@@ -113,8 +113,16 @@ const ANY_LOCAL_PATH: ImageLocalPattern = { pathname: '^.*$' };
 
 /**
  * The image configuration a deployment needs at request time, from the build's manifest — or
- * `undefined` when the default loader is not in use: `unoptimized`, a custom `loader`, or a
- * `loaderFile` all mean the client never asks for `/_next/image`, and there is nothing to serve.
+ * `undefined` when nothing can ask for `/_next/image`: `unoptimized`, or a `loader` of `custom`,
+ * which is where Next.js refuses to emit an optimizer URL at all.
+ *
+ * A `loaderFile` is *not* one of those, though it looks like one. Next.js allows it beside
+ * `loader: 'default'` — only another value is refused (`server/config.ts`, "cannot be used with
+ * images.loaderFile property") — and a file kept there is free to return an optimizer URL, which
+ * is exactly what the upstream fixture `loader-config-default-loader-with-file` does: its loader
+ * returns `/_next/image/?url=…`, and its test is named for the optimization it leaves enabled.
+ * Read as meaning otherwise, such a build recorded no configuration and every one of its images
+ * came back a miss.
  */
 export function imagesConfigFromNextManifest(
   manifest: unknown,
@@ -125,11 +133,7 @@ export function imagesConfigFromNextManifest(
     return undefined;
   }
   const { images } = parsed.data;
-  if (
-    images.loader !== 'default' ||
-    (images.loaderFile ?? '') !== '' ||
-    images.unoptimized === true
-  ) {
+  if (images.loader !== 'default' || images.unoptimized === true) {
     return undefined;
   }
   return checkedImagesConfigSchema.parse({
