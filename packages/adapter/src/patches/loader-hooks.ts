@@ -1,0 +1,67 @@
+import { RAW_BODY_MODULE, RAW_BODY_SOURCE } from './raw-body.ts';
+
+/**
+ * Modules a Worker has no use for, or cannot load, resolved to a module of the adapter's rather
+ * than bundled.
+ *
+ * `require-in-the-middle` and `import-in-the-middle` hook Node's module loader; Sentry's
+ * OpenTelemetry instrumentation registers them. A Worker has no module loader to hook, so they
+ * resolve to a module that hooks nothing. Turbopack may suffix an externalised package with a
+ * hash.
+ *
+ * A module that hooks nothing, and not an empty one: `new Hook(...)` is how a hook is registered,
+ * which an empty module makes a `TypeError`. It is thrown where Next.js loads the instrumentation
+ * hook, so every request the deployment serves is a 500 — as one configured with a Sentry DSN
+ * was, since that is what makes its Node SDK install the instrumentation.
+ *
+ * `critters` is required by the Pages Router runtime for `experimental.optimizeCss`, which
+ * inlines critical CSS from the built stylesheets on disk: an app that turns it on is refused at
+ * the first render rather than at the bundle, in so many words.
+ *
+ * `next/dist/compiled/raw-body` cannot be loaded by workerd (see `raw-body.ts`); the Pages
+ * Router's API body parser gets a copy that reads the stream the same way.
+ */
+
+const LOADER_HOOKS = /^(?:require-in-the-middle|import-in-the-middle)(?:-[0-9a-f]+)?$/u;
+const OPTIONAL_MODULES = /^critters$/u;
+
+/**
+ * What both packages export: the `Hook` constructor itself, named as well, with the rest of
+ * `import-in-the-middle`'s surface beside it. A hook that registers nothing has nothing to
+ * unregister, and the channel a loader would answer on carries no messages to wait for.
+ */
+const STUB_SOURCE = `function Hook() {}
+Hook.prototype.unhook = function () {};
+function addHook() {}
+function removeHook() {}
+function createAddHookMessageChannel() {
+  return {
+    registerOptions: { data: { include: [] }, transferList: [] },
+    addHookMessagePort: undefined,
+    waitForAllMessagesAcknowledged: function () { return Promise.resolve(); },
+  };
+}
+module.exports = Hook;
+module.exports.Hook = Hook;
+module.exports.addHook = addHook;
+module.exports.removeHook = removeHook;
+module.exports.createAddHookMessageChannel = createAddHookMessageChannel;
+`;
+const UNSUPPORTED_SOURCE =
+  'module.exports = class Critters { constructor() { throw new Error("experimental.optimizeCss is not supported on this platform"); } };';
+
+export function isStubbedModule(specifier: string): boolean {
+  return (
+    LOADER_HOOKS.test(specifier) ||
+    OPTIONAL_MODULES.test(specifier) ||
+    RAW_BODY_MODULE.test(specifier)
+  );
+}
+
+/** What stands in for a module: nothing, a refusal, or the adapter's own copy. */
+export function stubSourceFor(specifier: string): string {
+  if (RAW_BODY_MODULE.test(specifier)) {
+    return RAW_BODY_SOURCE;
+  }
+  return OPTIONAL_MODULES.test(specifier) ? UNSUPPORTED_SOURCE : STUB_SOURCE;
+}

@@ -1,0 +1,35 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "printWidth": 100,
+  "tabWidth": 2,
+  "useTabs": false,
+  "semi": true,
+  "singleQuote": true,
+  "trailingComma": "all",
+  "insertFinalNewline": true,
+  "sortImports": {},
+  "sortTailwindcss": {
+    "stylesheet": "./apps/web/src/app/globals.css",
+  },
+  "sortPackageJson": {},
+  "ignorePatterns": [
+    "**/node_modules/**",
+    "**/.adapter-tests/**",
+    "**/.next/**",
+    "**/.wrangler/**",
+    "**/dist/**",
+    "**/coverage/**",
+    "**/worker-configuration.d.ts",
+    "**/next-env.d.ts",
+    "**/drizzle/**",
+    "pnpm-lock.yaml",
+    "**/test/fixtures/**",
+    // Written by `measure.ts`; kept as it was written.
+    "packages/next-runtime/reports/**",
+    // The bundled collector, one minified string; written by `generate`.
+    "packages/vitals-script/generated/**",
+    // Written by `pnpm third-party-licenses:generate`; `third-party-licenses:check` compares bytes.
+    "apps/web/src/lib/licenses/third-party.json",
+    "tools/licenses/third-party.lock.json",
+  ],
+}

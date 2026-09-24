@@ -1,0 +1,22 @@
+export {
+  type Artifact,
+  type ArtifactKind,
+  type ArtifactLocator,
+  type ArtifactRef,
+  artifactKindSchema,
+  artifactRefSchema,
+  artifactSchema,
+  type EncodedShellRef,
+  encodedShellRefSchema,
+  kvArtifactKey,
+  r2ArtifactKey,
+  SHA256_HEX_LENGTH,
+  sha256HexSchema,
+  type ShellEncoding,
+  type ShellEncodings,
+  shellEncodingSchema,
+  shellEncodingsOf,
+  shellEncodingsSchema,
+  staticAssetShellPath,
+} from './artifact.ts';
+export { canonicalJson, contentAddress, sha256Hex, sha256HexOfText } from './hash.ts';

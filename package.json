@@ -1,0 +1,48 @@
+{
+  "name": "upwind",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A Next.js deployment adapter and runtime for Cloudflare Workers.",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arkorlab/upwind.git"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "format": "oxfmt --check",
+    "format:write": "oxfmt",
+    "knip": "knip",
+    "lint": "eslint . --max-warnings 0",
+    "lint:fix": "eslint . --max-warnings 0 --fix",
+    "typecheck": "pnpm -r typecheck && tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@eslint/js": "catalog:",
+    "@types/node": "catalog:",
+    "eslint": "catalog:",
+    "eslint-config-prettier": "catalog:",
+    "eslint-import-resolver-typescript": "catalog:",
+    "eslint-plugin-import-x": "catalog:",
+    "eslint-plugin-n": "catalog:",
+    "eslint-plugin-perfectionist": "catalog:",
+    "eslint-plugin-promise": "catalog:",
+    "eslint-plugin-regexp": "catalog:",
+    "eslint-plugin-security": "catalog:",
+    "eslint-plugin-sonarjs": "catalog:",
+    "eslint-plugin-unicorn": "catalog:",
+    "globals": "catalog:",
+    "knip": "catalog:",
+    "oxfmt": "catalog:",
+    "typescript": "catalog:",
+    "typescript-eslint": "catalog:"
+  },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": "24.21.0",
+      "onFail": "warn"
+    }
+  },
+  "packageManager": "pnpm@12.4.1+sha512.2e81e399d73fe8390dab25e06aa788ab7a5908248d2f5a370f82b481147a6a7a367bf8048f9a6fdb6460f21a66f0542dedb8b94ca2c8723596741920b1656d4c"
+}
