@@ -15,6 +15,7 @@ import { render404 } from '../error-pages.ts';
 import { invokeNodeHandler, type Run } from '../node-bridge.ts';
 import { type CapturedRender, renderCaptured } from './capture.ts';
 import { nowMs } from './clock.ts';
+import { asRegeneration } from './context.ts';
 import {
   type ArtifactUpload,
   type AttemptOutcome,
@@ -137,7 +138,7 @@ function renderStatic(
         ...meta.requestMeta,
       },
       waitUntil: input.waitUntil,
-      run: input.run,
+      run: (work) => input.run(() => asRegeneration(work)),
       expectNoResponse: meta.expectNoResponse,
     });
   });

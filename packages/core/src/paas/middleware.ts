@@ -12,15 +12,22 @@ const REWRITE_HEADER = 'x-middleware-rewrite';
 const OVERRIDE_HEADERS_HEADER = 'x-middleware-override-headers';
 const REQUEST_HEADER_PREFIX = 'x-middleware-request-';
 const SET_COOKIE_HEADER = 'set-cookie';
+/**
+ * The cookies a middleware set, as Next.js hands them to the render that follows it: the router puts
+ * the header on the request it renders rather than on the response (`server/lib/router-utils/
+ * resolve-routes.ts`), and `cookies()` reads them there as if the client had sent them
+ * (`server/async-storage/request-store.ts`, `mergeMiddlewareCookies`).
+ */
+export const MIDDLEWARE_SET_COOKIE_HEADER = 'x-middleware-set-cookie';
 /** Middleware-protocol headers that never reach a client. */
 const PROTOCOL_HEADERS: ReadonlySet<string> = new Set([
   'content-length',
+  MIDDLEWARE_SET_COOKIE_HEADER,
   NEXT_HEADER,
   OVERRIDE_HEADERS_HEADER,
   REWRITE_HEADER,
   'x-middleware-redirect',
   'x-middleware-refresh',
-  'x-middleware-set-cookie',
 ]);
 /**
  * What a middleware may not add to a response the edge composed: the body is the edge's, and so is
@@ -41,7 +48,9 @@ export type MiddlewareResult =
   /**
    * The request goes on, as the middleware left it: to `url` (the request's own, or a rewrite of
    * it on the same origin), with `requestHeaders` for whoever handles it and `responseHeaders`
-   * added to whatever answer comes back.
+   * added to whatever answer comes back. `setCookie` is what the middleware set for the render to
+   * read (`MIDDLEWARE_SET_COOKIE_HEADER`), kept apart from the request headers: a client's own
+   * `x-middleware-*` is dropped on the way to the runtime, and this one must not be.
    */
   | {
       readonly kind: 'continue';
@@ -49,6 +58,7 @@ export type MiddlewareResult =
       readonly rewritten: boolean;
       readonly requestHeaders: Headers;
       readonly responseHeaders: Headers;
+      readonly setCookie: string | undefined;
     }
   /** A rewrite to another origin: fetched from there, as the request the middleware left. */
   | {
@@ -84,6 +94,43 @@ function applyRequestOverrides(response: Response, requestHeaders: Headers): Hea
   return out;
 }
 
+/**
+ * What Next.js's router leaves off the request when it puts a middleware's response headers on it
+ * (`ipcForbiddenHeaders`, `server/lib/server-ipc/utils.ts`): how the body travels, not what it says.
+ */
+const NOT_ON_REQUEST: ReadonlySet<string> = new Set([
+  'accept-encoding',
+  'connection',
+  'content-encoding',
+  'expect',
+  'keep-alive',
+  'keepalive',
+  'transfer-encoding',
+]);
+
+/**
+ * The request as the middleware left it, with what it answered with on it as well. Next.js's router
+ * puts every header a middleware answers with on the request it renders, as well as on the
+ * response (`server/lib/router-utils/resolve-routes.ts`; `@next/routing` does the same), after the
+ * overrides: a `Content-Security-Policy` set with `NextResponse.next({ headers })` is how a page
+ * reads the nonce it renders its scripts with.
+ */
+function withAnswered(forwarded: Headers, answered: Headers): Headers {
+  const out = new Headers(forwarded);
+  const replaced = new Set<string>();
+  for (const [name, value] of answered) {
+    if (NOT_ON_REQUEST.has(name)) {
+      continue;
+    }
+    if (!replaced.has(name)) {
+      out.delete(name);
+      replaced.add(name);
+    }
+    out.append(name, value);
+  }
+  return out;
+}
+
 function responseHeadersOf(response: Response): Headers {
   const out = new Headers();
   for (const [name, value] of response.headers) {
@@ -115,8 +162,9 @@ export function readMiddlewareResponse(
   if (rewrite === null && next === null) {
     return { kind: 'responded', response };
   }
-  const forwarded = applyRequestOverrides(response, requestHeaders);
   const responseHeaders = responseHeadersOf(response);
+  const forwarded = withAnswered(applyRequestOverrides(response, requestHeaders), responseHeaders);
+  const setCookie = response.headers.get(MIDDLEWARE_SET_COOKIE_HEADER) ?? undefined;
   // A rewrite to another origin finishes the request before the `Location` below is read, which is
   // the order Next.js reads them in and therefore the order the edge reads them in.
   const target = rewrite === null ? undefined : new URL(rewrite, requestUrl);
@@ -138,6 +186,7 @@ export function readMiddlewareResponse(
       rewritten: false,
       requestHeaders: forwarded,
       responseHeaders,
+      setCookie,
     };
   }
   return {
@@ -146,27 +195,57 @@ export function readMiddlewareResponse(
     rewritten: target.pathname !== requestUrl.pathname || target.search !== requestUrl.search,
     requestHeaders: forwarded,
     responseHeaders,
+    setCookie,
   };
 }
 
-/**
- * Whether the application's middleware would run for this request: any matcher whose pattern the
- * pathname matches, and whose `has` conditions all hold and `missing` conditions all fail. The
- * patterns are the ones Next.js compiled for its own router, matched as it matches them.
- */
-export function middlewareApplies(
+function matchesAny(
   matchers: readonly MiddlewareMatcher[],
+  pathname: string,
   url: URL,
   headers: Headers,
 ): boolean {
   return matchers.some((matcher) => {
     // Case-insensitive, as Next.js matches them, and without the unicode flag, as it compiled them.
     // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-    if (!new RegExp(matcher.sourceRegex, 'i').test(url.pathname)) {
+    if (!new RegExp(matcher.sourceRegex, 'i').test(pathname)) {
       return false;
     }
     return conditionsHold(matcher, url, headers);
   });
+}
+
+/** The pathname with its escapes decoded; `undefined` when it has none, or one that does not decode. */
+function decodedPathname(pathname: string): string | undefined {
+  if (!pathname.includes('%')) {
+    return undefined;
+  }
+  try {
+    return decodeURIComponent(pathname);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Whether the application's middleware would run for this request: any matcher whose pattern the
+ * pathname matches, and whose `has` conditions all hold and `missing` conditions all fail. The
+ * patterns are the ones Next.js compiled for its own router, matched as it matches them.
+ *
+ * A matcher is written as a path reads (`/vercel copy.svg`), and a request carries it escaped
+ * (`/vercel%20copy.svg`), so a pathname that matches none as it came is tried again decoded, as
+ * `@next/routing` tries it (`shouldInvokeMiddlewareForRequest`). One that does not decode is not.
+ */
+export function middlewareApplies(
+  matchers: readonly MiddlewareMatcher[],
+  url: URL,
+  headers: Headers,
+): boolean {
+  if (matchesAny(matchers, url.pathname, url, headers)) {
+    return true;
+  }
+  const decoded = decodedPathname(url.pathname);
+  return decoded !== undefined && matchesAny(matchers, decoded, url, headers);
 }
 
 /** The response headers a middleware asked to add, merged onto a response the edge composed. */

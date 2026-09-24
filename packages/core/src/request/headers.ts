@@ -5,6 +5,7 @@ import {
   HOP_BY_HOP_HEADERS,
   INTERNAL_REQUEST_HEADER_PREFIXES,
   INTERNAL_REQUEST_HEADERS,
+  MIDDLEWARE_PREFETCH_HEADER,
   PASSTHROUGH_RESPONSE_HEADER_DENYLIST,
   PLATFORM_HEADER_PREFIX,
   RESPONSE_HEADER_DENY_PREFIXES,
@@ -27,7 +28,10 @@ function isInternalRequestHeader(name: string): boolean {
   if (HOP_BY_HOP_HEADERS.includes(name) || INTERNAL_REQUEST_HEADERS.includes(name)) {
     return true;
   }
-  return INTERNAL_REQUEST_HEADER_PREFIXES.some((prefix) => name.startsWith(prefix));
+  return (
+    name !== MIDDLEWARE_PREFETCH_HEADER &&
+    INTERNAL_REQUEST_HEADER_PREFIXES.some((prefix) => name.startsWith(prefix))
+  );
 }
 
 function baseSanitized(headers: Headers, ctx: ForwardingContext): Headers {

@@ -1,4 +1,5 @@
 import type { Prerender } from '@upwind/core/bundle';
+import { NO_STORE_CACHE_CONTROL } from '@upwind/core/request';
 import { releaseStream } from '@upwind/core/util';
 
 import { isDraftRequest } from './draft.ts';
@@ -19,6 +20,7 @@ import {
   type RoutedInput,
   RSC_CONTENT_TYPE,
   staticResponse,
+  withCacheState,
 } from './serve.ts';
 import { findShell, type Store } from './store.ts';
 
@@ -32,6 +34,7 @@ const NOT_FOUND_ENTRY_ID = '/_not-found';
 /** Next.js writes the static not-found document as the `/404` static file, under the `basePath`. */
 const NOT_FOUND_PAGE = '/404';
 const RSC_SUFFIX = '.rsc';
+const CACHE_CONTROL = 'cache-control';
 
 /** The state that resumes a prerender of the build, as the bundle carries it. */
 export function postponedOf(store: Store, prerender: Prerender): string | undefined {
@@ -93,14 +96,14 @@ export async function documentFromBuild(
   const status = shell.initialStatus ?? fallbackStatus;
   if (shell.postponed === undefined) {
     releaseStream(input.request.body, 'static document: handler body unused');
-    return staticResponse(store, shell, HTML_CONTENT_TYPE, status);
+    return withCacheState(staticResponse(store, shell, HTML_CONTENT_TYPE, status), 'HIT');
   }
   if (entry.kind === 'edge') {
     return invokeEntry(input, entry, resolved.url);
   }
   const headers = prerenderHeaders(shell, HTML_CONTENT_TYPE);
   headers.delete(POSTPONED_HEADER);
-  headers.set('cache-control', 'private, no-store');
+  headers.set(CACHE_CONTROL, NO_STORE_CACHE_CONTROL);
   // The headers are the shell's; nothing a resume renders would change them, so `HEAD` is
   // answered without one.
   if (input.request.method === 'HEAD') {
@@ -140,7 +143,7 @@ export async function rscFromBuild(
       const headers = prerenderHeaders(staticSegment, RSC_CONTENT_TYPE);
       headers.set(PRERENDER_HEADER, '1');
       headers.set(POSTPONED_HEADER, '2');
-      headers.set('cache-control', 'private, no-store');
+      headers.set(CACHE_CONTROL, NO_STORE_CACHE_CONTROL);
       headers.set('vary', store.manifest.routing.rsc.varyHeader);
       return new Response(store.readBlob(staticSegment.body.sha256), { status: HTTP_OK, headers });
     }
@@ -159,7 +162,32 @@ export async function rscFromBuild(
       url: resolved.url,
     });
   }
+  if (
+    shell?.pathname === resolved.pathname &&
+    shell.postponed === undefined &&
+    twin?.body !== undefined &&
+    twin.postponed === undefined
+  ) {
+    return builtPayload(store, twin);
+  }
   return invokeEntry(input, entry, resolved.url);
+}
+
+/**
+ * A page's whole payload as the build wrote it, for a page the build made complete: answered as
+ * a platform answers it, from the build, under the status the build gave it — none, whatever the
+ * page itself answered (`initialStatus: undefined` for a data route, `build/adapter/
+ * build-complete.ts`). A redirect or a `notFound()` is carried in the payload, which the client's
+ * router follows itself. Asked to render it, the page's handler answered from its cache under the
+ * page's own status, which in minimal mode it leaves to the platform to take off (`app-page.ts`,
+ * "Redirect information is encoded in RSC payload"): a client navigation to a page that redirects
+ * was answered 307 (`app-dir/rsc-redirect`).
+ */
+function builtPayload(store: Store, twin: Prerender): Response {
+  const response = staticResponse(store, twin, RSC_CONTENT_TYPE, twin.initialStatus ?? HTTP_OK);
+  response.headers.set(CACHE_CONTROL, NO_STORE_CACHE_CONTROL);
+  response.headers.set('vary', store.manifest.routing.rsc.varyHeader);
+  return withCacheState(response, 'HIT');
 }
 
 /**

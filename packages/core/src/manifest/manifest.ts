@@ -15,7 +15,9 @@ import {
   type RouteEntry,
   type ProjectManifest,
   projectManifestSchema,
+  type StaticFileAssetPrefix,
   type StaticFileEntry,
+  type StaticFileLocales,
 } from './schema.ts';
 
 const DEFAULT_FIRST_BYTE_TIMEOUT_MS = 15_000;
@@ -48,6 +50,8 @@ export interface BuildProjectManifestInput {
   readonly exactPathnames?: readonly string[] | undefined;
   readonly headerRules?: readonly HeaderRule[] | undefined;
   readonly images?: ImagesConfig | undefined;
+  readonly staticFileLocales?: StaticFileLocales | undefined;
+  readonly staticFileAssetPrefix?: StaticFileAssetPrefix | undefined;
   readonly cache?: ManifestCache | undefined;
 }
 
@@ -77,6 +81,10 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
     }),
     ...(input.headerRules !== undefined && { headerRules: input.headerRules }),
     ...(input.images !== undefined && { images: input.images }),
+    ...(input.staticFileLocales !== undefined && { staticFileLocales: input.staticFileLocales }),
+    ...(input.staticFileAssetPrefix !== undefined && {
+      staticFileAssetPrefix: input.staticFileAssetPrefix,
+    }),
     ...(input.cache !== undefined && { cache: input.cache }),
   });
 }
@@ -130,20 +138,122 @@ export function staticFileStatus(pathname: string, basePath = ''): number {
   return ERROR_DOCUMENT_STATUS[named] ?? HTTP_OK;
 }
 
+/**
+ * The key a record holds a pathname under: as the request spelled it, and then decoded. Next.js
+ * names what it builds by the characters a path reads as (`/sticks & stones`, `/記事`), escaping
+ * only a delimiter, and a request carries them escaped; its filesystem check looks a path up both
+ * ways (`getItem`, `server/lib/router-utils/filesystem.ts`). A pathname with nothing to decode
+ * costs the one lookup it always did.
+ */
+export function keyOf(
+  record: Readonly<Record<string, unknown>>,
+  pathname: string,
+): string | undefined {
+  if (Object.hasOwn(record, pathname)) {
+    return pathname;
+  }
+  if (!pathname.includes('%')) {
+    return undefined;
+  }
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return undefined;
+  }
+  return Object.hasOwn(record, decoded) ? decoded : undefined;
+}
+
+/** What a record holds under a pathname (`keyOf`). */
+function byPathname<T>(record: Readonly<Record<string, T>>, pathname: string): T | undefined {
+  const key = keyOf(record, pathname);
+  return key === undefined ? undefined : record[key];
+}
+
+/**
+ * The path with one of the application's default locales taken out from behind its base path, as
+ * Next.js's filesystem check takes it out of a static file's path ("legacy behavior allows
+ * visiting static assets under default locale but no other locale", `getItem`,
+ * `server/lib/router-utils/filesystem.ts`); `undefined` when no default locale is there.
+ */
+function withoutDefaultLocale(locales: StaticFileLocales, pathname: string): string | undefined {
+  const { basePath } = locales;
+  if (basePath !== '' && !pathname.startsWith(`${basePath}/`)) {
+    return undefined;
+  }
+  const rest = pathname.slice(basePath.length);
+  const end = rest.indexOf('/', 1);
+  if (end === -1) {
+    return undefined;
+  }
+  const segment = rest.slice(1, end).toLowerCase();
+  return locales.locales.some((locale) => locale.toLowerCase() === segment)
+    ? `${basePath}${rest.slice(end)}`
+    : undefined;
+}
+
+/**
+ * The path a request under the application's asset prefix names a file by: `<assetPrefix>/_next/…`
+ * as `<basePath>/_next/…`, the rewrite `next build` writes for an `assetPrefix` (`loadRewrites`,
+ * `lib/load-custom-routes.ts`); `undefined` for a path not under the prefix.
+ */
+export function withoutAssetPrefix(
+  prefix: StaticFileAssetPrefix,
+  pathname: string,
+): string | undefined {
+  const under = `${prefix.assetPrefix}/_next/`;
+  return pathname.startsWith(under)
+    ? `${prefix.basePath}/_next/${pathname.slice(under.length)}`
+    : undefined;
+}
+
+/**
+ * The pathname the manifest ships a file under, for a pathname a request names: as spelled or
+ * decoded (`keyOf`), and in an application with `i18n` behind a default locale as well
+ * (`withoutDefaultLocale`). Next.js's middleware puts the locale in front of every path it
+ * rewrites to (`forceLocale`), a file's among them, so the rewrite a middleware makes of
+ * `/_next/static/…` to itself names `/en/_next/static/…`, which Next.js serves as the file. In an
+ * application with an `assetPrefix`, a file under `_next` is found under the prefix as well
+ * (`withoutAssetPrefix`): its pages load their scripts from there.
+ */
+export function staticFileKey(manifest: ProjectManifest, pathname: string): string | undefined {
+  const { staticFiles, staticFileLocales, staticFileAssetPrefix } = manifest;
+  if (staticFiles === undefined) {
+    return undefined;
+  }
+  const named = keyOf(staticFiles, pathname);
+  if (named !== undefined) {
+    return named;
+  }
+  const unlocalized =
+    staticFileLocales === undefined ? undefined : withoutDefaultLocale(staticFileLocales, pathname);
+  const localized = unlocalized === undefined ? undefined : keyOf(staticFiles, unlocalized);
+  if (localized !== undefined) {
+    return localized;
+  }
+  const unprefixed =
+    staticFileAssetPrefix === undefined
+      ? undefined
+      : withoutAssetPrefix(staticFileAssetPrefix, pathname);
+  return unprefixed === undefined ? undefined : keyOf(staticFiles, unprefixed);
+}
+
+/** The file shipped under a pathname a request names (`staticFileKey`). */
 export function findStaticFile(
   manifest: ProjectManifest,
   pathname: string,
 ): StaticFileEntry | undefined {
-  if (manifest.staticFiles === undefined) {
-    return undefined;
-  }
-  return Object.hasOwn(manifest.staticFiles, pathname) ? manifest.staticFiles[pathname] : undefined;
+  const key = staticFileKey(manifest, pathname);
+  return key === undefined ? undefined : manifest.staticFiles?.[key];
 }
 
-/** Exact-match route lookup (case-sensitive, no trailing-slash normalization). */
+/**
+ * Exact-match route lookup (case-sensitive, no trailing-slash normalization), of the pathname as
+ * the request spelled it and then decoded (`byPathname`).
+ */
 export function findRouteEntry(
   manifest: ProjectManifest,
   pathname: string,
 ): RouteEntry | undefined {
-  return Object.hasOwn(manifest.routes, pathname) ? manifest.routes[pathname] : undefined;
+  return byPathname(manifest.routes, pathname);
 }

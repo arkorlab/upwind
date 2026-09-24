@@ -1,13 +1,14 @@
 import { type ResolveRoutesResult, resolveRoutes, responseToMiddlewareResult } from '@next/routing';
-import { isPagesDataPathname, isPagesDataRequestPath } from '@upwind/core/bundle';
+import { isPagesDataPathname } from '@upwind/core/bundle';
 import type { ImagesConfig } from '@upwind/core/images';
 import { staticFileStatus } from '@upwind/core/manifest';
 import {
   MIDDLEWARE_DONE_HEADER,
   MIDDLEWARE_ONLY_HEADER,
+  pathFromHeaders,
+  RESUME_PRERENDER_ESCAPED_HEADER,
   RESUME_PRERENDER_HEADER,
 } from '@upwind/core/paas';
-import { NEXT_DATA_HEADER } from '@upwind/core/request';
 import { releaseStream } from '@upwind/core/util';
 
 import { withClock } from './cache/clock.ts';
@@ -19,7 +20,7 @@ import {
   rscFromBuild,
   staticFileResponse,
 } from './documents.ts';
-import { type Entry, entryFor, hasEntry, middlewareHandler } from './entries.ts';
+import { entryFor, hasEntry, middlewareHandler } from './entries.ts';
 import { failureAnswer } from './error-pages.ts';
 import {
   handleDetached,
@@ -36,20 +37,26 @@ import {
   sourceRequest,
   sourceResponse,
 } from './image-fallback.ts';
-import { hasBody, isRscRequest } from './incoming.ts';
+import { hasBody, isRscRequest, wantsBlockingMetadata } from './incoming.ts';
 import { type Resolved, servePagesData, serveRouteHandler } from './outputs.ts';
 import { notFoundData } from './pages-not-found.ts';
 import { rscRepresentation } from './representations.ts';
 import { DEFAULT_PROXY_BODY_LIMIT, splitBody } from './request-body.ts';
 import {
+  askedOf,
+  internalRedirect,
+  landedRoute,
   type MiddlewareInvoker,
   missesInPlainText,
   parametersDecode,
+  pathnamesFor,
   redirectResponse,
   routingI18n,
   routingTables,
   resolvedOf,
+  routedHeaders,
   withoutRepeatedSlashes,
+  withRewriteStatus,
   withRoutingHeaders,
 } from './routing.ts';
 import { carriesResumeState, handleRuntimeResume } from './runtime-resume.ts';
@@ -67,6 +74,7 @@ import {
   withoutBody,
 } from './serve.ts';
 import { entrypointKindOf, findShell, getStore, type Store } from './store.ts';
+import { renderedBy, serveWithBody } from './with-body.ts';
 
 /**
  * Request handling for a deployment's Worker.
@@ -94,6 +102,8 @@ const HTTP_INTERNAL_ERROR = 500;
 const HTTP_BAD_GATEWAY = 502;
 const HTTP_METHOD_NOT_ALLOWED = 405;
 const FILE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD']);
+/** What a Pages Router data URL ends in. */
+const DATA_SUFFIX = '.json';
 
 export type { HandleInput } from './serve.ts';
 
@@ -160,32 +170,6 @@ async function externalRewrite(request: Request, target: URL): Promise<Response>
 }
 
 /**
- * The entrypoint that renders a resolved route, and the route it renders under.
- *
- * A prerender the router resolved by its own name — a member of a route the build closed — is a
- * pathname with no module of its own: what renders it is the route the prerender names, and that
- * route is what the shell of the member is filed under too (`store.shellsByRoute`), so it travels
- * with the entrypoint. Reading the page from storage is one thing, and a request that has to be
- * run (a write, a payload) is another; both end up here.
- */
-async function renderedBy(
-  input: RoutedInput,
-  store: Store,
-  resolved: Resolved,
-): Promise<{ readonly entry: Entry; readonly resolved: Resolved } | undefined> {
-  const own = await entryFor(input, resolved.route);
-  if (own !== undefined) {
-    return { entry: own, resolved };
-  }
-  const route = store.prerendersByPathname.get(resolved.pathname)?.route;
-  if (route === undefined) {
-    return undefined;
-  }
-  const entry = await entryFor(input, route);
-  return entry === undefined ? undefined : { entry, resolved: { ...resolved, route } };
-}
-
-/**
  * Serve a document: the shell from the cache or the build, then its resume, as one response. A
  * member of a route the build left to the first request for it (`fallback: 'blocking'`, a
  * parameter outside `generateStaticParams`) is rendered once and kept, as Next.js keeps it. A
@@ -199,13 +183,24 @@ async function serveDocument(input: RoutedInput, store: Store, asked: Resolved):
   }
   const { entry, resolved } = rendered;
   const shell = findShell(store, resolved.route, resolved.pathname);
+  // A partially prerendered page streams its metadata after the shell. Next.js bypasses the shell
+  // for a visitor it sends blocking metadata to and renders the page whole
+  // (`shouldForceDynamicPPRRender`, in the page's handler), so the handler is asked for it.
+  if (
+    shell?.postponed !== undefined &&
+    wantsBlockingMetadata(input.request, store.manifest.config.htmlLimitedBots)
+  ) {
+    return invokeEntry(input, entry, resolved.url, failureAnswer(store, entry, resolved.route));
+  }
   if (shell !== undefined && entry.kind === 'node') {
     const built = shell.body !== undefined;
     const current = await serveFromGeneration(
       input,
       store,
       {
-        route: resolved.route,
+        // The route the build filed the shell under, which its entry is keyed by: a locale's
+        // route of an application with `i18n` finds the page's (`findShell`).
+        route: shell.route,
         pathname: built ? shell.pathname : resolved.pathname,
         url: resolved.url,
         representation: 'html',
@@ -241,7 +236,9 @@ async function serveRsc(input: RoutedInput, store: Store, asked: Resolved): Prom
       input,
       store,
       {
-        route: resolved.route,
+        // As a document is looked up (`serveDocument`): under the route the build filed the shell
+        // under, which its entry is keyed by.
+        route: shell?.route ?? resolved.route,
         pathname: built ? shell.pathname : resolved.pathname,
         url: resolved.url,
         representation: rscRepresentation(input.request, store),
@@ -267,6 +264,36 @@ interface MiddlewareTrace {
   requestHeaders: Headers | undefined;
   /** Where the middleware rewrote the request to, when it did: what a route that matched nothing was asked at. */
   rewrite: URL | undefined;
+  /** The status the middleware gave its rewrite, where it gave one other than 200. */
+  status: number | undefined;
+}
+
+/**
+ * The URL a middleware is handed: for a data request, the page it is for.
+ *
+ * Next.js hands a middleware the page a `_next/data` request asks for, with the query, and the
+ * request's `x-nextjs-data` says what it is (`runMiddleware`, `server/next-server.ts`); only
+ * `skipProxyUrlNormalize` hands it the URL as it came. `@next/routing` hands it the data URL. The
+ * middleware's adapter writes `x-nextjs-rewrite` and `x-nextjs-redirect` in the form of the URL it
+ * was handed, so a redirect of `/_next/data/<id>/es/old-home.json` came back as the data URL of
+ * `/es/new-home` where the client's router is answered with the page (`server/web/adapter.ts`).
+ */
+function middlewareUrl(url: URL, store: Store): URL {
+  const { basePath, skipProxyUrlNormalize, trailingSlash } = store.manifest.config;
+  const prefix = `${basePath}/_next/data/${store.manifest.buildId}/`;
+  if (
+    skipProxyUrlNormalize === true ||
+    !url.pathname.startsWith(prefix) ||
+    !url.pathname.endsWith(DATA_SUFFIX)
+  ) {
+    return url;
+  }
+  const page = url.pathname.slice(prefix.length, -DATA_SUFFIX.length);
+  const normalized = new URL(url);
+  const pathname = page === 'index' ? basePath || '/' : `${basePath}/${page}`;
+  // With the trailing slash the application keeps its pages under (`maybeAddTrailingSlash`).
+  normalized.pathname = trailingSlash && !pathname.endsWith('/') ? `${pathname}/` : pathname;
+  return normalized;
 }
 
 /**
@@ -276,12 +303,16 @@ interface MiddlewareTrace {
  * them) but not the request headers a middleware overrode: those are read off the object the
  * middleware result was applied to, which the router hands in and never hands back.
  */
-function middlewareInvoker(input: RoutedInput, trace: MiddlewareTrace): MiddlewareInvoker {
+function middlewareInvoker(
+  input: RoutedInput,
+  store: Store,
+  trace: MiddlewareTrace,
+): MiddlewareInvoker {
   return async (ctx) => {
     trace.invoked = true;
     const response = await runMiddleware(
       input,
-      new Request(ctx.url, {
+      new Request(middlewareUrl(ctx.url, store), {
         method: input.request.method,
         headers: ctx.headers,
         ...(hasBody(input.request.method) && { body: ctx.requestBody, duplex: 'half' }),
@@ -296,6 +327,9 @@ function middlewareInvoker(input: RoutedInput, trace: MiddlewareTrace): Middlewa
     }
     trace.requestHeaders = result.requestHeaders;
     trace.rewrite = result.rewrite;
+    if (result.rewrite !== undefined && response.status !== HTTP_OK) {
+      trace.status = response.status;
+    }
     return result;
   };
 }
@@ -364,32 +398,11 @@ async function unrouted(
   if (isPagesDataPathname(new URL(forwarded.request.url).pathname)) {
     return withRoutingHeaders(notFoundData(), routed.resolvedHeaders);
   }
-  if (missesInPlainText(forwarded.request, at, store.manifest.config.basePath)) {
+  if (missesInPlainText(forwarded.request, at, store.manifest.config)) {
     releaseStream(forwarded.request.body, 'plain not found: handler body unused');
     return withRoutingHeaders(plainNotFoundResponse(), routed.resolvedHeaders);
   }
   return withRoutingHeaders(await notFound(forwarded, store, at), routed.resolvedHeaders);
-}
-
-/**
- * The client's headers as the middleware and the handler after it are given them: without the
- * platform's own, and with `x-nextjs-data` decided by the path rather than taken from the client.
- *
- * Next.js drops that header from what a client sends (`filterInternalHeaders`) and puts it back
- * itself when the path is a data request (`server/lib/router-utils/resolve-routes.ts`). The edge
- * drops it before a request reaches this Worker, and `@next/routing` puts nothing back. It is how a
- * middleware knows it is answering a client navigation's `_next/data` fetch, which it answers with
- * `x-nextjs-redirect` or `x-nextjs-rewrite` for the client's router to follow. Without it a
- * redirect comes back as a `Location` the fetch cannot use and a rewrite comes back unnamed, and
- * the router gives up and loads the whole page.
- */
-function routedHeaders(request: Request, url: URL, store: Store): Headers {
-  const headers = stripPlatformHeaders(request.headers);
-  headers.delete(NEXT_DATA_HEADER);
-  if (isPagesDataRequestPath(store.manifest.config.basePath, url.pathname)) {
-    headers.set(NEXT_DATA_HEADER, '1');
-  }
-  return headers;
 }
 
 async function handleFull(input: RoutedInput, store: Store): Promise<Response> {
@@ -398,13 +411,21 @@ async function handleFull(input: RoutedInput, store: Store): Promise<Response> {
   if (collapsed !== undefined) {
     return redirectResponse(collapsed, HTTP_PERMANENT_REDIRECT, undefined);
   }
-  return routeAndServe(input, store, url);
+  const headers = routedHeaders(input.request, url, store);
+  return (await internalRedirect(store, url, headers)) ?? routeAndServe(input, store, url, headers);
 }
 
-/** A request routed as Next.js's router routes it, and answered by what it resolved to. */
-async function routeAndServe(input: RoutedInput, store: Store, url: URL): Promise<Response> {
+/**
+ * A request routed as Next.js's router routes it, and answered by what it resolved to. The router
+ * is handed the client's headers as `routedHeaders` leaves them.
+ */
+async function routeAndServe(
+  input: RoutedInput,
+  store: Store,
+  url: URL,
+  requestHeaders: Headers,
+): Promise<Response> {
   const { request } = input;
-  const requestHeaders = routedHeaders(request, url, store);
   // Asked of the table, not of the module: a middleware the edge has already run is not loaded.
   const skipMiddleware =
     request.headers.get(MIDDLEWARE_DONE_HEADER) === '1' || !hasEntry(input, MIDDLEWARE_ENTRY_ID);
@@ -413,6 +434,7 @@ async function routeAndServe(input: RoutedInput, store: Store, url: URL): Promis
     response: undefined,
     requestHeaders: undefined,
     rewrite: undefined,
+    status: undefined,
   };
   // Split only where a middleware may read it: with none to run the router hands no body to
   // anything, and a side nobody reads would hold every byte the handler reads.
@@ -439,10 +461,10 @@ async function routeAndServe(input: RoutedInput, store: Store, url: URL): Promis
     basePath: store.manifest.config.basePath,
     requestBody: bodies.routing ?? new ReadableStream(),
     headers: requestHeaders,
-    pathnames: store.pathnames,
+    pathnames: pathnamesFor(store, url),
     ...(i18n !== null && i18n !== undefined && { i18n: routingI18n(i18n) }),
-    routes: routingTables(store, skipMiddleware),
-    invokeMiddleware: middlewareInvoker(input, trace),
+    routes: routingTables(store, skipMiddleware, url),
+    invokeMiddleware: middlewareInvoker(input, store, trace),
   });
   if (routed.middlewareResponded === true && trace.response !== undefined) {
     // The middleware's own answer may be streaming its side of the body back: that side stays.
@@ -488,12 +510,12 @@ async function routeAndServe(input: RoutedInput, store: Store, url: URL): Promis
       routed.resolvedHeaders,
     );
   }
-  const route = routed.resolvedPathname;
-  const target = routed.invocationTarget;
-  if (route === undefined || target === undefined) {
+  if (routed.resolvedPathname === undefined || routed.invocationTarget === undefined) {
     return unrouted(routed, forwarded, store, trace.rewrite ?? url);
   }
-  const resolved = resolvedOf(store, route, target, { url, rewrite: trace.rewrite });
+  const { route, target } = landedRoute(store, routed.resolvedPathname, routed.invocationTarget);
+  const asked = askedOf(request, input.initURL, url, trace.rewrite);
+  const resolved = resolvedOf(store, route, target, asked);
   const { images } = store.manifest.config;
   if (images?.path === route) {
     return withRoutingHeaders(
@@ -501,9 +523,12 @@ async function routeAndServe(input: RoutedInput, store: Store, url: URL): Promis
       routed.resolvedHeaders,
     );
   }
-  return withRoutingHeaders(
-    await serveResolved(forwarded, store, resolved, url),
-    routed.resolvedHeaders,
+  return withRewriteStatus(
+    withRoutingHeaders(
+      await serveResolved(forwarded, store, resolved, url),
+      routed.resolvedHeaders,
+    ),
+    trace.status,
   );
 }
 
@@ -527,15 +552,9 @@ async function serveResolved(
       : new Response('Method Not Allowed', { status: HTTP_METHOD_NOT_ALLOWED });
   }
   if (hasBody(request.method)) {
-    const rendered = await renderedBy(input, store, resolved);
-    if (rendered === undefined) {
-      return new Response('Method Not Allowed', { status: HTTP_METHOD_NOT_ALLOWED });
-    }
-    return invokeEntry(
-      input,
-      rendered.entry,
-      rendered.resolved.url,
-      failureAnswer(store, rendered.entry, rendered.resolved.route),
+    return (
+      (await serveWithBody(input, store, resolved)) ??
+      new Response('Method Not Allowed', { status: HTTP_METHOD_NOT_ALLOWED })
     );
   }
   // Read off the route when routing resolved to a data output of the build, and off the pathname
@@ -586,7 +605,9 @@ async function routeRequest(input: RoutedInput, store: Store): Promise<Response>
     const foreground = await handleForeground(input, store);
     return foreground.response ?? outcomeOn(await handleFull(input, store), foreground.outcome);
   }
-  const prerenderId = request.headers.get(RESUME_PRERENDER_HEADER);
+  const prerenderId =
+    pathFromHeaders(request.headers, RESUME_PRERENDER_HEADER, RESUME_PRERENDER_ESCAPED_HEADER) ??
+    null;
   if (prerenderId !== null || carriesResumeState(request)) {
     return handleAnyResume(input, store, prerenderId);
   }

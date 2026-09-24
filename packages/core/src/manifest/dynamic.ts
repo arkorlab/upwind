@@ -1,4 +1,5 @@
 import { conditionsHold } from '../request/conditions.ts';
+import { keyOf, withoutAssetPrefix } from './manifest.ts';
 import type { ProjectManifest, ReservedRoute, RouteEntry } from './schema.ts';
 
 /**
@@ -153,7 +154,27 @@ export function pathIsReserved(
   });
 }
 
-/** The same question of a manifest's own rules; nothing is reserved by one that carries none. */
+/**
+ * The path the asset prefix's rewrite lands a request under it on (`staticFileKey`), for the rest
+ * of `beforeFiles` to be asked of: the router runs them on that path, and checks the filesystem
+ * only after them. `undefined` for a path not under the prefix.
+ */
+function assetPrefixLanding(manifest: ProjectManifest, url: URL): URL | undefined {
+  const prefix = manifest.staticFileAssetPrefix;
+  const pathname = prefix === undefined ? undefined : withoutAssetPrefix(prefix, url.pathname);
+  if (pathname === undefined) {
+    return undefined;
+  }
+  const landed = new URL(url.href);
+  landed.pathname = pathname;
+  return landed;
+}
+
+/**
+ * The same question of a manifest's own rules; nothing is reserved by one that carries none. A
+ * path under the asset prefix is claimed ahead of the filesystem by a rule that claims the path
+ * its rewrite lands on as well (`assetPrefixLanding`).
+ */
 export function isReserved(
   manifest: ProjectManifest,
   url: URL,
@@ -163,15 +184,24 @@ export function isReserved(
   if (manifest.reservedRoutes === undefined) {
     return false;
   }
-  return pathIsReserved(manifest.reservedRoutes, url, headers, beforeFilesOnly);
+  if (pathIsReserved(manifest.reservedRoutes, url, headers, beforeFilesOnly)) {
+    return true;
+  }
+  const landed = beforeFilesOnly ? assetPrefixLanding(manifest, url) : undefined;
+  return landed !== undefined && pathIsReserved(manifest.reservedRoutes, landed, headers, true);
 }
 
-/** Whether a pathname Next.js resolves exactly, with no shell, is what was asked for. */
+/**
+ * Whether a pathname Next.js resolves exactly, with no shell, is what was asked for: as spelled or
+ * decoded, as a route is looked up (`keyOf`). Read as spelled alone, an escaped request for such a
+ * page passed this guard to a dynamic class that matched the escapes, and the class's shell was
+ * served where Next.js serves the page.
+ */
 export function isExactPathname(manifest: ProjectManifest, pathname: string): boolean {
   if (manifest.exactPathnames === undefined) {
     return false;
   }
-  return Object.hasOwn(manifest.exactPathnames, pathname);
+  return keyOf(manifest.exactPathnames, pathname) !== undefined;
 }
 
 /** What `next.config` sets on one request, and whether the request itself chose any of it. */

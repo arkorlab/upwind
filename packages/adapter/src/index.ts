@@ -10,14 +10,13 @@ import {
 import type { AdapterOutput, NextAdapter } from 'next';
 
 import { BlobStore } from './blobs.ts';
+import { bundleConfig, customCacheHandlerPaths } from './bundle-config.ts';
 import {
   type BuildContext,
-  bundleConfig,
   bypassTokenOf,
   collectEntrypoints,
   collectPrerenders,
   collectStaticFiles,
-  customCacheHandlerPaths,
   deploymentId,
   edgeEntryOf,
   exists,
@@ -25,6 +24,7 @@ import {
   isStaticExport,
   middlewareMatchers,
   middlewareOutput,
+  nftAssets,
   nftChunks,
   nftWasm,
   tracedChunks,
@@ -34,6 +34,7 @@ import type { EdgeEntry } from './edge.ts';
 import { collectManifests } from './manifests.ts';
 import type { PatchContext } from './patches/index.ts';
 import { readProjectConfig } from './project-config.ts';
+import { inlineAssetFiles, type TracedFile, tracedFiles } from './traced-files.ts';
 import { arkorWasmGlobal, WasmCollector, type WasmChunk, wasmChunks } from './wasm.ts';
 import { buildWorker, type EntryModule } from './worker.ts';
 
@@ -88,13 +89,46 @@ async function instrumentationOf(
   readonly file: string | undefined;
   readonly chunks: readonly string[];
   readonly wasm: readonly string[];
+  readonly assets: Readonly<Record<string, string>>;
 }> {
   const file = path.join(distDir, 'server', 'instrumentation.js');
   if (exported || !(await exists(file))) {
-    return { file: undefined, chunks: [], wasm: [] };
+    return { file: undefined, chunks: [], wasm: [], assets: {} };
   }
-  // Both of these go into both Workers: the hook runs before any entrypoint, in each of them.
-  return { file, chunks: await nftChunks(file), wasm: await nftWasm(file) };
+  // All of these go into both Workers: the hook runs before any entrypoint, in each of them.
+  return {
+    file,
+    chunks: await nftChunks(file),
+    wasm: await nftWasm(file),
+    assets: await nftAssets(file),
+  };
+}
+
+/**
+ * What the Node.js entries read through `node:fs`, for each Worker to carry what its own entries
+ * read: the app Worker carries the middleware as well, and both carry what the instrumentation
+ * hook reads, since it runs before any entrypoint in each of them (`instrumentationOf`). A static
+ * export runs none of the application's code, and reads nothing.
+ */
+function filesRead(
+  ctx: BuildContext,
+  middleware: AdapterOutput['MIDDLEWARE'] | undefined,
+  hookAssets: Readonly<Record<string, string>>,
+  exported: boolean,
+): { readonly app: readonly TracedFile[]; readonly middleware: readonly TracedFile[] } {
+  const own = middleware === undefined ? [] : [middleware];
+  const hook = [{ assets: hookAssets }];
+  const { appPages, appRoutes, pages, pagesApi } = ctx.outputs;
+  return {
+    app: exported
+      ? []
+      : tracedFiles(
+          [...appPages, ...appRoutes, ...pages, ...pagesApi, ...own, ...hook],
+          ctx.projectDir,
+          ctx.distDir,
+        ),
+    middleware: tracedFiles([...own, ...hook], ctx.projectDir, ctx.distDir),
+  };
 }
 
 async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Promise<void> {
@@ -146,6 +180,7 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     chunks: middlewareChunks,
     wasm: middlewareWasm,
   } = middlewarePlacement(middleware);
+  const files = filesRead(ctx, middleware, instrumentation.assets, exported);
   // Each Worker's chunk table names only what its entries can reach: the table is what Rolldown
   // bundles, so the middleware Worker stays small and the app Worker carries no middleware.
   const patchFor = (own: readonly string[], wasm: readonly WasmChunk[]): PatchContext => {
@@ -211,6 +246,10 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     runtimeManifest: runtimeManifestJson,
     cacheHostModule: options.cacheHostModule,
     blobs: [...shippedBlobs.values()],
+    files: [
+      ...files.app,
+      ...inlineAssetFiles([...edgeEntries, ...middlewareEdgeEntries], ctx.projectDir),
+    ],
     blobStore: blobs,
   });
   let middlewareWorker;
@@ -232,6 +271,7 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
       runtimeManifest: runtimeManifestJson,
       cacheHostModule: options.cacheHostModule,
       blobs: [],
+      files: [...files.middleware, ...inlineAssetFiles(middlewareEdgeEntries, ctx.projectDir)],
       blobStore: blobs,
     });
   }

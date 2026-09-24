@@ -20,10 +20,19 @@ import { RAW_BODY_MODULE, RAW_BODY_SOURCE } from './raw-body.ts';
  *
  * `next/dist/compiled/raw-body` cannot be loaded by workerd (see `raw-body.ts`); the Pages
  * Router's API body parser gets a copy that reads the stream the same way.
+ *
+ * `node:process` is not found by workerd's `require`, although its `import` finds it: under the
+ * Worker's compatibility date and flags a CommonJS module asking for it is told there is no such
+ * module. The global is that very module (`import process from 'node:process'` is
+ * `globalThis.process`), and the bundle, CommonJS, is handed the global. OpenTelemetry's Node.js
+ * SDK requires it, and an application whose instrumentation started one answered every render
+ * with a 500 (`cache-components-allow-otel-spans`).
  */
 
 const LOADER_HOOKS = /^(?:require-in-the-middle|import-in-the-middle)(?:-[0-9a-f]+)?$/u;
 const OPTIONAL_MODULES = /^critters$/u;
+const PROCESS_MODULE = /^(?:node:)?process$/u;
+const PROCESS_SOURCE = 'module.exports = globalThis.process;';
 
 /**
  * What both packages export: the `Hook` constructor itself, named as well, with the rest of
@@ -54,14 +63,18 @@ export function isStubbedModule(specifier: string): boolean {
   return (
     LOADER_HOOKS.test(specifier) ||
     OPTIONAL_MODULES.test(specifier) ||
-    RAW_BODY_MODULE.test(specifier)
+    RAW_BODY_MODULE.test(specifier) ||
+    PROCESS_MODULE.test(specifier)
   );
 }
 
-/** What stands in for a module: nothing, a refusal, or the adapter's own copy. */
+/** What stands in for a module: nothing, a refusal, the adapter's own copy, or the global. */
 export function stubSourceFor(specifier: string): string {
   if (RAW_BODY_MODULE.test(specifier)) {
     return RAW_BODY_SOURCE;
+  }
+  if (PROCESS_MODULE.test(specifier)) {
+    return PROCESS_SOURCE;
   }
   return OPTIONAL_MODULES.test(specifier) ? UNSUPPORTED_SOURCE : STUB_SOURCE;
 }

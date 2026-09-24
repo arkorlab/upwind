@@ -36,6 +36,12 @@ export interface BundleDependencies {
   readonly other: readonly DependencyInput[];
   /** Specifiers left for the Worker's own resolver: Node built-ins. */
   readonly externals: readonly string[];
+  /**
+   * Specifiers no module was found for, in a bundle of packages the runtime imports lazily
+   * (`linked-externals.ts`): an import that fails in the Worker as it would under Node.js, when it
+   * runs. Recorded, not refused.
+   */
+  readonly unresolved?: readonly string[];
   /** Specifiers resolved to an empty module. */
   readonly stubs: readonly string[];
   /** The rewrites applied, and to which files. */
@@ -72,6 +78,11 @@ export interface WorkerDependencies extends BundleDependencies {
   readonly size: WorkerSize;
   /** The same record for the Worker's edge bundle, when the build put entrypoints on it. */
   readonly edge?: BundleDependencies;
+  /**
+   * The same record for the packages the build leaves to the runtime as ES modules, which the
+   * Worker carries as modules of their own (`linked-externals.ts`), when the chunks import any.
+   */
+  readonly linked?: BundleDependencies;
 }
 
 export interface WorkerSize {
@@ -86,6 +97,8 @@ export interface BundleTrace {
   readonly inputs: readonly DependencyInput[];
   /** Specifiers the bundler left for the Worker's own resolver. */
   readonly externals: readonly string[];
+  /** Specifiers the bundler found nothing for, where that is not a failure (`unresolved`). */
+  readonly unresolved?: readonly string[];
   readonly patches: readonly AppliedPatch[];
   readonly stubs: readonly string[];
   /** `.wasm` the bundler resolved to the Worker's own module, as `<file> -> <global>`. */
@@ -198,6 +211,9 @@ export function bundleDependencies(
     ),
     other: other.toSorted((a, b) => a.file.localeCompare(b.file)),
     externals: [...new Set(trace.externals)].toSorted((a, b) => a.localeCompare(b)),
+    ...(trace.unresolved !== undefined && {
+      unresolved: [...new Set(trace.unresolved)].toSorted((a, b) => a.localeCompare(b)),
+    }),
     stubs: [...new Set(trace.stubs)].toSorted((a, b) => a.localeCompare(b)),
     patches: trace.patches.map((applied) => {
       return {
@@ -241,11 +257,19 @@ const ALLOWED_BUILTINS: ReadonlySet<string> = new Set([
   // Imported by Sentry's Node SDK and never called from a Worker: a stub in workerd.
   'child_process',
   'crypto',
+  // Imported by OpenTelemetry's Node.js SDK, for an exporter a Worker does not send through: a
+  // stub in workerd. Like `dns` and `http2`, it is found by `require` under the Worker's
+  // compatibility date and flags, as `process` is not (see `loader-hooks.ts`).
+  'dgram',
   'diagnostics_channel',
+  // workerd provides it natively. Imported by OpenTelemetry's Node.js SDK.
+  'dns',
   'events',
   'fs',
   'fs/promises',
   'http',
+  // Imported by OpenTelemetry's Node.js SDK, for its gRPC exporter: a stub in workerd.
+  'http2',
   'https',
   'inspector',
   'module',
@@ -295,7 +319,9 @@ function isAllowedExternal(specifier: string): boolean {
  * one, and the loader it keeps on its module context for a module compiled to ask the runtime for
  * it. None is reached: the edge build inlines every dependency, having no external to leave.
  *
- * That runtime is inlined, minified, into the chunk Turbopack builds from Next.js's edge-wrapper
+ * That runtime is inlined — minified, unless the application turns Turbopack's minifier off
+ * (`experimental.turbopackMinify: false`, which `middleware-basic` does), when it reads as the
+ * Node.js runtime's does — into the chunk Turbopack builds from Next.js's edge-wrapper
  * template, which is the entry chunk of every edge entrypoint and carries no application code —
  * the wrapper's own body is a load by module id. The exception is tied to that chunk by name, so
  * a dynamic `import()` an application makes, which lands in a chunk of its own, is refused as it
@@ -306,7 +332,7 @@ function isAllowedExternal(specifier: string): boolean {
  */
 const ALLOWED_DYNAMIC_LOADS: readonly RegExp[] = [
   /^\.next\/server\/chunks\/(?:ssr\/)?\[turbopack\]_runtime\.js:\d+: (?:import\(|require\.resolve\(|contextPrototype\.t = typeof require )/u,
-  /^\.next\/server\/edge\/chunks\/(?:ssr\/)?[\w-]+_next_dist_esm_build_templates_edge-wrapper_[\w-]+\.js:\d+: (?:import\(|require\.resolve\(|\w+\.t = "function" == typeof require \? require :)/u,
+  /^\.next\/server\/edge\/chunks\/(?:ssr\/)?[\w-]+_next_dist_esm_build_templates_edge-wrapper_[\w-]+\.js:\d+: (?:import\(|require\.resolve\(|\w+\.t = "function" == typeof require \? require :|contextPrototype\.t = typeof require === "function" \? require :)/u,
   /^next\/dist\/compiled\/next-server\/[\w-]+\.runtime\.prod\.js:\d+: import\(/u,
   /^next\/dist\/server\/require-hook\.js:\d+: (?:const|let) resolve = /u,
 ];
@@ -327,6 +353,26 @@ export class AuditError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = 'AuditError';
+  }
+}
+
+/**
+ * A file the application reads, under a name the Worker already carries a module of its own under
+ * — `runtime.json`, the deployment's manifest, say. The file is found at its path in the project,
+ * and the application would be handed that module where it asked for its file, so the build is
+ * refused rather than one silently read in place of the other.
+ */
+export function auditTracedFiles(
+  kind: string,
+  modules: readonly { readonly name: string }[],
+  files: readonly { readonly name: string }[],
+): void {
+  const taken = new Set(modules.map((module) => module.name));
+  const clashing = files.filter((file) => taken.has(file.name)).map((file) => file.name);
+  if (clashing.length > 0) {
+    throw new AuditError(
+      `@upwind/adapter: the application reads ${clashing.join(', ')}, which the ${kind} Worker carries a module of its own under; rename the file`,
+    );
   }
 }
 
@@ -380,12 +426,15 @@ function problemsIn(source: string, bundle: BundleDependencies): string[] {
 /** Fail the build on what would fail the Worker: each of its bundles is held to the same rules. */
 export function auditWorker(
   kind: string,
-  sources: { readonly app: string; readonly edge?: string },
+  sources: { readonly app: string; readonly edge?: string; readonly linked?: string },
   dependencies: WorkerDependencies,
 ): void {
   const problems = problemsIn(sources.app, dependencies);
   if (sources.edge !== undefined && dependencies.edge !== undefined) {
     problems.push(...problemsIn(sources.edge, dependencies.edge));
+  }
+  if (sources.linked !== undefined && dependencies.linked !== undefined) {
+    problems.push(...problemsIn(sources.linked, dependencies.linked));
   }
   if (problems.length > 0) {
     const list = problems.map((problem) => `  - ${problem}`).join('\n');

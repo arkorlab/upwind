@@ -66,13 +66,16 @@ function stubModule(id: string): { code: string; moduleType: 'js' } {
 /**
  * Module-loader hooks have nothing to hook in a Worker, and resolve to an empty module; an
  * optional module of a feature the platform does not run resolves to one that says so; a module
- * workerd cannot load resolves to the adapter's own copy (`loader-hooks.ts`).
+ * workerd cannot load resolves to the adapter's own copy, and `node:process`, which its `require`
+ * does not find, to the global it is (`loader-hooks.ts`).
  */
 export function stubPlugin(onStubbed?: (specifier: string) => void): Plugin {
   return {
     name: 'ppr-cdn-stubs',
     resolveId: {
-      filter: { id: /^(?:require|import)-in-the-middle|^critters$|compiled\/raw-body$/u },
+      filter: {
+        id: /^(?:require|import)-in-the-middle|^critters$|compiled\/raw-body$|^(?:node:)?process$/u,
+      },
       handler(source) {
         if (!isStubbedModule(source)) {
           return null;

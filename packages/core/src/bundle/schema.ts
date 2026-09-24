@@ -277,9 +277,22 @@ export type CacheLifeProfile = z.infer<typeof cacheLifeProfileSchema>;
 /** The subset of `next.config` the runtime and the edge need at request time. */
 export const bundleConfigSchema = z.looseObject({
   basePath: z.string(),
+  /**
+   * The path the application's `_next` files are served under as well as under the base path:
+   * for an `assetPrefix` (the pathname of one that is a URL), `next build` rewrites
+   * `<assetPrefix>/_next/:path+` to `<basePath>/_next/:path+` before the filesystem is checked.
+   * Absent where it writes no such rewrite.
+   */
+  assetPrefix: z.string().min(1).optional(),
   trailingSlash: z.boolean(),
   skipTrailingSlashRedirect: z.boolean(),
   skipProxyUrlNormalize: z.boolean().optional(),
+  /**
+   * The user agents Next.js sends blocking metadata to, as the pattern it tests them with
+   * (`htmlLimitedBots`, its own list when the app names none): the Worker renders a partially
+   * prerendered page whole for them, as Next.js does. Read by the Worker alone.
+   */
+  htmlLimitedBots: z.string().optional(),
   poweredByHeader: z.boolean(),
   i18n: i18nSchema.nullable().optional(),
   /** What `/_next/image` enforces; absent when the build left `next/image` unoptimized. */

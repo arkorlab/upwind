@@ -2,6 +2,7 @@ import { NEXT_ONE_YEAR_SECONDS } from '@upwind/core/cache';
 
 import { readWithin } from './body.ts';
 import { nowMs } from './clock.ts';
+import { isRegeneration } from './context.ts';
 import { readData, writeData } from './data.ts';
 import type { CacheRuntime, DataMemo } from './runtime.ts';
 import { recordValidity } from './tags.ts';
@@ -125,6 +126,14 @@ function isFetchValue(value: unknown): value is CachedFetchValue {
  * global symbol names a `FetchCache`. A value is the JSON Next.js hands over, stored whole; a
  * read is answered with the moment it was made, from which Next.js judges its age, and with a
  * moment of zero when a tag made it stale, so Next.js serves it and fetches again behind.
+ *
+ * Except to a regeneration (`isRegeneration`), which misses a value a tag made stale. Next.js
+ * hands an `unstable_cache` value it was told is stale to whatever render reads it, and computes
+ * it again only behind, so the page regenerated for a `revalidateTag` was the page as it was, with
+ * the value the tag was revalidated for — and a `fetch` one fared the same (`non-ascii-cache-tags`).
+ * Next.js's own platform tells the render which tags were revalidated
+ * (`x-next-revalidated-tags`), and `IncrementalCache` misses those tags' entries for it; a miss
+ * here is that, for the tags that made this entry stale.
  */
 export class PlatformFetchCache {
   // Next.js constructs it with its own context (fs, dev, revalidatedTags, …); none of it applies
@@ -173,7 +182,7 @@ export class PlatformFetchCache {
       invalidation: memo.response.invalidation,
       now,
     });
-    if (validity === 'expired') {
+    if (validity === 'expired' || (validity === 'stale' && isRegeneration())) {
       return null;
     }
     return { value, lastModified: validity === 'stale' ? 0 : entry.timestamp };

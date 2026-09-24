@@ -4,9 +4,7 @@ import path from 'node:path';
 
 import { isImmutableCacheControl } from '@upwind/core/assets';
 import {
-  type CacheLifeProfile,
   DEPLOYMENT_ID_PREFIX,
-  type DeploymentBundle,
   type Entrypoint,
   type Prerender,
   type Route,
@@ -147,6 +145,14 @@ export async function nftChunks(entryFile: string): Promise<string[]> {
 }
 
 /**
+ * Everything such an entry's trace names, keyed as an output's `assets` are: what it reads through
+ * `node:fs` is among them, beside its code, for `tracedFiles` to tell apart.
+ */
+export async function nftAssets(entryFile: string): Promise<Record<string, string>> {
+  return Object.fromEntries((await nftFiles(entryFile)).map((file) => [file, file]));
+}
+
+/**
  * The WebAssembly such an entry reaches. The instrumentation hook is the one entry the adapter
  * finds this way rather than being handed, and its chunks go into both Workers — so a `.wasm` it
  * imports has to be collected the same way, or the loader those chunks carry is rewritten with a
@@ -156,6 +162,12 @@ export async function nftChunks(entryFile: string): Promise<string[]> {
 export async function nftWasm(entryFile: string): Promise<string[]> {
   return [...new Set((await nftFiles(entryFile)).filter((file) => file.endsWith('.wasm')))];
 }
+
+/**
+ * What among an edge output's `assets` is code, which the edge bundle evaluates, or WebAssembly,
+ * which `wasmAssets` names; the rest are the files its chunks fetch as `blob:` URLs.
+ */
+const CHUNK_FILE = /\.(?:[cm]?js|map|wasm)$/u;
 
 /**
  * What an output on the edge runtime needs to be invoked, as Next.js hands it over.
@@ -168,6 +180,10 @@ export async function nftWasm(entryFile: string): Promise<string[]> {
  * `wasmAssets` names the WebAssembly those chunks read, keyed by the global they read it from
  * (`wasm_<hash>`): Turbopack's edge loader takes a `() => wasm_<hash>` thunk and gives up with
  * "global was not injected" if the name is not there. The Worker publishes it — see `wasm.ts`.
+ *
+ * The rest of `assets` are the files the chunks fetch by the name Next.js gave them
+ * (`blob:server/edge/assets/font.ttf`), which Next.js's own edge runtime answers from the
+ * function's assets (`fetchInlineAsset`) — see `edgeEntrySource`.
  */
 export function edgeEntryOf(
   output: RouteOutput | AdapterOutput['MIDDLEWARE'],
@@ -196,6 +212,9 @@ export function edgeEntryOf(
         filePath,
       };
     }),
+    inlineAssets: Object.entries(output.assets)
+      .filter(([, filePath]) => !CHUNK_FILE.test(filePath))
+      .map(([name, filePath]) => ({ name, filePath })),
     env: output.config.env ?? {},
   };
 }
@@ -648,102 +667,8 @@ export async function imagesConfig(ctx: BuildContext): Promise<ImagesConfig | un
  *
  * The fallbacks are Next.js's own, so an option left out means here what it means there.
  */
-function orDefault<T>(value: T | undefined, fallback: T): T {
+export function orDefault<T>(value: T | undefined, fallback: T): T {
   return value ?? fallback;
-}
-
-/**
- * Whether prefetches carry only the static part of a route. `'unstable_eager'` is an internal
- * migration aid Next.js documents as behaving like `true`; the bundle records the behaviour, not
- * the spelling.
- */
-function prefetchesPartially(value: BuildContext['config']['partialPrefetching']): boolean {
-  return value === true || value === 'unstable_eager';
-}
-
-/**
- * How much of a request body Next.js buffers for the middleware, in bytes. Its config loader has
- * turned a size like `'5mb'` into a number by the time the adapter is handed the config; anything
- * else is left out, and the runtime falls back to Next.js's default.
- */
-function proxyBodyLimitOf(config: BuildContext['config']): number | undefined {
-  const value: unknown = orDefault<BuildContext['config']['experimental'] | undefined>(
-    config.experimental,
-    undefined,
-  )?.proxyClientMaxBodySize;
-  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined;
-}
-
-/** The `cacheLife` profiles as Next.js resolved them, keeping only the three durations. */
-function cacheLifeProfiles(
-  profiles: BuildContext['config']['cacheLife'],
-): Record<string, CacheLifeProfile> {
-  const out: Record<string, CacheLifeProfile> = {};
-  for (const [name, profile] of Object.entries(profiles)) {
-    out[name] = {
-      ...(typeof profile.stale === 'number' && { stale: profile.stale }),
-      ...(typeof profile.revalidate === 'number' && { revalidate: profile.revalidate }),
-      ...(typeof profile.expire === 'number' && { expire: profile.expire }),
-    };
-  }
-  return out;
-}
-
-/**
- * The cache handler modules an app configured, by path. The platform's Worker cannot load a
- * module by path, so a build that names one is refused (`index.ts`) rather than deployed to fail
- * on its first cached request; the platform supplies the handlers itself.
- */
-export function customCacheHandlerPaths(config: BuildContext['config']): string[] {
-  const configured: (string | undefined)[] = [
-    orDefault(config.cacheHandler, undefined),
-    ...Object.values(orDefault(config.cacheHandlers, {})),
-  ];
-  return configured.filter((value): value is string => typeof value === 'string' && value !== '');
-}
-
-export function bundleConfig(
-  config: BuildContext['config'],
-  images: ImagesConfig | undefined,
-): DeploymentBundle['config'] {
-  const i18n = orDefault(config.i18n, null);
-  const expireTime = orDefault<number | undefined>(config.expireTime, undefined);
-  const cacheLife = orDefault<BuildContext['config']['cacheLife'] | undefined>(
-    config.cacheLife,
-    undefined,
-  );
-  const proxyBodyLimit = proxyBodyLimitOf(config);
-  return {
-    ...(images !== undefined && { images }),
-    basePath: orDefault(config.basePath, ''),
-    trailingSlash: orDefault(config.trailingSlash, false),
-    skipTrailingSlashRedirect: orDefault(config.skipTrailingSlashRedirect, false),
-    skipProxyUrlNormalize: config.skipProxyUrlNormalize,
-    poweredByHeader: orDefault(config.poweredByHeader, true),
-    cacheComponents: orDefault(config.cacheComponents, false),
-    partialPrefetching: prefetchesPartially(config.partialPrefetching),
-    ...(expireTime !== undefined && { expireTime }),
-    ...(cacheLife !== undefined && { cacheLife: cacheLifeProfiles(cacheLife) }),
-    ...(proxyBodyLimit !== undefined && { proxyClientMaxBodySize: proxyBodyLimit }),
-    i18n:
-      i18n === null
-        ? null
-        : {
-            defaultLocale: i18n.defaultLocale,
-            locales: [...i18n.locales],
-            ...(i18n.localeDetection === false && { localeDetection: false as const }),
-            ...(i18n.domains !== undefined && {
-              domains: i18n.domains.map((domain) => {
-                return {
-                  defaultLocale: domain.defaultLocale,
-                  domain: domain.domain,
-                  ...(domain.http === true && { http: true as const }),
-                  ...(domain.locales !== undefined && { locales: [...domain.locales] }),
-                };
-              }),
-            }),
-          },
-  };
 }
 
 /**

@@ -1,5 +1,7 @@
 import {
+  CACHE_ROUTE_ESCAPED_HEADER,
   CACHE_ROUTE_HEADER,
+  pathFromHeaders,
   RESUME_STATE_BODY,
   RESUME_STATE_HEADER,
   RESUME_STATE_LENGTH_HEADER,
@@ -43,7 +45,8 @@ async function readResumeState(request: Request): Promise<string | undefined> {
 
 /** The edge served a generation made at runtime: resume from the state it sent in the body. */
 export async function handleRuntimeResume(input: RoutedInput): Promise<Response> {
-  const route = input.request.headers.get(CACHE_ROUTE_HEADER) ?? '';
+  const route =
+    pathFromHeaders(input.request.headers, CACHE_ROUTE_HEADER, CACHE_ROUTE_ESCAPED_HEADER) ?? '';
   const handler = await nodeHandlerOf(input, route);
   if (handler === undefined) {
     return new Response(`no Node.js entrypoint for ${route}`, { status: HTTP_NOT_FOUND });

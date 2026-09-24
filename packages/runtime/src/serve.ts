@@ -97,6 +97,20 @@ export function staticResponse(
   });
 }
 
+/**
+ * Where an answer complete from the cache came from, as Next.js says it (`x-nextjs-cache`): `HIT`
+ * from the cache, `STALE` from it while it is regenerated, `MISS` rendered for the request. Its own
+ * server sets it on a page answered whole, and not on one a resume completes; in minimal mode it
+ * leaves the header to the platform (`build/templates/app-page.ts`).
+ */
+export const NEXT_CACHE_HEADER = 'x-nextjs-cache';
+export type NextCacheState = 'HIT' | 'STALE' | 'MISS';
+
+export function withCacheState(response: Response, state: NextCacheState): Response {
+  response.headers.set(NEXT_CACHE_HEADER, state);
+  return response;
+}
+
 /** A plain 404, for a request that names nothing the deployment has. */
 export function notFoundResponse(): Response {
   return new Response('Not Found', { status: HTTP_NOT_FOUND });

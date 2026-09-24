@@ -1,6 +1,12 @@
 import { interpolateHeader } from '../manifest/dynamic.ts';
 import type { BuildProjectManifestInput } from '../manifest/manifest.ts';
-import type { DynamicRoute, HeaderRule, ReservedRoute } from '../manifest/schema.ts';
+import type {
+  DynamicRoute,
+  HeaderRule,
+  ReservedRoute,
+  StaticFileAssetPrefix,
+  StaticFileLocales,
+} from '../manifest/schema.ts';
 import { BEHAVIORAL_RESPONSE_HEADERS, CONTENT_DISPOSITION_HEADER } from '../request/constants.ts';
 import { filterShellResponseHeaders, rendersInline } from '../request/headers.ts';
 import type { DeploymentBundle, Prerender, Route, StaticFile } from './schema.ts';
@@ -150,8 +156,7 @@ function pagesRoutes(bundle: DeploymentBundle): ReadonlySet<string> {
  * member it never saw is a loading page, not the page, which Next.js renders only at build — the
  * Worker renders the member instead, and a runtime cache holds no generation of the class.
  */
-function servableIn(bundle: DeploymentBundle): (prerender: Prerender) => boolean {
-  const templates = reachableTemplates(bundle);
+function generationIn(bundle: DeploymentBundle): (prerender: Prerender) => boolean {
   const edgeRuntime = edgeRuntimeRoutes(bundle);
   const pages = pagesRoutes(bundle);
   const rewritten = new Set(edgeServedRewrites(bundle).map((served) => served.pathname));
@@ -165,12 +170,36 @@ function servableIn(bundle: DeploymentBundle): (prerender: Prerender) => boolean
       prerender.routeType !== undefined &&
       SHELL_ROUTE_TYPES.has(prerender.routeType) &&
       prerender.body !== undefined &&
-      (prerender.initialStatus === undefined || prerender.initialStatus === HTTP_OK) &&
+      (prerender.initialStatus === undefined || prerender.initialStatus === HTTP_OK)
+    );
+  };
+}
+
+function servableIn(bundle: DeploymentBundle): (prerender: Prerender) => boolean {
+  const generation = generationIn(bundle);
+  const templates = reachableTemplates(bundle);
+  return (prerender) => {
+    return (
+      generation(prerender) &&
       (!isTemplate(prerender.pathname) || templates.has(prerender.pathname)) &&
       !claimedBeforeFiles(bundle, prerender) &&
       headersReproducible(bundle, prerender)
     );
   };
+}
+
+function resumableBy(
+  bundle: DeploymentBundle,
+  eligible: (prerender: Prerender) => boolean,
+): Prerender[] {
+  return bundle.prerenders.filter((prerender) => {
+    return (
+      prerender.response === 'initial' &&
+      prerender.compute === 'resuming' &&
+      prerender.postponed !== undefined &&
+      eligible(prerender)
+    );
+  });
 }
 
 /**
@@ -180,15 +209,7 @@ function servableIn(bundle: DeploymentBundle): (prerender: Prerender) => boolean
  * resumed (Next.js refuses to, vercel/next.js#98647) — both reach the deployment's Worker.
  */
 export function resumablePrerenders(bundle: DeploymentBundle): Prerender[] {
-  const servable = servableIn(bundle);
-  return bundle.prerenders.filter((prerender) => {
-    return (
-      prerender.response === 'initial' &&
-      prerender.compute === 'resuming' &&
-      prerender.postponed !== undefined &&
-      servable(prerender)
-    );
-  });
+  return resumableBy(bundle, servableIn(bundle));
 }
 
 /**
@@ -263,8 +284,10 @@ function actsThroughHeaders(bundle: DeploymentBundle, prerender: Prerender): boo
  * status, never for a request at their pathname — and so is a page that reads query parameters,
  * which the build rendered without any and a runtime cache would have to key by.
  */
-export function completePrerenders(bundle: DeploymentBundle): Prerender[] {
-  const servable = servableIn(bundle);
+function completeBy(
+  bundle: DeploymentBundle,
+  eligible: (prerender: Prerender) => boolean,
+): Prerender[] {
   return bundle.prerenders.filter((prerender) => {
     return (
       prerender.response === 'complete' &&
@@ -273,9 +296,13 @@ export function completePrerenders(bundle: DeploymentBundle): Prerender[] {
       !INTERNAL_PAGES.has(prerender.pathname) &&
       !actsThroughHeaders(bundle, prerender) &&
       (prerender.allowQuery === undefined || prerender.allowQuery.length === 0) &&
-      servable(prerender)
+      eligible(prerender)
     );
   });
+}
+
+export function completePrerenders(bundle: DeploymentBundle): Prerender[] {
+  return completeBy(bundle, servableIn(bundle));
 }
 
 export interface ServableOptions {
@@ -313,25 +340,92 @@ export function routeHandlerPrerenders(bundle: DeploymentBundle): Prerender[] {
 
 /**
  * The prerenders a runtime cache holds a generation of, and a deployment seeds it with:
- * every document the edge may serve, resumable or complete, whose key is its pathname alone,
- * and every route handler the build rendered.
+ * every document the edge or the deployment's Worker may answer from one, resumable or complete,
+ * whose key is its pathname alone, and every route handler the build rendered.
+ *
+ * Not only what the edge serves. What keeps a page off the edge — a rule of `next.config` that
+ * claims its path before the filesystem, as `trailingSlash` claims every path without the slash;
+ * a header rule the edge cannot judge; a template it cannot reach — is about routing at the edge,
+ * and the Worker answers the page from its generation all the same. Left unseeded, it had none to
+ * answer from: it served the build's document for as long as the deployment lived, and neither
+ * `revalidate` nor `revalidatePath` ever reached it.
  */
 export function cacheablePrerenders(bundle: DeploymentBundle): Prerender[] {
+  const generation = generationIn(bundle);
   return [
-    ...resumablePrerenders(bundle).filter(
+    ...resumableBy(bundle, generation).filter(
       (prerender) => prerender.allowQuery === undefined || prerender.allowQuery.length === 0,
     ),
-    ...completePrerenders(bundle),
+    ...completeBy(bundle, generation),
     ...routeHandlerPrerenders(bundle),
   ];
 }
 
-/** Every header rule, in the order Next.js applies them, for the edge to judge on each request. */
-export function headerRulesOf(bundle: DeploymentBundle): HeaderRule[] {
-  if (!reproducesDynamicRouting(bundle)) {
-    return [];
+/**
+ * The default locales a shipped file is found behind as well, in an application with `i18n`: its
+ * own, and each domain's, under its base path — what Next.js's filesystem check takes out of a
+ * static file's path. `undefined` for an application without `i18n`.
+ */
+export function staticFileLocalesOf(bundle: DeploymentBundle): StaticFileLocales | undefined {
+  const { basePath, i18n } = bundle.config;
+  if (i18n === null || i18n === undefined) {
+    return undefined;
   }
-  return headerPhases(bundle).flatMap((rule) => {
+  const domains = (i18n.domains ?? []).map((domain) => domain.defaultLocale);
+  return { basePath, locales: [...new Set([i18n.defaultLocale, ...domains])] };
+}
+
+/**
+ * The rewrite `next build` writes, first of its `beforeFiles`, for an `assetPrefix`:
+ * `<assetPrefix>/_next/:path+` to `<basePath>/_next/:path+` (`loadRewrites`, in
+ * `lib/load-custom-routes.ts`). `undefined` for a build without one.
+ */
+function assetPrefixRewrite(bundle: DeploymentBundle): Route | undefined {
+  const { assetPrefix, basePath } = bundle.config;
+  const [rule] = bundle.routing.beforeFiles;
+  if (
+    assetPrefix === undefined ||
+    rule?.source !== `${assetPrefix}/_next/:path+` ||
+    rule.destination !== `${basePath}/_next/$1` ||
+    rule.status !== undefined ||
+    isConditional(rule)
+  ) {
+    return undefined;
+  }
+  return rule;
+}
+
+/**
+ * Where a shipped file under the base path's `_next` is found as well, in an application with an
+ * `assetPrefix` `next build` rewrites from: under the prefix (`assetPrefixRewrite`). `undefined`
+ * for any other.
+ *
+ * A later `beforeFiles` rule that may claim the path a file lands on leaves that file, not every
+ * file, to the router: the edge asks it of each request, as it asks its other rules (`isReserved`).
+ * Decided here for the whole build, one rule that might claim one chunk had every script under
+ * the prefix handed to the Worker, which carries none of them.
+ */
+export function staticFileAssetPrefixOf(
+  bundle: DeploymentBundle,
+): StaticFileAssetPrefix | undefined {
+  const { basePath, assetPrefix } = bundle.config;
+  return assetPrefix === undefined || assetPrefixRewrite(bundle) === undefined
+    ? undefined
+    : { basePath, assetPrefix };
+}
+
+/**
+ * Every header rule, in the order Next.js applies them, for the edge to judge on each request —
+ * and, for a build whose routing the edge does not reproduce, the rules `next build` writes itself
+ * alone (`priority`): the `Service-Worker-Allowed` a service worker registers under, whose pattern
+ * names the whole path, base path included, and no locale. Without it the worker of an application
+ * with a base path was refused registration, and never controlled a page (`service-worker`).
+ */
+export function headerRulesOf(bundle: DeploymentBundle): HeaderRule[] {
+  const phases = reproducesDynamicRouting(bundle)
+    ? headerPhases(bundle)
+    : headerPhases(bundle).filter((rule) => rule.priority === true);
+  return phases.flatMap((rule) => {
     return rule.headers === undefined
       ? []
       : [{ sourceRegex: rule.sourceRegex, ...conditionsOf(rule), headers: rule.headers }];
@@ -509,6 +603,11 @@ export function dynamicRouting(
   // guards dynamic matching; direct static-file classification and its gate run before it.
   const aliases = edgeServedRewrites(bundle);
   const servedHere = new Set(aliases.map((served) => served.rule));
+  // The asset prefix's rewrite lands a file under the prefix on the file the edge finds there
+  // itself (`staticFileAssetPrefixOf`), so it does not claim such a file ahead of the filesystem;
+  // every other path under the prefix — a script that is not there, `_next/image` — it still
+  // claims from the dynamic routes, for the router to rewrite.
+  const prefixed = assetPrefixRewrite(bundle);
   const reservedRoutes: ReservedRoute[] = [
     ...reserved(
       routing.beforeMiddleware.filter(
@@ -517,9 +616,10 @@ export function dynamicRouting(
       true,
     ),
     ...reserved(
-      routing.beforeFiles.filter((route) => !servedHere.has(route)),
+      routing.beforeFiles.filter((route) => !servedHere.has(route) && route !== prefixed),
       true,
     ),
+    ...reserved(prefixed === undefined ? [] : [prefixed], false),
     ...reserved(routing.afterFiles, false),
   ];
   // Pathnames Next.js resolves exactly, ahead of its dynamic routes, that have no shell.

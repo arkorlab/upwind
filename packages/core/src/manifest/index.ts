@@ -17,6 +17,7 @@ export {
   findRouteEntry,
   findStaticFile,
   MAX_MANIFEST_BYTES,
+  staticFileKey,
   staticFileStatus,
   parseProjectManifest,
   serializeManifest,
@@ -50,6 +51,8 @@ export {
   type ProjectManifest,
   projectManifestSchema,
   type ReservedRoute,
+  type StaticFileAssetPrefix,
   type StaticFileEntry,
   staticFileEntrySchema,
+  type StaticFileLocales,
 } from './schema.ts';

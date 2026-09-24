@@ -1,5 +1,5 @@
 import { ORIGINAL_URL_HEADER, PLATFORM_REQUEST_HEADERS } from '@upwind/core/paas';
-import { BYPASS_QUERY_PREFIXES } from '@upwind/core/request';
+import { BYPASS_QUERY_PREFIXES, isHtmlLimitedBotUserAgent } from '@upwind/core/request';
 
 /**
  * What an incoming request says about itself.
@@ -55,4 +55,39 @@ export function rscBase(pathname: string): string {
 
 export function hasBody(method: string): boolean {
   return method !== 'GET' && method !== 'HEAD';
+}
+
+/** `htmlLimitedBots` compiled, by its pattern: one application's, for every request it serves. */
+const compiledBots = new Map<string, RegExp | undefined>();
+
+function botsRegexOf(pattern: string): RegExp | undefined {
+  if (!compiledBots.has(pattern)) {
+    let regex: RegExp | undefined;
+    try {
+      // Compiled as Next.js compiles it, case-insensitive and without the unicode flag.
+      // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
+      regex = new RegExp(pattern, 'i');
+    } catch {
+      regex = undefined;
+    }
+    compiledBots.set(pattern, regex);
+  }
+  return compiledBots.get(pattern);
+}
+
+/**
+ * Whether Next.js sends this visitor blocking metadata rather than streaming it: a user agent the
+ * application's `htmlLimitedBots` names, tested as Next.js tests it — case-insensitive, anywhere in
+ * the value (`shouldServeStreamingMetadata`, `server/lib/streaming-metadata.ts`) — or one on
+ * Next.js's own list when the build recorded no pattern.
+ */
+export function wantsBlockingMetadata(request: Request, pattern: string | undefined): boolean {
+  const userAgent = request.headers.get('user-agent');
+  if (userAgent === null || userAgent === '') {
+    return false;
+  }
+  if (pattern === undefined) {
+    return isHtmlLimitedBotUserAgent(userAgent);
+  }
+  return botsRegexOf(pattern)?.test(userAgent) ?? false;
 }

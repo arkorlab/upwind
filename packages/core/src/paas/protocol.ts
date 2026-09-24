@@ -9,6 +9,8 @@ export const MIDDLEWARE_ONLY_HEADER = 'x-arkor-middleware';
 export const MIDDLEWARE_DONE_HEADER = 'x-arkor-middleware-done';
 /** Resume this prerender: render only what its postponed state left out. */
 export const RESUME_PRERENDER_HEADER = 'x-arkor-prerender';
+/** The same, escaped where a header cannot carry it as it is (`pathHeaders`). */
+export const RESUME_PRERENDER_ESCAPED_HEADER = 'x-arkor-prerender-escaped';
 /** The URL the client asked for, when the request path is a rewrite of it. */
 export const ORIGINAL_URL_HEADER = 'x-arkor-original-url';
 /**
@@ -30,6 +32,8 @@ export type RegenerateMode = (typeof REGENERATE_MODES)[number];
 export const CACHE_SCOPE_REQUEST_HEADER = 'x-arkor-cache-scope';
 export const CACHE_ENTRY_HEADER = 'x-arkor-cache-entry';
 export const CACHE_ROUTE_HEADER = 'x-arkor-cache-route';
+/** The same, escaped where a header cannot carry it as it is (`pathHeaders`). */
+export const CACHE_ROUTE_ESCAPED_HEADER = 'x-arkor-cache-route-escaped';
 /**
  * The entry the request names is a member's own, not the class shell's that answers the member
  * (`runtimeCache.concreteUpgrade`): the runtime regenerates the concrete pathname, where it would
@@ -48,6 +52,7 @@ export const PLATFORM_REQUEST_HEADERS: readonly string[] = [
   MIDDLEWARE_ONLY_HEADER,
   MIDDLEWARE_DONE_HEADER,
   RESUME_PRERENDER_HEADER,
+  RESUME_PRERENDER_ESCAPED_HEADER,
   ORIGINAL_URL_HEADER,
   RESUME_STATE_HEADER,
   RESUME_STATE_LENGTH_HEADER,
@@ -55,6 +60,7 @@ export const PLATFORM_REQUEST_HEADERS: readonly string[] = [
   CACHE_SCOPE_REQUEST_HEADER,
   CACHE_ENTRY_HEADER,
   CACHE_ROUTE_HEADER,
+  CACHE_ROUTE_ESCAPED_HEADER,
   CACHE_UPGRADE_HEADER,
   GENERATION_HEADER,
   GENERATION_SEQ_HEADER,
@@ -74,4 +80,68 @@ export const IP_COUNTRY_HEADER = 'x-arkor-ip-country';
 
 export function isRegenerateMode(value: string | null): value is RegenerateMode {
   return value !== null && (REGENERATE_MODES as readonly string[]).includes(value);
+}
+
+/** Every character but visible ASCII, and `%`, which marks what was escaped. */
+const UNSAFE_IN_HEADER = /[^\u{21}-\u{24}\u{26}-\u{7E}]/gu;
+
+/**
+ * A route or a prerender's id as a header carries it between the edge and the runtime
+ * (`RESUME_PRERENDER_HEADER`, `CACHE_ROUTE_HEADER`). Next.js names what it builds by the characters
+ * a path reads as — a Japanese slug stays Japanese — and a header value is bytes: `Headers` refuses
+ * a character past U+00FF outright. So what a header cannot carry is escaped, `%` with it, and a
+ * name in plain visible ASCII goes as it is.
+ */
+export function pathHeaderValue(name: string): string {
+  return name.replaceAll(UNSAFE_IN_HEADER, (character) => encodeURIComponent(character));
+}
+
+/**
+ * The name a header written by `pathHeaderValue` carries: `undefined` when there is no header, and
+ * the value as it came in the one case it cannot be read back, an escape that is not one.
+ */
+export function pathFromHeader(value: string | null): string | undefined {
+  if (value === null) {
+    return undefined;
+  }
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+/** What `Headers` takes as it is: bytes, with no NUL and no line break among them. */
+const NOT_AS_IS_IN_HEADER = /[\0\n\r\u{100}-\u{10FFFF}]/u;
+
+/**
+ * The headers that name a route or a prerender to the runtime: `escapedName` with the name escaped
+ * where a header cannot carry it (`pathHeaderValue`), and `name` with the name as it is, wherever a
+ * header can carry it so. The edge and an application's Worker are deployed apart, and a Worker
+ * built before the escape reads `name` as it comes: sent escaped there, a name with a space or an
+ * accent in it (`/sticks & stones`, `/café`) was no name that Worker knew. A name no header could
+ * carry as it is was never sent to one that way.
+ */
+export function pathHeaders(
+  name: string,
+  escapedName: string,
+  path: string,
+): Record<string, string> {
+  return {
+    [escapedName]: pathHeaderValue(path),
+    ...(!NOT_AS_IS_IN_HEADER.test(path) && { [name]: path }),
+  };
+}
+
+/**
+ * The name `pathHeaders` sent: the escaped header's, read back, else the other's as it came — what
+ * an edge from before the escape sends. `undefined` when the request carries neither.
+ */
+export function pathFromHeaders(
+  headers: Headers,
+  name: string,
+  escapedName: string,
+): string | undefined {
+  const escaped = headers.get(escapedName);
+  return escaped === null ? (headers.get(name) ?? undefined) : pathFromHeader(escaped);
 }

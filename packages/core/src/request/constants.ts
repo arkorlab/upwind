@@ -9,6 +9,17 @@ export const NEXT_ACTION_HEADER = 'next-action';
 export const NEXT_ROUTER_STATE_TREE_HEADER = 'next-router-state-tree';
 export const NEXT_ROUTER_PREFETCH_HEADER = 'next-router-prefetch';
 export const NEXT_ROUTER_SEGMENT_PREFETCH_HEADER = 'next-router-segment-prefetch';
+/**
+ * What an answer to a client router's request varies on, as Next.js says it (`setVaryHeader`,
+ * `server/base-server.ts`): the request for React Server Components and what the router sends
+ * beside it.
+ */
+export const RSC_VARY = [
+  RSC_HEADER,
+  NEXT_ROUTER_STATE_TREE_HEADER,
+  NEXT_ROUTER_PREFETCH_HEADER,
+  NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+].join(', ');
 export const NEXT_URL_HEADER = 'next-url';
 export const NEXT_RESUME_HEADER = 'next-resume';
 export const NEXT_RESUME_STATE_LENGTH_HEADER = 'x-next-resume-state-length';
@@ -109,6 +120,13 @@ const CLOUDFLARE_HEADER_PREFIX = 'cf-';
  * what a runtime says to the edge on a response must not reach a client.
  */
 export const PLATFORM_HEADER_PREFIX = 'x-arkor-';
+/**
+ * What a client's router sends under a prefix that is otherwise the platform's to strip: Next.js's
+ * Pages Router marks a prefetch it makes through a middleware so, and Next.js leaves the header on
+ * the request (`INTERNAL_HEADERS`, `server/lib/server-ipc/utils.ts`, does not name it), for the
+ * server to answer it without rendering and for a middleware to tell a prefetch apart.
+ */
+export const MIDDLEWARE_PREFETCH_HEADER = 'x-middleware-prefetch';
 export const INTERNAL_REQUEST_HEADER_PREFIXES: readonly string[] = [
   'x-middleware-',
   'x-prerender-',

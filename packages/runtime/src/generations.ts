@@ -2,9 +2,12 @@ import { pagesDataPathname } from '@upwind/core/bundle';
 import type { DecodedGenerationPack, RouteEntryDescriptor } from '@upwind/core/cache';
 import {
   CACHE_OUTCOME_HEADER,
+  CACHE_ROUTE_ESCAPED_HEADER,
   CACHE_ROUTE_HEADER,
   CACHE_UPGRADE_HEADER,
+  GENERATION_HEADER,
   isRegenerateMode,
+  pathFromHeaders,
   REGENERATE_HEADER,
   type RegenerateMode,
   SERVED_GENERATION_HEADER,
@@ -32,6 +35,8 @@ import {
 import {
   baseRequestMeta,
   concatShell,
+  NEXT_CACHE_HEADER,
+  type NextCacheState,
   resume,
   resumeUrl,
   type RoutedInput,
@@ -133,8 +138,12 @@ interface Job {
  * captures), or a Pages Router class shell.
  */
 async function targetOf(input: RoutedInput, store: Store): Promise<Target | undefined> {
-  const route = input.request.headers.get(CACHE_ROUTE_HEADER);
-  if (route === null) {
+  const route = pathFromHeaders(
+    input.request.headers,
+    CACHE_ROUTE_HEADER,
+    CACHE_ROUTE_ESCAPED_HEADER,
+  );
+  if (route === undefined) {
     return undefined;
   }
   const handler = await nodeHandlerOf(input, route);
@@ -179,12 +188,19 @@ function runJob(job: Job, reason: AttemptReason): Promise<RegenerationOutcome> {
 }
 
 /**
- * Regenerate after the response, once per entry per hold: the edge asks on every stale request,
- * and one regeneration at a time is what the lease allows anyway.
+ * Regenerate after the response, once per generation of an entry per hold: the edge asks on every
+ * stale request, and one regeneration at a time is what the lease allows anyway.
+ *
+ * Once per generation, named by the one it replaces — the one served, or the one the edge says it
+ * served (`x-arkor-generation`) — rather than once per entry: a generation a regeneration has just
+ * published, invalidated in turn, asks for a regeneration of its own. Kept per entry, a
+ * `revalidateTag` within the hold of the regeneration before it was answered with the page as it
+ * was until the hold ran out (`non-ascii-cache-tags`).
  */
-function scheduleJob(job: Job, reason: AttemptReason): boolean {
+function scheduleJob(job: Job, reason: AttemptReason, base?: string): boolean {
   const { descriptor } = job.target;
-  const key = `${descriptor.route}|${descriptor.pathname}`;
+  const replaced = base ?? job.input.request.headers.get(GENERATION_HEADER) ?? '';
+  const key = `${descriptor.route}|${descriptor.pathname}|${replaced}`;
   if (job.runtime.regenerationMemo.get(key) !== undefined) {
     return false;
   }
@@ -253,14 +269,20 @@ interface Want {
 interface Answer extends Want {
   readonly body: Uint8Array;
   readonly postponed: string | undefined;
+  /** Whether the page leaves parts of itself to a resume: it has a postponed state. */
   readonly partial: boolean;
   readonly status: number;
   readonly headers: Readonly<Record<string, string>>;
+  /** Where the answer came from, said only of one complete without a resume (`NEXT_CACHE_HEADER`). */
+  readonly cache: NextCacheState;
 }
 
 /** The visitor's answer: a document — a shell, then their own resume of it — or an output whole. */
 function answerWith(input: RoutedInput, handler: NodeHandler, answer: Answer): Response {
   const headers = answerHeaders(answer.representation, answer.headers, answer.partial);
+  if (answer.postponed === undefined) {
+    headers.set(NEXT_CACHE_HEADER, answer.cache);
+  }
   const { status } = answer;
   // A `204` a handler answered is kept with the empty body it was captured as, and a `Response`
   // refuses a body under such a status even when it is empty.
@@ -312,6 +334,7 @@ async function answerFromRender(
     partial: render.postponed !== undefined,
     status: render.status,
     headers: render.headers,
+    cache: 'MISS',
   });
 }
 
@@ -584,7 +607,7 @@ export async function serveFromGeneration(
     return answerFromJob(job, await runJob(job, 'expired'), want);
   }
   if (validity === 'stale') {
-    scheduleJob(job, 'stale');
+    scheduleJob(job, 'stale', pack.header.generationId);
   }
   // What the record says is what the visitor would be told, and a record that cannot be answered
   // as written is not: the visitor gets a render of their own, as they would from a publish of it.
@@ -612,5 +635,6 @@ export async function serveFromGeneration(
         : undefined,
     status: pack.header.status,
     headers: pack.header.headers,
+    cache: validity === 'stale' ? 'STALE' : 'HIT',
   });
 }

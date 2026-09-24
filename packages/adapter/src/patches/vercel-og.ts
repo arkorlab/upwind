@@ -72,6 +72,49 @@ export const vercelOgPatch: Patch = {
   },
 };
 
+const IMAGE_RESPONSE_PATCH = 'vercel-og-image-response';
+/**
+ * `next/dist/server/og/image-response.js` — what an application's own `import … from '@vercel/og'`
+ * is, since `next build` aliases the package to it (`create-compiler-aliases`, `'@vercel/og$'`).
+ * Turbopack keeps it external (`e.x("next/dist/server/og/image-response", …)`), so the Worker
+ * bundles it from `node_modules`, where two things in it reach for what a Worker does not have.
+ */
+const IMAGE_RESPONSE_TARGET = /\/next\/dist\/server\/og\/image-response\.js$/u;
+/**
+ * The library, by the build `NEXT_RUNTIME` picks — the Node.js one, since the app Worker is
+ * bundled with `NEXT_RUNTIME` pinned to `"nodejs"`. That is the build the patch above keeps out,
+ * for the reasons it gives; it also brings `sharp`, a native module whose loader the bundler
+ * cannot follow.
+ */
+const RUNTIME_PICK = `import(process.env.NEXT_RUNTIME === 'edge' ? '${EDGE_BUILD}' : '${NODE_BUILD}')`;
+/**
+ * The Cache Components path, behind a flag `next build` writes into what it bundles
+ * (`define-env`) and a module left out of the bundle reads from the process's environment, where
+ * nothing of Next.js's sets it: on `next start` the branch never runs, and the modules it would
+ * require — `react-server-dom-webpack/static` and `/client` — are not installed for it to find.
+ * Bundled here, the branch is followed all the same and names two modules a Worker has not got.
+ */
+const CACHED_BODY =
+  /\nif \(process\.env\.NEXT_RUNTIME !== 'edge' && process\.env\.__NEXT_CACHE_COMPONENTS\) \{\n {4}getCachedImageResponseBody = require\('\.\/cache-image-response'\)\.getCachedImageResponseBody;\n\}/gu;
+
+export const vercelOgImageResponsePatch: Patch = {
+  name: IMAGE_RESPONSE_PATCH,
+  target: IMAGE_RESPONSE_TARGET,
+  nextVersions: ['16.3.5', '16.3.6'],
+  apply(source, file) {
+    const result = new Rewrite(IMAGE_RESPONSE_PATCH, file, source)
+      .replace(RUNTIME_PICK, `import(${JSON.stringify(EDGE_BUILD)})`, 1, "the library's import")
+      .replace(CACHED_BODY, '', 1, 'the Cache Components path')
+      .forbid([NODE_BUILD], "the library's Node.js build")
+      .forbid(['cache-image-response'], 'the Cache Components path');
+    return {
+      contents: result.contents,
+      edits: result.edits,
+      notes: [`${NODE_BUILD} -> ${EDGE_BUILD}`, 'Cache Components path left out'],
+    };
+  },
+};
+
 const FONT_PATCH = 'vercel-og-font';
 const FONT_TARGET = /\/next\/dist\/compiled\/@vercel\/og\/index\.edge\.js$/u;
 /** `fetch(\n  new URL("./Geist-Regular.ttf", import.meta.url)\n).then((res) => res.arrayBuffer())`. */

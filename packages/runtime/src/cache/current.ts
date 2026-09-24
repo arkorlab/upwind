@@ -63,6 +63,13 @@ async function readPack(
   return pack;
 }
 
+/** How far each state keeps a generation from being answered; `unknown` is served as `fresh` is. */
+const SEVERITY: Readonly<Record<Validity, number>> = { fresh: 0, unknown: 0, stale: 1, expired: 2 };
+
+function worse(a: Validity, b: Validity): Validity {
+  return SEVERITY[b] > SEVERITY[a] ? b : a;
+}
+
 /** The entry's current generation and how it stands at `now`; unavailable when the host is. */
 export async function currentGeneration(
   runtime: CacheRuntime,
@@ -81,11 +88,20 @@ export async function currentGeneration(
     return { kind: 'none', entryId };
   }
   const { header } = pack;
-  const { validity } = evaluateFreshness({
+  const { validity: recorded } = evaluateFreshness({
     policy: header.policy,
     cacheTimestamp: header.cacheTimestamp,
     invalidation: header.invalidation,
     now,
   });
-  return { kind: 'generation', current: { entryId, pack, validity } };
+  // What this isolate knows of the generation's tags counts as well: its own invalidation is in
+  // force here at once (`applyLocal`), and the record — read through the host, and kept for a
+  // hold — may say nothing of it yet. Judged on the record alone, a page revalidated by this
+  // Worker went on being answered as it was until the hold ran out.
+  const tagged = runtime.tags.validityOf(
+    header.tags.map((tag) => tag.value),
+    header.cacheTimestamp ?? header.producedAt ?? 0,
+    now,
+  );
+  return { kind: 'generation', current: { entryId, pack, validity: worse(recorded, tagged) } };
 }

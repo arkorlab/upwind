@@ -15,6 +15,7 @@ import {
 
 import { type BlobStore, contentTypeFor } from './blobs.ts';
 import {
+  auditTracedFiles,
   auditWorker,
   auditWorkerSize,
   bundled,
@@ -26,6 +27,11 @@ import {
 } from './dependencies.ts';
 import { dynamicLoadsInChunk } from './dynamic-loads.ts';
 import { bundleEdge, EDGE_MODULE, type EdgeEntry } from './edge.ts';
+import {
+  bundleLinkedExternals,
+  type LinkedExternals,
+  linkedImportsPlugin,
+} from './linked-externals.ts';
 import type { TextModule } from './manifests.ts';
 import {
   type AppliedPatch,
@@ -40,6 +46,7 @@ import {
   wasmModulePlugin,
   WORKER_BANNER,
 } from './patches/index.ts';
+import type { TracedFile } from './traced-files.ts';
 import { WASM_ENTRY_MODULE, type WasmCollector, wasmEntrySource, wasmModuleName } from './wasm.ts';
 
 /**
@@ -78,6 +85,8 @@ export interface BuildWorkerInput {
   readonly cacheHostModule: string | undefined;
   /** Blobs to ship inside the Worker (prerendered bodies and postponed states). */
   readonly blobs: readonly { sha256: string; bytes: Uint8Array }[];
+  /** The files the entries read through `node:fs`, at their paths in the project (`traced-files.ts`). */
+  readonly files: readonly TracedFile[];
   readonly blobStore: BlobStore;
 }
 
@@ -193,6 +202,8 @@ export interface AppBundleSinks {
   readonly externals: Set<string>;
   /** `.wasm` files the bundler resolved itself, as `<file> -> <global>`. */
   readonly wasm: string[];
+  /** The names the chunks import packages linked under `.next/node_modules` by (`linked-externals.ts`). */
+  readonly linked: Set<string>;
 }
 
 /**
@@ -222,6 +233,7 @@ export function appBundlePlugins(
     }),
     vendoredOtelPlugin(),
     externalsPlugin((specifier) => sinks.externals.add(specifier)),
+    linkedImportsPlugin((id) => sinks.linked.add(id)),
   ];
 }
 
@@ -268,11 +280,17 @@ export function appBundleOptions(
 async function bundleApp(
   input: BuildWorkerInput,
   workDir: string,
-): Promise<{ outFile: string; trace: BundleTrace }> {
+): Promise<{ outFile: string; trace: BundleTrace; linked: ReadonlySet<string> }> {
   const entryFile = path.join(workDir, `${input.kind}-entry.cjs`);
   const outFile = path.join(workDir, `${input.kind}-${APP_MODULE}`);
   await writeFile(entryFile, appEntrySource(input.entries));
-  const sinks: AppBundleSinks = { patches: [], stubs: [], externals: new Set(), wasm: [] };
+  const sinks: AppBundleSinks = {
+    patches: [],
+    stubs: [],
+    externals: new Set(),
+    wasm: [],
+    linked: new Set(),
+  };
   await using bundle = await rolldown(
     appBundleOptions(input.projectDir, entryFile, { patch: input.patch, wasm: input.wasm }, sinks),
   );
@@ -305,6 +323,7 @@ async function bundleApp(
       wasmModules: sinks.wasm,
       dynamicLoads: dynamicLoadsInChunk(chunk),
     },
+    linked: sinks.linked,
   };
 }
 
@@ -430,6 +449,31 @@ function auditWasmLoader(
   }
 }
 
+/** The packages the chunks import from `.next/node_modules`, as modules of the Worker's. */
+async function linkedModules(
+  blobStore: BlobStore,
+  linked: LinkedExternals | undefined,
+): Promise<WorkerModule[]> {
+  if (linked === undefined) {
+    return [];
+  }
+  return Promise.all(
+    linked.modules.map(async (module) => {
+      return {
+        name: module.name,
+        type: 'esm' as const,
+        blob: await blobStore.putFile(module.file, 'text/javascript'),
+      };
+    }),
+  );
+}
+
+/** The source of every such module, as the audit reads one bundle's. */
+async function linkedSource(linked: LinkedExternals): Promise<string> {
+  const sources = await Promise.all(linked.modules.map((module) => readFile(module.file, 'utf8')));
+  return sources.join('\n');
+}
+
 /**
  * Bundle one Worker and register its modules as blobs: the upload specification, and the record
  * of what went into it — audited, so a Worker that would not run fails the build.
@@ -450,6 +494,13 @@ export async function buildWorker(input: BuildWorkerInput): Promise<BuiltWorker>
         }),
   ]);
   const appFile = app.outFile;
+  // What the chunks import from `.next/node_modules`, named only once the app bundle has run.
+  const linked = await bundleLinkedExternals({
+    distDir: input.patch.distDir,
+    workDir,
+    kind: input.kind,
+    ids: app.linked,
+  });
   const modules: WorkerModule[] = [
     {
       name: RUNTIME_MODULE,
@@ -475,6 +526,7 @@ export async function buildWorker(input: BuildWorkerInput): Promise<BuiltWorker>
       type: 'text',
       blob: await input.blobStore.putText(input.runtimeManifest, 'application/json'),
     },
+    ...(await linkedModules(input.blobStore, linked)),
   ];
   for (const manifest of input.manifests) {
     modules.push({
@@ -518,12 +570,25 @@ export async function buildWorker(input: BuildWorkerInput): Promise<BuiltWorker>
       blob: await input.blobStore.put(font, 'font/ttf'),
     });
   }
+  // A file the application reads is found at its path in the project, which no module of the
+  // Worker's own may hold as well (`auditTracedFiles`).
+  auditTracedFiles(input.kind, modules, input.files);
+  for (const file of input.files) {
+    modules.push({
+      name: file.name,
+      type: 'data',
+      blob: await input.blobStore.putFile(file.filePath, contentTypeFor(file.filePath)),
+    });
+  }
   const { distDir } = input.patch;
   const size = await workerSize(input.outDir, modules);
   const dependencies: WorkerDependencies = {
     ...workerDependencies(input.projectDir, distDir, app.trace, { modules, size }),
     ...(edge !== undefined && {
       edge: bundleDependencies(input.projectDir, distDir, edge.trace),
+    }),
+    ...(linked !== undefined && {
+      linked: bundleDependencies(input.projectDir, distDir, linked.trace),
     }),
   };
   auditWasmLoader(input.kind, input.patch, app.trace.patches);
@@ -533,6 +598,7 @@ export async function buildWorker(input: BuildWorkerInput): Promise<BuiltWorker>
     {
       app: await readFile(appFile, 'utf8'),
       ...(edge !== undefined && { edge: await readFile(edge.outFile, 'utf8') }),
+      ...(linked !== undefined && { linked: await linkedSource(linked) }),
     },
     dependencies,
   );

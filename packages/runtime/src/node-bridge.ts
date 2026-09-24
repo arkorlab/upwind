@@ -75,6 +75,25 @@ const RENDER_KEEPALIVE_MS = 10_000;
 const HTTP_NO_CONTENT = 204;
 const HTTP_INTERNAL_ERROR = 500;
 
+/**
+ * The headers workerd hands the handler cut at their first comma: those Node.js keeps one of, whose
+ * repeats a `Request` joins with a comma (`multipleForbiddenHeaders` and `splitHeaderValue`, in its
+ * `internal_http_server`).
+ */
+const CUT_AT_A_COMMA: ReadonlySet<string> = new Set([
+  'authorization',
+  'content-type',
+  'from',
+  'host',
+  'if-modified-since',
+  'if-unmodified-since',
+  'location',
+  'max-forwards',
+  'proxy-authorization',
+  'referer',
+  'user-agent',
+]);
+
 /** What rides on the request from `invokeNodeHandler` to the server's handler. */
 interface Dispatch {
   readonly input: InvokeInput;
@@ -150,6 +169,52 @@ async function answerFailure(
   res.end('Internal Server Error');
 }
 
+/**
+ * The request's headers as the request carried them.
+ *
+ * workerd takes a comma in a header Node.js keeps one of for the join of a repeated one, and hands
+ * the handler what comes before it. A value with a comma of its own is cut short: a browser's
+ * `User-Agent` has one — `(KHTML, like Gecko)` — and so does every HTTP date. Next.js was told a
+ * crawler's agent up to its first comma, told the HTML-limited ones apart from a browser by what
+ * was left, and streamed them the metadata it has to block for them (`app-dir/metadata-streaming`,
+ * "Google speed insights bot"). The handler reads the headers once asked (`headers` is built from
+ * `rawHeaders` then), so the lines are put back before it runs.
+ */
+function restoreHeaders(req: IncomingMessage, headers: Headers): void {
+  const lines = req.rawHeaders;
+  for (let index = 0; index + 1 < lines.length; index += 2) {
+    const name = lines[index]?.toLowerCase() ?? '';
+    const whole = CUT_AT_A_COMMA.has(name) ? headers.get(name) : null;
+    if (whole !== null && whole !== lines[index + 1]) {
+      lines[index + 1] = whole;
+      req.headers[name] = whole;
+    }
+  }
+}
+
+/**
+ * A `socket` the request can be given, as Node.js's can: a property of the request itself.
+ *
+ * Destroying a server's request takes the socket off it (`stream.socket = null`, in workerd's own
+ * `streams_destroy` as in Node.js's), and `pipeline` destroys every stream in it when one of them
+ * fails. workerd's `IncomingMessage` has a getter for `socket` and no setter, so the assignment
+ * threw inside `pipeline`'s own handling of the failure, and the pipeline never settled. Next.js
+ * reads a server action's body through one, with a transform that fails a body past
+ * `serverActions.bodySizeLimit`: an action sent too large a body was never answered, and the
+ * request was let go of when the render's keepalive ran out (`app-action-size-limit-invalid`).
+ */
+function settableSocket(req: IncomingMessage): void {
+  if (Object.getOwnPropertyDescriptor(req, 'socket')?.writable === true) {
+    return;
+  }
+  Object.defineProperty(req, 'socket', {
+    configurable: true,
+    enumerable: true,
+    writable: true,
+    value: req.socket,
+  });
+}
+
 function onRequest(req: IncomingMessage, res: ServerResponse): void {
   const dispatch = (req as BridgedRequest).cloudflare?.ctx as Dispatch | undefined;
   if (dispatch === undefined) {
@@ -160,6 +225,8 @@ function onRequest(req: IncomingMessage, res: ServerResponse): void {
     return;
   }
   req.url = dispatch.url;
+  restoreHeaders(req, dispatch.input.request.headers);
+  settableSocket(req);
   // Every failure is caught in `invoke`; a rejection past it would leave the response hanging.
   void invoke(dispatch, req, res).catch((error: unknown) => {
     res.destroy(error instanceof Error ? error : new Error(String(error)));

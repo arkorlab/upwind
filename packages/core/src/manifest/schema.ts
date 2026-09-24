@@ -241,6 +241,18 @@ export const headerRuleSchema = z.object({
 });
 export type HeaderRule = z.infer<typeof headerRuleSchema>;
 
+const staticFileLocalesSchema = z.object({
+  basePath: z.string(),
+  locales: z.array(z.string().min(1)).min(1),
+});
+export type StaticFileLocales = z.infer<typeof staticFileLocalesSchema>;
+
+const staticFileAssetPrefixSchema = z.object({
+  basePath: z.string(),
+  assetPrefix: z.string().min(1),
+});
+export type StaticFileAssetPrefix = z.infer<typeof staticFileAssetPrefixSchema>;
+
 const manifestFields = {
   projectId: z.string().min(1),
   runId: z.string().min(1),
@@ -280,6 +292,17 @@ export const projectManifestSchema = z.object({
   headerRules: z.array(headerRuleSchema).optional(),
   /** The application's `next/image` configuration: the edge answers `/_next/image` with it. */
   images: imagesConfigSchema.optional(),
+  /**
+   * Where a shipped file is found as well, in an application with `i18n`: behind one of its
+   * default locales — its own, and each domain's — under its base path (`findStaticFile`).
+   */
+  staticFileLocales: staticFileLocalesSchema.optional(),
+  /**
+   * Where a shipped file under `<basePath>/_next/` is found as well, in an application with an
+   * `assetPrefix`: under `<assetPrefix>/_next/`, which `next build` rewrites to it before the
+   * filesystem is checked (`findStaticFile`).
+   */
+  staticFileAssetPrefix: staticFileAssetPrefixSchema.optional(),
   /** The runtime cache the routes' entries live in. */
   cache: manifestCacheSchema.optional(),
 });

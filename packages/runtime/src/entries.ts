@@ -1,5 +1,6 @@
 import type { AppModule, EdgeModule, NodeHandler, WebHandler } from './app-module.ts';
 import { admitting } from './cache/fetch-patch.ts';
+import { asMiddleware } from './middleware-scope.ts';
 
 /**
  * The entrypoints a deployment carries, and how each is invoked.
@@ -76,5 +77,5 @@ export async function middlewareHandler(
   id: string,
 ): Promise<WebHandler | undefined> {
   const entry = await entryFor(tables, id);
-  return entry === undefined ? undefined : (entry.handler as WebHandler);
+  return entry === undefined ? undefined : asMiddleware(entry.handler as WebHandler);
 }

@@ -27,3 +27,19 @@ export function withRequestContext<T>(context: RequestContext, work: () => Promi
 export function requestContext(): RequestContext | undefined {
   return contexts.getStore();
 }
+
+const regenerations = new AsyncLocalStorage<true>();
+
+/**
+ * Run a render as a regeneration of its entry: the data-cache reads made inside it miss an entry
+ * a tag invalidation made stale (`PlatformFetchCache.get`), where any other render is handed it to
+ * serve while Next.js fetches it again behind.
+ */
+export function asRegeneration<T>(work: () => Promise<T>): Promise<T> {
+  return regenerations.run(true, work);
+}
+
+/** Whether the render reading the cache is a regeneration (`asRegeneration`). */
+export function isRegeneration(): boolean {
+  return regenerations.getStore() === true;
+}

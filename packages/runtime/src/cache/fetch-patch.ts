@@ -1,5 +1,7 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+
 /**
- * Both of a deployment's Next.js module graphs get to patch `fetch`.
+ * Both of a deployment's Next.js module graphs get to patch `fetch`, each of them once.
  *
  * Next.js caches a `fetch` by replacing the global one, and it does that exactly once per
  * isolate: `patchFetch` returns early when `globalThis[Symbol.for('next-patch')]` is set
@@ -20,13 +22,15 @@
  * "If the workStore is not available … fallback to the original fetch implementation"), which is
  * the other graph's fetcher, which does find one. Order does not matter.
  *
- * A graph is let in for the length of one invocation and no longer. Leaving the flag down
- * between invocations would let any graph take a turn opened for another — a middleware is
- * loaded from the edge graph and patches nothing, and the Node.js render that follows it in the
- * same request would take the edge graph's turn and patch a second time. Nor is "the global
- * changed while a graph was running" enough to say that graph patched, so a turn counts as
- * taken only when no other invocation overlapped it; where one did, the graph simply gets
- * another turn on a later request.
+ * What must not happen is one graph patching twice. Both of its fetchers then find the store, and
+ * the outer takes the request's cache lock on a key and calls the inner, which waits on that same
+ * lock for good (`IncrementalCache.lock`): every render of the page that missed the cache hung,
+ * and so did every request for it after. So the flag answers for the graph that asks — which the
+ * invocation it runs in says — and it is set for the graph that sets it: each patches once, and
+ * two invocations running at once cannot give one graph a second turn. It used to be lowered for
+ * the length of an invocation and judged afterwards by whether the global had changed with
+ * nothing else running; a first page streamed on while the next request began, neither turn
+ * counted, and the next invocation of the same graph patched again (`non-ascii-cache-tags`).
  */
 
 const NEXT_PATCH_SYMBOL = Symbol.for('next-patch');
@@ -34,29 +38,37 @@ const NEXT_PATCH_SYMBOL = Symbol.for('next-patch');
 export type EntryGraph = 'app' | 'edge';
 
 const patched: Record<EntryGraph, boolean> = { app: false, edge: false };
-/** Turns running right now, and how many have been opened in all. */
-const turns = { open: 0, opened: 0 };
+/** The graph whose handler an invocation is running, while it has not yet patched. */
+const invocations = new AsyncLocalStorage<EntryGraph>();
+const flag = { installed: false };
+
+/**
+ * Put the flag in place, once: before the first handler is handed out, and so before anything
+ * Next.js runs could read it.
+ */
+function installFlag(): void {
+  if (flag.installed) {
+    return;
+  }
+  flag.installed = true;
+  Object.defineProperty(globalThis, NEXT_PATCH_SYMBOL, {
+    configurable: true,
+    /** Patched, for the graph asking; for anything asking outside an invocation, patched as well. */
+    get(): boolean {
+      const graph = invocations.getStore();
+      return graph === undefined || patched[graph];
+    },
+    /** What Next.js sets once it has patched: the graph asking has. */
+    set(value: unknown): void {
+      const graph = invocations.getStore();
+      if (graph !== undefined && value === true) {
+        patched[graph] = true;
+      }
+    },
+  });
+}
 
 type Handler = (...args: never[]) => Promise<unknown>;
-
-/** Open a turn for `graph`, and give back what closes it. */
-function openTurn(graph: EntryGraph): () => void {
-  const before = globalThis.fetch;
-  const alone = turns.open === 0;
-  turns.opened += 1;
-  turns.open += 1;
-  const seq = turns.opened;
-  Reflect.deleteProperty(globalThis, NEXT_PATCH_SYMBOL);
-  return () => {
-    turns.open -= 1;
-    // Nothing else ran inside this turn, so a global that changed changed for this graph.
-    if (alone && turns.open === 0 && turns.opened === seq && globalThis.fetch !== before) {
-      patched[graph] = true;
-    }
-    // Down again: nothing patches outside a turn, whoever asks.
-    Reflect.set(globalThis, NEXT_PATCH_SYMBOL, true);
-  };
-}
 
 /**
  * `handler`, invoked with its graph allowed to patch `fetch` while it has not yet. A graph whose
@@ -67,16 +79,12 @@ export function admitting<H extends Handler>(graph: EntryGraph, handler: H): H {
   if (patched[graph]) {
     return handler;
   }
+  installFlag();
   return (async (...args: Parameters<H>) => {
-    // Asked again here: the handler may have been taken before the graph's turn came.
+    // Asked again here: the handler may have been taken before the graph patched.
     if (patched[graph]) {
       return handler(...args);
     }
-    const close = openTurn(graph);
-    try {
-      return await handler(...args);
-    } finally {
-      close();
-    }
+    return invocations.run(graph, () => handler(...args));
   }) as H;
 }

@@ -56,5 +56,7 @@ export {
   type ServableOptions,
   type ServedRewrite,
   shellHeaders,
+  staticFileAssetPrefixOf,
+  staticFileLocalesOf,
   travelsWithWorker,
 } from './serving.ts';

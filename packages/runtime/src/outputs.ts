@@ -1,4 +1,5 @@
 import { pagesDataPathname, pagesPathnameOfData, type Prerender } from '@upwind/core/bundle';
+import { MIDDLEWARE_PREFETCH_HEADER } from '@upwind/core/request';
 
 import { isDraftRequest } from './draft.ts';
 import { entryFor } from './entries.ts';
@@ -10,6 +11,7 @@ import {
   notFoundResponse,
   type RoutedInput,
   staticResponse,
+  withCacheState,
 } from './serve.ts';
 import type { Store } from './store.ts';
 
@@ -26,6 +28,25 @@ import type { Store } from './store.ts';
 
 const JSON_UTF8_TYPE = 'application/json; charset=utf-8';
 const OCTET_STREAM = 'application/octet-stream';
+const MATCHED_PATH_HEADER = 'x-nextjs-matched-path';
+const NEVER_STORED = 'private, no-cache, no-store, max-age=0, must-revalidate';
+
+/**
+ * A client router's prefetch through a middleware, of a page whose props are not static: Next.js
+ * renders nothing for it and answers `{}`, marked `x-middleware-skip`, with the page it matched
+ * (`server/base-server.ts`); the navigation that follows asks for the props for real. Rendered and
+ * answered with the props instead, the prefetch was the navigation's answer as well: the client
+ * never asked again, and `getServerSideProps` ran for a link nobody followed.
+ */
+function prefetchSkipped(page: string): Response {
+  return new Response(new TextEncoder().encode('{}'), {
+    headers: {
+      [MATCHED_PATH_HEADER]: page,
+      'x-middleware-skip': '1',
+      'cache-control': NEVER_STORED,
+    },
+  });
+}
 
 export interface Resolved {
   readonly route: string;
@@ -87,7 +108,9 @@ export async function servePagesData(
   const target = dataTargetOf(store, resolved);
   const own = await entryFor(input, resolved.route);
   if (own !== undefined) {
-    return invokeEntry(input, own, target.url);
+    return input.request.headers.has(MIDDLEWARE_PREFETCH_HEADER)
+      ? prefetchSkipped(target.page)
+      : invokeEntry(input, own, target.url);
   }
   const template = store.prerendersByPathname.get(resolved.route);
   const entry = template === undefined ? undefined : await entryFor(input, template.route);
@@ -117,7 +140,10 @@ export async function servePagesData(
     return current;
   }
   if (built?.body !== undefined) {
-    return staticResponse(store, built, JSON_UTF8_TYPE, built.initialStatus ?? HTTP_OK);
+    return withCacheState(
+      staticResponse(store, built, JSON_UTF8_TYPE, built.initialStatus ?? HTTP_OK),
+      'HIT',
+    );
   }
   return invokeEntry(input, entry, target.url);
 }
@@ -158,6 +184,9 @@ export async function serveRouteHandler(
   );
   return (
     current ??
-    staticResponse(store, built, recordedContentType(built), built.initialStatus ?? HTTP_OK)
+    withCacheState(
+      staticResponse(store, built, recordedContentType(built), built.initialStatus ?? HTTP_OK),
+      'HIT',
+    )
   );
 }
