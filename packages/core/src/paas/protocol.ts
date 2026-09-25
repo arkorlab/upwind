@@ -73,6 +73,21 @@ export const PLATFORM_REQUEST_HEADERS: readonly string[] = [
  */
 export const CACHE_OUTCOME_HEADER = 'x-arkor-cache-outcome';
 /**
+ * What the runtime says of an answer that is a stored generation's: the same bytes for every
+ * visitor, and carrying a validator of its own, so a shared cache may hold it under the
+ * `Cache-Control` the runtime wrote rather than have it made one visitor's. Said only of an answer
+ * no visitor's request took part in. For the host only, and removed before anything reaches a
+ * client.
+ */
+export const SHARED_ANSWER_HEADER = 'x-arkor-shared-answer';
+/**
+ * What such an answer is served under: any cache may store it, and every use of it revalidates, so
+ * an invalidation of the generation is never outlived by a copy somewhere else. It is what Next.js
+ * writes on a metadata route itself (`next-metadata-route-loader.ts`) and what a CDN in front of a
+ * cached output answers with.
+ */
+export const SHARED_ANSWER_CACHE_CONTROL = 'public, max-age=0, must-revalidate';
+/**
  * The visitor's country as the platform observed it. Left on the request for the application to
  * read, where a Vercel-hosted one read `x-vercel-ip-country`.
  */

@@ -10,7 +10,6 @@ import {
   pathFromHeaders,
   REGENERATE_HEADER,
   type RegenerateMode,
-  SERVED_GENERATION_HEADER,
 } from '@upwind/core/paas';
 import { NULL_BODY_STATUSES } from '@upwind/core/request';
 import { releaseStream } from '@upwind/core/util';
@@ -19,10 +18,11 @@ import type { NodeHandler } from './app-module.ts';
 import { cacheLifetimeOf, type CapturedRender, renderCaptured } from './cache/capture.ts';
 import { nowMs } from './cache/clock.ts';
 import { currentGeneration } from './cache/current.ts';
-import type { AttemptReason, ServedObservation } from './cache/host.ts';
+import type { AttemptReason } from './cache/host.ts';
 import { regenerate, type RegenerationOutcome, servable } from './cache/regenerate.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
 import { nodeHandlerOf } from './entries.ts';
+import { holdsValidator, observationOf } from './incoming.ts';
 import { invokeNodeHandler } from './node-bridge.ts';
 import {
   answerHeaders,
@@ -57,6 +57,7 @@ import { entrypointKindOf, findShell, isClassShell, type Store } from './store.t
  */
 
 const HTTP_ACCEPTED = 202;
+const HTTP_NOT_MODIFIED = 304;
 
 export function regenerateMode(request: Request): RegenerateMode | undefined {
   const value = request.headers.get(REGENERATE_HEADER);
@@ -85,22 +86,6 @@ export function descriptorFor(store: Store, route: string, pathname: string): Ro
     return { kind: 'pages', route, pathname };
   }
   return { kind: entrypoint === 'app-route' ? 'app-route' : 'app-page', route, pathname };
-}
-
-/** `<generationId>;colo=<colo>;at=<ms>`: what the edge observed when it asked. */
-function observationOf(request: Request): ServedObservation | undefined {
-  const value = request.headers.get(SERVED_GENERATION_HEADER);
-  if (value === null) {
-    return undefined;
-  }
-  const [generationId = '', ...parts] = value.split(';');
-  const fields = new Map(parts.map((part) => part.split('=', 2) as [string, string | undefined]));
-  const at = Number(fields.get('at'));
-  if (generationId === '' || !Number.isSafeInteger(at)) {
-    return undefined;
-  }
-  const colo = fields.get('colo');
-  return { generationId, at, ...(colo !== undefined && colo !== '' && { colo }) };
 }
 
 interface Target {
@@ -263,6 +248,8 @@ interface Want {
 
 interface Answer extends Want {
   readonly body: Uint8Array;
+  /** The generation this answer is of, where the answer may be shared (`answerHeaders`). */
+  readonly validator?: string | undefined;
   readonly postponed: string | undefined;
   /** Whether the page leaves parts of itself to a resume: it has a postponed state. */
   readonly partial: boolean;
@@ -274,11 +261,17 @@ interface Answer extends Want {
 
 /** The visitor's answer: a document — a shell, then their own resume of it — or an output whole. */
 function answerWith(input: RoutedInput, handler: NodeHandler, answer: Answer): Response {
-  const headers = answerHeaders(answer.representation, answer.headers, answer.partial);
+  const { representation, headers: recorded, partial, validator } = answer;
+  const headers = answerHeaders(representation, recorded, partial, validator);
   if (answer.postponed === undefined) {
     headers.set(NEXT_CACHE_HEADER, answer.cache);
   }
   const { status } = answer;
+  // Nothing of the entity is sent again where the client holds this generation of it; the headers
+  // are the ones a 200 would carry, as a validated answer is told with.
+  if (validator !== undefined && holdsValidator(input.request, validator)) {
+    return new Response(null, { status: HTTP_NOT_MODIFIED, headers });
+  }
   // A `204` a handler answered is kept with the empty body it was captured as, and a `Response`
   // refuses a body under such a status even when it is empty.
   if (input.request.method === 'HEAD' || NULL_BODY_STATUSES.has(status)) {
@@ -644,6 +637,8 @@ export async function serveFromGeneration(
   return answerWith(input, handler, {
     ...want,
     body,
+    // The generation names the bytes: one is never rewritten, and a new one is a new name.
+    validator: `"${pack.header.generationId}"`,
     partial: pack.postponed !== undefined,
     postponed:
       source.representation === 'html' && pack.postponed !== undefined

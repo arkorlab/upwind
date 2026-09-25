@@ -1,9 +1,15 @@
-import { ORIGINAL_URL_HEADER, PLATFORM_REQUEST_HEADERS } from '@upwind/core/paas';
+import {
+  ORIGINAL_URL_HEADER,
+  PLATFORM_REQUEST_HEADERS,
+  SERVED_GENERATION_HEADER,
+} from '@upwind/core/paas';
 import {
   BYPASS_QUERY_PREFIXES,
   isBotUserAgent,
   isHtmlLimitedBotUserAgent,
 } from '@upwind/core/request';
+
+import type { ServedObservation } from './cache/host.ts';
 
 /**
  * What an incoming request says about itself.
@@ -105,4 +111,37 @@ export function wantsBlockingMetadata(request: Request, pattern: string | undefi
 export function isCrawler(request: Request): boolean {
   const userAgent = request.headers.get('user-agent');
   return userAgent !== null && userAgent !== '' && isBotUserAgent(userAgent);
+}
+
+/**
+ * Whether the client already holds this very generation of the answer, by the validator it was
+ * given: `If-None-Match`, as a list of entity tags or `*`, compared strongly — every tag written
+ * here is strong, and a `W/` prefix on one that came back is taken off before comparing so that a
+ * proxy that weakened it is still understood.
+ */
+export function holdsValidator(request: Request, validator: string): boolean {
+  const asked = request.headers.get('if-none-match');
+  if (asked === null) {
+    return false;
+  }
+  return asked
+    .split(',')
+    .map((tag) => tag.trim().replace(/^W\//u, ''))
+    .some((tag) => tag === '*' || tag === validator);
+}
+
+/** `<generationId>;colo=<colo>;at=<ms>`: what the edge observed when it asked. */
+export function observationOf(request: Request): ServedObservation | undefined {
+  const value = request.headers.get(SERVED_GENERATION_HEADER);
+  if (value === null) {
+    return undefined;
+  }
+  const [generationId = '', ...parts] = value.split(';');
+  const fields = new Map(parts.map((part) => part.split('=', 2) as [string, string | undefined]));
+  const at = Number(fields.get('at'));
+  if (generationId === '' || !Number.isSafeInteger(at)) {
+    return undefined;
+  }
+  const colo = fields.get('colo');
+  return { generationId, at, ...(colo !== undefined && colo !== '' && { colo }) };
 }
