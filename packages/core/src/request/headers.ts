@@ -126,15 +126,26 @@ export function filterShellResponseHeaders(
  * headers go out ahead of a resume that may disagree with them; a response replayed whole says
  * again only what it said, so its own headers are the answer — a download's disposition, its
  * CORS grants, the `Location` of a redirect, whatever the application named for itself.
+ *
+ * A header its `Connection` names belonged to the one transmission as much as `Connection` did:
+ * an intermediary removes it before forwarding (RFC 9110 §7.6.1), and a cache may before storage
+ * (RFC 9111 §3.1).
  */
 export function filterStoredResponseHeaders(
   headers: Iterable<[string, string]>,
 ): Record<string, string> {
+  const answered = [...headers];
+  const connectionOptions = new Set(
+    answered
+      .filter(([name]) => name.toLowerCase() === 'connection')
+      .flatMap(([, value]) => value.split(',').map((option) => option.trim().toLowerCase())),
+  );
   const out: Record<string, string> = {};
-  for (const [rawName, value] of headers) {
+  for (const [rawName, value] of answered) {
     const name = rawName.toLowerCase();
     if (
       STORED_RESPONSE_HEADER_DENYLIST.includes(name) ||
+      connectionOptions.has(name) ||
       STORED_RESPONSE_HEADER_DENY_PREFIXES.some((prefix) => name.startsWith(prefix))
     ) {
       continue;

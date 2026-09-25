@@ -1,6 +1,7 @@
 export {
   type ConfiguredHeaders,
   documentHeaderRulesFor,
+  foldedHeadersFor,
   headerRulesFor,
   isExactPathname,
   isReserved,

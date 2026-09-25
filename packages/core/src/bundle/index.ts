@@ -43,12 +43,14 @@ export {
   pagesDataPathname,
   pagesPathnameOfData,
 } from './pages-data.ts';
+export { queryDependent } from './query.ts';
 export {
   cacheablePrerenders,
   completePrerenders,
   dynamicRouting,
   edgeServablePrerenders,
   edgeServedRewrites,
+  foldedHeaderRulesOf,
   headerRulesOf,
   prerenderResponseHeaders,
   resumablePrerenders,

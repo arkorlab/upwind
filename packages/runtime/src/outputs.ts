@@ -1,11 +1,16 @@
-import { pagesDataPathname, pagesPathnameOfData, type Prerender } from '@upwind/core/bundle';
+import {
+  pagesDataPathname,
+  pagesPathnameOfData,
+  type Prerender,
+  queryDependent,
+} from '@upwind/core/bundle';
 import { MIDDLEWARE_PREFETCH_HEADER } from '@upwind/core/request';
 
-import { isDraftRequest } from './draft.ts';
 import { entryFor } from './entries.ts';
 import { serveFromGeneration } from './generations.ts';
 import { notFoundData } from './pages-not-found.ts';
 import {
+  bypassesPrerender,
   HTTP_OK,
   invokeEntry,
   notFoundResponse,
@@ -13,7 +18,7 @@ import {
   staticResponse,
   withCacheState,
 } from './serve.ts';
-import type { Store } from './store.ts';
+import { findShell, type Store } from './store.ts';
 
 /**
  * The outputs of an entry beside its document, which the Worker answers itself: a Pages Router
@@ -106,20 +111,40 @@ export async function servePagesData(
   resolved: Resolved,
 ): Promise<Response> {
   const target = dataTargetOf(store, resolved);
-  const own = await entryFor(input, resolved.route);
-  if (own !== undefined) {
+  const template = store.prerendersByPathname.get(resolved.route);
+  // No prerender: props from `getServerSideProps`, through the route's own entrypoint — and for a
+  // middleware's prefetch of them, nothing at all (`prefetchSkipped`).
+  if (template === undefined) {
+    const own = await entryFor(input, resolved.route);
+    if (own === undefined) {
+      return notFoundData();
+    }
     return input.request.headers.has(MIDDLEWARE_PREFETCH_HEADER)
       ? prefetchSkipped(target.page)
       : invokeEntry(input, own, target.url);
   }
-  const template = store.prerendersByPathname.get(resolved.route);
-  const entry = template === undefined ? undefined : await entryFor(input, template.route);
-  if (template === undefined || entry === undefined) {
+  // A prerendered page's props, an SSG fallback's included, come from its current generation or the
+  // build, whatever entrypoint the route has besides: the page's own, where routing normalized an
+  // unbuilt data URL to it, would render past the generation every visitor gets.
+  const entry = await entryFor(input, template.route);
+  if (entry === undefined) {
     return notFoundData();
   }
-  // A draft asks the page for the props it would render now: neither the build's output nor a
-  // generation of it is an answer (`draft.ts`).
-  if (entry.kind === 'edge' || isDraftRequest(store, input.request)) {
+  const shell = findShell(store, template.route, target.page);
+  // A draft or a bypass condition asks the page for the props it would render now: neither the
+  // build's output nor a generation of it is an answer (`draft.ts`).
+  if (
+    entry.kind === 'edge' ||
+    bypassesPrerender(store, input.request, template, target.url) ||
+    bypassesPrerender(store, input.request, shell, target.url) ||
+    // Props that depend on a query the route does not name: the build's data answered one query,
+    // not this request's, and no generation stands for it either (`serveFromGeneration`).
+    queryDependent(
+      store.prerendersByPathname.get(target.page) ?? shell,
+      template.route,
+      target.page,
+    )
+  ) {
     return invokeEntry(input, entry, target.url);
   }
   const built = store.prerendersByPathname.get(target.data);
@@ -164,9 +189,11 @@ export async function serveRouteHandler(
   const built = store.prerendersByPathname.get(resolved.pathname);
   if (
     entry.kind === 'edge' ||
+    bypassesPrerender(store, input.request, built, resolved.url) ||
     built?.body === undefined ||
     built.routeType !== 'route' ||
-    isDraftRequest(store, input.request)
+    // An answer that depends on a query the route does not name: the build's body is one query's.
+    queryDependent(built, resolved.route, resolved.pathname)
   ) {
     return invokeEntry(input, entry, resolved.url);
   }

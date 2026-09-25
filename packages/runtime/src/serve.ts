@@ -1,9 +1,10 @@
 import type { Prerender } from '@upwind/core/bundle';
-import { NULL_BODY_STATUSES } from '@upwind/core/request';
+import { anyConditionHolds, NULL_BODY_STATUSES } from '@upwind/core/request';
 import { releaseStream } from '@upwind/core/util';
 
 import type { NodeHandler } from './app-module.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
+import { isDraftRequest } from './draft.ts';
 import { invokeEdgeHandler } from './edge-invoke.ts';
 import type { Entry, EntryTables } from './entries.ts';
 import { NEVER_STORED, render404 } from './error-pages.ts';
@@ -56,6 +57,19 @@ export function baseRequestMeta(input: RoutedInput): Record<string, unknown> {
     // when a `fallback: false` route is asked for a member the build did not make.
     render404,
   };
+}
+
+/** A valid draft or a matching build condition must be rendered for the request. */
+export function bypassesPrerender(
+  store: Store,
+  request: Request,
+  prerender?: Prerender,
+  url = request.url,
+): boolean {
+  return (
+    isDraftRequest(store, request) ||
+    anyConditionHolds(prerender?.bypassFor ?? [], new URL(url, request.url), request.headers)
+  );
 }
 
 /**

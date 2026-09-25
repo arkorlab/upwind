@@ -49,6 +49,7 @@ export interface BuildProjectManifestInput {
   readonly reservedRoutes?: readonly ReservedRoute[] | undefined;
   readonly exactPathnames?: readonly string[] | undefined;
   readonly headerRules?: readonly HeaderRule[] | undefined;
+  readonly foldedHeaderRules?: readonly HeaderRule[] | undefined;
   readonly images?: ImagesConfig | undefined;
   readonly staticFileLocales?: StaticFileLocales | undefined;
   readonly staticFileAssetPrefix?: StaticFileAssetPrefix | undefined;
@@ -80,6 +81,7 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
       exactPathnames: Object.fromEntries(input.exactPathnames.map((pathname) => [pathname, true])),
     }),
     ...(input.headerRules !== undefined && { headerRules: input.headerRules }),
+    ...(input.foldedHeaderRules !== undefined && { foldedHeaderRules: input.foldedHeaderRules }),
     ...(input.images !== undefined && { images: input.images }),
     ...(input.staticFileLocales !== undefined && { staticFileLocales: input.staticFileLocales }),
     ...(input.staticFileAssetPrefix !== undefined && {

@@ -1,3 +1,5 @@
+import { filterStoredResponseHeaders } from '@upwind/core/request';
+
 import { documentHeaders, POSTPONED_HEADER, PRERENDER_HEADER, RSC_CONTENT_TYPE } from './serve.ts';
 import type { Store } from './store.ts';
 
@@ -29,7 +31,11 @@ function outputHeaders(
   representation: Representation,
   partial: boolean,
 ): Headers {
-  const headers = new Headers(recorded);
+  const headers = new Headers(
+    representation === ROUTE_BODY
+      ? filterStoredResponseHeaders(Object.entries(recorded))
+      : recorded,
+  );
   headers.set('content-type', contentTypeOf(representation, recorded));
   headers.set('cache-control', 'private, no-store');
   if (representation === 'rsc' || representation.startsWith(SEGMENT_PREFIX)) {

@@ -290,6 +290,14 @@ export const projectManifestSchema = z.object({
   reservedRoutes: z.array(reservedRouteSchema).optional(),
   exactPathnames: exactPathnamesSchema.optional(),
   headerRules: z.array(headerRuleSchema).optional(),
+  /**
+   * The unconditional header rules of a build whose routing the edge does not reproduce (a
+   * `basePath` or `i18n`), which publishes no `headerRules`: judged against a route's own pathname,
+   * as the deployment judged them when it folded them into the route's headers, and laid over the
+   * headers of a generation the runtime cache answers with. Present, if empty, for every such
+   * build; absent for any other, and on a manifest from before it was published.
+   */
+  foldedHeaderRules: z.array(headerRuleSchema).optional(),
   /** The application's `next/image` configuration: the edge answers `/_next/image` with it. */
   images: imagesConfigSchema.optional(),
   /**

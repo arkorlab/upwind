@@ -2,7 +2,7 @@ import { NEXT_ONE_YEAR_SECONDS } from '@upwind/core/cache';
 
 import { readWithin } from './body.ts';
 import { nowMs } from './clock.ts';
-import { isRegeneration } from './context.ts';
+import { isRegeneration, requestContext } from './context.ts';
 import { readData, writeData } from './data.ts';
 import type { CacheRuntime, DataMemo } from './runtime.ts';
 import { recordValidity } from './tags.ts';
@@ -149,6 +149,10 @@ export class PlatformFetchCache {
     }
     const { runtime } = current;
     const now = nowMs();
+    const context = requestContext();
+    if (context !== undefined && !context.fetchStarts.has(cacheKey)) {
+      context.fetchStarts.set(cacheKey, now);
+    }
     let memo: DataMemo;
     try {
       memo = await readData(runtime, { key: cacheKey, kind: DATA_FETCH });
@@ -194,7 +198,13 @@ export class PlatformFetchCache {
       return;
     }
     const { runtime } = current;
-    const now = nowMs();
+    const context = requestContext();
+    // A result fetched before an invalidation must keep that age when its body finishes.
+    // The host fences a write against its current tag marks by this timestamp.
+    const startedAt = context?.fetchStarts.get(cacheKey) ?? context?.startedAt;
+    if (startedAt === undefined) {
+      return;
+    }
     try {
       await writeData(runtime, {
         key: cacheKey,
@@ -202,7 +212,7 @@ export class PlatformFetchCache {
           kind: DATA_FETCH,
           tags: mergeTags(data.tags, ctx.tags),
           stale: 0,
-          timestamp: now,
+          timestamp: startedAt,
           expire: NEXT_ONE_YEAR_SECONDS,
           revalidate: data.revalidate,
         },

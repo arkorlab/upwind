@@ -55,6 +55,7 @@ export async function platformRevalidate(input: RevalidateInput): Promise<void> 
     target: {
       descriptor,
       reason: 'manual',
+      allowHeader: findShell(store, descriptor.route, pathname)?.allowHeader,
       dataPathname:
         descriptor.kind === 'pages'
           ? pagesDataPathname(store.manifest.buildId, pathname)

@@ -11,7 +11,7 @@ import {
 } from '@upwind/core/paas';
 import { releaseStream } from '@upwind/core/util';
 
-import { withClock } from './cache/clock.ts';
+import { nowMs, withClock } from './cache/clock.ts';
 import { type RequestContext, withRequestContext } from './cache/context.ts';
 import {
   documentFromBuild,
@@ -621,6 +621,8 @@ export async function handleRequest(handled: HandleInput): Promise<Response> {
     tables: { app: handled.app, edge: handled.edge },
     runtime: handled.cache,
     request: handled.request,
+    startedAt: handled.clock ?? nowMs(),
+    fetchStarts: new Map(),
     waitUntil: handled.waitUntil,
     run: (work) => withClock(handled.clock, () => withRequestContext(context, work)),
   };

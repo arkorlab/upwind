@@ -1,4 +1,4 @@
-import { pagesDataPathname } from '@upwind/core/bundle';
+import { pagesDataPathname, queryDependent } from '@upwind/core/bundle';
 import type { DecodedGenerationPack, RouteEntryDescriptor } from '@upwind/core/cache';
 import {
   CACHE_OUTCOME_HEADER,
@@ -22,7 +22,6 @@ import { currentGeneration } from './cache/current.ts';
 import type { AttemptReason, ServedObservation } from './cache/host.ts';
 import { regenerate, type RegenerationOutcome, servable } from './cache/regenerate.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
-import { isDraftRequest } from './draft.ts';
 import { nodeHandlerOf } from './entries.ts';
 import { invokeNodeHandler } from './node-bridge.ts';
 import {
@@ -34,6 +33,7 @@ import {
 } from './representations.ts';
 import {
   baseRequestMeta,
+  bypassesPrerender,
   concatShell,
   NEXT_CACHE_HEADER,
   type NextCacheState,
@@ -153,6 +153,10 @@ async function targetOf(input: RoutedInput, store: Store): Promise<Target | unde
   const asked = new URL(input.request.url).pathname;
   const member = input.request.headers.has(CACHE_UPGRADE_HEADER) && !isClassShell(asked);
   const pathname = member ? asked : entryPathnameOf(store, route, asked);
+  const shell = store.prerendersByPathname.get(pathname) ?? findShell(store, route, pathname);
+  if (bypassesPrerender(store, input.request, shell) || queryDependent(shell, route, pathname)) {
+    return undefined;
+  }
   const descriptor = descriptorFor(store, route, pathname);
   return regenerable(descriptor) ? { descriptor, handler } : undefined;
 }
@@ -175,7 +179,10 @@ function runJob(job: Job, reason: AttemptReason): Promise<RegenerationOutcome> {
     target: {
       descriptor,
       reason,
-      allowHeader: store.prerendersByPathname.get(descriptor.pathname)?.allowHeader,
+      allowHeader: (
+        store.prerendersByPathname.get(descriptor.pathname) ??
+        findShell(store, descriptor.route, descriptor.pathname)
+      )?.allowHeader,
       observation: observationOf(input.request),
       dataPathname:
         descriptor.kind === 'pages'
@@ -569,6 +576,27 @@ async function outputOf(
 }
 
 /**
+ * The entry a request may be answered from, and the cache it is kept in; `undefined` where no
+ * generation answers: no cache, a draft or a bypass condition, an output that depends on a query
+ * its route does not name (no one generation stands for it), or an entry never regenerated.
+ */
+function answerableEntry(input: RoutedInput, store: Store, source: GenerationSource) {
+  const runtime = input.cache;
+  const shell =
+    store.prerendersByPathname.get(source.pathname) ??
+    findShell(store, source.route, source.pathname);
+  if (
+    runtime === undefined ||
+    bypassesPrerender(store, input.request, shell, source.url) ||
+    queryDependent(shell, source.route, source.pathname)
+  ) {
+    return;
+  }
+  const descriptor = descriptorFor(store, source.route, source.pathname);
+  return regenerable(descriptor) ? { runtime, descriptor } : undefined;
+}
+
+/**
  * What the Worker answers itself, from the entry's current generation: fresh or stale it is
  * served (stale, regenerated behind); expired, it is regenerated first; missing, rendered now
  * where the build made none. `undefined` leaves the build's own output to answer: no generation
@@ -581,14 +609,11 @@ export async function serveFromGeneration(
   source: GenerationSource,
   handler: NodeHandler,
 ): Promise<Response | undefined> {
-  const runtime = input.cache;
-  if (runtime === undefined || isDraftRequest(store, input.request)) {
+  const answerable = answerableEntry(input, store, source);
+  if (answerable === undefined) {
     return undefined;
   }
-  const descriptor = descriptorFor(store, source.route, source.pathname);
-  if (!regenerable(descriptor)) {
-    return undefined;
-  }
+  const { runtime, descriptor } = answerable;
   const lookup = await currentGeneration(runtime, descriptor, nowMs());
   const job: Job = { input, store, runtime, target: { descriptor, handler } };
   const want: Want = {
@@ -603,8 +628,11 @@ export async function serveFromGeneration(
     return undefined;
   }
   const { pack, validity } = lookup.current;
+  // Once a runtime generation exists, its missing/rejected output must never fall back to
+  // a different generation's build artifact. Render the original request instead.
+  const renderRequest = () => resume({ input, handler, postponed: undefined, url: source.url });
   if (validity === 'expired') {
-    return answerFromJob(job, await runJob(job, 'expired'), want);
+    return (await answerFromJob(job, await runJob(job, 'expired'), want)) ?? renderRequest();
   }
   if (validity === 'stale') {
     scheduleJob(job, 'stale', pack.header.generationId);
@@ -612,7 +640,7 @@ export async function serveFromGeneration(
   // What the record says is what the visitor would be told, and a record that cannot be answered
   // as written is not: the visitor gets a render of their own, as they would from a publish of it.
   if (!servable(pack.header.status, pack.header.headers)) {
-    return renderForVisitor(input, job.target, want);
+    return (await renderForVisitor(input, job.target, want)) ?? renderRequest();
   }
   // Build records hold only the document's state; let rscFromBuild choose the RSC twin's own
   // state. A runtime navigation resumes directly, without reading its static RSC artifact first.
@@ -623,7 +651,7 @@ export async function serveFromGeneration(
   }
   const body = await outputOf(runtime, store, pack, source);
   if (body === undefined) {
-    return undefined;
+    return pack.header.source === 'runtime' ? renderRequest() : undefined;
   }
   return answerWith(input, handler, {
     ...want,

@@ -38,6 +38,7 @@ export {
 } from './cookies.ts';
 export {
   filterShellResponseHeaders,
+  filterStoredResponseHeaders,
   type ForwardingContext,
   rendersInline,
   type PassthroughResponseContext,

@@ -8,6 +8,7 @@ import { failureAnswer } from './error-pages.ts';
 import { isRscRequest, rscBase } from './incoming.ts';
 import type { Resolved } from './outputs.ts';
 import {
+  bypassesPrerender,
   concatShell,
   HTML_CONTENT_TYPE,
   HTTP_NOT_FOUND,
@@ -85,11 +86,12 @@ export async function documentFromBuild(
   resolved: Resolved,
   { entry, status: fallbackStatus }: BuiltDocument,
 ): Promise<Response> {
-  // A draft asks for the page as it is now; the shell was written before the draft existed.
-  if (isDraftRequest(store, input.request)) {
+  // A draft, or a request a condition of the build's bypasses, asks for the page as it is now; the
+  // shell was written before either existed.
+  const shell = findShell(store, resolved.route, resolved.pathname);
+  if (bypassesPrerender(store, input.request, shell, resolved.url)) {
     return invokeEntry(input, entry, resolved.url, failureAnswer(store, entry, resolved.route));
   }
-  const shell = findShell(store, resolved.route, resolved.pathname);
   if (shell?.body === undefined) {
     return invokeEntry(input, entry, resolved.url, failureAnswer(store, entry, resolved.route));
   }
@@ -128,15 +130,14 @@ export async function rscFromBuild(
   entry: Entry,
   resolved: Resolved,
 ): Promise<Response> {
-  // What the build prefetched and postponed is the published page; a draft is rendered instead.
-  if (isDraftRequest(store, input.request)) {
+  const shell = findShell(store, resolved.route, resolved.pathname);
+  if (bypassesPrerender(store, input.request, shell, resolved.url)) {
     return invokeEntry(input, entry, resolved.url);
   }
   const segment = input.request.headers.get(store.manifest.routing.rsc.prefetchSegmentHeader);
   if (segment !== null) {
     const suffix = store.manifest.routing.rsc.prefetchSegmentSuffix;
     const dir = store.manifest.routing.rsc.prefetchSegmentDirSuffix;
-    const shell = findShell(store, resolved.route, resolved.pathname);
     const base = rscBase(shell?.pathname ?? resolved.pathname);
     const staticSegment = store.prerendersByPathname.get(`${base}${dir}${segment}${suffix}`);
     if (staticSegment?.body !== undefined) {
@@ -148,7 +149,6 @@ export async function rscFromBuild(
       return new Response(store.readBlob(staticSegment.body.sha256), { status: HTTP_OK, headers });
     }
   }
-  const shell = findShell(store, resolved.route, resolved.pathname);
   const twin =
     shell === undefined
       ? undefined

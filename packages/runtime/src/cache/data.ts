@@ -174,8 +174,8 @@ export async function writeData(
         dependencyRevision: written.revision,
         entry: input.entry,
         value: { kind: 'inline', base64: valueBase64 },
-        // An unchanged write can land on a generation an invalidation condemned since; remember
-        // it as a read would answer it, not as fresh.
+        // A write can land on a generation an invalidation condemned — since, when unchanged, or
+        // before it arrived, when made before it; remember it as a read would answer it.
         ...(written.invalidation !== undefined && { invalidation: written.invalidation }),
       },
       bytes: input.bytes,

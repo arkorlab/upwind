@@ -257,6 +257,33 @@ export function headerRulesFor(
 }
 
 /**
+ * The headers the folded rules give a route (`foldedHeaderRules`), judged against the route's own
+ * pathname as the deployment judged them, for a document the edge composes: a rule's
+ * `documentHeaders` where it has them, and the later of two rules naming one header wins.
+ * `undefined` for a manifest that carries none.
+ */
+export function foldedHeadersFor(
+  manifest: ProjectManifest,
+  pathname: string,
+): Readonly<Record<string, string>> | undefined {
+  if (manifest.foldedHeaderRules === undefined) {
+    return undefined;
+  }
+  const out: Record<string, string> = {};
+  for (const rule of manifest.foldedHeaderRules) {
+    const match = patternMatch(rule.sourceRegex, pathname);
+    if (match === null) {
+      continue;
+    }
+    const set = rule.documentHeaders ?? rule.headers;
+    for (const [name, value] of Object.entries(set)) {
+      out[interpolateHeader(name, match).toLowerCase()] = interpolateHeader(value, match);
+    }
+  }
+  return out;
+}
+
+/**
  * The same, for a document the edge composes: a rule's `documentHeaders` where it has them, which
  * permit the recovery script only such a document can carry.
  */

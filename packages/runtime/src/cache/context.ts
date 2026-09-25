@@ -14,6 +14,10 @@ export interface RequestContext {
   readonly tables: EntryTables;
   readonly runtime: CacheRuntime | undefined;
   readonly request: Request;
+  /** Timestamp before any asynchronous work, including fetches which skip the read hook. */
+  readonly startedAt: number;
+  /** Fetch start times stay with their request, including background revalidation work. */
+  readonly fetchStarts: Map<string, number>;
   readonly waitUntil: (promise: Promise<unknown>) => void;
   readonly run: Run;
 }

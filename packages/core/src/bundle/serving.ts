@@ -9,6 +9,7 @@ import type {
 } from '../manifest/schema.ts';
 import { BEHAVIORAL_RESPONSE_HEADERS, CONTENT_DISPOSITION_HEADER } from '../request/constants.ts';
 import { filterShellResponseHeaders, rendersInline } from '../request/headers.ts';
+import { queryDependent } from './query.ts';
 import type { DeploymentBundle, Prerender, Route, StaticFile } from './schema.ts';
 
 /**
@@ -213,7 +214,6 @@ export function resumablePrerenders(bundle: DeploymentBundle): Prerender[] {
 }
 
 /**
-/**
  * The headers this page would answer with, as the edge would read them: what the build recorded,
  * under the rules of `next.config` that name it — the same two sources `shellHeaders` folds
  * together, before the allowlist takes anything out.
@@ -330,6 +330,7 @@ export function routeHandlerPrerenders(bundle: DeploymentBundle): Prerender[] {
     return (
       !edgeRuntime.has(prerender.route) &&
       prerender.routeType === 'route' &&
+      !queryDependent(prerender, prerender.route, prerender.pathname) &&
       prerender.response === 'complete' &&
       prerender.compute === 'static' &&
       prerender.body !== undefined &&
@@ -429,6 +430,24 @@ export function headerRulesOf(bundle: DeploymentBundle): HeaderRule[] {
     return rule.headers === undefined
       ? []
       : [{ sourceRegex: rule.sourceRegex, ...conditionsOf(rule), headers: rule.headers }];
+  });
+}
+
+/**
+ * The rules a build the edge does not route folds into its routes' headers (`applicableHeaders`),
+ * in the order Next.js applies them: every rule with headers and no condition. The edge judges
+ * them against a route's own pathname, as the deployment did, and lays them over the headers of
+ * a generation, whose record holds only what its render set. `undefined` for a build whose rules
+ * the edge judges on each request (`headerRulesOf`).
+ */
+export function foldedHeaderRulesOf(bundle: DeploymentBundle): HeaderRule[] | undefined {
+  if (reproducesDynamicRouting(bundle)) {
+    return undefined;
+  }
+  return headerPhases(bundle).flatMap((rule) => {
+    return rule.headers === undefined || isConditional(rule)
+      ? []
+      : [{ sourceRegex: rule.sourceRegex, headers: rule.headers }];
   });
 }
 
