@@ -61,6 +61,7 @@ export async function platformRevalidate(input: RevalidateInput): Promise<void> 
           ? pagesDataPathname(store.manifest.buildId, pathname)
           : undefined,
     },
+    previewToken: store.manifest.bypassToken,
     waitUntil: context.waitUntil,
     run: context.run,
   });

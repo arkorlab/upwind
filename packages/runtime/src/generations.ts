@@ -189,6 +189,7 @@ function runJob(job: Job, reason: AttemptReason): Promise<RegenerationOutcome> {
           ? pagesDataPathname(store.manifest.buildId, descriptor.pathname)
           : undefined,
     },
+    previewToken: store.manifest.bypassToken,
     waitUntil: input.waitUntil,
     run: input.run,
   });

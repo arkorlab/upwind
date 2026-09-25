@@ -55,6 +55,18 @@ const STATIC_REQUEST_HEADERS: Readonly<Record<string, string>> = {
   'sec-fetch-dest': 'document',
   'sec-fetch-mode': 'navigate',
 };
+/**
+ * How Next.js is told that a regeneration was asked for rather than come due: the header it
+ * compares against the build's own token (`checkIsOnDemandRevalidate`, `api-utils/index.ts`). It
+ * is what `getStaticProps` reads as `revalidateReason: 'on-demand'`, where a render without it
+ * reads `'stale'` however the regeneration came about.
+ */
+const ON_DEMAND_HEADER = 'x-prerender-revalidate';
+/** The reasons that are somebody asking: `revalidate()`, and an invalidation of a tag. */
+const ON_DEMAND_REASONS: ReadonlySet<AttemptReason> = new Set<AttemptReason>([
+  'invalidated',
+  'manual',
+]);
 const HTTP_OK = 200;
 const HTTP_SERVER_ERROR = 500;
 
@@ -74,6 +86,11 @@ export interface RegenerationInput {
   readonly request: Request;
   readonly handler: NodeHandler;
   readonly target: RegenerationTarget;
+  /**
+   * The token `next build` generated for this build, which says a request may make Next.js render
+   * rather than read what the build wrote. Absent for a build that generated none.
+   */
+  readonly previewToken: string | undefined;
   readonly waitUntil: (promise: Promise<unknown>) => void;
   readonly run: Run;
 }
@@ -111,6 +128,9 @@ function staticRequest(input: RegenerationInput, attemptId: string): Request {
   }
   // Next.js's own scoping of its minimal-mode response cache to one invocation.
   headers.set('x-invocation-id', attemptId);
+  if (input.previewToken !== undefined && ON_DEMAND_REASONS.has(input.target.reason)) {
+    headers.set(ON_DEMAND_HEADER, input.previewToken);
+  }
   return new Request(url, { headers });
 }
 
