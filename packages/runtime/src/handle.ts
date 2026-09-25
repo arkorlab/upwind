@@ -14,6 +14,7 @@ import { releaseStream } from '@upwind/core/util';
 import { nowMs, withClock } from './cache/clock.ts';
 import { type RequestContext, withRequestContext } from './cache/context.ts';
 import {
+  crawlerWantsWholePage,
   documentFromBuild,
   notFound,
   postponedOf,
@@ -192,8 +193,10 @@ async function serveDocument(input: RoutedInput, store: Store, asked: Resolved):
   ) {
     return invokeEntry(input, entry, resolved.url, failureAnswer(store, entry, resolved.route));
   }
+  const crawled =
+    shell !== undefined && crawlerWantsWholePage(store, shell, resolved, input.request);
   if (shell !== undefined && entry.kind === 'node') {
-    const built = shell.body !== undefined;
+    const built = shell.body !== undefined && !crawled;
     const current = await serveFromGeneration(
       input,
       store,
@@ -212,6 +215,7 @@ async function serveDocument(input: RoutedInput, store: Store, asked: Resolved):
       return current;
     }
   }
+  // Nothing kept the render; `documentFromBuild` answers a crawler with one all the same.
   return documentFromBuild(input, store, resolved, { entry, status: HTTP_OK });
 }
 

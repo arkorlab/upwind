@@ -1,5 +1,9 @@
 import { ORIGINAL_URL_HEADER, PLATFORM_REQUEST_HEADERS } from '@upwind/core/paas';
-import { BYPASS_QUERY_PREFIXES, isHtmlLimitedBotUserAgent } from '@upwind/core/request';
+import {
+  BYPASS_QUERY_PREFIXES,
+  isBotUserAgent,
+  isHtmlLimitedBotUserAgent,
+} from '@upwind/core/request';
 
 /**
  * What an incoming request says about itself.
@@ -90,4 +94,15 @@ export function wantsBlockingMetadata(request: Request, pattern: string | undefi
     return isHtmlLimitedBotUserAgent(userAgent);
   }
   return botsRegexOf(pattern)?.test(userAgent) ?? false;
+}
+
+/**
+ * Whether the visitor is a crawler, by the list Next.js keeps for the question (`isBot`,
+ * `shared/lib/router/utils/is-bot.ts`): the one crawler that runs a browser, Googlebot, and every
+ * agent limited to the HTML it is sent. Not the same question as `wantsBlockingMetadata`, which an
+ * application may answer with a list of its own; this one Next.js decides alone.
+ */
+export function isCrawler(request: Request): boolean {
+  const userAgent = request.headers.get('user-agent');
+  return userAgent !== null && userAgent !== '' && isBotUserAgent(userAgent);
 }

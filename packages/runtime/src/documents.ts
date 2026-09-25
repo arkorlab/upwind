@@ -5,7 +5,7 @@ import { releaseStream } from '@upwind/core/util';
 import { isDraftRequest } from './draft.ts';
 import { type Entry, entryFor } from './entries.ts';
 import { failureAnswer } from './error-pages.ts';
-import { isRscRequest, rscBase } from './incoming.ts';
+import { isCrawler, isRscRequest, rscBase } from './incoming.ts';
 import type { Resolved } from './outputs.ts';
 import {
   bypassesPrerender,
@@ -23,7 +23,7 @@ import {
   staticResponse,
   withCacheState,
 } from './serve.ts';
-import { findShell, type Store } from './store.ts';
+import { entrypointKindOf, findShell, isClassShell, type Store } from './store.ts';
 
 /**
  * What the build made of a route, answered from the bundle: a document from its shell and the
@@ -64,6 +64,32 @@ export function staticFileResponse(
   });
 }
 
+/**
+ * Whether a crawler asking for `resolved` must be answered with the page rather than the fallback
+ * document the build wrote for its class: a member of a Pages Router `fallback: true` route that
+ * the build did not prerender. Next.js renders one blocking for a crawler rather than serve the
+ * fallback (`isIsrFallback && isBot(…)`, `server/route-modules/pages/pages-handler.ts`), so that
+ * what a crawler indexes is the page and not its loading state. The member is rendered and kept as
+ * a `fallback: 'blocking'` member is, which is what Next.js does with it too.
+ *
+ * Only the Pages Router's fallback is a document of its own in this way. An App Router shell is
+ * resumed for every visitor, and the crawler it treats differently — one it sends blocking
+ * metadata to — it treats above.
+ */
+export function crawlerWantsWholePage(
+  store: Store,
+  shell: Prerender,
+  resolved: Resolved,
+  request: Request,
+): boolean {
+  return (
+    shell.pathname !== resolved.pathname &&
+    isClassShell(shell.pathname) &&
+    entrypointKindOf(store, shell.route) === 'pages' &&
+    isCrawler(request)
+  );
+}
+
 export interface BuiltDocument {
   readonly entry: Entry;
   /** The status the document goes out with when the build did not set one. */
@@ -87,9 +113,12 @@ export async function documentFromBuild(
   { entry, status: fallbackStatus }: BuiltDocument,
 ): Promise<Response> {
   // A draft, or a request a condition of the build's bypasses, asks for the page as it is now; the
-  // shell was written before either existed.
+  // shell was written before either existed. A crawler asks for the page rather than the fallback.
   const shell = findShell(store, resolved.route, resolved.pathname);
-  if (bypassesPrerender(store, input.request, shell, resolved.url)) {
+  if (
+    bypassesPrerender(store, input.request, shell, resolved.url) ||
+    (shell !== undefined && crawlerWantsWholePage(store, shell, resolved, input.request))
+  ) {
     return invokeEntry(input, entry, resolved.url, failureAnswer(store, entry, resolved.route));
   }
   if (shell?.body === undefined) {

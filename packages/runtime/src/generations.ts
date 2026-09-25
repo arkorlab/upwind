@@ -42,7 +42,7 @@ import {
   type RoutedInput,
   stripPlatformHeaders,
 } from './serve.ts';
-import { entrypointKindOf, findShell, type Store } from './store.ts';
+import { entrypointKindOf, findShell, isClassShell, type Store } from './store.ts';
 
 /**
  * The runtime cache's part in answering a request: a regeneration the edge asked for beside a
@@ -61,19 +61,6 @@ const HTTP_ACCEPTED = 202;
 export function regenerateMode(request: Request): RegenerateMode | undefined {
   const value = request.headers.get(REGENERATE_HEADER);
   return value !== null && isRegenerateMode(value) ? value : undefined;
-}
-
-/**
- * A shell that stands for a class of URLs (`/items/[id]`): Next.js's fallback shell, rendered
- * with its parameters unresolved, from which a member the build did not prerender is served and
- * resumed under its own path. It is regenerated as it was made — by a render of the template
- * pathname itself, whose placeholder parameters Next.js keeps as they are rather than reading
- * them as values (`route-module.js`, `prepare`: "literal slug matches"), and defers, which gives
- * the fallback shell again. Only an App Router page renders one at request time: a Pages Router
- * `fallback: true` document is the build's alone.
- */
-function isClassShell(pathname: string): boolean {
-  return pathname.includes('[');
 }
 
 /** Whether the cache may hold a generation of the entry made at request time. */

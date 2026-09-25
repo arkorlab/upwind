@@ -394,6 +394,19 @@ function unlocalizedRoute(store: Store, route: string): string | undefined {
 }
 
 /**
+ * A shell that stands for a class of URLs (`/items/[id]`): Next.js's fallback shell, rendered
+ * with its parameters unresolved, from which a member the build did not prerender is served and
+ * resumed under its own path. It is regenerated as it was made — by a render of the template
+ * pathname itself, whose placeholder parameters Next.js keeps as they are rather than reading
+ * them as values (`route-module.js`, `prepare`: "literal slug matches"), and defers, which gives
+ * the fallback shell again. Only an App Router page renders one at request time: a Pages Router
+ * `fallback: true` document is the build's alone.
+ */
+export function isClassShell(pathname: string): boolean {
+  return pathname.includes('[');
+}
+
+/**
  * The document shell for a concrete URL of `route`, if the build produced one: under the route
  * itself, or, for a locale's route of an application with `i18n`, under the page's
  * (`unlocalizedRoute`). Looked up under the locale's route alone, no page of such an application
