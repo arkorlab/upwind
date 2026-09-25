@@ -214,7 +214,9 @@ export function withoutAssetPrefix(
  * rewrites to (`forceLocale`), a file's among them, so the rewrite a middleware makes of
  * `/_next/static/…` to itself names `/en/_next/static/…`, which Next.js serves as the file. In an
  * application with an `assetPrefix`, a file under `_next` is found under the prefix as well
- * (`withoutAssetPrefix`): its pages load their scripts from there.
+ * (`withoutAssetPrefix`): its pages load their scripts from there. Behind a default locale too,
+ * in one with both: the same rewrite of `/assets/_next/static/…` names `/en/assets/_next/static/…`,
+ * and Next.js takes the default locale off before it matches the prefix's rewrite.
  */
 export function staticFileKey(manifest: ProjectManifest, pathname: string): string | undefined {
   const { staticFiles, staticFileLocales, staticFileAssetPrefix } = manifest;
@@ -231,10 +233,14 @@ export function staticFileKey(manifest: ProjectManifest, pathname: string): stri
   if (localized !== undefined) {
     return localized;
   }
+  if (staticFileAssetPrefix === undefined) {
+    return undefined;
+  }
   const unprefixed =
-    staticFileAssetPrefix === undefined
+    withoutAssetPrefix(staticFileAssetPrefix, pathname) ??
+    (unlocalized === undefined
       ? undefined
-      : withoutAssetPrefix(staticFileAssetPrefix, pathname);
+      : withoutAssetPrefix(staticFileAssetPrefix, unlocalized));
   return unprefixed === undefined ? undefined : keyOf(staticFiles, unprefixed);
 }
 

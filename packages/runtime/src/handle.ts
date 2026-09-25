@@ -524,6 +524,8 @@ async function routeAndServe(
     );
   }
   return withRewriteStatus(
+    store,
+    resolved.route,
     withRoutingHeaders(
       await serveResolved(forwarded, store, resolved, url),
       routed.resolvedHeaders,

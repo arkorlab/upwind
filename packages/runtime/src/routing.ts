@@ -6,7 +6,7 @@ import {
   type Route as RoutingRoute,
   resolveRoutes,
 } from '@next/routing';
-import { isPagesDataRequestPath, type Route } from '@upwind/core/bundle';
+import { type EntrypointKind, isPagesDataRequestPath, type Route } from '@upwind/core/bundle';
 import { ORIGINAL_URL_HEADER } from '@upwind/core/paas';
 import { NEXT_DATA_HEADER, NULL_BODY_STATUSES } from '@upwind/core/request';
 import { releaseStream } from '@upwind/core/util';
@@ -189,6 +189,14 @@ export function withRoutingHeaders(response: Response, added: Headers | undefine
 }
 
 /**
+ * The kind of entrypoint that answers a route: its own, or, for a member of a route the build
+ * closed — which resolves by its own name and names no entrypoint — the route it was built from.
+ */
+function answeringKind(store: Store, route: string): EntrypointKind | undefined {
+  return entrypointKindOf(store, store.prerendersByPathname.get(route)?.route ?? route);
+}
+
+/**
  * What a route answered, under the status a middleware rewrote the request with.
  *
  * Next.js's router puts a middleware's status on the response before the route renders
@@ -196,9 +204,21 @@ export function withRoutingHeaders(response: Response, added: Headers | undefine
  * of its own leaves it there: `NextResponse.rewrite(url, { status: 404 })` to the not-found page
  * is answered 404. `@next/routing` reads no status off a rewrite, and the page's own 200 went out
  * (`app-dir/not-found-non-document-dynamic`).
+ *
+ * A route handler renders nothing: the `Response` it returns is sent as it is, its status over
+ * whatever was on the response (`sendResponse`), so a 200 it answers with stays a 200.
  */
-export function withRewriteStatus(response: Response, status: number | undefined): Response {
-  if (status === undefined || response.status !== HTTP_OK) {
+export function withRewriteStatus(
+  store: Store,
+  route: string,
+  response: Response,
+  status: number | undefined,
+): Response {
+  if (
+    status === undefined ||
+    response.status !== HTTP_OK ||
+    answeringKind(store, route) === 'app-route'
+  ) {
     return response;
   }
   if (!NULL_BODY_STATUSES.has(status)) {
@@ -552,7 +572,7 @@ function handlerUrl(
 ): string {
   const routed = `${target.pathname}${queryString(target.query)}`;
   const { url } = asked;
-  const kind = entrypointKindOf(store, store.prerendersByPathname.get(route)?.route ?? route);
+  const kind = answeringKind(store, route);
   if (
     kind === undefined ||
     url.pathname === target.pathname ||
