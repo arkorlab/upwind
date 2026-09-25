@@ -86,9 +86,9 @@ function contentTypeOf(
 }
 
 /**
- * The headers the visitor is answered with, whatever the answer was read from. `validator` names
- * the generation the answer is of, for the one output that may be shared; a render made for this
- * visitor alone names none, and is not.
+ * The headers the visitor is answered with, whatever the answer was read from. `validator` is the
+ * entity tag the answer's bytes are named by, where the caller has one: a render made for this
+ * visitor alone has none, and of the outputs only a route handler's body is given it.
  */
 export function answerHeaders(
   representation: Representation,

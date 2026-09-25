@@ -261,15 +261,18 @@ interface Answer extends Want {
 
 /** The visitor's answer: a document — a shell, then their own resume of it — or an output whole. */
 function answerWith(input: RoutedInput, handler: NodeHandler, answer: Answer): Response {
-  const { representation, headers: recorded, partial, validator } = answer;
-  const headers = answerHeaders(representation, recorded, partial, validator);
+  const { representation, headers: recorded, partial } = answer;
+  const headers = answerHeaders(representation, recorded, partial, answer.validator);
   if (answer.postponed === undefined) {
     headers.set(NEXT_CACHE_HEADER, answer.cache);
   }
   const { status } = answer;
-  // Nothing of the entity is sent again where the client holds this generation of it; the headers
-  // are the ones a 200 would carry, as a validated answer is told with.
-  if (validator !== undefined && holdsValidator(input.request, validator)) {
+  // Nothing of the entity is sent again where the client holds these very bytes; the headers are
+  // the ones a 200 would carry, as a validated answer is told with. The tag is read back off the
+  // headers rather than kept beside them: an answer that may not be shared was given none, so a
+  // 304 cannot be reached for one.
+  const tag = headers.get('etag');
+  if (tag !== null && holdsValidator(input.request, tag)) {
     return new Response(null, { status: HTTP_NOT_MODIFIED, headers });
   }
   // A `204` a handler answered is kept with the empty body it was captured as, and a `Response`
@@ -637,8 +640,13 @@ export async function serveFromGeneration(
   return answerWith(input, handler, {
     ...want,
     body,
-    // The generation names the bytes: one is never rewritten, and a new one is a new name.
-    validator: `"${pack.header.generationId}"`,
+    // The bytes name themselves: a regeneration that produced the same body leaves what a client
+    // holds of it valid. Only a route handler's body is the record's primary, and it is the only
+    // answer here that may be shared (`answerHeaders`).
+    // The bytes name themselves, so a regeneration that produced the same body leaves what a client
+    // holds of it valid. The record's primary, which for a route handler is the body: whether the
+    // answer may carry it at all is `answerHeaders`'s to say.
+    validator: `"${pack.header.htmlSha256}"`,
     partial: pack.postponed !== undefined,
     postponed:
       source.representation === 'html' && pack.postponed !== undefined
