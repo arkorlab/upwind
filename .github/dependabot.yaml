@@ -1,0 +1,37 @@
+version: 2
+updates:
+  # One entry, for the workspace root, because that is where the versions are: every shared
+  # dependency is pinned exactly once in `pnpm-workspace.yaml`'s catalog, and a `package.json` under
+  # `packages/` names `catalog:` rather than a version. Dependabot has understood that catalog since
+  # February 2025, so pointing it at the root is enough — and enumerating the packages would only
+  # find nothing to update.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      # The day `minimumReleaseAge` already holds an install to, for the same reason it exists: a
+      # compromised release should be somebody else's problem first.
+      default-days: 1
+      # And the same exemption, for the same reason: a security release is the one case where
+      # waiting is the larger risk, because the fix is public and so is what it fixes.
+      exclude:
+        - next
+        - '@next/*'
+    open-pull-requests-limit: 100
+    ignore:
+      # Its majors track Node's own, and this repository is written against one Node at a time
+      # (`devEngines`). A bump follows a decision about Node, not about a package.
+      - dependency-name: '@types/node'
+        update-types:
+          - version-update:semver-major
+
+  # The workflows pin every action by commit, with the tag in a trailing comment. That is what makes
+  # a pinned action safe and also what makes it go stale, so it is worth a robot's attention.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 1
+    open-pull-requests-limit: 100
