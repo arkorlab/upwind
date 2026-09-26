@@ -1,0 +1,48 @@
+{
+  "name": "@upwind/adapter",
+  "version": "0.1.0",
+  "description": "Next.js deployment adapter: turns `next build` output into a content-addressed deployment bundle and the Cloudflare Workers that serve it.",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arkorlab/upwind.git",
+    "directory": "packages/adapter"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "exports": {
+      ".": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@upwind/core": "workspace:*",
+    "@upwind/runtime": "workspace:*",
+    "esbuild": "catalog:",
+    "jsonc-parser": "catalog:",
+    "rolldown": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@oxc-project/types": "catalog:",
+    "@types/node": "catalog:",
+    "next": "catalog:",
+    "typescript": "catalog:"
+  },
+  "peerDependencies": {
+    "next": ">=16.3.0 <17"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

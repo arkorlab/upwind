@@ -1,0 +1,54 @@
+packages:
+  - packages/*
+
+# Every shared version is pinned exactly once here; workspace packages reference "catalog:".
+catalog:
+  '@eslint/js': 10.0.1
+  '@next/routing': 16.3.6
+  # The AST Rolldown's `this.parse` hands a plugin: the version Rolldown itself depends on.
+  '@oxc-project/types': 0.150.0
+  '@types/node': 24.13.4
+  esbuild: 0.28.2
+  eslint: 10.10.0
+  eslint-config-prettier: 10.1.8
+  eslint-import-resolver-typescript: 4.4.5
+  eslint-plugin-import-x: 4.17.1
+  eslint-plugin-n: 18.3.0
+  eslint-plugin-perfectionist: 5.11.0
+  eslint-plugin-promise: 7.3.0
+  eslint-plugin-regexp: 3.3.0
+  eslint-plugin-security: 4.0.1
+  eslint-plugin-sonarjs: 4.2.0
+  eslint-plugin-unicorn: 74.0.0
+  globals: 17.12.0
+  # Reads a project's own config at build time, the way wrangler reads its own. Build-time only:
+  # nothing of it reaches a Worker.
+  jsonc-parser: 3.3.1
+  knip: 6.35.1
+  next: 16.3.6
+  oxfmt: 0.67.0
+  rolldown: 1.2.9
+  typescript: 5.9.3
+  typescript-eslint: 8.70.0
+  zod: 4.6.4
+
+# Only these dependencies may run install scripts.
+allowBuilds:
+  esbuild: true
+  unrs-resolver: false
+
+strictPeerDependencies: true
+
+# pnpm runs an implicit install before every `pnpm run` by default, and that install takes no lock
+# (pnpm/pnpm#14551), so a second checkout running a script at the same time races it over
+# `node_modules/.pnpm`. Nothing may install behind your back.
+verifyDepsBeforeRun: false
+
+# Supply-chain cooldown (pnpm default is 1 day; explicit so the policy is visible and strict).
+minimumReleaseAge: 1440
+# The cooldown exists so a compromised release is caught by somebody else first. A security
+# release is the one case where waiting is the larger risk: the fix is public and so is what it
+# fixes. Next.js is exempt for that reason and for no other.
+minimumReleaseAgeExclude:
+  - next
+  - '@next/*'

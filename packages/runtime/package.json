@@ -1,0 +1,34 @@
+{
+  "name": "@upwind/runtime",
+  "version": "0.1.0",
+  "description": "The Worker that runs a Next.js deployment bundle on Cloudflare: routing, middleware, and PPR resume over the entrypoints `next build` produced.",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arkorlab/upwind.git",
+    "directory": "packages/runtime"
+  },
+  "files": [
+    "src"
+  ],
+  "type": "module",
+  "exports": {
+    "./cache-host": "./src/cache/host.ts",
+    "./worker": "./src/worker.ts"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@next/routing": "catalog:",
+    "@upwind/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

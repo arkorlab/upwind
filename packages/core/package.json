@@ -1,0 +1,39 @@
+{
+  "name": "@upwind/core",
+  "version": "0.1.0",
+  "description": "What the Next.js adapter and runtime are built on: the deployment bundle contract, request classification, the cache vocabulary a runtime speaks, and the wire protocol between a host's edge and an application's Worker.",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arkorlab/upwind.git",
+    "directory": "packages/core"
+  },
+  "files": [
+    "src"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    "./artifact": "./src/artifact/index.ts",
+    "./assets": "./src/assets/index.ts",
+    "./bundle": "./src/bundle/index.ts",
+    "./cache": "./src/cache/index.ts",
+    "./cron": "./src/cron/index.ts",
+    "./deployment": "./src/deployment/index.ts",
+    "./images": "./src/images/index.ts",
+    "./manifest": "./src/manifest/index.ts",
+    "./paas": "./src/paas/index.ts",
+    "./request": "./src/request/index.ts",
+    "./util": "./src/util/index.ts"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "typescript": "catalog:"
+  }
+}
