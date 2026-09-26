@@ -29,15 +29,24 @@ import { restart } from './restart.ts';
  */
 const SETTLE_MS = 150;
 
-/** `CONFIG_FILES` in `next/dist/shared/lib/constants.ts`, as that module hands it over. */
+/**
+ * `CONFIG_FILES` in `next/dist/shared/lib/constants.ts`, as that module hands it over.
+ *
+ * Both ways it can arrive. Node's lexer reads the names out of the CommonJS module and a named import
+ * is what works today; a module whose shape it cannot read would put the whole of `module.exports`
+ * under `default` instead, and the same names are there.
+ */
 async function nextConfigFiles(projectDir: string): Promise<readonly string[] | undefined> {
   const entry = resolveFromProject(projectDir, 'next/constants.js');
   if (entry === undefined) {
     return undefined;
   }
   try {
-    const module = (await import(pathToFileURL(entry).href)) as { CONFIG_FILES?: unknown };
-    const names = module.CONFIG_FILES;
+    const module = (await import(pathToFileURL(entry).href)) as {
+      CONFIG_FILES?: unknown;
+      default?: { CONFIG_FILES?: unknown };
+    };
+    const names = module.CONFIG_FILES ?? module.default?.CONFIG_FILES;
     if (!Array.isArray(names)) {
       return undefined;
     }

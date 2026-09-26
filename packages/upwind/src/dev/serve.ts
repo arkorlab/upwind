@@ -199,13 +199,12 @@ export async function serveDev(options: DevOptions): Promise<void> {
   process.on('SIGINT', onStop);
   process.on('SIGTERM', onStop);
 
+  // Before Next.js is started, not after: `prepare()` reads `next.config` and can take seconds, and a
+  // config written during those seconds would otherwise be one this run never hears about — it would
+  // serve the old config until something changed again.
+  const stopWatching: StopWatching = await watchConfigFiles(options.projectDir);
   let app: RunningNext;
-  let stopWatching: StopWatching;
   try {
-    // Before Next.js is started, not after: `prepare()` reads `next.config` and can take seconds, and
-    // a config written during those seconds would otherwise be one this run never hears about — it
-    // would serve the old config until something changed again.
-    stopWatching = await watchConfigFiles(options.projectDir);
     app = await startNextApp({
       projectDir: options.projectDir,
       hostname: options.hostname,
@@ -216,8 +215,10 @@ export async function serveDev(options: DevOptions): Promise<void> {
     // Every request already waiting on the handler is told, so it is answered rather than left to a
     // connection that resets under it, and the socket stops taking new ones. The connections it still
     // has are left open long enough for those answers to go out; `cli.ts` ends the process once it has
-    // said why.
+    // said why. The watch goes with it: a config saved while this was failing would otherwise ask the
+    // supervisor to restart a run that is already over.
     nextReady.reject(error);
+    stopWatching();
     server.close();
     throw error;
   }
