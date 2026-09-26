@@ -119,9 +119,11 @@ export async function serveDev(options: DevOptions): Promise<void> {
   const adapter = installAdapterPath(options.projectDir);
   devSession.adapterPath = adapter.path;
 
-  // What everything but `/__upwind` waits on: the handler itself, once there is one. Rejected if
-  // Next.js never starts, so a request that arrived while it was starting is answered — with the 500
-  // `answerOrFail` writes — instead of holding a connection that the exit resets under it.
+  // What everything but `/__upwind` waits on: the handler itself, once there is one. If Next.js never
+  // starts it is resolved all the same, with a handler that fails — so a request that arrived while it
+  // was starting is answered, with the 500 `answerOrFail` writes, instead of holding a connection that
+  // the exit resets under it. Resolved rather than rejected, so a failure nobody happened to be waiting
+  // for is never an unhandled rejection: the drain below yields to the loop, which is where Node looks.
   const nextReady: PromiseWithResolvers<NextHandler> = Promise.withResolvers();
 
   async function answer(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -226,12 +228,16 @@ export async function serveDev(options: DevOptions): Promise<void> {
       httpServer: server,
     });
   } catch (error) {
+    // No longer starting: a signal arriving during the drain below would otherwise be read as a stop of
+    // a run that had not begun, and leave with the 0 that says nothing went wrong.
+    phase = 'stopping';
     // Every request already waiting on the handler is told, so it is answered rather than left to a
     // connection that resets under it, and the socket stops taking new ones. The connections it still
     // has are left open long enough for those answers to go out; `cli.ts` ends the process once it has
     // said why. The watch goes with it: a config saved while this was failing would otherwise ask the
     // supervisor to restart a run that is already over.
-    nextReady.reject(error);
+    const reason = error instanceof Error ? error : new Error(String(error));
+    nextReady.resolve(() => Promise.reject(reason));
     stopWatching();
     server.close();
     // Waited for rather than merely closed. The 500s are written in continuations of that rejection, and
