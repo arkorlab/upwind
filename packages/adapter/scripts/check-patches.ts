@@ -58,12 +58,33 @@ const VERSION_PARTS = 3;
 /** 64 MiB, for room rather than for need: both commands are run quiet and print a line at most. */
 const OUTPUT_LIMIT = 67_108_864;
 /**
- * npm, as a name `execFile` can start. On Windows the executable on `PATH` is `npm.cmd`, which
- * needs a shell — and a shell is what this deliberately does not use, since a version string read
- * off a registry would then be going through one. `tar` needs no such care: Windows has shipped
- * one since 10, as an executable.
+ * npm, as something `execFile` can start without a shell: its own JavaScript, run by this Node.
+ *
+ * The name on `PATH` is a shell script on Unix and a `.cmd` on Windows, and Node will not spawn the
+ * second without a shell — which this must not use, since a version read off a registry travels through
+ * these arguments. npm ships beside the Node that is running: under `lib/node_modules` on Unix, and
+ * beside the executable itself on Windows.
  */
-const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+async function npmCli(): Promise<string> {
+  const beside = path.dirname(process.execPath);
+  const candidates = [
+    path.join(beside, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    path.join(beside, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  ];
+  for (const candidate of candidates) {
+    try {
+      await stat(candidate);
+      return candidate;
+    } catch {
+      continue;
+    }
+  }
+  throw new Error(
+    `check-patches: npm was not found beside ${process.execPath}; looked in ${candidates.join(' and ')}`,
+  );
+}
+
+/** `tar` needs no such care: Windows has shipped one since 10, as an executable. */
 
 /** The context a patch is handed. Only `instrumentation` reads any of it from a package file. */
 const CONTEXT: PatchContext = {
@@ -199,8 +220,8 @@ async function fetchPackage(version: string): Promise<string> {
   await rm(dir, { recursive: true, force: true });
   await mkdir(dir, { recursive: true });
   const { stdout } = await execFileAsync(
-    NPM,
-    ['pack', `next@${version}`, '--silent', '--pack-destination', dir],
+    process.execPath,
+    [await npmCli(), 'pack', `next@${version}`, '--silent', '--pack-destination', dir],
     { maxBuffer: OUTPUT_LIMIT },
   );
   const printed = stdout.trim().split('\n').at(-1)?.trim();

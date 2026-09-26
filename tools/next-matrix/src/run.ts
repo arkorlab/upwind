@@ -46,11 +46,31 @@ const TAGS = new Set(['beta', 'canary', 'latest', 'rc']);
 /** Where `next build` leaves what the adapter wrote. */
 const OUT_DIR = '.ppr-cdn';
 /**
- * npm, as a name `execFile` can start. On Windows the executable on `PATH` is `npm.cmd`, which
- * needs a shell — and a shell is what this deliberately does not use, since a version string read
- * off a registry would then be going through one.
+ * npm, as something `execFile` can start without a shell: its own JavaScript, run by this Node.
+ *
+ * The name on `PATH` is a shell script on Unix and a `.cmd` on Windows, and Node will not spawn the
+ * second without a shell — which this must not use, since a version read off a registry travels through
+ * these arguments. npm ships beside the Node that is running: under `lib/node_modules` on Unix, and
+ * beside the executable itself on Windows.
  */
-const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+async function npmCli(): Promise<string> {
+  const beside = path.dirname(process.execPath);
+  const candidates = [
+    path.join(beside, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    path.join(beside, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  ];
+  for (const candidate of candidates) {
+    try {
+      await stat(candidate);
+      return candidate;
+    } catch {
+      continue;
+    }
+  }
+  throw new Error(
+    `next-matrix: npm was not found beside ${process.execPath}; looked in ${candidates.join(' and ')}`,
+  );
+}
 
 /** Next.js's own entry in an installed application: JavaScript, and so the same on every platform. */
 function nextBin(app: string): string {
@@ -301,7 +321,7 @@ async function build(fixture: Fixture, version: string, keep: boolean): Promise<
     manifest.dependencies['next'] = version;
     await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
-    await run(NPM, ['install', '--no-audit', '--no-fund'], app);
+    await run(process.execPath, [await npmCli(), 'install', '--no-audit', '--no-fund'], app);
     // Next.js's own entry under this Node, rather than the launcher npm wrote into `.bin`: that
     // one is a shell script on Unix and a `.cmd` on Windows, and `execFile` runs neither without
     // a shell. The file below is the same JavaScript both of them end up running.
