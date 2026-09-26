@@ -10,7 +10,10 @@
   },
   "files": [
     "dist",
-    "src"
+    "src",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "NOTICE"
   ],
   "type": "module",
   "exports": {
@@ -23,6 +26,7 @@
   },
   "scripts": {
     "build": "node scripts/build.ts",
+    "prepack": "node scripts/build.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -1,0 +1,49 @@
+# @stayingupwind/core
+
+The vocabulary the other two packages and a host's own edge all speak. Nothing here runs anything:
+it is the deployment bundle's shape, the cache's terms, the classification of a request, and the
+wire protocol between an edge and an application's Function — written once, so that the adapter that
+writes a bundle, the runtime that serves one, and the edge in front of it cannot disagree about what
+a field means.
+
+It has one dependency, `zod`, because most of this package is schemas. A schema is the contract:
+`deploymentBundleSchema` is what a bundle is, and a bundle that does not parse is not one.
+`BUNDLE_VERSION` says which shape a reader was written for.
+
+The published package is TypeScript sources — `exports` names `.ts` files, and there is no build
+step. A reader bundles it (the adapter bundles it into itself; the runtime is bundled by the
+adapter), which is also why `sideEffects: false` is true of it: nothing here initializes anything.
+
+## Entry points
+
+| Subpath        | What it holds                                                                                                                                                                                                                                                                                             |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `./bundle`     | The deployment bundle: entrypoints, prerenders, routing tables, static files, the blobs they name, cache-life profiles — and the rules deciding what the edge may serve from storage and what stays with the Function (`serving.ts`)                                                                      |
+| `./cache`      | What a runtime cache is made of: an entry's artifacts and their roles, freshness against a validity and an invalidation state, keys, the packing of a generation, the headers one goes out with                                                                                                           |
+| `./artifact`   | Content addressing: `sha256`, canonical JSON, the key an artifact takes in storage, and the encodings a shell is held in                                                                                                                                                                                  |
+| `./request`    | What a request is, before anything renders: its class, the wire constants of Next.js 16.3 the edge must recognise, RSC and conditional headers, cookies, referrer policy, CSP for a spliced document, and the safety check a pattern from a build is held to                                              |
+| `./images`     | The `/_next/image` contract: the configuration as `images-manifest.json` has it, what a request may ask for, format negotiation, detection of what came back, and the headers it goes out with                                                                                                            |
+| `./manifest`   | The manifest of a project as an edge reads it — routes and their cache entries, header rules, dynamic matchers, reserved routes, asset policy, preload links — with its own `MANIFEST_SCHEMA_VERSION`, on which a reader that does not know the version refuses the manifest rather than serving it wrong |
+| `./deployment` | A deployment's fingerprint, and the build id read back out of a shell or a continuation                                                                                                                                                                                                                   |
+| `./paas`       | The seam between a host and an application (below)                                                                                                                                                                                                                                                        |
+| `./assets`     | Whether an asset may be treated as immutable, read from the `cache-control` the build wrote                                                                                                                                                                                                               |
+| `./cron`       | Cron expressions in the dialect Vercel's cron jobs accept — five UTC fields, no `@daily`, no `MON` — and the schema a project declares them with                                                                                                                                                          |
+| `./util`       | Bytes, streams, deadlines, ids, small LRUs, CRC32, HTML scanning                                                                                                                                                                                                                                          |
+
+## The seam with a host
+
+`./paas` is the only part that describes two parties talking. The protocol is headers, all prefixed
+`x-arkor-`, and both sides import the names rather than spelling them: what the edge asks of a
+Function (run only the middleware, resume this shell, regenerate this entry) and what the Function
+says back (which generation answered, what the cache did). `PLATFORM_REQUEST_HEADERS` is the whole
+list of the ones that tell the runtime what to do, which is what lets it strip every one of them
+before the application sees a request.
+
+Beside it are the two things a Function is handed rather than told: its own `env`, published where
+application code can reach it without it passing through `process.env`, and a project's storage
+bindings, which a host binds under the names their owner gave them and lists in one text binding
+that the runtime reads back.
+
+What is deliberately absent is any host's internals. There is nothing here about how a deployment is
+uploaded, where it runs, what it is reached through, or what stores its cache — that is the host's,
+and a package that named it would make every host the same one.
