@@ -45,6 +45,17 @@ const TAIL_LINES = 20;
 const TAGS = new Set(['beta', 'canary', 'latest', 'rc']);
 /** Where `next build` leaves what the adapter wrote. */
 const OUT_DIR = '.ppr-cdn';
+/**
+ * npm, as a name `execFile` can start. On Windows the executable on `PATH` is `npm.cmd`, which
+ * needs a shell — and a shell is what this deliberately does not use, since a version string read
+ * off a registry would then be going through one.
+ */
+const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+
+/** Next.js's own entry in an installed application: JavaScript, and so the same on every platform. */
+function nextBin(app: string): string {
+  return path.join(app, 'node_modules', 'next', 'dist', 'bin', 'next');
+}
 
 type Dependencies = Readonly<
   Record<
@@ -290,10 +301,11 @@ async function build(fixture: Fixture, version: string, keep: boolean): Promise<
     manifest.dependencies['next'] = version;
     await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
-    await run('npm', ['install', '--no-audit', '--no-fund'], app);
-    await run(path.join(app, 'node_modules', '.bin', 'next'), ['build'], app, {
-      NEXT_ADAPTER_PATH: ADAPTER,
-    });
+    await run(NPM, ['install', '--no-audit', '--no-fund'], app);
+    // Next.js's own entry under this Node, rather than the launcher npm wrote into `.bin`: that
+    // one is a shell script on Unix and a `.cmd` on Windows, and `execFile` runs neither without
+    // a shell. The file below is the same JavaScript both of them end up running.
+    await run(process.execPath, [nextBin(app), 'build'], app, { NEXT_ADAPTER_PATH: ADAPTER });
     return { fixture: fixture.name, version, problems: await checkOutput(fixture, app) };
   } catch (error) {
     return { fixture: fixture.name, version, problems: explain(error) };
