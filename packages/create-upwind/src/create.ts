@@ -48,6 +48,11 @@ const PLAIN = process.platform === 'win32' ? /^[\w+,.:=@\\-]+$/u : /^[\w+,./:=@-
  * arguments — and `cmd.exe` does not read the single quotes a POSIX shell does, so the quoting has
  * to be the one the platform uses. And a relative path that begins with `-` is read as options by
  * every shell there is, which `./` settles.
+ *
+ * One thing is left: `cmd.exe` expands `%NAME%` inside double quotes, and has no escape for it at
+ * the prompt. A directory with a percent sign in its name prints a line that reads as something
+ * else there — and as itself in PowerShell, which is what a Windows developer is more likely to be
+ * standing in.
  */
 function shellWord(value: string): string {
   const safe = value.startsWith('-') ? `./${value}` : value;

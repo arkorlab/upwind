@@ -51,14 +51,39 @@ export async function runBuild(options: BuildOptions): Promise<never> {
   const command = await nextCommand(options.projectDir);
   // The same Node that is running this, so the command is reached without a shebang, a PATH lookup or
   // a shell.
+  //
+  // The adapter goes in the environment the child inherits, where Next.js reads it as the default for
+  // `adapterPath`. A `next.config` that names one of its own still wins, by Next.js's own precedence.
+  // What this does *not* see is a `.env` file: Next.js loads those itself, inside the child, and
+  // leaves a variable the process already has alone — so an adapter named in `.env` is one this run
+  // overrides. Name it in `next.config` or in the environment, which are the two places that win.
   const child = spawn(process.execPath, [command, 'build', options.projectDir], {
     cwd: options.projectDir,
     env: { ...process.env, [ADAPTER_PATH_ENV]: adapter },
     stdio: 'inherit',
   });
-  // `events.once` rejects if the child emits `error` instead: a command that never started is a
-  // failure of this one.
-  const [code] = (await once(child, 'exit')) as [number | null, NodeJS.Signals | null];
-  // A build that ended on a signal chose no code of its own, and produced nothing: a failure.
-  process.exit(code ?? 1);
+  // A signal this process is sent is the build's too. Without this, a `kill` on `upwind build` would
+  // leave `next build` running — writing into `.next` and `.ppr-cdn` with nothing left waiting for
+  // it. The terminal's own Ctrl-C reaches both anyway; this is for everything else.
+  const forward = (signal: NodeJS.Signals): void => {
+    child.kill(signal);
+  };
+  const onInterrupt = (): void => {
+    forward('SIGINT');
+  };
+  const onTerminate = (): void => {
+    forward('SIGTERM');
+  };
+  process.on('SIGINT', onInterrupt);
+  process.on('SIGTERM', onTerminate);
+  try {
+    // `events.once` rejects if the child emits `error` instead: a command that never started is a
+    // failure of this one.
+    const [code] = (await once(child, 'exit')) as [number | null, NodeJS.Signals | null];
+    // A build that ended on a signal chose no code of its own, and produced nothing: a failure.
+    process.exit(code ?? 1);
+  } finally {
+    process.off('SIGINT', onInterrupt);
+    process.off('SIGTERM', onTerminate);
+  }
 }

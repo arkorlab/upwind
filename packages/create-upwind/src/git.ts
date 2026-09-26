@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { rm, stat } from 'node:fs/promises';
+import { lstat, rm } from 'node:fs/promises';
 import path from 'node:path';
 
 /**
@@ -30,10 +30,16 @@ async function insideRepository(cwd: string): Promise<boolean> {
   return (await git(['rev-parse', '--is-inside-work-tree'], cwd)) === 0;
 }
 
-/** Does the target already hold a checkout of its own? Then nothing here is this program's. */
-async function hasGitDirectory(target: string): Promise<boolean> {
+/**
+ * Does the target already hold a checkout of its own? Then nothing here is this program's.
+ *
+ * `lstat`, not `stat`: a `.git` that is a symlink — dangling, or pointing at a repository somewhere
+ * else — is still an entry this program did not put there. Following it would answer "nothing here"
+ * for a broken one, and `git init` would then write through it, into a directory nobody named.
+ */
+async function hasGitEntry(target: string): Promise<boolean> {
   try {
-    await stat(path.join(target, '.git'));
+    await lstat(path.join(target, '.git'));
     return true;
   } catch {
     return false;
@@ -46,7 +52,7 @@ export async function initRepository(target: string): Promise<boolean> {
   // about it. `rev-parse` can refuse a repository it will not touch — a checkout owned by another
   // user is the usual one — and an `init` after that answer would re-initialize the repository this
   // program would then delete in its own cleanup, remotes, config, history and all.
-  if ((await hasGitDirectory(target)) || (await insideRepository(target))) {
+  if ((await hasGitEntry(target)) || (await insideRepository(target))) {
     return false;
   }
   if ((await git(['init', '-b', 'main'], target)) !== 0) {
