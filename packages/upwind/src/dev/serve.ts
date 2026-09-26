@@ -76,6 +76,7 @@ type Phase = 'starting' | 'running' | 'stopping';
 export async function serveDev(options: DevOptions): Promise<void> {
   const devSession = createSession({
     projectDir: options.projectDir,
+    hostname: options.hostname,
     upwindVersion: await ownVersion(),
   });
   devSession.adapterPath = installAdapterPath(options.projectDir);

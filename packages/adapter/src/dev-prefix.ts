@@ -1,4 +1,8 @@
-import { UPWIND_DEV_ADDRESS_ENV, UPWIND_INTERNAL_PREFIX } from '@stayingupwind/core/paas';
+import {
+  isUpwindInternalPath,
+  UPWIND_DEV_ADDRESS_ENV,
+  UPWIND_INTERNAL_PREFIX,
+} from '@stayingupwind/core/paas';
 import type { NextAdapter } from 'next';
 
 /**
@@ -70,7 +74,43 @@ function originOf(address: string): string {
       `@stayingupwind/adapter: ${UPWIND_DEV_ADDRESS_ENV} has to be an origin and nothing more, so no path, query or fragment: ${JSON.stringify(address)}`,
     );
   }
+  // An IPv6 literal is not something a rewrite destination can carry: Next.js compiles one with
+  // path-to-regexp, which reads the colons as parameter names, and what that breaks is the route
+  // resolution of every request rather than this line. `upwind dev` never writes one — a hand-set
+  // value can, and is told here instead.
+  if (url.hostname.includes(':')) {
+    throw new Error(
+      `@stayingupwind/adapter: ${UPWIND_DEV_ADDRESS_ENV} cannot be an IPv6 address, because Next.js cannot compile one into a rewrite: ${JSON.stringify(address)}`,
+    );
+  }
   return url.origin;
+}
+
+/**
+ * A rule of the project's own, with a destination that names this prefix pointed at the front door.
+ *
+ * This is what closes the one hole a reservation cannot: a rule that *produces* the prefix, whose
+ * result Next.js resolves without re-entering any rewrite phase, and which a dynamic route of the
+ * project's would then claim. Rules come from the config, dynamic routes come from the build, and
+ * nothing can be put in front of the latter — so the destination is changed where it is written
+ * instead, which is also where the project said what it meant: send this to `/__upwind`.
+ *
+ * Only a destination that starts with `/`. One that names a host is already someone's else's to
+ * answer, and not Next.js's routing to intercept.
+ */
+function pointAtFrontDoor(rule: RewriteRule, origin: string): RewriteRule {
+  const { destination } = rule;
+  if (!destination.startsWith('/')) {
+    return rule;
+  }
+  // The path alone decides; a query or a fragment travels with it untouched.
+  const cut = destination.search(/[?#]/u);
+  const [pathname, rest] =
+    cut === -1 ? [destination, ''] : [destination.slice(0, cut), destination.slice(cut)];
+  if (!isUpwindInternalPath(pathname)) {
+    return rule;
+  }
+  return { ...rule, destination: `${origin}${pathname}${rest}` };
 }
 
 /** The prefix itself, and everything under it. Both, because one rule cannot say both. */
@@ -111,11 +151,13 @@ export function reserveUpwindPrefix(rewrites: RewritesFn | undefined): RewritesF
         fallback: reservation(origin),
       };
     }
+    const own = (rules: RewriteRule[] | undefined): RewriteRule[] =>
+      (rules ?? []).map((rule) => pointAtFrontDoor(rule, origin));
     if (Array.isArray(declared)) {
       // An array is `afterFiles` to Next.js, and stays one here.
       return {
         beforeFiles: reservation(origin),
-        afterFiles: [...reservation(origin), ...declared],
+        afterFiles: [...reservation(origin), ...own(declared)],
         fallback: reservation(origin),
       };
     }
@@ -124,24 +166,22 @@ export function reserveUpwindPrefix(rewrites: RewritesFn | undefined): RewritesF
       // came keeps that message about the project's own declaration.
       return declared;
     }
-    // At the head of all three phases, because a rewrite of the project's own may *produce* this
-    // prefix and Next.js re-enters no phase for a path it has just rewritten. `beforeFiles` catches the
-    // prefix as it arrives; `afterFiles` catches what `beforeFiles` produced, ahead of the dynamic
-    // routes where a catch-all would answer; `fallback` catches what `afterFiles` produced, for a
-    // project that has no dynamic route to claim it first.
+    // Two things at once. The reservation goes at the head of all three phases, so the prefix is taken
+    // wherever a request carrying it enters Next.js's routing. And every rule of the project's own that
+    // *sends* something to the prefix is pointed at the front door instead (`pointAtFrontDoor`), since
+    // Next.js re-enters no phase for a path it has just rewritten and a dynamic route of the project's
+    // would otherwise claim it.
     //
-    // Two cases are past reach, and are named here rather than papered over. One is a rule of the
-    // project's own that produces this prefix *and* a dynamic route that matches the result: the dynamic
-    // routes come from the build rather than from the config, so no rule can be put in front of them.
-    // The other is an escaped spelling — `/%5F%5Fupwind` — produced inside Next.js, since a rewrite's
-    // `source` is matched against the raw pathname and the spellings of an escape are unbounded. The
-    // front door decodes, so nothing a *client* sends reaches the application under this prefix; what
-    // remains is a project rewriting to its own escaped form of it, which is the project's to mean.
+    // One case is left, and is named here rather than papered over: an escaped spelling —
+    // `/%5F%5Fupwind` — produced inside Next.js. A rewrite's `source` is matched against the raw
+    // pathname, and the spellings of an escape are unbounded, so no set of rules covers them. The front
+    // door decodes, so nothing a *client* sends reaches the application under this prefix; what remains
+    // is a project rewriting to its own escaped form of it, which is the project's to mean.
     return {
       ...declared,
-      beforeFiles: [...reservation(origin), ...(declared.beforeFiles ?? [])],
-      afterFiles: [...reservation(origin), ...(declared.afterFiles ?? [])],
-      fallback: [...reservation(origin), ...(declared.fallback ?? [])],
+      beforeFiles: [...reservation(origin), ...own(declared.beforeFiles)],
+      afterFiles: [...reservation(origin), ...own(declared.afterFiles)],
+      fallback: [...reservation(origin), ...own(declared.fallback)],
     };
   };
 }

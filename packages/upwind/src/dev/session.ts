@@ -15,6 +15,13 @@
 export interface DevSession {
   /** The application's directory: what `next dev [dir]` would have been given. */
   readonly projectDir: string;
+  /**
+   * The hostname this run was asked to bind, when it was asked for one.
+   *
+   * A name the developer chose, which is why `/__upwind` answers under it as well as under this
+   * machine's own names (`internal/host.ts`).
+   */
+  readonly hostname: string | undefined;
   /** When the run began, as a moment in time, for the report to name it. */
   readonly startedAt: number;
   /** When the run began, on the monotonic clock every duration here is measured against. */
@@ -36,10 +43,12 @@ export interface DevSession {
 
 export function createSession(options: {
   readonly projectDir: string;
+  readonly hostname: string | undefined;
   readonly upwindVersion: string | undefined;
 }): DevSession {
   return {
     projectDir: options.projectDir,
+    hostname: options.hostname,
     startedAt: Date.now(),
     startedTick: performance.now(),
     upwindVersion: options.upwindVersion,
