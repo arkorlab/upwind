@@ -74,11 +74,11 @@ function watchNothing(): void {
 /**
  * How many links are followed before a chain is taken for a loop.
  *
- * The largest bound any platform here resolves to: Linux's `MAXSYMLINKS` is 40, macOS's and
- * Windows's are lower. Matching the highest of them is what makes this bound only ever a guard
- * against a loop — a chain the operating system itself would open is never one this stops short of
- * and leaves watching a link instead of the config file it ends at. Anything longer is a loop, or
- * a chain no platform would resolve either.
+ * Forty, which is what Linux resolves (`MAXSYMLINKS`) and enough for any chain a project has. What
+ * this bound is for is the loop: a link that points at itself, directly or around a ring, is followed
+ * until something stops it, and nothing else here would. A chain longer than this is left where the
+ * walk reached — the links collected so far are watched, so a config behind one is not unwatched, only
+ * watched a step short of where it ends.
  */
 const MAX_LINK_FOLLOWS = 40;
 
