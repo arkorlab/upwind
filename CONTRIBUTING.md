@@ -131,6 +131,6 @@ By contributing, you agree that your contributions will be published under this 
 [NOTICE](NOTICE) that Apache 2.0 asks be passed along. Opening a pull request is deemed to
 constitute this agreement.
 
-The license may change in the future, including to a non-open-source license. By opening a pull
-request, you are also deemed to have agreed that your contributions may be published under any such
-changed license.
+What a later release is licensed under may change. This file does not ask you to agree to that in
+advance: what you grant by opening a pull request is the two licenses above, and nothing beyond
+them.
