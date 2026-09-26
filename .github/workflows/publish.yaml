@@ -188,8 +188,9 @@ jobs:
     needs: publish
     if: ${{ !inputs.dry-run }}
     runs-on: ubuntu-latest
-    # Three packages, each given the ten minutes the comment below explains, and room to say so.
-    timeout-minutes: 35
+    # Every publishable package is read back in turn, each given the ten minutes the comment below
+    # explains: five of them now, and room to say so. A package added to `packages/` adds ten here.
+    timeout-minutes: 55
     permissions:
       contents: read
     steps:
@@ -216,7 +217,7 @@ jobs:
             name="$(node -p "require('./${manifest}').name")"
             predicate=''
             # Give the registry time to agree with itself. It needs more than it sounds like: on the
-            # first release, two of the three packages were readable at once and the third answered
+            # first release, two of the three packages then published were readable at once and the third answered
             # 404 for its whole document for nine minutes — while its attestation endpoint was
             # already serving. So this waits ten, and the failure below means what it says.
             for _ in $(seq 20); do

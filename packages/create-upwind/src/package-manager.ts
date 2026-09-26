@@ -49,7 +49,7 @@ export async function install(manager: PackageManager, cwd: string): Promise<voi
   }
 }
 
-/** The two that have a command of their own where a script's name would go. */
+/** The two the bare word does not reach a project script through. */
 const NEEDS_RUN: ReadonlySet<PackageManager> = new Set<PackageManager>(['bun', 'npm']);
 
 /**

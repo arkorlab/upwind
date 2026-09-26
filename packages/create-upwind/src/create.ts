@@ -49,10 +49,12 @@ const PLAIN = process.platform === 'win32' ? /^[\w+,.:=@\\-]+$/u : /^[\w+,./:=@-
  * to be the one the platform uses. And a relative path that begins with `-` is read as options by
  * every shell there is, which `./` settles.
  *
- * One thing is left: `cmd.exe` expands `%NAME%` inside double quotes, and has no escape for it at
- * the prompt. A directory with a percent sign in its name prints a line that reads as something
- * else there — and as itself in PowerShell, which is what a Windows developer is more likely to be
- * standing in.
+ * Two things are left, and both are `cmd.exe`'s alone. It expands `%NAME%` inside double quotes and
+ * has no escape for it at the prompt, so a directory with a percent sign in its name prints a line
+ * that reads as something else there. And a target on another drive needs `cd /d` there, which is
+ * not a `cd` PowerShell accepts. Both read correctly in PowerShell, which is where a Windows
+ * developer is more likely to be standing, and the alternative would be a line that is wrong in the
+ * other shell instead.
  */
 function shellWord(value: string): string {
   const safe = value.startsWith('-') ? `./${value}` : value;

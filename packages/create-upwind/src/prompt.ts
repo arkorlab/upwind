@@ -22,6 +22,21 @@ async function untilClosed(rl: Interface): Promise<string> {
   return NO_ANSWER;
 }
 
+/**
+ * The answer, or none.
+ *
+ * Ctrl-D does not answer the question, it abandons it: Node rejects the promise with an
+ * `AbortError` — "Aborted with Ctrl+D" — rather than resolving it with nothing. Caught here, because
+ * an input that has ended has no more answers to give, and the one this asks for has a default.
+ */
+async function askOnce(rl: Interface, prompt: string): Promise<string> {
+  try {
+    return await rl.question(prompt);
+  } catch {
+    return NO_ANSWER;
+  }
+}
+
 export async function askDirectory(fallback: string): Promise<string> {
   if (!process.stdin.isTTY) {
     return fallback;
@@ -30,11 +45,12 @@ export async function askDirectory(fallback: string): Promise<string> {
   // `using` is not erasable syntax, and the lib this is typed against has no `Symbol.dispose`.
   // eslint-disable-next-line unicorn/prefer-dispose -- see above
   try {
-    // Ctrl-D closes the input without answering, and the question it was asked would then never
-    // settle: the process would end having said nothing and written nothing. Racing the close makes
-    // an end-of-file mean what an empty line means.
+    // An input that ends means the default, whichever way it ends: `askOnce` catches the rejection
+    // Ctrl-D raises, and the race catches a close that leaves the question unanswered and
+    // unrejected. Either way this returns, because a scaffolder that ends having written nothing is
+    // not an answer to `pnpm create upwind`.
     const answer = await Promise.race([
-      rl.question(`Where should the application go? (${fallback}) `),
+      askOnce(rl, `Where should the application go? (${fallback}) `),
       untilClosed(rl),
     ]);
     const trimmed = answer.trim();
