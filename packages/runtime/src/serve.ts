@@ -1,5 +1,9 @@
 import type { Prerender } from '@stayingupwind/core/bundle';
-import { anyConditionHolds, NULL_BODY_STATUSES } from '@stayingupwind/core/request';
+import {
+  anyConditionHolds,
+  dropPlatformHeaders,
+  NULL_BODY_STATUSES,
+} from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
 import type { NodeHandler } from './app-module.ts';
@@ -144,6 +148,8 @@ export function plainNotFoundResponse(): Response {
 }
 
 export function prerenderHeaders(prerender: Prerender, contentType: string): Headers {
+  // What the build recorded is what the application answered at build time, the platform's prefix
+  // included if it wrote one: not what a host may read there (`dropPlatformHeaders`).
   const headers = new Headers();
   const initial = Object.entries(prerender.initialHeaders ?? {});
   for (const [name, value] of initial) {
@@ -156,12 +162,12 @@ export function prerenderHeaders(prerender: Prerender, contentType: string): Hea
     }
   }
   headers.set('content-type', contentType);
-  return headers;
+  return dropPlatformHeaders(headers);
 }
 
 /** The headers a document is served with: what the render recorded, minus the resume marker. */
 export function documentHeaders(recorded: Readonly<Record<string, string>>): Headers {
-  const headers = new Headers(recorded);
+  const headers = dropPlatformHeaders(new Headers(recorded));
   headers.delete(POSTPONED_HEADER);
   headers.set('content-type', HTML_CONTENT_TYPE);
   headers.set('cache-control', 'private, no-store');

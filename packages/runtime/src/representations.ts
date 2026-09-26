@@ -1,5 +1,5 @@
 import { SHARED_ANSWER_CACHE_CONTROL, SHARED_ANSWER_HEADER } from '@stayingupwind/core/paas';
-import { filterStoredResponseHeaders } from '@stayingupwind/core/request';
+import { dropPlatformHeaders, filterStoredResponseHeaders } from '@stayingupwind/core/request';
 
 import { documentHeaders, POSTPONED_HEADER, PRERENDER_HEADER, RSC_CONTENT_TYPE } from './serve.ts';
 import type { Store } from './store.ts';
@@ -46,11 +46,13 @@ function outputHeaders(
   partial: boolean,
   validator: string | undefined,
 ): Headers {
-  const headers = new Headers(
+  // Whatever the application wrote under the platform's prefix is not what a host may read there;
+  // what this function sets below is.
+  const answered =
     representation === ROUTE_BODY
       ? filterStoredResponseHeaders(Object.entries(recorded))
-      : recorded,
-  );
+      : recorded;
+  const headers = dropPlatformHeaders(new Headers(answered));
   headers.set('content-type', contentTypeOf(representation, recorded));
   if (representation === ROUTE_BODY && validator !== undefined) {
     headers.set('cache-control', SHARED_ANSWER_CACHE_CONTROL);

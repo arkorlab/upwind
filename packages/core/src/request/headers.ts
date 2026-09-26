@@ -169,6 +169,29 @@ function hiddenFromPassthrough(name: string): boolean {
 }
 
 /**
+ * Take the platform's own headers off a response the application wrote.
+ *
+ * What a runtime says to its host on a response — which answer may be shared, what the cache did —
+ * is the runtime's to say, and a host that reads it has to be able to trust it. An application can
+ * write any header it likes, so anything under the prefix is dropped wherever the application's own
+ * headers are what a request is answered with: a render, a handler's stream, or the headers a build
+ * recorded. What the runtime sets afterwards is then the only thing under that prefix.
+ */
+export function dropPlatformHeaders(headers: Headers): Headers {
+  // Collected before any is deleted: a header list is not to be edited while it is being read.
+  const platform: string[] = [];
+  for (const name of headers.keys()) {
+    if (name.startsWith(PLATFORM_HEADER_PREFIX)) {
+      platform.push(name);
+    }
+  }
+  for (const name of platform) {
+    headers.delete(name);
+  }
+  return headers;
+}
+
+/**
  * Copy proxied response headers, dropping the ones a proxy may not replay and scoping cookies to
  * the host the client used.
  *
