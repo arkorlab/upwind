@@ -11,7 +11,7 @@ import { type Patch, Rewrite } from './types.ts';
  * is decoded.
  *
  * The timers of such a group are handed to the runtime's scheduler instead
- * (`Symbol.for('arkor.task-timer')`, `packages/next-runtime/src/tasks.ts`), which runs each
+ * (`Symbol.for('arkor.task-timer')`, `packages/runtime/src/tasks.ts`), which runs each
  * once the immediates scheduled before it — those they scheduled included — have run. Where
  * the runtime installs none (`next build` itself, under Node.js), `setTimeout` stays.
  *
