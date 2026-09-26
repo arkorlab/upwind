@@ -244,7 +244,12 @@ export async function serveDev(options: DevOptions): Promise<void> {
     // `cli.ts` ends the process the moment this throw reaches it — so without this the answers this
     // promised would be the reset connections it promised they would not be. `close` comes once they are
     // out; the wait is bounded, for a connection holding itself open with nothing to say.
-    await Promise.race([once(server, 'close'), delay(DRAIN_MS)]);
+    try {
+      await Promise.race([once(server, 'close'), delay(DRAIN_MS)]);
+    } catch {
+      // `events.once` rejects if the server has something to say while this waits, and whatever that
+      // is, it is not the failure being reported — nor a reason to leave the sockets open.
+    }
     server.closeAllConnections();
     throw error;
   }
