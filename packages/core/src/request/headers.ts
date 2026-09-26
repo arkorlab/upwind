@@ -169,24 +169,50 @@ function hiddenFromPassthrough(name: string): boolean {
 }
 
 /**
- * The pieces of the platform's own headers, taken before any application code can replace them.
+ * The pieces the platform's own trust boundary is built out of, taken before any application code
+ * can replace them.
  *
- * A Function's application shares this realm, and is evaluated before the entry's own body runs:
- * it can put its own `delete` on `Headers.prototype`, or hide a name from `entries`, and a check
- * made through those would pass while nothing was taken off. These are read as this module is
- * evaluated, which `environment.ts` names ahead of the application for exactly this reason, so what
- * is used below is the runtime's own however the application is written afterwards.
+ * A Function's application shares this realm and is evaluated before the entry's own body runs: it
+ * can put its own `delete` on `Headers.prototype`, hide a name from `entries`, answer `false` from
+ * `String.prototype.startsWith`, or hand back something else entirely from `Response`. A boundary
+ * that dispatched through any of those would pass while nothing was taken off.
+ *
+ * `captureHostIntrinsics` is called by the runtime before it names the application's module — a call
+ * rather than this module's mere evaluation, since a bundler that believes this package has no side
+ * effects may drop an import nothing reads from. What it takes is what everything below uses, so the
+ * boundary holds however the application is written afterwards.
  */
-/* eslint-disable @typescript-eslint/unbound-method -- taking the method off the prototype is the
-   point: each is called with `.call` on the header list it is for, and what is wanted is the one
-   the platform read here rather than whatever the object carries by then. */
-const intrinsic = {
+/* eslint-disable @typescript-eslint/unbound-method -- taking each method off its prototype is the
+   point: it is called with `.call` on the object it is for, and what is wanted is the one the
+   platform read here rather than whatever that object carries by then. */
+const intrinsic: {
+  Headers: typeof Headers;
+  Response: typeof Response;
+  entries: typeof Headers.prototype.entries;
+  append: typeof Headers.prototype.append;
+  set: typeof Headers.prototype.set;
+  delete: typeof Headers.prototype.delete;
+  startsWith: typeof String.prototype.startsWith;
+} = {
   Headers,
   Response,
   entries: Headers.prototype.entries,
   append: Headers.prototype.append,
   set: Headers.prototype.set,
-} as const;
+  delete: Headers.prototype.delete,
+  startsWith: String.prototype.startsWith,
+};
+
+/** Take them again, from wherever this is called: before the application is evaluated. */
+export function captureHostIntrinsics(): void {
+  intrinsic.Headers = Headers;
+  intrinsic.Response = Response;
+  intrinsic.entries = Headers.prototype.entries;
+  intrinsic.append = Headers.prototype.append;
+  intrinsic.set = Headers.prototype.set;
+  intrinsic.delete = Headers.prototype.delete;
+  intrinsic.startsWith = String.prototype.startsWith;
+}
 /* eslint-enable @typescript-eslint/unbound-method */
 
 const HTTP_LOWEST_STATUS = 200;
@@ -197,25 +223,57 @@ function rebuildable(status: number): boolean {
   return status >= HTTP_LOWEST_STATUS && status <= HTTP_HIGHEST_STATUS;
 }
 
+function platform(name: string): boolean {
+  return intrinsic.startsWith.call(name, PLATFORM_HEADER_PREFIX);
+}
+
+/** The names a header list carries under the platform's prefix, read before any is taken off. */
+function platformNames(headers: Headers): string[] {
+  const named: string[] = [];
+  for (const [name] of intrinsic.entries.call(headers)) {
+    if (platform(name)) {
+      named.push(name);
+    }
+  }
+  return named;
+}
+
 /**
  * The answer as it leaves a runtime: nothing of the application's under the platform's prefix, and
  * `said` — what the runtime has to say to its host about this answer — in its place.
  *
- * Rebuilt rather than edited: a response handed back by a call holds its headers immutable, and an
- * application may have replaced the methods that would edit them. A status outside 200–599 is a
- * protocol switch or an error response, which cannot be rebuilt around and which no host reads a
- * caching decision off; those are left as they came.
+ * Edited where the answer allows it, which is what a response the runtime made itself allows, and
+ * what leaves everything a `Response` does not carry over — a `webSocket`, the manual encoding an
+ * already-compressed body was answered under — exactly as it was. A response handed back by a call
+ * holds its headers immutable, and only that one is rebuilt; a status outside 200–599 cannot be
+ * rebuilt around at all, and is left as it came, being a protocol switch or an error that no host
+ * reads a caching decision off.
  *
- * `set-cookie` survives as the several headers it is: a header list yields each of those on its own,
- * and each is appended as its own again.
+ * `set-cookie` survives a rebuild as the several headers it is: a header list yields each of those
+ * on its own, and each is appended as its own again.
  */
 export function settledForHost(answered: Response, said: ReadonlyMap<string, string>): Response {
-  if (!rebuildable(answered.status)) {
+  const named = platformNames(answered.headers);
+  if (named.length === 0 && said.size === 0) {
     return answered;
   }
+  try {
+    for (const name of named) {
+      intrinsic.delete.call(answered.headers, name);
+    }
+    for (const [name, value] of said) {
+      intrinsic.set.call(answered.headers, name, value);
+    }
+    return answered;
+  } catch {
+    return rebuildable(answered.status) ? rebuiltForHost(answered, said) : answered;
+  }
+}
+
+function rebuiltForHost(answered: Response, said: ReadonlyMap<string, string>): Response {
   const kept = new intrinsic.Headers();
   for (const [name, value] of intrinsic.entries.call(answered.headers)) {
-    if (!name.startsWith(PLATFORM_HEADER_PREFIX)) {
+    if (!platform(name)) {
       intrinsic.append.call(kept, name, value);
     }
   }
@@ -227,6 +285,11 @@ export function settledForHost(answered: Response, said: ReadonlyMap<string, str
     statusText: answered.statusText,
     headers: kept,
   });
+}
+
+/** A response the platform answers with itself, built out of what no application can replace. */
+export function hostResponse(body: string | null, status: number): Response {
+  return new intrinsic.Response(body, { status });
 }
 
 /**

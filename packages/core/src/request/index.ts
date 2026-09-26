@@ -42,6 +42,8 @@ export {
   type ForwardingContext,
   rendersInline,
   type PassthroughResponseContext,
+  captureHostIntrinsics,
+  hostResponse,
   rewritePassthroughResponseHeaders,
   settledForHost,
   sanitizeContinuationHeaders,
