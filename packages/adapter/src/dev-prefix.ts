@@ -102,13 +102,22 @@ export function reserveUpwindPrefix(rewrites: RewritesFn | undefined): RewritesF
   const origin = originOf(address);
   return async (): Promise<Rewrites> => {
     const declared = await rewrites?.();
-    const rules = reservation(origin);
+    // A list of its own per phase, rules included: three keys holding one array — or one rule object —
+    // would be three places a single edit downstream could turn up in.
     if (declared === undefined) {
-      return { beforeFiles: rules, afterFiles: rules, fallback: rules };
+      return {
+        beforeFiles: reservation(origin),
+        afterFiles: reservation(origin),
+        fallback: reservation(origin),
+      };
     }
     if (Array.isArray(declared)) {
       // An array is `afterFiles` to Next.js, and stays one here.
-      return { beforeFiles: rules, afterFiles: [...rules, ...declared], fallback: rules };
+      return {
+        beforeFiles: reservation(origin),
+        afterFiles: [...reservation(origin), ...declared],
+        fallback: reservation(origin),
+      };
     }
     if (!isRewriteLists(declared)) {
       // Next.js will refuse this shape and name the key that made it do so. Handing it back as it
@@ -121,16 +130,18 @@ export function reserveUpwindPrefix(rewrites: RewritesFn | undefined): RewritesF
     // routes where a catch-all would answer; `fallback` catches what `afterFiles` produced, for a
     // project that has no dynamic route to claim it first.
     //
-    // One case is past reach, and is named here rather than papered over: a rule of the project's own
-    // that produces this prefix *and* a dynamic route that matches the result. The dynamic routes come
-    // from the build rather than from the config, so no rule can be put in front of them, and the front
-    // door never sees a request that was rewritten inside Next.js. Such a path is resolved as the
-    // project's own — which is where the project sent it.
+    // Two cases are past reach, and are named here rather than papered over. One is a rule of the
+    // project's own that produces this prefix *and* a dynamic route that matches the result: the dynamic
+    // routes come from the build rather than from the config, so no rule can be put in front of them.
+    // The other is an escaped spelling — `/%5F%5Fupwind` — produced inside Next.js, since a rewrite's
+    // `source` is matched against the raw pathname and the spellings of an escape are unbounded. The
+    // front door decodes, so nothing a *client* sends reaches the application under this prefix; what
+    // remains is a project rewriting to its own escaped form of it, which is the project's to mean.
     return {
       ...declared,
-      beforeFiles: [...rules, ...(declared.beforeFiles ?? [])],
-      afterFiles: [...rules, ...(declared.afterFiles ?? [])],
-      fallback: [...rules, ...(declared.fallback ?? [])],
+      beforeFiles: [...reservation(origin), ...(declared.beforeFiles ?? [])],
+      afterFiles: [...reservation(origin), ...(declared.afterFiles ?? [])],
+      fallback: [...reservation(origin), ...(declared.fallback ?? [])],
     };
   };
 }

@@ -18,6 +18,16 @@ import { restart } from './restart.ts';
  * export map, and the copy that matters is the project's.
  */
 
+/**
+ * How long the names are left alone before a change counts.
+ *
+ * An editor that writes in place truncates the file and then writes it, and the first of those is a
+ * change event for a file that is momentarily empty. Restarting on it would hand the replacement a
+ * config it cannot parse, which ends the run instead of restarting it — so the last event wins, once
+ * nothing has followed it.
+ */
+const SETTLE_MS = 150;
+
 /** `CONFIG_FILES` in `next/dist/shared/lib/constants.ts`, as that module hands it over. */
 async function nextConfigFiles(projectDir: string): Promise<readonly string[] | undefined> {
   const entry = resolveFromProject(projectDir, 'next/constants.js');
@@ -43,13 +53,21 @@ function lostWatch(projectDir: string, error: unknown): string {
   return `upwind: cannot watch ${projectDir} for config changes, so a change to next.config will not restart this server (${reason})`;
 }
 
-export async function watchConfigFiles(projectDir: string): Promise<void> {
+/** Stop watching: what a run calls when it is shutting down and a change is no longer its business. */
+export type StopWatching = () => void;
+
+/** For a run that has no watch to stop, so every caller has something to call. */
+function watchNothing(): void {
+  // There was never a watcher.
+}
+
+export async function watchConfigFiles(projectDir: string): Promise<StopWatching> {
   const names = await nextConfigFiles(projectDir);
   if (names === undefined) {
     console.warn(
       'upwind: could not read the config file names from Next.js, so a change to next.config will not restart this server',
     );
-    return;
+    return watchNothing;
   }
   // The *directory* is watched, not the files: only one of those names exists in a project, another
   // may be written while the server runs, and `fs.watch` on a path that is not there yet fails. One
@@ -59,16 +77,21 @@ export async function watchConfigFiles(projectDir: string): Promise<void> {
   // out of inotify watches refuses with `ENOSPC` — or lost later: a dev server that stops restarting
   // on a config change is still a dev server, and taking one down over this would be the worse
   // failure.
+  let settling: NodeJS.Timeout | undefined;
   let watcher;
   try {
     watcher = watch(projectDir, (_event, filename) => {
-      if (filename !== null && names.includes(filename)) {
-        restart(`${filename} changed`);
+      if (filename === null || !names.includes(filename)) {
+        return;
       }
+      clearTimeout(settling);
+      settling = setTimeout(() => {
+        restart(`${filename} changed`);
+      }, SETTLE_MS);
     });
   } catch (error) {
     console.warn(lostWatch(projectDir, error));
-    return;
+    return watchNothing;
   }
   watcher.on('error', (error: unknown) => {
     // Said rather than swallowed: a watch that dies mid-run stops restarting this server, and a
@@ -76,5 +99,8 @@ export async function watchConfigFiles(projectDir: string): Promise<void> {
     console.warn(lostWatch(projectDir, error));
     watcher.close();
   });
-  watcher.unref();
+  return () => {
+    clearTimeout(settling);
+    watcher.close();
+  };
 }

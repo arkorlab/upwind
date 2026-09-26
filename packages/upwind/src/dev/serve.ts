@@ -11,9 +11,10 @@ import { ownVersion } from '../manifest.ts';
 import { installAdapterPath } from './adapter.ts';
 import { displayAddress, internalAddress } from './address.ts';
 import { printListening, printReady } from './banner.ts';
-import { watchConfigFiles } from './config-watch.ts';
+import { type StopWatching, watchConfigFiles } from './config-watch.ts';
 import { listen } from './listen.ts';
 import { type NextHandler, type RunningNext, startNextApp } from './next-app.ts';
+import { reachable } from './probe.ts';
 import { createSession } from './session.ts';
 
 /**
@@ -134,17 +135,20 @@ export async function serveDev(options: DevOptions): Promise<void> {
   // leaves the reservation unmade rather than pointing it somewhere that will not parse; the front
   // door answers the prefix either way.
   const internal = internalAddress(bound);
-  if (internal === undefined) {
+  // Opened rather than assumed: `internalAddress` answers IPv4 loopback for a wildcard socket because
+  // that is what a rewrite destination can spell, and on a host that is not dual-stack the socket is
+  // not there. A connection to it settles that in a millisecond.
+  if (internal !== undefined && (await reachable(internal))) {
+    process.env[UPWIND_DEV_ADDRESS_ENV] = internal;
+  } else {
     // Removed, not merely left unset: an inherited value names some other run's front door, and the
     // adapter would reserve the prefix for a server that is not this one. `Reflect` because the name
     // is a constant this imports rather than a literal, and assigning `undefined` to `process.env`
     // would set the string.
     Reflect.deleteProperty(process.env, UPWIND_DEV_ADDRESS_ENV);
     console.warn(
-      `upwind: this socket's address cannot be named in a Next.js rewrite, so nothing reserves ${UPWIND_INTERNAL_PREFIX} inside Next.js's own routing — this server still answers it first`,
+      `upwind: no address of this socket can be named in a Next.js rewrite, so nothing reserves ${UPWIND_INTERNAL_PREFIX} inside Next.js's own routing — this server still answers it first`,
     );
-  } else {
-    process.env[UPWIND_DEV_ADDRESS_ENV] = internal;
   }
   printListening(devSession);
 
@@ -172,11 +176,12 @@ export async function serveDev(options: DevOptions): Promise<void> {
   process.on('SIGTERM', onStop);
 
   let app: RunningNext;
+  let stopWatching: StopWatching;
   try {
     // Before Next.js is started, not after: `prepare()` reads `next.config` and can take seconds, and
     // a config written during those seconds would otherwise be one this run never hears about — it
     // would serve the old config until something changed again.
-    await watchConfigFiles(options.projectDir);
+    stopWatching = await watchConfigFiles(options.projectDir);
     app = await startNextApp({
       projectDir: options.projectDir,
       hostname: options.hostname,
@@ -199,6 +204,9 @@ export async function serveDev(options: DevOptions): Promise<void> {
   printReady(devSession);
 
   await stop.promise;
+  // A config change is no longer this run's business: the developer asked it to stop, and a restart
+  // would start again the server they stopped.
+  stopWatching();
   server.close();
   // A keep-alive connection would otherwise hold the close open for as long as a browser felt like.
   server.closeAllConnections();
