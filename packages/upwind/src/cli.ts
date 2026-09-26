@@ -55,13 +55,26 @@ function orFail<T>(parse: () => T): T {
   }
 }
 
+/**
+ * The arguments that are still options: everything up to `--`.
+ *
+ * After that delimiter a word is a positional, whatever it is spelled like — which is how a
+ * directory named `--help` is named. A scan that read the whole line would answer with the usage
+ * and leave the directory unbuilt.
+ */
+function beforeTerminator(argv: readonly string[]): readonly string[] {
+  const terminator = argv.indexOf('--');
+  return terminator === -1 ? argv : argv.slice(0, terminator);
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
-  if (argv.length === 0 || argv.includes('--help') || argv.includes('-h')) {
+  const flags = beforeTerminator(argv);
+  if (argv.length === 0 || flags.includes('--help') || flags.includes('-h')) {
     console.log(USAGE);
     return;
   }
-  if (argv.includes('--version') || argv.includes('-v')) {
+  if (flags.includes('--version') || flags.includes('-v')) {
     console.log((await ownVersion()) ?? 'unknown');
     return;
   }
