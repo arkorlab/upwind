@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { parseDevOptions } from './args.ts';
+import { type DevRequest, parseDevRequest } from './args.ts';
 import { serveDev } from './dev/serve.ts';
 import { supervise, WORKER_ENV } from './dev/supervise.ts';
 import { ownVersion } from './manifest.ts';
@@ -11,6 +11,10 @@ import { ownVersion } from './manifest.ts';
  * again whenever the child asks to be restarted. Run by that supervisor — `UPWIND_DEV_WORKER` set —
  * it is the server. `supervise.ts` says why a restart has to be a new process.
  */
+
+/** What answers for itself before a command names one. */
+const HELP_FLAGS: ReadonlySet<string> = new Set(['--help', '-h']);
+const VERSION_FLAGS: ReadonlySet<string> = new Set(['--version', '-v']);
 
 const USAGE = `upwind — the front door of a Next.js development server
 
@@ -35,32 +39,45 @@ function fail(message: string, withUsage: boolean): never {
   process.exit(1);
 }
 
-async function main(): Promise<void> {
-  const argv = process.argv.slice(2);
-  if (argv.length === 0 || argv.includes('--help') || argv.includes('-h')) {
+async function answer(what: 'help' | 'version'): Promise<void> {
+  if (what === 'help') {
     console.log(USAGE);
     return;
   }
-  if (argv.includes('--version') || argv.includes('-v')) {
-    console.log((await ownVersion()) ?? 'unknown');
+  console.log((await ownVersion()) ?? 'unknown');
+}
+
+async function main(): Promise<void> {
+  const [command, ...rest] = process.argv.slice(2);
+  // Before a command, these are the whole of what was asked. After one they are that command's own
+  // options, and `parseDevRequest` reads them where it can see what else was given.
+  if (command === undefined || HELP_FLAGS.has(command)) {
+    await answer('help');
     return;
   }
-  const [command, ...rest] = argv;
-  if (command !== 'dev') {
-    fail(`unknown command \`${command ?? ''}\`; the only one is \`dev\``, true);
+  if (VERSION_FLAGS.has(command)) {
+    await answer('version');
+    return;
   }
-  let options;
+  if (command !== 'dev') {
+    fail(`unknown command \`${command}\`; the only one is \`dev\``, true);
+  }
+  let request: DevRequest;
   try {
-    options = parseDevOptions(rest);
+    request = parseDevRequest(rest);
   } catch (error) {
     fail(error instanceof Error ? error.message : String(error), true);
   }
+  if (request.answer !== undefined) {
+    await answer(request.answer);
+    return;
+  }
   if (process.env[WORKER_ENV] === '1') {
-    await serveDev(options);
+    await serveDev(request.options);
     return;
   }
   // The child is this same file, with the same arguments: one place says what a run is.
-  await supervise(import.meta.filename, argv);
+  await supervise(import.meta.filename, process.argv.slice(2));
 }
 
 try {

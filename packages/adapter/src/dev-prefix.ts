@@ -62,6 +62,14 @@ function originOf(address: string): string {
       `@stayingupwind/adapter: ${UPWIND_DEV_ADDRESS_ENV} has to be an http(s) address: ${JSON.stringify(address)}`,
     );
   }
+  // A path, a query or a fragment is something `URL.origin` would drop without a word, and the
+  // reservation would then send `/__upwind` somewhere other than what the variable said. Refused
+  // rather than trimmed: whoever wrote it meant something this cannot do.
+  if (url.pathname !== '/' || url.search !== '' || url.hash !== '') {
+    throw new Error(
+      `@stayingupwind/adapter: ${UPWIND_DEV_ADDRESS_ENV} has to be an origin and nothing more, so no path, query or fragment: ${JSON.stringify(address)}`,
+    );
+  }
   return url.origin;
 }
 
@@ -96,17 +104,25 @@ export function reserveUpwindPrefix(rewrites: RewritesFn | undefined): RewritesF
     const declared = await rewrites?.();
     const rules = reservation(origin);
     if (declared === undefined) {
-      return { beforeFiles: rules, afterFiles: [], fallback: [] };
+      return { beforeFiles: rules, afterFiles: rules, fallback: [] };
     }
     if (Array.isArray(declared)) {
       // An array is `afterFiles` to Next.js, and stays one here.
-      return { beforeFiles: rules, afterFiles: declared, fallback: [] };
+      return { beforeFiles: rules, afterFiles: [...rules, ...declared], fallback: [] };
     }
     if (!isRewriteLists(declared)) {
       // Next.js will refuse this shape and name the key that made it do so. Handing it back as it
       // came keeps that message about the project's own declaration.
       return declared;
     }
-    return { ...declared, beforeFiles: [...rules, ...(declared.beforeFiles ?? [])] };
+    return {
+      ...declared,
+      beforeFiles: [...rules, ...(declared.beforeFiles ?? [])],
+      // In both lists, because a rewrite of the project's own may *produce* this prefix, and Next.js
+      // does not put a rewritten path back through the phase it came out of. `beforeFiles` catches the
+      // prefix as it arrives; `afterFiles` catches it as a `beforeFiles` rule left it, and still runs
+      // ahead of the dynamic routes where a catch-all would otherwise answer.
+      afterFiles: [...rules, ...(declared.afterFiles ?? [])],
+    };
   };
 }

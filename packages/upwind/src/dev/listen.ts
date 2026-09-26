@@ -4,11 +4,25 @@ import type { Server } from 'node:http';
  * Bind the port the developer asked for, or the next one free.
  *
  * `next dev` moves up to ten ports when one is taken rather than refusing to start, and a developer
- * who has run two of these at once expects that. The port it settled on is returned rather than read
- * back off the server afterwards, because everything else — the banner, the address the adapter is
- * given — has to name the same one.
+ * who has run two of these at once expects that. What it settled on is returned rather than read back
+ * off the server by every caller, because everything else — the banner, the address the adapter is
+ * given, the `port` Next.js is constructed with — has to name the same one.
  */
 const PORT_RETRIES = 10;
+
+/** The last port there is. A candidate past it is not a port, and `listen` refuses it as a range error. */
+export const MAX_PORT = 65_535;
+
+export interface Bound {
+  /** The port the socket is on: what was asked for, or what the kernel gave a `--port 0` run. */
+  readonly port: number;
+  /**
+   * The address the socket is on, as the socket reports it — `::` or `0.0.0.0` for a server that
+   * took every interface. Not the hostname that was asked for: that one may be a name, and on a host
+   * with no IPv4 stack "unspecified" is an IPv6 socket, which nothing at `127.0.0.1` can reach.
+   */
+  readonly address: string | undefined;
+}
 
 function isAddressInUse(error: unknown): boolean {
   return (
@@ -36,31 +50,30 @@ async function listenOnce(
   return promise;
 }
 
-/**
- * The port the socket actually got.
- *
- * `--port 0` asks the kernel to pick one, and everything downstream — the banner, the address the
- * adapter is given, the `port` Next.js is constructed with — has to name the one it picked rather
- * than the zero it was asked for.
- */
-function boundPort(server: Server, asked: number): number {
+/** Where the socket ended up, as the socket says it. */
+function boundOf(server: Server, asked: number): Bound {
   const address = server.address();
-  return typeof address === 'object' && address !== null ? address.port : asked;
+  if (typeof address === 'object' && address !== null) {
+    return { port: address.port, address: address.address };
+  }
+  return { port: asked, address: undefined };
 }
 
 export async function listen(
   server: Server,
   port: number,
   hostname: string | undefined,
-): Promise<number> {
+): Promise<Bound> {
   let candidate = port;
   let retries = 0;
   for (;;) {
     try {
       await listenOnce(server, candidate, hostname);
-      return boundPort(server, candidate);
+      return boundOf(server, candidate);
     } catch (error) {
-      if (retries >= PORT_RETRIES || !isAddressInUse(error)) {
+      // Past the last port there is nothing to move up to, and the port being in use is the truer
+      // thing to say than the range error the next attempt would raise.
+      if (retries >= PORT_RETRIES || candidate >= MAX_PORT || !isAddressInUse(error)) {
         throw error;
       }
       retries += 1;

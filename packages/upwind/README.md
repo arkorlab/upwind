@@ -7,6 +7,10 @@ pnpm add -D upwind
 pnpm upwind dev
 ```
 
+`upwind` alone is enough to serve an application and to answer `/__upwind`. A project that also has
+`@stayingupwind/adapter` installed — which is what builds the deployment — gets the second half of the
+arrangement below as well, where the prefix is reserved inside Next.js's own routing.
+
 ```
   upwind 0.1.0 dev
   - Local:     http://localhost:3000

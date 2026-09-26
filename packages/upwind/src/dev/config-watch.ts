@@ -37,6 +37,12 @@ async function nextConfigFiles(projectDir: string): Promise<readonly string[] | 
   }
 }
 
+/** The one thing there is to say about a watch this run does not have. */
+function lostWatch(projectDir: string, error: unknown): string {
+  const reason = error instanceof Error ? error.message : String(error);
+  return `upwind: cannot watch ${projectDir} for config changes, so a change to next.config will not restart this server (${reason})`;
+}
+
 export async function watchConfigFiles(projectDir: string): Promise<void> {
   const names = await nextConfigFiles(projectDir);
   if (names === undefined) {
@@ -61,12 +67,13 @@ export async function watchConfigFiles(projectDir: string): Promise<void> {
       }
     });
   } catch (error) {
-    console.warn(
-      `upwind: cannot watch ${projectDir} for config changes, so a change to next.config will not restart this server (${error instanceof Error ? error.message : String(error)})`,
-    );
+    console.warn(lostWatch(projectDir, error));
     return;
   }
-  watcher.on('error', () => {
+  watcher.on('error', (error: unknown) => {
+    // Said rather than swallowed: a watch that dies mid-run stops restarting this server, and a
+    // developer editing `next.config` with nothing happening deserves to know which of the two it is.
+    console.warn(lostWatch(projectDir, error));
     watcher.close();
   });
   watcher.unref();
