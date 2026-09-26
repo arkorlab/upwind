@@ -1,4 +1,6 @@
+import { once } from 'node:events';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import {
   isUpwindInternalPath,
@@ -38,6 +40,8 @@ export interface DevOptions {
 }
 
 const STATUS_INTERNAL_ERROR = 500;
+/** How long a failed start waits for the answers it queued to go out before it takes the sockets. */
+const DRAIN_MS = 1000;
 
 /**
  * The pathname a request names, whatever form its target took, and `/` for one that parses as none.
@@ -230,6 +234,12 @@ export async function serveDev(options: DevOptions): Promise<void> {
     nextReady.reject(error);
     stopWatching();
     server.close();
+    // Waited for rather than merely closed. The 500s are written in continuations of that rejection, and
+    // `cli.ts` ends the process the moment this throw reaches it — so without this the answers this
+    // promised would be the reset connections it promised they would not be. `close` comes once they are
+    // out; the wait is bounded, for a connection holding itself open with nothing to say.
+    await Promise.race([once(server, 'close'), delay(DRAIN_MS)]);
+    server.closeAllConnections();
     throw error;
   }
   // Next.js has read the config, and with it the adapter this run named and the address it gave;

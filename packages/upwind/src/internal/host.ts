@@ -25,6 +25,11 @@ import { domainToASCII } from 'node:url';
  * name a developer has put in front of it, and Next.js has its own say about a cross-site dev request.
  */
 
+/** A name without the dot that says "from the root": `localhost.` is `localhost`, typed precisely. */
+function withoutRootDot(name: string): string {
+  return name.endsWith('.') ? name.slice(0, -1) : name;
+}
+
 /** The hostname a host header carries, without the port, and without an IPv6 literal's brackets. */
 function hostnameOf(header: string): string | undefined {
   const trimmed = header.trim().toLowerCase();
@@ -32,13 +37,16 @@ function hostnameOf(header: string): string | undefined {
     const close = trimmed.indexOf(']');
     return close === -1 ? undefined : trimmed.slice(1, close);
   }
-  const [name] = trimmed.split(':', 1);
-  return name === undefined || name === '' ? undefined : name;
+  // The dot goes after the port is off, not before: `localhost.:3000` ends in a digit, and it is the
+  // name in front of the colon that was written from the root.
+  const [name = ''] = trimmed.split(':', 1);
+  const host = withoutRootDot(name);
+  return host === '' ? undefined : host;
 }
 
 /** A name as a browser sends it: the ASCII form, or the name itself where there is no other. */
 function canonical(name: string): string {
-  const trimmed = name.trim().toLowerCase();
+  const trimmed = withoutRootDot(name.trim().toLowerCase());
   return domainToASCII(trimmed) || trimmed;
 }
 
