@@ -56,6 +56,12 @@ function pathnameOf(target: string | undefined): string {
  * matched raw. So a path that *means* the prefix would otherwise reach a catch-all route of the
  * project's, past the front door and past the reservation both. Escapes that are not escapes decode to
  * nothing, and such a request is not this prefix.
+ *
+ * `..` needs no handling of its own: `pathnameOf` parses through `URL`, which resolves dot segments
+ * before any of this sees them, so `/app/../__upwind` arrives here as `/__upwind`. What is deliberately
+ * *not* done is resolving them again after decoding — `%2F` is a character in a segment to Next.js and
+ * not a separator, so a second pass would claim paths the application is meant to answer. Nothing below
+ * reads a file or builds a target out of the path either way: the endpoints are a fixed table.
  */
 function internalPathname(pathname: string): string | undefined {
   if (isUpwindInternalPath(pathname)) {
