@@ -52,6 +52,10 @@ const OUT_DIR = '.ppr-cdn';
  * second without a shell — which this must not use, since a version read off a registry travels through
  * these arguments. npm ships beside the Node that is running: under `lib/node_modules` on Unix, and
  * beside the executable itself on Windows.
+ *
+ * Duplicated in `packages/adapter/scripts/check-patches.ts`, deliberately: the two live in different
+ * packages, and sharing twenty lines would mean either a tool package the adapter's own scripts depend
+ * on or a reach across the workspace. The `npm` name each of them used was duplicated before this was.
  */
 async function npmCli(): Promise<string> {
   const beside = path.dirname(process.execPath);

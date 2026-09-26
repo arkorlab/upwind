@@ -64,6 +64,10 @@ const OUTPUT_LIMIT = 67_108_864;
  * second without a shell — which this must not use, since a version read off a registry travels through
  * these arguments. npm ships beside the Node that is running: under `lib/node_modules` on Unix, and
  * beside the executable itself on Windows.
+ *
+ * Duplicated in `tools/next-matrix/src/run.ts`, deliberately: the two live in different packages, and
+ * sharing twenty lines would mean either a tool package these scripts depend on or a reach across the
+ * workspace. The `npm` name each of them used was duplicated before this was.
  */
 async function npmCli(): Promise<string> {
   const beside = path.dirname(process.execPath);
