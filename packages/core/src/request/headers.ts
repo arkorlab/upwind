@@ -191,6 +191,9 @@ export function dropPlatformHeaders(headers: Headers): Headers {
   return headers;
 }
 
+const HTTP_LOWEST_STATUS = 200;
+const HTTP_HIGHEST_STATUS = 599;
+
 /**
  * The response the application answered with, with the platform's own headers off it.
  *
@@ -209,13 +212,24 @@ export function withoutPlatformHeaders(answered: Response): Response {
     dropPlatformHeaders(answered.headers);
     return answered;
   } catch {
-    // Immutable headers, as a response that came back from a call has: copied instead.
-    return new Response(answered.body, {
-      status: answered.status,
-      statusText: answered.statusText,
-      headers: dropPlatformHeaders(new Headers(answered.headers)),
-    });
+    // Immutable headers, as a response that came back from a call has: copied instead, where the
+    // status is one a `Response` can be built around at all. A protocol switch or an error response
+    // is neither copyable nor anything a host decides caching by, so it is left as it came.
+    return rebuildable(answered.status) ? copiedWithout(answered) : answered;
   }
+}
+
+/** What a `Response` will take: anything else cannot be built around, however little is changed. */
+function rebuildable(status: number): boolean {
+  return status >= HTTP_LOWEST_STATUS && status <= HTTP_HIGHEST_STATUS;
+}
+
+function copiedWithout(answered: Response): Response {
+  return new Response(answered.body, {
+    status: answered.status,
+    statusText: answered.statusText,
+    headers: dropPlatformHeaders(new Headers(answered.headers)),
+  });
 }
 
 function namesPlatformHeader(headers: Headers): boolean {

@@ -11,8 +11,8 @@ import {
 } from '@stayingupwind/core/paas';
 import { releaseStream } from '@stayingupwind/core/util';
 
-import { nowMs, withClock } from './cache/clock.ts';
-import { type RequestContext, withRequestContext } from './cache/context.ts';
+import { nowMs } from './cache/clock.ts';
+import { requestContextFor } from './cache/context.ts';
 import {
   crawlerWantsWholePage,
   documentFromBuild,
@@ -74,7 +74,7 @@ import {
   stripPlatformHeaders,
   withoutBody,
 } from './serve.ts';
-import { settleSharedAnswer } from './shared-answer.ts';
+import { settleHostHeaders } from './shared-answer.ts';
 import { entrypointKindOf, findShell, getStore, type Store } from './store.ts';
 import { renderedBy, serveWithBody } from './with-body.ts';
 
@@ -622,18 +622,17 @@ async function routeRequest(input: RoutedInput, store: Store): Promise<Response>
 }
 
 export async function handleRequest(handled: HandleInput): Promise<Response> {
-  const context: RequestContext = {
+  const context = requestContextFor({
     tables: { app: handled.app, edge: handled.edge },
     runtime: handled.cache,
     request: handled.request,
     startedAt: handled.clock ?? nowMs(),
-    fetchStarts: new Map(),
     waitUntil: handled.waitUntil,
-    run: (work) => withClock(handled.clock, () => withRequestContext(context, work)),
-  };
+    clock: handled.clock,
+  });
   const input: RoutedInput = { ...handled, initURL: initUrlOf(handled.request), run: context.run };
   return context.run(async () => {
     const answered = await routeRequest(input, getStore());
-    return settleSharedAnswer(withoutBody(handled.request, answered));
+    return settleHostHeaders(withoutBody(handled.request, answered));
   });
 }

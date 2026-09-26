@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 import type { EntryTables } from '../entries.ts';
 import type { Run } from '../node-bridge.ts';
+import { withClock } from './clock.ts';
 import type { CacheRuntime } from './runtime.ts';
 
 /**
@@ -20,6 +21,40 @@ export interface RequestContext {
   readonly fetchStarts: Map<string, number>;
   readonly waitUntil: (promise: Promise<unknown>) => void;
   readonly run: Run;
+  /**
+   * What the runtime has to say to its host about this answer, by header name: which answer may be
+   * shared, what a regeneration came to. Kept here rather than written on the response as it is
+   * decided, because an application writes response headers too and a host must be able to tell
+   * the two apart — so the one place every answer passes through takes the platform's prefix off
+   * whatever came back and writes these instead (`settleHostHeaders`).
+   */
+  readonly hostHeaders: Map<string, string>;
+}
+
+/**
+ * The context one request is answered inside: what the runtime knows of the deployment, when the
+ * request started, and what it has to say to its host about the answer. `run` is what puts it where
+ * the rest of the runtime reads it from, under the clock the request was given.
+ */
+export function requestContextFor(input: {
+  readonly tables: EntryTables;
+  readonly runtime: CacheRuntime | undefined;
+  readonly request: Request;
+  readonly startedAt: number;
+  readonly waitUntil: (promise: Promise<unknown>) => void;
+  readonly clock: number | undefined;
+}): RequestContext {
+  const context: RequestContext = {
+    tables: input.tables,
+    runtime: input.runtime,
+    request: input.request,
+    startedAt: input.startedAt,
+    fetchStarts: new Map(),
+    hostHeaders: new Map(),
+    waitUntil: input.waitUntil,
+    run: (work) => withClock(input.clock, () => withRequestContext(context, work)),
+  };
+  return context;
 }
 
 const contexts = new AsyncLocalStorage<RequestContext>();

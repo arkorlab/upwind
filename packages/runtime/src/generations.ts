@@ -1,7 +1,6 @@
 import { pagesDataPathname, queryDependent } from '@stayingupwind/core/bundle';
 import type { DecodedGenerationPack, RouteEntryDescriptor } from '@stayingupwind/core/cache';
 import {
-  CACHE_OUTCOME_HEADER,
   CACHE_ROUTE_ESCAPED_HEADER,
   CACHE_ROUTE_HEADER,
   CACHE_UPGRADE_HEADER,
@@ -42,6 +41,7 @@ import {
   type RoutedInput,
   stripPlatformHeaders,
 } from './serve.ts';
+import { sayCacheOutcome } from './shared-answer.ts';
 import { entrypointKindOf, findShell, isClassShell, type Store } from './store.ts';
 
 /**
@@ -190,19 +190,16 @@ function scheduleJob(job: Job, reason: AttemptReason, base?: string): boolean {
 }
 
 function withOutcome(response: Response, outcome: string): Response {
-  const headers = new Headers(response.headers);
-  headers.set(CACHE_OUTCOME_HEADER, outcome);
-  return new Response(response.body, { status: response.status, headers });
+  sayCacheOutcome(outcome);
+  return response;
 }
 
 /** Answer at once; the regeneration runs after, on its own. */
 export async function handleDetached(input: RoutedInput, store: Store): Promise<Response> {
   const job = await jobOf(input, store);
   const scheduled = job !== undefined && scheduleJob(job, 'stale');
-  return new Response(null, {
-    status: HTTP_ACCEPTED,
-    headers: { [CACHE_OUTCOME_HEADER]: scheduled ? 'accepted' : 'skipped' },
-  });
+  sayCacheOutcome(scheduled ? 'accepted' : 'skipped');
+  return new Response(null, { status: HTTP_ACCEPTED });
 }
 
 /** Once the response has gone out in full, do this: the visitor's bytes come first. */
