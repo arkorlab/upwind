@@ -194,8 +194,9 @@ jobs:
     runs-on: ubuntu-latest
     # Four packages, each given the ten minutes the comment below explains, and room to say so. The
     # read-back is serial, so this has to grow with the number of packages or a release that published
-    # cleanly would be killed while verifying the last one.
-    timeout-minutes: 45
+    # cleanly would be killed while verifying the last one — and the eighty `npm view` calls and the
+    # checkout are on top of the forty minutes the waiting alone can take.
+    timeout-minutes: 50
     permissions:
       contents: read
     steps:

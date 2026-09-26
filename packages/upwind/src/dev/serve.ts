@@ -123,14 +123,23 @@ export async function serveDev(options: DevOptions): Promise<void> {
   const bound = await listen(server, options.port, options.hostname);
   devSession.address = displayAddress(options.hostname, bound.port);
   // The supervisor is told, so that a restart lands on this port rather than on another one the kernel
-  // picks for a `--port 0` run, or on a port that has since been taken by something else.
-  process.send?.({ port: bound.port });
+  // picks for a `--port 0` run, or on a port that has since been taken by something else. `connected`
+  // and not just `send`: a supervisor that died leaves the method behind on a channel that refuses,
+  // and what it refuses with would end a server that is otherwise fine.
+  if (process.connected) {
+    process.send?.({ port: bound.port });
+  }
   // Where the adapter's reservation sends `/__upwind`, set in the process that loads `next.config` —
   // which is this one, since Next.js runs here. A socket whose address cannot be written as a URL
   // leaves the reservation unmade rather than pointing it somewhere that will not parse; the front
   // door answers the prefix either way.
   const internal = internalAddress(bound);
   if (internal === undefined) {
+    // Removed, not merely left unset: an inherited value names some other run's front door, and the
+    // adapter would reserve the prefix for a server that is not this one. `Reflect` because the name
+    // is a constant this imports rather than a literal, and assigning `undefined` to `process.env`
+    // would set the string.
+    Reflect.deleteProperty(process.env, UPWIND_DEV_ADDRESS_ENV);
     console.warn(
       `upwind: this socket's address cannot be named in a Next.js rewrite, so nothing reserves ${UPWIND_INTERNAL_PREFIX} inside Next.js's own routing — this server still answers it first`,
     );

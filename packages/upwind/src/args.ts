@@ -3,6 +3,7 @@ import { parseArgs } from 'node:util';
 
 import { MAX_PORT } from './dev/listen.ts';
 import type { DevOptions } from './dev/serve.ts';
+import { WORKER_PORT_ENV } from './dev/worker-env.ts';
 
 /**
  * What `upwind dev` understands.
@@ -19,17 +20,24 @@ import type { DevOptions } from './dev/serve.ts';
 
 const DEFAULT_PORT = 3000;
 
-export interface DevRequest {
-  /** What was asked for instead of a server, if anything. */
-  readonly answer: 'help' | 'version' | undefined;
-  readonly options: DevOptions;
-}
+/**
+ * What `upwind dev` was asked for: an answer about itself, or a server with these options.
+ *
+ * Two shapes rather than one with both, so that a `--help` is answered without resolving anything a
+ * run would need. A `PORT` in the environment that is not a port is a thing to say when a server was
+ * asked for, and not when the question was what the options are.
+ */
+export type DevRequest =
+  | { readonly answer: 'help' | 'version' }
+  | { readonly answer: undefined; readonly options: DevOptions };
 
 /** Digits, and nothing else: what the message below promises, rather than what `Number` would take. */
 const PORT_SPELLING = /^\d+$/u;
 
 function portOf(value: string | undefined): number {
-  const asked = value ?? process.env['PORT'];
+  // The supervisor's own first: after the first child, the port is not a request but a fact
+  // (`worker-env.ts`). Then what was asked for, then the environment, then the default.
+  const asked = process.env[WORKER_PORT_ENV] ?? value ?? process.env['PORT'];
   if (asked === undefined || asked === '') {
     return DEFAULT_PORT;
   }
@@ -79,13 +87,17 @@ export function parseDevRequest(args: readonly string[]): DevRequest {
     allowPositionals: true,
     strict: true,
   });
+  const answer = answerOf(values);
+  if (answer !== undefined) {
+    return { answer };
+  }
   if (positionals.length > 1) {
     throw new Error(
       `\`upwind dev\` takes at most one directory, and was given ${positionals.length}`,
     );
   }
   return {
-    answer: answerOf(values),
+    answer: undefined,
     options: {
       // Resolved here so every later use — the adapter's resolution, the config watch, Next.js's own
       // `dir` — is the same absolute path.

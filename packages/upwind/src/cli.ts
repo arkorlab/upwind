@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { type DevRequest, parseDevRequest } from './args.ts';
 import { serveDev } from './dev/serve.ts';
-import { supervise, WORKER_ENV } from './dev/supervise.ts';
+import { supervise } from './dev/supervise.ts';
+import { WORKER_ENV } from './dev/worker-env.ts';
 import { ownVersion } from './manifest.ts';
 
 /**

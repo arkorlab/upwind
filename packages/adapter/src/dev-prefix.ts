@@ -104,25 +104,33 @@ export function reserveUpwindPrefix(rewrites: RewritesFn | undefined): RewritesF
     const declared = await rewrites?.();
     const rules = reservation(origin);
     if (declared === undefined) {
-      return { beforeFiles: rules, afterFiles: rules, fallback: [] };
+      return { beforeFiles: rules, afterFiles: rules, fallback: rules };
     }
     if (Array.isArray(declared)) {
       // An array is `afterFiles` to Next.js, and stays one here.
-      return { beforeFiles: rules, afterFiles: [...rules, ...declared], fallback: [] };
+      return { beforeFiles: rules, afterFiles: [...rules, ...declared], fallback: rules };
     }
     if (!isRewriteLists(declared)) {
       // Next.js will refuse this shape and name the key that made it do so. Handing it back as it
       // came keeps that message about the project's own declaration.
       return declared;
     }
+    // At the head of all three phases, because a rewrite of the project's own may *produce* this
+    // prefix and Next.js re-enters no phase for a path it has just rewritten. `beforeFiles` catches the
+    // prefix as it arrives; `afterFiles` catches what `beforeFiles` produced, ahead of the dynamic
+    // routes where a catch-all would answer; `fallback` catches what `afterFiles` produced, for a
+    // project that has no dynamic route to claim it first.
+    //
+    // One case is past reach, and is named here rather than papered over: a rule of the project's own
+    // that produces this prefix *and* a dynamic route that matches the result. The dynamic routes come
+    // from the build rather than from the config, so no rule can be put in front of them, and the front
+    // door never sees a request that was rewritten inside Next.js. Such a path is resolved as the
+    // project's own — which is where the project sent it.
     return {
       ...declared,
       beforeFiles: [...rules, ...(declared.beforeFiles ?? [])],
-      // In both lists, because a rewrite of the project's own may *produce* this prefix, and Next.js
-      // does not put a rewritten path back through the phase it came out of. `beforeFiles` catches the
-      // prefix as it arrives; `afterFiles` catches it as a `beforeFiles` rule left it, and still runs
-      // ahead of the dynamic routes where a catch-all would otherwise answer.
       afterFiles: [...rules, ...(declared.afterFiles ?? [])],
+      fallback: [...rules, ...(declared.fallback ?? [])],
     };
   };
 }
