@@ -101,13 +101,40 @@ Nothing of that happens under a plain `next dev`: with no upwind in front there 
 send anything to, and the adapter leaves the project's routing exactly as the project wrote it. A
 project's own `rewrites` are kept in the list they were declared in either way.
 
+## `upwind build`
+
+```bash
+pnpm upwind build
+```
+
+The project's own `next build`, with the adapter named — and that is the whole of it. The bundle
+under `.ppr-cdn/` is `@stayingupwind/adapter`'s work and the build is Next.js's; what was missing was
+only the thing `upwind dev` already does, which is to say _which_ adapter, resolved from the project
+rather than from wherever this CLI is installed.
+
+It is a convenience, not a requirement. A project whose `next.config` names the adapter itself —
+
+```ts
+import { createRequire } from 'node:module';
+
+export default {
+  adapterPath: createRequire(import.meta.url).resolve('@stayingupwind/adapter'),
+};
+```
+
+— gets the same bundle from a plain `next build`, from CI, or from any other tool that runs one.
+What `upwind build` adds is that a project which has _not_ written that line still builds a bundle,
+and that a project with no adapter installed is refused rather than left with a build that quietly
+produced none.
+
 ## Options
 
 ```
 upwind dev [directory]
+upwind build [directory]
 
-  -p, --port <port>      Port to listen on (default: $PORT, else 3000)
-  -H, --hostname <host>  Hostname to bind (default: every interface)
+  -p, --port <port>      Port to listen on, `dev` only (default: $PORT, else 3000)
+  -H, --hostname <host>  Hostname to bind, `dev` only (default: every interface)
   -v, --version          Print upwind's version
   -h, --help             Print the usage
 ```
@@ -115,7 +142,8 @@ upwind dev [directory]
 A port already in use moves up, up to ten times, as `next dev` does. `next dev`'s other flags —
 `--experimental-https`, `--inspect`, `--turbopack`, `--webpack` — are refused rather than quietly
 ignored; the bundler is Next.js's own default, which is Turbopack, and which is the only one
-`@stayingupwind/adapter` can build.
+`@stayingupwind/adapter` can build. `next build`'s own flags are not forwarded either: a project that
+needs one runs `next build` itself, with the `next.config` above.
 
 ## Licence
 
