@@ -1,4 +1,4 @@
-import { type FSWatcher, readlinkSync, watch } from 'node:fs';
+import { type FSWatcher, readlinkSync, realpathSync, watch } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -71,6 +71,10 @@ const MAX_LINK_HOPS = 8;
  * Read link by link rather than resolved in one go, so that a link whose target does not exist yet
  * still says where it is waiting for one: a config symlinked to a file somebody has not written is a
  * config that appears the moment they do, and the watch has to be on the directory it will appear in.
+ *
+ * A relative target is resolved against the directory the link really sits in, not the one its path
+ * spells: a link reached through a symlinked parent, pointing at `../shared/next.config.ts`, means a
+ * directory beside its real home and not beside the name it was found under.
  */
 function linkTarget(start: string): string | undefined {
   let current = start;
@@ -82,7 +86,13 @@ function linkTarget(start: string): string | undefined {
       // Not a link — so either the end of the chain, or a plain file this was never following.
       return hop === 0 ? undefined : current;
     }
-    current = path.resolve(path.dirname(current), next);
+    let directory = path.dirname(current);
+    try {
+      directory = realpathSync(directory);
+    } catch {
+      // Gone from under this; the lexical parent is the best there is to say.
+    }
+    current = path.resolve(directory, next);
   }
   return current;
 }
