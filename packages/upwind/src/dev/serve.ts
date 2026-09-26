@@ -39,10 +39,19 @@ export interface DevOptions {
 
 const STATUS_INTERNAL_ERROR = 500;
 
-/** The pathname a request names, whatever form its target took, and `/` for one that parses as none. */
-function pathnameOf(target: string | undefined): string {
+/**
+ * The pathname a request names, whatever form its target took, and `/` for one that parses as none.
+ *
+ * An origin-form target is a path even when it begins with `//`, so it is read as one: resolved against
+ * a base, `//docs/__upwind` is a *scheme-relative* URL whose authority is `docs`, and the pathname that
+ * falls out of it — `/__upwind` — is not the path anybody asked for. Next.js keeps the slashes and
+ * canonicalises towards `/docs/__upwind`, which is the application's.
+ */
+function pathnameOf(target = '/'): string {
   try {
-    return new URL(target ?? '/', 'http://localhost').pathname;
+    return target.startsWith('/')
+      ? new URL(`http://localhost${target}`).pathname
+      : new URL(target, 'http://localhost').pathname;
   } catch {
     return '/';
   }
@@ -199,13 +208,12 @@ export async function serveDev(options: DevOptions): Promise<void> {
   process.on('SIGINT', onStop);
   process.on('SIGTERM', onStop);
 
+  // Before Next.js is started, not after: `prepare()` reads `next.config` and can take seconds, and a
+  // config written during those seconds would otherwise be one this run never hears about — it would
+  // serve the old config until something changed again.
+  const stopWatching: StopWatching = await watchConfigFiles(options.projectDir);
   let app: RunningNext;
-  let stopWatching: StopWatching;
   try {
-    // Before Next.js is started, not after: `prepare()` reads `next.config` and can take seconds, and
-    // a config written during those seconds would otherwise be one this run never hears about — it
-    // would serve the old config until something changed again.
-    stopWatching = await watchConfigFiles(options.projectDir);
     app = await startNextApp({
       projectDir: options.projectDir,
       hostname: options.hostname,
@@ -216,8 +224,10 @@ export async function serveDev(options: DevOptions): Promise<void> {
     // Every request already waiting on the handler is told, so it is answered rather than left to a
     // connection that resets under it, and the socket stops taking new ones. The connections it still
     // has are left open long enough for those answers to go out; `cli.ts` ends the process once it has
-    // said why.
+    // said why. The watch goes with it: a config saved while this was failing would otherwise ask the
+    // supervisor to restart a run that is already over.
     nextReady.reject(error);
+    stopWatching();
     server.close();
     throw error;
   }

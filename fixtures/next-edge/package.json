@@ -1,0 +1,15 @@
+{
+  "name": "@upwind-fixture/next-edge",
+  "version": "0.0.0",
+  "private": true,
+  "description": "An application with an entrypoint on the deprecated edge runtime, and a middleware.ts.",
+  "type": "module",
+  "scripts": {
+    "build": "next build"
+  },
+  "dependencies": {
+    "next": "16.3.6",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}

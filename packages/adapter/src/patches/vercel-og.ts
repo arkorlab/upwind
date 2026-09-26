@@ -58,7 +58,6 @@ export const vercelOgPatch: Patch = {
   name: IMPORT_PATCH,
   target: IMPORT_TARGET,
   marker: (source) => source.includes(NODE_BUILD),
-  nextVersions: ['16.3.5', '16.3.6'],
   apply(source, file) {
     const result = new Rewrite(IMPORT_PATCH, file, source)
       .replace(EXTERNAL_IMPORT, `import(${JSON.stringify(EDGE_BUILD)})`, 1, 'the external import')
@@ -100,7 +99,6 @@ const CACHED_BODY =
 export const vercelOgImageResponsePatch: Patch = {
   name: IMAGE_RESPONSE_PATCH,
   target: IMAGE_RESPONSE_TARGET,
-  nextVersions: ['16.3.5', '16.3.6'],
   apply(source, file) {
     const result = new Rewrite(IMAGE_RESPONSE_PATCH, file, source)
       .replace(RUNTIME_PICK, `import(${JSON.stringify(EDGE_BUILD)})`, 1, "the library's import")
@@ -137,7 +135,6 @@ const FONT_READER = [
 export const vercelOgFontPatch: Patch = {
   name: FONT_PATCH,
   target: FONT_TARGET,
-  nextVersions: ['16.3.5', '16.3.6'],
   apply(source, file) {
     const result = new Rewrite(FONT_PATCH, file, FONT_IMPORT + source)
       .replace(

@@ -20,7 +20,13 @@ import { ownRange } from './version.ts';
  * component library. `create-next-app --empty` is the shape.
  */
 
-/** What the template is written against. */
+/**
+ * What the template is written against.
+ *
+ * `next` is a caret on the version this repository builds against, and stays inside
+ * `SUPPORTED_NEXT_RANGE` (`@stayingupwind/adapter`'s `patches/versions.ts`), which is what the
+ * adapter's patches are held to. A release that moves that range moves this line with it.
+ */
 const VERSIONS = {
   '@tailwindcss/postcss': '^4.3.3',
   '@types/node': '^24.13.4',

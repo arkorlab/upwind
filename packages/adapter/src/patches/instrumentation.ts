@@ -11,7 +11,8 @@ import { type Patch, Rewrite } from './types.ts';
  */
 
 const NAME = 'instrumentation';
-const TARGET = /instrumentation-globals\.external\.js$/u;
+/** Next.js's CommonJS build, for the reason `load-manifest.ts` gives of its own target. */
+const TARGET = /\/next\/dist\/server\/lib\/router-utils\/instrumentation-globals\.external\.js$/u;
 const HOOK_REQUIRE =
   /await require\(_nodepath\.default\.join\(projectDir, distDir, 'server', `\$\{_constants\.INSTRUMENTATION_HOOK_FILENAME\}\.js`\)\)/gu;
 const LEFTOVERS = [/INSTRUMENTATION_HOOK_FILENAME\}\.js`\)\)/u];
@@ -19,7 +20,6 @@ const LEFTOVERS = [/INSTRUMENTATION_HOOK_FILENAME\}\.js`\)\)/u];
 export const instrumentationPatch: Patch = {
   name: NAME,
   target: TARGET,
-  nextVersions: ['16.3.5', '16.3.6'],
   apply(source, file, ctx) {
     const replacement =
       ctx.instrumentation === undefined

@@ -38,7 +38,6 @@ const LEFTOVERS = [
 export const taskTimersPatch: Patch = {
   name: NAME,
   target: TARGET,
-  nextVersions: ['16.3.5', '16.3.6'],
   apply(source, file) {
     const result = new Rewrite(NAME, file, source)
       .replace(

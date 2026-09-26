@@ -1,7 +1,17 @@
 packages:
   - packages/*
+  - tools/*
+
+# `fixtures/*` are deliberately not workspace packages. Each is an application the matrix builds
+# with a Next.js of its own choosing, and a workspace package would be pinned to the catalog's —
+# the one version the matrix exists to look past.
 
 # Every shared version is pinned exactly once here; workspace packages reference "catalog:".
+#
+# `next` and `@next/routing` are pinned to the top of the range the adapter supports, not to its
+# floor: this is the version the repository builds and typechecks against.
+# `SUPPORTED_NEXT_RANGE` (`packages/adapter/src/patches/versions.ts`) is the range itself, and
+# `packages/adapter/scripts/check-patches.ts` is what holds every release in it to the patches.
 catalog:
   '@eslint/js': 10.0.1
   '@next/routing': 16.3.6

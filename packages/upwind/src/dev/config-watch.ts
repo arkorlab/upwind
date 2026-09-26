@@ -29,15 +29,24 @@ import { restart } from './restart.ts';
  */
 const SETTLE_MS = 150;
 
-/** `CONFIG_FILES` in `next/dist/shared/lib/constants.ts`, as that module hands it over. */
+/**
+ * `CONFIG_FILES` in `next/dist/shared/lib/constants.ts`, as that module hands it over.
+ *
+ * Both ways it can arrive. Node's lexer reads the names out of the CommonJS module and a named import
+ * is what works today; a module whose shape it cannot read would put the whole of `module.exports`
+ * under `default` instead, and the same names are there.
+ */
 async function nextConfigFiles(projectDir: string): Promise<readonly string[] | undefined> {
   const entry = resolveFromProject(projectDir, 'next/constants.js');
   if (entry === undefined) {
     return undefined;
   }
   try {
-    const module = (await import(pathToFileURL(entry).href)) as { CONFIG_FILES?: unknown };
-    const names = module.CONFIG_FILES;
+    const module = (await import(pathToFileURL(entry).href)) as {
+      CONFIG_FILES?: unknown;
+      default?: { CONFIG_FILES?: unknown };
+    };
+    const names = module.CONFIG_FILES ?? module.default?.CONFIG_FILES;
     if (!Array.isArray(names)) {
       return undefined;
     }
@@ -75,8 +84,13 @@ const MAX_LINK_HOPS = 8;
  * A relative target is resolved against the directory the link really sits in, not the one its path
  * spells: a link reached through a symlinked parent, pointing at `../shared/next.config.ts`, means a
  * directory beside its real home and not beside the name it was found under.
+ *
+ * Every hop is returned, not only the end of them. A chain is repointed in the middle as readily as at
+ * the end — `next.config.js -> shared/current -> configs/a.js`, where `current` is what moves — and a
+ * watch on the last file alone would never hear that.
  */
-function linkTarget(start: string): string | undefined {
+function linkChain(start: string): string[] {
+  const chain: string[] = [];
   let current = start;
   for (let hop = 0; hop < MAX_LINK_HOPS; hop += 1) {
     let next;
@@ -84,7 +98,7 @@ function linkTarget(start: string): string | undefined {
       next = readlinkSync(current);
     } catch {
       // Not a link — so either the end of the chain, or a plain file this was never following.
-      return hop === 0 ? undefined : current;
+      return chain;
     }
     let directory = path.dirname(current);
     try {
@@ -93,8 +107,9 @@ function linkTarget(start: string): string | undefined {
       // Gone from under this; the lexical parent is the best there is to say.
     }
     current = path.resolve(directory, next);
+    chain.push(current);
   }
-  return current;
+  return chain;
 }
 
 /**
@@ -109,14 +124,13 @@ function linkTarget(start: string): string | undefined {
 function watchPoints(projectDir: string, names: readonly string[]): Map<string, Set<string>> {
   const points = new Map<string, Set<string>>([[projectDir, new Set(names)]]);
   for (const name of names) {
-    const target = linkTarget(path.join(projectDir, name));
-    if (target === undefined) {
-      continue;
+    const chain = linkChain(path.join(projectDir, name));
+    for (const hop of chain) {
+      const directory = path.dirname(hop);
+      const listening = points.get(directory) ?? new Set<string>();
+      listening.add(path.basename(hop));
+      points.set(directory, listening);
     }
-    const directory = path.dirname(target);
-    const listening = points.get(directory) ?? new Set<string>();
-    listening.add(path.basename(target));
-    points.set(directory, listening);
   }
   return points;
 }

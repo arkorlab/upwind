@@ -86,6 +86,13 @@ function originOf(address: string): string {
       `@stayingupwind/adapter: ${UPWIND_DEV_ADDRESS_ENV} has to be an origin and nothing more, so no path, query or fragment: ${JSON.stringify(address)}`,
     );
   }
+  // Credentials are dropped by `URL.origin` as quietly as a path is, and a reservation that dropped
+  // them would reach the front door as somebody who had not authenticated.
+  if (url.username !== '' || url.password !== '') {
+    throw new Error(
+      `@stayingupwind/adapter: ${UPWIND_DEV_ADDRESS_ENV} cannot carry credentials: ${JSON.stringify(address)}`,
+    );
+  }
   // An IPv6 literal is not something a rewrite destination can carry: Next.js compiles one with
   // path-to-regexp, which reads the colons as parameter names, and what that breaks is the route
   // resolution of every request rather than this line. `upwind dev` never writes one — a hand-set

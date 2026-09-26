@@ -9,6 +9,11 @@
  * rewrite silently missed it; more means it matched something it never meant to. Both fail the
  * build: a Function that starts with a `require("vm")` or a chunk loader still resolving paths does
  * not fail until the first request that needs it.
+ *
+ * Which Next.js versions the patches are held to is one declaration, `SUPPORTED_NEXT_RANGE` in
+ * `versions.ts`, and `scripts/check-patches.ts` applies every patch to every release in it. A
+ * patch carries no version list of its own: one that stopped matching a release the others still
+ * match is not a patch with a narrower range, it is the notice that the floor has moved.
  */
 
 export interface PatchContext {
@@ -44,8 +49,6 @@ export interface Patch {
    * Next.js version.
    */
   readonly marker?: (source: string) => boolean;
-  /** The Next.js versions this rewrite was checked against. */
-  readonly nextVersions: readonly string[];
   apply(source: string, file: string, ctx: PatchContext): PatchResult;
 }
 

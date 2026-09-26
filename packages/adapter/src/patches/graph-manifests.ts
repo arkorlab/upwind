@@ -35,7 +35,6 @@ export const graphManifestsPatch: Patch = {
   target: TARGET,
   // The chunks Turbopack copied the module into have no name to find them by.
   marker: (source) => LEFTOVERS.some((pattern) => pattern.test(source)),
-  nextVersions: ['16.3.5', '16.3.6'],
   apply(source, file) {
     const result = new Rewrite(NAME, file, source)
       .replace(SHARED_KEY, NODE_KEY, 1, 'the key of the manifests singleton')

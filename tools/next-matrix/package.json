@@ -1,0 +1,21 @@
+{
+  "name": "@upwind-tools/next-matrix",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Builds the fixtures with each Next.js in the supported range and holds the result to what the adapter promises.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@stayingupwind/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

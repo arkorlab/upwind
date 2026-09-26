@@ -27,7 +27,13 @@ const CLI_FILES = ['packages/upwind/**/*.ts', 'packages/create-upwind/**/*.ts'];
  * The adapter runs under Node inside `next build`, and the CLIs are Node processes of their own; the
  * runtime runs in a Function, where `nodejs_compat` gives it the Node built-ins it does use.
  */
-const NODE_ONLY_FILES = ['packages/adapter/**/*.ts', ...CLI_FILES, '*.config.ts', '**/*.config.ts'];
+const NODE_ONLY_FILES = [
+  'packages/adapter/**/*.ts',
+  ...CLI_FILES,
+  'tools/**/*.ts',
+  '*.config.ts',
+  '**/*.config.ts',
+];
 /** What has to hold wherever it is evaluated, so it can be read by both of the above. */
 const RUNTIME_NEUTRAL_FILES = ['packages/core/**/*.ts'];
 
@@ -56,6 +62,10 @@ export default defineConfig([
     // An application this repository writes for somebody else, not one it runs: it is held to the
     // conventions of a Next.js project, which are not these.
     'packages/create-upwind/templates/**',
+    // Applications `tools/next-matrix` builds with a Next.js of their own. They are input to a
+    // build, not code of this repository's: what they may say is Next.js's to decide, and a
+    // `"use cache"` directive or a `?module` import is not this configuration's business.
+    'fixtures/**',
   ]),
 
   // 1. Base JavaScript rules: everything on, then a short, justified opt-out list.
@@ -330,6 +340,17 @@ export default defineConfig([
       'sonarjs/no-os-command-from-path': 'off',
       'unicorn/no-process-exit': 'off',
       'unicorn/prefer-temporal': 'off', // the Node version this runs on has no Temporal
+    },
+  },
+
+  // The tools are programs a maintainer runs, and what they have to say is the whole of their
+  // output. The paths they touch are under a directory they made themselves, or under a package
+  // they just fetched — neither is a literal anyone could have written here.
+  {
+    files: ['tools/**/*.ts'],
+    rules: {
+      'no-console': 'off',
+      'security/detect-non-literal-fs-filename': 'off',
     },
   },
 
