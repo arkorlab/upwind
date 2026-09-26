@@ -6,7 +6,7 @@ import { type Patch, Rewrite } from './types.ts';
  * `[turbopack]_runtime.js` loads a server chunk with `require(path.resolve(RUNTIME_ROOT,
  * chunkPath))`. workerd's CommonJS loader resolves only the names in the bundle, and a bundler
  * cannot follow a computed path either, so the resolution becomes a static table from chunk path
- * to `require` of the chunk's file: what the bundler bundles, and what the Worker can load.
+ * to `require` of the chunk's file: what the bundler bundles, and what the Function can load.
  *
  * Two runtimes come out of a build — `chunks/[turbopack]_runtime.js` for the instrumentation
  * hook and the middleware, `chunks/ssr/[turbopack]_runtime.js` for the app — and each has two

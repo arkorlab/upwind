@@ -1,5 +1,5 @@
-import { MAX_PACK_BYTES } from '@upwind/core/cache';
-import { RESUME_STATE_LENGTH_HEADER } from '@upwind/core/paas';
+import { MAX_PACK_BYTES } from '@stayingupwind/core/cache';
+import { RESUME_STATE_LENGTH_HEADER } from '@stayingupwind/core/paas';
 
 // State arrives via metadata, not Next.js's internally limited postponed request body.
 // Every state that fits the generation record must also be resumable.

@@ -8,18 +8,18 @@ import { dynamicLoadsInChunk } from './dynamic-loads.ts';
 import { externalsPlugin } from './patches/index.ts';
 
 /**
- * The packages a build leaves to the runtime as ES modules, carried as modules of the Worker's own.
+ * The packages a build leaves to the runtime as ES modules, carried as modules of the Function's own.
  *
  * Turbopack leaves some packages out of the server chunks — `serverExternalPackages`, and an ES
  * module package a Pages Router page imports — and links each under `.next/node_modules`, by its
  * name and a hash (`esm-package1-1bee965fe4e3c79d`). A chunk asks for a CommonJS one with a thunk
  * the bundler follows (`<context>.x(id, () => require(id))`); an ES module one it names to the
- * runtime (`<context>.y(id)`), whose `externalImport` hands the name to `import()`, and the Worker
+ * runtime (`<context>.y(id)`), whose `externalImport` hands the name to `import()`, and the Function
  * had no module of that name: every render of a page that imported one failed with "No such
  * module" (`esm-externals`).
  *
  * Each one a chunk names is bundled here as Node.js would have loaded it — resolved through the
- * link from the server chunks, under the `import` condition — into an ES module the Worker carries
+ * link from the server chunks, under the `import` condition — into an ES module the Function carries
  * under that very name, which is what workerd's `import()` looks a bare name up by. An ES module of
  * its own rather than a part of `app.cjs`: a package may await at its top level, which a CommonJS
  * bundle cannot carry. A name with no link under `.next/node_modules` is not one of these, and is
@@ -68,13 +68,13 @@ async function isLinked(distDir: string, id: string): Promise<boolean> {
   }
 }
 
-/** A module the Worker carries, by the name its file was written under. */
+/** A module the Function carries, by the name its file was written under. */
 function moduleOf(outDir: string, chunk: OutputChunk): { name: string; file: string } {
   return { name: chunk.fileName, file: path.join(outDir, chunk.fileName) };
 }
 
 export interface LinkedExternals {
-  /** Each module the Worker carries: the name it is imported by, and the file it was written to. */
+  /** Each module the Function carries: the name it is imported by, and the file it was written to. */
   readonly modules: readonly { readonly name: string; readonly file: string }[];
   readonly trace: BundleTrace;
 }

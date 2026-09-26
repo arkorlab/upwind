@@ -5,13 +5,13 @@ import path from 'node:path';
  * them: `fs.readFileSync(path.join(process.cwd(), 'data.json'))` in a page, `package.json` in a
  * middleware. Next.js's file tracing finds such a read and lists the file among the output's
  * `assets`, beside the code the output loads, for a platform to ship in the function's bundle —
- * which is what `@vercel/nft` traces reads for. The Worker's code is bundled instead, and its
+ * which is what `@vercel/nft` traces reads for. The Function's code is bundled instead, and its
  * virtual file system holds only what is uploaded with it, at `/bundle`, which is where
  * `process.cwd()` points; a file missing there failed the render that read it.
  *
  * So each such file goes up as a module named by its path in the project, which is where the
  * application's own path to it lands. Code is not among them — it is bundled — nor is anything a
- * package carries, nor anything `next build` wrote: those reach the Worker the ways they always
+ * package carries, nor anything `next build` wrote: those reach the Function the ways they always
  * have, or not at all.
  */
 export interface TracedFile {
@@ -20,7 +20,7 @@ export interface TracedFile {
   readonly filePath: string;
 }
 
-/** What the bundler reads, or the Worker cannot: never a file an application reads as data. */
+/** What the bundler reads, or the Function cannot: never a file an application reads as data. */
 const NOT_DATA = new Set([
   '.cjs',
   '.cts',

@@ -7,11 +7,11 @@ import {
   type Prerender,
   type Route,
   type StaticFile,
-} from '@upwind/core/bundle';
-import { ByteLru } from '@upwind/core/util';
+} from '@stayingupwind/core/bundle';
+import { ByteLru } from '@stayingupwind/core/util';
 
 /**
- * What the Worker knows about its deployment. Everything is read from the Worker's own bundle
+ * What the Function knows about its deployment. Everything is read from the Function's own bundle
  * through the virtual file system (`/bundle/...`), once per isolate, and never from the network:
  * a deployment is immutable, so the bytes shipped with the code are the truth for its lifetime.
  */
@@ -33,18 +33,18 @@ const MIB = KIB * KIB;
 const BLOB_MEMO_MIB = 8;
 /**
  * How much of the bundle's blobs an isolate keeps copies of. They are the build's documents, the
- * states that resume them and the files the Worker carries — the kind of bytes the cache
- * runtime's record memo holds for a generation, asked for on the same path (a document the Worker
- * answers itself), so they get the same budget (`cache/runtime.ts`). The rest of a Worker's
+ * states that resume them and the files the Function carries — the kind of bytes the cache
+ * runtime's record memo holds for a generation, asked for on the same path (a document the Function
+ * answers itself), so they get the same budget (`cache/runtime.ts`). The rest of a Function's
  * 128 MB is left to Next.js and to every request in flight.
  */
 const BLOB_MEMO_BYTES = BLOB_MEMO_MIB * MIB;
 
 /**
  * The runtime manifest: the deployment bundle minus the parts only the platform needs. Its
- * `staticFiles` are the few shipped with the Worker (documents and `public/`), not `_next/static`.
+ * `staticFiles` are the few shipped with the Function (documents and `public/`), not `_next/static`.
  */
-type RuntimeManifest = Omit<DeploymentBundle, 'workers' | 'projectDir' | 'generatedAt'>;
+type RuntimeManifest = Omit<DeploymentBundle, 'functions' | 'projectDir' | 'generatedAt'>;
 
 interface RouteShells {
   /** Prerenders whose URL has no dynamic segment left, by pathname (`/en` → shell). */
@@ -59,7 +59,7 @@ export interface Store {
   readonly prerendersByPathname: ReadonlyMap<string, Prerender>;
   /** Document shells per source route (`/[locale]` → its pages and patterns). */
   readonly shellsByRoute: ReadonlyMap<string, RouteShells>;
-  /** Static files shipped with the Worker, by pathname. */
+  /** Static files shipped with the Function, by pathname. */
   readonly staticFiles: ReadonlyMap<string, StaticFile>;
   /** Every pathname Next.js's router should treat as existing on the filesystem. */
   readonly pathnames: string[];
@@ -410,7 +410,7 @@ export function isClassShell(pathname: string): boolean {
  * The document shell for a concrete URL of `route`, if the build produced one: under the route
  * itself, or, for a locale's route of an application with `i18n`, under the page's
  * (`unlocalizedRoute`). Looked up under the locale's route alone, no page of such an application
- * was served from its shell by the Worker: each was rendered whole, and a `fallback: true` member
+ * was served from its shell by the Function: each was rendered whole, and a `fallback: true` member
  * the build left out came back rendered where Next.js answers with the fallback
  * (`middleware-rewrites`, "should rewrite to fallback: true page successfully").
  */

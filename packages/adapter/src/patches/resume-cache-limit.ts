@@ -10,7 +10,7 @@ const NAME = 'resume-cache-limit';
 // eslint-disable-next-line require-unicode-regexp -- a bundler filter: a Go regular expression
 const TARGET = /next-server\/app-page(?:-turbo)?(?:-experimental)?\.runtime\.prod\.js$/;
 const NEXT_LIMIT = /\b\w+\?5\*\w+:524288e3/gu;
-const WORKER_MAX_OUTPUT_BYTES = 134_217_728;
+const FUNCTION_MAX_OUTPUT_BYTES = 134_217_728;
 
 export const resumeCacheLimitPatch: Patch = {
   name: NAME,
@@ -19,7 +19,7 @@ export const resumeCacheLimitPatch: Patch = {
   apply(source, file) {
     const result = new Rewrite(NAME, file, source).replace(
       NEXT_LIMIT,
-      (match) => `Math.min(${match},${WORKER_MAX_OUTPUT_BYTES})`,
+      (match) => `Math.min(${match},${FUNCTION_MAX_OUTPUT_BYTES})`,
       1,
       'the resume cache decompression limit',
     );

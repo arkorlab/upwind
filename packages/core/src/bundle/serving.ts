@@ -24,17 +24,17 @@ import type { DeploymentBundle, Prerender, Route, StaticFile } from './schema.ts
 
 const HTTP_OK = 200;
 /**
- * The documents `next build` writes for an error, which the Worker answers a miss with — under
+ * The documents `next build` writes for an error, which the Function answers a miss with — under
  * these exact names, which are the ones the runtime looks them up by. A `trailingSlash` export
  * writes its not-found a second time, as `404/index.html`, for a visitor who types that path; that
- * one is a file like any other page of the site, so the edge serves it from storage and the Worker
+ * one is a file like any other page of the site, so the edge serves it from storage and the Function
  * never opens it.
  */
 const ERROR_DOCUMENTS: readonly string[] = ['/404', '/500'];
 const KIB = 1024;
-const MAX_WORKER_FILE_KIB = 256;
-/** The largest file, other than an error document, that is shipped with the Worker as well. */
-const MAX_WORKER_FILE_BYTES = MAX_WORKER_FILE_KIB * KIB;
+const MAX_FUNCTION_FILE_KIB = 256;
+/** The largest file, other than an error document, that is shipped with the Function as well. */
+const MAX_FUNCTION_FILE_BYTES = MAX_FUNCTION_FILE_KIB * KIB;
 /**
  * A path with nothing in it for a router to interpret: no parameter, no group, no wildcard. Only
  * such a source and destination say, at build time, exactly which request a rule answers and with
@@ -54,7 +54,7 @@ function isTemplate(pathname: string): boolean {
  * Whether the edge can pick a dynamic route's class the way Next.js picks the route. With `i18n`
  * Next.js rewrites the pathname before matching, and with a `basePath` both the patterns and the
  * pathnames carry a prefix the edge does not strip: an app with either keeps its exact routes and
- * leaves dynamic ones to its Worker.
+ * leaves dynamic ones to its Function.
  */
 function reproducesDynamicRouting(bundle: DeploymentBundle): boolean {
   const { config } = bundle;
@@ -79,9 +79,9 @@ function isConditional(rule: Route): boolean {
 }
 
 /**
- * Whether a shell can be served without the Worker's say on its headers: a header rule with a
+ * Whether a shell can be served without the Function's say on its headers: a header rule with a
  * condition is judged at the edge only where the edge reproduces the router's matching; elsewhere
- * a page such a rule covers keeps its headers, and its document, with the Worker.
+ * a page such a rule covers keeps its headers, and its document, with the Function.
  */
 function headersReproducible(bundle: DeploymentBundle, prerender: Prerender): boolean {
   if (reproducesDynamicRouting(bundle)) {
@@ -151,11 +151,11 @@ function pagesRoutes(bundle: DeploymentBundle): ReadonlySet<string> {
  * on the Node.js runtime. A page on Next.js's edge runtime renders with `postponed: undefined`,
  * so there is no resume to send after its shell, whatever state the build left behind — and
  * nothing of its render is captured for the cache, so it has no generation to serve from either.
- * Its documents, complete or not, are the deployment's Worker's.
+ * Its documents, complete or not, are the deployment's Function's.
  *
  * So is the class shell of a Pages Router route (`fallback: true`): the build's document for a
  * member it never saw is a loading page, not the page, which Next.js renders only at build — the
- * Worker renders the member instead, and a runtime cache holds no generation of the class.
+ * Function renders the member instead, and a runtime cache holds no generation of the class.
  */
 function generationIn(bundle: DeploymentBundle): (prerender: Prerender) => boolean {
   const edgeRuntime = edgeRuntimeRoutes(bundle);
@@ -207,7 +207,7 @@ function resumableBy(
  * The prerenders the edge can serve a shell for: a page whose build produced a shell and the state
  * that resumes it, whether the page has one pathname or is the class shell of a dynamic route the
  * edge can resolve. A blocking page has no shell, and a shell with no postponed state cannot be
- * resumed (Next.js refuses to, vercel/next.js#98647) — both reach the deployment's Worker.
+ * resumed (Next.js refuses to, vercel/next.js#98647) — both reach the deployment's Function.
  */
 export function resumablePrerenders(bundle: DeploymentBundle): Prerender[] {
   return resumableBy(bundle, servableIn(bundle));
@@ -261,7 +261,7 @@ function applicableHeaders(
  * that is caught at request time: the continuation carries the header, the edge sees it and
  * condemns the route. A document the build finished starts no continuation, so nothing would
  * ever see it — the page would quietly lose the header for as long as the deployment lives.
- * It stays with the Worker, which answers it as the application wrote it.
+ * It stays with the Function, which answers it as the application wrote it.
  *
  * A rule with conditions counts here as one without. The edge does judge those per request
  * (`headerRulesFor`), but what it judges them for is a header it may replay, and these are not:
@@ -321,8 +321,8 @@ export function edgeServablePrerenders(
 
 /**
  * The route handlers rendered at build time (`export const revalidate`, or nothing dynamic
- * read): the deployment's Worker serves them whole, from the cache's generation of each. One on
- * the edge runtime has no generation — the Worker runs it for every request.
+ * read): the deployment's Function serves them whole, from the cache's generation of each. One on
+ * the edge runtime has no generation — the Function runs it for every request.
  */
 export function routeHandlerPrerenders(bundle: DeploymentBundle): Prerender[] {
   const edgeRuntime = edgeRuntimeRoutes(bundle);
@@ -341,13 +341,13 @@ export function routeHandlerPrerenders(bundle: DeploymentBundle): Prerender[] {
 
 /**
  * The prerenders a runtime cache holds a generation of, and a deployment seeds it with:
- * every document the edge or the deployment's Worker may answer from one, resumable or complete,
+ * every document the edge or the deployment's Function may answer from one, resumable or complete,
  * whose key is its pathname alone, and every route handler the build rendered.
  *
  * Not only what the edge serves. What keeps a page off the edge — a rule of `next.config` that
  * claims its path before the filesystem, as `trailingSlash` claims every path without the slash;
  * a header rule the edge cannot judge; a template it cannot reach — is about routing at the edge,
- * and the Worker answers the page from its generation all the same. Left unseeded, it had none to
+ * and the Function answers the page from its generation all the same. Left unseeded, it had none to
  * answer from: it served the build's document for as long as the deployment lived, and neither
  * `revalidate` nor `revalidatePath` ever reached it.
  */
@@ -404,7 +404,7 @@ function assetPrefixRewrite(bundle: DeploymentBundle): Route | undefined {
  * A later `beforeFiles` rule that may claim the path a file lands on leaves that file, not every
  * file, to the router: the edge asks it of each request, as it asks its other rules (`isReserved`).
  * Decided here for the whole build, one rule that might claim one chunk had every script under
- * the prefix handed to the Worker, which carries none of them.
+ * the prefix handed to the Function, which carries none of them.
  */
 export function staticFileAssetPrefixOf(
   bundle: DeploymentBundle,
@@ -419,7 +419,7 @@ export function staticFileAssetPrefixOf(
  * Every header rule, in the order Next.js applies them, for the edge to judge on each request —
  * and, for a build whose routing the edge does not reproduce, the rules `next build` writes itself
  * alone (`priority`): the `Service-Worker-Allowed` a service worker registers under, whose pattern
- * names the whole path, base path included, and no locale. Without it the worker of an application
+ * names the whole path, base path included, and no locale. Without it the function of an application
  * with a base path was refused registration, and never controlled a page (`service-worker`).
  */
 export function headerRulesOf(bundle: DeploymentBundle): HeaderRule[] {
@@ -460,24 +460,25 @@ function conditionsOf(route: Route): Pick<DynamicRoute, 'has' | 'missing'> {
 }
 
 /**
- * Whether a file of the build is shipped inside the application's Worker as well as held by the
- * edge. The error documents always are — the Worker answers its own misses with them — and so is
+ * Whether a file of the build is shipped inside the application's Function as well as held by the
+ * edge. The error documents always are — the Function answers its own misses with them — and so is
  * anything small outside `_next/static`, which a rewrite may name. Everything else stays with the
- * edge alone: a Worker has a size limit, and a public asset need not count against it.
+ * edge alone: a Function has a size limit, and a public asset need not count against it.
  */
-export function travelsWithWorker(file: StaticFile, basePath: string, exported = false): boolean {
+export function travelsWithFunction(file: StaticFile, basePath: string, exported = false): boolean {
   if (ERROR_DOCUMENTS.some((document) => file.pathname === `${basePath}${document}`)) {
     return true;
   }
   // A static export ships nothing else: the edge serves every file from storage in every mode the
-  // pointer can be in, and the one reason the Worker carries a small file — a middleware rewrite
+  // pointer can be in, and the one reason the Function carries a small file — a middleware rewrite
   // that lands on it — cannot arise, since a static export has no middleware. A site's every
-  // document is a file here, and a Worker carrying them all would outgrow its size limit.
+  // document is a file here, and a Function carrying them all would outgrow its size limit.
   if (exported) {
     return false;
   }
   return (
-    !file.pathname.startsWith(`${basePath}/_next/`) && file.blob.byteLength <= MAX_WORKER_FILE_BYTES
+    !file.pathname.startsWith(`${basePath}/_next/`) &&
+    file.blob.byteLength <= MAX_FUNCTION_FILE_BYTES
   );
 }
 
@@ -519,15 +520,15 @@ function rewriteCandidate(
     return undefined;
   }
   const file = files.get(destination);
-  return file === undefined || travelsWithWorker(file, basePath)
+  return file === undefined || travelsWithFunction(file, basePath)
     ? undefined
     : { rule, pathname: source, file };
 }
 
 /**
- * The rewrites the edge serves from its own storage rather than handing to the Worker.
+ * The rewrites the edge serves from its own storage rather than handing to the Function.
  *
- * A rewrite to a file too large to travel with the Worker had nowhere to be answered: the Worker
+ * A rewrite to a file too large to travel with the Function had nowhere to be answered: the Function
  * is where routing happens, and the file it resolves to is not in the manifest compiled into it,
  * so the request came back a miss while the edge held the bytes all along. Resolved here, once,
  * against the build — never at request time — and the edge serves the source pathname as the
@@ -618,7 +619,7 @@ export function dynamicRouting(
     });
   };
   // A beforeFiles alias replaces its rule ahead of the filesystem: reserving that rule would
-  // send the request to the Worker, which cannot carry the file. An afterFiles reservation only
+  // send the request to the Function, which cannot carry the file. An afterFiles reservation only
   // guards dynamic matching; direct static-file classification and its gate run before it.
   const aliases = edgeServedRewrites(bundle);
   const servedHere = new Set(aliases.map((served) => served.rule));

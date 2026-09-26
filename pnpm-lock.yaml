@@ -301,10 +301,10 @@ importers:
 
   packages/adapter:
     dependencies:
-      '@upwind/core':
+      '@stayingupwind/core':
         specifier: workspace:*
         version: link:../core
-      '@upwind/runtime':
+      '@stayingupwind/runtime':
         specifier: workspace:*
         version: link:../runtime
       esbuild:
@@ -348,7 +348,7 @@ importers:
       '@next/routing':
         specifier: 'catalog:'
         version: 16.3.6
-      '@upwind/core':
+      '@stayingupwind/core':
         specifier: workspace:*
         version: link:../core
     devDependencies:

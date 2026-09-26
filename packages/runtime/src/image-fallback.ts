@@ -9,14 +9,19 @@ import {
   sourceSizeLimit,
   SVG,
   upstreamMaxAge,
-} from '@upwind/core/images';
-import { REDIRECT_STATUSES } from '@upwind/core/request';
-import { isBodyLimitError, limitBody, readBoundedBody, releaseStream } from '@upwind/core/util';
+} from '@stayingupwind/core/images';
+import { REDIRECT_STATUSES } from '@stayingupwind/core/request';
+import {
+  isBodyLimitError,
+  limitBody,
+  readBoundedBody,
+  releaseStream,
+} from '@stayingupwind/core/util';
 
 /**
- * `/_next/image` reaching the Worker itself.
+ * `/_next/image` reaching the Function itself.
  *
- * The edge optimizes images; the Worker has no encoder. But the edge proxies everything while it
+ * The edge optimizes images; the Function has no encoder. But the edge proxies everything while it
  * has no manifest to serve from — before a first deployment activates, while a manifest cannot
  * be read — and a page must not lose its images for that. So a request that gets this far —
  * asked for directly, or rewritten here by a rule of `next.config` — is answered with the source

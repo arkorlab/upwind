@@ -15,7 +15,7 @@ const ROUTER_SERVER_METHODS = Symbol.for('@next/router-server-methods');
 const PROJECT_DIR = '.';
 
 function install(key: symbol, hooks: unknown): void {
-  if (__ARKOR_WORKER_KIND__ === 'app' && !Reflect.has(globalThis, key)) {
+  if (__ARKOR_FUNCTION_KIND__ === 'app' && !Reflect.has(globalThis, key)) {
     Reflect.set(globalThis, key, hooks);
   }
 }

@@ -7,7 +7,7 @@
  *
  * A patch knows how many places it expects to rewrite. Fewer means Next.js moved the code and the
  * rewrite silently missed it; more means it matched something it never meant to. Both fail the
- * build: a Worker that starts with a `require("vm")` or a chunk loader still resolving paths does
+ * build: a Function that starts with a `require("vm")` or a chunk loader still resolving paths does
  * not fail until the first request that needs it.
  */
 
@@ -117,7 +117,7 @@ export class Rewrite {
 
   fail(detail: string): PatchError {
     return new PatchError(
-      `@upwind/adapter: ${this.#patch} could not patch ${this.#file}: ${detail}; this Next.js version is not supported`,
+      `@stayingupwind/adapter: ${this.#patch} could not patch ${this.#file}: ${detail}; this Next.js version is not supported`,
     );
   }
 

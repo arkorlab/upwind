@@ -8,8 +8,8 @@ import {
   policyFromCacheControl,
   type RouteEntryDescriptor,
   tagKindOf,
-} from '@upwind/core/cache';
-import { REDIRECT_STATUSES } from '@upwind/core/request';
+} from '@stayingupwind/core/cache';
+import { REDIRECT_STATUSES } from '@stayingupwind/core/request';
 
 import type { NodeHandler } from '../app-module.ts';
 import { render404 } from '../error-pages.ts';
@@ -508,7 +508,7 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
  * Whether a visitor may be answered with what a render or a generation says, as it says it: never
  * a status a `Response` cannot carry — below 200 — nor a server error, which no generation is
  * published under, and never a redirect that does not say where it leads. That one would send the
- * visitor nowhere. A record can say either: one seeded by a deployment older than the Worker
+ * visitor nowhere. A record can say either: one seeded by a deployment older than the Function
  * that reads it, or than the upload check that now holds a status to 200–599, does.
  */
 export function servable(status: number, headers: Readonly<Record<string, string>>): boolean {

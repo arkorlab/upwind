@@ -1,6 +1,6 @@
-import type { Prerender } from '@upwind/core/bundle';
-import { anyConditionHolds, NULL_BODY_STATUSES } from '@upwind/core/request';
-import { releaseStream } from '@upwind/core/util';
+import type { Prerender } from '@stayingupwind/core/bundle';
+import { anyConditionHolds, NULL_BODY_STATUSES } from '@stayingupwind/core/request';
+import { releaseStream } from '@stayingupwind/core/util';
 
 import type { NodeHandler } from './app-module.ts';
 import type { CacheRuntime } from './cache/runtime.ts';

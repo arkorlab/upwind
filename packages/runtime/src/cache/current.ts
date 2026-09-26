@@ -6,13 +6,13 @@ import {
   type RouteEntryDescriptor,
   type Validity,
   verifyGenerationPack,
-} from '@upwind/core/cache';
-import { withDeadline } from '@upwind/core/util';
+} from '@stayingupwind/core/cache';
+import { withDeadline } from '@stayingupwind/core/util';
 
 import type { CacheRuntime } from './runtime.ts';
 
 /**
- * The current generation of an entry, as the Worker reads it when it answers a document itself:
+ * The current generation of an entry, as the Function reads it when it answers a document itself:
  * the same delivery record the edge reads, through the host, kept for one hold. What the
  * record says is judged the way the edge judges it, so the two never serve different things.
  */
@@ -30,7 +30,7 @@ export type CurrentLookup =
 
 /**
  * How long a document waits for its record before the build's own shell answers instead. The
- * Worker answers a document itself only where the edge could not serve the shell; the record is
+ * Function answers a document itself only where the edge could not serve the shell; the record is
  * a bonus there, not a wait the visitor should notice.
  */
 const RECORD_DEADLINE_MS = 200;
@@ -97,9 +97,9 @@ export async function currentGeneration(
   // What this isolate knows of the generation's tags counts as well: its own invalidation is in
   // force here at once (`applyLocal`), and the record — read through the host, and kept for a
   // hold — may say nothing of it yet. Judged on the record alone, a page revalidated by this
-  // Worker went on being answered as it was until the hold ran out.
+  // Function went on being answered as it was until the hold ran out.
   //
-  // Read, not synced: `syncLocal` here would be a round trip on the path a Worker answers a
+  // Read, not synced: `syncLocal` here would be a round trip on the path a Function answers a
   // document from. What this isolate did itself is kept for it whatever else it is told
   // (`MAX_APPLIED_MARKS`); another isolate's invalidation reaches the record, which is what the
   // rest of this function is judging, within the lag its own read already has.

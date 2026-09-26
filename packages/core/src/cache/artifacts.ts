@@ -6,7 +6,7 @@ import { sha256HexSchema } from '../artifact/artifact.ts';
  * The outputs of one generation and the bytes behind them.
  *
  * An artifact reference names bytes by content and by the role they play; `storageRef` is where the
- * platform keeps them and never leaves a Worker — a browser gets an `artifactId` that only resolves
+ * platform keeps them and never leaves a Function — a browser gets an `artifactId` that only resolves
  * inside an authorized scope. An output snapshot is one response of the generation (the document,
  * its RSC twin, a segment, the Pages data, a route body), with the status and headers it is served
  * with and the artifacts it is made of. A legitimate zero-byte body is an artifact of length zero;
@@ -43,7 +43,7 @@ export type CacheArtifactRef = z.infer<typeof cacheArtifactRefSchema>;
 export const publicArtifactRefSchema = cacheArtifactRefSchema.omit({ storageRef: true });
 export type PublicArtifactRef = z.infer<typeof publicArtifactRefSchema>;
 
-/** The same reference without its storage key: the form that may leave a Worker. */
+/** The same reference without its storage key: the form that may leave a Function. */
 export function publicArtifactRef(ref: CacheArtifactRef): PublicArtifactRef {
   return {
     artifactId: ref.artifactId,

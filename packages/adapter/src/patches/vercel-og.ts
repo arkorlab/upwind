@@ -6,22 +6,22 @@ import { type Patch, Rewrite } from './types.ts';
  * Next.js ships two builds of `@vercel/og` and leaves the choice to the runtime's conditions. A
  * Node.js build picks `index.node.js`, which Turbopack keeps external: the chunk it emits is one
  * line, `externalImport("next/dist/compiled/@vercel/og/index.node.js")`, a module named at run
- * time that no bundler can follow and that a Worker therefore does not have. So every request to
+ * time that no bundler can follow and that a Function therefore does not have. So every request to
  * such a route fails — and would still fail if the module were bundled, because that build reads
  * `resvg.wasm` and its fallback font off disk with `fs.readFileSync`, and then compiles the
  * WebAssembly on the spot, in every isolate, on the first request to reach one.
  *
  * `index.edge.js` is the same library built for a runtime with neither a file system nor a
- * compile budget, and it is written in exactly the form a Worker wants:
+ * compile budget, and it is written in exactly the form a Function wants:
  * `import resvg_wasm from "./resvg.wasm?module"`. Cloudflare compiles those two modules at
- * upload, `wasmModulePlugin` resolves the imports to the globals the Worker publishes, and
+ * upload, `wasmModulePlugin` resolves the imports to the globals the Function publishes, and
  * nothing is read at run time. So the external import becomes an `import()` of that build — a
  * dynamic one, deliberately: the bundler can follow it, and the library it names is then
- * evaluated by the first request that renders an image rather than at the Worker's start.
+ * evaluated by the first request that renders an image rather than at the Function's start.
  *
  * What is left is its fallback font, which it `fetch`es from its own `import.meta.url` — a
- * `file:` URL under `node_modules`, which `fetch` in a Worker will not open. The font travels
- * with the Worker instead and is read back through the same virtual file system the runtime
+ * `file:` URL under `node_modules`, which `fetch` in a Function will not open. The font travels
+ * with the Function instead and is read back through the same virtual file system the runtime
  * reads its manifests and blobs from.
  */
 
@@ -76,12 +76,12 @@ const IMAGE_RESPONSE_PATCH = 'vercel-og-image-response';
 /**
  * `next/dist/server/og/image-response.js` — what an application's own `import … from '@vercel/og'`
  * is, since `next build` aliases the package to it (`create-compiler-aliases`, `'@vercel/og$'`).
- * Turbopack keeps it external (`e.x("next/dist/server/og/image-response", …)`), so the Worker
- * bundles it from `node_modules`, where two things in it reach for what a Worker does not have.
+ * Turbopack keeps it external (`e.x("next/dist/server/og/image-response", …)`), so the Function
+ * bundles it from `node_modules`, where two things in it reach for what a Function does not have.
  */
 const IMAGE_RESPONSE_TARGET = /\/next\/dist\/server\/og\/image-response\.js$/u;
 /**
- * The library, by the build `NEXT_RUNTIME` picks — the Node.js one, since the app Worker is
+ * The library, by the build `NEXT_RUNTIME` picks — the Node.js one, since the app Function is
  * bundled with `NEXT_RUNTIME` pinned to `"nodejs"`. That is the build the patch above keeps out,
  * for the reasons it gives; it also brings `sharp`, a native module whose loader the bundler
  * cannot follow.
@@ -92,7 +92,7 @@ const RUNTIME_PICK = `import(process.env.NEXT_RUNTIME === 'edge' ? '${EDGE_BUILD
  * (`define-env`) and a module left out of the bundle reads from the process's environment, where
  * nothing of Next.js's sets it: on `next start` the branch never runs, and the modules it would
  * require — `react-server-dom-webpack/static` and `/client` — are not installed for it to find.
- * Bundled here, the branch is followed all the same and names two modules a Worker has not got.
+ * Bundled here, the branch is followed all the same and names two modules a Function has not got.
  */
 const CACHED_BODY =
   /\nif \(process\.env\.NEXT_RUNTIME !== 'edge' && process\.env\.__NEXT_CACHE_COMPONENTS\) \{\n {4}getCachedImageResponseBody = require\('\.\/cache-image-response'\)\.getCachedImageResponseBody;\n\}/gu;

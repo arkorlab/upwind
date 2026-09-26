@@ -203,7 +203,7 @@ const MAX_IMMUTABLE_ASSET_MIB = 8;
  * Largest immutable asset the edge will admit, and therefore the most that has to be read when
  * validation compares the edge's copy with the origin's.
  *
- * This is not a number held up against a header: a Worker subrequest arrives without
+ * This is not a number held up against a header: a Function subrequest arrives without
  * `Content-Length`, so it is how many bytes the edge pulls into the isolate — behind the response,
  * while the client reads the same body — to find out how many there are. That makes it a memory
  * budget, which is why it matches `MAX_ORIGIN_DOCUMENT_BYTES`: the same isolate, bounded the same
@@ -220,7 +220,7 @@ const DELIVERABLE_REFUSALS: ReadonlySet<AssetRejection> = new Set([CONTENT_ENCOD
  * Every other rejection is a statement about the response: it sets a cookie, it varies, its own
  * origin said not to hold it. This one is a statement about the edge — the origin's declaration is
  * sound and the edge simply is not the one to keep the bytes — so the browser and the cache in
- * front of the Worker keep their entitlement.
+ * front of the Function keep their entitlement.
  */
 export function refusalAllowsStorage(reason: AssetRejection): boolean {
   return DELIVERABLE_REFUSALS.has(reason);
@@ -258,7 +258,7 @@ function rejectResponse(input: AssetScreenInput): AssetRejection | undefined {
 /**
  * Every question about an immutable-asset candidate that a header can answer.
  *
- * Size is not one of them, and it is not a rejection at all. A Cloudflare Worker subrequest arrives
+ * Size is not one of them, and it is not a rejection at all. A Cloudflare Function subrequest arrives
  * without `Content-Length` — the runtime sets that from the data source, and a subrequest body is a
  * stream — so the length belongs to whoever reads the body, and by then the headers have been
  * committed. An asset too large to keep is delivered as the admitted asset it is, and simply not

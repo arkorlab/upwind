@@ -3,8 +3,8 @@ import {
   pagesPathnameOfData,
   type Prerender,
   queryDependent,
-} from '@upwind/core/bundle';
-import { MIDDLEWARE_PREFETCH_HEADER } from '@upwind/core/request';
+} from '@stayingupwind/core/bundle';
+import { MIDDLEWARE_PREFETCH_HEADER } from '@stayingupwind/core/request';
 
 import { entryFor } from './entries.ts';
 import { serveFromGeneration } from './generations.ts';
@@ -21,7 +21,7 @@ import {
 import { findShell, type Store } from './store.ts';
 
 /**
- * The outputs of an entry beside its document, which the Worker answers itself: a Pages Router
+ * The outputs of an entry beside its document, which the Function answers itself: a Pages Router
  * page's data route, and a route handler rendered at build. Each is served from the entry's
  * current generation as the document is, from the build's own output while the cache holds
  * none, and by the handler where the build made nothing to keep.

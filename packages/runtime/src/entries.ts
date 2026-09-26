@@ -24,7 +24,7 @@ import { asMiddleware } from './middleware-scope.ts';
  * request on this awaits a value that is already there.
  */
 
-/** Where a deployment's entrypoints live: the Worker's two generated modules. */
+/** Where a deployment's entrypoints live: the Function's two generated modules. */
 export interface EntryTables {
   readonly app: AppModule;
   readonly edge: EdgeModule;

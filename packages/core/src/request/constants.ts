@@ -182,11 +182,11 @@ export const SHELL_RESPONSE_HEADER_ALLOWLIST: readonly string[] = [
 
 /**
  * Response headers a response kept whole is never replayed with — a route handler's, which the
- * deployment's Worker answers from its generation as the handler answered it.
+ * deployment's Function answers from its generation as the handler answered it.
  *
  * What belonged to the one transmission it was captured from: its framing, its encoding (the
  * record keeps the bytes as they are), its date and age, and the lifetime it went out with, which
- * the record's policy states and the Worker answers for itself. What belonged to the one visitor
+ * the record's policy states and the Function answers for itself. What belonged to the one visitor
  * it answered: a cookie. And what Next.js tells the platform on a response rather than the client
  * — the tags it was rendered with, which the record carries as tags of its own.
  */

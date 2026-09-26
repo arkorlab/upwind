@@ -6,19 +6,19 @@ import type {
   InvalidationState,
   OutputCompute,
   OutputResponse,
-} from '@upwind/core/cache';
+} from '@stayingupwind/core/cache';
 
 /**
- * The cache a deployment's Worker takes part in, as this runtime speaks to it.
+ * The cache a deployment's Function takes part in, as this runtime speaks to it.
  *
  * The runtime keeps no cache of its own. It derives an entry's identity, judges what it reads
  * against the tags it has synced, renders a generation and says what the generation is made of —
  * and hands every read and every write to a host that stores them. What that host is, where it
  * lives and how it is reached is the host's business: this interface is the whole of what the
- * runtime needs from one, and a deployment whose Worker was given no host runs as it did before
+ * runtime needs from one, and a deployment whose Function was given no host runs as it did before
  * any cache existed, answering every read a miss.
  *
- * Two things are deliberately not here. **Transport**: a host is handed the Worker's environment
+ * Two things are deliberately not here. **Transport**: a host is handed the Function's environment
  * and finds its own way to whatever stores the entries, so nothing about a URL, a binding or a
  * credential appears in this file. **Bookkeeping the runtime does not read**: a response type
  * below holds the fields the runtime acts on and no others, and a request type omits what the
@@ -26,7 +26,7 @@ import type {
  *
  * An entry is the logical thing a new generation replaces: a route's output, or one value of the
  * data cache. A generation is published through an *attempt* — a lease taken on the entry, so two
- * Workers cannot both publish for it, with a fencing token that says which lease a call belongs
+ * Functions cannot both publish for it, with a fencing token that says which lease a call belongs
  * to and a heartbeat that says the holder is still working. The host decides how long a lease
  * lasts and what happens to an expired one; the runtime only reports what it did with its own.
  */
@@ -340,7 +340,7 @@ export { nativeFetch } from './native.ts';
 export { requestClock } from './clock.ts';
 
 export interface CacheHostInit {
-  /** The Worker's own environment, unread by the runtime and passed through as it arrived. */
+  /** The Function's own environment, unread by the runtime and passed through as it arrived. */
   readonly env: Record<string, unknown> | undefined;
   /**
    * Stands in for the way *out*, and for nothing else: what a test or a local bench puts in

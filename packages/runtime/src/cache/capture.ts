@@ -4,7 +4,7 @@ import {
   type RouteEntryKind,
   type RuntimeCacheControl,
   runtimeCacheControlFromHeader,
-} from '@upwind/core/cache';
+} from '@stayingupwind/core/cache';
 
 import { readWithin } from './body.ts';
 

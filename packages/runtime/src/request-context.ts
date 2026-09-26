@@ -10,7 +10,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
  * response is not held for it. Without the context it logs "No session context found" and drops
  * the event; an application that never touched its code should not have to.
  *
- * One store per request, scoped by `AsyncLocalStorage`: a Worker isolate serves many requests at
+ * One store per request, scoped by `AsyncLocalStorage`: a Function isolate serves many requests at
  * once, and a global set per request would hand one visitor's headers to another's `track()`.
  */
 

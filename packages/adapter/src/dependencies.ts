@@ -1,15 +1,15 @@
 import path from 'node:path';
 
-import type { WorkerModule } from '@upwind/core/bundle';
+import type { FunctionModule } from '@stayingupwind/core/bundle';
 
 import type { DynamicLoad } from './dynamic-loads.ts';
 import type { AppliedPatch } from './patches/index.ts';
 
 /**
- * What went into a Worker, and what was done to it: written to `.ppr-cdn/dependencies.json` so
+ * What went into a Function, and what was done to it: written to `.ppr-cdn/dependencies.json` so
  * that a change in the bundle's makeup — a package newly pulled in, a Next.js file the patches
  * no longer find, a `require` the bundler could not follow — is visible in a diff and not only
- * in a failing Worker. The same record is what the audit reads: a Worker that would fail to
+ * in a failing Function. The same record is what the audit reads: a Function that would fail to
  * start or to serve fails the build here instead.
  */
 
@@ -26,7 +26,7 @@ export function bundled(
   return { file, bytes: module.renderedLength };
 }
 
-/** What one of a Worker's bundles is made of; a Worker has one for its code and one for its edge code. */
+/** What one of a Function's bundles is made of; a Function has one for its code and one for its edge code. */
 export interface BundleDependencies {
   /** Files bundled from the build output (`.next/…`), with the bytes each puts in the bundle. */
   readonly buildOutput: readonly DependencyInput[];
@@ -34,11 +34,11 @@ export interface BundleDependencies {
   readonly packages: Readonly<Record<string, { readonly files: number; readonly bytes: number }>>;
   /** Files bundled from anywhere else (the generated entry, the stubs). */
   readonly other: readonly DependencyInput[];
-  /** Specifiers left for the Worker's own resolver: Node built-ins. */
+  /** Specifiers left for the Function's own resolver: Node built-ins. */
   readonly externals: readonly string[];
   /**
    * Specifiers no module was found for, in a bundle of packages the runtime imports lazily
-   * (`linked-externals.ts`): an import that fails in the Worker as it would under Node.js, when it
+   * (`linked-externals.ts`): an import that fails in the Function as it would under Node.js, when it
    * runs. Recorded, not refused.
    */
   readonly unresolved?: readonly string[];
@@ -60,48 +60,48 @@ export interface BundleDependencies {
    */
   readonly dynamicRequires: readonly string[];
   /**
-   * The `.wasm` this bundle imported as WebAssembly, each with the global the Worker publishes it
+   * The `.wasm` this bundle imported as WebAssembly, each with the global the Function publishes it
    * under. Only what the bundler resolved itself; what Turbopack's own loader asks for is in
    * `patches` instead, as the `wasm-loader` patch's table.
    */
   readonly wasmModules: readonly string[];
 }
 
-export interface WorkerDependencies extends BundleDependencies {
-  /** The Worker's modules, by name, with their type and byte length. */
+export interface FunctionDependencies extends BundleDependencies {
+  /** The Function's modules, by name, with their type and byte length. */
   readonly modules: readonly {
     readonly name: string;
     readonly type: string;
     readonly bytes: number;
   }[];
-  /** What the Worker weighs, as Cloudflare measures it. */
-  readonly size: WorkerSize;
-  /** The same record for the Worker's edge bundle, when the build put entrypoints on it. */
+  /** What the Function weighs, as Cloudflare measures it. */
+  readonly size: FunctionSize;
+  /** The same record for the Function's edge bundle, when the build put entrypoints on it. */
   readonly edge?: BundleDependencies;
   /**
    * The same record for the packages the build leaves to the runtime as ES modules, which the
-   * Worker carries as modules of their own (`linked-externals.ts`), when the chunks import any.
+   * Function carries as modules of their own (`linked-externals.ts`), when the chunks import any.
    */
   readonly linked?: BundleDependencies;
 }
 
-export interface WorkerSize {
+export interface FunctionSize {
   readonly bytes: number;
   /** Gzipped, which is the number Cloudflare's 10 MiB limit is measured against. */
   readonly gzipBytes: number;
 }
 
-/** What `bundleApp` collects while it runs, for `workerDependencies` to record afterwards. */
+/** What `bundleApp` collects while it runs, for `functionDependencies` to record afterwards. */
 export interface BundleTrace {
   /** Every module bundled — a file by absolute path, a stub by its id — with its bytes in the output. */
   readonly inputs: readonly DependencyInput[];
-  /** Specifiers the bundler left for the Worker's own resolver. */
+  /** Specifiers the bundler left for the Function's own resolver. */
   readonly externals: readonly string[];
   /** Specifiers the bundler found nothing for, where that is not a failure (`unresolved`). */
   readonly unresolved?: readonly string[];
   readonly patches: readonly AppliedPatch[];
   readonly stubs: readonly string[];
-  /** `.wasm` the bundler resolved to the Worker's own module, as `<file> -> <global>`. */
+  /** `.wasm` the bundler resolved to the Function's own module, as `<file> -> <global>`. */
   readonly wasmModules: readonly string[];
   /** `require` and `import()` calls the bundler could not follow, where each module makes them. */
   readonly dynamicLoads: readonly DynamicLoad[];
@@ -137,18 +137,18 @@ function displayPath(projectDir: string, file: string): string {
   return (inside ?? path.relative(projectDir, file)).split(path.sep).join('/');
 }
 
-/** The Worker as it will be uploaded: the modules it carries, and what they weigh together. */
-export interface WorkerUpload {
-  readonly modules: readonly WorkerModule[];
-  readonly size: WorkerSize;
+/** The Function as it will be uploaded: the modules it carries, and what they weigh together. */
+export interface FunctionUpload {
+  readonly modules: readonly FunctionModule[];
+  readonly size: FunctionSize;
 }
 
-export function workerDependencies(
+export function functionDependencies(
   projectDir: string,
   distDir: string,
   trace: BundleTrace,
-  upload: WorkerUpload,
-): WorkerDependencies {
+  upload: FunctionUpload,
+): FunctionDependencies {
   return {
     ...bundleDependencies(projectDir, distDir, trace),
     modules: upload.modules.map((module) => moduleRecord(module)),
@@ -160,9 +160,9 @@ const KIB = 1024;
 const MIB = KIB * KIB;
 const GZIP_LIMIT_MIB = 10;
 const RAW_LIMIT_MIB = 64;
-/** Cloudflare's per-Worker limits: 10 MiB gzipped on a paid plan, 64 MiB before compression. */
-const MAX_WORKER_GZIP_BYTES = GZIP_LIMIT_MIB * MIB;
-const MAX_WORKER_BYTES = RAW_LIMIT_MIB * MIB;
+/** Cloudflare's per-Function limits: 10 MiB gzipped on a paid plan, 64 MiB before compression. */
+const MAX_FUNCTION_GZIP_BYTES = GZIP_LIMIT_MIB * MIB;
+const MAX_FUNCTION_BYTES = RAW_LIMIT_MIB * MIB;
 const MIB_DIGITS = 1;
 /** Enough to show where the room went without printing the whole record. */
 const HEAVIEST_MODULES = 5;
@@ -171,18 +171,18 @@ function mib(bytes: number): string {
   return `${(bytes / MIB).toFixed(MIB_DIGITS)} MiB`;
 }
 
-/** Which limit a Worker is over, said as the message will say it; `undefined` when it is under. */
-function overLimit(size: WorkerSize): string | undefined {
-  if (size.gzipBytes > MAX_WORKER_GZIP_BYTES) {
-    return `${mib(size.gzipBytes)} gzipped, over Cloudflare's ${mib(MAX_WORKER_GZIP_BYTES)} limit`;
+/** Which limit a Function is over, said as the message will say it; `undefined` when it is under. */
+function overLimit(size: FunctionSize): string | undefined {
+  if (size.gzipBytes > MAX_FUNCTION_GZIP_BYTES) {
+    return `${mib(size.gzipBytes)} gzipped, over Cloudflare's ${mib(MAX_FUNCTION_GZIP_BYTES)} limit`;
   }
-  if (size.bytes > MAX_WORKER_BYTES) {
-    return `${mib(size.bytes)}, over Cloudflare's ${mib(MAX_WORKER_BYTES)} limit before compression`;
+  if (size.bytes > MAX_FUNCTION_BYTES) {
+    return `${mib(size.bytes)}, over Cloudflare's ${mib(MAX_FUNCTION_BYTES)} limit before compression`;
   }
   return undefined;
 }
 
-/** What one bundle of a Worker is made of; `edge` in the record is this, for `edge.cjs`. */
+/** What one bundle of a Function is made of; `edge` in the record is this, for `edge.cjs`. */
 export function bundleDependencies(
   projectDir: string,
   distDir: string,
@@ -238,15 +238,15 @@ function describeLoad(projectDir: string, load: DynamicLoad): string {
   return `${displayPath(projectDir, load.file)}:${load.line}: ${load.text}`;
 }
 
-function moduleRecord(module: WorkerModule): { name: string; type: string; bytes: number } {
+function moduleRecord(module: FunctionModule): { name: string; type: string; bytes: number } {
   return { name: module.name, type: module.type, bytes: module.blob.byteLength };
 }
 
 /**
- * The Node built-ins a Worker may import, with or without the `node:` prefix: what the bundled
+ * The Node built-ins a Function may import, with or without the `node:` prefix: what the bundled
  * Next.js — and what an application bundles beside it, an error reporter say — reaches for today. Under `nodejs_compat` every built-in
  * import resolves — the ones workerd does not implement are stubs that throw when used — so
- * this is not what starts the Worker but what is known to be reached only where it works, by
+ * this is not what starts the Function but what is known to be reached only where it works, by
  * the runtime tests. A new one is a question — does workerd implement it, and is it called? —
  * asked here, at build time, rather than by a request that fails.
  */
@@ -254,11 +254,11 @@ const ALLOWED_BUILTINS: ReadonlySet<string> = new Set([
   'assert',
   'async_hooks',
   'buffer',
-  // Imported by Sentry's Node SDK and never called from a Worker: a stub in workerd.
+  // Imported by Sentry's Node SDK and never called from a Function: a stub in workerd.
   'child_process',
   'crypto',
-  // Imported by OpenTelemetry's Node.js SDK, for an exporter a Worker does not send through: a
-  // stub in workerd. Like `dns` and `http2`, it is found by `require` under the Worker's
+  // Imported by OpenTelemetry's Node.js SDK, for an exporter a Function does not send through: a
+  // stub in workerd. Like `dns` and `http2`, it is found by `require` under the Function's
   // compatibility date and flags, as `process` is not (see `loader-hooks.ts`).
   'dgram',
   'diagnostics_channel',
@@ -280,7 +280,7 @@ const ALLOWED_BUILTINS: ReadonlySet<string> = new Set([
   'path/posix',
   'perf_hooks',
   'querystring',
-  // Imported by Sentry's context-lines integration, never called from a Worker: a stub in workerd.
+  // Imported by Sentry's context-lines integration, never called from a Function: a stub in workerd.
   'readline',
   // Imported by better-auth's Kysely adapter for the SQLite it can drive; not the one here.
   'sqlite',
@@ -341,7 +341,7 @@ function isAllowedDynamicLoad(load: string): boolean {
   return ALLOWED_DYNAMIC_LOADS.some((pattern) => pattern.test(load));
 }
 
-/** What must not survive in a bundled app: each is a Worker that fails to start or to serve. */
+/** What must not survive in a bundled app: each is a Function that fails to start or to serve. */
 const FORBIDDEN_IN_APP: readonly (readonly [RegExp, string])[] = [
   [/require\(["'`](?:node:)?vm["'`]\)/u, 'a use of node:vm'],
   [/runInNewContext/u, 'a use of node:vm'],
@@ -357,7 +357,7 @@ export class AuditError extends Error {
 }
 
 /**
- * A file the application reads, under a name the Worker already carries a module of its own under
+ * A file the application reads, under a name the Function already carries a module of its own under
  * — `runtime.json`, the deployment's manifest, say. The file is found at its path in the project,
  * and the application would be handed that module where it asked for its file, so the build is
  * refused rather than one silently read in place of the other.
@@ -371,7 +371,7 @@ export function auditTracedFiles(
   const clashing = files.filter((file) => taken.has(file.name)).map((file) => file.name);
   if (clashing.length > 0) {
     throw new AuditError(
-      `@upwind/adapter: the application reads ${clashing.join(', ')}, which the ${kind} Worker carries a module of its own under; rename the file`,
+      `@stayingupwind/adapter: the application reads ${clashing.join(', ')}, which the ${kind} Function carries a module of its own under; rename the file`,
     );
   }
 }
@@ -379,7 +379,7 @@ export function auditTracedFiles(
 /**
  * What Cloudflare will refuse to accept, refused here instead.
  *
- * A Worker that is too large fails at upload, long after the build that made it and with a
+ * A Function that is too large fails at upload, long after the build that made it and with a
  * message about a number rather than about a deployment. WebAssembly is what makes this worth
  * checking: `@vercel/og`'s two modules are 1.4 MiB on their own, and an application may bring
  * more.
@@ -388,7 +388,7 @@ export function auditTracedFiles(
  * build throws here, before that file is written, so in exactly the case where the breakdown is
  * wanted there would be none to read.
  */
-export function auditWorkerSize(kind: string, upload: WorkerUpload): void {
+export function auditFunctionSize(kind: string, upload: FunctionUpload): void {
   const over = overLimit(upload.size);
   if (over === undefined) {
     return;
@@ -398,11 +398,11 @@ export function auditWorkerSize(kind: string, upload: WorkerUpload): void {
     .slice(0, HEAVIEST_MODULES)
     .map((module) => `${module.name} (${mib(module.blob.byteLength)})`);
   throw new AuditError(
-    `@upwind/adapter: the ${kind} Worker is ${over}; its largest modules are ${heaviest.join(', ')}`,
+    `@stayingupwind/adapter: the ${kind} Function is ${over}; its largest modules are ${heaviest.join(', ')}`,
   );
 }
 
-/** What would fail the Worker in one of its bundles: the source as rendered, and its record. */
+/** What would fail the Function in one of its bundles: the source as rendered, and its record. */
 function problemsIn(source: string, bundle: BundleDependencies): string[] {
   const problems: string[] = [];
   for (const [pattern, what] of FORBIDDEN_IN_APP) {
@@ -423,11 +423,11 @@ function problemsIn(source: string, bundle: BundleDependencies): string[] {
   return problems;
 }
 
-/** Fail the build on what would fail the Worker: each of its bundles is held to the same rules. */
-export function auditWorker(
+/** Fail the build on what would fail the Function: each of its bundles is held to the same rules. */
+export function auditFunction(
   kind: string,
   sources: { readonly app: string; readonly edge?: string; readonly linked?: string },
-  dependencies: WorkerDependencies,
+  dependencies: FunctionDependencies,
 ): void {
   const problems = problemsIn(sources.app, dependencies);
   if (sources.edge !== undefined && dependencies.edge !== undefined) {
@@ -438,6 +438,6 @@ export function auditWorker(
   }
   if (problems.length > 0) {
     const list = problems.map((problem) => `  - ${problem}`).join('\n');
-    throw new AuditError(`@upwind/adapter: the ${kind} Worker would not run:\n${list}`);
+    throw new AuditError(`@stayingupwind/adapter: the ${kind} Function would not run:\n${list}`);
   }
 }

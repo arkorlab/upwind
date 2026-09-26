@@ -3,7 +3,7 @@
  *
  * Next.js requires it and, when the require throws, falls back to the copy it ships
  * (`next/dist/server/lib/trace/tracer.js`). A bundler has no try/catch: Rolldown cannot resolve a
- * package that is not installed, leaves the specifier external with a warning, and a Worker has
+ * package that is not installed, leaves the specifier external with a warning, and a Function has
  * no resolver to satisfy it at run time — so the audit refuses the build. Every app without
  * OpenTelemetry installed hits this, which is every app that is not already using it.
  *

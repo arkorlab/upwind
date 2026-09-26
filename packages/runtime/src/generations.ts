@@ -1,5 +1,5 @@
-import { pagesDataPathname, queryDependent } from '@upwind/core/bundle';
-import type { DecodedGenerationPack, RouteEntryDescriptor } from '@upwind/core/cache';
+import { pagesDataPathname, queryDependent } from '@stayingupwind/core/bundle';
+import type { DecodedGenerationPack, RouteEntryDescriptor } from '@stayingupwind/core/cache';
 import {
   CACHE_OUTCOME_HEADER,
   CACHE_ROUTE_ESCAPED_HEADER,
@@ -10,9 +10,9 @@ import {
   pathFromHeaders,
   REGENERATE_HEADER,
   type RegenerateMode,
-} from '@upwind/core/paas';
-import { NULL_BODY_STATUSES } from '@upwind/core/request';
-import { releaseStream } from '@upwind/core/util';
+} from '@stayingupwind/core/paas';
+import { NULL_BODY_STATUSES } from '@stayingupwind/core/request';
+import { releaseStream } from '@stayingupwind/core/util';
 
 import type { NodeHandler } from './app-module.ts';
 import { cacheLifetimeOf, type CapturedRender, renderCaptured } from './cache/capture.ts';
@@ -46,7 +46,7 @@ import { entrypointKindOf, findShell, isClassShell, type Store } from './store.t
 
 /**
  * The runtime cache's part in answering a request: a regeneration the edge asked for beside a
- * resume, in the foreground, or on its own; and, for what the Worker answers itself — a document,
+ * resume, in the foreground, or on its own; and, for what the Function answers itself — a document,
  * a Pages Router page's data, a route handler's body — the current generation rather than the
  * build's output. A resume from a generation's state the edge sent in the body is
  * `runtime-resume.ts`'s.
@@ -581,7 +581,7 @@ function answerableEntry(input: RoutedInput, store: Store, source: GenerationSou
 }
 
 /**
- * What the Worker answers itself, from the entry's current generation: fresh or stale it is
+ * What the Function answers itself, from the entry's current generation: fresh or stale it is
  * served (stale, regenerated behind); expired, it is regenerated first; missing, rendered now
  * where the build made none. `undefined` leaves the build's own output to answer: no generation
  * where the build has one, a host out of reach (an answer is still given, and the record

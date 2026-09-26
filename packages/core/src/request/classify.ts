@@ -343,7 +343,7 @@ export function classifyRequest(input: ClassifyInput): RequestClass {
   }
   // Next.js answers a path that repeats a slash with a redirect before any routing, the
   // middleware's included (`normalizeRepeatedSlashes`). Such a request names no route, and it is
-  // not one to show the middleware on the chance of a rewrite either: the Worker redirects it first.
+  // not one to show the middleware on the chance of a rewrite either: the Function redirects it first.
   if (url.pathname.includes('//')) {
     return passthrough('repeated-slash');
   }

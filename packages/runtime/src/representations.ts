@@ -1,5 +1,5 @@
-import { SHARED_ANSWER_CACHE_CONTROL, SHARED_ANSWER_HEADER } from '@upwind/core/paas';
-import { filterStoredResponseHeaders } from '@upwind/core/request';
+import { SHARED_ANSWER_CACHE_CONTROL, SHARED_ANSWER_HEADER } from '@stayingupwind/core/paas';
+import { filterStoredResponseHeaders } from '@stayingupwind/core/request';
 
 import { documentHeaders, POSTPONED_HEADER, PRERENDER_HEADER, RSC_CONTENT_TYPE } from './serve.ts';
 import type { Store } from './store.ts';

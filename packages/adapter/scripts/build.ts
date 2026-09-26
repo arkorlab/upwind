@@ -12,9 +12,9 @@ import { rolldown } from 'rolldown';
  * installed from a registry has to be JavaScript, where a copy linked from a workspace can stay
  * the sources it is.
  *
- * `@upwind/core` is bundled in: it is this adapter's own vocabulary, and a reader of the published
- * package has no reason to resolve it. `@upwind/runtime` is not, and must not be — the adapter
- * resolves it to a *path* and hands that to the bundler that builds a Worker, so it has to be a
+ * `@stayingupwind/core` is bundled in: it is this adapter's own vocabulary, and a reader of the published
+ * package has no reason to resolve it. `@stayingupwind/runtime` is not, and must not be — the adapter
+ * resolves it to a *path* and hands that to the bundler that builds a Function, so it has to be a
  * package on disk rather than something inlined here.
  */
 
@@ -22,8 +22,8 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const OUT_DIR = path.join(ROOT, 'dist');
 
 const EXTERNAL = [
-  // Resolved to a path and bundled into the Worker, never imported here.
-  '@upwind/runtime',
+  // Resolved to a path and bundled into the Function, never imported here.
+  '@stayingupwind/runtime',
   // The bundlers and parsers the adapter drives, and the schema library it validates with.
   // `rolldown` by pattern, not by name: `rolldown/parseAst` is a subpath, and inlining it drags
   // in the loader that finds rolldown's native binding — which then looks for it beside *this*

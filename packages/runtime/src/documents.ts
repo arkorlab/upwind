@@ -1,6 +1,6 @@
-import type { Prerender } from '@upwind/core/bundle';
-import { NO_STORE_CACHE_CONTROL } from '@upwind/core/request';
-import { releaseStream } from '@upwind/core/util';
+import type { Prerender } from '@stayingupwind/core/bundle';
+import { NO_STORE_CACHE_CONTROL } from '@stayingupwind/core/request';
+import { releaseStream } from '@stayingupwind/core/util';
 
 import { isDraftRequest } from './draft.ts';
 import { type Entry, entryFor } from './entries.ts';
@@ -28,7 +28,7 @@ import { entrypointKindOf, findShell, isClassShell, type Store } from './store.t
 /**
  * What the build made of a route, answered from the bundle: a document from its shell and the
  * resume that completes it, a route's React Server Components from the build's state, a file
- * the Worker carries, and the not-found as the request asks for it.
+ * the Function carries, and the not-found as the request asks for it.
  */
 
 const NOT_FOUND_ENTRY_ID = '/_not-found';
@@ -98,7 +98,7 @@ export interface BuiltDocument {
 
 /**
  * A document from the build: its shell, when the build made one, then its resume, as one
- * response. Without a shell, the route is rendered whole — the one kind of render the Workers
+ * response. Without a shell, the route is rendered whole — the one kind of render the Functions
  * runtime is asked for from scratch.
  *
  * A shell that has to be resumed is of use only where the entrypoint can resume one. Next.js's

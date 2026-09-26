@@ -22,7 +22,7 @@ import tseslint from 'typescript-eslint';
  */
 
 /**
- * The adapter runs under Node inside `next build`; the runtime runs in a Worker, where
+ * The adapter runs under Node inside `next build`; the runtime runs in a Function, where
  * `nodejs_compat` gives it the Node built-ins it does use.
  */
 const NODE_ONLY_FILES = ['packages/adapter/**/*.ts', '*.config.ts', '**/*.config.ts'];
@@ -58,13 +58,13 @@ export default defineConfig([
     rules: {
       camelcase: 'off', // `@typescript-eslint/naming-convention` owns naming; external field names (Sentry) stay as-is
       'capitalized-comments': 'off', // comments quote identifiers and URLs
-      'class-methods-use-this': 'off', // Worker/Durable Object handlers are shape-driven
+      'class-methods-use-this': 'off', // Function/Durable Object handlers are shape-driven
       'consistent-return': 'off', // TypeScript `noImplicitReturns` covers this precisely
       'default-case': 'off', // `@typescript-eslint/switch-exhaustiveness-check` is stricter
       'func-style': ['error', 'declaration', { allowArrowFunctions: true }],
       'id-length': 'off', // short names are fine for indices and callbacks
       'init-declarations': 'off', // `let` without initializer is idiomatic for streaming state
-      'max-classes-per-file': ['error', 3], // Worker entry files export several classes
+      'max-classes-per-file': ['error', 3], // Function entry files export several classes
       'max-lines': ['error', { max: 500, skipBlankLines: true, skipComments: true }],
       'max-lines-per-function': 'off', // sonarjs cognitive complexity is the better signal
       'max-params': ['error', 4],

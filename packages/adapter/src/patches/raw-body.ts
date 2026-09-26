@@ -1,12 +1,12 @@
 /**
- * `next/dist/compiled/raw-body`, as a Worker can load it.
+ * `next/dist/compiled/raw-body`, as a Function can load it.
  *
  * The Pages Router's API body parser reads the request through `raw-body`, and the copy Next.js
  * compiles in bundles `depd`, whose deprecation wrapper builds a function from a string: workerd
  * refuses that at load (`EvalError: Code generation from strings disallowed`), and the parser
  * answers every request with `400 Invalid body`. This copy reads the stream the same way — the
  * `limit`, `length` and `encoding` options, the promise and callback forms, the errors with the
- * `type` and `status` the parser reads — decoding with `TextDecoder`, which is what the Worker
+ * `type` and `status` the parser reads — decoding with `TextDecoder`, which is what the Function
  * has in place of `iconv-lite`.
  */
 

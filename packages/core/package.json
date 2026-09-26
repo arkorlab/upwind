@@ -1,7 +1,7 @@
 {
-  "name": "@upwind/core",
+  "name": "@stayingupwind/core",
   "version": "0.1.0",
-  "description": "What the Next.js adapter and runtime are built on: the deployment bundle contract, request classification, the cache vocabulary a runtime speaks, and the wire protocol between a host's edge and an application's Worker.",
+  "description": "What the Next.js adapter and runtime are built on: the deployment bundle contract, request classification, the cache vocabulary a runtime speaks, and the wire protocol between a host's edge and an application's Function.",
   "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",
@@ -9,7 +9,10 @@
     "directory": "packages/core"
   },
   "files": [
-    "src"
+    "src",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "NOTICE"
   ],
   "type": "module",
   "sideEffects": false,

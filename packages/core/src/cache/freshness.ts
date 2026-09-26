@@ -68,7 +68,7 @@ function earliest(a: Deadline, b: Deadline): Deadline {
  * state is written against the generation the invalidation touched, and a render whose inputs were
  * invalidated while it ran publishes already condemned, with a `staleAt` recorded *before* the
  * commit that stamped the generation. Comparing the two here would discard exactly that case, and
- * it would compare two clocks — the timestamp is the runtime Worker's, the deadline the
+ * it would compare two clocks — the timestamp is the runtime Function's, the deadline the
  * host's.
  */
 function deadlineAt(

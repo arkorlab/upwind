@@ -11,13 +11,13 @@ import { occurrencesOf, type Patch, Rewrite } from './types.ts';
  * registered when the fetch's response arrives, which is after that. What `waitUntil` was handed
  * settles once the response's body has been read, while the write is still being sent.
  *
- * On a server the process goes on and the write lands. In a Worker a request's work ends once its
+ * On a server the process goes on and the write lands. In a Function a request's work ends once its
  * response has gone and what `waitUntil` was handed has settled, and what is in flight ends with
  * it: the cache gateway was sent the write's headers and never its body. The entry never changed,
  * and every request after it went stale was answered the old value and fetched the origin again
  * behind (`app-dir/app-static`, "should cache correctly for cache: force-cache and revalidate",
- * served by the local deployment in `tools/adapter-tests`). The runtime's Workers-side tests do not
- * show it: there the Worker is called from within the test's own request, and a fixture test
+ * served by the local deployment in `tools/adapter-tests`). The runtime's Functions-side tests do not
+ * show it: there the Function is called from within the test's own request, and a fixture test
  * written for this passed with the patch taken out.
  *
  * The rewrite hands the write to the runtime's hook as it is registered
@@ -33,7 +33,7 @@ import { occurrencesOf, type Patch, Rewrite } from './types.ts';
 
 const NAME = 'fetch-cache-wait-until';
 /**
- * Every copy of `patch-fetch` a Worker can load: the source files, the one each route runtime
+ * Every copy of `patch-fetch` a Function can load: the source files, the one each route runtime
  * bundles, and the ones Turbopack compiled into the server output of any `distDir`. The edge
  * graph's, under `server/edge/`, is bundled apart and does not reach this.
  */

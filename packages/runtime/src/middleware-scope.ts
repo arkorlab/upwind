@@ -10,7 +10,7 @@ import type { WebHandler } from './app-module.ts';
  * which its authors mean to replace with an explicit marker), and treats a request differently for
  * a page: it leaves the client router's headers on it, and says nothing of a rewrite to a data
  * request's router. On Next.js's own server and on Vercel the middleware has a global object to
- * itself. In this Worker it shares one with every page on the edge runtime, and once one of them
+ * itself. In this Function it shares one with every page on the edge runtime, and once one of them
  * was loaded the middleware was taken for such a page for the rest of the isolate: it saw `RSC`
  * on a client navigation, and a Pages Router navigation to a path it rewrote to the App Router
  * ended on a 404 (`app-dir/app`: "should strip internal query parameters from requests to

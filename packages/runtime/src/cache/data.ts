@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { toBase64 } from '@upwind/core/util';
+import { toBase64 } from '@stayingupwind/core/util';
 
 import type { DataEntryMetadata, DataRead, DataReadRequest } from './host.ts';
 import type { CacheRuntime, DataMemo, DataState } from './runtime.ts';

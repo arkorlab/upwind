@@ -15,7 +15,7 @@ import type { RouteHas } from '../bundle/schema.ts';
  * check and says so: a pattern of the `a+b` shape is admitted. Anchored, such a pattern is tried
  * from one position and costs a run linear in the value. Unanchored, it is tried from every
  * position and costs one quadratic in it — and the value is a header, a cookie or a query
- * parameter, whose length a visitor chooses, on a Worker every project shares.
+ * parameter, whose length a visitor chooses, on a Function every project shares.
  *
  * So the expensive half is the half that is bounded, and the cheap half always runs. Measured on
  * `a+b`, which the shape check admits: anchored against 200,000 characters, 0.33 ms; unanchored

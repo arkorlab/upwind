@@ -91,7 +91,7 @@ export function sanitizeContinuationHeaders(headers: Headers, ctx: ForwardingCon
  * Headers for transparent proxying. The client's router protocol headers, conditional headers,
  * range and encoding preferences survive; only platform-internal headers are removed.
  *
- * Nothing about the host is translated: an application's Worker is reached by name and asked on
+ * Nothing about the host is translated: an application's Function is reached by name and asked on
  * the host the client used — a customer's own hostname included — so what it sees is what the
  * client sent, and its own `Origin`/`Host` check is the one that decides.
  */
@@ -172,7 +172,7 @@ function hiddenFromPassthrough(name: string): boolean {
  * Copy proxied response headers, dropping the ones a proxy may not replay and scoping cookies to
  * the host the client used.
  *
- * A redirect is left exactly as the application wrote it: its Worker was asked on that same host,
+ * A redirect is left exactly as the application wrote it: its Function was asked on that same host,
  * so a `Location` naming the origin already names the host the client is on.
  */
 export function rewritePassthroughResponseHeaders(

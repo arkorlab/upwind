@@ -1,5 +1,5 @@
-import { pagesDataPathname } from '@upwind/core/bundle';
-import type { RouteEntryDescriptor } from '@upwind/core/cache';
+import { pagesDataPathname } from '@stayingupwind/core/bundle';
+import type { RouteEntryDescriptor } from '@stayingupwind/core/cache';
 
 import { nodeHandlerOf } from '../entries.ts';
 import { descriptorFor } from '../generations.ts';

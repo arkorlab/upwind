@@ -8,7 +8,7 @@ import { runnableSourceRegexSchema } from '../request/pattern-safety.ts';
  * (compiled to regular expressions by the build, so no glob matcher is needed here), and the
  * headers the optimized response carries.
  *
- * The patterns are checked — to compile, and to be safe to run on a shared Worker — where the
+ * The patterns are checked — to compile, and to be safe to run on a shared Function — where the
  * configuration is written: by the build, and at the upload, as every pattern a bundle carries is
  * (`checkedImagesConfigSchema`). They are read
  * as they were written: a manifest carries what its upload checked, and a reader that checked

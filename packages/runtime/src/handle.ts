@@ -1,15 +1,15 @@
 import { type ResolveRoutesResult, resolveRoutes, responseToMiddlewareResult } from '@next/routing';
-import { isPagesDataPathname } from '@upwind/core/bundle';
-import type { ImagesConfig } from '@upwind/core/images';
-import { staticFileStatus } from '@upwind/core/manifest';
+import { isPagesDataPathname } from '@stayingupwind/core/bundle';
+import type { ImagesConfig } from '@stayingupwind/core/images';
+import { staticFileStatus } from '@stayingupwind/core/manifest';
 import {
   MIDDLEWARE_DONE_HEADER,
   MIDDLEWARE_ONLY_HEADER,
   pathFromHeaders,
   RESUME_PRERENDER_ESCAPED_HEADER,
   RESUME_PRERENDER_HEADER,
-} from '@upwind/core/paas';
-import { releaseStream } from '@upwind/core/util';
+} from '@stayingupwind/core/paas';
+import { releaseStream } from '@stayingupwind/core/util';
 
 import { nowMs, withClock } from './cache/clock.ts';
 import { type RequestContext, withRequestContext } from './cache/context.ts';
@@ -78,7 +78,7 @@ import { entrypointKindOf, findShell, getStore, type Store } from './store.ts';
 import { renderedBy, serveWithBody } from './with-body.ts';
 
 /**
- * Request handling for a deployment's Worker.
+ * Request handling for a deployment's Function.
  *
  * The ways in, all chosen by the edge:
  * - middleware only: run `proxy.ts` and hand back its raw response, so the edge can apply the
@@ -600,8 +600,8 @@ async function routeRequest(input: RoutedInput, store: Store): Promise<Response>
       response ?? new Response(null, { status: HTTP_OK, headers: { 'x-middleware-next': '1' } })
     );
   }
-  if (__ARKOR_WORKER_KIND__ === 'middleware') {
-    return new Response('middleware worker', { status: HTTP_NOT_FOUND });
+  if (__ARKOR_FUNCTION_KIND__ === 'middleware') {
+    return new Response('middleware function', { status: HTTP_NOT_FOUND });
   }
   const mode = regenerateMode(request);
   if (mode === 'detached') {

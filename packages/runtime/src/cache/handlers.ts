@@ -1,4 +1,4 @@
-import { NEXT_ONE_YEAR_SECONDS } from '@upwind/core/cache';
+import { NEXT_ONE_YEAR_SECONDS } from '@stayingupwind/core/cache';
 
 import { readWithin } from './body.ts';
 import { nowMs } from './clock.ts';
@@ -16,7 +16,7 @@ import { recordValidity } from './tags.ts';
  *
  * The handlers are module singletons because Next.js instantiates them once per process; what
  * they reach is configured per request (`configureCacheHandlers`), since the bindings arrive
- * with the request and a Worker without a cache must still render.
+ * with the request and a Function without a cache must still render.
  */
 
 const FETCH_KIND = 'FETCH';

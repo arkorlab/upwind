@@ -1,12 +1,16 @@
-import { type InvalidationState, MAX_TAGS_PER_CALL, type Validity } from '@upwind/core/cache';
-import { Lru } from '@upwind/core/util';
+import {
+  type InvalidationState,
+  MAX_TAGS_PER_CALL,
+  type Validity,
+} from '@stayingupwind/core/cache';
+import { Lru } from '@stayingupwind/core/util';
 
 import type { CacheHost } from './host.ts';
 
 /**
  * What this isolate knows of the scope's invalidations: the tags the host has recorded an
  * invalidation against, synced from its delta at most once per hold window, and the ones this
- * Worker itself invalidated, applied at once. A data-cache read judges its entry against both
+ * Function itself invalidated, applied at once. A data-cache read judges its entry against both
  * (an entry made before a tag's `staleAt` is stale, and expired once the `hardExpireAt` that same
  * invalidation set has arrived), so an invalidation is honoured here without waiting for the
  * delivery record.
@@ -47,7 +51,7 @@ export interface TagStateOptions {
  * the record itself — the host rewrites what the invalidation touched — and the record is what
  * that judgement is about. The delta only ever told it sooner. Waiting for the record is the lag
  * its own read already has (its `cacheTtl`, and the hold on `recordMemo`);
- * asking the host again before judging would put a round trip on the path a Worker answers a
+ * asking the host again before judging would put a round trip on the path a Function answers a
  * document from, which is the one thing that may not get slower. What may not wait is this
  * isolate's own invalidation, and that is `MAX_APPLIED_MARKS`.
  */
@@ -58,12 +62,12 @@ const MAX_TAGS_HELD = 4096;
  *
  * Not every reader re-reads. `currentGeneration` judges a delivery record it has just read against
  * this view and asks the host nothing more (`cache/current.ts`), because the record travels
- * through KV and may say nothing yet of what this Worker invalidated a moment ago — which is the
+ * through KV and may say nothing yet of what this Function invalidated a moment ago — which is the
  * whole reason `applyLocal` exists. A mark of that kind dropped from the synced bound would leave
  * that judgement calling the record fresh, and nothing would correct it until the record itself
  * caught up.
  *
- * So the marks this Worker made are held apart from the ones it was told, and only what it made
+ * So the marks this Function made are held apart from the ones it was told, and only what it made
  * itself can push them out: an application would have to invalidate this many distinct tags in one
  * isolate, by when the oldest are long since in the records. Read together (`#markOf`), the
  * stronger of the two wins.
@@ -207,7 +211,7 @@ export class TagState {
     await Promise.all(waiting);
   }
 
-  /** An invalidation this Worker just recorded: in force here before the delta says so. */
+  /** An invalidation this Function just recorded: in force here before the delta says so. */
   applyLocal(values: readonly string[], mark: TagMark): void {
     for (const value of values) {
       const held = this.#applied.get(value);
@@ -222,7 +226,7 @@ export class TagState {
    * asked of each tag; an entry it reached is stale from then, and past the deadline the
    * invalidation set it may not be served at all.
    *
-   * An entry made in the same millisecond as the invalidation counts as made before it. A Worker's
+   * An entry made in the same millisecond as the invalidation counts as made before it. A Function's
    * clock stands still while it computes and moves only when I/O completes, so a write and the
    * `updateTag` that follows it with no I/O between them read the same time — and the render after
    * the update has to miss what the update was for. Next.js settles a tie the same way where it

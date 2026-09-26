@@ -1,18 +1,18 @@
-import type { DecodedGenerationPack } from '@upwind/core/cache';
-import { TtlCache } from '@upwind/core/util';
+import type { DecodedGenerationPack } from '@stayingupwind/core/cache';
+import { TtlCache } from '@stayingupwind/core/util';
 import { createCacheHost } from 'ppr-cdn:cache-host';
 
 import type { CacheHost, CacheHostLookup, DataRead, FetchLike } from './host.ts';
 import { TagState } from './tags.ts';
 
 /**
- * What the Worker holds, per isolate, to take part in its deployment's runtime cache: the host
+ * What the Function holds, per isolate, to take part in its deployment's runtime cache: the host
  * that stores the entries, the tags it has synced, and the small memories that keep a hot read
  * from being a round trip on every request.
  *
- * The host comes from `ppr-cdn:cache-host`, which is handed the Worker's environment and finds
+ * The host comes from `ppr-cdn:cache-host`, which is handed the Function's environment and finds
  * its own way to whatever stores the entries; a build whose host answers nothing leaves the
- * Worker as it was before any cache existed. Per isolate, not per request, because an isolate's
+ * Function as it was before any cache existed. Per isolate, not per request, because an isolate's
  * bindings do not change underneath a deployment.
  */
 
@@ -28,7 +28,7 @@ const ARTIFACT_MEMO_MIB = 4;
 const DATA_STATE_KIB = 128;
 const DATA_STATE_BYTES = DATA_STATE_KIB * KIB;
 const DATA_STATE_ENTRY_BYTES = 128;
-/** Leave the rest of a Worker's 128 MB for Next.js, rendering and concurrent requests. */
+/** Leave the rest of a Function's 128 MB for Next.js, rendering and concurrent requests. */
 const DATA_MEMO_BYTES = PAYLOAD_MEMO_MIB * MIB;
 const RECORD_MEMO_BYTES = PAYLOAD_MEMO_MIB * MIB;
 const ARTIFACT_MEMO_BYTES = ARTIFACT_MEMO_MIB * MIB;
@@ -103,7 +103,7 @@ function recordBytes(pack: DecodedGenerationPack | null): number {
 }
 
 function log(message: string, fields: Record<string, string | number> = {}): void {
-  // The Worker's own log; nothing else records what its cache did.
+  // The Function's own log; nothing else records what its cache did.
   // eslint-disable-next-line no-console
   console.warn(JSON.stringify({ level: 'warn', msg: `next-runtime: ${message}`, ...fields }));
 }

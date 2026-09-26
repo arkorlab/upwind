@@ -1,4 +1,4 @@
-import { releaseStream } from '@upwind/core/util';
+import { releaseStream } from '@stayingupwind/core/util';
 
 /**
  * A body read whole to be kept, never past what may be kept: once it passes `limit` bytes the

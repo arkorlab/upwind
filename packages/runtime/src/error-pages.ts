@@ -19,7 +19,7 @@ import { entrypointKindOf, getStore, type Store } from './store.ts';
  * Adapter API's "Invoking Entrypoints"). Without one, Next.js ends the response with a line of
  * plain text. A render that fails it does not answer at all: it throws, for its server to answer
  * with the error page (`renderErrorToResponse`, `server/base-server.ts`) — which here is the
- * Worker's to do.
+ * Function's to do.
  */
 
 /** Next.js names these outputs `/404` and `/500`, under the `basePath` as it names every output. */

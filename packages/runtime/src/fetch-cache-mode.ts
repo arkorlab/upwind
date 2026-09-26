@@ -1,8 +1,8 @@
 /**
- * The `cache` modes a Worker's `fetch` takes, and what becomes of the others.
+ * The `cache` modes a Function's `fetch` takes, and what becomes of the others.
  *
  * workerd takes `no-store` and `no-cache` and nothing else: any other mode throws `TypeError:
- * Unsupported cache mode: …` (Cloudflare's Workers documentation, runtime APIs, Fetch). Next.js
+ * Unsupported cache mode: …` (Cloudflare's Functions documentation, runtime APIs, Fetch). Next.js
  * reads `cache` to decide what its data cache does with a `fetch` — `force-cache`, `default` —
  * and then hands the same `init` to the `fetch` underneath it, which here is workerd's. It drops
  * the field itself on one path of the edge runtime ("Cloudflare Workers will throw an error",

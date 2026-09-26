@@ -16,7 +16,7 @@ import {
  *
  * A hosted project's `has` / `missing` conditions carry patterns straight from its `next.config`,
  * and its routes carry the expressions Next.js compiled their sources into; the edge tests them
- * against headers, cookies, query values and pathnames on a Worker shared with every other
+ * against headers, cookies, query values and pathnames on a Function shared with every other
  * project. V8's regexp engine backtracks and cannot be interrupted, so a pattern with a quantifier
  * or overlapping alternatives inside a repeated group — `(a+)+`, `(a|aa)+` — can turn a long
  * crafted value into seconds of CPU before the request has even been dispatched.

@@ -18,7 +18,7 @@ import type { ProjectManifest, ReservedRoute, RouteEntry } from './schema.ts';
  * repeated slashes and trailing slashes with a redirect before routing, and the runtime's shell
  * lookup does not admit a trailing slash either, so neither is a member of any class here. Nor is
  * a pathname that does not decode: Next.js answers a route parameter that does not with 400, not
- * with the class's shell, and the Worker is what answers it so.
+ * with the class's shell, and the Function is what answers it so.
  */
 function isCanonicalPathname(pathname: string): boolean {
   if (pathname === '/') {
@@ -48,7 +48,7 @@ function decodes(pathname: string): boolean {
 function patternMatch(sourceRegex: string, pathname: string): RegExpExecArray | null {
   // As Next.js compiled it, without the unicode flag. Not case-insensitive, unlike the router's own
   // matching: the runtime picks a class's shell by a case-sensitive pattern, so a case variant is
-  // served by the Worker rather than handed a shell built for another spelling.
+  // served by the Function rather than handed a shell built for another spelling.
   // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
   return new RegExp(sourceRegex).exec(pathname);
 }

@@ -11,7 +11,7 @@ function compiles(source: string): boolean {
 
 /**
  * A pattern as Next.js compiled it, checked to compile here too: one that does not would throw
- * out of the first request that reaches it, at the edge or in the Worker, long after the build
+ * out of the first request that reaches it, at the edge or in the Function, long after the build
  * or the upload that could have refused it.
  */
 export const sourceRegexSchema = z

@@ -2,12 +2,12 @@ import {
   ORIGINAL_URL_HEADER,
   PLATFORM_REQUEST_HEADERS,
   SERVED_GENERATION_HEADER,
-} from '@upwind/core/paas';
+} from '@stayingupwind/core/paas';
 import {
   BYPASS_QUERY_PREFIXES,
   isBotUserAgent,
   isHtmlLimitedBotUserAgent,
-} from '@upwind/core/request';
+} from '@stayingupwind/core/request';
 
 import type { ServedObservation } from './cache/host.ts';
 
@@ -21,7 +21,7 @@ import type { ServedObservation } from './cache/host.ts';
 
 const RSC_HEADER = 'rsc';
 
-/** The headers the edge adds for the Worker's own use; Next.js never sees them. */
+/** The headers the edge adds for the Function's own use; Next.js never sees them. */
 export function stripPlatformHeaders(headers: Headers): Headers {
   const out = new Headers(headers);
   for (const name of PLATFORM_REQUEST_HEADERS) {

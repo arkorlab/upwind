@@ -16,8 +16,8 @@ const REDIRECT_RESPONSE_HEADERS: ReadonlySet<string> = new Set(['location', 'ref
  *
  * A page's generation is a shell the edge may serve ahead of a resume, and keeps only what a
  * shell may replay — unless it is a redirect: the edge serves no status but 200, and the
- * deployment's Worker answers a redirect it keeps as Next.js answers one it cached, with where
- * it leads. A route handler's generation never reaches the edge: the Worker answers it whole, as
+ * deployment's Function answers a redirect it keeps as Next.js answers one it cached, with where
+ * it leads. A route handler's generation never reaches the edge: the Function answers it whole, as
  * the handler answered it, and without a generation it answers with every header the build
  * recorded — so its generation keeps what the handler said, less what no stored response is
  * replayed with.

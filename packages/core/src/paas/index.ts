@@ -47,4 +47,4 @@ export {
   RESOURCES_SYMBOL_KEY,
   type ResourceType,
 } from './resources.ts';
-export { bindingFetch, publishedWorkerEnv, publishWorkerEnv } from './worker-env.ts';
+export { bindingFetch, publishedFunctionEnv, publishFunctionEnv } from './function-env.ts';

@@ -22,7 +22,7 @@ catalog:
   eslint-plugin-unicorn: 74.0.0
   globals: 17.12.0
   # Reads a project's own config at build time, the way wrangler reads its own. Build-time only:
-  # nothing of it reaches a Worker.
+  # nothing of it reaches a Function.
   jsonc-parser: 3.3.1
   knip: 6.35.1
   next: 16.3.6

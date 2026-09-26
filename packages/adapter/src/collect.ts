@@ -2,7 +2,7 @@ import type { Stats } from 'node:fs';
 import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 
-import { isImmutableCacheControl } from '@upwind/core/assets';
+import { isImmutableCacheControl } from '@stayingupwind/core/assets';
 import {
   DEPLOYMENT_ID_PREFIX,
   type Entrypoint,
@@ -10,20 +10,20 @@ import {
   type Route,
   type SourcePage,
   type StaticFile,
-} from '@upwind/core/bundle';
-import { type ImagesConfig, imagesConfigFromNextManifest } from '@upwind/core/images';
-import { createId, isId } from '@upwind/core/util';
+} from '@stayingupwind/core/bundle';
+import { type ImagesConfig, imagesConfigFromNextManifest } from '@stayingupwind/core/images';
+import { createId, isId } from '@stayingupwind/core/util';
 import type { AdapterOutput, NextAdapter } from 'next';
 
 import { type BlobStore, contentTypeFor } from './blobs.ts';
 import type { EdgeEntry } from './edge.ts';
-import type { EntryModule } from './worker.ts';
+import type { EntryModule } from './function.ts';
 
 /**
  * What the adapter reads from `onBuildComplete`, and what it makes of it. Each function here
  * takes a piece of the build context and gives back a piece of the bundle: the contract with
  * Next.js on one side (`README.md`, "What the adapter reads"), the contract with the host on the
- * other (`@upwind/core/bundle`). Nothing here writes the bundle itself; that is `index.ts`.
+ * other (`@stayingupwind/core/bundle`). Nothing here writes the bundle itself; that is `index.ts`.
  */
 
 export type BuildContext = Parameters<NonNullable<NextAdapter['onBuildComplete']>>[0];
@@ -38,7 +38,7 @@ const RSC_SUFFIX = '.rsc';
 /**
  * A build that keeps no server: `next build` writes `out/` and calls the adapter with nothing but
  * static files — no entrypoint, no prerender, no middleware (Next.js, "Output Types"). What the
- * platform serves is then the files themselves, and the Worker answers only what is not one.
+ * platform serves is then the files themselves, and the Function answers only what is not one.
  */
 export function isStaticExport(config: BuildContext['config']): boolean {
   return config.output === 'export';
@@ -58,14 +58,14 @@ export function deploymentId(): string {
   if (configured !== undefined && configured !== '') {
     if (!isId(DEPLOYMENT_ID_PREFIX, configured)) {
       throw new Error(
-        `@upwind/adapter: NEXT_DEPLOYMENT_ID must be a deployment id (dpl_…), got ${configured}`,
+        `@stayingupwind/adapter: NEXT_DEPLOYMENT_ID must be a deployment id (dpl_…), got ${configured}`,
       );
     }
     return configured;
   }
   const generated = createId(DEPLOYMENT_ID_PREFIX);
   console.warn(
-    `@upwind/adapter: NEXT_DEPLOYMENT_ID is not set; using ${generated}. Assets will not carry a deployment id.`,
+    `@stayingupwind/adapter: NEXT_DEPLOYMENT_ID is not set; using ${generated}. Assets will not carry a deployment id.`,
   );
   return generated;
 }
@@ -81,7 +81,7 @@ const ENTRYPOINT_KINDS: Readonly<Record<string, Entrypoint['kind']>> = {
 function entrypointKind(output: RouteOutput): Entrypoint['kind'] {
   const kind = ENTRYPOINT_KINDS[output.type];
   if (kind === undefined) {
-    throw new Error(`@upwind/adapter: unknown output type ${output.type}`);
+    throw new Error(`@stayingupwind/adapter: unknown output type ${output.type}`);
   }
   return kind;
 }
@@ -94,7 +94,7 @@ const PAGES_HOME_ID = '/index';
  * which is the URL it answers, with one exception. The Pages Router's home is named `/index`
  * (`normalizePagePath`), `/docs/index` under a `basePath`, and answers the application's root.
  * `@next/routing` resolves a request against the pathnames it is handed and knows nothing of that,
- * so a root the Worker had to render — `getServerSideProps`, or a `getStaticProps` page not served
+ * so a root the Function had to render — `getServerSideProps`, or a `getStaticProps` page not served
  * from the build — was answered with the not-found page. It is collected under the URL it answers.
  */
 function entryIdOf(output: RouteOutput): string {
@@ -154,7 +154,7 @@ export async function nftAssets(entryFile: string): Promise<Record<string, strin
 
 /**
  * The WebAssembly such an entry reaches. The instrumentation hook is the one entry the adapter
- * finds this way rather than being handed, and its chunks go into both Workers — so a `.wasm` it
+ * finds this way rather than being handed, and its chunks go into both Functions — so a `.wasm` it
  * imports has to be collected the same way, or the loader those chunks carry is rewritten with a
  * table that does not name it (and, when the build has no other WebAssembly, is not rewritten at
  * all and fails the build instead).
@@ -179,7 +179,7 @@ const CHUNK_FILE = /\.(?:[cm]?js|map|wasm)$/u;
  *
  * `wasmAssets` names the WebAssembly those chunks read, keyed by the global they read it from
  * (`wasm_<hash>`): Turbopack's edge loader takes a `() => wasm_<hash>` thunk and gives up with
- * "global was not injected" if the name is not there. The Worker publishes it — see `wasm.ts`.
+ * "global was not injected" if the name is not there. The Function publishes it — see `wasm.ts`.
  *
  * The rest of `assets` are the files the chunks fetch by the name Next.js gave them
  * (`blob:server/edge/assets/font.ttf`), which Next.js's own edge runtime answers from the
@@ -192,7 +192,7 @@ export function edgeEntryOf(
   const { edgeRuntime } = output;
   if (edgeRuntime === undefined) {
     throw new Error(
-      `@upwind/adapter: ${id} is built for the edge runtime but has no edgeRuntime metadata`,
+      `@stayingupwind/adapter: ${id} is built for the edge runtime but has no edgeRuntime metadata`,
     );
   }
   const files = [...new Set(Object.values(output.assets).filter((file) => file.endsWith('.js')))];
@@ -223,7 +223,7 @@ export function edgeEntryOf(
  * One entry per built module; the `.rsc` twin of an app page is the same file under another name.
  *
  * A route on the deprecated edge runtime is built differently — chunks that register a Web
- * handler, not a module the Worker can require — so it is collected apart, into the Worker's edge
+ * handler, not a module the Function can require — so it is collected apart, into the Function's edge
  * bundle, and marked in the bundle so that nothing tries to resume it.
  */
 export function collectEntrypoints(outputs: BuildContext['outputs']): {
@@ -473,7 +473,7 @@ const INDEX_SUFFIX = '/index';
  *   `.../index.html` is then not a directory index at all but a route whose own last segment is
  *   `index` (`app/blog/index/page.tsx` → `out/blog/index.html` → `/blog/index`). Taking the
  *   segment off would serve the page at a URL the application does not have and leave the one it
- *   does have to the Worker's not-found.
+ *   does have to the Function's not-found.
  *
  * Everything that is not HTML — `_next/static`, `public/`, the RSC payloads the client router
  * fetches — is served under the name it has, and is returned unchanged.
@@ -676,7 +676,7 @@ export function orDefault<T>(value: T | undefined, fallback: T): T {
  *
  * `proxy.ts` (Node.js) and the deprecated `middleware.ts` (edge) are built from the same Next.js
  * template and export the same Web handler; only where the code lives differs, which is what
- * `runtime` says and what decides which of a Worker's two bundles carries it.
+ * `runtime` says and what decides which of a Function's two bundles carries it.
  */
 export function middlewareOutput(
   outputs: BuildContext['outputs'],
