@@ -1,0 +1,65 @@
+name: Release
+
+# npm's trusted publisher for every package here names *this file*, because npm validates the OIDC
+# token's `workflow_ref` — the workflow a run entered by — and not `job_workflow_ref`, where the
+# publishing job actually lives. So:
+#
+#   * renaming this file stops every release until npm is told the new name;
+#   * once npm is the only thing granting publication, a release started from any other file cannot
+#     publish, whatever else it is allowed to do;
+#   * the steps themselves are in `publish.yaml`, which npm neither knows nor needs to.
+#
+# Pushing a signed tag is the whole of a release. `workflow_dispatch` is for the two occasions that
+# are not one: rehearsing a release, which is what it defaults to, and the first publish of a
+# package, which cannot go through a trusted publisher that does not exist yet. Either way the tag
+# is verified the same way.
+
+on:
+  push:
+    # A glob, and only a glob: a filter pattern has `*`, `**`, `+`, `?` and `!` and no character
+    # classes, so `v[0-9]+...` would be read literally and match nothing at all. What a version has
+    # to look like is held to in `publish.yaml`, against the versions the packages themselves say —
+    # which is the check that matters, and which a pattern here could only approximate.
+    tags:
+      - v*
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The signed tag to release (`v0.1.0`).
+        required: true
+        type: string
+      dry-run:
+        description: Do everything but upload.
+        required: false
+        default: true
+        type: boolean
+      bootstrap:
+        description: The first publish of a package, by token. Once, then never again.
+        required: false
+        default: false
+        type: boolean
+
+permissions: {}
+
+concurrency:
+  # One release of a version at a time, and never cancelled: a publish that is half done is worse
+  # than a publish that is late.
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    uses: ./.github/workflows/publish.yaml
+    permissions:
+      contents: read
+      # A reusable workflow is given no more than its caller holds, so the token it publishes and
+      # signs with is granted here too.
+      id-token: write
+    with:
+      tag: ${{ inputs.tag || github.ref_name }}
+      dry-run: ${{ inputs.dry-run || false }}
+      bootstrap: ${{ inputs.bootstrap || false }}
+    secrets:
+      # Named rather than inherited, so the reusable half is handed this one secret and no other.
+      # Both this block and the secret itself go away after the first release of each package.
+      npm-token: ${{ secrets.NPM_TOKEN }}

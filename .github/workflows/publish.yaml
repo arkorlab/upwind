@@ -1,0 +1,254 @@
+name: Publish
+
+# The half of a release that does the work. It is reusable so that what a release *is* — a signed
+# tag, on the default branch, saying the version the packages say — is written once and cannot drift
+# between the ways a release is started.
+#
+# npm's trusted publisher does NOT name this file. npm validates the OIDC token's `workflow_ref`,
+# which is the workflow a run entered by, not the one the publishing job lives in: the name npm is
+# configured with is `release.yaml`. Renaming *that* file stops every release until npm is told.
+#
+# The shape follows SLSA: the tag is verified where nothing can publish, publishing happens in one
+# job and authenticates with an identity that outlives no run — save for the single occasion
+# `bootstrap` below names — and the provenance the registry recorded is read back afterwards, so a
+# release that produced no attestation fails loudly instead of quietly.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: The release tag, as it was signed (`v0.1.0`).
+        required: true
+        type: string
+      dry-run:
+        description: Verify and build, and do everything but upload.
+        required: false
+        default: false
+        type: boolean
+      bootstrap:
+        description: >
+          The first publish of a package, authenticated by a token instead of by OIDC. npm cannot be
+          told about a trusted publisher for a package that does not exist yet, so the first release
+          is the one that cannot use one. It still attests: provenance is signed with the workflow's
+          own identity, which is a separate thing from what publishing authenticates with.
+        required: false
+        default: false
+        type: boolean
+    secrets:
+      npm-token:
+        description: >
+          Needed by `bootstrap`, and by nothing else. Delete the secret, and the three places that
+          name it, once every package has been published once — a release then authenticates with
+          nothing that outlives it.
+        required: false
+
+permissions: {}
+
+jobs:
+  verify:
+    # Trust in a release starts here, and this job holds no `id-token`: nothing it can be made to do
+    # can publish anything.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          # The tag object itself, and enough history to prove where the tag stands.
+          fetch-depth: 0
+      # For `node`, below, to be the version this repository is written for rather than whichever
+      # one the runner image happens to carry.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: The tag carries a signature from a key this repository names
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          # Only a tag object can be signed. A lightweight tag is a name pointing at a commit, and
+          # `verify-tag` on one says nothing at all — so refuse it by its type first.
+          if [ "$(git cat-file -t "refs/tags/${TAG}")" != tag ]; then
+            echo "::error::${TAG} is not an annotated tag object, so it carries no signature"
+            exit 1
+          fi
+          # The runner's keyring starts empty and ends holding exactly the keys this file names, so a
+          # good signature over the tag is a signature by one of them and by nobody else.
+          gpg --batch --quiet --import .github/release-signers.asc
+          # Read into a variable rather than piped into `grep -q`: a quiet grep leaves the pipeline
+          # the moment it matches, and under `pipefail` the SIGPIPE that gives the writer would fail
+          # this step on the good signature it just found.
+          status="$(git verify-tag --raw "${TAG}" 2>&1 || true)"
+          printf '%s\n' "${status}"
+          case "${status}" in
+            *'[GNUPG:] GOODSIG'*) ;;
+            *)
+              echo "::error::${TAG} carries no good signature from a key in .github/release-signers.asc"
+              exit 1
+              ;;
+          esac
+
+      - name: The tag stands on the default branch
+        env:
+          TAG: ${{ inputs.tag }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+        run: |
+          set -euo pipefail
+          # A signature says who made the tag, not what it names. This says the tree being published
+          # is one that went through the branch every change is reviewed on.
+          git fetch --no-tags --quiet origin "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}"
+          if ! git merge-base --is-ancestor "refs/tags/${TAG}^{commit}" "refs/remotes/origin/${DEFAULT_BRANCH}"; then
+            echo "::error::${TAG} does not stand on ${DEFAULT_BRANCH}"
+            exit 1
+          fi
+
+      - name: The tag says the version the packages say
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          expected="${TAG#v}"
+          published=0
+          for manifest in packages/*/package.json; do
+            if [ "$(node -p "require('./${manifest}').private === true")" = true ]; then
+              continue
+            fi
+            name="$(node -p "require('./${manifest}').name")"
+            version="$(node -p "require('./${manifest}').version")"
+            if [ "${version}" != "${expected}" ]; then
+              echo "::error file=${manifest}::${name} is ${version}, but ${TAG} says ${expected}"
+              exit 1
+            fi
+            echo "${name}@${version}"
+            published=$((published + 1))
+          done
+          if [ "${published}" -eq 0 ]; then
+            echo "::error::no publishable package under packages/"
+            exit 1
+          fi
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # A second gate a person holds, and the `environment` claim npm can be configured to require.
+    environment: release
+    permissions:
+      contents: read
+      # The OIDC token, for two things at once: pnpm exchanges it with npm for a short-lived grant to
+      # publish these packages, and signs the provenance statement with it through Sigstore. The
+      # caller has to grant this as well — a reusable workflow gets no more than it was given.
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+          # Deliberately no `registry-url`: it writes an `.npmrc` naming `NODE_AUTH_TOKEN` for the
+          # whole job, and the only step here that may see a token is the bootstrap one below.
+
+      - run: pnpm install --frozen-lockfile
+
+      # The same checks CI runs. A tag on the default branch was green there, but "was green" is not
+      # "is green on this tree", and a release is the one place worth paying for the difference.
+      - run: pnpm typecheck
+      - run: pnpm lint
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+      - run: pnpm format
+      - run: pnpm knip
+      - run: pnpm build
+
+      # Last, and in one step alone: everything above this line — `pnpm install` and the lifecycle
+      # scripts it is allowed to run among them — has already happened, and none of it was in a
+      # position to read a publishing credential.
+      - name: A credential for a package that does not exist yet
+        if: ${{ inputs.bootstrap }}
+        env:
+          NPM_TOKEN: ${{ secrets.npm-token }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NPM_TOKEN:-}" ]; then
+            echo '::error::bootstrap was asked for, but no npm-token was passed'
+            exit 1
+          fi
+          printf '//registry.npmjs.org/:_authToken=%s\n' "${NPM_TOKEN}" >> ~/.npmrc
+
+      - name: Publish
+        env:
+          TAG: ${{ inputs.tag }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          # A prerelease must not become what `npm install` picks by default.
+          case "${version}" in
+            *-*) dist_tag=next ;;
+            *) dist_tag=latest ;;
+          esac
+          # `--access public`: a scoped package is restricted until it is said otherwise, and the
+          # first publish of each is the one that decides.
+          # `--provenance`: not left to the registry's own generation, so that a release that cannot
+          # attest to itself fails here rather than landing unattested.
+          # `--no-git-checks`: the tree is a tag, checked out detached, which those checks refuse.
+          # No `--batch`: provenance is bound to one package, and a batch sends them together.
+          set -- --access public --provenance --tag "${dist_tag}" --no-git-checks
+          if [ "${DRY_RUN}" = true ]; then
+            set -- "$@" --dry-run
+          fi
+          pnpm --recursive publish "$@"
+
+  provenance:
+    needs: publish
+    if: ${{ !inputs.dry-run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+      # For `npm` to be a version that reads a field out of a packument by name.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      # Read back rather than assumed: `--provenance` fails a publish that cannot attest, and this
+      # says the attestation is also what the registry will hand an installer.
+      - name: The registry holds a provenance attestation for every version published
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          for manifest in packages/*/package.json; do
+            if [ "$(node -p "require('./${manifest}').private === true")" = true ]; then
+              continue
+            fi
+            name="$(node -p "require('./${manifest}').name")"
+            predicate=''
+            # A version is readable the moment it is published, but the attestation it names is
+            # written beside it, so give the registry a moment to agree with itself.
+            for _ in 1 2 3 4 5 6; do
+              # `--prefer-online`: a cached packument from before the publish would read as a
+              # release with no attestation, which is the one wrong answer this must not give.
+              predicate="$(npm view --prefer-online "${name}@${version}" dist.attestations.provenance.predicateType 2>/dev/null || true)"
+              if [ -n "${predicate}" ]; then
+                break
+              fi
+              sleep 10
+            done
+            if [ -z "${predicate}" ]; then
+              echo "::error::${name}@${version} has no provenance attestation"
+              exit 1
+            fi
+            echo "${name}@${version}: ${predicate}"
+          done
