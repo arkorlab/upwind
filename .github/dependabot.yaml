@@ -5,6 +5,11 @@ updates:
   # `packages/` names `catalog:` rather than a version. Dependabot has understood that catalog since
   # February 2025, so pointing it at the root is enough — and enumerating the packages would only
   # find nothing to update.
+  #
+  # Its handling of a catalog is not perfect: a known bug writes the new version into
+  # `pnpm-workspace.yaml` and a lockfile that drops a package, which then fails CI on
+  # `--frozen-lockfile` (dependabot-core#14339). That failure is loud and the fix is local — check the
+  # branch out, `pnpm install`, commit the lockfile — so it costs a minute rather than a surprise.
   - package-ecosystem: npm
     directory: /
     schedule:
@@ -12,12 +17,14 @@ updates:
     cooldown:
       # The day `minimumReleaseAge` already holds an install to, for the same reason it exists: a
       # compromised release should be somebody else's problem first.
+      #
+      # No exemption here, where the workspace has one. `minimumReleaseAgeExclude` names Next.js
+      # because a cooldown that delayed a security fix would be the larger risk, and pnpm's cooldown
+      # cannot tell a security release from any other. Dependabot's can: a cooldown is documented to
+      # hold *version* updates only, and a security update goes out regardless of it. So the
+      # exemption Next.js needs is already made, and writing it here would only mean that ordinary
+      # Next.js releases skip the wait — which is what the wait is for.
       default-days: 1
-      # And the same exemption, for the same reason: a security release is the one case where
-      # waiting is the larger risk, because the fix is public and so is what it fixes.
-      exclude:
-        - next
-        - '@next/*'
     open-pull-requests-limit: 100
     ignore:
       # Its majors track Node's own, and this repository is written against one Node at a time

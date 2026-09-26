@@ -38,9 +38,12 @@ All three packages are published. The workspace root is private and is not.
 
 ## Development setup
 
-Node 24 (the repository names `24.21.0`) and pnpm 12, which `packageManager` will fetch for you.
+Node 24 — the repository names `24.21.0` — and pnpm 12. You do not install pnpm yourself:
+`packageManager` names the exact version, and Corepack fetches it. Corepack ships with Node but is
+not on until you say so, which is the one step a fresh machine needs.
 
 ```bash
+corepack enable          # once per machine; `pnpm` does not exist until this runs
 git clone https://github.com/arkorlab/upwind.git
 cd upwind
 pnpm install
