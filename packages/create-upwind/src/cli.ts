@@ -40,20 +40,19 @@ function fail(message: string, withUsage: boolean): never {
 }
 
 async function main(): Promise<void> {
-  const argv = process.argv.slice(2);
-  if (argv.includes('--help') || argv.includes('-h')) {
+  let request;
+  try {
+    request = parseCreateRequest(process.argv.slice(2));
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error), true);
+  }
+  if (request.answer === 'help') {
     console.log(USAGE);
     return;
   }
-  if (argv.includes('--version') || argv.includes('-v')) {
+  if (request.answer === 'version') {
     console.log((await ownVersion()) ?? 'unknown');
     return;
-  }
-  let request;
-  try {
-    request = parseCreateRequest(argv);
-  } catch (error) {
-    fail(error instanceof Error ? error.message : String(error), true);
   }
   await create(request);
 }

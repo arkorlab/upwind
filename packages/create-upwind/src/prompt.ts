@@ -1,4 +1,5 @@
-import { createInterface } from 'node:readline/promises';
+import { once } from 'node:events';
+import { createInterface, type Interface } from 'node:readline/promises';
 
 /**
  * The one question this asks.
@@ -11,6 +12,16 @@ import { createInterface } from 'node:readline/promises';
  * takes the default rather than waiting for an answer that is never coming — a scaffolder that hangs
  * on a closed stdin is one that hangs a pipeline.
  */
+
+/** The default is what an empty answer means, and Ctrl-D is the emptiest answer there is. */
+const NO_ANSWER = '';
+
+/** The answer an input that closed without one gives. */
+async function untilClosed(rl: Interface): Promise<string> {
+  await once(rl, 'close');
+  return NO_ANSWER;
+}
+
 export async function askDirectory(fallback: string): Promise<string> {
   if (!process.stdin.isTTY) {
     return fallback;
@@ -19,9 +30,15 @@ export async function askDirectory(fallback: string): Promise<string> {
   // `using` is not erasable syntax, and the lib this is typed against has no `Symbol.dispose`.
   // eslint-disable-next-line unicorn/prefer-dispose -- see above
   try {
-    const answer = await rl.question(`Where should the application go? (${fallback}) `);
+    // Ctrl-D closes the input without answering, and the question it was asked would then never
+    // settle: the process would end having said nothing and written nothing. Racing the close makes
+    // an end-of-file mean what an empty line means.
+    const answer = await Promise.race([
+      rl.question(`Where should the application go? (${fallback}) `),
+      untilClosed(rl),
+    ]);
     const trimmed = answer.trim();
-    return trimmed === '' ? fallback : trimmed;
+    return trimmed === NO_ANSWER ? fallback : trimmed;
   } finally {
     rl.close();
   }

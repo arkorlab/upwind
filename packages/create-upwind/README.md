@@ -9,6 +9,7 @@ installs it.
 
 ```
 my-upwind-app
+├── .gitignore
 ├── app/
 │   ├── globals.css
 │   ├── layout.tsx

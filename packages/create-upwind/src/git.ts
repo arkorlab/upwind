@@ -43,7 +43,13 @@ export async function initRepository(target: string): Promise<boolean> {
   if (committed === 0) {
     return true;
   }
-  // Half a repository is worse than none: an `init` nobody asked to be left behind.
-  await rm(path.join(target, '.git'), { recursive: true, force: true });
+  // Half a repository is worse than none: an `init` nobody asked to be left behind. And a cleanup
+  // that cannot be done is still not a reason to have failed to write an application — this function
+  // answers "no repository" either way.
+  try {
+    await rm(path.join(target, '.git'), { recursive: true, force: true });
+  } catch {
+    // Nothing to do about it here, and nothing that depends on it.
+  }
   return false;
 }

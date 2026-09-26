@@ -11,7 +11,7 @@ import {
   runCommand,
 } from './package-manager.ts';
 import { askDirectory } from './prompt.ts';
-import { conflictsIn, copyTemplate } from './template.ts';
+import { conflictsIn, copyTemplate, retellReadme } from './template.ts';
 
 /**
  * One run: a directory with a Next.js application in it that upwind can run.
@@ -36,15 +36,38 @@ function refuseConflicts(target: string, conflicts: readonly string[]): never {
   throw new Error(`${target} already has something in it (${shown}${rest})`);
 }
 
-function printNextSteps(target: string, manager: PackageManager, committed: boolean): void {
+/** How a single quote is written inside single quotes: close, escape one, open again. */
+const ESCAPED_QUOTE = String.raw`'\''`;
+
+/** A path a shell reads as one word, however the directories above it are spelled. */
+function shellWord(value: string): string {
+  if (/^[\w+,./:=@-]+$/u.test(value)) {
+    return value;
+  }
+  return `'${value.replaceAll("'", () => ESCAPED_QUOTE)}'`;
+}
+
+function printNextSteps(options: {
+  readonly target: string;
+  readonly manager: PackageManager;
+  readonly committed: boolean;
+  readonly installed: boolean;
+}): void {
+  const { manager, target } = options;
   const where = path.relative(process.cwd(), target);
+  const dev = runCommand(manager, 'dev');
   console.log('');
-  console.log(`Created ${path.basename(target)}${committed ? ' with a first commit' : ''}.`);
+  console.log(
+    `Created ${path.basename(target)}${options.committed ? ' with a first commit' : ''}.`,
+  );
   console.log('');
   if (where !== '') {
-    console.log(`  cd ${where}`);
+    console.log(`  cd ${shellWord(where)}`);
   }
-  const dev = runCommand(manager, 'dev');
+  if (!options.installed) {
+    // Nothing was installed, so `dev` would be a command that is not there yet.
+    console.log(`  ${manager} install`);
+  }
   console.log(`  ${dev}`);
   console.log('');
   console.log(
@@ -70,11 +93,12 @@ export async function create(request: CreateRequest): Promise<void> {
   const manager = request.packageManager ?? detectPackageManager();
   console.log(`Creating ${name} in ${target}`);
   await copyTemplate(target);
+  await retellReadme(target, manager);
   await writeManifest(target, name);
   if (request.install) {
     console.log('');
     await install(manager, target);
   }
   const committed = request.git && (await initRepository(target));
-  printNextSteps(target, manager, committed);
+  printNextSteps({ target, manager, committed, installed: request.install });
 }

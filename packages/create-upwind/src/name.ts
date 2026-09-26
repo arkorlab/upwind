@@ -13,11 +13,16 @@
 const MAX_LENGTH = 214;
 /** What an unscoped name may be made of, as the registry accepts it. */
 const ALLOWED = /^[a-z0-9._~-]+$/u;
+/** The two names npm refuses outright, whatever else is true of them. */
+const REFUSED: ReadonlySet<string> = new Set(['favicon.ico', 'node_modules']);
 
 /** What is wrong with `name` as a package name, or nothing when it is a fine one. */
 export function nameProblem(name: string): string | undefined {
   if (name === '') {
     return 'is empty';
+  }
+  if (REFUSED.has(name)) {
+    return 'is a name npm will not take, whatever is in the directory';
   }
   if (name.length > MAX_LENGTH) {
     return `is longer than npm's ${MAX_LENGTH} characters`;

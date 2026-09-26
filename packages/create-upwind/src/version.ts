@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 /**
  * This scaffolder's own version, and what it asks for of the packages released beside it.
  *
- * `create-upwind@0.2.0` scaffolds `upwind@^0.2.0`: the two are published from one tag, which the
+ * `create-upwind@x.y.z` scaffolds `upwind@^x.y.z`: the two are published from one tag, which the
  * release verifies says the version every package says, so a scaffolder and the CLI it wires in are
  * always of the same generation. A version that cannot be read falls back to `latest` — a scaffolded
  * project that installs the newest is a better answer than one that installs nothing.

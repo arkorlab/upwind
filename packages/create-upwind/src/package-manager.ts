@@ -21,6 +21,13 @@ export function detectPackageManager(): PackageManager {
   return known ?? 'npm';
 }
 
+/** The application is on disk by now, whatever went wrong here; say so, and say what to do. */
+function refuse(manager: PackageManager, why: string): never {
+  throw new Error(
+    `${why}. The application is written; run \`${manager} install\` in it once you know why.`,
+  );
+}
+
 export async function install(manager: PackageManager, cwd: string): Promise<void> {
   const child = spawn(manager, ['install'], {
     cwd,
@@ -29,11 +36,16 @@ export async function install(manager: PackageManager, cwd: string): Promise<voi
     // of four names of this program's own choosing, and nothing of the user's reaches the line.
     shell: process.platform === 'win32',
   });
-  const [code] = (await once(child, 'exit')) as [number | null, NodeJS.Signals | null];
+  let code;
+  try {
+    [code] = (await once(child, 'exit')) as [number | null, NodeJS.Signals | null];
+  } catch {
+    // `events.once` rejects on `error`, which is what a command that is not on the PATH raises — a
+    // `--use-bun` on a machine with no bun. The raw `spawn bun ENOENT` says less than this does.
+    refuse(manager, `\`${manager}\` could not be run; it may not be installed`);
+  }
   if (code !== 0) {
-    throw new Error(
-      `\`${manager} install\` failed. The application is written; run the install again once you know why.`,
-    );
+    refuse(manager, `\`${manager} install\` failed`);
   }
 }
 
