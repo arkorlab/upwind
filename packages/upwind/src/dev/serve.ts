@@ -12,6 +12,7 @@ import { installAdapterPath } from './adapter.ts';
 import { displayAddress, internalAddress } from './address.ts';
 import { printListening, printReady } from './banner.ts';
 import { type StopWatching, watchConfigFiles } from './config-watch.ts';
+import { setEnv } from './env.ts';
 import { listen } from './listen.ts';
 import { type NextHandler, type RunningNext, startNextApp } from './next-app.ts';
 import { reachable } from './probe.ts';
@@ -163,18 +164,16 @@ export async function serveDev(options: DevOptions): Promise<void> {
   // Opened rather than assumed: `internalAddress` answers IPv4 loopback for a wildcard socket because
   // that is what a rewrite destination can spell, and on a host that is not dual-stack the socket is
   // not there. A connection to it settles that in a millisecond.
-  if (internal !== undefined && (await reachable(internal))) {
-    process.env[UPWIND_DEV_ADDRESS_ENV] = internal;
-  } else {
-    // Removed, not merely left unset: an inherited value names some other run's front door, and the
-    // adapter would reserve the prefix for a server that is not this one. `Reflect` because the name
-    // is a constant this imports rather than a literal, and assigning `undefined` to `process.env`
-    // would set the string.
-    Reflect.deleteProperty(process.env, UPWIND_DEV_ADDRESS_ENV);
+  const usable = internal !== undefined && (await reachable(internal));
+  if (!usable) {
     console.warn(
       `upwind: no address of this socket can be named in a Next.js rewrite, so nothing reserves ${UPWIND_INTERNAL_PREFIX} inside Next.js's own routing — this server still answers it first`,
     );
   }
+  // Set for the config load and no longer (`env.ts`). Cleared rather than left alone when there is no
+  // address to give: an inherited value names some other run's front door, and the adapter would
+  // reserve this project's prefix for a server that is not this one.
+  const restoreAddress = setEnv(UPWIND_DEV_ADDRESS_ENV, usable ? internal : undefined);
   printListening(devSession);
 
   // Installed here, with the port, rather than once Next.js is ready.
@@ -222,9 +221,10 @@ export async function serveDev(options: DevOptions): Promise<void> {
     server.close();
     throw error;
   }
-  // Next.js has read the config, and with it the adapter this run named; what is left in the
-  // environment from here on is the project's own.
+  // Next.js has read the config, and with it the adapter this run named and the address it gave;
+  // what is in the environment from here on is the project's own.
   adapter.restore();
+  restoreAddress();
   devSession.nextVersion = app.version;
   devSession.readyTick = performance.now();
   nextReady.resolve(app.handle);

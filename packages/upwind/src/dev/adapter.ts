@@ -1,3 +1,4 @@
+import { type RestoreEnv, setEnv } from './env.ts';
 import { resolveFromProject } from './next-app.ts';
 
 /**
@@ -12,10 +13,8 @@ import { resolveFromProject } from './next-app.ts';
  * environment variable by Next.js's own precedence, and an environment that already names one is
  * left exactly as it is.
  *
- * And nothing is left behind. What this names is for the config Next.js is about to load, not for the
- * project's own tooling and whatever that starts: an `upwind dev` launched from inside one project
- * would otherwise find this path already set and run the first project's adapter against the second.
- * `restore` is what the run calls once Next.js has read it.
+ * And nothing is left behind: `restore` puts the environment back once Next.js has read it, for the
+ * reasons `env.ts` gives.
  */
 
 /** What Next.js's default config reads an adapter module's path from (`config-shared.ts`). */
@@ -26,7 +25,7 @@ export interface InstalledAdapter {
   /** The adapter module named for this run, or nothing when none was found. */
   readonly path: string | undefined;
   /** Put the environment back as it was, once the config that needed it has been read. */
-  readonly restore: () => void;
+  readonly restore: RestoreEnv;
 }
 
 /** For a run that set nothing: there is nothing to put back. */
@@ -46,11 +45,5 @@ export function installAdapterPath(projectDir: string): InstalledAdapter {
     );
     return { path: undefined, restore: restoreNothing };
   }
-  process.env[ADAPTER_PATH_ENV] = resolved;
-  return {
-    path: resolved,
-    restore: () => {
-      Reflect.deleteProperty(process.env, ADAPTER_PATH_ENV);
-    },
-  };
+  return { path: resolved, restore: setEnv(ADAPTER_PATH_ENV, resolved) };
 }
