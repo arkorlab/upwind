@@ -13,6 +13,14 @@ import { connect } from 'node:net';
  */
 const PROBE_TIMEOUT_MS = 500;
 
+/** What a URL means when it names no port. */
+const DEFAULT_PORTS: Readonly<Record<string, number>> = { 'http:': 80, 'https:': 443 };
+
+/** The port to knock on: the one written, or the one the scheme means. */
+function portOf(url: URL): number | undefined {
+  return url.port === '' ? DEFAULT_PORTS[url.protocol] : Number(url.port);
+}
+
 export async function reachable(address: string): Promise<boolean> {
   let url;
   try {
@@ -20,8 +28,12 @@ export async function reachable(address: string): Promise<boolean> {
   } catch {
     return false;
   }
+  const port = portOf(url);
+  if (port === undefined) {
+    return false;
+  }
   const { promise, resolve } = Promise.withResolvers<boolean>();
-  const socket = connect({ host: url.hostname, port: Number(url.port) });
+  const socket = connect({ host: url.hostname, port });
   let settled = false;
   const settle = (answer: boolean): void => {
     if (settled) {

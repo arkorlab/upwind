@@ -120,7 +120,9 @@ export async function supervise(entry: string, args: readonly string[]): Promise
     // A restarted child is told which port to take, through the environment — see `worker-env.ts` for
     // why the arguments are left exactly as the developer wrote them.
     const outcome = await runChild(entry, args, port);
-    port ??= outcome.port;
+    // The latest binding, not the first: a child that found the retained port taken moved up and said
+    // so, and the one after it has to be told where the run actually is.
+    port = outcome.port ?? port;
     if (!outcome.asked && outcome.code === RESTART_EXIT_CODE) {
       continue;
     }

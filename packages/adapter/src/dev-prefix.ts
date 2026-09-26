@@ -76,15 +76,15 @@ function originOf(address: string): string {
 /** The prefix itself, and everything under it. Both, because one rule cannot say both. */
 function reservation(origin: string): RewriteRule[] {
   const destination = `${origin}${UPWIND_INTERNAL_PREFIX}`;
+  // `basePath: false` and `locale: false` for one reason between them: the front door answers this
+  // prefix at the root and nowhere else, whatever the application's base path is and whatever locales
+  // it has, so the reservation has to name exactly the paths the front door claims. Without
+  // `locale: false`, Next.js would expand the source across every locale of an `i18n` project and the
+  // reservation would take `/fr/__upwind` — a path that is the application's.
+  const scope = { basePath: false, locale: false } as const;
   return [
-    // `basePath: false`: the front door answers `/__upwind` at the root, whatever the application's
-    // own base path is, so the reservation has to name the same path the front door does.
-    { source: UPWIND_INTERNAL_PREFIX, destination, basePath: false },
-    {
-      source: `${UPWIND_INTERNAL_PREFIX}/:path*`,
-      destination: `${destination}/:path*`,
-      basePath: false,
-    },
+    { source: UPWIND_INTERNAL_PREFIX, destination, ...scope },
+    { source: `${UPWIND_INTERNAL_PREFIX}/:path*`, destination: `${destination}/:path*`, ...scope },
   ];
 }
 
