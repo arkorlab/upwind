@@ -437,7 +437,7 @@ export function createAdapter(options: AdapterOptions = {}): NextAdapter {
         // for why a front door that already holds the path still wants the reservation, and why
         // this does nothing when no such server is there. Assigned only when there is something to
         // assign: a project that declares no rewrites must keep declaring none.
-        const reserved = reserveUpwindPrefix(config.rewrites);
+        const reserved = reserveUpwindPrefix(config.rewrites, config.basePath);
         if (reserved !== undefined) {
           config.rewrites = reserved;
         }

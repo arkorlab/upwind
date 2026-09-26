@@ -95,12 +95,17 @@ function originOf(address: string): string {
  * nothing can be put in front of the latter — so the destination is changed where it is written
  * instead, which is also where the project said what it meant: send this to `/__upwind`.
  *
- * Only a destination that starts with `/`. One that names a host is already someone's else's to
- * answer, and not Next.js's routing to intercept.
+ * Two destinations are left alone. One that names a host is already somebody else's to answer, and not
+ * Next.js's routing to intercept. And under a `basePath`, an internal destination is resolved beneath
+ * it unless the rule says `basePath: false` — `/__upwind/report` in a project based at `/docs` means
+ * `/docs/__upwind/report`, which is the application's own path and says nothing about this prefix.
  */
-function pointAtFrontDoor(rule: RewriteRule, origin: string): RewriteRule {
+function pointAtFrontDoor(rule: RewriteRule, origin: string, basePath: string): RewriteRule {
   const { destination } = rule;
   if (!destination.startsWith('/')) {
+    return rule;
+  }
+  if (basePath !== '' && rule.basePath !== false) {
     return rule;
   }
   // The path alone decides; a query or a fragment travels with it untouched.
@@ -132,7 +137,10 @@ function reservation(origin: string): RewriteRule[] {
  * The project's `rewrites`, with the reservation ahead of whatever it declared — or the project's
  * own, untouched, when no `upwind dev` is in front of this server.
  */
-export function reserveUpwindPrefix(rewrites: RewritesFn | undefined): RewritesFn | undefined {
+export function reserveUpwindPrefix(
+  rewrites: RewritesFn | undefined,
+  basePath: string | undefined,
+): RewritesFn | undefined {
   const address = process.env[UPWIND_DEV_ADDRESS_ENV];
   if (address === undefined || address === '') {
     return rewrites;
@@ -152,7 +160,7 @@ export function reserveUpwindPrefix(rewrites: RewritesFn | undefined): RewritesF
       };
     }
     const own = (rules: RewriteRule[] | undefined): RewriteRule[] =>
-      (rules ?? []).map((rule) => pointAtFrontDoor(rule, origin));
+      (rules ?? []).map((rule) => pointAtFrontDoor(rule, origin, basePath ?? ''));
     if (Array.isArray(declared)) {
       // An array is `afterFiles` to Next.js, and stays one here.
       return {

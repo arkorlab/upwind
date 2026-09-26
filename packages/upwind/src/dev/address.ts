@@ -40,6 +40,21 @@ export function displayAddress(hostname: string | undefined, port: number): stri
 }
 
 /**
+ * The host to reach the socket by: the name that was asked for, when there is one that can be written
+ * into a rewrite, and otherwise the address the socket is on.
+ *
+ * A name is preferred because it is the one thing known to be right: a `--hostname dev.local` that
+ * resolves to IPv6 binds an address no rewrite can carry, while the name itself carries perfectly well —
+ * and whether it reaches this socket is something the caller goes on to ask.
+ */
+function internalHost(bound: Bound, hostname: string | undefined): string | undefined {
+  if (hostname !== undefined && hostname !== '' && !ANY_INTERFACE.has(hostname)) {
+    return inUrl(hostname);
+  }
+  return bound.address === undefined ? undefined : inUrl(loopbackFor(bound.address));
+}
+
+/**
  * Where this machine reaches the socket: what `UPWIND_DEV_ADDRESS` carries, so the adapter's
  * reservation names a destination the dev server can open a connection to.
  *
@@ -53,15 +68,11 @@ export function displayAddress(hostname: string | undefined, port: number): stri
  * A zone identifier (`fe80::1%eth0`) is not a thing a URL can hold at all. The reservation is then left
  * unmade — the front door answers the prefix either way — which is the lesser of the two.
  */
-export function internalAddress(bound: Bound): string | undefined {
-  const { address } = bound;
-  if (address === undefined) {
+export function internalAddress(bound: Bound, hostname: string | undefined): string | undefined {
+  const host = internalHost(bound, hostname);
+  if (host === undefined || host.includes(':')) {
     return undefined;
   }
-  const host = loopbackFor(address);
-  if (host.includes(':')) {
-    return undefined;
-  }
-  const candidate = `http://${inUrl(host)}:${bound.port}`;
+  const candidate = `http://${host}:${bound.port}`;
   return URL.canParse(candidate) ? candidate : undefined;
 }

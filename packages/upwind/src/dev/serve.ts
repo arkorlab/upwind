@@ -135,7 +135,7 @@ export async function serveDev(options: DevOptions): Promise<void> {
   // which is this one, since Next.js runs here. A socket whose address cannot be written as a URL
   // leaves the reservation unmade rather than pointing it somewhere that will not parse; the front
   // door answers the prefix either way.
-  const internal = internalAddress(bound);
+  const internal = internalAddress(bound, options.hostname);
   // Opened rather than assumed: `internalAddress` answers IPv4 loopback for a wildcard socket because
   // that is what a rewrite destination can spell, and on a host that is not dual-stack the socket is
   // not there. A connection to it settles that in a millisecond.

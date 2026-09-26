@@ -31,9 +31,9 @@ function hostnameOf(header: string): string | undefined {
 
 export function isTrustedHost(header: string | undefined, bound: string | undefined): boolean {
   if (header === undefined) {
-    // Nothing to spoof: a browser always sends one, so this is a client speaking HTTP/1.0 to a port it
-    // already knows.
-    return true;
+    // A request with no `Host` is not one HTTP/1.1 allows, and a name that was never given is not one
+    // this can recognise. Nothing a browser sends arrives this way.
+    return false;
   }
   const host = hostnameOf(header);
   if (host === undefined) {
