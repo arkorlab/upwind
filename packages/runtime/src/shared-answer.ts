@@ -36,6 +36,29 @@ export function sayCacheOutcome(outcome: string): void {
   say(CACHE_OUTCOME_HEADER, outcome);
 }
 
+/**
+ * Run `work` as an answer of its own: what it says to the host is not said of the answer this
+ * request is making.
+ *
+ * The image optimizer asks for its own source through a whole inner request, and a source that is a
+ * route handler's cached body says it may be shared — of itself, not of the image built out of it.
+ * Said into the one place, it would have been said of the image too.
+ */
+export async function asAnotherAnswer<T>(work: () => Promise<T>): Promise<T> {
+  const said = requestContext()?.hostHeaders;
+  const before = said === undefined ? undefined : new Map(said);
+  try {
+    return await work();
+  } finally {
+    if (said !== undefined && before !== undefined) {
+      said.clear();
+      for (const [name, value] of before) {
+        said.set(name, value);
+      }
+    }
+  }
+}
+
 /** The answer as it leaves the runtime: the host's headers are the runtime's own, and only those. */
 export function settleHostHeaders(answered: Response): Response {
   const settled = withoutPlatformHeaders(answered);

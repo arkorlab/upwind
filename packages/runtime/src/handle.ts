@@ -62,6 +62,7 @@ import {
 } from './routing.ts';
 import { carriesResumeState, handleRuntimeResume } from './runtime-resume.ts';
 import {
+  externalRewrite,
   type HandleInput,
   HTTP_NOT_FOUND,
   HTTP_OK,
@@ -71,10 +72,9 @@ import {
   resume,
   resumeUrl,
   type RoutedInput,
-  stripPlatformHeaders,
   withoutBody,
 } from './serve.ts';
-import { settleHostHeaders } from './shared-answer.ts';
+import { asAnotherAnswer, settleHostHeaders } from './shared-answer.ts';
 import { entrypointKindOf, findShell, getStore, type Store } from './store.ts';
 import { renderedBy, serveWithBody } from './with-body.ts';
 
@@ -101,7 +101,6 @@ const MIDDLEWARE_ENTRY_ID = '/_middleware';
 const HTTP_PERMANENT_REDIRECT = 308;
 const HTTP_BAD_REQUEST = 400;
 const HTTP_INTERNAL_ERROR = 500;
-const HTTP_BAD_GATEWAY = 502;
 const HTTP_METHOD_NOT_ALLOWED = 405;
 const FILE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD']);
 /** What a Pages Router data URL ends in. */
@@ -148,27 +147,6 @@ async function handleResume(
     postponed: postponedOf(store, prerender),
     url: resumeUrl(input.request),
   });
-}
-
-async function externalRewrite(request: Request, target: URL): Promise<Response> {
-  const headers = stripPlatformHeaders(request.headers);
-  headers.delete('host');
-  let response: Response;
-  try {
-    response = await fetch(target, {
-      method: request.method,
-      headers,
-      body: request.body,
-      redirect: 'manual',
-    });
-  } catch {
-    releaseStream(request.body, 'rewrite failed: handler body unused');
-    // A name that does not resolve, a refused connection, a handshake that failed: the target is
-    // unreachable, which is not the application failing. Left to propagate it would leave the
-    // top-level catch reporting this app's own 500.
-    return new Response('rewrite target unavailable', { status: HTTP_BAD_GATEWAY });
-  }
-  return new Response(response.body, response);
 }
 
 /**
@@ -371,7 +349,10 @@ async function serveImageSource(
       : sourceResponse({ source: remote.response, params, images, internal: false, method });
   }
   const source = sourceRequest(request, params.href);
-  const answered = await handleFull({ ...input, request: source, initURL: source.url }, store);
+  // The source is answered as an answer of its own: what it has to say to the host is about itself,
+  // and the image built out of it is what this request answers with.
+  const inner = { ...input, request: source, initURL: source.url };
+  const answered = await asAnotherAnswer(() => handleFull(inner, store));
   return sourceResponse({ source: answered, params, images, internal: true, method });
 }
 
