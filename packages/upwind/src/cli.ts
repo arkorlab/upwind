@@ -30,6 +30,7 @@ Options
   -H, --hostname <host>  Hostname to bind, \`dev\` only (default: every interface)
   -v, --version          Print upwind's version
   -h, --help             Print this
+      --                 Everything after this is the directory, even \`--help\`
 
 \`upwind dev\` runs the project's own Next.js development server behind upwind, and answers
 /__upwind itself: a request for that prefix is never handed to Next.js.

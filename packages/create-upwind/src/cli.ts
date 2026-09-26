@@ -27,6 +27,7 @@ Options
       --use-bun       Install with bun
   -v, --version       Print create-upwind's version
   -h, --help          Print this
+      --              Everything after this is the directory, even \`--help\`
 
 Asked for no directory, it asks for one — or takes \`my-upwind-app\` when nothing is there to ask.
 `;

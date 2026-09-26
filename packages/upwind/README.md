@@ -137,6 +137,7 @@ upwind build [directory]
   -H, --hostname <host>  Hostname to bind, `dev` only (default: every interface)
   -v, --version          Print upwind's version
   -h, --help             Print the usage
+      --                 Everything after this is the directory, even `--help`
 ```
 
 A port already in use moves up, up to ten times, as `next dev` does. `next dev`'s other flags —

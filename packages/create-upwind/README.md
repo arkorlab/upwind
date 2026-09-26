@@ -63,6 +63,7 @@ pnpm create upwind [directory]
       --use-bun       Install with bun
   -v, --version       Print create-upwind's version
   -h, --help          Print the usage
+      --              Everything after this is the directory, even `--help`
 ```
 
 Given no directory it asks for one — once, because there is one template and nothing else to decide.
