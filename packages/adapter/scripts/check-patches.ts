@@ -349,7 +349,13 @@ async function targets(wholeRange: boolean, canary: boolean): Promise<Target[]> 
   const metadata = await registryMetadata();
   const wanted: { version: string; forecast: boolean }[] = [];
   if (wholeRange) {
-    for (const version of releasesInRange(metadata, SUPPORTED_NEXT_RANGE)) {
+    const releases = releasesInRange(metadata, SUPPORTED_NEXT_RANGE);
+    // Otherwise `--range` would quietly check the installed version alone and report a pass over
+    // a range that admits nothing anyone could install.
+    if (releases.length === 0) {
+      throw new Error(`check-patches: no published next satisfies ${SUPPORTED_NEXT_RANGE}`);
+    }
+    for (const version of releases) {
       wanted.push({ version, forecast: false });
     }
   }
@@ -377,16 +383,18 @@ async function printMatrix(): Promise<void> {
   const floor = inRange[0];
   const top = inRange.at(-1);
   const canary = metadata['dist-tags']['canary'];
+  const include = [
+    ...(floor === undefined ? [] : [{ version: floor, forecast: false }]),
+    ...(top === undefined || top === floor ? [] : [{ version: top, forecast: false }]),
+    ...(canary === undefined ? [] : [{ version: canary, forecast: true }]),
+  ];
+  // A matrix of nothing is a job GitHub skips without a word, which would read as a pass. If the
+  // range admits no published release, that is the thing to say.
+  if (include.length === 0) {
+    throw new Error(`check-patches: no published next satisfies ${SUPPORTED_NEXT_RANGE}`);
+  }
   // `{ include: [...] }`, which is a GitHub Actions `strategy.matrix` as it stands.
-  console.log(
-    JSON.stringify({
-      include: [
-        ...(floor === undefined ? [] : [{ version: floor, forecast: false }]),
-        ...(top === undefined || top === floor ? [] : [{ version: top, forecast: false }]),
-        ...(canary === undefined ? [] : [{ version: canary, forecast: true }]),
-      ],
-    }),
-  );
+  console.log(JSON.stringify({ include }));
 }
 
 /** One version's verdict: what its patches did, or what went wrong. */
