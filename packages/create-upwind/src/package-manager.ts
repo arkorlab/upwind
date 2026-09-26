@@ -32,8 +32,14 @@ export async function install(manager: PackageManager, cwd: string): Promise<voi
   const child = spawn(manager, ['install'], {
     cwd,
     stdio: 'inherit',
-    // Windows reaches `pnpm.cmd` and friends through the shell and not otherwise. The command is one
-    // of four names of this program's own choosing, and nothing of the user's reaches the line.
+    // Windows reaches `pnpm.cmd` and friends through the shell and not otherwise.
+    //
+    // Elsewhere in this repository a command is named for the platform instead — `npm.cmd` on
+    // Windows — and started without one, because what those pass on the line is a version string
+    // read off a registry. This passes the word `install` and nothing else, and the command is one
+    // of four names of this program's own choosing; and of those four, `bun` is on PATH as an
+    // `.exe` or a `.cmd` depending on how it was installed, which no single name covers. So the
+    // shell here is what finds the launcher, and it is handed nothing to interpret.
     shell: process.platform === 'win32',
   });
   let code;
