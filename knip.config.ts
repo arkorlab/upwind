@@ -14,6 +14,8 @@ const config: KnipConfig = {
     '.': {},
     'packages/adapter': {},
     'packages/core': {},
+    // `templates/` is what this package copies, not what it runs: files nothing imports, on purpose.
+    'packages/create-upwind': { ignore: ['templates/**'] },
     // `ppr-cdn:*` are the modules the adapter generates beside the runtime and resolves for it;
     // `cloudflare:*` are the Workers runtime's own. Neither is an npm package.
     'packages/runtime': { ignoreDependencies: ['cloudflare', 'ppr-cdn'] },

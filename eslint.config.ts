@@ -21,16 +21,13 @@ import tseslint from 'typescript-eslint';
  * catch the mistakes worth catching all need types.
  */
 
+/** The two commands a developer runs: one in front of a dev server, one that writes a project. */
+const CLI_FILES = ['packages/upwind/**/*.ts', 'packages/create-upwind/**/*.ts'];
 /**
- * The adapter runs under Node inside `next build`, and the CLI is a Node process of its own; the
+ * The adapter runs under Node inside `next build`, and the CLIs are Node processes of their own; the
  * runtime runs in a Function, where `nodejs_compat` gives it the Node built-ins it does use.
  */
-const NODE_ONLY_FILES = [
-  'packages/adapter/**/*.ts',
-  'packages/upwind/**/*.ts',
-  '*.config.ts',
-  '**/*.config.ts',
-];
+const NODE_ONLY_FILES = ['packages/adapter/**/*.ts', ...CLI_FILES, '*.config.ts', '**/*.config.ts'];
 /** What has to hold wherever it is evaluated, so it can be read by both of the above. */
 const RUNTIME_NEUTRAL_FILES = ['packages/core/**/*.ts'];
 
@@ -51,7 +48,15 @@ const NODE_BUILTINS = builtinModules.flatMap((name) =>
 );
 
 export default defineConfig([
-  globalIgnores(['**/node_modules/**', '**/dist/**', '**/.next/**', '**/.ppr-cdn/**']),
+  globalIgnores([
+    '**/node_modules/**',
+    '**/dist/**',
+    '**/.next/**',
+    '**/.ppr-cdn/**',
+    // An application this repository writes for somebody else, not one it runs: it is held to the
+    // conventions of a Next.js project, which are not these.
+    'packages/create-upwind/templates/**',
+  ]),
 
   // 1. Base JavaScript rules: everything on, then a short, justified opt-out list.
   {
@@ -305,16 +310,21 @@ export default defineConfig([
     },
   },
 
-  // The CLI is a program a developer runs, and after the Node config above because that is what
-  // turns `n/no-process-exit` back on. It speaks to a terminal, reads paths under the project it was
-  // pointed at, and ends the process with the code its own supervisor reads back — a restart is an
-  // exit code, not an exception, because Next.js's dev tooling exits the process itself.
+  // A CLI is a program a developer runs, and this block is after the Node config above because that
+  // is what turns `n/no-process-exit` back on. They speak to a terminal, read and write paths under
+  // the project they were pointed at, and end the process with the code something else reads back —
+  // a restart is an exit code, not an exception, because Next.js's dev tooling exits the process
+  // itself, and `create-upwind` ends with what the install it ran ended with.
   {
-    files: ['packages/upwind/**/*.ts'],
+    files: CLI_FILES,
     rules: {
       'n/no-process-exit': 'off',
       'no-console': 'off',
+      'security/detect-child-process': 'off', // the commands are this program's own names, never a user's
       'security/detect-non-literal-fs-filename': 'off',
+      // `git` and `pnpm` are reached the way a developer reaches them, through their own PATH. An
+      // absolute path would run something other than the tool they use.
+      'sonarjs/no-os-command-from-path': 'off',
       'unicorn/no-process-exit': 'off',
       'unicorn/prefer-temporal': 'off', // the Node version this runs on has no Temporal
     },
