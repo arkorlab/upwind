@@ -1,0 +1,44 @@
+version: 2
+updates:
+  # One entry, for the workspace root, because that is where the versions are: every shared
+  # dependency is pinned exactly once in `pnpm-workspace.yaml`'s catalog, and a `package.json` under
+  # `packages/` names `catalog:` rather than a version. Dependabot has understood that catalog since
+  # February 2025, so pointing it at the root is enough — and enumerating the packages would only
+  # find nothing to update.
+  #
+  # Its handling of a catalog is not perfect: a known bug writes the new version into
+  # `pnpm-workspace.yaml` and a lockfile that drops a package, which then fails CI on
+  # `--frozen-lockfile` (dependabot-core#14339). That failure is loud and the fix is local — check the
+  # branch out, `pnpm install`, commit the lockfile — so it costs a minute rather than a surprise.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      # The day `minimumReleaseAge` already holds an install to, for the same reason it exists: a
+      # compromised release should be somebody else's problem first.
+      #
+      # No exemption here, where the workspace has one. `minimumReleaseAgeExclude` names Next.js
+      # because a cooldown that delayed a security fix would be the larger risk, and pnpm's cooldown
+      # cannot tell a security release from any other. Dependabot's can: a cooldown is documented to
+      # hold *version* updates only, and a security update goes out regardless of it. So the
+      # exemption Next.js needs is already made, and writing it here would only mean that ordinary
+      # Next.js releases skip the wait — which is what the wait is for.
+      default-days: 1
+    open-pull-requests-limit: 100
+    ignore:
+      # Its majors track Node's own, and this repository is written against one Node at a time
+      # (`devEngines`). A bump follows a decision about Node, not about a package.
+      - dependency-name: '@types/node'
+        update-types:
+          - version-update:semver-major
+
+  # The workflows pin every action by commit, with the tag in a trailing comment. That is what makes
+  # a pinned action safe and also what makes it go stale, so it is worth a robot's attention.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 1
+    open-pull-requests-limit: 100
