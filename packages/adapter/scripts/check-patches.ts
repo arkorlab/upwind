@@ -266,18 +266,30 @@ async function profile(root: string): Promise<Applied[]> {
 }
 
 /**
- * The patches a package holds nothing for — they rewrite `next build`'s output, not the package —
- * said once, for whoever reads the run and wonders where the other three went.
+ * The three patches a published package holds nothing for, because what they rewrite is what
+ * `next build` *writes*: the Turbopack runtime, the WebAssembly loader Turbopack bundles into a
+ * server chunk, and the chunk Turbopack emits for `@vercel/og`'s external import. They are covered
+ * by `tools/next-matrix`, which builds applications.
+ *
+ * Named rather than inferred, and that is the whole point of the list. Every other patch has to
+ * fire here, so a `target` or a `marker` that stopped matching is a failure rather than a patch
+ * quietly reclassified as one of these — which is what it would be if this were "whatever found
+ * nothing today". Pull-request CI runs this checker and not the matrix, so a rewrite that silently
+ * stopped applying would otherwise ship in a Function and fail at the first request that needed it.
  */
-function reportUntouched(applied: readonly Applied[]): void {
-  const fired = new Set(applied.map((one) => one.patch));
-  const rest = missingFrom(
-    PATCHES.map((patch) => patch.name),
-    fired,
+const BUILD_OUTPUT_PATCHES = new Set(['turbopack-runtime', 'vercel-og', 'wasm-loader']);
+
+/** The patches a published package does hold a file for, and so every checked version must fire. */
+const REQUIRED_PATCHES = PATCHES.map((patch) => patch.name).filter(
+  (name) => !BUILD_OUTPUT_PATCHES.has(name),
+);
+
+/** A name in the list above that no patch answers to: the list itself, held to `PATCHES`. */
+function checkBuildOutputList(): string[] {
+  const names = new Set(PATCHES.map((patch) => patch.name));
+  return missingFrom(BUILD_OUTPUT_PATCHES, names).map(
+    (name) => `BUILD_OUTPUT_PATCHES names "${name}", which is not a patch`,
   );
-  if (rest.length > 0) {
-    console.log(`    build output only, covered by tools/next-matrix: ${rest.join(', ')}`);
-  }
 }
 
 // ─── the range and what declares it ──────────────────────────────────────────
@@ -380,43 +392,42 @@ async function targets(wholeRange: boolean, canary: boolean): Promise<Target[]> 
 async function printMatrix(): Promise<void> {
   const metadata = await registryMetadata();
   const inRange = releasesInRange(metadata, SUPPORTED_NEXT_RANGE);
+  // A matrix of nothing is a job GitHub skips without a word, which would read as a pass — and so
+  // is a matrix of the canary alone, which would build a version the range does not admit and none
+  // that it does. What is asked for here is a *release*, so that is what the emptiness is read off.
+  if (inRange.length === 0) {
+    throw new Error(`check-patches: no published next satisfies ${SUPPORTED_NEXT_RANGE}`);
+  }
   const floor = inRange[0];
   const top = inRange.at(-1);
   const canary = metadata['dist-tags']['canary'];
-  const include = [
-    ...(floor === undefined ? [] : [{ version: floor, forecast: false }]),
-    ...(top === undefined || top === floor ? [] : [{ version: top, forecast: false }]),
-    ...(canary === undefined ? [] : [{ version: canary, forecast: true }]),
-  ];
-  // A matrix of nothing is a job GitHub skips without a word, which would read as a pass. If the
-  // range admits no published release, that is the thing to say.
-  if (include.length === 0) {
-    throw new Error(`check-patches: no published next satisfies ${SUPPORTED_NEXT_RANGE}`);
-  }
   // `{ include: [...] }`, which is a GitHub Actions `strategy.matrix` as it stands.
-  console.log(JSON.stringify({ include }));
+  console.log(
+    JSON.stringify({
+      include: [
+        ...(floor === undefined ? [] : [{ version: floor, forecast: false }]),
+        ...(top === undefined || top === floor ? [] : [{ version: top, forecast: false }]),
+        ...(canary === undefined ? [] : [{ version: canary, forecast: true }]),
+      ],
+    }),
+  );
 }
 
 /** One version's verdict: what its patches did, or what went wrong. */
-async function verdict(
-  target: Target,
-  reference: readonly Applied[] | undefined,
-): Promise<{ applied?: Applied[]; problem?: string }> {
+async function verdict(target: Target): Promise<{ applied?: Applied[]; problem?: string }> {
   let applied: Applied[];
   try {
     applied = await profile(target.root);
   } catch (error) {
     return { problem: error instanceof Error ? error.message : String(error) };
   }
-  // The installed version says which patches a package holds anything for; every other version has
-  // to hold something for each of them. A patch that fired there and nowhere here means Next.js
-  // moved the file out from under a rewrite that would then silently never run.
-  if (reference !== undefined) {
-    const fired = new Set(applied.map((one) => one.patch));
-    const missing = missingFrom(new Set(reference.map((one) => one.patch)), fired);
-    if (missing.length > 0) {
-      return { applied, problem: `no file left for ${missing.join(', ')}` };
-    }
+  // Every patch but the three that rewrite build output has a file in the package, so one that
+  // found none is a rewrite that will not run and will not say so: `target` or `marker` has
+  // stopped matching, whether because Next.js moved the file or because an edit here missed.
+  const fired = new Set(applied.map((one) => one.patch));
+  const missing = missingFrom(REQUIRED_PATCHES, fired);
+  if (missing.length > 0) {
+    return { applied, problem: `no file left for ${missing.join(', ')}` };
   }
   return { applied };
 }
@@ -435,23 +446,15 @@ async function checkAll(
 ): Promise<{ failures: string[]; forecasts: string[] }> {
   const failures: string[] = [];
   const forecasts: string[] = [];
-  let reference: readonly Applied[] | undefined;
   for (const target of checked) {
-    const { applied, problem } = await verdict(target, reference);
+    const { applied, problem } = await verdict(target);
     if (problem !== undefined) {
       (target.forecast ? forecasts : failures).push(`next@${target.version}: ${problem}`);
       console.error(`${target.forecast ? '!' : '✗'} next@${target.version}\n    ${problem}`);
       continue;
     }
-    if (applied === undefined) {
-      continue;
-    }
-    report(target, applied);
-    // The first version checked is the one the rest are held to, and the only one whose untouched
-    // patches are worth naming: every version leaves the same three, and they say so once.
-    if (reference === undefined) {
-      reportUntouched(applied);
-      reference = applied;
+    if (applied !== undefined) {
+      report(target, applied);
     }
   }
   return { failures, forecasts };
@@ -464,12 +467,15 @@ async function main(): Promise<void> {
     return;
   }
 
-  const declarations = await checkDeclarations();
+  const declarations = [...checkBuildOutputList(), ...(await checkDeclarations())];
   for (const problem of declarations) {
     console.error(`✗ ${problem}`);
   }
 
   console.log(`supported range: ${SUPPORTED_NEXT_RANGE}`);
+  console.log(
+    `${String(REQUIRED_PATCHES.length)} patch(es) required of every version; ${[...BUILD_OUTPUT_PATCHES].join(', ')} rewrite build output and are covered by tools/next-matrix`,
+  );
   const checked = await targets(argv.has('--range'), argv.has('--canary'));
   const names = checked.map((one) => one.version).join(', ');
   console.log(`checking ${String(checked.length)} version(s): ${names}\n`);

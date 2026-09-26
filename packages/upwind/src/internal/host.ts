@@ -2,7 +2,7 @@ import { isIP } from 'node:net';
 import { domainToASCII } from 'node:url';
 
 /**
- * Which `Host` a request for `/__upwind` may carry.
+ * Which host a request for `/__upwind` may claim.
  *
  * A dev server on every interface is reachable under any name that resolves to the machine, and the
  * browser's notion of an origin is the name that was typed. So a page served from `evil.test:3000`
@@ -16,11 +16,16 @@ import { domainToASCII } from 'node:url';
  * have asked for — compared as a browser would send it, since a name outside ASCII travels as its
  * `xn--` form and would otherwise never equal the one that was typed.
  *
- * Only these endpoints are held to it. The application is Next.js's to answer, under whatever name a
- * developer has put in front of it, and Next.js has its own say about a cross-site dev request.
+ * *Every* name a request claims has to pass, not only the one in `Host`. The adapter's reservation sends
+ * an internally rewritten `/__upwind` back here over HTTP, and Next.js's proxy replaces `Host` with this
+ * server's own address and puts the name the client used in `x-forwarded-host` — so reading `Host`
+ * alone would have this door trust a request it made to itself on behalf of somebody it should not.
+ *
+ * Only these endpoints are held to any of it. The application is Next.js's to answer, under whatever
+ * name a developer has put in front of it, and Next.js has its own say about a cross-site dev request.
  */
 
-/** The hostname a `Host` header carries, without the port, and without an IPv6 literal's brackets. */
+/** The hostname a host header carries, without the port, and without an IPv6 literal's brackets. */
 function hostnameOf(header: string): string | undefined {
   const trimmed = header.trim().toLowerCase();
   if (trimmed.startsWith('[')) {
@@ -37,12 +42,8 @@ function canonical(name: string): string {
   return domainToASCII(trimmed) || trimmed;
 }
 
-export function isTrustedHost(header: string | undefined, bound: string | undefined): boolean {
-  if (header === undefined) {
-    // A request with no `Host` is not one HTTP/1.1 allows, and a name that was never given is not one
-    // this can recognise. Nothing a browser sends arrives this way.
-    return false;
-  }
+/** One claimed name, against what this run answers for. */
+function isTrustedName(header: string, bound: string | undefined): boolean {
   const host = hostnameOf(header);
   if (host === undefined) {
     return false;
@@ -54,4 +55,29 @@ export function isTrustedHost(header: string | undefined, bound: string | undefi
     return true;
   }
   return bound !== undefined && canonical(host) === canonical(bound);
+}
+
+/** The names an `x-forwarded-host` carries: one per proxy, however they were folded together. */
+function forwardedNames(forwarded: string | readonly string[] | undefined): string[] {
+  if (forwarded === undefined) {
+    return [];
+  }
+  const values = typeof forwarded === 'string' ? [forwarded] : forwarded;
+  return values.flatMap((value) => value.split(',')).filter((value) => value.trim() !== '');
+}
+
+export function isTrustedHost(
+  host: string | undefined,
+  forwarded: string | readonly string[] | undefined,
+  bound: string | undefined,
+): boolean {
+  if (host === undefined) {
+    // A request with no `Host` is not one HTTP/1.1 allows, and a name that was never given is not one
+    // this can recognise. Nothing a browser sends arrives this way.
+    return false;
+  }
+  return (
+    isTrustedName(host, bound) &&
+    forwardedNames(forwarded).every((name) => isTrustedName(name, bound))
+  );
 }

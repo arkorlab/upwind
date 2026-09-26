@@ -1,4 +1,4 @@
-import { type FSWatcher, readlinkSync, realpathSync, watch } from 'node:fs';
+import { type FSWatcher, readlinkSync, watch } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -72,44 +72,49 @@ function watchNothing(): void {
 }
 
 /** How far a chain of symlinks is followed. Long enough for any real one, bounded against a loop. */
-const MAX_LINK_HOPS = 8;
+const MAX_LINK_HOPS = 32;
 
 /**
- * Where a name really points, or nothing when it is not a link.
+ * Every symlink on the way to what a name points at, and the path it ends at.
  *
- * Read link by link rather than resolved in one go, so that a link whose target does not exist yet
- * still says where it is waiting for one: a config symlinked to a file somebody has not written is a
- * config that appears the moment they do, and the watch has to be on the directory it will appear in.
- *
- * A relative target is resolved against the directory the link really sits in, not the one its path
- * spells: a link reached through a symlinked parent, pointing at `../shared/next.config.ts`, means a
- * directory beside its real home and not beside the name it was found under.
- *
- * Every hop is returned, not only the end of them. A chain is repointed in the middle as readily as at
- * the end — `next.config.js -> shared/current -> configs/a.js`, where `current` is what moves — and a
- * watch on the last file alone would never hear that.
+ * Resolved component by component, the way the operating system resolves a path, because a link
+ * anywhere along it is a thing that can be repointed: `next.config.js -> shared/current/next.config.js`
+ * with `shared/current -> configs/a` is repointed at `current`, and a watch on the file that chain ends
+ * at would never hear it. Each link met is a place to watch; each one also replaces what is left to
+ * resolve, so the components of where it points are walked in their turn. The end is a place to watch
+ * too, and may be a file that does not exist yet — a config symlinked to something nobody has written
+ * is one that appears the moment they do.
  */
-function linkChain(start: string): string[] {
-  const chain: string[] = [];
-  let current = start;
-  for (let hop = 0; hop < MAX_LINK_HOPS; hop += 1) {
-    let next;
-    try {
-      next = readlinkSync(current);
-    } catch {
-      // Not a link — so either the end of the chain, or a plain file this was never following.
-      return chain;
+function linkPoints(start: string): string[] {
+  const points: string[] = [];
+  let remaining = start.split(path.sep).filter((part) => part !== '');
+  let resolved: string = path.sep;
+  for (let hops = 0; hops <= MAX_LINK_HOPS; hops += 1) {
+    const [part, ...rest] = remaining;
+    if (part === undefined) {
+      points.push(resolved);
+      return points;
     }
-    let directory = path.dirname(current);
+    remaining = rest;
+    resolved = path.join(resolved, part);
+    let target;
     try {
-      directory = realpathSync(directory);
+      target = readlinkSync(resolved);
     } catch {
-      // Gone from under this; the lexical parent is the best there is to say.
+      // Not a link: either a plain entry, or one that is not there. Either way, on to the next part.
+      continue;
     }
-    current = path.resolve(directory, next);
-    chain.push(current);
+    points.push(resolved);
+    // What the link points at is resolved from the start, since its own path may pass through links
+    // as well; whatever was still to come after the link comes after that.
+    const next = path.resolve(path.dirname(resolved), target);
+    remaining = [...next.split(path.sep).filter((entry) => entry !== ''), ...remaining];
+    resolved = path.sep;
   }
-  return chain;
+  // A chain this long is a loop, or close enough: what has been collected is watched, and the end of it
+  // is wherever the walk stopped.
+  points.push(resolved);
+  return points;
 }
 
 /**
@@ -124,11 +129,11 @@ function linkChain(start: string): string[] {
 function watchPoints(projectDir: string, names: readonly string[]): Map<string, Set<string>> {
   const points = new Map<string, Set<string>>([[projectDir, new Set(names)]]);
   for (const name of names) {
-    const chain = linkChain(path.join(projectDir, name));
-    for (const hop of chain) {
-      const directory = path.dirname(hop);
+    const reached = linkPoints(path.join(projectDir, name));
+    for (const point of reached) {
+      const directory = path.dirname(point);
       const listening = points.get(directory) ?? new Set<string>();
-      listening.add(path.basename(hop));
+      listening.add(path.basename(point));
       points.set(directory, listening);
     }
   }
