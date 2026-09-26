@@ -88,6 +88,18 @@ export const SHARED_ANSWER_HEADER = 'x-arkor-shared-answer';
  */
 export const SHARED_ANSWER_CACHE_CONTROL = 'public, max-age=0, must-revalidate';
 /**
+ * Every header a host reads off an answer, and so every one a runtime's boundary has to account for:
+ * each is deleted from whatever the application answered and written again only where the runtime
+ * itself said it (`settledForHost`). Named as a list so that the boundary never has to look through
+ * an answer's headers to find them — an application shares the realm, and an enumeration it can
+ * interfere with is one more thing to defend.
+ */
+export const HOST_RESPONSE_HEADERS: readonly string[] = [
+  CACHE_OUTCOME_HEADER,
+  SHARED_ANSWER_HEADER,
+];
+
+/**
  * The visitor's country as the platform observed it. Left on the request for the application to
  * read, where a Vercel-hosted one read `x-vercel-ip-country`.
  */
