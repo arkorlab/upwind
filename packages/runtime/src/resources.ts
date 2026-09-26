@@ -10,7 +10,7 @@ import {
 import { env as importedEnv } from 'cloudflare:workers';
 
 /**
- * A deployment's storage bindings, published at `globalThis[Symbol.for('arkor.resources')]` for
+ * A deployment's storage bindings, published at `globalThis[Symbol.for('upwind.resources')]` for
  * the application to read: its KV namespaces, R2 buckets and D1 databases, by the names their
  * owner gave them, as Cloudflare's own objects.
  *
