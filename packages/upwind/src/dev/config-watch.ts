@@ -71,8 +71,16 @@ function watchNothing(): void {
   // There was never a watcher.
 }
 
-/** How many links are followed before a chain is taken for a loop. The kernel's own bound is 40. */
-const MAX_LINK_FOLLOWS = 32;
+/**
+ * How many links are followed before a chain is taken for a loop.
+ *
+ * The largest bound any platform here resolves to: Linux's `MAXSYMLINKS` is 40, macOS's and
+ * Windows's are lower. Matching the highest of them is what makes this bound only ever a guard
+ * against a loop — a chain the operating system itself would open is never one this stops short of
+ * and leaves watching a link instead of the config file it ends at. Anything longer is a loop, or
+ * a chain no platform would resolve either.
+ */
+const MAX_LINK_FOLLOWS = 40;
 
 /** The components of an absolute path, below its root, with separators as this platform writes them. */
 function componentsOf(absolute: string): string[] {

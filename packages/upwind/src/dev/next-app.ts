@@ -76,6 +76,11 @@ export async function startNextApp(options: {
     // overlay speak over a WebSocket, and that connection is Next.js's to answer. Nothing of
     // `/__upwind` is served over one, which is why there is no second listener competing for it.
     httpServer: options.httpServer,
+    // Neither the bundler nor the environment is named here, because neither needs to be. The factory
+    // sets `TURBOPACK` to `auto` for a custom server, which is Next 16's own default, and Next.js sets
+    // `NODE_ENV` itself: with `NODE_ENV` unset in the environment, an `upwind dev` and a `next dev` in
+    // the same project both report `development` and Turbopack to the application. Forcing either would
+    // only take the choice away from a project that had made it.
     ...(options.hostname !== undefined && { hostname: options.hostname }),
   });
   await app.prepare();
