@@ -119,7 +119,7 @@ export function answerInternal(
   res: ServerResponse,
   devSession: DevSession,
 ): void {
-  if (!isTrustedHost(req.headers.host, devSession.hostname)) {
+  if (!isTrustedHost(req.headers.host, req.headers['x-forwarded-host'], devSession.hostname)) {
     write(
       res,
       {
@@ -127,6 +127,7 @@ export function answerInternal(
         body: {
           error: `${UPWIND_INTERNAL_PREFIX} is answered for this machine's own names only`,
           host: req.headers.host ?? null,
+          forwarded: req.headers['x-forwarded-host'] ?? null,
         },
       },
       false,
