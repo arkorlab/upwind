@@ -1,6 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 
-import { withoutPlatformHeaders } from '@stayingupwind/core/request';
 import { handleAsNodeRequest } from 'cloudflare:node';
 
 import type { NodeHandler } from './app-module.ts';
@@ -252,8 +251,5 @@ const bridge = new Bridge();
 export async function invokeNodeHandler(input: InvokeInput): Promise<Response> {
   const target = new URL(input.request.url);
   const dispatch: Dispatch = { input, url: input.url ?? `${target.pathname}${target.search}` };
-  const answered = await handleAsNodeRequest(bridge.port(), input.request, undefined, dispatch);
-  // The application does not speak for the platform: what it wrote under the platform's prefix is
-  // taken off here, so that what a host reads there is only ever what this runtime put on it.
-  return withoutPlatformHeaders(answered);
+  return handleAsNodeRequest(bridge.port(), input.request, undefined, dispatch);
 }

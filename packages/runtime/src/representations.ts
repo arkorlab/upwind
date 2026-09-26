@@ -1,7 +1,8 @@
-import { SHARED_ANSWER_CACHE_CONTROL, SHARED_ANSWER_HEADER } from '@stayingupwind/core/paas';
+import { SHARED_ANSWER_CACHE_CONTROL } from '@stayingupwind/core/paas';
 import { dropPlatformHeaders, filterStoredResponseHeaders } from '@stayingupwind/core/request';
 
 import { documentHeaders, POSTPONED_HEADER, PRERENDER_HEADER, RSC_CONTENT_TYPE } from './serve.ts';
+import { markSharedAnswer } from './shared-answer.ts';
 import type { Store } from './store.ts';
 
 /**
@@ -57,7 +58,7 @@ function outputHeaders(
   if (representation === ROUTE_BODY && validator !== undefined) {
     headers.set('cache-control', SHARED_ANSWER_CACHE_CONTROL);
     headers.set('etag', validator);
-    headers.set(SHARED_ANSWER_HEADER, '1');
+    markSharedAnswer(headers);
   } else {
     headers.set('cache-control', 'private, no-store');
   }

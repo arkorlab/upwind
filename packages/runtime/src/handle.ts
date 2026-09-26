@@ -74,6 +74,7 @@ import {
   stripPlatformHeaders,
   withoutBody,
 } from './serve.ts';
+import { settleSharedAnswer } from './shared-answer.ts';
 import { entrypointKindOf, findShell, getStore, type Store } from './store.ts';
 import { renderedBy, serveWithBody } from './with-body.ts';
 
@@ -631,7 +632,8 @@ export async function handleRequest(handled: HandleInput): Promise<Response> {
     run: (work) => withClock(handled.clock, () => withRequestContext(context, work)),
   };
   const input: RoutedInput = { ...handled, initURL: initUrlOf(handled.request), run: context.run };
-  return context.run(async () =>
-    withoutBody(handled.request, await routeRequest(input, getStore())),
-  );
+  return context.run(async () => {
+    const answered = await routeRequest(input, getStore());
+    return settleSharedAnswer(withoutBody(handled.request, answered));
+  });
 }

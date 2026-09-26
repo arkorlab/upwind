@@ -1,5 +1,3 @@
-import { withoutPlatformHeaders } from '@stayingupwind/core/request';
-
 import type { WebHandler } from './app-module.ts';
 
 /**
@@ -23,7 +21,7 @@ export interface InvokeEdgeInput {
   readonly waitUntil: (promise: Promise<unknown>) => void;
 }
 
-export async function invokeEdgeHandler(input: InvokeEdgeInput): Promise<Response> {
+export function invokeEdgeHandler(input: InvokeEdgeInput): Promise<Response> {
   const target = new URL(input.request.url);
   // Under another URL, the request as it is: workerd takes the method, the headers and the body —
   // a stream by then, the router having teed it — from the request handed as the initializer, and
@@ -33,12 +31,9 @@ export async function invokeEdgeHandler(input: InvokeEdgeInput): Promise<Respons
     input.url === undefined
       ? input.request
       : new Request(new URL(input.url, target), input.request);
-  const answered = await input.handler(asked, {
+  return input.handler(asked, {
     waitUntil: input.waitUntil,
     signal: input.request.signal,
     requestMeta: input.requestMeta,
   });
-  // As on the other runtime: what the application wrote under the platform's prefix is not what a
-  // host may read there.
-  return withoutPlatformHeaders(answered);
 }
