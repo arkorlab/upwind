@@ -98,6 +98,11 @@ export async function currentGeneration(
   // force here at once (`applyLocal`), and the record — read through the host, and kept for a
   // hold — may say nothing of it yet. Judged on the record alone, a page revalidated by this
   // Worker went on being answered as it was until the hold ran out.
+  //
+  // Read, not synced: `syncLocal` here would be a round trip on the path a Worker answers a
+  // document from. What this isolate did itself is kept for it whatever else it is told
+  // (`MAX_APPLIED_MARKS`); another isolate's invalidation reaches the record, which is what the
+  // rest of this function is judging, within the lag its own read already has.
   const tagged = runtime.tags.validityOf(
     header.tags.map((tag) => tag.value),
     header.cacheTimestamp ?? header.producedAt ?? 0,

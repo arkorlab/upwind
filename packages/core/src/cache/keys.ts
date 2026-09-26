@@ -21,9 +21,36 @@ export const GENERATION_ID_PREFIX = 'gen';
 export const TAG_ID_PREFIX = 'tag';
 /** Next.js prefixes the tags it derives from a route (`revalidatePath` works through them). */
 export const IMPLICIT_TAG_PREFIX = '_N_T_';
-/** Next.js's own limits on a tag (`NEXT_CACHE_TAG_MAX_LENGTH`, `NEXT_CACHE_TAG_MAX_ITEMS`). */
+/** Next.js's own limit on a tag's length (`NEXT_CACHE_TAG_MAX_LENGTH`). */
 export const MAX_TAG_LENGTH = 256;
-export const MAX_TAGS_PER_ENTRY = 128;
+/**
+ * How many tags one call may name: Next.js's `NEXT_CACHE_TAG_MAX_ITEMS`, which `validateTags`
+ * applies per `fetch`, per `revalidateTag`, per `use cache` entry.
+ *
+ * The bound of a request, where `MAX_TAGS_PER_ENTRY` is the bound of a record. A data-cache
+ * entry's tags are one call's, an invalidation names one call's, and a read of named tags asks
+ * about one read's. A host may have encoded this bound into what it records — one that carries a
+ * membership bit per tag has nowhere to put the hundred and twenty-ninth — so it is a number the
+ * protocol rests on rather than a limit that may be raised here.
+ */
+export const MAX_TAGS_PER_CALL = 128;
+/**
+ * How many tags one route's generation may carry.
+ *
+ * Not `MAX_TAGS_PER_CALL`, which is what Next.js allows one call: a generation carries what a whole
+ * render accumulated — every call's tags, plus the route's implicit ones — so a page with twenty
+ * tagged fetches passes 128 without any one call coming near it. Held to 128 here, such a page's
+ * commit was refused for good and its entry never got a generation: the route silently fell back
+ * to rendering on every request.
+ *
+ * Eight fully tagged calls' worth, which is past what a page reasonably writes and still small
+ * enough to lay out. What actually stops a generation past this is the record's header: it may not
+ * pass `MAX_PACK_HEADER_BYTES`, and a thousand tags of `MAX_TAG_LENGTH` are more than that on
+ * their own, so a host refuses such a commit by the byte count rather than by this one. A quota a
+ * host keeps for the tags an *invalidation* names is a different count, which the tags a generation
+ * carries do not add to; what they cost it is one derived id each, per commit.
+ */
+export const MAX_TAGS_PER_ENTRY = 1024;
 const REVISION_DIGITS = 12;
 
 /** Route outputs by router and kind, and the two data caches Next.js keeps. */

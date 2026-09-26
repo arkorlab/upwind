@@ -56,5 +56,5 @@ export {
   TERMINATION_WINDOW_BYTES,
 } from './html.ts';
 export { addressInCidrs, type Cidr, parseCidr, parseCidrs, parseIp } from './ip.ts';
-export { ByteLru, TtlCache, type TtlPeek } from './lru.ts';
+export { ByteLru, Lru, TtlCache, type TtlPeek } from './lru.ts';
 export { releaseStream } from './stream.ts';

@@ -1,4 +1,4 @@
-/** Small in-memory caches used by the edge Worker (per isolate) and by tests. */
+/** Small in-memory caches, one per isolate, used by the edge Worker, the runtime and by tests. */
 
 interface ByteLruEntry<V> {
   readonly value: V;
@@ -60,6 +60,49 @@ export class ByteLru<K, V> {
 
   get usedBytes(): number {
     return this.#usedBytes;
+  }
+
+  get size(): number {
+    return this.#entries.size;
+  }
+}
+
+/**
+ * Least-recently-used cache bounded by a count of entries, with no expiry of its own.
+ *
+ * For what is true until something says otherwise, rather than for what goes stale on a clock: the
+ * bound is there so an isolate that sees unboundedly many keys does not grow without end, and the
+ * caller decides what a missing key means.
+ */
+export class Lru<K, V> {
+  readonly #maxEntries: number;
+  readonly #entries = new Map<K, V>();
+
+  constructor(maxEntries: number) {
+    this.#maxEntries = maxEntries;
+  }
+
+  get(key: K): V | undefined {
+    const value = this.#entries.get(key);
+    if (value === undefined) {
+      return undefined;
+    }
+    // Re-insert to mark as most recently used.
+    this.#entries.delete(key);
+    this.#entries.set(key, value);
+    return value;
+  }
+
+  set(key: K, value: V): void {
+    this.#entries.delete(key);
+    this.#entries.set(key, value);
+    while (this.#entries.size > this.#maxEntries) {
+      const oldest = this.#entries.keys().next();
+      if (oldest.done === true) {
+        break;
+      }
+      this.#entries.delete(oldest.value);
+    }
   }
 
   get size(): number {

@@ -60,6 +60,7 @@ export {
   kvScopeKey,
   kvTagKey,
   MAX_TAG_LENGTH,
+  MAX_TAGS_PER_CALL,
   MAX_TAGS_PER_ENTRY,
   normalizeRoutePathname,
   type OutputRepresentation,

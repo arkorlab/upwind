@@ -8,6 +8,31 @@ import type { RouteHas } from '../bundle/schema.ts';
  * pattern tries a whole-value match before falling back to a substring match.
  */
 
+/**
+ * The longest value the *substring* attempt is made against; past it only the whole-value one is.
+ *
+ * `unsafeRoutePatternReason` refuses the patterns that backtrack exponentially, but it is a shape
+ * check and says so: a pattern of the `a+b` shape is admitted. Anchored, such a pattern is tried
+ * from one position and costs a run linear in the value. Unanchored, it is tried from every
+ * position and costs one quadratic in it — and the value is a header, a cookie or a query
+ * parameter, whose length a visitor chooses, on a Worker every project shares.
+ *
+ * So the expensive half is the half that is bounded, and the cheap half always runs. Measured on
+ * `a+b`, which the shape check admits: anchored against 200,000 characters, 0.33 ms; unanchored
+ * against the same, 17.8 seconds; unanchored at this bound, 7.5 ms. What the bound gives up is a
+ * pattern that matches only *within* a value longer than it, which then reads as
+ * the non-match it reads as in `@next/routing` when the whole-value attempt fails and nothing
+ * else matches. Nothing a routing rule is written about — a locale, a flag, a bearer token — is
+ * near this length, and a rule written `^admin$`, `Bearer .*` or `multipart/form-data;.*` is
+ * answered exactly as Next.js answers it however long the value is.
+ *
+ * Bounding the whole condition instead was the first shape of this, and it was worse: an answer of
+ * "cannot tell" has no reading that is safe for every caller at once — a middleware matcher has to
+ * run the middleware, a redirect has to not fire — and a visitor could pick which by the length of
+ * a header.
+ */
+const MAX_SUBSTRING_MATCH_LENGTH = 4096;
+
 function cookieValue(header: string | null, key: string | undefined): string | undefined {
   if (header === null || header === '') {
     return undefined;
@@ -57,8 +82,9 @@ function conditionMatches(condition: RouteHas, url: URL, headers: Headers): bool
     return (
       // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
       new RegExp(`^(?:${condition.value})$`).test(value) ||
-      // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-      new RegExp(condition.value).test(value) ||
+      (value.length <= MAX_SUBSTRING_MATCH_LENGTH &&
+        // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
+        new RegExp(condition.value).test(value)) ||
       value === condition.value
     );
   } catch {

@@ -3,6 +3,7 @@ import {
   generationResponseHeaders,
   type GenerationTag,
   implicitTagsFor,
+  MAX_TAGS_PER_ENTRY,
   parseCacheTagsHeader,
   policyFromCacheControl,
   type RouteEntryDescriptor,
@@ -164,6 +165,35 @@ function renderStatic(
   });
 }
 
+/**
+ * A regeneration this runtime refuses itself, under the word the attempt is recorded with.
+ *
+ * The gateway records whatever word a failure carries (`attemptErrorSchema.code` enumerates none),
+ * so a refusal decided here is told apart in the inspector from a render that threw.
+ */
+class RegenerationError extends Error {
+  readonly code: string;
+
+  constructor(message: string, options: RegenerationErrorOptions) {
+    super(message, options);
+    this.name = 'RegenerationError';
+    this.code = options.code;
+  }
+}
+
+interface RegenerationErrorOptions extends ErrorOptions {
+  readonly code: string;
+}
+
+/**
+ * Every tag the render leaves on the entry: the ones it recorded, and the route's implicit ones.
+ *
+ * Refused here rather than at the gateway when there are too many. The contract bounds them
+ * (`MAX_TAGS_PER_ENTRY`), and a request past that bound is turned away by a schema whose message
+ * says nothing about tags — so the entry would go on failing every regeneration with no way to
+ * read why. Said here, before the outputs are uploaded, the attempt carries the count and the
+ * pathname into the inspector.
+ */
 function tagsOf(target: RegenerationTarget, render: CapturedRender): GenerationTag[] {
   const { descriptor } = target;
   const recorded = parseCacheTagsHeader(render.headers[CACHE_TAGS_HEADER]);
@@ -175,6 +205,12 @@ function tagsOf(target: RegenerationTarget, render: CapturedRender): GenerationT
   const values = new Set(recorded);
   for (const value of implicit) {
     values.add(value);
+  }
+  if (values.size > MAX_TAGS_PER_ENTRY) {
+    throw new RegenerationError(
+      `the render of ${descriptor.pathname} left ${values.size} cache tags on the entry; a generation may carry ${MAX_TAGS_PER_ENTRY}`,
+      { code: 'too_many_tags' },
+    );
   }
   return [...values].map((value) => ({ kind: tagKindOf(value), value }));
 }
@@ -301,11 +337,17 @@ function outputsOf(
   return outputs;
 }
 
+/** What the render came to: the outputs that were stored, and the tags it left on the entry. */
+interface Made {
+  readonly uploads: Uploads;
+  readonly tags: readonly GenerationTag[];
+}
+
 function commitRequest(
   input: RegenerationInput,
   lease: Leased,
   render: CapturedRender,
-  uploads: Uploads,
+  made: Made,
 ): CommitRequest {
   const now = nowMs();
   return {
@@ -321,8 +363,10 @@ function commitRequest(
         render.status,
         Object.entries(render.headers),
       ),
-      tags: tagsOf(input.target, render),
-      outputs: outputsOf(input.target, render, uploads),
+      // Handed in rather than read here, because `tagsOf` ran before the uploads did: a render
+      // carrying more tags than a generation may is refused without paying to store its outputs.
+      tags: [...made.tags],
+      outputs: outputsOf(input.target, render, made.uploads),
       reason: input.target.reason,
     },
   };
@@ -338,7 +382,14 @@ async function abandon(
     await input.runtime.host.fail(lease.attemptId, {
       fencingToken: lease.fencingToken,
       outcome,
-      ...(error !== undefined && { error: { code: 'render_failed', message: detail(error) } }),
+      // The failure's own word where it has one, so a refusal decided here reads as itself and
+      // not as a render that threw; the gateway enumerates none of them.
+      ...(error !== undefined && {
+        error: {
+          code: error instanceof RegenerationError ? error.code : 'render_failed',
+          message: detail(error),
+        },
+      }),
     });
   } catch (error_) {
     input.runtime.log('attempt not ended', { attemptId: lease.attemptId, detail: detail(error_) });
@@ -428,10 +479,13 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
       // decides when to try again.
       throw new Error(`the render answered ${captured.status}`);
     }
+    // Ahead of the uploads: a render the contract will not take is one whose outputs are not
+    // worth sending, and what says so is `tagsOf`.
+    const tags = tagsOf(target, captured);
     const uploads = await upload(input, lease, captured);
     const committed = await runtime.host.commit(
       lease.attemptId,
-      commitRequest(input, lease, captured, uploads),
+      commitRequest(input, lease, captured, { uploads, tags }),
     );
     if (committed.kind === 'published') {
       runtime.recordMemo.delete(lease.entryId);
