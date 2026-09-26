@@ -49,12 +49,16 @@ export async function install(manager: PackageManager, cwd: string): Promise<voi
   }
 }
 
+/** The two that have a command of their own where a script's name would go. */
+const NEEDS_RUN: ReadonlySet<PackageManager> = new Set<PackageManager>(['bun', 'npm']);
+
 /**
  * How a developer runs one of the project's scripts with this manager.
  *
- * `npm` is the one that needs `run`: `npm dev` is not a command, while `pnpm dev`, `yarn dev` and
- * `bun dev` all are. A next step somebody cannot paste is not a next step.
+ * `npm dev` is not a command at all, and `bun build` is a different one: Bun's own bundler, which
+ * answers a project's `build` script with "Missing entrypoints". Both take `run`. `pnpm` and `yarn`
+ * pass an unknown word to the scripts, and `pnpm run dev` would only be longer.
  */
 export function runCommand(manager: PackageManager, script: string): string {
-  return manager === 'npm' ? `npm run ${script}` : `${manager} ${script}`;
+  return NEEDS_RUN.has(manager) ? `${manager} run ${script}` : `${manager} ${script}`;
 }

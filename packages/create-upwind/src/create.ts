@@ -38,13 +38,25 @@ function refuseConflicts(target: string, conflicts: readonly string[]): never {
 
 /** How a single quote is written inside single quotes: close, escape one, open again. */
 const ESCAPED_QUOTE = String.raw`'\''`;
+/** What needs no quoting anywhere, plus the separator each shell writes a path with. */
+const PLAIN = process.platform === 'win32' ? /^[\w+,.:=@\\-]+$/u : /^[\w+,./:=@-]+$/u;
 
-/** A path a shell reads as one word, however the directories above it are spelled. */
+/**
+ * A path the shell this was run from reads as one word, and as a path.
+ *
+ * Two things can go wrong with a next step somebody pastes. A path with a space in it is two
+ * arguments — and `cmd.exe` does not read the single quotes a POSIX shell does, so the quoting has
+ * to be the one the platform uses. And a relative path that begins with `-` is read as options by
+ * every shell there is, which `./` settles.
+ */
 function shellWord(value: string): string {
-  if (/^[\w+,./:=@-]+$/u.test(value)) {
-    return value;
+  const safe = value.startsWith('-') ? `./${value}` : value;
+  if (PLAIN.test(safe)) {
+    return safe;
   }
-  return `'${value.replaceAll("'", () => ESCAPED_QUOTE)}'`;
+  return process.platform === 'win32'
+    ? `"${safe}"`
+    : `'${safe.replaceAll("'", () => ESCAPED_QUOTE)}'`;
 }
 
 function printNextSteps(options: {
