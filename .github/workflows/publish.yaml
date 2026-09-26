@@ -8,10 +8,14 @@ name: Publish
 # which is the workflow a run entered by, not the one the publishing job lives in: the name npm is
 # configured with is `release.yaml`. Renaming *that* file stops every release until npm is told.
 #
-# The shape follows SLSA: the tag is verified where nothing can publish, publishing happens in one
-# job and authenticates with an identity that outlives no run — save for the single occasion
-# `bootstrap` below names — and the provenance the registry recorded is read back afterwards, so a
-# release that produced no attestation fails loudly instead of quietly.
+# The shape follows SLSA: the tag is verified where nothing can publish, publishing authenticates
+# with an identity that outlives no run — there is no token here, and no secret to leak — and the
+# provenance the registry recorded is read back afterwards, so a release that produced no
+# attestation fails loudly instead of quietly.
+#
+# A package published for the first time cannot come through here: npm will not hold a trusted
+# publisher for a name that does not exist yet. That release needs a token once, and the shape it
+# took is in this file's history (the `bootstrap` input, retired once the three packages existed).
 
 on:
   workflow_call:
@@ -25,22 +29,6 @@ on:
         required: false
         default: false
         type: boolean
-      bootstrap:
-        description: >
-          The first publish of a package, authenticated by a token instead of by OIDC. npm cannot be
-          told about a trusted publisher for a package that does not exist yet, so the first release
-          is the one that cannot use one. It still attests: provenance is signed with the workflow's
-          own identity, which is a separate thing from what publishing authenticates with.
-        required: false
-        default: false
-        type: boolean
-    secrets:
-      npm-token:
-        description: >
-          Needed by `bootstrap`, and by nothing else. Delete the secret, and the three places that
-          name it, once every package has been published once — a release then authenticates with
-          nothing that outlives it.
-        required: false
 
 permissions: {}
 
@@ -151,8 +139,8 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-          # Deliberately no `registry-url`: it writes an `.npmrc` naming `NODE_AUTH_TOKEN` for the
-          # whole job, and the only step here that may see a token is the bootstrap one below.
+          # Deliberately no `registry-url`: it writes an `.npmrc` naming `NODE_AUTH_TOKEN`, and this
+          # job has no token to name — what it publishes with, it is handed at the moment it asks.
 
       - run: pnpm install --frozen-lockfile
 
@@ -165,21 +153,6 @@ jobs:
       - run: pnpm format
       - run: pnpm knip
       - run: pnpm build
-
-      # Last, and in one step alone: everything above this line — `pnpm install` and the lifecycle
-      # scripts it is allowed to run among them — has already happened, and none of it was in a
-      # position to read a publishing credential.
-      - name: A credential for a package that does not exist yet
-        if: ${{ inputs.bootstrap }}
-        env:
-          NPM_TOKEN: ${{ secrets.npm-token }}
-        run: |
-          set -euo pipefail
-          if [ -z "${NPM_TOKEN:-}" ]; then
-            echo '::error::bootstrap was asked for, but no npm-token was passed'
-            exit 1
-          fi
-          printf '//registry.npmjs.org/:_authToken=%s\n' "${NPM_TOKEN}" >> ~/.npmrc
 
       - name: Publish
         env:
@@ -209,7 +182,8 @@ jobs:
     needs: publish
     if: ${{ !inputs.dry-run }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Three packages, each given the ten minutes the comment below explains, and room to say so.
+    timeout-minutes: 35
     permissions:
       contents: read
     steps:
@@ -235,16 +209,18 @@ jobs:
             fi
             name="$(node -p "require('./${manifest}').name")"
             predicate=''
-            # A version is readable the moment it is published, but the attestation it names is
-            # written beside it, so give the registry a moment to agree with itself.
-            for _ in 1 2 3 4 5 6; do
+            # Give the registry time to agree with itself. It needs more than it sounds like: on the
+            # first release, two of the three packages were readable at once and the third answered
+            # 404 for its whole document for nine minutes — while its attestation endpoint was
+            # already serving. So this waits ten, and the failure below means what it says.
+            for _ in $(seq 20); do
               # `--prefer-online`: a cached packument from before the publish would read as a
               # release with no attestation, which is the one wrong answer this must not give.
               predicate="$(npm view --prefer-online "${name}@${version}" dist.attestations.provenance.predicateType 2>/dev/null || true)"
               if [ -n "${predicate}" ]; then
                 break
               fi
-              sleep 10
+              sleep 30
             done
             if [ -z "${predicate}" ]; then
               echo "::error::${name}@${version} has no provenance attestation"
