@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 /**
  * What one `upwind dev` run knows about itself.
  *
@@ -13,6 +15,13 @@
  * otherwise report a server that became ready before it started.
  */
 export interface DevSession {
+  /**
+   * What this run answers as, on every internal response (`x-upwind-run`).
+   *
+   * One run, one value, and nobody else's: it is how the address probe knows it reached this server
+   * rather than whatever else happened to be listening on the address it tried.
+   */
+  readonly runId: string;
   /** The application's directory: what `next dev [dir]` would have been given. */
   readonly projectDir: string;
   /**
@@ -47,6 +56,7 @@ export function createSession(options: {
   readonly upwindVersion: string | undefined;
 }): DevSession {
   return {
+    runId: randomUUID(),
     projectDir: options.projectDir,
     hostname: options.hostname,
     startedAt: Date.now(),

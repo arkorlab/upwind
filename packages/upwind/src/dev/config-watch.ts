@@ -1,4 +1,4 @@
-import { type FSWatcher, readlinkSync, watch } from 'node:fs';
+import { type FSWatcher, readlinkSync, statSync, watch } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -167,6 +167,58 @@ interface Settling {
   timer: NodeJS.Timeout | undefined;
 }
 
+/** What one name looks like now: when it was last written, or nothing where it is not there. */
+function writtenAt(file: string): number | undefined {
+  try {
+    return statSync(file).mtimeMs;
+  } catch {
+    return undefined;
+  }
+}
+
+/** What each of these names looks like now, for an event that will not say which one moved. */
+function writtenTimes(directory: string, listening: ReadonlySet<string>): Map<string, number> {
+  const times = new Map<string, number>();
+  for (const name of listening) {
+    const at = writtenAt(path.join(directory, name));
+    if (at !== undefined) {
+      times.set(name, at);
+    }
+  }
+  return times;
+}
+
+/**
+ * Which of the names this watch listens for has moved since it last looked, for an event that did
+ * not say.
+ *
+ * `fs.watch` names the entry that changed on Linux, macOS, Windows and AIX, and nowhere else
+ * (Node, `fs.watch` "Caveats") — a project on a filesystem it cannot ask, or a platform outside
+ * that list, gets a `null` instead. Dropping those is a dev server that never restarts on a config
+ * change and never says why; restarting on them is a dev server that restarts whenever anything
+ * lands beside the config, which in the project's own directory is every lockfile and every
+ * `.next`. So an unnamed event is answered by looking, which is the one reading that is neither.
+ */
+function movedAmong(
+  directory: string,
+  listening: ReadonlySet<string>,
+  seen: Map<string, number>,
+): string | undefined {
+  let moved;
+  for (const name of listening) {
+    const at = writtenAt(path.join(directory, name));
+    if (at !== seen.get(name)) {
+      moved ??= name;
+      if (at === undefined) {
+        seen.delete(name);
+      } else {
+        seen.set(name, at);
+      }
+    }
+  }
+  return moved;
+}
+
 /** One directory, watched for the names that matter in it, or nothing if it cannot be watched. */
 function watchDirectory(
   directory: string,
@@ -174,13 +226,17 @@ function watchDirectory(
   settling: Settling,
 ): FSWatcher | undefined {
   try {
+    // Read before the watch rather than at the first unnamed event, so that the first change is one
+    // this has something to compare against. Where events carry a name, nothing below ever reads it.
+    const seen = writtenTimes(directory, listening);
     const watcher = watch(directory, (_event, filename) => {
-      if (filename === null || !listening.has(filename)) {
+      const moved = filename ?? movedAmong(directory, listening, seen);
+      if (moved === undefined || !listening.has(moved)) {
         return;
       }
       clearTimeout(settling.timer);
       settling.timer = setTimeout(() => {
-        restart(`${filename} changed`);
+        restart(`${moved} changed`);
       }, SETTLE_MS);
     });
     watcher.on('error', (error: unknown) => {

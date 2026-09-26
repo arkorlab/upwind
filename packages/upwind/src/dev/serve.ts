@@ -170,10 +170,11 @@ export async function serveDev(options: DevOptions): Promise<void> {
   // leaves the reservation unmade rather than pointing it somewhere that will not parse; the front
   // door answers the prefix either way.
   const internal = internalAddress(bound, options.hostname);
-  // Opened rather than assumed: `internalAddress` answers IPv4 loopback for a wildcard socket because
+  // Asked rather than assumed: `internalAddress` answers IPv4 loopback for a wildcard socket because
   // that is what a rewrite destination can spell, and on a host that is not dual-stack the socket is
-  // not there. A connection to it settles that in a millisecond.
-  const usable = internal !== undefined && (await reachable(internal));
+  // not there — or is somebody else's. The run asks its own door and reads back the identity it stamps
+  // on every answer (`probe.ts`).
+  const usable = internal !== undefined && (await reachable(internal, devSession.runId));
   if (!usable) {
     console.warn(
       `upwind: no address of this socket can be named in a Next.js rewrite, so nothing reserves ${UPWIND_INTERNAL_PREFIX} inside Next.js's own routing — this server still answers it first`,
