@@ -80,17 +80,20 @@ the package readmes refers to suites by path; those suites are not here.
 
 ## Releases
 
-Maintainers only, and short: bump the version of all three packages in lockstep, then
+Maintainers only. The version of all three packages moves in lockstep, in a pull request like any
+other; a tag is not a place to make a change. Once the bump is on `main`:
 
 ```bash
+git switch main && git pull
 git tag -s v0.1.1 -m v0.1.1
 git push origin v0.1.1
 ```
 
 Everything else is in [`publish.yaml`](.github/workflows/publish.yaml). A release refuses a tag that
 is not signed by a key in [`release-signers.asc`](.github/release-signers.asc), that does not stand
-on `main`, or that names a version the packages do not; it publishes through npm's trusted
-publishing, with a provenance attestation it reads back off the registry afterwards. Two things are
+on `main`, or that names a version the packages do not — which is why the bump has to be merged
+before the tag exists rather than carried by it. It publishes through npm's trusted publishing, with
+a provenance attestation it reads back off the registry afterwards. Two things are
 load-bearing and easy to break by tidying: the **filename** `release.yaml`, which npm's trusted
 publisher is configured with, and the `release` environment the publishing job declares, which npm
 requires as a claim.
