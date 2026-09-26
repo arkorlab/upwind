@@ -10,7 +10,13 @@ import { type Patch, Rewrite } from './types.ts';
  */
 
 const NAME = 'load-manifest';
-const TARGET = /load-manifest\.external\.js$/u;
+/**
+ * Next.js's CommonJS build, which is the one a Function loads: the module is `require`d by the
+ * server's own code, and the bundle is CommonJS. The package carries an ESM copy of it as well
+ * (`dist/esm/server/`), written in a form this rewrite does not read and belonging to a graph
+ * nothing here bundles; a target that named the file alone claimed both.
+ */
+const TARGET = /\/next\/dist\/server\/load-manifest\.external\.js$/u;
 const EVAL_READ = "content = (0, _fs.readFileSync)(/* turbopackIgnore: true */ path, 'utf8');";
 const EVAL_READ_SITES = 2;
 const EVAL_RUN = '(0, _vm.runInNewContext)(content, contextObject);';
@@ -20,7 +26,6 @@ const LEFTOVERS = ['runInNewContext', 'require("vm")', "require('vm')", 'node:vm
 export const loadManifestPatch: Patch = {
   name: NAME,
   target: TARGET,
-  nextVersions: ['16.3.5', '16.3.6'],
   apply(source, file) {
     const result = new Rewrite(NAME, file, source)
       .replace(
