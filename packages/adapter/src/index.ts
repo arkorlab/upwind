@@ -141,7 +141,7 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
   }
   // Read before anything is written: a cron this platform cannot run fails the build here, where
   // the message is about the file the author wrote, rather than at the upload or never.
-  const projectConfig = await readProjectConfig(ctx.projectDir);
+  const projectConfig = await readProjectConfig(ctx.projectDir, options.hostConfigFiles);
   const outDir = path.join(ctx.projectDir, OUT_DIR_NAME);
   await rm(outDir, { recursive: true, force: true });
   await mkdir(outDir, { recursive: true });
@@ -410,6 +410,13 @@ export interface AdapterOptions {
    * generations names its own module here.
    */
   readonly cacheHostModule?: string | undefined;
+  /**
+   * Names the host reads a project's configuration under besides this adapter's own, for a host
+   * that once called that file something else. Looked for after `upwind.*` and before
+   * `vercel.json` (`configFileOrder`); a build that simply stopped looking would read an empty
+   * configuration from a project that wrote one, and take the crons it declared as withdrawn.
+   */
+  readonly hostConfigFiles?: readonly string[] | undefined;
 }
 
 /**

@@ -41,6 +41,23 @@ export const CONFIG_FILES = [
   'upwind.json',
   'vercel.json',
 ] as const;
+const VERCEL_CONFIG = 'vercel.json';
+
+/**
+ * The names this build looks for, in order: this adapter's own, then any the host still answers to,
+ * then `vercel.json`.
+ *
+ * A host that once read the same file under a different name has projects that wrote it, and a
+ * build that stopped looking would read no configuration at all from them — which is not nothing
+ * but an empty one: the crons such a project declared would be taken as withdrawn and its schedule
+ * dropped. Its names go after this adapter's, which is what makes them the older spelling rather
+ * than a second way to say the same thing, and before `vercel.json`, where a platform's own file
+ * has always come.
+ */
+export function configFileOrder(hostConfigFiles: readonly string[] = []): readonly string[] {
+  const own = CONFIG_FILES.filter((name) => name !== VERCEL_CONFIG);
+  return [...own, ...hostConfigFiles, VERCEL_CONFIG];
+}
 
 export interface ProjectConfig {
   /** The file the configuration came from, relative to the project directory; for messages. */
@@ -139,8 +156,11 @@ async function importConfigModule(file: string, absolute: string): Promise<unkno
 }
 
 /** Where the platform's configuration for this build is, if the project wrote one. */
-async function findConfigFile(projectDir: string): Promise<string | undefined> {
-  for (const name of CONFIG_FILES) {
+async function findConfigFile(
+  projectDir: string,
+  names: readonly string[],
+): Promise<string | undefined> {
+  for (const name of names) {
     if (await exists(path.join(projectDir, name))) {
       return name;
     }
@@ -155,8 +175,11 @@ async function findConfigFile(projectDir: string): Promise<string | undefined> {
  * declaration is refused, because the alternative is a deployment whose cron jobs quietly never
  * fire.
  */
-export async function readProjectConfig(projectDir: string): Promise<ProjectConfig> {
-  const file = await findConfigFile(projectDir);
+export async function readProjectConfig(
+  projectDir: string,
+  hostConfigFiles: readonly string[] = [],
+): Promise<ProjectConfig> {
+  const file = await findConfigFile(projectDir, configFileOrder(hostConfigFiles));
   if (file === undefined) {
     return EMPTY_PROJECT_CONFIG;
   }
