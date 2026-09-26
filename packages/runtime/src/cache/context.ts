@@ -21,14 +21,6 @@ export interface RequestContext {
   readonly fetchStarts: Map<string, number>;
   readonly waitUntil: (promise: Promise<unknown>) => void;
   readonly run: Run;
-  /**
-   * What the runtime has to say to its host about this answer, by header name: which answer may be
-   * shared, what a regeneration came to. Kept here rather than written on the response as it is
-   * decided, because an application writes response headers too and a host must be able to tell
-   * the two apart — so the one place every answer passes through takes the platform's prefix off
-   * whatever came back and writes these instead (`settleHostHeaders`).
-   */
-  readonly hostHeaders: Map<string, string>;
 }
 
 /**
@@ -50,7 +42,6 @@ export function requestContextFor(input: {
     request: input.request,
     startedAt: input.startedAt,
     fetchStarts: new Map(),
-    hostHeaders: new Map(),
     waitUntil: input.waitUntil,
     run: (work) => withClock(input.clock, () => withRequestContext(context, work)),
   };

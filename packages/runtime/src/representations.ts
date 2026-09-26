@@ -1,8 +1,6 @@
-import { SHARED_ANSWER_CACHE_CONTROL } from '@stayingupwind/core/paas';
 import { filterStoredResponseHeaders } from '@stayingupwind/core/request';
 
 import { documentHeaders, POSTPONED_HEADER, PRERENDER_HEADER, RSC_CONTENT_TYPE } from './serve.ts';
-import { saySharedAnswer } from './shared-answer.ts';
 import type { Store } from './store.ts';
 
 /**
@@ -28,40 +26,25 @@ export function rscRepresentation(request: Request, store: Store): 'rsc' | `segm
 }
 
 /**
- * The headers an output other than a document is served with: its own type, and one visitor's
- * alone unless it is a route handler's body out of a generation.
+ * The headers an output other than a document is served with: its own type, never shared.
  *
- * That one is shareable, and is the only one here that is. It is the whole answer — the bytes a
- * handler wrote, an image or a feed, with no resume to come and nothing of the visitor in it — and
- * a generation of it is the same bytes for everyone until it is replaced. Served under
- * `SHARED_ANSWER_CACHE_CONTROL` with the generation as its validator, so that a metadata route's
- * image is revalidated rather than sent again: Next.js writes that very `Cache-Control` on such a
- * route itself, and without it a browser was made to re-read every icon on every navigation.
- *
- * A page's data, its RSC payload and its segments stay one visitor's: each is read by the client
- * router alongside a document, keyed on headers a cache cannot be trusted to vary on here.
+ * Not even a route handler's body, which is the same bytes for every visitor until its generation is
+ * replaced: a host that shared it would have to be told so, and there is no telling it from inside a
+ * realm the application shares — an application can replace whatever the telling is built out of. So
+ * every output here is one visitor's, and a host makes its own decision about the answer.
  */
 function outputHeaders(
   recorded: Readonly<Record<string, string>>,
   representation: Representation,
   partial: boolean,
-  validator: string | undefined,
 ): Headers {
-  // Whatever the application wrote under the platform's prefix is not what a host may read there;
-  // what this function sets below is.
   const answered =
     representation === ROUTE_BODY
       ? filterStoredResponseHeaders(Object.entries(recorded))
       : recorded;
   const headers = new Headers(answered);
   headers.set('content-type', contentTypeOf(representation, recorded));
-  if (representation === ROUTE_BODY && validator !== undefined) {
-    headers.set('cache-control', SHARED_ANSWER_CACHE_CONTROL);
-    headers.set('etag', validator);
-    saySharedAnswer();
-  } else {
-    headers.set('cache-control', 'private, no-store');
-  }
+  headers.set('cache-control', 'private, no-store');
   if (representation === 'rsc' || representation.startsWith(SEGMENT_PREFIX)) {
     headers.set(PRERENDER_HEADER, '1');
     // The client keeps a partial Flight stream open for the unresolved records. Segments use
@@ -88,18 +71,13 @@ function contentTypeOf(
   return recorded['content-type'] ?? OCTET_STREAM;
 }
 
-/**
- * The headers the visitor is answered with, whatever the answer was read from. `validator` is the
- * entity tag the answer's bytes are named by, where the caller has one: a render made for this
- * visitor alone has none, and of the outputs only a route handler's body is given it.
- */
+/** The headers the visitor is answered with, whatever the answer was read from. */
 export function answerHeaders(
   representation: Representation,
   recorded: Readonly<Record<string, string>>,
   partial: boolean,
-  validator?: string,
 ): Headers {
   return representation === 'html'
     ? documentHeaders(recorded)
-    : outputHeaders(recorded, representation, partial, validator);
+    : outputHeaders(recorded, representation, partial);
 }

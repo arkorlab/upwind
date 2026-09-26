@@ -1,6 +1,7 @@
 import { pagesDataPathname, queryDependent } from '@stayingupwind/core/bundle';
 import type { DecodedGenerationPack, RouteEntryDescriptor } from '@stayingupwind/core/cache';
 import {
+  CACHE_OUTCOME_HEADER,
   CACHE_ROUTE_ESCAPED_HEADER,
   CACHE_ROUTE_HEADER,
   CACHE_UPGRADE_HEADER,
@@ -21,7 +22,7 @@ import type { AttemptReason } from './cache/host.ts';
 import { regenerate, type RegenerationOutcome, servable } from './cache/regenerate.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
 import { nodeHandlerOf } from './entries.ts';
-import { holdsValidator, observationOf } from './incoming.ts';
+import { observationOf } from './incoming.ts';
 import { invokeNodeHandler } from './node-bridge.ts';
 import {
   answerHeaders,
@@ -41,7 +42,6 @@ import {
   type RoutedInput,
   stripPlatformHeaders,
 } from './serve.ts';
-import { sayCacheOutcome } from './shared-answer.ts';
 import { entrypointKindOf, findShell, isClassShell, type Store } from './store.ts';
 
 /**
@@ -57,7 +57,6 @@ import { entrypointKindOf, findShell, isClassShell, type Store } from './store.t
  */
 
 const HTTP_ACCEPTED = 202;
-const HTTP_NOT_MODIFIED = 304;
 
 export function regenerateMode(request: Request): RegenerateMode | undefined {
   const value = request.headers.get(REGENERATE_HEADER);
@@ -190,16 +189,19 @@ function scheduleJob(job: Job, reason: AttemptReason, base?: string): boolean {
 }
 
 function withOutcome(response: Response, outcome: string): Response {
-  sayCacheOutcome(outcome);
-  return response;
+  const headers = new Headers(response.headers);
+  headers.set(CACHE_OUTCOME_HEADER, outcome);
+  return new Response(response.body, { status: response.status, headers });
 }
 
 /** Answer at once; the regeneration runs after, on its own. */
 export async function handleDetached(input: RoutedInput, store: Store): Promise<Response> {
   const job = await jobOf(input, store);
   const scheduled = job !== undefined && scheduleJob(job, 'stale');
-  sayCacheOutcome(scheduled ? 'accepted' : 'skipped');
-  return new Response(null, { status: HTTP_ACCEPTED });
+  return new Response(null, {
+    status: HTTP_ACCEPTED,
+    headers: { [CACHE_OUTCOME_HEADER]: scheduled ? 'accepted' : 'skipped' },
+  });
 }
 
 /** Once the response has gone out in full, do this: the visitor's bytes come first. */
@@ -245,8 +247,6 @@ interface Want {
 
 interface Answer extends Want {
   readonly body: Uint8Array;
-  /** The generation this answer is of, where the answer may be shared (`answerHeaders`). */
-  readonly validator?: string | undefined;
   readonly postponed: string | undefined;
   /** Whether the page leaves parts of itself to a resume: it has a postponed state. */
   readonly partial: boolean;
@@ -258,20 +258,11 @@ interface Answer extends Want {
 
 /** The visitor's answer: a document — a shell, then their own resume of it — or an output whole. */
 function answerWith(input: RoutedInput, handler: NodeHandler, answer: Answer): Response {
-  const { representation, headers: recorded, partial } = answer;
-  const headers = answerHeaders(representation, recorded, partial, answer.validator);
+  const headers = answerHeaders(answer.representation, answer.headers, answer.partial);
   if (answer.postponed === undefined) {
     headers.set(NEXT_CACHE_HEADER, answer.cache);
   }
   const { status } = answer;
-  // Nothing of the entity is sent again where the client holds these very bytes; the headers are
-  // the ones a 200 would carry, as a validated answer is told with. The tag is read back off the
-  // headers rather than kept beside them: an answer that may not be shared was given none, so a
-  // 304 cannot be reached for one.
-  const tag = headers.get('etag');
-  if (tag !== null && holdsValidator(input.request, tag)) {
-    return new Response(null, { status: HTTP_NOT_MODIFIED, headers });
-  }
   // A `204` a handler answered is kept with the empty body it was captured as, and a `Response`
   // refuses a body under such a status even when it is empty.
   if (input.request.method === 'HEAD' || NULL_BODY_STATUSES.has(status)) {
@@ -640,10 +631,6 @@ export async function serveFromGeneration(
     // The bytes name themselves: a regeneration that produced the same body leaves what a client
     // holds of it valid. Only a route handler's body is the record's primary, and it is the only
     // answer here that may be shared (`answerHeaders`).
-    // The bytes name themselves, so a regeneration that produced the same body leaves what a client
-    // holds of it valid. The record's primary, which for a route handler is the body: whether the
-    // answer may carry it at all is `answerHeaders`'s to say.
-    validator: `"${pack.header.htmlSha256}"`,
     partial: pack.postponed !== undefined,
     postponed:
       source.representation === 'html' && pack.postponed !== undefined

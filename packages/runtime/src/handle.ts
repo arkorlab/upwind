@@ -74,7 +74,6 @@ import {
   type RoutedInput,
   withoutBody,
 } from './serve.ts';
-import { asAnotherAnswer, settleHostHeaders } from './shared-answer.ts';
 import { entrypointKindOf, findShell, getStore, type Store } from './store.ts';
 import { renderedBy, serveWithBody } from './with-body.ts';
 
@@ -349,10 +348,7 @@ async function serveImageSource(
       : sourceResponse({ source: remote.response, params, images, internal: false, method });
   }
   const source = sourceRequest(request, params.href);
-  // The source is answered as an answer of its own: what it has to say to the host is about itself,
-  // and the image built out of it is what this request answers with.
-  const inner = { ...input, request: source, initURL: source.url };
-  const answered = await asAnotherAnswer(() => handleFull(inner, store));
+  const answered = await handleFull({ ...input, request: source, initURL: source.url }, store);
   return sourceResponse({ source: answered, params, images, internal: true, method });
 }
 
@@ -612,8 +608,7 @@ export async function handleRequest(handled: HandleInput): Promise<Response> {
     clock: handled.clock,
   });
   const input: RoutedInput = { ...handled, initURL: initUrlOf(handled.request), run: context.run };
-  return context.run(async () => {
-    const answered = await routeRequest(input, getStore());
-    return settleHostHeaders(withoutBody(handled.request, answered));
-  });
+  return context.run(async () =>
+    withoutBody(handled.request, await routeRequest(input, getStore())),
+  );
 }

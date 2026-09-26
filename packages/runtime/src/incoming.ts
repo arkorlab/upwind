@@ -113,23 +113,6 @@ export function isCrawler(request: Request): boolean {
   return userAgent !== null && userAgent !== '' && isBotUserAgent(userAgent);
 }
 
-/**
- * Whether the client already holds this very generation of the answer, by the validator it was
- * given: `If-None-Match`, as a list of entity tags or `*`, compared strongly — every tag written
- * here is strong, and a `W/` prefix on one that came back is taken off before comparing so that a
- * proxy that weakened it is still understood.
- */
-export function holdsValidator(request: Request, validator: string): boolean {
-  const asked = request.headers.get('if-none-match');
-  if (asked === null) {
-    return false;
-  }
-  return asked
-    .split(',')
-    .map((tag) => tag.trim().replace(/^W\//u, ''))
-    .some((tag) => tag === '*' || tag === validator);
-}
-
 /** `<generationId>;colo=<colo>;at=<ms>`: what the edge observed when it asked. */
 export function observationOf(request: Request): ServedObservation | undefined {
   const value = request.headers.get(SERVED_GENERATION_HEADER);

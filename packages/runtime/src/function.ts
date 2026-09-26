@@ -8,7 +8,6 @@ import './cache/install.ts';
 // deployment that reached no WebAssembly has no such module, and this import is then empty.
 import 'ppr-cdn:wasm';
 import { publishFunctionEnv } from '@stayingupwind/core/paas';
-import { hostResponse } from '@stayingupwind/core/request';
 import app from 'ppr-cdn:app';
 import edge from 'ppr-cdn:edge';
 
@@ -85,9 +84,7 @@ const entry = {
       // The Function's own log: nothing else sees a request that failed before Next.js answered.
       // eslint-disable-next-line no-console
       console.error('next-runtime: request failed', error);
-      // Built out of what no application can replace: an application that threw on purpose, having
-      // put its own `Response` on the global, would otherwise have answered this for us.
-      return hostResponse('Internal Server Error', HTTP_INTERNAL_ERROR);
+      return new Response('Internal Server Error', { status: HTTP_INTERNAL_ERROR });
     }
   },
 };
