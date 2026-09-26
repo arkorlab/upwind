@@ -1,4 +1,4 @@
-import { type FSWatcher, readlinkSync, statSync, watch } from 'node:fs';
+import { type FSWatcher, lstatSync, readlinkSync, watch } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -167,25 +167,36 @@ interface Settling {
   timer: NodeJS.Timeout | undefined;
 }
 
-/** What one name looks like now: when it was last written, or nothing where it is not there. */
-function writtenAt(file: string): number | undefined {
+/**
+ * What one name looks like now, or nothing where it is not there.
+ *
+ * `lstat`, so the answer is about the entry rather than about whatever it points at: a watch point
+ * here may well *be* a symlink — `watchPoints` adds the link's own name — and a link repointed at
+ * another file is exactly the change this exists to catch. `stat` would have read the new target's
+ * modification time, which a repointed link can share with the old one and often does.
+ *
+ * Three fields rather than one, because a replacement is a new entry: an editor writing a config in
+ * place moves the modification time, and `rm`ing a link and making another moves the inode.
+ */
+function entryNow(file: string): string | undefined {
   try {
-    return statSync(file).mtimeMs;
+    const entry = lstatSync(file);
+    return `${String(entry.mtimeMs)}:${String(entry.ino)}:${String(entry.size)}`;
   } catch {
     return undefined;
   }
 }
 
 /** What each of these names looks like now, for an event that will not say which one moved. */
-function writtenTimes(directory: string, listening: ReadonlySet<string>): Map<string, number> {
-  const times = new Map<string, number>();
+function entriesNow(directory: string, listening: ReadonlySet<string>): Map<string, string> {
+  const entries = new Map<string, string>();
   for (const name of listening) {
-    const at = writtenAt(path.join(directory, name));
-    if (at !== undefined) {
-      times.set(name, at);
+    const entry = entryNow(path.join(directory, name));
+    if (entry !== undefined) {
+      entries.set(name, entry);
     }
   }
-  return times;
+  return entries;
 }
 
 /**
@@ -202,17 +213,17 @@ function writtenTimes(directory: string, listening: ReadonlySet<string>): Map<st
 function movedAmong(
   directory: string,
   listening: ReadonlySet<string>,
-  seen: Map<string, number>,
+  seen: Map<string, string>,
 ): string | undefined {
   let moved;
   for (const name of listening) {
-    const at = writtenAt(path.join(directory, name));
-    if (at !== seen.get(name)) {
+    const entry = entryNow(path.join(directory, name));
+    if (entry !== seen.get(name)) {
       moved ??= name;
-      if (at === undefined) {
+      if (entry === undefined) {
         seen.delete(name);
       } else {
-        seen.set(name, at);
+        seen.set(name, entry);
       }
     }
   }
@@ -228,7 +239,7 @@ function watchDirectory(
   try {
     // Read before the watch rather than at the first unnamed event, so that the first change is one
     // this has something to compare against. Where events carry a name, nothing below ever reads it.
-    const seen = writtenTimes(directory, listening);
+    const seen = entriesNow(directory, listening);
     const watcher = watch(directory, (_event, filename) => {
       const moved = filename ?? movedAmong(directory, listening, seen);
       if (moved === undefined || !listening.has(moved)) {

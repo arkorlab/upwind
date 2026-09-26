@@ -28,6 +28,10 @@ export async function reachable(address: string, runId: string): Promise<boolean
       // Whatever the state of the server, the header is on the answer: a `503` from a run still
       // compiling is as good an answer as the `200` after it.
       headers: { accept: 'application/json' },
+      // Followed, a redirect would let something else at this address point the probe at this very
+      // run and pass — while the requests the adapter rewrites here went on being redirected rather
+      // than answered. The question is who answers *this* address, so a `3xx` is a no.
+      redirect: 'manual',
     });
     return answer.headers.get(RUN_HEADER) === runId;
   } catch {
