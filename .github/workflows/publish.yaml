@@ -164,6 +164,10 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=8192
       - run: pnpm format
       - run: pnpm knip
+      # A patch that no longer applies to the Next.js being released against is a Function that runs
+      # without a rewrite it needs, and the adapter's own build says nothing about it. Cheap, and here
+      # rather than only in CI: a tag can be pushed before that run finishes, or after it is cancelled.
+      - run: pnpm check:patches
       - run: pnpm build
 
       - name: Publish

@@ -45,6 +45,41 @@ const TAIL_LINES = 20;
 const TAGS = new Set(['beta', 'canary', 'latest', 'rc']);
 /** Where `next build` leaves what the adapter wrote. */
 const OUT_DIR = '.ppr-cdn';
+/**
+ * npm, as something `execFile` can start without a shell: its own JavaScript, run by this Node.
+ *
+ * The name on `PATH` is a shell script on Unix and a `.cmd` on Windows, and Node will not spawn the
+ * second without a shell — which this must not use, since a version read off a registry travels through
+ * these arguments. npm ships beside the Node that is running: under `lib/node_modules` on Unix, and
+ * beside the executable itself on Windows.
+ *
+ * Duplicated in `packages/adapter/scripts/check-patches.ts`, deliberately: the two live in different
+ * packages, and sharing twenty lines would mean either a tool package the adapter's own scripts depend
+ * on or a reach across the workspace. The `npm` name each of them used was duplicated before this was.
+ */
+async function npmCli(): Promise<string> {
+  const beside = path.dirname(process.execPath);
+  const candidates = [
+    path.join(beside, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    path.join(beside, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  ];
+  for (const candidate of candidates) {
+    try {
+      await stat(candidate);
+      return candidate;
+    } catch {
+      continue;
+    }
+  }
+  throw new Error(
+    `next-matrix: npm was not found beside ${process.execPath}; looked in ${candidates.join(' and ')}`,
+  );
+}
+
+/** Next.js's own entry in an installed application: JavaScript, and so the same on every platform. */
+function nextBin(app: string): string {
+  return path.join(app, 'node_modules', 'next', 'dist', 'bin', 'next');
+}
 
 type Dependencies = Readonly<
   Record<
@@ -290,10 +325,11 @@ async function build(fixture: Fixture, version: string, keep: boolean): Promise<
     manifest.dependencies['next'] = version;
     await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
-    await run('npm', ['install', '--no-audit', '--no-fund'], app);
-    await run(path.join(app, 'node_modules', '.bin', 'next'), ['build'], app, {
-      NEXT_ADAPTER_PATH: ADAPTER,
-    });
+    await run(process.execPath, [await npmCli(), 'install', '--no-audit', '--no-fund'], app);
+    // Next.js's own entry under this Node, rather than the launcher npm wrote into `.bin`: that
+    // one is a shell script on Unix and a `.cmd` on Windows, and `execFile` runs neither without
+    // a shell. The file below is the same JavaScript both of them end up running.
+    await run(process.execPath, [nextBin(app), 'build'], app, { NEXT_ADAPTER_PATH: ADAPTER });
     return { fixture: fixture.name, version, problems: await checkOutput(fixture, app) };
   } catch (error) {
     return { fixture: fixture.name, version, problems: explain(error) };

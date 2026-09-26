@@ -1,56 +1,40 @@
-import { connect } from 'node:net';
+import { UPWIND_INTERNAL_PREFIX } from '@stayingupwind/core/paas';
 
 /**
- * Is this address one this machine reaches the server on?
+ * Is this address one this machine reaches *this* server on?
  *
  * Asked rather than assumed, because the answer depends on the host. A socket bound to `::` is
  * dual-stack nearly everywhere, and IPv4 loopback reaches it — but not on a host with no IPv4 stack, nor
- * on one where `bindv6only` is set. The address the adapter is given has to be one that works, and the
- * cheapest way to know is to open a connection to it and see.
+ * on one where `bindv6only` is set. And on such a host `127.0.0.1:<port>` may be answered by something
+ * else entirely, which is why a connection is not the question: the question is who answers it.
  *
- * Reaching a socket this process is itself listening on is immediate or never, so the wait is short and
- * a failure is an answer rather than a delay.
+ * So the run asks its own door, and reads back the identity it stamps on every answer. What is verified
+ * is not that something is listening but that upwind is — the address the adapter is given sends
+ * internally rewritten requests somewhere, and somewhere else is worse than nowhere.
  */
+
+/** Reaching a socket this process is itself listening on is immediate or never. */
 const PROBE_TIMEOUT_MS = 500;
+/** The header every internal answer carries (`internal/router.ts`). */
+const RUN_HEADER = 'x-upwind-run';
 
-/** What a URL means when it names no port. */
-const DEFAULT_PORTS: Readonly<Record<string, number>> = { 'http:': 80, 'https:': 443 };
-
-/** The port to knock on: the one written, or the one the scheme means. */
-function portOf(url: URL): number | undefined {
-  return url.port === '' ? DEFAULT_PORTS[url.protocol] : Number(url.port);
-}
-
-export async function reachable(address: string): Promise<boolean> {
-  let url;
+export async function reachable(address: string, runId: string): Promise<boolean> {
+  if (!URL.canParse(address)) {
+    return false;
+  }
   try {
-    url = new URL(address);
+    const answer = await fetch(`${address}${UPWIND_INTERNAL_PREFIX}/health`, {
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+      // Whatever the state of the server, the header is on the answer: a `503` from a run still
+      // compiling is as good an answer as the `200` after it.
+      headers: { accept: 'application/json' },
+      // Followed, a redirect would let something else at this address point the probe at this very
+      // run and pass — while the requests the adapter rewrites here went on being redirected rather
+      // than answered. The question is who answers *this* address, so a `3xx` is a no.
+      redirect: 'manual',
+    });
+    return answer.headers.get(RUN_HEADER) === runId;
   } catch {
     return false;
   }
-  const port = portOf(url);
-  if (port === undefined) {
-    return false;
-  }
-  const { promise, resolve } = Promise.withResolvers<boolean>();
-  const socket = connect({ host: url.hostname, port });
-  let settled = false;
-  const settle = (answer: boolean): void => {
-    if (settled) {
-      return;
-    }
-    settled = true;
-    socket.destroy();
-    resolve(answer);
-  };
-  socket.setTimeout(PROBE_TIMEOUT_MS, () => {
-    settle(false);
-  });
-  socket.once('connect', () => {
-    settle(true);
-  });
-  socket.once('error', () => {
-    settle(false);
-  });
-  return promise;
 }

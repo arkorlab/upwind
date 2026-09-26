@@ -38,6 +38,9 @@ interface Answer {
   readonly body: Record<string, unknown>;
 }
 
+/** What every answer here carries, so a caller can tell this run's door from any other (`probe.ts`). */
+const RUN_HEADER = 'x-upwind-run';
+
 /** Keyed by what follows the prefix, so `''` is `/__upwind` itself. */
 type Endpoint = (session: DevSession) => Answer;
 
@@ -90,12 +93,13 @@ function health(devSession: DevSession): Answer {
   };
 }
 
-function write(res: ServerResponse, answer: Answer, headOnly: boolean): void {
+function write(res: ServerResponse, answer: Answer, runId: string, headOnly: boolean): void {
   const payload = `${JSON.stringify(answer.body, null, 2)}\n`;
   res.writeHead(answer.status, {
     'content-type': 'application/json; charset=utf-8',
     'content-length': Buffer.byteLength(payload),
     'cache-control': 'no-store',
+    [RUN_HEADER]: runId,
   });
   if (headOnly) {
     res.end();
@@ -119,6 +123,10 @@ export function answerInternal(
   res: ServerResponse,
   devSession: DevSession,
 ): void {
+  const method = req.method ?? 'GET';
+  // Decided before anything is written, because a `HEAD` carries no body whatever the answer is — a
+  // refusal included, or a keep-alive client reads the bytes it was promised as the next response.
+  const headOnly = method === 'HEAD';
   if (!isTrustedHost(req.headers.host, req.headers['x-forwarded-host'], devSession.hostname)) {
     write(
       res,
@@ -130,11 +138,11 @@ export function answerInternal(
           forwarded: req.headers['x-forwarded-host'] ?? null,
         },
       },
-      false,
+      devSession.runId,
+      headOnly,
     );
     return;
   }
-  const method = req.method ?? 'GET';
   if (method !== 'GET' && method !== 'HEAD') {
     res.setHeader('allow', ALLOWED_METHODS);
     write(
@@ -146,7 +154,8 @@ export function answerInternal(
           allow: ALLOWED_METHODS,
         },
       },
-      false,
+      devSession.runId,
+      headOnly,
     );
     return;
   }
@@ -158,5 +167,5 @@ export function answerInternal(
           body: { error: `no upwind endpoint at ${pathname}`, endpoints: ENDPOINT_PATHS },
         }
       : endpoint(devSession);
-  write(res, answer, method === 'HEAD');
+  write(res, answer, devSession.runId, headOnly);
 }

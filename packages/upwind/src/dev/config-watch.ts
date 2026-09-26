@@ -1,4 +1,4 @@
-import { type FSWatcher, readlinkSync, watch } from 'node:fs';
+import { type FSWatcher, lstatSync, readlinkSync, watch } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -74,11 +74,11 @@ function watchNothing(): void {
 /**
  * How many links are followed before a chain is taken for a loop.
  *
- * The largest bound any platform here resolves to: Linux's `MAXSYMLINKS` is 40, macOS's and
- * Windows's are lower. Matching the highest of them is what makes this bound only ever a guard
- * against a loop — a chain the operating system itself would open is never one this stops short of
- * and leaves watching a link instead of the config file it ends at. Anything longer is a loop, or
- * a chain no platform would resolve either.
+ * Forty, which is what Linux resolves (`MAXSYMLINKS`) and enough for any chain a project has. What
+ * this bound is for is the loop: a link that points at itself, directly or around a ring, is followed
+ * until something stops it, and nothing else here would. A chain longer than this is left where the
+ * walk reached — the links collected so far are watched, so a config behind one is not unwatched, only
+ * watched a step short of where it ends.
  */
 const MAX_LINK_FOLLOWS = 40;
 
@@ -167,6 +167,69 @@ interface Settling {
   timer: NodeJS.Timeout | undefined;
 }
 
+/**
+ * What one name looks like now, or nothing where it is not there.
+ *
+ * `lstat`, so the answer is about the entry rather than about whatever it points at: a watch point
+ * here may well *be* a symlink — `watchPoints` adds the link's own name — and a link repointed at
+ * another file is exactly the change this exists to catch. `stat` would have read the new target's
+ * modification time, which a repointed link can share with the old one and often does.
+ *
+ * Three fields rather than one, because a replacement is a new entry: an editor writing a config in
+ * place moves the modification time, and `rm`ing a link and making another moves the inode.
+ */
+function entryNow(file: string): string | undefined {
+  try {
+    const entry = lstatSync(file);
+    return `${String(entry.mtimeMs)}:${String(entry.ino)}:${String(entry.size)}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/** What each of these names looks like now, for an event that will not say which one moved. */
+function entriesNow(directory: string, listening: ReadonlySet<string>): Map<string, string> {
+  const entries = new Map<string, string>();
+  for (const name of listening) {
+    const entry = entryNow(path.join(directory, name));
+    if (entry !== undefined) {
+      entries.set(name, entry);
+    }
+  }
+  return entries;
+}
+
+/**
+ * Which of the names this watch listens for has moved since it last looked, for an event that did
+ * not say.
+ *
+ * `fs.watch` names the entry that changed on Linux, macOS, Windows and AIX, and nowhere else
+ * (Node, `fs.watch` "Caveats") — a project on a filesystem it cannot ask, or a platform outside
+ * that list, gets a `null` instead. Dropping those is a dev server that never restarts on a config
+ * change and never says why; restarting on them is a dev server that restarts whenever anything
+ * lands beside the config, which in the project's own directory is every lockfile and every
+ * `.next`. So an unnamed event is answered by looking, which is the one reading that is neither.
+ */
+function movedAmong(
+  directory: string,
+  listening: ReadonlySet<string>,
+  seen: Map<string, string>,
+): string | undefined {
+  let moved;
+  for (const name of listening) {
+    const entry = entryNow(path.join(directory, name));
+    if (entry !== seen.get(name)) {
+      moved ??= name;
+      if (entry === undefined) {
+        seen.delete(name);
+      } else {
+        seen.set(name, entry);
+      }
+    }
+  }
+  return moved;
+}
+
 /** One directory, watched for the names that matter in it, or nothing if it cannot be watched. */
 function watchDirectory(
   directory: string,
@@ -174,13 +237,17 @@ function watchDirectory(
   settling: Settling,
 ): FSWatcher | undefined {
   try {
+    // Read before the watch rather than at the first unnamed event, so that the first change is one
+    // this has something to compare against. Where events carry a name, nothing below ever reads it.
+    const seen = entriesNow(directory, listening);
     const watcher = watch(directory, (_event, filename) => {
-      if (filename === null || !listening.has(filename)) {
+      const moved = filename ?? movedAmong(directory, listening, seen);
+      if (moved === undefined || !listening.has(moved)) {
         return;
       }
       clearTimeout(settling.timer);
       settling.timer = setTimeout(() => {
-        restart(`${filename} changed`);
+        restart(`${moved} changed`);
       }, SETTLE_MS);
     });
     watcher.on('error', (error: unknown) => {
