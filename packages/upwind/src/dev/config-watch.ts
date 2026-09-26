@@ -228,6 +228,16 @@ function entriesNow(directory: string, listening: ReadonlySet<string>): Map<stri
   return entries;
 }
 
+/** Move one name's baseline on to whatever it is now, absent included. */
+function remember(directory: string, name: string, seen: Map<string, string>): void {
+  const entry = entryNow(path.join(directory, name));
+  if (entry === undefined) {
+    seen.delete(name);
+  } else {
+    seen.set(name, entry);
+  }
+}
+
 /**
  * Which of the names this watch listens for has moved since it last looked, for an event that did
  * not say.
@@ -246,15 +256,11 @@ function movedAmong(
 ): string | undefined {
   let moved;
   for (const name of listening) {
-    const entry = entryNow(path.join(directory, name));
-    if (entry !== seen.get(name)) {
-      moved ??= name;
-      if (entry === undefined) {
-        seen.delete(name);
-      } else {
-        seen.set(name, entry);
-      }
+    if (entryNow(path.join(directory, name)) === seen.get(name)) {
+      continue;
     }
+    moved ??= name;
+    remember(directory, name, seen);
   }
   return moved;
 }
@@ -267,13 +273,21 @@ function watchDirectory(
 ): FSWatcher | undefined {
   try {
     // Read before the watch rather than at the first unnamed event, so that the first change is one
-    // this has something to compare against. Where events carry a name, nothing below ever reads it.
+    // this has something to compare against.
     const seen = entriesNow(directory, listening);
     const watcher = watch(directory, (_event, filename) => {
-      const moved = filename ?? movedAmong(directory, listening, seen);
-      if (moved === undefined || !listening.has(moved)) {
+      // A named event this watch listens for is taken at its word. Anything else is looked at instead,
+      // which covers the two cases a name cannot: a platform that reports none, and this directory
+      // *itself* being moved or replaced — Linux reports that as its own basename, which is not a name
+      // in here and is very much a change to what is in it.
+      const named = filename !== null && listening.has(filename);
+      const moved = named ? filename : movedAmong(directory, listening, seen);
+      if (moved === undefined) {
         return;
       }
+      // A named event moves the baseline on too, so that a later look does not report the change this
+      // one already did and push the settling out by another round.
+      remember(directory, moved, seen);
       clearTimeout(settling.timer);
       settling.timer = setTimeout(() => {
         restart(`${moved} changed`);
