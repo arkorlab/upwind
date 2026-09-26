@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { UPWIND_INTERNAL_PREFIX } from '@stayingupwind/core/paas';
 
 import { type DevSession, readyInMs, uptimeMs } from '../dev/session.ts';
+import { isTrustedHost } from './host.ts';
 
 /**
  * What upwind answers under its own prefix, and the rules every endpoint here is held to.
@@ -18,13 +19,15 @@ import { type DevSession, readyInMs, uptimeMs } from '../dev/session.ts';
  *   than a method: a page on another origin can *send* a request to this port, and what stops it
  *   reading the answer is only that no CORS header is ever written below.
  * - No `access-control-allow-origin`, ever. The same-origin policy is the whole of the protection a
- *   developer's machine has here.
+ *   developer's machine has here — and `host.ts` is what keeps a name that resolves to this machine
+ *   from borrowing that protection.
  * - `cache-control: no-store`. Every answer describes a moment.
  * - An unknown path answers with the paths that are known, because a typo in a tool's URL should say
  *   so rather than look like a server that is not running.
  */
 
 const STATUS_OK = 200;
+const STATUS_FORBIDDEN = 403;
 const STATUS_NOT_FOUND = 404;
 const STATUS_METHOD_NOT_ALLOWED = 405;
 const STATUS_UNAVAILABLE = 503;
@@ -116,6 +119,20 @@ export function answerInternal(
   res: ServerResponse,
   devSession: DevSession,
 ): void {
+  if (!isTrustedHost(req.headers.host, devSession.hostname)) {
+    write(
+      res,
+      {
+        status: STATUS_FORBIDDEN,
+        body: {
+          error: `${UPWIND_INTERNAL_PREFIX} is answered for this machine's own names only`,
+          host: req.headers.host ?? null,
+        },
+      },
+      false,
+    );
+    return;
+  }
   const method = req.method ?? 'GET';
   if (method !== 'GET' && method !== 'HEAD') {
     res.setHeader('allow', ALLOWED_METHODS);

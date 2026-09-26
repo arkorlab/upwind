@@ -22,6 +22,12 @@ name: Publish
 # bootstrapped fails at the publish step, possibly with some of the other packages already uploaded.
 # Publish each of them once by hand with a token, configure its trusted publisher to name
 # `release.yaml`, and then release as usual.
+#
+# Those one-offs have to be `pnpm publish`, not `npm publish`. Three packages here describe what they
+# ship through `publishConfig` — the `bin` of `upwind` and of `create-upwind`, and the adapter's
+# `exports`, each naming `dist/` there and the TypeScript sources outside it — and pnpm is what folds
+# those in as it packs. `npm publish` would upload manifests pointing at `.ts` files that no installed
+# copy can load.
 
 on:
   workflow_call:
@@ -188,9 +194,11 @@ jobs:
     needs: publish
     if: ${{ !inputs.dry-run }}
     runs-on: ubuntu-latest
-    # Every publishable package is read back in turn, each given the ten minutes the comment below
-    # explains: five of them now, and room to say so. A package added to `packages/` adds ten here.
-    timeout-minutes: 55
+    # Five packages, each given the ten minutes the comment below explains, and room to say so. The
+    # read-back is serial, so this has to grow with the number of packages or a release that published
+    # cleanly would be killed while verifying the last one — and the hundred `npm view` calls and the
+    # checkout are on top of the fifty minutes the waiting alone can take.
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:

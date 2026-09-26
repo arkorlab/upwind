@@ -9,6 +9,10 @@ import { parseArgs } from 'node:util';
  * that would have changed a build is an error rather than a build that ignored it. A project that
  * needs one runs `next build` itself; the `next.config` a scaffolded project has names the adapter,
  * so that build produces the same bundle this one does.
+ *
+ * `--help` and `--version` are options here rather than tokens looked for in the arguments, for the
+ * reason `args.ts` gives of `upwind dev`: it is the parser that knows where the options end, and a
+ * directory named `--help` is named after a `--`.
  */
 
 export interface BuildOptions {
@@ -16,17 +20,39 @@ export interface BuildOptions {
   readonly projectDir: string;
 }
 
-export function parseBuildOptions(args: readonly string[]): BuildOptions {
-  const { positionals } = parseArgs({
+/** What `upwind build` was asked for: an answer about itself, or a build of this directory. */
+export type BuildRequest =
+  | { readonly answer: 'help' | 'version' }
+  | { readonly answer: undefined; readonly options: BuildOptions };
+
+function answerOf(values: {
+  readonly help?: boolean;
+  readonly version?: boolean;
+}): BuildRequest['answer'] {
+  if (values.help === true) {
+    return 'help';
+  }
+  return values.version === true ? 'version' : undefined;
+}
+
+export function parseBuildRequest(args: readonly string[]): BuildRequest {
+  const { values, positionals } = parseArgs({
     args: [...args],
-    options: {},
+    options: {
+      help: { type: 'boolean', short: 'h' },
+      version: { type: 'boolean', short: 'v' },
+    },
     allowPositionals: true,
     strict: true,
   });
+  const answer = answerOf(values);
+  if (answer !== undefined) {
+    return { answer };
+  }
   if (positionals.length > 1) {
     throw new Error(
       `\`upwind build\` takes at most one directory, and was given ${positionals.length}`,
     );
   }
-  return { projectDir: path.resolve(positionals[0] ?? '.') };
+  return { answer: undefined, options: { projectDir: path.resolve(positionals[0] ?? '.') } };
 }

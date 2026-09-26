@@ -310,11 +310,14 @@ export default defineConfig([
     },
   },
 
-  // A CLI is a program a developer runs, and this block is after the Node config above because that
-  // is what turns `n/no-process-exit` back on. They speak to a terminal, read and write paths under
-  // the project they were pointed at, and end the process with the code something else reads back —
-  // a restart is an exit code, not an exception, because Next.js's dev tooling exits the process
-  // itself, and `create-upwind` ends with what the install it ran ended with.
+  // A CLI is a program a developer runs, and it says so on the terminal it was run from.
+  // The paths it reads and writes are the ones under the project it was pointed at.
+  // It ends the process with the code something else reads back: `upwind dev`'s supervisor, or
+  // whoever started `create-upwind` and the install it ran.
+  // A restart is an exit code rather than an exception, because Next.js's dev tooling exits from inside.
+  //
+  // After the Node-only config above, which is what turns `n/no-process-exit` on: in a flat config
+  // the later entry decides.
   {
     files: CLI_FILES,
     rules: {
