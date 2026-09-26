@@ -9,10 +9,8 @@ name: Release
 #     publish, whatever else it is allowed to do;
 #   * the steps themselves are in `publish.yaml`, which npm neither knows nor needs to.
 #
-# Pushing a signed tag is the whole of a release. `workflow_dispatch` is for the two occasions that
-# are not one: rehearsing a release, which is what it defaults to, and the first publish of a
-# package, which cannot go through a trusted publisher that does not exist yet. Either way the tag
-# is verified the same way.
+# Pushing a signed tag is the whole of a release. `workflow_dispatch` is for rehearsing one: it
+# defaults to a dry run, and verifies the same tag the same way.
 
 on:
   push:
@@ -32,11 +30,6 @@ on:
         description: Do everything but upload.
         required: false
         default: true
-        type: boolean
-      bootstrap:
-        description: The first publish of a package, by token. Once, then never again.
-        required: false
-        default: false
         type: boolean
 
 permissions: {}
@@ -58,8 +51,3 @@ jobs:
     with:
       tag: ${{ inputs.tag || github.ref_name }}
       dry-run: ${{ inputs.dry-run || false }}
-      bootstrap: ${{ inputs.bootstrap || false }}
-    secrets:
-      # Named rather than inherited, so the reusable half is handed this one secret and no other.
-      # Both this block and the secret itself go away after the first release of each package.
-      npm-token: ${{ secrets.NPM_TOKEN }}
