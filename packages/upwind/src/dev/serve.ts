@@ -102,7 +102,8 @@ export async function serveDev(options: DevOptions): Promise<void> {
     hostname: options.hostname,
     upwindVersion: await ownVersion(),
   });
-  devSession.adapterPath = installAdapterPath(options.projectDir);
+  const adapter = installAdapterPath(options.projectDir);
+  devSession.adapterPath = adapter.path;
 
   // What everything but `/__upwind` waits on: the handler itself, once there is one. Rejected if
   // Next.js never starts, so a request that arrived while it was starting is answered — with the 500
@@ -221,6 +222,9 @@ export async function serveDev(options: DevOptions): Promise<void> {
     server.close();
     throw error;
   }
+  // Next.js has read the config, and with it the adapter this run named; what is left in the
+  // environment from here on is the project's own.
+  adapter.restore();
   devSession.nextVersion = app.version;
   devSession.readyTick = performance.now();
   nextReady.resolve(app.handle);

@@ -24,6 +24,18 @@ import type { NextAdapter } from 'next';
  */
 
 type NextConfig = Parameters<NonNullable<NextAdapter['modifyConfig']>>[0];
+/** What decides whether an internal destination is the application's rather than this prefix. */
+interface ProjectScope {
+  readonly basePath: string;
+  readonly localised: boolean;
+}
+
+/** What this reads of `next.config`, as the object really is rather than as its type describes it. */
+export interface ProjectRouting {
+  readonly rewrites: RewritesFn | undefined;
+  readonly basePath: string | undefined;
+  readonly i18n: unknown;
+}
 /** `next.config`'s `rewrites`, and the shapes Next.js lets it answer with. */
 type RewritesFn = NonNullable<NextConfig['rewrites']>;
 type Rewrites = Awaited<ReturnType<RewritesFn>>;
@@ -95,17 +107,27 @@ function originOf(address: string): string {
  * nothing can be put in front of the latter — so the destination is changed where it is written
  * instead, which is also where the project said what it meant: send this to `/__upwind`.
  *
- * Two destinations are left alone. One that names a host is already somebody else's to answer, and not
- * Next.js's routing to intercept. And under a `basePath`, an internal destination is resolved beneath
- * it unless the rule says `basePath: false` — `/__upwind/report` in a project based at `/docs` means
- * `/docs/__upwind/report`, which is the application's own path and says nothing about this prefix.
+ * What is left alone. A destination that names a host is already somebody else's to answer, and not
+ * Next.js's routing to intercept. Under a `basePath`, an internal destination is resolved beneath it
+ * unless the rule says `basePath: false` — `/__upwind/report` in a project based at `/docs` means
+ * `/docs/__upwind/report`, which is the application's own path. The same goes for a locale: with `i18n`
+ * configured, Next.js carries the matched locale onto the destination unless the rule says
+ * `locale: false`, and `/fr/__upwind` is the application's too.
+ *
+ * And one thing this cannot read: a destination that only *becomes* this prefix for some requests, as
+ * `{ source: '/legacy/:path*', destination: '/:path*' }` does for `/legacy/__upwind/health`. What the
+ * pattern resolves to is known when the request is, which is not here — and a rule whose destination is
+ * a bare parameter is a rule about everything, not about this prefix.
  */
-function pointAtFrontDoor(rule: RewriteRule, origin: string, basePath: string): RewriteRule {
+function pointAtFrontDoor(rule: RewriteRule, origin: string, scope: ProjectScope): RewriteRule {
   const { destination } = rule;
   if (!destination.startsWith('/')) {
     return rule;
   }
-  if (basePath !== '' && rule.basePath !== false) {
+  if (scope.basePath !== '' && rule.basePath !== false) {
+    return rule;
+  }
+  if (scope.localised && rule.locale !== false) {
     return rule;
   }
   // The path alone decides; a query or a fragment travels with it untouched.
@@ -137,10 +159,15 @@ function reservation(origin: string): RewriteRule[] {
  * The project's `rewrites`, with the reservation ahead of whatever it declared — or the project's
  * own, untouched, when no `upwind dev` is in front of this server.
  */
-export function reserveUpwindPrefix(
-  rewrites: RewritesFn | undefined,
-  basePath: string | undefined,
-): RewritesFn | undefined {
+export function reserveUpwindPrefix(project: ProjectRouting): RewritesFn | undefined {
+  const { rewrites } = project;
+  // Read as `unknown`, and both ways: `NextConfigComplete` types every key as present, which is a
+  // promise about the type rather than about the object — a project that declares no rewrites and no
+  // locales has neither key at run time.
+  const scope: ProjectScope = {
+    basePath: project.basePath ?? '',
+    localised: project.i18n !== null && project.i18n !== undefined,
+  };
   const address = process.env[UPWIND_DEV_ADDRESS_ENV];
   if (address === undefined || address === '') {
     return rewrites;
@@ -160,7 +187,7 @@ export function reserveUpwindPrefix(
       };
     }
     const own = (rules: RewriteRule[] | undefined): RewriteRule[] =>
-      (rules ?? []).map((rule) => pointAtFrontDoor(rule, origin, basePath ?? ''));
+      (rules ?? []).map((rule) => pointAtFrontDoor(rule, origin, scope));
     if (Array.isArray(declared)) {
       // An array is `afterFiles` to Next.js, and stays one here.
       return {

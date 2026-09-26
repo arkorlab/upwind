@@ -1,4 +1,4 @@
-import { type FSWatcher, realpathSync, watch } from 'node:fs';
+import { type FSWatcher, readlinkSync, watch } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -62,6 +62,31 @@ function watchNothing(): void {
   // There was never a watcher.
 }
 
+/** How far a chain of symlinks is followed. Long enough for any real one, bounded against a loop. */
+const MAX_LINK_HOPS = 8;
+
+/**
+ * Where a name really points, or nothing when it is not a link.
+ *
+ * Read link by link rather than resolved in one go, so that a link whose target does not exist yet
+ * still says where it is waiting for one: a config symlinked to a file somebody has not written is a
+ * config that appears the moment they do, and the watch has to be on the directory it will appear in.
+ */
+function linkTarget(start: string): string | undefined {
+  let current = start;
+  for (let hop = 0; hop < MAX_LINK_HOPS; hop += 1) {
+    let next;
+    try {
+      next = readlinkSync(current);
+    } catch {
+      // Not a link — so either the end of the chain, or a plain file this was never following.
+      return hop === 0 ? undefined : current;
+    }
+    current = path.resolve(path.dirname(current), next);
+  }
+  return current;
+}
+
 /**
  * The directories to watch, and the names to listen for in each.
  *
@@ -74,14 +99,8 @@ function watchNothing(): void {
 function watchPoints(projectDir: string, names: readonly string[]): Map<string, Set<string>> {
   const points = new Map<string, Set<string>>([[projectDir, new Set(names)]]);
   for (const name of names) {
-    let target;
-    try {
-      target = realpathSync(path.join(projectDir, name));
-    } catch {
-      // Not there, or a link to nothing: the watch on the project is what will see it appear.
-      continue;
-    }
-    if (target === path.join(projectDir, name)) {
+    const target = linkTarget(path.join(projectDir, name));
+    if (target === undefined) {
       continue;
     }
     const directory = path.dirname(target);
