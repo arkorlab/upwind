@@ -184,9 +184,12 @@ export function reserveUpwindPrefix(project: ProjectRouting): RewritesFn | undef
   const origin = originOf(address);
   return async (): Promise<Rewrites> => {
     const declared = await rewrites?.();
+    // `null` as well as absent: a project's `rewrites` is JavaScript whatever its type says, and one
+    // that answers with nothing at all should leave the reservation standing rather than the config
+    // load falling over.
     // A list of its own per phase, rules included: three keys holding one array — or one rule object —
     // would be three places a single edit downstream could turn up in.
-    if (declared === undefined) {
+    if (declared === undefined || (declared as unknown) === null) {
       return {
         beforeFiles: reservation(origin),
         afterFiles: reservation(origin),
