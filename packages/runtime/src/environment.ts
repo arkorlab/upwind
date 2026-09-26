@@ -1,3 +1,6 @@
+// Named here for its evaluation alone: the module takes the header methods the platform's own
+// trust boundary uses before the application can replace them (`settledForHost`).
+import '@stayingupwind/core/request';
 import { installFetchCacheModes } from './fetch-cache-mode.ts';
 import { installFetchCacheWrites } from './fetch-cache-writes.ts';
 import { installResources } from './resources.ts';

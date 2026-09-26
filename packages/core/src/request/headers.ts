@@ -169,76 +169,64 @@ function hiddenFromPassthrough(name: string): boolean {
 }
 
 /**
- * Take the platform's own headers off a response the application wrote.
+ * The pieces of the platform's own headers, taken before any application code can replace them.
  *
- * What a runtime says to its host on a response — which answer may be shared, what the cache did —
- * is the runtime's to say, and a host that reads it has to be able to trust it. An application can
- * write any header it likes, so anything under the prefix is dropped wherever the application's own
- * headers are what a request is answered with: a render, a handler's stream, or the headers a build
- * recorded. What the runtime sets afterwards is then the only thing under that prefix.
+ * A Function's application shares this realm, and is evaluated before the entry's own body runs:
+ * it can put its own `delete` on `Headers.prototype`, or hide a name from `entries`, and a check
+ * made through those would pass while nothing was taken off. These are read as this module is
+ * evaluated, which `environment.ts` names ahead of the application for exactly this reason, so what
+ * is used below is the runtime's own however the application is written afterwards.
  */
-export function dropPlatformHeaders(headers: Headers): Headers {
-  // Collected before any is deleted: a header list is not to be edited while it is being read.
-  const platform: string[] = [];
-  for (const name of headers.keys()) {
-    if (name.startsWith(PLATFORM_HEADER_PREFIX)) {
-      platform.push(name);
-    }
-  }
-  for (const name of platform) {
-    headers.delete(name);
-  }
-  return headers;
-}
+/* eslint-disable @typescript-eslint/unbound-method -- taking the method off the prototype is the
+   point: each is called with `.call` on the header list it is for, and what is wanted is the one
+   the platform read here rather than whatever the object carries by then. */
+const intrinsic = {
+  Headers,
+  Response,
+  entries: Headers.prototype.entries,
+  append: Headers.prototype.append,
+  set: Headers.prototype.set,
+} as const;
+/* eslint-enable @typescript-eslint/unbound-method */
 
 const HTTP_LOWEST_STATUS = 200;
 const HTTP_HIGHEST_STATUS = 599;
-
-/**
- * The response the application answered with, with the platform's own headers off it.
- *
- * Left exactly as it is when there is nothing under the prefix, which is all but every response.
- * A response handed back by a call is not always ours to edit — its headers may be immutable — and
- * not every response can be rebuilt around: a `Response` takes no status outside 200–599, so an
- * error response and a protocol switch would both throw, and a `webSocket` a runtime attached does
- * not come along. So: nothing to take off, nothing done; something to take off, edited where the
- * headers allow it and copied only where they do not.
- */
-export function withoutPlatformHeaders(answered: Response): Response {
-  if (!namesPlatformHeader(answered.headers)) {
-    return answered;
-  }
-  try {
-    dropPlatformHeaders(answered.headers);
-    return answered;
-  } catch {
-    // Immutable headers, as a response that came back from a call has: copied instead, where the
-    // status is one a `Response` can be built around at all. A protocol switch or an error response
-    // is neither copyable nor anything a host decides caching by, so it is left as it came.
-    return rebuildable(answered.status) ? copiedWithout(answered) : answered;
-  }
-}
 
 /** What a `Response` will take: anything else cannot be built around, however little is changed. */
 function rebuildable(status: number): boolean {
   return status >= HTTP_LOWEST_STATUS && status <= HTTP_HIGHEST_STATUS;
 }
 
-function copiedWithout(answered: Response): Response {
-  return new Response(answered.body, {
-    status: answered.status,
-    statusText: answered.statusText,
-    headers: dropPlatformHeaders(new Headers(answered.headers)),
-  });
-}
-
-function namesPlatformHeader(headers: Headers): boolean {
-  for (const name of headers.keys()) {
-    if (name.startsWith(PLATFORM_HEADER_PREFIX)) {
-      return true;
+/**
+ * The answer as it leaves a runtime: nothing of the application's under the platform's prefix, and
+ * `said` — what the runtime has to say to its host about this answer — in its place.
+ *
+ * Rebuilt rather than edited: a response handed back by a call holds its headers immutable, and an
+ * application may have replaced the methods that would edit them. A status outside 200–599 is a
+ * protocol switch or an error response, which cannot be rebuilt around and which no host reads a
+ * caching decision off; those are left as they came.
+ *
+ * `set-cookie` survives as the several headers it is: a header list yields each of those on its own,
+ * and each is appended as its own again.
+ */
+export function settledForHost(answered: Response, said: ReadonlyMap<string, string>): Response {
+  if (!rebuildable(answered.status)) {
+    return answered;
+  }
+  const kept = new intrinsic.Headers();
+  for (const [name, value] of intrinsic.entries.call(answered.headers)) {
+    if (!name.startsWith(PLATFORM_HEADER_PREFIX)) {
+      intrinsic.append.call(kept, name, value);
     }
   }
-  return false;
+  for (const [name, value] of said) {
+    intrinsic.set.call(kept, name, value);
+  }
+  return new intrinsic.Response(answered.body, {
+    status: answered.status,
+    statusText: answered.statusText,
+    headers: kept,
+  });
 }
 
 /**

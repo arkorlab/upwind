@@ -38,13 +38,12 @@ export {
 } from './cookies.ts';
 export {
   filterShellResponseHeaders,
-  dropPlatformHeaders,
   filterStoredResponseHeaders,
   type ForwardingContext,
   rendersInline,
   type PassthroughResponseContext,
   rewritePassthroughResponseHeaders,
-  withoutPlatformHeaders,
+  settledForHost,
   sanitizeContinuationHeaders,
   sanitizePassthroughHeaders,
 } from './headers.ts';

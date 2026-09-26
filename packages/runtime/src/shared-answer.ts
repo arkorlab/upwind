@@ -1,10 +1,7 @@
 import { CACHE_OUTCOME_HEADER, SHARED_ANSWER_HEADER } from '@stayingupwind/core/paas';
-import { withoutPlatformHeaders } from '@stayingupwind/core/request';
+import { settledForHost } from '@stayingupwind/core/request';
 
 import { requestContext } from './cache/context.ts';
-
-const HTTP_LOWEST_STATUS = 200;
-const HTTP_HIGHEST_STATUS = 599;
 
 /**
  * What the runtime tells its host about an answer, said so that no application can say it.
@@ -61,36 +58,5 @@ export async function asAnotherAnswer<T>(work: () => Promise<T>): Promise<T> {
 
 /** The answer as it leaves the runtime: the host's headers are the runtime's own, and only those. */
 export function settleHostHeaders(answered: Response): Response {
-  const settled = withoutPlatformHeaders(answered);
-  const said = requestContext()?.hostHeaders;
-  if (said === undefined || said.size === 0) {
-    return settled;
-  }
-  try {
-    for (const [name, value] of said) {
-      settled.headers.set(name, value);
-    }
-    return settled;
-  } catch {
-    // Headers that came back from a call are not ours to edit; said on a copy instead. A status no
-    // `Response` can be built around is a protocol switch or an error, and a host reads neither of
-    // these of it.
-    return rebuildable(settled.status) ? saidOn(settled, said) : settled;
-  }
-}
-
-function rebuildable(status: number): boolean {
-  return status >= HTTP_LOWEST_STATUS && status <= HTTP_HIGHEST_STATUS;
-}
-
-function saidOn(answered: Response, said: ReadonlyMap<string, string>): Response {
-  const headers = new Headers(answered.headers);
-  for (const [name, value] of said) {
-    headers.set(name, value);
-  }
-  return new Response(answered.body, {
-    status: answered.status,
-    statusText: answered.statusText,
-    headers,
-  });
+  return settledForHost(answered, requestContext()?.hostHeaders ?? new Map());
 }

@@ -1,5 +1,5 @@
 import { SHARED_ANSWER_CACHE_CONTROL } from '@stayingupwind/core/paas';
-import { dropPlatformHeaders, filterStoredResponseHeaders } from '@stayingupwind/core/request';
+import { filterStoredResponseHeaders } from '@stayingupwind/core/request';
 
 import { documentHeaders, POSTPONED_HEADER, PRERENDER_HEADER, RSC_CONTENT_TYPE } from './serve.ts';
 import { saySharedAnswer } from './shared-answer.ts';
@@ -53,7 +53,7 @@ function outputHeaders(
     representation === ROUTE_BODY
       ? filterStoredResponseHeaders(Object.entries(recorded))
       : recorded;
-  const headers = dropPlatformHeaders(new Headers(answered));
+  const headers = new Headers(answered);
   headers.set('content-type', contentTypeOf(representation, recorded));
   if (representation === ROUTE_BODY && validator !== undefined) {
     headers.set('cache-control', SHARED_ANSWER_CACHE_CONTROL);
