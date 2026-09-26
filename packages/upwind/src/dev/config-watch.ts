@@ -71,8 +71,18 @@ function watchNothing(): void {
   // There was never a watcher.
 }
 
-/** How far a chain of symlinks is followed. Long enough for any real one, bounded against a loop. */
-const MAX_LINK_HOPS = 32;
+/** How many links are followed before a chain is taken for a loop. The kernel's own bound is 40. */
+const MAX_LINK_FOLLOWS = 32;
+
+/** The components of an absolute path, below its root, with separators as this platform writes them. */
+function componentsOf(absolute: string): string[] {
+  const normalized = path.normalize(absolute);
+  const { root } = path.parse(normalized);
+  return normalized
+    .slice(root.length)
+    .split(path.sep)
+    .filter((part) => part !== '');
+}
 
 /**
  * Every symlink on the way to what a name points at, and the path it ends at.
@@ -84,19 +94,20 @@ const MAX_LINK_HOPS = 32;
  * resolve, so the components of where it points are walked in their turn. The end is a place to watch
  * too, and may be a file that does not exist yet — a config symlinked to something nobody has written
  * is one that appears the moment they do.
+ *
+ * The walk starts at the path's own root rather than at a separator, because a drive letter is part of
+ * the root on Windows and `\C:\…` is not a path anything can be read from. Only the links are counted
+ * against the bound; the components are however many a project happens to be nested under.
  */
 function linkPoints(start: string): string[] {
   const points: string[] = [];
-  let remaining = start.split(path.sep).filter((part) => part !== '');
-  let resolved: string = path.sep;
-  for (let hops = 0; hops <= MAX_LINK_HOPS; hops += 1) {
+  let remaining = componentsOf(start);
+  let resolved = path.parse(path.normalize(start)).root;
+  let follows = 0;
+  while (remaining.length > 0) {
     const [part, ...rest] = remaining;
-    if (part === undefined) {
-      points.push(resolved);
-      return points;
-    }
     remaining = rest;
-    resolved = path.join(resolved, part);
+    resolved = path.join(resolved, part ?? '');
     let target;
     try {
       target = readlinkSync(resolved);
@@ -104,15 +115,18 @@ function linkPoints(start: string): string[] {
       // Not a link: either a plain entry, or one that is not there. Either way, on to the next part.
       continue;
     }
+    if (follows >= MAX_LINK_FOLLOWS) {
+      // A chain this long is a loop, or close enough. What was collected is watched all the same.
+      break;
+    }
+    follows += 1;
     points.push(resolved);
-    // What the link points at is resolved from the start, since its own path may pass through links
-    // as well; whatever was still to come after the link comes after that.
+    // What the link points at is resolved from its own root, since its path may pass through links as
+    // well; whatever was still to come after the link comes after that.
     const next = path.resolve(path.dirname(resolved), target);
-    remaining = [...next.split(path.sep).filter((entry) => entry !== ''), ...remaining];
-    resolved = path.sep;
+    remaining = [...componentsOf(next), ...remaining];
+    resolved = path.parse(path.normalize(next)).root;
   }
-  // A chain this long is a loop, or close enough: what has been collected is watched, and the end of it
-  // is wherever the walk stopped.
   points.push(resolved);
   return points;
 }
