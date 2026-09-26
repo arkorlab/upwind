@@ -108,6 +108,10 @@ export async function serveDev(options: DevOptions): Promise<void> {
   printListening(devSession);
 
   try {
+    // Before Next.js is started, not after: `prepare()` reads `next.config` and can take seconds, and
+    // a config written during those seconds would otherwise be one this run never hears about — it
+    // would serve the old config until something changed again.
+    await watchConfigFiles(options.projectDir);
     const app: RunningNext = await startNextApp({
       projectDir: options.projectDir,
       hostname: options.hostname,
@@ -118,7 +122,6 @@ export async function serveDev(options: DevOptions): Promise<void> {
     devSession.readyTick = performance.now();
     nextReady.resolve(app.handle);
     printReady(devSession);
-    await watchConfigFiles(options.projectDir);
     await untilStopped(server, app);
   } catch (error) {
     // The socket is this process's to let go of. A run that cannot start is over, and a port held by

@@ -16,6 +16,11 @@ name: Publish
 # A package published for the first time cannot come through here: npm will not hold a trusted
 # publisher for a name that does not exist yet. That release needs a token once, and the shape it
 # took is in this file's history (the `bootstrap` input, retired once the three packages existed).
+#
+# `upwind` is in that position now. It is publishable, `pnpm --recursive publish` will reach it, and
+# it has no trusted publisher — so a release made before it is bootstrapped fails at the publish step,
+# possibly with some of the other packages already uploaded. Publish `upwind@<version>` once by hand
+# with a token, configure its trusted publisher to name `release.yaml`, and then release as usual.
 
 on:
   workflow_call:

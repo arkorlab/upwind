@@ -20,12 +20,10 @@ export const WORKER_ENV = 'UPWIND_DEV_WORKER';
 
 /** How long a child has to end on its own after a signal, before it is killed outright. */
 const EXIT_GRACE_MS = 2000;
-/** What a shell expects of a process that ended on SIGINT: 128 plus the signal number. */
-const SIGINT_EXIT_CODE = 130;
 
 interface Outcome {
+  /** The child's own exit code, or nothing when a signal ended it before it could choose one. */
   readonly code: number | null;
-  readonly signal: NodeJS.Signals | null;
   /** Whether this process passed a signal down: then the child's end was asked for, not its own. */
   readonly asked: boolean;
 }
@@ -59,8 +57,8 @@ async function runChild(entry: string, args: readonly string[]): Promise<Outcome
   try {
     // `events.once` rejects if the child emits `error` instead — a fork that never started is a
     // failure of this command, and is thrown from here.
-    const [code, signal] = (await once(child, 'exit')) as [number | null, NodeJS.Signals | null];
-    return { code, signal, asked };
+    const [code] = (await once(child, 'exit')) as [number | null, NodeJS.Signals | null];
+    return { code, asked };
   } finally {
     process.off('SIGINT', onInterrupt);
     process.off('SIGTERM', onTerminate);
@@ -69,11 +67,15 @@ async function runChild(entry: string, args: readonly string[]): Promise<Outcome
 
 export async function supervise(entry: string, args: readonly string[]): Promise<void> {
   for (;;) {
-    const { code, signal, asked } = await runChild(entry, args);
+    const { code, asked } = await runChild(entry, args);
     if (!asked && code === RESTART_EXIT_CODE) {
       continue;
     }
-    process.exitCode = code ?? (signal === 'SIGINT' ? SIGINT_EXIT_CODE : 1);
+    // The child's own code, whatever ended it. A stop that was asked for is a clean one — the child
+    // closes the port and leaves with 0, and `next dev` reports the same 0 for the same interruption
+    // (`handleSessionStop`), which is what a script that stops this server on purpose wants to read.
+    // A child that ended on a signal chose no code, and closed nothing: that is a failure.
+    process.exitCode = code ?? 1;
     return;
   }
 }
