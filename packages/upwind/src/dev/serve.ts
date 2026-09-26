@@ -39,10 +39,19 @@ export interface DevOptions {
 
 const STATUS_INTERNAL_ERROR = 500;
 
-/** The pathname a request names, whatever form its target took, and `/` for one that parses as none. */
-function pathnameOf(target: string | undefined): string {
+/**
+ * The pathname a request names, whatever form its target took, and `/` for one that parses as none.
+ *
+ * An origin-form target is a path even when it begins with `//`, so it is read as one: resolved against
+ * a base, `//docs/__upwind` is a *scheme-relative* URL whose authority is `docs`, and the pathname that
+ * falls out of it — `/__upwind` — is not the path anybody asked for. Next.js keeps the slashes and
+ * canonicalises towards `/docs/__upwind`, which is the application's.
+ */
+function pathnameOf(target = '/'): string {
   try {
-    return new URL(target ?? '/', 'http://localhost').pathname;
+    return target.startsWith('/')
+      ? new URL(`http://localhost${target}`).pathname
+      : new URL(target, 'http://localhost').pathname;
   } catch {
     return '/';
   }
