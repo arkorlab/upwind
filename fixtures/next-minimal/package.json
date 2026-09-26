@@ -1,0 +1,15 @@
+{
+  "name": "@upwind-fixture/next-minimal",
+  "version": "0.0.0",
+  "private": true,
+  "description": "An application on the Node.js runtime that reaches every place the adapter patches.",
+  "type": "module",
+  "scripts": {
+    "build": "next build"
+  },
+  "dependencies": {
+    "next": "16.3.6",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}

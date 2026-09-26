@@ -28,6 +28,7 @@ import tseslint from 'typescript-eslint';
 const NODE_ONLY_FILES = [
   'packages/adapter/**/*.ts',
   'packages/upwind/**/*.ts',
+  'tools/**/*.ts',
   '*.config.ts',
   '**/*.config.ts',
 ];
@@ -51,7 +52,16 @@ const NODE_BUILTINS = builtinModules.flatMap((name) =>
 );
 
 export default defineConfig([
-  globalIgnores(['**/node_modules/**', '**/dist/**', '**/.next/**', '**/.ppr-cdn/**']),
+  globalIgnores([
+    '**/node_modules/**',
+    '**/dist/**',
+    '**/.next/**',
+    '**/.ppr-cdn/**',
+    // Applications `tools/next-matrix` builds with a Next.js of their own. They are input to a
+    // build, not code of this repository's: what they may say is Next.js's to decide, and a
+    // `"use cache"` directive or a `?module` import is not this configuration's business.
+    'fixtures/**',
+  ]),
 
   // 1. Base JavaScript rules: everything on, then a short, justified opt-out list.
   {
@@ -320,6 +330,17 @@ export default defineConfig([
       'security/detect-non-literal-fs-filename': 'off',
       'unicorn/no-process-exit': 'off',
       'unicorn/prefer-temporal': 'off', // the Node version this runs on has no Temporal
+    },
+  },
+
+  // The tools are programs a maintainer runs, and what they have to say is the whole of their
+  // output. The paths they touch are under a directory they made themselves, or under a package
+  // they just fetched — neither is a literal anyone could have written here.
+  {
+    files: ['tools/**/*.ts'],
+    rules: {
+      'no-console': 'off',
+      'security/detect-non-literal-fs-filename': 'off',
     },
   },
 

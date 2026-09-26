@@ -18,7 +18,10 @@ const config: KnipConfig = {
     // `cloudflare:*` are the Workers runtime's own. Neither is an npm package.
     'packages/runtime': { ignoreDependencies: ['cloudflare', 'ppr-cdn'] },
     'packages/upwind': {},
+    'tools/next-matrix': {},
   },
+  // Applications the matrix builds with a Next.js of their own, not code of this repository's.
+  ignore: ['fixtures/**'],
 };
 
 export default config;
