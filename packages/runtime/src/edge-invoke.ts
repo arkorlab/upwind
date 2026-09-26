@@ -1,4 +1,4 @@
-import { dropPlatformHeaders } from '@stayingupwind/core/request';
+import { withoutPlatformHeaders } from '@stayingupwind/core/request';
 
 import type { WebHandler } from './app-module.ts';
 
@@ -40,9 +40,5 @@ export async function invokeEdgeHandler(input: InvokeEdgeInput): Promise<Respons
   });
   // As on the other runtime: what the application wrote under the platform's prefix is not what a
   // host may read there.
-  return new Response(answered.body, {
-    status: answered.status,
-    statusText: answered.statusText,
-    headers: dropPlatformHeaders(new Headers(answered.headers)),
-  });
+  return withoutPlatformHeaders(answered);
 }

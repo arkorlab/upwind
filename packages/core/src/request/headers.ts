@@ -192,6 +192,42 @@ export function dropPlatformHeaders(headers: Headers): Headers {
 }
 
 /**
+ * The response the application answered with, with the platform's own headers off it.
+ *
+ * Left exactly as it is when there is nothing under the prefix, which is all but every response.
+ * A response handed back by a call is not always ours to edit — its headers may be immutable — and
+ * not every response can be rebuilt around: a `Response` takes no status outside 200–599, so an
+ * error response and a protocol switch would both throw, and a `webSocket` a runtime attached does
+ * not come along. So: nothing to take off, nothing done; something to take off, edited where the
+ * headers allow it and copied only where they do not.
+ */
+export function withoutPlatformHeaders(answered: Response): Response {
+  if (!namesPlatformHeader(answered.headers)) {
+    return answered;
+  }
+  try {
+    dropPlatformHeaders(answered.headers);
+    return answered;
+  } catch {
+    // Immutable headers, as a response that came back from a call has: copied instead.
+    return new Response(answered.body, {
+      status: answered.status,
+      statusText: answered.statusText,
+      headers: dropPlatformHeaders(new Headers(answered.headers)),
+    });
+  }
+}
+
+function namesPlatformHeader(headers: Headers): boolean {
+  for (const name of headers.keys()) {
+    if (name.startsWith(PLATFORM_HEADER_PREFIX)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Copy proxied response headers, dropping the ones a proxy may not replay and scoping cookies to
  * the host the client used.
  *

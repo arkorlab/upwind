@@ -44,6 +44,7 @@ export {
   rendersInline,
   type PassthroughResponseContext,
   rewritePassthroughResponseHeaders,
+  withoutPlatformHeaders,
   sanitizeContinuationHeaders,
   sanitizePassthroughHeaders,
 } from './headers.ts';
