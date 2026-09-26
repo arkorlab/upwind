@@ -139,6 +139,35 @@ function linkPoints(start: string): string[] {
   return points;
 }
 
+/** Is this a directory a watch can be put on? */
+function isThere(directory: string): boolean {
+  try {
+    lstatSync(directory);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The directory to watch for a path, and the name to listen for in it.
+ *
+ * Ordinarily the path's own parent. Where that parent is not there either — a config symlinked to
+ * `shared/generated/config.js` before anything has generated it — the nearest directory that *is*,
+ * listening for the name of the next thing to appear in it. A watch cannot be put on a directory that
+ * does not exist, and the one that will hold it is the one that says when it does.
+ */
+function watchFor(target: string): { directory: string; name: string } {
+  let name = path.basename(target);
+  let directory = path.dirname(target);
+  // `dirname` of a root is the root, so this ends at the filesystem's own top whatever is missing.
+  while (!isThere(directory) && path.dirname(directory) !== directory) {
+    name = path.basename(directory);
+    directory = path.dirname(directory);
+  }
+  return { directory, name };
+}
+
 /**
  * The directories to watch, and the names to listen for in each.
  *
@@ -153,9 +182,9 @@ function watchPoints(projectDir: string, names: readonly string[]): Map<string, 
   for (const name of names) {
     const reached = linkPoints(path.join(projectDir, name));
     for (const point of reached) {
-      const directory = path.dirname(point);
+      const { directory, name: listenFor } = watchFor(point);
       const listening = points.get(directory) ?? new Set<string>();
-      listening.add(path.basename(point));
+      listening.add(listenFor);
       points.set(directory, listening);
     }
   }
