@@ -53,7 +53,7 @@ export const routeHasSchema = z.object({
 export type RouteHas = z.infer<typeof routeHasSchema>;
 
 /**
- * The same condition, with its pattern held to what the edge may run on a shared Worker.
+ * The same condition, with its pattern held to what the edge may run on a shared Function.
  *
  * A condition's value is tested against a header, cookie or query value the visitor chose, so a
  * pattern that backtracks catastrophically is CPU any caller can spend. Refused here, at the
@@ -79,7 +79,7 @@ const HEADER_NAME = /^[!#$%&'*+\-.^`|~\w]+$/u;
 /** A value `Headers` takes: no NUL, CR or LF, and no character a single byte cannot carry. */
 const HEADER_VALUE = /^[^\0\n\r\u{100}-\u{10FFFF}]*$/u;
 /**
- * The edge and the Worker set these on responses they build, and `Headers` throws on a name or a
+ * The edge and the Function set these on responses they build, and `Headers` throws on a name or a
  * value it refuses: out of every request that reaches the rule or the page, long after the upload
  * that could have said so. Refused here instead, as a content type is.
  */
@@ -139,7 +139,7 @@ export type Routing = z.infer<typeof routingSchema>;
 export const entrypointKindSchema = z.enum(['app-page', 'app-route', 'pages', 'pages-api']);
 export type EntrypointKind = z.infer<typeof entrypointKindSchema>;
 
-/** A route that runs code. Its module is part of the app Worker and is required by `id`. */
+/** A route that runs code. Its module is part of the app Function and is required by `id`. */
 export const entrypointSchema = z.object({
   id: z.string().min(1),
   kind: entrypointKindSchema,
@@ -147,7 +147,7 @@ export const entrypointSchema = z.object({
   pathname: z.string().startsWith('/'),
   /**
    * Present only on a route the build put on Next.js's deprecated edge runtime. Such a route is
-   * answered by a Web handler the Worker loads from its own bundle, and — this is what the field
+   * answered by a Web handler the Function loads from its own bundle, and — this is what the field
    * is read for — it cannot resume a postponed shell: Next.js's edge template renders with
    * `postponed: undefined`, so nothing it renders is the rest of a document.
    */
@@ -169,8 +169,8 @@ export type Entrypoint = z.infer<typeof entrypointSchema>;
  * Router entry keeps its leading slash and its `page` or `route` file (`/blog/[slug]/page`), a
  * Pages Router entry has neither (`blog/[slug]`).
  *
- * The adapter builds the Worker's runtime manifest without this field (`index.ts`): nothing at
- * request time routes by a source page, and a Worker that parsed these at every cold start would
+ * The adapter builds the Function's runtime manifest without this field (`index.ts`): nothing at
+ * request time routes by a source page, and a Function that parsed these at every cold start would
  * spend the time before its first byte on what only a reader of the build ever looks at.
  */
 export const sourcePageSchema = z.object({
@@ -233,25 +233,25 @@ export const staticFileSchema = z.object({
 });
 export type StaticFile = z.infer<typeof staticFileSchema>;
 
-export const workerModuleTypeSchema = z.enum(['esm', 'commonjs', 'text', 'json', 'wasm', 'data']);
-export type WorkerModuleType = z.infer<typeof workerModuleTypeSchema>;
+export const functionModuleTypeSchema = z.enum(['esm', 'commonjs', 'text', 'json', 'wasm', 'data']);
+export type FunctionModuleType = z.infer<typeof functionModuleTypeSchema>;
 
-export const workerModuleSchema = z.object({
-  /** Module path inside the Worker (`index.mjs`, `.next/server/app-paths-manifest.json`). */
+export const functionModuleSchema = z.object({
+  /** Module path inside the Function (`index.mjs`, `.next/server/app-paths-manifest.json`). */
   name: z.string().min(1),
-  type: workerModuleTypeSchema,
+  type: functionModuleTypeSchema,
   blob: blobRefSchema,
 });
-export type WorkerModule = z.infer<typeof workerModuleSchema>;
+export type FunctionModule = z.infer<typeof functionModuleSchema>;
 
-/** A Worker as it will be uploaded: its modules, entry, and the runtime it was built for. */
-export const workerSchema = z.object({
+/** A Function as it will be uploaded: its modules, entry, and the runtime it was built for. */
+export const functionSchema = z.object({
   mainModule: z.string().min(1),
-  modules: z.array(workerModuleSchema),
+  modules: z.array(functionModuleSchema),
   compatibilityDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u),
   compatibilityFlags: z.array(z.string()),
 });
-export type WorkerSpec = z.infer<typeof workerSchema>;
+export type FunctionSpec = z.infer<typeof functionSchema>;
 
 const i18nDomainSchema = z.object({
   defaultLocale: z.string(),
@@ -289,8 +289,8 @@ export const bundleConfigSchema = z.looseObject({
   skipProxyUrlNormalize: z.boolean().optional(),
   /**
    * The user agents Next.js sends blocking metadata to, as the pattern it tests them with
-   * (`htmlLimitedBots`, its own list when the app names none): the Worker renders a partially
-   * prerendered page whole for them, as Next.js does. Read by the Worker alone.
+   * (`htmlLimitedBots`, its own list when the app names none): the Function renders a partially
+   * prerendered page whole for them, as Next.js does. Read by the Function alone.
    */
   htmlLimitedBots: z.string().optional(),
   poweredByHeader: z.boolean(),
@@ -326,7 +326,7 @@ const bundleSchema = z.object({
   /**
    * What a request must carry to be in draft mode: the value Next.js gives the build, which it
    * compares its `__prerender_bypass` cookie against (`previewModeId`). A request carrying it
-   * asks for the page rendered now, so the deployment's Worker renders it instead of answering
+   * asks for the page rendered now, so the deployment's Function renders it instead of answering
    * from what the build wrote. One value per build, and absent for a build with no prerenders.
    */
   bypassToken: z.string().min(1).optional(),
@@ -345,16 +345,16 @@ const bundleSchema = z.object({
   middleware: z.object({ matchers: z.array(routeSchema) }).optional(),
   prerenders: z.array(prerenderSchema),
   staticFiles: z.array(staticFileSchema),
-  workers: z.object({
-    app: workerSchema,
-    middleware: workerSchema.optional(),
+  functions: z.object({
+    app: functionSchema,
+    middleware: functionSchema.optional(),
   }),
 });
 export type DeploymentBundle = z.infer<typeof bundleSchema>;
 
 /**
  * How many routing rules a deployment may carry: every phase of `routing`, and the middleware's
- * matchers. The edge and the Worker walk them in order on every request, so a table is only as
+ * matchers. The edge and the Function walk them in order on every request, so a table is only as
  * long as a request can afford to walk. A large application's table runs to a couple of hundred
  * rules; this is twenty times that, rounded.
  */
@@ -445,12 +445,12 @@ function forEachBlob(bundle: DeploymentBundle, visit: (ref: BlobRef) => void): v
   for (const file of bundle.staticFiles) {
     add(file.blob);
   }
-  const workers = [bundle.workers.app, bundle.workers.middleware];
-  for (const worker of workers) {
-    if (worker === undefined) {
+  const functions = [bundle.functions.app, bundle.functions.middleware];
+  for (const spec of functions) {
+    if (spec === undefined) {
       continue;
     }
-    for (const module of worker.modules) {
+    for (const module of spec.modules) {
       add(module.blob);
     }
   }

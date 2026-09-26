@@ -1,5 +1,5 @@
 /**
- * The wire protocol between the edge and an application's runtime Worker. Both sides import these
+ * The wire protocol between the edge and an application's runtime Function. Both sides import these
  * names; nothing else on the request carries platform intent.
  */
 
@@ -132,9 +132,9 @@ const NOT_AS_IS_IN_HEADER = /[\0\n\r\u{100}-\u{10FFFF}]/u;
 /**
  * The headers that name a route or a prerender to the runtime: `escapedName` with the name escaped
  * where a header cannot carry it (`pathHeaderValue`), and `name` with the name as it is, wherever a
- * header can carry it so. The edge and an application's Worker are deployed apart, and a Worker
+ * header can carry it so. The edge and an application's Function are deployed apart, and a Function
  * built before the escape reads `name` as it comes: sent escaped there, a name with a space or an
- * accent in it (`/sticks & stones`, `/café`) was no name that Worker knew. A name no header could
+ * accent in it (`/sticks & stones`, `/café`) was no name that Function knew. A name no header could
  * carry as it is was never sent to one that way.
  */
 export function pathHeaders(

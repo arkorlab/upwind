@@ -1,11 +1,11 @@
 import { RAW_BODY_MODULE, RAW_BODY_SOURCE } from './raw-body.ts';
 
 /**
- * Modules a Worker has no use for, or cannot load, resolved to a module of the adapter's rather
+ * Modules a Function has no use for, or cannot load, resolved to a module of the adapter's rather
  * than bundled.
  *
  * `require-in-the-middle` and `import-in-the-middle` hook Node's module loader; Sentry's
- * OpenTelemetry instrumentation registers them. A Worker has no module loader to hook, so they
+ * OpenTelemetry instrumentation registers them. A Function has no module loader to hook, so they
  * resolve to a module that hooks nothing. Turbopack may suffix an externalised package with a
  * hash.
  *
@@ -22,7 +22,7 @@ import { RAW_BODY_MODULE, RAW_BODY_SOURCE } from './raw-body.ts';
  * Router's API body parser gets a copy that reads the stream the same way.
  *
  * `node:process` is not found by workerd's `require`, although its `import` finds it: under the
- * Worker's compatibility date and flags a CommonJS module asking for it is told there is no such
+ * Function's compatibility date and flags a CommonJS module asking for it is told there is no such
  * module. The global is that very module (`import process from 'node:process'` is
  * `globalThis.process`), and the bundle, CommonJS, is handed the global. OpenTelemetry's Node.js
  * SDK requires it, and an application whose instrumentation started one answered every render

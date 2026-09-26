@@ -192,7 +192,7 @@ export async function peekBody(
 /**
  * Read a body to its end, or give up once it passes `limit`.
  *
- * A Cloudflare Worker subrequest arrives without `Content-Length` (the runtime sets that from the
+ * A Cloudflare Function subrequest arrives without `Content-Length` (the runtime sets that from the
  * data source, and a subrequest body is a stream), so counting is the only way to learn how many
  * bytes there are — and the length is the verdict on whether a copy can be kept.
  */

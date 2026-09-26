@@ -1,11 +1,11 @@
-import type { CacheLifeProfile, DeploymentBundle } from '@upwind/core/bundle';
-import type { ImagesConfig } from '@upwind/core/images';
+import type { CacheLifeProfile, DeploymentBundle } from '@stayingupwind/core/bundle';
+import type { ImagesConfig } from '@stayingupwind/core/images';
 
 import { type BuildContext, orDefault } from './collect.ts';
 
 /**
  * The part of `next.config` the runtime and the edge read at request time, as the bundle records
- * it (`@upwind/core/bundle`, `bundleConfigSchema`): each option as Next.js resolved it, with
+ * it (`@stayingupwind/core/bundle`, `bundleConfigSchema`): each option as Next.js resolved it, with
  * Next.js's own fallback where the build context leaves one out.
  */
 
@@ -47,7 +47,7 @@ function cacheLifeProfiles(
 }
 
 /**
- * The cache handler modules an app configured, by path. The platform's Worker cannot load a
+ * The cache handler modules an app configured, by path. The platform's Function cannot load a
  * module by path, so a build that names one is refused (`index.ts`) rather than deployed to fail
  * on its first cached request; the platform supplies the handlers itself.
  */

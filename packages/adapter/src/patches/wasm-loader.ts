@@ -14,9 +14,9 @@ import { type Patch, Rewrite } from './types.ts';
  * async function instantiate(chunkPath, imports) { … WebAssembly.instantiateStreaming(…) … }
  * ```
  *
- * A Worker has no such file, and compiling at request time is what this platform is trying not to
- * do: Cloudflare already compiled the module when the Worker was uploaded. So the module's two
- * exports become reads of the module the Worker carries, keyed by the very path Turbopack asks
+ * A Function has no such file, and compiling at request time is what this platform is trying not to
+ * do: Cloudflare already compiled the module when the Function was uploaded. So the module's two
+ * exports become reads of the module the Function carries, keyed by the very path Turbopack asks
  * for — the `.wasm` relative to the runtime root, which is `distDir`, the same form the chunk
  * table in `turbopack-runtime.ts` is keyed by.
  *
@@ -79,7 +79,7 @@ function wasmTable(chunks: readonly { chunkPath: string; global: string }[]): st
     ...cases,
     '  }',
     '  if (found === undefined) {',
-    "    throw new Error('@upwind/adapter: no WebAssembly module for ' + chunkPath);",
+    "    throw new Error('@stayingupwind/adapter: no WebAssembly module for ' + chunkPath);",
     '  }',
     '  return found;',
     '}',
@@ -105,7 +105,7 @@ export const wasmLoaderPatch: Patch = {
   nextVersions: ['16.3.5', '16.3.6'],
   apply(source, file, ctx) {
     const exports = registeredExports(source);
-    // An empty table is not a failure: a Worker may bundle the loader from a shared chunk while
+    // An empty table is not a failure: a Function may bundle the loader from a shared chunk while
     // none of its own entrypoints reaches WebAssembly, and then nothing ever asks it for one.
     const result = new Rewrite(NAME, file, source)
       .replace(EXPORTS, exportRegistration(exports), 1, "the loader's exports")

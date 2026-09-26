@@ -1,8 +1,8 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { sha256Hex } from '@upwind/core/artifact';
-import type { BlobRef } from '@upwind/core/bundle';
+import { sha256Hex } from '@stayingupwind/core/artifact';
+import type { BlobRef } from '@stayingupwind/core/bundle';
 
 /**
  * Content-addressed files under `<outDir>/blobs/<sha256>`. Writing the same bytes twice costs one

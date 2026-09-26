@@ -77,7 +77,7 @@ export const generationPackHeaderSchema = z.object({
   /**
    * What the entry is answered with, already filtered for the kind of entry it is
    * (`generationResponseHeaders`): a page's to what an edge-served shell may replay, and a
-   * redirect's to where it leads as well; a route handler's — which only its Worker serves — to
+   * redirect's to where it leads as well; a route handler's — which only its Function serves — to
    * what a response replayed whole may.
    */
   headers: z.record(z.string(), z.string()),

@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { type CronJob, cronsSchema } from '@upwind/core/cron';
+import { type CronJob, cronsSchema } from '@stayingupwind/core/cron';
 import { parse as parseJsonc, type ParseError, printParseErrorCode } from 'jsonc-parser';
 import { z } from 'zod';
 
@@ -81,7 +81,7 @@ const projectConfigSchema = z.object({
 });
 
 function configError(file: string, detail: string): Error {
-  return new Error(`@upwind/adapter: ${file}: ${detail}`);
+  return new Error(`@stayingupwind/adapter: ${file}: ${detail}`);
 }
 
 /** Zod's issues, as one line per issue naming where in the file it was. */

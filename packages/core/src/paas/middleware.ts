@@ -2,9 +2,9 @@ import type { MiddlewareMatcher } from '../manifest/schema.ts';
 import { conditionsHold } from '../request/conditions.ts';
 
 /**
- * The middleware protocol as Next.js speaks it over HTTP, for the edge to read a middleware Worker's
+ * The middleware protocol as Next.js speaks it over HTTP, for the edge to read a middleware Function's
  * answer without a Node runtime. The same reading `@next/routing` makes inside the application's
- * Worker; kept apart so the edge carries none of that package.
+ * Function; kept apart so the edge carries none of that package.
  */
 
 const NEXT_HEADER = 'x-middleware-next';
@@ -143,7 +143,7 @@ function responseHeadersOf(response: Response): Headers {
 }
 
 /**
- * Read what a middleware Worker's response asks for.
+ * Read what a middleware Function's response asks for.
  *
  * `requestUrl` is the request the middleware was given; a rewrite is resolved against it, and a
  * rewrite that lands on another origin is reported as such rather than followed.

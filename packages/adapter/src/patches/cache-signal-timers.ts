@@ -15,7 +15,7 @@ import { occurrencesOf, type Patch, Rewrite } from './types.ts';
  * ```
  *
  * The next read cancels it — `beginRead` calls `pendingTimeoutCleanup()` and then forgets it. On
- * a server that is one `clearImmediate` among many. In a Worker a timer belongs to the request
+ * a server that is one `clearImmediate` among many. In a Function a timer belongs to the request
  * that scheduled it, and clearing it from another request's handler is refused: "Cannot perform
  * I/O on behalf of a different request". So the second request in an isolate to make a dynamic
  * import fails, with a stack that names nothing the application wrote.
@@ -51,7 +51,7 @@ import { occurrencesOf, type Patch, Rewrite } from './types.ts';
 
 const NAME = 'cache-signal-timers';
 /**
- * Two copies reach a Worker: the source file, which Next.js's own server code requires, and the
+ * Two copies reach a Function: the source file, which Next.js's own server code requires, and the
  * one bundled into each compiled server runtime. Both are loaded, so both are rewritten.
  */
 const TARGET =
@@ -100,7 +100,7 @@ const HELPER = [
   '    try {',
   '      clearPending();',
   '    } catch {',
-  '      // A timer belongs to the request that scheduled it, and a Worker refuses to let another',
+  '      // A timer belongs to the request that scheduled it, and a Function refuses to let another',
   '      // request clear it. The generation above has already cancelled it, so a timer that goes',
   '      // on to fire finds itself out of date and does nothing.',
   '    }',

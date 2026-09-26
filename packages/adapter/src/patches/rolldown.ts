@@ -64,7 +64,7 @@ function stubModule(id: string): { code: string; moduleType: 'js' } {
 }
 
 /**
- * Module-loader hooks have nothing to hook in a Worker, and resolve to an empty module; an
+ * Module-loader hooks have nothing to hook in a Function, and resolve to an empty module; an
  * optional module of a feature the platform does not run resolves to one that says so; a module
  * workerd cannot load resolves to the adapter's own copy, and `node:process`, which its `require`
  * does not find, to the global it is (`loader-hooks.ts`).
@@ -92,7 +92,7 @@ export function stubPlugin(onStubbed?: (specifier: string) => void): Plugin {
 }
 
 /**
- * What the bundler leaves to the Worker's own resolver: every Node built-in a module asks for,
+ * What the bundler leaves to the Function's own resolver: every Node built-in a module asks for,
  * under either spelling, is reported as it is resolved. (Rolldown externalizes them itself for
  * the `node` platform; what it cannot resolve at all it externalizes too, with a log — see
  * `bundleApp` — and the audit refuses.)
@@ -121,7 +121,7 @@ const MODULE_QUERY = '?module';
  * loader asks for them by path, which is the `wasm-loader` patch's business. This is for a
  * package bundled from `node_modules` that writes the import Vercel's edge runtime documents,
  * `import m from './x.wasm?module'`: `@vercel/og`'s edge build, which Next.js ships, is the one
- * at hand. The module becomes a read of the global the Worker publishes, so the bytes travel as
+ * at hand. The module becomes a read of the global the Function publishes, so the bytes travel as
  * a compiled module rather than as a string in the bundle.
  *
  * Only `?module` is claimed. The suffix is what says "give me the compiled module and do not
@@ -129,7 +129,7 @@ const MODULE_QUERY = '?module';
  * asks to be instantiated and to re-export what the module exports, and answering it with a
  * `WebAssembly.Module` would build cleanly and then fail on the first call of `f`.
  *
- * A `.wasm` no trace offered fails the build: shipping a module the Worker does not carry would
+ * A `.wasm` no trace offered fails the build: shipping a module the Function does not carry would
  * leave the global undefined, and the route would fail on its first request instead.
  */
 export function wasmModulePlugin(
@@ -152,7 +152,7 @@ export function wasmModulePlugin(
         const sha256 = wasm.shaFor(resolved.id);
         if (sha256 === undefined) {
           throw new Error(
-            `@upwind/adapter: ${resolved.id} is imported as WebAssembly but no output's trace named it; the Worker would carry no such module`,
+            `@stayingupwind/adapter: ${resolved.id} is imported as WebAssembly but no output's trace named it; the Function would carry no such module`,
           );
         }
         const global = arkorWasmGlobal(sha256);

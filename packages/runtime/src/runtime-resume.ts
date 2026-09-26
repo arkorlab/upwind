@@ -4,7 +4,7 @@ import {
   pathFromHeaders,
   RESUME_STATE_BODY,
   RESUME_STATE_HEADER,
-} from '@upwind/core/paas';
+} from '@stayingupwind/core/paas';
 
 import { nodeHandlerOf } from './entries.ts';
 import { readResumeState } from './resume-state.ts';
@@ -19,7 +19,7 @@ import {
 /**
  * A resume of a generation the runtime cache made: the edge served the generation's shell from
  * its record and sends the state that resumes it as the request's body — it read the state with
- * the shell, and the build this Worker carries never had it.
+ * the shell, and the build this Function carries never had it.
  */
 
 const HTTP_BAD_REQUEST = 400;

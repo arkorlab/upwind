@@ -11,7 +11,7 @@ import { runWithTaskScheduler } from './tasks.ts';
  * The entrypoints take Node's `IncomingMessage` and `ServerResponse`, the pair every official
  * adapter hands them from a real `node:http` server. workerd provides that server:
  * `cloudflare:node`'s `handleAsNodeRequest` turns a `Request` into a request on a `node:http`
- * server the Worker listens on, and its response back into a `Response` whose body streams as
+ * server the Function listens on, and its response back into a `Response` whose body streams as
  * the handler writes — the first bytes leave as soon as headers commit, and nothing waits for
  * the handler to finish. One server per isolate, started on the first request.
  *
@@ -47,7 +47,7 @@ export interface InvokeInput {
   readonly onFailure?: FailureAnswer | undefined;
 }
 
-/** A port on the Worker's own loopback: nothing listens there but this server. */
+/** A port on the Function's own loopback: nothing listens there but this server. */
 const BRIDGE_PORT = 18_080;
 
 /**
@@ -55,13 +55,13 @@ const BRIDGE_PORT = 18_080;
  *
  * A workaround, and the reasoning behind it is inferred rather than proven. On Cloudflare, one to
  * eight percent of requests to one deployed application were ended by workerd itself — "your
- * Worker's code had hung and would never generate a response" — after 40 to 395 ms, which the
+ * Function's code had hung and would never generate a response" — after 40 to 395 ms, which the
  * edge turned into a 502. They were renders of pages that fetch nothing: `/`, `/blog`, `/docs`,
  * `/pricing`. A probe deployed to find out reported an empty task queue, and while it was
  * deployed the failures stopped altogether: a timer left pending on the request was enough.
  *
  * So these renders are not deadlocked, they are let go of: this bridge runs the handler on a
- * `node:http` server over the Worker's own loopback, and workerd appears not to count what is in
+ * `node:http` server over the Function's own loopback, and workerd appears not to count what is in
  * flight there as work the outer request waits on. Appears — neither Miniflare nor the bundle
  * served locally reproduces any of it, at any concurrency, so nothing here fails without this
  * line, and the mechanism above is what the evidence suggests rather than what it shows.
@@ -127,7 +127,7 @@ async function invoke(
     }
   } catch (error) {
     await answerFailure(input, req, res, error);
-    // The Worker's own log: the client sees a 500 and nothing else records why.
+    // The Function's own log: the client sees a 500 and nothing else records why.
     // eslint-disable-next-line no-console
     console.error('next-runtime: handler failed', error);
   } finally {

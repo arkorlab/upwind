@@ -25,12 +25,12 @@ const HTTP_OK = 200;
 /**
  * The runtime cache entry a route's document is the current generation of. Present for a route
  * whose build the cache was seeded from; the edge then reads the entry's delivery record, and
- * asks the deployment's Worker to regenerate it.
+ * asks the deployment's Function to regenerate it.
  */
 export const routeCacheSchema = z.object({
   entryId: z.string().min(1),
   kind: z.enum(['app-page', 'pages']),
-  /** `resume`: the deployment's Worker completes the document; `complete`: the document is whole. */
+  /** `resume`: the deployment's Function completes the document; `complete`: the document is whole. */
   delivery: z.enum(['resume', 'complete']),
 });
 export type RouteCache = z.infer<typeof routeCacheSchema>;
@@ -47,7 +47,7 @@ export type ManifestCache = z.infer<typeof manifestCacheSchema>;
  * one of those names may be.
  *
  * A `Link` header is read by every hop between here and the browser, and Cloudflare's Early Hints
- * cache replays it before the Worker runs; six values of a couple of hundred characters keep it a
+ * cache replays it before the Function runs; six values of a couple of hundred characters keep it a
  * header rather than a payload. A page with more render-blocking resources than that has a problem
  * this cannot fix.
  */
@@ -87,7 +87,7 @@ export const routeEntrySchema = z.object({
   cache: routeCacheSchema.optional(),
   /**
    * Conditions under which Next.js would not serve the prerender at all (a Server Action, a
-   * multipart body): any one holding sends the request to the deployment's Worker untouched.
+   * multipart body): any one holding sends the request to the deployment's Function untouched.
    */
   bypassFor: z.array(routeHasSchema).optional(),
   /**
@@ -104,7 +104,7 @@ export type RouteEntry = z.infer<typeof routeEntrySchema>;
 
 /**
  * How long the edge waits on the resume that completes a shell. There is one way to obtain the
- * dynamic suffix — ask the deployment's own Worker for what the postponed state left out — so
+ * dynamic suffix — ask the deployment's own Function for what the postponed state left out — so
  * what travels here is the budget, not a choice of mechanism.
  */
 export const continuationConfigSchema = z.object({
@@ -134,12 +134,12 @@ export const assetPolicySchema = z.object({
 });
 export type AssetPolicy = z.infer<typeof assetPolicySchema>;
 
-/** The Workers a deployment runs as. */
+/** The Functions a deployment runs as. */
 export const appRuntimeSchema = z.object({
   deploymentId: z.string().min(1),
-  /** The user Worker in the applications namespace that serves every request the edge does not. */
+  /** The user Function in the applications namespace that serves every request the edge does not. */
   scriptName: z.string().min(1),
-  /** A small Worker holding only the middleware, dispatched before a shell is served. */
+  /** A small Function holding only the middleware, dispatched before a shell is served. */
   middlewareScriptName: z.string().min(1).optional(),
 });
 export type AppRuntime = z.infer<typeof appRuntimeSchema>;
@@ -157,7 +157,7 @@ const staticFileBytesSchema = z.object({
  * `deploymentId` and `previous` are what the manifest keeps of the deployment served just before,
  * for the documents of that deployment still open in browsers, which ask for their own files by
  * their own `dpl`. An edge that does not know the fields drops them and answers such a request as
- * it did before they existed — with the Worker's 404 — which is why they are not a schema version
+ * it did before they existed — with the Function's 404 — which is why they are not a schema version
  * (see `MANIFEST_SCHEMA_VERSION`).
  */
 export const staticFileEntrySchema = staticFileBytesSchema.extend({
@@ -275,7 +275,7 @@ const manifestFields = {
 export const projectManifestSchema = z.object({
   ...manifestFields,
   schemaVersion: z.literal(MANIFEST_SCHEMA_VERSION),
-  /** The Workers this deployment runs as: the application's, and its middleware's. */
+  /** The Functions this deployment runs as: the application's, and its middleware's. */
   app: appRuntimeSchema,
   /** Files served straight from storage, by pathname. */
   staticFiles: staticFilesSchema.optional(),

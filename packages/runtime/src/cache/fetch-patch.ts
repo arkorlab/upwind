@@ -10,7 +10,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
  * incremental cache among it — from there.
  *
  * On Next.js's own server that is one graph. Here it is two: the code built for the Node.js
- * runtime is a module of the Worker, and the code built for the edge runtime is a second one,
+ * runtime is a module of the Function, and the code built for the edge runtime is a second one,
  * with its own copy of Next.js and so its own `AsyncLocalStorage`. Whichever renders first in an
  * isolate takes the global, and every cached `fetch` of the other then finds no work store and
  * is passed straight through — no key, no read, no write, and nothing said about it. A page and

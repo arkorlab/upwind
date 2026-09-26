@@ -6,10 +6,14 @@ import {
   type Route as RoutingRoute,
   resolveRoutes,
 } from '@next/routing';
-import { type EntrypointKind, isPagesDataRequestPath, type Route } from '@upwind/core/bundle';
-import { ORIGINAL_URL_HEADER } from '@upwind/core/paas';
-import { NEXT_DATA_HEADER, NULL_BODY_STATUSES } from '@upwind/core/request';
-import { releaseStream } from '@upwind/core/util';
+import {
+  type EntrypointKind,
+  isPagesDataRequestPath,
+  type Route,
+} from '@stayingupwind/core/bundle';
+import { ORIGINAL_URL_HEADER } from '@stayingupwind/core/paas';
+import { NEXT_DATA_HEADER, NULL_BODY_STATUSES } from '@stayingupwind/core/request';
+import { releaseStream } from '@stayingupwind/core/util';
 
 import { stripPlatformHeaders } from './incoming.ts';
 import type { Resolved } from './outputs.ts';
@@ -109,7 +113,7 @@ function queryString(query: Record<string, string | string[]>): string {
  *
  * Next.js drops that header from what a client sends (`filterInternalHeaders`) and puts it back
  * itself when the path is a data request (`server/lib/router-utils/resolve-routes.ts`). The edge
- * drops it before a request reaches this Worker, and `@next/routing` puts nothing back. It is how a
+ * drops it before a request reaches this Function, and `@next/routing` puts nothing back. It is how a
  * middleware knows it is answering a client navigation's `_next/data` fetch, which it answers with
  * `x-nextjs-redirect` or `x-nextjs-rewrite` for the client's router to follow. Without it a
  * redirect comes back as a `Location` the fetch cannot use and a rewrite comes back unnamed, and
@@ -644,7 +648,7 @@ export interface Asked {
 }
 
 /**
- * What a request was asked by (`Asked`). The Worker's own middleware says where it rewrote the
+ * What a request was asked by (`Asked`). The Function's own middleware says where it rewrote the
  * request as it runs (`rewrite`); one the edge ran has sent the request on to where it rewrote it,
  * with the URL the client asked for beside it (`x-arkor-original-url`, which is `initURL`).
  */

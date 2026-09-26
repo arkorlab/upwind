@@ -1,7 +1,7 @@
 {
-  "name": "@upwind/runtime",
+  "name": "@stayingupwind/runtime",
   "version": "0.1.0",
-  "description": "The Worker that runs a Next.js deployment bundle on Cloudflare: routing, middleware, and PPR resume over the entrypoints `next build` produced.",
+  "description": "The Function that runs a Next.js deployment bundle on Cloudflare: routing, middleware, and PPR resume over the entrypoints `next build` produced.",
   "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",
@@ -14,7 +14,7 @@
   "type": "module",
   "exports": {
     "./cache-host": "./src/cache/host.ts",
-    "./worker": "./src/worker.ts"
+    "./function": "./src/function.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",
@@ -22,7 +22,7 @@
   },
   "dependencies": {
     "@next/routing": "catalog:",
-    "@upwind/core": "workspace:*"
+    "@stayingupwind/core": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "catalog:",

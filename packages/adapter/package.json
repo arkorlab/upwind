@@ -1,7 +1,7 @@
 {
-  "name": "@upwind/adapter",
+  "name": "@stayingupwind/adapter",
   "version": "0.1.0",
-  "description": "Next.js deployment adapter: turns `next build` output into a content-addressed deployment bundle and the Cloudflare Workers that serve it.",
+  "description": "Next.js deployment adapter: turns `next build` output into a content-addressed deployment bundle and the Functions that serve it.",
   "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",
@@ -26,8 +26,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@upwind/core": "workspace:*",
-    "@upwind/runtime": "workspace:*",
+    "@stayingupwind/core": "workspace:*",
+    "@stayingupwind/runtime": "workspace:*",
     "esbuild": "catalog:",
     "jsonc-parser": "catalog:",
     "rolldown": "catalog:",

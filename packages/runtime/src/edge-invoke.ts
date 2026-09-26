@@ -4,7 +4,7 @@ import type { WebHandler } from './app-module.ts';
  * Invoke an entrypoint built for Next.js's edge runtime.
  *
  * These take a Web `Request` and give back a `Response`, so there is no `node:http` server
- * between the Worker and them: the request goes to the handler as it arrived, under the URL
+ * between the Function and them: the request goes to the handler as it arrived, under the URL
  * routing resolved, and the response streams back as the handler writes it.
  *
  * What the handler is told the client asked for rides on `requestMeta`, as it does for a Node.js

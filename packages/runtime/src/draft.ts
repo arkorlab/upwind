@@ -1,4 +1,4 @@
-import { getCookieValue } from '@upwind/core/request';
+import { getCookieValue } from '@stayingupwind/core/request';
 
 import type { Store } from './store.ts';
 

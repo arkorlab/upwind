@@ -8,7 +8,7 @@
  * definition (RFC 6761), and the deprecated IPv4-compatible `::/96` prefix (RFC 4291).
  *
  * Only a literal address is judged; a hostname is not resolved. Next.js looks its sources up
- * before fetching them, and a Worker cannot — nor needs to: the platform refuses a request to a
+ * before fetching them, and a Function cannot — nor needs to: the platform refuses a request to a
  * bare address, and has no route into private space. What this keeps is the optimizer's own
  * refusal, in its own words, for what it would have refused.
  */

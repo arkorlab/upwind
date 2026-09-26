@@ -31,7 +31,7 @@ jobs:
       - run: pnpm build
 
   vocabulary:
-    # These packages describe a Next.js build and the Worker that serves it. They must not
+    # These packages describe a Next.js build and the Function that serves it. They must not
     # describe the workings of any one host that runs them — not its control plane, not its
     # topology, not the applications it happens to host. This says so mechanically, because
     # prose is where such a thing arrives unnoticed and the history keeps it.

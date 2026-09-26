@@ -97,7 +97,7 @@ class TaskScope {
    * immediates of a request that has finished, and a cancelled one never runs its callback. A
    * marker only that callback clears therefore stays set for good once its request is over, and
    * on the scope requests share (`#scope`) that leaves the queue with nothing to pump it — a
-   * later task waits on no timer and no I/O, which workerd ends as a Worker that "had hung and
+   * later task waits on no timer and no I/O, which workerd ends as a Function that "had hung and
    * would never generate a response". Arming by handle instead lets the next request arm its own,
    * and the two other halves of that liveness are here too: what was outstanding when a pump was
    * armed is dropped once that pump has run, since workerd runs immediates in the order they were

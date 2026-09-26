@@ -1,5 +1,5 @@
-import type { Prerender } from '@upwind/core/bundle';
-import { NEXT_ACTION_HEADER } from '@upwind/core/request';
+import type { Prerender } from '@stayingupwind/core/bundle';
+import { NEXT_ACTION_HEADER } from '@stayingupwind/core/request';
 
 import { nowMs } from './cache/clock.ts';
 import { currentGeneration } from './cache/current.ts';

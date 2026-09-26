@@ -7,7 +7,7 @@ import './cache/install.ts';
 // which is what naming it above them says: modules are evaluated in the order they are named. A
 // deployment that reached no WebAssembly has no such module, and this import is then empty.
 import 'ppr-cdn:wasm';
-import { publishWorkerEnv } from '@upwind/core/paas';
+import { publishFunctionEnv } from '@stayingupwind/core/paas';
 import app from 'ppr-cdn:app';
 import edge from 'ppr-cdn:edge';
 
@@ -24,10 +24,10 @@ import {
 } from './request-context.ts';
 
 /**
- * Entry of a deployment's Worker. The adapter bundles this file, with `ppr-cdn:app` resolved to the
- * generated `app.cjs` that holds the application's own code, and uploads both as one user Worker.
+ * Entry of a deployment's Function. The adapter bundles this file, with `ppr-cdn:app` resolved to the
+ * generated `app.cjs` that holds the application's own code, and uploads both as one user Function.
  * `ppr-cdn:edge` is the same for the entrypoints built for Next.js's edge runtime — a module of
- * the Worker when the build produced any, and an empty table when it did not.
+ * the Function when the build produced any, and an empty table when it did not.
  */
 const HTTP_INTERNAL_ERROR = 500;
 
@@ -54,7 +54,7 @@ function cacheRuntimeFor(env: unknown): CacheRuntime | undefined {
   return shared.runtime;
 }
 
-const worker = {
+const entry = {
   async fetch(request: Request, env: unknown, ctx: ExecutionContext): Promise<Response> {
     installRequestContext();
     const waitUntil = (promise: Promise<unknown>): void => {
@@ -64,7 +64,7 @@ const worker = {
       // Before anything of the application runs: a service binding is an object, so it reaches
       // neither `process.env` nor any other place Next.js server code can look. The dashboard's
       // control-plane and database clients read theirs back out of here.
-      publishWorkerEnv(env);
+      publishFunctionEnv(env);
       const runtime = cacheRuntimeFor(env);
       return await withRequestContext(
         { headers: plainHeaders(request.headers), url: publicUrl(request), waitUntil },
@@ -81,7 +81,7 @@ const worker = {
         },
       );
     } catch (error) {
-      // The Worker's own log: nothing else sees a request that failed before Next.js answered.
+      // The Function's own log: nothing else sees a request that failed before Next.js answered.
       // eslint-disable-next-line no-console
       console.error('next-runtime: request failed', error);
       return new Response('Internal Server Error', { status: HTTP_INTERNAL_ERROR });
@@ -89,6 +89,6 @@ const worker = {
   },
 };
 
-// The Worker entry: what workerd looks for, and the one default export the runtime has.
+// The Function entry: what workerd looks for, and the one default export the runtime has.
 // eslint-disable-next-line import-x/no-default-export
-export default worker;
+export default entry;

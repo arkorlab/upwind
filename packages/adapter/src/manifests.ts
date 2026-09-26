@@ -4,7 +4,7 @@ import { runInNewContext } from 'node:vm';
 
 /**
  * The files Next.js's route modules read from disk at request time, as `(name, contents)` pairs
- * to ship as text modules. Inside the Worker they are read back through the virtual file system
+ * to ship as text modules. Inside the Function they are read back through the virtual file system
  * at `/bundle/<name>`, which is why their names keep the `.next/...` layout.
  */
 export interface TextModule {
@@ -39,7 +39,7 @@ async function walk(dir: string): Promise<string[]> {
  * A client reference manifest is a script that assigns into `globalThis.__RSC_MANIFEST`. Next.js
  * evaluates it at request time with `node:vm`, in a fresh context that holds only
  * `process.env.NEXT_DEPLOYMENT_ID`, and reads the manifest back off that context. The adapter
- * runs the very same evaluation here, at build time, with the deployment id the Worker will be
+ * runs the very same evaluation here, at build time, with the deployment id the Function will be
  * given, and ships the whole context as JSON: the patched loader assigns it into its own
  * context instead of evaluating (see `patches/load-manifest.ts`). Nothing about the script's
  * shape is assumed — Turbopack has more than one template — only that its result is JSON.
@@ -47,7 +47,7 @@ async function walk(dir: string): Promise<string[]> {
 export function evaluateManifestScript(source: string, deploymentId: string, file: string): string {
   if (source.length === 0) {
     // What Next.js itself throws for an empty manifest (E328).
-    throw new Error(`@upwind/adapter: manifest file is empty: ${file}`);
+    throw new Error(`@stayingupwind/adapter: manifest file is empty: ${file}`);
   }
   const contextObject: Record<string, unknown> = {
     process: { env: { NEXT_DEPLOYMENT_ID: deploymentId } },
@@ -72,15 +72,17 @@ function assertJson(value: unknown, file: string, at: string, seen = new Set<unk
   }
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) {
-      throw new TypeError(`@upwind/adapter: ${file}: ${at || '.'} is ${value}, not JSON`);
+      throw new TypeError(`@stayingupwind/adapter: ${file}: ${at || '.'} is ${value}, not JSON`);
     }
     return;
   }
   if (typeof value !== 'object') {
-    throw new TypeError(`@upwind/adapter: ${file}: ${at || '.'} is ${typeof value}, not JSON`);
+    throw new TypeError(
+      `@stayingupwind/adapter: ${file}: ${at || '.'} is ${typeof value}, not JSON`,
+    );
   }
   if (seen.has(value)) {
-    throw new TypeError(`@upwind/adapter: ${file}: ${at || '.'} is part of a cycle`);
+    throw new TypeError(`@stayingupwind/adapter: ${file}: ${at || '.'} is part of a cycle`);
   }
   seen.add(value);
   if (Array.isArray(value)) {
@@ -93,7 +95,7 @@ function assertJson(value: unknown, file: string, at: string, seen = new Set<unk
     }
   } else {
     throw new TypeError(
-      `@upwind/adapter: ${file}: ${at || '.'} is ${Object.prototype.toString.call(value)}, not JSON`,
+      `@stayingupwind/adapter: ${file}: ${at || '.'} is ${Object.prototype.toString.call(value)}, not JSON`,
     );
   }
   seen.delete(value);
@@ -117,7 +119,7 @@ async function jsonFilesIn(dir: string): Promise<string[]> {
 }
 
 /**
- * The module's name inside the Worker: the file's path from the project root, with `/` between
+ * The module's name inside the Function: the file's path from the project root, with `/` between
  * segments whatever the build machine's own separator is — the runtime mounts the bundle under
  * POSIX paths, and Next.js reads its manifests by those.
  */
@@ -146,7 +148,7 @@ async function routeManifestModule(
 
 /**
  * Everything under `distDir` a route module may `readFileSync`. `deploymentId` is what the
- * Worker's `process.env.NEXT_DEPLOYMENT_ID` will be: the manifests are evaluated with it.
+ * Function's `process.env.NEXT_DEPLOYMENT_ID` will be: the manifests are evaluated with it.
  */
 export async function collectManifests(
   projectDir: string,

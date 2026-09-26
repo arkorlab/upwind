@@ -8,9 +8,9 @@ import { parseAst } from 'rolldown/parseAst';
  *
  * In the rendered module, a `require` of a module bundled has become a call of that module's
  * function, one of a Node built-in a `require` of its name, and every `require` left with a
- * name of its own is the Worker's: Rolldown reserves the name for it and renames any binding a
+ * name of its own is the Function's: Rolldown reserves the name for it and renames any binding a
  * module called `require` out of its way — a parameter, say — so the call of such a binding is
- * not mistaken for a load. What is left of the name is what the Worker will do with the loader
+ * not mistaken for a load. What is left of the name is what the Function will do with the loader
  * at run time, against modules it does not have, and that is what is reported: a call of it
  * with anything but one module's name, whatever the spelling was (`(0, require)(name)` is
  * rendered `require(name)`); a method of it called — `require.resolve`, which resolves, and
@@ -58,7 +58,7 @@ interface Use {
 /**
  * Whether a load's argument names one module: a string, or a template with nothing to fill in.
  * Anything else — a name, a call, a string with something added to it, nothing at all — is
- * resolved at run time, against modules the Worker does not have, or throws there.
+ * resolved at run time, against modules the Function does not have, or throws there.
  */
 function namesOneModule(argument: Argument | undefined): boolean {
   if (argument === undefined) {

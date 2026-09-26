@@ -213,7 +213,7 @@ const ALLOW_SAME_ORIGIN = 'allow-same-origin';
  * broken document, and again, for as long as the visitor watched.
  *
  * Neither is something the edge can work around from inside the document, so a route whose policy
- * says either is delegated: its documents are the Worker's, where nothing has to be recovered.
+ * says either is delegated: its documents are the Function's, where nothing has to be recovered.
  */
 export function sandboxBlocksRecovery(value: string): string | undefined {
   for (const policy of value.split(',')) {

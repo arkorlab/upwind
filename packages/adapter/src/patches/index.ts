@@ -11,7 +11,7 @@ import type { Patch } from './types.ts';
 import { vercelOgFontPatch, vercelOgImageResponsePatch, vercelOgPatch } from './vercel-og.ts';
 import { wasmLoaderPatch } from './wasm-loader.ts';
 
-export { WORKER_BANNER } from './banner.ts';
+export { FUNCTION_BANNER } from './banner.ts';
 export {
   type AppliedPatch,
   externalsPlugin,
@@ -22,7 +22,7 @@ export {
 } from './rolldown.ts';
 export type { PatchContext } from './types.ts';
 
-/** Every rewrite of Next.js's output the Worker build applies. */
+/** Every rewrite of Next.js's output the Function build applies. */
 export const PATCHES: readonly Patch[] = [
   turbopackRuntimePatch,
   wasmLoaderPatch,

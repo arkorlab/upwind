@@ -30,12 +30,12 @@ export {
   sourcePageSchema,
   type StaticFile,
   staticFileSchema,
-  type WorkerModule,
-  type WorkerModuleType,
-  workerModuleSchema,
-  workerModuleTypeSchema,
-  workerSchema,
-  type WorkerSpec,
+  type FunctionModule,
+  type FunctionModuleType,
+  functionModuleSchema,
+  functionModuleTypeSchema,
+  functionSchema,
+  type FunctionSpec,
 } from './schema.ts';
 export {
   isPagesDataPathname,
@@ -60,5 +60,5 @@ export {
   shellHeaders,
   staticFileAssetPrefixOf,
   staticFileLocalesOf,
-  travelsWithWorker,
+  travelsWithFunction,
 } from './serving.ts';

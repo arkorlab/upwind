@@ -4,7 +4,7 @@
  *
  * `tee()` keeps every chunk one side reads queued for the other until that side reads it too, so
  * a side read late — or never — holds the whole body in the isolate: a 90 MB upload to a route
- * handler, held twice in a Worker of 128 MB. So the middleware's side is made only when a
+ * handler, held twice in a Function of 128 MB. So the middleware's side is made only when a
  * middleware may run, and it is given a copy of no more than Next.js buffers for a proxy
  * (`proxyClientMaxBodySize`); what answers the request gets the body whole. The copy is the
  * middleware's for as long as it is read, work it left to `waitUntil` included, and it is never

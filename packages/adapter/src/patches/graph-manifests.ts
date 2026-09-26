@@ -1,7 +1,7 @@
 import { type Patch, Rewrite } from './types.ts';
 
 /**
- * One Worker holds two copies of Next.js: the module graph built for the Node.js runtime, which
+ * One Function holds two copies of Next.js: the module graph built for the Node.js runtime, which
  * this bundle is, and the one built for the edge runtime, which `edge.ts` bundles without any
  * patch. Next.js keeps the client reference manifests of the routes it has loaded on a global,
  * `Symbol.for('next.server.manifests')` (`server/app-render/manifests-singleton.ts`), and what it

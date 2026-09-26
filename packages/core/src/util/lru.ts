@@ -1,4 +1,4 @@
-/** Small in-memory caches, one per isolate, used by the edge Worker, the runtime and by tests. */
+/** Small in-memory caches, one per isolate, used by the edge Function, the runtime and by tests. */
 
 interface ByteLruEntry<V> {
   readonly value: V;
