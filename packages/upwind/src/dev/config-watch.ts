@@ -1,4 +1,5 @@
-import { watch } from 'node:fs';
+import { type FSWatcher, realpathSync, watch } from 'node:fs';
+import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { resolveFromProject } from './next-app.ts';
@@ -48,9 +49,9 @@ async function nextConfigFiles(projectDir: string): Promise<readonly string[] | 
 }
 
 /** The one thing there is to say about a watch this run does not have. */
-function lostWatch(projectDir: string, error: unknown): string {
+function lostWatch(where: string, error: unknown): string {
   const reason = error instanceof Error ? error.message : String(error);
-  return `upwind: cannot watch ${projectDir} for config changes, so a change to next.config will not restart this server (${reason})`;
+  return `upwind: cannot watch ${where} for config changes, so a change to next.config will not restart this server (${reason})`;
 }
 
 /** Stop watching: what a run calls when it is shutting down and a change is no longer its business. */
@@ -61,6 +62,70 @@ function watchNothing(): void {
   // There was never a watcher.
 }
 
+/**
+ * The directories to watch, and the names to listen for in each.
+ *
+ * The project's own directory, for a config file being created, edited or removed there. And, for a
+ * config file that is a symlink, the directory its target is in: editing that target changes nothing
+ * about the link or about the entry beside the project, so nothing of it reaches a watch on the project
+ * alone. A directory rather than the file, in both cases, because an editor that replaces a file writes
+ * a new one over the name and the old inode hears nothing.
+ */
+function watchPoints(projectDir: string, names: readonly string[]): Map<string, Set<string>> {
+  const points = new Map<string, Set<string>>([[projectDir, new Set(names)]]);
+  for (const name of names) {
+    let target;
+    try {
+      target = realpathSync(path.join(projectDir, name));
+    } catch {
+      // Not there, or a link to nothing: the watch on the project is what will see it appear.
+      continue;
+    }
+    if (target === path.join(projectDir, name)) {
+      continue;
+    }
+    const directory = path.dirname(target);
+    const listening = points.get(directory) ?? new Set<string>();
+    listening.add(path.basename(target));
+    points.set(directory, listening);
+  }
+  return points;
+}
+
+/** The one debounce the watchers share: the last event anywhere is the one that counts. */
+interface Settling {
+  timer: NodeJS.Timeout | undefined;
+}
+
+/** One directory, watched for the names that matter in it, or nothing if it cannot be watched. */
+function watchDirectory(
+  directory: string,
+  listening: ReadonlySet<string>,
+  settling: Settling,
+): FSWatcher | undefined {
+  try {
+    const watcher = watch(directory, (_event, filename) => {
+      if (filename === null || !listening.has(filename)) {
+        return;
+      }
+      clearTimeout(settling.timer);
+      settling.timer = setTimeout(() => {
+        restart(`${filename} changed`);
+      }, SETTLE_MS);
+    });
+    watcher.on('error', (error: unknown) => {
+      // Said rather than swallowed: a watch that dies mid-run stops restarting this server, and a
+      // developer editing `next.config` with nothing happening deserves to know which of the two it is.
+      console.warn(lostWatch(directory, error));
+      watcher.close();
+    });
+    return watcher;
+  } catch (error) {
+    console.warn(lostWatch(directory, error));
+    return undefined;
+  }
+}
+
 export async function watchConfigFiles(projectDir: string): Promise<StopWatching> {
   const names = await nextConfigFiles(projectDir);
   if (names === undefined) {
@@ -69,38 +134,22 @@ export async function watchConfigFiles(projectDir: string): Promise<StopWatching
     );
     return watchNothing;
   }
-  // The *directory* is watched, not the files: only one of those names exists in a project, another
-  // may be written while the server runs, and `fs.watch` on a path that is not there yet fails. One
-  // watcher on the project root, filtered by name, covers a config file created, edited or removed.
-  //
   // A watch this cannot have is not worth the server, whether it is refused at the start — a machine
   // out of inotify watches refuses with `ENOSPC` — or lost later: a dev server that stops restarting
   // on a config change is still a dev server, and taking one down over this would be the worse
   // failure.
-  let settling: NodeJS.Timeout | undefined;
-  let watcher;
-  try {
-    watcher = watch(projectDir, (_event, filename) => {
-      if (filename === null || !names.includes(filename)) {
-        return;
-      }
-      clearTimeout(settling);
-      settling = setTimeout(() => {
-        restart(`${filename} changed`);
-      }, SETTLE_MS);
-    });
-  } catch (error) {
-    console.warn(lostWatch(projectDir, error));
-    return watchNothing;
+  const settling: Settling = { timer: undefined };
+  const watchers: FSWatcher[] = [];
+  for (const [directory, listening] of watchPoints(projectDir, names)) {
+    const watcher = watchDirectory(directory, listening, settling);
+    if (watcher !== undefined) {
+      watchers.push(watcher);
+    }
   }
-  watcher.on('error', (error: unknown) => {
-    // Said rather than swallowed: a watch that dies mid-run stops restarting this server, and a
-    // developer editing `next.config` with nothing happening deserves to know which of the two it is.
-    console.warn(lostWatch(projectDir, error));
-    watcher.close();
-  });
   return () => {
-    clearTimeout(settling);
-    watcher.close();
+    clearTimeout(settling.timer);
+    for (const watcher of watchers) {
+      watcher.close();
+    }
   };
 }

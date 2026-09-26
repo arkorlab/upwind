@@ -2,7 +2,7 @@
 import { type DevRequest, parseDevRequest } from './args.ts';
 import { serveDev } from './dev/serve.ts';
 import { supervise } from './dev/supervise.ts';
-import { WORKER_ENV } from './dev/worker-env.ts';
+import { WORKER_ENV, WORKER_PORT_ENV } from './dev/worker-env.ts';
 import { ownVersion } from './manifest.ts';
 
 /**
@@ -74,6 +74,12 @@ async function main(): Promise<void> {
     return;
   }
   if (process.env[WORKER_ENV] === '1') {
+    // Read once, and then gone: everything the project runs — `next.config`, the application, whatever
+    // either of them spawns — inherits this environment, and an `upwind dev` started from inside it
+    // would take itself for a worker of a supervisor that is not watching, on a port it was not asked
+    // for.
+    Reflect.deleteProperty(process.env, WORKER_ENV);
+    Reflect.deleteProperty(process.env, WORKER_PORT_ENV);
     await serveDev(request.options);
     return;
   }

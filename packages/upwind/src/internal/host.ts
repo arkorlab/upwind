@@ -1,4 +1,5 @@
 import { isIP } from 'node:net';
+import { domainToASCII } from 'node:url';
 
 /**
  * Which `Host` a request for `/__upwind` may carry.
@@ -12,7 +13,8 @@ import { isIP } from 'node:net';
  * The rule is the one Vite settled on: a name has to be one that cannot be pointed somewhere else. An
  * address literal is such a name, since DNS has no part in it. `localhost` and anything under it are
  * reserved for loopback (RFC 6761). And a name the developer asked this server to bind is theirs to
- * have asked for.
+ * have asked for — compared as a browser would send it, since a name outside ASCII travels as its
+ * `xn--` form and would otherwise never equal the one that was typed.
  *
  * Only these endpoints are held to it. The application is Next.js's to answer, under whatever name a
  * developer has put in front of it, and Next.js has its own say about a cross-site dev request.
@@ -27,6 +29,12 @@ function hostnameOf(header: string): string | undefined {
   }
   const [name] = trimmed.split(':', 1);
   return name === undefined || name === '' ? undefined : name;
+}
+
+/** A name as a browser sends it: the ASCII form, or the name itself where there is no other. */
+function canonical(name: string): string {
+  const trimmed = name.trim().toLowerCase();
+  return domainToASCII(trimmed) || trimmed;
 }
 
 export function isTrustedHost(header: string | undefined, bound: string | undefined): boolean {
@@ -45,5 +53,5 @@ export function isTrustedHost(header: string | undefined, bound: string | undefi
   if (host === 'localhost' || host.endsWith('.localhost')) {
     return true;
   }
-  return host === bound?.trim().toLowerCase();
+  return bound !== undefined && canonical(host) === canonical(bound);
 }

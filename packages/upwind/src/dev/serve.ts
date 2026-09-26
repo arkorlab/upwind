@@ -48,29 +48,46 @@ function pathnameOf(target: string | undefined): string {
 }
 
 /**
+ * The pathname with its escapes read, except for the ones a segment holds as data.
+ *
+ * `%2F` is not a separator to Next.js: it survives into the route parameter, so `/__upwind%2Freport` is
+ * one segment that an application route may own rather than a child of this prefix. Decoding the whole
+ * pathname at once would turn it into two segments and hand the application's path to the front door,
+ * so each segment is read on its own and a slash that appears inside one is put back as the escape it
+ * came from. Nothing, for escapes that are not escapes.
+ */
+function decodedPathname(pathname: string): string | undefined {
+  try {
+    return pathname
+      .split('/')
+      .map((segment) => decodeURIComponent(segment).replaceAll('/', '%2F'))
+      .join('/');
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * The internal path a request asks for, in the form this answers it under — or nothing, for a request
  * that is the application's.
  *
  * Both the prefix as written and the prefix as it decodes, because Next.js's own router does not treat
  * them alike: `/%5F%5Fupwind` is matched against the filesystem decoded, where a rewrite's `source` is
  * matched raw. So a path that *means* the prefix would otherwise reach a catch-all route of the
- * project's, past the front door and past the reservation both. Escapes that are not escapes decode to
- * nothing, and such a request is not this prefix.
+ * project's, past the front door and past the reservation both.
  *
  * `..` needs no handling of its own: `pathnameOf` parses through `URL`, which resolves dot segments
  * before any of this sees them, so `/app/../__upwind` arrives here as `/__upwind`. What is deliberately
- * *not* done is resolving them again after decoding — `%2F` is a character in a segment to Next.js and
- * not a separator, so a second pass would claim paths the application is meant to answer. Nothing below
- * reads a file or builds a target out of the path either way: the endpoints are a fixed table.
+ * *not* done is resolving them again after decoding, for the same reason `%2F` is left alone above: the
+ * second pass would claim paths the application is meant to answer. Nothing below reads a file or builds
+ * a target out of the path either way — the endpoints are a fixed table.
  */
 function internalPathname(pathname: string): string | undefined {
   if (isUpwindInternalPath(pathname)) {
     return pathname;
   }
-  let decoded;
-  try {
-    decoded = decodeURIComponent(pathname);
-  } catch {
+  const decoded = decodedPathname(pathname);
+  if (decoded === undefined) {
     return undefined;
   }
   return isUpwindInternalPath(decoded) ? decoded : undefined;
