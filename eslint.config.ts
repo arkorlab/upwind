@@ -22,10 +22,15 @@ import tseslint from 'typescript-eslint';
  */
 
 /**
- * The adapter runs under Node inside `next build`; the runtime runs in a Function, where
- * `nodejs_compat` gives it the Node built-ins it does use.
+ * The adapter runs under Node inside `next build`, and the CLI is a Node process of its own; the
+ * runtime runs in a Function, where `nodejs_compat` gives it the Node built-ins it does use.
  */
-const NODE_ONLY_FILES = ['packages/adapter/**/*.ts', '*.config.ts', '**/*.config.ts'];
+const NODE_ONLY_FILES = [
+  'packages/adapter/**/*.ts',
+  'packages/upwind/**/*.ts',
+  '*.config.ts',
+  '**/*.config.ts',
+];
 /** What has to hold wherever it is evaluated, so it can be read by both of the above. */
 const RUNTIME_NEUTRAL_FILES = ['packages/core/**/*.ts'];
 
@@ -297,6 +302,21 @@ export default defineConfig([
       'n/no-missing-import': 'off', // TypeScript resolves these
       'n/no-process-env': 'off',
       'n/no-unpublished-import': 'off',
+    },
+  },
+
+  // The CLI is a program a developer runs, and after the Node config above because that is what
+  // turns `n/no-process-exit` back on. It speaks to a terminal, reads paths under the project it was
+  // pointed at, and ends the process with the code its own supervisor reads back — a restart is an
+  // exit code, not an exception, because Next.js's dev tooling exits the process itself.
+  {
+    files: ['packages/upwind/**/*.ts'],
+    rules: {
+      'n/no-process-exit': 'off',
+      'no-console': 'off',
+      'security/detect-non-literal-fs-filename': 'off',
+      'unicorn/no-process-exit': 'off',
+      'unicorn/prefer-temporal': 'off', // the Node version this runs on has no Temporal
     },
   },
 

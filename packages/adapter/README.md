@@ -71,6 +71,20 @@ offered under the application's root as well.
 Next.js turns it off again for a static export, in `finalizeConfig`, after the hook has run.
 `next/image` is left as the application configured it: the edge optimizes `/_next/image`.
 
+## The development server
+
+`modifyConfig` is called for every phase, and in `phase-development-server` it does one thing: it
+reserves `/__upwind` inside the dev server's own routing (`src/dev-prefix.ts`). `upwind dev` is the
+front door and has already answered that prefix before Next.js is asked, so this is for the paths back
+in — a middleware that rewrites to `/__upwind/…`, a request Next.js makes of itself — where a
+catch-all route of the project's would otherwise answer for it. Two rules go at the head of
+`beforeFiles`, ahead of the filesystem, pointing at the address `UPWIND_DEV_ADDRESS` names; a
+project's own `rewrites` keep the list they were declared in.
+
+Without that variable — a plain `next dev`, with no upwind in front — nothing is changed at all. There
+would be no server to send the prefix to, and a rewrite to a port nothing listens on is worse than no
+reservation.
+
 ## What the project declares beside `next.config`
 
 One thing the Adapter API has no notion of is a schedule, so the adapter reads it from a file of
