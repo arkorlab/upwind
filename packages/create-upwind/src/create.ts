@@ -126,7 +126,21 @@ export async function create(request: CreateRequest): Promise<void> {
     if (request.agentsMd) {
       // The Next.js that just arrived may word its agent rules differently from the one this release
       // was built against, and it is the one the project will run (`agents.ts`).
-      await refreshAgentRules(target);
+      const asked = await refreshAgentRules(target);
+      if (!asked) {
+        // Said rather than swallowed, because the commonest reason is a whole package manager — a
+        // Yarn Plug'n'Play install keeps its packages zipped where this process cannot read them —
+        // and a scaffolder that quietly kept its own copy of somebody else's text would be found
+        // out by a diff, months later, in a project nobody had touched.
+        console.log('');
+        console.log(
+          "AGENTS.md and CLAUDE.md hold create-upwind's own copy of Next.js's agent rules: this",
+        );
+        console.log(
+          "project's Next.js could not be reached to write its own. The first `upwind dev` a coding",
+        );
+        console.log('agent runs brings them up to date.');
+      }
     }
   }
   const committed = request.git && (await initRepository(target));
