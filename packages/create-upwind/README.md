@@ -58,7 +58,11 @@ tell a coding agent that this major is not the one it was trained on, and where 
 `create-next-app` writes, from the same text. Keeping it identical is the point: `upwind dev` asks
 the project's own Next.js to bring the block up to date, so a project upgraded to a Next.js that
 words it differently is re-worded rather than left behind, and a plain `next dev` agrees with what
-is already there. `--no-agents-md` writes neither.
+is already there.
+
+`--no-agents-md` writes neither — and the first `upwind dev` an agent runs writes both, because that
+is what the project's Next.js does about a missing block, and `next dev` would do it too. The switch
+that lasts is Next.js's own: `agentRules: false` in `next.config.ts`, which both commands obey.
 
 ## Options
 

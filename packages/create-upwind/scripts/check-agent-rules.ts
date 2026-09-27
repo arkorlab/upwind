@@ -19,8 +19,8 @@ import { writeAgentRules } from '../src/agents.ts';
  * So the comparison is made against Next.js rather than asserted here: both sides write into an
  * empty directory of their own — which is the branch of `writeAgentFiles` that scaffolds both files,
  * the one `create-next-app` takes — and the bytes are compared. No network and no build; the Next.js
- * it checks against is the catalog pin in `node_modules`, the same one `pnpm check:patches` uses and
- * the same one `packages/create-upwind/src/manifest.ts` writes a caret on.
+ * it checks against is the one in `node_modules`, the catalog pin, which is what `pnpm check:patches`
+ * reads too.
  *
  * A failure here is not a bug in this repository. It is Next.js having changed the block, and the
  * fix is to copy the new one into `src/agents.ts` — from `buildAgentRulesBlock()` in the file named

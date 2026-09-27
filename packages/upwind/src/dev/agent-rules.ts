@@ -22,11 +22,17 @@ import { resolveFromProject } from './next-app.ts';
  * that refused over two markdown files.
  */
 
-/** What Next.js reports having done to each file. */
+/**
+ * What Next.js reports having done to each file.
+ *
+ * Every field optional, because this is a foreign function's return value and the only thing read
+ * off it is a line to print. A release that reports something else leaves the files written and the
+ * line unsaid, rather than throwing away the work on the way to describing it.
+ */
 type AgentFileResult = 'created' | 'skipped' | 'unchanged' | 'updated';
 interface WriteResult {
-  readonly agentsMd: AgentFileResult;
-  readonly claudeMd: AgentFileResult;
+  readonly agentsMd?: AgentFileResult;
+  readonly claudeMd?: AgentFileResult;
 }
 
 /**
@@ -127,12 +133,12 @@ async function agentRulesAllowed(projectDir: string): Promise<boolean> {
 }
 
 /** The files that were actually written, for the one line this prints. */
-function written(result: WriteResult): readonly string[] {
+function written(result: WriteResult | undefined): readonly string[] {
   const names: string[] = [];
-  if (result.agentsMd === 'created' || result.agentsMd === 'updated') {
+  if (result?.agentsMd === 'created' || result?.agentsMd === 'updated') {
     names.push('AGENTS.md');
   }
-  if (result.claudeMd === 'created' || result.claudeMd === 'updated') {
+  if (result?.claudeMd === 'created' || result?.claudeMd === 'updated') {
     names.push('CLAUDE.md');
   }
   return names;
@@ -155,7 +161,7 @@ export async function ensureAgentRules(projectDir: string): Promise<void> {
       GENERATE_AGENT_FILES,
       'hasCurrentAgentRules',
     );
-    const writeAgentFiles = await functionFromProject<(dir: string) => WriteResult>(
+    const writeAgentFiles = await functionFromProject<(dir: string) => WriteResult | undefined>(
       projectDir,
       GENERATE_AGENT_FILES,
       'writeAgentFiles',
