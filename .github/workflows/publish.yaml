@@ -107,6 +107,42 @@ jobs:
             exit 1
           fi
 
+      # Asked here, where nothing has been published yet, and asked again in the draft job, which is
+      # the one that has to tell a draft from a published release. A tag whose release has already
+      # been told about is not a tag to release: immutability means there is nothing to add to it, and
+      # finding that out before npm rather than after is the difference between a refused release and
+      # a published one with nowhere to say so.
+      - name: Nothing has published a release for this tag
+        env:
+          TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if answer="$(gh release view "${TAG}" --json isDraft --jq .isDraft 2>&1)"; then
+            case "${answer}" in
+              false)
+                echo "::error::${TAG} already has a *published* release, which immutability makes unchangeable"
+                exit 1
+                ;;
+              true)
+                # A draft from an earlier attempt. The draft job replaces it; nothing to refuse here.
+                echo "::notice::${TAG} has a draft release, which this run will replace"
+                ;;
+              *)
+                echo "::error::unexpected answer about whether ${TAG} has a release: ${answer}"
+                exit 1
+                ;;
+            esac
+          else
+            case "${answer}" in
+              *'release not found'*) ;;
+              *)
+                echo "::error::could not tell whether ${TAG} has a release: ${answer}"
+                exit 1
+                ;;
+            esac
+          fi
+
       - name: The tag says the version the packages say
         env:
           TAG: ${{ inputs.tag }}
