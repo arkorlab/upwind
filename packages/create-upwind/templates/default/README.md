@@ -25,6 +25,10 @@ writes a deployment bundle under `.ppr-cdn/` — every route, prerender and stat
 and the Functions that run the application's code. `next.config.ts` names the same adapter, so a
 plain `next build` from CI or from any other tool produces the same bundle.
 
+One thing only `upwind build` does: bind this project's own storage for the build, so that a page
+prerendering from `@stayingupwind/sdk` has a database to read. A plain `next build` publishes none,
+and such a page fails there saying so.
+
 There is no `start` script on purpose. What a deployment runs is the bundle, not a Node server of
 this project's own.
 

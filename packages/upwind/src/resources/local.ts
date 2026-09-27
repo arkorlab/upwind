@@ -1,5 +1,5 @@
 import { readFileSync, unlinkSync } from 'node:fs';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
@@ -302,6 +302,12 @@ function letGoOfClaim(at: string): void {
  * removed and taken over. Anything else is refused — including a claim that cannot be read, which is
  * a claim being written at this very moment by somebody who got there first: `wx` creates the file
  * before its contents land, so an empty one is the one thing that must not be taken for abandoned.
+ *
+ * Two runs finding the same abandoned claim is the case to read this for. `unlink` is what keeps them
+ * apart: exactly one of them removes the file and the other is told it is already gone, so only one
+ * goes on to claim a directory nobody holds. The one that lost tries anyway — it may be first past the
+ * post — and whichever of them ends up with `wx` failing reads a live pid and refuses. What must never
+ * happen is the removal succeeding for both, which is what `rm` with `force` would have done.
  */
 async function claimStorage(persist: string): Promise<() => void> {
   const at = path.join(persist, OWNER_FILE);
@@ -331,11 +337,17 @@ async function claimStorage(persist: string): Promise<() => void> {
       if (attempt === 2 || !abandoned) {
         const whom = had === undefined ? 'another process' : `another process (${String(had)})`;
         throw new LocalStorageError(
-          `${whom} is already holding this project's local storage (${PERSIST_DIR}/), so nothing is published in this run — a dev server and a build cannot hold it at the same time, and neither can two dev servers on the same project`,
+          `${whom} is already holding this project's local storage (${PERSIST_DIR}/), so nothing is published in this run — a dev server and a build cannot hold it at the same time, and neither can two dev servers on the same project. If nothing is holding it, delete ${PERSIST_DIR}/${OWNER_FILE}`,
         );
       }
-      // The process that wrote this is gone, so the claim is not one any more.
-      await rm(at, { force: true });
+      try {
+        // The process that wrote this is gone, so the claim is not one any more. Not `rm` with
+        // `force`: this has to fail for the second run to reach it, which is the whole point.
+        await unlink(at);
+      } catch {
+        // Somebody else took it away first. They may or may not have claimed it yet, so the retry
+        // below tries for it — and refuses if they got there.
+      }
     }
   }
   // Unreachable: the loop returns or throws.
