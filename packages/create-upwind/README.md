@@ -57,12 +57,16 @@ tell a coding agent that this major is not the one it was trained on, and where 
 `node_modules/next/dist/docs/` to read before writing any code — the same two files
 `create-next-app` writes, from the same text.
 
-Keeping it identical is the point, so neither copy is ever this scaffolder's last word. The text it
-was built against is written first; then the Next.js the install actually brought is asked to write
-its own, before the first commit — so a project made after a release that words the block
-differently is committed with that release's wording rather than this one's. `upwind dev` asks the
-same question on every start, so a project stays current as its Next.js moves, and a plain
-`next dev` agrees with what is already there instead of rewriting it.
+Keeping it identical is the point, so this scaffolder tries not to be the last word on it. The text
+it was built against is written first; then, where there was an install to ask, the Next.js it
+brought is asked to write its own, before the first commit — so a project made after a release that
+words the block differently is committed with that release's wording rather than this one's. Under
+`--skip-install` there is nothing to ask, and the text this release carries is what the project
+keeps until something corrects it.
+
+`upwind dev` asks the same question on any start where it finds a coding agent, which is the only
+kind of start the answer matters on, so a project stays current as its Next.js moves — and a plain
+`next dev` then agrees with what is already there instead of rewriting it.
 
 `--no-agents-md` writes neither — and the first `upwind dev` an agent runs writes both, because that
 is what the project's Next.js does about a missing block, and `next dev` would do it too. The switch

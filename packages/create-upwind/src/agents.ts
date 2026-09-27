@@ -78,8 +78,16 @@ export async function writeAgentRules(target: string): Promise<void> {
  *
  * So the static text is what a project starts with, and this is what corrects it. `writeAgentFiles`
  * replaces the block in place and leaves everything around it, so a project whose Next.js agrees is
- * not written to at all. Called after the install and before the first commit, so what is committed
- * is what the project's own Next.js would have written.
+ * not written to at all. Called after the install and before the first commit, so that a correction
+ * is in the first commit rather than arriving as a change to it.
+ *
+ * What it does not do is check that the correction happened. Every way this can decline — no
+ * install to ask, a Next.js that has moved the module, an export under a name it does not use any
+ * more — leaves the static text, which is this release's reading of a block that is only ever
+ * advice. Saying so at a scaffold would be telling somebody about an internal path of Next.js's on
+ * the one occasion they have nothing to do about it, and the first dev run in the project puts it
+ * right. What is *not* claimed, then, is that a scaffolded project holds the installed Next.js's
+ * wording — only that it holds it whenever the installed Next.js was there to be asked.
  *
  * Resolved from the project and called through, the same way `upwind`'s `src/dev/agent-rules.ts`
  * does it at dev time — duplicated deliberately: the two live in different packages, neither depends
@@ -101,7 +109,10 @@ export async function refreshAgentRules(target: string): Promise<void> {
     const write = [module['writeAgentFiles'], module.default?.['writeAgentFiles']].find(
       (value) => typeof value === 'function',
     );
-    write?.(target);
+    // Awaited, though today's writes it synchronously and returns a plain object: a version that
+    // returned a promise instead would otherwise have the first commit racing the write, and would
+    // reject somewhere no `catch` of this one's could reach.
+    await write?.(target);
   } catch {
     // Nothing installed, nothing resolvable, nothing writable: the files written above stand.
   }
