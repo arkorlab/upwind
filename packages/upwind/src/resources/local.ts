@@ -9,6 +9,7 @@ import {
 } from '@stayingupwind/core/paas';
 import type { Miniflare, MiniflareOptions } from 'miniflare';
 
+import { guardListeners } from './listeners.ts';
 import { publishResources } from './publish.ts';
 
 /**
@@ -130,33 +131,6 @@ const RUNTIME_TYPES = {
   r2_bucket: 'r2',
 } as const satisfies Record<ResourceType, string>;
 
-/** A listener, by identity alone: what it is called with is not this module's business. */
-type ProcessListener = (...args: unknown[]) => void;
-
-/**
- * The IPC channel's own event, and the runtime listener for it that is never this process's to keep.
- *
- * The runtime's exit hook attaches one wherever there is a channel, and that is not a harmless thing
- * to do. A channel is *started* by the first `message` listener attached to it, and from then on
- * every message the parent sends is delivered to whoever is listening — so a listener added before
- * the process's own receives the parent's first instructions and drops them. In `next build`'s render
- * worker that is fatal and silent: the worker is asked to initialise and to render, hears neither,
- * and waits for work that already came, while the build waits for a worker that will never answer.
- * It is why a build hangs rather than failing, and it took a while to find.
- */
-const MESSAGE = 'message';
-
-/**
- * The signals the runtime answers, which some processes want back.
- *
- * It ends the process from inside each of them, after killing the runtime. `upwind dev` wants that
- * back — it closes its port, lets Next.js shut down, and leaves with the 0 that a script which
- * stopped it on purpose reads. A build's render worker does not: the pool ends a worker with
- * `SIGTERM` (`jest-worker`, half a second after asking nicely), and with no listener for it the
- * worker dies where it stands, runs no exit hook, and leaves a runtime process behind.
- */
-const RUNTIME_SIGNALS: readonly string[] = ['SIGINT', 'SIGTERM', 'SIGHUP'];
-
 export interface LocalResources {
   /** Stop the local runtime. Call it as often as you like; the first call is the one that acts. */
   readonly dispose: () => Promise<void>;
@@ -164,8 +138,8 @@ export interface LocalResources {
 
 export interface LocalOptions {
   /**
-   * Whether this process answers interrupts itself, and so wants the runtime's handlers taken back
-   * (`RUNTIME_SIGNALS`). The dev server does; a process something else ends does not.
+   * Whether this process answers interrupts itself, and so wants the runtime's signal handlers taken
+   * back (`listeners.ts`). The dev server does; a process something else ends does not.
    */
   readonly answersSignals: boolean;
 }
@@ -308,85 +282,6 @@ async function localEnv(
 }
 
 /**
- * `process` as the event emitter it is.
- *
- * Its typings describe these two in terms of signals, and one of the events that matters here is
- * `message`, which is not one.
- */
-const processEvents = process as unknown as {
-  listeners: (event: string) => ProcessListener[];
-  removeListener: (event: string, listener: ProcessListener) => void;
-  emit: (event: string, ...args: unknown[]) => boolean;
-};
-
-function listenersOf(event: string): ProcessListener[] {
-  return processEvents.listeners(event);
-}
-
-/** What was listening before the runtime was started, so that only its own can be taken back. */
-function listenersBefore(events: readonly string[]): Map<string, Set<ProcessListener>> {
-  return new Map(events.map((event) => [event, new Set(listenersOf(event))]));
-}
-
-/**
- * Hold anything the parent sends while the runtime is starting, and hand it on afterwards.
- *
- * Installed *before* the runtime is, so that this is the listener the channel starts for and the
- * runtime's is never the only one. What arrives in the meantime is kept rather than answered —
- * this process has no idea yet what its messages mean — and given back on the next turn of the
- * loop, by when the code that does know is listening. Nothing is lost and nothing is answered
- * twice; without it, a render worker's first instructions are dropped and the build waits forever
- * (see `MESSAGE`).
- */
-function holdMessages(): () => void {
-  // Only a child has a channel, and only a channel has this problem.
-  if (process.send === undefined) {
-    return () => {
-      // Nothing was held.
-    };
-  }
-  const held: unknown[][] = [];
-  const hold = (...args: unknown[]): void => {
-    held.push(args);
-  };
-  process.on(MESSAGE, hold);
-  return () => {
-    processEvents.removeListener(MESSAGE, hold);
-    if (held.length === 0) {
-      return;
-    }
-    // On the next turn: this runs while the module that owns this process is still being loaded,
-    // and its own listener is attached by the end of that.
-    setImmediate(() => {
-      for (const args of held) {
-        processEvents.emit(MESSAGE, ...args);
-      }
-    });
-  };
-}
-
-/**
- * Take back what starting the runtime attached to this process.
- *
- * Only listeners that appeared while it was starting are removed, and by identity, so nothing else
- * listening for those events is touched.
- *
- * Its `exit` hook is left exactly as it is, and is load-bearing: that one kills the runtime process
- * outright on any exit, which is what reaps it when this process leaves without being asked to —
- * `upwind dev` restarting itself on a config change, or Next.js's error overlay restarting it from
- * inside, neither of which is a shutdown this module ever hears about.
- */
-function takeBackListeners(before: ReadonlyMap<string, ReadonlySet<ProcessListener>>): void {
-  for (const [event, had] of before) {
-    for (const listener of listenersOf(event)) {
-      if (!had.has(listener)) {
-        processEvents.removeListener(event, listener);
-      }
-    }
-  }
-}
-
-/**
  * Stop the runtime, and stop waiting for one that cannot answer.
  *
  * A runtime that died inside a query — `proveReadable` says how that happens — never reports the exit
@@ -424,7 +319,7 @@ function cannotStart(error: unknown): string {
   // The failure worth naming, because it says what to do about it rather than what went wrong: the
   // runtime will not share a directory, so whoever has it has it.
   if (reason.includes('SQLITE_BUSY')) {
-    return `upwind: another process is already holding this project's local storage (${PERSIST_DIR}/), so nothing is published in this one — a dev server and a build cannot hold it at the same time, and a build renders in several processes at once`;
+    return `upwind: another process is already holding this project's local storage (${PERSIST_DIR}/), so nothing is published in this one — a dev server and a build cannot hold it at the same time, and neither can two dev servers on the same project`;
   }
   // The first line only: a runtime that failed to start says so in pages of its own output, and the
   // sentence that names what was lost must not be at the bottom of them.
@@ -459,13 +354,9 @@ export async function startLocalResources(
   options: LocalOptions,
 ): Promise<LocalResources> {
   const entries = bindings();
-  // Held before anything is snapshotted, so that this listener is one of the ones taken as given and
-  // `handOnMessages` is what removes it — rather than `takeBackListeners` mistaking it for the
-  // runtime's.
-  const handOnMessages = holdMessages();
-  const before = listenersBefore(
-    options.answersSignals ? [MESSAGE, ...RUNTIME_SIGNALS] : [MESSAGE],
-  );
+  // Before the runtime is started, and given back in the `finally`: what it does to a process it
+  // does not own, and why that matters more than it sounds like, is `listeners.ts`.
+  const guard = guardListeners({ answersSignals: options.answersSignals });
   const started: { runtime?: Miniflare } = {};
   try {
     await Promise.race([
@@ -475,7 +366,7 @@ export async function startLocalResources(
         `this project's local storage did not come up within ${String(START_SECONDS)}s, so nothing is published in this run — another process holding it (${PERSIST_DIR}/) is the usual reason`,
       ),
     ]);
-    // Only reached when `publish` won, so the runtime is there.
+    // Only reached when `startAndPublish` won, so the runtime is there.
     return started.runtime === undefined ? NOTHING_STARTED : stopper(started.runtime);
   } catch (error) {
     console.warn(cannotStart(error));
@@ -487,7 +378,6 @@ export async function startLocalResources(
     }
     return NOTHING_STARTED;
   } finally {
-    takeBackListeners(before);
-    handOnMessages();
+    guard.restore();
   }
 }

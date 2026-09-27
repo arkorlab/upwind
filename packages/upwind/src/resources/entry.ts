@@ -23,8 +23,9 @@ import { startLocalResources } from './local.ts';
  * an `--import` module is the one place where waiting for that is free.
  *
  * Nothing here disposes of it. A process holding a runtime never runs out of work — the handles it
- * keeps see to that — so `beforeExit` is not a thing that happens, and what ends both is the pool's
- * `SIGTERM` and the runtime's own handler for it (`local.ts`, `answersSignals`).
+ * keeps see to that — so `beforeExit` is not a thing that happens here. What ends this process is the
+ * pool's `SIGTERM`, and what ends the runtime with it is the runtime's own handler for that signal,
+ * which is why this one is left to answer it (`local.ts`, `answersSignals`).
  */
 
 /** Set by `createStaticWorker`, in the workers that prerender and in no other process. */
