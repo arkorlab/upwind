@@ -23,8 +23,43 @@ const HEIC = 'image/heic';
 
 /** Bytes to read of a source before its type is known: what the SVG allowance looks through. */
 export const IMAGE_SIGNATURE_BYTES = 1024;
-/** `<svg …>` anywhere in what was read, as Next.js's fallback detector finds it. */
-const SVG_ROOT = /<svg\s(?:[^>"']|"[^"]*"|'[^']*')*>/u;
+/** `<svg` and the whitespace that has to follow it: where the root element can begin. */
+const SVG_ROOT_START = /<svg\s/u;
+
+/**
+ * `<svg …>` anywhere in what was read, as Next.js's fallback detector finds it.
+ *
+ * The start tag is walked rather than matched, because the pattern that matches it — attributes,
+ * with a quoted value allowed to hold the `>` that would otherwise end the tag — is attempted again
+ * from every `<svg ` in the source, and the source is whatever was fetched. Each character here is
+ * looked at once: a quote is skipped to its pair, and the first `>` outside one ends the tag.
+ *
+ * Only the first `<svg ` is read, and reading one character once is what that buys. So a source
+ * whose first `<svg ` opens a quote that never closes is not an image here, where the pattern would
+ * have gone on to try a later `<svg `. That answer is never the less careful one: this says `<svg …>`
+ * only where the pattern did, and a source it cannot name is refused rather than served
+ * (`image-fallback.ts`), which is also what the `dangerouslyAllowSVG` gate behind this wants.
+ */
+function hasSvgRoot(text: string): boolean {
+  const start = SVG_ROOT_START.exec(text);
+  if (start === null) {
+    return false;
+  }
+  let quote: string | undefined;
+  for (let index = start.index + start[0].length; index < text.length; index += 1) {
+    const char = text[index];
+    if (quote !== undefined) {
+      if (char === quote) {
+        quote = undefined;
+      }
+    } else if (char === '>') {
+      return true;
+    } else if (char === '"' || char === "'") {
+      quote = char;
+    }
+  }
+  return false;
+}
 
 /** A byte the signature names, or `null` where it names none: the length of a RIFF or ISO box. */
 type Signature = readonly (number | null)[];
@@ -60,7 +95,7 @@ export function detectImageType(bytes: Uint8Array): string | undefined {
   if (signed !== undefined) {
     return signed;
   }
-  return SVG_ROOT.test(decodeUtf8(bytes.subarray(0, IMAGE_SIGNATURE_BYTES))) ? SVG : undefined;
+  return hasSvgRoot(decodeUtf8(bytes.subarray(0, IMAGE_SIGNATURE_BYTES))) ? SVG : undefined;
 }
 
 /** Types Next.js serves as they are, whatever the request asked for. */
