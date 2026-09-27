@@ -415,12 +415,15 @@ async function localEnv(
  * in a build's render worker, a build that never ends. Its own exit hook is the backstop, and it is a
  * `SIGKILL`, so whatever this gives up on is still gone when the process leaves.
  */
-async function stopRuntime(runtime: Miniflare): Promise<void> {
+async function stopRuntime(runtime: Miniflare): Promise<boolean> {
   try {
     await Promise.race([runtime.dispose(), afterDeadline(STOP_MS, 'the runtime did not stop')]);
+    return true;
   } catch {
     // Nothing more can be done about it here, and nothing is waiting to be told: a run that is
-    // shutting down has nowhere to put this, and one that failed to start has already said so.
+    // shutting down has nowhere to put this, and one that failed to start has already said so. What
+    // the answer is for is the claim, which must not go back while a runtime may still be up.
+    return false;
   }
 }
 
@@ -486,18 +489,23 @@ function startAndPublish(projectDir: string, entries: readonly ResourceManifestE
 }
 
 /**
- * Let go of everything an abandoned attempt took: the runtime it turned out to start, as soon as
- * there is one to stop, and the claim on the storage either way.
+ * Let go of everything that was taken: the runtime, as soon as there is one to stop, and then the
+ * claim on the storage — but only once the runtime is known to be gone.
+ *
+ * A stop that could not be confirmed leaves the claim where it is, because the claim is what keeps a
+ * second runtime out of a directory this one may still be in. Nothing is lost by keeping it: a claim
+ * outlives the process that made it only until the next run reads a pid nobody answers to, and this
+ * process's own `exit` gives it back for good once the runtime has been killed outright.
  */
 async function letGo(
   arriving: Promise<Miniflare | undefined> | undefined,
   release: (() => void) | undefined,
 ): Promise<void> {
   const runtime = arriving === undefined ? undefined : await arriving;
-  if (runtime !== undefined) {
-    await stopRuntime(runtime);
+  const gone = runtime === undefined || (await stopRuntime(runtime));
+  if (gone) {
+    release?.();
   }
-  release?.();
 }
 
 /**
