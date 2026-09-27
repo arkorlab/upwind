@@ -44,9 +44,10 @@ jobs:
   release:
     uses: ./.github/workflows/publish.yaml
     permissions:
-      contents: read
-      # A reusable workflow is given no more than its caller holds, so the token it publishes and
-      # signs with is granted here too.
+      # A reusable workflow is given no more than its caller holds — a job of it declaring more than
+      # this gets silently less — so everything the called jobs ask for is granted here. `write` is
+      # for the draft release at the end; every job that does not need it asks for `read`.
+      contents: write
       id-token: write
     with:
       tag: ${{ inputs.tag || github.ref_name }}
