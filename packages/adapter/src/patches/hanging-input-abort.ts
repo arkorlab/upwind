@@ -50,15 +50,17 @@ const MARKS = [INPUT_READY, '.waitForStage('];
  *
  * Both in one match, and the second held to the first by back-reference, so the scope this rewrites
  * is the pair itself. A minifier picks names per scope and reuses them freely, so `t(()=>b.abort())`
- * somewhere else in the same chunk is a thing that happens; anchored to the `waitForStage` that
- * belongs to this function, it cannot be mistaken for one of these. What separates the two is kept
- * as it was: a chunk writes a ternary where the source writes an `else`.
+ * somewhere else in the same chunk is a thing that happens, and neither end of the pair may be one
+ * of those: the first is anchored to the `waitForStage` this function's own wait follows, and the
+ * second to the branch taken when there was no stage — an `else`, or the `:` a chunk writes it as.
+ * An unrelated call between them is stepped over rather than taken, and what does separate them is
+ * kept as it was.
  *
- * An arrow is written `()=>` by every compiler that produces these files, minified or not; the one
- * space any of them writes is the one after the comma in `(0, ns.name)`.
+ * An arrow is written `()=>` by every compiler that produces these files, minified or not, so the
+ * scheduler is either a name or a parenthesized expression and needs no more than that said of it.
  */
 const BOTH_ABORTS =
-  /(?<head>\.waitForStage\([^;]*?\)\.then\(\(\)=>)(?<tick>\(0,\s?[\w$]+\.[\w$]+\)|[\w$]+)\(\(\)=>(?<controller>[\w$]+)\.abort\(\)\)(?<between>[\s\S]{0,400}?)\k<tick>\(\(\)=>\k<controller>\.abort\(\)\)/gu;
+  /(?<head>\.waitForStage\([^;]*?\)\.then\(\(\)=>)(?<tick>[\w$]+|\([^)]{1,60}\))\(\(\)=>(?<controller>[\w$]+)\.abort\(\)\)(?<between>[\s\S]{0,200}?(?:else[\s{]*|:))\k<tick>\(\(\)=>\k<controller>\.abort\(\)\)/gu;
 /** The same two, on a timer that runs once the microtask queue is empty. */
 const TIMER_ABORTS =
   '$<head>setTimeout(()=>$<controller>.abort(),0)$<between>setTimeout(()=>$<controller>.abort(),0)';
