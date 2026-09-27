@@ -280,9 +280,10 @@ async function holder(at: string): Promise<number | undefined> {
 /**
  * Give the claim back, if it is still this process's to give.
  *
- * Synchronous, because the one place this has to work is an `exit` handler. The pid is checked first:
- * a claim this run had taken from it — by a later run that read a pid this one no longer had, which is
- * the stale-takeover path — is not a claim to remove.
+ * Synchronous, because the one place this has to work is an `exit` handler. The pid is checked first,
+ * and not out of caution: deleting `.upwind/` while a run is up is a thing people do — it is how a
+ * project is put back to empty — and the run that claims the directory afterwards is holding a claim
+ * this one must not remove on its way out.
  */
 function letGoOfClaim(at: string): void {
   try {
@@ -298,8 +299,9 @@ function letGoOfClaim(at: string): void {
  * Claim this project's storage for this process, or say who has it.
  *
  * Twice, at most: the second attempt is for a claim that turned out to be a dead process's, which is
- * removed and taken over. A third failure means somebody live is holding it — or racing for it, which
- * amounts to the same answer.
+ * removed and taken over. Anything else is refused — including a claim that cannot be read, which is
+ * a claim being written at this very moment by somebody who got there first: `wx` creates the file
+ * before its contents land, so an empty one is the one thing that must not be taken for abandoned.
  */
 async function claimStorage(persist: string): Promise<() => void> {
   const at = path.join(persist, OWNER_FILE);
@@ -325,13 +327,14 @@ async function claimStorage(persist: string): Promise<() => void> {
       // what says whether that is a claim or a leftover. Any other reason — a directory that cannot
       // be written — comes back as the same refusal, which is the honest answer for it too.
       const had = await holder(at);
-      if (attempt === 2 || (had !== undefined && running(had))) {
+      const abandoned = had !== undefined && !running(had);
+      if (attempt === 2 || !abandoned) {
         const whom = had === undefined ? 'another process' : `another process (${String(had)})`;
         throw new LocalStorageError(
           `${whom} is already holding this project's local storage (${PERSIST_DIR}/), so nothing is published in this run — a dev server and a build cannot hold it at the same time, and neither can two dev servers on the same project`,
         );
       }
-      // Whoever wrote it is gone, or wrote nothing readable. Either way it is not a claim any more.
+      // The process that wrote this is gone, so the claim is not one any more.
       await rm(at, { force: true });
     }
   }
