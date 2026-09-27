@@ -20,6 +20,8 @@ const LEFTOVERS = [/INSTRUMENTATION_HOOK_FILENAME\}\.js`\)\)/u];
 export const instrumentationPatch: Patch = {
   name: NAME,
   target: TARGET,
+  // One file of Next.js's own, and no copy of it anywhere else.
+  reaches: ['module'],
   apply(source, file, ctx) {
     const replacement =
       ctx.instrumentation === undefined

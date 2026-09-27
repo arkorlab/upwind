@@ -58,6 +58,8 @@ export const vercelOgPatch: Patch = {
   name: IMPORT_PATCH,
   target: IMPORT_TARGET,
   marker: (source) => source.includes(NODE_BUILD),
+  // The chunk a build emitted for the external import; a published package holds nothing for it.
+  reaches: ['build-output'],
   apply(source, file) {
     const result = new Rewrite(IMPORT_PATCH, file, source)
       .replace(EXTERNAL_IMPORT, `import(${JSON.stringify(EDGE_BUILD)})`, 1, 'the external import')
@@ -99,6 +101,8 @@ const CACHED_BODY =
 export const vercelOgImageResponsePatch: Patch = {
   name: IMAGE_RESPONSE_PATCH,
   target: IMAGE_RESPONSE_TARGET,
+  // Next.js's own file, and no copy of it anywhere else.
+  reaches: ['module'],
   apply(source, file) {
     const rewrite = new Rewrite(IMAGE_RESPONSE_PATCH, file, source);
     // The Cache Components path arrived in 16.3; a 16.2 build has no such branch and there is
@@ -147,6 +151,8 @@ const FONT_READER = [
 export const vercelOgFontPatch: Patch = {
   name: FONT_PATCH,
   target: FONT_TARGET,
+  // The vendored `@vercel/og` in Next.js's `compiled/`.
+  reaches: ['vendored'],
   apply(source, file) {
     const result = new Rewrite(FONT_PATCH, file, FONT_IMPORT + source)
       .replace(

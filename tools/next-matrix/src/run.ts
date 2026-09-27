@@ -7,15 +7,22 @@ import { promisify } from 'node:util';
 
 import { type DeploymentBundle, deploymentBundleSchema } from '@stayingupwind/core/bundle';
 
+import {
+  type Expected,
+  FIXTURE_COVERAGE,
+  type FixtureCoverage,
+  type FixtureName,
+} from './coverage.ts';
+
 /**
  * Builds real applications with real Next.js versions, and holds each build to what the adapter
  * says it does.
  *
  * `packages/adapter/scripts/check-patches.ts` answers most of the same question far more cheaply,
- * by applying each rewrite to the files of a published package. Four patches are out of its reach
+ * by applying each rewrite to the files of a published package. Three patches are out of its reach
  * because they rewrite what `next build` *writes* rather than what Next.js ships —
- * `turbopack-runtime`, `wasm-loader`, `runtime-wasm-loader`, `vercel-og` — and no amount of reading
- * a tarball produces a Turbopack runtime. Those need a build, which is this.
+ * `turbopack-runtime`, `wasm-loader`, `vercel-og` — and no amount of reading a tarball produces a
+ * Turbopack runtime. Those need a build, which is this.
  *
  * It is also the only thing that checks the other half of the claim: that each patch still finds
  * its file *in a bundle*. A rewrite can apply perfectly to a module no build ever loads, and the
@@ -85,101 +92,89 @@ type Dependencies = Readonly<
   Record<
     string,
     {
-      readonly patches: readonly { readonly patch: string }[];
-      readonly edge?: { readonly patches: readonly { readonly patch: string }[] };
+      readonly patches: readonly AppliedPatch[];
+      readonly edge?: { readonly patches: readonly AppliedPatch[] };
     }
   >
 >;
 
-/**
- * A patch a build has to apply, or — where Next.js has shipped a thing in two shapes across the
- * supported range — the set of patches of which exactly the one for this version must fire. The
- * Turbopack WebAssembly loader is the case in point: its own module from 16.3, the Turbopack
- * runtime itself in 16.2. Naming both is what lets one expectation hold for the whole range.
- */
-type Expected = string | readonly string[];
-
-interface Fixture {
-  readonly name: string;
-  /** Every patch a build of this fixture has to apply, in one Function or the other. */
-  readonly expected: readonly Expected[];
-  /** What else has to be true of the bundle, beyond its schema. */
-  readonly holds: (bundle: DeploymentBundle, dependencies: Dependencies) => string[];
+/** What the adapter recorded of one rewrite: which patch, and the file it rewrote. */
+interface AppliedPatch {
+  readonly patch: string;
+  readonly file: string;
 }
 
-/** The rewrites that reach Next.js's own package, and so every build of any fixture. */
-const PACKAGE_PATCHES = [
-  'cache-signal-timers',
-  'fetch-cache-wait-until',
-  'graph-manifests',
-  'hanging-input-abort',
-  'instrumentation',
-  'load-manifest',
-  'resume-cache-limit',
-  'task-timers',
-] as const;
+/** What a build wrote, as the record names it; anything else is a file of Next.js's own package. */
+const BUILD_DIR = '.next/';
+
+/** What else has to be true of a fixture's bundle, beyond its schema. */
+type Holds = (bundle: DeploymentBundle, dependencies: Dependencies) => string[];
+
+interface Fixture extends FixtureCoverage {
+  readonly name: string;
+  readonly holds: Holds;
+}
 
 const DATA_ROUTE = '/_next/data/';
 
-const FIXTURE_LIST: readonly Fixture[] = [
-  {
-    name: 'next-minimal',
-    // Every patch there is: this fixture exists to be the one build that reaches all of them.
-    expected: [
-      ...PACKAGE_PATCHES,
-      'turbopack-runtime',
-      // One or the other, by version: see `Expected`.
-      ['wasm-loader', 'runtime-wasm-loader'],
-      'vercel-og',
-      'vercel-og-font',
-      'vercel-og-image-response',
-    ],
-    holds: (bundle) => {
-      const problems: string[] = [];
-      if (bundle.middleware === undefined) {
-        problems.push('no middleware: `proxy.js` should have made one');
-      }
-      if (bundle.prerenders.length === 0) {
-        problems.push('no prerenders: `generateStaticParams` should have made some');
-      }
-      if (bundle.prerenders.every((one) => one.postponed === undefined)) {
-        problems.push('no postponed state: Cache Components should have made a shell to resume');
-      }
-      // The Pages Router's two data paths, which Next.js emits as different kinds of output:
-      // `getServerSideProps` gives an entrypoint, `getStaticProps` a prerender, both named
-      // `/_next/data/<buildId>/….json`.
-      if (bundle.entrypoints.every((one) => !one.id.includes(DATA_ROUTE))) {
-        problems.push('no `_next/data` entrypoint: `getServerSideProps` should have made one');
-      }
-      if (bundle.prerenders.every((one) => !one.pathname.includes(DATA_ROUTE))) {
-        problems.push('no `_next/data` prerender: `getStaticProps` should have made one');
-      }
-      return problems;
-    },
-  },
-  {
-    name: 'next-edge',
-    // No `wasm-loader`: WebAssembly on the edge runtime travels as `wasmAssets` under Turbopack's
-    // own global and never reaches the Node.js loader that patch rewrites. No `vercel-og` either —
-    // nothing here renders an image.
-    expected: [...PACKAGE_PATCHES, 'turbopack-runtime'],
-    holds: (bundle, dependencies) => {
-      const problems: string[] = [];
-      if (bundle.entrypoints.every((one) => one.runtime !== 'edge')) {
-        problems.push("no entrypoint on the edge runtime: `runtime = 'edge'` should have made one");
-      }
-      if (bundle.functions.middleware === undefined) {
-        problems.push('no middleware Function: `middleware.js` should have made one');
-      }
-      for (const [name, one] of Object.entries(dependencies)) {
-        if (one.edge === undefined) {
-          problems.push(`the ${name} Function has no edge bundle`);
-        }
-      }
-      return problems;
-    },
-  },
-];
+/** Every kind of output the Routers have between them, from one application. */
+function minimalHolds(bundle: DeploymentBundle): string[] {
+  const problems: string[] = [];
+  if (bundle.middleware === undefined) {
+    problems.push('no middleware: `proxy.js` should have made one');
+  }
+  if (bundle.prerenders.length === 0) {
+    problems.push('no prerenders: `generateStaticParams` should have made some');
+  }
+  if (bundle.prerenders.every((one) => one.postponed === undefined)) {
+    problems.push('no postponed state: Cache Components should have made a shell to resume');
+  }
+  // The Pages Router's two data paths, which Next.js emits as different kinds of output:
+  // `getServerSideProps` gives an entrypoint, `getStaticProps` a prerender, both named
+  // `/_next/data/<buildId>/….json`.
+  if (bundle.entrypoints.every((one) => !one.id.includes(DATA_ROUTE))) {
+    problems.push('no `_next/data` entrypoint: `getServerSideProps` should have made one');
+  }
+  if (bundle.prerenders.every((one) => !one.pathname.includes(DATA_ROUTE))) {
+    problems.push('no `_next/data` prerender: `getStaticProps` should have made one');
+  }
+  return problems;
+}
+
+/** The edge runtime, which is bundled apart and has its own copy of everything. */
+function edgeHolds(bundle: DeploymentBundle, dependencies: Dependencies): string[] {
+  const problems: string[] = [];
+  if (bundle.entrypoints.every((one) => one.runtime !== 'edge')) {
+    problems.push("no entrypoint on the edge runtime: `runtime = 'edge'` should have made one");
+  }
+  if (bundle.functions.middleware === undefined) {
+    problems.push('no middleware Function: `middleware.js` should have made one');
+  }
+  for (const [name, one] of Object.entries(dependencies)) {
+    if (one.edge === undefined) {
+      problems.push(`the ${name} Function has no edge bundle`);
+    }
+  }
+  return problems;
+}
+
+/** What each fixture has to show, by name — every name `coverage.ts` has, and no other. */
+const HOLDS: Readonly<Record<FixtureName, Holds>> = {
+  'next-minimal': minimalHolds,
+  'next-edge': edgeHolds,
+};
+
+/**
+ * Every fixture there is: `coverage.ts` says which they are and what each build has to show, and `HOLDS`
+ * what else is true of each one's bundle. The names come off the coverage record rather than out of a
+ * list here, so what this builds and what a checker reads are the same set by construction.
+ *
+ * `Object.keys` of a record whose keys are those literals is those literals; TypeScript types it as
+ * `string` all the same.
+ */
+const FIXTURE_LIST: readonly Fixture[] = (Object.keys(FIXTURE_COVERAGE) as FixtureName[]).map(
+  (name) => ({ name, ...FIXTURE_COVERAGE[name], holds: HOLDS[name] }),
+);
 
 // ─── the versions ────────────────────────────────────────────────────────────
 
@@ -266,24 +261,57 @@ function explain(error: unknown): string[] {
   return patchErrors.length > 0 ? patchErrors : lines.slice(-TAIL_LINES);
 }
 
-/** Every patch the build recorded, in either Function and in either of a Function's two bundles. */
-function patchesApplied(dependencies: Dependencies): Set<string> {
+/**
+ * Every patch the build recorded, in either Function and in either of a Function's two bundles — and,
+ * of those, the ones that rewrote something the build itself wrote.
+ *
+ * That second set is the half no published package can show, and so the half `check-patches.ts` cannot
+ * check: a patch that says it reaches `build-output` is held to it here and nowhere else.
+ */
+function patchesApplied(dependencies: Dependencies): {
+  applied: Set<string>;
+  inChunks: Set<string>;
+} {
   const applied = new Set<string>();
+  const inChunks = new Set<string>();
+  const record = ({ patch, file }: AppliedPatch): void => {
+    applied.add(patch);
+    if (file.startsWith(BUILD_DIR)) {
+      inChunks.add(patch);
+    }
+  };
   for (const one of Object.values(dependencies)) {
-    for (const { patch } of one.patches) {
-      applied.add(patch);
+    for (const entry of one.patches) {
+      record(entry);
     }
     if (one.edge !== undefined) {
-      for (const { patch } of one.edge.patches) {
-        applied.add(patch);
+      for (const entry of one.edge.patches) {
+        record(entry);
       }
     }
   }
-  return applied;
+  return { applied, inChunks };
 }
 
 async function readJson(file: string): Promise<unknown> {
   return JSON.parse(await readFile(file, 'utf8')) as unknown;
+}
+
+/**
+ * One name, or exactly one of a group.
+ *
+ * Exactly one, not at least one: where a coverage entry names the two shapes one patch has across
+ * the range, a build reaches whichever its version holds, and both firing means a marker has started
+ * claiming what is not its shape — which is the thing naming both is there to catch, not to allow.
+ */
+function firedOnce(expected: Expected, fired: ReadonlySet<string>, missing: string): string[] {
+  if (typeof expected === 'string') {
+    return fired.has(expected) ? [] : [`the ${expected} patch ${missing}`];
+  }
+  const count = expected.filter((name) => fired.has(name)).length;
+  return count === 1
+    ? []
+    : [`${expected.join(' / ')}: exactly one should have ${missing}, ${String(count)} did`];
 }
 
 async function checkOutput(fixture: Fixture, app: string): Promise<string[]> {
@@ -294,20 +322,16 @@ async function checkOutput(fixture: Fixture, app: string): Promise<string[]> {
     return [`bundle.json does not parse: ${first?.path.join('.') ?? ''} ${first?.message ?? ''}`];
   }
   const dependencies = (await readJson(path.join(out, 'dependencies.json'))) as Dependencies;
-  const applied = patchesApplied(dependencies);
-  const problems = fixture.expected.flatMap((expected) => {
-    const names = typeof expected === 'string' ? [expected] : expected;
-    // Exactly one, not at least one: where two patches are the same thing in the two shapes a
-    // version can hold, a build reaching both means a marker has started claiming what is not its
-    // shape — which is the thing an alternative expectation is here to catch rather than allow.
-    const fired = names.filter((name) => applied.has(name));
-    if (fired.length === 1) {
-      return [];
-    }
-    return names.length === 1
-      ? [`the ${names[0] ?? ''} patch applied to nothing`]
-      : [`${names.join(' / ')}: exactly one should have applied, ${String(fired.length)} did`];
-  });
+  const { applied, inChunks } = patchesApplied(dependencies);
+  const problems = [
+    ...fixture.expected.flatMap((patch) => firedOnce(patch, applied, 'applied to nothing')),
+    // A patch that fired on Next.js's own file and on nothing this build wrote has lost the half of
+    // itself that only a build can show: `check-patches.ts` would still see it fire, and a Function
+    // would load a chunk it never rewrote.
+    ...fixture.chunks.flatMap((patch) =>
+      firedOnce(patch, inChunks, 'rewrote nothing this build wrote'),
+    ),
+  ];
   return [...problems, ...fixture.holds(parsed.data, dependencies)];
 }
 

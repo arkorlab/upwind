@@ -35,6 +35,9 @@ export const graphManifestsPatch: Patch = {
   target: TARGET,
   // The chunks Turbopack copied the module into have no name to find them by.
   marker: (source) => LEFTOVERS.some((pattern) => pattern.test(source)),
+  // The singleton's own file and the ESM copy beside it, the compiled runtimes, and the chunks
+  // Turbopack copied the module into — which only a build has.
+  reaches: ['module', 'esm-module', 'server-runtime', 'build-output'],
   apply(source, file) {
     const result = new Rewrite(NAME, file, source)
       .replace(SHARED_KEY, NODE_KEY, 1, 'the key of the manifests singleton')

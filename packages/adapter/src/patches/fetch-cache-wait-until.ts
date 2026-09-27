@@ -63,6 +63,9 @@ export const fetchCacheWaitUntilPatch: Patch = {
   target: TARGET,
   // Turbopack puts the module in whichever chunk its graph put it; there is no name to find it by.
   marker: (source) => MARKS.every((mark) => source.includes(mark)),
+  // Every copy of `patch-fetch` a Function can load: the source files, the one each route runtime
+  // bundles, and the chunk a build copied it into.
+  reaches: ['module', 'esm-module', 'server-runtime', 'build-output'],
   apply(source, file) {
     // One registration to each copy of the module, and a chunk may hold more than one: Turbopack
     // puts the one it compiled for each layer that imports it wherever the graph put that layer.

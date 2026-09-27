@@ -26,6 +26,8 @@ const LEFTOVERS = ['runInNewContext', 'require("vm")', "require('vm')", 'node:vm
 export const loadManifestPatch: Patch = {
   name: NAME,
   target: TARGET,
+  // One file of Next.js's own, and no copy of it anywhere else.
+  reaches: ['module'],
   apply(source, file) {
     const result = new Rewrite(NAME, file, source)
       .replace(

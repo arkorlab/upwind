@@ -16,6 +16,28 @@
  * match is not a patch with a narrower range, it is the notice that the floor has moved.
  */
 
+/**
+ * A kind of copy of the thing a patch rewrites.
+ *
+ * Next.js ships the same module more than once, and a Function loads whichever copies its build
+ * reached for: the file under `dist/`, the ESM one beside it, the one bundled into each compiled
+ * server runtime, a vendored package's own — and, for what `next build` *writes* rather than ships,
+ * the chunks Turbopack emits.
+ *
+ * A patch names the kinds it has to reach, because a patch that reaches one of them and no longer
+ * reaches another is the failure this is here to catch: `cache-signal-timers` is loaded from both the
+ * source module and the compiled runtime, and a Function that got the first and missed the second is
+ * a Function with the bug back. Counting files would say the same thing more brittlely — the number
+ * of runtime variants is Next.js's to change — so what is declared is the kinds, not how many.
+ *
+ * `scripts/check-patches.ts` holds every patch to the kinds a published package can show. The one it
+ * cannot show is `build-output`, and `tools/next-matrix` holds a patch to that by building an
+ * application and reading what the adapter recorded. Pull-request CI runs the first and not the
+ * second, so a rewrite that quietly stopped reaching one of its kinds would otherwise ship in a
+ * Function and fail at the first request that needed it.
+ */
+export type Copy = 'build-output' | 'esm-module' | 'module' | 'server-runtime' | 'vendored';
+
 export interface PatchContext {
   /** Absolute `.next` directory. */
   readonly distDir: string;
@@ -49,6 +71,13 @@ export interface Patch {
    * Next.js version.
    */
   readonly marker?: (source: string) => boolean;
+  /**
+   * The kinds of copy this has to reach, and what a checker holds it to. `Copy` says why the kinds are
+   * what is declared rather than a count of files.
+   *
+   * One at least: a patch that reached nothing anywhere would otherwise be a patch nothing checks.
+   */
+  readonly reaches: readonly [Copy, ...Copy[]];
   apply(source: string, file: string, ctx: PatchContext): PatchResult;
 }
 

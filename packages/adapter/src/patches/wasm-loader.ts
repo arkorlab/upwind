@@ -102,6 +102,8 @@ export const wasmLoaderPatch: Patch = {
   name: NAME,
   target: TARGET,
   marker: (source) => READS_A_FILE.test(source) && registeredExports(source).length > 0,
+  // The chunk Turbopack put the loader in, which only a build has.
+  reaches: ['build-output'],
   apply(source, file, ctx) {
     const exports = registeredExports(source);
     // An empty table is not a failure: a Function may bundle the loader from a shared chunk while
@@ -158,6 +160,8 @@ export const runtimeWasmLoaderPatch: Patch = {
   name: RUNTIME_NAME,
   target: RUNTIME_TARGET,
   marker: (source) => source.includes(RUNTIME_LOADER),
+  // The Turbopack runtime `next build` writes; a published package holds nothing for this.
+  reaches: ['build-output'],
   apply(source, file, ctx) {
     const result = new Rewrite(RUNTIME_NAME, file, source)
       .replace(
