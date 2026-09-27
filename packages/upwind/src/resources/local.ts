@@ -92,7 +92,7 @@ const START_MS = START_SECONDS * MS_IN_SECOND;
 /**
  * How long stopping the runtime is waited for before its own exit hook is left to it.
  *
- * Under the two seconds a `upwind dev` supervisor gives a child it has signalled before killing it
+ * Under the two seconds an `upwind dev` supervisor gives a child it has signalled before killing it
  * outright (`EXIT_GRACE_MS` in `dev/supervise.ts`), because this wait is inside that one: a shutdown
  * that waited longer would be a shutdown the supervisor interrupts, and the rest of what the dev
  * server does on its way out — closing the port, letting Next.js finish — would not happen.
@@ -350,22 +350,27 @@ async function startAndPublish(
 /**
  * Stop the runtime an abandoned attempt started, whenever it turns out to have started one.
  *
- * An attempt that lost to the deadline is still running: it may be between `new Miniflare` and the
- * query that proves the storage readable, and the runtime it is about to hold would then be one
- * nothing published and nothing stops. So the attempt is waited out — its failure is already
- * reported, and is not a reason to say anything twice — and whatever it left behind is stopped.
+ * An attempt that lost to the deadline is still running, and where it is decides what there is to do.
+ * Past `new Miniflare` it has a runtime already — which is the usual way this goes, since what the
+ * deadline catches is a query that will never answer — and that one is stopped now. Short of it there
+ * is nothing yet, so the attempt is waited out first: its failure is already reported and is not a
+ * reason to say anything twice.
  */
 async function stopWhateverStarted(
   attempt: Promise<void>,
   started: { runtime?: Miniflare },
 ): Promise<void> {
-  try {
-    await attempt;
-  } catch {
-    // Reported by the caller, which is the one that gave up on this.
+  if (started.runtime === undefined) {
+    try {
+      await attempt;
+    } catch {
+      // Reported by the caller, which is the one that gave up on this.
+    }
   }
-  if (started.runtime !== undefined) {
-    await stopRuntime(started.runtime);
+  // Read after the wait, because the wait is what may have put one there.
+  const { runtime } = started;
+  if (runtime !== undefined) {
+    await stopRuntime(runtime);
   }
 }
 
