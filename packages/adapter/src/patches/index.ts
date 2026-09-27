@@ -20,7 +20,7 @@ export {
   vendoredOtelPlugin,
   wasmModulePlugin,
 } from './rolldown.ts';
-export type { PatchContext } from './types.ts';
+export type { Copy, Patch, PatchContext } from './types.ts';
 
 /** Every rewrite of Next.js's output the Function build applies. */
 export const PATCHES: readonly Patch[] = [
