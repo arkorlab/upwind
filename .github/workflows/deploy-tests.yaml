@@ -1,0 +1,101 @@
+name: Deploy tests
+
+# Next.js's own deploy-mode suite, against real deployments of what this adapter builds.
+#
+# Apart from CI, and dispatched by hand, for three reasons. It needs credentials for a host, which a
+# pull request from a fork must never be given. It deploys — each suite is an application built,
+# uploaded and served, minutes of it. And it cannot shard: every deployment replaces the project's whole
+# runtime environment, so one project takes one fixture at a time, and two runners would take each
+# other's environment away mid-test. What sharding would buy has to be bought with projects instead, one
+# per runner, which this tool does not pool yet.
+#
+# So this runs a named selection. The whole manifest is a serial run of hundreds of deployments — tens of
+# hours, past any job's limit — and belongs on a machine somebody is watching.
+
+on:
+  workflow_dispatch:
+    inputs:
+      nextjsRef:
+        description: "Next.js ref to test against — inside the adapter's supported range"
+        default: 'v16.3.6'
+        type: string
+      tests:
+        description: 'Upstream test paths, space separated'
+        default: >-
+          test/e2e/hello-world/hello-world.test.ts
+          test/e2e/app-dir/hello-world/hello-world.test.ts
+          test/e2e/app-dir/app-simple-routes/app-simple-routes.test.ts
+        type: string
+
+permissions: {}
+
+# Never two at once: they would be deploying into the same project.
+concurrency:
+  group: deploy-tests
+  cancel-in-progress: false
+
+jobs:
+  deploy-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: adapter
+      # The suite is upstream's, run unmodified: its own manifest decides which suites deploy mode
+      # selects, and this repository rewrites no expectation of theirs.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: vercel/next.js
+          ref: ${{ inputs.nextjsRef }}
+          path: nextjs
+          fetch-depth: 25
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: adapter/pnpm-lock.yaml
+
+      # Next.js is built from source, and installed again afterwards, because its test harness runs out
+      # of the checkout and loads what it just built.
+      - name: Build Next.js
+        working-directory: nextjs
+        run: pnpm install && pnpm build && pnpm install
+      - name: Install Chromium
+        working-directory: nextjs
+        run: pnpm playwright install --with-deps chromium
+
+      # `dist`, because that is the adapter as a release hands it to a project.
+      - name: Build the adapter
+        working-directory: adapter
+        run: pnpm install --frozen-lockfile && pnpm --filter @stayingupwind/adapter build
+
+      # Serially (`-c 1`), with no retries: a retry would deploy the same fixture again and say nothing
+      # about why the first one failed.
+      - name: Run the suite
+        working-directory: nextjs
+        env:
+          NEXT_TEST_MODE: deploy
+          NEXT_E2E_TEST_TIMEOUT: 240000
+          NEXT_EXTERNAL_TESTS_FILTERS: test/deploy-tests-manifest.json
+          NEXT_TELEMETRY_DISABLED: 1
+          IS_TURBOPACK_TEST: 1
+          ADAPTER_DIR: ${{ github.workspace }}/adapter
+          NEXT_TEST_DEPLOY_SCRIPT_PATH: ${{ github.workspace }}/adapter/tools/deploy-tests/scripts/e2e-deploy.sh
+          NEXT_TEST_DEPLOY_LOGS_SCRIPT_PATH: ${{ github.workspace }}/adapter/tools/deploy-tests/scripts/e2e-logs.sh
+          NEXT_TEST_CLEANUP_SCRIPT_PATH: ${{ github.workspace }}/adapter/tools/deploy-tests/scripts/e2e-cleanup.sh
+          # The host to deploy to. Secrets rather than anything written down here: which host runs this
+          # suite is whoever dispatched it, and a project id in a log is a project somebody can name.
+          ARKOR_API_URL: ${{ secrets.ARKOR_API_URL }}
+          ARKOR_API_TOKEN: ${{ secrets.ARKOR_API_TOKEN }}
+          ADAPTER_TEST_PROJECT_ID: ${{ secrets.ADAPTER_TEST_PROJECT_ID }}
+          # Through the environment rather than into the command: the selection is a string this workflow
+          # was handed, and a `run:` that interpolates one is a shell that was handed it too.
+          TESTS: ${{ inputs.tests }}
+        # Paths are positional, after the flags. Unquoted on purpose: the selection is several of them,
+        # and a quoted one would be a single path with spaces in it.
+        # shellcheck disable=SC2086
+        run: node run-tests.js --type e2e -c 1 --retries 0 $TESTS

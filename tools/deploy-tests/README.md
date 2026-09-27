@@ -1,0 +1,102 @@
+# `@upwind-tools/deploy-tests`
+
+Runs Next.js's own deploy-mode test suite against this adapter, by deploying each test application to a
+host over that host's public API and letting the host serve it.
+
+This is the only honest way to run that suite against an adapter. What the adapter produces is a
+deployment bundle; serving one — its static files, its prerendered shells, the routing in front of the
+Function — is the host's half of the contract. A harness that stood the bundle's Function up on its own
+would answer `404` for every `/_next/static/…`, and a page without its chunks never hydrates: measured
+on a host's private harness, 240 of 944 suites failed for that one reason and nothing else. So a real
+deployment it is.
+
+The lifecycle is the
+[documented contract](https://nextjs.org/docs/app/api-reference/adapters/testing-adapters): three
+scripts, named to the suite through `NEXT_TEST_DEPLOY_SCRIPT_PATH`,
+`NEXT_TEST_DEPLOY_LOGS_SCRIPT_PATH` and `NEXT_TEST_CLEANUP_SCRIPT_PATH`. Nothing in the suite is
+modified and no expectation of theirs is rewritten: their `test/deploy-tests-manifest.json` decides
+which suites deploy mode selects.
+
+## What it needs
+
+| Variable                  | What it is                                                 |
+| ------------------------- | ---------------------------------------------------------- |
+| `ARKOR_API_URL`           | The host's public API, for example `https://api.arkor.dev` |
+| `ARKOR_API_TOKEN`         | A token of that host with the `write` scope                |
+| `ADAPTER_TEST_PROJECT_ID` | A project on that host, **used by nothing else**           |
+
+The names are the host's own, so that the script an operator already drives this suite with drives this
+too. They arrive through the environment alone: a token on a command line is in every process list on
+the machine, and a token in a file is one somebody forgets.
+
+**The project has to be dedicated.** Each fixture's deployment _replaces_ the project's whole runtime
+environment with that fixture's own, so a project anything else uses would have its environment taken
+out from under it. Create one however the host creates projects — its public API deploys into a project
+and does not make one.
+
+## Running it
+
+```console
+$ pnpm --filter @stayingupwind/adapter build     # the suite tests dist, as a project would
+$ pnpm test:deploy preflight
+```
+
+`preflight` answers whether a run would get as far as its first deployment, without making one: the
+configuration, that the project is served somewhere public, and that the token may write. The last is
+proved by reading the project's environment and putting the same environment straight back — a no-op by
+the API's own definition, since a secret reads back as `null` and `null` put back keeps the stored
+value. A fixture is minutes of building before the first call to the API, so a token that cannot write
+is worth learning about first.
+
+Then, from a checkout of Next.js that has been built (`pnpm install && pnpm build && pnpm install`, and
+`pnpm playwright install --with-deps chromium`):
+
+```console
+$ NEXT_TEST_MODE=deploy \
+  NEXT_EXTERNAL_TESTS_FILTERS=test/deploy-tests-manifest.json \
+  ADAPTER_DIR=/path/to/upwind \
+  NEXT_TEST_DEPLOY_SCRIPT_PATH=$ADAPTER_DIR/tools/deploy-tests/scripts/e2e-deploy.sh \
+  NEXT_TEST_DEPLOY_LOGS_SCRIPT_PATH=$ADAPTER_DIR/tools/deploy-tests/scripts/e2e-logs.sh \
+  NEXT_TEST_CLEANUP_SCRIPT_PATH=$ADAPTER_DIR/tools/deploy-tests/scripts/e2e-cleanup.sh \
+  node run-tests.js --type e2e -c 1 --retries 0 \
+    test/e2e/app-dir/app-simple-routes/app-simple-routes.test.ts
+```
+
+`.github/workflows/deploy-tests.yaml` is the same thing on a runner, dispatched by hand, with a
+three-suite selection as its default.
+
+**Serially, `-c 1`.** One project takes one fixture at a time, because a deployment replaces the
+project's environment; a second fixture deploying while the first is under test makes the _first_ fail,
+for a reason nothing in its own output explains. The deploy hook refuses rather than let that happen,
+and says which application holds the project. Parallelism has to be bought with projects, one per
+runner, and this tool does not pool them yet.
+
+## What the numbers do and do not mean
+
+A run is an inventory of observed compatibility, not an assertion that every feature is supported.
+Beyond that, four limits are worth knowing before reading a failure as this adapter's:
+
+- **A fixture's environment is its own `.env` files, and only those.** A host's private harness can do
+  better — it starts the deploy hook itself, so it can tell a variable the suite's harness passed
+  through the process environment from one the machine already had. Here the suite starts the hook
+  directly and there is no such baseline, so a suite whose application reads a variable that arrives
+  only that way will fail. Guessing would be worse: it would hand a deployed Function whatever the
+  terminal happened to hold.
+- **No runtime logs.** The API serves a built deployment's build log, and an uploaded deployment has
+  none, so what the logs hook shows is the build and the deployment. A suite that asserts on server
+  output may fail for want of it.
+- **Which deployment answered is proved by an asset, where there is one.** A `HEAD` for one of the
+  bundle's static files, with its digest as the expected `ETag`. The public endpoint exposes no
+  deployment id, so an identical asset shared with an older deployment cannot tell those two apart. A
+  fixture with no static file at all is judged by the host's own account of which deployment is
+  current, and says so.
+- **The Next.js under test must be inside `SUPPORTED_NEXT_RANGE`.** Outside it the host refuses every
+  deployment, and the suite reports every suite as failed for a reason that has nothing to do with the
+  test.
+
+Deployments are left in place. The API has no delete, and a host retires what a later deployment
+replaces; the cleanup hook gives the project back and nothing else.
+
+One environment note, from a machine that needed it: where IPv6 is advertised but unreachable, every
+call waits out the happy-eyeballs attempt first.
+`NODE_OPTIONS=--network-family-autoselection-attempt-timeout=2000` is what made it bearable.

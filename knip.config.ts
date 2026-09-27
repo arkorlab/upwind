@@ -11,7 +11,9 @@ import type { KnipConfig } from 'knip';
 const config: KnipConfig = {
   exclude: ['exports', 'types', 'nsExports', 'nsTypes'],
   workspaces: {
-    '.': {},
+    // `playwright` is installed and run inside the Next.js checkout the deploy-tests workflow makes,
+    // which is not a dependency of this repository and never will be.
+    '.': { ignoreBinaries: ['playwright'] },
     'packages/adapter': {},
     'packages/core': {},
     // `templates/` is what this package copies, not what it runs: files nothing imports, on purpose.
@@ -25,6 +27,8 @@ const config: KnipConfig = {
     // Reached by path rather than by import: it is the module `upwind build` tells the processes
     // below it to `--import`, so nothing in this repository imports it and `bin` does not lead there.
     'packages/upwind': { entry: ['src/resources/entry.ts'] },
+    // The reader is started as a child process by path, so nothing here imports it.
+    'tools/deploy-tests': { entry: ['src/read-env.ts'] },
     'tools/next-matrix': {},
   },
   // Applications the matrix builds with a Next.js of their own, not code of this repository's.
