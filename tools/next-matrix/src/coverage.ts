@@ -6,6 +6,10 @@
  * no published package can show, so the only thing that can exercise it is a fixture here — and a
  * patch nobody listed would otherwise be checked by nothing at all. Pull-request CI runs that checker,
  * which is why the cross-check lives there rather than in this tool.
+ *
+ * The names below are the fixtures. `run.ts` builds one for each of them rather than keeping a list of
+ * its own, because the two lists drifting apart would drift the wrong way quietly: a name here that
+ * nothing built would leave a `build-output` patch reading as exercised by a build that never ran.
  */
 
 /** The patch names more than one of the lists below spells, kept in one place. */
@@ -39,7 +43,7 @@ export interface FixtureCoverage {
   readonly chunks: readonly string[];
 }
 
-export const FIXTURE_COVERAGE: Readonly<Record<string, FixtureCoverage>> = {
+export const FIXTURE_COVERAGE = {
   // Every patch there is: this fixture exists to be the one build that reaches all of them.
   'next-minimal': {
     expected: [
@@ -67,4 +71,12 @@ export const FIXTURE_COVERAGE: Readonly<Record<string, FixtureCoverage>> = {
     expected: [...PACKAGE_PATCHES, TURBOPACK_RUNTIME],
     chunks: [FETCH_CACHE_WAIT_UNTIL, GRAPH_MANIFESTS, TURBOPACK_RUNTIME],
   },
-};
+} as const satisfies Readonly<Record<string, FixtureCoverage>>;
+
+/**
+ * The fixtures there are, as a type: what `run.ts` has to say `holds` for, and nothing else. `satisfies`
+ * above is what keeps both — the shape is checked as an annotation would check it, and the names stay the
+ * literals they are written as, so one added here without a `holds` is a type error rather than a fixture
+ * that builds nothing.
+ */
+export type FixtureName = keyof typeof FIXTURE_COVERAGE;

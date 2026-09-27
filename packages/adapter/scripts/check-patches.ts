@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-import { FIXTURE_COVERAGE } from '../../../tools/next-matrix/src/coverage.ts';
+import { FIXTURE_COVERAGE, type FixtureCoverage } from '../../../tools/next-matrix/src/coverage.ts';
 import { type Copy, type Patch, PATCHES, type PatchContext } from '../src/patches/index.ts';
 import { SUPPORTED_NEXT_RANGE } from '../src/patches/versions.ts';
 
@@ -331,6 +331,9 @@ function packageKinds(patch: Patch): string[] {
 /** The patches a published package does hold a file for, and so every checked version must fire. */
 const REQUIRED_PATCHES = PATCHES.filter((patch) => packageKinds(patch).length > 0);
 
+/** The patches by name, for the checks that read a name somebody else wrote. */
+type Patches = ReadonlyMap<string, Patch>;
+
 /** Every patch some fixture of `tools/next-matrix` says its build has to rewrite a chunk with. */
 function chunksClaimed(): Set<string> {
   const claimed = new Set<string>();
@@ -342,25 +345,50 @@ function chunksClaimed(): Set<string> {
   return claimed;
 }
 
-/** A fixture's claims, held to the patches: a name that is none, and a chunk a patch never promised. */
-function checkFixtureClaims(byName: ReadonlyMap<string, Patch>): string[] {
+/**
+ * One fixture's claims, held to the patches and to itself: a name that is no patch, a chunk from a patch
+ * that never promised one, and a chunk from a patch the same fixture does not expect to fire at all —
+ * `chunks` is *of those* in `expected`, and two lists that drift apart would check less than they read as.
+ */
+function checkClaims(fixture: string, coverage: FixtureCoverage, byName: Patches): string[] {
+  const problems: string[] = [];
+  const expected = new Set<string>(coverage.expected);
+  for (const name of coverage.expected) {
+    if (!byName.has(name)) {
+      problems.push(`${fixture} names "${name}", which is not a patch`);
+    }
+  }
+  for (const name of coverage.chunks) {
+    const patch = byName.get(name);
+    if (patch === undefined) {
+      problems.push(`${fixture} names "${name}", which is not a patch`);
+    } else if (!patch.reaches.includes(BUILD_OUTPUT)) {
+      problems.push(`${fixture} expects a chunk from ${name}, which does not say it rewrites one`);
+    } else if (!expected.has(name)) {
+      problems.push(
+        `${fixture} expects a chunk from ${name}, which it does not expect to fire at all`,
+      );
+    }
+  }
+  return problems;
+}
+
+/**
+ * Every fixture's claims, and the fixture: an application has to be there for the matrix to build.
+ *
+ * `run.ts` builds a fixture for every name in the coverage record, so a name with no application under
+ * `fixtures/` is a matrix that fails at the copy — and, until someone ran it, a `build-output` patch that
+ * reads as exercised by a build that cannot happen. Asked here because pull-request CI runs this checker.
+ */
+async function checkFixtureClaims(byName: Patches): Promise<string[]> {
   const problems: string[] = [];
   for (const [fixture, coverage] of Object.entries(FIXTURE_COVERAGE)) {
-    for (const name of coverage.expected) {
-      if (!byName.has(name)) {
-        problems.push(`${fixture} names "${name}", which is not a patch`);
-      }
+    if (!(await exists(path.join(REPO, 'fixtures', fixture)))) {
+      problems.push(
+        `${fixture} is in tools/next-matrix's coverage, and fixtures/${fixture} is not there to build`,
+      );
     }
-    for (const name of coverage.chunks) {
-      const patch = byName.get(name);
-      if (patch === undefined) {
-        problems.push(`${fixture} names "${name}", which is not a patch`);
-      } else if (!patch.reaches.includes(BUILD_OUTPUT)) {
-        problems.push(
-          `${fixture} expects a chunk from ${name}, which does not say it rewrites one`,
-        );
-      }
-    }
+    problems.push(...checkClaims(fixture, coverage, byName));
   }
   return problems;
 }
@@ -375,8 +403,8 @@ function checkFixtureClaims(byName: ReadonlyMap<string, Patch>): string[] {
  * Here rather than in the tool because pull-request CI runs this checker and not the matrix: this is
  * where a declaration and the thing that exercises it can be held together before either lands.
  */
-function checkCoverage(): string[] {
-  const byName = new Map(PATCHES.map((patch) => [patch.name, patch]));
+async function checkCoverage(): Promise<string[]> {
+  const byName: Patches = new Map(PATCHES.map((patch) => [patch.name, patch]));
   const claimed = chunksClaimed();
   const unexercised = PATCHES.filter(
     (patch) => patch.reaches.includes(BUILD_OUTPUT) && !claimed.has(patch.name),
@@ -384,7 +412,7 @@ function checkCoverage(): string[] {
     (patch) =>
       `${patch.name} says it rewrites build output, and no fixture in tools/next-matrix exercises it`,
   );
-  return [...checkFixtureClaims(byName), ...unexercised];
+  return [...(await checkFixtureClaims(byName)), ...unexercised];
 }
 
 // ─── the range and what declares it ──────────────────────────────────────────
@@ -572,7 +600,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const declarations = [...checkCoverage(), ...(await checkDeclarations())];
+  const declarations = [...(await checkCoverage()), ...(await checkDeclarations())];
   for (const problem of declarations) {
     console.error(`✗ ${problem}`);
   }

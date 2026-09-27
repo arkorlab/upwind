@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 
 import { type DeploymentBundle, deploymentBundleSchema } from '@stayingupwind/core/bundle';
 
-import { FIXTURE_COVERAGE, type FixtureCoverage } from './coverage.ts';
+import { FIXTURE_COVERAGE, type FixtureCoverage, type FixtureName } from './coverage.ts';
 
 /**
  * Builds real applications with real Next.js versions, and holds each build to what the adapter
@@ -102,70 +102,74 @@ interface AppliedPatch {
 /** What a build wrote, as the record names it; anything else is a file of Next.js's own package. */
 const BUILD_DIR = '.next/';
 
+/** What else has to be true of a fixture's bundle, beyond its schema. */
+type Holds = (bundle: DeploymentBundle, dependencies: Dependencies) => string[];
+
 interface Fixture extends FixtureCoverage {
   readonly name: string;
-  /** What else has to be true of the bundle, beyond its schema. */
-  readonly holds: (bundle: DeploymentBundle, dependencies: Dependencies) => string[];
-}
-
-/** A fixture's coverage, by name, or a failure that names the mistake rather than reading `undefined`. */
-function coverageOf(name: string): FixtureCoverage {
-  const coverage = FIXTURE_COVERAGE[name];
-  if (coverage === undefined) {
-    throw new Error(`next-matrix: ${name} is built here but says nothing in coverage.ts`);
-  }
-  return coverage;
+  readonly holds: Holds;
 }
 
 const DATA_ROUTE = '/_next/data/';
 
-const FIXTURE_LIST: readonly Fixture[] = [
-  {
-    name: 'next-minimal',
-    ...coverageOf('next-minimal'),
-    holds: (bundle) => {
-      const problems: string[] = [];
-      if (bundle.middleware === undefined) {
-        problems.push('no middleware: `proxy.js` should have made one');
-      }
-      if (bundle.prerenders.length === 0) {
-        problems.push('no prerenders: `generateStaticParams` should have made some');
-      }
-      if (bundle.prerenders.every((one) => one.postponed === undefined)) {
-        problems.push('no postponed state: Cache Components should have made a shell to resume');
-      }
-      // The Pages Router's two data paths, which Next.js emits as different kinds of output:
-      // `getServerSideProps` gives an entrypoint, `getStaticProps` a prerender, both named
-      // `/_next/data/<buildId>/….json`.
-      if (bundle.entrypoints.every((one) => !one.id.includes(DATA_ROUTE))) {
-        problems.push('no `_next/data` entrypoint: `getServerSideProps` should have made one');
-      }
-      if (bundle.prerenders.every((one) => !one.pathname.includes(DATA_ROUTE))) {
-        problems.push('no `_next/data` prerender: `getStaticProps` should have made one');
-      }
-      return problems;
-    },
-  },
-  {
-    name: 'next-edge',
-    ...coverageOf('next-edge'),
-    holds: (bundle, dependencies) => {
-      const problems: string[] = [];
-      if (bundle.entrypoints.every((one) => one.runtime !== 'edge')) {
-        problems.push("no entrypoint on the edge runtime: `runtime = 'edge'` should have made one");
-      }
-      if (bundle.functions.middleware === undefined) {
-        problems.push('no middleware Function: `middleware.js` should have made one');
-      }
-      for (const [name, one] of Object.entries(dependencies)) {
-        if (one.edge === undefined) {
-          problems.push(`the ${name} Function has no edge bundle`);
-        }
-      }
-      return problems;
-    },
-  },
-];
+/** Every kind of output the Routers have between them, from one application. */
+function minimalHolds(bundle: DeploymentBundle): string[] {
+  const problems: string[] = [];
+  if (bundle.middleware === undefined) {
+    problems.push('no middleware: `proxy.js` should have made one');
+  }
+  if (bundle.prerenders.length === 0) {
+    problems.push('no prerenders: `generateStaticParams` should have made some');
+  }
+  if (bundle.prerenders.every((one) => one.postponed === undefined)) {
+    problems.push('no postponed state: Cache Components should have made a shell to resume');
+  }
+  // The Pages Router's two data paths, which Next.js emits as different kinds of output:
+  // `getServerSideProps` gives an entrypoint, `getStaticProps` a prerender, both named
+  // `/_next/data/<buildId>/….json`.
+  if (bundle.entrypoints.every((one) => !one.id.includes(DATA_ROUTE))) {
+    problems.push('no `_next/data` entrypoint: `getServerSideProps` should have made one');
+  }
+  if (bundle.prerenders.every((one) => !one.pathname.includes(DATA_ROUTE))) {
+    problems.push('no `_next/data` prerender: `getStaticProps` should have made one');
+  }
+  return problems;
+}
+
+/** The edge runtime, which is bundled apart and has its own copy of everything. */
+function edgeHolds(bundle: DeploymentBundle, dependencies: Dependencies): string[] {
+  const problems: string[] = [];
+  if (bundle.entrypoints.every((one) => one.runtime !== 'edge')) {
+    problems.push("no entrypoint on the edge runtime: `runtime = 'edge'` should have made one");
+  }
+  if (bundle.functions.middleware === undefined) {
+    problems.push('no middleware Function: `middleware.js` should have made one');
+  }
+  for (const [name, one] of Object.entries(dependencies)) {
+    if (one.edge === undefined) {
+      problems.push(`the ${name} Function has no edge bundle`);
+    }
+  }
+  return problems;
+}
+
+/** What each fixture has to show, by name — every name `coverage.ts` has, and no other. */
+const HOLDS: Readonly<Record<FixtureName, Holds>> = {
+  'next-minimal': minimalHolds,
+  'next-edge': edgeHolds,
+};
+
+/**
+ * Every fixture there is: `coverage.ts` says which they are and what each build has to show, and `HOLDS`
+ * what else is true of each one's bundle. The names come off the coverage record rather than out of a
+ * list here, so what this builds and what a checker reads are the same set by construction.
+ *
+ * `Object.keys` of a record whose keys are those literals is those literals; TypeScript types it as
+ * `string` all the same.
+ */
+const FIXTURE_LIST: readonly Fixture[] = (Object.keys(FIXTURE_COVERAGE) as FixtureName[]).map(
+  (name) => ({ name, ...FIXTURE_COVERAGE[name], holds: HOLDS[name] }),
+);
 
 // ─── the versions ────────────────────────────────────────────────────────────
 
