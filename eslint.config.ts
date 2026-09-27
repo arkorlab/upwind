@@ -22,10 +22,16 @@ import tseslint from 'typescript-eslint';
  */
 
 /**
- * The adapter runs under Node inside `next build`; the runtime runs in a Function, where
- * `nodejs_compat` gives it the Node built-ins it does use.
+ * The adapter runs under Node inside `next build`, and the CLI is a Node process of its own; the
+ * runtime runs in a Function, where `nodejs_compat` gives it the Node built-ins it does use.
  */
-const NODE_ONLY_FILES = ['packages/adapter/**/*.ts', '*.config.ts', '**/*.config.ts'];
+const NODE_ONLY_FILES = [
+  'packages/adapter/**/*.ts',
+  'packages/upwind/**/*.ts',
+  'tools/**/*.ts',
+  '*.config.ts',
+  '**/*.config.ts',
+];
 /** What has to hold wherever it is evaluated, so it can be read by both of the above. */
 const RUNTIME_NEUTRAL_FILES = ['packages/core/**/*.ts'];
 
@@ -46,7 +52,16 @@ const NODE_BUILTINS = builtinModules.flatMap((name) =>
 );
 
 export default defineConfig([
-  globalIgnores(['**/node_modules/**', '**/dist/**', '**/.next/**', '**/.ppr-cdn/**']),
+  globalIgnores([
+    '**/node_modules/**',
+    '**/dist/**',
+    '**/.next/**',
+    '**/.ppr-cdn/**',
+    // Applications `tools/next-matrix` builds with a Next.js of their own. They are input to a
+    // build, not code of this repository's: what they may say is Next.js's to decide, and a
+    // `"use cache"` directive or a `?module` import is not this configuration's business.
+    'fixtures/**',
+  ]),
 
   // 1. Base JavaScript rules: everything on, then a short, justified opt-out list.
   {
@@ -297,6 +312,35 @@ export default defineConfig([
       'n/no-missing-import': 'off', // TypeScript resolves these
       'n/no-process-env': 'off',
       'n/no-unpublished-import': 'off',
+    },
+  },
+
+  // The CLI is a program a developer runs, and it says so on the terminal it was run from.
+  // The paths it reads are the ones under the project it was pointed at.
+  // It ends the process with the code its own supervisor reads back.
+  // A restart is an exit code rather than an exception, because Next.js's dev tooling exits from inside.
+  //
+  // After the Node-only config above, which is what turns `n/no-process-exit` on: in a flat config
+  // the later entry decides.
+  {
+    files: ['packages/upwind/**/*.ts'],
+    rules: {
+      'n/no-process-exit': 'off',
+      'no-console': 'off',
+      'security/detect-non-literal-fs-filename': 'off',
+      'unicorn/no-process-exit': 'off',
+      'unicorn/prefer-temporal': 'off', // the Node version this runs on has no Temporal
+    },
+  },
+
+  // The tools are programs a maintainer runs, and what they have to say is the whole of their
+  // output. The paths they touch are under a directory they made themselves, or under a package
+  // they just fetched — neither is a literal anyone could have written here.
+  {
+    files: ['tools/**/*.ts'],
+    rules: {
+      'no-console': 'off',
+      'security/detect-non-literal-fs-filename': 'off',
     },
   },
 

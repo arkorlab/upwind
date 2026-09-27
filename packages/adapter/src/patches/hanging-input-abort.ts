@@ -55,7 +55,6 @@ export const hangingInputAbortPatch: Patch = {
   target: TARGET,
   // Turbopack puts the module in whichever chunk its graph put it; there is no name to find it by.
   marker: (source) => MARKS.every((mark) => source.includes(mark)),
-  nextVersions: ['16.3.5', '16.3.6'],
   apply(source, file) {
     // Two to each copy of the function, and a chunk may hold more than one: Turbopack puts the
     // one it compiled for each layer that imports it wherever the graph put that layer.

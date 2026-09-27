@@ -71,6 +71,20 @@ offered under the application's root as well.
 Next.js turns it off again for a static export, in `finalizeConfig`, after the hook has run.
 `next/image` is left as the application configured it: the edge optimizes `/_next/image`.
 
+## The development server
+
+`modifyConfig` is called for every phase, and in `phase-development-server` it does one thing: it
+reserves `/__upwind` inside the dev server's own routing (`src/dev-prefix.ts`). `upwind dev` is the
+front door and has already answered that prefix before Next.js is asked, so this is for the paths back
+in — a middleware that rewrites to `/__upwind/…`, a request Next.js makes of itself — where a
+catch-all route of the project's would otherwise answer for it. Two rules go at the head of
+`beforeFiles`, ahead of the filesystem, pointing at the address `UPWIND_DEV_ADDRESS` names; a
+project's own `rewrites` keep the list they were declared in.
+
+Without that variable — a plain `next dev`, with no upwind in front — nothing is changed at all. There
+would be no server to send the prefix to, and a rewrite to a port nothing listens on is worse than no
+reservation.
+
 ## What the project declares beside `next.config`
 
 One thing the Adapter API has no notion of is a schedule, so the adapter reads it from a file of
@@ -125,8 +139,9 @@ support rewrites under Next.js either).
 ## What the adapter reaches into
 
 Beyond the API, the Function build depends on these files of Next.js's output and package. Each
-dependency is one module under `src/patches/`, checked against the installed Next.js by
-`test/patches.test.ts`, and recorded per build in `.ppr-cdn/dependencies.json`.
+dependency is one module under `src/patches/`, held to every Next.js in the supported range by
+the two checks described under "Which Next.js" below, and recorded per build in
+`.ppr-cdn/dependencies.json`.
 
 | Where                                                                                                                                                  | What                                                                                                                                                                                                                                                                                                                                                                                                             | Why, and what guards it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -241,6 +256,40 @@ route with `runtime = 'edge'`, called twice. `fixtures/next-minimal` does the sa
 runtime, in both of the forms Turbopack compiles — `?module`, which compiles, and the plain
 import, which instantiates.
 
+## Which Next.js
+
+One declaration, `SUPPORTED_NEXT_RANGE` in `src/patches/versions.ts`, which is also the
+`peerDependencies.next` of this package and of `upwind` — `check-patches.ts` holds those two to
+it, and holds the catalog's own pin to being inside it, since that pin is the version the checks
+below use when they are given no other. Two checks hold the range itself to Next.js rather than
+leaving it a number somebody wrote once:
+
+| Check                                             | What it answers                                                                                                                                                                                                                                                                                                |
+| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm check:patches` (`scripts/check-patches.ts`) | every rewrite still finds what it insists on. A patch is a pure function of a file's source, so this needs no build: the files come out of the published package. With no flags, the installed Next.js — seconds, no network, and what every pull request runs. With `--range`, every release the range admits |
+| `pnpm check:matrix` (`tools/next-matrix`)         | the same rewrites against a real `next build` of `fixtures/next-minimal` and `fixtures/next-edge`. Three patches rewrite what the build _writes_ rather than what Next.js ships — `turbopack-runtime`, `wasm-loader`, `vercel-og` — and no reading of a package produces a Turbopack runtime                   |
+
+The second one is also what checks the half of the claim the first cannot: that a patch still
+finds its file **in a bundle**. A rewrite can apply perfectly to a module no build ever loads.
+
+`--canary` checks the current canary as a forecast. A prerelease is not in the range — a
+semantic-version range admits no prerelease it does not name — so what it reports is not this
+adapter being wrong about a version somebody can install, but what the next release is about to
+do to these rewrites. It is run as a step of its own that is allowed to fail, and it is failing
+now: `16.4.0-canary`'s `CacheSignal` schedules through an `immediateTracker` that the
+`cache-signal-timers` patch has never seen. A canary is numbered as the next minor whatever it is
+going to become, and which it becomes is decided when it ships: as a major it is outside this
+range already and costs nothing, as a minor it is inside it and that patch has to learn the new
+shape first.
+
+The floor is the Adapter API this adapter is written against, not a preference. 16.3 is where
+`onBuildComplete` gained a prerender's classification (`routeType`, `response`, `compute`,
+`htmlSize`), its source `route`, and `routing.middlewareMatchers`, all of which the bundle is
+built out of. 16.2 is where the API became stable and is reachable from here at a cost the next
+section prices. Below that the hook is `experimental.adapterPath` and hands `ctx.routes`, a
+different shape altogether, with no `@next/routing` release to resolve it and no `edgeRuntime`
+metadata to build an edge bundle from: not a range to widen, but an adapter to write.
+
 ## Not supported, and not prepared for
 
 builds by webpack (except for a static export, which carries no built code and so is taken from
@@ -252,6 +301,18 @@ served as built, or rendered whole, and never regenerated); `partialFallback` (r
 `experimental.runtimeServerDeploymentId` (its manifests evaluate — see
 `test/manifests.test.ts` — but the Function would need `process.env.NEXT_DEPLOYMENT_ID` at request
 time, which the deploy step sets and the runtime tests do not).
+
+**Next.js 16.2**, which is reachable and is not reached yet. Every patch here applies to it
+unchanged — `check-patches.ts` says so if `SUPPORTED_NEXT_RANGE` is widened to `>=16.2.0 <17` —
+so what stands in the way is the Adapter API alone, in five places:
+
+| What 16.2 has not got                          | What it costs                                                                                                                                                                                 |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `outputs.prerenders[].route`                   | `prerenderSchema.route` is required. `parentOutputId` resolves it for a prerender with a page among the entries (`collect.ts`, `entryIdsByOutputId`); one without a page needs something else |
+| `routing.middlewareMatchers`                   | `routingSchema` requires it. `middleware.config.matchers` is the same table, and `middlewareMatchers()` already builds it                                                                     |
+| `routeType`, `response`, `compute`, `htmlSize` | already optional here, but `edgeServablePrerenders` reads them, so **the edge serves no shell at all** and every prerender is answered by the Function. Correct, and the slow way round       |
+| `config.supportsImmutableAssets`               | ignored, so no `/_next/static/immutable/*`. `immutableHash` is in 16.2 already, so `immutable` itself still holds                                                                             |
+| `config.partialPrefetching`                    | recorded as absent (16.2's `partialFallbacks` is a different thing, not a spelling of it)                                                                                                     |
 
 ## Experiments
 

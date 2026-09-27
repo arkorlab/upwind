@@ -40,7 +40,6 @@ function chunkTable(distDir: string, chunks: readonly string[]): string {
 export const turbopackRuntimePatch: Patch = {
   name: NAME,
   target: TARGET,
-  nextVersions: ['16.3.5', '16.3.6'],
   apply(source, file, ctx) {
     const rewrite = new Rewrite(NAME, file, source);
     if (ctx.chunks.length === 0) {

@@ -1,0 +1,47 @@
+{
+  "name": "upwind",
+  "version": "0.1.0",
+  "description": "The upwind CLI: `upwind dev` runs a Next.js development server behind upwind's own front door, which answers `/__upwind` itself.",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arkorlab/upwind.git",
+    "directory": "packages/upwind"
+  },
+  "bin": {
+    "upwind": "./src/cli.ts"
+  },
+  "files": [
+    "dist",
+    "src",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "NOTICE"
+  ],
+  "type": "module",
+  "publishConfig": {
+    "bin": {
+      "upwind": "./dist/cli.js"
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.ts",
+    "prepack": "node scripts/build.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@stayingupwind/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "next": "catalog:",
+    "rolldown": "catalog:",
+    "typescript": "catalog:"
+  },
+  "peerDependencies": {
+    "next": ">=16.3.0 <17"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

@@ -10,6 +10,10 @@
   },
   "scripts": {
     "build": "pnpm -r build",
+    "check:patches": "node packages/adapter/scripts/check-patches.ts",
+    "check:patches:range": "node packages/adapter/scripts/check-patches.ts --range",
+    "check:patches:canary": "node packages/adapter/scripts/check-patches.ts --canary",
+    "check:matrix": "node tools/next-matrix/src/run.ts",
     "format": "oxfmt --check",
     "format:write": "oxfmt",
     "knip": "knip",

@@ -15,7 +15,6 @@ const FUNCTION_MAX_OUTPUT_BYTES = 134_217_728;
 export const resumeCacheLimitPatch: Patch = {
   name: NAME,
   target: TARGET,
-  nextVersions: ['16.3.5', '16.3.6'],
   apply(source, file) {
     const result = new Rewrite(NAME, file, source).replace(
       NEXT_LIMIT,
