@@ -114,7 +114,10 @@ only matters if you touched `packages/adapter/src/patches/`. The patch checks ar
 ## Releases
 
 Maintainers only. The version of all six packages moves in lockstep, in a pull request like any
-other; a tag is not a place to make a change. Once the bump is on `main`:
+other; a tag is not a place to make a change. A release that publishes a package for the first time
+also adds its row to `PACKAGES` in [`web-site/src/lib/site.ts`](web-site/src/lib/site.ts): the site's
+table links to npm, so it names what a reader can install rather than what the repository holds, and
+the bump is the moment those two agree. Once the bump is on `main`:
 
 ```bash
 git switch main && git pull

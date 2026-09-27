@@ -262,7 +262,12 @@ export default async function Home(props: {
   return (
     <>
       <SiteHeader locale={locale} copy={copy} />
-      <main id="content" className="mx-auto w-full max-w-3xl px-6 pb-24">
+      {/*
+        `tabIndex={-1}` is what the header's skip link needs: a `main` is not focusable of itself, so
+        following the fragment would scroll the page and leave the focus in the header, one Tab away
+        from the link the reader just used to get past it.
+      */}
+      <main id="content" tabIndex={-1} className="mx-auto w-full max-w-3xl px-6 pb-24">
         <Hero copy={copy} />
         <Bundle copy={copy} />
         <Development copy={copy} />

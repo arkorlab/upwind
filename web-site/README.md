@@ -28,15 +28,15 @@ formats these files with the repository's settings, and sorts the Tailwind class
 
 ## What is where
 
-| Path                 | What it holds                                                                                                          |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `src/app/[locale]/`  | The root layout and the page. The segment is the language, and `generateStaticParams` prerenders both of them          |
-| `src/proxy.ts`       | The only Function that runs per request: `/en/…` → the bare path, `/ja/…` as it stands, and a bare path to one of them |
-| `src/content/`       | Every word on the screen: one interface, two dictionaries the type holds to each other                                 |
-| `src/i18n/`          | The locales, `Accept-Language` negotiation, and the narrowing of the `[locale]` segment                                |
-| `src/lib/`           | The site's own facts (`site.ts`), locale paths, and the metadata every page is built from                              |
-| `src/components/`    | The header, the footer, the language switch, and the backtick-to-`<code>` renderer                                     |
-| `src/app/sitemap.ts` | Both pages with their hreflang alternates; `robots.ts` beside it names the sitemap absolutely                          |
+| Path                 | What it holds                                                                                                                                 |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/app/[locale]/`  | The root layout and the page. The segment is the language, and `generateStaticParams` prerenders both of them                                 |
+| `src/proxy.ts`       | The only Function that runs per request: `/en/…` → the bare path (recording the choice), `/ja/…` as it stands, and a bare path to one of them |
+| `src/content/`       | Every word on the screen: one interface, two dictionaries the type holds to each other                                                        |
+| `src/i18n/`          | The locales, `Accept-Language` negotiation, and the narrowing of the `[locale]` segment                                                       |
+| `src/lib/`           | The site's own facts (`site.ts`), locale paths, and the metadata every page is built from                                                     |
+| `src/components/`    | The header, the footer, the language switch, and the backtick-to-`<code>` renderer                                                            |
+| `src/app/sitemap.ts` | Both pages with their hreflang alternates; `robots.ts` beside it names the sitemap absolutely                                                 |
 
 ## Changing the copy
 

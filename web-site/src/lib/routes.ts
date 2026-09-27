@@ -23,6 +23,20 @@ export function localeAlternates(path = '/'): Record<Locale, string> {
 }
 
 /**
+ * The URL that *asks* for a language, as opposed to the one a language is served at.
+ *
+ * For Japanese they are the same address. For English they are not: English is served on the bare
+ * path, and a bare path is negotiated — so a link to `/` is a link to whichever language the reader's
+ * cookie or browser prefers, which is exactly wrong on the bilingual 404, where the point of the
+ * English link is that it is the English one. `/en` says it, and the proxy canonicalises it back to
+ * `/` and writes the choice down on the way (`proxy.ts`). Never used in a canonical or an hreflang:
+ * what a crawler is told is where a page is served, which is `localePath`.
+ */
+export function explicitLocalePath(locale: Locale): string {
+  return `/${locale}`;
+}
+
+/**
  * The same page in the other language, from the URL the browser is showing.
  *
  * Derived from `location` rather than from `usePathname()`, which reports the path Next.js is
