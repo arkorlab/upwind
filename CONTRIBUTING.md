@@ -57,30 +57,32 @@ git clone https://github.com/arkorlab/upwind.git
 cd upwind
 pnpm install
 
-pnpm typecheck     # tsc across every package, then the root config
-pnpm lint          # ESLint, type-aware, across every package
-pnpm format        # oxfmt --check; `pnpm format:write` writes
-pnpm knip          # unused files and unused dependencies
-pnpm build         # type-checks core and runtime; bundles the adapter's published entry
-pnpm check:patches # every rewrite of Next.js's output still finds what it insists on
+pnpm typecheck         # tsc across every package, then the root config
+pnpm lint              # ESLint, type-aware, across every package
+pnpm format            # oxfmt --check; `pnpm format:write` writes
+pnpm knip              # unused files and unused dependencies
+pnpm build             # type-checks core and runtime; bundles the adapter's published entry
+pnpm check:patches     # every rewrite of Next.js's output still finds what it insists on
+pnpm check:agent-rules # the agent rules `create-upwind` writes are still Next.js's own
 ```
 
-Those six, in that order, are exactly what CI runs — there is nothing else to pass. `pnpm lint` is
+Those seven, in that order, are exactly what CI runs — there is nothing else to pass. `pnpm lint` is
 type-aware over the whole workspace and wants more than Node's default heap; CI gives it 8 GB
 (`NODE_OPTIONS=--max-old-space-size=8192`), and you may need to as well.
 
 **There is no test suite in this repository.** The checks above are the whole of CI, and some prose
-in the package readmes refers to suites by path; those suites are not here. The one thing that is
-checked against something outside this repository is the adapter's rewrites of Next.js's own
-output, because they are matched by text and go stale silently:
+in the package readmes refers to suites by path; those suites are not here. What _is_ checked against
+something outside this repository is whatever this one matched against Next.js by text, because text
+goes stale silently:
 
-| Command              | What it does                                                                                                                                                     |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pnpm check:patches` | applies every patch to the installed Next.js. No network, a second or two, and part of CI. `--range` does it for every release the supported range admits        |
-| `pnpm check:matrix`  | builds `fixtures/` with several Next.js versions and checks the bundle that came out. Minutes and a package download per version, so it runs on its own schedule |
+| Command                  | What it does                                                                                                                                                     |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm check:patches`     | applies every patch to the installed Next.js. No network, a second or two, and part of CI. `--range` does it for every release the supported range admits        |
+| `pnpm check:agent-rules` | has the installed Next.js write its own `AGENTS.md` and `CLAUDE.md`, and compares them byte for byte with what `create-upwind` writes. Instant, and part of CI   |
+| `pnpm check:matrix`      | builds `fixtures/` with several Next.js versions and checks the bundle that came out. Minutes and a package download per version, so it runs on its own schedule |
 
-Neither is in your way on a normal change: `check:patches` is the fast one, and `check:matrix`
-only matters if you touched `packages/adapter/src/patches/`. Both are described in
+None of them is in your way on a normal change: the first two are the fast ones, and `check:matrix`
+only matters if you touched `packages/adapter/src/patches/`. The patch checks are described in
 [the adapter's readme](packages/adapter/README.md), under "Which Next.js".
 
 ## Style

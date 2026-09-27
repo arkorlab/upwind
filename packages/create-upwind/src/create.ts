@@ -1,5 +1,6 @@
 import path from 'node:path';
 
+import { writeAgentRules } from './agents.ts';
 import type { CreateRequest } from './args.ts';
 import { initRepository } from './git.ts';
 import { writeManifest } from './manifest.ts';
@@ -114,6 +115,9 @@ export async function create(request: CreateRequest): Promise<void> {
   await copyTemplate(target);
   await retellReadme(target, manager);
   await writeManifest(target, name);
+  if (request.agentsMd) {
+    await writeAgentRules(target);
+  }
   if (request.install) {
     console.log('');
     await install(manager, target);

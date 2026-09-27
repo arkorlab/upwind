@@ -12,6 +12,7 @@ import { answerInternal } from '../internal/router.ts';
 import { ownVersion } from '../manifest.ts';
 import { installAdapterPath } from './adapter.ts';
 import { displayAddress, internalAddress } from './address.ts';
+import { ensureAgentRules } from './agent-rules.ts';
 import { printListening, printReady } from './banner.ts';
 import { type StopWatching, watchConfigFiles } from './config-watch.ts';
 import { setEnv } from './env.ts';
@@ -262,6 +263,9 @@ export async function serveDev(options: DevOptions): Promise<void> {
   nextReady.resolve(app.handle);
   phase = 'running';
   printReady(devSession);
+  // After the banner, because it is not what anybody is waiting for, and before the wait, because
+  // an agent reading the project is reading it now. Nothing here can fail the run (`agent-rules.ts`).
+  await ensureAgentRules(options.projectDir);
 
   await stop.promise;
   // A config change is no longer this run's business: the developer asked it to stop, and a restart

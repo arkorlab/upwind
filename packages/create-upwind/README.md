@@ -10,6 +10,8 @@ installs it.
 ```
 my-upwind-app
 ├── .gitignore
+├── AGENTS.md
+├── CLAUDE.md
 ├── app/
 │   ├── globals.css
 │   ├── layout.tsx
@@ -50,6 +52,14 @@ bundle.
 **Tailwind 4 is set up** (`@import "tailwindcss";` and a PostCSS plugin, no config file). Nothing
 else is: no ESLint, no `src/`, no component library. `create-next-app --empty` is the shape.
 
+**`AGENTS.md` and `CLAUDE.md` are Next.js's, word for word.** They carry the block Next.js writes to
+tell a coding agent that this major is not the one it was trained on, and where in
+`node_modules/next/dist/docs/` to read before writing any code — the same two files
+`create-next-app` writes, from the same text. Keeping it identical is the point: `upwind dev` asks
+the project's own Next.js to bring the block up to date, so a project upgraded to a Next.js that
+words it differently is re-worded rather than left behind, and a plain `next dev` agrees with what
+is already there. `--no-agents-md` writes neither.
+
 ## Options
 
 ```
@@ -57,6 +67,7 @@ pnpm create upwind [directory]
 
       --skip-install  Write the application, install nothing
       --no-git        Do not make a first commit
+      --no-agents-md  Do not write AGENTS.md and CLAUDE.md
       --use-npm       Install with npm
       --use-pnpm      Install with pnpm
       --use-yarn      Install with yarn
