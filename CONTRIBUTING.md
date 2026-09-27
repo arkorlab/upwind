@@ -22,12 +22,14 @@ Function. Please open an issue before writing one of those, so the shape can be 
 ```
 upwind/
 ├── packages/
-│   ├── core/      # @stayingupwind/core — the vocabulary all three speak: the bundle contract,
+│   ├── core/      # @stayingupwind/core — the vocabulary the others speak: the bundle contract,
 │   │              #   the cache's terms, request classification, the host↔application protocol
 │   ├── adapter/   # @stayingupwind/adapter — runs inside `next build`, writes the bundle and
 │   │              #   builds the Functions that serve it
 │   ├── runtime/   # @stayingupwind/runtime — what a deployment's Function runs
-│   └── upwind/    # upwind — the CLI; `upwind dev` runs a Next.js dev server behind its own door
+│   ├── upwind/    # upwind — the CLI; `upwind dev` runs a Next.js dev server behind its own door
+│   └── create-upwind/
+│                   # create-upwind — `pnpm create upwind`, and the application it writes
 ├── fixtures/      # applications built against each supported Next.js, one per runtime
 ├── tools/
 │   └── next-matrix/  # builds those fixtures with each Next.js and checks what came out
@@ -39,7 +41,7 @@ upwind/
     └── release-signers.asc         # the keys a release tag may be signed with
 ```
 
-All four packages are published. The workspace root, `tools/` and `fixtures/` are not — and the
+All five packages are published. The workspace root, `tools/` and `fixtures/` are not — and the
 fixtures are deliberately outside the pnpm workspace, since a workspace package would be pinned to
 the catalog's single Next.js, which is the one thing the matrix exists to look past.
 
@@ -99,7 +101,7 @@ only matters if you touched `packages/adapter/src/patches/`. Both are described 
 
 ## Releases
 
-Maintainers only. The version of all three packages moves in lockstep, in a pull request like any
+Maintainers only. The version of all five packages moves in lockstep, in a pull request like any
 other; a tag is not a place to make a change. Once the bump is on `main`:
 
 ```bash
