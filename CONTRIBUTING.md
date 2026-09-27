@@ -27,6 +27,8 @@ upwind/
 │   ├── adapter/   # @stayingupwind/adapter — runs inside `next build`, writes the bundle and
 │   │              #   builds the Functions that serve it
 │   ├── runtime/   # @stayingupwind/runtime — what a deployment's Function runs
+│   ├── sdk/       # @stayingupwind/sdk — what an application reads its own storage through:
+│   │              #   the D1 database, KV namespace and R2 bucket its deployment published
 │   ├── upwind/    # upwind — the CLI; `upwind dev` runs a Next.js dev server behind its own door
 │   └── create-upwind/
 │                   # create-upwind — `pnpm create upwind`, and the application it writes
@@ -41,7 +43,7 @@ upwind/
     └── release-signers.asc         # the keys a release tag may be signed with
 ```
 
-All five packages are published. The workspace root, `tools/` and `fixtures/` are not — and the
+All six packages are published. The workspace root, `tools/` and `fixtures/` are not — and the
 fixtures are deliberately outside the pnpm workspace, since a workspace package would be pinned to
 the catalog's single Next.js, which is the one thing the matrix exists to look past.
 
@@ -101,7 +103,7 @@ only matters if you touched `packages/adapter/src/patches/`. Both are described 
 
 ## Releases
 
-Maintainers only. The version of all five packages moves in lockstep, in a pull request like any
+Maintainers only. The version of all six packages moves in lockstep, in a pull request like any
 other; a tag is not a place to make a change. Once the bump is on `main`:
 
 ```bash

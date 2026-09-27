@@ -1,0 +1,52 @@
+{
+  "name": "@stayingupwind/sdk",
+  "version": "0.2.0",
+  "description": "What an application reads its own storage through: the KV namespaces, R2 buckets and D1 databases its deployment published, by name or — where there is exactly one of a kind — by no name at all.",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arkorlab/upwind.git",
+    "directory": "packages/sdk"
+  },
+  "files": [
+    "dist",
+    "src",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "NOTICE"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./db": {
+      "types": "./dist/db.d.ts",
+      "default": "./dist/db.js"
+    },
+    "./kv": {
+      "types": "./dist/kv.d.ts",
+      "default": "./dist/kv.js"
+    },
+    "./blob": {
+      "types": "./dist/blob.d.ts",
+      "default": "./dist/blob.js"
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.ts",
+    "prepack": "node scripts/build.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cloudflare/workers-types": "catalog:"
+  },
+  "devDependencies": {
+    "@stayingupwind/core": "workspace:*",
+    "@types/node": "catalog:",
+    "rolldown": "catalog:",
+    "typescript": "catalog:"
+  }
+}

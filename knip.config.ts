@@ -19,6 +19,9 @@ const config: KnipConfig = {
     // `ppr-cdn:*` are the modules the adapter generates beside the runtime and resolves for it;
     // `cloudflare:*` are the Workers runtime's own. Neither is an npm package.
     'packages/runtime': { ignoreDependencies: ['cloudflare', 'ppr-cdn'] },
+    // Four entry points, and `exports` names the `dist` they are built into — so the sources behind
+    // them are named here rather than looked for through files this has not built.
+    'packages/sdk': { entry: ['src/{index,db,kv,blob}.ts'] },
     'packages/upwind': {},
     'tools/next-matrix': {},
   },

@@ -30,7 +30,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@stayingupwind/core": "workspace:*"
+    "@stayingupwind/core": "workspace:*",
+    "miniflare": "catalog:"
   },
   "devDependencies": {
     "@types/node": "catalog:",

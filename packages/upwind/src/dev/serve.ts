@@ -10,6 +10,7 @@ import {
 
 import { answerInternal } from '../internal/router.ts';
 import { ownVersion } from '../manifest.ts';
+import { type LocalResources, startLocalResources } from '../resources/local.ts';
 import { installAdapterPath } from './adapter.ts';
 import { displayAddress, internalAddress } from './address.ts';
 import { printListening, printReady } from './banner.ts';
@@ -219,6 +220,10 @@ export async function serveDev(options: DevOptions): Promise<void> {
   // config written during those seconds would otherwise be one this run never hears about — it would
   // serve the old config until something changed again.
   const stopWatching: StopWatching = await watchConfigFiles(options.projectDir);
+  // Also before Next.js, and for a harder reason: the application's own modules may look for their
+  // storage as they are evaluated, and everything Next.js evaluates it evaluates after this line.
+  // In this process, because Next.js runs in this one — a supervisor's bindings would reach nothing.
+  const local: LocalResources = await startLocalResources(options.projectDir);
   let app: RunningNext;
   try {
     app = await startNextApp({
@@ -251,6 +256,10 @@ export async function serveDev(options: DevOptions): Promise<void> {
       // is, it is not the failure being reported — nor a reason to leave the sockets open.
     }
     server.closeAllConnections();
+    // The runtime this run started goes with the run. Its own exit hook would kill it anyway; doing
+    // it here means the directories under `.upwind/` are released before `cli.ts` ends the process,
+    // rather than while it is ending.
+    await local.dispose();
     throw error;
   }
   // Next.js has read the config, and with it the adapter this run named and the address it gave;
@@ -271,6 +280,7 @@ export async function serveDev(options: DevOptions): Promise<void> {
   // A keep-alive connection would otherwise hold the close open for as long as a browser felt like.
   server.closeAllConnections();
   await app.close();
+  await local.dispose();
   // Next.js's dev bundler keeps handles of its own, so this process would not end on its own. What
   // was asked for is over.
   process.exit(0);

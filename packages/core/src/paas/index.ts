@@ -36,6 +36,7 @@ export {
 } from './protocol.ts';
 export {
   formatResourcesManifest,
+  type FunctionEnv,
   parseResourcesManifest,
   type PublishedResource,
   type PublishedResources,
@@ -44,6 +45,7 @@ export {
   RESOURCES_API_VERSION,
   RESOURCES_MANIFEST_BINDING,
   RESOURCES_SYMBOL_KEY,
+  resourcesOf,
   type ResourceType,
 } from './resources.ts';
 export { bindingFetch, publishedFunctionEnv, publishFunctionEnv } from './function-env.ts';
