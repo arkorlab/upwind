@@ -11,7 +11,7 @@ export const ja = {
   meta: {
     title: 'upwind — Next.js のデプロイ用アダプター',
     description:
-      'upwind は next build の中で動き、デプロイ用のバンドルを書き出します。すべてのルート、プリレンダー、静的ファイルを内容で識別し、それらを配信する Function まで含めて。対応は Next.js 16.2 以降。',
+      'upwind は next build の中で動き、デプロイ用のバンドルを書き出します。すべてのルート、プリレンダー、静的ファイルを内容で識別し、それらを配信する Function まで含めて。対応は Next.js 16.3 以降の 16 系。',
     siteName: 'upwind',
     ogImageAlt: 'upwind — Next.js のデプロイ用アダプターと、それが作ったものを配信するランタイム',
   },

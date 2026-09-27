@@ -28,15 +28,20 @@ export const NPM_URL = 'https://www.npmjs.com/package/upwind';
 export const CREATE_COMMAND = 'pnpm create upwind';
 
 /**
- * The Next.js the adapter is held to.
+ * The Next.js a reader can run this on.
  *
- * Kept here as a string, and it is a copy: the range itself is `SUPPORTED_NEXT_RANGE` in
- * `packages/adapter/src/patches/versions.ts`, which the repository's own checks hold the patches and
- * both packages' `peerDependencies` to. A release that widens it widens this line too. Reading it
- * out of the installed adapter at build time would keep them in step by itself, but the code that
- * did the reading would travel into the Function that serves this page and open a file there.
+ * **The published adapter's range, not the repository's.** This page is read by somebody about to
+ * run `pnpm create upwind`, and what they install is the release — so the number that matters is
+ * `peerDependencies.next` of the `@stayingupwind/adapter` in this project's own lockfile, which is
+ * the version that serves this very site. The working tree can already support a Next.js the
+ * registry does not: naming that one here would send a reader to a version the package they install
+ * refuses to build with.
+ *
+ * It is a copy, because the adapter's `exports` does not offer its `package.json` to be read. The
+ * thing to check it against is one directory away — `web-site/pnpm-lock.yaml`, under
+ * `@stayingupwind/adapter` — so a bump that moves the range moves it in the same diff as this line.
  */
-export const SUPPORTED_NEXT_RANGE = '>=16.2.0 <17';
+export const SUPPORTED_NEXT_RANGE = '>=16.3.0 <17';
 
 /** The npm scope the scoped libraries share; `upwind` and `create-upwind` sit outside it. */
 const SCOPE = '@stayingupwind';

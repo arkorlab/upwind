@@ -89,6 +89,33 @@ function rememberLocale(response: NextResponse, locale: Locale): NextResponse {
   return response;
 }
 
+/**
+ * Is this a person asking for a page, or a machine looking ahead?
+ *
+ * A prefetch is a request nobody made — the router fetches the links it can see, a browser follows a
+ * speculation rule, a crawler walks — and a `Set-Cookie` on one of those would change the language of
+ * a reader who had only scrolled past a link, for a year. So the language is written down for a
+ * document navigation and nothing else.
+ *
+ * Read from the shape of the request rather than from `Next-Router-Prefetch`, which never arrives:
+ * Next.js strips its own routing headers off anything from the network before a proxy is called, so
+ * that they cannot be spoofed. What cannot be spoofed away is what the request asks for — the
+ * router's prefetch is a `fetch` for `text/x-component`, and a navigation is a browser asking for
+ * `text/html`. `Sec-Purpose` is the browser's own word for a speculative load, and it does arrive.
+ */
+function isDocumentNavigation(request: NextRequest): boolean {
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    return false;
+  }
+  if (
+    (request.headers.get('sec-purpose') ?? '').includes('prefetch') ||
+    request.headers.get('purpose') === 'prefetch'
+  ) {
+    return false;
+  }
+  return (request.headers.get('accept') ?? '').includes('text/html');
+}
+
 /** The locale's own path, without the trailing slash a root would otherwise gain from the prefix. */
 function localeUrl(request: NextRequest, locale: Locale, segments: readonly string[]): URL {
   const url = request.nextUrl.clone();
@@ -103,7 +130,8 @@ export const proxy: NextProxy = (request) => {
   if (first === defaultLocale) {
     const url = request.nextUrl.clone();
     url.pathname = joinPath(rest);
-    return rememberLocale(NextResponse.redirect(url, PERMANENT_REDIRECT), defaultLocale);
+    const redirect = NextResponse.redirect(url, PERMANENT_REDIRECT);
+    return isDocumentNavigation(request) ? rememberLocale(redirect, defaultLocale) : redirect;
   }
 
   if (first !== undefined && isLocale(first)) {

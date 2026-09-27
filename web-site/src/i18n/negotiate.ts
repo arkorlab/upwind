@@ -50,11 +50,19 @@ function parseAcceptLanguage(header: string | null): LanguageRange[] {
 }
 
 /**
- * Matching is by base language — `ja-JP` is Japanese — and a wildcard or a language this site is not
- * written in falls through to the default rather than to the next best thing, there being none.
+ * Matching is by base language — `ja-JP` is Japanese — and a language this site is not written in is
+ * passed over, there being no next best thing to offer instead.
+ *
+ * A wildcard is answered where it stands rather than skipped. `*;q=1, ja;q=0.5` says *anything* is
+ * preferred to Japanese, and a loop that stepped over the `*` would read that header as a request
+ * for Japanese — the one language it ranks last. Reaching `*` means nothing better was named, so the
+ * answer is the default, which is what a browser that asked for "anything" is owed.
  */
 export function negotiateLocale(header: string | null): Locale {
   for (const range of parseAcceptLanguage(header)) {
+    if (range.tag === '*') {
+      return defaultLocale;
+    }
     const base = range.tag.split('-', 1)[0] ?? '';
     if (isLocale(base)) {
       return base;

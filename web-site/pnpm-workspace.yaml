@@ -25,3 +25,15 @@ minimumReleaseAge: 1440
 minimumReleaseAgeExclude:
   - upwind
   - '@stayingupwind/*'
+
+# A peer range that is not satisfied is a refusal here, as it is at the root. This project's whole
+# reason to exist outside the workspace is to install what a reader installs, and a peer warning
+# nobody reads is how a deployment finds out later.
+strictPeerDependencies: true
+
+# pnpm runs an implicit install before every `pnpm run` by default, and that install takes no lock
+# (pnpm/pnpm#14551). Here that would also make it the *unfrozen* one: a host runs
+# `pnpm install --frozen-lockfile` and then `pnpm build`, and an install slipped in between could
+# resolve a newer version than the one the lockfile was checked with. Nothing may install behind
+# your back.
+verifyDepsBeforeRun: false

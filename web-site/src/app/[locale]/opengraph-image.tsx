@@ -14,6 +14,15 @@ import { OG_IMAGE_HEIGHT, OG_IMAGE_WIDTH } from '@/lib/metadata.ts';
  * shares the same picture with a Japanese `og:image:alt` beside it (`lib/metadata.ts`).
  */
 
+/**
+ * What this route says about itself, for a reader of the route rather than of the page.
+ *
+ * It is not what goes out in the `og:image:alt` of either page: a page that sets `openGraph.images`
+ * itself — which `buildPageMetadata` does, with the alt from that page's own dictionary — is the one
+ * that wins, so `/ja` carries the Japanese sentence and `/` the English one. Worth knowing because
+ * the precedence runs the other way when a page leaves its images unset, and this export is the
+ * English one.
+ */
 export const alt = en.meta.ogImageAlt;
 export const size = { width: OG_IMAGE_WIDTH, height: OG_IMAGE_HEIGHT };
 export const contentType = 'image/png';

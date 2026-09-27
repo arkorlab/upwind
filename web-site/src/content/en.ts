@@ -13,7 +13,7 @@ export const en = {
   meta: {
     title: 'upwind — a Next.js deployment adapter',
     description:
-      'upwind runs inside next build and writes a deployment bundle: every route, prerender and static file by content, and the Functions that serve them. For Next.js 16.2 and later.',
+      'upwind runs inside next build and writes a deployment bundle: every route, prerender and static file by content, and the Functions that serve them. For Next.js 16.3 and every 16 after it.',
     siteName: 'upwind',
     ogImageAlt: 'upwind — a Next.js deployment adapter and the runtime that serves what it builds',
   },
