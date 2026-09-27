@@ -33,3 +33,6 @@ jobs:
       # repository builds against. The whole supported range, and the canary, are the
       # `next-matrix` workflow's: they cost a download per version.
       - run: pnpm check:patches
+      # The agent rules `create-upwind` writes are still the ones Next.js writes. Text copied out of
+      # another project goes stale without saying so, and this one is compared byte for byte.
+      - run: pnpm check:agent-rules

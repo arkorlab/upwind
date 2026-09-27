@@ -213,6 +213,9 @@ jobs:
       # without a rewrite it needs, and the adapter's own build says nothing about it. Cheap, and here
       # rather than only in CI: a tag can be pushed before that run finishes, or after it is cancelled.
       - run: pnpm check:patches
+      # And for the same reason: a `create-upwind` released with last version's agent rules writes
+      # every new project an uncommitted change, which nothing downstream would catch.
+      - run: pnpm check:agent-rules
       - run: pnpm build
 
       # Made here, and before the publish, for two reasons. The install above populated pnpm's store,

@@ -1,5 +1,6 @@
 import path from 'node:path';
 
+import { refreshAgentRules, writeAgentRules } from './agents.ts';
 import type { CreateRequest } from './args.ts';
 import { initRepository } from './git.ts';
 import { writeManifest } from './manifest.ts';
@@ -22,7 +23,9 @@ import { conflictsIn, copyTemplate, retellReadme } from './template.ts';
  *
  * The install comes before the first commit so the lockfile is in it: the point of a lockfile is the
  * install somebody else does from it, and one that arrives a commit late is one that arrives after
- * the first person cloned it.
+ * the first person cloned it. The agent rules are between the two for the same reason and the other
+ * way round — written from what this release knows, corrected by the Next.js that actually arrived,
+ * and only then committed.
  */
 
 const DEFAULT_DIRECTORY = 'my-upwind-app';
@@ -114,9 +117,31 @@ export async function create(request: CreateRequest): Promise<void> {
   await copyTemplate(target);
   await retellReadme(target, manager);
   await writeManifest(target, name);
+  if (request.agentsMd) {
+    await writeAgentRules(target);
+  }
   if (request.install) {
     console.log('');
     await install(manager, target);
+    if (request.agentsMd) {
+      // The Next.js that just arrived may word its agent rules differently from the one this release
+      // was built against, and it is the one the project will run (`agents.ts`).
+      const asked = await refreshAgentRules(target);
+      if (!asked) {
+        // Said rather than swallowed, because the commonest reason is a whole package manager — a
+        // Yarn Plug'n'Play install keeps its packages zipped where this process cannot read them —
+        // and a scaffolder that quietly kept its own copy of somebody else's text would be found
+        // out by a diff, months later, in a project nobody had touched.
+        console.log('');
+        console.log(
+          "AGENTS.md and CLAUDE.md hold create-upwind's own copy of Next.js's agent rules: this",
+        );
+        console.log(
+          "project's Next.js could not be reached to write its own. The first `upwind dev` a coding",
+        );
+        console.log('agent runs brings them up to date.');
+      }
+    }
   }
   const committed = request.git && (await initRepository(target));
   printNextSteps({ target, manager, committed, installed: request.install });

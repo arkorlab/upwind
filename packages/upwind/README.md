@@ -45,6 +45,12 @@ everything the old one loaded, so `upwind dev` is two processes — a supervisor
 serves. Exit code 77 means "start me again"; that is Next.js's own `RESTART_EXIT_CODE`, and both a
 change to `next.config` and the error overlay's restart button leave with it.
 
+The third thing that parent does is write `AGENTS.md` and `CLAUDE.md`. Run by an AI coding agent
+against a project whose agent-rules block is missing or out of date, `next dev` writes the current
+one — the block that says this major is not the Next.js the agent was trained on. `upwind dev` asks
+the project's own Next.js to do exactly that, so the files say what that Next.js says, and
+`agentRules: false` in `next.config` turns it off here as it does there.
+
 Everything is resolved from the project, not from this package: the Next.js that runs an application
 is the copy the application itself depends on, and so is the adapter below.
 

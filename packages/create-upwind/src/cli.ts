@@ -21,6 +21,7 @@ Usage
 Options
       --skip-install  Write the application, install nothing
       --no-git        Do not make a first commit
+      --no-agents-md  Do not write AGENTS.md and CLAUDE.md
       --use-npm       Install with npm
       --use-pnpm      Install with pnpm
       --use-yarn      Install with yarn
