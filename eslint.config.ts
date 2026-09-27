@@ -268,6 +268,18 @@ export default defineConfig([
       'unicorn/try-complexity': 'off', // a complexity budget of 1 per try block is unworkable for stream pumps
       'unicorn/prefer-top-level-await': 'off', // not valid in Next.js modules
       'unicorn/prevent-abbreviations': 'off', // Next.js conventions (`props`, `params`, `env`, `ref`)
+      // unicorn 76 rewrote a family of rules that want a function's shape changed — a guard chain
+      // flattened into one ternary, two guards merged with `||`, a positive condition inverted into
+      // an early `continue` — and 95 of them fired on code that was green the release before. The
+      // autofix is the argument against them: it wrote `cond ? true : (…)` and `!(a > b)`, which
+      // `unicorn/prefer-logical-operator-over-ternary` and `sonarjs/no-inverted-boolean-check` then
+      // reject, and it flattened the two branches of `completeByItself` — a classified prerender and
+      // an unclassified one — into a single line, which is the distinction that function exists to
+      // draw. One `if` per reason, in the order a reader meets them, is the shape here.
+      'unicorn/prefer-combined-guards': 'off',
+      'unicorn/prefer-continue': 'off',
+      'unicorn/prefer-early-return': 'off',
+      'unicorn/prefer-ternary': 'off',
     },
   },
 

@@ -147,9 +147,7 @@ function classifyByPath(url: URL): RequestClass | undefined {
 
 function classifyByRouterHeaders(headers: Headers): RequestClass | undefined {
   if (headers.get(RSC_HEADER) === '1') {
-    return headers.has(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)
-      ? { kind: 'segment-prefetch' }
-      : { kind: 'rsc' };
+    return { kind: headers.has(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER) ? 'segment-prefetch' : 'rsc' };
   }
   if (
     headers.has(RSC_HEADER) ||
