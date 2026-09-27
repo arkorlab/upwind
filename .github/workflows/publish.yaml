@@ -186,8 +186,10 @@ jobs:
       - run: pnpm check:patches
       - run: pnpm build
 
-      # Last, and alone: everything above — `pnpm install` and the lifecycle scripts it is allowed to
-      # run among them — has already happened, and none of it was in a position to read a credential.
+      # Last, and alone. Everything above — `pnpm install` and the lifecycle scripts it is allowed to
+      # run among them — has already happened; and the publish below runs no package code either,
+      # because `--ignore-scripts` is what makes that true. Without it `pnpm publish` would run each
+      # `prepack` *after* this step, in a process that loads a bundler, with the token on disk.
       - name: A credential for a package that does not exist yet
         if: ${{ inputs.bootstrap }}
         env:
@@ -217,8 +219,12 @@ jobs:
           # `--provenance`: not left to the registry's own generation, so that a release that cannot
           # attest to itself fails here rather than landing unattested.
           # `--no-git-checks`: the tree is a tag, checked out detached, which those checks refuse.
+          # `--ignore-scripts`: `pnpm build` above already ran what `prepack` would run — they are the
+          # same command in every package that has one — so the only thing publishing them again would
+          # add is package code running while a credential is readable. The hook stays for whoever
+          # packs by hand, where it is the safety net it was added to be.
           # No `--batch`: provenance is bound to one package, and a batch sends them together.
-          set -- --access public --provenance --tag "${dist_tag}" --no-git-checks
+          set -- --access public --provenance --tag "${dist_tag}" --no-git-checks --ignore-scripts
           if [ "${DRY_RUN}" = true ]; then
             set -- "$@" --dry-run
           fi
