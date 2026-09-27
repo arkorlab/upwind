@@ -24,7 +24,7 @@ function ofKind(published: Published, type: string): [string, PublishedResource]
 
 /** Nothing is published at all, which says something about the run rather than about the project. */
 function nothingPublished(kind: Kind): string {
-  return `\`${kind.accessor}\` found no storage published in this run, so there is no ${kind.called} to reach. Storage is published by \`upwind dev\`, and in a deployment by the Function itself. It is not published during a build — so if this is a build, the page reading it is one that must not be prerendered — and it is not published by a plain \`next dev\` or a test runner`;
+  return `\`${kind.accessor}\` found no storage published in this run, so there is no ${kind.called} to reach: \`upwind dev\` and \`upwind build\` publish a project's storage locally and a deployment's Function publishes its own, so running under a plain \`next dev\`, a plain \`next build\` or a test runner is the usual reason to be reading this`;
 }
 
 /** Storage is published and none of it is this kind — so this is about the project, not the run. */

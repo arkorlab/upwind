@@ -23,6 +23,19 @@ export const UPWIND_INTERNAL_PREFIX = '/__upwind';
 export const UPWIND_DEV_ADDRESS_ENV = 'UPWIND_DEV_ADDRESS';
 
 /**
+ * That this build has a project's local storage in it, as the adapter reads it off the environment.
+ *
+ * `upwind build` sets it, and what the adapter does about it is render the pages in one process
+ * (`experimental.cpus`). A directory of local storage belongs to one runtime at a time, and a build
+ * that rendered in six processes would be six runtimes over one directory — so the only build that
+ * can read storage while it prerenders is a build that renders in one place.
+ *
+ * Absent — a plain `next build`, or a `upwind build` in a project with no storage — and the
+ * adapter leaves the project's own worker count exactly as it is.
+ */
+export const UPWIND_LOCAL_RESOURCES_ENV = 'UPWIND_LOCAL_RESOURCES';
+
+/**
  * Is `pathname` the internal prefix, or a path under it?
  *
  * `/__upwindfoo` is neither. A prefix match alone would take a path the application may own, and

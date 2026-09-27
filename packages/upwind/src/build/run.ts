@@ -3,8 +3,11 @@ import { once } from 'node:events';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import { UPWIND_LOCAL_RESOURCES_ENV } from '@stayingupwind/core/paas';
+
 import { ADAPTER_PACKAGE, ADAPTER_PATH_ENV, resolveAdapterPath } from '../dev/adapter.ts';
 import { resolveFromProject } from '../dev/next-app.ts';
+import { localResourcesEntry, PROJECT_DIR_ENV } from '../resources/entry-path.ts';
 import type { BuildOptions } from './args.ts';
 
 /**
@@ -39,6 +42,19 @@ async function nextCommand(projectDir: string): Promise<string> {
   return path.join(path.dirname(manifestPath), bin);
 }
 
+/**
+ * `NODE_OPTIONS` for the build: whatever the environment already asked for, and then the publisher.
+ *
+ * Appended rather than assigned. A project that runs its builds with `--max-old-space-size` or a
+ * loader of its own said so on purpose, and a build that silently dropped it would fail in a way
+ * that looks nothing like this line.
+ */
+function nodeOptionsWith(imported: string): string {
+  const asked = process.env['NODE_OPTIONS']?.trim();
+  const ours = `--import ${imported}`;
+  return asked === undefined || asked === '' ? ours : `${asked} ${ours}`;
+}
+
 export async function runBuild(options: BuildOptions): Promise<never> {
   const adapter = resolveAdapterPath(options.projectDir);
   if (adapter === undefined) {
@@ -57,9 +73,21 @@ export async function runBuild(options: BuildOptions): Promise<never> {
   // What this does *not* see is a `.env` file: Next.js loads those itself, inside the child, and
   // leaves a variable the process already has alone — so an adapter named in `.env` is one this run
   // overrides. Name it in `next.config` or in the environment, which are the two places that win.
+  //
+  // The project's storage goes in the same environment, as an import every process of the build
+  // runs before anything else: this process cannot publish it for them, and the one that renders
+  // pages is where an application asks for it (`resources/entry.ts`).
   const child = spawn(process.execPath, [command, 'build', options.projectDir], {
     cwd: options.projectDir,
-    env: { ...process.env, [ADAPTER_PATH_ENV]: adapter },
+    env: {
+      ...process.env,
+      [ADAPTER_PATH_ENV]: adapter,
+      [PROJECT_DIR_ENV]: options.projectDir,
+      // Read by the adapter, in the child, while Next.js loads the config: a build with storage in
+      // it renders in one process, because the storage can only be in one.
+      [UPWIND_LOCAL_RESOURCES_ENV]: '1',
+      NODE_OPTIONS: nodeOptionsWith(localResourcesEntry()),
+    },
     stdio: 'inherit',
   });
   // A signal this process is sent is the build's too. Without this, a `kill` on `upwind build` would

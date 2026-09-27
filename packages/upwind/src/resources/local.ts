@@ -22,9 +22,9 @@ import { publishResources } from './publish.ts';
  * straight to the application — would have been fewer lines and would have told us nothing about
  * whether the real route is any good to use.
  *
- * One instance, in the process the application runs in: the dev server's own. These bindings do not
- * cross a process boundary, which is why a supervisor starting one would be wasted work — and why
- * `upwind build` has none, for which see below.
+ * One instance, in the process the application is evaluated in: the dev server itself, or the one
+ * worker a build renders its pages in. These bindings do not cross a process boundary, which is why
+ * a supervisor or a build's parent starting one would be wasted work.
  */
 
 /**
@@ -34,28 +34,26 @@ import { publishResources } from './publish.ts';
 const PERSIST_DIR = '.upwind';
 
 /**
- * Why a build has no storage, while a dev server does.
+ * One directory of storage, one runtime that may write to it.
  *
- * One directory of storage admits one runtime. A second process that opens `.upwind/` does not queue
- * behind the first: the query that reaches the database dies inside the runtime — `SQLITE_BUSY`,
- * fatal — taking the runtime with it and leaving that query unanswered for good. And a process
- * holding a live runtime cannot end on its own, because the handles it keeps never let the event
- * loop drain. Neither of those matters to `upwind dev`, which is one process that ends by exiting
- * on purpose. Both are fatal to `upwind build`, which renders in half a dozen worker processes that
- * are expected to finish and exit.
+ * A second runtime over the same `.upwind/` does not queue behind the first. Reading is fine —
+ * several of them can read at once, as several readers of a SQLite database can — but a *write*
+ * from the second dies inside the runtime, `SQLITE_BUSY` and fatal, taking the runtime with it and
+ * leaving that query unanswered for good. There is nothing to catch, because nothing ever returns.
  *
- * Miniflare has a mechanism for several processes over one directory — `unsafeEnableSharedStorage`,
- * where instances elect an owner through a dev registry and reach storage through it — and against
- * 5.20260925.0-alpha it works for two instances and deadlocks for six: every render worker registers
- * as a candidate, none is elected, and the first query never returns. It also leaves a file watcher
- * and a heartbeat timer that `Miniflare.dispose()` does not clear (it calls the registry's
- * `unregisterWorkers`, not its `dispose`), so a process that turned it on can never exit. The other
- * way in, `ProxyClient`, is exported but refuses a client that is not the instance that owns the
- * runtime.
+ * `upwind dev` is one process and never meets this. A build renders in several, so `upwind build`
+ * asks the adapter for one (`UPWIND_LOCAL_RESOURCES_ENV`, `experimental.cpus`) and publishes only
+ * there (`entry.ts`). A project that sets its own worker count keeps it, and then a prerender that
+ * writes is a prerender that may find the storage taken — which is what `proveReadable` and the
+ * reader's own message are for.
  *
- * So build-time storage waits for a client that can reach a runtime it does not own. Until then a
- * page that reads storage is a page that must not be prerendered, which is what the reader says
- * when a build reaches one (`@stayingupwind/sdk`).
+ * Miniflare's mechanism for several runtimes over one directory is `unsafeEnableSharedStorage`,
+ * where instances elect an owner through a dev registry and reach storage through it. It is not
+ * used here: against 5.20260925.0-alpha it works for two instances and deadlocks for six, and it
+ * leaves a file watcher and a heartbeat timer that `Miniflare.dispose()` never clears (it calls the
+ * registry's `unregisterWorkers`, not its `dispose`), so a process that turns it on can no longer
+ * exit. `ProxyClient` — a client for a runtime you do not own, which is what would make several
+ * renderers possible — is exported but refuses anyone but the instance that owns it.
  */
 
 /**
@@ -130,15 +128,47 @@ const RUNTIME_TYPES = {
   r2_bucket: 'r2',
 } as const satisfies Record<ResourceType, string>;
 
-/** A signal listener, by identity alone: what it is called with is not this module's business. */
-type SignalListener = (...args: unknown[]) => void;
+/** A listener, by identity alone: what it is called with is not this module's business. */
+type ProcessListener = (...args: unknown[]) => void;
 
-/** The signals `upwind dev` and `next build` answer themselves, so nothing else may answer them. */
-const OWN_SIGNALS: readonly NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+/**
+ * The runtime's `message` listener, which is never this process's to keep.
+ *
+ * Its exit hook attaches one wherever there is an IPC channel, and that is not a harmless thing to
+ * do. A channel is *started* by the first `message` listener attached to it, and from then on every
+ * message the parent sends is delivered to whoever is listening — so a listener added before the
+ * process's own receives the parent's first instructions and drops them. In `next build`'s render
+ * worker that is fatal and silent: the worker is asked to initialise and to render, hears neither,
+ * and waits for work that already came, while the build waits for a worker that will never answer.
+ * It is why a build hangs rather than failing, and it took a while to find.
+ */
+const RUNTIME_MESSAGE_LISTENER: readonly string[] = ['message'];
+
+/**
+ * The signals the runtime answers, which some processes want back.
+ *
+ * It ends the process from inside each of them, after killing the runtime. `upwind dev` wants that
+ * back — it closes its port, lets Next.js shut down, and leaves with the 0 that a script which
+ * stopped it on purpose reads. A build's render worker does not: the pool ends a worker with
+ * `SIGTERM` (`jest-worker`, half a second after asking nicely), and with no listener for it the
+ * worker dies where it stands, runs no exit hook, and leaves a runtime process behind.
+ */
+const RUNTIME_SIGNALS: readonly string[] = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+
+/** The channel's own event, which is held and handed on rather than merely taken back. */
+const MESSAGE = 'message';
 
 export interface LocalResources {
   /** Stop the local runtime. Call it as often as you like; the first call is the one that acts. */
   readonly dispose: () => Promise<void>;
+}
+
+export interface LocalOptions {
+  /**
+   * Whether this process answers interrupts itself, and so wants the runtime's handlers taken back
+   * (`RUNTIME_SIGNALS`). The dev server does; a process something else ends does not.
+   */
+  readonly answersSignals: boolean;
 }
 
 /** For a run with no local storage, so that every caller has something to call. */
@@ -278,35 +308,80 @@ async function localEnv(
   return env;
 }
 
-function listenersOf(signal: NodeJS.Signals): SignalListener[] {
-  return process.listeners(signal) as SignalListener[];
+/**
+ * `process` as the event emitter it is.
+ *
+ * Its typings describe these two in terms of signals, and one of the events that matters here is
+ * `message`, which is not one.
+ */
+const processEvents = process as unknown as {
+  listeners: (event: string) => ProcessListener[];
+  removeListener: (event: string, listener: ProcessListener) => void;
+  emit: (event: string, ...args: unknown[]) => boolean;
+};
+
+function listenersOf(event: string): ProcessListener[] {
+  return processEvents.listeners(event);
 }
 
-function ownSignalListeners(): Map<NodeJS.Signals, Set<SignalListener>> {
-  return new Map(OWN_SIGNALS.map((signal) => [signal, new Set(listenersOf(signal))]));
+/** What was listening before the runtime was started, so that only its own can be taken back. */
+function listenersBefore(events: readonly string[]): Map<string, Set<ProcessListener>> {
+  return new Map(events.map((event) => [event, new Set(listenersOf(event))]));
 }
 
 /**
- * Take back the signal handlers that starting the runtime installed.
+ * Hold anything the parent sends while the runtime is starting, and hand it on afterwards.
  *
- * The runtime adds `SIGINT`, `SIGTERM` and `SIGHUP` listeners that end the process where they
- * stand, and when to leave is the dev server's decision: it closes its port, lets Next.js shut
- * down, and leaves with the 0 that a script which stopped it on purpose reads back. An exit from
- * inside one of those listeners would cut that short and leave with 130 instead.
+ * Installed *before* the runtime is, so that this is the listener the channel starts for and the
+ * runtime's is never the only one. What arrives in the meantime is kept rather than answered —
+ * this process has no idea yet what its messages mean — and given back on the next turn of the
+ * loop, by when the code that does know is listening. Nothing is lost and nothing is answered
+ * twice; without it, a render worker's first instructions are dropped and the build waits forever
+ * (see `NOT_THE_RUNTIME_S`).
+ */
+function holdMessages(): () => void {
+  // Only a child has a channel, and only a channel has this problem.
+  if (process.send === undefined) {
+    return () => {
+      // Nothing was held.
+    };
+  }
+  const held: unknown[][] = [];
+  const hold = (...args: unknown[]): void => {
+    held.push(args);
+  };
+  process.on(MESSAGE, hold);
+  return () => {
+    processEvents.removeListener(MESSAGE, hold);
+    if (held.length === 0) {
+      return;
+    }
+    // On the next turn: this runs while the module that owns this process is still being loaded,
+    // and its own listener is attached by the end of that.
+    setImmediate(() => {
+      for (const args of held) {
+        processEvents.emit(MESSAGE, ...args);
+      }
+    });
+  };
+}
+
+/**
+ * Take back what starting the runtime attached to this process.
  *
  * Only listeners that appeared while it was starting are removed, and by identity, so nothing else
- * listening for those signals is touched.
+ * listening for those events is touched.
  *
  * Its `exit` hook is left exactly as it is, and is load-bearing: that one kills the runtime process
  * outright on any exit, which is what reaps it when this process leaves without being asked to —
  * `upwind dev` restarting itself on a config change, or Next.js's error overlay restarting it from
  * inside, neither of which is a shutdown this module ever hears about.
  */
-function takeBackSignals(before: ReadonlyMap<NodeJS.Signals, ReadonlySet<SignalListener>>): void {
-  for (const [signal, had] of before) {
-    for (const listener of listenersOf(signal)) {
+function takeBackListeners(before: ReadonlyMap<string, ReadonlySet<ProcessListener>>): void {
+  for (const [event, had] of before) {
+    for (const listener of listenersOf(event)) {
       if (!had.has(listener)) {
-        process.removeListener(signal, listener);
+        processEvents.removeListener(event, listener);
       }
     }
   }
@@ -380,9 +455,16 @@ async function publish(
   publishResources(env);
 }
 
-export async function startLocalResources(projectDir: string): Promise<LocalResources> {
+export async function startLocalResources(
+  projectDir: string,
+  options: LocalOptions,
+): Promise<LocalResources> {
   const entries = bindings();
-  const before = ownSignalListeners();
+  const taking = options.answersSignals
+    ? [...RUNTIME_MESSAGE_LISTENER, ...RUNTIME_SIGNALS]
+    : RUNTIME_MESSAGE_LISTENER;
+  const before = listenersBefore(taking);
+  const handOnMessages = holdMessages();
   const started: { runtime?: Miniflare } = {};
   try {
     await Promise.race([
@@ -402,6 +484,7 @@ export async function startLocalResources(projectDir: string): Promise<LocalReso
     }
     return NOTHING_STARTED;
   } finally {
-    takeBackSignals(before);
+    takeBackListeners(before);
+    handOnMessages();
   }
 }
