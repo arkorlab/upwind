@@ -336,30 +336,37 @@ function entryIdsByOutputId(outputs: BuildContext['outputs']): Map<string, strin
 }
 
 /**
- * What the bundle records about a prerender, apart from its blobs. Next.js names every output's
- * `pathname` under the `basePath` before the adapter runs — a page's, which is the id its module
- * is required by (see `collectEntrypoints`), as much as a prerender's — but leaves a prerender's
- * source `route` bare. The runtime finds a pathname's shell by the route the router resolved,
- * which carries the `basePath`, and renders or resumes it through the entry that route names; so
- * the route has to be an entry id.
+ * Which route a prerender belongs to, as an entry id.
+ *
+ * Next.js names every output's `pathname` under the `basePath` before the adapter runs — a page's,
+ * which is the id its module is required by (see `collectEntrypoints`), as much as a prerender's —
+ * but leaves a prerender's source `route` bare. The runtime finds a pathname's shell by the route
+ * the router resolved, which carries the `basePath`, and renders or resumes it through the entry
+ * that route names; so the route has to be an entry id.
  *
  * It is the entry id of the page the prerender came from (`parentOutputId`), where that page is
  * one. Naming the source route under the `basePath` gives the same id for every page but the
  * Pages Router's home, whose source route under a `basePath` of `/docs` is `/docs/` while its entry
  * is `/docs` (`entryIdOf`), so no entry answered to it. A prerender with no page of its own among
- * the entries keeps its source route under the `basePath`, as before.
+ * the entries keeps its source route under the `basePath`.
+ *
+ * `route` itself arrived in 16.3, and a 16.2 build that leaves a prerender with neither a route
+ * nor a parent among the entries has said nothing about where it belongs. Guessing is the one
+ * thing not to do: the runtime groups prerenders by route and answers a pathname with the shell of
+ * the route it resolved, so a route taken from the pathname would file every member of
+ * `/blog/[slug]` under its own name and serve one page's shell for another's. The build names the
+ * prerender it could not place and stops. No prerender of any fixture built against 16.2 has
+ * needed this — every one of them had a parent among the entries.
  */
-function routeOf(output: PrerenderOutput, entryIds: ReadonlyMap<string, string>, basePath: string) {
+function routeOf(
+  output: PrerenderOutput,
+  entryIds: ReadonlyMap<string, string>,
+  basePath: string,
+): string {
   const entry = entryIds.get(output.parentOutputId);
   if (entry !== undefined) {
     return entry;
   }
-  // `route` arrived in 16.3. Where a 16.2 build leaves a prerender whose parent is not among the
-  // entries, there is nothing left that says which route it belongs to — and guessing is the one
-  // thing not to do here: the runtime groups prerenders by route and answers a pathname with the
-  // shell of the route it resolved, so a route invented from the pathname would put the members of
-  // `/blog/[slug]` under `/blog/first` and serve one page's shell for another's. The build says
-  // which prerender it could not place and stops.
   if (output.route === undefined) {
     throw new Error(
       `@stayingupwind/adapter: the prerender ${output.id} (${output.pathname}) has no source route, and its parent output ${output.parentOutputId} is not among the entrypoints; Next.js 16.3 is the first to carry one, so this build cannot say which route it belongs to`,
@@ -368,6 +375,7 @@ function routeOf(output: PrerenderOutput, entryIds: ReadonlyMap<string, string>,
   return withBasePath(basePath, output.route);
 }
 
+/** What the bundle records about a prerender, apart from its blobs. */
 function prerenderFields(output: PrerenderOutput, route: string): Prerender {
   return {
     id: output.id,

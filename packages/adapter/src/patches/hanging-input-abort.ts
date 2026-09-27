@@ -82,35 +82,44 @@ export const hangingInputAbortPatch: Patch = {
   apply(source, file) {
     // One copy of the function to each `inputReady`, and a chunk may hold more than one: Turbopack
     // puts the one it compiled for each layer that imports it wherever the graph put that layer.
+    // Each copy has one staged abort, so the two counts have to agree — and where they do not,
+    // something about the shape has moved and no count below would mean anything.
     const copies = occurrencesOf(source, INPUT_READY);
-    let rewrite = new Rewrite(NAME, file, source);
-    const pairs = [
-      ...new Map(
-        [...source.matchAll(STAGED_ABORT)].flatMap((match) => {
-          const tick = match.groups?.['tick'];
-          const controller = match.groups?.['controller'];
-          return tick === undefined || controller === undefined
-            ? []
-            : [[`${tick} ${controller}`, { tick, controller }] as const];
-        }),
-      ).values(),
-    ];
-    if (pairs.length !== copies) {
+    const found = [...source.matchAll(STAGED_ABORT)].flatMap((match) => {
+      const tick = match.groups?.['tick'];
+      const controller = match.groups?.['controller'];
+      return tick === undefined || controller === undefined ? [] : [{ tick, controller }];
+    });
+    const rewrite = new Rewrite(NAME, file, source);
+    if (found.length !== copies) {
       throw rewrite.fail(
-        `expected the last pass's wait for a cached function's input in ${String(copies)} copy/copies, found ${String(pairs.length)}`,
+        `expected the last pass's wait for a cached function's input in ${String(copies)} copy/copies, found ${String(found.length)}`,
       );
     }
-    for (const { tick, controller } of pairs) {
-      rewrite = rewrite.replace(
+    // Grouped rather than taken one at a time, because two copies in one chunk can be minified to
+    // the same names — a minifier picks per scope, and these scopes hold the same code. Their two
+    // sites each are then one pattern matching four, and the count has to say four.
+    const perPair = new Map<string, { tick: string; controller: string; sites: number }>();
+    for (const { tick, controller } of found) {
+      const key = `${tick} ${controller}`;
+      const seen = perPair.get(key);
+      perPair.set(key, { tick, controller, sites: (seen?.sites ?? 0) + WAITS_PER_COPY });
+    }
+    // The counts are the whole guard: every site of every pair is replaced, and a pattern that
+    // found a different number of them fails here rather than leaving one behind. A leftover check
+    // could not add to that — after a minifier there is no name left to look for.
+    let rewritten = rewrite;
+    for (const { tick, controller, sites } of perPair.values()) {
+      rewritten = rewritten.replace(
         abortsWith(tick, controller),
         `setTimeout(()=>${controller}.abort(),0)`,
-        WAITS_PER_COPY,
+        sites,
         "the last pass's wait for a cached function's input",
       );
     }
     return {
-      contents: rewrite.contents,
-      edits: rewrite.edits,
+      contents: rewritten.contents,
+      edits: rewritten.edits,
       notes: [`${String(copies)} copy/copies of the wait`],
     };
   },
