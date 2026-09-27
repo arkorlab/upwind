@@ -27,6 +27,8 @@ upwind/
 │   ├── adapter/   # @stayingupwind/adapter — runs inside `next build`, writes the bundle and
 │   │              #   builds the Functions that serve it
 │   ├── runtime/   # @stayingupwind/runtime — what a deployment's Function runs
+│   ├── sdk/       # @stayingupwind/sdk — what an application reads its own storage through:
+│   │              #   the D1 database, KV namespace and R2 bucket its deployment published
 │   ├── upwind/    # upwind — the CLI; `upwind dev` runs a Next.js dev server behind its own door
 │   └── create-upwind/
 │                   # create-upwind — `pnpm create upwind`, and the application it writes
@@ -41,7 +43,7 @@ upwind/
     └── release-signers.asc         # the keys a release tag may be signed with
 ```
 
-All five packages are published. The workspace root, `tools/` and `fixtures/` are not — and the
+All six packages are published. The workspace root, `tools/` and `fixtures/` are not — and the
 fixtures are deliberately outside the pnpm workspace, since a workspace package would be pinned to
 the catalog's single Next.js, which is the one thing the matrix exists to look past.
 
@@ -104,7 +106,7 @@ only matters if you touched `packages/adapter/src/patches/`. The patch checks ar
 
 ## Releases
 
-Maintainers only. The version of all five packages moves in lockstep, in a pull request like any
+Maintainers only. The version of all six packages moves in lockstep, in a pull request like any
 other; a tag is not a place to make a change. Once the bump is on `main`:
 
 ```bash
@@ -119,6 +121,13 @@ is not signed by a key in [`release-signers.asc`](.github/release-signers.asc), 
 on `main`, or that names a version the packages do not — which is why the bump has to be merged
 before the tag exists rather than carried by it. It publishes through npm's trusted publishing, with
 a provenance attestation it reads back off the registry afterwards.
+
+**A package published for the first time takes one release that cannot come through there.** npm will
+not hold a trusted publisher for a name that does not exist yet, and publishing such a name by hand
+would leave a version no provenance covers — which the release after it fails over. The answer, twice
+now, has been a temporary `bootstrap` input carrying a token for that one release and removed again
+afterwards; [`publish.yaml`](.github/workflows/publish.yaml) opens by saying what that release taught.
+`@stayingupwind/sdk` is a name in that position today.
 
 The last thing it does is draft a GitHub Release for the tag. Notes written; the tarballs npm is
 serving attached, each checked against the digest npm published beside it; and a bill of materials

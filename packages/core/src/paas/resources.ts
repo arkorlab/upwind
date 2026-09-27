@@ -51,6 +51,9 @@ export interface PublishedResources {
   readonly resources: Readonly<Record<string, PublishedResource>>;
 }
 
+/** An environment a deployment's Functions are handed, as much of one as anything here reads. */
+export type FunctionEnv = Readonly<Record<string, unknown>>;
+
 const KNOWN_TYPES: ReadonlySet<string> = new Set(RESOURCE_TYPES);
 
 export function formatResourcesManifest(entries: readonly ResourceManifestEntry[]): string {
@@ -86,4 +89,33 @@ export function parseResourcesManifest(raw: unknown): ResourceManifestEntry[] {
         .filter((entry) => isEntry(entry))
         .map((entry) => ({ name: entry.name, type: entry.type }))
     : [];
+}
+
+/**
+ * The storage bindings `env` holds, as the list beside them names them; frozen throughout.
+ *
+ * Only what `ARKOR_RESOURCES` lists is published: an environment variable, or a binding of the
+ * platform's, is never on it, whatever the application names.
+ *
+ * Here rather than beside the runtime that publishes it in a Function, because a Function is not
+ * the only place this shape is built. `upwind dev` and `upwind build` build it in Node, from a
+ * project's local storage, and the whole value of that is that they build it the same way from the
+ * same list — a second implementation would be a second set of rules about what an application
+ * finds. Nothing in this function is of either runtime: it reads an object and returns one.
+ */
+export function resourcesOf(env: FunctionEnv): PublishedResources {
+  const resources = Object.create(null) as Record<string, PublishedResource>;
+  const listed = parseResourcesManifest(env[RESOURCES_MANIFEST_BINDING]);
+  for (const entry of listed) {
+    // The name has to be one the environment holds itself. `__proto__` is the one that is always
+    // there otherwise — an object, on every ordinary environment — and a list that named it would
+    // publish `Object.prototype` as a database.
+    const binding = Object.hasOwn(env, entry.name) ? env[entry.name] : undefined;
+    // A name the Function holds no object by is left out: the application finds nothing there,
+    // rather than text where it expects storage.
+    if (typeof binding === 'object' && binding !== null) {
+      resources[entry.name] = Object.freeze({ type: entry.type, binding });
+    }
+  }
+  return Object.freeze({ version: RESOURCES_API_VERSION, resources: Object.freeze(resources) });
 }

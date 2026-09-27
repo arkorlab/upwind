@@ -30,12 +30,16 @@ const CLI_FILES = ['packages/upwind/**/*.ts', 'packages/create-upwind/**/*.ts'];
 const NODE_ONLY_FILES = [
   'packages/adapter/**/*.ts',
   ...CLI_FILES,
+  'packages/sdk/scripts/**/*.ts',
   'tools/**/*.ts',
   '*.config.ts',
   '**/*.config.ts',
 ];
-/** What has to hold wherever it is evaluated, so it can be read by both of the above. */
-const RUNTIME_NEUTRAL_FILES = ['packages/core/**/*.ts'];
+/**
+ * What has to hold wherever it is evaluated, so it can be read by both of the above — and, for the
+ * SDK, by an application, which is a Function as often as it is a development server.
+ */
+const RUNTIME_NEUTRAL_FILES = ['packages/core/**/*.ts', 'packages/sdk/src/**/*.ts'];
 
 /**
  * Plugin `configs` maps are index signatures typed as unions of legacy and flat shapes; resolve one
@@ -355,6 +359,25 @@ export default defineConfig([
       'no-console': 'off',
       'security/detect-non-literal-fs-filename': 'off',
     },
+  },
+
+  // A build script is the same kind of program: it says what it produced, and the only paths it
+  // touches are the ones it is about to write, under its own package.
+  {
+    files: ['packages/sdk/scripts/**/*.ts'],
+    rules: {
+      'no-console': 'off',
+      'security/detect-child-process': 'off', // `tsc`, resolved from this package's own install
+      'security/detect-non-literal-fs-filename': 'off',
+    },
+  },
+
+  // Three entry points whose whole subject is one value, which is the one they export by default:
+  // `import db from '@stayingupwind/sdk/db'` is the line this package exists to make possible, and
+  // `import { db }` would be the same word twice.
+  {
+    files: ['packages/sdk/src/{db,kv,blob}.ts'],
+    rules: { 'import-x/no-default-export': 'off' },
   },
 
   // What both of the others are built on: it must hold wherever it is evaluated.

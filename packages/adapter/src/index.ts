@@ -1,4 +1,5 @@
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 
 import {
@@ -7,6 +8,7 @@ import {
   deploymentBundleSchema,
   travelsWithFunction,
 } from '@stayingupwind/core/bundle';
+import { UPWIND_LOCAL_RESOURCES_ENV } from '@stayingupwind/core/paas';
 import type { AdapterOutput, NextAdapter } from 'next';
 
 import { BlobStore } from './blobs.ts';
@@ -446,6 +448,58 @@ export interface AdapterOptions {
   readonly hostConfigFiles?: readonly string[] | undefined;
 }
 
+/** The config `modifyConfig` is handed, as Next.js declares it. */
+type BuildConfig = Parameters<NonNullable<NextAdapter['modifyConfig']>>[0];
+
+/**
+ * That the line below has been said already, where the next process to say it can see.
+ *
+ * A build loads its config more than once and in more than one process, and that is a line worth
+ * reading exactly once. The environment is what those processes share.
+ */
+const SAID_ENV = 'UPWIND_LOCAL_RESOURCES_SAID';
+
+/**
+ * Next.js's own default for `experimental.cpus`, which is always set by the time a config is handed
+ * over — so "the project chose this" means "not this".
+ *
+ * The same expression `defaultConfig` uses (`server/config-shared`), and the same test Next.js makes
+ * of it when it decides whether a count is a user override (`getNumberOfWorkers` in `build/index`).
+ * Read out of a copy of Next.js it would be an import into internals; written here it is one line
+ * that is wrong only if Next.js changes its default, and then the worst of it is a build that leaves
+ * the count alone.
+ */
+function defaultCpus(): number {
+  return Math.max(1, (Number(process.env['CIRCLE_NODE_TOTAL']) || os.cpus().length) - 1);
+}
+
+/**
+ * Render this build's pages in one process, because its storage can only be in one.
+ *
+ * Only for a build that has local storage in it, which is `upwind build` in a project that reads
+ * storage and nothing else (`UPWIND_LOCAL_RESOURCES_ENV` says why one process). It is a real cost —
+ * page data is collected by one worker rather than several — so it is said out loud rather than done
+ * quietly, and a project that has asked for a worker count of its own keeps it: whoever wrote that
+ * line knows something this does not.
+ */
+function renderInOneProcessForStorage(config: BuildConfig): void {
+  const chosen = config.experimental.cpus;
+  if (
+    process.env[UPWIND_LOCAL_RESOURCES_ENV] !== '1' ||
+    (chosen !== undefined && chosen !== defaultCpus())
+  ) {
+    return;
+  }
+  config.experimental.cpus = 1;
+  if (process.env[SAID_ENV] === '1') {
+    return;
+  }
+  process.env[SAID_ENV] = '1';
+  console.log(
+    "@stayingupwind/adapter: this build has the project's local storage in it, so its pages are rendered in one process. Set `experimental.cpus` yourself to decide otherwise — a page that reads storage while it prerenders then fails in every process but one.",
+  );
+}
+
 /**
  * The adapter, as a host configures it.
  *
@@ -484,6 +538,7 @@ export function createAdapter(options: AdapterOptions = {}): NextAdapter {
         // assets are recognized from the build's own `onMatch` rule instead (see
         // `immutableByBuild`).
         config.supportsImmutableAssets = true;
+        renderInOneProcessForStorage(config);
       }
       return config;
     },

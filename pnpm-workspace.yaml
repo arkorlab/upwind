@@ -13,6 +13,9 @@ packages:
 # `SUPPORTED_NEXT_RANGE` (`packages/adapter/src/patches/versions.ts`) is the range itself, and
 # `packages/adapter/scripts/check-patches.ts` is what holds every release in it to the patches.
 catalog:
+  # Cloudflare's own types for the storage objects `@stayingupwind/sdk` hands an application. They
+  # are in that package's public declarations, so they are a dependency of it and not a dev one.
+  '@cloudflare/workers-types': 5.20260926.1
   '@eslint/js': 10.0.1
   '@next/routing': 16.3.6
   # The AST Rolldown's `this.parse` hands a plugin: the version Rolldown itself depends on.
@@ -35,6 +38,11 @@ catalog:
   # nothing of it reaches a Function.
   jsonc-parser: 3.3.1
   knip: 6.35.1
+  # The workerd `upwind dev` and `upwind build` bind a project's local storage to. The version is
+  # the registry's `latest`, which is a prerelease: the last non-prerelease carries a workerd from
+  # July, and a compatibility date a Function is built against (`FUNCTION_COMPATIBILITY_DATE` in
+  # `@stayingupwind/adapter`) is newer than that — a local run must not be the older runtime.
+  miniflare: 5.20260925.0-alpha
   next: 16.3.6
   oxfmt: 0.67.0
   rolldown: 1.2.9
@@ -46,6 +54,12 @@ catalog:
 allowBuilds:
   esbuild: true
   unrs-resolver: false
+  # `false`, and not for want of trying it: `miniflare` requires the `workerd` package, whose main
+  # module resolves the binary out of the platform package for this machine when it is loaded
+  # (`generateBinPath`). The install script only copies that binary to `workerd/bin`, for a command
+  # nothing here runs — and a project that installs `upwind` gets the same answer, which is why one
+  # does not have to approve a build script to have local storage.
+  workerd: false
 
 strictPeerDependencies: true
 

@@ -1,11 +1,9 @@
 import {
-  parseResourcesManifest,
-  type PublishedResource,
+  type FunctionEnv,
   type PublishedResources,
   publishedFunctionEnv,
-  RESOURCES_API_VERSION,
-  RESOURCES_MANIFEST_BINDING,
   RESOURCES_SYMBOL_KEY,
+  resourcesOf,
 } from '@stayingupwind/core/paas';
 import { env as importedEnv } from 'cloudflare:workers';
 
@@ -22,26 +20,10 @@ import { env as importedEnv } from 'cloudflare:workers';
  * the runtime imports, which in a Function that has one is the same environment; I/O through what it
  * holds still has to wait for a request, as it does for any binding.
  *
- * Only what `ARKOR_RESOURCES` lists is published: an environment variable, or a binding of the
- * platform's, is never on it, whatever the application names.
+ * What is published is `resourcesOf`'s work (`@stayingupwind/core/paas`), and only what
+ * `ARKOR_RESOURCES` lists is on it. This module is the workerd half: where the environment comes
+ * from, and the one place a Function defines the symbol.
  */
-
-type FunctionEnv = Readonly<Record<string, unknown>>;
-
-/** The storage bindings `env` holds, as the list beside them names them; frozen throughout. */
-export function resourcesOf(env: FunctionEnv): PublishedResources {
-  const resources = Object.create(null) as Record<string, PublishedResource>;
-  const listed = parseResourcesManifest(env[RESOURCES_MANIFEST_BINDING]);
-  for (const entry of listed) {
-    const binding = env[entry.name];
-    // A name the Function holds no object by is left out: the application finds nothing there,
-    // rather than text where it expects storage.
-    if (typeof binding === 'object' && binding !== null) {
-      resources[entry.name] = Object.freeze({ type: entry.type, binding });
-    }
-  }
-  return Object.freeze({ version: RESOURCES_API_VERSION, resources: Object.freeze(resources) });
-}
 
 /** Where the bindings are read from: the environment a request was handed, and the imported one. */
 export interface ResourceSources {

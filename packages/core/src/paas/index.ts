@@ -1,4 +1,9 @@
-export { isUpwindInternalPath, UPWIND_DEV_ADDRESS_ENV, UPWIND_INTERNAL_PREFIX } from './dev.ts';
+export {
+  isUpwindInternalPath,
+  UPWIND_DEV_ADDRESS_ENV,
+  UPWIND_INTERNAL_PREFIX,
+  UPWIND_LOCAL_RESOURCES_ENV,
+} from './dev.ts';
 export {
   MIDDLEWARE_SET_COOKIE_HEADER,
   middlewareApplies,
@@ -36,6 +41,7 @@ export {
 } from './protocol.ts';
 export {
   formatResourcesManifest,
+  type FunctionEnv,
   parseResourcesManifest,
   type PublishedResource,
   type PublishedResources,
@@ -44,6 +50,7 @@ export {
   RESOURCES_API_VERSION,
   RESOURCES_MANIFEST_BINDING,
   RESOURCES_SYMBOL_KEY,
+  resourcesOf,
   type ResourceType,
 } from './resources.ts';
 export { bindingFetch, publishedFunctionEnv, publishFunctionEnv } from './function-env.ts';

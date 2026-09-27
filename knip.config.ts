@@ -19,7 +19,12 @@ const config: KnipConfig = {
     // `ppr-cdn:*` are the modules the adapter generates beside the runtime and resolves for it;
     // `cloudflare:*` are the Workers runtime's own. Neither is an npm package.
     'packages/runtime': { ignoreDependencies: ['cloudflare', 'ppr-cdn'] },
-    'packages/upwind': {},
+    // Four entry points, and `exports` names the `dist` they are built into — so the sources behind
+    // them are named here rather than looked for through files this has not built.
+    'packages/sdk': { entry: ['src/{index,db,kv,blob}.ts'] },
+    // Reached by path rather than by import: it is the module `upwind build` tells the processes
+    // below it to `--import`, so nothing in this repository imports it and `bin` does not lead there.
+    'packages/upwind': { entry: ['src/resources/entry.ts'] },
     'tools/next-matrix': {},
   },
   // Applications the matrix builds with a Next.js of their own, not code of this repository's.

@@ -117,10 +117,30 @@ project's own `rewrites` are kept in the list they were declared in either way.
 pnpm upwind build
 ```
 
-The project's own `next build`, with the adapter named — and that is the whole of it. The bundle
-under `.ppr-cdn/` is `@stayingupwind/adapter`'s work and the build is Next.js's; what was missing was
-only the thing `upwind dev` already does, which is to say _which_ adapter, resolved from the project
-rather than from wherever this CLI is installed.
+The project's own `next build`, with the adapter named and with the project's storage bound. The
+bundle under `.ppr-cdn/` is `@stayingupwind/adapter`'s work and the build is Next.js's; what was
+missing was the thing `upwind dev` already does, which is to say _which_ adapter, resolved from the
+project rather than from wherever this CLI is installed.
+
+## Storage during a build
+
+A page can read the project's own storage while it prerenders — `generateStaticParams` pulling its
+slugs out of D1 is the case this is for — and `upwind build` is what makes that possible: it hands
+the process that renders a runtime bound to `.upwind/`, the same one `upwind dev` uses, and tells the
+adapter to render in one process because a directory of storage belongs to one runtime at a time.
+
+Two consequences worth knowing before you meet them.
+
+- **A plain `next build` publishes no storage.** It still produces the same bundle, with the adapter
+  named in `next.config`; what it cannot do is prerender a page that reads storage, and
+  `@stayingupwind/sdk` says exactly that when it happens.
+- **Pages are collected by one worker rather than several** for a project that has the reader
+  installed, which a large application will notice. `experimental.cpus` is yours to set if you would
+  rather decide it yourself; a build that renders in several processes is one where all but the first
+  find the storage taken.
+
+Neither applies to a project that never reads storage: without `@stayingupwind/sdk` installed, a
+build is exactly what it was.
 
 It is a convenience, not a requirement. A project whose `next.config` names the adapter itself —
 

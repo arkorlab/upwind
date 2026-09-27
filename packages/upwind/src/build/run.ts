@@ -1,10 +1,14 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { readdirSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import { UPWIND_LOCAL_RESOURCES_ENV } from '@stayingupwind/core/paas';
+
 import { ADAPTER_PACKAGE, ADAPTER_PATH_ENV, resolveAdapterPath } from '../dev/adapter.ts';
 import { resolveFromProject } from '../dev/next-app.ts';
+import { localResourcesEntry, PROJECT_DIR_ENV } from '../resources/entry-path.ts';
 import type { BuildOptions } from './args.ts';
 
 /**
@@ -39,6 +43,82 @@ async function nextCommand(projectDir: string): Promise<string> {
   return path.join(path.dirname(manifestPath), bin);
 }
 
+/**
+ * `NODE_OPTIONS` for the build: whatever the environment already asked for, and then the publisher.
+ *
+ * Appended rather than assigned. A project that runs its builds with `--max-old-space-size` or a
+ * loader of its own said so on purpose, and a build that silently dropped it would fail in a way
+ * that looks nothing like this line.
+ */
+function nodeOptionsWith(imported: string): string {
+  const asked = process.env['NODE_OPTIONS']?.trim();
+  const ours = `--import ${imported}`;
+  return asked === undefined || asked === '' ? ours : `${asked} ${ours}`;
+}
+
+/** What an application reads its storage through. A project without it cannot ask for any. */
+const READER_PACKAGE = '@stayingupwind/sdk';
+
+/** What pnpm calls the reader's directory in a store, whoever in the tree depends on it. */
+const READER_IN_STORE = '@stayingupwind+sdk@';
+
+/**
+ * Can anything in this project reach the reader?
+ *
+ * Resolution from the project answers for a project that depends on it, which is nearly all of them,
+ * and under npm and Yarn it answers for one that reaches it through a package of its own as well,
+ * since those hoist. pnpm does not hoist: a shared package that depends on the reader has it in a
+ * store, reachable by the code that imports it and not from the application's own directory. So the
+ * store is looked at too — from here upwards, because in a workspace it belongs to the repository
+ * rather than to the project.
+ *
+ * Wrong in the harmless direction, if it is wrong: a store higher up that holds the reader for some
+ * other project costs this one a runtime it does not use, which is what every build did before this
+ * gate existed.
+ */
+function readsStorage(projectDir: string): boolean {
+  if (resolveFromProject(projectDir, READER_PACKAGE) !== undefined) {
+    return true;
+  }
+  let at = path.resolve(projectDir);
+  for (;;) {
+    try {
+      const store = readdirSync(path.join(at, 'node_modules', '.pnpm'));
+      if (store.some((entry) => entry.startsWith(READER_IN_STORE))) {
+        return true;
+      }
+    } catch {
+      // No store here, or none this may read. Either way the answer is not here.
+    }
+    const up = path.dirname(at);
+    if (up === at) {
+      return false;
+    }
+    at = up;
+  }
+}
+
+/**
+ * What the build is told about the project's storage, and nothing at all for a project that has no
+ * way to read it.
+ *
+ * Storage costs a build something: a runtime process in the worker that renders, and — since a
+ * directory of it belongs to one runtime — that worker being the only one, which the adapter arranges
+ * from `UPWIND_LOCAL_RESOURCES`. Neither is worth a project that never asks for storage, and whether
+ * it can ask is a question with an answer (`readsStorage`).
+ */
+function storageEnv(projectDir: string): Record<string, string> {
+  if (!readsStorage(projectDir)) {
+    return {};
+  }
+  return {
+    [PROJECT_DIR_ENV]: projectDir,
+    // Read by the adapter, in the child, while Next.js loads the config.
+    [UPWIND_LOCAL_RESOURCES_ENV]: '1',
+    NODE_OPTIONS: nodeOptionsWith(localResourcesEntry()),
+  };
+}
+
 export async function runBuild(options: BuildOptions): Promise<never> {
   const adapter = resolveAdapterPath(options.projectDir);
   if (adapter === undefined) {
@@ -57,9 +137,17 @@ export async function runBuild(options: BuildOptions): Promise<never> {
   // What this does *not* see is a `.env` file: Next.js loads those itself, inside the child, and
   // leaves a variable the process already has alone — so an adapter named in `.env` is one this run
   // overrides. Name it in `next.config` or in the environment, which are the two places that win.
+  //
+  // The project's storage goes in the same environment, as an import every process of the build runs
+  // before anything else: this process cannot publish it for them, and the one that renders pages is
+  // where an application asks for it (`storageEnv`, `resources/entry.ts`).
   const child = spawn(process.execPath, [command, 'build', options.projectDir], {
     cwd: options.projectDir,
-    env: { ...process.env, [ADAPTER_PATH_ENV]: adapter },
+    env: {
+      ...process.env,
+      [ADAPTER_PATH_ENV]: adapter,
+      ...storageEnv(options.projectDir),
+    },
     stdio: 'inherit',
   });
   // A signal this process is sent is the build's too. Without this, a `kill` on `upwind build` would
