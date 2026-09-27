@@ -103,14 +103,18 @@ const GENERATE_AGENT_FILES = 'next/dist/server/lib/generate-agent-files.js';
  * asked last, when there is something to write and nothing else left to decide: a run with no agent,
  * or with the block already current, never gets here at all.
  *
- * It is also asked *after* `serve.ts` has put the environment back (`adapter.restore()`,
- * `restoreAddress()`), so `NEXT_ADAPTER_PATH` and `UPWIND_DEV_ADDRESS` are set while Next.js reads
- * the config and unset while this does. Nothing else differs between the two readings — same
- * process, same everything — so the only config this disagrees with Next.js about is one whose
- * `agentRules` is derived from those two variables, which is to say a project saying "not under
- * upwind". The way to say that and be obeyed is `agentRules: false` outright: it is the same switch,
- * it reads the same both times, and `next dev` honours it too. Reading it before the restore instead
- * would mean holding every queued request through a config load, on the one run that needs one.
+ * A second evaluation is a second answer, and it can differ from the first for any reason the
+ * config's own value depends on: the clock, a file written between the two, state the first
+ * evaluation left behind. That is what evaluating it twice means, and it is why it is only ever
+ * evaluated twice on the run that is about to write.
+ *
+ * The difference upwind itself puts there is one: this is asked *after* `serve.ts` has restored the
+ * environment (`adapter.restore()`, `restoreAddress()`), so `NEXT_ADAPTER_PATH` and
+ * `UPWIND_DEV_ADDRESS` are set while Next.js reads the config and unset while this does. A config
+ * deriving `agentRules` from those is a project saying "not under upwind", and the way to say that
+ * and be obeyed is `agentRules: false` outright — the same switch, read the same by both, and
+ * honoured by `next dev` too. Reading it before the restore instead would hold every queued request
+ * through a config load, on the one run that needs one.
  */
 async function agentRulesAllowed(projectDir: string): Promise<boolean> {
   type LoadConfig = (
