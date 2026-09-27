@@ -97,10 +97,20 @@ const GENERATE_AGENT_FILES = 'next/dist/server/lib/generate-agent-files.js';
  * Does this project's `next.config` turn the whole thing off?
  *
  * `agentRules: false` is Next.js's own switch, and a project that set it meant it for `upwind dev`
- * too. Reading it costs a second config load — `next dev` reads the one it already has, and a custom
- * server has no way to reach that one — which is why this is asked last, when there is something to
- * write and nothing else left to decide. A run with no agent, or with the block already current,
- * never gets here.
+ * too. Reading it costs a second config load — `next dev` reads the one it already has, a custom
+ * server has no way to reach that one, and `next dev` loads it exactly once, so this really is an
+ * evaluation of the project's config that would not otherwise have happened. Which is why it is
+ * asked last, when there is something to write and nothing else left to decide: a run with no agent,
+ * or with the block already current, never gets here at all.
+ *
+ * It is also asked *after* `serve.ts` has put the environment back (`adapter.restore()`,
+ * `restoreAddress()`), so `NEXT_ADAPTER_PATH` and `UPWIND_DEV_ADDRESS` are set while Next.js reads
+ * the config and unset while this does. Nothing else differs between the two readings — same
+ * process, same everything — so the only config this disagrees with Next.js about is one whose
+ * `agentRules` is derived from those two variables, which is to say a project saying "not under
+ * upwind". The way to say that and be obeyed is `agentRules: false` outright: it is the same switch,
+ * it reads the same both times, and `next dev` honours it too. Reading it before the restore instead
+ * would mean holding every queued request through a config load, on the one run that needs one.
  */
 async function agentRulesAllowed(projectDir: string): Promise<boolean> {
   type LoadConfig = (

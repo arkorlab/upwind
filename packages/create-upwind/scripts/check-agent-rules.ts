@@ -31,6 +31,17 @@ import { writeAgentRules } from '../src/agents.ts';
 const FILES = ['AGENTS.md', 'CLAUDE.md'] as const;
 
 /**
+ * Next.js's writer as this calls it: its own signature, and a promise it does not return today.
+ *
+ * Widened so the call below can be awaited. A version that made the write asynchronous would
+ * otherwise be compared before it had written anything, and the check would fail saying the file is
+ * missing rather than saying what is in it.
+ */
+type NextWriter = (
+  projectDir: string,
+) => PromiseLike<ReturnType<typeof writeAgentFiles>> | ReturnType<typeof writeAgentFiles>;
+
+/**
  * Next.js's own writer, loaded from the installed package.
  *
  * `require` rather than `import`: it is CommonJS in a package with no export map, and this wants the
@@ -38,7 +49,7 @@ const FILES = ['AGENTS.md', 'CLAUDE.md'] as const;
  * comes from the same path, so a release that moves or renames it fails `pnpm typecheck` here rather
  * than at the first mismatch.
  */
-function nextWriter(): typeof writeAgentFiles {
+function nextWriter(): NextWriter {
   const require = createRequire(import.meta.url);
   const module = require('next/dist/server/lib/generate-agent-files.js') as {
     writeAgentFiles: typeof writeAgentFiles;
@@ -81,7 +92,7 @@ async function main(): Promise<void> {
   const theirs = await mkdtemp(path.join(tmpdir(), 'next-agents-'));
   try {
     await writeAgentRules(ours);
-    writeNext(theirs);
+    await writeNext(theirs);
     const differences: string[] = [];
     for (const file of FILES) {
       const mine = await readFile(path.join(ours, file));
