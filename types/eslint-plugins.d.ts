@@ -12,3 +12,12 @@ declare module 'eslint-plugin-security' {
   const plugin: ESLint.Plugin & { configs: Record<'recommended', Linter.Config> };
   export default plugin;
 }
+
+// Ships one config, in the legacy `eslintrc` shape (`plugins: ['redos']`), so the plugin itself is
+// what a flat config takes and the rule is named here rather than read off a `configs` entry.
+declare module 'eslint-plugin-redos' {
+  import type { ESLint } from 'eslint';
+
+  const plugin: ESLint.Plugin;
+  export default plugin;
+}
