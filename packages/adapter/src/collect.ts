@@ -47,9 +47,10 @@ type Loosened<T, K extends PropertyKey> = T extends unknown
  *
  * The prerender classification (`routeType`, `response`, `compute`, `htmlSize`) needs no such
  * widening — Next.js already types it as present or wholly absent, and everything here already
- * asks. What it costs a 16.2 deployment is that `edgeServablePrerenders` finds nothing, so every
- * prerender is answered by the Function rather than from the edge (`@stayingupwind/core/bundle`,
- * `generationIn`). Correct, and the slow way round; `index.ts` says so at the end of a build.
+ * asks. What a bundle without it is read as is `@stayingupwind/core/bundle`'s business
+ * (`documentPrerenders`): which output of a group is the document, whether the code behind a route
+ * renders one at all, and what a build finished against what it left to a resume, each read off
+ * the outputs themselves. `index.ts` says at the end of a build that this is what happened.
  */
 export type BuildContext = Omit<NextBuildContext, 'outputs' | 'routing'> & {
   readonly routing: Loosened<NextBuildContext['routing'], 'middlewareMatchers'>;

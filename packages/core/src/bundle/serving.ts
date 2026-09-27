@@ -405,22 +405,27 @@ export function routeHandlerPrerenders(bundle: DeploymentBundle): Prerender[] {
  * classification where there is one, and of what it classifies where there is not.
  *
  * `response` and `compute` arrived in 16.3. What they say about an output the build wrote is what
- * the output itself says: postponed state is the rest of a document, so an output that carries some
- * is the initial part of one and resumes; an output that carries none is the whole of it. Checked
- * against every classified prerender of a 16.3 build, where Next.js's answer and this one agree.
+ * the output itself says: a body is a response to serve, and postponed state is the rest of a
+ * document — so an output with both is the initial part of one and resumes, one with a body alone
+ * is the whole of it, and one with no body is neither. That last is the part a first attempt at
+ * this missed: the class shell of a `fallback: true` route carries no body, and Next.js calls it
+ * `empty`/`blocking` where postponed state alone would have called it complete.
+ *
+ * Checked against every classified prerender of every fixture bundle to hand — 16.2 and 16.3, both
+ * fixtures — where Next.js's answer and this one agree on all of them.
  */
 function completeByItself(prerender: Prerender): boolean {
   if (prerender.response !== undefined || prerender.compute !== undefined) {
     return prerender.response === 'complete' && prerender.compute === 'static';
   }
-  return prerender.postponed === undefined;
+  return prerender.body !== undefined && prerender.postponed === undefined;
 }
 
 function resumesFromItself(prerender: Prerender): boolean {
   if (prerender.response !== undefined || prerender.compute !== undefined) {
     return prerender.response === 'initial' && prerender.compute === 'resuming';
   }
-  return prerender.postponed !== undefined;
+  return prerender.body !== undefined && prerender.postponed !== undefined;
 }
 
 /** The routes whose entrypoint answers with a response rather than rendering a document. */
