@@ -17,9 +17,8 @@
  *
  * What a 16.2 build does not carry, and what that costs a deployment, is the adapter's README
  * under "Which Next.js". The short of it: two of the three things 16.3 added are filled in from
- * elsewhere, and the third — the prerender classification — is what the edge reads to decide which
- * shells it may serve, so a 16.2 deployment serves none of them from the edge and answers every
- * one from the Function instead.
+ * elsewhere, the third is read off the outputs it would have described, and what a 16.2 deployment
+ * actually does without is `/_next/static/immutable/*`.
  *
  * The ceiling is the Adapter API's own contract: its shape changes only in a major release
  * (Next.js, "Adapters"). A minor within the major is admitted on the strength of the check, which

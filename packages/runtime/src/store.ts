@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 
 import {
   type DeploymentBundle,
+  documentPrerenders,
   type EntrypointKind,
   isPagesDataPathname,
   type Prerender,
@@ -117,70 +118,16 @@ function patternFor(pathname: string): RegExp {
   return new RegExp(`^${source}$`, 'u');
 }
 
-/**
- * Is this output a document the build rendered, rather than a route handler's response or one of
- * the RSC and data outputs that travel beside a document?
- *
- * Next.js says so itself from 16.3 on, in the classification it puts on the primary output of each
- * prerender group and leaves off the siblings (`routeType`). Before that it classifies nothing, and
- * the same question has to be asked of what the bundle carries anyway:
- *
- * - the entrypoint for the route says whether the code behind it renders a document at all. A
- *   handler's prerender belongs to an `app-route` or a `pages-api`, and no shell is ever served for
- *   one — the Function runs it.
- * - the sibling outputs are the document's pathname with a suffix the build itself names
- *   (`routing.rsc`), or a Pages Router `_next/data` URL. Nothing else shares a route with a
- *   document.
- *
- * Both are exact rather than inferred, and both agree with the classification where there is one:
- * on a 16.3 build every unclassified prerender is a sibling, so this admits precisely what
- * `routeType` did. Which is the point — a 16.2 deployment whose documents never reached the shell
- * index re-rendered every one of them on every request, and served the build's HTML to nobody.
- */
-function isDocumentPrerender(
-  prerender: Prerender,
-  kindOf: (route: string) => EntrypointKind | undefined,
-  rsc: RuntimeManifest['routing']['rsc'],
-): boolean {
-  if (prerender.routeType !== undefined) {
-    return prerender.routeType !== 'route';
-  }
-  const kind = kindOf(prerender.route);
-  if (kind !== 'app-page' && kind !== 'pages') {
-    return false;
-  }
-  return !isSiblingOutput(prerender.pathname, rsc);
-}
-
-/**
- * The RSC, segment and `_next/data` outputs a document's own is accompanied by, named by the
- * suffixes the build itself reports (`routing.rsc`) rather than by any written out here. An empty
- * one is not a suffix: every pathname ends with it.
- */
-function isSiblingOutput(pathname: string, rsc: RuntimeManifest['routing']['rsc']): boolean {
-  const suffixes = [
-    rsc.suffix,
-    rsc.prefetchSuffix,
-    rsc.prefetchSegmentSuffix,
-    rsc.prefetchSegmentDirSuffix,
-  ].filter((suffix): suffix is string => suffix !== undefined && suffix !== '');
-  return (
-    suffixes.some((suffix) => pathname.endsWith(suffix) || pathname.includes(`${suffix}/`)) ||
-    isPagesDataPathname(pathname)
-  );
-}
-
 function buildShells(
   prerenders: readonly Prerender[],
-  kindOf: (route: string) => EntrypointKind | undefined,
-  rsc: RuntimeManifest['routing']['rsc'],
+  isDocument: (prerender: Prerender) => boolean,
 ): Map<string, RouteShells> {
   const byRoute = new Map<
     string,
     { pages: Map<string, Prerender>; patterns: { pattern: RegExp; prerender: Prerender }[] }
   >();
   for (const prerender of prerenders) {
-    if (!isDocumentPrerender(prerender, kindOf, rsc)) {
+    if (!isDocument(prerender)) {
       continue;
     }
     let entry = byRoute.get(prerender.route);
@@ -412,8 +359,7 @@ export function getStore(): Store {
     prerendersByPathname,
     shellsByRoute: buildShells(
       manifest.prerenders,
-      (route) => manifest.entrypoints.find((entry) => entry.pathname === route)?.kind,
-      manifest.routing.rsc,
+      documentPrerenders(manifest.prerenders, manifest.entrypoints),
     ),
     staticFiles,
     ...routerPathnames(manifest),

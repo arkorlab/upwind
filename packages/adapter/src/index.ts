@@ -315,10 +315,11 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
  * A page on the edge runtime renders with no postponed state, so nothing of it can be served ahead
  * of its render the way a Node.js page's shell is.
  *
- * And Next.js classifies each prerender from 16.3 on (`routeType`, `response`, `compute`), which is
- * what the edge reads to decide which shells it may serve ahead of the Function
- * (`@stayingupwind/core/bundle`, `generationIn`). A build before that carries no classification and
- * nothing qualifies: every prerender is still correct, and every one of them costs a Function call.
+ * And a build before 16.3 classifies none of its prerenders, which is a thing worth saying once:
+ * what the platform makes of such a bundle is read off the outputs themselves
+ * (`@stayingupwind/core/bundle`, `documentPrerenders`), and while that answers the same as the
+ * classification wherever there is one to compare it with, there is no classification here to
+ * compare it with.
  */
 function reportWhatTravels(
   bundle: DeploymentBundle,
@@ -335,7 +336,7 @@ function reportWhatTravels(
     bundle.prerenders.length > 0 && bundle.prerenders.every((one) => one.routeType === undefined);
   if (unclassified) {
     console.warn(
-      `@stayingupwind/adapter: Next.js ${nextVersion} does not classify its prerenders, which Next.js 16.3 is the first to do. All ${String(bundle.prerenders.length)} of this deployment's prerenders will be answered by the Function rather than served from the edge.`,
+      `@stayingupwind/adapter: Next.js ${nextVersion} does not classify its prerenders, which Next.js 16.3 is the first to do. This deployment's ${String(bundle.prerenders.length)} prerenders are read as their outputs describe them instead; \`/_next/static/immutable/*\` is off, since 16.2 does not offer it.`,
     );
   }
 }
