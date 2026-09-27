@@ -5,8 +5,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-import { PATCHES, type PatchContext } from '../src/patches/index.ts';
+import { FIXTURE_COVERAGE, type FixtureCoverage } from '../../../tools/next-matrix/src/coverage.ts';
+import { type Copy, type Patch, PATCHES, type PatchContext } from '../src/patches/index.ts';
 import { SUPPORTED_NEXT_RANGE } from '../src/patches/versions.ts';
+import { copyOf, missedRuntimes } from './copies.ts';
 
 /**
  * Holds `SUPPORTED_NEXT_RANGE` to its word.
@@ -297,31 +299,101 @@ async function profile(root: string): Promise<Applied[]> {
   return applied;
 }
 
-/**
- * The three patches a published package holds nothing for, because what they rewrite is what
- * `next build` *writes*: the Turbopack runtime, the WebAssembly loader Turbopack bundles into a
- * server chunk, and the chunk Turbopack emits for `@vercel/og`'s external import. They are covered
- * by `tools/next-matrix`, which builds applications.
- *
- * Named rather than inferred, and that is the whole point of the list. Every other patch has to
- * fire here, so a `target` or a `marker` that stopped matching is a failure rather than a patch
- * quietly reclassified as one of these — which is what it would be if this were "whatever found
- * nothing today". Pull-request CI runs this checker and not the matrix, so a rewrite that silently
- * stopped applying would otherwise ship in a Function and fail at the first request that needed it.
- */
-const BUILD_OUTPUT_PATCHES = new Set(['turbopack-runtime', 'vercel-og', 'wasm-loader']);
+/** The one kind no published package holds, and so the one this checker cannot ask about. */
+const BUILD_OUTPUT: Copy = 'build-output';
+/** The kind that is a family rather than a file, and the only one there is more than one of. */
+const SERVER_RUNTIME: Copy = 'server-runtime';
+
+/** The kinds a patch has to reach that a published package can show at all. */
+function packageKinds(patch: Patch): string[] {
+  return patch.reaches.filter((kind) => kind !== BUILD_OUTPUT);
+}
 
 /** The patches a published package does hold a file for, and so every checked version must fire. */
-const REQUIRED_PATCHES = PATCHES.map((patch) => patch.name).filter(
-  (name) => !BUILD_OUTPUT_PATCHES.has(name),
-);
+const REQUIRED_PATCHES = PATCHES.filter((patch) => packageKinds(patch).length > 0);
 
-/** A name in the list above that no patch answers to: the list itself, held to `PATCHES`. */
-function checkBuildOutputList(): string[] {
-  const names = new Set(PATCHES.map((patch) => patch.name));
-  return missingFrom(BUILD_OUTPUT_PATCHES, names).map(
-    (name) => `BUILD_OUTPUT_PATCHES names "${name}", which is not a patch`,
+/** The patches by name, for the checks that read a name somebody else wrote. */
+type Patches = ReadonlyMap<string, Patch>;
+
+/** Every patch some fixture of `tools/next-matrix` says its build has to rewrite a chunk with. */
+function chunksClaimed(): Set<string> {
+  const claimed = new Set<string>();
+  for (const coverage of Object.values(FIXTURE_COVERAGE)) {
+    for (const name of coverage.chunks) {
+      claimed.add(name);
+    }
+  }
+  return claimed;
+}
+
+/**
+ * One fixture's claims, held to the patches and to itself: a name that is no patch, a chunk from a patch
+ * that never promised one, and a chunk from a patch the same fixture does not expect to fire at all —
+ * `chunks` is *of those* in `expected`, and two lists that drift apart would check less than they read as.
+ */
+function checkClaims(fixture: string, coverage: FixtureCoverage, byName: Patches): string[] {
+  const problems: string[] = [];
+  const expected = new Set<string>(coverage.expected);
+  for (const name of coverage.expected) {
+    if (!byName.has(name)) {
+      problems.push(`${fixture} names "${name}", which is not a patch`);
+    }
+  }
+  for (const name of coverage.chunks) {
+    const patch = byName.get(name);
+    if (patch === undefined) {
+      problems.push(`${fixture} names "${name}", which is not a patch`);
+    } else if (!patch.reaches.includes(BUILD_OUTPUT)) {
+      problems.push(`${fixture} expects a chunk from ${name}, which does not say it rewrites one`);
+    } else if (!expected.has(name)) {
+      problems.push(
+        `${fixture} expects a chunk from ${name}, which it does not expect to fire at all`,
+      );
+    }
+  }
+  return problems;
+}
+
+/**
+ * Every fixture's claims, and the fixture: an application has to be there for the matrix to build.
+ *
+ * `run.ts` builds a fixture for every name in the coverage record, so a name with no application under
+ * `fixtures/` is a matrix that fails at the copy — and, until someone ran it, a `build-output` patch that
+ * reads as exercised by a build that cannot happen. Asked here because pull-request CI runs this checker.
+ */
+async function checkFixtureClaims(byName: Patches): Promise<string[]> {
+  const problems: string[] = [];
+  for (const [fixture, coverage] of Object.entries(FIXTURE_COVERAGE)) {
+    if (!(await exists(path.join(REPO, 'fixtures', fixture)))) {
+      problems.push(
+        `${fixture} is in tools/next-matrix's coverage, and fixtures/${fixture} is not there to build`,
+      );
+    }
+    problems.push(...checkClaims(fixture, coverage, byName));
+  }
+  return problems;
+}
+
+/**
+ * Every claim in `tools/next-matrix`'s fixture coverage, held to the patches themselves.
+ *
+ * A patch that declares `build-output` is exempt from everything above — a published package holds none
+ * of it — so the only thing that can exercise it is a fixture the matrix builds. Nobody adding it to one
+ * would leave it checked by nothing at all, which is the drift this file exists to catch.
+ *
+ * Here rather than in the tool because pull-request CI runs this checker and not the matrix: this is
+ * where a declaration and the thing that exercises it can be held together before either lands.
+ */
+async function checkCoverage(): Promise<string[]> {
+  const byName: Patches = new Map(PATCHES.map((patch) => [patch.name, patch]));
+  const claimed = chunksClaimed();
+  const unexercised = PATCHES.filter(
+    (patch) => patch.reaches.includes(BUILD_OUTPUT) && !claimed.has(patch.name),
+  ).map(
+    (patch) =>
+      `${patch.name} says it rewrites build output, and no fixture in tools/next-matrix exercises it`,
   );
+  return [...(await checkFixtureClaims(byName)), ...unexercised];
 }
 
 // ─── the range and what declares it ──────────────────────────────────────────
@@ -445,6 +517,48 @@ async function printMatrix(): Promise<void> {
   );
 }
 
+/**
+ * What one patch failed to reach in one package.
+ *
+ * A patch is held to the kinds of copy it says it reaches, and not merely to having fired somewhere:
+ * `cache-signal-timers` is loaded from the source module *and* from each compiled runtime, and a version
+ * where only the first still matches is a Function with the bug back. A kind that went missing means
+ * `target` or `marker` stopped matching it, whether because Next.js moved the file or because an edit here
+ * missed. Then the one kind that is a family is asked the same question one runtime at a time.
+ */
+async function shortfall(
+  root: string,
+  patch: Patch,
+  applied: readonly Applied[],
+): Promise<string[]> {
+  const mine = applied.filter((one) => one.patch === patch.name);
+  const missing = missingFrom(packageKinds(patch), new Set(mine.map((one) => copyOf(one.file))));
+  if (missing.length > 0) {
+    // A kind nothing reached at all is the whole of what is wrong; naming the runtimes of a kind that was
+    // never reached would bury it.
+    return [`${patch.name} reached no ${missing.join(', no ')}`];
+  }
+  if (!patch.reaches.includes(SERVER_RUNTIME)) {
+    return [];
+  }
+  const reached = new Set(
+    mine
+      .filter((one) => copyOf(one.file) === SERVER_RUNTIME)
+      .map((one) => path.posix.basename(one.file)),
+  );
+  const { claimed, siblings } = await missedRuntimes(root, patch, reached);
+  return [
+    ...(claimed.length > 0
+      ? [`${patch.name} did not reach ${claimed.join(', ')}, which hold what it rewrites`]
+      : []),
+    ...(siblings.length > 0
+      ? [
+          `${patch.name} did not reach ${siblings.join(', ')}, other builds of an entry it did reach`,
+        ]
+      : []),
+  ];
+}
+
 /** One version's verdict: what its patches did, or what went wrong. */
 async function verdict(target: Target): Promise<{ applied?: Applied[]; problem?: string }> {
   let applied: Applied[];
@@ -453,13 +567,12 @@ async function verdict(target: Target): Promise<{ applied?: Applied[]; problem?:
   } catch (error) {
     return { problem: error instanceof Error ? error.message : String(error) };
   }
-  // Every patch but the three that rewrite build output has a file in the package, so one that
-  // found none is a rewrite that will not run and will not say so: `target` or `marker` has
-  // stopped matching, whether because Next.js moved the file or because an edit here missed.
-  const fired = new Set(applied.map((one) => one.patch));
-  const missing = missingFrom(REQUIRED_PATCHES, fired);
-  if (missing.length > 0) {
-    return { applied, problem: `no file left for ${missing.join(', ')}` };
+  const problems: string[] = [];
+  for (const patch of REQUIRED_PATCHES) {
+    problems.push(...(await shortfall(target.root, patch, applied)));
+  }
+  if (problems.length > 0) {
+    return { applied, problem: problems.join('; ') };
   }
   return { applied };
 }
@@ -499,14 +612,17 @@ async function main(): Promise<void> {
     return;
   }
 
-  const declarations = [...checkBuildOutputList(), ...(await checkDeclarations())];
+  const declarations = [...(await checkCoverage()), ...(await checkDeclarations())];
   for (const problem of declarations) {
     console.error(`✗ ${problem}`);
   }
 
   console.log(`supported range: ${SUPPORTED_NEXT_RANGE}`);
+  const buildOutput = PATCHES.filter((patch) => packageKinds(patch).length === 0).map(
+    (patch) => patch.name,
+  );
   console.log(
-    `${String(REQUIRED_PATCHES.length)} patch(es) required of every version; ${[...BUILD_OUTPUT_PATCHES].join(', ')} rewrite build output and are covered by tools/next-matrix`,
+    `${String(REQUIRED_PATCHES.length)} patch(es) held to the copies they reach; ${buildOutput.join(', ')} rewrite build output alone and are covered by tools/next-matrix`,
   );
   const checked = await targets(argv.has('--range'), argv.has('--canary'));
   const names = checked.map((one) => one.version).join(', ');
