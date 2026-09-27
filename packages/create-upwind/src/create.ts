@@ -23,7 +23,9 @@ import { conflictsIn, copyTemplate, retellReadme } from './template.ts';
  *
  * The install comes before the first commit so the lockfile is in it: the point of a lockfile is the
  * install somebody else does from it, and one that arrives a commit late is one that arrives after
- * the first person cloned it.
+ * the first person cloned it. The agent rules are between the two for the same reason and the other
+ * way round — written from what this release knows, corrected by the Next.js that actually arrived,
+ * and only then committed.
  */
 
 const DEFAULT_DIRECTORY = 'my-upwind-app';
