@@ -13,6 +13,7 @@ import { BlobStore } from './blobs.ts';
 import { bundleConfig, customCacheHandlerPaths } from './bundle-config.ts';
 import {
   type BuildContext,
+  bundleRouting,
   bypassTokenOf,
   collectEntrypoints,
   collectPrerenders,
@@ -221,7 +222,7 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     nextVersion: ctx.nextVersion,
     buildId: ctx.buildId,
     config: bundleConfig(ctx.config, await imagesConfig(ctx)),
-    routing: ctx.routing,
+    routing: bundleRouting(ctx.routing, middleware),
     ...(bypassToken !== undefined && { bypassToken }),
     entrypoints,
     ...(middleware !== undefined && { middleware: { matchers: middlewareMatchers(middleware) } }),
@@ -305,12 +306,36 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
   console.log(
     `@stayingupwind/adapter: wrote ${OUT_DIR_NAME}/${BUNDLE_FILE} (${bundle.prerenders.length} prerenders, ${bundle.staticFiles.length} static files, ${blobs.count} blobs)`,
   );
+  reportWhatTravels(bundle, edgeEntries, ctx.nextVersion);
+}
+
+/**
+ * What a reader of the build is told once it is written, rather than in the middle of it.
+ *
+ * A page on the edge runtime renders with no postponed state, so nothing of it can be served ahead
+ * of its render the way a Node.js page's shell is.
+ *
+ * And Next.js classifies each prerender from 16.3 on (`routeType`, `response`, `compute`), which is
+ * what the edge reads to decide which shells it may serve ahead of the Function
+ * (`@stayingupwind/core/bundle`, `generationIn`). A build before that carries no classification and
+ * nothing qualifies: every prerender is still correct, and every one of them costs a Function call.
+ */
+function reportWhatTravels(
+  bundle: DeploymentBundle,
+  edgeEntries: readonly EdgeEntry[],
+  nextVersion: string,
+): void {
   if (edgeEntries.length > 0) {
-    // A hint, for whoever reads the build: a page on the edge runtime renders with no postponed
-    // state, so nothing of it can be served ahead of its render the way a Node.js page's shell is.
     const ids = edgeEntries.map((entry) => entry.id).join(', ');
     console.warn(
       `@stayingupwind/adapter: on the deprecated edge runtime: ${ids}. Their code travels in the Function's own edge bundle, and a page among them is answered in full — the edge serves no shell ahead of a route that cannot resume one.`,
+    );
+  }
+  const unclassified =
+    bundle.prerenders.length > 0 && bundle.prerenders.every((one) => one.routeType === undefined);
+  if (unclassified) {
+    console.warn(
+      `@stayingupwind/adapter: Next.js ${nextVersion} does not classify its prerenders, which Next.js 16.3 is the first to do. All ${String(bundle.prerenders.length)} of this deployment's prerenders will be answered by the Function rather than served from the edge.`,
     );
   }
 }

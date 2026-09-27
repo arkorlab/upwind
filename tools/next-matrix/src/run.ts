@@ -91,10 +91,18 @@ type Dependencies = Readonly<
   >
 >;
 
+/**
+ * A patch a build has to apply, or — where Next.js has shipped a thing in two shapes across the
+ * supported range — the set of patches of which exactly the one for this version must fire. The
+ * Turbopack WebAssembly loader is the case in point: its own module from 16.3, the Turbopack
+ * runtime itself in 16.2. Naming both is what lets one expectation hold for the whole range.
+ */
+type Expected = string | readonly string[];
+
 interface Fixture {
   readonly name: string;
   /** Every patch a build of this fixture has to apply, in one Function or the other. */
-  readonly expected: readonly string[];
+  readonly expected: readonly Expected[];
   /** What else has to be true of the bundle, beyond its schema. */
   readonly holds: (bundle: DeploymentBundle, dependencies: Dependencies) => string[];
 }
@@ -120,7 +128,8 @@ const FIXTURE_LIST: readonly Fixture[] = [
     expected: [
       ...PACKAGE_PATCHES,
       'turbopack-runtime',
-      'wasm-loader',
+      // One or the other, by version: see `Expected`.
+      ['wasm-loader', 'runtime-wasm-loader'],
       'vercel-og',
       'vercel-og-font',
       'vercel-og-image-response',
@@ -240,7 +249,9 @@ function explain(error: unknown): string[] {
   if (failure.killed === true) {
     return [`the build was killed after ${String(BUILD_TIMEOUT_MS / MINUTE_MS)} minutes`];
   }
-  const output = `${failure.stderr ?? ''}\n${failure.stdout ?? ''}`.trim();
+  // stderr last, because that is where the reason ends up and the tail is what gets shown:
+  // `next build`'s progress fills stdout, and a tail of that says only that it was still going.
+  const output = `${failure.stdout ?? ''}\n${failure.stderr ?? ''}`.trim();
   if (output === '') {
     return [error instanceof Error ? error.message : String(error)];
   }
@@ -284,9 +295,12 @@ async function checkOutput(fixture: Fixture, app: string): Promise<string[]> {
   }
   const dependencies = (await readJson(path.join(out, 'dependencies.json'))) as Dependencies;
   const applied = patchesApplied(dependencies);
-  const problems = fixture.expected.flatMap((patch) =>
-    applied.has(patch) ? [] : [`the ${patch} patch applied to nothing`],
-  );
+  const problems = fixture.expected.flatMap((expected) => {
+    const names = typeof expected === 'string' ? [expected] : expected;
+    return names.some((name) => applied.has(name))
+      ? []
+      : [`${names.join(' / ')} applied to nothing`];
+  });
   return [...problems, ...fixture.holds(parsed.data, dependencies)];
 }
 

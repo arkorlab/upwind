@@ -9,7 +9,7 @@ import { taskTimersPatch } from './task-timers.ts';
 import { turbopackRuntimePatch } from './turbopack-runtime.ts';
 import type { Patch } from './types.ts';
 import { vercelOgFontPatch, vercelOgImageResponsePatch, vercelOgPatch } from './vercel-og.ts';
-import { wasmLoaderPatch } from './wasm-loader.ts';
+import { runtimeWasmLoaderPatch, wasmLoaderPatch } from './wasm-loader.ts';
 
 export { FUNCTION_BANNER } from './banner.ts';
 export {
@@ -26,6 +26,7 @@ export type { PatchContext } from './types.ts';
 export const PATCHES: readonly Patch[] = [
   turbopackRuntimePatch,
   wasmLoaderPatch,
+  runtimeWasmLoaderPatch,
   vercelOgPatch,
   vercelOgImageResponsePatch,
   vercelOgFontPatch,

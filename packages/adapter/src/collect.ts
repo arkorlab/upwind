@@ -26,7 +26,37 @@ import type { EntryModule } from './function.ts';
  * other (`@stayingupwind/core/bundle`). Nothing here writes the bundle itself; that is `index.ts`.
  */
 
-export type BuildContext = Parameters<NonNullable<NextAdapter['onBuildComplete']>>[0];
+type NextBuildContext = Parameters<NonNullable<NextAdapter['onBuildComplete']>>[0];
+
+/**
+ * `T` with `K` no longer required. Distributed over a union, because a prerender's type is one —
+ * Next.js intersects it with a classification that is either present or entirely absent — and the
+ * plain `Omit` collapses a union to the keys its members share.
+ */
+type Loosened<T, K extends PropertyKey> = T extends unknown
+  ? Omit<T, K> & { [P in Extract<keyof T, K>]?: T[P] }
+  : never;
+
+/**
+ * What `onBuildComplete` hands over, as this adapter reads it across the range it supports.
+ *
+ * Next.js's own type is the newest version's, because that is what the catalog pins and what this
+ * repository typechecks against. The range starts at 16.2, which has not got two of the things
+ * 16.3 added, and they are declared here as what they are across the range: optional. A build
+ * against 16.2 carries neither, so the code that reads them has to say what it does without them.
+ *
+ * The prerender classification (`routeType`, `response`, `compute`, `htmlSize`) needs no such
+ * widening — Next.js already types it as present or wholly absent, and everything here already
+ * asks. What it costs a 16.2 deployment is that `edgeServablePrerenders` finds nothing, so every
+ * prerender is answered by the Function rather than from the edge (`@stayingupwind/core/bundle`,
+ * `generationIn`). Correct, and the slow way round; `index.ts` says so at the end of a build.
+ */
+export type BuildContext = Omit<NextBuildContext, 'outputs' | 'routing'> & {
+  readonly routing: Loosened<NextBuildContext['routing'], 'middlewareMatchers'>;
+  readonly outputs: Omit<NextBuildContext['outputs'], 'prerenders'> & {
+    readonly prerenders: Loosened<NextBuildContext['outputs']['prerenders'][number], 'route'>[];
+  };
+};
 type RouteOutput =
   | AdapterOutput['APP_PAGE']
   | AdapterOutput['APP_ROUTE']
@@ -319,6 +349,25 @@ function entryIdsByOutputId(outputs: BuildContext['outputs']): Map<string, strin
  * is `/docs` (`entryIdOf`), so no entry answered to it. A prerender with no page of its own among
  * the entries keeps its source route under the `basePath`, as before.
  */
+function routeOf(output: PrerenderOutput, entryIds: ReadonlyMap<string, string>, basePath: string) {
+  const entry = entryIds.get(output.parentOutputId);
+  if (entry !== undefined) {
+    return entry;
+  }
+  // `route` arrived in 16.3. Where a 16.2 build leaves a prerender whose parent is not among the
+  // entries, there is nothing left that says which route it belongs to — and guessing is the one
+  // thing not to do here: the runtime groups prerenders by route and answers a pathname with the
+  // shell of the route it resolved, so a route invented from the pathname would put the members of
+  // `/blog/[slug]` under `/blog/first` and serve one page's shell for another's. The build says
+  // which prerender it could not place and stops.
+  if (output.route === undefined) {
+    throw new Error(
+      `@stayingupwind/adapter: the prerender ${output.id} (${output.pathname}) has no source route, and its parent output ${output.parentOutputId} is not among the entrypoints; Next.js 16.3 is the first to carry one, so this build cannot say which route it belongs to`,
+    );
+  }
+  return withBasePath(basePath, output.route);
+}
+
 function prerenderFields(output: PrerenderOutput, route: string): Prerender {
   return {
     id: output.id,
@@ -382,8 +431,7 @@ export async function collectPrerenders(
   const shipped = new Map<string, Uint8Array>();
   const entryIds = entryIdsByOutputId(outputs);
   for (const output of outputs.prerenders) {
-    const route = entryIds.get(output.parentOutputId) ?? withBasePath(basePath, output.route);
-    const prerender = prerenderFields(output, route);
+    const prerender = prerenderFields(output, routeOf(output, entryIds, basePath));
     const filePath = output.fallback?.filePath;
     if (filePath !== undefined && (await exists(filePath))) {
       const bytes = new Uint8Array(await readFile(filePath));
@@ -638,6 +686,26 @@ export function middlewareMatchers(middleware: AdapterOutput['MIDDLEWARE'] | und
       ...(matcher.missing !== undefined && { missing: matcher.missing }),
     };
   });
+}
+
+/**
+ * The routing tables, with the one phase 16.3 added filled in where a build did not carry it.
+ *
+ * `routing.middlewareMatchers` is what decides whether the middleware runs for a request, and the
+ * runtime hands it to `@next/routing` as a phase of its own. A 16.2 build has no such field — it
+ * describes the same thing one place along, on the middleware output — so that is what fills it.
+ * The two are the same table: `middlewareMatchers` above builds the phase out of exactly it, and
+ * from 16.3 on Next.js builds the phase out of it too. A build with no middleware has no matchers
+ * either way.
+ */
+export function bundleRouting(
+  routing: BuildContext['routing'],
+  middleware: AdapterOutput['MIDDLEWARE'] | undefined,
+): Omit<BuildContext['routing'], 'middlewareMatchers'> & { middlewareMatchers: Route[] } {
+  return {
+    ...routing,
+    middlewareMatchers: routing.middlewareMatchers ?? middlewareMatchers(middleware),
+  };
 }
 
 /**

@@ -3,18 +3,22 @@
  *
  * What settles the range is the patches beside this file. They are rewrites of Next.js's own
  * output, matched by text, so a version is supported when every one of them still finds what it
- * expects — which is a question with an answer, not an opinion: `scripts/check-patches.ts` applies
- * each patch to each published release in this range and fails on the first that does not fire.
- * The range is therefore checked across its whole width rather than asserted at its top.
+ * expects — which is a question with an answer, not an opinion. `scripts/check-patches.ts` applies
+ * the ten that reach Next.js's package to each published release in this range, and
+ * `tools/next-matrix` builds applications for the four that rewrite what `next build` writes. The
+ * range is therefore checked across its whole width rather than asserted at its top, and it is
+ * the second of those that has found every version difference so far: all five that reaching down
+ * to 16.2 needed were in build output, where reading a package cannot see them.
  *
- * The floor is the Adapter API this adapter is written against. Three things arrived in 16.3: the
- * prerender classification (`routeType`, `response`, `compute`, `htmlSize`), which the bundle
- * takes as optional and the edge reads to decide what it may serve; a prerender's source `route`;
- * and `routing.middlewareMatchers`. The bundle requires the last two, so a 16.2 build has nothing
- * to fill them with — see the adapter's README, "Not supported, and not prepared for", for what
- * reaching down to 16.2 would take. Below that the hook is `experimental.adapterPath` and hands
- * `ctx.routes`, a different shape altogether, with no `@next/routing` release to resolve it and
- * no `edgeRuntime` metadata to build an edge bundle from.
+ * The floor is where the Adapter API became stable, which is 16.2. Below it the hook is
+ * `experimental.adapterPath` and hands `ctx.routes`, a different shape altogether, with no
+ * `@next/routing` release to resolve it and no `edgeRuntime` metadata to build an edge bundle
+ * from.
+ *
+ * What a 16.2 build does not carry, and what that costs a deployment, is the adapter's README
+ * under "Which Next.js". The short of it: two of the three things 16.3 added are filled in from
+ * elsewhere, and the third — the prerender classification — is what the edge reads to decide which
+ * shells it may serve, so a 16.2 deployment serves none of them from the edge.
  *
  * The ceiling is the Adapter API's own contract: its shape changes only in a major release
  * (Next.js, "Adapters"). A minor within the major is admitted on the strength of the check, which
@@ -26,4 +30,4 @@
  * `packages/adapter/package.json` and `packages/upwind/package.json` declare this same range as
  * their `peerDependencies.next`, and the check holds all three to each other.
  */
-export const SUPPORTED_NEXT_RANGE = '>=16.3.0 <17';
+export const SUPPORTED_NEXT_RANGE = '>=16.2.0 <17';

@@ -41,14 +41,38 @@ const MARKS = [INPUT_READY, '.waitForStage('];
 /** The two waits of the last pass, in each copy of the function. */
 const WAITS_PER_COPY = 2;
 /**
- * `scheduleOnNextTick(() => controller.abort())`, once after the final stage and once without one,
- * as it reads in the source, called through the module (`(0, _scheduler.scheduleOnNextTick)(…)`) and
- * after a minifier alike.
+ * The pair of waits the last pass gives up on, and how the scheduler that carries them is found.
+ *
+ * It is read off the code rather than named, because the name does not always survive. Reached as a
+ * property of a module namespace it does — a minifier may rename the namespace but not the export
+ * (`(0,g.scheduleOnNextTick)(…)`, and `(0, _scheduler.scheduleOnNextTick)(…)` in the source) — and
+ * reached as a local binding it does not (`t(…)`, which is what a 16.2 chunk holds). What is the
+ * same in every shape is the pair: a wait for the runtime stage whose `then` schedules the abort,
+ * and the same call again where there was no stage to wait for.
+ *
+ * So the first is matched to learn what the second is spelled as, and both are replaced together.
+ * A chunk may hold more than one copy of the function, each minified to names of its own, so each
+ * copy is found and rewritten against its own pair.
  */
-const TICK_ABORT =
-  /(?:\(0,\s*[\w$]+\.)?scheduleOnNextTick\)?\(\(\)\s*=>\s*(?<controller>[\w$]+)\.abort\(\)\)/gu;
-const TIMER_ABORT = 'setTimeout(()=>$<controller>.abort(),0)';
-const LEFTOVERS = [/scheduleOnNextTick\)?\(\(\)\s*=>\s*[\w$]+\.abort\(\)\)/u];
+const STAGED_ABORT =
+  /\.waitForStage\([^;]*?\)\.then\(\(\)\s*=>\s*(?<tick>\(0,\s*[\w$]+\.[\w$]+\)|[\w$]+)\(\(\)\s*=>\s*(?<controller>[\w$]+)\.abort\(\)\)/gu;
+
+/** A literal, as a pattern that matches only itself. */
+function literally(text: string): string {
+  return text.replaceAll(/[$()*+.?[\\\]^{|}]/gu, String.raw`\$&`);
+}
+
+/**
+ * `<tick>(() => <controller>.abort())`, whatever those two are spelled as in this copy. Built
+ * rather than written, since both names come from the file being rewritten; `literally` is what
+ * keeps them from being read as a pattern.
+ */
+function abortsWith(tick: string, controller: string): RegExp {
+  const opens = String.raw`\(\(\)\s*=>\s*`;
+  const aborts = String.raw`\.abort\(\)\)`;
+  // eslint-disable-next-line security/detect-non-literal-regexp -- built from two identifiers this build's own output spelled, each escaped
+  return new RegExp(`${literally(tick)}${opens}${literally(controller)}${aborts}`, 'gu');
+}
 
 export const hangingInputAbortPatch: Patch = {
   name: NAME,
@@ -56,12 +80,38 @@ export const hangingInputAbortPatch: Patch = {
   // Turbopack puts the module in whichever chunk its graph put it; there is no name to find it by.
   marker: (source) => MARKS.every((mark) => source.includes(mark)),
   apply(source, file) {
-    // Two to each copy of the function, and a chunk may hold more than one: Turbopack puts the
-    // one it compiled for each layer that imports it wherever the graph put that layer.
-    const waits = WAITS_PER_COPY * occurrencesOf(source, INPUT_READY);
-    const result = new Rewrite(NAME, file, source)
-      .expand(TICK_ABORT, TIMER_ABORT, waits, "the last pass's wait for a cached function's input")
-      .forbid(LEFTOVERS, 'a wait that ends in the middle of the microtasks it waits for');
-    return { contents: result.contents, edits: result.edits, notes: [] };
+    // One copy of the function to each `inputReady`, and a chunk may hold more than one: Turbopack
+    // puts the one it compiled for each layer that imports it wherever the graph put that layer.
+    const copies = occurrencesOf(source, INPUT_READY);
+    let rewrite = new Rewrite(NAME, file, source);
+    const pairs = [
+      ...new Map(
+        [...source.matchAll(STAGED_ABORT)].flatMap((match) => {
+          const tick = match.groups?.['tick'];
+          const controller = match.groups?.['controller'];
+          return tick === undefined || controller === undefined
+            ? []
+            : [[`${tick} ${controller}`, { tick, controller }] as const];
+        }),
+      ).values(),
+    ];
+    if (pairs.length !== copies) {
+      throw rewrite.fail(
+        `expected the last pass's wait for a cached function's input in ${String(copies)} copy/copies, found ${String(pairs.length)}`,
+      );
+    }
+    for (const { tick, controller } of pairs) {
+      rewrite = rewrite.replace(
+        abortsWith(tick, controller),
+        `setTimeout(()=>${controller}.abort(),0)`,
+        WAITS_PER_COPY,
+        "the last pass's wait for a cached function's input",
+      );
+    }
+    return {
+      contents: rewrite.contents,
+      edits: rewrite.edits,
+      notes: [`${String(copies)} copy/copies of the wait`],
+    };
   },
 };

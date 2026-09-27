@@ -18,7 +18,13 @@ const TARGET = /\[turbopack\]_runtime\.js$/u;
 const LOAD_SITES = 2;
 const CHUNK_REQUIRE =
   /const resolved = path\.resolve\(RUNTIME_ROOT, chunkPath\);\s*(?:\/\/[^\n]*\n\s*)*const chunkModules = require\(resolved\);/gu;
-const LEFTOVERS = [/path\.resolve\(RUNTIME_ROOT, chunkPath\)/u, /require\(resolved\)/u];
+/**
+ * A chunk require that survived, which is what this patch is about. Resolving against the root is
+ * not itself one: 16.2's runtime resolves a `.wasm` against the same root in two more places, and
+ * `runtime-wasm-loader` is what rewrites those. `require(resolved)` is the thing that would be
+ * left, and the rewrite above already insists on how many there were.
+ */
+const LEFTOVERS = [/require\(resolved\)/u];
 
 function chunkTable(distDir: string, chunks: readonly string[]): string {
   const cases = chunks.map(

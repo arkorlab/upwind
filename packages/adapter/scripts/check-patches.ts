@@ -298,10 +298,11 @@ async function profile(root: string): Promise<Applied[]> {
 }
 
 /**
- * The three patches a published package holds nothing for, because what they rewrite is what
- * `next build` *writes*: the Turbopack runtime, the WebAssembly loader Turbopack bundles into a
- * server chunk, and the chunk Turbopack emits for `@vercel/og`'s external import. They are covered
- * by `tools/next-matrix`, which builds applications.
+ * The patches a published package holds nothing for, because what they rewrite is what `next
+ * build` *writes*: the Turbopack runtime, the WebAssembly loader — the module Turbopack bundles
+ * into a server chunk from 16.3, and the runtime's own from 16.2 — and the chunk Turbopack emits
+ * for `@vercel/og`'s external import. They are covered by `tools/next-matrix`, which builds
+ * applications.
  *
  * Named rather than inferred, and that is the whole point of the list. Every other patch has to
  * fire here, so a `target` or a `marker` that stopped matching is a failure rather than a patch
@@ -309,7 +310,12 @@ async function profile(root: string): Promise<Applied[]> {
  * nothing today". Pull-request CI runs this checker and not the matrix, so a rewrite that silently
  * stopped applying would otherwise ship in a Function and fail at the first request that needed it.
  */
-const BUILD_OUTPUT_PATCHES = new Set(['turbopack-runtime', 'vercel-og', 'wasm-loader']);
+const BUILD_OUTPUT_PATCHES = new Set([
+  'runtime-wasm-loader',
+  'turbopack-runtime',
+  'vercel-og',
+  'wasm-loader',
+]);
 
 /** The patches a published package does hold a file for, and so every checked version must fire. */
 const REQUIRED_PATCHES = PATCHES.map((patch) => patch.name).filter(
