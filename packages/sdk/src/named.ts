@@ -21,7 +21,12 @@ function byName(name: string, kind: Kind): unknown {
   if (reading.state === 'absent') {
     return undefined;
   }
-  const found = reading.published.resources[name];
+  // A name the map holds itself, and not one it inherits. What is published was checked entry by
+  // entry (`published.ts`), and an entry reached through a prototype is not one of those — it is
+  // whatever the object behind the symbol was made from, which this package did not make.
+  const found = Object.hasOwn(reading.published.resources, name)
+    ? reading.published.resources[name]
+    : undefined;
   // The kind is checked here and nowhere else. What comes back is Cloudflare's own object, which is
   // `unknown` until this line and whichever of theirs the kind says it is after it.
   return found?.type === kind.type ? found.binding : undefined;

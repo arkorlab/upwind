@@ -1,5 +1,5 @@
-import { readFileSync, unlinkSync } from 'node:fs';
-import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import { unlinkSync } from 'node:fs';
+import { mkdir, readdir, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
@@ -81,20 +81,26 @@ const WORKER_NAME = 'upwind-local';
 const PROBE_KEY = '__upwind_probe';
 
 /**
- * The file that says which process has this project's storage.
+ * Where the runs using this project's storage say so: one empty file each, named for its process.
  *
- * The rule it enforces is the runtime's, and the runtime enforces it terribly: a second runtime over
- * one directory reads happily and then dies inside the first write, leaving that write unanswered
- * for good. Nothing can be caught there, so the conflict is caught here instead, before a binding is
- * published — a file this run creates exclusively, holding the pid, removed when it stops.
+ * The rule being kept is the runtime's, and the runtime keeps it terribly: a second runtime over one
+ * directory reads happily and then dies inside the first write, leaving that write unanswered for
+ * good. Nothing can be caught there, so the conflict is caught here instead, before a binding is
+ * published — a run writes its own name in, looks at who else is there, and stands down if anybody
+ * live is.
  *
- * A run that was killed outright leaves the file behind, and a build is exactly that: the pool gives a
- * worker half a second between `SIGTERM` and `SIGKILL`, and stopping a runtime can take longer than
- * that. So a claim left over is the ordinary case rather than the exception, and the pid in it is what
- * tells one apart from a claim in use: a process that is gone was not using this, and a run that finds
- * it takes it over. What the file prevents is two *live* runtimes, which is the thing that loses data.
+ * A file per process, rather than one file passed between them, and that is the whole design. A
+ * shared file can only be taken over by removing it, and a removal by path cannot tell the claim it
+ * read from the one that replaced it a moment later — two runs finding the same abandoned claim will
+ * each delete the other's and both go on. A name nobody else writes has no such step: the only entry
+ * a run ever creates or removes is its own, and the entries of processes that no longer exist, which
+ * by definition hold nothing.
+ *
+ * Entries outlive the runs that made them. A build is the ordinary case: the pool gives a worker half
+ * a second between `SIGTERM` and `SIGKILL`, and stopping a runtime can take longer than that. A pid
+ * that answers nothing is what marks one as spent.
  */
-const OWNER_FILE = 'owner';
+const OWNERS_DIR = 'owners';
 
 /**
  * How long all of that is waited for — starting the runtime, taking the bindings, reading through
@@ -267,91 +273,81 @@ function running(pid: number): boolean {
   }
 }
 
-/** The pid in the owner file, or nothing when there is no file or it says something else. */
-async function holder(at: string): Promise<number | undefined> {
-  try {
-    const said = Number.parseInt(await readFile(at, 'utf8'), 10);
-    return Number.isSafeInteger(said) && said > 0 ? said : undefined;
-  } catch {
-    return undefined;
-  }
+/** Every run that has said it is using this storage, by the pid each entry is named for. */
+async function others(dir: string): Promise<number[]> {
+  const entries = await readdir(dir);
+  return entries
+    .map((entry) => Number.parseInt(entry, 10))
+    .filter((pid) => Number.isSafeInteger(pid) && pid > 0 && pid !== process.pid);
 }
 
 /**
- * Give the claim back, if it is still this process's to give.
+ * Take this run's entry out, and nothing else.
  *
- * Synchronous, because the one place this has to work is an `exit` handler. The pid is checked first,
- * and not out of caution: deleting `.upwind/` while a run is up is a thing people do — it is how a
- * project is put back to empty — and the run that claims the directory afterwards is holding a claim
- * this one must not remove on its way out.
+ * Synchronous, because the one place this has to work is an `exit` handler. Its own name is the only
+ * one it ever removes, which is what makes it safe at any moment — including after somebody deleted
+ * `.upwind/` underneath a running project, which is how a project is put back to empty.
  */
-function letGoOfClaim(at: string): void {
+function letGoOfClaim(mine: string): void {
   try {
-    if (readFileSync(at, 'utf8') === String(process.pid)) {
-      unlinkSync(at);
-    }
+    unlinkSync(mine);
   } catch {
-    // Gone already, or never ours. Either way there is nothing to let go of and nobody to tell.
+    // Gone already. There is nothing to let go of and nobody to tell.
   }
 }
 
 /**
- * Claim this project's storage for this process, or say who has it.
+ * Say that this run is using the project's storage, or stand down for the run that already is.
  *
- * Twice, at most: the second attempt is for a claim that turned out to be a dead process's, which is
- * removed and taken over. Anything else is refused — including a claim that cannot be read, which is
- * a claim being written at this very moment by somebody who got there first: `wx` creates the file
- * before its contents land, so an empty one is the one thing that must not be taken for abandoned.
+ * Written first and read second, and in that order for a reason: a run that reads the directory
+ * before writing itself into it can be read as absent by somebody doing the same thing at the same
+ * moment, and then both go on. This way the only pair that can miss each other is one that started
+ * in the same instant, and what they both do then is stand down — over-cautious once, rather than
+ * wrong.
  *
- * Two runs finding the same abandoned claim is the case to read this for. `unlink` is what keeps them
- * apart: exactly one of them removes the file and the other is told it is already gone, so only one
- * goes on to claim a directory nobody holds. The one that lost tries anyway — it may be first past the
- * post — and whichever of them ends up with `wx` failing reads a live pid and refuses. What must never
- * happen is the removal succeeding for both, which is what `rm` with `force` would have done.
+ * Entries naming processes that no longer exist are cleared as they are found. That is safe where
+ * taking over a shared claim is not: an entry's name says whose it is, so a run only ever removes
+ * its own, and those of processes that hold nothing because they are gone.
  */
 async function claimStorage(persist: string): Promise<() => void> {
-  const at = path.join(persist, OWNER_FILE);
-  await mkdir(persist, { recursive: true });
-  for (const attempt of [1, 2]) {
+  const dir = path.join(persist, OWNERS_DIR);
+  await mkdir(dir, { recursive: true });
+  const mine = path.join(dir, String(process.pid));
+  await writeFile(mine, '');
+  // Also on the way out, because most of the processes that use storage are not asked to give it
+  // back: a build's render worker is ended with a signal, and the runtime's handler for that ends
+  // the process from inside. `exit` is the last thing that runs either way, and only a synchronous
+  // hand-back is any use there.
+  const atExit = (): void => {
+    letGoOfClaim(mine);
+  };
+  process.once('exit', atExit);
+  const release = (): void => {
+    process.removeListener('exit', atExit);
+    letGoOfClaim(mine);
+  };
+  const live: number[] = [];
+  const said = await others(dir);
+  for (const pid of said) {
+    if (running(pid)) {
+      live.push(pid);
+      continue;
+    }
     try {
-      // `wx`: this creates the file or it fails, which is what makes the claim a claim.
-      await writeFile(at, String(process.pid), { flag: 'wx' });
-      // Also on the way out, because most of the processes that hold a claim are not asked to give it
-      // back: a build's render worker is ended with a signal, and the runtime's handler for that ends
-      // the process from inside. `exit` is the last thing that runs either way, and only a synchronous
-      // hand-back is any use there.
-      const atExit = (): void => {
-        letGoOfClaim(at);
-      };
-      process.once('exit', atExit);
-      return () => {
-        process.removeListener('exit', atExit);
-        letGoOfClaim(at);
-      };
+      // A process that is gone is using nothing, and the entry's name is what says it was its.
+      await unlink(path.join(dir, String(pid)));
     } catch {
-      // The one reason `wx` fails that matters is the file being there already, and the pid in it is
-      // what says whether that is a claim or a leftover. Any other reason — a directory that cannot
-      // be written — comes back as the same refusal, which is the honest answer for it too.
-      const had = await holder(at);
-      const abandoned = had !== undefined && !running(had);
-      if (attempt === 2 || !abandoned) {
-        const whom = had === undefined ? 'another process' : `another process (${String(had)})`;
-        throw new LocalStorageError(
-          `${whom} is already holding this project's local storage (${PERSIST_DIR}/), so nothing is published in this run — a dev server and a build cannot hold it at the same time, and neither can two dev servers on the same project. If nothing is holding it, delete ${PERSIST_DIR}/${OWNER_FILE}`,
-        );
-      }
-      try {
-        // The process that wrote this is gone, so the claim is not one any more. Not `rm` with
-        // `force`: this has to fail for the second run to reach it, which is the whole point.
-        await unlink(at);
-      } catch {
-        // Somebody else took it away first. They may or may not have claimed it yet, so the retry
-        // below tries for it — and refuses if they got there.
-      }
+      // Somebody else cleared it first, which is the same outcome.
     }
   }
-  // Unreachable: the loop returns or throws.
-  throw new LocalStorageError("this project's local storage could not be claimed");
+  const [first] = live;
+  if (first !== undefined) {
+    release();
+    throw new LocalStorageError(
+      `another process (${String(first)}) is already using this project's local storage (${PERSIST_DIR}/), so nothing is published in this run — a dev server and a build cannot use it at the same time, and neither can two dev servers on the same project. If nothing is using it, delete ${PERSIST_DIR}/${OWNERS_DIR}/`,
+    );
+  }
+  return release;
 }
 
 /** A failure once the deadline has passed. Its timer never holds a process open by itself. */
