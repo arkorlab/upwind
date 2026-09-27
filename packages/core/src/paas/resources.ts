@@ -107,7 +107,10 @@ export function resourcesOf(env: FunctionEnv): PublishedResources {
   const resources = Object.create(null) as Record<string, PublishedResource>;
   const listed = parseResourcesManifest(env[RESOURCES_MANIFEST_BINDING]);
   for (const entry of listed) {
-    const binding = env[entry.name];
+    // The name has to be one the environment holds itself. `__proto__` is the one that is always
+    // there otherwise — an object, on every ordinary environment — and a list that named it would
+    // publish `Object.prototype` as a database.
+    const binding = Object.hasOwn(env, entry.name) ? env[entry.name] : undefined;
     // A name the Function holds no object by is left out: the application finds nothing there,
     // rather than text where it expects storage.
     if (typeof binding === 'object' && binding !== null) {

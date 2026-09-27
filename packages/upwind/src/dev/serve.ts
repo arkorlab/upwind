@@ -302,8 +302,12 @@ export async function serveDev(options: DevOptions): Promise<void> {
   server.close();
   // A keep-alive connection would otherwise hold the close open for as long as a browser felt like.
   server.closeAllConnections();
-  await app.close();
+  // Before Next.js rather than after, because this is the part of the shutdown that has a deadline
+  // outside it: the supervisor kills a child two seconds after it signals one, and a `SIGKILL` runs
+  // no exit hook, so a runtime still up at that point is a runtime nothing reaps. Nothing is left to
+  // read storage by now — the port is closed and the connections with it.
   await local.dispose();
+  await app.close();
   // Next.js's dev bundler keeps handles of its own, so this process would not end on its own. What
   // was asked for is over.
   process.exit(0);

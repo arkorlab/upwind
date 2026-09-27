@@ -44,7 +44,12 @@ export type Reading =
   | { readonly state: 'unreadable'; readonly saw: string };
 
 function isResource(value: unknown): value is PublishedResource {
-  return typeof value === 'object' && value !== null && 'type' in value && 'binding' in value;
+  if (typeof value !== 'object' || value === null || !('binding' in value)) {
+    return false;
+  }
+  // The kind has to be a kind. `published()` says it hands back a `type` that is a string, and what
+  // it reads is a global rather than something this package built.
+  return 'type' in value && typeof value.type === 'string';
 }
 
 /**

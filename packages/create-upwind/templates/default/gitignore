@@ -15,6 +15,9 @@
 # the deployment bundle a build writes
 /.ppr-cdn/
 
+# this machine's own copy of the project's storage, which `upwind dev` and `upwind build` bind
+/.upwind/
+
 # misc
 .DS_Store
 *.pem

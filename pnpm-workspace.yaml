@@ -54,9 +54,12 @@ catalog:
 allowBuilds:
   esbuild: true
   unrs-resolver: false
-  # Puts the runtime binary where `miniflare` looks for it. Without this the script is skipped and
-  # `upwind dev` finds no workerd to bind a project's local storage to.
-  workerd: true
+  # `false`, and not for want of trying it: `miniflare` requires the `workerd` package, whose main
+  # module resolves the binary out of the platform package for this machine when it is loaded
+  # (`generateBinPath`). The install script only copies that binary to `workerd/bin`, for a command
+  # nothing here runs — and a project that installs `upwind` gets the same answer, which is why one
+  # does not have to approve a build script to have local storage.
+  workerd: false
 
 strictPeerDependencies: true
 

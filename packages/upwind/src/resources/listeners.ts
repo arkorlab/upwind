@@ -38,15 +38,20 @@ const processEvents = process as unknown as {
 const MESSAGE = 'message';
 
 /**
- * The signals the runtime answers, which some processes want back.
+ * The signals the runtime answers that a process may want back — and only the ones it answers
+ * itself.
  *
- * It ends the process from inside each of them, after killing the runtime. `upwind dev` wants that
- * back — it closes its port, lets Next.js shut down, and leaves with the 0 that a script which
- * stopped it on purpose reads. A build's render worker does not: the pool ends a worker with
- * `SIGTERM` (`jest-worker`, half a second after asking nicely), and with no listener for it the
- * worker dies where it stands, runs no exit hook, and leaves a runtime process behind.
+ * The runtime ends the process from inside each of `SIGINT`, `SIGTERM` and `SIGHUP`, after killing
+ * the runtime. `upwind dev` wants the first two back: it closes its port, lets Next.js shut down, and
+ * leaves with the 0 that a script which stopped it on purpose reads. `SIGHUP` it does not answer, so
+ * `SIGHUP` is not taken — a terminal closing on a dev server would otherwise end it with no listener
+ * at all, which runs no exit hook and leaves a runtime process behind.
+ *
+ * A build's render worker wants none of them back: the pool ends a worker with `SIGTERM`
+ * (`jest-worker`, half a second after asking nicely), and the runtime's handler for it is the only
+ * thing that kills the runtime then.
  */
-const RUNTIME_SIGNALS: readonly string[] = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+const RUNTIME_SIGNALS: readonly string[] = ['SIGINT', 'SIGTERM'];
 
 export interface ListenerGuard {
   /** Hand back what was held, and take back what starting the runtime attached. */

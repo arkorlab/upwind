@@ -54,7 +54,10 @@ function declarations(): void {
     stdio: 'inherit',
   });
   if (emit.status !== 0) {
-    throw new Error('the declarations did not build');
+    // `status` is `null` for a `tsc` that never started or that a signal ended, and then what went
+    // wrong is on the result rather than on the terminal.
+    const why = emit.error?.message ?? emit.signal ?? `exit ${String(emit.status)}`;
+    throw new Error(`the declarations did not build (${why})`);
   }
 }
 

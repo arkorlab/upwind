@@ -122,6 +122,12 @@ on `main`, or that names a version the packages do not — which is why the bump
 before the tag exists rather than carried by it. It publishes through npm's trusted publishing, with
 a provenance attestation it reads back off the registry afterwards.
 
+**A package published for the first time needs a person first.** Trusted publishing is configured
+per package on npm, and a name nobody has published has nothing to configure — so a release that
+includes a new package fails on that one until its trusted publisher is set up (which, for a scoped
+name that does not exist yet, means publishing it once by hand). `@stayingupwind/sdk` is in that
+position today.
+
 The last thing it does is draft a GitHub Release for the tag. Notes written; the tarballs npm is
 serving attached, each checked against the digest npm published beside it; and a bill of materials
 for what they carry, in both formats `pnpm sbom` emits. Then it stops. A release here cannot be

@@ -334,11 +334,11 @@ jobs:
     needs: publish
     if: ${{ !inputs.dry-run }}
     runs-on: ubuntu-latest
-    # Five packages, each given the ten minutes the comment below explains, and room to say so. The
+    # Six packages, each given the ten minutes the comment below explains, and room to say so. The
     # read-back is serial, so this has to grow with the number of packages or a release that published
-    # cleanly would be killed while verifying the last one — and the hundred `npm view` calls and the
-    # checkout are on top of the fifty minutes the waiting alone can take.
-    timeout-minutes: 60
+    # cleanly would be killed while verifying the last one — and the hundred and twenty `npm view`
+    # calls and the checkout are on top of the sixty minutes the waiting alone can take.
+    timeout-minutes: 75
     permissions:
       contents: read
     steps:

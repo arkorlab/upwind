@@ -89,9 +89,15 @@ const MS_IN_SECOND = 1000;
 const START_SECONDS = 20;
 const START_MS = START_SECONDS * MS_IN_SECOND;
 
-/** How long stopping the runtime is waited for before its own exit hook is left to it. */
-const STOP_SECONDS = 5;
-const STOP_MS = STOP_SECONDS * MS_IN_SECOND;
+/**
+ * How long stopping the runtime is waited for before its own exit hook is left to it.
+ *
+ * Under the two seconds a `upwind dev` supervisor gives a child it has signalled before killing it
+ * outright (`EXIT_GRACE_MS` in `dev/supervise.ts`), because this wait is inside that one: a shutdown
+ * that waited longer would be a shutdown the supervisor interrupts, and the rest of what the dev
+ * server does on its way out — closing the port, letting Next.js finish — would not happen.
+ */
+const STOP_MS = 1500;
 
 /**
  * The runtime insists a worker have code. This one answers nothing and is never sent a request: it
@@ -342,6 +348,28 @@ async function startAndPublish(
 }
 
 /**
+ * Stop the runtime an abandoned attempt started, whenever it turns out to have started one.
+ *
+ * An attempt that lost to the deadline is still running: it may be between `new Miniflare` and the
+ * query that proves the storage readable, and the runtime it is about to hold would then be one
+ * nothing published and nothing stops. So the attempt is waited out — its failure is already
+ * reported, and is not a reason to say anything twice — and whatever it left behind is stopped.
+ */
+async function stopWhateverStarted(
+  attempt: Promise<void>,
+  started: { runtime?: Miniflare },
+): Promise<void> {
+  try {
+    await attempt;
+  } catch {
+    // Reported by the caller, which is the one that gave up on this.
+  }
+  if (started.runtime !== undefined) {
+    await stopRuntime(started.runtime);
+  }
+}
+
+/**
  * Start a project's local storage and publish it, or say why there is none.
  *
  * Said and carried on rather than thrown, the way a missing adapter is (`dev/adapter.ts`): a dev
@@ -358,9 +386,10 @@ export async function startLocalResources(
   // does not own, and why that matters more than it sounds like, is `listeners.ts`.
   const guard = guardListeners({ answersSignals: options.answersSignals });
   const started: { runtime?: Miniflare } = {};
+  const attempt = startAndPublish(started, projectDir, entries);
   try {
     await Promise.race([
-      startAndPublish(started, projectDir, entries),
+      attempt,
       afterDeadline(
         START_MS,
         `this project's local storage did not come up within ${String(START_SECONDS)}s, so nothing is published in this run — another process holding it (${PERSIST_DIR}/) is the usual reason`,
@@ -370,12 +399,12 @@ export async function startLocalResources(
     return started.runtime === undefined ? NOTHING_STARTED : stopper(started.runtime);
   } catch (error) {
     console.warn(cannotStart(error));
-    if (started.runtime !== undefined) {
-      // Whatever went wrong, a runtime process must not outlive the attempt that started it. One
-      // that is still starting as this gives up on it is left to the runtime's own exit hook: it was
-      // never published, so nothing reads it, and it goes when this process does.
-      await stopRuntime(started.runtime);
-    }
+    // Whatever went wrong, a runtime process must not outlive the attempt that started it — and an
+    // attempt this gave up on may still be starting one, so it is followed to wherever it ends and
+    // whatever it left is stopped. Nothing waits for that: this run has already said it has no
+    // storage, and the runtime it is stopping was never published to anybody.
+    // eslint-disable-next-line @typescript-eslint/no-floating-promises -- said above, not waited for.
+    void stopWhateverStarted(attempt, started);
     return NOTHING_STARTED;
   } finally {
     guard.restore();
