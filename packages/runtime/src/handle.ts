@@ -11,8 +11,8 @@ import {
 } from '@stayingupwind/core/paas';
 import { releaseStream } from '@stayingupwind/core/util';
 
-import { nowMs, withClock } from './cache/clock.ts';
-import { type RequestContext, withRequestContext } from './cache/context.ts';
+import { nowMs } from './cache/clock.ts';
+import { requestContextFor } from './cache/context.ts';
 import {
   crawlerWantsWholePage,
   documentFromBuild,
@@ -62,6 +62,7 @@ import {
 } from './routing.ts';
 import { carriesResumeState, handleRuntimeResume } from './runtime-resume.ts';
 import {
+  externalRewrite,
   type HandleInput,
   HTTP_NOT_FOUND,
   HTTP_OK,
@@ -71,7 +72,6 @@ import {
   resume,
   resumeUrl,
   type RoutedInput,
-  stripPlatformHeaders,
   withoutBody,
 } from './serve.ts';
 import { entrypointKindOf, findShell, getStore, type Store } from './store.ts';
@@ -100,7 +100,6 @@ const MIDDLEWARE_ENTRY_ID = '/_middleware';
 const HTTP_PERMANENT_REDIRECT = 308;
 const HTTP_BAD_REQUEST = 400;
 const HTTP_INTERNAL_ERROR = 500;
-const HTTP_BAD_GATEWAY = 502;
 const HTTP_METHOD_NOT_ALLOWED = 405;
 const FILE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD']);
 /** What a Pages Router data URL ends in. */
@@ -147,27 +146,6 @@ async function handleResume(
     postponed: postponedOf(store, prerender),
     url: resumeUrl(input.request),
   });
-}
-
-async function externalRewrite(request: Request, target: URL): Promise<Response> {
-  const headers = stripPlatformHeaders(request.headers);
-  headers.delete('host');
-  let response: Response;
-  try {
-    response = await fetch(target, {
-      method: request.method,
-      headers,
-      body: request.body,
-      redirect: 'manual',
-    });
-  } catch {
-    releaseStream(request.body, 'rewrite failed: handler body unused');
-    // A name that does not resolve, a refused connection, a handshake that failed: the target is
-    // unreachable, which is not the application failing. Left to propagate it would leave the
-    // top-level catch reporting this app's own 500.
-    return new Response('rewrite target unavailable', { status: HTTP_BAD_GATEWAY });
-  }
-  return new Response(response.body, response);
 }
 
 /**
@@ -621,15 +599,14 @@ async function routeRequest(input: RoutedInput, store: Store): Promise<Response>
 }
 
 export async function handleRequest(handled: HandleInput): Promise<Response> {
-  const context: RequestContext = {
+  const context = requestContextFor({
     tables: { app: handled.app, edge: handled.edge },
     runtime: handled.cache,
     request: handled.request,
     startedAt: handled.clock ?? nowMs(),
-    fetchStarts: new Map(),
     waitUntil: handled.waitUntil,
-    run: (work) => withClock(handled.clock, () => withRequestContext(context, work)),
-  };
+    clock: handled.clock,
+  });
   const input: RoutedInput = { ...handled, initURL: initUrlOf(handled.request), run: context.run };
   return context.run(async () =>
     withoutBody(handled.request, await routeRequest(input, getStore())),

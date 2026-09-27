@@ -24,6 +24,7 @@ export const PRERENDER_HEADER = 'x-nextjs-prerender';
 export const POSTPONED_HEADER = 'x-nextjs-postponed';
 export const HTTP_OK = 200;
 export const HTTP_NOT_FOUND = 404;
+const HTTP_BAD_GATEWAY = 502;
 
 export interface HandleInput extends EntryTables {
   readonly request: Request;
@@ -123,6 +124,27 @@ export type NextCacheState = 'HIT' | 'STALE' | 'MISS';
 export function withCacheState(response: Response, state: NextCacheState): Response {
   response.headers.set(NEXT_CACHE_HEADER, state);
   return response;
+}
+
+export async function externalRewrite(request: Request, target: URL): Promise<Response> {
+  const headers = stripPlatformHeaders(request.headers);
+  headers.delete('host');
+  let response: Response;
+  try {
+    response = await fetch(target, {
+      method: request.method,
+      headers,
+      body: request.body,
+      redirect: 'manual',
+    });
+  } catch {
+    releaseStream(request.body, 'rewrite failed: handler body unused');
+    // A name that does not resolve, a refused connection, a handshake that failed: the target is
+    // unreachable, which is not the application failing. Left to propagate it would leave the
+    // top-level catch reporting this app's own 500.
+    return new Response('rewrite target unavailable', { status: HTTP_BAD_GATEWAY });
+  }
+  return new Response(response.body, response);
 }
 
 /** A plain 404, for a request that names nothing the deployment has. */
