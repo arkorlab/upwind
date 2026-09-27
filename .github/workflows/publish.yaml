@@ -253,3 +253,126 @@ jobs:
             fi
             echo "${name}@${version}: ${predicate}"
           done
+
+  draft:
+    needs: provenance
+    if: ${{ !inputs.dry-run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # The one job here that writes anything. What it writes is a draft: a release nobody has
+      # published yet, which is the only kind this repository can still change its mind about.
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      # Releases are immutable here: once one is published, its notes and its files are what they
+      # are. So a release this workflow left half-made must never be published by accident, and a
+      # release a person did publish must never be touched — the two cases are the two branches.
+      - name: Nothing has published a release for this tag
+        env:
+          TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          state="$(gh release view "${TAG}" --json isDraft --jq .isDraft 2>/dev/null || true)"
+          case "${state}" in
+            true)
+              # An earlier attempt at this same release. A draft holds nothing anyone can have read,
+              # so it is replaced rather than added to, and the tag it names is left alone.
+              echo "::notice::replacing the draft an earlier run left for ${TAG}"
+              gh release delete "${TAG}" --yes
+              ;;
+            false)
+              echo "::error::${TAG} already has a *published* release, which immutability makes unchangeable"
+              exit 1
+              ;;
+          esac
+
+      # The files attached are the ones npm is serving, fetched back and checked against the digest
+      # npm publishes beside them — not a second packing of the same tree, which would be a different
+      # file that only ought to be the same.
+      - name: Collect the tarballs npm is serving
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          rm -rf "${RUNNER_TEMP}/assets" && mkdir -p "${RUNNER_TEMP}/assets"
+          : > "${RUNNER_TEMP}/packages.tsv"
+          for manifest in packages/*/package.json; do
+            if [ "$(node -p "require('./${manifest}').private === true")" = true ]; then
+              continue
+            fi
+            name="$(node -p "require('./${manifest}').name")"
+            curl -fsSL "https://registry.npmjs.org/${name/\//%2f}" -o "${RUNNER_TEMP}/packument.json"
+            # One line, three fields: where the tarball is, the digest npm published beside it, and
+            # what the attestation says it is. Read with `cut` rather than a heredoc, which inside a
+            # YAML block would depend on its own indentation surviving every future edit of this file.
+            meta="$(python3 -c "
+          import json, sys
+          dist = json.load(open(sys.argv[1]))['versions'][sys.argv[2]]['dist']
+          print(
+              dist['tarball'],
+              dist.get('integrity', '-'),
+              dist.get('attestations', {}).get('provenance', {}).get('predicateType', '-'),
+          )
+          " "${RUNNER_TEMP}/packument.json" "${version}")"
+            url="$(printf '%s' "${meta}" | cut -d' ' -f1)"
+            integrity="$(printf '%s' "${meta}" | cut -d' ' -f2)"
+            predicate="$(printf '%s' "${meta}" | cut -d' ' -f3)"
+            file="${RUNNER_TEMP}/assets/$(basename "${url}")"
+            # A scoped and an unscoped package can share a tarball basename, and the second download
+            # would quietly replace the first. Say so instead.
+            if [ -e "${file}" ]; then
+              echo "::error::${name}@${version} would overwrite $(basename "${file}"), already collected"
+              exit 1
+            fi
+            curl -fsSL "${url}" -o "${file}"
+            if [ "${integrity}" != - ]; then
+              got="sha512-$(openssl dgst -sha512 -binary "${file}" | base64 -w0)"
+              if [ "${got}" != "${integrity}" ]; then
+                echo "::error::${name}@${version}: the tarball npm served does not match the digest npm published"
+                exit 1
+              fi
+            fi
+            printf '%s\t%s\t%s\n' "${name}" "${version}" "${predicate}" >> "${RUNNER_TEMP}/packages.tsv"
+            echo "${name}@${version}: $(basename "${file}") matches ${integrity}"
+          done
+
+      - name: Draft the release
+        env:
+          TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          notes="${RUNNER_TEMP}/notes.md"
+          {
+            echo '## Packages'
+            echo
+            echo 'Published to npm, each with a provenance attestation the release verified before this'
+            echo 'draft was made. The files below are the tarballs npm is serving.'
+            echo
+            while IFS=$'\t' read -r name pkg_version predicate; do
+              printf -- '- [`%s@%s`](https://www.npmjs.com/package/%s/v/%s) — `%s`\n' \
+                "${name}" "${pkg_version}" "${name}" "${pkg_version}" "${predicate}"
+            done < "${RUNNER_TEMP}/packages.tsv"
+            echo
+            # GitHub's own changelog, asked for rather than left to `--generate-notes`, so that it
+            # goes *below* what this release is and the whole body is settled before a person looks.
+            gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" -f tag_name="${TAG}" --jq .body
+          } > "${notes}"
+
+          set -- "${TAG}" "${RUNNER_TEMP}"/assets/*.tgz
+          set -- "$@" --draft --verify-tag --title "${TAG}" --notes-file "${notes}"
+          case "${version}" in
+            *-*) set -- "$@" --prerelease ;;
+          esac
+          gh release create "$@"
+          echo "::notice::a draft release for ${TAG} is ready; publishing it is a person's job"
