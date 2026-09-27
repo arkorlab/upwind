@@ -184,6 +184,39 @@ jobs:
       # caller has to grant this as well — a reusable workflow gets no more than it was given.
       id-token: write
     steps:
+      # Asked in `verify` too, and asked again here on purpose: `verify` runs before the environment
+      # gate above, and an approval can wait for hours. What it was asked about can change in that
+      # time — somebody, tired of waiting, makes the release by hand — and this is the last moment
+      # before the irreversible one. First step of the job, so it costs a clone and not a build.
+      - name: Still nothing has published a release for this tag
+        env:
+          TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          said="$(mktemp)"
+          if answer="$(gh release view "${TAG}" --json isDraft --jq .isDraft 2>"${said}")"; then
+            case "${answer}" in
+              false)
+                echo "::error::${TAG} has had a release published while this run waited; immutability makes it unchangeable, and publishing to npm now would leave nowhere to say so"
+                exit 1
+                ;;
+              true) ;;
+              *)
+                echo "::error::unexpected answer about whether ${TAG} has a release: ${answer}"
+                exit 1
+                ;;
+            esac
+          else
+            case "$(cat "${said}")" in
+              *'release not found'*) ;;
+              *)
+                echo "::error::could not tell whether ${TAG} has a release: $(cat "${said}")"
+                exit 1
+                ;;
+            esac
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.tag }}
