@@ -62,7 +62,7 @@ pnpm lint              # ESLint, type-aware, across every package
 pnpm format            # oxfmt --check; `pnpm format:write` writes
 pnpm knip              # unused files and unused dependencies
 pnpm build             # type-checks core and runtime; bundles the adapter's published entry
-pnpm check:patches     # every rewrite of Next.js's output still finds what it insists on
+pnpm check:patches     # the rewrites of Next.js's own package still find what they insist on
 pnpm check:agent-rules # the agent rules `create-upwind` writes are still Next.js's own
 ```
 
@@ -76,11 +76,11 @@ something outside this repository is what this one matched against Next.js by te
 rewrites of Next.js's own output, and the agent rules `create-upwind` copies from it — because text
 goes stale silently:
 
-| Command                  | What it does                                                                                                                                                     |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pnpm check:patches`     | applies every patch to the installed Next.js. No network, a second or two, and part of CI. `--range` does it for every release the supported range admits        |
-| `pnpm check:agent-rules` | has the installed Next.js write its own `AGENTS.md` and `CLAUDE.md`, and compares them byte for byte with what `create-upwind` writes. Instant, and part of CI   |
-| `pnpm check:matrix`      | builds `fixtures/` with several Next.js versions and checks the bundle that came out. Minutes and a package download per version, so it runs on its own schedule |
+| Command                  | What it does                                                                                                                                                                                                                                                                |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm check:patches`     | applies the rewrites that reach Next.js's published package to the installed Next.js. No network, a second or two, and part of CI. `--range` does it for every release the supported range admits                                                                           |
+| `pnpm check:agent-rules` | has the installed Next.js write its own `AGENTS.md` and `CLAUDE.md`, and compares them byte for byte with what `create-upwind` writes. Instant, and part of CI                                                                                                              |
+| `pnpm check:matrix`      | builds `fixtures/` with several Next.js versions and checks the bundle that came out — including the four rewrites aimed at what `next build` _writes_, which no reading of a package can reach. Minutes and a package download per version, so it runs on its own schedule |
 
 None of them is in your way on a normal change: the first two are the fast ones, and `check:matrix`
 only matters if you touched `packages/adapter/src/patches/`. The patch checks are described in

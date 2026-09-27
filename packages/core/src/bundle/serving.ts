@@ -10,7 +10,7 @@ import type {
 import { BEHAVIORAL_RESPONSE_HEADERS, CONTENT_DISPOSITION_HEADER } from '../request/constants.ts';
 import { filterShellResponseHeaders, rendersInline } from '../request/headers.ts';
 import { queryDependent } from './query.ts';
-import type { DeploymentBundle, Prerender, Route, StaticFile } from './schema.ts';
+import type { DeploymentBundle, Entrypoint, Prerender, Route, StaticFile } from './schema.ts';
 
 /**
  * What of a deployment's build the edge serves, and under which headers: the prerenders with a
@@ -41,10 +41,62 @@ const MAX_FUNCTION_FILE_BYTES = MAX_FUNCTION_FILE_KIB * KIB;
  * what — which is what `edgeServedRewrites` needs before it may answer one itself.
  */
 const LITERAL_PATHNAME = /^\/[^\s:(*?#[]*$/u;
-/** The prerender kinds that are a page's own shell: exact, or the class shell of a dynamic route. */
-const SHELL_ROUTE_TYPES: ReadonlySet<string> = new Set(['fallback', 'page', 'shell']);
 /** Documents Next.js renders for an error, never for a request at their own pathname. */
 const INTERNAL_PAGES: ReadonlySet<string> = new Set(['/_error', '/_global-error', '/_not-found']);
+/** The entrypoint kinds whose code renders a document, rather than answering with a response. */
+const DOCUMENT_KINDS: ReadonlySet<string> = new Set(['app-page', 'pages']);
+
+/**
+ * The primary output of each prerender group, by id.
+ *
+ * Next.js writes a group as one document and the RSC, segment and `_next/data` outputs beside it,
+ * and every one of those is the document's own pathname with something added — `.rsc`,
+ * `.segments/…`, or the `_next/data/<buildId>` form a Pages Router page's props take. So the
+ * document is the shortest pathname in its group, and this is a fact about the group rather than
+ * about any spelling: a route whose own last segment happens to read like a suffix is still the
+ * shortest thing in its own group.
+ *
+ * Which matters for a build that says nothing else. Next.js classifies the primary of each group
+ * from 16.3 on (`routeType`) and leaves the siblings unclassified; before that it classifies
+ * nothing, and this is what stands in its place. On a build that does classify, the two agree.
+ */
+function primaryPrerenderIds(prerenders: readonly Prerender[]): ReadonlySet<string> {
+  const primary = new Map<string, Prerender>();
+  for (const prerender of prerenders) {
+    const group = `${prerender.route}\u{0}${String(prerender.groupId)}`;
+    const held = primary.get(group);
+    const shorter =
+      held === undefined ||
+      prerender.pathname.length < held.pathname.length ||
+      (prerender.pathname.length === held.pathname.length && prerender.pathname < held.pathname);
+    if (shorter) {
+      primary.set(group, prerender);
+    }
+  }
+  return new Set([...primary.values()].map((prerender) => prerender.id));
+}
+
+/**
+ * Is this output a document the build rendered, rather than a route handler's response or one of
+ * the outputs that travel beside a document?
+ *
+ * Next.js says so itself from 16.3 on. Before that it says nothing, and the same question is asked
+ * of what a bundle carries either way: the entrypoint for the route says whether the code behind it
+ * renders a document at all, and the group says which of its outputs is the document.
+ */
+export function documentPrerenders(
+  prerenders: readonly Prerender[],
+  entrypoints: readonly Entrypoint[],
+): (prerender: Prerender) => boolean {
+  const kinds = new Map(entrypoints.map((entry) => [entry.pathname, entry.kind]));
+  const primaries = primaryPrerenderIds(prerenders);
+  return (prerender) => {
+    if (prerender.routeType !== undefined) {
+      return prerender.routeType !== 'route';
+    }
+    return DOCUMENT_KINDS.has(kinds.get(prerender.route) ?? '') && primaries.has(prerender.id);
+  };
+}
 
 function isTemplate(pathname: string): boolean {
   return pathname.includes('[');
@@ -161,6 +213,7 @@ function generationIn(bundle: DeploymentBundle): (prerender: Prerender) => boole
   const edgeRuntime = edgeRuntimeRoutes(bundle);
   const pages = pagesRoutes(bundle);
   const rewritten = new Set(edgeServedRewrites(bundle).map((served) => served.pathname));
+  const isDocument = documentPrerenders(bundle.prerenders, bundle.entrypoints);
   return (prerender) => {
     return (
       // A beforeFiles alias hides the page at this pathname. Publishing its shell too would ask
@@ -168,8 +221,10 @@ function generationIn(bundle: DeploymentBundle): (prerender: Prerender) => boole
       !rewritten.has(prerender.pathname) &&
       !edgeRuntime.has(prerender.route) &&
       !(isTemplate(prerender.pathname) && pages.has(prerender.route)) &&
-      prerender.routeType !== undefined &&
-      SHELL_ROUTE_TYPES.has(prerender.routeType) &&
+      // A page's own shell: exact, or the class shell of a dynamic route. Where a build classifies
+      // its outputs that is every `routeType` but `route`, and where it does not it is read off the
+      // outputs themselves — `documentPrerenders` says how.
+      isDocument(prerender) &&
       prerender.body !== undefined &&
       (prerender.initialStatus === undefined || prerender.initialStatus === HTTP_OK)
     );
@@ -193,14 +248,10 @@ function resumableBy(
   bundle: DeploymentBundle,
   eligible: (prerender: Prerender) => boolean,
 ): Prerender[] {
-  return bundle.prerenders.filter((prerender) => {
-    return (
-      prerender.response === 'initial' &&
-      prerender.compute === 'resuming' &&
-      prerender.postponed !== undefined &&
-      eligible(prerender)
-    );
-  });
+  return bundle.prerenders.filter(
+    (prerender) =>
+      resumesFromItself(prerender) && prerender.postponed !== undefined && eligible(prerender),
+  );
 }
 
 /**
@@ -290,8 +341,7 @@ function completeBy(
 ): Prerender[] {
   return bundle.prerenders.filter((prerender) => {
     return (
-      prerender.response === 'complete' &&
-      prerender.compute === 'static' &&
+      completeByItself(prerender) &&
       prerender.postponed === undefined &&
       !INTERNAL_PAGES.has(prerender.pathname) &&
       !actsThroughHeaders(bundle, prerender) &&
@@ -326,13 +376,13 @@ export function edgeServablePrerenders(
  */
 export function routeHandlerPrerenders(bundle: DeploymentBundle): Prerender[] {
   const edgeRuntime = edgeRuntimeRoutes(bundle);
+  const handlers = handlerRoutes(bundle);
   return bundle.prerenders.filter((prerender) => {
     return (
       !edgeRuntime.has(prerender.route) &&
-      prerender.routeType === 'route' &&
+      isHandlerOutput(prerender, handlers) &&
       !queryDependent(prerender, prerender.route, prerender.pathname) &&
-      prerender.response === 'complete' &&
-      prerender.compute === 'static' &&
+      completeByItself(prerender) &&
       prerender.body !== undefined &&
       !isTemplate(prerender.pathname)
     );
@@ -351,6 +401,64 @@ export function routeHandlerPrerenders(bundle: DeploymentBundle): Prerender[] {
  * answer from: it served the build's document for as long as the deployment lived, and neither
  * `revalidate` nor `revalidatePath` ever reached it.
  */
+/**
+ * Has this output the classification that answers for it, whole?
+ *
+ * Next.js writes `response` and `compute` together or not at all, and the bundle carries each as
+ * it found it. One without the other answers nothing — the pair is the answer — so it is read as
+ * the absence it is, and the outputs themselves are asked instead.
+ */
+function isClassified(prerender: Prerender): boolean {
+  return prerender.response !== undefined && prerender.compute !== undefined;
+}
+
+/**
+ * A response the build finished, and one it left the rest of to a resume — asked of the
+ * classification where there is one whole, and of what it classifies where there is not.
+ *
+ * `response` and `compute` arrived in 16.3. What they say about an output the build wrote is what
+ * the output itself says: a body is a response to serve, and postponed state is the rest of a
+ * document — so an output with both is the initial part of one and resumes, one with a body alone
+ * is the whole of it, and one with no body is neither. That last is the part a first attempt at
+ * this missed: the class shell of a `fallback: true` route carries no body, and Next.js calls it
+ * `empty`/`blocking` where postponed state alone would have called it complete.
+ *
+ * Checked against every classified prerender of every fixture bundle to hand — 16.2 and 16.3, both
+ * fixtures — where Next.js's answer and this one agree on all of them.
+ */
+function completeByItself(prerender: Prerender): boolean {
+  if (isClassified(prerender)) {
+    return prerender.response === 'complete' && prerender.compute === 'static';
+  }
+  return prerender.body !== undefined && prerender.postponed === undefined;
+}
+
+function resumesFromItself(prerender: Prerender): boolean {
+  if (isClassified(prerender)) {
+    return prerender.response === 'initial' && prerender.compute === 'resuming';
+  }
+  return prerender.body !== undefined && prerender.postponed !== undefined;
+}
+
+/** The routes whose entrypoint answers with a response rather than rendering a document. */
+function handlerRoutes(bundle: DeploymentBundle): ReadonlySet<string> {
+  const handlers = new Set<string>();
+  for (const entry of bundle.entrypoints) {
+    if (DOCUMENT_KINDS.has(entry.kind)) {
+      continue;
+    }
+    handlers.add(entry.pathname);
+  }
+  return handlers;
+}
+
+/** Is this a route handler's own response? The classification says so, or the entrypoint does. */
+function isHandlerOutput(prerender: Prerender, handlers: ReadonlySet<string>): boolean {
+  return prerender.routeType === undefined
+    ? handlers.has(prerender.route)
+    : prerender.routeType === 'route';
+}
+
 export function cacheablePrerenders(bundle: DeploymentBundle): Prerender[] {
   const generation = generationIn(bundle);
   return [

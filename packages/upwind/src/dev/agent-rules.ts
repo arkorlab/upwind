@@ -17,9 +17,11 @@ import { resolveFromProject } from './next-app.ts';
  * what counts as current. Nothing is imported statically: this package depends on `next` for its
  * types, and the copy that matters is never that one.
  *
- * Never fatal, and never loud about what it could not find. A Next.js without these modules is one
- * that did not have the feature or has moved it, and a dev server that runs is worth more than one
- * that refused over two markdown files.
+ * Never fatal, and never loud about what it could not find. The floor of `SUPPORTED_NEXT_RANGE` is
+ * one of the projects it finds nothing in: 16.2 has neither `generate-agent-files` nor
+ * `telemetry/agent-name`, because the feature arrived in 16.3. So a 16.2 project gets a dev server
+ * and no agent files, which is what it would get from its own `next dev`, and nothing here says a
+ * word about it. The same silence covers a later release that moves them.
  */
 
 /**

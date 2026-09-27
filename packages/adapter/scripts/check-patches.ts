@@ -5,7 +5,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-import { FIXTURE_COVERAGE, type FixtureCoverage } from '../../../tools/next-matrix/src/coverage.ts';
+import {
+  FIXTURE_COVERAGE,
+  type FixtureCoverage,
+  namesIn,
+} from '../../../tools/next-matrix/src/coverage.ts';
 import { type Copy, type Patch, PATCHES, type PatchContext } from '../src/patches/index.ts';
 import { SUPPORTED_NEXT_RANGE } from '../src/patches/versions.ts';
 import { copyOf, missedRuntimes } from './copies.ts';
@@ -319,7 +323,7 @@ type Patches = ReadonlyMap<string, Patch>;
 function chunksClaimed(): Set<string> {
   const claimed = new Set<string>();
   for (const coverage of Object.values(FIXTURE_COVERAGE)) {
-    for (const name of coverage.chunks) {
+    for (const name of namesIn(coverage.chunks)) {
       claimed.add(name);
     }
   }
@@ -333,13 +337,15 @@ function chunksClaimed(): Set<string> {
  */
 function checkClaims(fixture: string, coverage: FixtureCoverage, byName: Patches): string[] {
   const problems: string[] = [];
-  const expected = new Set<string>(coverage.expected);
-  for (const name of coverage.expected) {
+  // Groups flattened: a coverage entry may name the two shapes one patch has across the range, and
+  // every name in one is a patch that has to exist and, for a chunk, to say it rewrites build output.
+  const expected = new Set<string>(namesIn(coverage.expected));
+  for (const name of namesIn(coverage.expected)) {
     if (!byName.has(name)) {
       problems.push(`${fixture} names "${name}", which is not a patch`);
     }
   }
-  for (const name of coverage.chunks) {
+  for (const name of namesIn(coverage.chunks)) {
     const patch = byName.get(name);
     if (patch === undefined) {
       problems.push(`${fixture} names "${name}", which is not a patch`);

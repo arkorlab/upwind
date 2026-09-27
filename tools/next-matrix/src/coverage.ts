@@ -16,6 +16,11 @@
 const FETCH_CACHE_WAIT_UNTIL = 'fetch-cache-wait-until';
 const GRAPH_MANIFESTS = 'graph-manifests';
 const TURBOPACK_RUNTIME = 'turbopack-runtime';
+/**
+ * The Turbopack WebAssembly loader, in the two shapes the range holds it: a module of its own from
+ * 16.3, and the Turbopack runtime itself in 16.2 (`patches/wasm-loader.ts`).
+ */
+const WASM_LOADER = ['wasm-loader', 'runtime-wasm-loader'] as const;
 
 /** The rewrites that reach Next.js's own package, and so every build of any fixture. */
 const PACKAGE_PATCHES = [
@@ -29,9 +34,19 @@ const PACKAGE_PATCHES = [
   'task-timers',
 ] as const;
 
+/**
+ * A patch a build has to apply, or — where Next.js has shipped one thing in two shapes across the
+ * supported range — the patches of which exactly one must fire. The Turbopack WebAssembly loader is
+ * the case in point: a module of its own from 16.3, the Turbopack runtime itself in 16.2, and which
+ * of the two a build reaches is the version's business rather than the fixture's. Naming both is
+ * what lets one coverage record hold for the whole range; requiring exactly one is what keeps it
+ * from quietly passing when a marker starts claiming what is not its shape.
+ */
+export type Expected = string | readonly string[];
+
 export interface FixtureCoverage {
   /** Every patch a build of this fixture has to apply, in one Function or the other. */
-  readonly expected: readonly string[];
+  readonly expected: readonly Expected[];
   /**
    * Of those, the patches that have to rewrite something this build *wrote*.
    *
@@ -40,7 +55,12 @@ export interface FixtureCoverage {
    * reaches only Next.js's own file in `next-edge`, where it did not. Each list was read off a real
    * build rather than reasoned about.
    */
-  readonly chunks: readonly string[];
+  readonly chunks: readonly Expected[];
+}
+
+/** Every patch a coverage entry names, groups flattened. */
+export function namesIn(expected: readonly Expected[]): string[] {
+  return expected.flatMap((one) => (typeof one === 'string' ? [one] : [...one]));
 }
 
 export const FIXTURE_COVERAGE = {
@@ -49,7 +69,7 @@ export const FIXTURE_COVERAGE = {
     expected: [
       ...PACKAGE_PATCHES,
       TURBOPACK_RUNTIME,
-      'wasm-loader',
+      WASM_LOADER,
       'vercel-og',
       'vercel-og-font',
       'vercel-og-image-response',
@@ -60,11 +80,11 @@ export const FIXTURE_COVERAGE = {
       'hanging-input-abort',
       TURBOPACK_RUNTIME,
       'vercel-og',
-      'wasm-loader',
+      WASM_LOADER,
     ],
   },
-  // No `wasm-loader`: WebAssembly on the edge runtime travels as `wasmAssets` under Turbopack's own
-  // global and never reaches the Node.js loader that patch rewrites. No `vercel-og` either — nothing
+  // No WebAssembly loader: on the edge runtime it travels as `wasmAssets` under Turbopack's own
+  // global and never reaches the Node.js loader either shape of that patch rewrites. No `vercel-og` either — nothing
   // here renders an image. And `hanging-input-abort` reaches no chunk: this build put the module it
   // rewrites in none of its own.
   'next-edge': {
