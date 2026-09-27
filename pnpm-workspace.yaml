@@ -37,7 +37,7 @@ catalog:
   # Reads a project's own config at build time, the way wrangler reads its own. Build-time only:
   # nothing of it reaches a Function.
   jsonc-parser: 3.3.1
-  knip: 6.35.1
+  knip: 6.38.0
   # The workerd `upwind dev` and `upwind build` bind a project's local storage to. The version is
   # the registry's `latest`, which is a prerelease: the last non-prerelease carries a workerd from
   # July, and a compatibility date a Function is built against (`FUNCTION_COMPATIBILITY_DATE` in
