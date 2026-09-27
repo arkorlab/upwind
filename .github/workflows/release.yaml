@@ -31,6 +31,11 @@ on:
         required: false
         default: true
         type: boolean
+      bootstrap:
+        description: The first publish of a package npm holds no trusted publisher for. By token, once.
+        required: false
+        default: false
+        type: boolean
 
 permissions: {}
 
@@ -51,3 +56,8 @@ jobs:
     with:
       tag: ${{ inputs.tag || github.ref_name }}
       dry-run: ${{ inputs.dry-run || false }}
+      bootstrap: ${{ inputs.bootstrap || false }}
+    secrets:
+      # Named rather than inherited, so the reusable half is handed this one secret and no other.
+      # This block and the secret both go away once every package has a trusted publisher.
+      npm-token: ${{ secrets.NPM_TOKEN }}

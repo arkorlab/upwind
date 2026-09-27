@@ -13,21 +13,20 @@ name: Publish
 # provenance the registry recorded is read back afterwards, so a release that produced no
 # attestation fails loudly instead of quietly.
 #
-# A package published for the first time cannot come through here: npm will not hold a trusted
-# publisher for a name that does not exist yet. That release needs a token once, and the shape it
-# took is in this file's history (the `bootstrap` input, retired once the three packages existed).
+# A package published for the first time cannot come through a trusted publisher: npm will not hold
+# one for a name that does not exist yet. `upwind` and `create-upwind` are in that position, and
+# `bootstrap` below is how they get out of it — a token, read in one step of one release, and then
+# taken away again. It was here once before, for the first three packages, and left the same way.
 #
-# `upwind` and `create-upwind` are in that position now. Both are publishable, `pnpm --recursive
-# publish` will reach both, and neither has a trusted publisher — so a release made before they are
-# bootstrapped fails at the publish step, possibly with some of the other packages already uploaded.
-# Publish each of them once by hand with a token, configure its trusted publisher to name
-# `release.yaml`, and then release as usual.
+# The alternative — publishing each of them by hand and then releasing as usual — would put a version
+# of each on the registry that no provenance covers, because a provenance statement is signed with
+# this workflow's own identity and nothing on a laptop has one. The `provenance` job below would then
+# fail a release for packages that are, permanently, unattested. So the token comes in here instead.
 #
-# Those one-offs have to be `pnpm publish`, not `npm publish`. Three packages here describe what they
-# ship through `publishConfig` — the `bin` of `upwind` and of `create-upwind`, and the adapter's
-# `exports`, each naming `dist/` there and the TypeScript sources outside it — and pnpm is what folds
-# those in as it packs. `npm publish` would upload manifests pointing at `.ts` files that no installed
-# copy can load.
+# Either way it has to be pnpm and not npm that packs. Three packages describe what they ship through
+# `publishConfig` — the `bin` of `upwind` and of `create-upwind`, and the adapter's `exports`, each
+# naming `dist/` there and the TypeScript sources outside it — and pnpm is what folds those in as it
+# packs. `npm publish` would upload manifests pointing at `.ts` files no installed copy can load.
 
 on:
   workflow_call:
@@ -41,6 +40,23 @@ on:
         required: false
         default: false
         type: boolean
+      bootstrap:
+        description: >
+          Hand the publish step a token as well, for a package npm holds no trusted publisher for
+          because it does not exist yet. The packages that do have one still use it: pnpm asks for
+          each in turn and falls back per package, so a release can carry both kinds at once. What
+          neither kind changes is the attestation — provenance is signed with this workflow's
+          identity, which is a separate thing from what publishing authenticated by.
+        required: false
+        default: false
+        type: boolean
+    secrets:
+      npm-token:
+        description: >
+          Needed by `bootstrap`, and by nothing else. A new *unscoped* name cannot be named in a
+          granular token before it exists, so the one this asks for is broader than the packages it
+          publishes: make it short-lived, and revoke it as soon as the release lands.
+        required: false
 
 permissions: {}
 
@@ -169,6 +185,20 @@ jobs:
       # rather than only in CI: a tag can be pushed before that run finishes, or after it is cancelled.
       - run: pnpm check:patches
       - run: pnpm build
+
+      # Last, and alone: everything above — `pnpm install` and the lifecycle scripts it is allowed to
+      # run among them — has already happened, and none of it was in a position to read a credential.
+      - name: A credential for a package that does not exist yet
+        if: ${{ inputs.bootstrap }}
+        env:
+          NPM_TOKEN: ${{ secrets.npm-token }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NPM_TOKEN:-}" ]; then
+            echo '::error::bootstrap was asked for, but no npm-token was passed'
+            exit 1
+          fi
+          printf '//registry.npmjs.org/:_authToken=%s\n' "${NPM_TOKEN}" >> ~/.npmrc
 
       - name: Publish
         env:
