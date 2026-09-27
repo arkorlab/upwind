@@ -49,7 +49,9 @@ function digestOf(value: string): string {
 
 /** The directory of a project's claims: named for the project, and never for the token. */
 function ownersDir(config: Config): string {
-  const digest = digestOf(`${config.baseUrl}\n${config.projectId}`);
+  // The origin rather than the spelling: `https://h` and `https://h/` name one host, and two runs
+  // that wrote them differently would each think they had the project to themselves.
+  const digest = digestOf(`${new URL(config.baseUrl).origin}\n${config.projectId}`);
   return path.join(os.tmpdir(), `upwind-deploy-claims-${digest}`, 'owners');
 }
 

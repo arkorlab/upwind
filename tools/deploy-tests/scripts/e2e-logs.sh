@@ -9,11 +9,16 @@
 # making shows up anyway.
 set -euo pipefail
 
+# A newline after each, because neither is guaranteed to end with one: a build or a deployment that
+# died mid-line is exactly what this hook exists to show, and the header below must not land on the
+# end of it.
 if [ -f .adapter-build.log ]; then
   cat .adapter-build.log
+  echo
 fi
 
 if [ -f .adapter-server.log ]; then
   echo '=== the deployment ==='
   cat .adapter-server.log
+  echo
 fi

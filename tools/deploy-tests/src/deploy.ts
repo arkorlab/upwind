@@ -120,6 +120,27 @@ async function uploadMissing(
   );
 }
 
+/**
+ * The deployment as the API sees it, or nothing while it cannot see it yet.
+ *
+ * It was registered a moment ago, by id, and the registration was answered — so a `not_found` here is
+ * not an answer about this deployment, it is a read that has not caught up with the write. Polling
+ * again is the whole of the response; the deadline above still ends a wait that never resolves.
+ */
+async function visible(
+  input: DeployInput,
+  deploymentId: string,
+): Promise<DeploymentDetail | undefined> {
+  try {
+    return await input.client.getDeployment(deploymentId);
+  } catch (error) {
+    if (error instanceof ApiError && error.code === 'not_found') {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
 /** What a deployment the host has finished with has to be for the suite to test it. */
 function settled(input: DeployInput, deploymentId: string, detail: DeploymentDetail): void {
   if (detail.id !== deploymentId || detail.projectId !== input.config.projectId) {
@@ -144,7 +165,11 @@ async function waitForHost(input: DeployInput, deploymentId: string): Promise<vo
   let deadline = now() + NO_PROGRESS_TIMEOUT_MS;
   let seen: string | undefined;
   for (;;) {
-    const detail = await input.client.getDeployment(deploymentId);
+    const detail = await visible(input, deploymentId);
+    if (detail === undefined) {
+      await wait(input.pollIntervalMs ?? POLL_INTERVAL_MS);
+      continue;
+    }
     if (detail.currentStep !== seen) {
       seen = detail.currentStep;
       deadline = now() + NO_PROGRESS_TIMEOUT_MS;

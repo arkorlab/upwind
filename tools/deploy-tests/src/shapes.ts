@@ -25,8 +25,18 @@ export function asString(value: unknown): string {
   return value;
 }
 
+/**
+ * Absent means absent: `null` or nothing at all.
+ *
+ * A present field of another type is not the same thing and is not read as one — a `value` that came
+ * back as a number would otherwise be put back as `null`, which the API reads as "keep what is
+ * stored", and the environment of the fixture before this one would answer for this one.
+ */
 export function optionalString(value: unknown): string | undefined {
-  return typeof value === 'string' ? value : undefined;
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  return asString(value);
 }
 
 export function asStrings(value: unknown): string[] {

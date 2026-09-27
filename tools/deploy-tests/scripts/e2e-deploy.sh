@@ -47,14 +47,22 @@ export NEXT_PRIVATE_TEST_MODE=e2e
 pnpm install --no-frozen-lockfile --prod=false >&2
 
 # The harness writes the application's own build script and appends `&& pnpm post-build`
-# (`test/lib/next-modes/base.ts`). Run what it wrote, so that a fixture's own build command and its
-# arguments are not silently replaced by a plain `next build`. The appended step only reprints the
-# markers below, and the harness reads the first match of each, so it is dropped here.
+# (`test/lib/next-modes/base.ts`). Run exactly what it wrote: a fixture's own build command and its
+# build arguments are not ours to replace with a plain `next build`, and the appended step is not
+# ours to drop either — in deploy mode the harness writes a `post-build` of its own that prints the
+# three markers, but a fixture that has one keeps it (`...pkgScripts` comes after), and that one may
+# do real work.
+#
+# So both sets of markers can end up in the log. The harness's own gates
+# `NEXT_SUPPORTS_IMMUTABLE_ASSETS` on `VERCEL_IMMUTABLE_STATIC_FILES_ENABLED`, which nothing here
+# sets, and would say `0`; this adapter turns them on, so ours says `1`. It is read with
+# `String.prototype.match` — the first match, not the last (`test/lib/next-modes/next-deploy.ts`,
+# `parseIdsFromCliOuput`) — and `.adapter-build.log` below puts ours at the top, ahead of the build's
+# own output. Checked against v16.3.6.
 build_command="$(
   node -p "JSON.parse(require('fs').readFileSync('package.json','utf8')).scripts?.build ?? 'next build'" \
     2>/dev/null || echo 'next build'
 )"
-build_command="${build_command% && pnpm post-build}"
 echo "build command: ${build_command}" >&2
 
 # What the build says is what `next.cliOutput` is read from, so it has to be kept and not only shown:

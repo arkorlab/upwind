@@ -24,11 +24,18 @@ import { TOOL_ENV_PREFIXES } from './config.ts';
 const execFileAsync = promisify(execFile);
 const READER = path.join(import.meta.dirname, 'read-env.ts');
 /**
- * Seeded so that `@next/env` can run at all, plus the marker it leaves behind to know it has already
- * read the files. All of them are dropped from what comes back: the last is Next.js's own bookkeeping
- * in the reader's process, and a deployed Function that started with it set would skip its own.
+ * The two names the child is given, both dropped again from what it gives back.
+ *
+ * `NODE_ENV` because which `.env` files count is a question about a production build. Nothing else,
+ * and that is the point: dotenv expands `$NAME` in a value against the environment it reads in, so a
+ * `PATH` or a `HOME` handed in here is a machine's path waiting to be written into a deployed
+ * Function by any fixture whose `.env` mentions one. The reader is started as an absolute path, so it
+ * needs no `PATH` of its own.
+ *
+ * `__NEXT_PROCESSED_ENV` is Next.js's own bookkeeping — the marker it leaves to know it has read the
+ * files — and a Function that started with it set would skip its own.
  */
-const SEEDED = ['PATH', 'HOME', 'NODE_ENV', '__NEXT_PROCESSED_ENV'] as const;
+const SEEDED = ['NODE_ENV', '__NEXT_PROCESSED_ENV'] as const;
 const KIB = 1024;
 const MIB = KIB * KIB;
 /** An application's `.env` files are small; a runaway is not something to read to the end of. */
@@ -41,11 +48,7 @@ export async function fixtureEnvironment(directory: string): Promise<Record<stri
   try {
     ({ stdout } = await execFileAsync(process.execPath, [READER, appDir], {
       cwd: appDir,
-      env: {
-        PATH: process.env['PATH'] ?? '',
-        HOME: process.env['HOME'] ?? '',
-        NODE_ENV: 'production',
-      },
+      env: { NODE_ENV: 'production' },
       maxBuffer: MAX_OUTPUT_BYTES,
     }));
   } catch (error) {
