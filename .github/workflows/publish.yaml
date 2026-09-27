@@ -121,7 +121,7 @@ jobs:
           # stdout and stderr kept apart: merged, a warning `gh` decided to print on a *successful*
           # call would arrive glued to the answer, and `true` would stop matching `true`.
           said="$(mktemp)"
-          if answer="$(gh release view "${TAG}" --json isDraft --jq .isDraft 2>"${said}")"; then
+          if answer="$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft --jq .isDraft 2>"${said}")"; then
             case "${answer}" in
               false)
                 echo "::error::${TAG} already has a *published* release, which immutability makes unchangeable"
@@ -184,39 +184,6 @@ jobs:
       # caller has to grant this as well — a reusable workflow gets no more than it was given.
       id-token: write
     steps:
-      # Asked in `verify` too, and asked again here on purpose: `verify` runs before the environment
-      # gate above, and an approval can wait for hours. What it was asked about can change in that
-      # time — somebody, tired of waiting, makes the release by hand — and this is the last moment
-      # before the irreversible one. First step of the job, so it costs a clone and not a build.
-      - name: Still nothing has published a release for this tag
-        env:
-          TAG: ${{ inputs.tag }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          said="$(mktemp)"
-          if answer="$(gh release view "${TAG}" --json isDraft --jq .isDraft 2>"${said}")"; then
-            case "${answer}" in
-              false)
-                echo "::error::${TAG} has had a release published while this run waited; immutability makes it unchangeable, and publishing to npm now would leave nowhere to say so"
-                exit 1
-                ;;
-              true) ;;
-              *)
-                echo "::error::unexpected answer about whether ${TAG} has a release: ${answer}"
-                exit 1
-                ;;
-            esac
-          else
-            case "$(cat "${said}")" in
-              *'release not found'*) ;;
-              *)
-                echo "::error::could not tell whether ${TAG} has a release: $(cat "${said}")"
-                exit 1
-                ;;
-            esac
-          fi
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.tag }}
@@ -291,6 +258,39 @@ jobs:
           # Long enough for the draft job below to take them, and no longer: what they are for is the
           # release, and the release is where they end up.
           retention-days: 1
+
+      # Asked in `verify` too, and asked again here on purpose. `verify` runs before the environment
+      # gate above, and an approval can wait hours; what it was asked about can change while it waits,
+      # if somebody tired of waiting makes the release by hand. This is the last step before the one
+      # thing here that cannot be undone, which is where the answer has to still be true.
+      - name: Still nothing has published a release for this tag
+        env:
+          TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          said="$(mktemp)"
+          if answer="$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft --jq .isDraft 2>"${said}")"; then
+            case "${answer}" in
+              false)
+                echo "::error::${TAG} has had a release published while this run waited; immutability makes it unchangeable, and publishing to npm now would leave nowhere to say so"
+                exit 1
+                ;;
+              true) ;;
+              *)
+                echo "::error::unexpected answer about whether ${TAG} has a release: ${answer}"
+                exit 1
+                ;;
+            esac
+          else
+            case "$(cat "${said}")" in
+              *'release not found'*) ;;
+              *)
+                echo "::error::could not tell whether ${TAG} has a release: $(cat "${said}")"
+                exit 1
+                ;;
+            esac
+          fi
 
       - name: Publish
         env:
@@ -411,7 +411,7 @@ jobs:
           # stdout is read apart from stderr, so a warning printed beside a good answer is not read as
           # part of it.
           said="$(mktemp)"
-          if answer="$(gh release view "${TAG}" --json isDraft --jq .isDraft 2>"${said}")"; then
+          if answer="$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft --jq .isDraft 2>"${said}")"; then
             state="${answer}"
           else
             case "$(cat "${said}")" in
@@ -427,7 +427,7 @@ jobs:
               # An earlier attempt at this same release. A draft holds nothing anyone can have read,
               # so it is replaced rather than added to, and the tag it names is left alone.
               echo "::notice::replacing the draft an earlier run left for ${TAG}"
-              gh release delete "${TAG}" --yes
+              gh release delete "${TAG}" --repo "${GITHUB_REPOSITORY}" --yes
               ;;
             false)
               echo "::error::${TAG} already has a *published* release, which immutability makes unchangeable"
@@ -535,7 +535,7 @@ jobs:
             fi
           done
           set -- "${TAG}" "${RUNNER_TEMP}"/assets/*.tgz "${RUNNER_TEMP}"/sbom/*.json
-          set -- "$@" --draft --verify-tag --title "${TAG}" --notes-file "${notes}"
+          set -- "$@" --repo "${GITHUB_REPOSITORY}" --draft --verify-tag --title "${TAG}" --notes-file "${notes}"
           case "${version}" in
             *-*) set -- "$@" --prerelease ;;
           esac
