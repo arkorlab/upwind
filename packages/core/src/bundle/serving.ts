@@ -60,7 +60,7 @@ const DOCUMENT_KINDS: ReadonlySet<string> = new Set(['app-page', 'pages']);
  * from 16.3 on (`routeType`) and leaves the siblings unclassified; before that it classifies
  * nothing, and this is what stands in its place. On a build that does classify, the two agree.
  */
-export function primaryPrerenderIds(prerenders: readonly Prerender[]): ReadonlySet<string> {
+function primaryPrerenderIds(prerenders: readonly Prerender[]): ReadonlySet<string> {
   const primary = new Map<string, Prerender>();
   for (const prerender of prerenders) {
     const group = `${prerender.route}\u{0}${String(prerender.groupId)}`;
@@ -221,8 +221,9 @@ function generationIn(bundle: DeploymentBundle): (prerender: Prerender) => boole
       !rewritten.has(prerender.pathname) &&
       !edgeRuntime.has(prerender.route) &&
       !(isTemplate(prerender.pathname) && pages.has(prerender.route)) &&
-      // The same set `routeType` named where a build names one: a classified document is any of
-      // `SHELL_ROUTE_TYPES`, which is every classification but `route`.
+      // A page's own shell: exact, or the class shell of a dynamic route. Where a build classifies
+      // its outputs that is every `routeType` but `route`, and where it does not it is read off the
+      // outputs themselves — `documentPrerenders` says how.
       isDocument(prerender) &&
       prerender.body !== undefined &&
       (prerender.initialStatus === undefined || prerender.initialStatus === HTTP_OK)
