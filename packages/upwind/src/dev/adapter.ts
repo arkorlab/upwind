@@ -2,11 +2,11 @@ import { type RestoreEnv, setEnv } from './env.ts';
 import { resolveFromProject } from './next-app.ts';
 
 /**
- * The adapter, named for this run.
+ * The adapter, named for a run.
  *
  * `next build` and the dev server load the same adapter module, and its `modifyConfig` runs in every
  * phase — which is how `/__upwind` comes to be reserved inside the dev server's own routing table
- * (see `dev-prefix.ts` in `@stayingupwind/adapter`). So `upwind dev` names it, from the project's own
+ * (see `dev-prefix.ts` in `@stayingupwind/adapter`). So `upwind` names it, from the project's own
  * installed copy, rather than asking every project to write it into `next.config` twice.
  *
  * Nothing is overwritten: a project's `next.config` that sets `adapterPath` wins over this
@@ -15,11 +15,19 @@ import { resolveFromProject } from './next-app.ts';
  *
  * And nothing is left behind: `restore` puts the environment back once Next.js has read it, for the
  * reasons `env.ts` gives.
+ *
+ * Both commands come through here, and they differ twice. A dev server names the adapter in its own
+ * environment, because Next.js runs inside it; `upwind build` only asks which adapter it is
+ * (`resolveAdapterPath`) and hands it to the child it starts, so its own environment is never
+ * touched — and has nothing to put back. And a dev server without an adapter still serves the
+ * application and still answers `/__upwind` at the front door, so it says what is lost and carries
+ * on, where a build without one produces no deployment bundle at all and is refused
+ * (`build/run.ts`).
  */
 
 /** What Next.js's default config reads an adapter module's path from (`config-shared.ts`). */
-const ADAPTER_PATH_ENV = 'NEXT_ADAPTER_PATH';
-const ADAPTER_PACKAGE = '@stayingupwind/adapter';
+export const ADAPTER_PATH_ENV = 'NEXT_ADAPTER_PATH';
+export const ADAPTER_PACKAGE = '@stayingupwind/adapter';
 
 export interface InstalledAdapter {
   /** The adapter module named for this run, or nothing when none was found. */
@@ -31,6 +39,18 @@ export interface InstalledAdapter {
 /** For a run that set nothing: there is nothing to put back. */
 function restoreNothing(): void {
   // The environment was not touched.
+}
+
+/**
+ * Which adapter this run would use: the one the environment already names, or the project's own
+ * copy. Nothing is written, and nothing is said — the caller decides what a missing one means.
+ */
+export function resolveAdapterPath(projectDir: string): string | undefined {
+  const configured = process.env[ADAPTER_PATH_ENV];
+  if (configured !== undefined && configured !== '') {
+    return configured;
+  }
+  return resolveFromProject(projectDir, ADAPTER_PACKAGE);
 }
 
 export function installAdapterPath(projectDir: string): InstalledAdapter {

@@ -343,6 +343,18 @@ importers:
         specifier: 'catalog:'
         version: 5.9.3
 
+  packages/create-upwind:
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.13.4
+      rolldown:
+        specifier: 'catalog:'
+        version: 1.2.9
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+
   packages/runtime:
     dependencies:
       '@next/routing':

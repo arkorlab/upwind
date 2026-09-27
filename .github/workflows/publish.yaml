@@ -17,15 +17,17 @@ name: Publish
 # publisher for a name that does not exist yet. That release needs a token once, and the shape it
 # took is in this file's history (the `bootstrap` input, retired once the three packages existed).
 #
-# `upwind` is in that position now. It is publishable, `pnpm --recursive publish` will reach it, and
-# it has no trusted publisher — so a release made before it is bootstrapped fails at the publish step,
-# possibly with some of the other packages already uploaded. Publish `upwind@<version>` once by hand
-# with a token, configure its trusted publisher to name `release.yaml`, and then release as usual.
+# `upwind` and `create-upwind` are in that position now. Both are publishable, `pnpm --recursive
+# publish` will reach both, and neither has a trusted publisher — so a release made before they are
+# bootstrapped fails at the publish step, possibly with some of the other packages already uploaded.
+# Publish each of them once by hand with a token, configure its trusted publisher to name
+# `release.yaml`, and then release as usual.
 #
-# That one-off has to be `pnpm publish`, not `npm publish`. Two packages here describe what they ship
-# through `publishConfig` — `upwind`'s `bin` and the adapter's `exports` both name `dist/` there and the
-# TypeScript sources outside it — and pnpm is what folds those in as it packs. `npm publish` would
-# upload manifests pointing at `.ts` files that no installed copy can load.
+# Those one-offs have to be `pnpm publish`, not `npm publish`. Three packages here describe what they
+# ship through `publishConfig` — the `bin` of `upwind` and of `create-upwind`, and the adapter's
+# `exports`, each naming `dist/` there and the TypeScript sources outside it — and pnpm is what folds
+# those in as it packs. `npm publish` would upload manifests pointing at `.ts` files that no installed
+# copy can load.
 
 on:
   workflow_call:
@@ -196,11 +198,11 @@ jobs:
     needs: publish
     if: ${{ !inputs.dry-run }}
     runs-on: ubuntu-latest
-    # Four packages, each given the ten minutes the comment below explains, and room to say so. The
+    # Five packages, each given the ten minutes the comment below explains, and room to say so. The
     # read-back is serial, so this has to grow with the number of packages or a release that published
-    # cleanly would be killed while verifying the last one — and the eighty `npm view` calls and the
-    # checkout are on top of the forty minutes the waiting alone can take.
-    timeout-minutes: 50
+    # cleanly would be killed while verifying the last one — and the hundred `npm view` calls and the
+    # checkout are on top of the fifty minutes the waiting alone can take.
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:
@@ -227,7 +229,7 @@ jobs:
             name="$(node -p "require('./${manifest}').name")"
             predicate=''
             # Give the registry time to agree with itself. It needs more than it sounds like: on the
-            # first release, two of the three packages were readable at once and the third answered
+            # first release, two of the three packages then published were readable at once and the third answered
             # 404 for its whole document for nine minutes — while its attestation endpoint was
             # already serving. So this waits ten, and the failure below means what it says.
             for _ in $(seq 20); do

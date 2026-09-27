@@ -14,6 +14,9 @@
   "sortPackageJson": {},
   "ignorePatterns": [
     "**/node_modules/**",
+    // The application `create-upwind` writes: it ships as it is written, in the shape a Next.js
+    // project has rather than the shape this repository's own sources have.
+    "packages/create-upwind/templates/**",
     "**/.adapter-tests/**",
     "**/.next/**",
     "**/.wrangler/**",
