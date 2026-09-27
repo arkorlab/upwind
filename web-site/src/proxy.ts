@@ -40,18 +40,24 @@ function joinPath(segments: readonly string[]): string {
 }
 
 /**
- * Both inputs are part of the decision even when only one of them was read: a redirect chosen from
- * `Accept-Language` must not be replayed for a request whose cookie asks for the other language.
+ * What a redirect out of a bare path varies on: both inputs, even when only one was read — a
+ * redirect chosen from `Accept-Language` must not be replayed for a request whose cookie asks for
+ * the other language.
  *
- * It reaches the visitor on the redirect, and not on the rewrite: Next.js builds that response from
- * the page it rewrote to and keeps its own `Vary` (`rsc, next-router-*`), which a rule in
- * `next.config` cannot add to either — the framework owns that header on an app response. What keeps
- * the rewrite honest instead is the matcher below: it matches `/`, so the edge runs this Function for
- * every bare path rather than serving one out of storage, and the language is decided per request.
+ * **On the redirects only, and never on the rewrite.** A redirect is this Function's own response.
+ * A rewrite is not: the page is what answers, and the headers set here are merged onto that response
+ * by `Headers.set` — the host's runtime does it the way Next.js's own server does, so a `Vary` here
+ * would not join the framework's but replace it. `/` would go out varying on the cookie and not on
+ * `rsc`, and a cached document could then answer the router's own request for the same URL with
+ * markup where a flight payload belongs.
+ *
+ * What keeps the rewrite honest instead is the matcher below: it matches every bare path, so the
+ * edge runs this Function for `/` rather than serving it out of storage, and the language is decided
+ * per request.
  */
 const LOCALE_VARY = 'Cookie, Accept-Language';
 
-/** Appended, not set: the `Vary` Next.js adds for an RSC request has to survive this. */
+/** Appended, not set: a redirect of Next.js's own may carry a `Vary` that has to survive this. */
 function varyOnLocaleInputs(response: NextResponse): NextResponse {
   response.headers.append('vary', LOCALE_VARY);
   return response;
@@ -72,19 +78,26 @@ function chooseLocaleForBarePath(request: NextRequest): Locale {
  * Without this, following an English link with a Japanese cookie would land on Japanese, which is
  * what the bilingual 404's own English link would otherwise do to a reader who has a cookie.
  *
- * `private, no-store` twice over. A `Set-Cookie` a shared cache replayed would hand one visitor's
- * choice to the next — and a 308 the *browser* stored would be followed from its own cache, without
- * ever asking for this response again, so a reader who had since chosen Japanese would take the
- * English link and arrive in Japanese: the bug this exists to fix, by way of the redirect cache. The
- * status stays 308 because `/en` really is `/` permanently, which is what a crawler should record.
- *
- * Only on a redirect, and never on a page: a response that cannot be shared is one a Function has to
- * serve every time, and the redirect is the cheap one to give up. `/ja` is a page, and records
- * nothing.
+ * Only on a redirect, and never on a page: a `Set-Cookie` makes a response one visitor's, so the
+ * `cache-control` goes with it, and a page that cannot be shared is a page a Function serves every
+ * time. The redirect is the cheap one to give up. `/ja` is a page, and records nothing.
  */
 function rememberLocale(response: NextResponse, locale: Locale): NextResponse {
   const { name, ...options } = localeCookieOptions;
   response.cookies.set(name, locale, options);
+  return response;
+}
+
+/**
+ * A response no cache may keep: shared, or the browser's own.
+ *
+ * The `/en` redirect is both, for different reasons. A `Set-Cookie` a shared cache replayed would
+ * hand one visitor's choice to the next; and a 308 — cacheable by default, permanently — that the
+ * browser stored from a prefetch would be followed from its own cache, so the click that was meant
+ * to say "English" would reach nothing that could hear it. The status stays 308 all the same,
+ * because `/en` really is `/` for good, which is what a crawler should write down.
+ */
+function unstorable(response: NextResponse): NextResponse {
   response.headers.set('cache-control', 'private, no-store');
   return response;
 }
@@ -130,7 +143,10 @@ export const proxy: NextProxy = (request) => {
   if (first === defaultLocale) {
     const url = request.nextUrl.clone();
     url.pathname = joinPath(rest);
-    const redirect = NextResponse.redirect(url, PERMANENT_REDIRECT);
+    // Never stored, whether or not it carries the cookie: a 308 is cacheable by default, and one a
+    // prefetch put in the browser's cache would be followed later without this Function being asked
+    // again — so the click that was meant to record English would record nothing.
+    const redirect = unstorable(NextResponse.redirect(url, PERMANENT_REDIRECT));
     return isDocumentNavigation(request) ? rememberLocale(redirect, defaultLocale) : redirect;
   }
 
@@ -144,5 +160,5 @@ export const proxy: NextProxy = (request) => {
       NextResponse.redirect(localeUrl(request, locale, segments), TEMPORARY_REDIRECT),
     );
   }
-  return varyOnLocaleInputs(NextResponse.rewrite(localeUrl(request, defaultLocale, segments)));
+  return NextResponse.rewrite(localeUrl(request, defaultLocale, segments));
 };

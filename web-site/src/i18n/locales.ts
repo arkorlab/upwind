@@ -35,3 +35,22 @@ export const htmlLang: Record<Locale, string> = {
 export function otherLocale(locale: Locale): Locale {
   return locale === 'en' ? 'ja' : 'en';
 }
+
+/**
+ * A language's own name for itself, and the invitation to switch to it — both written *in* it.
+ *
+ * Not in the dictionaries, because neither is a sentence of the page's language: the switch on the
+ * English page says 日本語 and means it in Japanese, which is why the button carries `lang` and why a
+ * reader who cannot read the page can still read the way out of it. A label half in one language and
+ * half in the other is the thing this avoids: a screen reader announces one `lang` per element, and
+ * would say "Language" in a Japanese voice.
+ */
+export const localeName: Record<Locale, string> = {
+  en: 'English',
+  ja: '日本語',
+};
+
+export const switchToLocale: Record<Locale, string> = {
+  en: 'Switch to English',
+  ja: '日本語に切り替える',
+};

@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 import './globals.css';
 
 import { NotFoundCard } from '@/components/not-found-card.tsx';
+import { en } from '@/content/en.ts';
 
 /**
  * The 404 for a URL that matched no route at all.
@@ -14,7 +15,7 @@ import { NotFoundCard } from '@/components/not-found-card.tsx';
  */
 
 export const metadata: Metadata = {
-  title: 'upwind',
+  title: en.meta.siteName,
   robots: { index: false, follow: false },
 };
 

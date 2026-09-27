@@ -43,11 +43,7 @@ export function SiteHeader({
           <a href={NPM_URL} className={NAV_LINK}>
             {copy.nav.npm}
           </a>
-          <LanguageSwitcher
-            locale={locale}
-            label={copy.nav.language.label}
-            target={copy.nav.language.target}
-          />
+          <LanguageSwitcher locale={locale} />
         </nav>
       </div>
     </header>

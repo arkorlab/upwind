@@ -30,8 +30,6 @@ export interface Copy {
     readonly skipToContent: string;
     readonly repository: string;
     readonly npm: string;
-    /** The switch's accessible name, and the other language's name written in that language. */
-    readonly language: { readonly label: string; readonly target: string };
   };
   readonly hero: {
     readonly tagline: string;

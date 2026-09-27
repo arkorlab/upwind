@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation';
 import { type ReactNode, useTransition } from 'react';
 
 import { setLocaleAction } from '@/app/actions/locale.ts';
-import { type Locale, otherLocale } from '@/i18n/locales.ts';
+import { type Locale, localeName, otherLocale, switchToLocale } from '@/i18n/locales.ts';
 import { switchLocalePath } from '@/lib/routes.ts';
 
 /**
@@ -14,18 +14,12 @@ import { switchLocalePath } from '@/lib/routes.ts';
  * and it takes the target from `location` rather than from `usePathname()`, which for English reports
  * the internal `/en` rewrite, a path this site redirects away from.
  *
- * The label is the other language's name written in that language, which is the one label a reader
- * who cannot read the current page can still read.
+ * Every word of it is in the language it leads to, which is what `lang` on the button says: the name
+ * a reader can read without reading the page, and an accessible name in one language rather than a
+ * sentence stitched from two. A screen reader has one voice per element, and this element has one
+ * language.
  */
-export function LanguageSwitcher({
-  locale,
-  label,
-  target,
-}: {
-  readonly locale: Locale;
-  readonly label: string;
-  readonly target: string;
-}): ReactNode {
+export function LanguageSwitcher({ locale }: { readonly locale: Locale }): ReactNode {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const to = otherLocale(locale);
@@ -41,13 +35,13 @@ export function LanguageSwitcher({
     <button
       type="button"
       lang={to}
-      aria-label={`${label}: ${target}`}
+      aria-label={switchToLocale[to]}
       aria-busy={pending}
       disabled={pending}
       onClick={onClick}
       className="rounded-sm border border-border px-2 py-1 text-xs hover:bg-subtle disabled:text-muted"
     >
-      {target}
+      {localeName[to]}
     </button>
   );
 }

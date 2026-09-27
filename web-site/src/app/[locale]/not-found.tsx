@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
 
 import { NotFoundCard } from '@/components/not-found-card.tsx';
+import { en } from '@/content/en.ts';
 
 /**
  * A path that matched `[locale]` but named no language — `/zz`, which the proxy never produces and a
@@ -14,7 +15,7 @@ import { NotFoundCard } from '@/components/not-found-card.tsx';
  */
 
 export const metadata: Metadata = {
-  title: 'upwind',
+  title: en.meta.siteName,
   description: undefined,
   robots: { index: false, follow: false },
 };

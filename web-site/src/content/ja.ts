@@ -19,7 +19,6 @@ export const ja = {
     skipToContent: '本文へ',
     repository: 'GitHub',
     npm: 'npm',
-    language: { label: '言語', target: 'English' },
   },
   hero: {
     tagline: 'Next.js のデプロイ用アダプターと、それが作ったものを配信するランタイム。',

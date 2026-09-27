@@ -21,7 +21,6 @@ export const en = {
     skipToContent: 'Skip to content',
     repository: 'GitHub',
     npm: 'npm',
-    language: { label: 'Language', target: '日本語' },
   },
   hero: {
     tagline: 'A Next.js deployment adapter, and the runtime that serves what it builds.',
