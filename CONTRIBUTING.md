@@ -122,11 +122,12 @@ on `main`, or that names a version the packages do not — which is why the bump
 before the tag exists rather than carried by it. It publishes through npm's trusted publishing, with
 a provenance attestation it reads back off the registry afterwards.
 
-**A package published for the first time needs a person first.** Trusted publishing is configured
-per package on npm, and a name nobody has published has nothing to configure — so a release that
-includes a new package fails on that one until its trusted publisher is set up (which, for a scoped
-name that does not exist yet, means publishing it once by hand). `@stayingupwind/sdk` is in that
-position today.
+**A package published for the first time takes one release that cannot come through there.** npm will
+not hold a trusted publisher for a name that does not exist yet, and publishing such a name by hand
+would leave a version no provenance covers — which the release after it fails over. The answer, twice
+now, has been a temporary `bootstrap` input carrying a token for that one release and removed again
+afterwards; [`publish.yaml`](.github/workflows/publish.yaml) opens by saying what that release taught.
+`@stayingupwind/sdk` is a name in that position today.
 
 The last thing it does is draft a GitHub Release for the tag. Notes written; the tarballs npm is
 serving attached, each checked against the digest npm published beside it; and a bill of materials

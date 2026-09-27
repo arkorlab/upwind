@@ -1,3 +1,5 @@
+import { readFileSync, unlinkSync } from 'node:fs';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
@@ -42,11 +44,13 @@ const PERSIST_DIR = '.upwind';
  * from the second dies inside the runtime, `SQLITE_BUSY` and fatal, taking the runtime with it and
  * leaving that query unanswered for good. There is nothing to catch, because nothing ever returns.
  *
- * `upwind dev` is one process and never meets this. A build renders in several, so `upwind build`
- * asks the adapter for one (`UPWIND_LOCAL_RESOURCES_ENV`, `experimental.cpus`) and publishes only
- * there (`entry.ts`). A project that sets its own worker count keeps it, and then a prerender that
- * writes is a prerender that may find the storage taken — which is what `proveReadable` and the
- * reader's own message are for.
+ * Which is why the rule is kept here rather than discovered there: `claimStorage` takes the directory
+ * for one process at a time, and a run that cannot have it says so before it publishes anything.
+ *
+ * `upwind dev` is one process and would never have met this anyway. A build renders in several, so
+ * `upwind build` asks the adapter for one (`UPWIND_LOCAL_RESOURCES_ENV`, `experimental.cpus`) and
+ * publishes only there (`entry.ts`) — a project that sets its own worker count keeps it, and then all
+ * but one of its renderers is told, at startup, that something else has the storage.
  *
  * Miniflare's mechanism for several runtimes over one directory is `unsafeEnableSharedStorage`,
  * where instances elect an owner through a dev registry and reach storage through it. It is not
@@ -75,6 +79,22 @@ const WORKER_NAME = 'upwind-local';
  * A key nothing is ever stored under. Read once per run, to prove the storage can be read at all.
  */
 const PROBE_KEY = '__upwind_probe';
+
+/**
+ * The file that says which process has this project's storage.
+ *
+ * The rule it enforces is the runtime's, and the runtime enforces it terribly: a second runtime over
+ * one directory reads happily and then dies inside the first write, leaving that write unanswered
+ * for good. Nothing can be caught there, so the conflict is caught here instead, before a binding is
+ * published — a file this run creates exclusively, holding the pid, removed when it stops.
+ *
+ * A run that was killed outright leaves the file behind, and a build is exactly that: the pool gives a
+ * worker half a second between `SIGTERM` and `SIGKILL`, and stopping a runtime can take longer than
+ * that. So a claim left over is the ordinary case rather than the exception, and the pid in it is what
+ * tells one apart from a claim in use: a process that is gone was not using this, and a run that finds
+ * it takes it over. What the file prevents is two *live* runtimes, which is the thing that loses data.
+ */
+const OWNER_FILE = 'owner';
 
 /**
  * How long all of that is waited for — starting the runtime, taking the bindings, reading through
@@ -236,6 +256,89 @@ async function probe(entry: ResourceManifestEntry, binding: unknown): Promise<vo
   }
 }
 
+/** Is that process still running? Signal 0 asks without sending anything. */
+function running(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // `EPERM` is a process this user may not signal, which is still a process that exists.
+    return (error as { code?: string }).code === 'EPERM';
+  }
+}
+
+/** The pid in the owner file, or nothing when there is no file or it says something else. */
+async function holder(at: string): Promise<number | undefined> {
+  try {
+    const said = Number.parseInt(await readFile(at, 'utf8'), 10);
+    return Number.isSafeInteger(said) && said > 0 ? said : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Give the claim back, if it is still this process's to give.
+ *
+ * Synchronous, because the one place this has to work is an `exit` handler. The pid is checked first:
+ * a claim this run had taken from it — by a later run that read a pid this one no longer had, which is
+ * the stale-takeover path — is not a claim to remove.
+ */
+function letGoOfClaim(at: string): void {
+  try {
+    if (readFileSync(at, 'utf8') === String(process.pid)) {
+      unlinkSync(at);
+    }
+  } catch {
+    // Gone already, or never ours. Either way there is nothing to let go of and nobody to tell.
+  }
+}
+
+/**
+ * Claim this project's storage for this process, or say who has it.
+ *
+ * Twice, at most: the second attempt is for a claim that turned out to be a dead process's, which is
+ * removed and taken over. A third failure means somebody live is holding it — or racing for it, which
+ * amounts to the same answer.
+ */
+async function claimStorage(persist: string): Promise<() => void> {
+  const at = path.join(persist, OWNER_FILE);
+  await mkdir(persist, { recursive: true });
+  for (const attempt of [1, 2]) {
+    try {
+      // `wx`: this creates the file or it fails, which is what makes the claim a claim.
+      await writeFile(at, String(process.pid), { flag: 'wx' });
+      // Also on the way out, because most of the processes that hold a claim are not asked to give it
+      // back: a build's render worker is ended with a signal, and the runtime's handler for that ends
+      // the process from inside. `exit` is the last thing that runs either way, and only a synchronous
+      // hand-back is any use there.
+      const atExit = (): void => {
+        letGoOfClaim(at);
+      };
+      process.once('exit', atExit);
+      return () => {
+        process.removeListener('exit', atExit);
+        letGoOfClaim(at);
+      };
+    } catch {
+      // The one reason `wx` fails that matters is the file being there already, and the pid in it is
+      // what says whether that is a claim or a leftover. Any other reason — a directory that cannot
+      // be written — comes back as the same refusal, which is the honest answer for it too.
+      const had = await holder(at);
+      if (attempt === 2 || (had !== undefined && running(had))) {
+        const whom = had === undefined ? 'another process' : `another process (${String(had)})`;
+        throw new LocalStorageError(
+          `${whom} is already holding this project's local storage (${PERSIST_DIR}/), so nothing is published in this run — a dev server and a build cannot hold it at the same time, and neither can two dev servers on the same project`,
+        );
+      }
+      // Whoever wrote it is gone, or wrote nothing readable. Either way it is not a claim any more.
+      await rm(at, { force: true });
+    }
+  }
+  // Unreachable: the loop returns or throws.
+  throw new LocalStorageError("this project's local storage could not be claimed");
+}
+
 /** A failure once the deadline has passed. Its timer never holds a process open by itself. */
 async function afterDeadline(ms: number, said: string): Promise<never> {
   await new Promise<void>((resolve) => {
@@ -247,14 +350,16 @@ async function afterDeadline(ms: number, said: string): Promise<never> {
 /**
  * Prove the storage can be read, before a single binding is published.
  *
- * The runtime does not open a database when it starts — it opens it at the first query, and a
- * directory another process is already holding is one that query dies on: `SQLITE_BUSY`, fatal,
- * from inside the runtime, taking the runtime with it and leaving the query unanswered for good.
- * Published without this, that would be an application that *hangs* the first time a page reads
- * storage, which is the worst of the ways this can go wrong — nothing to read, and nothing said.
+ * The runtime does not open a database when it starts; it opens it at the first query. So a runtime
+ * that cannot reach its storage at all — a directory it has no business in, one whose contents another
+ * program left in a state it will not have — is one that looks perfectly well until an application
+ * asks it something, and then answers nothing at all. The first read of every kind is made here
+ * instead, against a key nothing uses, where a failure is still a sentence this can print and where
+ * a read that never answers is caught by the deadline the whole attempt is under (`START_MS`).
  *
- * So the first read of every kind is made here, against a key nothing uses. What cannot answer is
- * caught by the deadline the whole attempt is under (`START_MS`).
+ * What this does *not* catch is another runtime over the same directory: two of them read side by
+ * side without complaint, and it is the first *write* that dies. `claimStorage` is what covers that,
+ * because nothing here could.
  */
 async function proveReadable(
   env: FunctionEnv,
@@ -304,13 +409,13 @@ async function stopRuntime(runtime: Miniflare): Promise<void> {
   }
 }
 
-function stopper(runtime: Miniflare): LocalResources {
+function stopper(runtime: Miniflare, release: () => void): LocalResources {
   let stopping: Promise<void> | undefined;
   return {
     dispose: async () => {
       // Once, and awaited by everyone: a dev run ends through whichever of its paths reaches the
       // end first, and stopping a runtime that is already stopping is not the caller's problem.
-      stopping ??= stopRuntime(runtime);
+      stopping ??= letGo(Promise.resolve(runtime), release);
       await stopping;
     },
   };
@@ -333,45 +438,51 @@ function cannotStart(error: unknown): string {
   return `upwind: could not start this project's local storage (${first}) — nothing is published, so \`db\`, \`kv()\` and \`blob()\` will find nothing in this run`;
 }
 
-/** What starting takes: a runtime, the bindings on it, a read through each, and the symbol. */
-async function startAndPublish(
-  started: { runtime?: Miniflare },
-  projectDir: string,
-  entries: readonly ResourceManifestEntry[],
-): Promise<void> {
-  // Handed back through the caller's object rather than returned, so that a deadline which gives up
-  // on the rest of this still knows what there is to stop.
-  started.runtime = await startRuntime(runtimeOptions(projectDir, entries));
-  const env = await localEnv(started.runtime, entries);
-  await proveReadable(env, entries);
-  publishResources(env);
+interface Attempt {
+  /**
+   * The runtime, as soon as there is one, or nothing when the attempt failed before there was.
+   *
+   * Separate from `done` because the two answer at different moments, and the cleanup path needs the
+   * earlier one: what the deadline below catches is a query that never answers, and by then a runtime
+   * is up and holding the project's storage. Waiting for `done` to find that out would be waiting for
+   * the very thing that is not going to happen.
+   */
+  readonly runtime: Promise<Miniflare | undefined>;
+  /** The whole of it: a runtime, the bindings on it, a read through each, and the symbol. */
+  readonly done: Promise<Miniflare>;
+}
+
+function startAndPublish(projectDir: string, entries: readonly ResourceManifestEntry[]): Attempt {
+  const arrived: PromiseWithResolvers<Miniflare | undefined> = Promise.withResolvers();
+  const done = (async (): Promise<Miniflare> => {
+    let runtime: Miniflare | undefined;
+    try {
+      runtime = await startRuntime(runtimeOptions(projectDir, entries));
+    } finally {
+      // Either way, and before anything slower: a runtime, or the news that there will not be one.
+      arrived.resolve(runtime);
+    }
+    const env = await localEnv(runtime, entries);
+    await proveReadable(env, entries);
+    publishResources(env);
+    return runtime;
+  })();
+  return { runtime: arrived.promise, done };
 }
 
 /**
- * Stop the runtime an abandoned attempt started, whenever it turns out to have started one.
- *
- * An attempt that lost to the deadline is still running, and where it is decides what there is to do.
- * Past `new Miniflare` it has a runtime already — which is the usual way this goes, since what the
- * deadline catches is a query that will never answer — and that one is stopped now. Short of it there
- * is nothing yet, so the attempt is waited out first: its failure is already reported and is not a
- * reason to say anything twice.
+ * Let go of everything an abandoned attempt took: the runtime it turned out to start, as soon as
+ * there is one to stop, and the claim on the storage either way.
  */
-async function stopWhateverStarted(
-  attempt: Promise<void>,
-  started: { runtime?: Miniflare },
+async function letGo(
+  arriving: Promise<Miniflare | undefined> | undefined,
+  release: (() => void) | undefined,
 ): Promise<void> {
-  if (started.runtime === undefined) {
-    try {
-      await attempt;
-    } catch {
-      // Reported by the caller, which is the one that gave up on this.
-    }
-  }
-  // Read after the wait, because the wait is what may have put one there.
-  const { runtime } = started;
+  const runtime = arriving === undefined ? undefined : await arriving;
   if (runtime !== undefined) {
     await stopRuntime(runtime);
   }
+  release?.();
 }
 
 /**
@@ -390,26 +501,29 @@ export async function startLocalResources(
   // Before the runtime is started, and given back in the `finally`: what it does to a process it
   // does not own, and why that matters more than it sounds like, is `listeners.ts`.
   const guard = guardListeners({ answersSignals: options.answersSignals });
-  const started: { runtime?: Miniflare } = {};
-  const attempt = startAndPublish(started, projectDir, entries);
+  let release: (() => void) | undefined;
+  let attempt: Attempt | undefined;
   try {
-    await Promise.race([
-      attempt,
+    // The claim comes first, because the thing it prevents cannot be undone: two runtimes over one
+    // directory read each other's data happily and then lose a write with no error anybody can see.
+    release = await claimStorage(path.join(projectDir, PERSIST_DIR));
+    attempt = startAndPublish(projectDir, entries);
+    const runtime = await Promise.race([
+      attempt.done,
       afterDeadline(
         START_MS,
-        `this project's local storage did not come up within ${String(START_SECONDS)}s, so nothing is published in this run — another process holding it (${PERSIST_DIR}/) is the usual reason`,
+        `this project's local storage did not come up within ${String(START_SECONDS)}s, so nothing is published in this run`,
       ),
     ]);
-    // Only reached when `startAndPublish` won, so the runtime is there.
-    return started.runtime === undefined ? NOTHING_STARTED : stopper(started.runtime);
+    return stopper(runtime, release);
   } catch (error) {
     console.warn(cannotStart(error));
-    // Whatever went wrong, a runtime process must not outlive the attempt that started it — and an
-    // attempt this gave up on may still be starting one, so it is followed to wherever it ends and
-    // whatever it left is stopped. Nothing waits for that: this run has already said it has no
-    // storage, and the runtime it is stopping was never published to anybody.
+    // Whatever went wrong, a runtime process must not outlive the attempt that started it — including
+    // an attempt still in the middle of starting one — and the claim goes back with it. Nothing waits
+    // for that: this run has already said it has no storage, and what is being let go of was never
+    // published to anybody.
     // eslint-disable-next-line @typescript-eslint/no-floating-promises -- said above, not waited for.
-    void stopWhateverStarted(attempt, started);
+    void letGo(attempt?.runtime, release);
     return NOTHING_STARTED;
   } finally {
     guard.restore();
