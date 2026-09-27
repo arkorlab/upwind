@@ -38,17 +38,32 @@ const TARGET =
 /** What the function reads of a prerender, both of them Next.js's own: not a file of anyone else's. */
 const INPUT_READY = '.inputReady().then(';
 const MARKS = [INPUT_READY, '.waitForStage('];
-/** The two waits of the last pass, in each copy of the function. */
-const WAITS_PER_COPY = 2;
 /**
- * `scheduleOnNextTick(() => controller.abort())`, once after the final stage and once without one,
- * as it reads in the source, called through the module (`(0, _scheduler.scheduleOnNextTick)(…)`) and
- * after a minifier alike.
+ * The pair of waits the last pass gives up on, matched together.
+ *
+ * The scheduler is read off the code rather than named, because the name does not always survive.
+ * Reached as a property of a module namespace it does — a minifier may rename the namespace but not
+ * the export (`(0,g.scheduleOnNextTick)(…)`, and `(0, _scheduler.scheduleOnNextTick)(…)` in the
+ * source) — and reached as a local binding it does not (`t(…)`, which is what a 16.2 chunk holds).
+ * What is the same in every shape is the pair: a wait for the runtime stage whose `then` schedules
+ * the abort, and the same call again where there was no stage to wait for.
+ *
+ * Both in one match, and the second held to the first by back-reference, so the scope this rewrites
+ * is the pair itself. A minifier picks names per scope and reuses them freely, so `t(()=>b.abort())`
+ * somewhere else in the same chunk is a thing that happens, and neither end of the pair may be one
+ * of those: the first is anchored to the `waitForStage` this function's own wait follows, and the
+ * second to the branch taken when there was no stage — an `else`, or the `:` a chunk writes it as.
+ * An unrelated call between them is stepped over rather than taken, and what does separate them is
+ * kept as it was.
+ *
+ * An arrow is written `()=>` by every compiler that produces these files, minified or not, so the
+ * scheduler is either a name or a parenthesized expression and needs no more than that said of it.
  */
-const TICK_ABORT =
-  /(?:\(0,\s*[\w$]+\.)?scheduleOnNextTick\)?\(\(\)\s*=>\s*(?<controller>[\w$]+)\.abort\(\)\)/gu;
-const TIMER_ABORT = 'setTimeout(()=>$<controller>.abort(),0)';
-const LEFTOVERS = [/scheduleOnNextTick\)?\(\(\)\s*=>\s*[\w$]+\.abort\(\)\)/u];
+const BOTH_ABORTS =
+  /(?<head>\.waitForStage\([^;]*?\)\.then\(\(\)=>)(?<tick>[\w$]+|\([^)]{1,60}\))\(\(\)=>(?<controller>[\w$]+)\.abort\(\)\)(?<between>[\s\S]{0,200}?(?:else[\s{]*|:))\k<tick>\(\(\)=>\k<controller>\.abort\(\)\)/gu;
+/** The same two, on a timer that runs once the microtask queue is empty. */
+const TIMER_ABORTS =
+  '$<head>setTimeout(()=>$<controller>.abort(),0)$<between>setTimeout(()=>$<controller>.abort(),0)';
 
 export const hangingInputAbortPatch: Patch = {
   name: NAME,
@@ -59,12 +74,21 @@ export const hangingInputAbortPatch: Patch = {
   // compiled runtimes: `TARGET` admits them, and the waits this rewrites are not in them.
   reaches: ['module', 'esm-module', 'build-output'],
   apply(source, file) {
-    // Two to each copy of the function, and a chunk may hold more than one: Turbopack puts the
-    // one it compiled for each layer that imports it wherever the graph put that layer.
-    const waits = WAITS_PER_COPY * occurrencesOf(source, INPUT_READY);
-    const result = new Rewrite(NAME, file, source)
-      .expand(TICK_ABORT, TIMER_ABORT, waits, "the last pass's wait for a cached function's input")
-      .forbid(LEFTOVERS, 'a wait that ends in the middle of the microtasks it waits for');
-    return { contents: result.contents, edits: result.edits, notes: [] };
+    // One copy of the function to each `inputReady`, and a chunk may hold more than one: Turbopack
+    // puts the one it compiled for each layer that imports it wherever the graph put that layer.
+    // Each copy holds the pair once, so the two counts have to agree — and where they do not,
+    // something about the shape has moved and no rewrite below would mean anything.
+    const copies = occurrencesOf(source, INPUT_READY);
+    const result = new Rewrite(NAME, file, source).expand(
+      BOTH_ABORTS,
+      TIMER_ABORTS,
+      copies,
+      "the last pass's wait for a cached function's input",
+    );
+    return {
+      contents: result.contents,
+      edits: result.edits,
+      notes: [`${String(copies)} copy/copies of the wait`],
+    };
   },
 };

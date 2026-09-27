@@ -326,13 +326,18 @@ function isAllowedExternal(specifier: string): boolean {
  * the wrapper's own body is a load by module id. The exception is tied to that chunk by name, so
  * a dynamic `import()` an application makes, which lands in a chunk of its own, is refused as it
  * is anywhere else. A Turbopack that names the chunk otherwise fails the build here, which is
- * where the question belongs. The hashes on either side of the template's name are Turbopack's,
- * whose alphabet has `-` and `_` beside the letters and digits (`0a-s4i-`, `06bu--d` are ones it
- * made), so they are matched as such and nothing else about the name is.
+ * where the question belongs.
+ *
+ * What identifies the chunk is the template it was built from, and only that. The hashes on either
+ * side of the template's name are Turbopack's, and their alphabet is not one to enumerate: it was
+ * taken for letters, digits, `-` and `_` until a build produced `11s91~v`, which failed an audit
+ * over a character nothing here has any business having an opinion about. So the hashes are
+ * whatever is not a path separator, and the name is read for the one part of it that means
+ * something.
  */
 const ALLOWED_DYNAMIC_LOADS: readonly RegExp[] = [
   /^\.next\/server\/chunks\/(?:ssr\/)?\[turbopack\]_runtime\.js:\d+: (?:import\(|require\.resolve\(|contextPrototype\.t = typeof require )/u,
-  /^\.next\/server\/edge\/chunks\/(?:ssr\/)?[\w-]+_next_dist_esm_build_templates_edge-wrapper_[\w-]+\.js:\d+: (?:import\(|require\.resolve\(|\w+\.t = "function" == typeof require \? require :|contextPrototype\.t = typeof require === "function" \? require :)/u,
+  /^\.next\/server\/edge\/chunks\/(?:ssr\/)?[^/]+_next_dist_esm_build_templates_edge-wrapper_[^/]+\.js:\d+: (?:import\(|require\.resolve\(|\w+\.t = "function" == typeof require \? require :|contextPrototype\.t = typeof require === "function" \? require :)/u,
   /^next\/dist\/compiled\/next-server\/[\w-]+\.runtime\.prod\.js:\d+: import\(/u,
   /^next\/dist\/server\/require-hook\.js:\d+: (?:const|let) resolve = /u,
 ];

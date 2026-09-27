@@ -1,4 +1,4 @@
-import { type Patch, Rewrite } from './types.ts';
+import { occurrencesOf, type Patch, Rewrite } from './types.ts';
 
 /**
  * `next/og` — the `ImageResponse` behind an `opengraph-image` or `twitter-image` route.
@@ -104,15 +104,27 @@ export const vercelOgImageResponsePatch: Patch = {
   // Next.js's own file, and no copy of it anywhere else.
   reaches: ['module'],
   apply(source, file) {
-    const result = new Rewrite(IMAGE_RESPONSE_PATCH, file, source)
+    const rewrite = new Rewrite(IMAGE_RESPONSE_PATCH, file, source);
+    // The Cache Components path arrived in 16.3; a 16.2 build has no such branch and there is
+    // nothing to leave out. More than one would mean this matched something it never meant to.
+    const cached = occurrencesOf(source, CACHED_BODY);
+    if (cached > 1) {
+      throw rewrite.fail(
+        `expected the Cache Components path at most once, found ${String(cached)}`,
+      );
+    }
+    const result = rewrite
       .replace(RUNTIME_PICK, `import(${JSON.stringify(EDGE_BUILD)})`, 1, "the library's import")
-      .replace(CACHED_BODY, '', 1, 'the Cache Components path')
+      .replace(CACHED_BODY, '', cached, 'the Cache Components path')
       .forbid([NODE_BUILD], "the library's Node.js build")
       .forbid(['cache-image-response'], 'the Cache Components path');
     return {
       contents: result.contents,
       edits: result.edits,
-      notes: [`${NODE_BUILD} -> ${EDGE_BUILD}`, 'Cache Components path left out'],
+      notes: [
+        `${NODE_BUILD} -> ${EDGE_BUILD}`,
+        cached === 0 ? 'no Cache Components path' : 'Cache Components path left out',
+      ],
     };
   },
 };

@@ -7,7 +7,12 @@ import { promisify } from 'node:util';
 
 import { type DeploymentBundle, deploymentBundleSchema } from '@stayingupwind/core/bundle';
 
-import { FIXTURE_COVERAGE, type FixtureCoverage, type FixtureName } from './coverage.ts';
+import {
+  type Expected,
+  FIXTURE_COVERAGE,
+  type FixtureCoverage,
+  type FixtureName,
+} from './coverage.ts';
 
 /**
  * Builds real applications with real Next.js versions, and holds each build to what the adapter
@@ -239,7 +244,9 @@ function explain(error: unknown): string[] {
   if (failure.killed === true) {
     return [`the build was killed after ${String(BUILD_TIMEOUT_MS / MINUTE_MS)} minutes`];
   }
-  const output = `${failure.stderr ?? ''}\n${failure.stdout ?? ''}`.trim();
+  // stderr last, because that is where the reason ends up and the tail is what gets shown:
+  // `next build`'s progress fills stdout, and a tail of that says only that it was still going.
+  const output = `${failure.stdout ?? ''}\n${failure.stderr ?? ''}`.trim();
   if (output === '') {
     return [error instanceof Error ? error.message : String(error)];
   }
@@ -290,6 +297,23 @@ async function readJson(file: string): Promise<unknown> {
   return JSON.parse(await readFile(file, 'utf8')) as unknown;
 }
 
+/**
+ * One name, or exactly one of a group.
+ *
+ * Exactly one, not at least one: where a coverage entry names the two shapes one patch has across
+ * the range, a build reaches whichever its version holds, and both firing means a marker has started
+ * claiming what is not its shape — which is the thing naming both is there to catch, not to allow.
+ */
+function firedOnce(expected: Expected, fired: ReadonlySet<string>, missing: string): string[] {
+  if (typeof expected === 'string') {
+    return fired.has(expected) ? [] : [`the ${expected} patch ${missing}`];
+  }
+  const count = expected.filter((name) => fired.has(name)).length;
+  return count === 1
+    ? []
+    : [`${expected.join(' / ')}: exactly one should have ${missing}, ${String(count)} did`];
+}
+
 async function checkOutput(fixture: Fixture, app: string): Promise<string[]> {
   const out = path.join(app, OUT_DIR);
   const parsed = deploymentBundleSchema.safeParse(await readJson(path.join(out, 'bundle.json')));
@@ -300,14 +324,12 @@ async function checkOutput(fixture: Fixture, app: string): Promise<string[]> {
   const dependencies = (await readJson(path.join(out, 'dependencies.json'))) as Dependencies;
   const { applied, inChunks } = patchesApplied(dependencies);
   const problems = [
-    ...fixture.expected.flatMap((patch) =>
-      applied.has(patch) ? [] : [`the ${patch} patch applied to nothing`],
-    ),
+    ...fixture.expected.flatMap((patch) => firedOnce(patch, applied, 'applied to nothing')),
     // A patch that fired on Next.js's own file and on nothing this build wrote has lost the half of
     // itself that only a build can show: `check-patches.ts` would still see it fire, and a Function
     // would load a chunk it never rewrote.
     ...fixture.chunks.flatMap((patch) =>
-      inChunks.has(patch) ? [] : [`the ${patch} patch rewrote nothing this build wrote`],
+      firedOnce(patch, inChunks, 'rewrote nothing this build wrote'),
     ),
   ];
   return [...problems, ...fixture.holds(parsed.data, dependencies)];

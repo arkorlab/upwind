@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 
 import {
   type DeploymentBundle,
+  documentPrerenders,
   type EntrypointKind,
   isPagesDataPathname,
   type Prerender,
@@ -117,17 +118,16 @@ function patternFor(pathname: string): RegExp {
   return new RegExp(`^${source}$`, 'u');
 }
 
-function isDocumentPrerender(prerender: Prerender): boolean {
-  return prerender.routeType !== undefined && prerender.routeType !== 'route';
-}
-
-function buildShells(prerenders: readonly Prerender[]): Map<string, RouteShells> {
+function buildShells(
+  prerenders: readonly Prerender[],
+  isDocument: (prerender: Prerender) => boolean,
+): Map<string, RouteShells> {
   const byRoute = new Map<
     string,
     { pages: Map<string, Prerender>; patterns: { pattern: RegExp; prerender: Prerender }[] }
   >();
   for (const prerender of prerenders) {
-    if (!isDocumentPrerender(prerender)) {
+    if (!isDocument(prerender)) {
       continue;
     }
     let entry = byRoute.get(prerender.route);
@@ -357,7 +357,10 @@ export function getStore(): Store {
     manifest,
     prerendersById,
     prerendersByPathname,
-    shellsByRoute: buildShells(manifest.prerenders),
+    shellsByRoute: buildShells(
+      manifest.prerenders,
+      documentPrerenders(manifest.prerenders, manifest.entrypoints),
+    ),
     staticFiles,
     ...routerPathnames(manifest),
     dynamicRoutes: routerDynamicRoutes(manifest),
