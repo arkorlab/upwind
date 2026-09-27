@@ -102,7 +102,6 @@ export const wasmLoaderPatch: Patch = {
   name: NAME,
   target: TARGET,
   marker: (source) => READS_A_FILE.test(source) && registeredExports(source).length > 0,
-  nextVersions: ['16.3.5', '16.3.6'],
   apply(source, file, ctx) {
     const exports = registeredExports(source);
     // An empty table is not a failure: a Function may bundle the loader from a shared chunk while

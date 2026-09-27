@@ -14,6 +14,9 @@
   "sortPackageJson": {},
   "ignorePatterns": [
     "**/node_modules/**",
+    // The application `create-upwind` writes: it ships as it is written, in the shape a Next.js
+    // project has rather than the shape this repository's own sources have.
+    "packages/create-upwind/templates/**",
     "**/.adapter-tests/**",
     "**/.next/**",
     "**/.wrangler/**",
@@ -24,6 +27,9 @@
     "**/drizzle/**",
     "pnpm-lock.yaml",
     "**/test/fixtures/**",
+    // Applications built by `tools/next-matrix`, written for Next.js's own compiler: a `?module`
+    // import and a `"use cache"` directive are shapes this formatter has no reason to know.
+    "fixtures/**",
     // Written by `measure.ts`; kept as it was written.
     "packages/next-runtime/reports/**",
     // The bundled collector, one minified string; written by `generate`.

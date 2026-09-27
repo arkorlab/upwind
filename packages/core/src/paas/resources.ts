@@ -4,7 +4,7 @@
  * A host binds each of them to the deployment's Functions under the name its owner gave it, and
  * beside them a text binding that lists them as JSON. The runtime reads that list back, picks out
  * exactly the bindings it names, and publishes them — never an environment variable, never a
- * binding of the host's — at `globalThis[Symbol.for('arkor.resources')]`, in the shape
+ * binding of the host's — at `globalThis[Symbol.for('upwind.resources')]`, in the shape
  * `PublishedResources` describes. `version` is what lets a reader follow a change to that shape.
  */
 
@@ -20,8 +20,13 @@ export type ResourceType = (typeof RESOURCE_TYPES)[number];
  */
 export const RESOURCES_MANIFEST_BINDING = 'ARKOR_RESOURCES';
 
-/** The key the runtime publishes the bindings under, in the global symbol registry. */
-export const RESOURCES_SYMBOL_KEY = 'arkor.resources';
+/**
+ * The key the runtime publishes the bindings under, in the global symbol registry.
+ *
+ * What an application reads, so it is named for these packages and not for a host of them. Nothing
+ * of this has been deployed anywhere, so no reader holds the earlier key and none is kept.
+ */
+export const RESOURCES_SYMBOL_KEY = 'upwind.resources';
 
 /** The shape of what is published; raised when the shape changes in a way a reader would notice. */
 export const RESOURCES_API_VERSION = 1;
@@ -39,7 +44,7 @@ export interface PublishedResource {
   readonly binding: unknown;
 }
 
-/** What `globalThis[Symbol.for('arkor.resources')]` holds; frozen, every level of it. */
+/** What `globalThis[Symbol.for('upwind.resources')]` holds; frozen, every level of it. */
 export interface PublishedResources {
   readonly version: typeof RESOURCES_API_VERSION;
   /** By binding name; an object with no prototype, so no name reads as anything inherited. */

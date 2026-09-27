@@ -13,9 +13,23 @@ name: Publish
 # provenance the registry recorded is read back afterwards, so a release that produced no
 # attestation fails loudly instead of quietly.
 #
-# A package published for the first time cannot come through here: npm will not hold a trusted
-# publisher for a name that does not exist yet. That release needs a token once, and the shape it
-# took is in this file's history (the `bootstrap` input, retired once the three packages existed).
+# Adding a package takes one release that cannot come through here, because npm will not hold a
+# trusted publisher for a name that does not exist yet. Twice now the answer has been a `bootstrap`
+# input carrying a token for that one release, removed again afterwards; the history has the shape of
+# it. Publishing the new names by hand instead would leave a version of each that no provenance
+# covers — a statement is signed with this workflow's identity and nothing on a laptop has one — and
+# the `provenance` job below would then fail a release over packages that are permanently unattested.
+#
+# Two things that release taught, for whoever does it next. npm answers 409 `Failed to save packument`
+# when a run publishes one brand-new package straight after another, so expect to re-run once the
+# first has settled; a recursive publish skips what is already up, and a version that 409s is not
+# recorded, so nothing is burned by trying again. And a token beside a trusted publisher does not
+# override it: pnpm asks per package, and only the one with no publisher fell back.
+#
+# Either way it has to be pnpm and not npm that packs. Three packages describe what they ship through
+# `publishConfig` — the `bin` of `upwind` and of `create-upwind`, and the adapter's `exports`, each
+# naming `dist/` there and the TypeScript sources outside it — and pnpm is what folds those in as it
+# packs. `npm publish` would upload manifests pointing at `.ts` files no installed copy can load.
 
 on:
   workflow_call:
@@ -152,6 +166,10 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=8192
       - run: pnpm format
       - run: pnpm knip
+      # A patch that no longer applies to the Next.js being released against is a Function that runs
+      # without a rewrite it needs, and the adapter's own build says nothing about it. Cheap, and here
+      # rather than only in CI: a tag can be pushed before that run finishes, or after it is cancelled.
+      - run: pnpm check:patches
       - run: pnpm build
 
       - name: Publish
@@ -171,8 +189,12 @@ jobs:
           # `--provenance`: not left to the registry's own generation, so that a release that cannot
           # attest to itself fails here rather than landing unattested.
           # `--no-git-checks`: the tree is a tag, checked out detached, which those checks refuse.
+          # `--ignore-scripts`: `pnpm build` above already ran what `prepack` would run — they are the
+          # same command in every package that has one — so the only thing publishing them again would
+          # add is package code running in a job that holds an `id-token`. The hook stays for whoever
+          # packs by hand, where it is the safety net it was added to be.
           # No `--batch`: provenance is bound to one package, and a batch sends them together.
-          set -- --access public --provenance --tag "${dist_tag}" --no-git-checks
+          set -- --access public --provenance --tag "${dist_tag}" --no-git-checks --ignore-scripts
           if [ "${DRY_RUN}" = true ]; then
             set -- "$@" --dry-run
           fi
@@ -182,8 +204,11 @@ jobs:
     needs: publish
     if: ${{ !inputs.dry-run }}
     runs-on: ubuntu-latest
-    # Three packages, each given the ten minutes the comment below explains, and room to say so.
-    timeout-minutes: 35
+    # Five packages, each given the ten minutes the comment below explains, and room to say so. The
+    # read-back is serial, so this has to grow with the number of packages or a release that published
+    # cleanly would be killed while verifying the last one — and the hundred `npm view` calls and the
+    # checkout are on top of the fifty minutes the waiting alone can take.
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:
@@ -210,7 +235,7 @@ jobs:
             name="$(node -p "require('./${manifest}').name")"
             predicate=''
             # Give the registry time to agree with itself. It needs more than it sounds like: on the
-            # first release, two of the three packages were readable at once and the third answered
+            # first release, two of the three packages then published were readable at once and the third answered
             # 404 for its whole document for nine minutes — while its attestation endpoint was
             # already serving. So this waits ten, and the failure below means what it says.
             for _ in $(seq 20); do

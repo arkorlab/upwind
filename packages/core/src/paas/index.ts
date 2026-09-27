@@ -1,3 +1,4 @@
+export { isUpwindInternalPath, UPWIND_DEV_ADDRESS_ENV, UPWIND_INTERNAL_PREFIX } from './dev.ts';
 export {
   MIDDLEWARE_SET_COOKIE_HEADER,
   middlewareApplies,

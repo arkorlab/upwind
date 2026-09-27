@@ -113,7 +113,6 @@ export const cacheSignalTimersPatch: Patch = {
   name: NAME,
   target: TARGET,
   marker: (source) => source.includes(MARKER),
-  nextVersions: ['16.3.5', '16.3.6'],
   apply(source, file) {
     const rewrite = new Rewrite(NAME, file, source);
     const shape = SCHEDULE_SHAPES.find((candidate) => occurrencesOf(source, candidate) > 0);

@@ -30,6 +30,7 @@ import {
   tracedChunks,
   tracedWasm,
 } from './collect.ts';
+import { reserveUpwindPrefix } from './dev-prefix.ts';
 import type { EdgeEntry } from './edge.ts';
 import { buildFunction, type EntryModule } from './function.ts';
 import { collectManifests } from './manifests.ts';
@@ -431,7 +432,20 @@ export function createAdapter(options: AdapterOptions = {}): NextAdapter {
   return {
     name: 'ppr-cdn',
     modifyConfig(config, { phase }) {
-      if (phase === 'phase-production-build') {
+      if (phase === 'phase-development-server') {
+        // `/__upwind` belongs to `upwind dev`, which is in front of this server. See `dev-prefix.ts`
+        // for why a front door that already holds the path still wants the reservation, and why
+        // this does nothing when no such server is there. Assigned only when there is something to
+        // assign: a project that declares no rewrites must keep declaring none.
+        const reserved = reserveUpwindPrefix({
+          rewrites: config.rewrites,
+          basePath: config.basePath,
+          i18n: config.i18n,
+        });
+        if (reserved !== undefined) {
+          config.rewrites = reserved;
+        }
+      } else if (phase === 'phase-production-build') {
         // The same exception `onBuildComplete` makes, made here too, since this runs first and
         // would otherwise stop a static export before the build that has nothing to load the
         // module.

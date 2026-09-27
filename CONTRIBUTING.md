@@ -1,9 +1,9 @@
 # Contributing to upwind
 
 Thanks for looking. upwind is a Next.js deployment adapter and the runtime that serves what it
-builds. The packages are at `0.1.0`: the deployment bundle carries a version of its own and is
-expected to change shape before it settles, and there are no compatibility shims between `0.1.x`
-releases. Issues, questions and pull requests are all welcome.
+builds. Everything here is before `1.0`: the deployment bundle carries a version of its own and is
+expected to change shape before it settles, and no release carries a compatibility shim for the minor
+before it. Issues, questions and pull requests are all welcome.
 
 ## Ways to help
 
@@ -22,19 +22,28 @@ Function. Please open an issue before writing one of those, so the shape can be 
 ```
 upwind/
 ├── packages/
-│   ├── core/      # @stayingupwind/core — the vocabulary all three speak: the bundle contract,
+│   ├── core/      # @stayingupwind/core — the vocabulary the others speak: the bundle contract,
 │   │              #   the cache's terms, request classification, the host↔application protocol
 │   ├── adapter/   # @stayingupwind/adapter — runs inside `next build`, writes the bundle and
 │   │              #   builds the Functions that serve it
-│   └── runtime/   # @stayingupwind/runtime — what a deployment's Function runs
+│   ├── runtime/   # @stayingupwind/runtime — what a deployment's Function runs
+│   ├── upwind/    # upwind — the CLI; `upwind dev` runs a Next.js dev server behind its own door
+│   └── create-upwind/
+│                   # create-upwind — `pnpm create upwind`, and the application it writes
+├── fixtures/      # applications built against each supported Next.js, one per runtime
+├── tools/
+│   └── next-matrix/  # builds those fixtures with each Next.js and checks what came out
 └── .github/
-    ├── workflows/ci.yaml        # every check, on every pull request
-    ├── workflows/release.yaml   # where a release enters; npm's trusted publisher names this file
-    ├── workflows/publish.yaml   # what a release does
-    └── release-signers.asc      # the keys a release tag may be signed with
+    ├── workflows/ci.yaml           # every check, on every pull request
+    ├── workflows/next-matrix.yaml  # the supported Next.js range, checked against Next.js itself
+    ├── workflows/release.yaml      # where a release enters; npm's trusted publisher names this file
+    ├── workflows/publish.yaml      # what a release does
+    └── release-signers.asc         # the keys a release tag may be signed with
 ```
 
-All three packages are published. The workspace root is private and is not.
+All five packages are published. The workspace root, `tools/` and `fixtures/` are not — and the
+fixtures are deliberately outside the pnpm workspace, since a workspace package would be pinned to
+the catalog's single Next.js, which is the one thing the matrix exists to look past.
 
 ## Development setup
 
@@ -53,14 +62,26 @@ pnpm lint          # ESLint, type-aware, across every package
 pnpm format        # oxfmt --check; `pnpm format:write` writes
 pnpm knip          # unused files and unused dependencies
 pnpm build         # type-checks core and runtime; bundles the adapter's published entry
+pnpm check:patches # every rewrite of Next.js's output still finds what it insists on
 ```
 
-Those five, in that order, are exactly what CI runs — there is nothing else to pass. `pnpm lint` is
+Those six, in that order, are exactly what CI runs — there is nothing else to pass. `pnpm lint` is
 type-aware over the whole workspace and wants more than Node's default heap; CI gives it 8 GB
 (`NODE_OPTIONS=--max-old-space-size=8192`), and you may need to as well.
 
-**There is no test suite in this repository.** The checks above are the whole of CI. Some prose in
-the package readmes refers to suites by path; those suites are not here.
+**There is no test suite in this repository.** The checks above are the whole of CI, and some prose
+in the package readmes refers to suites by path; those suites are not here. The one thing that is
+checked against something outside this repository is the adapter's rewrites of Next.js's own
+output, because they are matched by text and go stale silently:
+
+| Command              | What it does                                                                                                                                                     |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm check:patches` | applies every patch to the installed Next.js. No network, a second or two, and part of CI. `--range` does it for every release the supported range admits        |
+| `pnpm check:matrix`  | builds `fixtures/` with several Next.js versions and checks the bundle that came out. Minutes and a package download per version, so it runs on its own schedule |
+
+Neither is in your way on a normal change: `check:patches` is the fast one, and `check:matrix`
+only matters if you touched `packages/adapter/src/patches/`. Both are described in
+[the adapter's readme](packages/adapter/README.md), under "Which Next.js".
 
 ## Style
 
@@ -80,13 +101,14 @@ the package readmes refers to suites by path; those suites are not here.
 
 ## Releases
 
-Maintainers only. The version of all three packages moves in lockstep, in a pull request like any
+Maintainers only. The version of all five packages moves in lockstep, in a pull request like any
 other; a tag is not a place to make a change. Once the bump is on `main`:
 
 ```bash
 git switch main && git pull
-git tag -s v0.1.1 -m v0.1.1
-git push origin v0.1.1
+# The name is `v` and the version every package now says — nothing else is accepted.
+git tag -s v0.2.0 -m v0.2.0
+git push origin v0.2.0
 ```
 
 Everything else is in [`publish.yaml`](.github/workflows/publish.yaml). A release refuses a tag that

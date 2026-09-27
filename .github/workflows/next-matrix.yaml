@@ -1,0 +1,93 @@
+name: Next.js matrix
+
+# What `SUPPORTED_NEXT_RANGE` claims, checked against Next.js itself rather than asserted.
+#
+# Apart from CI because of what it costs: a package download per release in the range, and a real
+# `next build` of each fixture per version in the matrix. A pull request gets the cheap half of the
+# same question (`pnpm check:patches` against the installed Next.js) and this gets the rest.
+#
+# The canary is checked as a forecast and allowed to fail. It is not a version anybody can install
+# under the range, and it is numbered as the next minor whatever it is going to become: shipped as
+# a major it is outside the range already, shipped as a minor it is inside it. Either way the
+# notice arrives as a yellow step, weeks before it would otherwise have been a broken release.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Daily, early UTC. This is the one that matters: a Next.js release lands when it lands, and
+    # nothing in this repository changes to tell us about it.
+    - cron: '0 5 * * *'
+  push:
+    branches: [main]
+    # On a merge only when the merge could have changed the answer. Upstream's releases are the
+    # schedule's business, not a docs commit's.
+    paths:
+      - 'packages/adapter/**'
+      - 'packages/upwind/package.json'
+      - 'fixtures/**'
+      - 'tools/next-matrix/**'
+      - '.github/workflows/next-matrix.yaml'
+
+permissions: {}
+
+concurrency:
+  group: next-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Every rewrite against every release the range admits. No build: a patch is a pure function of a
+  # file's source, so the published package is enough for every patch but the three that rewrite
+  # what `next build` writes.
+  range:
+    name: Patches across the range
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      versions: ${{ steps.matrix.outputs.versions }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check:patches:range
+      # Allowed to fail: see the note at the top.
+      - run: pnpm check:patches:canary
+        continue-on-error: true
+      # The versions the build matrix takes, read off the range rather than written down again
+      # here: a workflow with its own list is a second declaration, and the one that goes stale.
+      - id: matrix
+        run: echo "versions=$(node packages/adapter/scripts/check-patches.ts --print-matrix)" >> "$GITHUB_OUTPUT"
+
+  # The other half: the patches that rewrite `next build`'s own output, and the fact that every
+  # patch still finds its file *in a bundle* rather than merely in a package.
+  build:
+    name: ${{ matrix.version }}
+    needs: range
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    continue-on-error: ${{ matrix.forecast }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.range.outputs.versions) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # The fixtures are built with the adapter as a published package reads it, which is `dist`.
+      - run: pnpm --filter @stayingupwind/adapter build
+      # Through the environment rather than into the command: the version is a string this
+      # workflow was handed, and a `run:` that interpolates one is a shell that was handed it too.
+      - run: pnpm check:matrix --versions "$NEXT_VERSION"
+        env:
+          NEXT_VERSION: ${{ matrix.version }}
