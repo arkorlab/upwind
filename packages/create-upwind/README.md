@@ -60,10 +60,13 @@ tell a coding agent that this major is not the one it was trained on, and where 
 Keeping it identical is the point, so this scaffolder tries not to be the last word on it. The text
 it was built against is written first; then, where the install left a Next.js it can reach, that one
 is asked to write its own, before the first commit — so a project made after a release that words
-the block differently is committed with that release's wording rather than this one's. Where there
-is nothing to reach — `--skip-install`, or a Yarn Plug'n'Play install, whose packages stay zipped
-where this cannot read them — it says so, and the text this release carries is what the project
-keeps until the first `upwind dev` corrects it.
+the block differently is committed with that release's wording rather than this one's.
+
+Where there is nothing to reach, the text this release carries is what the project keeps until the
+first `upwind dev` corrects it. Under `--skip-install` there is no install to ask and nothing is
+said, which is the flag doing what it says. After an install that left nothing this can read — a
+Yarn Plug'n'Play project keeps its packages zipped, where a plain Node process cannot open them —
+it says so before it finishes.
 
 `upwind dev` asks the same question on any start where it finds a coding agent, which is the only
 kind of start the answer matters on, so a project stays current as its Next.js moves — and a plain
