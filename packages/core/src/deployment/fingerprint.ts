@@ -22,6 +22,9 @@ export type DeploymentFingerprint = z.infer<typeof deploymentFingerprintSchema>;
 const HTML_TAG_START = '<html';
 const DATA_DPL_ID_PATTERN = /\sdata-dpl-id="([^"]+)"/u;
 const STATIC_PATH = '/_next/static/';
+const SCHEME_PATTERN = /^https?:\/\//u;
+/** What ends a URL's authority: after one of these, nothing further is part of the host. */
+const AUTHORITY_END_PATTERN = /[?#]/u;
 const DPL_QUERY_PATTERN = /\?dpl=([\w-]+)/u;
 /**
  * What ends a `/_next/static/` reference in a document.
@@ -80,6 +83,31 @@ function dplIdFromHtmlTag(html: string): string | undefined {
 }
 
 /**
+ * Where a reference's `/_next/static/…` path begins, or `undefined` if that text is not its path.
+ *
+ * `STATIC_ASSET_URL_PATTERN` reads a reference by its characters and cannot tell a path from a host
+ * that merely looks like one, because `?`, `=` and `#` are all characters it allows a host: both
+ * `https://host?dpl=x/_next/static/a.js` and `https://host?next=/_next/static/a.js?dpl=x` are one
+ * reference to it. In neither does the deployment own that query — the first `?` ended the authority,
+ * so everything after it is what the author of that text wrote, about something else.
+ *
+ * So the authority is where a URL says it is: from `://` to the first `/`, and only if nothing ended
+ * it sooner. A reference with no scheme is a path already.
+ */
+function staticAssetPath(url: string): string | undefined {
+  const scheme = SCHEME_PATTERN.exec(url);
+  if (scheme === null) {
+    return url.startsWith(STATIC_PATH) ? url : undefined;
+  }
+  const path = url.indexOf('/', scheme[0].length);
+  if (path === -1 || AUTHORITY_END_PATTERN.test(url.slice(scheme[0].length, path))) {
+    return undefined;
+  }
+  const rest = url.slice(path);
+  return rest.startsWith(STATIC_PATH) ? rest : undefined;
+}
+
+/**
  * `?dpl=` on the first asset reference that carries one, as Skew Protection appends it.
  *
  * Read off the references already collected rather than searched for again: every `?dpl=` on an
@@ -87,20 +115,15 @@ function dplIdFromHtmlTag(html: string): string | undefined {
  * characters, and they are held in the order the document mentions them. So this is the match a
  * second scan of the document would have found first, without the second scan.
  *
- * Read from `/_next/static/` and not from the start of the reference, because a `?` is a character
- * the host part of one may carry: `https://host?dpl=…/_next/static/a.js` is a reference this
- * collects whole, and the `?dpl=` in it is the author of that text talking about something else.
- * A query read from before the path is not this deployment's id, and a fingerprint taking one would
- * answer for a deployment nobody named.
- *
- * The first `?dpl=` after the path is the one, because the first `?` is where a URL's query begins
- * and a second is a character inside the value it opened. A reference carrying two is malformed
- * either way, and nobody who can write one into a document is short of ways to write the value.
+ * Read from the reference's path and no earlier, for the reason above. The first `?dpl=` in that path
+ * is the one, because the first `?` is where a query begins and a second is a character inside the
+ * value it opened. A reference carrying two is malformed either way, and nobody who can write one
+ * into a document is short of ways to write the value.
  */
 function dplIdFromAssetUrls(urls: Iterable<string>): string | undefined {
   for (const url of urls) {
-    const path = url.indexOf(STATIC_PATH);
-    const dplId = path === -1 ? undefined : DPL_QUERY_PATTERN.exec(url.slice(path))?.[1];
+    const path = staticAssetPath(url);
+    const dplId = path === undefined ? undefined : DPL_QUERY_PATTERN.exec(path)?.[1];
     if (dplId !== undefined) {
       return dplId;
     }
