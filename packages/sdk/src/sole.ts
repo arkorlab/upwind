@@ -73,9 +73,11 @@ function soleOf(kind: Kind): unknown {
  * bindings come from arrives with the first one. Resolving on use also puts the failure where it can
  * be read — at the line that wanted a database, not at an import that says nothing about why.
  *
- * Only `get` and `has` are answered. This is for reaching what the storage can do; a question *about*
- * the storage — what is published, under what names — is `published()`'s to answer, and asking it of
- * a stand-in would get an answer about the stand-in.
+ * Only `get` and `has` are answered, and either of them resolves it — including the ones something
+ * else asks on your behalf, so a `console.log` of this is a resolution too, and says so where there
+ * is nothing to resolve. This is for reaching what the storage can do; a question *about* the
+ * storage — what is published, under what names — is `published()`'s to answer, and asking that of a
+ * stand-in would only get an answer about the stand-in.
  */
 export function sole(kind: Kind): unknown {
   let resolved: Reached | undefined;

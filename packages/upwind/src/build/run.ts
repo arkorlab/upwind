@@ -55,6 +55,34 @@ function nodeOptionsWith(imported: string): string {
   return asked === undefined || asked === '' ? ours : `${asked} ${ours}`;
 }
 
+/** What an application reads its storage through. A project without it cannot ask for any. */
+const READER_PACKAGE = '@stayingupwind/sdk';
+
+/**
+ * What the build is told about the project's storage, and nothing at all for a project that has no
+ * way to read it.
+ *
+ * Storage costs a build something: a runtime process in the worker that renders, and — since a
+ * directory of it belongs to one runtime — that worker being the only one, which the adapter arranges
+ * from `UPWIND_LOCAL_RESOURCES`. Neither is worth a project that never asks for storage, and whether
+ * it can ask is a question with an answer: is the reader installed.
+ *
+ * A project that reaches the reader only through a package of its own, and does not depend on it
+ * itself, is the one case this answers wrongly. Its build gets no storage, and the reader says so at
+ * the line that wanted some.
+ */
+function storageEnv(projectDir: string): Record<string, string> {
+  if (resolveFromProject(projectDir, READER_PACKAGE) === undefined) {
+    return {};
+  }
+  return {
+    [PROJECT_DIR_ENV]: projectDir,
+    // Read by the adapter, in the child, while Next.js loads the config.
+    [UPWIND_LOCAL_RESOURCES_ENV]: '1',
+    NODE_OPTIONS: nodeOptionsWith(localResourcesEntry()),
+  };
+}
+
 export async function runBuild(options: BuildOptions): Promise<never> {
   const adapter = resolveAdapterPath(options.projectDir);
   if (adapter === undefined) {
@@ -74,19 +102,15 @@ export async function runBuild(options: BuildOptions): Promise<never> {
   // leaves a variable the process already has alone — so an adapter named in `.env` is one this run
   // overrides. Name it in `next.config` or in the environment, which are the two places that win.
   //
-  // The project's storage goes in the same environment, as an import every process of the build
-  // runs before anything else: this process cannot publish it for them, and the one that renders
-  // pages is where an application asks for it (`resources/entry.ts`).
+  // The project's storage goes in the same environment, as an import every process of the build runs
+  // before anything else: this process cannot publish it for them, and the one that renders pages is
+  // where an application asks for it (`storageEnv`, `resources/entry.ts`).
   const child = spawn(process.execPath, [command, 'build', options.projectDir], {
     cwd: options.projectDir,
     env: {
       ...process.env,
       [ADAPTER_PATH_ENV]: adapter,
-      [PROJECT_DIR_ENV]: options.projectDir,
-      // Read by the adapter, in the child, while Next.js loads the config: a build with storage in
-      // it renders in one process, because the storage can only be in one.
-      [UPWIND_LOCAL_RESOURCES_ENV]: '1',
-      NODE_OPTIONS: nodeOptionsWith(localResourcesEntry()),
+      ...storageEnv(options.projectDir),
     },
     stdio: 'inherit',
   });

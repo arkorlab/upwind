@@ -6,8 +6,8 @@ import { type FunctionEnv, RESOURCES_SYMBOL_KEY, resourcesOf } from '@stayingupw
  * A deployment's Function defines this symbol as its runtime is evaluated (`installResources` in
  * `@stayingupwind/runtime`), from the environment the platform handed it. A local run has neither,
  * so the CLI defines it — and it is defined in one place for both commands, because `upwind dev`
- * publishes in the process Next.js runs in and `upwind build` in the child it starts. Two
- * implementations would be two answers to "what does the application find", which is the question
+ * publishes in the process Next.js runs in and `upwind build` in the process that renders its pages.
+ * Two implementations would be two answers to "what does the application find", which is the question
  * this arrangement exists to have exactly one answer to.
  *
  * The rules are the Function's, for the same reasons: published once, not replaceable, not

@@ -448,26 +448,26 @@ export interface AdapterOptions {
   readonly hostConfigFiles?: readonly string[] | undefined;
 }
 
-/**
- * The adapter, as a host configures it.
- *
- * `NEXT_ADAPTER_PATH` and `adapterPath` both name a module whose default export is a
- * `NextAdapter`, so a host that needs no options points either at this module and takes the
- * default export below. One that does — a cache host of its own — exports an adapter of its own
- * from a module of two lines.
- */
 /** The config `modifyConfig` is handed, as Next.js declares it. */
 type BuildConfig = Parameters<NonNullable<NextAdapter['modifyConfig']>>[0];
+
+/**
+ * That the line below has been said already, where the next process to say it can see.
+ *
+ * A build loads its config more than once and in more than one process, and that is a line worth
+ * reading exactly once. The environment is what those processes share.
+ */
+const SAID_ENV = 'UPWIND_LOCAL_RESOURCES_SAID';
 
 /**
  * Next.js's own default for `experimental.cpus`, which is always set by the time a config is handed
  * over — so "the project chose this" means "not this".
  *
- * The same expression `defaultConfig` uses (`server/config-shared`), and the same test Next.js
- * makes of it when it decides whether a count is a user override (`getNumberOfWorkers` in
- * `build/index`). Read from a copy of Next.js rather than computed here it would be an import into
- * internals; computed here it is one line that is wrong only if Next.js changes the default, and
- * then the worst of it is a build that leaves the count alone.
+ * The same expression `defaultConfig` uses (`server/config-shared`), and the same test Next.js makes
+ * of it when it decides whether a count is a user override (`getNumberOfWorkers` in `build/index`).
+ * Read out of a copy of Next.js it would be an import into internals; written here it is one line
+ * that is wrong only if Next.js changes its default, and then the worst of it is a build that leaves
+ * the count alone.
  */
 function defaultCpus(): number {
   return Math.max(1, (Number(process.env['CIRCLE_NODE_TOTAL']) || os.cpus().length) - 1);
@@ -476,20 +476,12 @@ function defaultCpus(): number {
 /**
  * Render this build's pages in one process, because its storage can only be in one.
  *
- * Only for a build that has local storage in it, which is `upwind build` and nothing else
- * (`UPWIND_LOCAL_RESOURCES_ENV` says why one process). It is a real cost — page data is collected
- * by one worker rather than several — so it is said out loud rather than done quietly, and a
- * project that has asked for a worker count of its own keeps it: whoever wrote that line knows
- * something this does not, and a build that overrode it would only be a build that hangs.
+ * Only for a build that has local storage in it, which is `upwind build` in a project that reads
+ * storage and nothing else (`UPWIND_LOCAL_RESOURCES_ENV` says why one process). It is a real cost —
+ * page data is collected by one worker rather than several — so it is said out loud rather than done
+ * quietly, and a project that has asked for a worker count of its own keeps it: whoever wrote that
+ * line knows something this does not.
  */
-/**
- * That this has been said already, where the next process to say it can see.
- *
- * A build loads its config more than once and in more than one process, and this is a line worth
- * reading exactly once. The environment is what those processes share.
- */
-const SAID_ENV = 'UPWIND_LOCAL_RESOURCES_SAID';
-
 function renderInOneProcessForStorage(config: BuildConfig): void {
   const chosen = config.experimental.cpus;
   if (
@@ -508,6 +500,14 @@ function renderInOneProcessForStorage(config: BuildConfig): void {
   );
 }
 
+/**
+ * The adapter, as a host configures it.
+ *
+ * `NEXT_ADAPTER_PATH` and `adapterPath` both name a module whose default export is a
+ * `NextAdapter`, so a host that needs no options points either at this module and takes the
+ * default export below. One that does — a cache host of its own — exports an adapter of its own
+ * from a module of two lines.
+ */
 export function createAdapter(options: AdapterOptions = {}): NextAdapter {
   return {
     name: 'ppr-cdn',

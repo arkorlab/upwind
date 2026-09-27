@@ -84,11 +84,13 @@ const PROBE_KEY = '__upwind_probe';
  * workers waited on that would never finish. Twenty seconds is far past a cold start, which is two
  * or three.
  */
+const MS_IN_SECOND = 1000;
 const START_SECONDS = 20;
-const START_MS = 20_000;
+const START_MS = START_SECONDS * MS_IN_SECOND;
 
 /** How long stopping the runtime is waited for before its own exit hook is left to it. */
-const STOP_MS = 5000;
+const STOP_SECONDS = 5;
+const STOP_MS = STOP_SECONDS * MS_IN_SECOND;
 
 /**
  * The runtime insists a worker have code. This one answers nothing and is never sent a request: it
@@ -132,17 +134,17 @@ const RUNTIME_TYPES = {
 type ProcessListener = (...args: unknown[]) => void;
 
 /**
- * The runtime's `message` listener, which is never this process's to keep.
+ * The IPC channel's own event, and the runtime listener for it that is never this process's to keep.
  *
- * Its exit hook attaches one wherever there is an IPC channel, and that is not a harmless thing to
- * do. A channel is *started* by the first `message` listener attached to it, and from then on every
- * message the parent sends is delivered to whoever is listening — so a listener added before the
- * process's own receives the parent's first instructions and drops them. In `next build`'s render
+ * The runtime's exit hook attaches one wherever there is a channel, and that is not a harmless thing
+ * to do. A channel is *started* by the first `message` listener attached to it, and from then on
+ * every message the parent sends is delivered to whoever is listening — so a listener added before
+ * the process's own receives the parent's first instructions and drops them. In `next build`'s render
  * worker that is fatal and silent: the worker is asked to initialise and to render, hears neither,
  * and waits for work that already came, while the build waits for a worker that will never answer.
  * It is why a build hangs rather than failing, and it took a while to find.
  */
-const RUNTIME_MESSAGE_LISTENER: readonly string[] = ['message'];
+const MESSAGE = 'message';
 
 /**
  * The signals the runtime answers, which some processes want back.
@@ -154,9 +156,6 @@ const RUNTIME_MESSAGE_LISTENER: readonly string[] = ['message'];
  * worker dies where it stands, runs no exit hook, and leaves a runtime process behind.
  */
 const RUNTIME_SIGNALS: readonly string[] = ['SIGINT', 'SIGTERM', 'SIGHUP'];
-
-/** The channel's own event, which is held and handed on rather than merely taken back. */
-const MESSAGE = 'message';
 
 export interface LocalResources {
   /** Stop the local runtime. Call it as often as you like; the first call is the one that acts. */
@@ -337,7 +336,7 @@ function listenersBefore(events: readonly string[]): Map<string, Set<ProcessList
  * this process has no idea yet what its messages mean — and given back on the next turn of the
  * loop, by when the code that does know is listening. Nothing is lost and nothing is answered
  * twice; without it, a render worker's first instructions are dropped and the build waits forever
- * (see `NOT_THE_RUNTIME_S`).
+ * (see `MESSAGE`).
  */
 function holdMessages(): () => void {
   // Only a child has a channel, and only a channel has this problem.
@@ -433,16 +432,8 @@ function cannotStart(error: unknown): string {
   return `upwind: could not start this project's local storage (${first}) — nothing is published, so \`db\`, \`kv()\` and \`blob()\` will find nothing in this run`;
 }
 
-/**
- * Start a project's local storage and publish it, or say why there is none.
- *
- * Said and carried on rather than thrown, the way a missing adapter is (`dev/adapter.ts`): a dev
- * server without storage still serves the application, and a build without it still builds
- * everything that does not read storage. What breaks is narrower than the command, and where it
- * breaks the reader is told which of the two happened — this line, and then the SDK's own.
- */
 /** What starting takes: a runtime, the bindings on it, a read through each, and the symbol. */
-async function publish(
+async function startAndPublish(
   started: { runtime?: Miniflare },
   projectDir: string,
   entries: readonly ResourceManifestEntry[],
@@ -455,20 +446,30 @@ async function publish(
   publishResources(env);
 }
 
+/**
+ * Start a project's local storage and publish it, or say why there is none.
+ *
+ * Said and carried on rather than thrown, the way a missing adapter is (`dev/adapter.ts`): a dev
+ * server without storage still serves the application, and a build without it still builds
+ * everything that does not read storage. What breaks is narrower than the command, and where it
+ * breaks the reader is told which of the two happened — this line, and then the SDK's own.
+ */
 export async function startLocalResources(
   projectDir: string,
   options: LocalOptions,
 ): Promise<LocalResources> {
   const entries = bindings();
-  const taking = options.answersSignals
-    ? [...RUNTIME_MESSAGE_LISTENER, ...RUNTIME_SIGNALS]
-    : RUNTIME_MESSAGE_LISTENER;
-  const before = listenersBefore(taking);
+  // Held before anything is snapshotted, so that this listener is one of the ones taken as given and
+  // `handOnMessages` is what removes it — rather than `takeBackListeners` mistaking it for the
+  // runtime's.
   const handOnMessages = holdMessages();
+  const before = listenersBefore(
+    options.answersSignals ? [MESSAGE, ...RUNTIME_SIGNALS] : [MESSAGE],
+  );
   const started: { runtime?: Miniflare } = {};
   try {
     await Promise.race([
-      publish(started, projectDir, entries),
+      startAndPublish(started, projectDir, entries),
       afterDeadline(
         START_MS,
         `this project's local storage did not come up within ${String(START_SECONDS)}s, so nothing is published in this run — another process holding it (${PERSIST_DIR}/) is the usual reason`,
@@ -479,7 +480,9 @@ export async function startLocalResources(
   } catch (error) {
     console.warn(cannotStart(error));
     if (started.runtime !== undefined) {
-      // Whatever went wrong, a runtime process must not outlive the attempt that started it.
+      // Whatever went wrong, a runtime process must not outlive the attempt that started it. One
+      // that is still starting as this gives up on it is left to the runtime's own exit hook: it was
+      // never published, so nothing reads it, and it goes when this process does.
       await stopRuntime(started.runtime);
     }
     return NOTHING_STARTED;

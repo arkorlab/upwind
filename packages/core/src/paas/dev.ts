@@ -30,8 +30,8 @@ export const UPWIND_DEV_ADDRESS_ENV = 'UPWIND_DEV_ADDRESS';
  * that rendered in six processes would be six runtimes over one directory — so the only build that
  * can read storage while it prerenders is a build that renders in one place.
  *
- * Absent — a plain `next build`, or a `upwind build` in a project with no storage — and the
- * adapter leaves the project's own worker count exactly as it is.
+ * Absent — a plain `next build`, or an `upwind build` in a project that has no way to read storage —
+ * and the adapter leaves the project's own worker count exactly as it is.
  */
 export const UPWIND_LOCAL_RESOURCES_ENV = 'UPWIND_LOCAL_RESOURCES';
 

@@ -225,7 +225,7 @@ export async function serveDev(options: DevOptions): Promise<void> {
   // storage as they are evaluated, and everything Next.js evaluates it evaluates after this line.
   // In this process, because Next.js runs in this one — a supervisor's bindings would reach nothing.
   const local: LocalResources = await startLocalResources(options.projectDir, {
-    // This run answers its own interrupts, below, and disposes of the runtime on its way out.
+    // This run answers its own interrupts, above, and disposes of the runtime on its way out.
     answersSignals: true,
   });
   let app: RunningNext;

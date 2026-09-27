@@ -47,20 +47,36 @@ function isResource(value: unknown): value is PublishedResource {
   return typeof value === 'object' && value !== null && 'type' in value && 'binding' in value;
 }
 
+/**
+ * What was found, read as the unknown thing it is.
+ *
+ * Deliberately not `Partial<Published>`: nothing has checked this yet, and a type that said the
+ * shape was nearly right would turn every check below into one the compiler thinks is pointless.
+ */
 function publishedOf(held: unknown): Reading {
-  const { version, resources } = held as Partial<Published>;
+  const { version, resources } = held as { version?: unknown; resources?: unknown };
   if (version !== RESOURCES_API_VERSION) {
     return { state: 'unreadable', saw: `version ${String(version)}` };
   }
-  if (typeof resources !== 'object') {
-    return { state: 'unreadable', saw: `version ${String(version)} with no resources` };
+  // `null` is an object, and `Object.values(null)` throws — which a reader of a global anything at
+  // all may have written must not do.
+  if (typeof resources !== 'object' || resources === null) {
+    return { state: 'unreadable', saw: 'a version 1 with no resources' };
   }
-  // Every entry, checked: what is published is frozen and built by one function, so this is not
-  // expected to fail — and a reader of a global that anything may have written has no business
-  // assuming it.
-  return Object.values(resources).every((resource) => isResource(resource))
-    ? { state: 'present', published: { version, resources } }
-    : { state: 'unreadable', saw: `version ${String(version)} with an entry of another shape` };
+  // Every entry, checked. What is published is frozen and built by one function, so this is not
+  // expected to fail — and a reader of a global has no business assuming that.
+  if (Object.values(resources).some((resource) => !isResource(resource))) {
+    return { state: 'unreadable', saw: 'a version 1 with an entry of another shape' };
+  }
+  return {
+    state: 'present',
+    // The version is the one checked above, and every entry has been looked at: this is the one
+    // place where what was read becomes what the rest of this package may trust.
+    published: {
+      version: RESOURCES_API_VERSION,
+      resources: resources as Readonly<Record<string, PublishedResource>>,
+    },
+  };
 }
 
 /** Read the symbol. Nothing here throws: every caller decides what an answer means for it. */
