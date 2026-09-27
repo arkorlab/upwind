@@ -55,6 +55,9 @@ export const hangingInputAbortPatch: Patch = {
   target: TARGET,
   // Turbopack puts the module in whichever chunk its graph put it; there is no name to find it by.
   marker: (source) => MARKS.every((mark) => source.includes(mark)),
+  // The function's own file, the ESM copy beside it, and the chunk a build copied it into. Not the
+  // compiled runtimes: `TARGET` admits them, and the waits this rewrites are not in them.
+  reaches: ['module', 'esm-module', 'build-output'],
   apply(source, file) {
     // Two to each copy of the function, and a chunk may hold more than one: Turbopack puts the
     // one it compiled for each layer that imports it wherever the graph put that layer.
