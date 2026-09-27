@@ -84,15 +84,27 @@ function publishedOf(held: unknown): Reading {
   };
 }
 
-/** Read the symbol. Nothing here throws: every caller decides what an answer means for it. */
+/**
+ * Read the symbol. Nothing here throws: every caller decides what an answer means for it.
+ *
+ * Which takes a `try`, because looking at this is not a passive thing to do. What holds the symbol is
+ * a getter, and the object behind it is somebody else's — a newer runtime's, or whatever else found
+ * the same name in the global registry — so reading a property of it can run code, and that code can
+ * throw. An application asking for its database is owed an answer either way, and "this is not
+ * something I can read" is one.
+ */
 export function read(): Reading {
-  const held: unknown = (globalThis as Record<symbol, unknown>)[Symbol.for(RESOURCES_SYMBOL_KEY)];
-  if (held === undefined || held === null) {
-    return { state: 'absent' };
+  try {
+    const held: unknown = (globalThis as Record<symbol, unknown>)[Symbol.for(RESOURCES_SYMBOL_KEY)];
+    if (held === undefined || held === null) {
+      return { state: 'absent' };
+    }
+    return typeof held === 'object'
+      ? publishedOf(held)
+      : { state: 'unreadable', saw: `a ${typeof held}` };
+  } catch {
+    return { state: 'unreadable', saw: 'something that throws when it is read' };
   }
-  return typeof held === 'object'
-    ? publishedOf(held)
-    : { state: 'unreadable', saw: `a ${typeof held}` };
 }
 
 /**
@@ -112,5 +124,5 @@ export function published(): Published | undefined {
 
 /** The one thing to say about storage published in a shape this package does not read. */
 export function unreadable(saw: string): string {
-  return `@stayingupwind/sdk reads version ${String(RESOURCES_API_VERSION)} of a project's published storage, and this run published ${saw}: \`upwind\` and \`@stayingupwind/sdk\` are from different releases here — install both from the same one`;
+  return `@stayingupwind/sdk reads version ${String(RESOURCES_API_VERSION)} of a project's published storage, and this run published ${saw} — the usual reason is \`upwind\` and \`@stayingupwind/sdk\` from different releases, so install both from the same one`;
 }
