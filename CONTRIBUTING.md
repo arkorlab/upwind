@@ -33,6 +33,8 @@ upwind/
 │   └── create-upwind/
 │                   # create-upwind — `pnpm create upwind`, and the application it writes
 ├── fixtures/      # applications built against each supported Next.js, one per runtime
+├── web-site/      # www.stayingupwind.com — the project's own site, in English and Japanese,
+│                   #   written by create-upwind and built by the released upwind
 ├── tools/
 │   └── next-matrix/  # builds those fixtures with each Next.js and checks what came out
 └── .github/
@@ -43,9 +45,14 @@ upwind/
     └── release-signers.asc         # the keys a release tag may be signed with
 ```
 
-All six packages are published. The workspace root, `tools/` and `fixtures/` are not — and the
-fixtures are deliberately outside the pnpm workspace, since a workspace package would be pinned to
-the catalog's single Next.js, which is the one thing the matrix exists to look past.
+All six packages are published. The workspace root, `tools/`, `fixtures/` and `web-site/` are not —
+and the fixtures are deliberately outside the pnpm workspace, since a workspace package would be
+pinned to the catalog's single Next.js, which is the one thing the matrix exists to look past.
+
+The site is outside it for a reason of its own: it depends on the _published_ `upwind` and
+`@stayingupwind/adapter`, so what serves stayingupwind.com is a release rather than whatever is
+uncommitted beside it. It has its own lockfile and its own install, `pnpm lint`, `pnpm knip` and
+`pnpm typecheck` do not reach it, and `pnpm format` does. Its own readme says the rest.
 
 ## Development setup
 

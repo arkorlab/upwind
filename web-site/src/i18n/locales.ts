@@ -1,0 +1,37 @@
+/**
+ * The two languages this site is written in, and the spellings each of them needs.
+ *
+ * English is the default and is served on the bare path, because the repository, the readmes and the
+ * issue tracker are all in English and a reader who arrives from any of them is already there.
+ * Japanese lives under `/ja`. There is no third locale and no library: two languages, one page, and
+ * a page that renders from a dictionary it is handed.
+ */
+
+export const locales = ['en', 'ja'] as const;
+export type Locale = (typeof locales)[number];
+export const defaultLocale: Locale = 'en';
+
+/** What the proxy reads on a bare path, and what the switcher writes so a choice outlives a visit. */
+export const LOCALE_COOKIE = 'locale';
+
+const LOCALE_SET: ReadonlySet<string> = new Set(locales);
+
+export function isLocale(value: string): value is Locale {
+  return LOCALE_SET.has(value);
+}
+
+/** `og:locale` takes a language *and* a region; `<html lang>` takes the language alone. */
+export const ogLocale: Record<Locale, 'en_US' | 'ja_JP'> = {
+  en: 'en_US',
+  ja: 'ja_JP',
+};
+
+export const htmlLang: Record<Locale, string> = {
+  en: 'en',
+  ja: 'ja',
+};
+
+/** The other one: what hreflang alternates name, and what the switcher switches to. */
+export function otherLocale(locale: Locale): Locale {
+  return locale === 'en' ? 'ja' : 'en';
+}
