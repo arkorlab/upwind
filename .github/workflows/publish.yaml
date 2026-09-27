@@ -128,8 +128,12 @@ jobs:
                 exit 1
                 ;;
               true)
-                # A draft from an earlier attempt. The draft job replaces it; nothing to refuse here.
-                echo "::notice::${TAG} has a draft release, which this run will replace"
+                # A draft from an earlier attempt, left publishable. Leaving it there means a person
+                # could publish it — incomplete, and then immutable — while this run is still going.
+                # Deleting it here would need `contents: write` in a job that is meant to hold none,
+                # so the slate is cleared by hand instead.
+                echo "::error::${TAG} has a draft release from an earlier attempt. Delete it (gh release delete ${TAG} --repo ${GITHUB_REPOSITORY} --yes) and run this again; a draft left standing can be published while this one works."
+                exit 1
                 ;;
               *)
                 echo "::error::unexpected answer about whether ${TAG} has a release: ${answer}"
@@ -276,7 +280,10 @@ jobs:
                 echo "::error::${TAG} has had a release published while this run waited; immutability makes it unchangeable, and publishing to npm now would leave nowhere to say so"
                 exit 1
                 ;;
-              true) ;;
+              true)
+                echo "::error::a draft release for ${TAG} appeared while this run waited; publishing now would leave it standing, publishable and incomplete, beside packages it does not describe"
+                exit 1
+                ;;
               *)
                 echo "::error::unexpected answer about whether ${TAG} has a release: ${answer}"
                 exit 1
@@ -398,8 +405,13 @@ jobs:
           path: ${{ runner.temp }}/sbom
 
       # Releases are immutable here: once one is published, its notes and its files are what they
-      # are. So a release this workflow left half-made must never be published by accident, and a
-      # release a person did publish must never be touched — the two cases are the two branches.
+      # are. So a release a person did publish must never be touched — that branch refuses.
+      #
+      # A draft is replaced rather than refused, which is the opposite of what the two guards before
+      # the publish do, and for a reason: they were asking whether something was standing that a
+      # person could publish while the packages were going out. By the time this runs the packages
+      # are out, this job is the one whose business is the draft, and anything it finds appeared
+      # during the run.
       - name: Nothing has published a release for this tag
         env:
           TAG: ${{ inputs.tag }}
@@ -475,6 +487,25 @@ jobs:
             url="$(printf '%s' "${meta}" | cut -d' ' -f1)"
             integrity="$(printf '%s' "${meta}" | cut -d' ' -f2)"
             predicate="$(printf '%s' "${meta}" | cut -d' ' -f3)"
+            # The provenance job proved every one of these attested, minutes ago. An edge that has the
+            # version but not yet the attestation beside it would hand back a dash here, and the notes
+            # below say in prose that each package is attested — so a dash would make them lie. Given a
+            # moment to catch up, and then refused.
+            for _ in 1 2 3 4 5 6; do
+              if [ "${predicate}" != - ]; then
+                break
+              fi
+              sleep 10
+              curl -fsSL "https://registry.npmjs.org/${name/\//%2f}" -o "${RUNNER_TEMP}/packument.json"
+              predicate="$(node -e '
+                const dist = require(process.argv[1]).versions[process.argv[2]].dist;
+                console.log(dist.attestations?.provenance?.predicateType ?? "-");
+              ' "${RUNNER_TEMP}/packument.json" "${version}")"
+            done
+            if [ "${predicate}" = - ]; then
+              echo "::error::${name}@${version}: the registry served this version without the attestation the provenance job read; a draft that said otherwise would be wrong"
+              exit 1
+            fi
             file="${RUNNER_TEMP}/assets/$(basename "${url}")"
             # A scoped and an unscoped package can share a tarball basename, and the second download
             # would quietly replace the first. Say so instead.
