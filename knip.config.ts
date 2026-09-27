@@ -27,8 +27,10 @@ const config: KnipConfig = {
     'packages/upwind': { entry: ['src/resources/entry.ts'] },
     'tools/next-matrix': {},
   },
-  // Applications the matrix builds with a Next.js of their own, not code of this repository's.
-  ignore: ['fixtures/**'],
+  // Applications the matrix builds with a Next.js of their own, not code of this repository's — and
+  // the site, which is an application too: its own project, its own lockfile, and its own install of
+  // the published packages, none of which this workspace's dependency graph knows anything about.
+  ignore: ['fixtures/**', 'web-site/**'],
 };
 
 export default config;

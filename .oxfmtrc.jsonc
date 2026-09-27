@@ -8,8 +8,10 @@
   "trailingComma": "all",
   "insertFinalNewline": true,
   "sortImports": {},
+  // The one stylesheet in this repository that defines a Tailwind theme, and so the one that says
+  // what order this formatter should put a class list in.
   "sortTailwindcss": {
-    "stylesheet": "./apps/web/src/app/globals.css",
+    "stylesheet": "./web-site/src/app/globals.css",
   },
   "sortPackageJson": {},
   "ignorePatterns": [

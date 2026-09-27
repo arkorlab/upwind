@@ -74,6 +74,10 @@ export default defineConfig([
     // build, not code of this repository's: what they may say is Next.js's to decide, and a
     // `"use cache"` directive or a `?module` import is not this configuration's business.
     'fixtures/**',
+    // The project's own site: an application outside this workspace, on the published packages and
+    // its own lockfile. This configuration is type-aware and written for Node, and nothing in it
+    // knows what a React component or a Server Action is; `next build` is what checks that project.
+    'web-site/**',
   ]),
 
   // 1. Base JavaScript rules: everything on, then a short, justified opt-out list.
