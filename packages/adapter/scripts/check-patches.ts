@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import { FIXTURE_COVERAGE, type FixtureCoverage } from '../../../tools/next-matrix/src/coverage.ts';
 import { type Copy, type Patch, PATCHES, type PatchContext } from '../src/patches/index.ts';
 import { SUPPORTED_NEXT_RANGE } from '../src/patches/versions.ts';
+import { copyOf, missedRuntimes } from './copies.ts';
 
 /**
  * Holds `SUPPORTED_NEXT_RANGE` to its word.
@@ -298,30 +299,10 @@ async function profile(root: string): Promise<Applied[]> {
   return applied;
 }
 
-/**
- * Which copy of Next.js a file is, by the name a build knows it under.
- *
- * The same module is shipped more than once, and a patch declares the kinds it has to reach
- * (`Copy`, `src/patches/types.ts`). This is where a file is read as one of them: the compiled server
- * runtimes each bundle their own copy, everything else under `compiled/` is a vendored package's,
- * `esm/` is the ESM copy beside a file, and the rest is the file itself.
- *
- * `build-output` is not among the answers, because a published package holds none of it. That is the
- * one kind this checker cannot see, and `tools/next-matrix` is what holds a patch to it.
- */
-function copyOf(file: string): Exclude<Copy, 'build-output'> {
-  const inPackage = file.replace(/^.*\/node_modules\/next\/dist\//u, '');
-  if (/^compiled\/next-server\/[\w-]+\.runtime\.prod\.js$/u.test(inPackage)) {
-    return 'server-runtime';
-  }
-  if (inPackage.startsWith('compiled/')) {
-    return 'vendored';
-  }
-  return inPackage.startsWith('esm/') ? 'esm-module' : 'module';
-}
-
 /** The one kind no published package holds, and so the one this checker cannot ask about. */
 const BUILD_OUTPUT: Copy = 'build-output';
+/** The kind that is a family rather than a file, and the only one there is more than one of. */
+const SERVER_RUNTIME: Copy = 'server-runtime';
 
 /** The kinds a patch has to reach that a published package can show at all. */
 function packageKinds(patch: Patch): string[] {
@@ -536,6 +517,48 @@ async function printMatrix(): Promise<void> {
   );
 }
 
+/**
+ * What one patch failed to reach in one package.
+ *
+ * A patch is held to the kinds of copy it says it reaches, and not merely to having fired somewhere:
+ * `cache-signal-timers` is loaded from the source module *and* from each compiled runtime, and a version
+ * where only the first still matches is a Function with the bug back. A kind that went missing means
+ * `target` or `marker` stopped matching it, whether because Next.js moved the file or because an edit here
+ * missed. Then the one kind that is a family is asked the same question one runtime at a time.
+ */
+async function shortfall(
+  root: string,
+  patch: Patch,
+  applied: readonly Applied[],
+): Promise<string[]> {
+  const mine = applied.filter((one) => one.patch === patch.name);
+  const missing = missingFrom(packageKinds(patch), new Set(mine.map((one) => copyOf(one.file))));
+  if (missing.length > 0) {
+    // A kind nothing reached at all is the whole of what is wrong; naming the runtimes of a kind that was
+    // never reached would bury it.
+    return [`${patch.name} reached no ${missing.join(', no ')}`];
+  }
+  if (!patch.reaches.includes(SERVER_RUNTIME)) {
+    return [];
+  }
+  const reached = new Set(
+    mine
+      .filter((one) => copyOf(one.file) === SERVER_RUNTIME)
+      .map((one) => path.posix.basename(one.file)),
+  );
+  const { claimed, siblings } = await missedRuntimes(root, patch, reached);
+  return [
+    ...(claimed.length > 0
+      ? [`${patch.name} did not reach ${claimed.join(', ')}, which hold what it rewrites`]
+      : []),
+    ...(siblings.length > 0
+      ? [
+          `${patch.name} did not reach ${siblings.join(', ')}, other builds of an entry it did reach`,
+        ]
+      : []),
+  ];
+}
+
 /** One version's verdict: what its patches did, or what went wrong. */
 async function verdict(target: Target): Promise<{ applied?: Applied[]; problem?: string }> {
   let applied: Applied[];
@@ -544,20 +567,9 @@ async function verdict(target: Target): Promise<{ applied?: Applied[]; problem?:
   } catch (error) {
     return { problem: error instanceof Error ? error.message : String(error) };
   }
-  // Each patch is held to the kinds of copy it says it reaches, and not merely to having fired
-  // somewhere: `cache-signal-timers` is loaded from the source module *and* from each compiled
-  // runtime, and a version where only the first still matches is a Function with the bug back. A
-  // kind that went missing means `target` or `marker` stopped matching it, whether because Next.js
-  // moved the file or because an edit here missed.
   const problems: string[] = [];
   for (const patch of REQUIRED_PATCHES) {
-    const reached = new Set(
-      applied.filter((one) => one.patch === patch.name).map((one) => copyOf(one.file)),
-    );
-    const missing = missingFrom(packageKinds(patch), reached);
-    if (missing.length > 0) {
-      problems.push(`${patch.name} reached no ${missing.join(', no ')}`);
-    }
+    problems.push(...(await shortfall(target.root, patch, applied)));
   }
   if (problems.length > 0) {
     return { applied, problem: problems.join('; ') };
