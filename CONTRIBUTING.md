@@ -62,7 +62,7 @@ pnpm lint          # ESLint, type-aware, across every package
 pnpm format        # oxfmt --check; `pnpm format:write` writes
 pnpm knip          # unused files and unused dependencies
 pnpm build         # type-checks core and runtime; bundles the adapter's published entry
-pnpm check:patches # every rewrite of Next.js's output still finds what it insists on
+pnpm check:patches # the rewrites of Next.js's own package still find what they insist on
 ```
 
 Those six, in that order, are exactly what CI runs — there is nothing else to pass. `pnpm lint` is
@@ -74,10 +74,10 @@ in the package readmes refers to suites by path; those suites are not here. The 
 checked against something outside this repository is the adapter's rewrites of Next.js's own
 output, because they are matched by text and go stale silently:
 
-| Command              | What it does                                                                                                                                                     |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pnpm check:patches` | applies every patch to the installed Next.js. No network, a second or two, and part of CI. `--range` does it for every release the supported range admits        |
-| `pnpm check:matrix`  | builds `fixtures/` with several Next.js versions and checks the bundle that came out. Minutes and a package download per version, so it runs on its own schedule |
+| Command              | What it does                                                                                                                                                                                                                                                                |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm check:patches` | applies the rewrites that reach Next.js's published package to the installed Next.js. No network, a second or two, and part of CI. `--range` does it for every release the supported range admits                                                                           |
+| `pnpm check:matrix`  | builds `fixtures/` with several Next.js versions and checks the bundle that came out — including the four rewrites aimed at what `next build` _writes_, which no reading of a package can reach. Minutes and a package download per version, so it runs on its own schedule |
 
 Neither is in your way on a normal change: `check:patches` is the fast one, and `check:matrix`
 only matters if you touched `packages/adapter/src/patches/`. Both are described in

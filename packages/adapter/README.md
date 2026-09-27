@@ -295,9 +295,10 @@ not a range to widen, but an adapter to write.
 
 ### What a build before 16.3 does not carry
 
-16.2 reaches the whole of this adapter, and three of the things the bundle is built out of arrived
-in 16.3. Two are filled in; the third is not fillable, and costs a 16.2 deployment the thing this
-platform exists to do.
+16.2 reaches the whole of this adapter. Three of the things the bundle is built out of arrived in
+16.3 — two of them filled in from elsewhere, the third not fillable at all and costing a 16.2
+deployment the thing this platform exists to do — and two configuration options simply are not
+read.
 
 | What 16.2 has not got            | What happens                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
