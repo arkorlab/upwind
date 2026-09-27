@@ -37,15 +37,25 @@ const MAX_OUTPUT_BYTES = MAX_OUTPUT_MIB * MIB;
 
 export async function fixtureEnvironment(directory: string): Promise<Record<string, string>> {
   const appDir = path.resolve(directory);
-  const { stdout } = await execFileAsync(process.execPath, [READER, appDir], {
-    cwd: appDir,
-    env: {
-      PATH: process.env['PATH'] ?? '',
-      HOME: process.env['HOME'] ?? '',
-      NODE_ENV: 'production',
-    },
-    maxBuffer: MAX_OUTPUT_BYTES,
-  });
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync(process.execPath, [READER, appDir], {
+      cwd: appDir,
+      env: {
+        PATH: process.env['PATH'] ?? '',
+        HOME: process.env['HOME'] ?? '',
+        NODE_ENV: 'production',
+      },
+      maxBuffer: MAX_OUTPUT_BYTES,
+    }));
+  } catch (error) {
+    // One sentence naming the likely cause — an application whose dependencies are not there — with
+    // the child's own output kept as the `cause`, which `main.ts` prints under it. A bare
+    // `MODULE_NOT_FOUND` stack from a process nobody knows about says none of that by itself.
+    throw new Error(`could not read the environment of ${appDir} — is its \`next\` installed?`, {
+      cause: error,
+    });
+  }
   const read = JSON.parse(stdout) as Record<string, string | undefined>;
   return Object.fromEntries(
     Object.entries(read).flatMap(([name, value]) =>

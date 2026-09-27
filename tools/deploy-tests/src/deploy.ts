@@ -201,6 +201,27 @@ async function answered(
   }
 }
 
+/**
+ * What stands between this deployment and the suite, said in the words of what is actually wrong.
+ *
+ * A project that is not answering at all is worth telling apart from one that has not caught up: the
+ * first is somebody's decision and waiting out the deadline tells nobody anything.
+ */
+async function served(
+  input: DeployInput,
+  detail: ProjectDetail,
+  bundle: DeploymentBundle,
+  probe: { url: URL; etag: string | undefined },
+): Promise<string | undefined> {
+  if (detail.active?.deploymentId !== bundle.deploymentId) {
+    return 'the project does not answer with this deployment yet';
+  }
+  if (detail.active.mode === 'disabled') {
+    return 'the project answers with this deployment but is disabled, so nothing is served';
+  }
+  return answered(input.fetchImpl ?? fetch, probe);
+}
+
 async function waitUntilServed(
   input: DeployInput,
   bundle: DeploymentBundle,
@@ -208,7 +229,6 @@ async function waitUntilServed(
 ): Promise<void> {
   const now = input.now ?? Date.now;
   const wait = input.sleep ?? ((ms: number): Promise<void> => sleepFor(ms));
-  const fetchImpl = input.fetchImpl ?? fetch;
   const probe = probeOf(publicUrl, bundle);
   const deadline = now() + NO_PROGRESS_TIMEOUT_MS;
   let said: string | undefined;
@@ -217,11 +237,7 @@ async function waitUntilServed(
     if (previewUrlOf(detail, input.config).origin !== publicUrl.origin) {
       throw new Error('the project changed the hostname it is served on during the deployment');
     }
-    const current =
-      detail.active?.deploymentId === bundle.deploymentId && detail.active.mode !== 'disabled';
-    const observation = current
-      ? await answered(fetchImpl, probe)
-      : 'the project does not answer with this deployment yet';
+    const observation = await served(input, detail, bundle, probe);
     if (observation === undefined) {
       input.log(`${probe.url.href} answers with this deployment`);
       if (probe.etag === undefined) {
@@ -256,8 +272,11 @@ function explained(error: unknown): unknown {
 
 export async function deployFixture(input: DeployInput): Promise<Deployment> {
   const publicUrl = await hostedProject(input.client, input.config);
-  await replaceEnvironment(input);
+  // Before the environment is replaced, not after: a build that wrote no bundle — a `next.config`
+  // naming an `adapterPath` of its own, a Next.js without the hook — should not first cost the
+  // project the environment of whatever was tested before it.
   const bundle = await readBundle(input.appDir);
+  await replaceEnvironment(input);
   input.log(`uploading ${bundle.deploymentId} to ${input.config.projectId}`);
   let runId: string;
   try {

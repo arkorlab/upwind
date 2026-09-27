@@ -15,11 +15,41 @@ import { deployFixture, preflight } from './deploy.ts';
  */
 
 const USAGE = 'usage: node src/main.ts <preflight|deploy|release> [directory]';
+/** How far down a `cause` chain a failure is followed. */
+const MAX_CAUSES = 5;
 const COMMANDS = ['preflight', 'deploy', 'release'] as const;
 type Command = (typeof COMMANDS)[number];
 
 function say(message: string): void {
   console.error(message);
+}
+
+/**
+ * A failure with what caused it under it.
+ *
+ * Nothing here is read as it happens: the suite's harness shows this hours later through the logs
+ * hook, so a message that dropped the `cause` would be a message nobody can act on — and the causes
+ * are the interesting half (a child process's output, a refusal's code and status).
+ */
+function reported(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return String(error);
+  }
+  const said = [error.message];
+  // Bounded, because a chain that points back at itself is a tool that never finishes saying why it
+  // failed. Nothing here builds one; nothing here has to be the thing that proves it.
+  for (let cause: unknown = error.cause; cause !== undefined && said.length <= MAX_CAUSES;) {
+    if (cause instanceof Error) {
+      said.push(cause.message);
+      cause = cause.cause;
+      continue;
+    }
+    // Whatever it is, it is not an `Error` and not this tool's: shown as JSON rather than as
+    // `[object Object]`, which is what stringifying it would otherwise say.
+    said.push(typeof cause === 'string' ? cause : JSON.stringify(cause));
+    cause = undefined;
+  }
+  return said.join('\n  caused by: ');
 }
 
 function commandOf(value: string | undefined): Command {
@@ -64,6 +94,6 @@ async function main(argv: readonly string[]): Promise<void> {
 try {
   await main(process.argv.slice(2));
 } catch (error) {
-  say(error instanceof Error ? error.message : String(error));
+  say(reported(error));
   process.exitCode = 1;
 }

@@ -53,6 +53,12 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): Config {
       `${NAMES.baseUrl} must be an HTTP(S) URL without credentials, query or fragment`,
     );
   }
+  // A path of its own would be dropped rather than honoured: every call names an absolute path
+  // (`/v1/…`), which resolves against the origin. Refused here, where it can still be said, instead
+  // of arriving as a run of refusals from somewhere that was never asked the question.
+  if (url.pathname !== '/') {
+    throw new Error(`${NAMES.baseUrl} must name an origin, without a path of its own`);
+  }
   return config;
 }
 
