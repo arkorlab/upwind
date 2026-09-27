@@ -402,8 +402,19 @@ export function routeHandlerPrerenders(bundle: DeploymentBundle): Prerender[] {
  * `revalidate` nor `revalidatePath` ever reached it.
  */
 /**
+ * Has this output the classification that answers for it, whole?
+ *
+ * Next.js writes `response` and `compute` together or not at all, and the bundle carries each as
+ * it found it. One without the other answers nothing — the pair is the answer — so it is read as
+ * the absence it is, and the outputs themselves are asked instead.
+ */
+function isClassified(prerender: Prerender): boolean {
+  return prerender.response !== undefined && prerender.compute !== undefined;
+}
+
+/**
  * A response the build finished, and one it left the rest of to a resume — asked of the
- * classification where there is one, and of what it classifies where there is not.
+ * classification where there is one whole, and of what it classifies where there is not.
  *
  * `response` and `compute` arrived in 16.3. What they say about an output the build wrote is what
  * the output itself says: a body is a response to serve, and postponed state is the rest of a
@@ -416,14 +427,14 @@ export function routeHandlerPrerenders(bundle: DeploymentBundle): Prerender[] {
  * fixtures — where Next.js's answer and this one agree on all of them.
  */
 function completeByItself(prerender: Prerender): boolean {
-  if (prerender.response !== undefined || prerender.compute !== undefined) {
+  if (isClassified(prerender)) {
     return prerender.response === 'complete' && prerender.compute === 'static';
   }
   return prerender.body !== undefined && prerender.postponed === undefined;
 }
 
 function resumesFromItself(prerender: Prerender): boolean {
-  if (prerender.response !== undefined || prerender.compute !== undefined) {
+  if (isClassified(prerender)) {
     return prerender.response === 'initial' && prerender.compute === 'resuming';
   }
   return prerender.body !== undefined && prerender.postponed !== undefined;
