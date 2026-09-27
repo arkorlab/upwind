@@ -6,9 +6,9 @@
  * expects — which is a question with an answer, not an opinion. `scripts/check-patches.ts` applies
  * the ten that reach Next.js's package to each published release in this range, and
  * `tools/next-matrix` builds applications for the four that rewrite what `next build` writes. The
- * range is therefore checked across its whole width rather than asserted at its top, and it is
- * the second of those that has found every version difference so far: all five that reaching down
- * to 16.2 needed were in build output, where reading a package cannot see them.
+ * range is therefore checked across its whole width rather than asserted at its top, and it is the
+ * second of those that finds most of what moves: of the five differences that reaching down to
+ * 16.2 turned up, four were in build output, where reading a package cannot see them.
  *
  * The floor is where the Adapter API became stable, which is 16.2. Below it the hook is
  * `experimental.adapterPath` and hands `ctx.routes`, a different shape altogether, with no

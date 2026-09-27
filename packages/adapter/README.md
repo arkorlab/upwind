@@ -272,8 +272,11 @@ leaving it a number somebody wrote once:
 **The first check cannot speak for all fourteen, and it does not claim to.** It names the four it
 cannot reach and requires every other patch to fire, so one whose target stopped matching is a
 failure rather than a patch quietly reclassified. The four are the matrix's, and they are where
-the version differences have actually been: every one of the five that 16.2 needed was in build
-output, invisible to a package read.
+most of what moves has moved: of the five differences reaching down to 16.2 turned up, four were
+invisible to a package read — the WebAssembly loader's move, the leftover `turbopack-runtime` was
+reading, a chunk where a minifier had renamed `scheduleOnNextTick`, and a chunk name carrying a
+character the audit's allowance had not expected. The fifth, `image-response`'s Cache Components
+branch, is in the package, and `--range` would have caught it on its own.
 
 The matrix is also what checks the half of the claim the first cannot: that a patch still finds
 its file **in a bundle**. A rewrite can apply perfectly to a module no build ever loads.

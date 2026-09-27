@@ -27,11 +27,11 @@ import { SUPPORTED_NEXT_RANGE } from '../src/patches/versions.ts';
  *   `package.json`. Hundreds of megabytes, so it runs on its own schedule.
  * - `--canary`: the current canary as well, as a forecast. See `Target.forecast`.
  *
- * What it cannot reach: three patches rewrite `next build`'s *output* rather than Next.js's
- * package — `turbopack-runtime` and `wasm-loader` (the Turbopack runtime and the WebAssembly
- * loader it bundles) and `vercel-og` (the chunk Turbopack emits for the external import). They
- * find nothing here and are reported as such; `tools/next-matrix` builds real applications and
- * covers them.
+ * What it cannot reach: four patches rewrite `next build`'s *output* rather than Next.js's
+ * package — `turbopack-runtime`, the two that are the WebAssembly loader in the two shapes a
+ * version can hold it (`wasm-loader`, `runtime-wasm-loader`), and `vercel-og` (the chunk Turbopack
+ * emits for the external import). They find nothing here and are reported as such;
+ * `tools/next-matrix` builds real applications and covers them.
  */
 
 const execFileAsync = promisify(execFile);
@@ -459,7 +459,7 @@ async function verdict(target: Target): Promise<{ applied?: Applied[]; problem?:
   } catch (error) {
     return { problem: error instanceof Error ? error.message : String(error) };
   }
-  // Every patch but the three that rewrite build output has a file in the package, so one that
+  // Every patch but the four that rewrite build output has a file in the package, so one that
   // found none is a rewrite that will not run and will not say so: `target` or `marker` has
   // stopped matching, whether because Next.js moved the file or because an edit here missed.
   const fired = new Set(applied.map((one) => one.patch));

@@ -12,10 +12,10 @@ import { type DeploymentBundle, deploymentBundleSchema } from '@stayingupwind/co
  * says it does.
  *
  * `packages/adapter/scripts/check-patches.ts` answers most of the same question far more cheaply,
- * by applying each rewrite to the files of a published package. Three patches are out of its reach
+ * by applying each rewrite to the files of a published package. Four patches are out of its reach
  * because they rewrite what `next build` *writes* rather than what Next.js ships —
- * `turbopack-runtime`, `wasm-loader`, `vercel-og` — and no amount of reading a tarball produces a
- * Turbopack runtime. Those need a build, which is this.
+ * `turbopack-runtime`, `wasm-loader`, `runtime-wasm-loader`, `vercel-og` — and no amount of reading
+ * a tarball produces a Turbopack runtime. Those need a build, which is this.
  *
  * It is also the only thing that checks the other half of the claim: that each patch still finds
  * its file *in a bundle*. A rewrite can apply perfectly to a module no build ever loads, and the
@@ -297,9 +297,16 @@ async function checkOutput(fixture: Fixture, app: string): Promise<string[]> {
   const applied = patchesApplied(dependencies);
   const problems = fixture.expected.flatMap((expected) => {
     const names = typeof expected === 'string' ? [expected] : expected;
-    return names.some((name) => applied.has(name))
-      ? []
-      : [`${names.join(' / ')} applied to nothing`];
+    // Exactly one, not at least one: where two patches are the same thing in the two shapes a
+    // version can hold, a build reaching both means a marker has started claiming what is not its
+    // shape — which is the thing an alternative expectation is here to catch rather than allow.
+    const fired = names.filter((name) => applied.has(name));
+    if (fired.length === 1) {
+      return [];
+    }
+    return names.length === 1
+      ? [`the ${names[0] ?? ''} patch applied to nothing`]
+      : [`${names.join(' / ')}: exactly one should have applied, ${String(fired.length)} did`];
   });
   return [...problems, ...fixture.holds(parsed.data, dependencies)];
 }
