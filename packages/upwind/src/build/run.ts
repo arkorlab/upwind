@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { readdirSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -58,6 +59,45 @@ function nodeOptionsWith(imported: string): string {
 /** What an application reads its storage through. A project without it cannot ask for any. */
 const READER_PACKAGE = '@stayingupwind/sdk';
 
+/** What pnpm calls the reader's directory in a store, whoever in the tree depends on it. */
+const READER_IN_STORE = '@stayingupwind+sdk@';
+
+/**
+ * Can anything in this project reach the reader?
+ *
+ * Resolution from the project answers for a project that depends on it, which is nearly all of them,
+ * and under npm and Yarn it answers for one that reaches it through a package of its own as well,
+ * since those hoist. pnpm does not hoist: a shared package that depends on the reader has it in a
+ * store, reachable by the code that imports it and not from the application's own directory. So the
+ * store is looked at too — from here upwards, because in a workspace it belongs to the repository
+ * rather than to the project.
+ *
+ * Wrong in the harmless direction, if it is wrong: a store higher up that holds the reader for some
+ * other project costs this one a runtime it does not use, which is what every build did before this
+ * gate existed.
+ */
+function readsStorage(projectDir: string): boolean {
+  if (resolveFromProject(projectDir, READER_PACKAGE) !== undefined) {
+    return true;
+  }
+  let at = path.resolve(projectDir);
+  for (;;) {
+    try {
+      const store = readdirSync(path.join(at, 'node_modules', '.pnpm'));
+      if (store.some((entry) => entry.startsWith(READER_IN_STORE))) {
+        return true;
+      }
+    } catch {
+      // No store here, or none this may read. Either way the answer is not here.
+    }
+    const up = path.dirname(at);
+    if (up === at) {
+      return false;
+    }
+    at = up;
+  }
+}
+
 /**
  * What the build is told about the project's storage, and nothing at all for a project that has no
  * way to read it.
@@ -65,14 +105,10 @@ const READER_PACKAGE = '@stayingupwind/sdk';
  * Storage costs a build something: a runtime process in the worker that renders, and — since a
  * directory of it belongs to one runtime — that worker being the only one, which the adapter arranges
  * from `UPWIND_LOCAL_RESOURCES`. Neither is worth a project that never asks for storage, and whether
- * it can ask is a question with an answer: is the reader installed.
- *
- * A project that reaches the reader only through a package of its own, and does not depend on it
- * itself, is the one case this answers wrongly. Its build gets no storage, and the reader says so at
- * the line that wanted some.
+ * it can ask is a question with an answer (`readsStorage`).
  */
 function storageEnv(projectDir: string): Record<string, string> {
-  if (resolveFromProject(projectDir, READER_PACKAGE) === undefined) {
+  if (!readsStorage(projectDir)) {
     return {};
   }
   return {
