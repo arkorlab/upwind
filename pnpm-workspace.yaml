@@ -20,7 +20,7 @@ catalog:
   '@next/routing': 16.3.6
   # The AST Rolldown's `this.parse` hands a plugin: the version Rolldown itself depends on.
   '@oxc-project/types': 0.150.0
-  '@types/node': 24.13.4
+  '@types/node': 24.19.0
   esbuild: 0.28.2
   eslint: 10.10.0
   eslint-config-prettier: 10.1.8
