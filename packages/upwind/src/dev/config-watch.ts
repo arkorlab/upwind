@@ -1,4 +1,4 @@
-import { type FSWatcher, lstatSync, readlinkSync, watch } from 'node:fs';
+import { type FSWatcher, lstatSync, readlinkSync, statSync, watch } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -139,11 +139,17 @@ function linkPoints(start: string): string[] {
   return points;
 }
 
-/** Is this a directory a watch can be put on? */
-function isThere(directory: string): boolean {
+/**
+ * Is this a directory a watch can be put on?
+ *
+ * A directory, and not merely something that exists: a watch on a *file* is a watch on that file's
+ * inode, which says nothing about the directory that replaces it. `stat` rather than `lstat`, since a
+ * link to a directory is as good a place to watch as the directory itself — and a link to nothing is
+ * not there at all, which is the answer either way.
+ */
+function isWatchableDirectory(directory: string): boolean {
   try {
-    lstatSync(directory);
-    return true;
+    return statSync(directory).isDirectory();
   } catch {
     return false;
   }
@@ -161,7 +167,7 @@ function watchFor(target: string): { directory: string; name: string } {
   let name = path.basename(target);
   let directory = path.dirname(target);
   // `dirname` of a root is the root, so this ends at the filesystem's own top whatever is missing.
-  while (!isThere(directory) && path.dirname(directory) !== directory) {
+  while (!isWatchableDirectory(directory) && path.dirname(directory) !== directory) {
     name = path.basename(directory);
     directory = path.dirname(directory);
   }

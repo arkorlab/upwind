@@ -21,6 +21,13 @@ import { domainToASCII } from 'node:url';
  * server's own address and puts the name the client used in `x-forwarded-host` — so reading `Host`
  * alone would have this door trust a request it made to itself on behalf of somebody it should not.
  *
+ * A page can set that header on a same-origin request of its own, which is why *every* value in it has to
+ * pass rather than any one of them. Next.js writes the client's real host over whatever was there
+ * (`proxy-request.ts`: `headers: { 'x-forwarded-host': req.headers.host }`), so a forged value does not
+ * survive the hop today; a proxy that appended instead of replacing would leave the forgery beside the
+ * real name, and a rule that reads all of them refuses that too. There is no private channel to use
+ * instead: a rewrite carries no headers of upwind's own.
+ *
  * Only these endpoints are held to any of it. The application is Next.js's to answer, under whatever
  * name a developer has put in front of it, and Next.js has its own say about a cross-site dev request.
  */
