@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
+import { FIXTURE_COVERAGE } from '../../../tools/next-matrix/src/coverage.ts';
 import { type Copy, type Patch, PATCHES, type PatchContext } from '../src/patches/index.ts';
 import { SUPPORTED_NEXT_RANGE } from '../src/patches/versions.ts';
 
@@ -319,13 +320,72 @@ function copyOf(file: string): Exclude<Copy, 'build-output'> {
   return inPackage.startsWith('esm/') ? 'esm-module' : 'module';
 }
 
+/** The one kind no published package holds, and so the one this checker cannot ask about. */
+const BUILD_OUTPUT: Copy = 'build-output';
+
 /** The kinds a patch has to reach that a published package can show at all. */
 function packageKinds(patch: Patch): string[] {
-  return patch.reaches.filter((kind) => kind !== 'build-output');
+  return patch.reaches.filter((kind) => kind !== BUILD_OUTPUT);
 }
 
 /** The patches a published package does hold a file for, and so every checked version must fire. */
 const REQUIRED_PATCHES = PATCHES.filter((patch) => packageKinds(patch).length > 0);
+
+/** Every patch some fixture of `tools/next-matrix` says its build has to rewrite a chunk with. */
+function chunksClaimed(): Set<string> {
+  const claimed = new Set<string>();
+  for (const coverage of Object.values(FIXTURE_COVERAGE)) {
+    for (const name of coverage.chunks) {
+      claimed.add(name);
+    }
+  }
+  return claimed;
+}
+
+/** A fixture's claims, held to the patches: a name that is none, and a chunk a patch never promised. */
+function checkFixtureClaims(byName: ReadonlyMap<string, Patch>): string[] {
+  const problems: string[] = [];
+  for (const [fixture, coverage] of Object.entries(FIXTURE_COVERAGE)) {
+    for (const name of coverage.expected) {
+      if (!byName.has(name)) {
+        problems.push(`${fixture} names "${name}", which is not a patch`);
+      }
+    }
+    for (const name of coverage.chunks) {
+      const patch = byName.get(name);
+      if (patch === undefined) {
+        problems.push(`${fixture} names "${name}", which is not a patch`);
+      } else if (!patch.reaches.includes(BUILD_OUTPUT)) {
+        problems.push(
+          `${fixture} expects a chunk from ${name}, which does not say it rewrites one`,
+        );
+      }
+    }
+  }
+  return problems;
+}
+
+/**
+ * Every claim in `tools/next-matrix`'s fixture coverage, held to the patches themselves.
+ *
+ * A patch that declares `build-output` is exempt from everything above — a published package holds none
+ * of it — so the only thing that can exercise it is a fixture the matrix builds. Nobody adding it to one
+ * would leave it checked by nothing at all, which is the drift this file exists to catch.
+ *
+ * Here rather than in the tool because pull-request CI runs this checker and not the matrix: this is
+ * where a declaration and the thing that exercises it can be held together before either lands.
+ */
+function checkCoverage(): string[] {
+  const byName = new Map(PATCHES.map((patch) => [patch.name, patch]));
+  const claimed = chunksClaimed();
+  const unexercised = PATCHES.filter(
+    (patch) => patch.reaches.includes(BUILD_OUTPUT) && !claimed.has(patch.name),
+  ).map(
+    (patch) =>
+      `${patch.name} says it rewrites build output, and no fixture in tools/next-matrix exercises it`,
+  );
+  return [...checkFixtureClaims(byName), ...unexercised];
+}
 
 // ─── the range and what declares it ──────────────────────────────────────────
 
@@ -512,7 +572,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const declarations = await checkDeclarations();
+  const declarations = [...checkCoverage(), ...(await checkDeclarations())];
   for (const problem of declarations) {
     console.error(`✗ ${problem}`);
   }

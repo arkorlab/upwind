@@ -72,10 +72,12 @@ export interface Patch {
    */
   readonly marker?: (source: string) => boolean;
   /**
-   * The kinds of copy this has to reach, and what a checker holds it to. `Copy` says why the kinds
-   * are what is declared rather than a count of files.
+   * The kinds of copy this has to reach, and what a checker holds it to. `Copy` says why the kinds are
+   * what is declared rather than a count of files.
+   *
+   * One at least: a patch that reached nothing anywhere would otherwise be a patch nothing checks.
    */
-  readonly reaches: readonly Copy[];
+  readonly reaches: readonly [Copy, ...Copy[]];
   apply(source: string, file: string, ctx: PatchContext): PatchResult;
 }
 
