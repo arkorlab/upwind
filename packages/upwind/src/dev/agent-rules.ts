@@ -35,6 +35,9 @@ interface WriteResult {
   readonly claudeMd?: AgentFileResult;
 }
 
+/** What a function of somebody else's may start returning without telling anyone. */
+type Awaitable<T> = PromiseLike<T> | T;
+
 /**
  * Both places an export of a CommonJS module of the project's can arrive, for one name.
  *
@@ -156,27 +159,29 @@ export async function ensureAgentRules(projectDir: string): Promise<void> {
     if (getAgentName === undefined || (await getAgentName()) === null) {
       return;
     }
-    const hasCurrentAgentRules = await functionFromProject<(dir: string) => boolean>(
+    // Both awaited, though Next.js does the two of them synchronously today. A version that turned
+    // either into a promise would otherwise be read as its promise: a truthy one from the first,
+    // which is every project answered "already current" and never written to, and an object with no
+    // `agentsMd` from the second, which is the files written and the line never said.
+    const hasCurrentAgentRules = await functionFromProject<(dir: string) => Awaitable<boolean>>(
       projectDir,
       GENERATE_AGENT_FILES,
       'hasCurrentAgentRules',
     );
-    const writeAgentFiles = await functionFromProject<(dir: string) => WriteResult | undefined>(
-      projectDir,
-      GENERATE_AGENT_FILES,
-      'writeAgentFiles',
-    );
+    const writeAgentFiles = await functionFromProject<
+      (dir: string) => Awaitable<WriteResult | undefined>
+    >(projectDir, GENERATE_AGENT_FILES, 'writeAgentFiles');
     if (hasCurrentAgentRules === undefined || writeAgentFiles === undefined) {
       return;
     }
     // Two file reads, and the answer for every run after the one that wrote them.
-    if (hasCurrentAgentRules(projectDir)) {
+    if (await hasCurrentAgentRules(projectDir)) {
       return;
     }
     if (!(await agentRulesAllowed(projectDir))) {
       return;
     }
-    const names = written(writeAgentFiles(projectDir));
+    const names = written(await writeAgentFiles(projectDir));
     if (names.length > 0) {
       console.log(
         `  ✓ ${names.join(' and ')} written for the coding agent running this (\`agentRules: false\` in next.config turns it off)`,

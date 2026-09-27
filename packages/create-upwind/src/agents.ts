@@ -85,9 +85,10 @@ export async function writeAgentRules(target: string): Promise<void> {
  * install to ask, a Next.js that has moved the module, an export under a name it does not use any
  * more — leaves the static text, which is this release's reading of a block that is only ever
  * advice. Saying so at a scaffold would be telling somebody about an internal path of Next.js's on
- * the one occasion they have nothing to do about it, and the first dev run in the project puts it
- * right. What is *not* claimed, then, is that a scaffolded project holds the installed Next.js's
- * wording — only that it holds it whenever the installed Next.js was there to be asked.
+ * the one occasion they have nothing to do about it, and the first dev run a coding agent makes in
+ * the project puts it right — which is the only run where anything reads the block anyway. What is
+ * *not* claimed, then, is that a scaffolded project holds the installed Next.js's wording — only
+ * that it holds it whenever the installed Next.js was there to be asked.
  *
  * Resolved from the project and called through, the same way `upwind`'s `src/dev/agent-rules.ts`
  * does it at dev time — duplicated deliberately: the two live in different packages, neither depends
