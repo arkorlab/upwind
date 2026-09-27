@@ -1,6 +1,6 @@
 {
   "name": "@stayingupwind/runtime",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "The Function that runs a Next.js deployment bundle on Cloudflare: routing, middleware, and PPR resume over the entrypoints `next build` produced.",
   "license": "MIT OR Apache-2.0",
   "repository": {
