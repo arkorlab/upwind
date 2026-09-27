@@ -117,10 +117,10 @@ on `main`, or that names a version the packages do not — which is why the bump
 before the tag exists rather than carried by it. It publishes through npm's trusted publishing, with
 a provenance attestation it reads back off the registry afterwards.
 
-The last thing it does is draft a GitHub Release for the tag: notes written, and the tarballs npm is
-serving attached after checking each against the digest npm published beside it. It stops there. A
-release here cannot be changed once it is published, so the draft is made complete and the button
-stays a person's.
+The last thing it does is draft a GitHub Release for the tag. Notes written; the tarballs npm is
+serving attached, each checked against the digest npm published beside it; and a bill of materials
+for what they carry, in both formats `pnpm sbom` emits. Then it stops. A release here cannot be
+changed once it is published, so the draft is made complete and the button stays a person's.
 
 Two things are load-bearing and easy to break by tidying: the **filename** `release.yaml`, which
 npm's trusted publisher is configured with, and the `release` environment the publishing job

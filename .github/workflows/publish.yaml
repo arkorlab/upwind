@@ -231,17 +231,21 @@ jobs:
           # pnpm writes the document to stdout and its progress to stderr, so anything that ever
           # crossed those wires would arrive as a file that is not JSON. Say so here rather than
           # attach it to a release nobody can change afterwards.
-          python3 -c "
-          import json, sys
-          cdx = json.load(open(sys.argv[1]))
-          spdx = json.load(open(sys.argv[2]))
-          assert cdx.get('specVersion') == '1.7', cdx.get('specVersion')
-          assert spdx.get('spdxVersion') == 'SPDX-2.3', spdx.get('spdxVersion')
-          assert cdx.get('components'), 'CycloneDX names no components'
-          assert spdx.get('packages'), 'SPDX names no packages'
-          print(f\"CycloneDX {cdx['specVersion']}: {len(cdx['components'])} components\")
-          print(f\"SPDX {spdx['spdxVersion']}: {len(spdx['packages'])} packages\")
-          " "${out}/sbom.cyclonedx.json" "${out}/sbom.spdx.json"
+          #
+          # In node rather than python because this is a script inside a YAML block: python would
+          # read the indentation of this file as its own, and a later edit of one would be a syntax
+          # error in the other.
+          node -e '
+            const read = (p) => JSON.parse(require("node:fs").readFileSync(p, "utf8"));
+            const [cdx, spdx] = [read(process.argv[1]), read(process.argv[2])];
+            const must = (ok, said) => { if (!ok) { console.error(said); process.exit(1); } };
+            must(cdx.specVersion === "1.7", `CycloneDX says ${cdx.specVersion}, not 1.7`);
+            must(spdx.spdxVersion === "SPDX-2.3", `SPDX says ${spdx.spdxVersion}, not SPDX-2.3`);
+            must(cdx.components?.length, "CycloneDX names no components");
+            must(spdx.packages?.length, "SPDX names no packages");
+            console.log(`CycloneDX ${cdx.specVersion}: ${cdx.components.length} components`);
+            console.log(`SPDX ${spdx.spdxVersion}: ${spdx.packages.length} packages`);
+          ' "${out}/sbom.cyclonedx.json" "${out}/sbom.spdx.json"
 
       # Only the draft job reads this, and a dry run has no draft job. The step above still runs in
       # one, because "can the document be made" is a thing a rehearsal is for.
@@ -425,17 +429,16 @@ jobs:
             name="$(node -p "require('./${manifest}').name")"
             curl -fsSL "https://registry.npmjs.org/${name/\//%2f}" -o "${RUNNER_TEMP}/packument.json"
             # One line, three fields: where the tarball is, the digest npm published beside it, and
-            # what the attestation says it is. Read with `cut` rather than a heredoc, which inside a
-            # YAML block would depend on its own indentation surviving every future edit of this file.
-            meta="$(python3 -c "
-          import json, sys
-          dist = json.load(open(sys.argv[1]))['versions'][sys.argv[2]]['dist']
-          print(
-              dist['tarball'],
-              dist.get('integrity', '-'),
-              dist.get('attestations', {}).get('provenance', {}).get('predicateType', '-'),
-          )
-          " "${RUNNER_TEMP}/packument.json" "${version}")"
+            # what the attestation says it is. In node, and read back with `cut`, so that nothing here
+            # depends on the indentation of this file surviving a later edit of it.
+            meta="$(node -e '
+              const dist = require(process.argv[1]).versions[process.argv[2]].dist;
+              console.log([
+                dist.tarball,
+                dist.integrity ?? "-",
+                dist.attestations?.provenance?.predicateType ?? "-",
+              ].join(" "));
+            ' "${RUNNER_TEMP}/packument.json" "${version}")"
             url="$(printf '%s' "${meta}" | cut -d' ' -f1)"
             integrity="$(printf '%s' "${meta}" | cut -d' ' -f2)"
             predicate="$(printf '%s' "${meta}" | cut -d' ' -f3)"
@@ -488,6 +491,16 @@ jobs:
             gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" -f tag_name="${TAG}" --jq .body
           } > "${notes}"
 
+          # An unmatched glob stays a literal here, and `gh` would refuse it as a file it cannot
+          # find. Count them instead, so the message names what is missing.
+          for kind in 'assets/*.tgz' 'sbom/*.json'; do
+            # shellcheck disable=SC2086
+            set -- ${RUNNER_TEMP}/${kind}
+            if [ ! -e "$1" ]; then
+              echo "::error::nothing matched ${kind}, so the release would have had none of them to attach"
+              exit 1
+            fi
+          done
           set -- "${TAG}" "${RUNNER_TEMP}"/assets/*.tgz "${RUNNER_TEMP}"/sbom/*.json
           set -- "$@" --draft --verify-tag --title "${TAG}" --notes-file "${notes}"
           case "${version}" in
