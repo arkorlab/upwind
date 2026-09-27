@@ -172,6 +172,47 @@ jobs:
       - run: pnpm check:patches
       - run: pnpm build
 
+      # Made here, and before the publish, for two reasons. The install above populated pnpm's store,
+      # which is what lets a licence and an author resolve rather than coming out `NOASSERTION`; and a
+      # document that cannot be made should stop a release that has not happened yet, not a draft of
+      # one that has.
+      #
+      # `--prod` is the whole point: the production closure is what the published packages carry with
+      # them (11 components), where the full workspace graph is 230, most of it the linters and the
+      # bundlers that never leave this repository. The CycloneDX spec version is pinned so that a
+      # change to pnpm's default cannot quietly ship a different schema than the one read here; SPDX
+      # has no equivalent, and pnpm emits 2.3.
+      - name: The bill of materials for what is about to be published
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/sbom"
+          rm -rf "${out}" && mkdir -p "${out}"
+          pnpm sbom --sbom-format cyclonedx --sbom-spec-version 1.7 --prod > "${out}/sbom.cyclonedx.json"
+          pnpm sbom --sbom-format spdx --prod > "${out}/sbom.spdx.json"
+          # pnpm writes the document to stdout and its progress to stderr, so anything that ever
+          # crossed those wires would arrive as a file that is not JSON. Say so here rather than
+          # attach it to a release nobody can change afterwards.
+          python3 -c "
+          import json, sys
+          cdx = json.load(open(sys.argv[1]))
+          spdx = json.load(open(sys.argv[2]))
+          assert cdx.get('specVersion') == '1.7', cdx.get('specVersion')
+          assert spdx.get('spdxVersion') == 'SPDX-2.3', spdx.get('spdxVersion')
+          assert cdx.get('components'), 'CycloneDX names no components'
+          assert spdx.get('packages'), 'SPDX names no packages'
+          print(f\"CycloneDX {cdx['specVersion']}: {len(cdx['components'])} components\")
+          print(f\"SPDX {spdx['spdxVersion']}: {len(spdx['packages'])} packages\")
+          " "${out}/sbom.cyclonedx.json" "${out}/sbom.spdx.json"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom
+          path: ${{ runner.temp }}/sbom
+          if-no-files-found: error
+          # Long enough for the draft job below to take them, and no longer: what they are for is the
+          # release, and the release is where they end up.
+          retention-days: 1
+
       - name: Publish
         env:
           TAG: ${{ inputs.tag }}
@@ -270,6 +311,12 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
+      # The documents the publish job made of the tree it published, rather than a second pair made
+      # here of a tree installed again.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sbom
+          path: ${{ runner.temp }}/sbom
 
       # Releases are immutable here: once one is published, its notes and its files are what they
       # are. So a release this workflow left half-made must never be published by accident, and a
@@ -371,7 +418,11 @@ jobs:
             echo '## Packages'
             echo
             echo 'Published to npm, each with a provenance attestation the release verified before this'
-            echo 'draft was made. The files below are the tarballs npm is serving.'
+            echo 'draft was made. Attached below are the tarballs npm is serving, and a bill of'
+            echo 'materials for what they carry: `sbom.cyclonedx.json` (CycloneDX 1.7) and'
+            echo '`sbom.spdx.json` (SPDX 2.3), both from `pnpm sbom --prod`, so they describe the'
+            echo 'production dependency closure of this tag and not the tooling this repository builds'
+            echo 'with. Their root component is the workspace itself.'
             echo
             while IFS=$'\t' read -r name pkg_version predicate; do
               printf -- '- [`%s@%s`](https://www.npmjs.com/package/%s/v/%s) — `%s`\n' \
@@ -383,7 +434,7 @@ jobs:
             gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" -f tag_name="${TAG}" --jq .body
           } > "${notes}"
 
-          set -- "${TAG}" "${RUNNER_TEMP}"/assets/*.tgz
+          set -- "${TAG}" "${RUNNER_TEMP}"/assets/*.tgz "${RUNNER_TEMP}"/sbom/*.json
           set -- "$@" --draft --verify-tag --title "${TAG}" --notes-file "${notes}"
           case "${version}" in
             *-*) set -- "$@" --prerelease ;;
