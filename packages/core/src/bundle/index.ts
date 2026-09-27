@@ -47,6 +47,7 @@ export { queryDependent } from './query.ts';
 export {
   cacheablePrerenders,
   completePrerenders,
+  documentPrerenders,
   dynamicRouting,
   edgeServablePrerenders,
   edgeServedRewrites,

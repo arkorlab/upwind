@@ -9,7 +9,7 @@ import { taskTimersPatch } from './task-timers.ts';
 import { turbopackRuntimePatch } from './turbopack-runtime.ts';
 import type { Patch } from './types.ts';
 import { vercelOgFontPatch, vercelOgImageResponsePatch, vercelOgPatch } from './vercel-og.ts';
-import { wasmLoaderPatch } from './wasm-loader.ts';
+import { runtimeWasmLoaderPatch, wasmLoaderPatch } from './wasm-loader.ts';
 
 export { FUNCTION_BANNER } from './banner.ts';
 export {
@@ -20,12 +20,13 @@ export {
   vendoredOtelPlugin,
   wasmModulePlugin,
 } from './rolldown.ts';
-export type { PatchContext } from './types.ts';
+export type { Copy, Patch, PatchContext } from './types.ts';
 
 /** Every rewrite of Next.js's output the Function build applies. */
 export const PATCHES: readonly Patch[] = [
   turbopackRuntimePatch,
   wasmLoaderPatch,
+  runtimeWasmLoaderPatch,
   vercelOgPatch,
   vercelOgImageResponsePatch,
   vercelOgFontPatch,

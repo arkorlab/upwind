@@ -102,6 +102,8 @@ export const wasmLoaderPatch: Patch = {
   name: NAME,
   target: TARGET,
   marker: (source) => READS_A_FILE.test(source) && registeredExports(source).length > 0,
+  // The chunk Turbopack put the loader in, which only a build has.
+  reaches: ['build-output'],
   apply(source, file, ctx) {
     const exports = registeredExports(source);
     // An empty table is not a failure: a Function may bundle the loader from a shared chunk while
@@ -113,6 +115,73 @@ export const wasmLoaderPatch: Patch = {
       contents: result.contents,
       edits: result.edits,
       notes: [`wasm table: ${ctx.wasm.length} entries; exports: ${exports.join(', ')}`],
+    };
+  },
+};
+
+/**
+ * The same loader, where 16.2 keeps it: inside the Turbopack runtime itself.
+ *
+ * Next.js 16.3 moved these two out into a module of their own — the one the patch above finds by
+ * marker — and left the runtime exposing only the root they resolve against
+ * (`contextPrototype.w = RUNTIME_ROOT`). In 16.2 the runtime carries them:
+ *
+ * ```js
+ * function loadWebAssembly(chunkPath, _edgeModule, imports) {
+ *   const resolved = path.resolve(RUNTIME_ROOT, chunkPath);
+ *   return instantiateWebAssemblyFromPath(resolved, imports);
+ * }
+ * function loadWebAssemblyModule(chunkPath, _edgeModule) {
+ *   const resolved = path.resolve(RUNTIME_ROOT, chunkPath);
+ *   return compileWebAssemblyFromPath(resolved);
+ * }
+ * ```
+ *
+ * Different code in a different file, and the same two things: one compiles, one instantiates, and
+ * both are handed the `.wasm` path relative to the runtime root — which is `distDir`, the form the
+ * table is keyed by. So the bodies become calls into the same table, and the helpers they called
+ * are left unreferenced for the bundler to drop.
+ *
+ * The two shapes cannot both be present, and each is found by what only it has: this one by the
+ * runtime assigning a *function* to `contextPrototype.w`, the other by a module registering
+ * `compileModule` and `instantiate` as its exports.
+ */
+const RUNTIME_NAME = 'runtime-wasm-loader';
+const RUNTIME_TARGET = /\[turbopack\]_runtime\.js$/u;
+/** 16.2 assigns the loader here; 16.3 assigns `RUNTIME_ROOT`, which is not a thing to rewrite. */
+const RUNTIME_LOADER = 'contextPrototype.w = loadWebAssembly;';
+const RUNTIME_INSTANTIATE =
+  /const resolved = path\.resolve\(RUNTIME_ROOT, chunkPath\);\s*return instantiateWebAssemblyFromPath\(resolved, imports\);/gu;
+const RUNTIME_COMPILE =
+  /const resolved = path\.resolve\(RUNTIME_ROOT, chunkPath\);\s*return compileWebAssemblyFromPath\(resolved\);/gu;
+const RUNTIME_LEFTOVERS = [/WebAssemblyFromPath\(resolved/u];
+
+export const runtimeWasmLoaderPatch: Patch = {
+  name: RUNTIME_NAME,
+  target: RUNTIME_TARGET,
+  marker: (source) => source.includes(RUNTIME_LOADER),
+  // The Turbopack runtime `next build` writes; a published package holds nothing for this.
+  reaches: ['build-output'],
+  apply(source, file, ctx) {
+    const result = new Rewrite(RUNTIME_NAME, file, source)
+      .replace(
+        RUNTIME_INSTANTIATE,
+        'return __arkorWasmInstantiate(chunkPath, imports);',
+        1,
+        "the runtime's WebAssembly instantiation",
+      )
+      .replace(
+        RUNTIME_COMPILE,
+        'return __arkorWasmCompile(chunkPath);',
+        1,
+        "the runtime's WebAssembly compilation",
+      )
+      .forbid(RUNTIME_LEFTOVERS, 'a WebAssembly read from a resolved path')
+      .append(wasmTable(ctx.wasm));
+    return {
+      contents: result.contents,
+      edits: result.edits,
+      notes: [`wasm table: ${String(ctx.wasm.length)} entries`],
     };
   },
 };

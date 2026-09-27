@@ -113,6 +113,8 @@ export const cacheSignalTimersPatch: Patch = {
   name: NAME,
   target: TARGET,
   marker: (source) => source.includes(MARKER),
+  // Both copies `TARGET` names, because a Function loads both.
+  reaches: ['module', 'server-runtime'],
   apply(source, file) {
     const rewrite = new Rewrite(NAME, file, source);
     const shape = SCHEDULE_SHAPES.find((candidate) => occurrencesOf(source, candidate) > 0);

@@ -107,6 +107,49 @@ jobs:
             exit 1
           fi
 
+      # Asked here, where nothing has been published yet, and asked again in the draft job, which is
+      # the one that has to tell a draft from a published release. A tag whose release has already
+      # been told about is not a tag to release: immutability means there is nothing to add to it, and
+      # finding that out before npm rather than after is the difference between a refused release and
+      # a published one with nowhere to say so.
+      - name: Nothing has published a release for this tag
+        env:
+          TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # stdout and stderr kept apart: merged, a warning `gh` decided to print on a *successful*
+          # call would arrive glued to the answer, and `true` would stop matching `true`.
+          said="$(mktemp)"
+          if answer="$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft --jq .isDraft 2>"${said}")"; then
+            case "${answer}" in
+              false)
+                echo "::error::${TAG} already has a *published* release, which immutability makes unchangeable"
+                exit 1
+                ;;
+              true)
+                # A draft from an earlier attempt, left publishable. Leaving it there means a person
+                # could publish it — incomplete, and then immutable — while this run is still going.
+                # Deleting it here would need `contents: write` in a job that is meant to hold none,
+                # so the slate is cleared by hand instead.
+                echo "::error::${TAG} has a draft release from an earlier attempt. Delete it (gh release delete ${TAG} --repo ${GITHUB_REPOSITORY} --yes) and run this again; a draft left standing can be published while this one works."
+                exit 1
+                ;;
+              *)
+                echo "::error::unexpected answer about whether ${TAG} has a release: ${answer}"
+                exit 1
+                ;;
+            esac
+          else
+            case "$(cat "${said}")" in
+              *'release not found'*) ;;
+              *)
+                echo "::error::could not tell whether ${TAG} has a release: $(cat "${said}")"
+                exit 1
+                ;;
+            esac
+          fi
+
       - name: The tag says the version the packages say
         env:
           TAG: ${{ inputs.tag }}
@@ -170,7 +213,94 @@ jobs:
       # without a rewrite it needs, and the adapter's own build says nothing about it. Cheap, and here
       # rather than only in CI: a tag can be pushed before that run finishes, or after it is cancelled.
       - run: pnpm check:patches
+      # And for the same reason: a `create-upwind` released with last version's agent rules writes
+      # every new project an uncommitted change, which nothing downstream would catch.
+      - run: pnpm check:agent-rules
       - run: pnpm build
+
+      # Made here, and before the publish, for two reasons. The install above populated pnpm's store,
+      # which is what lets a licence and an author resolve rather than coming out `NOASSERTION`; and a
+      # document that cannot be made should stop a release that has not happened yet, not a draft of
+      # one that has.
+      #
+      # `--prod` is the whole point: the production closure is what the published packages carry with
+      # them (11 components), where the full workspace graph is 230, most of it the linters and the
+      # bundlers that never leave this repository. The CycloneDX spec version is pinned so that a
+      # change to pnpm's default cannot quietly ship a different schema than the one read here; SPDX
+      # has no equivalent, and pnpm emits 2.3.
+      - name: The bill of materials for what is about to be published
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/sbom"
+          rm -rf "${out}" && mkdir -p "${out}"
+          pnpm sbom --sbom-format cyclonedx --sbom-spec-version 1.7 --prod > "${out}/sbom.cyclonedx.json"
+          pnpm sbom --sbom-format spdx --prod > "${out}/sbom.spdx.json"
+          # pnpm writes the document to stdout and its progress to stderr, so anything that ever
+          # crossed those wires would arrive as a file that is not JSON. Say so here rather than
+          # attach it to a release nobody can change afterwards.
+          #
+          # In node rather than python because this is a script inside a YAML block: python would
+          # read the indentation of this file as its own, and a later edit of one would be a syntax
+          # error in the other.
+          node -e '
+            const read = (p) => JSON.parse(require("node:fs").readFileSync(p, "utf8"));
+            const [cdx, spdx] = [read(process.argv[1]), read(process.argv[2])];
+            const must = (ok, said) => { if (!ok) { console.error(said); process.exit(1); } };
+            must(cdx.specVersion === "1.7", `CycloneDX says ${cdx.specVersion}, not 1.7`);
+            must(spdx.spdxVersion === "SPDX-2.3", `SPDX says ${spdx.spdxVersion}, not SPDX-2.3`);
+            must(cdx.components?.length, "CycloneDX names no components");
+            must(spdx.packages?.length, "SPDX names no packages");
+            console.log(`CycloneDX ${cdx.specVersion}: ${cdx.components.length} components`);
+            console.log(`SPDX ${spdx.spdxVersion}: ${spdx.packages.length} packages`);
+          ' "${out}/sbom.cyclonedx.json" "${out}/sbom.spdx.json"
+
+      # Only the draft job reads this, and a dry run has no draft job. The step above still runs in
+      # one, because "can the document be made" is a thing a rehearsal is for.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !inputs.dry-run }}
+        with:
+          name: sbom
+          path: ${{ runner.temp }}/sbom
+          if-no-files-found: error
+          # Long enough for the draft job below to take them, and no longer: what they are for is the
+          # release, and the release is where they end up.
+          retention-days: 1
+
+      # Asked in `verify` too, and asked again here on purpose. `verify` runs before the environment
+      # gate above, and an approval can wait hours; what it was asked about can change while it waits,
+      # if somebody tired of waiting makes the release by hand. This is the last step before the one
+      # thing here that cannot be undone, which is where the answer has to still be true.
+      - name: Still nothing has published a release for this tag
+        env:
+          TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          said="$(mktemp)"
+          if answer="$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft --jq .isDraft 2>"${said}")"; then
+            case "${answer}" in
+              false)
+                echo "::error::${TAG} has had a release published while this run waited; immutability makes it unchangeable, and publishing to npm now would leave nowhere to say so"
+                exit 1
+                ;;
+              true)
+                echo "::error::a draft release for ${TAG} appeared while this run waited; publishing now would leave it standing, publishable and incomplete, beside packages it does not describe"
+                exit 1
+                ;;
+              *)
+                echo "::error::unexpected answer about whether ${TAG} has a release: ${answer}"
+                exit 1
+                ;;
+            esac
+          else
+            case "$(cat "${said}")" in
+              *'release not found'*) ;;
+              *)
+                echo "::error::could not tell whether ${TAG} has a release: $(cat "${said}")"
+                exit 1
+                ;;
+            esac
+          fi
 
       - name: Publish
         env:
@@ -253,3 +383,200 @@ jobs:
             fi
             echo "${name}@${version}: ${predicate}"
           done
+
+  draft:
+    needs: provenance
+    if: ${{ !inputs.dry-run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # The one job here that writes anything. What it writes is a draft: a release nobody has
+      # published yet, which is the only kind this repository can still change its mind about.
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      # The documents the publish job made of the tree it published, rather than a second pair made
+      # here of a tree installed again.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sbom
+          path: ${{ runner.temp }}/sbom
+
+      # Releases are immutable here: once one is published, its notes and its files are what they
+      # are. So a release a person did publish must never be touched — that branch refuses.
+      #
+      # A draft is replaced rather than refused, which is the opposite of what the two guards before
+      # the publish do, and for a reason: they were asking whether something was standing that a
+      # person could publish while the packages were going out. By the time this runs the packages
+      # are out, this job is the one whose business is the draft, and anything it finds appeared
+      # during the run.
+      - name: Nothing has published a release for this tag
+        env:
+          TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # `|| true` would read a rate limit or an expired token as "no release here", which is the
+          # one answer that must not be guessed. Only the registry's own words for it count — and
+          # stdout is read apart from stderr, so a warning printed beside a good answer is not read as
+          # part of it.
+          said="$(mktemp)"
+          if answer="$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft --jq .isDraft 2>"${said}")"; then
+            state="${answer}"
+          else
+            case "$(cat "${said}")" in
+              *'release not found'*) state=none ;;
+              *)
+                echo "::error::could not tell whether ${TAG} has a release: $(cat "${said}")"
+                exit 1
+                ;;
+            esac
+          fi
+          case "${state}" in
+            true)
+              # An earlier attempt at this same release. A draft holds nothing anyone can have read,
+              # so it is replaced rather than added to, and the tag it names is left alone.
+              echo "::notice::replacing the draft an earlier run left for ${TAG}"
+              gh release delete "${TAG}" --repo "${GITHUB_REPOSITORY}" --yes
+              ;;
+            false)
+              echo "::error::${TAG} already has a *published* release, which immutability makes unchangeable"
+              exit 1
+              ;;
+            none)
+              # No release for this tag, which is what a release expects to find.
+              ;;
+            *)
+              # Three answers are understood and a fourth is not an answer. Falling through here
+              # would be reading "I do not know" as "there is nothing there".
+              echo "::error::unexpected answer about whether ${TAG} has a release: ${state}"
+              exit 1
+              ;;
+          esac
+
+      # The files attached are the ones npm is serving, fetched back and checked against the digest
+      # npm publishes beside them — not a second packing of the same tree, which would be a different
+      # file that only ought to be the same.
+      - name: Collect the tarballs npm is serving
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          rm -rf "${RUNNER_TEMP}/assets" && mkdir -p "${RUNNER_TEMP}/assets"
+          : > "${RUNNER_TEMP}/packages.tsv"
+          for manifest in packages/*/package.json; do
+            if [ "$(node -p "require('./${manifest}').private === true")" = true ]; then
+              continue
+            fi
+            name="$(node -p "require('./${manifest}').name")"
+            curl -fsSL "https://registry.npmjs.org/${name/\//%2f}" -o "${RUNNER_TEMP}/packument.json"
+            # One line, three fields: where the tarball is, the digest npm published beside it, and
+            # what the attestation says it is. In node, and read back with `cut`, so that nothing here
+            # depends on the indentation of this file surviving a later edit of it.
+            meta="$(node -e '
+              const dist = require(process.argv[1]).versions[process.argv[2]].dist;
+              console.log([
+                dist.tarball,
+                dist.integrity ?? "-",
+                dist.attestations?.provenance?.predicateType ?? "-",
+              ].join(" "));
+            ' "${RUNNER_TEMP}/packument.json" "${version}")"
+            url="$(printf '%s' "${meta}" | cut -d' ' -f1)"
+            integrity="$(printf '%s' "${meta}" | cut -d' ' -f2)"
+            predicate="$(printf '%s' "${meta}" | cut -d' ' -f3)"
+            # The provenance job proved every one of these attested, minutes ago. An edge that has the
+            # version but not yet the attestation beside it would hand back a dash here, and the notes
+            # below say in prose that each package is attested — so a dash would make them lie. Given a
+            # moment to catch up, and then refused.
+            for _ in 1 2 3 4 5 6; do
+              if [ "${predicate}" != - ]; then
+                break
+              fi
+              sleep 10
+              # Both of these are allowed to fail, because the loop they are in exists to absorb a
+              # registry that is not answering the same way twice. Under `set -e` an unguarded one
+              # would end the job instead of trying again, which is the opposite of what it is for.
+              if ! curl -fsSL "https://registry.npmjs.org/${name/\//%2f}" -o "${RUNNER_TEMP}/packument.json"; then
+                continue
+              fi
+              predicate="$(node -e '
+                const dist = require(process.argv[1]).versions[process.argv[2]].dist;
+                console.log(dist.attestations?.provenance?.predicateType ?? "-");
+              ' "${RUNNER_TEMP}/packument.json" "${version}" || echo -)"
+            done
+            if [ "${predicate}" = - ]; then
+              echo "::error::${name}@${version}: the registry served this version without the attestation the provenance job read; a draft that said otherwise would be wrong"
+              exit 1
+            fi
+            file="${RUNNER_TEMP}/assets/$(basename "${url}")"
+            # A scoped and an unscoped package can share a tarball basename, and the second download
+            # would quietly replace the first. Say so instead.
+            if [ -e "${file}" ]; then
+              echo "::error::${name}@${version} would overwrite $(basename "${file}"), already collected"
+              exit 1
+            fi
+            curl -fsSL "${url}" -o "${file}"
+            if [ "${integrity}" = - ]; then
+              echo "::error::${name}@${version}: npm published no digest to check the tarball against"
+              exit 1
+            fi
+            got="sha512-$(openssl dgst -sha512 -binary "${file}" | base64 -w0)"
+            if [ "${got}" != "${integrity}" ]; then
+              echo "::error::${name}@${version}: the tarball npm served does not match the digest npm published"
+              exit 1
+            fi
+            printf '%s\t%s\t%s\n' "${name}" "${version}" "${predicate}" >> "${RUNNER_TEMP}/packages.tsv"
+            echo "${name}@${version}: $(basename "${file}") matches ${integrity}"
+          done
+
+      - name: Draft the release
+        env:
+          TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          notes="${RUNNER_TEMP}/notes.md"
+          {
+            echo '## Packages'
+            echo
+            echo 'Published to npm, each with a provenance attestation the release verified before this'
+            echo 'draft was made. Attached below are the tarballs npm is serving, and a bill of'
+            echo 'materials for what they carry: `sbom.cyclonedx.json` (CycloneDX 1.7) and'
+            echo '`sbom.spdx.json` (SPDX 2.3), both from `pnpm sbom --prod`, so they describe the'
+            echo 'production dependency closure of this tag and not the tooling this repository builds'
+            echo 'with. Their root component is the workspace itself.'
+            echo
+            while IFS=$'\t' read -r name pkg_version predicate; do
+              printf -- '- [`%s@%s`](https://www.npmjs.com/package/%s/v/%s) — `%s`\n' \
+                "${name}" "${pkg_version}" "${name}" "${pkg_version}" "${predicate}"
+            done < "${RUNNER_TEMP}/packages.tsv"
+            echo
+            # GitHub's own changelog, asked for rather than left to `--generate-notes`, so that it
+            # goes *below* what this release is and the whole body is settled before a person looks.
+            gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" -f tag_name="${TAG}" --jq .body
+          } > "${notes}"
+
+          # An unmatched glob stays a literal here, and `gh` would refuse it as a file it cannot
+          # find. Count them instead, so the message names what is missing.
+          for kind in 'assets/*.tgz' 'sbom/*.json'; do
+            # shellcheck disable=SC2086
+            set -- ${RUNNER_TEMP}/${kind}
+            if [ ! -e "$1" ]; then
+              echo "::error::nothing matched ${kind}, so the release would have had none of them to attach"
+              exit 1
+            fi
+          done
+          set -- "${TAG}" "${RUNNER_TEMP}"/assets/*.tgz "${RUNNER_TEMP}"/sbom/*.json
+          set -- "$@" --repo "${GITHUB_REPOSITORY}" --draft --verify-tag --title "${TAG}" --notes-file "${notes}"
+          case "${version}" in
+            *-*) set -- "$@" --prerelease ;;
+          esac
+          gh release create "$@"
+          echo "::notice::a draft release for ${TAG} is ready; publishing it is a person's job"

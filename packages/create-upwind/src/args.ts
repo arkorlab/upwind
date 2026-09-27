@@ -5,9 +5,13 @@ import { PACKAGE_MANAGERS, type PackageManager } from './package-manager.ts';
 /**
  * What `create-upwind` understands.
  *
- * A directory, and three things about what to do after writing it. Everything a scaffolder usually
+ * A directory, and four things about what is written with it. Everything a scaffolder usually
  * asks about the application itself — the language, the router, the bundler — is decided by what
  * upwind runs, so there is nothing to ask and nothing to flag.
+ *
+ * `--no-agents-md` is the one exception, and it is `create-next-app`'s: what an agent is told
+ * about this Next.js is not a fact about the application, and a project that keeps its agent rules
+ * somewhere else has nothing to gain from two more files.
  */
 
 export interface CreateRequest {
@@ -17,6 +21,8 @@ export interface CreateRequest {
   readonly directory: string | undefined;
   readonly install: boolean;
   readonly git: boolean;
+  /** Write `AGENTS.md` and `CLAUDE.md`, as `create-next-app` does unless told not to. */
+  readonly agentsMd: boolean;
   /** The manager to install with, or nothing to use the one this was started from. */
   readonly packageManager: PackageManager | undefined;
 }
@@ -43,6 +49,7 @@ export function parseCreateRequest(args: readonly string[]): CreateRequest {
   const { values, positionals } = parseArgs({
     args: [...args],
     options: {
+      'agents-md': { type: 'boolean', default: true },
       git: { type: 'boolean', default: true },
       help: { type: 'boolean', short: 'h' },
       'skip-install': { type: 'boolean' },
@@ -65,6 +72,7 @@ export function parseCreateRequest(args: readonly string[]): CreateRequest {
     directory: positionals[0],
     install: values['skip-install'] !== true,
     git: values.git,
+    agentsMd: values['agents-md'],
     packageManager: answer === undefined ? packageManagerOf(values) : undefined,
   };
 }

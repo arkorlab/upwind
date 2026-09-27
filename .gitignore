@@ -9,3 +9,6 @@ dist/
 # bind. It is a developer's own data, and it is rebuilt from nothing by deleting it.
 .upwind/
 fixtures/*/package-lock.json
+# Worktrees an agent puts under its own tool directory: a second checkout of this repository, which
+# every tool that walks the tree would otherwise lint, format and count as this one's files.
+.claude/worktrees/

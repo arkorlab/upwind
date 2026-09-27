@@ -191,7 +191,11 @@ export async function serveRouteHandler(
     entry.kind === 'edge' ||
     bypassesPrerender(store, input.request, built, resolved.url) ||
     built?.body === undefined ||
-    built.routeType !== 'route' ||
+    // Next.js classifies its outputs from 16.3 on, and this is the handler's own response only if
+    // it says so. Before that it classifies nothing, and what stands in its place is the caller's
+    // own question: nothing reaches here but an `app-route` (`handle.ts`), and a route handler has
+    // no second output at its pathname for this to be mistaken for.
+    (built.routeType ?? 'route') !== 'route' ||
     // An answer that depends on a query the route does not name: the build's body is one query's.
     queryDependent(built, resolved.route, resolved.pathname)
   ) {

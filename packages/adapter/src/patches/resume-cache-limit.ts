@@ -15,6 +15,8 @@ const FUNCTION_MAX_OUTPUT_BYTES = 134_217_728;
 export const resumeCacheLimitPatch: Patch = {
   name: NAME,
   target: TARGET,
+  // The compiled page runtime, which is the only place `TARGET` names.
+  reaches: ['server-runtime'],
   apply(source, file) {
     const result = new Rewrite(NAME, file, source).replace(
       NEXT_LIMIT,

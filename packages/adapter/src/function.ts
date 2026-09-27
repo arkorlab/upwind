@@ -365,7 +365,12 @@ export interface BuiltFunction {
   readonly dependencies: FunctionDependencies;
 }
 
-const WASM_LOADER_PATCH = 'wasm-loader';
+/**
+ * The two patches that can be the Turbopack WebAssembly loader, one per shape Next.js has shipped:
+ * a module of its own from 16.3, and the Turbopack runtime itself in 16.2 (`wasm-loader.ts`). A
+ * build reaches exactly one of them, and which is the version's business rather than this audit's.
+ */
+const WASM_LOADER_PATCHES: ReadonlySet<string> = new Set(['runtime-wasm-loader', 'wasm-loader']);
 const OG_FONT_PATCH = 'vercel-og-font';
 
 /**
@@ -443,7 +448,7 @@ function auditWasmLoader(
   if (patch.wasm.length === 0) {
     return;
   }
-  if (applied.every((item) => item.patch !== WASM_LOADER_PATCH)) {
+  if (applied.every((item) => !WASM_LOADER_PATCHES.has(item.patch))) {
     throw new Error(
       `@stayingupwind/adapter: the ${kind} Function's entrypoints bundle WebAssembly (${patch.wasm
         .map((item) => item.chunkPath)

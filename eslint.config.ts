@@ -63,6 +63,9 @@ export default defineConfig([
     '**/dist/**',
     '**/.next/**',
     '**/.ppr-cdn/**',
+    // A worktree an agent put under its own tool directory: a second checkout of this repository is
+    // not a second thing to lint (`.gitignore` says the same for git).
+    '.claude/worktrees/**',
     // An application this repository writes for somebody else, not one it runs: it is held to the
     // conventions of a Next.js project, which are not these.
     'packages/create-upwind/templates/**',
