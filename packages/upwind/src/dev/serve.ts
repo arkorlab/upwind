@@ -269,8 +269,14 @@ export async function serveDev(options: DevOptions): Promise<void> {
   // Raced against the stop rather than awaited, because on the one run where it does real work it
   // loads the config, which took a second in testing — and a Ctrl-C arriving in that second would be
   // a shutdown that had not started yet when the supervisor's two seconds (`EXIT_GRACE_MS`) ran out
-  // and killed this outright. Losing the race abandons two markdown files, not a write half done:
-  // Next.js writes them synchronously, so one that has begun has finished.
+  // and killed this outright.
+  //
+  // What losing the race abandons is almost always the config load, which is the slow part and costs
+  // nothing to drop. Next.js writes the files themselves synchronously, so a write that has begun has
+  // finished before anything here runs again. A release that made that write asynchronous would put a
+  // `process.exit(0)` and a half-written `AGENTS.md` in the same window — everything shutdown does
+  // first, `app.close()` most of all, stands between them, and if that ever stops being enough the
+  // answer is to stop racing here rather than to bound the wait with a timer.
   //
   // Nothing on the failure path above, deliberately. `next dev` calls this after its own startup has
   // succeeded and not in the `catch`, so a start that failed writes nothing there either, and an

@@ -88,9 +88,13 @@ function firstDifference(ours: Buffer, theirs: Buffer): string {
 
 async function main(): Promise<void> {
   const writeNext = nextWriter();
-  const ours = await mkdtemp(path.join(tmpdir(), 'create-upwind-agents-'));
-  const theirs = await mkdtemp(path.join(tmpdir(), 'next-agents-'));
+  // Made inside the `try`, not before it, so that the second one failing does not leave the first
+  // behind: the cleanup below is what this promises, and a promise with one way out of it is not one.
+  let ours: string | undefined;
+  let theirs: string | undefined;
   try {
+    ours = await mkdtemp(path.join(tmpdir(), 'create-upwind-agents-'));
+    theirs = await mkdtemp(path.join(tmpdir(), 'next-agents-'));
     await writeAgentRules(ours);
     await writeNext(theirs);
     const differences: string[] = [];
@@ -115,10 +119,13 @@ async function main(): Promise<void> {
     }
     console.log(`agent rules: ${FILES.join(' and ')} are Next.js's own, byte for byte`);
   } finally {
-    // Both, whatever happened: a failing check that leaves two directories in `/tmp` per run is a
-    // check somebody turns off.
-    await rm(ours, { recursive: true, force: true });
-    await rm(theirs, { recursive: true, force: true });
+    // Whichever of them got made, whatever happened after: a failing check that leaves directories
+    // in `/tmp` per run is a check somebody turns off.
+    for (const directory of [ours, theirs]) {
+      if (directory !== undefined) {
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
   }
 }
 
