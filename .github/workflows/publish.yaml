@@ -496,11 +496,16 @@ jobs:
                 break
               fi
               sleep 10
-              curl -fsSL "https://registry.npmjs.org/${name/\//%2f}" -o "${RUNNER_TEMP}/packument.json"
+              # Both of these are allowed to fail, because the loop they are in exists to absorb a
+              # registry that is not answering the same way twice. Under `set -e` an unguarded one
+              # would end the job instead of trying again, which is the opposite of what it is for.
+              if ! curl -fsSL "https://registry.npmjs.org/${name/\//%2f}" -o "${RUNNER_TEMP}/packument.json"; then
+                continue
+              fi
               predicate="$(node -e '
                 const dist = require(process.argv[1]).versions[process.argv[2]].dist;
                 console.log(dist.attestations?.provenance?.predicateType ?? "-");
-              ' "${RUNNER_TEMP}/packument.json" "${version}")"
+              ' "${RUNNER_TEMP}/packument.json" "${version}" || echo -)"
             done
             if [ "${predicate}" = - ]; then
               echo "::error::${name}@${version}: the registry served this version without the attestation the provenance job read; a draft that said otherwise would be wrong"
