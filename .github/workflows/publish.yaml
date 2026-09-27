@@ -204,7 +204,10 @@ jobs:
           print(f\"SPDX {spdx['spdxVersion']}: {len(spdx['packages'])} packages\")
           " "${out}/sbom.cyclonedx.json" "${out}/sbom.spdx.json"
 
+      # Only the draft job reads this, and a dry run has no draft job. The step above still runs in
+      # one, because "can the document be made" is a thing a rehearsal is for.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !inputs.dry-run }}
         with:
           name: sbom
           path: ${{ runner.temp }}/sbom
@@ -349,6 +352,15 @@ jobs:
               ;;
             false)
               echo "::error::${TAG} already has a *published* release, which immutability makes unchangeable"
+              exit 1
+              ;;
+            none)
+              # No release for this tag, which is what a release expects to find.
+              ;;
+            *)
+              # Three answers are understood and a fourth is not an answer. Falling through here
+              # would be reading "I do not know" as "there is nothing there".
+              echo "::error::unexpected answer about whether ${TAG} has a release: ${state}"
               exit 1
               ;;
           esac
