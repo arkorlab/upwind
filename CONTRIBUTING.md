@@ -1,9 +1,9 @@
 # Contributing to upwind
 
 Thanks for looking. upwind is a Next.js deployment adapter and the runtime that serves what it
-builds. The packages are at `0.2.0`: the deployment bundle carries a version of its own and is
-expected to change shape before it settles, and there are no compatibility shims between `0.1.x`
-releases. Issues, questions and pull requests are all welcome.
+builds. Everything here is before `1.0`: the deployment bundle carries a version of its own and is
+expected to change shape before it settles, and no release carries a compatibility shim for the minor
+before it. Issues, questions and pull requests are all welcome.
 
 ## Ways to help
 
@@ -104,8 +104,9 @@ other; a tag is not a place to make a change. Once the bump is on `main`:
 
 ```bash
 git switch main && git pull
-git tag -s v0.2.1 -m v0.2.1
-git push origin v0.2.1
+# The name is `v` and the version every package now says — nothing else is accepted.
+git tag -s v0.2.0 -m v0.2.0
+git push origin v0.2.0
 ```
 
 Everything else is in [`publish.yaml`](.github/workflows/publish.yaml). A release refuses a tag that
