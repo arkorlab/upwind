@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-import { PATCHES, type PatchContext } from '../src/patches/index.ts';
+import { type Copy, type Patch, PATCHES, type PatchContext } from '../src/patches/index.ts';
 import { SUPPORTED_NEXT_RANGE } from '../src/patches/versions.ts';
 
 /**
@@ -298,31 +298,34 @@ async function profile(root: string): Promise<Applied[]> {
 }
 
 /**
- * The three patches a published package holds nothing for, because what they rewrite is what
- * `next build` *writes*: the Turbopack runtime, the WebAssembly loader Turbopack bundles into a
- * server chunk, and the chunk Turbopack emits for `@vercel/og`'s external import. They are covered
- * by `tools/next-matrix`, which builds applications.
+ * Which copy of Next.js a file is, by the name a build knows it under.
  *
- * Named rather than inferred, and that is the whole point of the list. Every other patch has to
- * fire here, so a `target` or a `marker` that stopped matching is a failure rather than a patch
- * quietly reclassified as one of these — which is what it would be if this were "whatever found
- * nothing today". Pull-request CI runs this checker and not the matrix, so a rewrite that silently
- * stopped applying would otherwise ship in a Function and fail at the first request that needed it.
+ * The same module is shipped more than once, and a patch declares the kinds it has to reach
+ * (`Copy`, `src/patches/types.ts`). This is where a file is read as one of them: the compiled server
+ * runtimes each bundle their own copy, everything else under `compiled/` is a vendored package's,
+ * `esm/` is the ESM copy beside a file, and the rest is the file itself.
+ *
+ * `build-output` is not among the answers, because a published package holds none of it. That is the
+ * one kind this checker cannot see, and `tools/next-matrix` is what holds a patch to it.
  */
-const BUILD_OUTPUT_PATCHES = new Set(['turbopack-runtime', 'vercel-og', 'wasm-loader']);
+function copyOf(file: string): Exclude<Copy, 'build-output'> {
+  const inPackage = file.replace(/^.*\/node_modules\/next\/dist\//u, '');
+  if (/^compiled\/next-server\/[\w-]+\.runtime\.prod\.js$/u.test(inPackage)) {
+    return 'server-runtime';
+  }
+  if (inPackage.startsWith('compiled/')) {
+    return 'vendored';
+  }
+  return inPackage.startsWith('esm/') ? 'esm-module' : 'module';
+}
+
+/** The kinds a patch has to reach that a published package can show at all. */
+function packageKinds(patch: Patch): string[] {
+  return patch.reaches.filter((kind) => kind !== 'build-output');
+}
 
 /** The patches a published package does hold a file for, and so every checked version must fire. */
-const REQUIRED_PATCHES = PATCHES.map((patch) => patch.name).filter(
-  (name) => !BUILD_OUTPUT_PATCHES.has(name),
-);
-
-/** A name in the list above that no patch answers to: the list itself, held to `PATCHES`. */
-function checkBuildOutputList(): string[] {
-  const names = new Set(PATCHES.map((patch) => patch.name));
-  return missingFrom(BUILD_OUTPUT_PATCHES, names).map(
-    (name) => `BUILD_OUTPUT_PATCHES names "${name}", which is not a patch`,
-  );
-}
+const REQUIRED_PATCHES = PATCHES.filter((patch) => packageKinds(patch).length > 0);
 
 // ─── the range and what declares it ──────────────────────────────────────────
 
@@ -453,13 +456,23 @@ async function verdict(target: Target): Promise<{ applied?: Applied[]; problem?:
   } catch (error) {
     return { problem: error instanceof Error ? error.message : String(error) };
   }
-  // Every patch but the three that rewrite build output has a file in the package, so one that
-  // found none is a rewrite that will not run and will not say so: `target` or `marker` has
-  // stopped matching, whether because Next.js moved the file or because an edit here missed.
-  const fired = new Set(applied.map((one) => one.patch));
-  const missing = missingFrom(REQUIRED_PATCHES, fired);
-  if (missing.length > 0) {
-    return { applied, problem: `no file left for ${missing.join(', ')}` };
+  // Each patch is held to the kinds of copy it says it reaches, and not merely to having fired
+  // somewhere: `cache-signal-timers` is loaded from the source module *and* from each compiled
+  // runtime, and a version where only the first still matches is a Function with the bug back. A
+  // kind that went missing means `target` or `marker` stopped matching it, whether because Next.js
+  // moved the file or because an edit here missed.
+  const problems: string[] = [];
+  for (const patch of REQUIRED_PATCHES) {
+    const reached = new Set(
+      applied.filter((one) => one.patch === patch.name).map((one) => copyOf(one.file)),
+    );
+    const missing = missingFrom(packageKinds(patch), reached);
+    if (missing.length > 0) {
+      problems.push(`${patch.name} reached no ${missing.join(', no ')}`);
+    }
+  }
+  if (problems.length > 0) {
+    return { applied, problem: problems.join('; ') };
   }
   return { applied };
 }
@@ -499,14 +512,17 @@ async function main(): Promise<void> {
     return;
   }
 
-  const declarations = [...checkBuildOutputList(), ...(await checkDeclarations())];
+  const declarations = await checkDeclarations();
   for (const problem of declarations) {
     console.error(`✗ ${problem}`);
   }
 
   console.log(`supported range: ${SUPPORTED_NEXT_RANGE}`);
+  const buildOutput = PATCHES.filter((patch) => packageKinds(patch).length === 0).map(
+    (patch) => patch.name,
+  );
   console.log(
-    `${String(REQUIRED_PATCHES.length)} patch(es) required of every version; ${[...BUILD_OUTPUT_PATCHES].join(', ')} rewrite build output and are covered by tools/next-matrix`,
+    `${String(REQUIRED_PATCHES.length)} patch(es) held to the copies they reach; ${buildOutput.join(', ')} rewrite build output alone and are covered by tools/next-matrix`,
   );
   const checked = await targets(argv.has('--range'), argv.has('--canary'));
   const names = checked.map((one) => one.version).join(', ');

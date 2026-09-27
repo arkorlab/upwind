@@ -85,25 +85,48 @@ type Dependencies = Readonly<
   Record<
     string,
     {
-      readonly patches: readonly { readonly patch: string }[];
-      readonly edge?: { readonly patches: readonly { readonly patch: string }[] };
+      readonly patches: readonly AppliedPatch[];
+      readonly edge?: { readonly patches: readonly AppliedPatch[] };
     }
   >
 >;
+
+/** What the adapter recorded of one rewrite: which patch, and the file it rewrote. */
+interface AppliedPatch {
+  readonly patch: string;
+  readonly file: string;
+}
+
+/** What a build wrote, as the record names it; anything else is a file of Next.js's own package. */
+const BUILD_DIR = '.next/';
 
 interface Fixture {
   readonly name: string;
   /** Every patch a build of this fixture has to apply, in one Function or the other. */
   readonly expected: readonly string[];
+  /**
+   * Of those, the patches that have to rewrite something this build *wrote*.
+   *
+   * Which they are is a fact about the fixture and not about the patches: `hanging-input-abort`
+   * reaches a chunk in `next-minimal`, where Turbopack copied the module it rewrites into one, and
+   * reaches only Next.js's own file in `next-edge`, where it did not. Each list here was read off a
+   * real build rather than reasoned about.
+   */
+  readonly chunks: readonly string[];
   /** What else has to be true of the bundle, beyond its schema. */
   readonly holds: (bundle: DeploymentBundle, dependencies: Dependencies) => string[];
 }
 
+/** The patch names more than one of the lists below spells, kept in one place. */
+const FETCH_CACHE_WAIT_UNTIL = 'fetch-cache-wait-until';
+const GRAPH_MANIFESTS = 'graph-manifests';
+const TURBOPACK_RUNTIME = 'turbopack-runtime';
+
 /** The rewrites that reach Next.js's own package, and so every build of any fixture. */
 const PACKAGE_PATCHES = [
   'cache-signal-timers',
-  'fetch-cache-wait-until',
-  'graph-manifests',
+  FETCH_CACHE_WAIT_UNTIL,
+  GRAPH_MANIFESTS,
   'hanging-input-abort',
   'instrumentation',
   'load-manifest',
@@ -119,11 +142,19 @@ const FIXTURE_LIST: readonly Fixture[] = [
     // Every patch there is: this fixture exists to be the one build that reaches all of them.
     expected: [
       ...PACKAGE_PATCHES,
-      'turbopack-runtime',
+      TURBOPACK_RUNTIME,
       'wasm-loader',
       'vercel-og',
       'vercel-og-font',
       'vercel-og-image-response',
+    ],
+    chunks: [
+      FETCH_CACHE_WAIT_UNTIL,
+      GRAPH_MANIFESTS,
+      'hanging-input-abort',
+      TURBOPACK_RUNTIME,
+      'vercel-og',
+      'wasm-loader',
     ],
     holds: (bundle) => {
       const problems: string[] = [];
@@ -153,7 +184,10 @@ const FIXTURE_LIST: readonly Fixture[] = [
     // No `wasm-loader`: WebAssembly on the edge runtime travels as `wasmAssets` under Turbopack's
     // own global and never reaches the Node.js loader that patch rewrites. No `vercel-og` either —
     // nothing here renders an image.
-    expected: [...PACKAGE_PATCHES, 'turbopack-runtime'],
+    expected: [...PACKAGE_PATCHES, TURBOPACK_RUNTIME],
+    // `hanging-input-abort` is not here either: this build put the module it rewrites in no chunk of
+    // its own, so it reaches Next.js's own file and nothing else.
+    chunks: [FETCH_CACHE_WAIT_UNTIL, GRAPH_MANIFESTS, TURBOPACK_RUNTIME],
     holds: (bundle, dependencies) => {
       const problems: string[] = [];
       if (bundle.entrypoints.every((one) => one.runtime !== 'edge')) {
@@ -255,20 +289,36 @@ function explain(error: unknown): string[] {
   return patchErrors.length > 0 ? patchErrors : lines.slice(-TAIL_LINES);
 }
 
-/** Every patch the build recorded, in either Function and in either of a Function's two bundles. */
-function patchesApplied(dependencies: Dependencies): Set<string> {
+/**
+ * Every patch the build recorded, in either Function and in either of a Function's two bundles — and,
+ * of those, the ones that rewrote something the build itself wrote.
+ *
+ * That second set is the half no published package can show, and so the half `check-patches.ts` cannot
+ * check: a patch that says it reaches `build-output` is held to it here and nowhere else.
+ */
+function patchesApplied(dependencies: Dependencies): {
+  applied: Set<string>;
+  inChunks: Set<string>;
+} {
   const applied = new Set<string>();
+  const inChunks = new Set<string>();
+  const record = ({ patch, file }: AppliedPatch): void => {
+    applied.add(patch);
+    if (file.startsWith(BUILD_DIR)) {
+      inChunks.add(patch);
+    }
+  };
   for (const one of Object.values(dependencies)) {
-    for (const { patch } of one.patches) {
-      applied.add(patch);
+    for (const entry of one.patches) {
+      record(entry);
     }
     if (one.edge !== undefined) {
-      for (const { patch } of one.edge.patches) {
-        applied.add(patch);
+      for (const entry of one.edge.patches) {
+        record(entry);
       }
     }
   }
-  return applied;
+  return { applied, inChunks };
 }
 
 async function readJson(file: string): Promise<unknown> {
@@ -283,10 +333,18 @@ async function checkOutput(fixture: Fixture, app: string): Promise<string[]> {
     return [`bundle.json does not parse: ${first?.path.join('.') ?? ''} ${first?.message ?? ''}`];
   }
   const dependencies = (await readJson(path.join(out, 'dependencies.json'))) as Dependencies;
-  const applied = patchesApplied(dependencies);
-  const problems = fixture.expected.flatMap((patch) =>
-    applied.has(patch) ? [] : [`the ${patch} patch applied to nothing`],
-  );
+  const { applied, inChunks } = patchesApplied(dependencies);
+  const problems = [
+    ...fixture.expected.flatMap((patch) =>
+      applied.has(patch) ? [] : [`the ${patch} patch applied to nothing`],
+    ),
+    // A patch that fired on Next.js's own file and on nothing this build wrote has lost the half of
+    // itself that only a build can show: `check-patches.ts` would still see it fire, and a Function
+    // would load a chunk it never rewrote.
+    ...fixture.chunks.flatMap((patch) =>
+      inChunks.has(patch) ? [] : [`the ${patch} patch rewrote nothing this build wrote`],
+    ),
+  ];
   return [...problems, ...fixture.holds(parsed.data, dependencies)];
 }
 
@@ -383,6 +441,17 @@ async function main(): Promise<void> {
   if (fixtures.length === 0) {
     const names = FIXTURE_LIST.map((one) => one.name).join(', ');
     throw new Error(`next-matrix: no fixture named "${only ?? ''}"; there are ${names}`);
+  }
+  // A `chunks` name outside `expected` is a claim about a patch this fixture never said it applies,
+  // and would be checked against a build that had no reason to apply it.
+  for (const fixture of FIXTURE_LIST) {
+    const expected = new Set(fixture.expected);
+    const stray = fixture.chunks.filter((patch) => !expected.has(patch));
+    if (stray.length > 0) {
+      throw new Error(
+        `next-matrix: ${fixture.name} expects chunks from ${stray.join(', ')}, which it does not expect to apply at all`,
+      );
+    }
   }
 
   await adapterIsBuilt();

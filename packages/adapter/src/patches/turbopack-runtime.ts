@@ -40,6 +40,8 @@ function chunkTable(distDir: string, chunks: readonly string[]): string {
 export const turbopackRuntimePatch: Patch = {
   name: NAME,
   target: TARGET,
+  // The runtime chunk `next build` writes; a published package holds nothing for this.
+  reaches: ['build-output'],
   apply(source, file, ctx) {
     const rewrite = new Rewrite(NAME, file, source);
     if (ctx.chunks.length === 0) {
