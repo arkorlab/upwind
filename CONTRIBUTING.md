@@ -72,7 +72,8 @@ type-aware over the whole workspace and wants more than Node's default heap; CI 
 
 **There is no test suite in this repository.** The checks above are the whole of CI, and some prose
 in the package readmes refers to suites by path; those suites are not here. What _is_ checked against
-something outside this repository is whatever this one matched against Next.js by text, because text
+something outside this repository is what this one matched against Next.js by text — the adapter's
+rewrites of Next.js's own output, and the agent rules `create-upwind` copies from it — because text
 goes stale silently:
 
 | Command                  | What it does                                                                                                                                                     |

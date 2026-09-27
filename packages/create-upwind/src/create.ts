@@ -1,6 +1,6 @@
 import path from 'node:path';
 
-import { writeAgentRules } from './agents.ts';
+import { refreshAgentRules, writeAgentRules } from './agents.ts';
 import type { CreateRequest } from './args.ts';
 import { initRepository } from './git.ts';
 import { writeManifest } from './manifest.ts';
@@ -121,6 +121,11 @@ export async function create(request: CreateRequest): Promise<void> {
   if (request.install) {
     console.log('');
     await install(manager, target);
+    if (request.agentsMd) {
+      // The Next.js that just arrived may word its agent rules differently from the one this release
+      // was built against, and it is the one the project will run (`agents.ts`).
+      await refreshAgentRules(target);
+    }
   }
   const committed = request.git && (await initRepository(target));
   printNextSteps({ target, manager, committed, installed: request.install });

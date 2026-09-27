@@ -55,10 +55,14 @@ else is: no ESLint, no `src/`, no component library. `create-next-app --empty` i
 **`AGENTS.md` and `CLAUDE.md` are Next.js's, word for word.** They carry the block Next.js writes to
 tell a coding agent that this major is not the one it was trained on, and where in
 `node_modules/next/dist/docs/` to read before writing any code — the same two files
-`create-next-app` writes, from the same text. Keeping it identical is the point: `upwind dev` asks
-the project's own Next.js to bring the block up to date, so a project upgraded to a Next.js that
-words it differently is re-worded rather than left behind, and a plain `next dev` agrees with what
-is already there.
+`create-next-app` writes, from the same text.
+
+Keeping it identical is the point, so neither copy is ever this scaffolder's last word. The text it
+was built against is written first; then the Next.js the install actually brought is asked to write
+its own, before the first commit — so a project made after a release that words the block
+differently is committed with that release's wording rather than this one's. `upwind dev` asks the
+same question on every start, so a project stays current as its Next.js moves, and a plain
+`next dev` agrees with what is already there instead of rewriting it.
 
 `--no-agents-md` writes neither — and the first `upwind dev` an agent runs writes both, because that
 is what the project's Next.js does about a missing block, and `next dev` would do it too. The switch

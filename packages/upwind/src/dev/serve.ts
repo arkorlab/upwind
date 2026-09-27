@@ -263,9 +263,19 @@ export async function serveDev(options: DevOptions): Promise<void> {
   nextReady.resolve(app.handle);
   phase = 'running';
   printReady(devSession);
-  // After the banner, because it is not what anybody is waiting for, and before the wait, because
-  // an agent reading the project is reading it now. Nothing here can fail the run (`agent-rules.ts`).
-  await ensureAgentRules(options.projectDir);
+  // After the banner, because it is not what anybody is waiting for, and before the wait, because an
+  // agent reading the project is reading it now. Nothing here can fail the run (`agent-rules.ts`).
+  //
+  // Raced against the stop rather than awaited, because on the one run where it does real work it
+  // loads the config, which took a second in testing — and a Ctrl-C arriving in that second would be
+  // a shutdown that had not started yet when the supervisor's two seconds (`EXIT_GRACE_MS`) ran out
+  // and killed this outright. Losing the race abandons two markdown files, not a write half done:
+  // Next.js writes them synchronously, so one that has begun has finished.
+  //
+  // Nothing on the failure path above, deliberately. `next dev` calls this after its own startup has
+  // succeeded and not in the `catch`, so a start that failed writes nothing there either, and an
+  // error path is the last place to add a second thing that can go wrong.
+  await Promise.race([ensureAgentRules(options.projectDir), stop.promise]);
 
   await stop.promise;
   // A config change is no longer this run's business: the developer asked it to stop, and a restart

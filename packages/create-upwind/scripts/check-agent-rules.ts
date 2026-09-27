@@ -46,6 +46,18 @@ function nextWriter(): typeof writeAgentFiles {
   return module.writeAgentFiles;
 }
 
+/**
+ * A line as the report prints it.
+ *
+ * A line that is not there is said in words rather than quoted, because the commonest drift is a
+ * sentence added or removed and the two sides then run out at different places — and
+ * `JSON.stringify(undefined)` is not a string at all, so quoting it would print the bare word
+ * `undefined` and read as a line whose contents are that.
+ */
+function show(line: string | undefined): string {
+  return line === undefined ? '(nothing — the file ended above this)' : JSON.stringify(line);
+}
+
 /** Where the two disagree, in the terms somebody fixing it would use: a line, and both versions of it. */
 function firstDifference(ours: Buffer, theirs: Buffer): string {
   const mine = ours.toString('utf8').split('\n');
@@ -54,8 +66,8 @@ function firstDifference(ours: Buffer, theirs: Buffer): string {
     if (mine[line] !== yours[line]) {
       return [
         `  line ${String(line + 1)}`,
-        `    create-upwind: ${JSON.stringify(mine[line])}`,
-        `    Next.js:       ${JSON.stringify(yours[line])}`,
+        `    create-upwind: ${show(mine[line])}`,
+        `    Next.js:       ${show(yours[line])}`,
       ].join('\n');
     }
   }
