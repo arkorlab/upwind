@@ -1,0 +1,39 @@
+# This directory is a project of its own, and this file is what makes pnpm agree.
+#
+# The site is an application, not a package of this repository: it depends on the *released* upwind
+# and adapter rather than the sources beside it, so that what serves the site is what a reader of it
+# would install. pnpm finds the nearest `pnpm-workspace.yaml` walking up, and the one at the
+# repository root lists `packages/*` and `tools/*` — not this directory. Without a file here, an
+# install run from here would be an install into a workspace that does not admit it. With one, the
+# lockfile and the `node_modules` are this project's, and the repository's own install never sees
+# them.
+packages: []
+
+# Only these dependencies may run install scripts. esbuild's puts its platform binary in place, and
+# the adapter runs esbuild during `next build` — without the script there is no binary to run.
+allowBuilds:
+  esbuild: true
+
+# The supply-chain cooldown the repository holds every other install to (pnpm's default is a day;
+# written out so the policy is visible here too, as it is in the root workspace).
+minimumReleaseAge: 1440
+
+# The exception, and the only one: `upwind` and `@stayingupwind/*` are this repository's own
+# releases, published from its own signed tag by its own workflow. A cooldown exists so that a
+# compromised release is somebody else's problem first — there is no somebody else here, and a day's
+# wait would only mean the site is built by a release this repository has already cut.
+minimumReleaseAgeExclude:
+  - upwind
+  - '@stayingupwind/*'
+
+# A peer range that is not satisfied is a refusal here, as it is at the root. This project's whole
+# reason to exist outside the workspace is to install what a reader installs, and a peer warning
+# nobody reads is how a deployment finds out later.
+strictPeerDependencies: true
+
+# pnpm runs an implicit install before every `pnpm run` by default, and that install takes no lock
+# (pnpm/pnpm#14551). Here that would also make it the *unfrozen* one: a host runs
+# `pnpm install --frozen-lockfile` and then `pnpm build`, and an install slipped in between could
+# resolve a newer version than the one the lockfile was checked with. Nothing may install behind
+# your back.
+verifyDepsBeforeRun: false

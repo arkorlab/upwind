@@ -33,6 +33,22 @@ updates:
         update-types:
           - version-update:semver-major
 
+  # The site is a project of its own — outside the workspace, with its own lockfile and its own
+  # versions — so the entry above cannot see it. It is also the one thing here that is deployed, and
+  # a deployed application is where a stale dependency is worth the most attention.
+  - package-ecosystem: npm
+    directory: /web-site
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 1
+    open-pull-requests-limit: 100
+    ignore:
+      # As above: Node's majors are a decision about Node, not about a package.
+      - dependency-name: '@types/node'
+        update-types:
+          - version-update:semver-major
+
   # The workflows pin every action by commit, with the tag in a trailing comment. That is what makes
   # a pinned action safe and also what makes it go stale, so it is worth a robot's attention.
   - package-ecosystem: github-actions
