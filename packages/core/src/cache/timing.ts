@@ -167,6 +167,7 @@ export function runtimeCacheControlFromHeader(
   }
   const staleWhileRevalidate = secondsDirective(directives.get('stale-while-revalidate'));
   return {
+    // eslint-disable-next-line unicorn/prefer-logical-operator-over-ternary -- `a < b && a` hides what this says: a year or more is not a revalidation at all
     revalidate: revalidateSeconds >= NEXT_ONE_YEAR_SECONDS ? false : revalidateSeconds,
     expire:
       staleWhileRevalidate === undefined ? undefined : revalidateSeconds + staleWhileRevalidate,

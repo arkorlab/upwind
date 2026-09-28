@@ -285,6 +285,31 @@ export default defineConfig([
       'unicorn/try-complexity': 'off', // a complexity budget of 1 per try block is unworkable for stream pumps
       'unicorn/prefer-top-level-await': 'off', // not valid in Next.js modules
       'unicorn/prevent-abbreviations': 'off', // Next.js conventions (`props`, `params`, `env`, `ref`)
+      // unicorn 76 rewrote a family of rules that want a function's shape changed, and the four
+      // below are settled one at a time rather than together: two are a setting this repository
+      // disagrees with, and two are the rule itself.
+      //
+      // A guard that wraps up to three statements is a positive case — "when this applies, do
+      // these" — and not a function body pushed sideways. At the default of one, both rules ask for
+      // the remaining `if` of a two-branch loop to become a `continue` that falls off the end
+      // anyway (`parseCacheControl`), and for two parallel conditionals over the same chunk to
+      // become an early return (`request-body`). At four the wrapping really has become the
+      // function, and the one site that reaches it now reads like the two guards above it.
+      'unicorn/prefer-continue': ['error', { maximumStatements: 3 }],
+      'unicorn/prefer-early-return': ['error', { maximumStatements: 3 }],
+      // These two have no setting that fits. `prefer-ternary` wants `if (c) { return a; } return b;`
+      // written as one ternary; that guard chain — one `if` per reason, in the order a reader meets
+      // them — is the shape of nearly every classifier here, and `only-single-line` still asks for
+      // 61 of them. `prefer-combined-guards` wants separately-reasoned guards merged with `||`,
+      // which costs `filterShellResponseHeaders` the three distinct reasons it skips a header for.
+      // The autofix is the second argument: it wrote `cond ? true : (…)` and `!(a > b)`, which
+      // `unicorn/prefer-logical-operator-over-ternary` and `sonarjs/no-inverted-boolean-check` then
+      // reject, and put both branches of `completeByItself` — a classified prerender and an
+      // unclassified one — on one line, which is the distinction that function exists to draw.
+      // Ternaries that do get written are still governed: `no-nested-ternary`,
+      // `prefer-minimal-ternary` and `prefer-logical-operator-over-ternary` stay on.
+      'unicorn/prefer-combined-guards': 'off',
+      'unicorn/prefer-ternary': 'off',
     },
   },
 
