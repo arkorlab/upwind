@@ -7,6 +7,7 @@ import {
   DEPLOYMENT_ID_PREFIX,
   type Entrypoint,
   type Prerender,
+  primaryPrerenders,
   type Route,
   type SourcePage,
   type StaticFile,
@@ -18,6 +19,7 @@ import type { AdapterOutput, NextAdapter } from 'next';
 import { type BlobStore, contentTypeFor } from './blobs.ts';
 import type { EdgeEntry } from './edge.ts';
 import type { EntryModule } from './function.ts';
+import { segmentPathOf, withBasePath } from './segments.ts';
 
 /**
  * What the adapter reads from `onBuildComplete`, and what it makes of it. Each function here
@@ -435,12 +437,22 @@ export async function collectPrerenders(
   outputs: BuildContext['outputs'],
   blobs: BlobStore,
   basePath: string,
+  rsc: BuildContext['routing']['rsc'],
 ): Promise<{ prerenders: Prerender[]; shipped: { sha256: string; bytes: Uint8Array }[] }> {
-  const prerenders: Prerender[] = [];
   const shipped = new Map<string, Uint8Array>();
   const entryIds = entryIdsByOutputId(outputs);
-  for (const output of outputs.prerenders) {
-    const prerender = prerenderFields(output, routeOf(output, entryIds, basePath));
+  const collected = outputs.prerenders.map((output) => {
+    const route = routeOf(output, entryIds, basePath);
+    return { output, prerender: prerenderFields(output, route) };
+  });
+  // Which document each output travels with, asked of the bundle by the rule the bundle is read
+  // with, so a segment is placed against the same document the host will serve it under.
+  const documents = primaryPrerenders(collected.map((each) => each.prerender));
+  for (const { output, prerender } of collected) {
+    const segmentPath = segmentPathOf(prerender, documents.get(prerender.id), basePath, rsc);
+    if (segmentPath !== undefined) {
+      prerender.segmentPath = segmentPath;
+    }
     const filePath = output.fallback?.filePath;
     if (filePath !== undefined && (await exists(filePath))) {
       const bytes = new Uint8Array(await readFile(filePath));
@@ -449,16 +461,16 @@ export async function collectPrerenders(
       prerender.body = ref;
     }
     const postponed = output.fallback?.postponedState;
-    if (postponed !== undefined && postponed !== '') {
-      const bytes = new TextEncoder().encode(postponed);
-      const ref = await blobs.put(bytes, 'text/plain; charset=utf-8');
-      shipped.set(ref.sha256, bytes);
-      prerender.postponed = ref;
+    if (postponed === undefined || postponed === '') {
+      continue;
     }
-    prerenders.push(prerender);
+    const bytes = new TextEncoder().encode(postponed);
+    const ref = await blobs.put(bytes, 'text/plain; charset=utf-8');
+    shipped.set(ref.sha256, bytes);
+    prerender.postponed = ref;
   }
   return {
-    prerenders,
+    prerenders: collected.map((each) => each.prerender),
     shipped: [...shipped].map(([sha256, bytes]) => ({ sha256, bytes })),
   };
 }
@@ -496,11 +508,6 @@ async function walk(dir: string, seen: ReadonlySet<string> = new Set()): Promise
     }
   }
   return out;
-}
-
-/** Every pathname Next.js names carries the app's `basePath`; so does everything named here. */
-function withBasePath(basePath: string, pathname: string): string {
-  return `${basePath}${pathname}`;
 }
 
 async function statOf(target: string): Promise<Stats | undefined> {
