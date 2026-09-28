@@ -93,7 +93,14 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): Config {
 }
 
 function checkBaseUrl(baseUrl: string): void {
-  const url = new URL(baseUrl);
+  let url: URL;
+  try {
+    url = new URL(baseUrl);
+  } catch (error) {
+    // `Invalid URL` on its own names neither the variable nor what was in it, and the first thing to
+    // suspect is the variable. Not quoted: a mistyped URL is whatever somebody pasted.
+    throw new Error(`${NAMES.baseUrl} is not a URL`, { cause: error });
+  }
   if (
     !['http:', 'https:'].includes(url.protocol) ||
     url.username !== '' ||
