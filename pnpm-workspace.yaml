@@ -53,7 +53,7 @@ catalog:
   rolldown: 1.2.9
   typescript: 5.9.3
   typescript-eslint: 8.70.0
-  zod: 4.6.4
+  zod: 4.6.5
 
 # Only these dependencies may run install scripts.
 allowBuilds:

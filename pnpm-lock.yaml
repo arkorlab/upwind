@@ -246,8 +246,8 @@ catalogs:
       specifier: 8.70.0
       version: 8.70.0
     zod:
-      specifier: 4.6.4
-      version: 4.6.4
+      specifier: 4.6.5
+      version: 4.6.5
 
 importers:
 
@@ -330,7 +330,7 @@ importers:
         version: 1.2.9
       zod:
         specifier: 'catalog:'
-        version: 4.6.4
+        version: 4.6.5
     devDependencies:
       '@oxc-project/types':
         specifier: 'catalog:'
@@ -349,7 +349,7 @@ importers:
     dependencies:
       zod:
         specifier: 'catalog:'
-        version: 4.6.4
+        version: 4.6.5
     devDependencies:
       typescript:
         specifier: 'catalog:'
@@ -2527,9 +2527,6 @@ packages:
   youch@4.1.0-beta.10:
     resolution: {integrity: sha512-rLfVLB4FgQneDr0dv1oddCVZmKjcJ6yX6mS4pU82Mq/Dt9a3cLZQ62pDBL4AUO+uVrCvtWz3ZFUL2HFAFJ/BXQ==}
 
-  zod@4.6.4:
-    resolution: {integrity: sha512-AXSD6hvGdvRjajG/l1cC+d6IrhH+sjmPKtYeQdJIK8MFJl3LyClzS+o/YsVC+zQZPupAaeH5skwwm8YqYH7BqA==}
-
   zod@4.6.5:
     resolution: {integrity: sha512-v5l/aFXZQeai4awLbOpSoHecE9UiMrnfx75tEXLjNonXVARxQ5mOeipTjROUchszUNCqnE+hqAMujRsRHsut2Q==}
 
@@ -4319,7 +4316,5 @@ snapshots:
       '@speed-highlight/core': 1.2.24
       cookie: 1.1.1
       youch-core: 0.3.3
-
-  zod@4.6.4: {}
 
   zod@4.6.5: {}
