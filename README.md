@@ -1,11 +1,11 @@
 <div align="center">
 
-<a href="https://www.stayingupwind.com">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/logo-dark.svg">
-    <img src=".github/assets/logo-light.svg" alt="upwind" width="88" height="88">
-  </picture>
-</a>
+<!-- Once www.stayingupwind.com is served, link the logo to it and add it to the links below. -->
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/logo-dark.svg">
+  <img src=".github/assets/logo-light.svg" alt="upwind" width="88" height="88">
+</picture>
 
 # upwind
 
@@ -25,7 +25,7 @@ Your own `next build` writes one deployment bundle for a host to run on Cloudfla
 [![Status: before 1.0](https://img.shields.io/badge/status-before_1.0-orange)](#status)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](CONTRIBUTING.md)
 
-[Website](https://www.stayingupwind.com) · [Quick start](#-quick-start) · [Why upwind](#-why-upwind) · [vs. Next.js](#-upwind-and-nextjs) · [Packages](#-packages) · [FAQ](#-faq) · [Contributing](#-contributing)
+[Quick start](#-quick-start) · [Why upwind](#-why-upwind) · [vs. Next.js](#-upwind-and-nextjs) · [Packages](#-packages) · [FAQ](#-faq) · [Contributing](#-contributing)
 
 **English** · [日本語](README.ja.md)
 
@@ -252,7 +252,7 @@ Then add `.ppr-cdn/`, which a build writes, to `.gitignore` — and, from the ne
 <tr>
 <td valign="top">
 
-**🛑 Fails in the build, not after it.** Every Function is audited — over Cloudflare's size limit, a Node.js built-in not known to work on Workers, a `vm` call left in the bundle, a module that did not resolve — and the build fails and says why before an upload would.
+**🛑 Fails in the build, not after it.** Every Function is audited — over Cloudflare's size limit, an import the Workers runtime is not known to provide, a `vm` call left in the bundle, a load the bundler could not follow — and the build fails and says why before an upload would.
 
 </td>
 <td valign="top">
@@ -303,7 +303,7 @@ New projects get Next.js's own `AGENTS.md` and `CLAUDE.md`, and `upwind dev` kee
 | **Partial Prerendering**                | The server sends the shell, then streams the rest    | The edge sends the shell from storage; the Function sends only the dynamic part                                                                                                                 |
 | **Middleware / `proxy.ts`**             | Runs inside the server                               | Also a Function of its own, which an edge can run before waking the application                                                                                                                 |
 | **`/_next/image`**                      | Optimized by the server                              | Optimized by the edge                                                                                                                                                                           |
-| **Cache** (ISR, `"use cache"`, `fetch`) | In memory and on disk, or a `cacheHandler` you write | Kept by the host: the runtime hands every read and write to the cache the host provides                                                                                                         |
+| **Cache** (ISR, `"use cache"`, `fetch`) | In memory and on disk, or a `cacheHandler` you write | Kept by the host, through a cache module named when the bundle is built; with the default adapter, a bundle caches nothing                                                                      |
 | **Cron jobs**                           | —                                                    | `crons` in `upwind.config.ts` or `vercel.json`, checked at build time                                                                                                                           |
 | **Local storage**                       | —                                                    | D1, KV and R2 under `.upwind/`, read through `@stayingupwind/sdk` [![next release](https://img.shields.io/badge/next_release-f97316)](https://github.com/arkorlab/upwind/compare/v0.2.0...main) |
 | **Bundler**                             | Turbopack or webpack                                 | Turbopack                                                                                                                                                                                       |
@@ -333,7 +333,7 @@ Apart from `--port` and `--hostname`, `next dev`'s flags — `--experimental-htt
 | :-: | ----------------------------------------------------------------- | ----------------------------------------------------------------- |
 | ✅  | App Router: Server Components, streaming, Server Actions          |                                                                   |
 | ✅  | Partial Prerendering, Cache Components                            | the shell from storage, the rest from the Function                |
-| ✅  | `"use cache"`, ISR, `revalidateTag` / `updateTag`, cached `fetch` | kept by the host's cache                                          |
+| ✅  | `"use cache"`, ISR, `revalidateTag` / `updateTag`, cached `fetch` | kept by a host's cache module, named at build time (below)        |
 | ✅  | Pages Router: `getStaticProps`, `getServerSideProps`, API routes  | including the `_next/data` outputs the client router asks for     |
 | ✅  | `proxy.ts`, and the deprecated `middleware.ts`                    | also a Function of its own                                        |
 | ✅  | Routes with `export const runtime = 'edge'`                       | served as built, or rendered in full on each request              |
@@ -344,6 +344,8 @@ Apart from `--port` and `--hostname`, `next dev`'s flags — `--experimental-htt
 | ✅  | `basePath`, `trailingSlash`, `i18n`                               |                                                                   |
 | ✅  | Static export (`output: 'export'`)                                | the same bundle, with the server parts empty                      |
 | ✅  | Cron jobs                                                         | [declared beside `next.config`](#-scheduled-work)                 |
+
+**The cache is a host's, and it is chosen at build time.** The runtime hands every cache read and write to a module the host names in an adapter of its own, `createAdapter({ cacheHostModule })`. The default adapter — the one the steps above use — names none, so its bundle serves what the build produced and revalidates nothing.
 
 <details>
 <summary><b>Not supported</b></summary>
@@ -394,7 +396,7 @@ export default async function Page() {
 
 - **One of a kind needs no name.** When exactly one D1 database is published, `db` is that database; with several it throws and lists them, and `d1('ORDERS')` picks the one you mean.
 - **The types are Cloudflare's own** — `D1Database`, `KVNamespace`, `R2Bucket`, imported from `@cloudflare/workers-types` — so no `tsconfig` of yours needs to know about them.
-- **Prerendering can read it.** In a project with the SDK installed, `upwind build` publishes the same storage while pages prerender, so `generateStaticParams` can read its slugs out of D1. Pages are then prerendered by one build worker rather than several, since one directory of storage can be open in only one runtime at a time. A plain `next build` publishes none, and the SDK throws an error saying so rather than guessing.
+- **Prerendering can read it.** In a project with the SDK installed, `upwind build` publishes the same storage while pages prerender, so `generateStaticParams` can read its slugs out of D1. One directory of storage can be open in only one runtime at a time, so pages are then prerendered by one build worker rather than several — unless the project sets `experimental.cpus` itself, in which case a page that reads storage fails in every worker but one. A plain `next build` publishes none, and the SDK throws an error saying so rather than guessing.
 - **Delete `.upwind/` to start from empty.** It is local data, and no deployment reads it.
 
 ## ⏰ Scheduled work
@@ -419,7 +421,7 @@ The adapter looks for `upwind.config.ts`, `upwind.jsonc`, `upwind.json` and `ver
 | [`@stayingupwind/core`](packages/core)       | [![@stayingupwind/core](https://img.shields.io/npm/v/@stayingupwind/core?label=&color=cb3837)](https://www.npmjs.com/package/@stayingupwind/core)          | The contract: the bundle's schema, the cache's terms, request classification, the edge ↔ Function protocol |
 | [`@stayingupwind/sdk`](packages/sdk)         | [![next release](https://img.shields.io/badge/next_release-f97316)](https://github.com/arkorlab/upwind/compare/v0.2.0...main)                              | What an app reads its own D1, KV and R2 through, with no configuration                                     |
 
-<!-- When the SDK ships, give its row the npm badge its siblings have, and drop every other "next release" mark: the badges, the note under Storage, the two comments in the create-upwind tree, and the wording about `.upwind/` in the `.gitignore` step. README.ja.md has the same. -->
+<!-- When the next release ships: give the SDK's row the npm badge its siblings have; drop every other "next release" mark — the badges, the note under Storage, the two comments in the create-upwind tree, and the wording about `.upwind/` in the `.gitignore` step; and in Which Next.js, say the published release supports 16.2 and later, which is what the Next.js badge will then read from npm. README.ja.md has the same. -->
 
 An app depends on two of them — `upwind` and `@stayingupwind/adapter` — plus the SDK once it reads storage. All of them share one version, and `create-upwind` asks for its own version of both (`^x.y.z`), so what scaffolds a project and what runs it start out as the same generation.
 
