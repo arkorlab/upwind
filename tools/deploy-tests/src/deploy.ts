@@ -6,8 +6,12 @@ import {
   bundleBlobs,
   type DeploymentBundle,
   deploymentBundleSchema,
+  foldedHeaderRulesOf,
+  headerRulesOf,
   type Route,
 } from '@stayingupwind/core/bundle';
+import type { MiddlewareMatcher } from '@stayingupwind/core/manifest';
+import { middlewareApplies } from '@stayingupwind/core/paas';
 
 import { ApiError, type Client, type DeploymentDetail, type ProjectDetail } from './client.ts';
 import type { Config } from './config.ts';
@@ -260,20 +264,20 @@ interface Probe {
  * everything: the point is to find a path nothing touches, and there are usually many.
  *
  * Compiled as the serving path compiles these. Case-insensitive, because that is how Next.js matches a
- * path against them and so how the host does (`matchesAny`, `mayRoutePath`). Without the unicode flag,
- * because Next.js wrote them for a router that runs them without it, and `u` makes an error of an escape
- * that is merely redundant there — measured, a static segment containing a hyphen is escaped as `\-`, so
+ * path against them and so how the host does (`mayRoutePath`). Without the unicode flag, because Next.js
+ * wrote them for a router that runs them without it, and `u` makes an error of an escape that is merely
+ * redundant there — measured, a static segment containing a hyphen is escaped as `\-`, so
  * `^\/app\-simple\-routes(?:\/)?$`, an ordinary rule of an ordinary fixture, throws under `u` and not
  * without it. Read as matching everything, that one throw would have disqualified every asset of such a
  * build and quietly reduced it to the pointer alone.
  */
-function compiledOr(routes: readonly Route[]): (RegExp | undefined)[] {
-  return routes.map((route) => {
+function compiledOr(patterns: readonly { sourceRegex: string }[]): (RegExp | undefined)[] {
+  return patterns.map((rule) => {
     // Assigned rather than returned from the `try`, as the runtime's own `botsRegexOf` does it.
     let pattern: RegExp | undefined;
     try {
       // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-      pattern = new RegExp(route.sourceRegex, 'i');
+      pattern = new RegExp(rule.sourceRegex, 'i');
     } catch {
       // Left unread, which is read below as matching everything.
     }
@@ -281,13 +285,8 @@ function compiledOr(routes: readonly Route[]): (RegExp | undefined)[] {
   });
 }
 
-function anyMatches(
-  patterns: readonly (RegExp | undefined)[],
-  spellings: readonly string[],
-): boolean {
-  return patterns.some(
-    (pattern) => pattern === undefined || spellings.some((spelling) => pattern.test(spelling)),
-  );
+function anyMatches(patterns: readonly (RegExp | undefined)[], pathname: string): boolean {
+  return patterns.some((pattern) => pattern === undefined || pattern.test(pathname));
 }
 
 /** A rule is ahead of the file only if it answers or rewrites; one that does neither sets headers. */
@@ -295,90 +294,82 @@ function answersOrRewrites(route: Route): boolean {
   return route.status !== undefined || route.destination !== undefined;
 }
 
-function setsEtag(route: Route): boolean {
-  return Object.keys(route.headers ?? {}).some((name) => name.toLowerCase() === 'etag');
+function setsEtag(rule: { headers?: Record<string, string> | undefined }): boolean {
+  return Object.keys(rule.headers ?? {}).some((name) => name.toLowerCase() === 'etag');
 }
 
 /**
- * What could stop a file's own digest from coming back, compiled once for a whole bundle.
+ * What could stop a file's own digest from coming back, worked out once for a whole bundle.
  *
- * Three things, and each is read the way the serving path reads it. **Middleware** answers whatever it
- * matches — a catch-all matcher includes `/_next/static`. A **redirect or rewrite ahead of the
- * filesystem** answers instead of the file; one after it does not, because by then the file has won. And
- * a **header rule that sets `ETag`** leaves the file exactly where it is and replaces the one thing being
- * compared: those land in `beforeMiddleware`, `afterFiles` and `onMatch` (`headerPhases`), and the host
- * applies them to a file's own answer wherever they sit (`configuredHeaders`), so the phases that run
- * after the filesystem matter here even though nothing about them is ahead of it.
+ * Three things. **Middleware** answers whatever it matches, and a catch-all matcher includes
+ * `/_next/static`; that one is asked of the host's own `middlewareApplies`, per candidate path, so the
+ * conditions on a matcher are read exactly as the host reads them and so is a path that matches only
+ * once decoded. Asking it rather than the pattern alone matters in the ordinary direction too: a
+ * conditional catch-all matcher would otherwise disqualify every asset a build has, and what that costs
+ * is not caution but evidence — the probe would fall back to the pointer, which is the weakest thing it
+ * can rest on.
  *
- * Blunter than the core's `claimedBeforeFiles` on one point: that one counts unconditional rules only,
- * because it decides what a build publishes, and a conditional rule claims some requests and not others.
- * This decides which path one probe asks for and cannot tell which side of a condition that probe lands
- * on, so a rule that might apply is enough to look elsewhere.
+ * A **redirect or rewrite ahead of the filesystem** answers instead of the file; one after it does not,
+ * because by then the file has won. And a **header rule that sets `ETag`** leaves the file exactly where
+ * it is and replaces the one thing being compared — those come from `headerRulesOf` and
+ * `foldedHeaderRulesOf`, which is where the host looks for them, and both lists are read because which
+ * one it consults depends on whether it reproduces the build's own routing.
+ *
+ * Those two are read from their patterns alone, conditions and all, which is the blunt reading the core
+ * takes when it decides what a build publishes (`claimedBeforeFiles`). They can afford it: a rule that
+ * rewrites everything ahead of the filesystem or sets `ETag` over everything is a rule a handful of
+ * fixtures have, so reading it as always applying cannot plausibly leave a build with nothing to ask for
+ * — which is the very thing that made the matchers worth asking about properly.
  */
 interface CouldAnswer {
-  /** Matched against both spellings of a path, as the host matches a matcher. */
-  readonly matchers: readonly (RegExp | undefined)[];
+  readonly matchers: readonly MiddlewareMatcher[];
   readonly ahead: readonly (RegExp | undefined)[];
   readonly retagged: readonly (RegExp | undefined)[];
 }
 
-function couldAnswer({ routing }: DeploymentBundle): CouldAnswer {
+function couldAnswer(bundle: DeploymentBundle): CouldAnswer {
+  const { routing } = bundle;
   return {
-    matchers: compiledOr(routing.middlewareMatchers),
+    matchers: routing.middlewareMatchers,
     ahead: compiledOr(
       [...routing.beforeMiddleware, ...routing.beforeFiles].filter((route) =>
         answersOrRewrites(route),
       ),
     ),
     retagged: compiledOr(
-      [...routing.beforeMiddleware, ...routing.afterFiles, ...routing.onMatch].filter((route) =>
-        setsEtag(route),
+      [...headerRulesOf(bundle), ...(foldedHeaderRulesOf(bundle) ?? [])].filter((rule) =>
+        setsEtag(rule),
       ),
     ),
   };
 }
 
-/**
- * Both spellings of a pathname a matcher may be written against: as the build named it, and decoded.
- *
- * A matcher is written as a path reads (`/vercel copy.svg`) while a request carries it escaped — and
- * `public/` files are named in the bundle escaped, segment by segment (`collectStaticFiles`). The host
- * tries the decoded form when the escaped one matches nothing (`middlewareApplies`), so a path that
- * matches only that way is matched here too.
- */
-function spellingsOf(pathname: string): string[] {
-  try {
-    const decoded = decodeURIComponent(pathname);
-    return decoded === pathname ? [pathname] : [pathname, decoded];
-  } catch {
-    // Not decodable, which is what the host makes of it as well: only the escaped form is tried.
-    return [pathname];
-  }
-}
-
-/** Whether a `HEAD` of this path would come back with the file's own digest, as far as the bundle says. */
-function showsTheDigest(could: CouldAnswer, pathname: string): boolean {
-  const asItCame = [pathname];
+/** Whether a `HEAD` of this URL would come back with the file's own digest, as far as the bundle says. */
+function showsTheDigest(could: CouldAnswer, url: URL): boolean {
   return !(
-    anyMatches(could.matchers, spellingsOf(pathname)) ||
-    // As it came, not decoded: a rule is matched against the request's own pathname (`patternMatch`).
-    anyMatches(could.ahead, asItCame) ||
-    anyMatches(could.retagged, asItCame)
+    // The headers the probe will send are none of its own, which is what makes a matcher conditioned on
+    // one of them not apply — and this is the same question the host asks of the same request.
+    middlewareApplies(could.matchers, url, new Headers()) ||
+    anyMatches(could.ahead, url.pathname) ||
+    anyMatches(could.retagged, url.pathname)
   );
 }
 
 function probeOf(publicUrl: URL, bundle: DeploymentBundle): Probe {
+  // Assigned rather than resolved, so that a fixture's `//path` stays on this host.
+  const asked = (pathname: string): URL => {
+    const url = new URL(publicUrl.origin);
+    url.pathname = pathname;
+    return url;
+  };
   const could = couldAnswer(bundle);
-  const quiet = bundle.staticFiles.filter((entry) => showsTheDigest(could, entry.pathname));
+  const quiet = bundle.staticFiles.filter((entry) => showsTheDigest(could, asked(entry.pathname)));
   const file =
     quiet.find((entry) => entry.pathname.includes(`/${bundle.buildId}/`)) ??
     quiet.find((entry) => entry.immutable) ??
     quiet[0];
-  const url = new URL(publicUrl.origin);
-  // Assigned rather than resolved, so that a fixture's `//path` stays on this host.
-  url.pathname = file?.pathname ?? (bundle.config.basePath || '/');
   return {
-    url,
+    url: asked(file?.pathname ?? (bundle.config.basePath || '/')),
     etag: file === undefined ? undefined : `"${file.blob.sha256}"`,
     deploymentId: bundle.deploymentId,
   };
