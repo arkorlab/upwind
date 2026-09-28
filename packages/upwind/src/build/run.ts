@@ -18,6 +18,9 @@ import type { BuildOptions } from './args.ts';
  * missing was only the one thing `upwind dev` already does, which is to say *which* adapter, from the
  * project rather than from wherever this CLI is installed.
  *
+ * With one exception, and it is about somebody else's build: on Vercel this command names nothing
+ * (`isVercelsOwnBuild`), so a project can keep one `build` script and be deployed to both.
+ *
  * A child process rather than an import, because `next build` is a program: it decides `NODE_ENV`,
  * runs workers, prints for a terminal and ends the process itself. Wrapping it means running it, and
  * this run ends the way that one did.
@@ -119,9 +122,40 @@ function storageEnv(projectDir: string): Record<string, string> {
   };
 }
 
+/**
+ * A build on Vercel, where the one thing this command adds is the one thing not to do.
+ *
+ * Vercel sets `VERCEL` on every build it runs. A build there is Vercel's: it produces what Vercel
+ * serves, and naming the adapter would produce a deployment bundle under `.ppr-cdn/` instead —
+ * which Vercel does not read, leaving it without the output it does. So a project whose `build`
+ * script is this command can be deployed to both places from the same commit, and on Vercel this
+ * command is the project's own `next build` and nothing else: no adapter, and no storage published
+ * for one (`storageEnv`).
+ *
+ * `NEXT_ADAPTER_PATH` still wins, for the build that means it. A job that runs on Vercel to produce
+ * a bundle rather than a Vercel deployment names the adapter in the environment and gets one, which
+ * is the same sentence this command has always honoured.
+ */
+function isVercelsOwnBuild(): boolean {
+  const named = process.env[ADAPTER_PATH_ENV];
+  if (named !== undefined && named !== '') {
+    return false;
+  }
+  const vercel = process.env['VERCEL'];
+  return vercel !== undefined && vercel !== '';
+}
+
 export async function runBuild(options: BuildOptions): Promise<never> {
-  const adapter = resolveAdapterPath(options.projectDir);
-  if (adapter === undefined) {
+  const vercel = isVercelsOwnBuild();
+  if (vercel) {
+    // Said rather than done quietly: what makes this command different from `next build` is the
+    // bundle, and a run that writes none has to be a run that explains itself.
+    console.log(
+      "upwind: VERCEL is set, so this build is Vercel's — the adapter is not named, and no deployment bundle is written. Name `NEXT_ADAPTER_PATH` to build one here anyway.",
+    );
+  }
+  const adapter = vercel ? undefined : resolveAdapterPath(options.projectDir);
+  if (!vercel && adapter === undefined) {
     // Refused rather than warned about: a build without the adapter is a build that runs to the end
     // and produces no deployment bundle, which is the one thing this command is for.
     throw new Error(
@@ -145,8 +179,11 @@ export async function runBuild(options: BuildOptions): Promise<never> {
     cwd: options.projectDir,
     env: {
       ...process.env,
-      [ADAPTER_PATH_ENV]: adapter,
-      ...storageEnv(options.projectDir),
+      // Both together, or neither: the storage a build publishes is published for the adapter to
+      // bind, and a build with no adapter is one with nothing to bind it to.
+      ...(adapter === undefined
+        ? {}
+        : { [ADAPTER_PATH_ENV]: adapter, ...storageEnv(options.projectDir) }),
     },
     stdio: 'inherit',
   });

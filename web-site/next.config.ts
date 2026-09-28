@@ -18,9 +18,20 @@ import type { NextConfig } from 'next';
  * `upwind build` sets the same thing in the environment, so a build started that way needs nothing
  * from this file. This line is what makes a plain `next build` — from CI, from a script, from
  * anything that does not know about upwind — produce the same deployment bundle.
+ *
+ * **Except on Vercel**, which builds this site too, from the same commit. A build there is Vercel's:
+ * it produces what Vercel serves, and an adapter named here would produce a deployment bundle under
+ * `.ppr-cdn/` instead — which Vercel does not read, leaving it with nothing to deploy. `VERCEL` is
+ * set on every build Vercel runs, and this is the one line that has to notice, because a `next.config`
+ * that names an adapter outranks anything the environment says.
  */
+const vercel = process.env['VERCEL'];
+const onVercel = vercel !== undefined && vercel !== '';
+
 const config: NextConfig = {
-  adapterPath: createRequire(import.meta.url).resolve('@stayingupwind/adapter'),
+  ...(onVercel
+    ? {}
+    : { adapterPath: createRequire(import.meta.url).resolve('@stayingupwind/adapter') }),
   experimental: {
     /*
      * The root layout of this site is `app/[locale]/layout.tsx`, because English is served on the
