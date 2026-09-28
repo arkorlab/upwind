@@ -1,3 +1,4 @@
+import { jsLiteral } from '../codegen.ts';
 import { type Patch, Rewrite } from './types.ts';
 
 /**
@@ -68,8 +69,7 @@ function exportRegistration(exports: readonly string[]): string {
 
 function wasmTable(chunks: readonly { chunkPath: string; global: string }[]): string {
   const cases = chunks.map(
-    (chunk) =>
-      `    case ${JSON.stringify(chunk.chunkPath)}: found = globalThis.${chunk.global}; break;`,
+    (chunk) => `    case ${jsLiteral(chunk.chunkPath)}: found = globalThis.${chunk.global}; break;`,
   );
   return [
     '',

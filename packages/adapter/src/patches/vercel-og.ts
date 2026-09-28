@@ -1,3 +1,4 @@
+import { jsLiteral } from '../codegen.ts';
 import { occurrencesOf, type Patch, Rewrite } from './types.ts';
 
 /**
@@ -62,7 +63,7 @@ export const vercelOgPatch: Patch = {
   reaches: ['build-output'],
   apply(source, file) {
     const result = new Rewrite(IMPORT_PATCH, file, source)
-      .replace(EXTERNAL_IMPORT, `import(${JSON.stringify(EDGE_BUILD)})`, 1, 'the external import')
+      .replace(EXTERNAL_IMPORT, `import(${jsLiteral(EDGE_BUILD)})`, 1, 'the external import')
       .forbid([NODE_BUILD], "the library's Node.js build")
       .forbid([GLUED_IMPORT], 'a call glued to the import');
     return {
@@ -114,7 +115,7 @@ export const vercelOgImageResponsePatch: Patch = {
       );
     }
     const result = rewrite
-      .replace(RUNTIME_PICK, `import(${JSON.stringify(EDGE_BUILD)})`, 1, "the library's import")
+      .replace(RUNTIME_PICK, `import(${jsLiteral(EDGE_BUILD)})`, 1, "the library's import")
       .replace(CACHED_BODY, '', cached, 'the Cache Components path')
       .forbid([NODE_BUILD], "the library's Node.js build")
       .forbid(['cache-image-response'], 'the Cache Components path');
@@ -142,7 +143,7 @@ const FONT_IMPORT = 'import { readFileSync as __arkorReadFile } from "node:fs";\
 const FONT_READER = [
   '',
   'function __arkorOgFallbackFont() {',
-  `  const bytes = __arkorReadFile(${JSON.stringify(OG_FONT_PATH)});`,
+  `  const bytes = __arkorReadFile(${jsLiteral(OG_FONT_PATH)});`,
   '  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);',
   '}',
   '',
