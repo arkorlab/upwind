@@ -106,7 +106,11 @@ Beyond that, four limits are worth knowing before reading a failure as this adap
   no deployment id, so an identical asset shared with an older deployment cannot tell those two apart.
   Where the build has no such file, the host's own account of which deployment is current is the whole
   of the evidence, and then any answer at all — including a `5xx`, which a route-only application may
-  mean — counts as served. Both cases say so in the log.
+  mean — counts as served. Both cases say so in the log. A redirect is the one answer that can never
+  become the digest, so it is given thirty seconds — the pointer flips before every part of the host has
+  caught up, and what answers in between is the previous fixture, which may redirect everything — and
+  then said plainly: a project that is access-protected, or something in front of it redirecting static
+  files, rather than a quarter of an hour of polling.
 - **The Next.js under test must be inside `SUPPORTED_NEXT_RANGE`.** Outside it the host refuses every
   deployment, and the suite reports every suite as failed for a reason that has nothing to do with the
   test. Inside it, 16.2 does without the content-addressed `/_next/static/immutable/*` — it ignores the

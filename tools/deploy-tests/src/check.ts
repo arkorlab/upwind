@@ -34,7 +34,34 @@ const ACCEPTED = 202;
 const CONFLICT = 409;
 const NOT_FOUND = 404;
 const HOOK_TIMEOUT_MS = 60_000;
+const SERVER_LOG = '.adapter-server.log';
 const MS_PER_SECOND = 1000;
+
+function orNothing(said: string | undefined): string {
+  return said !== undefined && said.trim() !== '' ? said.trimEnd() : '(nothing)';
+}
+
+/** Whatever a failed child process wrote to standard error. */
+function saidBy(error: unknown): string {
+  const said =
+    typeof error === 'object' && error !== null && 'stderr' in error ? error.stderr : undefined;
+  return orNothing(typeof said === 'string' ? said : undefined);
+}
+
+/**
+ * What the deploy tool itself said, which is not on the hook's standard error.
+ *
+ * The hook keeps it in a file for the logs hook to show the suite (`2>>`), so a failure in the
+ * deployment — the API calls, what readiness was waiting for, why it gave up — is in there and nowhere
+ * else. Without this, a broken deployment reads here as a hook that failed after a successful build.
+ */
+function keptBy(appDir: string): string {
+  try {
+    return orNothing(readFileSync(path.join(appDir, SERVER_LOG), 'utf8'));
+  } catch {
+    return '(no log; it failed before the deployment)';
+  }
+}
 
 /**
  * An application that builds without Next.js, and lies about its build id on purpose.
@@ -369,16 +396,18 @@ async function main(): Promise<void> {
         timeout: HOOK_TIMEOUT_MS,
       });
     } catch (error) {
-      // A killed hook otherwise arrives as a `SIGTERM` nobody sent on purpose, printed as an object
-      // with the whole environment of the failure in it and no sentence saying what happened.
-      if (error instanceof Error && 'signal' in error && error.signal === 'SIGTERM') {
-        throw new Error(
-          `${name} was still running after ${String(HOOK_TIMEOUT_MS / MS_PER_SECOND)}s and was killed. ` +
-            'Its readiness check is probably waiting for something this host will never say.',
-          { cause: error },
-        );
-      }
-      throw error;
+      // Rethrown with the hook's own account of itself in the message, because a failed `execFile`
+      // arrives as an object whose `stderr` Node prints truncated — and the hook says everything worth
+      // knowing there: the API calls it made, what it was waiting for, why it gave up. A killed one says
+      // nothing at all beyond a `SIGTERM` nobody sent on purpose, so it gets a sentence of its own.
+      const killed = error instanceof Error && 'signal' in error && error.signal === 'SIGTERM';
+      const why = killed
+        ? `was still running after ${String(HOOK_TIMEOUT_MS / MS_PER_SECOND)}s and was killed`
+        : 'failed';
+      throw new Error(
+        `${name} ${why}. It said:\n${saidBy(error)}\nand its own log says:\n${keptBy(appDir)}`,
+        { cause: error },
+      );
     }
   };
   try {

@@ -33,7 +33,19 @@ const PROGRESS_EVERY = 25;
 /** How long any one request may take. The client bounds its own; this is the readiness probe's. */
 const REQUEST_TIMEOUT_MS = 30_000;
 const TERMINAL_STATUSES = new Set(['active', 'failed', 'retired']);
+const REDIRECTION = 300;
+const CLIENT_ERROR = 400;
 const SERVER_ERROR = 500;
+/**
+ * How long the asset's path may be redirected before that is taken as the answer it is.
+ *
+ * A redirect can never carry the file's digest, so this is not a wait that ends by waiting — except in
+ * one window, which is why it is a wait at all: the pointer flips before every part of the host has
+ * caught up, and what answers in between is the deployment before this one, which in this project is
+ * the previous fixture and may be a Next.js test application that redirects everything.
+ */
+const REDIRECT_GRACE_MS = 30_000;
+const MS_PER_SECOND = 1000;
 
 export interface DeployInput {
   /** The isolated copy of the test application the suite's harness made; the hook's own directory. */
@@ -302,11 +314,25 @@ function probeOf(publicUrl: URL, bundle: DeploymentBundle): Probe {
   };
 }
 
+/**
+ * What one probe saw, when it did not prove the deployment.
+ *
+ * `redirected` because that one is not a wait like the others. Every other thing a probe sees is a
+ * deployment that may yet catch up — a `404` becomes the file, a `502` becomes an answer — but a
+ * redirect is the host answering, correctly, with something that is not this file, and no amount of
+ * asking again turns it into the digest. It is told apart so that it can be waited out briefly and then
+ * reported for what it is, rather than polled for a quarter of an hour.
+ */
+interface Unproved {
+  readonly said: string;
+  readonly redirected: boolean;
+}
+
 async function answered(
   input: DeployInput,
   probe: Probe,
   remainingMs: number,
-): Promise<string | undefined> {
+): Promise<Unproved | undefined> {
   // Bounded, because a connection that is accepted and then never answered would otherwise sit here
   // for ever: the deadline this is polling against is only looked at between requests.
   const within = Math.min(REQUEST_TIMEOUT_MS, remainingMs);
@@ -314,17 +340,29 @@ async function answered(
   try {
     response = await fetch(probe.url, {
       method: 'HEAD',
+      // Followed by hand, not by `fetch`: where the redirect leads is not this deployment's asset, and
+      // following it turns a configuration to report into whatever that destination happens to do —
+      // measured, a location that does not resolve comes back as `TypeError: fetch failed`. Node gives
+      // the real status and headers here, unlike a browser's opaque `0`.
       redirect: 'manual',
       signal: AbortSignal.timeout(Math.max(1, within)),
     });
   } catch (error) {
-    return `the request failed: ${error instanceof Error ? error.message : String(error)}`;
+    return {
+      said: `the request failed: ${error instanceof Error ? error.message : String(error)}`,
+      redirected: false,
+    };
   }
   await response.body?.cancel();
   if (probe.etag !== undefined) {
-    return response.ok && response.headers.get('etag') === probe.etag
-      ? undefined
-      : `HTTP ${String(response.status)} without the bundle's own asset behind it`;
+    if (response.ok && response.headers.get('etag') === probe.etag) {
+      return undefined;
+    }
+    const status = response.status;
+    return {
+      said: `HTTP ${String(status)} without the bundle's own asset behind it`,
+      redirected: status >= REDIRECTION && status < CLIENT_ERROR,
+    };
   }
   // Nothing of this fixture's is being identified here — it has no asset to be identified by — so the
   // question is only whether the host is answering at all, and an answer is an answer. What the
@@ -351,9 +389,9 @@ async function served(
   detail: ProjectDetail,
   probe: Probe,
   remainingMs: number,
-): Promise<string | undefined> {
+): Promise<Unproved | undefined> {
   if (detail.active?.deploymentId !== probe.deploymentId) {
-    return 'the project does not answer with this deployment yet';
+    return { said: 'the project does not answer with this deployment yet', redirected: false };
   }
   if (detail.active.mode === 'disabled') {
     // Not an observation to wait out: nothing this tool does will turn it back on, so the deadline
@@ -376,16 +414,41 @@ function sayItIsServed(input: DeployInput, probe: Probe): void {
   }
 }
 
-/** The project's own answer, or nothing while the API cannot give one (`aMoment`). */
-async function answering(input: DeployInput): Promise<ProjectDetail | undefined> {
-  try {
-    return await input.client.getProject();
-  } catch (error) {
-    if (aMoment(error)) {
-      return undefined;
+/** The project's own answer, waiting out an API that cannot give one yet (`aMoment`). */
+async function answering(input: DeployInput, deadline: number): Promise<ProjectDetail> {
+  for (;;) {
+    try {
+      return await input.client.getProject();
+    } catch (error) {
+      if (!aMoment(error)) {
+        throw error;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error('the API never said what the project answers with', { cause: error });
+      }
+      await sleepFor(POLL_INTERVAL_MS);
     }
-    throw error;
   }
+}
+
+/**
+ * How long the probe's path has been redirected, or the end of waiting for it to stop.
+ *
+ * Kept as the moment it started rather than a count of tries, so that a host which redirects, answers
+ * some other way, and redirects again is given the grace afresh — that is a host still settling, which
+ * is the case the grace is for.
+ */
+function redirectedSince(probe: Probe, since: number | undefined): number {
+  const started = since ?? Date.now();
+  if (Date.now() - started >= REDIRECT_GRACE_MS) {
+    throw new Error(
+      `${probe.url.href} has redirected for ${String(REDIRECT_GRACE_MS / MS_PER_SECOND)}s instead of ` +
+        "serving this deployment's own file. A redirect cannot carry the file's digest, so this is " +
+        'not a wait that ends: either the project is protected, or something in front of it redirects ' +
+        'static files.',
+    );
+  }
+  return started;
 }
 
 async function waitUntilServed(
@@ -396,15 +459,9 @@ async function waitUntilServed(
   const probe = probeOf(publicUrl, bundle);
   const deadline = Date.now() + NO_PROGRESS_TIMEOUT_MS;
   let said: string | undefined;
+  let redirecting: number | undefined;
   for (;;) {
-    const detail = await answering(input);
-    if (detail === undefined) {
-      if (Date.now() >= deadline) {
-        throw new Error('the API never said what the project answers with');
-      }
-      await sleepFor(POLL_INTERVAL_MS);
-      continue;
-    }
+    const detail = await answering(input, deadline);
     // Validated outside that tolerance on purpose: a project that answers as a different project, or
     // with no public URL, is an answer and not a moment.
     if (previewUrlOf(detail, input.config).origin !== publicUrl.origin) {
@@ -415,12 +472,13 @@ async function waitUntilServed(
       sayItIsServed(input, probe);
       return;
     }
-    if (observation !== said) {
-      input.log(observation);
-      said = observation;
+    if (observation.said !== said) {
+      input.log(observation.said);
+      said = observation.said;
     }
+    redirecting = observation.redirected ? redirectedSince(probe, redirecting) : undefined;
     if (Date.now() >= deadline) {
-      throw new Error(`the deployment was never served: ${observation}`);
+      throw new Error(`the deployment was never served: ${observation.said}`);
     }
     await sleepFor(POLL_INTERVAL_MS);
   }
