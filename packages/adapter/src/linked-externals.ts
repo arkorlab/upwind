@@ -37,7 +37,7 @@ const SHARED_CHUNKS = '__linked/[name]-[hash].js';
 /** The names the chunks import linked packages by, as each chunk is loaded into the app bundle. */
 export function linkedImportsPlugin(onLinked: (id: string) => void): Plugin {
   return {
-    name: 'ppr-cdn-linked-imports',
+    name: 'arkor-linked-imports',
     transform: {
       filter: { id: /\/server\/chunks\/.*\.js$/u, code: /\.y\("/u },
       handler(code) {

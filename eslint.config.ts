@@ -62,7 +62,7 @@ export default defineConfig([
     '**/node_modules/**',
     '**/dist/**',
     '**/.next/**',
-    '**/.ppr-cdn/**',
+    '**/.arkor/**',
     // A worktree an agent put under its own tool directory: a second checkout of this repository is
     // not a second thing to lint (`.gitignore` says the same for git).
     '.claude/worktrees/**',

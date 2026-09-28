@@ -43,10 +43,10 @@ import { inlineAssetFiles, type TracedFile, tracedFiles } from './traced-files.t
 import { arkorWasmGlobal, WasmCollector, type WasmChunk, wasmChunks } from './wasm.ts';
 
 /**
- * The ppr-cdn deployment adapter.
+ * The upwind deployment adapter.
  *
  * `next build` calls `onBuildComplete` with a typed description of the application; this turns it
- * into a deployment bundle under `<projectDir>/.ppr-cdn/`: a `bundle.json` naming every route,
+ * into a deployment bundle under `<projectDir>/.arkor/`: a `bundle.json` naming every route,
  * prerender and static file by content, the blobs themselves, and the Function modules that run the
  * application's code. Nothing here talks to Cloudflare — uploading is the host's job,
  * so a build needs no credentials and can run anywhere `next build` runs.
@@ -58,7 +58,7 @@ import { arkorWasmGlobal, WasmCollector, type WasmChunk, wasmChunks } from './wa
  * answered by Next.js's own router rather than by a rule reinvented here.
  */
 
-export const OUT_DIR_NAME = '.ppr-cdn';
+export const OUT_DIR_NAME = '.arkor';
 export const BUNDLE_FILE = 'bundle.json';
 /** What went into each Function, and what was done to it: for a diff, not for the platform. */
 const DEPENDENCIES_FILE = 'dependencies.json';
@@ -432,7 +432,7 @@ function middlewarePlacement(middleware: AdapterOutput['MIDDLEWARE'] | undefined
 export interface AdapterOptions {
   /**
    * The module the runtime's cache reads and writes through, as an absolute path — what
-   * `ppr-cdn:cache-host` resolves to, bundled into the Function's runtime.
+   * `arkor:cache-host` resolves to, bundled into the Function's runtime.
    *
    * Left out, the runtime is given no cache and answers every read a miss: a bundle that is
    * correct, serves what the build produced, and revalidates nothing. A host that stores
@@ -510,7 +510,7 @@ function renderInOneProcessForStorage(config: BuildConfig): void {
  */
 export function createAdapter(options: AdapterOptions = {}): NextAdapter {
   return {
-    name: 'ppr-cdn',
+    name: 'upwind',
     modifyConfig(config, { phase }) {
       if (phase === 'phase-development-server') {
         // `/__upwind` belongs to `upwind dev`, which is in front of this server. See `dev-prefix.ts`

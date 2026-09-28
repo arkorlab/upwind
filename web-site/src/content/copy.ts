@@ -9,7 +9,7 @@ import type { PackageId } from '@/lib/site.ts';
  * back to English in front of a reader.
  *
  * What is *not* here: package names, paths, versions and commands. `upwind build`, `/__upwind` and
- * `.ppr-cdn/` are spelled the same in every language, and a name that can be translated by accident
+ * `.arkor/` are spelled the same in every language, and a name that can be translated by accident
  * is a name that will be.
  */
 

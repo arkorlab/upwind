@@ -41,7 +41,7 @@ Options
 /__upwind itself: a request for that prefix is never handed to Next.js.
 
 \`upwind build\` runs the project's own \`next build\` with the deployment adapter named, which
-writes the deployment bundle under .ppr-cdn/.
+writes the deployment bundle under .arkor/.
 `;
 
 function fail(message: string, withUsage: boolean): never {

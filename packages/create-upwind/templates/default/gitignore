@@ -13,7 +13,7 @@
 /out/
 
 # the deployment bundle a build writes
-/.ppr-cdn/
+/.arkor/
 
 # this machine's own copy of the project's storage, which `upwind dev` and `upwind build` bind
 /.upwind/

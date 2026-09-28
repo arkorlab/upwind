@@ -118,7 +118,7 @@ pnpm upwind build
 ```
 
 The project's own `next build`, with the adapter named and with the project's storage bound. The
-bundle under `.ppr-cdn/` is `@stayingupwind/adapter`'s work and the build is Next.js's; what was
+bundle under `.arkor/` is `@stayingupwind/adapter`'s work and the build is Next.js's; what was
 missing was the thing `upwind dev` already does, which is to say _which_ adapter, resolved from the
 project rather than from wherever this CLI is installed.
 

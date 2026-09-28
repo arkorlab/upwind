@@ -151,7 +151,7 @@ export async function runBuild(options: BuildOptions): Promise<never> {
     stdio: 'inherit',
   });
   // A signal this process is sent is the build's too. Without this, a `kill` on `upwind build` would
-  // leave `next build` running — writing into `.next` and `.ppr-cdn` with nothing left waiting for
+  // leave `next build` running — writing into `.next` and `.arkor` with nothing left waiting for
   // it. The terminal's own Ctrl-C reaches both anyway; this is for everything else.
   const forward = (signal: NodeJS.Signals): void => {
     child.kill(signal);

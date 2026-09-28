@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 /**
  * A sentence from the dictionary, with its backticks set as code.
  *
- * The copy on this site is full of names a reader types — `next build`, `upwind dev`, `.ppr-cdn/` —
+ * The copy on this site is full of names a reader types — `next build`, `upwind dev`, `.arkor/` —
  * and a paragraph that spelled them in the body face would be asking the reader to guess which words
  * are literal. Markdown's own notation is what the dictionaries are written in, and this is the whole
  * of the notation: one character, split on, alternating.

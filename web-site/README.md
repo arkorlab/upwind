@@ -10,7 +10,7 @@ page describes is the adapter that shipped the page.
 ```bash
 pnpm install
 pnpm dev        # upwind dev, on http://localhost:3000
-pnpm build      # upwind build, writes .ppr-cdn/
+pnpm build      # upwind build, writes .arkor/
 pnpm typecheck  # tsc; `next build` type-checks too
 ```
 
@@ -43,7 +43,7 @@ formats these files with the repository's settings, and sorts the Tailwind class
 `src/content/copy.ts` is the interface and `en.ts` / `ja.ts` are the two objects that satisfy it, so
 a string added to one and forgotten in the other is a type error rather than a page that quietly
 falls back to English. Backticks are inline code (`src/components/prose.tsx`); names a reader types —
-`next build`, `.ppr-cdn/` — stay in the dictionary in both languages, because they are the same name
+`next build`, `.arkor/` — stay in the dictionary in both languages, because they are the same name
 in both.
 
 Tailwind finds the utilities it must generate by reading these files as text. Write whole class
@@ -58,7 +58,7 @@ that is the whole edit — no sentence counts the packages.
 ## Deployment
 
 Arkor builds `main` from GitHub — root directory `web-site`, `pnpm install --frozen-lockfile`,
-`pnpm build`, and the bundle it serves is `.ppr-cdn/`. Nothing about that lives in this repository:
+`pnpm build`, and the bundle it serves is `.arkor/`. Nothing about that lives in this repository:
 there are no credentials here and no workflow that deploys.
 
 The canonical host is `www.stayingupwind.com` and the apex redirects to it, so every absolute URL the
