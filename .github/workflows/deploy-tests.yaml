@@ -16,11 +16,13 @@ name: Deploy tests
 # **That is what bounds a full run.** The manifest selects around 1,100 suites — measured at 47–74s each
 # for small ones, so 18–28 hours of deployments — against two limits: 6 hours of execution per job, and
 # **24 hours in the queue before a job is cancelled**. Queueing behind one project, the shards have to
-# satisfy both at once, and they pull in opposite directions: a shard runs for `total / n`, which wants
-# `n` large, and the last one starts at `total * (n - 1) / n`, which wants `n` small. For 28 hours that
-# leaves five or six — `6` is the default for that reason, not because it divides nicely. A longer run
-# than that cannot be covered by one project in one dispatch however it is cut: give it as many projects
-# as shards, or take the slices one dispatch at a time with `only`.
+# satisfy both at once, and they pull in opposite directions: a shard runs for `total / n + 3min` of its
+# own setup (measured: two checkouts, two installs, Next.js built, Chromium), which wants `n` large, and
+# the last one starts after the other `n - 1` of those, which wants `n` small. At 18 hours six shards
+# start the last at about 15½; at 28 they start it at about 23½, which is inside the day by less than
+# half an hour. So `6` is the default because it satisfies both at the estimate, not because it divides
+# nicely — and a run at the top of that range, or past it, wants as many projects as it has shards, or
+# the slices taken one dispatch at a time with `only`.
 
 on:
   workflow_dispatch:
@@ -78,39 +80,59 @@ jobs:
             echo 'no tests were selected: name upstream paths, or `all` for the whole manifest' >&2
             exit 1
           fi
+          # At most two digits, checked before anything compares them: `[` on a number wider than the
+          # shell's own range fails the *comparison*, and a failed comparison inside an `if` is a branch
+          # not taken rather than a script stopped — after which `seq` would be asked for that many.
+          # Two digits is all 1..64 needs.
+          whole() {
+            case "$2" in
+              [0-9] | [0-9][0-9]) ;;
+              *) echo "$1 must be one or two digits, not '$2'" >&2; exit 1 ;;
+            esac
+            # Base ten explicitly: a leading zero is octal to the shell and not a number at all to JSON,
+            # so `01` would otherwise reach the matrix as `[01]` and expand to nothing.
+            echo "$((10#$2))"
+          }
           # A named selection is one job: `-g` would cut *those* paths into pieces, and nine of ten
           # shards of three paths are empty jobs that install Next.js to run nothing.
           if [ "$selection" = 'all' ]; then
-            total="$SHARDS"
+            total="$(whole shards "$SHARDS")"
           else
             total=1
           fi
-          case "$total" in
-            '' | *[!0-9]*) echo "shards must be a whole number, not '$total'" >&2; exit 1 ;;
-          esac
           # 256 jobs is the matrix limit; past a few dozen the setup of each is most of its time.
           if [ "$total" -lt 1 ] || [ "$total" -gt 64 ]; then
             echo "shards must be between 1 and 64, not $total" >&2
             exit 1
           fi
           if [ -n "$ONLY" ]; then
-            case "$ONLY" in
-              '' | *[!0-9]*) echo "only must be a whole number, not '$ONLY'" >&2; exit 1 ;;
-            esac
-            if [ "$ONLY" -lt 1 ] || [ "$ONLY" -gt "$total" ]; then
-              echo "only must name one of the $total shards, not $ONLY" >&2
+            only="$(whole only "$ONLY")"
+            if [ "$only" -lt 1 ] || [ "$only" -gt "$total" ]; then
+              echo "only must name one of the $total shards, not $only" >&2
               exit 1
             fi
-            shards="[$ONLY]"
+            shards="[$only]"
           else
             shards="$(seq -s, 1 "$total" | sed 's/^/[/; s/$/]/')"
           fi
-          # As many at once as there are projects to deploy into, and no more.
-          ids="${PROJECT_IDS:-$PROJECT_ID}"
-          parallel="$(printf '%s' "$ids" | tr -s '[:space:]' '\n' | grep -c '[^[:space:]]' || true)"
-          if [ "$parallel" -lt 1 ]; then
+          # The ids, split on whitespace by the shell itself: a pipeline that counts lines one way and
+          # picks one another way disagrees about a list that begins with a space, and then a shard is
+          # handed the empty string.
+          # shellcheck disable=SC2086 -- splitting the list is the parse
+          set -- ${PROJECT_IDS:-$PROJECT_ID}
+          if [ "$#" -lt 1 ]; then
             echo 'ADAPTER_TEST_PROJECT_IDS (or ADAPTER_TEST_PROJECT_ID) names no project' >&2
             exit 1
+          fi
+          # Shards run at once only when every one of them has a project of its own. `max-parallel` caps
+          # how many jobs run, not which project each holds: with two ids and six shards it would start
+          # job 3 the moment job 2 ended, and job 3's project is job 1's, which is still deploying into
+          # it. Fewer ids than shards is therefore one at a time — slower, and not two fixtures taking
+          # each other's environment away.
+          if [ "$#" -ge "$total" ]; then
+            parallel="$total"
+          else
+            parallel=1
           fi
           {
             echo "shards=$shards"
@@ -185,14 +207,14 @@ jobs:
           PROJECT_ID: ${{ secrets.ADAPTER_TEST_PROJECT_ID }}
         run: |
           set -euo pipefail
-          ids="${PROJECT_IDS:-$PROJECT_ID}"
-          # Wrapping round, so that fewer projects than shards is a slower run rather than a broken
-          # one — the shards of one project queue behind each other, which is what `max-parallel` says.
-          count="$(printf '%s' "$ids" | tr -s '[:space:]' '\n' | grep -c '[^[:space:]]')"
-          index="$(( (SHARD - 1) % count + 1 ))"
-          mine="$(printf '%s' "$ids" | tr -s '[:space:]' '\n' | sed -n "${index}p")"
-          echo "::add-mask::$mine"
-          echo "ADAPTER_TEST_PROJECT_ID=$mine" >>"$GITHUB_ENV"
+          # Split by the shell, as the plan splits it, so that both agree about a list with a space at
+          # the front of it. Wrapping round, because fewer ids than shards is a run the plan has already
+          # made serial: the shards of one project queue behind each other rather than sharing it.
+          # shellcheck disable=SC2086 -- splitting the list is the parse
+          set -- ${PROJECT_IDS:-$PROJECT_ID}
+          shift "$(( (SHARD - 1) % $# ))"
+          echo "::add-mask::$1"
+          echo "ADAPTER_TEST_PROJECT_ID=$1" >>"$GITHUB_ENV"
 
       # Before anything long, which is the point of having it: a token that cannot write, or a project
       # id that names somebody else's application, is worth a minute's wait to learn about rather than

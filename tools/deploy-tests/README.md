@@ -77,11 +77,12 @@ many pieces (upstream's own `-g n/total`), and `only` runs one piece on its own,
 after it was cut short.
 
 **A full run is bounded by two of GitHub's limits at once**, and they pull in opposite directions. The
-manifest selects around 1,100 suites, so 18–28 hours of deployments: a shard runs for `total / n`, which
-must stay under the 6 hours a job may execute, and the last shard starts at `total * (n - 1) / n`, which
-must stay under the 24 hours a job may sit in the queue before it is cancelled. For 28 hours that leaves
-five or six shards, which is why the default is `6`. Beyond that, one project cannot cover the manifest in
-one dispatch however it is cut — and the way out is the section below, not a different number.
+manifest selects around 1,100 suites, so 18–28 hours of deployments. A shard runs for `total / n` plus
+about three minutes of its own setup, and must stay under the 6 hours a job may execute; the last shard
+starts after the other `n - 1` of those, and must stay under the 24 hours a job may sit in the queue
+before it is cancelled. Six shards start the last one at about 15½ hours for an 18-hour run and about 23½
+for a 28-hour one — inside the day, in the second case by under half an hour, which is why the default is
+`6` and why a run at the top of that range wants the section below rather than a different number.
 
 Without a host at all, `pnpm check:deploy-tests` runs the three hooks against a fake one: a fake
 application, a fake API, and the real scripts. It is what CI runs, and what keeps the shell contract
