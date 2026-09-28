@@ -121,7 +121,20 @@ async function uploadMissing(
 }
 
 /**
- * The deployment as the API sees it, or nothing while it cannot see it yet.
+ * Whether a refusal is the API having a moment rather than an answer about the deployment.
+ *
+ * A `5xx` is the platform's own failure and says nothing about what was asked. The client already
+ * makes a handful of attempts at one (`isServerFailure`); this is what happens when all of them are
+ * spent, and these loops are polling anyway — losing a fixture that deployed perfectly well to a run
+ * of bad gateways would be a failure of this tool's making. Everything else — a refusal, a validation,
+ * a project that is not there — is an answer, and is not waited out. The deadline bounds both.
+ */
+function aMoment(error: unknown): boolean {
+  return error instanceof ApiError && error.status >= SERVER_ERROR;
+}
+
+/**
+ * The deployment as the API sees it, or nothing while it cannot say.
  *
  * It was registered a moment ago, by id, and the registration was answered — so a `not_found` here is
  * not an answer about this deployment, it is a read that has not caught up with the write. Polling
@@ -134,7 +147,7 @@ async function visible(
   try {
     return await input.client.getDeployment(deploymentId);
   } catch (error) {
-    if (error instanceof ApiError && error.code === 'not_found') {
+    if (aMoment(error) || (error instanceof ApiError && error.code === 'not_found')) {
       return undefined;
     }
     throw error;
@@ -256,6 +269,26 @@ async function served(
   return answered(input.fetchImpl ?? fetch, probe);
 }
 
+/** What was proved, and what was not, once the host is answering with this deployment. */
+function sayItIsServed(input: DeployInput, probe: { url: URL; etag: string | undefined }): void {
+  input.log(`${probe.url.href} answers with this deployment`);
+  if (probe.etag === undefined) {
+    input.log('this fixture has no static file, so only the host says which deployment answered');
+  }
+}
+
+/** The project's own answer, or nothing while the API cannot give one (`aMoment`). */
+async function answering(input: DeployInput): Promise<ProjectDetail | undefined> {
+  try {
+    return await input.client.getProject();
+  } catch (error) {
+    if (aMoment(error)) {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
 async function waitUntilServed(
   input: DeployInput,
   bundle: DeploymentBundle,
@@ -267,18 +300,22 @@ async function waitUntilServed(
   const deadline = now() + NO_PROGRESS_TIMEOUT_MS;
   let said: string | undefined;
   for (;;) {
-    const detail = await input.client.getProject();
+    const detail = await answering(input);
+    if (detail === undefined) {
+      if (now() >= deadline) {
+        throw new Error('the API never said what the project answers with');
+      }
+      await wait(input.pollIntervalMs ?? POLL_INTERVAL_MS);
+      continue;
+    }
+    // Validated outside that tolerance on purpose: a project that answers as a different project, or
+    // with no public URL, is an answer and not a moment.
     if (previewUrlOf(detail, input.config).origin !== publicUrl.origin) {
       throw new Error('the project changed the hostname it is served on during the deployment');
     }
     const observation = await served(input, detail, bundle, probe);
     if (observation === undefined) {
-      input.log(`${probe.url.href} answers with this deployment`);
-      if (probe.etag === undefined) {
-        input.log(
-          'this fixture has no static file, so only the host says which deployment answered',
-        );
-      }
+      sayItIsServed(input, probe);
       return;
     }
     if (observation !== said) {

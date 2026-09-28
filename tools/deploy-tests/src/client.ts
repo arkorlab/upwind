@@ -46,6 +46,23 @@ const RATE_LIMIT_MAX_WAIT_MS = 30_000;
 const NETWORK_ATTEMPTS = 4;
 const NETWORK_FIRST_WAIT_MS = 500;
 
+/**
+ * How a failure of the platform's own is waited out.
+ *
+ * A `5xx` says nothing about what was asked, and every call here may be made twice without harm for
+ * the same reasons a network retry is safe: a deployment is named by an id this side minted, a blob is
+ * its own digest, a finalize after the fact answers with what began, and reading is reading. A run of
+ * this suite is hours long and deploys hundreds of times; losing one fixture to one bad gateway is a
+ * failure of this tool's making, not an observation about the adapter.
+ *
+ * Fewer attempts and a shorter first wait than a rate limit, which is a refusal with a window behind
+ * it. This is either a moment or a real fault, and a real fault should be reported rather than sat on.
+ */
+const SERVER_ATTEMPTS = 4;
+const SERVER_FIRST_WAIT_MS = 1000;
+const SERVER_MAX_WAIT_MS = 8000;
+const SERVER_ERROR = 500;
+
 export interface ApiErrorOptions extends ErrorOptions {
   readonly code: string;
   readonly status: number;
@@ -114,6 +131,10 @@ function isRateLimited(error: unknown): boolean {
  */
 function isNetworkFailure(error: unknown): boolean {
   return error instanceof TypeError && error.cause !== undefined;
+}
+
+function isServerFailure(error: unknown): boolean {
+  return error instanceof ApiError && error.status >= SERVER_ERROR;
 }
 
 async function retrying<T>(
@@ -190,9 +211,18 @@ export function createClient(config: Config, options: ClientOptions = {}): Clien
         retry: isNetworkFailure,
       });
     }
-    // Network retries sit inside the rate-limit ones: a refusal is an answer and belongs to the outer
-    // budget, while a call that never arrived has not used the API's patience at all.
-    return retrying(arrived, sleep, {
+    function answered(): Promise<unknown> {
+      return retrying(arrived, sleep, {
+        attempts: SERVER_ATTEMPTS,
+        first: SERVER_FIRST_WAIT_MS,
+        max: SERVER_MAX_WAIT_MS,
+        retry: isServerFailure,
+      });
+    }
+    // Innermost first: a call that never arrived has not used the API's patience at all, a `5xx` has
+    // used none of its window either, and a rate limit is the one that wants the longest wait — so it
+    // is the budget the other two spend inside.
+    return retrying(answered, sleep, {
       attempts: RATE_LIMIT_ATTEMPTS,
       first: RATE_LIMIT_FIRST_WAIT_MS,
       max: RATE_LIMIT_MAX_WAIT_MS,
