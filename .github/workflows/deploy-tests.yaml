@@ -148,12 +148,18 @@ jobs:
             echo "total=$total"
             echo "parallel=$parallel"
           } >>"$GITHUB_OUTPUT"
-          echo "$selection in $total shard(s), $parallel at a time" >>"$GITHUB_STEP_SUMMARY"
-          # Said out loud, because one at a time where more was asked for is a list to fix rather than a
-          # run to wonder about. Which ids, and how many, stay out of it.
-          if [ "$parallel" -lt "$total" ]; then
-            echo 'fewer projects than shards, or two shards on one project: they queue' \
-              >>"$GITHUB_STEP_SUMMARY"
+          # One shard asked for by name is one job: nothing of the rest of the split runs, so nothing
+          # about how many could have run at once is true of it.
+          if [ -n "$ONLY" ]; then
+            echo "$selection: shard $only of $total, on its own" >>"$GITHUB_STEP_SUMMARY"
+          else
+            echo "$selection in $total shard(s), $parallel at a time" >>"$GITHUB_STEP_SUMMARY"
+            # Said out loud, because one at a time where more was asked for is a list to fix rather than
+            # a run to wonder about. Which ids, and how many, stay out of it.
+            if [ "$parallel" -lt "$total" ]; then
+              echo 'fewer projects than shards, or two shards on one project: they queue' \
+                >>"$GITHUB_STEP_SUMMARY"
+            fi
           fi
 
   deploy-tests:
