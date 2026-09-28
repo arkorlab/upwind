@@ -39,6 +39,13 @@ export function optionalString(value: unknown): string | undefined {
   return asString(value);
 }
 
+export function asBoolean(value: unknown): boolean {
+  if (typeof value !== 'boolean') {
+    throw new TypeError('the API answered no boolean where one was required');
+  }
+  return value;
+}
+
 export function asStrings(value: unknown): string[] {
   if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) {
     throw new TypeError('the API answered no list of strings where one was required');

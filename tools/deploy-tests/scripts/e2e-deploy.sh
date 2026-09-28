@@ -90,13 +90,24 @@ fixture env PATH="$PWD/node_modules/.bin:$PATH" sh -c "$build_command" 2>&1 |
 # is under that name instead — while the bundle is `.ppr-cdn/` whatever the fixture called its output.
 # An empty marker here is worse than a missing one, since the harness reads the first match and would
 # take the empty string as the build id.
-build_id="$(node -p "JSON.parse(require('fs').readFileSync('.ppr-cdn/bundle.json','utf8')).buildId")"
+bundle_says() {
+  node -p "JSON.parse(require('fs').readFileSync('.ppr-cdn/bundle.json','utf8'))$1"
+}
+build_id="$(bundle_says '.buildId')"
+
+# Whether this build has immutable assets, from the build rather than from a constant. The adapter asks
+# Next.js for them unconditionally, and does not always get them: a Next.js below 16.3 does not offer
+# `/_next/static/immutable/*` at all, and a static export has them turned off again by Next.js itself.
+# What survives all of that is whether any file in the bundle is marked immutable — the adapter sets that
+# from the build's own `immutableHash`. Saying `1` where the answer is no makes the suite apply
+# expectations this deployment cannot meet, and read the difference as the adapter's fault.
+immutable_assets="$(bundle_says '.staticFiles.some((file) => file.immutable) ? 1 : 0')"
 
 {
   echo "BUILD_ID: ${build_id}"
   echo "DEPLOYMENT_ID: ${NEXT_DEPLOYMENT_ID}"
-  # `modifyConfig` turns them on, and the harness asks whether it may expect them.
-  echo "NEXT_SUPPORTS_IMMUTABLE_ASSETS: 1"
+  # What the bundle says, not what was asked for: see above.
+  echo "NEXT_SUPPORTS_IMMUTABLE_ASSETS: ${immutable_assets}"
   # The markers the harness parses come first; the build's own output follows them.
   cat .adapter-build-output.log
 } >.adapter-build.log

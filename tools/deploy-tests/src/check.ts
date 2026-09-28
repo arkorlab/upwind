@@ -31,7 +31,6 @@ const TOKEN = 'ark_a_token_nothing_may_read';
 const OK = 200;
 const CREATED = 201;
 const ACCEPTED = 202;
-const NO_CONTENT = 204;
 const CONFLICT = 409;
 const NOT_FOUND = 404;
 
@@ -95,7 +94,13 @@ writeFileSync(
     },
     entrypoints: [],
     prerenders: [],
-    staticFiles: [],
+    staticFiles: [
+      {
+        pathname: '/_next/static/immutable/' + sha256 + '.js',
+        blob: { sha256, byteLength: bytes.byteLength, contentType: 'text/javascript' },
+        immutable: true,
+      },
+    ],
     functions: {
       app: {
         mainModule: 'index.mjs',
@@ -169,6 +174,8 @@ async function fakeHost(deploymentId: string): Promise<FakeHost> {
   let registered: string | undefined;
   let environment: Record<string, string> = {};
   let wanted: string[] = [];
+  /** The digest the application's one static file is served under, learned at registration. */
+  let asset: string | undefined;
   const uploaded: string[] = [];
   const refusals: string[] = [];
   let finalized = false;
@@ -229,8 +236,9 @@ async function fakeHost(deploymentId: string): Promise<FakeHost> {
 
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     if (request.method === 'HEAD') {
-      // This application has no static file, so readiness rests on the pointer alone.
-      response.writeHead(NO_CONTENT);
+      // The application ships one immutable file, so readiness is the digest of it — which is what the
+      // deploy hook also reads the immutable-assets marker from.
+      response.writeHead(OK, { etag: `"${asset ?? ''}"` });
       response.end();
       return;
     }
@@ -257,9 +265,11 @@ async function fakeHost(deploymentId: string): Promise<FakeHost> {
     if (pathname === '/v1/projects/p/deployments' && request.method === 'POST') {
       const bundle = (await body(request)) as {
         buildId: string;
+        staticFiles: { blob: { sha256: string } }[];
         functions: { app: { modules: { blob: { sha256: string } }[] } };
       };
       registered = bundle.buildId;
+      asset = bundle.staticFiles[0]?.blob.sha256;
       // Every blob it names is asked for, so that the upload loop is what answers, not `missing: []`.
       wanted = bundle.functions.app.modules.map((module) => module.blob.sha256);
       answer(CREATED, { deployment: { id: deploymentId }, missing: wanted });
@@ -362,6 +372,14 @@ async function main(): Promise<void> {
     holds(
       'the logs hook leads with the three markers',
       /^BUILD_ID: .+\nDEPLOYMENT_ID: .+\nNEXT_SUPPORTS_IMMUTABLE_ASSETS: 1\n/u.test(logs.stdout),
+    );
+    holds(
+      'and the immutable-assets marker came from the bundle',
+      // The application's bundle marks its one static file immutable, so `1` above is derived and not
+      // a constant: the assertion is worth only as much as that file being there.
+      readFileSync(path.join(appDir, '.ppr-cdn', 'bundle.json'), 'utf8').includes(
+        '"immutable":true',
+      ),
     );
   } finally {
     host.close();

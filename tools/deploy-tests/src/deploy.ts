@@ -30,6 +30,8 @@ const POLL_INTERVAL_MS = 3000;
 /** How long a deployment may go without reaching a further step before it is taken to be stuck. */
 const NO_PROGRESS_TIMEOUT_MS = 900_000;
 const PROGRESS_EVERY = 25;
+/** How long any one request may take. The client bounds its own; this is the readiness probe's. */
+const REQUEST_TIMEOUT_MS = 30_000;
 const TERMINAL_STATUSES = new Set(['active', 'failed', 'retired']);
 const SERVER_ERROR = 500;
 
@@ -53,6 +55,16 @@ export interface Deployment {
   readonly runId: string;
 }
 
+/**
+ * A URL-shaped string with anything before an `@` taken out, for a message that will be kept.
+ *
+ * Applied to what did not parse, where `URL.origin` is not available to do it properly: the only place
+ * a URL can carry a credential is between `//` and `@`, so that is what goes.
+ */
+function withoutUserinfo(said: string): string {
+  return said.replace(/\/\/[^/@]*@/u, '//…@');
+}
+
 /** The project this tool was pointed at, and where the host serves it. */
 async function hostedProject(client: Client, config: Config): Promise<URL> {
   return previewUrlOf(await client.getProject(), config);
@@ -67,11 +79,15 @@ function previewUrlOf(detail: ProjectDetail, config: Config): URL {
     url = new URL(detail.previewUrl);
   } catch (error) {
     // `Invalid URL` on its own names neither the value nor where it came from, and this is read out of
-    // a log hours later by somebody who has to decide whether the fault is theirs or the host's.
-    throw new Error(`the project's URL is not a URL: ${detail.previewUrl}`, { cause: error });
+    // a log hours later by somebody who has to decide whether the fault is theirs or the host's. What
+    // is quoted is quoted without its userinfo: this log is kept, and a URL may carry a credential.
+    throw new Error(`the project's URL is not a URL: ${withoutUserinfo(detail.previewUrl)}`, {
+      cause: error,
+    });
   }
   if (!['http:', 'https:'].includes(url.protocol) || url.username !== '' || url.password !== '') {
-    throw new Error(`the project is not served over public HTTP(S): ${detail.previewUrl}`);
+    // `origin` is the one form of a parsed URL that cannot carry a credential.
+    throw new Error(`the project is not served over public HTTP(S): ${url.origin}`);
   }
   return url;
 }
@@ -221,7 +237,14 @@ async function waitForHost(input: DeployInput, deploymentId: string): Promise<vo
  * is current to go by, which is why that case is said out loud rather than passed off as the same
  * evidence.
  */
-function probeOf(publicUrl: URL, bundle: DeploymentBundle): { url: URL; etag: string | undefined } {
+/** What one readiness check needs: where to ask, what would prove it, and whose deployment it is. */
+interface Probe {
+  readonly url: URL;
+  readonly etag: string | undefined;
+  readonly deploymentId: string;
+}
+
+function probeOf(publicUrl: URL, bundle: DeploymentBundle): Probe {
   const file =
     bundle.staticFiles.find((entry) => entry.pathname.includes(`/${bundle.buildId}/`)) ??
     bundle.staticFiles.find((entry) => entry.immutable) ??
@@ -229,17 +252,29 @@ function probeOf(publicUrl: URL, bundle: DeploymentBundle): { url: URL; etag: st
   const url = new URL(publicUrl.origin);
   // Assigned rather than resolved, so that a fixture's `//path` stays on this host.
   url.pathname = file?.pathname ?? (bundle.config.basePath || '/');
-  return { url, etag: file === undefined ? undefined : `"${file.blob.sha256}"` };
+  return {
+    url,
+    etag: file === undefined ? undefined : `"${file.blob.sha256}"`,
+    deploymentId: bundle.deploymentId,
+  };
 }
 
 async function answered(
   input: DeployInput,
-  probe: { url: URL; etag: string | undefined },
+  probe: Probe,
+  remainingMs: number,
 ): Promise<string | undefined> {
   const fetchImpl = input.fetchImpl ?? fetch;
+  // Bounded, because a connection that is accepted and then never answered would otherwise sit here
+  // for ever: the deadline this is polling against is only looked at between requests.
+  const within = Math.min(REQUEST_TIMEOUT_MS, remainingMs);
   let response: Response;
   try {
-    response = await fetchImpl(probe.url, { method: 'HEAD', redirect: 'manual' });
+    response = await fetchImpl(probe.url, {
+      method: 'HEAD',
+      redirect: 'manual',
+      signal: AbortSignal.timeout(Math.max(1, within)),
+    });
   } catch (error) {
     return `the request failed: ${error instanceof Error ? error.message : String(error)}`;
   }
@@ -272,10 +307,10 @@ async function answered(
 async function served(
   input: DeployInput,
   detail: ProjectDetail,
-  bundle: DeploymentBundle,
-  probe: { url: URL; etag: string | undefined },
+  probe: Probe,
+  remainingMs: number,
 ): Promise<string | undefined> {
-  if (detail.active?.deploymentId !== bundle.deploymentId) {
+  if (detail.active?.deploymentId !== probe.deploymentId) {
     return 'the project does not answer with this deployment yet';
   }
   if (detail.active.mode === 'disabled') {
@@ -285,11 +320,11 @@ async function served(
       `${input.config.projectId} answers with this deployment but is disabled, so nothing is served`,
     );
   }
-  return answered(input, probe);
+  return answered(input, probe, remainingMs);
 }
 
 /** What was proved, and what was not, once the host is answering with this deployment. */
-function sayItIsServed(input: DeployInput, probe: { url: URL; etag: string | undefined }): void {
+function sayItIsServed(input: DeployInput, probe: Probe): void {
   input.log(`${probe.url.href} answers with this deployment`);
   if (probe.etag === undefined) {
     input.log('this fixture has no static file, so only the host says which deployment answered');
@@ -332,7 +367,7 @@ async function waitUntilServed(
     if (previewUrlOf(detail, input.config).origin !== publicUrl.origin) {
       throw new Error('the project changed the hostname it is served on during the deployment');
     }
-    const observation = await served(input, detail, bundle, probe);
+    const observation = await served(input, detail, probe, deadline - now());
     if (observation === undefined) {
       sayItIsServed(input, probe);
       return;
@@ -404,7 +439,15 @@ export async function preflight(input: {
   readonly log: (message: string) => void;
 }): Promise<void> {
   input.log(`the API: ${input.config.baseUrl}`);
-  const publicUrl = await hostedProject(input.client, input.config);
+  const detail = await input.client.getProject();
+  const publicUrl = previewUrlOf(detail, input.config);
+  // Asked here as well as while waiting to be served: a project that is off cannot serve a fixture, and
+  // learning that now costs a second rather than a Next.js build and a suite of its own failures.
+  if (detail.active?.mode === 'disabled') {
+    throw new Error(
+      `${input.config.projectId} is disabled, so nothing it is given would be served`,
+    );
+  }
   input.log(`${input.config.projectId} is served at ${publicUrl.origin}`);
   const env = await input.client.getEnv();
   await input.client.putEnv(env);

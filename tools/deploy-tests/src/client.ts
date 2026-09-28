@@ -3,7 +3,14 @@ import { setTimeout as sleepFor } from 'node:timers/promises';
 import type { DeploymentBundle } from '@stayingupwind/core/bundle';
 
 import type { Config } from './config.ts';
-import { asRecord, asString, asStrings, optionalRecord, optionalString } from './shapes.ts';
+import {
+  asBoolean,
+  asRecord,
+  asString,
+  asStrings,
+  optionalRecord,
+  optionalString,
+} from './shapes.ts';
 
 /**
  * The host's public API, as much of it as deploying a fixture takes: six calls, a bearer token, and
@@ -45,6 +52,20 @@ const RATE_LIMIT_MAX_WAIT_MS = 30_000;
  */
 const NETWORK_ATTEMPTS = 4;
 const NETWORK_FIRST_WAIT_MS = 500;
+
+/**
+ * How long any one call may take.
+ *
+ * A connection the API accepts and then answers slowly — a trickle of headers, a body that never ends
+ * — is not a failure `fetch` reports: it simply does not return. The loops above this are polling
+ * against deadlines they only look at between calls, so a call with no bound of its own can hold a
+ * fixture past every deadline there is. A timeout is treated as a network failure, because that is what
+ * it is: the call did not arrive anywhere, and making it again is safe.
+ *
+ * Generous, because one of these calls carries a blob: a fixture's are small, and a minute of one is
+ * already far past anything healthy.
+ */
+const REQUEST_TIMEOUT_MS = 60_000;
 
 /**
  * How a failure of the platform's own is waited out.
@@ -130,7 +151,14 @@ function isRateLimited(error: unknown): boolean {
  * this file's own bug, and repeating a bug four times is not a retry.
  */
 function isNetworkFailure(error: unknown): boolean {
-  return error instanceof TypeError && error.cause !== undefined;
+  // `AbortSignal.timeout` rejects with a `TimeoutError`, which is this side's own bound rather than
+  // anything the API said, so it is made again like any other call that did not arrive. It arrives as a
+  // `DOMException` and not as the `TypeError` everything else below HTTP comes as — measured on Node 24
+  // against a server that accepts a connection and never answers, which is the case this is for.
+  return (
+    (error instanceof TypeError && error.cause !== undefined) ||
+    (error instanceof DOMException && error.name === 'TimeoutError')
+  );
 }
 
 function isServerFailure(error: unknown): boolean {
@@ -189,6 +217,7 @@ export function createClient(config: Config, options: ClientOptions = {}): Clien
         ...(contentType !== undefined && { 'content-type': contentType }),
       },
       ...(body !== undefined && { body }),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     const text = await response.text();
     if (!response.ok) {
@@ -259,7 +288,10 @@ export function createClient(config: Config, options: ClientOptions = {}): Clien
         return {
           name: asString(record['name']),
           value: optionalString(record['value']) ?? null,
-          secret: record['secret'] === true,
+          // Asked for rather than coerced: `preflight` puts back what it reads, and a flag read as
+          // `false` because it was malformed would be a flag put back as `false` — a secret turned into
+          // a plain value by the one operation that promises to change nothing.
+          secret: asBoolean(record['secret']),
         };
       });
     },
