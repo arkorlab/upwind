@@ -1,5 +1,6 @@
 import path from 'node:path';
 
+import { jsLiteral } from '../codegen.ts';
 import { type Patch, Rewrite } from './types.ts';
 
 /**
@@ -26,7 +27,7 @@ export const instrumentationPatch: Patch = {
     const replacement =
       ctx.instrumentation === undefined
         ? 'await ({})'
-        : `await require(${JSON.stringify(ctx.instrumentation)})`;
+        : `await require(${jsLiteral(ctx.instrumentation)})`;
     const result = new Rewrite(NAME, file, source)
       .replace(HOOK_REQUIRE, replacement, 1, 'the hook loader')
       .forbid(LEFTOVERS, 'a computed hook require');

@@ -23,8 +23,63 @@ const HEIC = 'image/heic';
 
 /** Bytes to read of a source before its type is known: what the SVG allowance looks through. */
 export const IMAGE_SIGNATURE_BYTES = 1024;
-/** `<svg …>` anywhere in what was read, as Next.js's fallback detector finds it. */
-const SVG_ROOT = /<svg\s(?:[^>"']|"[^"]*"|'[^']*')*>/u;
+/** Where the root element can begin, and what has to follow for its name to be `svg` and no longer. */
+const SVG_TAG_START = '<svg';
+const SVG_NAME_END = /\s/u;
+
+/**
+ * Whether the start tag whose attributes begin at `from` is closed within what was read.
+ *
+ * A quoted attribute value may hold the `>` that would otherwise end the tag, so a quote is followed
+ * to its pair and the first `>` outside one closes it.
+ */
+function closesStartTag(text: string, from: number): boolean {
+  let quote: string | undefined;
+  for (let index = from; index < text.length; index += 1) {
+    const char = text[index];
+    if (quote !== undefined) {
+      if (char === quote) {
+        quote = undefined;
+      }
+    } else if (char === '>') {
+      return true;
+    } else if (char === '"' || char === "'") {
+      quote = char;
+    }
+  }
+  return false;
+}
+
+/**
+ * `<svg …>` anywhere in what was read, as Next.js's fallback detector finds it.
+ *
+ * Walked rather than matched. One pattern saying all of this is attempted again from every `<svg ` in
+ * its subject, and on a subject of any size that is quadratic — `js/polynomial-redos`, which is what
+ * a regular expression here would be reported for.
+ *
+ * This is quadratic too, and may be: the subject has a size. `detectImageType` reads
+ * `IMAGE_SIGNATURE_BYTES` of a source and no further, and nothing else calls this, so the work is
+ * bounded by that window whatever was fetched — a kilobyte, against the whole of a response.
+ *
+ * What the bound buys is every candidate rather than the first, which is the pattern's own answer: a
+ * `<svg ` inside a comment ahead of the root, carrying a quote it never closes, does not get to
+ * decide for the root that follows it.
+ */
+function hasSvgRoot(text: string): boolean {
+  let from = 0;
+  while (from < text.length) {
+    const start = text.indexOf(SVG_TAG_START, from);
+    if (start === -1) {
+      return false;
+    }
+    const afterName = start + SVG_TAG_START.length;
+    if (SVG_NAME_END.test(text[afterName] ?? '') && closesStartTag(text, afterName + 1)) {
+      return true;
+    }
+    from = start + 1;
+  }
+  return false;
+}
 
 /** A byte the signature names, or `null` where it names none: the length of a RIFF or ISO box. */
 type Signature = readonly (number | null)[];
@@ -60,7 +115,7 @@ export function detectImageType(bytes: Uint8Array): string | undefined {
   if (signed !== undefined) {
     return signed;
   }
-  return SVG_ROOT.test(decodeUtf8(bytes.subarray(0, IMAGE_SIGNATURE_BYTES))) ? SVG : undefined;
+  return hasSvgRoot(decodeUtf8(bytes.subarray(0, IMAGE_SIGNATURE_BYTES))) ? SVG : undefined;
 }
 
 /** Types Next.js serves as they are, whatever the request asked for. */

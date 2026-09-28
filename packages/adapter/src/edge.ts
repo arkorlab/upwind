@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { type InputOptions, type OutputChunk, rolldown } from 'rolldown';
 
+import { jsLiteral } from './codegen.ts';
 import { bundled, type BundleTrace } from './dependencies.ts';
 import { dynamicLoadsInChunk } from './dynamic-loads.ts';
 import { externalsPlugin, FUNCTION_BANNER } from './patches/index.ts';
@@ -80,7 +81,7 @@ function inlineAssetsSource(entries: readonly EdgeEntry[], projectDir: string): 
     return [];
   }
   return [
-    `const inlineAssets = new Map(${JSON.stringify([...files])});`,
+    `const inlineAssets = new Map(${jsLiteral([...files])});`,
     'const fetchBeneath = globalThis.fetch;',
     'globalThis.fetch = function fetch(input, init) {',
     '  const url =',
@@ -113,13 +114,13 @@ function inlineAssetsSource(entries: readonly EdgeEntry[], projectDir: string): 
  */
 export function edgeEntrySource(entries: readonly EdgeEntry[], projectDir: string): string {
   const table = entries.map((entry) => {
-    const env = JSON.stringify(entry.env);
+    const env = jsLiteral(entry.env);
     return [
-      `    ${JSON.stringify(entry.id)}: () => {`,
+      `    ${jsLiteral(entry.id)}: () => {`,
       ...(Object.keys(entry.env).length === 0 ? [] : [`      Object.assign(process.env, ${env});`]),
-      ...entry.files.map((file) => `      require(${JSON.stringify(file)});`),
+      ...entry.files.map((file) => `      require(${jsLiteral(file)});`),
       '      trustingHost();',
-      `      return registered(${JSON.stringify(entry.entryKey)}, ${JSON.stringify(entry.handlerExport)});`,
+      `      return registered(${jsLiteral(entry.entryKey)}, ${jsLiteral(entry.handlerExport)});`,
       '    },',
     ].join('\n');
   });

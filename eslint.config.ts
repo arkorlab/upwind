@@ -8,6 +8,7 @@ import importX from 'eslint-plugin-import-x';
 import nodePlugin from 'eslint-plugin-n';
 import perfectionist from 'eslint-plugin-perfectionist';
 import promisePlugin from 'eslint-plugin-promise';
+import redos from 'eslint-plugin-redos';
 import regexp from 'eslint-plugin-regexp';
 import security from 'eslint-plugin-security';
 import sonarjs from 'eslint-plugin-sonarjs';
@@ -219,6 +220,22 @@ export default defineConfig([
   configOf(security.configs, 'recommended'),
   configOf(regexp.configs, 'flat/recommended'),
   configOf(promisePlugin.configs, 'flat/recommended'),
+  // What a regular expression costs in the worst case, decided by `recheck` rather than guessed at
+  // from the pattern's shape. This is the half the `regexp` rules above do not have: they look for
+  // one match attempt that backtracks, and a pattern whose attempt is linear but is attempted from
+  // every position in the subject is quadratic all the same — which is what CodeQL reports as
+  // `js/polynomial-redos`, and what neither `no-super-linear-backtracking` nor
+  // `no-super-linear-move` says a word about. A regular expression in this repository reads a
+  // document, a header or a URL somebody else wrote, so the subject is theirs to choose.
+  //
+  // `ignoreErrors` off because the rule's own default is to say nothing when it could not decide,
+  // and a check that has quietly stopped checking is the one outcome worth less than no check at
+  // all: it would read as a clean run. A pattern it cannot answer for is reported as that.
+  {
+    files: ['**/*.{ts,tsx,mts}'],
+    plugins: { redos },
+    rules: { 'redos/no-vulnerable': ['error', { ignoreErrors: false }] },
+  },
   configOf(perfectionist.configs, 'recommended-natural'),
   {
     files: ['**/*.{ts,tsx,mts}'],
@@ -247,7 +264,7 @@ export default defineConfig([
       ],
       'perfectionist/sort-switch-case': 'off', // case order follows the protocol, not the alphabet
       'security/detect-object-injection': 'off', // flags every computed access; TypeScript covers it
-      'security/detect-unsafe-regex': 'off', // false positives on bounded quantifiers; regexp/no-super-linear-backtracking is precise
+      'security/detect-unsafe-regex': 'off', // star height is not a cost; `redos/no-vulnerable` decides the worst case
       'unicorn/comment-content': 'off', // prose casing in comments is not a code-quality signal
       'unicorn/no-break-in-nested-loop': 'off', // `switch` inside parser loops is idiomatic
       'unicorn/no-non-function-verb-prefix': 'off', // zod schema names such as `createSiteRequestSchema` are nouns
@@ -296,10 +313,47 @@ export default defineConfig([
   {
     // The adapter reads and writes the build output Next.js hands it, on a Node version without
     // Temporal, so every path it touches comes from that output rather than from a literal.
+    //
+    // Its regular expressions read the same output: a path under `.next`, a line of a bundle trace,
+    // or the compiled source of Next.js itself, which the patches match to rewrite. What a quadratic
+    // match would cost is a developer's own build, over input that developer chose — and the
+    // patterns the patches match by are held byte for byte against every supported Next.js release
+    // (`check:patches`), which rewriting them for a cost nobody pays would put at risk. The rule
+    // stays on for `packages/core` and the runtime, where the subject is a document, a header or a
+    // URL somebody else wrote.
     files: ['packages/adapter/**/*.ts'],
     rules: {
+      'redos/no-vulnerable': 'off',
       'security/detect-non-literal-fs-filename': 'off',
       'unicorn/prefer-temporal': 'off',
+    },
+  },
+
+  // The modules of the adapter that write JavaScript: the entry tables it feeds the bundlers, the
+  // rewrites the patches apply, and the `define` values esbuild substitutes as source.
+  //
+  // `JSON.stringify` is an escape for JSON, and JSON is not JavaScript: it leaves `<`, `>` and the
+  // two line separators U+2028 and U+2029 as themselves, so a value that carries one ends the
+  // literal it was meant to sit inside. Every value these modules embed comes from the build output
+  // rather than from a literal here, and `jsLiteral` (`codegen.ts`) is what escapes one for the
+  // source it is written into. Nothing in these files writes JSON as JSON — that is `manifests.ts`
+  // and `index.ts`, and the messages that quote a value are `dev-prefix.ts`'s.
+  {
+    files: [
+      'packages/adapter/src/edge.ts',
+      'packages/adapter/src/function.ts',
+      'packages/adapter/src/patches/*.ts',
+      'packages/adapter/src/wasm.ts',
+    ],
+    rules: {
+      'no-restricted-properties': [
+        'error',
+        {
+          object: 'JSON',
+          property: 'stringify',
+          message: 'Generated JavaScript embeds a value through `jsLiteral` (`codegen.ts`).',
+        },
+      ],
     },
   },
   {
