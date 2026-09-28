@@ -62,9 +62,16 @@ function previewUrlOf(detail: ProjectDetail, config: Config): URL {
   if (detail.id !== config.projectId) {
     throw new Error(`the API answered with a different project than ${config.projectId}`);
   }
-  const url = new URL(detail.previewUrl);
+  let url: URL;
+  try {
+    url = new URL(detail.previewUrl);
+  } catch (error) {
+    // `Invalid URL` on its own names neither the value nor where it came from, and this is read out of
+    // a log hours later by somebody who has to decide whether the fault is theirs or the host's.
+    throw new Error(`the project's URL is not a URL: ${detail.previewUrl}`, { cause: error });
+  }
   if (!['http:', 'https:'].includes(url.protocol) || url.username !== '' || url.password !== '') {
-    throw new Error('the project has no public HTTP(S) URL to serve a fixture on');
+    throw new Error(`the project is not served over public HTTP(S): ${detail.previewUrl}`);
   }
   return url;
 }
