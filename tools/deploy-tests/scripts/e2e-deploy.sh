@@ -110,8 +110,20 @@ build_id="$(bundle_says '.buildId')"
 # `staticFiles` is the right array to look in: it is "`_next/static` from the build output, plus
 # everything under `public/`" (`collectStaticFiles`). An application with no such file answers `0`,
 # which is the truth about it — there are none to test.
+#
+# Both the flag and the path, because neither alone is the question. The flag without the path is a 16.2
+# build, which marks files immutable and writes none of them under that path. The path without the flag
+# is somebody's `public/` directory: a file at `public/docs/_next/static/immutable/logo.js` is served
+# under a pathname that reads like the content-addressed one, and `collectStaticFiles` gives every
+# `public/` file `immutable: false`, while a real one takes it from `output.immutableHash` (`collect.ts`).
 immutable_assets="$(
-  bundle_says ".staticFiles.some((file) => file.pathname.includes('/_next/static/immutable/')) ? 1 : 0"
+  bundle_says "
+    .staticFiles.some(
+      (file) => file.immutable && file.pathname.includes('/_next/static/immutable/'),
+    )
+      ? 1
+      : 0
+  "
 )"
 
 {
