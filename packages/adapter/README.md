@@ -182,8 +182,13 @@ the global the Function publishes it under — and the Function's modules, with 
 together before and after gzip. The audit (`auditFunction`), which each of a Function's bundles goes
 through, fails the build on a `require("vm")` or `runInNewContext` that survived, a built-in
 outside the list, a module the bundler could not resolve, or a use of the loader outside
-Next.js's own; `auditFunctionSize` fails it on a Function over Cloudflare's 10 MiB gzipped, so that
-the build says so rather than the upload.
+Next.js's own; `auditFunctionSize` fails it on a Function over Cloudflare's 64 MiB, so that the
+build says so rather than the upload. That limit is on the uncompressed bundle and is the only one
+there is: Cloudflare dropped the compressed limits — 3 MB free, 10 MB paid — on 2026-09-04, and the
+gzipped figure the record carries is now worth reading rather than being refused for. A Function
+well inside the limit can still be worth making smaller; Cloudflare says of the same change that
+"larger Worker bundles can impact startup time", which is a cost the audit does not measure and a
+first response pays.
 
 ## The edge runtime
 
