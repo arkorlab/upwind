@@ -6,6 +6,7 @@ import {
   bundleBlobs,
   type DeploymentBundle,
   deploymentBundleSchema,
+  type Route,
 } from '@stayingupwind/core/bundle';
 
 import { ApiError, type Client, type DeploymentDetail, type ProjectDetail } from './client.ts';
@@ -251,6 +252,22 @@ interface Probe {
 }
 
 /**
+ * Whether a rule decides any part of what a probe of this path would see.
+ *
+ * Answering or rewriting is most of it, and `mayRoutePath` in `bundle/serving.ts` asks exactly that. A
+ * rule that does neither is a header rule and claims nothing — except when the header it sets is the
+ * one being compared: a fixture is free to give `/:path*` an `ETag` of its own, the host sends that
+ * instead of the digest, and the probe would be asking a question that cannot come out right.
+ */
+function claimsTheAnswer(route: Route): boolean {
+  return (
+    route.status !== undefined ||
+    route.destination !== undefined ||
+    Object.keys(route.headers ?? {}).some((name) => name.toLowerCase() === 'etag')
+  );
+}
+
+/**
  * Whether something runs before the filesystem for this path, and may answer instead of the file.
  *
  * A fixture's middleware can match anything it likes — a catch-all matcher includes `/_next/static` —
@@ -275,8 +292,8 @@ function somethingRunsAhead(bundle: DeploymentBundle, pathname: string): boolean
     // counting it would leave nothing quiet to ask for. Both readings are the serving path's own —
     // `matchesAny` in `paas/middleware.ts`, `mayRoutePath` in `bundle/serving.ts`.
     ...bundle.routing.middlewareMatchers,
-    ...[...bundle.routing.beforeMiddleware, ...bundle.routing.beforeFiles].filter(
-      (route) => route.status !== undefined || route.destination !== undefined,
+    ...[...bundle.routing.beforeMiddleware, ...bundle.routing.beforeFiles].filter((route) =>
+      claimsTheAnswer(route),
     ),
   ];
   return ahead.some((route) => {
@@ -363,7 +380,12 @@ async function answered(
     const status = response.status;
     return {
       said: `HTTP ${String(status)} without the bundle's own asset behind it`,
-      redirected: status >= REDIRECTION && status < CLIENT_ERROR,
+      // A `Location` as well as a `3xx`, because the grace is about being sent elsewhere and the range
+      // holds one status that is not: a `304` is the file, withheld because the asker already had it.
+      // Nothing here asks conditionally, so no host should send one — and if one does, it is not a
+      // configuration to report but a host to keep asking.
+      redirected:
+        status >= REDIRECTION && status < CLIENT_ERROR && response.headers.has('location'),
     };
   }
   // Nothing of this fixture's is being identified here — it has no asset to be identified by — so the
@@ -371,6 +393,11 @@ async function answered(
   // application said is the suite's to judge: a route-only fixture may answer `500` on purpose, and
   // waiting out the deadline over it would stop the very test that meant to see it. Said out loud,
   // since a `5xx` here is also what a deployment that cannot start looks like.
+  //
+  // A redirect gets no grace on this path, deliberately: the probe is the application's own root, and
+  // fixtures redirect that on purpose — a trailing slash, a locale, middleware. Failing those after
+  // thirty seconds, to catch a previous deployment still answering a moment after the pointer moved,
+  // would cost more than it saves where no digest can tell the two apart.
   if (response.status >= SERVER_ERROR) {
     input.log(
       `${probe.url.href} answered ${String(response.status)}; with no asset to identify this ` +

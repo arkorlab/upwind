@@ -32,8 +32,26 @@ const ACCEPTED = 202;
 const CONFLICT = 409;
 const NOT_FOUND = 404;
 const HOOK_TIMEOUT_MS = 60_000;
+/** About a megabyte of each stream, which is what `execFile` would have held. */
+const MAX_CAPTURED = 1_000_000;
 const SERVER_LOG = '.adapter-server.log';
 const MS_PER_SECOND = 1000;
+
+/**
+ * A stream of a child process, held to a size.
+ *
+ * What it says is read to decide things and to explain a failure, and neither wants all of a build that
+ * has gone wrong in a loop — which `execFile` bounded for us and a stream of one's own does not. The far
+ * end is not stopped for it: a hook that will not stop is what the timeout is for. The rest is dropped
+ * as it arrives, and the tail says so, so that nobody reads a truncated log as a complete one.
+ */
+function keptTo(said: string, chunk: Buffer): string {
+  if (said.length >= MAX_CAPTURED) {
+    return said;
+  }
+  const grown = `${said}${chunk.toString()}`;
+  return grown.length <= MAX_CAPTURED ? grown : `${grown.slice(0, MAX_CAPTURED)}\n… (truncated)`;
+}
 
 interface HookFailureOptions extends ErrorOptions {
   /** What the hook had written to standard error by the time it failed. */
@@ -100,8 +118,8 @@ function bounded(
     const child = spawn(path.join(SCRIPTS, name), [], { cwd: appDir, env, detached: true });
     let stdout = '';
     let stderr = '';
-    child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString()));
-    child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
+    child.stdout.on('data', (chunk: Buffer) => (stdout = keptTo(stdout, chunk)));
+    child.stderr.on('data', (chunk: Buffer) => (stderr = keptTo(stderr, chunk)));
     let expired = false;
     const bound = setTimeout(() => {
       expired = true;
@@ -470,7 +488,7 @@ async function main(): Promise<void> {
       // there at all — its account goes to a file, for the logs hook to show the suite. Between them is
       // everything worth knowing: the API calls it made, what it was waiting for, why it gave up.
       throw new Error(
-        `${name} ${error instanceof HookFailureError ? error.message : 'could not be run'}. It said:\n` +
+        `${name} ${error instanceof Error ? error.message : String(error)}. It said:\n` +
           `${saidBy(error)}\nand its own log says:\n${keptBy(appDir)}`,
         { cause: error },
       );
