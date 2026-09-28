@@ -7,6 +7,7 @@ import type {
   StaticFileAssetPrefix,
   StaticFileLocales,
 } from '../manifest/schema.ts';
+import { mayHoldForDocument } from '../request/conditions.ts';
 import { BEHAVIORAL_RESPONSE_HEADERS, CONTENT_DISPOSITION_HEADER } from '../request/constants.ts';
 import { filterShellResponseHeaders, rendersInline } from '../request/headers.ts';
 import { queryDependent } from './query.ts';
@@ -121,13 +122,19 @@ function isTemplate(pathname: string): boolean {
 
 /**
  * Whether the edge can pick a dynamic route's class the way Next.js picks the route. With `i18n`
- * Next.js rewrites the pathname before matching, and with a `basePath` both the patterns and the
- * pathnames carry a prefix the edge does not strip: an app with either keeps its exact routes and
- * leaves dynamic ones to its Function.
+ * Next.js rewrites the pathname before matching — a request that names no locale is matched under
+ * the default one — and the edge matches the pathname as it was asked for: an app with `i18n`
+ * keeps its exact routes and leaves dynamic ones to its Function.
+ *
+ * A `basePath` is not such a case. `next build` writes it into everything the edge matches: a
+ * dynamic route's pattern and the page its destination names, the pathname of every page and
+ * every file, the rules of `next.config`, and the redirects it adds of its own. A request is
+ * matched as it arrives, prefix and all, and lands on the class shell whose name carries the same
+ * prefix.
  */
 function reproducesDynamicRouting(bundle: DeploymentBundle): boolean {
-  const { config } = bundle;
-  return (config.i18n === null || config.i18n === undefined) && config.basePath === '';
+  const { i18n } = bundle.config;
+  return i18n === null || i18n === undefined;
 }
 
 /** The templates the edge could reach: the ones a dynamic route resolves to. */
@@ -151,6 +158,11 @@ function isConditional(rule: Route): boolean {
  * Whether a shell can be served without the Function's say on its headers: a header rule with a
  * condition is judged at the edge only where the edge reproduces the router's matching; elsewhere
  * a page such a rule covers keeps its headers, and its document, with the Function.
+ *
+ * Not a rule whose condition no document meets (`mayHoldForDocument`): it never sets a header on
+ * one, so there is nothing to judge. Next.js writes such a rule over every path of every build with
+ * a deployment id, and counted here it left no page of a build the edge does not route on the edge
+ * at all.
  */
 function headersReproducible(bundle: DeploymentBundle, prerender: Prerender): boolean {
   if (reproducesDynamicRouting(bundle)) {
@@ -160,6 +172,7 @@ function headersReproducible(bundle: DeploymentBundle, prerender: Prerender): bo
     (rule) =>
       rule.headers !== undefined &&
       isConditional(rule) &&
+      mayHoldForDocument(rule) &&
       // Compiled by Next.js for its own router, which runs them without the unicode flag.
       // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
       new RegExp(rule.sourceRegex).test(prerender.pathname),
@@ -190,11 +203,17 @@ function beforeFilesPhases(bundle: DeploymentBundle): Route[] {
  * with conditions claims some requests and not others, which is a question about a request and
  * not about a build — the edge answers it per request, as Next.js does, and the publication
  * puts the same question to the manifest before it asks the edge for a sample (`validateOne`).
+ *
+ * That holds where the edge has the rules to ask. A build whose routing it does not reproduce
+ * publishes none (`dynamicRouting`), and a page a conditional rule may claim is then settled here
+ * as a header rule's is (`headersReproducible`): the Function keeps it, since the edge would serve
+ * the request the rule claims. A rule no document meets (`mayHoldForDocument`) claims no document
+ * either way.
  */
 function claimedBeforeFiles(bundle: DeploymentBundle, prerender: Prerender): boolean {
   return beforeFilesPhases(bundle).some(
     (rule) =>
-      !isConditional(rule) &&
+      (reproducesDynamicRouting(bundle) ? !isConditional(rule) : mayHoldForDocument(rule)) &&
       // Compiled by Next.js for its own router, which runs them without the unicode flag.
       // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
       new RegExp(rule.sourceRegex).test(prerender.pathname),
@@ -289,7 +308,9 @@ export function resumablePrerenders(bundle: DeploymentBundle): Prerender[] {
  * `conditional` is what to do with a rule that depends on the request. A shell is served with the
  * headers a request cannot change, so folding one in would be an answer given before the question
  * (`shellHeaders`); deciding whether a page can be served at all is the other case, and there a
- * rule that may apply is a rule that has to be reckoned with (`actsThroughHeaders`).
+ * rule that may apply is a rule that has to be reckoned with (`actsThroughHeaders`). A rule whose
+ * condition no document meets (`mayHoldForDocument`) cannot apply, and is reckoned with by
+ * neither.
  */
 function applicableHeaders(
   bundle: DeploymentBundle,
@@ -302,7 +323,8 @@ function applicableHeaders(
     headers.set(name.toLowerCase(), headerValue(value));
   }
   for (const rule of headerPhases(bundle)) {
-    if (rule.headers === undefined || (conditional === 'leave' && isConditional(rule))) {
+    const applies = mayHoldForDocument(rule) && (conditional === 'fold' || !isConditional(rule));
+    if (!applies || rule.headers === undefined) {
       continue;
     }
     // Compiled by Next.js for its own router, which runs them without the unicode flag.
@@ -335,7 +357,8 @@ function applicableHeaders(
  * (`headerRulesFor`), but what it judges them for is a header it may replay, and these are not:
  * the request that meets the condition would be answered without the header and nothing would
  * notice. One rule takes the page off the edge for every request, which is the safe way round
- * for a header whose whole purpose is to change what the response does.
+ * for a header whose whole purpose is to change what the response does. Save a rule no document
+ * meets: no request the edge answers with this page can be answered with the header.
  */
 function actsThroughHeaders(bundle: DeploymentBundle, prerender: Prerender): boolean {
   const headers = applicableHeaders(bundle, prerender, 'fold');
@@ -544,8 +567,8 @@ export function staticFileAssetPrefixOf(
  * Every header rule, in the order Next.js applies them, for the edge to judge on each request —
  * and, for a build whose routing the edge does not reproduce, the rules `next build` writes itself
  * alone (`priority`): the `Service-Worker-Allowed` a service worker registers under, whose pattern
- * names the whole path, base path included, and no locale. Without it the function of an application
- * with a base path was refused registration, and never controlled a page (`service-worker`).
+ * names the whole path, base path included, and no locale. Without it the service worker of such
+ * an application was refused registration, and never controlled a page (`service-worker`).
  */
 export function headerRulesOf(bundle: DeploymentBundle): HeaderRule[] {
   const phases = reproducesDynamicRouting(bundle)

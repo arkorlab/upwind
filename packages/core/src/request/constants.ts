@@ -137,6 +137,21 @@ export const INTERNAL_REQUEST_HEADER_PREFIXES: readonly string[] = [
   PLATFORM_HEADER_PREFIX,
 ];
 
+/**
+ * What a client's router puts on a request of its own, and a browser's navigation never does: a
+ * request that carries any one of them, whatever its value, is the router's — a payload, a
+ * prefetch, an action — and is never answered with a document the edge serves
+ * (`classifyRequest`). So a rule of `next.config` that holds only where one is present never holds
+ * for such a document either (`mayHoldForDocument`).
+ */
+export const ROUTER_REQUEST_HEADERS: readonly string[] = [
+  RSC_HEADER,
+  NEXT_ROUTER_STATE_TREE_HEADER,
+  NEXT_ROUTER_PREFETCH_HEADER,
+  NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+  NEXT_ACTION_HEADER,
+];
+
 /** Client-side router protocol headers: passed through untouched, never used for edge decisions. */
 export const ROUTER_PROTOCOL_HEADERS: readonly string[] = [
   RSC_HEADER,

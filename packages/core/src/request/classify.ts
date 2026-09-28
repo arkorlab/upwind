@@ -24,9 +24,8 @@ import {
   PREFETCH_HINT_HEADERS,
   NEXT_RESUME_HEADER,
   NEXT_RESUME_STATE_LENGTH_HEADER,
-  NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
-  NEXT_ROUTER_STATE_TREE_HEADER,
+  ROUTER_REQUEST_HEADERS,
   RSC_CACHE_BUSTING_QUERY,
   RSC_HEADER,
   SKEW_PROTECTION_COOKIE,
@@ -149,13 +148,9 @@ function classifyByRouterHeaders(headers: Headers): RequestClass | undefined {
   if (headers.get(RSC_HEADER) === '1') {
     return { kind: headers.has(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER) ? 'segment-prefetch' : 'rsc' };
   }
-  if (
-    headers.has(RSC_HEADER) ||
-    headers.has(NEXT_ROUTER_PREFETCH_HEADER) ||
-    headers.has(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER) ||
-    headers.has(NEXT_ROUTER_STATE_TREE_HEADER) ||
-    headers.has(NEXT_ACTION_HEADER)
-  ) {
+  // The one list, read here and by `mayHoldForDocument`: a header this lets through to a document
+  // is one a rule may ask for of a document.
+  if (ROUTER_REQUEST_HEADERS.some((name) => headers.has(name))) {
     return passthrough('router-header');
   }
   return undefined;
