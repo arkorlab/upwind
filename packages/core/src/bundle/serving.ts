@@ -432,8 +432,8 @@ export function routeHandlerPrerenders(bundle: DeploymentBundle): Prerender[] {
  * whose key is its pathname alone, and every route handler the build rendered.
  *
  * Not only what the edge serves. What keeps a page off the edge — a rule of `next.config` that
- * claims its path before the filesystem, as `trailingSlash` claims every path without the slash;
- * a header rule the edge cannot judge; a template it cannot reach — is about routing at the edge,
+ * claims its path before the filesystem, while a rewrite or a middleware still leads to the page; a
+ * header rule the edge cannot judge; a template it cannot reach — is about routing at the edge,
  * and the Function answers the page from its generation all the same. Left unseeded, it had none to
  * answer from: it served the build's document for as long as the deployment lived, and neither
  * `revalidate` nor `revalidatePath` ever reached it.
