@@ -4,6 +4,7 @@ import { readWithin } from './body.ts';
 import { nowMs } from './clock.ts';
 import { isRegeneration, requestContext } from './context.ts';
 import { readData, writeData } from './data.ts';
+import type { DataEntryMetadata } from './host.ts';
 import type { CacheRuntime, DataMemo } from './runtime.ts';
 import { recordValidity } from './tags.ts';
 
@@ -121,6 +122,21 @@ function isFetchValue(value: unknown): value is CachedFetchValue {
   );
 }
 
+/** Write what a `fetch` answered, under the key and the entry its render gave it. */
+async function keepFetch(
+  runtime: CacheRuntime,
+  key: string,
+  entry: DataEntryMetadata,
+  data: CachedFetchValue,
+): Promise<void> {
+  try {
+    await writeData(runtime, { key, entry, bytes: new TextEncoder().encode(JSON.stringify(data)) });
+  } catch (error) {
+    // The render has its data; what failed is keeping it for the next one.
+    runtime.log('fetch cache write failed', { detail: detail(error) });
+  }
+}
+
 /**
  * Next.js's incremental cache handler for `fetch`: what `IncrementalCache` instantiates when the
  * global symbol names a `FetchCache`. A value is the JSON Next.js hands over, stored whole; a
@@ -192,36 +208,51 @@ export class PlatformFetchCache {
     return { value, lastModified: validity === 'stale' ? 0 : entry.timestamp };
   }
 
-  async set(cacheKey: string, data: CachedFetchValue | null, ctx: FetchSetContext): Promise<void> {
+  /**
+   * Start keeping what a `fetch` answered, and answer at once: the write goes on behind the render
+   * that fetched it, in the request's `waitUntil`.
+   *
+   * Where Next.js prerenders — every regeneration, and the render a visitor waits on when an entry
+   * has expired or has none — it hands the render the response a `fetch` got only once this has
+   * answered (`createCachedPrerenderResponse`, in `server/lib/patch-fetch.ts`). A write awaited
+   * here would put a round trip to wherever the host keeps its entries in front of the render, once
+   * for every value the page fetched. A dynamic render writes behind its response already, and
+   * what Next.js registers for that write (`fetch-cache-writes.ts`) settles as this answers — so
+   * the write is handed to `waitUntil` here, and nothing ends the request's work under it.
+   *
+   * Nothing after the render needs the write to have landed. A prerender has the value in its
+   * resume data cache before Next.js calls this (`IncrementalCache.set`): a later read of the key
+   * in the same render is answered from there, and so is the resume of what the render postponed,
+   * whose state carries that cache. A generation is committed against the tag revision its render
+   * synced, not against anything here. And what orders the write is in place before this answers:
+   * `writeData` takes the key's state, fences the reads under way and forgets what was remembered
+   * before it first waits, and the entry carries the moment the fetch began, by which the host
+   * fences the write. A read of the key while the write is out — Next.js lets one past its lock on
+   * the key as this answers — is answered what was there before, as a read in any other isolate
+   * would be, and that answer is not kept past the write's reply.
+   */
+  set(cacheKey: string, data: CachedFetchValue | null, ctx: FetchSetContext): Promise<void> {
     const current = state.current;
-    if (current === undefined || data === null || ctx.fetchCache !== true) {
-      return;
-    }
-    const { runtime } = current;
     const context = requestContext();
-    // A result fetched before an invalidation must keep that age when its body finishes.
-    // The host fences a write against its current tag marks by this timestamp.
-    const startedAt = context?.fetchStarts.get(cacheKey) ?? context?.startedAt;
-    if (startedAt === undefined) {
-      return;
+    if (
+      current !== undefined &&
+      context !== undefined &&
+      data !== null &&
+      ctx.fetchCache === true
+    ) {
+      const entry: DataEntryMetadata = {
+        kind: DATA_FETCH,
+        tags: mergeTags(data.tags, ctx.tags),
+        stale: 0,
+        // A result fetched before an invalidation must keep that age when its body finishes.
+        // The host fences a write against its current tag marks by this timestamp.
+        timestamp: context.fetchStarts.get(cacheKey) ?? context.startedAt,
+        expire: NEXT_ONE_YEAR_SECONDS,
+        revalidate: data.revalidate,
+      };
+      context.waitUntil(keepFetch(current.runtime, cacheKey, entry, data));
     }
-    try {
-      await writeData(runtime, {
-        key: cacheKey,
-        entry: {
-          kind: DATA_FETCH,
-          tags: mergeTags(data.tags, ctx.tags),
-          stale: 0,
-          timestamp: startedAt,
-          expire: NEXT_ONE_YEAR_SECONDS,
-          revalidate: data.revalidate,
-        },
-        bytes: new TextEncoder().encode(JSON.stringify(data)),
-      });
-    } catch (error) {
-      // The render has its data; what failed is keeping it for the next one.
-      runtime.log('fetch cache write failed', { detail: detail(error) });
-    }
+    return Promise.resolve();
   }
 
   async revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void> {
