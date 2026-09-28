@@ -158,10 +158,19 @@ export function functionDependencies(
 
 const KIB = 1024;
 const MIB = KIB * KIB;
-const GZIP_LIMIT_MIB = 10;
 const RAW_LIMIT_MIB = 64;
-/** Cloudflare's per-Function limits: 10 MiB gzipped on a paid plan, 64 MiB before compression. */
-const MAX_FUNCTION_GZIP_BYTES = GZIP_LIMIT_MIB * MIB;
+/**
+ * Cloudflare's per-Function limit: 64 MiB, uncompressed, on every plan.
+ *
+ * It used to be a compressed one as well — 3 MB free, 10 MB paid — and Cloudflare removed that on
+ * 2026-09-04: "Cloudflare now only checks the uncompressed size of your bundle, which is 64 MiB
+ * across all plans", and the gzipped figure is "shown for reference but is no longer a limit".
+ * Wrangler still prints it, and so does the record this module writes, for the same reason: it is
+ * worth knowing and it decides nothing.
+ *
+ * A Function held to a limit its platform has dropped is one this adapter refuses to build for no
+ * reason anybody can act on, which is what the compressed check had become.
+ */
 const MAX_FUNCTION_BYTES = RAW_LIMIT_MIB * MIB;
 const MIB_DIGITS = 1;
 /** Enough to show where the room went without printing the whole record. */
@@ -171,13 +180,10 @@ function mib(bytes: number): string {
   return `${(bytes / MIB).toFixed(MIB_DIGITS)} MiB`;
 }
 
-/** Which limit a Function is over, said as the message will say it; `undefined` when it is under. */
+/** Whether a Function is over the limit, said as the message will say it; `undefined` when under. */
 function overLimit(size: FunctionSize): string | undefined {
-  if (size.gzipBytes > MAX_FUNCTION_GZIP_BYTES) {
-    return `${mib(size.gzipBytes)} gzipped, over Cloudflare's ${mib(MAX_FUNCTION_GZIP_BYTES)} limit`;
-  }
   if (size.bytes > MAX_FUNCTION_BYTES) {
-    return `${mib(size.bytes)}, over Cloudflare's ${mib(MAX_FUNCTION_BYTES)} limit before compression`;
+    return `${mib(size.bytes)}, over Cloudflare's ${mib(MAX_FUNCTION_BYTES)} limit`;
   }
   return undefined;
 }
