@@ -501,10 +501,11 @@ pnpm format
 pnpm knip
 pnpm build
 pnpm check:patches
+pnpm check:deploy-tests
 pnpm check:agent-rules
 ```
 
-The last seven are exactly what CI runs, in the order it runs them. CI gives `pnpm lint` an 8 GB heap (`NODE_OPTIONS=--max-old-space-size=8192`), and you may need to as well.
+The last eight are exactly what CI runs, in the order it runs them. CI gives `pnpm lint` an 8 GB heap (`NODE_OPTIONS=--max-old-space-size=8192`), and you may need to as well.
 
 > [!CAUTION]
 > **Found a security issue?** Email [security@arkor.ai](mailto:security@arkor.ai) rather than opening a public issue. We acknowledge within 48 hours.

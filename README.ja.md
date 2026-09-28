@@ -501,10 +501,11 @@ pnpm format
 pnpm knip
 pnpm build
 pnpm check:patches
+pnpm check:deploy-tests
 pnpm check:agent-rules
 ```
 
-最後の 7 つが、CI が実行するもののすべてで、順番も同じです。CI は `pnpm lint` に 8 GB のヒープを与えているので（`NODE_OPTIONS=--max-old-space-size=8192`）、手元でも同じ設定が必要になることがあります。
+最後の 8 つが、CI が実行するもののすべてで、順番も同じです。CI は `pnpm lint` に 8 GB のヒープを与えているので（`NODE_OPTIONS=--max-old-space-size=8192`）、手元でも同じ設定が必要になることがあります。
 
 > [!CAUTION]
 > **セキュリティの問題を見つけたら**、公開の Issue ではなく [security@arkor.ai](mailto:security@arkor.ai) にメールしてください。48 時間以内に受領をお知らせします。
