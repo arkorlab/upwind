@@ -512,6 +512,11 @@ function renderInOneProcessForStorage(config: BuildConfig): void {
  * `NextAdapter`, so a host that needs no options points either at this module and takes the
  * default export below. One that does — a cache host of its own — exports an adapter of its own
  * from a module of two lines.
+ *
+ * `name` is what Next.js calls this adapter in its own output, and the one string here a reader
+ * outside the build can come to depend on. It is the name a user installed rather than the name of
+ * anything inside: the bundle's own vocabulary is `arkor`, and a host that wants to know what wrote
+ * a bundle should read the bundle.
  */
 export function createAdapter(options: AdapterOptions = {}): NextAdapter {
   return {
