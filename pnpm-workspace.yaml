@@ -50,7 +50,7 @@ catalog:
   miniflare: 5.20260925.0-alpha
   next: 16.3.6
   oxfmt: 0.67.0
-  rolldown: 1.2.9
+  rolldown: 1.2.11
   typescript: 5.9.3
   typescript-eslint: 8.70.0
   zod: 4.6.4
