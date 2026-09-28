@@ -47,6 +47,17 @@ const BLOB_MEMO_BYTES = BLOB_MEMO_MIB * MIB;
  */
 type RuntimeManifest = Omit<DeploymentBundle, 'functions' | 'projectDir' | 'generatedAt'>;
 
+/**
+ * The part of the manifest every Function carries: which deployment and build it is, and its
+ * configuration. The middleware Function carries this and no more (`middlewareManifest`, in the
+ * adapter): it runs the middleware and nothing else, and none of the routes, prerenders or files
+ * bear on that.
+ */
+type ManifestHead = Pick<
+  RuntimeManifest,
+  'v' | 'deploymentId' | 'nextVersion' | 'buildId' | 'config'
+>;
+
 interface RouteShells {
   /** Prerenders whose URL has no dynamic segment left, by pathname (`/en` → shell). */
   readonly pages: ReadonlyMap<string, Prerender>;
@@ -335,16 +346,35 @@ function unlocalizedApiRoutes(manifest: {
   });
 }
 
-/** The store for this isolate; parsed on first use and kept for its lifetime. */
-const shared: { store: Store | undefined } = { store: undefined };
+/** The manifest this isolate read, and the store built over it: each made once, on first use. */
+const shared: { manifest: ManifestHead | undefined; store: Store | undefined } = {
+  manifest: undefined,
+  store: undefined,
+};
+
+/** The manifest this Function carries: its head in the middleware Function, whole in the app's. */
+function readManifest(): ManifestHead {
+  shared.manifest ??= JSON.parse(
+    new TextDecoder().decode(readBundleFile(RUNTIME_MANIFEST)),
+  ) as ManifestHead;
+  return shared.manifest;
+}
+
+/**
+ * The deployment's configuration, read without building the store: what a request for the
+ * middleware alone reads of the manifest, and all the middleware Function's manifest holds besides
+ * which deployment and build it is (`ManifestHead`).
+ */
+export function deploymentConfig(): ManifestHead['config'] {
+  return readManifest().config;
+}
 
 export function getStore(): Store {
   if (shared.store !== undefined) {
     return shared.store;
   }
-  const manifest = JSON.parse(
-    new TextDecoder().decode(readBundleFile(RUNTIME_MANIFEST)),
-  ) as RuntimeManifest;
+  // The whole manifest: the app Function's, since nothing in the middleware Function builds one.
+  const manifest = readManifest() as RuntimeManifest;
   const prerendersById = new Map(manifest.prerenders.map((prerender) => [prerender.id, prerender]));
   const prerendersByPathname = new Map(
     manifest.prerenders.map((prerender) => [prerender.pathname, prerender]),

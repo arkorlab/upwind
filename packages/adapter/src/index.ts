@@ -35,7 +35,7 @@ import {
 } from './collect.ts';
 import { reserveUpwindPrefix } from './dev-prefix.ts';
 import type { EdgeEntry } from './edge.ts';
-import { buildFunction, type EntryModule } from './function.ts';
+import { buildFunction, type EntryModule, middlewareManifest } from './function.ts';
 import { collectManifests } from './manifests.ts';
 import type { PatchContext } from './patches/index.ts';
 import { readProjectConfig } from './project-config.ts';
@@ -277,7 +277,8 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
       edgeEntries: middlewareEdgeEntries,
       wasm: wasm.collector,
       manifests,
-      runtimeManifest: runtimeManifestJson,
+      // The manifest's head alone: nothing the middleware Function answers reads the rest.
+      runtimeManifest: JSON.stringify(middlewareManifest(runtimeManifest)),
       cacheHostModule: options.cacheHostModule,
       blobs: [],
       files: [...files.middleware, ...inlineAssetFiles(middlewareEdgeEntries, ctx.projectDir)],

@@ -91,6 +91,25 @@ export interface BuildFunctionInput {
   readonly blobStore: BlobStore;
 }
 
+/** The fields of the runtime manifest that say which deployment and build it is, and its config. */
+type ManifestHead = Readonly<
+  Record<'v' | 'deploymentId' | 'nextVersion' | 'buildId' | 'config', unknown>
+>;
+
+/**
+ * The runtime manifest as the middleware Function is given it: which deployment and build it is,
+ * and its configuration — none of the routes, prerenders and files the app Function answers by.
+ *
+ * The middleware Function answers the middleware alone, run ahead of a shell the edge serves, and
+ * reads the base path of the manifest to do it (`deploymentConfig`, in the runtime). The rest would
+ * be parsed all the same on its first request — the manifest of an application with a few thousand
+ * prerenders runs to megabytes — on the Function whose cold start that shell waits on.
+ */
+export function middlewareManifest(manifest: ManifestHead): ManifestHead {
+  const { v, deploymentId, nextVersion, buildId, config } = manifest;
+  return { v, deploymentId, nextVersion, buildId, config };
+}
+
 /** Module name a blob is shipped under; the runtime reads it back at `/bundle/blobs/<sha256>`. */
 function blobModuleName(sha256: string): string {
   return `${BLOB_MODULE_PREFIX}${sha256}`;
