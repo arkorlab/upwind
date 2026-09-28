@@ -56,6 +56,8 @@ const SERVER_ERROR = 500;
  * the previous fixture and may be a Next.js test application that redirects everything.
  */
 const REDIRECT_GRACE_MS = 30_000;
+/** Asked for by the probe, and judged by it: see `probeHeaders`. */
+const PROBE_ENCODING = 'identity';
 const MS_PER_SECOND = 1000;
 
 export interface DeployInput {
@@ -311,14 +313,19 @@ function couldAnswer(bundle: DeploymentBundle): MiddlewareMatcher[] {
  * Judging them against no headers at all would be judging a different request: a condition on
  * `user-agent` or `accept` holds for the probe and would read as failing, and the asset it disqualifies
  * would be chosen and then intercepted. Measured on Node 24 — `fetch` adds `host`, `connection`,
- * `accept`, `accept-language`, `sec-fetch-mode`, `user-agent` and `accept-encoding`, and nothing else —
- * so this is that list, with `user-agent` set on the request as well so that the value judged here is the
- * value sent rather than whatever the runtime defaults to.
+ * `accept`, `accept-language`, `sec-fetch-mode`, `user-agent` and `accept-encoding`, and nothing else.
+ *
+ * Two of them are set on the request rather than left to the runtime, because a default is not a thing
+ * this file can state: `user-agent`, which would otherwise be `node`, and `accept-encoding`, whose
+ * default turned out to depend on the scheme — `br, gzip, deflate` over HTTPS and `gzip, deflate` over
+ * plain HTTP, both measured. `identity` earns its place twice over: it is the one value that is the same
+ * under either scheme, and a response nobody compressed is a response whose `ETag` no proxy had a reason
+ * to touch.
  */
 function probeHeaders(url: URL): Headers {
   return new Headers({
     accept: '*/*',
-    'accept-encoding': 'gzip, deflate',
+    'accept-encoding': PROBE_ENCODING,
     'accept-language': '*',
     connection: 'close',
     host: url.host,
@@ -375,6 +382,16 @@ function probeOf(publicUrl: URL, bundle: DeploymentBundle): Probe {
 }
 
 /**
+ * Whether the host answered with the file the probe asked for.
+ *
+ * `W/` off the front of what came back: a proxy that recompresses a response may mark its `ETag` weak,
+ * and a weak one still names this file. The probe asks for no encoding partly so that it rarely has to.
+ */
+function sameFile(sent: string | null, expected: string): boolean {
+  return sent !== null && sent.replace(/^W\//u, '') === expected;
+}
+
+/**
  * What one probe saw, when it did not prove the deployment.
  *
  * `redirected` because that one is not a wait like the others. Every other thing a probe sees is a
@@ -400,9 +417,9 @@ async function answered(
   try {
     response = await fetch(probe.url, {
       method: 'HEAD',
-      // The one header worth setting: `probeHeaders` judges a rule's conditions against this value, and
-      // an unset one would be the runtime's own, which is not a thing this file can say.
-      headers: { 'user-agent': USER_AGENT },
+      // The two `probeHeaders` does not leave to the runtime, sent here so that what it judged a rule's
+      // conditions against is what the host is asked with.
+      headers: { 'accept-encoding': PROBE_ENCODING, 'user-agent': USER_AGENT },
       // Followed by hand, not by `fetch`: where the redirect leads is not this deployment's asset, and
       // following it turns a configuration to report into whatever that destination happens to do —
       // measured, a location that does not resolve comes back as `TypeError: fetch failed`. Node gives
@@ -418,7 +435,11 @@ async function answered(
   }
   await response.body?.cancel();
   if (probe.etag !== undefined) {
-    if (response.ok && response.headers.get('etag') === probe.etag) {
+    // Whatever the status. The digest is the whole question, and nothing but this file answers it: a
+    // `404` is what a bundled error document is served with, and a `304` is the file itself withheld
+    // from somebody who already had it. Requiring a `2xx` as well would have waited out the deadline
+    // over a file the host was already serving.
+    if (sameFile(response.headers.get('etag'), probe.etag)) {
       return undefined;
     }
     const status = response.status;
