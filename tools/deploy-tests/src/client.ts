@@ -21,7 +21,8 @@ import {
  * field added, renamed or reordered upstream is not a thing this has to be taught.
  */
 
-const USER_AGENT = 'upwind-deploy-tests/1.0';
+/** Sent by every call this tool makes, the readiness probe included. */
+export const USER_AGENT = 'upwind-deploy-tests/1.0';
 
 /**
  * How a refusal for going too fast is waited out.

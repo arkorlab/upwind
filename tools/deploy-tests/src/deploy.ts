@@ -13,7 +13,13 @@ import {
 import type { MiddlewareMatcher } from '@stayingupwind/core/manifest';
 import { middlewareApplies } from '@stayingupwind/core/paas';
 
-import { ApiError, type Client, type DeploymentDetail, type ProjectDetail } from './client.ts';
+import {
+  ApiError,
+  type Client,
+  type DeploymentDetail,
+  type ProjectDetail,
+  USER_AGENT,
+} from './client.ts';
 import type { Config } from './config.ts';
 import { fixtureEnvironment } from './fixture-env.ts';
 
@@ -252,41 +258,18 @@ async function waitForHost(input: DeployInput, deploymentId: string): Promise<vo
 interface Probe {
   readonly url: URL;
   readonly etag: string | undefined;
+  /**
+   * Whether that digest is this build's alone.
+   *
+   * A content-addressed asset is shared across deployments on purpose — that is what the path means —
+   * and an unchanged `public/` file is byte for byte what the fixture before it served. Either can be
+   * answered by the deployment before this one while the pointer's move is still reaching the edge, so
+   * neither proves which deployment answered. Both are still worth asking for: where the other
+   * deployment does not have the file, the digest is proof, and where it does, the answer is no weaker
+   * than the pointer this is read beside. What it is not is called proof.
+   */
+  readonly onlyThisBuild: boolean;
   readonly deploymentId: string;
-}
-
-/**
- * A pattern the host would test a path against, compiled once — or nothing, where it cannot be read.
- *
- * The patterns are the build's own, and they arrived through `runnableSourceRegexSchema`, the schema's
- * refusal of a pattern that is not safe to run, which is the check the host's own router rests on. What
- * that leaves is a pattern this engine will not take, and the safe reading of one is that it matches
- * everything: the point is to find a path nothing touches, and there are usually many.
- *
- * Compiled as the serving path compiles these. Case-insensitive, because that is how Next.js matches a
- * path against them and so how the host does (`mayRoutePath`). Without the unicode flag, because Next.js
- * wrote them for a router that runs them without it, and `u` makes an error of an escape that is merely
- * redundant there — measured, a static segment containing a hyphen is escaped as `\-`, so
- * `^\/app\-simple\-routes(?:\/)?$`, an ordinary rule of an ordinary fixture, throws under `u` and not
- * without it. Read as matching everything, that one throw would have disqualified every asset of such a
- * build and quietly reduced it to the pointer alone.
- */
-function compiledOr(patterns: readonly { sourceRegex: string }[]): (RegExp | undefined)[] {
-  return patterns.map((rule) => {
-    // Assigned rather than returned from the `try`, as the runtime's own `botsRegexOf` does it.
-    let pattern: RegExp | undefined;
-    try {
-      // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-      pattern = new RegExp(rule.sourceRegex, 'i');
-    } catch {
-      // Left unread, which is read below as matching everything.
-    }
-    return pattern;
-  });
-}
-
-function anyMatches(patterns: readonly (RegExp | undefined)[], pathname: string): boolean {
-  return patterns.some((pattern) => pattern === undefined || pattern.test(pathname));
 }
 
 /** A rule is ahead of the file only if it answers or rewrites; one that does neither sets headers. */
@@ -299,60 +282,73 @@ function setsEtag(rule: { headers?: Record<string, string> | undefined }): boole
 }
 
 /**
- * What could stop a file's own digest from coming back, worked out once for a whole bundle.
+ * Everything that could stop a file's own digest from coming back, as one list.
  *
- * Three things. **Middleware** answers whatever it matches, and a catch-all matcher includes
- * `/_next/static`; that one is asked of the host's own `middlewareApplies`, per candidate path, so the
- * conditions on a matcher are read exactly as the host reads them and so is a path that matches only
- * once decoded. Asking it rather than the pattern alone matters in the ordinary direction too: a
- * conditional catch-all matcher would otherwise disqualify every asset a build has, and what that costs
- * is not caution but evidence — the probe would fall back to the pointer, which is the weakest thing it
- * can rest on.
- *
- * A **redirect or rewrite ahead of the filesystem** answers instead of the file; one after it does not,
- * because by then the file has won. And a **header rule that sets `ETag`** leaves the file exactly where
- * it is and replaces the one thing being compared — those come from `headerRulesOf` and
- * `foldedHeaderRulesOf`, which is where the host looks for them, and both lists are read because which
- * one it consults depends on whether it reproduces the build's own routing.
- *
- * Those two are read from their patterns alone, conditions and all, which is the blunt reading the core
- * takes when it decides what a build publishes (`claimedBeforeFiles`). They can afford it: a rule that
- * rewrites everything ahead of the filesystem or sets `ETag` over everything is a rule a handful of
- * fixtures have, so reading it as always applying cannot plausibly leave a build with nothing to ask for
- * — which is the very thing that made the matchers worth asking about properly.
+ * Three kinds of thing, and all three are matcher-shaped — a pattern and its conditions — which is what
+ * lets the host's own reading of that shape answer for all of them. **Middleware** answers whatever it
+ * matches, and a catch-all matcher includes `/_next/static`. A **redirect or rewrite ahead of the
+ * filesystem** answers instead of the file; one after it does not, because by then the file has won. And
+ * a **header rule that sets `ETag`** leaves the file where it is and replaces the one thing being
+ * compared — from `headerRulesOf` and `foldedHeaderRulesOf`, which is where the host looks for them, both
+ * read because which one it consults depends on whether it reproduces the build's own routing.
  */
-interface CouldAnswer {
-  readonly matchers: readonly MiddlewareMatcher[];
-  readonly ahead: readonly (RegExp | undefined)[];
-  readonly retagged: readonly (RegExp | undefined)[];
-}
-
-function couldAnswer(bundle: DeploymentBundle): CouldAnswer {
+function couldAnswer(bundle: DeploymentBundle): MiddlewareMatcher[] {
   const { routing } = bundle;
-  return {
-    matchers: routing.middlewareMatchers,
-    ahead: compiledOr(
-      [...routing.beforeMiddleware, ...routing.beforeFiles].filter((route) =>
-        answersOrRewrites(route),
-      ),
+  return [
+    ...routing.middlewareMatchers,
+    ...[...routing.beforeMiddleware, ...routing.beforeFiles].filter((route) =>
+      answersOrRewrites(route),
     ),
-    retagged: compiledOr(
-      [...headerRulesOf(bundle), ...(foldedHeaderRulesOf(bundle) ?? [])].filter((rule) =>
-        setsEtag(rule),
-      ),
+    ...[...headerRulesOf(bundle), ...(foldedHeaderRulesOf(bundle) ?? [])].filter((rule) =>
+      setsEtag(rule),
     ),
-  };
+  ];
 }
 
-/** Whether a `HEAD` of this URL would come back with the file's own digest, as far as the bundle says. */
-function showsTheDigest(could: CouldAnswer, url: URL): boolean {
-  return !(
-    // The headers the probe will send are none of its own, which is what makes a matcher conditioned on
-    // one of them not apply — and this is the same question the host asks of the same request.
-    middlewareApplies(could.matchers, url, new Headers()) ||
-    anyMatches(could.ahead, url.pathname) ||
-    anyMatches(could.retagged, url.pathname)
-  );
+/**
+ * The headers the probe's request carries, to judge a rule's conditions by the request that will be made.
+ *
+ * Judging them against no headers at all would be judging a different request: a condition on
+ * `user-agent` or `accept` holds for the probe and would read as failing, and the asset it disqualifies
+ * would be chosen and then intercepted. Measured on Node 24 — `fetch` adds `host`, `connection`,
+ * `accept`, `accept-language`, `sec-fetch-mode`, `user-agent` and `accept-encoding`, and nothing else —
+ * so this is that list, with `user-agent` set on the request as well so that the value judged here is the
+ * value sent rather than whatever the runtime defaults to.
+ */
+function probeHeaders(url: URL): Headers {
+  return new Headers({
+    accept: '*/*',
+    'accept-encoding': 'gzip, deflate',
+    'accept-language': '*',
+    connection: 'close',
+    host: url.host,
+    'sec-fetch-mode': 'cors',
+    'user-agent': USER_AGENT,
+  });
+}
+
+/**
+ * Whether a `HEAD` of this URL would come back with the file's own digest, as far as the bundle says.
+ *
+ * `middlewareApplies` is the host's own answer to "would this apply to this request": the pattern as
+ * Next.js compiled it, the conditions as Next.js reads them, and a path that matches only once decoded.
+ * Asking it rather than reading the patterns here is what keeps a *conditional* catch-all rule from
+ * disqualifying every asset a build has — and what that would cost is not caution but evidence, since
+ * the probe would fall back to the pointer, which is the weakest thing it can rest on.
+ *
+ * Used for the rules as well as the matchers, because the shape is the same one. The rules get the
+ * decoded retry too, which the host would not give them; it can only make this answer more cautious, and
+ * the alternative is a second reading of the same patterns kept in step with the host's by hand.
+ */
+function showsTheDigest(could: readonly MiddlewareMatcher[], url: URL, headers: Headers): boolean {
+  try {
+    return !middlewareApplies(could, url, headers);
+  } catch {
+    // A pattern this engine will not take. The schema refuses what is unsafe to run, and every ordinary
+    // one compiles, so this is the last resort — read as applying, which loses a candidate rather than
+    // the deployment.
+    return false;
+  }
 }
 
 function probeOf(publicUrl: URL, bundle: DeploymentBundle): Probe {
@@ -363,14 +359,17 @@ function probeOf(publicUrl: URL, bundle: DeploymentBundle): Probe {
     return url;
   };
   const could = couldAnswer(bundle);
-  const quiet = bundle.staticFiles.filter((entry) => showsTheDigest(could, asked(entry.pathname)));
-  const file =
-    quiet.find((entry) => entry.pathname.includes(`/${bundle.buildId}/`)) ??
-    quiet.find((entry) => entry.immutable) ??
-    quiet[0];
+  const headers = probeHeaders(publicUrl);
+  const quiet = bundle.staticFiles.filter((entry) =>
+    showsTheDigest(could, asked(entry.pathname), headers),
+  );
+  // A path carrying the build id first, because that is the one digest another deployment cannot have.
+  const named = quiet.find((entry) => entry.pathname.includes(`/${bundle.buildId}/`));
+  const file = named ?? quiet.find((entry) => entry.immutable) ?? quiet[0];
   return {
     url: asked(file?.pathname ?? (bundle.config.basePath || '/')),
     etag: file === undefined ? undefined : `"${file.blob.sha256}"`,
+    onlyThisBuild: named !== undefined,
     deploymentId: bundle.deploymentId,
   };
 }
@@ -401,6 +400,9 @@ async function answered(
   try {
     response = await fetch(probe.url, {
       method: 'HEAD',
+      // The one header worth setting: `probeHeaders` judges a rule's conditions against this value, and
+      // an unset one would be the runtime's own, which is not a thing this file can say.
+      headers: { 'user-agent': USER_AGENT },
       // Followed by hand, not by `fetch`: where the redirect leads is not this deployment's asset, and
       // following it turns a configuration to report into whatever that destination happens to do —
       // measured, a location that does not resolve comes back as `TypeError: fetch failed`. Node gives
@@ -481,6 +483,14 @@ function sayItIsServed(input: DeployInput, probe: Probe): void {
     input.log(
       'no asset of this deployment could identify it — it has none, or something runs ahead of them ' +
         '— so only the host says which deployment answered',
+    );
+    return;
+  }
+  if (!probe.onlyThisBuild) {
+    input.log(
+      "that file is not this build's alone — a content-addressed asset is shared across deployments " +
+        'on purpose, and an unchanged `public/` file is what the fixture before it served — so the ' +
+        'host is still what says which deployment answered',
     );
   }
 }

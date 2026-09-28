@@ -104,11 +104,17 @@ Beyond that, four limits are worth knowing before reading a failure as this adap
 - **No runtime logs.** The API serves a built deployment's build log, and an uploaded deployment has
   none, so what the logs hook shows is the build and the deployment. A suite that asserts on server
   output may fail for want of it.
-- **Which deployment answered is proved by an asset, where a quiet one exists.** A `HEAD` for one of the
-  bundle's static files, with its digest as the expected `ETag` — one whose path nothing in the
-  deployment runs ahead of, since a catch-all middleware matcher, a redirect or a `beforeFiles` rewrite
-  would have the host answer correctly with something that is not that file. The public endpoint exposes
-  no deployment id, so an identical asset shared with an older deployment cannot tell those two apart.
+- **Which deployment answered is proved by an asset, where one can prove it.** A `HEAD` for one of the
+  bundle's static files, with its digest as the expected `ETag` — one whose answer the build's own
+  routing would not have decided, since a middleware matcher, a redirect or rewrite ahead of the
+  filesystem, or a `headers()` rule that sets `ETag` would each leave the host answering correctly with
+  something that is not that digest. Which of them apply to the probe's own request is asked of the
+  host's own `middlewareApplies`, so a rule conditioned on a header the probe does not send does not
+  disqualify an asset. A path carrying the build id is preferred, because it is the one digest another
+  deployment cannot have: the public endpoint exposes no deployment id, so where the only candidate is a
+  content-addressed asset — shared across deployments on purpose — or an unchanged `public/` file, the
+  digest is evidence that the file is served and not that this deployment served it. The log says which
+  of the two it had.
   Where the build has no such file, the host's own account of which deployment is current is the whole
   of the evidence, and then any answer at all — including a `5xx`, which a route-only application may
   mean — counts as served. Both cases say so in the log. A redirect is the one answer that can never
