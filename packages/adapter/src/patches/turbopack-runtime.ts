@@ -1,5 +1,6 @@
 import path from 'node:path';
 
+import { jsLiteral } from '../codegen.ts';
 import { type Patch, Rewrite } from './types.ts';
 
 /**
@@ -29,7 +30,7 @@ const LEFTOVERS = [/require\(resolved\)/u];
 function chunkTable(distDir: string, chunks: readonly string[]): string {
   const cases = chunks.map(
     (chunk) =>
-      `    case ${JSON.stringify(path.relative(distDir, chunk).split(path.sep).join('/'))}: return require(${JSON.stringify(chunk)});`,
+      `    case ${jsLiteral(path.relative(distDir, chunk).split(path.sep).join('/'))}: return require(${jsLiteral(chunk)});`,
   );
   return [
     '',

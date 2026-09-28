@@ -70,6 +70,16 @@ export const routeEntrySchema = z.object({
    * before compression existed still parses and simply serves identity.
    */
   shellEncodings: shellEncodingsSchema.optional(),
+  /**
+   * The route's prefetch segments, by the value of `next-router-segment-prefetch` each answers
+   * (`prefetchSegments`). A host that holds these in its own storage names them here and answers a
+   * prefetch itself; one that leaves prefetches to the deployment's Function carries none, and so
+   * does a build that wrote none.
+   *
+   * A reader that does not know the field drops it and hands every prefetch to the Function, which
+   * is what every reader did before the field existed — so no schema version turns on it.
+   */
+  segments: z.record(z.string().startsWith('/'), artifactRefSchema).optional(),
   headers: z.record(z.string(), z.string()),
   /**
    * The route's policy permits any inline script, which the nonce the edge mints stops it doing.

@@ -58,3 +58,11 @@ updates:
     cooldown:
       default-days: 1
     open-pull-requests-limit: 100
+    groups:
+      # A pinned action is a commit and a tag in a trailing comment, and a week of them is one
+      # reading rather than five. `applies-to` is left at its default of version updates, so a
+      # security update still arrives on its own — that is the one that should be readable and
+      # mergeable without waiting for the rest.
+      actions:
+        patterns:
+          - '*'

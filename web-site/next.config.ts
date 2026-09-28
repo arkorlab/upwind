@@ -18,9 +18,22 @@ import type { NextConfig } from 'next';
  * `upwind build` sets the same thing in the environment, so a build started that way needs nothing
  * from this file. This line is what makes a plain `next build` — from CI, from a script, from
  * anything that does not know about upwind — produce the same deployment bundle.
+ *
+ * **Except on Vercel**, which builds this site too, from the same commit. An adapter named in a build
+ * takes the deployment over: the build writes a bundle under `.arkor/` that Vercel does not read,
+ * and, on Next.js 16.3, stops writing the file traces Vercel's own build does
+ * (`next-server.js.nft.json`). `VERCEL` is
+ * set on every build Vercel runs, and this is the line that has to notice, because a `next.config`
+ * that names an adapter outranks anything the environment says — including the nothing `upwind build`
+ * says there.
  */
+const vercel = process.env['VERCEL'];
+const onVercel = vercel !== undefined && vercel !== '';
+
 const config: NextConfig = {
-  adapterPath: createRequire(import.meta.url).resolve('@stayingupwind/adapter'),
+  ...(onVercel
+    ? {}
+    : { adapterPath: createRequire(import.meta.url).resolve('@stayingupwind/adapter') }),
   experimental: {
     /*
      * The root layout of this site is `app/[locale]/layout.tsx`, because English is served on the

@@ -18,6 +18,10 @@ import type { BuildOptions } from './args.ts';
  * missing was only the one thing `upwind dev` already does, which is to say *which* adapter, from the
  * project rather than from wherever this CLI is installed.
  *
+ * With one exception, and it is about somebody else's build: on Vercel this command names nothing
+ * (`isVercelsOwnBuild`). That is half of what a project deployed to both places needs; the other
+ * half is its own `next.config`, which outranks this and is nothing this process can see.
+ *
  * A child process rather than an import, because `next build` is a program: it decides `NODE_ENV`,
  * runs workers, prints for a terminal and ends the process itself. Wrapping it means running it, and
  * this run ends the way that one did.
@@ -119,9 +123,43 @@ function storageEnv(projectDir: string): Record<string, string> {
   };
 }
 
+/**
+ * A build on Vercel, where the one thing this command adds is the one thing not to do.
+ *
+ * Vercel sets `VERCEL` on every build it runs, and a build there is Vercel's. An adapter named in it
+ * takes the deployment over: `next build` writes a bundle under `.arkor/`, which Vercel does not
+ * read — and on the Next.js this repository builds against, 16.3, it stops writing the file traces
+ * Vercel's own build does (`next-server.js.nft.json` and `next-minimal-server.js.nft.json` are
+ * absent from `.next/` when an adapter is named, and written when none is). So on Vercel this
+ * command is the project's own `next build` and nothing else: no adapter, and no storage published
+ * for one (`storageEnv`).
+ *
+ * `NEXT_ADAPTER_PATH` still wins, for the build that means it. A job that runs on Vercel to produce
+ * a bundle rather than a Vercel deployment names the adapter in the environment and gets one, which
+ * is the same sentence this command has always honoured.
+ */
+function isVercelsOwnBuild(): boolean {
+  const named = process.env[ADAPTER_PATH_ENV];
+  if (named !== undefined && named !== '') {
+    return false;
+  }
+  const vercel = process.env['VERCEL'];
+  return vercel !== undefined && vercel !== '';
+}
+
 export async function runBuild(options: BuildOptions): Promise<never> {
-  const adapter = resolveAdapterPath(options.projectDir);
-  if (adapter === undefined) {
+  const vercel = isVercelsOwnBuild();
+  if (vercel) {
+    // Said rather than done quietly: what makes this command different from `next build` is the
+    // adapter, and a run that names none has to be a run that says why. It says what *this* does and
+    // no more — a `next.config` that names an adapter of its own is read later, by Next.js, and this
+    // process cannot know what it will find there.
+    console.log(
+      'upwind: VERCEL is set, so this command names no adapter and publishes no storage — what runs is the project’s own `next build`. A `next.config` that names an adapter still names it; `NEXT_ADAPTER_PATH` names one for this build.',
+    );
+  }
+  const adapter = vercel ? undefined : resolveAdapterPath(options.projectDir);
+  if (!vercel && adapter === undefined) {
     // Refused rather than warned about: a build without the adapter is a build that runs to the end
     // and produces no deployment bundle, which is the one thing this command is for.
     throw new Error(
@@ -129,25 +167,30 @@ export async function runBuild(options: BuildOptions): Promise<never> {
     );
   }
   const command = await nextCommand(options.projectDir);
-  // The same Node that is running this, so the command is reached without a shebang, a PATH lookup or
-  // a shell.
-  //
   // The adapter goes in the environment the child inherits, where Next.js reads it as the default for
   // `adapterPath`. A `next.config` that names one of its own still wins, by Next.js's own precedence.
   // What this does *not* see is a `.env` file: Next.js loads those itself, inside the child, and
   // leaves a variable the process already has alone — so an adapter named in `.env` is one this run
   // overrides. Name it in `next.config` or in the environment, which are the two places that win.
   //
+  // Which is why a run that names no adapter passes the variable *empty* rather than leaving it out:
+  // "leaves alone what the process already has" is what makes an empty one stick, and `.env` would
+  // otherwise name an adapter after this run decided there would be none. Next.js reads the variable
+  // as `process.env.NEXT_ADAPTER_PATH || undefined` (`config-shared`), so empty is no adapter.
+  //
   // The project's storage goes in the same environment, as an import every process of the build runs
   // before anything else: this process cannot publish it for them, and the one that renders pages is
-  // where an application asks for it (`storageEnv`, `resources/entry.ts`).
+  // where an application asks for it (`storageEnv`, `resources/entry.ts`). Both together or neither:
+  // storage is published for an adapter to bind, and a build with no adapter has nothing to bind it.
+  const adapterEnv =
+    adapter === undefined
+      ? { [ADAPTER_PATH_ENV]: '' }
+      : { [ADAPTER_PATH_ENV]: adapter, ...storageEnv(options.projectDir) };
+  // The same Node that is running this, so the command is reached without a shebang, a PATH lookup or
+  // a shell.
   const child = spawn(process.execPath, [command, 'build', options.projectDir], {
     cwd: options.projectDir,
-    env: {
-      ...process.env,
-      [ADAPTER_PATH_ENV]: adapter,
-      ...storageEnv(options.projectDir),
-    },
+    env: { ...process.env, ...adapterEnv },
     stdio: 'inherit',
   });
   // A signal this process is sent is the build's too. Without this, a `kill` on `upwind build` would

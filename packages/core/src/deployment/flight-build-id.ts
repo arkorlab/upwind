@@ -91,12 +91,13 @@ class FlightBuildIdReader {
       return;
     }
     this.#prefixOffset += 1;
-    if (this.#prefixOffset === ROOT_ROW_PREFIX.length) {
-      this.#depth = 1;
-      this.#phase = 'key';
-      this.#buildIdField = false;
-      this.#prefixOffset = -1;
+    if (this.#prefixOffset !== ROOT_ROW_PREFIX.length) {
+      return;
     }
+    this.#depth = 1;
+    this.#phase = 'key';
+    this.#buildIdField = false;
+    this.#prefixOffset = -1;
   }
 
   #readString(char: string): string | undefined {

@@ -157,6 +157,40 @@ What `upwind build` adds is that a project which has _not_ written that line sti
 and that a project with no adapter installed is refused rather than left with a build that quietly
 produced none.
 
+## On Vercel
+
+**`VERCEL` is set, so this command names nothing.** An adapter named in a build takes the deployment
+over, and on Vercel the deployment is Vercel's: `next build` writes a bundle under `.arkor/` that
+Vercel does not read, and — on Next.js 16.3, which is what this was measured against — stops writing
+the file traces Vercel's own build does: `next-server.js.nft.json` and
+`next-minimal-server.js.nft.json` are absent from `.next/` when an adapter is named, and written when
+none is. So `upwind build` on Vercel does not name the adapter and publishes no storage for one; what
+runs is the project's own `next build`, and a line says so, because a command that stops doing the one
+thing it is for owes you the reason.
+
+That is this command's half of it. The other half is the project's, and it is the half that decides:
+**a `next.config` that names an adapter outranks anything the environment says**, including the
+nothing this command now says on Vercel — so the block above, written unconditionally, produces a
+bundle on Vercel too. A project that deploys to both writes it conditionally, and then one `build`
+script serves both:
+
+```ts
+import { createRequire } from 'node:module';
+
+const onVercel = process.env.VERCEL !== undefined && process.env.VERCEL !== '';
+
+export default {
+  ...(onVercel
+    ? {}
+    : { adapterPath: createRequire(import.meta.url).resolve('@stayingupwind/adapter') }),
+};
+```
+
+`create-upwind` writes the unconditional line, so a scaffolded project is one edit away from this.
+
+And `NEXT_ADAPTER_PATH` still wins, for the build that means it: a job that runs on Vercel to produce
+a bundle rather than a Vercel deployment names the adapter in the environment and gets one.
+
 ## Options
 
 ```

@@ -63,3 +63,15 @@ there are no credentials here and no workflow that deploys.
 
 The canonical host is `www.stayingupwind.com` and the apex redirects to it, so every absolute URL the
 site emits — canonical, hreflang, the sitemap, the Open Graph card — names `www` (`src/lib/site.ts`).
+
+### And on Vercel
+
+The same commit deploys there too. An adapter named in a build takes the deployment over: the build
+writes a bundle under `.arkor/` that Vercel does not read, and — on Next.js 16.3 — stops writing
+the file traces Vercel's own build does (`next-server.js.nft.json`). `next.config.ts` is what notices `VERCEL`,
+because a config that names an adapter outranks anything the environment says.
+
+**Set Vercel's build command to `next build`.** This project's `pnpm build` is `upwind build`, which
+names the adapter in the environment; the copy of `upwind` this project installs is the published one,
+and the release that stops it doing so on Vercel is not out yet (the guard itself is in
+`packages/upwind` here). `next build` is the command that means what it says on Vercel either way.
