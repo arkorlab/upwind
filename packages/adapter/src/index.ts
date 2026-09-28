@@ -175,7 +175,12 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     wasm: nodeWasm,
     edgeEntries,
   } = collectEntrypoints(ctx.outputs);
-  const { prerenders, shipped } = await collectPrerenders(ctx.outputs, blobs, ctx.config.basePath);
+  const { prerenders, shipped } = await collectPrerenders(
+    ctx.outputs,
+    blobs,
+    ctx.config.basePath,
+    ctx.routing.rsc,
+  );
   const staticFiles = await collectStaticFiles(ctx, blobs);
   const middleware = middlewareOutput(ctx.outputs);
   const {

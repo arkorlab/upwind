@@ -201,6 +201,16 @@ export const prerenderSchema = z.object({
   compute: prerenderComputeSchema.optional(),
   renderingMode: z.enum(['STATIC', 'PARTIALLY_STATIC']).optional(),
   htmlSize: z.number().int().nonnegative().optional(),
+  /**
+   * The value of `next-router-segment-prefetch` this output answers, for one the build wrote as a
+   * prefetch segment of its group's document. Read off the pathname the build gave it, against the
+   * suffixes the build declared (`segmentPathOf`).
+   *
+   * Absent on every other output, and on a bundle from before this was recorded — a reader that
+   * finds none has a build's prefetches to hand to the deployment's Function, not a build without
+   * any.
+   */
+  segmentPath: z.string().startsWith('/').optional(),
   body: blobRefSchema.optional(),
   postponed: blobRefSchema.optional(),
   initialStatus: responseStatusSchema.optional(),

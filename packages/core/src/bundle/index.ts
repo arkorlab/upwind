@@ -44,6 +44,7 @@ export {
   pagesPathnameOfData,
 } from './pages-data.ts';
 export { queryDependent } from './query.ts';
+export { type PrefetchSegment, prefetchSegments } from './segments.ts';
 export {
   cacheablePrerenders,
   completePrerenders,
@@ -54,6 +55,7 @@ export {
   foldedHeaderRulesOf,
   headerRulesOf,
   prerenderResponseHeaders,
+  primaryPrerenders,
   resumablePrerenders,
   routeHandlerPrerenders,
   type ServableOptions,
