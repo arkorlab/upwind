@@ -154,12 +154,20 @@ function classifyByPath(url: URL): RequestClass | undefined {
   return undefined;
 }
 
-/** The part of a page a router prefetch asks for, or `undefined` for a request asking for none. */
+/**
+ * The part of a page a router prefetch asks for, or `undefined` for a request asking for none.
+ *
+ * A header that is present and empty names no part. Next.js writes every segment path with a
+ * leading slash, so nothing a build wrote can be found under the empty string — and saying so here
+ * keeps the classification from carrying a path no route could hold, and from skipping the
+ * navigation hints for a request that named nothing.
+ */
 function segmentPrefetchOf(headers: Headers): string | undefined {
   if (headers.get(RSC_HEADER) !== '1') {
     return undefined;
   }
-  return headers.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER) ?? undefined;
+  const segmentPath = headers.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER);
+  return segmentPath === null || segmentPath === '' ? undefined : segmentPath;
 }
 
 function classifyByRouterHeaders(headers: Headers): RequestClass | undefined {

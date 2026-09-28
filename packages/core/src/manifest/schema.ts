@@ -65,6 +65,11 @@ export const preloadLinksSchema = z
  * renderings of those bytes where the run produced them — the same pair a route's own shell
  * travels as, for the same reason. A segment is an RSC payload, which is text, and compresses
  * like one.
+ *
+ * `segments` held a bare `ArtifactRef` between the field being added and this, and changing its
+ * shape narrows nothing: **no writer ever set it.** The field was added ahead of the host that
+ * would fill it, and this is that host's shape. What the rule on `MANIFEST_SCHEMA_VERSION` forbids
+ * is refusing a manifest that was served the day before — and there is no such manifest to refuse.
  */
 export const routeSegmentSchema = z.object({
   artifact: artifactRefSchema,
