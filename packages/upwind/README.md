@@ -161,18 +161,19 @@ produced none.
 
 **`VERCEL` is set, so this command names nothing.** A build on Vercel is Vercel's: it produces what
 Vercel serves, and an adapter named there would produce a deployment bundle instead — which Vercel
-does not read, leaving it without the output it does. So `upwind build` on Vercel is the project's
-own `next build` and nothing else: no adapter, no storage published for one, and a line saying so,
-because a run of this command that writes no bundle owes you the reason.
+does not read, leaving it without the output it does. So `upwind build` on Vercel does not name the
+adapter and publishes no storage for one; what runs is the project's own `next build`, and a line
+says so, because a command that stops doing the one thing it is for owes you the reason.
 
-That is what lets one `build` script serve both: the same commit deploys to a host that reads the
-bundle and to Vercel, and neither needs its own command.
-
-A project whose `next.config` names the adapter itself — the block above — has said something this
-command cannot unsay, and will produce a bundle on Vercel too. A project that wants both writes the
-line conditionally:
+That is this command's half of it. The other half is the project's, and it is the half that decides:
+**a `next.config` that names an adapter outranks anything the environment says**, including the
+nothing this command now says on Vercel — so the block above, written unconditionally, produces a
+bundle on Vercel too. A project that deploys to both writes it conditionally, and then one `build`
+script serves both:
 
 ```ts
+import { createRequire } from 'node:module';
+
 const onVercel = process.env.VERCEL !== undefined && process.env.VERCEL !== '';
 
 export default {
@@ -181,6 +182,8 @@ export default {
     : { adapterPath: createRequire(import.meta.url).resolve('@stayingupwind/adapter') }),
 };
 ```
+
+`create-upwind` writes the unconditional line, so a scaffolded project is one edit away from this.
 
 And `NEXT_ADAPTER_PATH` still wins, for the build that means it: a job that runs on Vercel to produce
 a bundle rather than a Vercel deployment names the adapter in the environment and gets one.

@@ -19,7 +19,8 @@ import type { BuildOptions } from './args.ts';
  * project rather than from wherever this CLI is installed.
  *
  * With one exception, and it is about somebody else's build: on Vercel this command names nothing
- * (`isVercelsOwnBuild`), so a project can keep one `build` script and be deployed to both.
+ * (`isVercelsOwnBuild`). That is half of what a project deployed to both places needs; the other
+ * half is its own `next.config`, which outranks this and is nothing this process can see.
  *
  * A child process rather than an import, because `next build` is a program: it decides `NODE_ENV`,
  * runs workers, prints for a terminal and ends the process itself. Wrapping it means running it, and
@@ -149,9 +150,11 @@ export async function runBuild(options: BuildOptions): Promise<never> {
   const vercel = isVercelsOwnBuild();
   if (vercel) {
     // Said rather than done quietly: what makes this command different from `next build` is the
-    // bundle, and a run that writes none has to be a run that explains itself.
+    // adapter, and a run that names none has to be a run that says why. It says what *this* does and
+    // no more — a `next.config` that names an adapter of its own is read later, by Next.js, and this
+    // process cannot know what it will find there.
     console.log(
-      "upwind: VERCEL is set, so this build is Vercel's — the adapter is not named, and no deployment bundle is written. Name `NEXT_ADAPTER_PATH` to build one here anyway.",
+      'upwind: VERCEL is set, so this command names no adapter and publishes no storage — what runs is the project’s own `next build`. A `next.config` that names an adapter still names it; `NEXT_ADAPTER_PATH` names one for this build.',
     );
   }
   const adapter = vercel ? undefined : resolveAdapterPath(options.projectDir);
@@ -181,9 +184,10 @@ export async function runBuild(options: BuildOptions): Promise<never> {
       ...process.env,
       // Both together, or neither: the storage a build publishes is published for the adapter to
       // bind, and a build with no adapter is one with nothing to bind it to.
-      ...(adapter === undefined
-        ? {}
-        : { [ADAPTER_PATH_ENV]: adapter, ...storageEnv(options.projectDir) }),
+      ...(adapter !== undefined && {
+        [ADAPTER_PATH_ENV]: adapter,
+        ...storageEnv(options.projectDir),
+      }),
     },
     stdio: 'inherit',
   });
