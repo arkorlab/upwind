@@ -117,8 +117,11 @@ jobs:
           fi
           # The ids, split on whitespace by the shell itself: a pipeline that counts lines one way and
           # picks one another way disagrees about a list that begins with a space, and then a shard is
-          # handed the empty string.
-          # shellcheck disable=SC2086 -- splitting the list is the parse
+          # handed the empty string. `-f` with it, because the same unquoted expansion would otherwise
+          # also expand pathnames — an id holding `*`, `?` or `[` would be matched against whatever the
+          # runner's working directory happens to contain, and a match would quietly replace it.
+          set -f
+          # shellcheck disable=SC2086 -- splitting the list is the parse, and globbing is off above
           set -- ${PROJECT_IDS:-$PROJECT_ID}
           if [ "$#" -lt 1 ]; then
             echo 'ADAPTER_TEST_PROJECT_IDS (or ADAPTER_TEST_PROJECT_ID) names no project' >&2
@@ -207,10 +210,12 @@ jobs:
           PROJECT_ID: ${{ secrets.ADAPTER_TEST_PROJECT_ID }}
         run: |
           set -euo pipefail
-          # Split by the shell, as the plan splits it, so that both agree about a list with a space at
-          # the front of it. Wrapping round, because fewer ids than shards is a run the plan has already
-          # made serial: the shards of one project queue behind each other rather than sharing it.
-          # shellcheck disable=SC2086 -- splitting the list is the parse
+          # Split by the shell, as the plan splits it — `-f` included, so that an id holding a glob
+          # character is the id and not whatever it matched — so that both agree about a list with a
+          # space at the front of it. Wrapping round, because fewer ids than shards is a run the plan has
+          # already made serial: the shards of one project queue behind each other rather than sharing it.
+          set -f
+          # shellcheck disable=SC2086 -- splitting the list is the parse, and globbing is off above
           set -- ${PROJECT_IDS:-$PROJECT_ID}
           shift "$(( (SHARD - 1) % $# ))"
           echo "::add-mask::$1"
