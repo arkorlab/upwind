@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <title>upwind</title>
+  <!-- The dark theme's twin of logo-light.svg, which says why there are two. -->
+  <rect width="128" height="128" rx="28" fill="#fafafa" />
+  <path
+    d="M32 79 64 43 96 79"
+    fill="none"
+    stroke="#0a0a0a"
+    stroke-width="10"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+</svg>
