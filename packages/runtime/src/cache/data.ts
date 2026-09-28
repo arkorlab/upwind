@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { toBase64 } from '@stayingupwind/core/util';
+import { fromBase64, toBase64 } from '@stayingupwind/core/util';
 
 import type { DataEntryMetadata, DataRead, DataReadRequest } from './host.ts';
 import type { CacheRuntime, DataMemo, DataState } from './runtime.ts';
@@ -51,8 +51,9 @@ function currentOrMissing(runtime: CacheRuntime, key: string): DataMemo {
 
 async function withBytes(runtime: CacheRuntime, response: DataRead): Promise<DataMemo> {
   if (response.value.kind === 'inline') {
-    const bytes = Uint8Array.from(atob(response.value.base64), (char) => char.codePointAt(0) ?? 0);
-    return { kind: 'found', response, bytes };
+    // Not `Uint8Array.from` over what `atob` makes, which collected every byte into a list of
+    // numbers first, several times the size of the value it was decoding (`fromBase64`).
+    return { kind: 'found', response, bytes: fromBase64(response.value.base64) };
   }
   const bytes = await runtime.host.readArtifact(response.value.artifactId);
   return bytes === undefined ? { kind: 'missing' } : { kind: 'found', response, bytes };
