@@ -226,22 +226,34 @@ function probeOf(publicUrl: URL, bundle: DeploymentBundle): { url: URL; etag: st
 }
 
 async function answered(
-  fetchImpl: typeof fetch,
+  input: DeployInput,
   probe: { url: URL; etag: string | undefined },
 ): Promise<string | undefined> {
+  const fetchImpl = input.fetchImpl ?? fetch;
+  let response: Response;
   try {
-    const response = await fetchImpl(probe.url, { method: 'HEAD', redirect: 'manual' });
-    await response.body?.cancel();
-    const ready =
-      probe.etag === undefined
-        ? response.status < SERVER_ERROR
-        : response.ok && response.headers.get('etag') === probe.etag;
-    return ready
-      ? undefined
-      : `HTTP ${String(response.status)} without the bundle's own asset behind it`;
+    response = await fetchImpl(probe.url, { method: 'HEAD', redirect: 'manual' });
   } catch (error) {
     return `the request failed: ${error instanceof Error ? error.message : String(error)}`;
   }
+  await response.body?.cancel();
+  if (probe.etag !== undefined) {
+    return response.ok && response.headers.get('etag') === probe.etag
+      ? undefined
+      : `HTTP ${String(response.status)} without the bundle's own asset behind it`;
+  }
+  // Nothing of this fixture's is being identified here — it has no static file — so the question is
+  // only whether the host is answering at all, and an answer is an answer. What the application said
+  // is the suite's to judge: a route-only fixture may answer `500` on purpose, and waiting out the
+  // deadline over it would stop the very test that meant to see it. Said out loud, since a `5xx` here
+  // is also what a deployment that cannot start looks like.
+  if (response.status >= SERVER_ERROR) {
+    input.log(
+      `${probe.url.href} answered ${String(response.status)}; with no static file to identify this ` +
+        'deployment by, the host answering at all is what counts as served',
+    );
+  }
+  return undefined;
 }
 
 /**
@@ -266,7 +278,7 @@ async function served(
       `${input.config.projectId} answers with this deployment but is disabled, so nothing is served`,
     );
   }
-  return answered(input.fetchImpl ?? fetch, probe);
+  return answered(input, probe);
 }
 
 /** What was proved, and what was not, once the host is answering with this deployment. */

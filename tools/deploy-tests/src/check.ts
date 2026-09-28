@@ -32,6 +32,7 @@ const OK = 200;
 const CREATED = 201;
 const ACCEPTED = 202;
 const NO_CONTENT = 204;
+const CONFLICT = 409;
 const NOT_FOUND = 404;
 
 /**
@@ -147,16 +148,40 @@ interface FakeHost {
   readonly port: number;
   /** What the bundle said its build id was, as the registration carried it. */
   readonly registered: () => string | undefined;
-  /** The names the deployment's environment was replaced with. */
-  readonly environment: () => string[];
+  /** The deployment's environment as it was replaced, names and values. */
+  readonly environment: () => Record<string, string>;
+  /** The digests that were uploaded, in the order they arrived. */
+  readonly uploaded: () => string[];
+  /** Whatever this host refused, because it was asked out of order. */
+  readonly refusals: () => string[];
   close: () => void;
 }
 
-/** A host that answers the six calls this tool makes, and nothing else. */
+/**
+ * A host that answers the six calls this tool makes, and nothing else — in order.
+ *
+ * The order is half of what is being checked, so it is a host that refuses out of it: no upload before
+ * a registration, no finalize before every blob it asked for, no polling before a finalize. A refusal
+ * here fails the check with the call that made it, rather than passing because a fake host was willing
+ * to answer anything.
+ */
 async function fakeHost(deploymentId: string): Promise<FakeHost> {
   let registered: string | undefined;
-  let environment: string[] = [];
+  let environment: Record<string, string> = {};
+  let wanted: string[] = [];
+  const uploaded: string[] = [];
+  const refusals: string[] = [];
+  let finalized = false;
   let port = 0;
+
+  /** Refuse, and remember: the check reads these back rather than trusting a status alone. */
+  function outOfOrder(said: string): { status: number; body: unknown } {
+    refusals.push(said);
+    return {
+      status: CONFLICT,
+      body: { ok: false, error: { code: 'deployment_conflict', message: said } },
+    };
+  }
 
   async function body(request: IncomingMessage): Promise<unknown> {
     const chunks: Buffer[] = [];
@@ -164,6 +189,42 @@ async function fakeHost(deploymentId: string): Promise<FakeHost> {
       chunks.push(chunk as Buffer);
     }
     return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
+  }
+
+  /** The deployment's own half of the protocol: registered, uploaded into, finalized, then polled. */
+  function aboutTheDeployment(pathname: string, method: string): { status: number; body: unknown } {
+    const blob = /\/blobs\/(?<sha256>[0-9a-f]{64})$/u.exec(pathname)?.groups?.['sha256'];
+    if (blob !== undefined && method === 'PUT') {
+      if (registered === undefined) {
+        return outOfOrder('a blob arrived before the deployment was registered');
+      }
+      uploaded.push(blob);
+      return { status: OK, body: { sha256: blob } };
+    }
+    if (pathname.endsWith('/finalize')) {
+      const missing = wanted.filter((sha256) => !uploaded.includes(sha256));
+      if (registered === undefined || missing.length > 0) {
+        return outOfOrder(`a finalize arrived with ${String(missing.length)} blobs still missing`);
+      }
+      finalized = true;
+      return { status: ACCEPTED, body: { run: { id: 'run_checked' } } };
+    }
+    if (pathname.endsWith(deploymentId)) {
+      if (!finalized) {
+        return outOfOrder('the deployment was polled before it was finalized');
+      }
+      return {
+        status: OK,
+        body: {
+          deployment: { id: deploymentId, projectId: 'p', status: 'active' },
+          run: { currentStep: 'activate' },
+        },
+      };
+    }
+    return {
+      status: NOT_FOUND,
+      body: { ok: false, error: { code: 'not_found', message: 'nothing here' } },
+    };
   }
 
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -187,29 +248,25 @@ async function fakeHost(deploymentId: string): Promise<FakeHost> {
     }
     if (pathname === '/v1/projects/p/env') {
       if (request.method === 'PUT') {
-        const sent = (await body(request)) as { env: { name: string }[] };
-        environment = sent.env.map((entry) => entry.name);
+        const sent = (await body(request)) as { env: { name: string; value: string }[] };
+        environment = Object.fromEntries(sent.env.map((entry) => [entry.name, entry.value]));
       }
       answer(OK, { env: [] });
       return;
     }
     if (pathname === '/v1/projects/p/deployments' && request.method === 'POST') {
-      registered = ((await body(request)) as { buildId: string }).buildId;
-      answer(CREATED, { deployment: { id: deploymentId }, missing: [] });
+      const bundle = (await body(request)) as {
+        buildId: string;
+        functions: { app: { modules: { blob: { sha256: string } }[] } };
+      };
+      registered = bundle.buildId;
+      // Every blob it names is asked for, so that the upload loop is what answers, not `missing: []`.
+      wanted = bundle.functions.app.modules.map((module) => module.blob.sha256);
+      answer(CREATED, { deployment: { id: deploymentId }, missing: wanted });
       return;
     }
-    if (pathname.endsWith('/finalize')) {
-      answer(ACCEPTED, { run: { id: 'run_checked' } });
-      return;
-    }
-    if (pathname.endsWith(deploymentId)) {
-      answer(OK, {
-        deployment: { id: deploymentId, projectId: 'p', status: 'active' },
-        run: { currentStep: 'activate' },
-      });
-      return;
-    }
-    answer(NOT_FOUND, { ok: false, error: { code: 'not_found', message: 'nothing here' } });
+    const onward = aboutTheDeployment(pathname, request.method ?? 'GET');
+    answer(onward.status, onward.body);
   }
 
   async function answering(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -238,6 +295,8 @@ async function fakeHost(deploymentId: string): Promise<FakeHost> {
     port,
     registered: () => registered,
     environment: () => environment,
+    uploaded: () => [...uploaded],
+    refusals: () => [...refusals],
     close: () => {
       server.close();
     },
@@ -291,9 +350,11 @@ async function main(): Promise<void> {
       !build.includes(OUTPUT_DIRECTORY_BUILD_ID),
     );
     holds(
-      "the deployment's environment is the application's own",
-      host.environment().join(',') === 'OWN',
+      "the deployment's environment is the application's own value, and only it",
+      JSON.stringify(host.environment()) === JSON.stringify({ OWN: 'yes' }),
     );
+    holds('the blobs the host asked for were uploaded', host.uploaded().length === 1);
+    holds('and nothing was asked of it out of order', host.refusals().length === 0);
     holds('the build saw no token', build.includes('ARKOR_API_TOKEN: no'));
     holds('nor the file holding it', build.includes('ARKOR_API_TOKEN_FILE: no'));
     holds("the application's own post-build ran", build.includes('the fixture post-build ran'));

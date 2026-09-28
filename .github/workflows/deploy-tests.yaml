@@ -90,6 +90,17 @@ jobs:
           umask 077
           printf '%s' "$TOKEN" >"$RUNNER_TEMP/deploy-token"
 
+      # Before a fixture is built, because a fixture is minutes of building before the first call to the
+      # API: a token that cannot write, or a project id that names somebody else's application, is
+      # worth learning about now rather than as a suite that failed for a reason of its own.
+      - name: Preflight
+        working-directory: adapter
+        env:
+          ARKOR_API_URL: ${{ secrets.ARKOR_API_URL }}
+          ARKOR_API_TOKEN_FILE: ${{ runner.temp }}/deploy-token
+          ADAPTER_TEST_PROJECT_ID: ${{ secrets.ADAPTER_TEST_PROJECT_ID }}
+        run: pnpm test:deploy preflight
+
       # Serially (`-c 1`), with no retries: a retry would deploy the same fixture again and say nothing
       # about why the first one failed.
       - name: Run the suite

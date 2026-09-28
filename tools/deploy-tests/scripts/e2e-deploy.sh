@@ -30,9 +30,13 @@ fi
 # same thing: the build would mint its own, and the assets would go out without the `?dpl=` the suite
 # reads.
 export NEXT_DEPLOYMENT_ID="${NEXT_DEPLOYMENT_ID:-$(
-  node --input-type=module -e "
-    import { DEPLOYMENT_ID_PREFIX } from '${core_dir}/src/bundle/schema.ts';
-    import { createId } from '${core_dir}/src/util/id.ts';
+  # The directory travels in the environment and is turned into a URL there: a path interpolated into
+  # this source would end the string it sits in the moment somebody's checkout has a quote in its name.
+  CORE_DIR="${core_dir}" node --input-type=module -e "
+    import { pathToFileURL } from 'node:url';
+    const core = pathToFileURL(process.env.CORE_DIR + '/');
+    const { DEPLOYMENT_ID_PREFIX } = await import(new URL('src/bundle/schema.ts', core).href);
+    const { createId } = await import(new URL('src/util/id.ts', core).href);
     process.stdout.write(createId(DEPLOYMENT_ID_PREFIX));
   "
 )}"
