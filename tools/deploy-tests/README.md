@@ -74,6 +74,11 @@ $ NEXT_TEST_MODE=deploy \
 `.github/workflows/deploy-tests.yaml` is the same thing on a runner, dispatched by hand, with a
 three-suite selection as its default.
 
+Without a host at all, `pnpm check:deploy-tests` runs the three hooks against a fake one: a fake
+application, a fake API, and the real scripts. It is what CI runs, and what keeps the shell contract
+(standard output, which variables a fixture's scripts can see, which file the build id comes from) and
+the order of the calls from breaking quietly between runs against a real host.
+
 **Serially, `-c 1`.** One project takes one fixture at a time, because a deployment replaces the
 project's environment; a second fixture deploying while the first is under test makes the _first_ fail,
 for a reason nothing in its own output explains. The deploy hook refuses rather than let that happen,
