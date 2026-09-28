@@ -67,8 +67,8 @@ site emits — canonical, hreflang, the sitemap, the Open Graph card — names `
 ### And on Vercel
 
 The same commit deploys there too. An adapter named in a build takes the deployment over: the build
-writes a bundle under `.ppr-cdn/` that Vercel does not read, and stops writing the file traces
-Vercel's own build does (`next-server.js.nft.json`). `next.config.ts` is what notices `VERCEL`,
+writes a bundle under `.ppr-cdn/` that Vercel does not read, and — on Next.js 16.3 — stops writing
+the file traces Vercel's own build does (`next-server.js.nft.json`). `next.config.ts` is what notices `VERCEL`,
 because a config that names an adapter outranks anything the environment says.
 
 **Set Vercel's build command to `next build`.** This project's `pnpm build` is `upwind build`, which

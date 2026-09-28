@@ -161,11 +161,12 @@ produced none.
 
 **`VERCEL` is set, so this command names nothing.** An adapter named in a build takes the deployment
 over, and on Vercel the deployment is Vercel's: `next build` writes a bundle under `.ppr-cdn/` that
-Vercel does not read, and stops writing the file traces Vercel's own build does —
-`next-server.js.nft.json` and `next-minimal-server.js.nft.json` are simply absent from `.next/`
-whenever an adapter is named. So `upwind build` on Vercel does not name the adapter and publishes no
-storage for one; what runs is the project's own `next build`, and a line says so, because a command
-that stops doing the one thing it is for owes you the reason.
+Vercel does not read, and — on Next.js 16.3, which is what this was measured against — stops writing
+the file traces Vercel's own build does: `next-server.js.nft.json` and
+`next-minimal-server.js.nft.json` are absent from `.next/` when an adapter is named, and written when
+none is. So `upwind build` on Vercel does not name the adapter and publishes no storage for one; what
+runs is the project's own `next build`, and a line says so, because a command that stops doing the one
+thing it is for owes you the reason.
 
 That is this command's half of it. The other half is the project's, and it is the half that decides:
 **a `next.config` that names an adapter outranks anything the environment says**, including the
