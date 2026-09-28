@@ -46,7 +46,7 @@ upwind does two jobs around your Next.js app: it turns `next build` into a deplo
 
 **🔨 `upwind build`**
 
-Your own `next build`, with upwind's adapter plugged in through Next.js's [Adapter API](https://nextjs.org/docs/app/api-reference/adapters). It writes `.arkor/`: a `bundle.json`, every prerender and static file as a blob named by its hash, and the Functions for workerd, the runtime behind Cloudflare Workers — `app`, plus `middleware` when the project has a `proxy.ts` or `middleware.ts`.
+Your own `next build`, with upwind's adapter plugged in through Next.js's [Adapter API](https://nextjs.org/docs/app/api-reference/adapters). It writes one directory: a `bundle.json`, every prerender and static file as a blob named by its hash, and the Functions for workerd, the runtime behind Cloudflare Workers — `app`, plus `middleware` when the project has a `proxy.ts` or `middleware.ts`.
 
 </td>
 <td width="33%" valign="top">
@@ -131,7 +131,7 @@ pnpm dev
 Open <http://localhost:3000> and edit `app/page.tsx` — it is the Next.js dev server you already know. To build the deployment bundle:
 
 ```bash
-pnpm build   # upwind build: your own next build, with the adapter plugged in → .arkor/
+pnpm build   # upwind build: your own next build, with the adapter plugged in → the bundle
 ```
 
 > [!TIP]
@@ -418,7 +418,7 @@ The adapter looks for `upwind.config.ts`, `upwind.jsonc`, `upwind.json` and `ver
 | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | [`upwind`](packages/upwind)                  | [![upwind](https://img.shields.io/npm/v/upwind?label=&color=cb3837)](https://www.npmjs.com/package/upwind)                                                 | The CLI: `upwind dev` and `upwind build`                                                                   |
 | [`create-upwind`](packages/create-upwind)    | [![create-upwind](https://img.shields.io/npm/v/create-upwind?label=&color=cb3837)](https://www.npmjs.com/package/create-upwind)                            | `pnpm create upwind`, and the app it writes                                                                |
-| [`@stayingupwind/adapter`](packages/adapter) | [![@stayingupwind/adapter](https://img.shields.io/npm/v/@stayingupwind/adapter?label=&color=cb3837)](https://www.npmjs.com/package/@stayingupwind/adapter) | Runs inside `next build`, writes `.arkor/`, and builds the Functions that serve it                         |
+| [`@stayingupwind/adapter`](packages/adapter) | [![@stayingupwind/adapter](https://img.shields.io/npm/v/@stayingupwind/adapter?label=&color=cb3837)](https://www.npmjs.com/package/@stayingupwind/adapter) | Runs inside `next build`, writes the bundle, and builds the Functions that serve it                        |
 | [`@stayingupwind/runtime`](packages/runtime) | [![@stayingupwind/runtime](https://img.shields.io/npm/v/@stayingupwind/runtime?label=&color=cb3837)](https://www.npmjs.com/package/@stayingupwind/runtime) | The code a deployment's Functions run — bundled into them by the adapter, never installed by hand          |
 | [`@stayingupwind/core`](packages/core)       | [![@stayingupwind/core](https://img.shields.io/npm/v/@stayingupwind/core?label=&color=cb3837)](https://www.npmjs.com/package/@stayingupwind/core)          | The contract: the bundle's schema, the cache's terms, request classification, the edge ↔ Function protocol |
 | [`@stayingupwind/sdk`](packages/sdk)         | [![next release](https://img.shields.io/badge/next_release-f97316)](https://github.com/arkorlab/upwind/compare/v0.2.0...main)                              | What an app reads its own D1, KV and R2 through, with no configuration                                     |

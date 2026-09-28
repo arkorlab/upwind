@@ -46,7 +46,7 @@ upwind は、Next.js アプリの周りで 2 つの仕事をします。`next bu
 
 **🔨 `upwind build`**
 
-Next.js の [Adapter API](https://nextjs.org/docs/app/api-reference/adapters) を通じて upwind のアダプターを差し込んだ、いつもの `next build` です。`.arkor/` に、`bundle.json`、中身のハッシュを名前にしたプリレンダーと静的ファイルの blob、そして Cloudflare Workers のランタイムである workerd 向けの Function（`app` と、`proxy.ts` か `middleware.ts` があれば `middleware`）を書き出します。
+Next.js の [Adapter API](https://nextjs.org/docs/app/api-reference/adapters) を通じて upwind のアダプターを差し込んだ、いつもの `next build` です。1 つのディレクトリーに、`bundle.json`、中身のハッシュを名前にしたプリレンダーと静的ファイルの blob、そして Cloudflare Workers のランタイムである workerd 向けの Function（`app` と、`proxy.ts` か `middleware.ts` があれば `middleware`）を書き出します。
 
 </td>
 <td width="33%" valign="top">
@@ -131,7 +131,7 @@ pnpm dev
 <http://localhost:3000> を開いて、`app/page.tsx` を編集してみてください。いつもの Next.js の開発サーバーです。デプロイ用バンドルをビルドするには:
 
 ```bash
-pnpm build   # upwind build: アダプターを差し込んだ、いつもの next build → .arkor/
+pnpm build   # upwind build: アダプターを差し込んだ、いつもの next build → バンドル
 ```
 
 > [!TIP]
@@ -418,7 +418,7 @@ export default {
 | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | [`upwind`](packages/upwind)                  | [![upwind](https://img.shields.io/npm/v/upwind?label=&color=cb3837)](https://www.npmjs.com/package/upwind)                                                              | CLI。`upwind dev` と `upwind build`                                                                  |
 | [`create-upwind`](packages/create-upwind)    | [![create-upwind](https://img.shields.io/npm/v/create-upwind?label=&color=cb3837)](https://www.npmjs.com/package/create-upwind)                                         | `pnpm create upwind` と、それが書き出すアプリ                                                        |
-| [`@stayingupwind/adapter`](packages/adapter) | [![@stayingupwind/adapter](https://img.shields.io/npm/v/@stayingupwind/adapter?label=&color=cb3837)](https://www.npmjs.com/package/@stayingupwind/adapter)              | `next build` の中で動き、`.arkor/` を書き出し、それを配信する Function を組み立てる                  |
+| [`@stayingupwind/adapter`](packages/adapter) | [![@stayingupwind/adapter](https://img.shields.io/npm/v/@stayingupwind/adapter?label=&color=cb3837)](https://www.npmjs.com/package/@stayingupwind/adapter)              | `next build` の中で動き、バンドルを書き出し、それを配信する Function を組み立てる                    |
 | [`@stayingupwind/runtime`](packages/runtime) | [![@stayingupwind/runtime](https://img.shields.io/npm/v/@stayingupwind/runtime?label=&color=cb3837)](https://www.npmjs.com/package/@stayingupwind/runtime)              | デプロイされた Function が動かすコード。アダプターが組み込むもので、手でインストールするものではない |
 | [`@stayingupwind/core`](packages/core)       | [![@stayingupwind/core](https://img.shields.io/npm/v/@stayingupwind/core?label=&color=cb3837)](https://www.npmjs.com/package/@stayingupwind/core)                       | 契約そのもの。バンドルのスキーマ、キャッシュの用語、リクエストの分類、エッジと Function のプロトコル |
 | [`@stayingupwind/sdk`](packages/sdk)         | [![次のリリース](https://img.shields.io/badge/%E6%AC%A1%E3%81%AE%E3%83%AA%E3%83%AA%E3%83%BC%E3%82%B9-f97316)](https://github.com/arkorlab/upwind/compare/v0.2.0...main) | アプリが自分の D1、KV、R2 を設定なしで読むためのもの                                                 |
