@@ -19,6 +19,7 @@ import type { AdapterOutput, NextAdapter } from 'next';
 import { type BlobStore, contentTypeFor } from './blobs.ts';
 import type { EdgeEntry } from './edge.ts';
 import type { EntryModule } from './function.ts';
+import { segmentPathOf, withBasePath } from './segments.ts';
 
 /**
  * What the adapter reads from `onBuildComplete`, and what it makes of it. Each function here
@@ -377,53 +378,6 @@ function routeOf(
   return withBasePath(basePath, output.route);
 }
 
-/**
- * How the build spells a route in the paths of the files it writes for it, as `normalizePagePath`
- * does (`shared/lib/page-path/normalize-page-path.ts`): the root is written `/index`, and a route
- * that already begins with `/index` is nested under a second one. Both spellings are given, the
- * route's own first, so a reading anchored on one of them need not decide which case a route is.
- */
-function builtAs(pathname: string): string[] {
-  return pathname === '/' ? ['/index'] : [pathname, `/index${pathname}`];
-}
-
-/**
- * The value of `next-router-segment-prefetch` this output answers — `undefined` for an output that
- * is not a prefetch segment.
- *
- * Next.js writes a segment's pathname from its document's own: `path.join(normalizePagePath(route)
- * + prefetchSegmentDirSuffix, segmentPath) + prefetchSegmentSuffix`, in
- * `build/adapter/build-complete.ts`, where `segmentPath` is one of the `segmentPaths` the render
- * recorded and is the header value itself. Both suffixes arrive with the build (`routing.rsc`), so
- * this reads the pathname back the way that wrote it rather than matching a shape of its own.
- *
- * Anchored on the document the output travels with, not on a suffix found anywhere in the path: a
- * route whose own last part happens to read like one is still read as itself. An output the reading
- * does not account for keeps no segment path and travels with the Function, which is where every
- * prefetch went before this was recorded. That is the answer for a build that spells such a path
- * some way not seen here — never a guess at which document a segment belongs to. The host serves
- * what this names, and naming the wrong document would answer one page's prefetch with part of
- * another.
- */
-function segmentPathOf(
-  prerender: Prerender,
-  document: Prerender | undefined,
-  rsc: BuildContext['routing']['rsc'],
-): string | undefined {
-  const { prefetchSegmentDirSuffix: dir, prefetchSegmentSuffix: suffix } = rsc;
-  if (document === undefined || !prerender.pathname.endsWith(suffix)) {
-    return undefined;
-  }
-  const named = prerender.pathname.slice(0, -suffix.length);
-  for (const route of builtAs(document.pathname)) {
-    const base = `${route}${dir}`;
-    if (named.startsWith(base) && named[base.length] === '/') {
-      return named.slice(base.length);
-    }
-  }
-  return undefined;
-}
-
 /** What the bundle records about a prerender, apart from its blobs. */
 function prerenderFields(output: PrerenderOutput, route: string): Prerender {
   return {
@@ -495,7 +449,7 @@ export async function collectPrerenders(
   // with, so a segment is placed against the same document the host will serve it under.
   const documents = primaryPrerenders(collected.map((each) => each.prerender));
   for (const { output, prerender } of collected) {
-    const segmentPath = segmentPathOf(prerender, documents.get(prerender.id), rsc);
+    const segmentPath = segmentPathOf(prerender, documents.get(prerender.id), basePath, rsc);
     if (segmentPath !== undefined) {
       prerender.segmentPath = segmentPath;
     }
@@ -554,11 +508,6 @@ async function walk(dir: string, seen: ReadonlySet<string> = new Set()): Promise
     }
   }
   return out;
-}
-
-/** Every pathname Next.js names carries the app's `basePath`; so does everything named here. */
-function withBasePath(basePath: string, pathname: string): string {
-  return `${basePath}${pathname}`;
 }
 
 async function statOf(target: string): Promise<Stats | undefined> {
