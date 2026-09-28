@@ -22,7 +22,7 @@ catalog:
   '@oxc-project/types': 0.150.0
   '@types/node': 24.13.4
   esbuild: 0.28.2
-  eslint: 10.10.0
+  eslint: 10.11.0
   eslint-config-prettier: 10.1.8
   eslint-import-resolver-typescript: 4.4.5
   eslint-plugin-import-x: 4.17.1
