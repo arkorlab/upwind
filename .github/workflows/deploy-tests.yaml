@@ -41,6 +41,18 @@ jobs:
     permissions:
       contents: read
     steps:
+      # First of all, because it is the cheapest thing that can be wrong and the only one already in
+      # hand: an empty selection is not "everything" — with no positional paths the runner takes the
+      # whole manifest, which is the tens-of-hours run this workflow says it is not for.
+      - name: Check the selection
+        env:
+          TESTS: ${{ inputs.tests }}
+        run: |
+          if [ -z "$(printf '%s' "$TESTS" | tr -d '[:space:]')" ]; then
+            echo 'no tests were selected; name at least one upstream path' >&2
+            exit 1
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: adapter
@@ -131,15 +143,8 @@ jobs:
           # Through the environment rather than into the command: the selection is a string this workflow
           # was handed, and a `run:` that interpolates one is a shell that was handed it too.
           TESTS: ${{ inputs.tests }}
-        # An empty selection is not "everything": with no positional paths the runner takes the whole
-        # manifest, which is the tens-of-hours run this workflow says it is not for.
-        #
         # Paths are positional, after the flags. Unquoted on purpose: the selection is several of them,
-        # and a quoted one would be a single path with spaces in it.
+        # and a quoted one would be a single path with spaces in it. Whether there is one at all was
+        # answered by the first step of this job.
         # shellcheck disable=SC2086
-        run: |
-          if [ -z "$(printf '%s' "$TESTS" | tr -d '[:space:]')" ]; then
-            echo 'no tests were selected; name at least one upstream path' >&2
-            exit 1
-          fi
-          node run-tests.js --type e2e -c 1 --retries 0 $TESTS
+        run: node run-tests.js --type e2e -c 1 --retries 0 $TESTS

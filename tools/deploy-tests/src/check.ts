@@ -313,6 +313,13 @@ async function fakeHost(deploymentId: string): Promise<FakeHost> {
   };
 }
 
+/** What a marker line carries after its prefix, or nothing when it is absent or carries nothing. */
+function markerAfter(line: string | undefined, prefix: string): string | undefined {
+  return line !== undefined && line.startsWith(prefix) && line.length > prefix.length
+    ? line.slice(prefix.length)
+    : undefined;
+}
+
 function holds(said: string, held: boolean): void {
   console.log(`  ${held ? 'ok  ' : 'NOT '} ${said}`);
   if (!held) {
@@ -379,9 +386,11 @@ async function main(): Promise<void> {
     const immutable = bundle.staticFiles.some((file) => file.immutable) ? '1' : '0';
     const markers = logs.stdout.split('\n');
     holds(
-      'the logs hook leads with the build id and the deployment id',
-      (markers[0]?.startsWith('BUILD_ID: ') ?? false) &&
-        (markers[1]?.startsWith('DEPLOYMENT_ID: ') ?? false),
+      'the logs hook leads with a build id and a deployment id',
+      // Named *and* non-empty: a hook that printed `BUILD_ID: ` with nothing after it is the failure
+      // reading the id from the bundle exists to prevent, and the harness would take the empty string.
+      markerAfter(markers[0], 'BUILD_ID: ') !== undefined &&
+        markerAfter(markers[1], 'DEPLOYMENT_ID: ') !== undefined,
     );
     holds(
       "and with the immutable-assets marker the bundle's own files add up to",
