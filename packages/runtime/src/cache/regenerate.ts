@@ -17,6 +17,7 @@ import { invokeNodeHandler, type Run } from '../node-bridge.ts';
 import { type CapturedRender, renderCaptured } from './capture.ts';
 import { nowMs } from './clock.ts';
 import { asRegeneration } from './context.ts';
+import { forgetRecord } from './current.ts';
 import {
   type ArtifactUpload,
   type AttemptOutcome,
@@ -38,6 +39,11 @@ import type { CacheRuntime } from './runtime.ts';
  * payload and segments; a Pages Router page's document with the data its route serves; a route
  * handler's body. A visitor's own render is never what is published: what a cookie or a header
  * made of it is theirs alone.
+ *
+ * The uploads and the commit go on behind whoever answers from the render, handed to the runtime
+ * once the render is made: they are round trips to the host, none of which changes what the render
+ * says, and a visitor answered from a render made for them waited for every one of them before
+ * the first byte.
  */
 
 const HTML_TYPE = 'text/html; charset=utf-8';
@@ -96,8 +102,17 @@ export interface RegenerationInput {
   readonly run: Run;
 }
 
+/**
+ * What a regeneration came to by the time its render was made: the render, with its publish under
+ * way (`accepted`); or why there is nothing to publish.
+ */
 export type RegenerationOutcome =
-  | { readonly kind: 'published'; readonly render: CapturedRender; readonly generationId: string }
+  | {
+      readonly kind: 'accepted';
+      readonly render: CapturedRender;
+      /** The uploads and the commit, already handed to the runtime; it never rejects. */
+      readonly published: Promise<PublishOutcome>;
+    }
   | { readonly kind: 'busy' }
   | { readonly kind: 'skipped'; readonly render: CapturedRender | undefined }
   | { readonly kind: 'refused'; readonly reason: string }
@@ -106,6 +121,12 @@ export type RegenerationOutcome =
       readonly render: CapturedRender | undefined;
       readonly error: string;
     };
+
+/** What the publish of a render came to, once the host has answered it. */
+export type PublishOutcome =
+  | { readonly kind: 'published'; readonly generationId: string }
+  | { readonly kind: 'refused'; readonly reason: string }
+  | { readonly kind: 'failed'; readonly error: string };
 
 function detail(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -245,19 +266,24 @@ async function upload(
     host.uploadArtifact({ ...lease, role, bytes, contentType });
   const encoder = new TextEncoder();
   const primary = bodyArtifact(input.target, render);
-  const [body, postponed, rsc, data] = await Promise.all([
+  // Every output at once, the segments with the rest. Each is a call of its own to the host, which
+  // none of the others waits on, and one after another a page's segments were a round trip each
+  // between the render and its commit. What a Function may have open at once is the runtime's to
+  // bound: past that, it holds a call back until another is done rather than failing it.
+  const [body, postponed, rsc, data, segments] = await Promise.all([
     one(primary.role, render.html, primary.contentType),
     render.postponed === undefined
       ? undefined
       : one('postponed', encoder.encode(render.postponed), JSON_TYPE),
     render.rscData === undefined ? undefined : one('rsc', render.rscData, RSC_TYPE),
     render.data === undefined ? undefined : one(PAGES_DATA, render.data, JSON_UTF8_TYPE),
+    Promise.all(
+      [...render.segments].map(
+        async ([key, bytes]) => [key, await one('segment', bytes, RSC_TYPE)] as const,
+      ),
+    ),
   ]);
-  const segments = new Map<string, UploadedArtifact>();
-  for (const [key, bytes] of render.segments) {
-    segments.set(key, await one('segment', bytes, RSC_TYPE));
-  }
-  return { body, postponed, rsc, data, segments };
+  return { body, postponed, rsc, data, segments: new Map(segments) };
 }
 
 function artifact(
@@ -337,10 +363,14 @@ function outputsOf(
   return outputs;
 }
 
-/** What the render came to: the outputs that were stored, and the tags it left on the entry. */
+/**
+ * What the render came to: the outputs that were stored, the tags it left on the entry, and the
+ * revision of the tag view its reads were judged against.
+ */
 interface Made {
   readonly uploads: Uploads;
   readonly tags: readonly GenerationTag[];
+  readonly observedTagRevision: number;
 }
 
 function commitRequest(
@@ -352,7 +382,7 @@ function commitRequest(
   const now = nowMs();
   return {
     fencingToken: lease.fencingToken,
-    observedTagRevision: input.runtime.tags.revision,
+    observedTagRevision: made.observedTagRevision,
     generation: {
       cacheTimestamp: now,
       producedAt: now,
@@ -396,6 +426,16 @@ async function abandon(
   }
 }
 
+/** End the attempt as failed, and say why in the Function's log; what it says is returned. */
+async function giveUp(input: RegenerationInput, lease: Leased, error: unknown): Promise<string> {
+  await abandon(input, lease, 'failed', error);
+  input.runtime.log('regeneration failed', {
+    pathname: input.target.descriptor.pathname,
+    detail: detail(error),
+  });
+  return detail(error);
+}
+
 type Leased = Extract<AttemptOutcome, { kind: 'leased' }>;
 
 /** A third of what is left of the lease, and never so often that the beats are the work. */
@@ -427,8 +467,9 @@ function heartbeat(input: RegenerationInput, lease: Leased): () => void {
     }
   };
   const timer = setInterval(() => {
-    // Handed to the runtime rather than left loose: the beat outlives no response, but it is a
-    // request of its own and the isolate may not be torn down in the middle of it.
+    // Handed to the runtime rather than left loose: a beat comes behind the response as often as
+    // not, since the uploads and the commit do, and it is a request of its own that the isolate
+    // may not be torn down in the middle of.
     input.waitUntil(beat());
   }, every);
   return () => {
@@ -436,15 +477,63 @@ function heartbeat(input: RegenerationInput, lease: Leased): () => void {
   };
 }
 
-/** Take the lease, render, upload and commit — or say why not. Never throws. */
+/**
+ * Upload what the render made and commit it, behind whoever was answered from the render, and keep
+ * the lease until the host has answered. Never throws: a publish that fails or is refused is
+ * logged, since the response that could have said so went out ahead of it.
+ */
+async function publish(
+  input: RegenerationInput,
+  lease: Leased,
+  rendered: { readonly render: CapturedRender; readonly observedTagRevision: number },
+  stopHeartbeat: () => void,
+): Promise<PublishOutcome> {
+  const { runtime, target } = input;
+  const { render, observedTagRevision } = rendered;
+  try {
+    // Ahead of the uploads: a render the contract will not take is one whose outputs are not
+    // worth sending, and what says so is `tagsOf`.
+    const tags = tagsOf(target, render);
+    const uploads = await upload(input, lease, render);
+    const committed = await runtime.host.commit(
+      lease.attemptId,
+      commitRequest(input, lease, render, { uploads, tags, observedTagRevision }),
+    );
+    if (committed.kind === 'published') {
+      forgetRecord(runtime, lease.entryId);
+      return { kind: 'published', generationId: committed.generationId };
+    }
+    runtime.log('regeneration not published', {
+      pathname: target.descriptor.pathname,
+      detail: committed.reason,
+    });
+    return { kind: 'refused', reason: committed.reason };
+  } catch (error) {
+    return { kind: 'failed', error: await giveUp(input, lease, error) };
+  } finally {
+    stopHeartbeat();
+  }
+}
+
+/**
+ * Take the lease and render the entry — or say why there is nothing to publish — and hand the
+ * uploads and the commit to the runtime. Never throws. It answers once the render is made: what
+ * follows is round trips to the host that change nothing the render says, and whoever answers from
+ * the render waits for none of them. `published` says what came of them.
+ */
 export async function regenerate(input: RegenerationInput): Promise<RegenerationOutcome> {
   const { runtime, target } = input;
   // The view of the tags the render will judge its data-cache reads against, brought up to date
-  // before the lease rather than on the first read, and whatever the hold says: the revision it
-  // stands at is what the commit claims the render knew, and a claim older than the render is one
-  // the host refuses the generation for. One delta pull beside the several calls a
-  // regeneration already makes, and none of them on a request that is served.
-  await runtime.tags.sync(runtime.host, nowMs(), { force: true });
+  // whatever the hold says: the revision it stands at is what the commit claims the render knew,
+  // and a claim older than the render is one the host refuses the generation for. Pulled beside
+  // the lease rather than ahead of it, since neither needs the other and a fresh isolate's pull
+  // pages through the scope's whole delta — but finished before the render begins, which is what
+  // keeps the claim true: the commit claims the revision the view stood at when the render began,
+  // and every read the render makes is judged against that view or one brought further along
+  // since. Handed to the runtime as well, whatever the lease says: a pull cut off with its request
+  // would be the one every later sync of this isolate joins.
+  const synced = runtime.tags.sync(runtime.host, nowMs(), { force: true });
+  input.waitUntil(synced);
   let lease: AttemptOutcome;
   try {
     lease = await runtime.host.startAttempt({
@@ -464,11 +553,14 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   if (lease.kind === 'busy') {
     return { kind: 'busy' };
   }
-  let captured: CapturedRender | undefined;
   const stopHeartbeat = heartbeat(input, lease);
+  await synced;
+  const observedTagRevision = runtime.tags.revision;
+  let captured: CapturedRender | undefined;
   try {
     captured = await renderStatic(input, lease.attemptId);
     if (captured === undefined) {
+      stopHeartbeat();
       await abandon(input, lease, 'skipped');
       return { kind: 'skipped', render: undefined };
     }
@@ -479,29 +571,18 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
       // decides when to try again.
       throw new Error(`the render answered ${captured.status}`);
     }
-    // Ahead of the uploads: a render the contract will not take is one whose outputs are not
-    // worth sending, and what says so is `tagsOf`.
-    const tags = tagsOf(target, captured);
-    const uploads = await upload(input, lease, captured);
-    const committed = await runtime.host.commit(
-      lease.attemptId,
-      commitRequest(input, lease, captured, { uploads, tags }),
-    );
-    if (committed.kind === 'published') {
-      runtime.recordMemo.delete(lease.entryId);
-      return { kind: 'published', render: captured, generationId: committed.generationId };
-    }
-    return { kind: 'refused', reason: committed.kind };
   } catch (error) {
-    await abandon(input, lease, 'failed', error);
-    runtime.log('regeneration failed', {
-      pathname: target.descriptor.pathname,
-      detail: detail(error),
-    });
-    return { kind: 'failed', render: captured, error: detail(error) };
-  } finally {
     stopHeartbeat();
+    return { kind: 'failed', render: captured, error: await giveUp(input, lease, error) };
   }
+  // What this isolate holds of the entry is the generation the render replaces. Let go of it with
+  // the answer rather than with the commit, so that a request after the answer asks the host —
+  // which says the same until the commit has landed, and the replacement from then on — however
+  // long this isolate then takes to hear the commit answered.
+  forgetRecord(runtime, lease.entryId);
+  const published = publish(input, lease, { render: captured, observedTagRevision }, stopHeartbeat);
+  input.waitUntil(published);
+  return { kind: 'accepted', render: captured, published };
 }
 
 /**

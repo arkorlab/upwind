@@ -57,6 +57,11 @@ export interface CacheRuntime {
   >;
   /** Delivery records by entry, decoded, for one hold. */
   readonly recordMemo: TtlCache<string, DecodedGenerationPack | null>;
+  /**
+   * The reads of delivery records in flight, one per entry, which every request that wants the
+   * record while it runs shares (`cache/current.ts`).
+   */
+  readonly recordReads: Map<string, RecordRead>;
   /** Entries a regeneration was asked for lately; a second ask within the hold is not repeated. */
   readonly regenerationMemo: TtlCache<string, true>;
   /** Artifacts of current generations read for a data route, by id, for one hold. */
@@ -74,6 +79,12 @@ export interface DataState {
   revision: number;
   /** Writes in flight on the state; while there are any, `dataWrites` holds it. */
   writes: number;
+}
+
+/** A read of an entry's delivery record in flight: when it began, and what it will say. */
+export interface RecordRead {
+  readonly startedAt: number;
+  readonly pack: Promise<DecodedGenerationPack | null>;
 }
 
 export interface CacheRuntimeOptions {
@@ -152,6 +163,7 @@ export function createCacheRuntime(options: CacheRuntimeOptions): CacheRuntime |
       maxBytes: RECORD_MEMO_BYTES,
       sizeOf: (pack, key) => recordBytes(pack) + key.length * UTF16_BYTES,
     }),
+    recordReads: new Map(),
     regenerationMemo: new TtlCache(holdMs, MEMO_ENTRIES, options.now),
     artifactMemo: new TtlCache(holdMs, ARTIFACT_MEMO_ENTRIES, options.now, {
       maxBytes: ARTIFACT_MEMO_BYTES,

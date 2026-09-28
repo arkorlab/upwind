@@ -17,7 +17,7 @@ import { releaseStream } from '@stayingupwind/core/util';
 import type { NodeHandler } from './app-module.ts';
 import { cacheLifetimeOf, type CapturedRender, renderCaptured } from './cache/capture.ts';
 import { nowMs } from './cache/clock.ts';
-import { currentGeneration } from './cache/current.ts';
+import { type CurrentGeneration, currentGeneration } from './cache/current.ts';
 import type { AttemptReason } from './cache/host.ts';
 import { regenerate, type RegenerationOutcome, servable } from './cache/regenerate.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
@@ -425,28 +425,29 @@ async function renderForVisitor(
 }
 
 /**
- * The visitor's answer from a regeneration just made: the render published, when one was; their
- * own render when the entry could not be published now; nothing when the entry is dynamic here,
- * which leaves the request to the usual path.
+ * The visitor's answer from a regeneration just made: the render, as soon as it is made, its
+ * publish still under way behind the answer — which the outcome says (`accepted`) rather than claim
+ * a commit the bytes went out ahead of; their own render when the entry could not be published
+ * now; nothing when the entry is dynamic here, which leaves the request to the usual path.
  *
- * A generation published as something a visitor may not be answered with — a redirect that does
- * not say where it leads — is one the visitor never saw, so the outcome the response carries says
- * so rather than `published`, which whatever reads it would take for the bytes that went out.
+ * A render published as something a visitor may not be answered with — a redirect that does not
+ * say where it leads — is one the visitor never saw, so the outcome the response carries says so
+ * rather than `accepted`, which whatever reads it would take for the bytes that went out.
  */
 async function answerFromJob(
   job: Job,
   outcome: RegenerationOutcome,
   want: Want,
 ): Promise<Response | undefined> {
-  if (outcome.kind === 'published' && servable(outcome.render.status, outcome.render.headers)) {
+  if (outcome.kind === 'accepted' && servable(outcome.render.status, outcome.render.headers)) {
     const answered = await answerFromRender(job.input, job.target.handler, outcome.render, want);
-    return answered === undefined ? undefined : withOutcome(answered, 'committed');
+    return answered === undefined ? undefined : withOutcome(answered, 'accepted');
   }
   if (outcome.kind === 'skipped') {
     return undefined;
   }
   const own = await renderForVisitor(job.input, job.target, want);
-  const said = outcome.kind === 'published' ? 'unservable' : outcome.kind;
+  const said = outcome.kind === 'accepted' ? 'unservable' : outcome.kind;
   return own === undefined ? undefined : withOutcome(own, said);
 }
 
@@ -457,8 +458,9 @@ export interface ForegroundAnswer {
 }
 
 /**
- * No valid generation exists: render one now, publish it, and answer the visitor from it. A page
- * that cannot be regenerated, or that is not one a cache may hold, is left to the usual path.
+ * No valid generation exists: render one now, answer the visitor from it, and publish it behind the
+ * answer. A page that cannot be regenerated, or that is not one a cache may hold, is left to the
+ * usual path.
  */
 export async function handleForeground(
   input: RoutedInput,
@@ -569,6 +571,13 @@ function answerableEntry(input: RoutedInput, store: Store, source: GenerationSou
 }
 
 /**
+ * The request rendered as it came. Once a runtime generation exists, its missing/rejected output
+ * must never fall back to a different generation's build artifact: this answers instead.
+ */
+const renderRequest = (job: Job, url: string): Promise<Response> =>
+  resume({ input: job.input, handler: job.target.handler, postponed: undefined, url });
+
+/**
  * What the Function answers itself, from the entry's current generation: fresh or stale it is
  * served (stale, regenerated behind); expired, it is regenerated first; missing, rendered now
  * where the build made none. `undefined` leaves the build's own output to answer: no generation
@@ -586,7 +595,7 @@ export async function serveFromGeneration(
     return undefined;
   }
   const { runtime, descriptor } = answerable;
-  const lookup = await currentGeneration(runtime, descriptor, nowMs());
+  const lookup = await currentGeneration(runtime, descriptor, nowMs(), input.waitUntil);
   const job: Job = { input, store, runtime, target: { descriptor, handler } };
   const want: Want = {
     representation: source.representation,
@@ -600,19 +609,42 @@ export async function serveFromGeneration(
     return undefined;
   }
   const { pack, validity } = lookup.current;
-  // Once a runtime generation exists, its missing/rejected output must never fall back to
-  // a different generation's build artifact. Render the original request instead.
-  const renderRequest = () => resume({ input, handler, postponed: undefined, url: source.url });
   if (validity === 'expired') {
-    return (await answerFromJob(job, await runJob(job, 'expired'), want)) ?? renderRequest();
+    const regenerated = await answerFromJob(job, await runJob(job, 'expired'), want);
+    return regenerated ?? renderRequest(job, source.url);
+  }
+  const answer = await answerFromGeneration(job, lookup.current, source, want);
+  // A stale one is regenerated once the answer has gone out in full, as it is behind a resume the
+  // edge dispatched (`withBackgroundRegeneration`). Begun at once, the regeneration rendered on
+  // this isolate beside the visitor's own render — their resume, where the page has one — and the
+  // two shared its time. Where the generation leads to no output, the build's answers instead,
+  // from the caller, and nothing here sees that answer end: the regeneration is begun at once.
+  const behind = (): boolean => scheduleJob(job, 'stale', pack.header.generationId);
+  if (validity === 'stale' && answer !== undefined) {
+    return afterBody(answer, behind);
   }
   if (validity === 'stale') {
-    scheduleJob(job, 'stale', pack.header.generationId);
+    behind();
   }
+  return answer;
+}
+
+/**
+ * The visitor's answer from a generation that may be served, fresh or stale; `undefined` where it
+ * leads to no output of its own, which leaves the build's to answer.
+ */
+async function answerFromGeneration(
+  job: Job,
+  { pack, validity }: CurrentGeneration,
+  source: GenerationSource,
+  want: Want,
+): Promise<Response | undefined> {
+  const { input, runtime, store } = job;
+  const { handler } = job.target;
   // What the record says is what the visitor would be told, and a record that cannot be answered
   // as written is not: the visitor gets a render of their own, as they would from a publish of it.
   if (!servable(pack.header.status, pack.header.headers)) {
-    return (await renderForVisitor(input, job.target, want)) ?? renderRequest();
+    return (await renderForVisitor(input, job.target, want)) ?? renderRequest(job, source.url);
   }
   // Build records hold only the document's state; let rscFromBuild choose the RSC twin's own
   // state. A runtime navigation resumes directly, without reading its static RSC artifact first.
@@ -623,7 +655,7 @@ export async function serveFromGeneration(
   }
   const body = await outputOf(runtime, store, pack, source);
   if (body === undefined) {
-    return pack.header.source === 'runtime' ? renderRequest() : undefined;
+    return pack.header.source === 'runtime' ? renderRequest(job, source.url) : undefined;
   }
   return answerWith(input, handler, {
     ...want,
