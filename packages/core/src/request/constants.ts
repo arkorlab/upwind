@@ -88,8 +88,9 @@ export const NAVIGATION_REQUEST_HEADERS = {
 
 /**
  * Headers a browser adds to a speculative document fetch (prefetch, prerender), current and
- * legacy spellings. Such a request is proxied: an application may answer a speculative one
- * differently, and nothing is lost — a prefetch is by definition not on the user's critical path.
+ * legacy spellings. The request is still a navigation, and a shell is served to it as to any
+ * other: a browser adopts one still in flight as the navigation the visitor then makes. What they
+ * tell apart is a guess, for whatever must not act on one — the response may be thrown away unread.
  */
 export const PREFETCH_HINT_HEADERS: readonly string[] = ['sec-purpose', 'purpose', 'x-moz'];
 

@@ -11,6 +11,7 @@ import {
   type StaticFileEntry,
 } from '../manifest/index.ts';
 import { acceptsHtml } from './accept.ts';
+import { wantsBlockingMetadata } from './blocking-metadata.ts';
 import {
   BYPASS_COOKIE_NAMES,
   BYPASS_QUERY_KEYS,
@@ -18,10 +19,8 @@ import {
   DEPLOYMENT_ID_QUERY,
   DEPLOYMENT_ID_REQUEST_HEADER,
   INTERNAL_REQUEST_HEADERS,
-  isBotUserAgent,
   NAVIGATION_REQUEST_HEADERS,
   NEXT_ACTION_HEADER,
-  PREFETCH_HINT_HEADERS,
   NEXT_RESUME_HEADER,
   NEXT_RESUME_STATE_LENGTH_HEADER,
   NEXT_ROUTER_PREFETCH_HEADER,
@@ -50,7 +49,6 @@ export type PassthroughReason =
   | 'dpl-mismatch'
   | 'sec-fetch-dest'
   | 'sec-fetch-mode'
-  | 'prefetch'
   | 'accept'
   | 'no-manifest'
   | 'repeated-slash'
@@ -236,15 +234,19 @@ function classifyByQuery(
 /** What a browser puts on a top-level navigation, and what nothing else sends. */
 const NAVIGATION_FETCH_MODE = NAVIGATION_REQUEST_HEADERS['sec-fetch-mode'];
 
+/**
+ * A navigation the browser made on a guess — a prefetch or a prerender, which says so in
+ * `sec-purpose` (`PREFETCH_HINT_HEADERS`) — is one all the same, and is served as one. A browser
+ * adopts such a load still in flight as the navigation when the visitor follows the link, so its
+ * first byte is that navigation's; and Next.js answers it as it answers any other. A
+ * `<link rel=prefetch>` is not a navigation at all, and says so in `sec-fetch-dest`.
+ */
 function classifyByNavigationHints(headers: Headers): RequestClass | undefined {
   if (headers.get('sec-fetch-dest') !== DOCUMENT_FETCH_DESTINATION) {
     return passthrough('sec-fetch-dest');
   }
   if (headers.get('sec-fetch-mode') !== NAVIGATION_FETCH_MODE) {
     return passthrough('sec-fetch-mode');
-  }
-  if (PREFETCH_HINT_HEADERS.some((name) => headers.has(name))) {
-    return passthrough('prefetch');
   }
   if (!acceptsHtml(headers.get('accept'))) {
     return passthrough('accept');
@@ -325,8 +327,9 @@ export function classifyRequest(input: ClassifyInput): RequestClass {
   if (hasInternalDocumentHeader(headers)) {
     return passthrough('internal-header');
   }
-  const userAgent = headers.get('user-agent');
-  if (userAgent !== null && isBotUserAgent(userAgent)) {
+  // Only a visitor Next.js renders the page whole for, by the application's list or its own: any
+  // other crawler is served the shell as a browser is (`wantsBlockingMetadata`).
+  if (wantsBlockingMetadata(headers.get('user-agent'), input.manifest)) {
     return passthrough('bot');
   }
   const late =

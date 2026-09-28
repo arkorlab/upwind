@@ -311,6 +311,18 @@ export const projectManifestSchema = z.object({
   /** The application's `next/image` configuration: the edge answers `/_next/image` with it. */
   images: imagesConfigSchema.optional(),
   /**
+   * The user agents the application sends blocking metadata to, as the pattern Next.js tests them
+   * with (`htmlLimitedBots`) — its own list, or Next.js's, which loading the config fills in where
+   * the application names none: Next.js renders a partially prerendered page whole for them, so no
+   * shell is served to them. Absent where the build recorded none, and Next.js's list applies.
+   * Carried as the build recorded it, a pattern the edge will not run included: whether it runs
+   * one is decided where it is read (`wantsBlockingMetadata`).
+   *
+   * A reader that does not know the field drops it and judges every visitor by the list it has, as
+   * every reader did before the field existed — so no schema version turns on it.
+   */
+  htmlLimitedBots: z.string().optional(),
+  /**
    * Where a shipped file is found as well, in an application with `i18n`: behind one of its
    * default locales — its own, and each domain's — under its base path (`findStaticFile`).
    */

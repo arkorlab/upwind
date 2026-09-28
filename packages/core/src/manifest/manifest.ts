@@ -51,6 +51,8 @@ export interface BuildProjectManifestInput {
   readonly headerRules?: readonly HeaderRule[] | undefined;
   readonly foldedHeaderRules?: readonly HeaderRule[] | undefined;
   readonly images?: ImagesConfig | undefined;
+  /** The application's `htmlLimitedBots`, as the build recorded it. */
+  readonly htmlLimitedBots?: string | undefined;
   readonly staticFileLocales?: StaticFileLocales | undefined;
   readonly staticFileAssetPrefix?: StaticFileAssetPrefix | undefined;
   readonly cache?: ManifestCache | undefined;
@@ -83,6 +85,7 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
     ...(input.headerRules !== undefined && { headerRules: input.headerRules }),
     ...(input.foldedHeaderRules !== undefined && { foldedHeaderRules: input.foldedHeaderRules }),
     ...(input.images !== undefined && { images: input.images }),
+    ...(input.htmlLimitedBots !== undefined && { htmlLimitedBots: input.htmlLimitedBots }),
     ...(input.staticFileLocales !== undefined && { staticFileLocales: input.staticFileLocales }),
     ...(input.staticFileAssetPrefix !== undefined && {
       staticFileAssetPrefix: input.staticFileAssetPrefix,
