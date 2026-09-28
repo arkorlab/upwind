@@ -51,10 +51,6 @@ export interface CacheRuntime {
    * of its own, whose floor the older write's reply never learns.
    */
   readonly dataWrites: Map<string, DataState>;
-  readonly dataReads: Map<
-    string,
-    { readonly identity: symbol; readonly promise: Promise<DataMemo> }
-  >;
   /** Delivery records by entry, decoded, for one hold. */
   readonly recordMemo: TtlCache<string, DecodedGenerationPack | null>;
   /** Entries a regeneration was asked for lately; a second ask within the hold is not repeated. */
@@ -138,7 +134,6 @@ export function createCacheRuntime(options: CacheRuntimeOptions): CacheRuntime |
       },
     }),
     holdMs,
-    dataReads: new Map(),
     dataWrites: new Map(),
     dataStates: new TtlCache(Infinity, MEMO_ENTRIES, options.now, {
       maxBytes: DATA_STATE_BYTES,

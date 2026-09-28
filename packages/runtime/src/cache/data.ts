@@ -40,9 +40,9 @@ function stateFor(runtime: CacheRuntime, key: string, stateKey = stateKeyOf(key)
   return state;
 }
 
-function fenceReads(runtime: CacheRuntime, key: string, state: DataState): void {
+/** Every read of the key under way now answers too late to be remembered. */
+function fenceReads(state: DataState): void {
   state.epoch += 1;
-  runtime.dataReads.delete(key);
 }
 
 function currentOrMissing(runtime: CacheRuntime, key: string): DataMemo {
@@ -59,53 +59,44 @@ async function withBytes(runtime: CacheRuntime, response: DataRead): Promise<Dat
   return bytes === undefined ? { kind: 'missing' } : { kind: 'found', response, bytes };
 }
 
-/** The regional projection, coalesced per key and rejected if a local write overtook the read. */
+/**
+ * The regional projection, rejected if a local write overtook the read.
+ *
+ * Read by every call the memo cannot answer, however many reads of the key are under way. A read is
+ * I/O of the request that started it, which the Workers runtime cancels once that request is over:
+ * a render of another request that joined it would wait on it for as long as its own request was
+ * let run, and so would every later miss of the key in the isolate. Only what a read found is
+ * shared, through the memo. Nor is a read shared within a request, where Next.js mostly asks for a
+ * key once at a time already: `use cache` joins the call under way, and a `fetch` waits for the
+ * lock its `IncrementalCache` holds on the key.
+ */
 export async function readData(runtime: CacheRuntime, request: DataReadRequest): Promise<DataMemo> {
   const key = keyOf(request);
   const remembered = runtime.dataMemo.get(key);
   if (remembered !== undefined) return remembered;
-  const pending = runtime.dataReads.get(key);
-  if (pending !== undefined) return pending.promise;
   const stateKey = stateKeyOf(key);
   const state = stateFor(runtime, key, stateKey);
   const epoch = state.epoch;
-  const identity = Symbol('cache read');
-  const current = (): boolean => {
-    return (
-      liveState(runtime, stateKey) === state &&
-      state.epoch === epoch &&
-      runtime.dataReads.get(key)?.identity === identity
-    );
-  };
-  const read = (async (): Promise<DataMemo> => {
-    const answer = await runtime.host.getData(request);
-    if (!current() || (answer !== undefined && answer.dependencyRevision < state.revision)) {
-      return currentOrMissing(runtime, key);
-    }
-    // Observe ordering before a potentially slow artifact read, even if its bytes are missing.
-    if (answer !== undefined) state.revision = answer.dependencyRevision;
-    const memo =
-      answer === undefined ? { kind: 'missing' as const } : await withBytes(runtime, answer);
-    if (
-      !current() ||
-      (memo.kind === 'found' && memo.response.dependencyRevision < state.revision)
-    ) {
-      return currentOrMissing(runtime, key);
-    }
-    runtime.dataMemo.set(key, memo);
-    return memo;
-  })();
-  runtime.dataReads.set(key, { identity, promise: read });
-  try {
-    return await read;
-  } finally {
-    if (runtime.dataReads.get(key)?.identity === identity) runtime.dataReads.delete(key);
+  // What keeps a read from overwriting a write is the key's state, whose epoch every write moves,
+  // and the revision floor: a read that answers after either moved is not remembered.
+  const current = (): boolean => liveState(runtime, stateKey) === state && state.epoch === epoch;
+  const answer = await runtime.host.getData(request);
+  if (!current() || (answer !== undefined && answer.dependencyRevision < state.revision)) {
+    return currentOrMissing(runtime, key);
   }
+  // Observe ordering before a potentially slow artifact read, even if its bytes are missing.
+  if (answer !== undefined) state.revision = answer.dependencyRevision;
+  const memo =
+    answer === undefined ? { kind: 'missing' as const } : await withBytes(runtime, answer);
+  if (!current() || (memo.kind === 'found' && memo.response.dependencyRevision < state.revision)) {
+    return currentOrMissing(runtime, key);
+  }
+  runtime.dataMemo.set(key, memo);
+  return memo;
 }
 
-/** A write in flight: the key, and the state it holds out of the LRU's reach. */
+/** A write in flight: the state it holds out of the LRU's reach. */
 interface Write {
-  readonly key: string;
   readonly stateKey: string;
   readonly state: DataState;
 }
@@ -119,8 +110,8 @@ function startWrite(runtime: CacheRuntime, key: string): Write {
   const state = stateFor(runtime, key, stateKey);
   state.writes += 1;
   runtime.dataWrites.set(stateKey, state);
-  fenceReads(runtime, key, state);
-  return { key, stateKey, state };
+  fenceReads(state);
+  return { stateKey, state };
 }
 
 /**
@@ -128,9 +119,9 @@ function startWrite(runtime: CacheRuntime, key: string): Write {
  * began meanwhile, and hand the state back to the LRU once no other write is in flight on it.
  */
 function finishWrite(runtime: CacheRuntime, write: Write, revision = write.state.revision): void {
-  const { key, stateKey, state } = write;
+  const { stateKey, state } = write;
   state.revision = Math.max(state.revision, revision);
-  fenceReads(runtime, key, state);
+  fenceReads(state);
   state.writes -= 1;
   if (state.writes === 0) {
     runtime.dataWrites.delete(stateKey);
