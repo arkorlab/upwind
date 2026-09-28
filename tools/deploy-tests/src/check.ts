@@ -369,18 +369,25 @@ async function main(): Promise<void> {
     holds('nor the file holding it', build.includes('ARKOR_API_TOKEN_FILE: no'));
     holds("the application's own post-build ran", build.includes('the fixture post-build ran'));
     holds('and it saw no token either', build.includes('it saw ARKOR_API_TOKEN: no'));
+    const bundle = JSON.parse(
+      readFileSync(path.join(appDir, '.ppr-cdn', 'bundle.json'), 'utf8'),
+    ) as {
+      staticFiles: { immutable: boolean }[];
+    };
+    // Computed from what the build wrote and then compared with what the hook said: the marker is
+    // derived or it is not, and an assertion that expects a constant cannot tell the difference.
+    const immutable = bundle.staticFiles.some((file) => file.immutable) ? '1' : '0';
+    const markers = logs.stdout.split('\n');
     holds(
-      'the logs hook leads with the three markers',
-      /^BUILD_ID: .+\nDEPLOYMENT_ID: .+\nNEXT_SUPPORTS_IMMUTABLE_ASSETS: 1\n/u.test(logs.stdout),
+      'the logs hook leads with the build id and the deployment id',
+      (markers[0]?.startsWith('BUILD_ID: ') ?? false) &&
+        (markers[1]?.startsWith('DEPLOYMENT_ID: ') ?? false),
     );
     holds(
-      'and the immutable-assets marker came from the bundle',
-      // The application's bundle marks its one static file immutable, so `1` above is derived and not
-      // a constant: the assertion is worth only as much as that file being there.
-      readFileSync(path.join(appDir, '.ppr-cdn', 'bundle.json'), 'utf8').includes(
-        '"immutable":true',
-      ),
+      "and with the immutable-assets marker the bundle's own files add up to",
+      markers[2] === `NEXT_SUPPORTS_IMMUTABLE_ASSETS: ${immutable}`,
     );
+    holds('which, for this application, is yes', immutable === '1');
   } finally {
     host.close();
     rmSync(workDir, { recursive: true, force: true });

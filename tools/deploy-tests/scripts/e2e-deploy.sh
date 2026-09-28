@@ -99,8 +99,13 @@ build_id="$(bundle_says '.buildId')"
 # Next.js for them unconditionally, and does not always get them: a Next.js below 16.3 does not offer
 # `/_next/static/immutable/*` at all, and a static export has them turned off again by Next.js itself.
 # What survives all of that is whether any file in the bundle is marked immutable — the adapter sets that
-# from the build's own `immutableHash`. Saying `1` where the answer is no makes the suite apply
-# expectations this deployment cannot meet, and read the difference as the adapter's fault.
+# from the build's own `immutableHash` (`collect.ts`). Saying `1` where the answer is no makes the suite
+# apply expectations this deployment cannot meet, and read the difference as the adapter's fault.
+#
+# `staticFiles` is the right array to read: it is "`_next/static` from the build output, plus everything
+# under `public/`" (`collectStaticFiles`), so a build with immutable assets has them in here. An
+# application with no static file at all answers `0`, which is the truth about it — there are none to
+# test.
 immutable_assets="$(bundle_says '.staticFiles.some((file) => file.immutable) ? 1 : 0')"
 
 {

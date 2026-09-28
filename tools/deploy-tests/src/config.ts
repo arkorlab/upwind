@@ -10,6 +10,9 @@ import { readFileSync } from 'node:fs';
  * in a file is one somebody forgets.
  */
 
+/** Where a token may travel without TLS, because it does not leave the machine. */
+const LOOPBACK = new Set(['127.0.0.1', '::1', '[::1]', 'localhost']);
+
 const NAMES = {
   baseUrl: 'ARKOR_API_URL',
   token: 'ARKOR_API_TOKEN',
@@ -101,6 +104,12 @@ function checkBaseUrl(baseUrl: string): void {
     throw new Error(
       `${NAMES.baseUrl} must be an HTTP(S) URL without credentials, query or fragment`,
     );
+  }
+  // Plain HTTP only to this machine. The token goes out in an `Authorization` header on every call, and
+  // a mistyped scheme against a real host would put it on the network in the clear; loopback is where a
+  // fake host answers, which is what `check:deploy-tests` and a local experiment use.
+  if (url.protocol === 'http:' && !LOOPBACK.has(url.hostname)) {
+    throw new Error(`${NAMES.baseUrl} must be HTTPS unless it names this machine`);
   }
   // A path of its own would be dropped rather than honoured: every call names an absolute path
   // (`/v1/…`), which resolves against the origin. Refused here, where it can still be said, instead

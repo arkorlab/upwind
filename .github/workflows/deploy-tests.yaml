@@ -131,7 +131,15 @@ jobs:
           # Through the environment rather than into the command: the selection is a string this workflow
           # was handed, and a `run:` that interpolates one is a shell that was handed it too.
           TESTS: ${{ inputs.tests }}
+        # An empty selection is not "everything": with no positional paths the runner takes the whole
+        # manifest, which is the tens-of-hours run this workflow says it is not for.
+        #
         # Paths are positional, after the flags. Unquoted on purpose: the selection is several of them,
         # and a quoted one would be a single path with spaces in it.
         # shellcheck disable=SC2086
-        run: node run-tests.js --type e2e -c 1 --retries 0 $TESTS
+        run: |
+          if [ -z "$(printf '%s' "$TESTS" | tr -d '[:space:]')" ]; then
+            echo 'no tests were selected; name at least one upstream path' >&2
+            exit 1
+          fi
+          node run-tests.js --type e2e -c 1 --retries 0 $TESTS
