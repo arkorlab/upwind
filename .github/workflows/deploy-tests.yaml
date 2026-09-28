@@ -132,7 +132,13 @@ jobs:
           # job 3 the moment job 2 ended, and job 3's project is job 1's, which is still deploying into
           # it. Fewer ids than shards is therefore one at a time — slower, and not two fixtures taking
           # each other's environment away.
-          if [ "$#" -ge "$total" ]; then
+          #
+          # Counting them is not enough: a list long enough but with an id repeated — a paste gone wrong —
+          # would pass and then give two shards the same project. What has to be true is that the ids the
+          # shards would actually take are different projects, which is the first `total` of them, since
+          # that is where shard `k` looks when there are enough to go round.
+          distinct="$(printf '%s\n' "$@" | awk -v n="$total" 'NR <= n && !seen[$0]++ { c++ } END { print c + 0 }')"
+          if [ "$#" -ge "$total" ] && [ "$distinct" -eq "$total" ]; then
             parallel="$total"
           else
             parallel=1
@@ -143,6 +149,12 @@ jobs:
             echo "parallel=$parallel"
           } >>"$GITHUB_OUTPUT"
           echo "$selection in $total shard(s), $parallel at a time" >>"$GITHUB_STEP_SUMMARY"
+          # Said out loud, because one at a time where more was asked for is a list to fix rather than a
+          # run to wonder about. Which ids, and how many, stay out of it.
+          if [ "$parallel" -lt "$total" ]; then
+            echo 'fewer projects than shards, or two shards on one project: they queue' \
+              >>"$GITHUB_STEP_SUMMARY"
+          fi
 
   deploy-tests:
     needs: plan
