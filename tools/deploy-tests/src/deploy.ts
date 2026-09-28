@@ -244,11 +244,60 @@ interface Probe {
   readonly deploymentId: string;
 }
 
+/**
+ * Whether something runs before the filesystem for this path, and may answer instead of the file.
+ *
+ * A fixture's middleware can match anything it likes — a catch-all matcher includes `/_next/static` —
+ * and a `beforeFiles` rewrite or redirect is by definition ahead of the file. Either would make the
+ * host answer correctly with something that is not this blob, and a probe that insisted on the blob's
+ * digest would wait out its deadline over a deployment that is perfectly well. A pattern this cannot
+ * read counts as claimed: the point is to pick a quiet path, and there are usually many.
+ *
+ * Deliberately blunter than the core's own `claimedBeforeFiles` (`bundle/serving.ts`), which asks a
+ * narrower question — unconditional rules only, and no middleware — because it decides what a build
+ * publishes, and a conditional rule claims some requests and not others. This decides which path one
+ * probe asks for, and it cannot tell which side of a condition that probe will land on, so anything
+ * that might answer is enough to look elsewhere.
+ */
+function somethingRunsAhead(bundle: DeploymentBundle, pathname: string): boolean {
+  const ahead = [
+    ...bundle.routing.middlewareMatchers,
+    // Filtered as the core filters the same list: a `beforeMiddleware` rule that neither answers nor
+    // rewrites is a header rule, and it changes what comes back with the file, not whether the file is
+    // what comes back. The distinction is worth making in both directions — a redirect here would send
+    // the probe somewhere else entirely, and `headers()` over `/:path*` is common enough in fixtures
+    // that counting it would leave nothing quiet to ask for.
+    ...bundle.routing.beforeMiddleware.filter(
+      (route) => route.status !== undefined || route.destination !== undefined,
+    ),
+    ...bundle.routing.beforeFiles,
+  ];
+  return ahead.some((route) => {
+    try {
+      // The pattern is the build's own, and it arrived through `runnableSourceRegexSchema`, which is
+      // the schema's refusal of a pattern that is not safe to run — the same check the host's own
+      // router rests on. The `catch` is for what that leaves: a pattern this engine will not take.
+      //
+      // Without the unicode flag, as the core compiles these and for its reason: they were written by
+      // Next.js for its own router, which runs them without it, and `u` makes an error of an escape
+      // that is merely redundant there. Measured: a static segment containing a hyphen is escaped as
+      // `\-`, so `^\/app\-simple\-routes(?:\/)?$` — an ordinary rule of an ordinary fixture — throws
+      // under `u` and not without it. That throw is caught as "claimed", which would have marked
+      // every asset of such a build claimed and quietly reduced it to the pointer alone.
+      // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
+      return new RegExp(route.sourceRegex).test(pathname);
+    } catch {
+      return true;
+    }
+  });
+}
+
 function probeOf(publicUrl: URL, bundle: DeploymentBundle): Probe {
+  const quiet = bundle.staticFiles.filter((entry) => !somethingRunsAhead(bundle, entry.pathname));
   const file =
-    bundle.staticFiles.find((entry) => entry.pathname.includes(`/${bundle.buildId}/`)) ??
-    bundle.staticFiles.find((entry) => entry.immutable) ??
-    bundle.staticFiles[0];
+    quiet.find((entry) => entry.pathname.includes(`/${bundle.buildId}/`)) ??
+    quiet.find((entry) => entry.immutable) ??
+    quiet[0];
   const url = new URL(publicUrl.origin);
   // Assigned rather than resolved, so that a fixture's `//path` stays on this host.
   url.pathname = file?.pathname ?? (bundle.config.basePath || '/');
@@ -284,14 +333,14 @@ async function answered(
       ? undefined
       : `HTTP ${String(response.status)} without the bundle's own asset behind it`;
   }
-  // Nothing of this fixture's is being identified here — it has no static file — so the question is
-  // only whether the host is answering at all, and an answer is an answer. What the application said
-  // is the suite's to judge: a route-only fixture may answer `500` on purpose, and waiting out the
-  // deadline over it would stop the very test that meant to see it. Said out loud, since a `5xx` here
-  // is also what a deployment that cannot start looks like.
+  // Nothing of this fixture's is being identified here — it has no asset to be identified by — so the
+  // question is only whether the host is answering at all, and an answer is an answer. What the
+  // application said is the suite's to judge: a route-only fixture may answer `500` on purpose, and
+  // waiting out the deadline over it would stop the very test that meant to see it. Said out loud,
+  // since a `5xx` here is also what a deployment that cannot start looks like.
   if (response.status >= SERVER_ERROR) {
     input.log(
-      `${probe.url.href} answered ${String(response.status)}; with no static file to identify this ` +
+      `${probe.url.href} answered ${String(response.status)}; with no asset to identify this ` +
         'deployment by, the host answering at all is what counts as served',
     );
   }
@@ -327,7 +376,10 @@ async function served(
 function sayItIsServed(input: DeployInput, probe: Probe): void {
   input.log(`${probe.url.href} answers with this deployment`);
   if (probe.etag === undefined) {
-    input.log('this fixture has no static file, so only the host says which deployment answered');
+    input.log(
+      'no asset of this deployment could identify it — it has none, or something runs ahead of them ' +
+        '— so only the host says which deployment answered',
+    );
   }
 }
 

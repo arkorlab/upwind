@@ -174,8 +174,8 @@ async function fakeHost(deploymentId: string): Promise<FakeHost> {
   let registered: string | undefined;
   let environment: Record<string, string> = {};
   let wanted: string[] = [];
-  /** The digest the application's one static file is served under, learned at registration. */
-  let asset: string | undefined;
+  /** The application's one static file, learned at registration: where it is and what it hashes to. */
+  let asset: { pathname: string; sha256: string } | undefined;
   const uploaded: string[] = [];
   const refusals: string[] = [];
   let finalized = false;
@@ -236,9 +236,16 @@ async function fakeHost(deploymentId: string): Promise<FakeHost> {
 
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     if (request.method === 'HEAD') {
-      // The application ships one immutable file, so readiness is the digest of it — which is what the
-      // deploy hook also reads the immutable-assets marker from.
-      response.writeHead(OK, { etag: `"${asset ?? ''}"` });
+      // Only the file the bundle named, and only once the deployment is finalized: a host that answered
+      // every path with the right digest would let a probe of the wrong URL pass for readiness, which is
+      // the thing this is here to catch.
+      const asked = (request.url ?? '/').split('?', 1)[0] ?? '/';
+      if (!finalized || asked !== asset?.pathname) {
+        response.writeHead(NOT_FOUND);
+        response.end();
+        return;
+      }
+      response.writeHead(OK, { etag: `"${asset.sha256}"` });
       response.end();
       return;
     }
@@ -265,11 +272,13 @@ async function fakeHost(deploymentId: string): Promise<FakeHost> {
     if (pathname === '/v1/projects/p/deployments' && request.method === 'POST') {
       const bundle = (await body(request)) as {
         buildId: string;
-        staticFiles: { blob: { sha256: string } }[];
+        staticFiles: { pathname: string; blob: { sha256: string } }[];
         functions: { app: { modules: { blob: { sha256: string } }[] } };
       };
       registered = bundle.buildId;
-      asset = bundle.staticFiles[0]?.blob.sha256;
+      const [file] = bundle.staticFiles;
+      asset =
+        file === undefined ? undefined : { pathname: file.pathname, sha256: file.blob.sha256 };
       // Every blob it names is asked for, so that the upload loop is what answers, not `missing: []`.
       wanted = bundle.functions.app.modules.map((module) => module.blob.sha256);
       answer(CREATED, { deployment: { id: deploymentId }, missing: wanted });
