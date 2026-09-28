@@ -297,6 +297,14 @@ export const projectManifestSchema = z.object({
    * would have picked that class.
    */
   dynamicRoutes: z.array(dynamicRouteSchema).optional(),
+  /**
+   * The application keeps its pages behind a trailing slash (`trailingSlash`): a route is named by
+   * the spelling a request asks for it by (`/about/`), and a member of a dynamic route's class is
+   * asked for with the slash as well (`matchDynamicRoute`). Absent for any other application — and
+   * on a manifest from before it was published, whose reader matches no member with the slash,
+   * which leaves such a member to the Function as every one of its pages was left then.
+   */
+  trailingSlash: z.literal(true).optional(),
   reservedRoutes: z.array(reservedRouteSchema).optional(),
   exactPathnames: exactPathnamesSchema.optional(),
   headerRules: z.array(headerRuleSchema).optional(),

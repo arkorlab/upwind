@@ -14,22 +14,39 @@ import type { ProjectManifest, ReservedRoute, RouteEntry } from './schema.ts';
  */
 
 /**
+ * Whether a pathname's last segment names no file: nothing in it Next.js reads as an extension. A
+ * dynamic segment's own brackets and dots (`[...slug]`) say nothing of the member it stands for.
+ */
+function namesNoFile(pathname: string): boolean {
+  const last = pathname.slice(pathname.lastIndexOf('/') + 1);
+  return last !== '' && !last.replaceAll(/\[[^[\]]*\]/gu, '').includes('.');
+}
+
+/**
+ * The spelling a request asks for a pathname by, in an application that keeps its pages behind a
+ * trailing slash (`trailingSlash`): with the slash, which Next.js redirects the pathname without it
+ * to, and which it takes off again before it looks the page up. A last segment that names a file
+ * keeps none — Next.js redirects the other way there — and neither does the root, which is a slash.
+ */
+export function withTrailingSlash(pathname: string): string {
+  return namesNoFile(pathname) ? `${pathname}/` : pathname;
+}
+
+/**
  * Pathnames the edge leaves alone before it looks at any pattern. Next.js's own server normalizes
  * repeated slashes and trailing slashes with a redirect before routing, and the runtime's shell
- * lookup does not admit a trailing slash either, so neither is a member of any class here. Nor is
- * a pathname that does not decode: Next.js answers a route parameter that does not with 400, not
- * with the class's shell, and the Function is what answers it so.
+ * lookup does not admit a trailing slash either, so neither is a member of any class here — save
+ * the one trailing slash of an application that keeps its pages behind one (`trailingSlash`), which
+ * is the spelling its members are asked for by. Nor is a pathname that does not decode: Next.js
+ * answers a route parameter that does not with 400, not with the class's shell, and the Function is
+ * what answers it so.
  */
-function isCanonicalPathname(pathname: string): boolean {
+function isCanonicalPathname(pathname: string, trailingSlash: boolean): boolean {
   if (pathname === '/') {
     return true;
   }
-  return (
-    !pathname.includes('//') &&
-    !pathname.includes('\\') &&
-    !pathname.endsWith('/') &&
-    decodes(pathname)
-  );
+  const bare = trailingSlash && pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
+  return !bare.includes('//') && !bare.includes('\\') && !bare.endsWith('/') && decodes(bare);
 }
 
 /** Whether `pathname` decodes; one without an escape does, and is not handed to the decoder. */
@@ -105,7 +122,7 @@ export function matchDynamicRoute(
     return undefined;
   }
   const { pathname } = url;
-  if (!isCanonicalPathname(pathname)) {
+  if (!isCanonicalPathname(pathname, manifest.trailingSlash === true)) {
     return undefined;
   }
   // A redirect or a rewrite Next.js evaluates ahead of its dynamic routes claims the request first.
@@ -303,6 +320,11 @@ const PLACEHOLDER_ORIGIN = 'https://validation.invalid';
 const DYNAMIC_SEGMENT = /^\[[^\]]+\]\]?$/u;
 const CATCH_ALL_SEGMENT = /^\[\[?\.\.\.[^\]]+\]\]?$/u;
 
+/** A sample as a visitor asks for it: behind the trailing slash, where the pages are kept there. */
+function askedFor(manifest: ProjectManifest | undefined, pathname: string): string {
+  return manifest?.trailingSlash === true ? withTrailingSlash(pathname) : pathname;
+}
+
 function substitutedPathname(
   parts: readonly string[],
   segment: string,
@@ -337,7 +359,7 @@ function* validationCandidates(
   for (const segment of segments) {
     let maxDepth = expandable ? maxAttempts : 1;
     for (let depth = 1; depth <= maxDepth; depth += 1) {
-      const pathname = substitutedPathname(parts, segment, depth);
+      const pathname = askedFor(manifest, substitutedPathname(parts, segment, depth));
       // Exact claims spend no depth budget, but only ones encountered extend the search.
       // Unrelated files cannot make a shadowed class search arbitrarily deeper URLs.
       if (expandable && claimedExactly(manifest, pathname)) {
@@ -368,7 +390,8 @@ export function validationPathnameFor(
   manifest?: ProjectManifest,
 ): string | undefined {
   const parts = route.split('/');
-  const preferred = substitutedPathname(parts, VALIDATION_SEGMENT);
+  // Asked for as a visitor asks for a page: behind the slash, where the application keeps them.
+  const preferred = askedFor(manifest, substitutedPathname(parts, VALIDATION_SEGMENT));
   // Only require a class match when this manifest actually records the class being validated.
   const targetIndex =
     manifest?.dynamicRoutes?.findIndex((candidate) => candidate.route === route) ?? -1;

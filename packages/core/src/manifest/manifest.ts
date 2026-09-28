@@ -46,6 +46,7 @@ export interface BuildProjectManifestInput {
   readonly staticFiles?: Record<string, StaticFileEntry> | undefined;
   readonly middleware?: { readonly matchers: readonly MiddlewareMatcher[] } | undefined;
   readonly dynamicRoutes?: readonly DynamicRoute[] | undefined;
+  readonly trailingSlash?: boolean | undefined;
   readonly reservedRoutes?: readonly ReservedRoute[] | undefined;
   readonly exactPathnames?: readonly string[] | undefined;
   readonly headerRules?: readonly HeaderRule[] | undefined;
@@ -76,6 +77,7 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
     ...(input.staticFiles !== undefined && { staticFiles: input.staticFiles }),
     ...(input.middleware !== undefined && { middleware: input.middleware }),
     ...(input.dynamicRoutes !== undefined && { dynamicRoutes: input.dynamicRoutes }),
+    ...(input.trailingSlash === true && { trailingSlash: true }),
     ...(input.reservedRoutes !== undefined && { reservedRoutes: input.reservedRoutes }),
     ...(input.exactPathnames !== undefined && {
       exactPathnames: Object.fromEntries(input.exactPathnames.map((pathname) => [pathname, true])),
@@ -257,7 +259,9 @@ export function findStaticFile(
 
 /**
  * Exact-match route lookup (case-sensitive, no trailing-slash normalization), of the pathname as
- * the request spelled it and then decoded (`byPathname`).
+ * the request spelled it and then decoded (`byPathname`). A route is named by the spelling a
+ * request asks for it by — behind the slash, for an application that keeps its pages there — so
+ * the other spelling finds nothing, and is Next.js's to redirect.
  */
 export function findRouteEntry(
   manifest: ProjectManifest,

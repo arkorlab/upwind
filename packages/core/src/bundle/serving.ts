@@ -12,6 +12,7 @@ import { BEHAVIORAL_RESPONSE_HEADERS, CONTENT_DISPOSITION_HEADER } from '../requ
 import { filterShellResponseHeaders, rendersInline } from '../request/headers.ts';
 import { queryDependent } from './query.ts';
 import type { DeploymentBundle, Entrypoint, Prerender, Route, StaticFile } from './schema.ts';
+import { isTemplate, requestedPathname } from './spelling.ts';
 
 /**
  * What of a deployment's build the edge serves, and under which headers: the prerenders with a
@@ -116,10 +117,6 @@ export function documentPrerenders(
   };
 }
 
-function isTemplate(pathname: string): boolean {
-  return pathname.includes('[');
-}
-
 /**
  * Whether the edge can pick a dynamic route's class the way Next.js picks the route. With `i18n`
  * Next.js rewrites the pathname before matching — a request that names no locale is matched under
@@ -175,7 +172,7 @@ function headersReproducible(bundle: DeploymentBundle, prerender: Prerender): bo
       mayHoldForDocument(rule) &&
       // Compiled by Next.js for its own router, which runs them without the unicode flag.
       // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-      new RegExp(rule.sourceRegex).test(prerender.pathname),
+      new RegExp(rule.sourceRegex).test(requestedPathname(bundle, prerender.pathname)),
   );
 }
 
@@ -216,7 +213,7 @@ function claimedBeforeFiles(bundle: DeploymentBundle, prerender: Prerender): boo
       (reproducesDynamicRouting(bundle) ? !isConditional(rule) : mayHoldForDocument(rule)) &&
       // Compiled by Next.js for its own router, which runs them without the unicode flag.
       // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-      new RegExp(rule.sourceRegex).test(prerender.pathname),
+      new RegExp(rule.sourceRegex).test(requestedPathname(bundle, prerender.pathname)),
   );
 }
 
@@ -329,7 +326,7 @@ function applicableHeaders(
     }
     // Compiled by Next.js for its own router, which runs them without the unicode flag.
     // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-    const match = new RegExp(rule.sourceRegex).exec(prerender.pathname);
+    const match = new RegExp(rule.sourceRegex).exec(requestedPathname(bundle, prerender.pathname));
     if (match === null) {
       continue;
     }
@@ -736,11 +733,18 @@ export function edgeServedRewrites(bundle: DeploymentBundle): ServedRewrite[] {
   return served;
 }
 
-/** What the edge needs to pick a dynamic route's class the way Next.js picks the route. */
+/**
+ * What the edge needs to pick a dynamic route's class the way Next.js picks the route — and, where
+ * the application keeps its pages behind a trailing slash, that it does, since a member of a class
+ * is asked for with the slash too.
+ */
 export function dynamicRouting(
   bundle: DeploymentBundle,
   routeKeys: ReadonlySet<string>,
-): Pick<BuildProjectManifestInput, 'dynamicRoutes' | 'exactPathnames' | 'reservedRoutes'> {
+): Pick<
+  BuildProjectManifestInput,
+  'dynamicRoutes' | 'exactPathnames' | 'reservedRoutes' | 'trailingSlash'
+> {
   const { routing } = bundle;
   if (!reproducesDynamicRouting(bundle)) {
     return {};
@@ -790,20 +794,20 @@ export function dynamicRouting(
     ...reserved(prefixed === undefined ? [] : [prefixed], false),
     ...reserved(routing.afterFiles, false),
   ];
-  // Pathnames Next.js resolves exactly, ahead of its dynamic routes, that have no shell.
-  const exact = new Set<string>();
+  // Pathnames Next.js resolves exactly, ahead of its dynamic routes, that have no shell — under
+  // each spelling a request may ask for one by: `/stream/` is the page `/stream` where the
+  // application keeps its pages behind the slash, and no member of a class that also matches it.
   const pathnames = [
     ...bundle.entrypoints.map((entry) => entry.pathname),
     ...bundle.prerenders.map((prerender) => prerender.pathname),
     // A middleware rewrite must reach the alias's file, not a dynamic route's class shell.
     ...aliases.map((served) => served.pathname),
-  ];
-  for (const pathname of pathnames) {
-    if (!isTemplate(pathname) && !routeKeys.has(pathname)) {
-      exact.add(pathname);
-    }
-  }
-  return { dynamicRoutes, reservedRoutes, exactPathnames: [...exact] };
+  ]
+    .filter((pathname) => !isTemplate(pathname))
+    .flatMap((pathname) => [pathname, requestedPathname(bundle, pathname)]);
+  const exact = new Set(pathnames.filter((pathname) => !routeKeys.has(pathname)));
+  const spelled = bundle.config.trailingSlash && { trailingSlash: true };
+  return { dynamicRoutes, reservedRoutes, exactPathnames: [...exact], ...spelled };
 }
 
 function headerValue(value: string | readonly string[]): string {
