@@ -86,8 +86,13 @@ export interface FunctionDependencies extends BundleDependencies {
 }
 
 export interface FunctionSize {
+  /** Uncompressed, which is what `MAX_FUNCTION_BYTES` measures — Cloudflare's only limit left. */
   readonly bytes: number;
-  /** Gzipped, which is the number Cloudflare's 10 MiB limit is measured against. */
+  /**
+   * Gzipped, and enforced nowhere: the compressed limit this used to be measured against is one
+   * Cloudflare removed, as `MAX_FUNCTION_BYTES` says. Still worth reading — it is what the upload
+   * spends — and worth refusing a build for no longer.
+   */
   readonly gzipBytes: number;
 }
 
