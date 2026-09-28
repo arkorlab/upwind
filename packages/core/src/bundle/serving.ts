@@ -47,7 +47,9 @@ const INTERNAL_PAGES: ReadonlySet<string> = new Set(['/_error', '/_global-error'
 const DOCUMENT_KINDS: ReadonlySet<string> = new Set(['app-page', 'pages']);
 
 /**
- * The primary output of each prerender group, by id.
+ * The primary output of each prerender group, by the id of every output in that group — so an
+ * output beside a document can be asked which document it travels with (`prefetchSegments`), and
+ * the document itself answers with itself.
  *
  * Next.js writes a group as one document and the RSC, segment and `_next/data` outputs beside it,
  * and every one of those is the document's own pathname with something added — `.rsc`,
@@ -60,10 +62,14 @@ const DOCUMENT_KINDS: ReadonlySet<string> = new Set(['app-page', 'pages']);
  * from 16.3 on (`routeType`) and leaves the siblings unclassified; before that it classifies
  * nothing, and this is what stands in its place. On a build that does classify, the two agree.
  */
-function primaryPrerenderIds(prerenders: readonly Prerender[]): ReadonlySet<string> {
+export function primaryPrerenders(
+  prerenders: readonly Prerender[],
+): ReadonlyMap<string, Prerender> {
+  const groupOf = (prerender: Prerender): string =>
+    `${prerender.route}\u{0}${String(prerender.groupId)}`;
   const primary = new Map<string, Prerender>();
   for (const prerender of prerenders) {
-    const group = `${prerender.route}\u{0}${String(prerender.groupId)}`;
+    const group = groupOf(prerender);
     const held = primary.get(group);
     const shorter =
       held === undefined ||
@@ -73,7 +79,18 @@ function primaryPrerenderIds(prerenders: readonly Prerender[]): ReadonlySet<stri
       primary.set(group, prerender);
     }
   }
-  return new Set([...primary.values()].map((prerender) => prerender.id));
+  const byId = new Map<string, Prerender>();
+  for (const prerender of prerenders) {
+    const held = primary.get(groupOf(prerender));
+    if (held !== undefined) {
+      byId.set(prerender.id, held);
+    }
+  }
+  return byId;
+}
+
+function primaryPrerenderIds(prerenders: readonly Prerender[]): ReadonlySet<string> {
+  return new Set([...primaryPrerenders(prerenders).values()].map((prerender) => prerender.id));
 }
 
 /**
