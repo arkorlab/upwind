@@ -71,8 +71,17 @@ $ NEXT_TEST_MODE=deploy \
     test/e2e/app-dir/app-simple-routes/app-simple-routes.test.ts
 ```
 
-`.github/workflows/deploy-tests.yaml` is the same thing on a runner, dispatched by hand, with a
-three-suite selection as its default.
+`.github/workflows/deploy-tests.yaml` is the same thing on a runner, dispatched by hand. Its `tests`
+input takes upstream paths, or `all` for everything the manifest allows; `shards` cuts `all` into that
+many pieces (upstream's own `-g n/total`), and `only` runs one piece on its own, for taking a slice again
+after it was cut short.
+
+**A full run is bounded by two of GitHub's limits at once**, and they pull in opposite directions. The
+manifest selects around 1,100 suites, so 18–28 hours of deployments: a shard runs for `total / n`, which
+must stay under the 6 hours a job may execute, and the last shard starts at `total * (n - 1) / n`, which
+must stay under the 24 hours a job may sit in the queue before it is cancelled. For 28 hours that leaves
+five or six shards, which is why the default is `6`. Beyond that, one project cannot cover the manifest in
+one dispatch however it is cut — and the way out is the section below, not a different number.
 
 Without a host at all, `pnpm check:deploy-tests` runs the three hooks against a fake one: a fake
 application, a fake API, and the real scripts. It is what CI runs, and what keeps the shell contract
@@ -80,10 +89,16 @@ application, a fake API, and the real scripts. It is what CI runs, and what keep
 the order of the calls from breaking quietly between runs against a real host.
 
 **Serially, `-c 1`.** One project takes one fixture at a time, because a deployment replaces the
-project's environment; a second fixture deploying while the first is under test makes the _first_ fail,
-for a reason nothing in its own output explains. The deploy hook refuses rather than let that happen,
-and says which application holds the project. Parallelism has to be bought with projects, one per
-runner, and this tool does not pool them yet.
+project's environment and moves the pointer its requests follow; a second fixture deploying while the
+first is under test makes the _first_ fail, for a reason nothing in its own output explains. The deploy
+hook refuses rather than let that happen, and says which application holds the project.
+
+**Parallelism is bought with projects, one per shard.** `ADAPTER_TEST_PROJECT_IDS` holds them, separated
+by whitespace, and the count is how many shards the workflow runs at once — a shard takes the id at its
+own position, so nothing is pooled and no two shards share a project. Fewer ids than shards is a slower
+run rather than a broken one: the extra shards queue behind the ids that exist. Six projects turn a
+day-long serial run into an afternoon, and they are made on the dashboard, since the public API deploys
+into a project and does not create one.
 
 **That refusal is one machine's.** The claims are files in the machine's own temporary directory, so a
 run on a laptop and a dispatched workflow run cannot see each other, and the API has nothing to hold a

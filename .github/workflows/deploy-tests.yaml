@@ -2,15 +2,25 @@ name: Deploy tests
 
 # Next.js's own deploy-mode suite, against real deployments of what this adapter builds.
 #
-# Apart from CI, and dispatched by hand, for three reasons. It needs credentials for a host, which a
-# pull request from a fork must never be given. It deploys — each suite is an application built,
-# uploaded and served, minutes of it. And it cannot shard: every deployment replaces the project's whole
-# runtime environment, so one project takes one fixture at a time, and two runners would take each
-# other's environment away mid-test. What sharding would buy has to be bought with projects instead, one
-# per runner, which this tool does not pool yet.
+# Apart from CI, and dispatched by hand, for two reasons. It needs credentials for a host, which a pull
+# request from a fork must never be given. And it deploys — each suite is an application installed, built,
+# uploaded and served, a minute of it at the least.
 #
-# So this runs a named selection. The whole manifest is a serial run of hundreds of deployments — tens of
-# hours, past any job's limit — and belongs on a machine somebody is watching.
+# **One project takes one fixture at a time.** Every deployment replaces the project's whole runtime
+# environment and moves the pointer the suite's requests follow, so two shards sharing a project would
+# take each other's application away mid-test. Splitting the *list* is upstream's own `-g n/total`;
+# running the pieces at the same time is what has to be bought, with a project per shard. So the number
+# of ids in `ADAPTER_TEST_PROJECT_IDS` is the parallelism, and with one id the shards queue behind each
+# other.
+#
+# **That is what bounds a full run.** The manifest selects around 1,100 suites — measured at 47–74s each
+# for small ones, so 18–28 hours of deployments — against two limits: 6 hours of execution per job, and
+# **24 hours in the queue before a job is cancelled**. Queueing behind one project, the shards have to
+# satisfy both at once, and they pull in opposite directions: a shard runs for `total / n`, which wants
+# `n` large, and the last one starts at `total * (n - 1) / n`, which wants `n` small. For 28 hours that
+# leaves five or six — `6` is the default for that reason, not because it divides nicely. A longer run
+# than that cannot be covered by one project in one dispatch however it is cut: give it as many projects
+# as shards, or take the slices one dispatch at a time with `only`.
 
 on:
   workflow_dispatch:
@@ -20,39 +30,111 @@ on:
         default: 'v16.3.6'
         type: string
       tests:
-        description: 'Upstream test paths, space separated'
+        description: 'Upstream test paths, space separated — or `all` for the whole manifest'
         default: >-
           test/e2e/hello-world/hello-world.test.ts
           test/e2e/app-dir/hello-world/hello-world.test.ts
           test/e2e/app-dir/app-simple-routes/app-simple-routes.test.ts
         type: string
+      shards:
+        description: 'How many pieces to cut `all` into (ignored for a named selection)'
+        default: '6'
+        type: string
+      only:
+        description: 'Run just this shard of that many — for taking a slice again on its own'
+        default: ''
+        type: string
 
 permissions: {}
 
-# Never two at once: they would be deploying into the same project.
+# Never two dispatches at once: they would be deploying into the same projects.
 concurrency:
   group: deploy-tests
   cancel-in-progress: false
 
 jobs:
-  deploy-tests:
+  # Everything that can be answered before a runner does anything expensive: what the selection means,
+  # how many pieces it is in, and how many of them may run at once.
+  plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
-    permissions:
-      contents: read
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+      total: ${{ steps.plan.outputs.total }}
+      parallel: ${{ steps.plan.outputs.parallel }}
     steps:
-      # First of all, because it is the cheapest thing that can be wrong and the only one already in
-      # hand: an empty selection is not "everything" — with no positional paths the runner takes the
-      # whole manifest, which is the tens-of-hours run this workflow says it is not for.
-      - name: Check the selection
+      - name: Work out the shards
+        id: plan
         env:
           TESTS: ${{ inputs.tests }}
+          SHARDS: ${{ inputs.shards }}
+          ONLY: ${{ inputs.only }}
+          # Counted, never printed: the count is not a project anybody can name, the ids are.
+          PROJECT_IDS: ${{ secrets.ADAPTER_TEST_PROJECT_IDS }}
+          PROJECT_ID: ${{ secrets.ADAPTER_TEST_PROJECT_ID }}
         run: |
-          if [ -z "$(printf '%s' "$TESTS" | tr -d '[:space:]')" ]; then
-            echo 'no tests were selected; name at least one upstream path' >&2
+          set -euo pipefail
+          selection="$(printf '%s' "$TESTS" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')"
+          if [ -z "$selection" ]; then
+            echo 'no tests were selected: name upstream paths, or `all` for the whole manifest' >&2
             exit 1
           fi
+          # A named selection is one job: `-g` would cut *those* paths into pieces, and nine of ten
+          # shards of three paths are empty jobs that install Next.js to run nothing.
+          if [ "$selection" = 'all' ]; then
+            total="$SHARDS"
+          else
+            total=1
+          fi
+          case "$total" in
+            '' | *[!0-9]*) echo "shards must be a whole number, not '$total'" >&2; exit 1 ;;
+          esac
+          # 256 jobs is the matrix limit; past a few dozen the setup of each is most of its time.
+          if [ "$total" -lt 1 ] || [ "$total" -gt 64 ]; then
+            echo "shards must be between 1 and 64, not $total" >&2
+            exit 1
+          fi
+          if [ -n "$ONLY" ]; then
+            case "$ONLY" in
+              '' | *[!0-9]*) echo "only must be a whole number, not '$ONLY'" >&2; exit 1 ;;
+            esac
+            if [ "$ONLY" -lt 1 ] || [ "$ONLY" -gt "$total" ]; then
+              echo "only must name one of the $total shards, not $ONLY" >&2
+              exit 1
+            fi
+            shards="[$ONLY]"
+          else
+            shards="$(seq -s, 1 "$total" | sed 's/^/[/; s/$/]/')"
+          fi
+          # As many at once as there are projects to deploy into, and no more.
+          ids="${PROJECT_IDS:-$PROJECT_ID}"
+          parallel="$(printf '%s' "$ids" | tr -s '[:space:]' '\n' | grep -c '[^[:space:]]' || true)"
+          if [ "$parallel" -lt 1 ]; then
+            echo 'ADAPTER_TEST_PROJECT_IDS (or ADAPTER_TEST_PROJECT_ID) names no project' >&2
+            exit 1
+          fi
+          {
+            echo "shards=$shards"
+            echo "total=$total"
+            echo "parallel=$parallel"
+          } >>"$GITHUB_OUTPUT"
+          echo "$selection in $total shard(s), $parallel at a time" >>"$GITHUB_STEP_SUMMARY"
 
+  deploy-tests:
+    needs: plan
+    runs-on: ubuntu-latest
+    # Under the six hours a job is allowed, with room for a slice that runs long to be reported rather
+    # than cut off mid-suite.
+    timeout-minutes: 340
+    permissions:
+      contents: read
+    strategy:
+      # An inventory, not a gate: a shard that fails has found something, and the others still have
+      # their own ground to cover.
+      fail-fast: false
+      max-parallel: ${{ fromJSON(needs.plan.outputs.parallel) }}
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: adapter
@@ -94,6 +176,24 @@ jobs:
           umask 077
           printf '%s' "$TOKEN" >"$RUNNER_TEMP/deploy-token"
 
+      # This shard's own project, by position in the list. Masked first: it is one word of a secret
+      # rather than the secret, so nothing else would keep it out of a log.
+      - name: Take a project for this shard
+        env:
+          SHARD: ${{ matrix.shard }}
+          PROJECT_IDS: ${{ secrets.ADAPTER_TEST_PROJECT_IDS }}
+          PROJECT_ID: ${{ secrets.ADAPTER_TEST_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          ids="${PROJECT_IDS:-$PROJECT_ID}"
+          # Wrapping round, so that fewer projects than shards is a slower run rather than a broken
+          # one — the shards of one project queue behind each other, which is what `max-parallel` says.
+          count="$(printf '%s' "$ids" | tr -s '[:space:]' '\n' | grep -c '[^[:space:]]')"
+          index="$(( (SHARD - 1) % count + 1 ))"
+          mine="$(printf '%s' "$ids" | tr -s '[:space:]' '\n' | sed -n "${index}p")"
+          echo "::add-mask::$mine"
+          echo "ADAPTER_TEST_PROJECT_ID=$mine" >>"$GITHUB_ENV"
+
       # Before anything long, which is the point of having it: a token that cannot write, or a project
       # id that names somebody else's application, is worth a minute's wait to learn about rather than
       # twenty minutes of building Next.js and then a suite that failed for a reason of its own.
@@ -102,7 +202,6 @@ jobs:
         env:
           ARKOR_API_URL: ${{ secrets.ARKOR_API_URL }}
           ARKOR_API_TOKEN_FILE: ${{ runner.temp }}/deploy-token
-          ADAPTER_TEST_PROJECT_ID: ${{ secrets.ADAPTER_TEST_PROJECT_ID }}
         run: pnpm test:deploy preflight
 
       # Next.js is built from source, and installed again afterwards, because its test harness runs out
@@ -120,7 +219,9 @@ jobs:
         run: pnpm --filter @stayingupwind/adapter build
 
       # Serially (`-c 1`), with no retries: a retry would deploy the same fixture again and say nothing
-      # about why the first one failed.
+      # about why the first one failed. A suite that fails does not stop the rest — the runner carries on
+      # and reports every one at the end, which is what makes a long run an inventory. Its own job
+      # summary lists the failures, so a shard's findings are readable without opening the log.
       - name: Run the suite
         working-directory: nextjs
         env:
@@ -136,15 +237,29 @@ jobs:
           NEXT_TEST_CLEANUP_SCRIPT_PATH: ${{ github.workspace }}/adapter/tools/deploy-tests/scripts/e2e-cleanup.sh
           # The host to deploy to. Secrets rather than anything written down here: which host runs this
           # suite is whoever dispatched it, and a project id in a log is a project somebody can name.
-          # The token itself is not among them — it is in the file named below.
+          # The token itself is not among them — it is in the file named below, and this shard's project
+          # came from the step above through the environment.
           ARKOR_API_URL: ${{ secrets.ARKOR_API_URL }}
           ARKOR_API_TOKEN_FILE: ${{ runner.temp }}/deploy-token
-          ADAPTER_TEST_PROJECT_ID: ${{ secrets.ADAPTER_TEST_PROJECT_ID }}
           # Through the environment rather than into the command: the selection is a string this workflow
           # was handed, and a `run:` that interpolates one is a shell that was handed it too.
           TESTS: ${{ inputs.tests }}
-        # Paths are positional, after the flags. Unquoted on purpose: the selection is several of them,
-        # and a quoted one would be a single path with spaces in it. Whether there is one at all was
-        # answered by the first step of this job.
-        # shellcheck disable=SC2086
-        run: node run-tests.js --type e2e -c 1 --retries 0 $TESTS
+          SHARD: ${{ matrix.shard }}
+          TOTAL: ${{ needs.plan.outputs.total }}
+        # Paths are positional, after the flags, and `all` names none of them: with nothing positional
+        # the runner takes everything its manifest allows. `-g` only where there is more than one piece,
+        # since a single group is the whole list and asking for it warns about timing data it does not
+        # need. Unquoted on purpose: the selection is several paths, and a quoted one would be a single
+        # path with spaces in it. Whether there is one at all was answered by the plan.
+        run: |
+          set -euo pipefail
+          group=''
+          if [ "$TOTAL" -gt 1 ]; then
+            group="-g $SHARD/$TOTAL"
+          fi
+          paths=''
+          if [ "$(printf '%s' "$TESTS" | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')" != 'all' ]; then
+            paths="$TESTS"
+          fi
+          # shellcheck disable=SC2086 -- both are several words, or none, on purpose
+          node run-tests.js --type e2e -c 1 --retries 0 $group $paths
