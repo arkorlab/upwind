@@ -101,12 +101,14 @@ Beyond that, four limits are worth knowing before reading a failure as this adap
   output may fail for want of it.
 - **Which deployment answered is proved by an asset, where there is one.** A `HEAD` for one of the
   bundle's static files, with its digest as the expected `ETag`. The public endpoint exposes no
-  deployment id, so an identical asset shared with an older deployment cannot tell those two apart. A
-  fixture with no static file at all is judged by the host's own account of which deployment is
-  current, and says so.
+  deployment id, so an identical asset shared with an older deployment cannot tell those two apart.
+  Where there is no static file, the host's own account of which deployment is current is the whole of
+  the evidence, and then any answer at all — including a `5xx`, which a route-only application may mean
+  — counts as served. Both cases say so in the log.
 - **The Next.js under test must be inside `SUPPORTED_NEXT_RANGE`.** Outside it the host refuses every
   deployment, and the suite reports every suite as failed for a reason that has nothing to do with the
-  test.
+  test. Inside it, a version below 16.3 has no immutable assets to offer, which the deploy hook reports
+  as it finds it: the marker the harness reads is what the bundle's own files add up to, not a constant.
 
 Deployments are left in place. The API has no delete, and a host retires what a later deployment
 replaces; the cleanup hook gives the project back and nothing else.
