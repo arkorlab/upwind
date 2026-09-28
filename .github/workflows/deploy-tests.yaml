@@ -120,9 +120,15 @@ jobs:
           # handed the empty string. `-f` with it, because the same unquoted expansion would otherwise
           # also expand pathnames — an id holding `*`, `?` or `[` would be matched against whatever the
           # runner's working directory happens to contain, and a match would quietly replace it.
+          # Carriage returns out first: the shell splits on space, tab and newline, so a list pasted from
+          # CRLF text leaves `\r` stuck to every id but the last. Two spellings of one project would then
+          # count as two projects here, while everything downstream trims it away — `$GITHUB_ENV` when it
+          # reads the line back, `required()` in `config.ts` before it asks the API — and two shards would
+          # be deploying into the one project the count said they were not.
+          ids="$(printf '%s' "${PROJECT_IDS:-$PROJECT_ID}" | tr -d '\r')"
           set -f
           # shellcheck disable=SC2086 -- splitting the list is the parse, and globbing is off above
-          set -- ${PROJECT_IDS:-$PROJECT_ID}
+          set -- $ids
           if [ "$#" -lt 1 ]; then
             echo 'ADAPTER_TEST_PROJECT_IDS (or ADAPTER_TEST_PROJECT_ID) names no project' >&2
             exit 1
@@ -228,13 +234,13 @@ jobs:
           PROJECT_ID: ${{ secrets.ADAPTER_TEST_PROJECT_ID }}
         run: |
           set -euo pipefail
-          # Split by the shell, as the plan splits it — `-f` included, so that an id holding a glob
-          # character is the id and not whatever it matched — so that both agree about a list with a
-          # space at the front of it. Wrapping round, because fewer ids than shards is a run the plan has
+          # Read exactly as the plan reads it — carriage returns out, globbing off, split by the shell —
+          # so that the id a shard takes is the id the plan counted, however the list was pasted. Wrapping round, because fewer ids than shards is a run the plan has
           # already made serial: the shards of one project queue behind each other rather than sharing it.
+          ids="$(printf '%s' "${PROJECT_IDS:-$PROJECT_ID}" | tr -d '\r')"
           set -f
           # shellcheck disable=SC2086 -- splitting the list is the parse, and globbing is off above
-          set -- ${PROJECT_IDS:-$PROJECT_ID}
+          set -- $ids
           shift "$(( (SHARD - 1) % $# ))"
           echo "::add-mask::$1"
           echo "ADAPTER_TEST_PROJECT_ID=$1" >>"$GITHUB_ENV"
