@@ -60,6 +60,18 @@ export const preloadLinksSchema = z
   .min(1)
   .max(MAX_PRELOAD_LINKS);
 
+/**
+ * One prefetch segment a host holds: the bytes the build wrote for it, and the pre-compressed
+ * renderings of those bytes where the run produced them — the same pair a route's own shell
+ * travels as, for the same reason. A segment is an RSC payload, which is text, and compresses
+ * like one.
+ */
+export const routeSegmentSchema = z.object({
+  artifact: artifactRefSchema,
+  encodings: shellEncodingsSchema.optional(),
+});
+export type RouteSegment = z.infer<typeof routeSegmentSchema>;
+
 /** One route the build prerendered: its pathname, its shell artifact and its response headers. */
 export const routeEntrySchema = z.object({
   pathname: z.string().startsWith('/'),
@@ -79,7 +91,7 @@ export const routeEntrySchema = z.object({
    * A reader that does not know the field drops it and hands every prefetch to the Function, which
    * is what every reader did before the field existed — so no schema version turns on it.
    */
-  segments: z.record(z.string().startsWith('/'), artifactRefSchema).optional(),
+  segments: z.record(z.string().startsWith('/'), routeSegmentSchema).optional(),
   headers: z.record(z.string(), z.string()),
   /**
    * The route's policy permits any inline script, which the nonce the edge mints stops it doing.
