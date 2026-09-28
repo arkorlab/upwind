@@ -252,73 +252,124 @@ interface Probe {
 }
 
 /**
- * Whether a rule decides any part of what a probe of this path would see.
+ * A pattern the host would test a path against, compiled once — or nothing, where it cannot be read.
  *
- * Answering or rewriting is most of it, and `mayRoutePath` in `bundle/serving.ts` asks exactly that. A
- * rule that does neither is a header rule and claims nothing — except when the header it sets is the
- * one being compared: a fixture is free to give `/:path*` an `ETag` of its own, the host sends that
- * instead of the digest, and the probe would be asking a question that cannot come out right.
+ * The patterns are the build's own, and they arrived through `runnableSourceRegexSchema`, the schema's
+ * refusal of a pattern that is not safe to run, which is the check the host's own router rests on. What
+ * that leaves is a pattern this engine will not take, and the safe reading of one is that it matches
+ * everything: the point is to find a path nothing touches, and there are usually many.
+ *
+ * Compiled as the serving path compiles these. Case-insensitive, because that is how Next.js matches a
+ * path against them and so how the host does (`matchesAny`, `mayRoutePath`). Without the unicode flag,
+ * because Next.js wrote them for a router that runs them without it, and `u` makes an error of an escape
+ * that is merely redundant there — measured, a static segment containing a hyphen is escaped as `\-`, so
+ * `^\/app\-simple\-routes(?:\/)?$`, an ordinary rule of an ordinary fixture, throws under `u` and not
+ * without it. Read as matching everything, that one throw would have disqualified every asset of such a
+ * build and quietly reduced it to the pointer alone.
  */
-function claimsTheAnswer(route: Route): boolean {
-  return (
-    route.status !== undefined ||
-    route.destination !== undefined ||
-    Object.keys(route.headers ?? {}).some((name) => name.toLowerCase() === 'etag')
-  );
-}
-
-/**
- * Whether something runs before the filesystem for this path, and may answer instead of the file.
- *
- * A fixture's middleware can match anything it likes — a catch-all matcher includes `/_next/static` —
- * and a `beforeFiles` rewrite or redirect is by definition ahead of the file. Either would make the
- * host answer correctly with something that is not this blob, and a probe that insisted on the blob's
- * digest would wait out its deadline over a deployment that is perfectly well. A pattern this cannot
- * read counts as claimed: the point is to pick a quiet path, and there are usually many.
- *
- * Blunter than the core's own `claimedBeforeFiles` (`bundle/serving.ts`) on one point: that one counts
- * unconditional rules only, because it decides what a build publishes and a conditional rule claims
- * some requests and not others. This decides which path one probe asks for, and it cannot tell which
- * side of a condition that probe will land on, so anything that might answer is enough to look
- * elsewhere. How a pattern is matched, and which rules count as ahead at all, are the serving path's.
- */
-function somethingRunsAhead(bundle: DeploymentBundle, pathname: string): boolean {
-  const ahead = [
-    // A matcher is not a rule with a destination: middleware runs on what it matches, so nothing about
-    // it is filtered. A rule is only ahead of the file if it answers or rewrites — one that does
-    // neither is a header rule, and it changes what comes back with the file rather than whether the
-    // file is what comes back. Worth the distinction in both directions: a redirect here sends the
-    // probe somewhere else entirely, and `headers()` over `/:path*` is common enough in fixtures that
-    // counting it would leave nothing quiet to ask for. Both readings are the serving path's own —
-    // `matchesAny` in `paas/middleware.ts`, `mayRoutePath` in `bundle/serving.ts`.
-    ...bundle.routing.middlewareMatchers,
-    ...[...bundle.routing.beforeMiddleware, ...bundle.routing.beforeFiles].filter((route) =>
-      claimsTheAnswer(route),
-    ),
-  ];
-  return ahead.some((route) => {
+function compiledOr(routes: readonly Route[]): (RegExp | undefined)[] {
+  return routes.map((route) => {
+    // Assigned rather than returned from the `try`, as the runtime's own `botsRegexOf` does it.
+    let pattern: RegExp | undefined;
     try {
-      // The pattern is the build's own, and it arrived through `runnableSourceRegexSchema`, which is
-      // the schema's refusal of a pattern that is not safe to run — the same check the host's own
-      // router rests on. The `catch` is for what that leaves: a pattern this engine will not take.
-      //
-      // Compiled as the two functions above compile it, and for their reasons. Case-insensitive,
-      // because that is how Next.js matches a path against these and so how the host does. Without the
-      // unicode flag, because Next.js wrote them for a router that runs them without it, and `u` makes
-      // an error of an escape that is merely redundant there — measured, a static segment containing a
-      // hyphen is escaped as `\-`, so `^\/app\-simple\-routes(?:\/)?$`, an ordinary rule of an ordinary
-      // fixture, throws under `u` and not without it. A throw is caught as "claimed", so that would
-      // have marked every asset of such a build claimed and quietly reduced it to the pointer alone.
       // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-      return new RegExp(route.sourceRegex, 'i').test(pathname);
+      pattern = new RegExp(route.sourceRegex, 'i');
     } catch {
-      return true;
+      // Left unread, which is read below as matching everything.
     }
+    return pattern;
   });
 }
 
+function anyMatches(
+  patterns: readonly (RegExp | undefined)[],
+  spellings: readonly string[],
+): boolean {
+  return patterns.some(
+    (pattern) => pattern === undefined || spellings.some((spelling) => pattern.test(spelling)),
+  );
+}
+
+/** A rule is ahead of the file only if it answers or rewrites; one that does neither sets headers. */
+function answersOrRewrites(route: Route): boolean {
+  return route.status !== undefined || route.destination !== undefined;
+}
+
+function setsEtag(route: Route): boolean {
+  return Object.keys(route.headers ?? {}).some((name) => name.toLowerCase() === 'etag');
+}
+
+/**
+ * What could stop a file's own digest from coming back, compiled once for a whole bundle.
+ *
+ * Three things, and each is read the way the serving path reads it. **Middleware** answers whatever it
+ * matches — a catch-all matcher includes `/_next/static`. A **redirect or rewrite ahead of the
+ * filesystem** answers instead of the file; one after it does not, because by then the file has won. And
+ * a **header rule that sets `ETag`** leaves the file exactly where it is and replaces the one thing being
+ * compared: those land in `beforeMiddleware`, `afterFiles` and `onMatch` (`headerPhases`), and the host
+ * applies them to a file's own answer wherever they sit (`configuredHeaders`), so the phases that run
+ * after the filesystem matter here even though nothing about them is ahead of it.
+ *
+ * Blunter than the core's `claimedBeforeFiles` on one point: that one counts unconditional rules only,
+ * because it decides what a build publishes, and a conditional rule claims some requests and not others.
+ * This decides which path one probe asks for and cannot tell which side of a condition that probe lands
+ * on, so a rule that might apply is enough to look elsewhere.
+ */
+interface CouldAnswer {
+  /** Matched against both spellings of a path, as the host matches a matcher. */
+  readonly matchers: readonly (RegExp | undefined)[];
+  readonly ahead: readonly (RegExp | undefined)[];
+  readonly retagged: readonly (RegExp | undefined)[];
+}
+
+function couldAnswer({ routing }: DeploymentBundle): CouldAnswer {
+  return {
+    matchers: compiledOr(routing.middlewareMatchers),
+    ahead: compiledOr(
+      [...routing.beforeMiddleware, ...routing.beforeFiles].filter((route) =>
+        answersOrRewrites(route),
+      ),
+    ),
+    retagged: compiledOr(
+      [...routing.beforeMiddleware, ...routing.afterFiles, ...routing.onMatch].filter((route) =>
+        setsEtag(route),
+      ),
+    ),
+  };
+}
+
+/**
+ * Both spellings of a pathname a matcher may be written against: as the build named it, and decoded.
+ *
+ * A matcher is written as a path reads (`/vercel copy.svg`) while a request carries it escaped — and
+ * `public/` files are named in the bundle escaped, segment by segment (`collectStaticFiles`). The host
+ * tries the decoded form when the escaped one matches nothing (`middlewareApplies`), so a path that
+ * matches only that way is matched here too.
+ */
+function spellingsOf(pathname: string): string[] {
+  try {
+    const decoded = decodeURIComponent(pathname);
+    return decoded === pathname ? [pathname] : [pathname, decoded];
+  } catch {
+    // Not decodable, which is what the host makes of it as well: only the escaped form is tried.
+    return [pathname];
+  }
+}
+
+/** Whether a `HEAD` of this path would come back with the file's own digest, as far as the bundle says. */
+function showsTheDigest(could: CouldAnswer, pathname: string): boolean {
+  const asItCame = [pathname];
+  return !(
+    anyMatches(could.matchers, spellingsOf(pathname)) ||
+    // As it came, not decoded: a rule is matched against the request's own pathname (`patternMatch`).
+    anyMatches(could.ahead, asItCame) ||
+    anyMatches(could.retagged, asItCame)
+  );
+}
+
 function probeOf(publicUrl: URL, bundle: DeploymentBundle): Probe {
-  const quiet = bundle.staticFiles.filter((entry) => !somethingRunsAhead(bundle, entry.pathname));
+  const could = couldAnswer(bundle);
+  const quiet = bundle.staticFiles.filter((entry) => showsTheDigest(could, entry.pathname));
   const file =
     quiet.find((entry) => entry.pathname.includes(`/${bundle.buildId}/`)) ??
     quiet.find((entry) => entry.immutable) ??
