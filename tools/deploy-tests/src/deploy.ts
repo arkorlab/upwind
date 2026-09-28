@@ -259,24 +259,25 @@ interface Probe {
  * digest would wait out its deadline over a deployment that is perfectly well. A pattern this cannot
  * read counts as claimed: the point is to pick a quiet path, and there are usually many.
  *
- * Deliberately blunter than the core's own `claimedBeforeFiles` (`bundle/serving.ts`), which asks a
- * narrower question — unconditional rules only, and no middleware — because it decides what a build
- * publishes, and a conditional rule claims some requests and not others. This decides which path one
- * probe asks for, and it cannot tell which side of a condition that probe will land on, so anything
- * that might answer is enough to look elsewhere.
+ * Blunter than the core's own `claimedBeforeFiles` (`bundle/serving.ts`) on one point: that one counts
+ * unconditional rules only, because it decides what a build publishes and a conditional rule claims
+ * some requests and not others. This decides which path one probe asks for, and it cannot tell which
+ * side of a condition that probe will land on, so anything that might answer is enough to look
+ * elsewhere. How a pattern is matched, and which rules count as ahead at all, are the serving path's.
  */
 function somethingRunsAhead(bundle: DeploymentBundle, pathname: string): boolean {
   const ahead = [
+    // A matcher is not a rule with a destination: middleware runs on what it matches, so nothing about
+    // it is filtered. A rule is only ahead of the file if it answers or rewrites — one that does
+    // neither is a header rule, and it changes what comes back with the file rather than whether the
+    // file is what comes back. Worth the distinction in both directions: a redirect here sends the
+    // probe somewhere else entirely, and `headers()` over `/:path*` is common enough in fixtures that
+    // counting it would leave nothing quiet to ask for. Both readings are the serving path's own —
+    // `matchesAny` in `paas/middleware.ts`, `mayRoutePath` in `bundle/serving.ts`.
     ...bundle.routing.middlewareMatchers,
-    // Filtered as the core filters the same list: a `beforeMiddleware` rule that neither answers nor
-    // rewrites is a header rule, and it changes what comes back with the file, not whether the file is
-    // what comes back. The distinction is worth making in both directions — a redirect here would send
-    // the probe somewhere else entirely, and `headers()` over `/:path*` is common enough in fixtures
-    // that counting it would leave nothing quiet to ask for.
-    ...bundle.routing.beforeMiddleware.filter(
+    ...[...bundle.routing.beforeMiddleware, ...bundle.routing.beforeFiles].filter(
       (route) => route.status !== undefined || route.destination !== undefined,
     ),
-    ...bundle.routing.beforeFiles,
   ];
   return ahead.some((route) => {
     try {
@@ -284,14 +285,15 @@ function somethingRunsAhead(bundle: DeploymentBundle, pathname: string): boolean
       // the schema's refusal of a pattern that is not safe to run — the same check the host's own
       // router rests on. The `catch` is for what that leaves: a pattern this engine will not take.
       //
-      // Without the unicode flag, as the core compiles these and for its reason: they were written by
-      // Next.js for its own router, which runs them without it, and `u` makes an error of an escape
-      // that is merely redundant there. Measured: a static segment containing a hyphen is escaped as
-      // `\-`, so `^\/app\-simple\-routes(?:\/)?$` — an ordinary rule of an ordinary fixture — throws
-      // under `u` and not without it. That throw is caught as "claimed", which would have marked
-      // every asset of such a build claimed and quietly reduced it to the pointer alone.
+      // Compiled as the two functions above compile it, and for their reasons. Case-insensitive,
+      // because that is how Next.js matches a path against these and so how the host does. Without the
+      // unicode flag, because Next.js wrote them for a router that runs them without it, and `u` makes
+      // an error of an escape that is merely redundant there — measured, a static segment containing a
+      // hyphen is escaped as `\-`, so `^\/app\-simple\-routes(?:\/)?$`, an ordinary rule of an ordinary
+      // fixture, throws under `u` and not without it. A throw is caught as "claimed", so that would
+      // have marked every asset of such a build claimed and quietly reduced it to the pointer alone.
       // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-      return new RegExp(route.sourceRegex).test(pathname);
+      return new RegExp(route.sourceRegex, 'i').test(pathname);
     } catch {
       return true;
     }

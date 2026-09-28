@@ -1,10 +1,9 @@
-import { execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
-import { promisify } from 'node:util';
 
 import { DEPLOYMENT_ID_PREFIX } from '@stayingupwind/core/bundle';
 import { createId } from '@stayingupwind/core/util';
@@ -22,7 +21,6 @@ import { createId } from '@stayingupwind/core/util';
  * few seconds. `pnpm check:deploy-tests`, and CI runs it.
  */
 
-const execFileAsync = promisify(execFile);
 const SCRIPTS = path.join(import.meta.dirname, '..', 'scripts');
 const REPO = path.join(import.meta.dirname, '..', '..', '..');
 const BUNDLE_BUILD_ID = 'from-the-bundle';
@@ -37,15 +35,29 @@ const HOOK_TIMEOUT_MS = 60_000;
 const SERVER_LOG = '.adapter-server.log';
 const MS_PER_SECOND = 1000;
 
+interface HookFailureOptions extends ErrorOptions {
+  /** What the hook had written to standard error by the time it failed. */
+  readonly said: string;
+}
+
+/** A hook that did not finish well, with whatever it had said by then. */
+class HookFailureError extends Error {
+  readonly said: string;
+
+  constructor(message: string, options: HookFailureOptions) {
+    super(message, options);
+    this.name = 'HookFailureError';
+    this.said = options.said;
+  }
+}
+
 function orNothing(said: string | undefined): string {
   return said !== undefined && said.trim() !== '' ? said.trimEnd() : '(nothing)';
 }
 
-/** Whatever a failed child process wrote to standard error. */
+/** Whatever the hook had written to standard error by the time it failed. */
 function saidBy(error: unknown): string {
-  const said =
-    typeof error === 'object' && error !== null && 'stderr' in error ? error.stderr : undefined;
-  return orNothing(typeof said === 'string' ? said : undefined);
+  return orNothing(error instanceof HookFailureError ? error.said : undefined);
 }
 
 /**
@@ -61,6 +73,71 @@ function keptBy(appDir: string): string {
   } catch {
     return '(no log; it failed before the deployment)';
   }
+}
+
+/**
+ * One hook, run to the end or ended — and with it everything it started.
+ *
+ * Bounded because the deploy hook's own patience is fifteen minutes of a host that never becomes ready.
+ * That is the right answer against a real host and the wrong shape of failure here: a readiness check
+ * that asks this fake host something it will never say would hold the whole run open for it. Six seconds
+ * is the whole of this file against a warm store, so a minute is failure rather than slowness.
+ *
+ * `detached`, so that the hook and everything below it are one process group and the bound can end all
+ * of it. The shell is only the shell: the deployment is a `node` grandchild of it, and a signal to the
+ * shell alone leaves that one running — measured, still polling a host that had gone away two seconds
+ * after the check had reported the timeout and exited. `SIGKILL` for the same reason; there is nothing
+ * left for it to wind down, and the file it writes is appended to as it goes.
+ */
+function bounded(
+  name: string,
+  appDir: string,
+  env: NodeJS.ProcessEnv,
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    // The script itself, by its own path, rather than a shell found on `PATH`: they are executable and
+    // carry a shebang, and this is how the suite's harness starts them.
+    const child = spawn(path.join(SCRIPTS, name), [], { cwd: appDir, env, detached: true });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk: Buffer) => (stdout += chunk.toString()));
+    child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()));
+    let expired = false;
+    const bound = setTimeout(() => {
+      expired = true;
+      if (child.pid !== undefined) {
+        // The group, not the process: `-pid` is how a group is named, and `detached` made this one its
+        // leader. Killing it twice is what happens if it has already gone, and that is not an error.
+        try {
+          process.kill(-child.pid, 'SIGKILL');
+        } catch {
+          // Already over.
+        }
+      }
+    }, HOOK_TIMEOUT_MS);
+    child.on('error', (error) => {
+      clearTimeout(bound);
+      reject(error);
+    });
+    child.on('close', (code) => {
+      clearTimeout(bound);
+      if (expired) {
+        const seconds = String(HOOK_TIMEOUT_MS / MS_PER_SECOND);
+        reject(
+          new HookFailureError(
+            `was still running after ${seconds}s, so it and its children were killed`,
+            { said: stderr },
+          ),
+        );
+        return;
+      }
+      if (code === 0) {
+        resolve({ stdout, stderr });
+        return;
+      }
+      reject(new HookFailureError(`exited ${String(code)}`, { said: stderr }));
+    });
+  });
 }
 
 /**
@@ -384,28 +461,17 @@ async function main(): Promise<void> {
     CHECK_BUNDLE_BUILD_ID: BUNDLE_BUILD_ID,
     CHECK_OUTPUT_DIRECTORY_BUILD_ID: OUTPUT_DIRECTORY_BUILD_ID,
   };
-  // Bounded, because the deploy hook's own patience is fifteen minutes of a host that never becomes
-  // ready — the right answer against a real host, and the wrong shape of failure here: a readiness
-  // check that asks this fake host the wrong question would hold the whole run open for it. Six seconds
-  // is the whole of this file against a warm store, so a minute is failure, not slowness.
   const hook = async (name: string): Promise<{ stdout: string }> => {
     try {
-      return await execFileAsync('bash', [path.join(SCRIPTS, name)], {
-        cwd: appDir,
-        env,
-        timeout: HOOK_TIMEOUT_MS,
-      });
+      return await bounded(name, appDir, env);
     } catch (error) {
-      // Rethrown with the hook's own account of itself in the message, because a failed `execFile`
-      // arrives as an object whose `stderr` Node prints truncated — and the hook says everything worth
-      // knowing there: the API calls it made, what it was waiting for, why it gave up. A killed one says
-      // nothing at all beyond a `SIGTERM` nobody sent on purpose, so it gets a sentence of its own.
-      const killed = error instanceof Error && 'signal' in error && error.signal === 'SIGTERM';
-      const why = killed
-        ? `was still running after ${String(HOOK_TIMEOUT_MS / MS_PER_SECOND)}s and was killed`
-        : 'failed';
+      // Rethrown with the hook's own account of itself in the message. A child process that failed
+      // arrives as an error whose `stderr` Node prints truncated, and the deploy tool does not write
+      // there at all — its account goes to a file, for the logs hook to show the suite. Between them is
+      // everything worth knowing: the API calls it made, what it was waiting for, why it gave up.
       throw new Error(
-        `${name} ${why}. It said:\n${saidBy(error)}\nand its own log says:\n${keptBy(appDir)}`,
+        `${name} ${error instanceof HookFailureError ? error.message : 'could not be run'}. It said:\n` +
+          `${saidBy(error)}\nand its own log says:\n${keptBy(appDir)}`,
         { cause: error },
       );
     }

@@ -85,6 +85,11 @@ for a reason nothing in its own output explains. The deploy hook refuses rather 
 and says which application holds the project. Parallelism has to be bought with projects, one per
 runner, and this tool does not pool them yet.
 
+**That refusal is one machine's.** The claims are files in the machine's own temporary directory, so a
+run on a laptop and a dispatched workflow run cannot see each other, and the API has nothing to hold a
+lock in. Between runners the rule is the workflow's `concurrency` group; between a runner and a terminal
+it is whoever dispatched them. If two must overlap, give the second its own project.
+
 ## What the numbers do and do not mean
 
 A run is an inventory of observed compatibility, not an assertion that every feature is supported.

@@ -39,6 +39,15 @@ import type { ProjectConfig } from './config.ts';
  * before the thing it protects had begun. So a claim names the isolated application the suite's harness
  * made, and is spent when that directory is gone — which is what the harness does with it once the
  * suite is over. The cleanup hook gives it back sooner, in the ordinary case.
+ *
+ * **This is one machine's rule, and it cannot be more than that.** The claims live in this machine's
+ * temporary directory, so a run here and a run on a runner see none of each other and both proceed —
+ * and the project's environment goes to whichever deployed last, while the other's tests are still
+ * running. Nothing in the API can be borrowed to do better: it has no lock, and the one piece of state
+ * both runs share is the very thing being taken away. So the rest is arranged so the case does not
+ * arise — the workflow that dispatches this run takes a `concurrency` group, which is the same rule
+ * between runners, and a second project is what a second machine needs. Said in the README, because it
+ * is the operator's to know, not something this file can enforce.
  */
 
 const DIGEST_CHARACTERS = 16;
