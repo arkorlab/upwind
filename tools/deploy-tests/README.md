@@ -107,8 +107,10 @@ Beyond that, four limits are worth knowing before reading a failure as this adap
   — counts as served. Both cases say so in the log.
 - **The Next.js under test must be inside `SUPPORTED_NEXT_RANGE`.** Outside it the host refuses every
   deployment, and the suite reports every suite as failed for a reason that has nothing to do with the
-  test. Inside it, a version below 16.3 has no immutable assets to offer, which the deploy hook reports
-  as it finds it: the marker the harness reads is what the bundle's own files add up to, not a constant.
+  test. Inside it, 16.2 does without the content-addressed `/_next/static/immutable/*` — it ignores the
+  option the adapter sets, while still marking files `immutable` for caching — and the deploy hook
+  reports that as it finds it: the marker the harness reads is whether the bundle has a file under that
+  path, not a constant.
 
 Deployments are left in place. The API has no delete, and a host retires what a later deployment
 replaces; the cleanup hook gives the project back and nothing else.

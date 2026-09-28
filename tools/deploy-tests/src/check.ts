@@ -379,11 +379,16 @@ async function main(): Promise<void> {
     const bundle = JSON.parse(
       readFileSync(path.join(appDir, '.ppr-cdn', 'bundle.json'), 'utf8'),
     ) as {
-      staticFiles: { immutable: boolean }[];
+      staticFiles: { pathname: string }[];
     };
     // Computed from what the build wrote and then compared with what the hook said: the marker is
-    // derived or it is not, and an assertion that expects a constant cannot tell the difference.
-    const immutable = bundle.staticFiles.some((file) => file.immutable) ? '1' : '0';
+    // derived or it is not, and an assertion that expects a constant cannot tell the difference. The
+    // question is the path, not the bundle's `immutable` flag, for the reason the hook gives beside it.
+    const immutable = bundle.staticFiles.some((file) =>
+      file.pathname.includes('/_next/static/immutable/'),
+    )
+      ? '1'
+      : '0';
     const markers = logs.stdout.split('\n');
     holds(
       'the logs hook leads with a build id and a deployment id',

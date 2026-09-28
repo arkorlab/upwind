@@ -96,17 +96,23 @@ bundle_says() {
 build_id="$(bundle_says '.buildId')"
 
 # Whether this build has immutable assets, from the build rather than from a constant. The adapter asks
-# Next.js for them unconditionally, and does not always get them: a Next.js below 16.3 does not offer
-# `/_next/static/immutable/*` at all, and a static export has them turned off again by Next.js itself.
-# What survives all of that is whether any file in the bundle is marked immutable — the adapter sets that
-# from the build's own `immutableHash` (`collect.ts`). Saying `1` where the answer is no makes the suite
-# apply expectations this deployment cannot meet, and read the difference as the adapter's fault.
+# Next.js for them unconditionally and does not always get them: `config.supportsImmutableAssets` is
+# ignored by 16.2, and a static export has the option turned off again by Next.js itself after the hook
+# has run. Saying `1` where the answer is no makes the suite hold a deployment to expectations it cannot
+# meet, and read the difference as the adapter's fault.
 #
-# `staticFiles` is the right array to read: it is "`_next/static` from the build output, plus everything
-# under `public/`" (`collectStaticFiles`), so a build with immutable assets has them in here. An
-# application with no static file at all answers `0`, which is the truth about it — there are none to
-# test.
-immutable_assets="$(bundle_says '.staticFiles.some((file) => file.immutable) ? 1 : 0')"
+# What is asked is whether any file went out under the content-addressed path, because that is the thing
+# a deployment does without: the adapter's README says of 16.2 "ignored by 16.2, so no
+# `/_next/static/immutable/*`. `immutableHash` is there already, so `immutable` itself still holds" — so
+# the bundle's `immutable` flag is true on a 16.2 build as well and answers a different question (may
+# this file be cached forever), while the path answers this one (is it shared across deployments).
+#
+# `staticFiles` is the right array to look in: it is "`_next/static` from the build output, plus
+# everything under `public/`" (`collectStaticFiles`). An application with no such file answers `0`,
+# which is the truth about it — there are none to test.
+immutable_assets="$(
+  bundle_says ".staticFiles.some((file) => file.pathname.includes('/_next/static/immutable/')) ? 1 : 0"
+)"
 
 {
   echo "BUILD_ID: ${build_id}"
