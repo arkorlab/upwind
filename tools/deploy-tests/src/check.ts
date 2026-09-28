@@ -33,6 +33,8 @@ const CREATED = 201;
 const ACCEPTED = 202;
 const CONFLICT = 409;
 const NOT_FOUND = 404;
+const HOOK_TIMEOUT_MS = 60_000;
+const MS_PER_SECOND = 1000;
 
 /**
  * An application that builds without Next.js, and lies about its build id on purpose.
@@ -355,8 +357,30 @@ async function main(): Promise<void> {
     CHECK_BUNDLE_BUILD_ID: BUNDLE_BUILD_ID,
     CHECK_OUTPUT_DIRECTORY_BUILD_ID: OUTPUT_DIRECTORY_BUILD_ID,
   };
-  const hook = (name: string): Promise<{ stdout: string }> =>
-    execFileAsync('bash', [path.join(SCRIPTS, name)], { cwd: appDir, env });
+  // Bounded, because the deploy hook's own patience is fifteen minutes of a host that never becomes
+  // ready — the right answer against a real host, and the wrong shape of failure here: a readiness
+  // check that asks this fake host the wrong question would hold the whole run open for it. Six seconds
+  // is the whole of this file against a warm store, so a minute is failure, not slowness.
+  const hook = async (name: string): Promise<{ stdout: string }> => {
+    try {
+      return await execFileAsync('bash', [path.join(SCRIPTS, name)], {
+        cwd: appDir,
+        env,
+        timeout: HOOK_TIMEOUT_MS,
+      });
+    } catch (error) {
+      // A killed hook otherwise arrives as a `SIGTERM` nobody sent on purpose, printed as an object
+      // with the whole environment of the failure in it and no sentence saying what happened.
+      if (error instanceof Error && 'signal' in error && error.signal === 'SIGTERM') {
+        throw new Error(
+          `${name} was still running after ${String(HOOK_TIMEOUT_MS / MS_PER_SECOND)}s and was killed. ` +
+            'Its readiness check is probably waiting for something this host will never say.',
+          { cause: error },
+        );
+      }
+      throw error;
+    }
+  };
   try {
     const deployed = await hook('e2e-deploy.sh');
     const logs = await hook('e2e-logs.sh');

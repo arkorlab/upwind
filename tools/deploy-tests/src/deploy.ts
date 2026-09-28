@@ -42,10 +42,6 @@ export interface DeployInput {
   readonly config: Config;
   /** Everything this says goes to standard error: standard output carries the URL and nothing else. */
   readonly log: (message: string) => void;
-  readonly fetchImpl?: typeof fetch | undefined;
-  readonly pollIntervalMs?: number | undefined;
-  readonly now?: (() => number) | undefined;
-  readonly sleep?: ((ms: number) => Promise<void>) | undefined;
 }
 
 export interface Deployment {
@@ -196,35 +192,33 @@ function settled(input: DeployInput, deploymentId: string, detail: DeploymentDet
  * genuinely stuck reaches no further step, so it still gives up — and says where it was.
  */
 async function waitForHost(input: DeployInput, deploymentId: string): Promise<void> {
-  const now = input.now ?? Date.now;
-  const wait = input.sleep ?? ((ms: number): Promise<void> => sleepFor(ms));
-  let deadline = now() + NO_PROGRESS_TIMEOUT_MS;
+  let deadline = Date.now() + NO_PROGRESS_TIMEOUT_MS;
   let seen: string | undefined;
   for (;;) {
     const detail = await visible(input, deploymentId);
     if (detail === undefined) {
       // The same deadline as every other kind of no progress: a deployment that is never visible is
       // a deployment that stopped moving, and a wait with no end is worse than a failure with one.
-      if (now() >= deadline) {
+      if (Date.now() >= deadline) {
         throw new Error('the deployment was registered and never became visible');
       }
-      await wait(input.pollIntervalMs ?? POLL_INTERVAL_MS);
+      await sleepFor(POLL_INTERVAL_MS);
       continue;
     }
     if (detail.currentStep !== seen) {
       seen = detail.currentStep;
-      deadline = now() + NO_PROGRESS_TIMEOUT_MS;
+      deadline = Date.now() + NO_PROGRESS_TIMEOUT_MS;
       input.log(`  ${seen ?? 'between steps'}`);
     }
     if (TERMINAL_STATUSES.has(detail.status)) {
       settled(input, deploymentId, detail);
       return;
     }
-    if (now() >= deadline) {
+    if (Date.now() >= deadline) {
       const stalledOn = seen === undefined ? '' : ` on ${seen}`;
       throw new Error(`the deployment stopped making progress${stalledOn}`);
     }
-    await wait(input.pollIntervalMs ?? POLL_INTERVAL_MS);
+    await sleepFor(POLL_INTERVAL_MS);
   }
 }
 
@@ -313,13 +307,12 @@ async function answered(
   probe: Probe,
   remainingMs: number,
 ): Promise<string | undefined> {
-  const fetchImpl = input.fetchImpl ?? fetch;
   // Bounded, because a connection that is accepted and then never answered would otherwise sit here
   // for ever: the deadline this is polling against is only looked at between requests.
   const within = Math.min(REQUEST_TIMEOUT_MS, remainingMs);
   let response: Response;
   try {
-    response = await fetchImpl(probe.url, {
+    response = await fetch(probe.url, {
       method: 'HEAD',
       redirect: 'manual',
       signal: AbortSignal.timeout(Math.max(1, within)),
@@ -400,18 +393,16 @@ async function waitUntilServed(
   bundle: DeploymentBundle,
   publicUrl: URL,
 ): Promise<void> {
-  const now = input.now ?? Date.now;
-  const wait = input.sleep ?? ((ms: number): Promise<void> => sleepFor(ms));
   const probe = probeOf(publicUrl, bundle);
-  const deadline = now() + NO_PROGRESS_TIMEOUT_MS;
+  const deadline = Date.now() + NO_PROGRESS_TIMEOUT_MS;
   let said: string | undefined;
   for (;;) {
     const detail = await answering(input);
     if (detail === undefined) {
-      if (now() >= deadline) {
+      if (Date.now() >= deadline) {
         throw new Error('the API never said what the project answers with');
       }
-      await wait(input.pollIntervalMs ?? POLL_INTERVAL_MS);
+      await sleepFor(POLL_INTERVAL_MS);
       continue;
     }
     // Validated outside that tolerance on purpose: a project that answers as a different project, or
@@ -419,7 +410,7 @@ async function waitUntilServed(
     if (previewUrlOf(detail, input.config).origin !== publicUrl.origin) {
       throw new Error('the project changed the hostname it is served on during the deployment');
     }
-    const observation = await served(input, detail, probe, deadline - now());
+    const observation = await served(input, detail, probe, deadline - Date.now());
     if (observation === undefined) {
       sayItIsServed(input, probe);
       return;
@@ -428,10 +419,10 @@ async function waitUntilServed(
       input.log(observation);
       said = observation;
     }
-    if (now() >= deadline) {
+    if (Date.now() >= deadline) {
       throw new Error(`the deployment was never served: ${observation}`);
     }
-    await wait(input.pollIntervalMs ?? POLL_INTERVAL_MS);
+    await sleepFor(POLL_INTERVAL_MS);
   }
 }
 

@@ -99,12 +99,14 @@ Beyond that, four limits are worth knowing before reading a failure as this adap
 - **No runtime logs.** The API serves a built deployment's build log, and an uploaded deployment has
   none, so what the logs hook shows is the build and the deployment. A suite that asserts on server
   output may fail for want of it.
-- **Which deployment answered is proved by an asset, where there is one.** A `HEAD` for one of the
-  bundle's static files, with its digest as the expected `ETag`. The public endpoint exposes no
-  deployment id, so an identical asset shared with an older deployment cannot tell those two apart.
-  Where there is no static file, the host's own account of which deployment is current is the whole of
-  the evidence, and then any answer at all — including a `5xx`, which a route-only application may mean
-  — counts as served. Both cases say so in the log.
+- **Which deployment answered is proved by an asset, where a quiet one exists.** A `HEAD` for one of the
+  bundle's static files, with its digest as the expected `ETag` — one whose path nothing in the
+  deployment runs ahead of, since a catch-all middleware matcher, a redirect or a `beforeFiles` rewrite
+  would have the host answer correctly with something that is not that file. The public endpoint exposes
+  no deployment id, so an identical asset shared with an older deployment cannot tell those two apart.
+  Where the build has no such file, the host's own account of which deployment is current is the whole
+  of the evidence, and then any answer at all — including a `5xx`, which a route-only application may
+  mean — counts as served. Both cases say so in the log.
 - **The Next.js under test must be inside `SUPPORTED_NEXT_RANGE`.** Outside it the host refuses every
   deployment, and the suite reports every suite as failed for a reason that has nothing to do with the
   test. Inside it, 16.2 does without the content-addressed `/_next/static/immutable/*` — it ignores the

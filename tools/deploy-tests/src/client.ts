@@ -137,11 +137,6 @@ export interface Client {
   getDeployment(deploymentId: string): Promise<DeploymentDetail>;
 }
 
-export interface ClientOptions {
-  readonly fetchImpl?: typeof fetch | undefined;
-  readonly sleep?: ((ms: number) => Promise<void>) | undefined;
-}
-
 function isRateLimited(error: unknown): boolean {
   return error instanceof ApiError && error.code === 'rate_limited';
 }
@@ -167,7 +162,6 @@ function isServerFailure(error: unknown): boolean {
 
 async function retrying<T>(
   call: () => Promise<T>,
-  sleep: (ms: number) => Promise<void>,
   options: { attempts: number; first: number; max: number; retry: (error: unknown) => boolean },
 ): Promise<T> {
   let wait = options.first;
@@ -178,7 +172,7 @@ async function retrying<T>(
       if (!options.retry(error)) {
         throw error;
       }
-      await sleep(wait);
+      await sleepFor(wait);
       wait = Math.min(wait * 2, options.max);
     }
   }
@@ -199,17 +193,14 @@ function refusalOf(status: number, body: string): ApiError {
   return new ApiError(`HTTP ${String(status)} (${code})`, { code, status });
 }
 
-export function createClient(config: Config, options: ClientOptions = {}): Client {
-  const fetchImpl = options.fetchImpl ?? fetch;
-  const sleep = options.sleep ?? ((ms: number): Promise<void> => sleepFor(ms));
-
+export function createClient(config: Config): Client {
   async function once(
     method: string,
     path: string,
     body?: BodyInit,
     contentType?: string,
   ): Promise<unknown> {
-    const response = await fetchImpl(new URL(path, config.baseUrl), {
+    const response = await fetch(new URL(path, config.baseUrl), {
       method,
       headers: {
         authorization: `Bearer ${config.token}`,
@@ -233,7 +224,7 @@ export function createClient(config: Config, options: ClientOptions = {}): Clien
     contentType?: string,
   ): Promise<unknown> {
     function arrived(): Promise<unknown> {
-      return retrying(() => once(method, path, body, contentType), sleep, {
+      return retrying(() => once(method, path, body, contentType), {
         attempts: NETWORK_ATTEMPTS,
         first: NETWORK_FIRST_WAIT_MS,
         max: NETWORK_FIRST_WAIT_MS * 2 ** NETWORK_ATTEMPTS,
@@ -241,7 +232,7 @@ export function createClient(config: Config, options: ClientOptions = {}): Clien
       });
     }
     function answered(): Promise<unknown> {
-      return retrying(arrived, sleep, {
+      return retrying(arrived, {
         attempts: SERVER_ATTEMPTS,
         first: SERVER_FIRST_WAIT_MS,
         max: SERVER_MAX_WAIT_MS,
@@ -251,7 +242,7 @@ export function createClient(config: Config, options: ClientOptions = {}): Clien
     // Innermost first: a call that never arrived has not used the API's patience at all, a `5xx` has
     // used none of its window either, and a rate limit is the one that wants the longest wait — so it
     // is the budget the other two spend inside.
-    return retrying(answered, sleep, {
+    return retrying(answered, {
       attempts: RATE_LIMIT_ATTEMPTS,
       first: RATE_LIMIT_FIRST_WAIT_MS,
       max: RATE_LIMIT_MAX_WAIT_MS,
