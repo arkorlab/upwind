@@ -58,8 +58,13 @@ that is the whole edit — no sentence counts the packages.
 ## Deployment
 
 Arkor builds `main` from GitHub — root directory `web-site`, `pnpm install --frozen-lockfile`,
-`pnpm build`, and the bundle it serves is `.arkor/`. Nothing about that lives in this repository:
-there are no credentials here and no workflow that deploys.
+`pnpm build`, and the bundle it serves is the directory that build writes. Nothing about that lives
+in this repository: there are no credentials here and no workflow that deploys.
+
+That directory is `.arkor/` from the release this project installs next. The dependencies here are
+the **published** ones, so what the build writes today is what the version in `pnpm-lock.yaml`
+writes, and whoever holds the deployment has to know the name before this project moves to a release
+that changed it — `OUT_DIR_NAME`, which `@stayingupwind/adapter` exports, is that name.
 
 The canonical host is `www.stayingupwind.com` and the apex redirects to it, so every absolute URL the
 site emits — canonical, hreflang, the sitemap, the Open Graph card — names `www` (`src/lib/site.ts`).
