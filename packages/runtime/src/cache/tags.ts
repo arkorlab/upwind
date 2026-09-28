@@ -85,10 +85,8 @@ export class TagState {
   readonly #applied = new Lru<string, TagMark>(MAX_APPLIED_MARKS);
   readonly #holdMs: number;
   readonly #log: TagStateOptions['log'];
-  readonly #localReads = new Map<string, Promise<void>>();
   #revision = 0;
   #syncedAt: number | undefined;
-  #inflight: Promise<void> | undefined;
 
   constructor(options: TagStateOptions) {
     this.#holdMs = options.holdMs;
@@ -122,22 +120,18 @@ export class TagState {
   }
 
   async #pullLocal(host: TagHost, values: readonly string[], now: number): Promise<void> {
-    try {
-      const result = await host.getTags(values);
-      for (const tag of result.tags) {
-        this.#mark(tag.value, { staleAt: tag.staleAt, hardExpireAt: tag.hardExpireAt });
-      }
-      // Every tag asked about, not only the ones the host had something to say about: the answer
-      // that a tag has no invalidation is worth the same hold as the answer that it has one.
-      //
-      // The two loops are one turn: there is no `await` between them, so no other read can evict
-      // what the first just marked before the second reads it back. A second read of this key
-      // would find the mark even if one could — it is read and written together.
-      for (const value of values) {
-        this.#tags.set(value, { ...this.#tags.get(value), checkedAt: now });
-      }
-    } finally {
-      for (const value of values) this.#localReads.delete(value);
+    const result = await host.getTags(values);
+    for (const tag of result.tags) {
+      this.#mark(tag.value, { staleAt: tag.staleAt, hardExpireAt: tag.hardExpireAt });
+    }
+    // Every tag asked about, not only the ones the host had something to say about: the answer
+    // that a tag has no invalidation is worth the same hold as the answer that it has one.
+    //
+    // The two loops are one turn: there is no `await` between them, so no other read can evict
+    // what the first just marked before the second reads it back. A second read of this key
+    // would find the mark even if one could — it is read and written together.
+    for (const value of values) {
+      this.#tags.set(value, { ...this.#tags.get(value), checkedAt: now });
     }
   }
 
@@ -167,19 +161,18 @@ export class TagState {
    * condemns a generation whose renderer was behind. Within the hold that claim would be older
    * than the render — including on the isolate that just invalidated a tag itself, whose view
    * knows of it but whose revision does not.
+   *
+   * Each call that needs a pull makes its own, whatever pull is under way: that one is I/O of the
+   * request that started it, which the Workers runtime cancels once that request is over, and a
+   * regeneration of another request waiting on it would wait as long as its request was let run.
+   * What two pulls bring is merged, whichever answers first.
    */
   async sync(host: TagHost, now: number, options: { force?: boolean } = {}): Promise<void> {
     const held = this.#syncedAt !== undefined && now - this.#syncedAt < this.#holdMs;
     if (held && options.force !== true) {
       return;
     }
-    // One pull at a time: whoever arrives while it runs waits for the same one.
-    this.#inflight ??= this.#pull(host, now);
-    try {
-      await this.#inflight;
-    } finally {
-      this.#inflight = undefined;
-    }
+    await this.#pull(host, now);
   }
 
   /**
@@ -189,26 +182,22 @@ export class TagState {
    * and `getExpiration` all sync the very tags they are about to weigh — which is what lets the
    * synced view be bounded: a tag this isolate has forgotten is one it asks about again here.
    * `currentGeneration` is the reader that does not, and `MAX_APPLIED_MARKS` is why it need not.
+   *
+   * What the host answered is held; a question still under way is not. It is I/O of the request
+   * that asked it, which the Workers runtime cancels once that request is over, and a read of
+   * another request waiting on it would wait for nothing — so a tag no answer is held for is asked
+   * about again by every read that needs it, until one answer is in.
    */
   async syncLocal(host: TagHost, values: readonly string[], now: number): Promise<void> {
     const needed = [...new Set(values)].filter((value) => {
       const checked = this.#tags.get(value)?.checkedAt;
       return checked === undefined || now - checked >= this.#holdMs;
     });
-    const waiting = new Set<Promise<void>>();
-    const unread: string[] = [];
-    for (const value of needed) {
-      const pending = this.#localReads.get(value);
-      if (pending === undefined) unread.push(value);
-      else waiting.add(pending);
+    const reads: Promise<void>[] = [];
+    for (let offset = 0; offset < needed.length; offset += MAX_TAGS_PER_CALL) {
+      reads.push(this.#pullLocal(host, needed.slice(offset, offset + MAX_TAGS_PER_CALL), now));
     }
-    for (let offset = 0; offset < unread.length; offset += MAX_TAGS_PER_CALL) {
-      const batch = unread.slice(offset, offset + MAX_TAGS_PER_CALL);
-      const read = this.#pullLocal(host, batch, now);
-      for (const value of batch) this.#localReads.set(value, read);
-      waiting.add(read);
-    }
-    await Promise.all(waiting);
+    await Promise.all(reads);
   }
 
   /** An invalidation this Function just recorded: in force here before the delta says so. */
