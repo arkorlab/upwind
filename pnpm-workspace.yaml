@@ -27,7 +27,7 @@ catalog:
   eslint-import-resolver-typescript: 4.4.5
   eslint-plugin-import-x: 4.17.1
   eslint-plugin-n: 18.3.0
-  eslint-plugin-perfectionist: 5.11.0
+  eslint-plugin-perfectionist: 5.12.1
   eslint-plugin-promise: 7.3.0
   # `recheck`, which decides a regular expression's worst case rather than guessing at its shape.
   # It is here because the cheaper checks miss what CodeQL's `js/polynomial-redos` reports: a
