@@ -61,19 +61,11 @@ jobs:
       # repository's inside `adapter`.
       - run: corepack enable
 
-      # Next.js is built from source, and installed again afterwards, because its test harness runs out
-      # of the checkout and loads what it just built.
-      - name: Build Next.js
-        working-directory: nextjs
-        run: pnpm install && pnpm build && pnpm install
-      - name: Install Chromium
-        working-directory: nextjs
-        run: pnpm playwright install --with-deps chromium
-
-      # `dist`, because that is the adapter as a release hands it to a project.
-      - name: Build the adapter
+      # This repository first, so that the next step can ask the API a question before anything long
+      # happens: the adapter's own install is a minute, and building Next.js from source is twenty.
+      - name: Install this repository
         working-directory: adapter
-        run: pnpm install --frozen-lockfile && pnpm --filter @stayingupwind/adapter build
+        run: pnpm install --frozen-lockfile
 
       # The token goes into a file, and the step that runs the suite is given its path. Everything
       # below the deploy hook — the application's install, its build, the suite itself — inherits that
@@ -90,9 +82,9 @@ jobs:
           umask 077
           printf '%s' "$TOKEN" >"$RUNNER_TEMP/deploy-token"
 
-      # Before a fixture is built, because a fixture is minutes of building before the first call to the
-      # API: a token that cannot write, or a project id that names somebody else's application, is
-      # worth learning about now rather than as a suite that failed for a reason of its own.
+      # Before anything long, which is the point of having it: a token that cannot write, or a project
+      # id that names somebody else's application, is worth a minute's wait to learn about rather than
+      # twenty minutes of building Next.js and then a suite that failed for a reason of its own.
       - name: Preflight
         working-directory: adapter
         env:
@@ -100,6 +92,20 @@ jobs:
           ARKOR_API_TOKEN_FILE: ${{ runner.temp }}/deploy-token
           ADAPTER_TEST_PROJECT_ID: ${{ secrets.ADAPTER_TEST_PROJECT_ID }}
         run: pnpm test:deploy preflight
+
+      # Next.js is built from source, and installed again afterwards, because its test harness runs out
+      # of the checkout and loads what it just built.
+      - name: Build Next.js
+        working-directory: nextjs
+        run: pnpm install && pnpm build && pnpm install
+      - name: Install Chromium
+        working-directory: nextjs
+        run: pnpm playwright install --with-deps chromium
+
+      # `dist`, because that is the adapter as a release hands it to a project.
+      - name: Build the adapter
+        working-directory: adapter
+        run: pnpm --filter @stayingupwind/adapter build
 
       # Serially (`-c 1`), with no retries: a retry would deploy the same fixture again and say nothing
       # about why the first one failed.
