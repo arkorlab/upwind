@@ -167,6 +167,11 @@ async function waitForHost(input: DeployInput, deploymentId: string): Promise<vo
   for (;;) {
     const detail = await visible(input, deploymentId);
     if (detail === undefined) {
+      // The same deadline as every other kind of no progress: a deployment that is never visible is
+      // a deployment that stopped moving, and a wait with no end is worse than a failure with one.
+      if (now() >= deadline) {
+        throw new Error('the deployment was registered and never became visible');
+      }
       await wait(input.pollIntervalMs ?? POLL_INTERVAL_MS);
       continue;
     }
@@ -242,7 +247,11 @@ async function served(
     return 'the project does not answer with this deployment yet';
   }
   if (detail.active.mode === 'disabled') {
-    return 'the project answers with this deployment but is disabled, so nothing is served';
+    // Not an observation to wait out: nothing this tool does will turn it back on, so the deadline
+    // would only be fifteen minutes of asking a question already answered.
+    throw new Error(
+      `${input.config.projectId} answers with this deployment but is disabled, so nothing is served`,
+    );
   }
   return answered(input.fetchImpl ?? fetch, probe);
 }

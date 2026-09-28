@@ -23,11 +23,20 @@ which suites deploy mode selects.
 | ------------------------- | ---------------------------------------------------------- |
 | `ARKOR_API_URL`           | The host's public API, for example `https://api.arkor.dev` |
 | `ARKOR_API_TOKEN`         | A token of that host with the `write` scope                |
+| `ARKOR_API_TOKEN_FILE`    | Or a file holding that token, read instead of the variable |
 | `ADAPTER_TEST_PROJECT_ID` | A project on that host, **used by nothing else**           |
 
 The names are the host's own, so that the script an operator already drives this suite with drives this
-too. They arrive through the environment alone: a token on a command line is in every process list on
-the machine, and a token in a file is one somebody forgets.
+too. Nothing is passed on a command line, which is in every process list on the machine.
+
+**The suite is somebody else's code, on the machine that holds the credential.** It is Next.js's
+repository at a ref the run chose, and its applications' `package.json` scripts are run by the deploy
+hook. So: the hook runs a fixture's install and build with these variables removed, the workflow keeps
+the token in a file and gives the suite only its path, and `nextjsRef` should name a tag. None of that
+is a boundary — a fixture's build and the deploy hook are the same user on the same machine, and a
+process can read what another process of its own user can. What it removes is the ordinary way a secret
+escapes, which is something printing the environment it was handed. So use a credential whose loss is
+survivable: one project's worth of write access, rotatable, and nothing else.
 
 **The project has to be dedicated.** Each fixture's deployment _replaces_ the project's whole runtime
 environment with that fixture's own, so a project anything else uses would have its environment taken

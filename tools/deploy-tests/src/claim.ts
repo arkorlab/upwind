@@ -10,7 +10,7 @@ import {
 import os from 'node:os';
 import path from 'node:path';
 
-import type { Config } from './config.ts';
+import type { ProjectConfig } from './config.ts';
 
 /**
  * One project, one fixture at a time.
@@ -48,14 +48,14 @@ function digestOf(value: string): string {
 }
 
 /** The directory of a project's claims: named for the project, and never for the token. */
-function ownersDir(config: Config): string {
+function ownersDir(config: ProjectConfig): string {
   // The origin rather than the spelling: `https://h` and `https://h/` name one host, and two runs
   // that wrote them differently would each think they had the project to themselves.
   const digest = digestOf(`${new URL(config.baseUrl).origin}\n${config.projectId}`);
   return path.join(os.tmpdir(), `upwind-deploy-claims-${digest}`, 'owners');
 }
 
-function entryFor(config: Config, appDir: string): string {
+function entryFor(config: ProjectConfig, appDir: string): string {
   return path.join(ownersDir(config), digestOf(path.resolve(appDir)));
 }
 
@@ -68,7 +68,7 @@ function letGo(entry: string): void {
 }
 
 /** Take the project for this fixture, or say which application already has it. */
-export function claimProject(config: Config, appDir: string): void {
+export function claimProject(config: ProjectConfig, appDir: string): void {
   const dir = ownersDir(config);
   mkdirSync(dir, { recursive: true });
   const mine = entryFor(config, appDir);
@@ -105,6 +105,6 @@ export function claimProject(config: Config, appDir: string): void {
 }
 
 /** Give the project back, as the cleanup hook does once a fixture's tests are over. */
-export function releaseProject(config: Config, appDir: string): void {
+export function releaseProject(config: ProjectConfig, appDir: string): void {
   letGo(entryFor(config, appDir));
 }

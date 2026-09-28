@@ -24,16 +24,17 @@ import { TOOL_ENV_PREFIXES } from './config.ts';
 const execFileAsync = promisify(execFile);
 const READER = path.join(import.meta.dirname, 'read-env.ts');
 /**
- * The two names the child is given, both dropped again from what it gives back.
+ * The two names that are dropped from what the reader gives back: the one it is given, and the one it
+ * produces.
  *
- * `NODE_ENV` because which `.env` files count is a question about a production build. Nothing else,
- * and that is the point: dotenv expands `$NAME` in a value against the environment it reads in, so a
- * `PATH` or a `HOME` handed in here is a machine's path waiting to be written into a deployed
+ * Given: `NODE_ENV`, because which `.env` files count is a question about a production build. Nothing
+ * else, and that is the point — dotenv expands `$NAME` in a value against the environment it reads in,
+ * so a `PATH` or a `HOME` handed in here is a machine's path waiting to be written into a deployed
  * Function by any fixture whose `.env` mentions one. The reader is started as an absolute path, so it
  * needs no `PATH` of its own.
  *
- * `__NEXT_PROCESSED_ENV` is Next.js's own bookkeeping — the marker it leaves to know it has read the
- * files — and a Function that started with it set would skip its own.
+ * Produced: `__NEXT_PROCESSED_ENV`, Next.js's own bookkeeping — the marker it sets to know it has read
+ * the files — and a Function that started with it set would skip its own.
  */
 const SEEDED = ['NODE_ENV', '__NEXT_PROCESSED_ENV'] as const;
 const KIB = 1024;

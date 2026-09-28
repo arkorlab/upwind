@@ -1,6 +1,6 @@
 import { claimProject, releaseProject } from './claim.ts';
 import { createClient } from './client.ts';
-import { readConfig } from './config.ts';
+import { readConfig, readProjectConfig } from './config.ts';
 import { deployFixture, preflight } from './deploy.ts';
 
 /**
@@ -65,6 +65,12 @@ async function main(argv: readonly string[]): Promise<void> {
   const [first, directory] = argv;
   const command = commandOf(first);
   const appDir = directory ?? process.cwd();
+  if (command === 'release') {
+    // No token asked for: giving the project back is a file on this machine, and a cleanup hook that
+    // demanded a credential would fail on a run whose credential is already gone.
+    releaseProject(readProjectConfig(), appDir);
+    return;
+  }
   const config = readConfig();
   const client = createClient(config);
   switch (command) {
@@ -83,10 +89,6 @@ async function main(argv: readonly string[]): Promise<void> {
         releaseProject(config, appDir);
         throw error;
       }
-      return;
-    }
-    case 'release': {
-      releaseProject(config, appDir);
     }
   }
 }

@@ -75,6 +75,21 @@ jobs:
         working-directory: adapter
         run: pnpm install --frozen-lockfile && pnpm --filter @stayingupwind/adapter build
 
+      # The token goes into a file, and the step that runs the suite is given its path. Everything
+      # below the deploy hook — the application's install, its build, the suite itself — inherits that
+      # step's environment, and all of it is code this repository checked out from somewhere else. A
+      # path is the one thing worth inheriting.
+      #
+      # A reduction, not a boundary: the file and the suite belong to the same user on the same
+      # machine. What it removes is the ordinary way a secret escapes, which is something printing the
+      # environment it was handed — and `nextjsRef` should name a tag for the same reason.
+      - name: Put the token in a file
+        env:
+          TOKEN: ${{ secrets.ARKOR_API_TOKEN }}
+        run: |
+          umask 077
+          printf '%s' "$TOKEN" >"$RUNNER_TEMP/deploy-token"
+
       # Serially (`-c 1`), with no retries: a retry would deploy the same fixture again and say nothing
       # about why the first one failed.
       - name: Run the suite
@@ -92,8 +107,9 @@ jobs:
           NEXT_TEST_CLEANUP_SCRIPT_PATH: ${{ github.workspace }}/adapter/tools/deploy-tests/scripts/e2e-cleanup.sh
           # The host to deploy to. Secrets rather than anything written down here: which host runs this
           # suite is whoever dispatched it, and a project id in a log is a project somebody can name.
+          # The token itself is not among them — it is in the file named below.
           ARKOR_API_URL: ${{ secrets.ARKOR_API_URL }}
-          ARKOR_API_TOKEN: ${{ secrets.ARKOR_API_TOKEN }}
+          ARKOR_API_TOKEN_FILE: ${{ runner.temp }}/deploy-token
           ADAPTER_TEST_PROJECT_ID: ${{ secrets.ADAPTER_TEST_PROJECT_ID }}
           # Through the environment rather than into the command: the selection is a string this workflow
           # was handed, and a `run:` that interpolates one is a shell that was handed it too.

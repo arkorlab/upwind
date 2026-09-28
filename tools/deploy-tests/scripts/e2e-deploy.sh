@@ -42,9 +42,21 @@ export NEXT_DEPLOYMENT_ID="${NEXT_DEPLOYMENT_ID:-$(
 # the client. Without it every page the suite opens is waited on for ten seconds.
 export NEXT_PRIVATE_TEST_MODE=e2e
 
+# Everything below runs the application's own code — its install scripts, its build, its `post-build` —
+# and none of it is ours. So it runs without this tool's configuration in the environment: the token
+# that deploys the bundle has no business inside a fixture's `package.json` scripts, and a fixture that
+# printed its environment would otherwise print it into the suite's log.
+#
+# This is a reduction, not a boundary: the deploy hook and the fixture's build run as the same user on
+# the same machine, and a process can read what another process of its own user can. What it removes is
+# the ordinary way a secret escapes — something dumping the environment it was handed.
+fixture() {
+  env -u ARKOR_API_URL -u ARKOR_API_TOKEN -u ARKOR_API_TOKEN_FILE -u ADAPTER_TEST_PROJECT_ID "$@"
+}
+
 # Deploy mode makes the isolated copy with `skipInstall: true` (`test/lib/next-modes/next-deploy.ts`),
 # so the application arrives without its dependencies and installing them is this script's job.
-pnpm install --no-frozen-lockfile --prod=false >&2
+fixture pnpm install --no-frozen-lockfile --prod=false >&2
 
 # The harness writes the application's own build script and appends `&& pnpm post-build`
 # (`test/lib/next-modes/base.ts`). Run exactly what it wrote: a fixture's own build command and its
@@ -67,10 +79,17 @@ echo "build command: ${build_command}" >&2
 
 # What the build says is what `next.cliOutput` is read from, so it has to be kept and not only shown:
 # `tee` writes it for the logs hook, and standard output stays reserved for the URL.
-PATH="$PWD/node_modules/.bin:$PATH" sh -c "$build_command" 2>&1 | tee .adapter-build-output.log >&2
+fixture env PATH="$PWD/node_modules/.bin:$PATH" sh -c "$build_command" 2>&1 |
+  tee .adapter-build-output.log >&2
+
+# From the bundle rather than from `.next/BUILD_ID`: a fixture may set `distDir`, and then the build id
+# is under that name instead — while the bundle is `.ppr-cdn/` whatever the fixture called its output.
+# An empty marker here is worse than a missing one, since the harness reads the first match and would
+# take the empty string as the build id.
+build_id="$(node -p "JSON.parse(require('fs').readFileSync('.ppr-cdn/bundle.json','utf8')).buildId")"
 
 {
-  echo "BUILD_ID: $(cat .next/BUILD_ID)"
+  echo "BUILD_ID: ${build_id}"
   echo "DEPLOYMENT_ID: ${NEXT_DEPLOYMENT_ID}"
   # `modifyConfig` turns them on, and the harness asks whether it may expect them.
   echo "NEXT_SUPPORTS_IMMUTABLE_ASSETS: 1"
