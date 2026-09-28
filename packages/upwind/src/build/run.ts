@@ -126,12 +126,12 @@ function storageEnv(projectDir: string): Record<string, string> {
 /**
  * A build on Vercel, where the one thing this command adds is the one thing not to do.
  *
- * Vercel sets `VERCEL` on every build it runs. A build there is Vercel's: it produces what Vercel
- * serves, and naming the adapter would produce a deployment bundle under `.ppr-cdn/` instead —
- * which Vercel does not read, leaving it without the output it does. So a project whose `build`
- * script is this command can be deployed to both places from the same commit, and on Vercel this
- * command is the project's own `next build` and nothing else: no adapter, and no storage published
- * for one (`storageEnv`).
+ * Vercel sets `VERCEL` on every build it runs, and a build there is Vercel's. An adapter named in it
+ * takes the deployment over: `next build` writes a bundle under `.ppr-cdn/`, which Vercel does not
+ * read — and stops writing the file traces Vercel's own build does
+ * (`next-server.js.nft.json`, `next-minimal-server.js.nft.json`, absent from `.next/` whenever an
+ * adapter is named). So on Vercel this command is the project's own `next build` and nothing else:
+ * no adapter, and no storage published for one (`storageEnv`).
  *
  * `NEXT_ADAPTER_PATH` still wins, for the build that means it. A job that runs on Vercel to produce
  * a bundle rather than a Vercel deployment names the adapter in the environment and gets one, which

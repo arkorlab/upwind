@@ -66,10 +66,10 @@ site emits — canonical, hreflang, the sitemap, the Open Graph card — names `
 
 ### And on Vercel
 
-The same commit deploys there too. A build on Vercel is Vercel's: it produces what Vercel serves, and
-an adapter named during it would produce a deployment bundle instead — which Vercel does not read,
-leaving it with nothing to deploy. `next.config.ts` is what notices, because a config that names an
-adapter outranks anything the environment says, and `VERCEL` is set on every build Vercel runs.
+The same commit deploys there too. An adapter named in a build takes the deployment over: the build
+writes a bundle under `.ppr-cdn/` that Vercel does not read, and stops writing the file traces
+Vercel's own build does (`next-server.js.nft.json`). `next.config.ts` is what notices `VERCEL`,
+because a config that names an adapter outranks anything the environment says.
 
 **Set Vercel's build command to `next build`.** This project's `pnpm build` is `upwind build`, which
 names the adapter in the environment; the copy of `upwind` this project installs is the published one,
