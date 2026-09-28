@@ -158,9 +158,9 @@ function classifyByPath(url: URL): RequestClass | undefined {
  * The part of a page a router prefetch asks for, or `undefined` for a request asking for none.
  *
  * A header that is present and empty names no part. Next.js writes every segment path with a
- * leading slash, so nothing a build wrote can be found under the empty string — and saying so here
- * keeps the classification from carrying a path no route could hold, and from skipping the
- * navigation hints for a request that named nothing.
+ * leading slash, so nothing a build wrote could be found under the empty string, and saying so here
+ * keeps the classification from carrying a path no route could hold. Such a request is then read as
+ * the plain RSC request it is, and reaches the application as one.
  */
 function segmentPrefetchOf(headers: Headers): string | undefined {
   if (headers.get(RSC_HEADER) !== '1') {
@@ -371,6 +371,12 @@ export function classifyRequest(input: ClassifyInput): RequestClass {
   if (hints !== undefined) {
     return hints;
   }
+  // A prefetch of part of a page is turned away here with everything else that needed a route,
+  // rather than carried on as its own class with no route to go with it. Review read that as an
+  // oversight twice, so: with no manifest there is no table of parts to look one up in, so a host
+  // hands the request to its Function either way, and the reason it reports is the only difference.
+  // `no-manifest` is the reason that says something — the deployment has published none — where the
+  // class would only repeat what the headers already said.
   if (input.manifest === undefined) {
     return passthrough('no-manifest');
   }
