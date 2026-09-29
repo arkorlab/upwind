@@ -61,7 +61,16 @@ export type RequestClass =
   /** A file the manifest holds by content: served from storage, and nobody is asked. */
   | { readonly kind: 'static-file'; readonly pathname: string; readonly file: StaticFileEntry }
   | { readonly kind: 'rsc' }
-  | { readonly kind: 'segment-prefetch' }
+  /**
+   * A router prefetch of part of a page: `segmentPath` is the `next-router-segment-prefetch` it
+   * asks under, and `entry` the route it belongs to — `undefined` where the build proved none, as
+   * it is for a document at a pathname the build never wrote.
+   */
+  | {
+      readonly kind: 'segment-prefetch';
+      readonly segmentPath: string;
+      readonly entry: RouteEntry | undefined;
+    }
   | { readonly kind: 'action' }
   | { readonly kind: 'passthrough'; readonly reason: PassthroughReason };
 
@@ -143,9 +152,29 @@ function classifyByPath(url: URL): RequestClass | undefined {
   return undefined;
 }
 
+/**
+ * The part of a page a router prefetch asks for, or `undefined` for a request asking for none.
+ *
+ * A header that is present and empty names no part. Next.js writes every segment path with a
+ * leading slash, so nothing a build wrote could be found under the empty string, and saying so here
+ * keeps the classification from carrying a path no route could hold. Such a request is then read as
+ * the plain RSC request it is, and reaches the application as one.
+ */
+function segmentPrefetchOf(headers: Headers): string | undefined {
+  if (headers.get(RSC_HEADER) !== '1') {
+    return undefined;
+  }
+  const segmentPath = headers.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER);
+  return segmentPath === null || segmentPath === '' ? undefined : segmentPath;
+}
+
 function classifyByRouterHeaders(headers: Headers): RequestClass | undefined {
   if (headers.get(RSC_HEADER) === '1') {
-    return { kind: headers.has(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER) ? 'segment-prefetch' : 'rsc' };
+    // A segment prefetch is classified further down, with the route it is part of: it names one,
+    // and every gate a document passes on the way there is its gate too — a draft cookie, a
+    // deployment that is not the one being served. Anything else asking for React Server
+    // Components names no route of its own and is the application's to answer.
+    return segmentPrefetchOf(headers) === undefined ? { kind: 'rsc' } : undefined;
   }
   // The one list, read here and by `mayHoldForDocument`: a header this lets through to a document
   // is one a rule may ask for of a document.
@@ -324,12 +353,24 @@ export function classifyRequest(input: ClassifyInput): RequestClass {
     return passthrough('bot');
   }
   const late =
-    classifyByCookies(headers, input.deployment) ??
-    classifyByQuery(url, headers, input.deployment) ??
-    classifyByNavigationHints(headers);
+    classifyByCookies(headers, input.deployment) ?? classifyByQuery(url, headers, input.deployment);
   if (late !== undefined) {
     return late;
   }
+  // What a browser puts on a top-level navigation is asked only of one. A prefetch is fetched by
+  // the router rather than navigated to, so it carries none of those hints and every one of them
+  // would turn it away.
+  const segmentPath = segmentPrefetchOf(headers);
+  const hints = segmentPath === undefined ? classifyByNavigationHints(headers) : undefined;
+  if (hints !== undefined) {
+    return hints;
+  }
+  // A prefetch of part of a page is turned away here with everything else that needed a route,
+  // rather than carried on as its own class with no route to go with it. Review read that as an
+  // oversight twice, so: with no manifest there is no table of parts to look one up in, so a host
+  // hands the request to its Function either way, and the reason it reports is the only difference.
+  // `no-manifest` is the reason that says something — the deployment has published none — where the
+  // class would only repeat what the headers already said.
   if (input.manifest === undefined) {
     return passthrough('no-manifest');
   }
@@ -339,7 +380,11 @@ export function classifyRequest(input: ClassifyInput): RequestClass {
   if (url.pathname.includes('//')) {
     return passthrough('repeated-slash');
   }
-  return routeFor(input.manifest, url, headers) ?? passthrough('route-not-proved');
+  const entry = entryFor(input.manifest, url, headers);
+  if (segmentPath !== undefined) {
+    return { kind: 'segment-prefetch', segmentPath, entry };
+  }
+  return entry === undefined ? passthrough('route-not-proved') : { kind: 'document', entry };
 }
 
 /**
@@ -353,14 +398,16 @@ export function classifyRequest(input: ClassifyInput): RequestClass {
  * filesystem and not before it. Asked only of a pathname the build named, which is the only
  * kind of answer that step decides: a dynamic class carries the gate in `matchDynamicRoute`,
  * and a claimed pathname matches no class there either.
+ *
+ * The same route for a document and for a prefetch of part of it. A prefetch asks for a piece of
+ * the page at its own URL, so the page it is a piece of is the page that URL names.
  */
-function routeFor(manifest: ProjectManifest, url: URL, headers: Headers): RequestClass | undefined {
+function entryFor(manifest: ProjectManifest, url: URL, headers: Headers): RouteEntry | undefined {
   const exact = findRouteEntry(manifest, url.pathname);
   if (exact !== undefined && isReserved(manifest, url, headers, true)) {
     return undefined;
   }
-  const entry = exact ?? dynamicEntry(manifest, url, headers);
-  return entry === undefined ? undefined : { kind: 'document', entry };
+  return exact ?? dynamicEntry(manifest, url, headers);
 }
 
 function dynamicEntry(
