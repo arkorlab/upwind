@@ -164,8 +164,8 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
   const instrumentation = await instrumentationOf(ctx.distDir, exported);
   const id = deploymentId();
   // Next.js's build manifests are what its route modules read at request time. A static export
-  // has no route module in the Function, so nothing would ever read one: shipping them would be
-  // bytes in a Function that never opens them.
+  // has no route module in the Function, and the middleware Function has none either, so nothing
+  // there would ever read one: shipping them would be bytes in a Function that never opens them.
   const manifests = exported ? [] : await collectManifests(ctx.projectDir, ctx.distDir, id);
   const {
     entrypoints,
@@ -268,6 +268,9 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
       [...middlewareWasm, ...instrumentation.wasm],
       middlewareEdgeEntries,
     );
+    // What the middleware's path reads and nothing more (`middlewareManifest`): no build manifest,
+    // which only a route module reads, and no cache, which nothing on that path reads or writes —
+    // the platform's cache handlers are installed in the app Function alone.
     middlewareFunction = await buildFunction({
       kind: 'middleware',
       projectDir: ctx.projectDir,
@@ -276,9 +279,9 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
       entries: nodeMiddleware,
       edgeEntries: middlewareEdgeEntries,
       wasm: wasm.collector,
-      manifests,
-      runtimeManifest: runtimeManifestJson,
-      cacheHostModule: options.cacheHostModule,
+      manifests: [],
+      runtimeManifest: JSON.stringify(middlewareManifest(runtimeManifest)),
+      cacheHostModule: undefined,
       blobs: [],
       files: [...files.middleware, ...inlineAssetFiles(middlewareEdgeEntries, ctx.projectDir)],
       blobStore: blobs,
@@ -314,6 +317,34 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     `@stayingupwind/adapter: wrote ${OUT_DIR_NAME}/${BUNDLE_FILE} (${bundle.prerenders.length} prerenders, ${bundle.staticFiles.length} static files, ${blobs.count} blobs)`,
   );
   reportWhatTravels(bundle, edgeEntries, ctx.nextVersion);
+}
+
+/**
+ * The runtime manifest of the middleware Function: the deployment's configuration and its
+ * `next.config` rules, without the lists that grow with the application — its entrypoints,
+ * prerenders, files and dynamic routes.
+ *
+ * That Function answers one request, the one that runs the middleware and hands back its response,
+ * and on that path the runtime reads the configuration and looks nothing up by route. Parsed before
+ * its first answer, the lists are time on the first byte of every document the middleware matches:
+ * megabytes, in a large application, that the Function never reads. Its files would be wrong
+ * besides, since it carries no blob to serve one from.
+ */
+function middlewareManifest<
+  T extends {
+    readonly routing: { readonly dynamicRoutes: readonly unknown[] };
+    readonly entrypoints: readonly unknown[];
+    readonly prerenders: readonly unknown[];
+    readonly staticFiles: readonly unknown[];
+  },
+>(manifest: T): T {
+  return {
+    ...manifest,
+    routing: { ...manifest.routing, dynamicRoutes: [] },
+    entrypoints: [],
+    prerenders: [],
+    staticFiles: [],
+  };
 }
 
 /**
@@ -437,7 +468,8 @@ function middlewarePlacement(middleware: AdapterOutput['MIDDLEWARE'] | undefined
 export interface AdapterOptions {
   /**
    * The module the runtime's cache reads and writes through, as an absolute path — what
-   * `ppr-cdn:cache-host` resolves to, bundled into the Function's runtime.
+   * `ppr-cdn:cache-host` resolves to, bundled into the app Function's runtime. The middleware
+   * Function is built without it: nothing on its path reads or writes the cache.
    *
    * Left out, the runtime is given no cache and answers every read a miss: a bundle that is
    * correct, serves what the build produced, and revalidates nothing. A host that stores
