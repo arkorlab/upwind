@@ -169,6 +169,33 @@ jobs:
             esac
           fi
 
+      # A release that would publish a name npm has never seen needs `bootstrap`, and a tag push
+      # cannot ask for it. Without this the run would publish every package that does have a trusted
+      # publisher and fail on the one that does not — a release half made, and the half that landed
+      # cannot be taken back. Asked here, where nothing has been published yet.
+      - name: Nothing is being published for the first time without being asked for
+        if: ${{ !inputs.bootstrap }}
+        run: |
+          set -euo pipefail
+          for manifest in packages/*/package.json; do
+            if [ "$(node -p "require('./${manifest}').private === true")" = true ]; then
+              continue
+            fi
+            name="$(node -p "require('./${manifest}').name")"
+            code="$(curl -fsS -o /dev/null -w '%{http_code}' "https://registry.npmjs.org/${name/\//%2f}" || true)"
+            case "${code}" in
+              200) ;;
+              404)
+                echo "::error::${name} has never been published, and this run cannot publish it: a first publish needs a token, which only a dispatch with bootstrap: true carries. Cancel this run and dispatch Release with that tag instead."
+                exit 1
+                ;;
+              *)
+                echo "::error::could not tell whether ${name} has ever been published (HTTP ${code})"
+                exit 1
+                ;;
+            esac
+          done
+
       - name: The tag says the version the packages say
         env:
           TAG: ${{ inputs.tag }}
