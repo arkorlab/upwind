@@ -91,6 +91,12 @@ export async function readData(runtime: CacheRuntime, request: DataReadRequest):
   if (!current() || (memo.kind === 'found' && memo.response.dependencyRevision < state.revision)) {
     return currentOrMissing(runtime, key);
   }
+  // Nothing was remembered when this read began, so what is remembered now another read put there
+  // meanwhile. A value is ordered against it by the revision floor above; a miss carries no
+  // revision to be ordered by, and does not take the place of what that read found.
+  if (memo.kind === 'missing' && runtime.dataMemo.get(key) !== undefined) {
+    return currentOrMissing(runtime, key);
+  }
   runtime.dataMemo.set(key, memo);
   return memo;
 }
