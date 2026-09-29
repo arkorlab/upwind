@@ -87,11 +87,11 @@ fixture env PATH="$PWD/node_modules/.bin:$PATH" sh -c "$build_command" 2>&1 |
   tee .adapter-build-output.log >&2
 
 # From the bundle rather than from `.next/BUILD_ID`: a fixture may set `distDir`, and then the build id
-# is under that name instead — while the bundle is `.ppr-cdn/` whatever the fixture called its output.
+# is under that name instead — while the bundle is `.arkor/` whatever the fixture called its output.
 # An empty marker here is worse than a missing one, since the harness reads the first match and would
 # take the empty string as the build id.
 bundle_says() {
-  node -p "JSON.parse(require('fs').readFileSync('.ppr-cdn/bundle.json','utf8'))$1"
+  node -p "JSON.parse(require('fs').readFileSync('.arkor/bundle.json','utf8'))$1"
 }
 build_id="$(bundle_says '.buildId')"
 

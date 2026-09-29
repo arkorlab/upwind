@@ -33,7 +33,7 @@ export const en = {
   },
   bundle: {
     title: 'What a build writes',
-    body: 'Next.js calls the adapter through its own Adapter API — `modifyConfig` before the build, `onBuildComplete` after it — and everything a deployment needs is written under `.ppr-cdn/`.',
+    body: 'Next.js calls the adapter through its own Adapter API — `modifyConfig` before the build, `onBuildComplete` after it — and everything a deployment needs is written under one directory. From the next release, that directory is `.arkor/`.',
     items: [
       {
         term: '`bundle.json`',

@@ -96,7 +96,7 @@ function printNextSteps(options: {
     `\`${dev}\` runs upwind in front of the project's own Next.js, and /__upwind is answered by`,
   );
   console.log(
-    `upwind itself. \`${runCommand(manager, 'build')}\` writes the deployment bundle under .ppr-cdn/.`,
+    `upwind itself. \`${runCommand(manager, 'build')}\` writes the deployment bundle under .arkor/.`,
   );
 }
 

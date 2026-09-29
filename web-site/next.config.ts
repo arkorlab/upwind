@@ -20,7 +20,7 @@ import type { NextConfig } from 'next';
  * anything that does not know about upwind — produce the same deployment bundle.
  *
  * **Except on Vercel**, which builds this site too, from the same commit. An adapter named in a build
- * takes the deployment over: the build writes a bundle under `.ppr-cdn/` that Vercel does not read,
+ * takes the deployment over: the build writes a bundle Vercel does not read,
  * and, on Next.js 16.3, stops writing the file traces Vercel's own build does
  * (`next-server.js.nft.json`). `VERCEL` is
  * set on every build Vercel runs, and this is the line that has to notice, because a `next.config`

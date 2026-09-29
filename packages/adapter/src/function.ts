@@ -82,7 +82,7 @@ export interface BuildFunctionInput {
   readonly manifests: readonly TextModule[];
   /** Contents of `runtime.json`: what the runtime needs to know about the deployment. */
   readonly runtimeManifest: string;
-  /** The module `ppr-cdn:cache-host` resolves to; a build given none gets no runtime cache. */
+  /** The module `arkor:cache-host` resolves to; a build given none gets no runtime cache. */
   readonly cacheHostModule: string | undefined;
   /** Blobs to ship inside the Function (prerendered bodies and postponed states). */
   readonly blobs: readonly { sha256: string; bytes: Uint8Array }[];
@@ -121,13 +121,13 @@ const EMPTY_WASM_MODULE = '// This deployment carries no WebAssembly.';
 const NO_CACHE_HOST_MODULE = 'export function createCacheHost() { return undefined; }';
 
 /**
- * The generated modules the runtime source names: `ppr-cdn:app` is the `app.cjs` next to it in
- * the Function, `ppr-cdn:edge` the `edge.cjs` — which a deployment with no edge entrypoint does
+ * The generated modules the runtime source names: `arkor:app` is the `app.cjs` next to it in
+ * the Function, `arkor:edge` the `edge.cjs` — which a deployment with no edge entrypoint does
  * not have, and whose import is then the empty table above rather than a module the Function would
- * carry and never use — and `ppr-cdn:wasm` the `wasm.mjs` that publishes the compiled
+ * carry and never use — and `arkor:wasm` the `wasm.mjs` that publishes the compiled
  * WebAssembly, which a deployment with none does not have either.
  *
- * `ppr-cdn:cache-host` is the one module of the four that comes from outside the build:
+ * `arkor:cache-host` is the one module of the four that comes from outside the build:
  * `cacheHostModule` names what the runtime's cache reads and writes through, and it is bundled
  * into the runtime rather than shipped beside it, since it is source like the rest of the
  * runtime. A build told of none resolves to the stub above.
@@ -138,46 +138,46 @@ function generatedModulesPlugin(has: {
   cacheHostModule: string | undefined;
 }): Plugin {
   return {
-    name: 'ppr-cdn-generated-modules',
+    name: 'arkor-generated-modules',
     setup(bundler) {
       // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-      bundler.onResolve({ filter: /^ppr-cdn:app$/ }, () => {
+      bundler.onResolve({ filter: /^arkor:app$/ }, () => {
         return {
           path: `./${APP_MODULE}`,
           external: true,
         };
       });
       // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-      bundler.onResolve({ filter: /^ppr-cdn:edge$/ }, () => {
+      bundler.onResolve({ filter: /^arkor:edge$/ }, () => {
         return has.edge
           ? { path: `./${EDGE_MODULE}`, external: true }
-          : { path: 'ppr-cdn:edge', namespace: 'ppr-cdn-edge' };
+          : { path: 'arkor:edge', namespace: 'arkor-edge' };
       });
       bundler.onLoad(
         // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-        { filter: /^ppr-cdn:edge$/, namespace: 'ppr-cdn-edge' },
+        { filter: /^arkor:edge$/, namespace: 'arkor-edge' },
         () => ({ contents: EMPTY_EDGE_MODULE, loader: 'js' }),
       );
       // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-      bundler.onResolve({ filter: /^ppr-cdn:wasm$/ }, () => {
+      bundler.onResolve({ filter: /^arkor:wasm$/ }, () => {
         return has.wasm
           ? { path: `./${WASM_ENTRY_MODULE}`, external: true }
-          : { path: 'ppr-cdn:wasm', namespace: 'ppr-cdn-wasm' };
+          : { path: 'arkor:wasm', namespace: 'arkor-wasm' };
       });
       bundler.onLoad(
         // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-        { filter: /^ppr-cdn:wasm$/, namespace: 'ppr-cdn-wasm' },
+        { filter: /^arkor:wasm$/, namespace: 'arkor-wasm' },
         () => ({ contents: EMPTY_WASM_MODULE, loader: 'js' }),
       );
       // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-      bundler.onResolve({ filter: /^ppr-cdn:cache-host$/ }, () => {
+      bundler.onResolve({ filter: /^arkor:cache-host$/ }, () => {
         return has.cacheHostModule === undefined
-          ? { path: 'ppr-cdn:cache-host', namespace: 'ppr-cdn-cache-host' }
+          ? { path: 'arkor:cache-host', namespace: 'arkor-cache-host' }
           : { path: has.cacheHostModule };
       });
       bundler.onLoad(
         // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-        { filter: /^ppr-cdn:cache-host$/, namespace: 'ppr-cdn-cache-host' },
+        { filter: /^arkor:cache-host$/, namespace: 'arkor-cache-host' },
         () => ({ contents: NO_CACHE_HOST_MODULE, loader: 'js' }),
       );
     },

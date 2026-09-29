@@ -4,7 +4,7 @@ import type { Copy } from './copy.ts';
  * The site in Japanese, served under `/ja`.
  *
  * A translation of what the English says, not a gloss of it: the sentences are Japanese sentences,
- * and the names — `next build`, `upwind dev`, `.ppr-cdn/` — are the same names, because they are what
+ * and the names — `next build`, `upwind dev`, `.arkor/` — are the same names, because they are what
  * a reader types.
  */
 export const ja = {
@@ -31,7 +31,7 @@ export const ja = {
   },
   bundle: {
     title: 'ビルドが書き出すもの',
-    body: 'Next.js は自身の Adapter API を通じてアダプターを呼びます。ビルド前に `modifyConfig`、ビルド後に `onBuildComplete`。デプロイに必要なものはすべて `.ppr-cdn/` の下に書き出されます。',
+    body: 'Next.js は自身の Adapter API を通じてアダプターを呼びます。ビルド前に `modifyConfig`、ビルド後に `onBuildComplete`。デプロイに必要なものはすべて 1 つのディレクトリーの下に書き出されます。そのディレクトリーは、次のリリースから `.arkor/` です。',
     items: [
       {
         term: '`bundle.json`',
