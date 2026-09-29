@@ -177,12 +177,47 @@ jobs:
         if: ${{ !inputs.bootstrap }}
         run: |
           set -euo pipefail
+          # A budget for the whole step, not for each request. Per-request deadlines alone say
+          # nothing about the total: multiply them by the attempts and by however many packages this
+          # repository has grown to, and a registry that accepts connections and then says nothing
+          # costs more than this job is allowed (`timeout-minutes` above), which kills the run with
+          # GitHub's message instead of the one below. With a budget, the arithmetic does not depend
+          # on the number of packages, and what a reader gets is the error that explains itself.
+          #
+          # The bound is the budget plus one request: an attempt that started a moment before the
+          # deadline still gets its fifteen seconds, and nothing waits after that. A hundred and
+          # thirty-five seconds against this job's five minutes, whatever the registry is doing.
+          deadline=$((SECONDS + 120))
           for manifest in packages/*/package.json; do
             if [ "$(node -p "require('./${manifest}').private === true")" = true ]; then
               continue
             fi
             name="$(node -p "require('./${manifest}').name")"
-            code="$(curl -fsS -o /dev/null -w '%{http_code}' "https://registry.npmjs.org/${name/\//%2f}" || true)"
+            # Two answers are answers — it is there, or it never was — and everything else is the
+            # registry not saying. `-f` is left off so that 404 is one of the answers rather than an
+            # error with a `curl: (22)` beside it; the timeouts are so that a host which accepts the
+            # connection and then says nothing costs half a minute instead of this job's whole five;
+            # and the retry is because one 500 on the way to a release should not be the end of it.
+            code=000
+            for attempt in 1 2 3; do
+              if [ "${SECONDS}" -ge "${deadline}" ]; then
+                break
+              fi
+              # `|| true` and not `|| echo 000`: `-w` prints after completion, successful or not, so a
+              # connection that never got a response has already said `000` and a second one would
+              # make it `000000`. What the `||` is for is `set -e`, which would otherwise end the
+              # loop on the first failure it is there to survive.
+              code="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 15 \
+                "https://registry.npmjs.org/${name/\//%2f}" || true)"
+              case "${code}" in
+                200 | 404) break ;;
+              esac
+              # Not after the last one, and not once the budget is spent: in both cases there is no
+              # next request for the wait to be spacing out from.
+              if [ "${attempt}" != 3 ] && [ "${SECONDS}" -lt "${deadline}" ]; then
+                sleep 5
+              fi
+            done
             case "${code}" in
               200) ;;
               404)
