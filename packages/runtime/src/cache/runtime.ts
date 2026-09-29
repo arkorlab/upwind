@@ -74,7 +74,12 @@ export interface CacheRuntime {
   readonly recordReads: Map<string, RecordRead>;
   /** Entries a regeneration was asked for lately; a second ask within the hold is not repeated. */
   readonly regenerationMemo: TtlCache<string, true>;
-  /** Artifacts of current generations read for a data route, by id, for one hold. */
+  /**
+   * Artifacts of current generations, by id, read for an output other than the record's own. An
+   * artifact is named by its content and never rewritten, so what an id read once says it says for
+   * good: kept until the budget needs the room rather than for a hold, after which every request
+   * that found the record again read the same bytes again, a round trip to the host each time.
+   */
   readonly artifactMemo: TtlCache<string, Uint8Array>;
   readonly log: (message: string, fields?: Record<string, string | number>) => void;
 }
@@ -179,7 +184,7 @@ export function createCacheRuntime(options: CacheRuntimeOptions): CacheRuntime |
     }),
     recordReads: new Map(),
     regenerationMemo: new TtlCache(holdMs, MEMO_ENTRIES, options.now),
-    artifactMemo: new TtlCache(holdMs, ARTIFACT_MEMO_ENTRIES, options.now, {
+    artifactMemo: new TtlCache(Infinity, ARTIFACT_MEMO_ENTRIES, options.now, {
       maxBytes: ARTIFACT_MEMO_BYTES,
       sizeOf: (bytes, key) => bytes.buffer.byteLength + key.length * UTF16_BYTES,
     }),
