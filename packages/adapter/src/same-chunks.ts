@@ -25,8 +25,8 @@ import { compareCodeUnits } from '@stayingupwind/core/util';
  *   so the identifiers recorded there never told the chunks apart to begin with.
  */
 
-/** The comments naming the file, which a build writes last: only there are they set aside. */
-const MAP_OR_ID_COMMENTS = /(?:\n\/\/[#@] (?:sourceMappingURL|debugId|chunkId)=[^\n]*)+\s*$/u;
+/** A comment naming the file, which a build writes last: only there are they set aside. */
+const MAP_OR_ID_COMMENT = /^\/\/[#@] (?:sourceMappingURL|debugId|chunkId)=/u;
 const UUID = /[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}/giu;
 const ANY_ID = '00000000-0000-0000-0000-000000000000';
 /** Longer than any such statement, and short enough that a first line of code is not read whole. */
@@ -56,7 +56,25 @@ export function chunkCode(source: string): string {
     first !== undefined && recordsAnId(first)
       ? `${first.replaceAll(UUID, () => ANY_ID)}${source.slice(end)}`
       : source;
-  return code.replace(MAP_OR_ID_COMMENTS, '');
+  return withoutFileComments(code);
+}
+
+/**
+ * `source` less the run of comments naming the file on its last lines, and the whitespace after
+ * them; `source` itself when it does not end in one. Read a line at a time from the end, rather than
+ * by a pattern that would try every such comment in a chunk of megabytes against the rest of it.
+ */
+function withoutFileComments(source: string): string {
+  let kept = source.trimEnd();
+  let stripped = false;
+  for (let start = kept.lastIndexOf('\n'); start !== -1; start = kept.lastIndexOf('\n')) {
+    if (!MAP_OR_ID_COMMENT.test(kept.slice(start + 1))) {
+      break;
+    }
+    kept = kept.slice(0, start);
+    stripped = true;
+  }
+  return stripped ? kept : source;
 }
 
 /**
