@@ -50,6 +50,8 @@ export {
   routeCacheSchema,
   type RouteEntry,
   routeEntrySchema,
+  type RouteSegment,
+  routeSegmentSchema,
   type ProjectManifest,
   projectManifestSchema,
   type ReservedRoute,
