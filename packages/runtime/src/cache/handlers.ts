@@ -133,19 +133,59 @@ interface HeldFetch {
 }
 
 /**
- * A write the fetch cache handed over: what it writes, and a promise that settles as the write is
- * answered, or has failed.
+ * How long a write waits for the write of its key that was out when it was handed over. Past this
+ * the earlier one is taken for lost — its request may have ended under it, and what a request that
+ * has ended left out never settles in another — and the write goes regardless, so it may land
+ * first.
  */
-interface FetchWrite extends HeldFetch {
+const FETCH_WRITE_PATIENCE_MS = 5000;
+
+/**
+ * How long a write is taken to be out at the most: the time a request may go on for once it has
+ * answered (`waitUntil`). A write whose request ended under it never settles here, and would
+ * otherwise answer reads of its key, and hold its key's later writes back, for as long as the
+ * isolate lives.
+ */
+const FETCH_WRITE_LIFETIME_MS = 30_000;
+
+/**
+ * A write the fetch cache handed over: what it writes, when, the write of its key it goes after,
+ * whether it has gone out, and a promise that settles as it is answered, has failed, or will not
+ * go. A write that a newer one of its key took the place of before it went out lets its bytes go.
+ */
+interface FetchWrite {
+  readonly entry: DataEntryMetadata;
+  bytes: Uint8Array | undefined;
+  readonly handedAt: number;
+  readonly after: Promise<void> | undefined;
+  sent: boolean;
   settled: Promise<void> | undefined;
 }
 
 /**
  * The fetch cache's writes still out in this isolate: for each key, the last one handed over, which
  * is what a read of the key is answered with meanwhile (`get`). An entry leaves as its write
- * settles, so there are only ever as many as there are keys with a write out.
+ * settles, or once it is older than a write can be out (`FETCH_WRITE_LIFETIME_MS`), so there are
+ * only ever as many as there are keys with a write out.
  */
 const fetchWrites = new WeakMap<CacheRuntime, Map<string, FetchWrite>>();
+
+/** The key's write still out, if there is one: none handed over longer ago than a write can be. */
+function writeOut(writes: Map<string, FetchWrite>, key: string): FetchWrite | undefined {
+  const write = writes.get(key);
+  if (write !== undefined && performance.now() - write.handedAt >= FETCH_WRITE_LIFETIME_MS) {
+    writes.delete(key);
+    return undefined;
+  }
+  return write;
+}
+
+/** What the key's write still out in this isolate carries, if there is one. */
+function heldOut(runtime: CacheRuntime, key: string): HeldFetch | undefined {
+  const writes = fetchWrites.get(runtime);
+  const write = writes === undefined ? undefined : writeOut(writes, key);
+  return write?.bytes === undefined ? undefined : { entry: write.entry, bytes: write.bytes };
+}
 
 function heldIn(memo: DataMemo): HeldFetch | undefined {
   return memo.kind === 'found'
@@ -153,17 +193,69 @@ function heldIn(memo: DataMemo): HeldFetch | undefined {
     : undefined;
 }
 
+/** `promise` settled, or `ms` gone by, whichever is first. */
+async function patiently(promise: Promise<void>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      promise,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Send a write once the one it goes after has settled, unless a newer one took its place. */
+async function send(
+  runtime: CacheRuntime,
+  writes: Map<string, FetchWrite>,
+  key: string,
+  write: FetchWrite,
+): Promise<void> {
+  try {
+    // Never rejects: a write that failed is logged below, and the next one goes on. With none
+    // before it, the write takes the key's state before this first waits (`writeData`).
+    if (write.after !== undefined) {
+      await patiently(write.after, FETCH_WRITE_PATIENCE_MS);
+    }
+    const { bytes } = write;
+    if (bytes === undefined) {
+      return;
+    }
+    write.sent = true;
+    await writeData(runtime, { key, entry: write.entry, bytes });
+  } catch (error) {
+    // The render has its data; what failed is keeping it for the next one.
+    runtime.log('fetch cache write failed', { detail: detail(error) });
+  } finally {
+    // A later write of the key, handed over meanwhile, keeps its place.
+    if (writes.get(key) === write) {
+      writes.delete(key);
+    }
+  }
+}
+
 /**
  * Write what a `fetch` answered, under the key and the entry its render gave it, once the write of
- * the key handed over before it has been answered.
+ * the key that is out has been answered.
  *
  * Next.js ordered a key's writes itself while it waited on them: a render's writes of one key ran
  * one after another (`cache-set-<key>`, in `createCachedDynamicResponse`), and its lock on the key
  * held a second render's until the first had landed. Both now let go as `set()` answers, which is
  * before the write lands; two writes of a key out at once would reach the host in whichever order
- * the network gave them, and the last to land is what the host keeps. Each waits for the one before
- * it here instead, so the key's writes land in the order they were handed over, and the render
- * waits on none of them.
+ * the network gave them, and the last to land is what the host keeps. So a write goes out only once
+ * the one before it has been answered, and the render waits on none of them.
+ *
+ * At most one waits: a write handed over while another of its key is still waiting takes that one's
+ * place, and the one it replaces never goes out. The host would keep the newer anyway, and a key
+ * the host is slow to answer for, fetched again by every render that misses it meanwhile, would
+ * otherwise hold every value those renders fetched until it did. Nor does one wait for long
+ * (`FETCH_WRITE_PATIENCE_MS`), or for a write handed over longer ago than a write can be out
+ * (`FETCH_WRITE_LIFETIME_MS`): the request a write is kept alive by may end under it, and a write
+ * waiting on that one would never go.
  */
 function keepFetch(
   runtime: CacheRuntime,
@@ -173,27 +265,23 @@ function keepFetch(
 ): Promise<void> {
   const writes = fetchWrites.get(runtime) ?? new Map<string, FetchWrite>();
   fetchWrites.set(runtime, writes);
-  const before = writes.get(key)?.settled;
-  const write: FetchWrite = { entry, bytes, settled: undefined };
+  const previous = writeOut(writes, key);
+  let after = previous?.settled;
+  if (previous?.sent === false) {
+    // It never went out: this one takes its place, behind the write it was waiting for.
+    previous.bytes = undefined;
+    ({ after } = previous);
+  }
+  const write: FetchWrite = {
+    entry,
+    bytes,
+    handedAt: performance.now(),
+    after,
+    sent: false,
+    settled: undefined,
+  };
   writes.set(key, write);
-  write.settled = (async () => {
-    try {
-      // Never rejects: a write that failed is logged below, and the next one goes on. With none
-      // before it, the write takes the key's state before this first waits (`writeData`).
-      if (before !== undefined) {
-        await before;
-      }
-      await writeData(runtime, { key, entry, bytes });
-    } catch (error) {
-      // The render has its data; what failed is keeping it for the next one.
-      runtime.log('fetch cache write failed', { detail: detail(error) });
-    } finally {
-      // A later write of the key, handed over meanwhile, keeps its place.
-      if (writes.get(key) === write) {
-        writes.delete(key);
-      }
-    }
-  })();
+  write.settled = send(runtime, writes, key, write);
   return write.settled;
 }
 
@@ -239,7 +327,7 @@ export class PlatformFetchCache {
     let held: HeldFetch | undefined;
     try {
       held =
-        fetchWrites.get(runtime)?.get(cacheKey) ??
+        heldOut(runtime, cacheKey) ??
         heldIn(await readData(runtime, { key: cacheKey, kind: DATA_FETCH }));
       if (held !== undefined) {
         await runtime.tags.syncLocal(
