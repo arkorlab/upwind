@@ -42,8 +42,8 @@ import type { CacheRuntime } from './runtime.ts';
  *
  * The uploads and the commit go on behind whoever answers from the render, handed to the runtime
  * once the render is made: they are round trips to the host, none of which changes what the render
- * says, and a visitor answered from a render made for them waited for every one of them before
- * the first byte.
+ * says, and a visitor answered from a render made for them no longer waits for any of them before
+ * the first byte, as it once waited for every one.
  */
 
 const HTML_TYPE = 'text/html; charset=utf-8';

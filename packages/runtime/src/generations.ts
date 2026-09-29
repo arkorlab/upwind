@@ -217,7 +217,15 @@ function afterBody(response: Response, then: () => void): Response {
   const reader = body.getReader();
   const through = new ReadableStream<Uint8Array>({
     async pull(controller) {
-      const read = await reader.read();
+      let read: ReadableStreamReadResult<Uint8Array>;
+      try {
+        read = await reader.read();
+      } catch (error) {
+        // A body that fails part way has still been sent all it will be: the entry is as stale as
+        // it was, and its regeneration no less due.
+        once();
+        throw error;
+      }
       if (read.done) {
         controller.close();
         once();

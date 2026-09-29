@@ -149,7 +149,14 @@ export function forgetRecord(runtime: CacheRuntime, entryId: string): void {
   runtime.recordReads.delete(entryId);
 }
 
-/** The entry's id, derived once per isolate: it is the same for the scope's every request. */
+/**
+ * The entry's id, derived once per isolate: it is the same for the scope's every request.
+ *
+ * Two requests that find it missing at once each derive it. A derivation under way is work of the
+ * request that began it, and the Workers runtime drops what a request left out once that request
+ * has ended: a second request waiting on it could wait on something that never settles, for a
+ * digest that costs less than the wait.
+ */
 async function entryIdOf(runtime: CacheRuntime, descriptor: RouteEntryDescriptor): Promise<string> {
   const key = JSON.stringify([descriptor.kind, descriptor.route, descriptor.pathname]);
   const known = runtime.entryIds.get(key);
