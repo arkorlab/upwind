@@ -1,4 +1,6 @@
+import type { RouteHas } from '../bundle/schema.ts';
 import type { ProjectManifest } from '../manifest/index.ts';
+import { anyConditionHolds } from './conditions.ts';
 import { isHtmlLimitedBotUserAgent } from './constants.ts';
 import { atomAt, quantifierAt } from './pattern-syntax.ts';
 
@@ -26,6 +28,12 @@ const MAX_TESTED_USER_AGENT_LENGTH = 512;
  * The longest pattern run here. Its alternatives without a repetition cost at most their own
  * length at each position of the user agent, so this bounds them all together: well past Next.js's
  * list (about 300 characters) with an application's own names added to it.
+ *
+ * What these limits bound is a test once the engine has compiled the pattern. The first tests cost
+ * more: the engine compiles the pattern when it is first run and again when it tiers it up. A
+ * 4096-character alternation of sets, against a 512-character agent, has measured from 2 to
+ * 12.5 ms on its first test, against well under 1 ms once tiered up. That is paid once for each
+ * manifest an isolate judges by (`judges`), not once for each request.
  */
 const MAX_RUN_PATTERN_LENGTH = 4096;
 
@@ -116,12 +124,12 @@ function runsBounded(pattern: string): boolean {
  *
  * The two it stands in for cost different things. A pattern that does not compile, the Function
  * does not run either, so a crawler passed on for it is only answered later. A pattern of another
- * shape the Function does run. A partially prerendered route carries it all the same, in the
- * user-agent condition of its `bypassFor`, which is judged on the route the request lands on, as
- * Next.js's router judges it: a visitor it names is passed on there. What is lost is a visitor it
- * names only in another case, since that condition, unlike this judge, is case-sensitive — the
- * price of never running such a pattern here, paid by the application that wrote it rather than
- * by every application the edge serves.
+ * shape the Function does run, and the edge never does: not here, and not in the user-agent
+ * condition Next.js writes into each partially prerendered route's `bypassFor` from the same
+ * pattern, which is judged by this judge as well (`bypassForHolds`). So a visitor such a pattern
+ * names and Next.js's list does not is served the shell, its metadata streamed, where Next.js
+ * would have rendered the page whole for it — the price of never running such a pattern here,
+ * paid by the application that wrote it rather than by every application the edge serves.
  */
 function judgeOf(pattern: string): BlockingJudge {
   if (pattern === NEXT_HTML_LIMITED_BOTS || !runsBounded(pattern)) {
@@ -161,4 +169,46 @@ export function wantsBlockingMetadata(
     judges.set(manifest, judge);
   }
   return judge(userAgent);
+}
+
+/** The pattern Next.js writes into a partially prerendered route's `bypassFor` for this manifest. */
+function blockingMetadataPattern(manifest: ProjectManifest): string {
+  const pattern = manifest.htmlLimitedBots;
+  return pattern === undefined || pattern === '' ? NEXT_HTML_LIMITED_BOTS : pattern;
+}
+
+/**
+ * Whether a prerender's `bypassFor` holds for a request: any one of its conditions, as Next.js reads
+ * the list (`anyConditionHolds`), except the one `next build` writes from `htmlLimitedBots`.
+ *
+ * `next build` gives every partially prerendered route a user-agent condition whose pattern is the
+ * application's list verbatim, or Next.js's own where the application names none, so that a
+ * visitor it sends blocking metadata to skips the shell. Run as a condition, that pattern is
+ * tested whole and then anywhere in the agent, with no bound on its shape — before the first byte
+ * of every navigation to such a route. It is asked of `wantsBlockingMetadata` instead, the
+ * bounded judge that already answers the same question for the classification, so the two cannot
+ * disagree either. That judge is case-insensitive where the condition is not, and so passes on at
+ * least every visitor the condition does when it runs the pattern.
+ *
+ * Every other condition — a Server Action's header, a multipart body, or a user-agent condition
+ * with another pattern (a manifest that records no `htmlLimitedBots` while its build wrote one of
+ * the application's own) — is still run as Next.js's router runs it, unbounded in its shape as
+ * every `has` and `missing` condition is. Bounding those is separate work.
+ */
+export function bypassForHolds(
+  conditions: readonly RouteHas[],
+  url: URL,
+  headers: Headers,
+  manifest: ProjectManifest,
+): boolean {
+  const pattern = blockingMetadataPattern(manifest);
+  return conditions.some((condition) => {
+    const listed =
+      condition.type === 'header' &&
+      condition.key?.toLowerCase() === 'user-agent' &&
+      condition.value === pattern;
+    return listed
+      ? wantsBlockingMetadata(headers.get('user-agent'), manifest)
+      : anyConditionHolds([condition], url, headers);
+  });
 }

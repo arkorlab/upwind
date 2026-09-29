@@ -318,12 +318,25 @@ const HTML_LIMITED_BOT_TOKENS: readonly string[] = [
   'yeti',
   'googleweblight',
 ];
-const GOOGLE_CRAWLER_RE = /[\w-]-google|google-[\w-]/iu;
-const DOM_BOT_UA_RE = /googlebot(?!-)/iu;
+// Tested against `asciiLowerCase` of the agent. Without the `i` flag, `\w` is ASCII alone, as it
+// is in Next.js's patterns; with `i` and `u` together it would take `ſ` and the Kelvin sign too.
+const GOOGLE_CRAWLER_RE = /[\w-]-google|google-[\w-]/u;
+const DOM_BOT_UA_RE = /googlebot(?!-)/u;
+const ASCII_UPPER_CASE_RE = /[A-Z]/gu;
+
+/**
+ * The agent with its ASCII letters in lower case and nothing else changed: the case Next.js's
+ * lists ignore, which it compiles with `i` and without `u`. Such a pattern folds no character
+ * outside ASCII onto one inside it, so `İ`, `ſ` and the Kelvin sign match none of its letters,
+ * where `toLowerCase` would make `yeti` of `YETİ`.
+ */
+function asciiLowerCase(value: string): string {
+  return value.replaceAll(ASCII_UPPER_CASE_RE, (letter) => letter.toLowerCase());
+}
 
 /** True for user agents Next.js serves with a blocking (non-streaming) render. */
 export function isHtmlLimitedBotUserAgent(userAgent: string): boolean {
-  const lower = userAgent.toLowerCase();
+  const lower = asciiLowerCase(userAgent);
   return (
     GOOGLE_CRAWLER_RE.test(lower) || HTML_LIMITED_BOT_TOKENS.some((token) => lower.includes(token))
   );
@@ -331,7 +344,7 @@ export function isHtmlLimitedBotUserAgent(userAgent: string): boolean {
 
 /** True for the DOM-executing Googlebot as well as HTML-limited bots. */
 export function isBotUserAgent(userAgent: string): boolean {
-  return DOM_BOT_UA_RE.test(userAgent) || isHtmlLimitedBotUserAgent(userAgent);
+  return DOM_BOT_UA_RE.test(asciiLowerCase(userAgent)) || isHtmlLimitedBotUserAgent(userAgent);
 }
 
 /**
