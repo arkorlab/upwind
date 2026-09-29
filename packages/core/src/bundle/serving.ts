@@ -692,11 +692,10 @@ export function edgeServedRewrites(bundle: DeploymentBundle): ServedRewrite[] {
   const { basePath } = bundle.config;
   const files = new Map(bundle.staticFiles.map((file) => [file.pathname, file]));
   const claimed = new Set<string>(files.keys());
-  for (const entry of bundle.entrypoints) {
-    claimed.add(entry.pathname);
-  }
-  for (const prerender of bundle.prerenders) {
-    claimed.add(prerender.pathname);
+  // A page is found under the spelling a request asks for it by as well: `/about/` is `/about`.
+  const named = [...bundle.entrypoints, ...bundle.prerenders].map((output) => output.pathname);
+  for (const pathname of named) {
+    claimed.add(pathname).add(requestedPathname(bundle, pathname));
   }
   const served: ServedRewrite[] = [];
   // Every earlier rule counts, including one serving a small file, a conditional rule and a
@@ -746,8 +745,9 @@ export function dynamicRouting(
   'dynamicRoutes' | 'exactPathnames' | 'reservedRoutes' | 'trailingSlash'
 > {
   const { routing } = bundle;
+  const spelled = bundle.config.trailingSlash && { trailingSlash: true };
   if (!reproducesDynamicRouting(bundle)) {
-    return {};
+    return { ...spelled };
   }
   // Next.js's own order, every route kept: a class with no shell that matches first is a request
   // the edge must not serve, and only the whole list says which class is first.
@@ -807,7 +807,6 @@ export function dynamicRouting(
     .filter((pathname) => !isTemplate(pathname))
     .flatMap((pathname) => [pathname, requestedPathname(bundle, pathname)]);
   const exact = new Set(pathnames.filter((pathname) => !routeKeys.has(pathname)));
-  const spelled = bundle.config.trailingSlash && { trailingSlash: true };
   return { dynamicRoutes, reservedRoutes, exactPathnames: [...exact], ...spelled };
 }
 

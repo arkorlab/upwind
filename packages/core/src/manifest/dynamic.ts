@@ -45,8 +45,9 @@ function isCanonicalPathname(pathname: string, trailingSlash: boolean): boolean 
   if (pathname === '/') {
     return true;
   }
+  // A repeated slash is refused as asked for, before the one trailing slash allowed comes off.
   const bare = trailingSlash && pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
-  return !bare.includes('//') && !bare.includes('\\') && !bare.endsWith('/') && decodes(bare);
+  return !pathname.includes('//') && !bare.includes('\\') && !bare.endsWith('/') && decodes(bare);
 }
 
 /** Whether `pathname` decodes; one without an escape does, and is not handed to the decoder. */

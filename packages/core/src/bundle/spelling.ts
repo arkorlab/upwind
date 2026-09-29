@@ -16,13 +16,19 @@ export function isTemplate(pathname: string): boolean {
 /**
  * The spelling a request asks for a pathname of the build by: behind the trailing slash an
  * application keeps its pages behind (`withTrailingSlash`), and as the build named it otherwise.
+ * The base path's own root gains the slash whatever its last segment reads like — `next build`
+ * redirects it by name (`/docs.v1` → `/docs.v1/`), not by the pattern the other pages go by.
  *
  * A rule of `next.config` is judged against this, as the router judges one against the request.
  * Read against the name the build gave the page instead, the redirect `next build` adds for
  * `trailingSlash` claimed every page but the root, and kept all of them off the edge.
  */
 export function requestedPathname(bundle: DeploymentBundle, pathname: string): string {
-  return bundle.config.trailingSlash ? withTrailingSlash(pathname) : pathname;
+  const { basePath, trailingSlash } = bundle.config;
+  if (!trailingSlash) {
+    return pathname;
+  }
+  return basePath !== '' && pathname === basePath ? `${pathname}/` : withTrailingSlash(pathname);
 }
 
 /**
