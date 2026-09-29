@@ -1,4 +1,5 @@
 import type { MiddlewareMatcher } from '../manifest/schema.ts';
+import { compiledRules, patternOf } from '../request/compiled-patterns.ts';
 import { conditionsHold } from '../request/conditions.ts';
 
 /**
@@ -205,13 +206,13 @@ function matchesAny(
   url: URL,
   headers: Headers,
 ): boolean {
-  return matchers.some((matcher) => {
-    // Case-insensitive, as Next.js matches them, and without the unicode flag, as it compiled them.
-    // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-    if (!new RegExp(matcher.sourceRegex, 'i').test(pathname)) {
+  // Case-insensitive, as Next.js matches them, and without the unicode flag, as it compiled them;
+  // compiled once for the list rather than on every request (`compiledRules`).
+  return compiledRules(matchers, 'i').some((compiled) => {
+    if (!patternOf(compiled).test(pathname)) {
       return false;
     }
-    return conditionsHold(matcher, url, headers);
+    return conditionsHold(compiled.rule, url, headers);
   });
 }
 
