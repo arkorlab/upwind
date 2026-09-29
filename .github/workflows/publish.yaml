@@ -183,6 +183,10 @@ jobs:
           # costs more than this job is allowed (`timeout-minutes` above), which kills the run with
           # GitHub's message instead of the one below. With a budget, the arithmetic does not depend
           # on the number of packages, and what a reader gets is the error that explains itself.
+          #
+          # The bound is the budget plus one request: an attempt that started a moment before the
+          # deadline still gets its fifteen seconds, and nothing waits after that. A hundred and
+          # thirty-five seconds against this job's five minutes, whatever the registry is doing.
           deadline=$((SECONDS + 120))
           for manifest in packages/*/package.json; do
             if [ "$(node -p "require('./${manifest}').private === true")" = true ]; then
@@ -208,8 +212,9 @@ jobs:
               case "${code}" in
                 200 | 404) break ;;
               esac
-              # Not after the last one: there is no next request for it to be spacing out from.
-              if [ "${attempt}" != 3 ]; then
+              # Not after the last one, and not once the budget is spent: in both cases there is no
+              # next request for the wait to be spacing out from.
+              if [ "${attempt}" != 3 ] && [ "${SECONDS}" -lt "${deadline}" ]; then
                 sleep 5
               fi
             done
