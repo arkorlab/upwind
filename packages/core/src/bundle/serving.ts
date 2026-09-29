@@ -10,6 +10,7 @@ import type {
 import { mayHoldForDocument } from '../request/conditions.ts';
 import { BEHAVIORAL_RESPONSE_HEADERS, CONTENT_DISPOSITION_HEADER } from '../request/constants.ts';
 import { filterShellResponseHeaders, rendersInline } from '../request/headers.ts';
+import { isInternalPage, nextNamespaceRoutes } from './base-path.ts';
 import { queryDependent } from './query.ts';
 import type { DeploymentBundle, Entrypoint, Prerender, Route, StaticFile } from './schema.ts';
 import { isTemplate, requestedPathname } from './spelling.ts';
@@ -43,8 +44,6 @@ const MAX_FUNCTION_FILE_BYTES = MAX_FUNCTION_FILE_KIB * KIB;
  * what — which is what `edgeServedRewrites` needs before it may answer one itself.
  */
 const LITERAL_PATHNAME = /^\/[^\s:(*?#[]*$/u;
-/** Documents Next.js renders for an error, never for a request at their own pathname. */
-const INTERNAL_PAGES: ReadonlySet<string> = new Set(['/_error', '/_global-error', '/_not-found']);
 /** The entrypoint kinds whose code renders a document, rather than answering with a response. */
 const DOCUMENT_KINDS: ReadonlySet<string> = new Set(['app-page', 'pages']);
 
@@ -368,9 +367,10 @@ function actsThroughHeaders(bundle: DeploymentBundle, prerender: Prerender): boo
 
 /**
  * The pages complete at build time that the edge can serve whole: nothing resumes them, so the
- * document is the shell. Next.js's own error documents are left out — they are rendered for a
- * status, never for a request at their pathname — and so is a page that reads query parameters,
- * which the build rendered without any and a runtime cache would have to key by.
+ * document is the shell. Next.js's own error documents are left out, under a base path as at the
+ * root — they are rendered for a status, never for a request at their pathname — and so is a page
+ * that reads query parameters, which the build rendered without any and a runtime cache would have
+ * to key by.
  */
 function completeBy(
   bundle: DeploymentBundle,
@@ -380,7 +380,7 @@ function completeBy(
     return (
       completeByItself(prerender) &&
       prerender.postponed === undefined &&
-      !INTERNAL_PAGES.has(prerender.pathname) &&
+      !isInternalPage(bundle, prerender.pathname) &&
       !actsThroughHeaders(bundle, prerender) &&
       (prerender.allowQuery === undefined || prerender.allowQuery.length === 0) &&
       eligible(prerender)
@@ -793,6 +793,7 @@ export function dynamicRouting(
     ),
     ...reserved(prefixed === undefined ? [] : [prefixed], false),
     ...reserved(routing.afterFiles, false),
+    ...nextNamespaceRoutes(bundle),
   ];
   // Pathnames Next.js resolves exactly, ahead of its dynamic routes, that have no shell — under
   // each spelling a request may ask for one by: `/stream/` is the page `/stream` where the
