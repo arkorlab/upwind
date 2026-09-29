@@ -427,13 +427,30 @@ async function abandon(
 }
 
 /** End the attempt as failed, and say why in the Function's log; what it says is returned. */
-async function giveUp(input: RegenerationInput, lease: Leased, error: unknown): Promise<string> {
+async function giveUp(
+  input: RegenerationInput,
+  lease: Leased,
+  error: unknown,
+  began: number,
+): Promise<string> {
   await abandon(input, lease, 'failed', error);
   input.runtime.log('regeneration failed', {
     pathname: input.target.descriptor.pathname,
     detail: detail(error),
+    elapsedMs: elapsedSince(began),
   });
   return detail(error);
+}
+
+/**
+ * How long the attempt has held its lease, as the logs of one that came to nothing say: its publish
+ * runs behind the answer, within what the runtime gives work handed to it after the response —
+ * about 30 s on Workers — and an attempt that ran out of it says nothing of its own. One that took
+ * nearly all of that to fail says where the time went. Read off `performance`, as the clock is
+ * (`clock.ts`), and never off a clock a test handed the request, which does not move.
+ */
+function elapsedSince(began: number): number {
+  return Math.round(performance.now() - began);
 }
 
 type Leased = Extract<AttemptOutcome, { kind: 'leased' }>;
@@ -485,11 +502,15 @@ function heartbeat(input: RegenerationInput, lease: Leased): () => void {
 async function publish(
   input: RegenerationInput,
   lease: Leased,
-  rendered: { readonly render: CapturedRender; readonly observedTagRevision: number },
+  rendered: {
+    readonly render: CapturedRender;
+    readonly observedTagRevision: number;
+    readonly began: number;
+  },
   stopHeartbeat: () => void,
 ): Promise<PublishOutcome> {
   const { runtime, target } = input;
-  const { render, observedTagRevision } = rendered;
+  const { render, observedTagRevision, began } = rendered;
   try {
     // Ahead of the uploads: a render the contract will not take is one whose outputs are not
     // worth sending, and what says so is `tagsOf`.
@@ -506,10 +527,11 @@ async function publish(
     runtime.log('regeneration not published', {
       pathname: target.descriptor.pathname,
       detail: committed.reason,
+      elapsedMs: elapsedSince(began),
     });
     return { kind: 'refused', reason: committed.reason };
   } catch (error) {
-    return { kind: 'failed', error: await giveUp(input, lease, error) };
+    return { kind: 'failed', error: await giveUp(input, lease, error, began) };
   } finally {
     stopHeartbeat();
   }
@@ -553,6 +575,7 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   if (lease.kind === 'busy') {
     return { kind: 'busy' };
   }
+  const began = performance.now();
   const stopHeartbeat = heartbeat(input, lease);
   await synced;
   const observedTagRevision = runtime.tags.revision;
@@ -573,14 +596,19 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
     }
   } catch (error) {
     stopHeartbeat();
-    return { kind: 'failed', render: captured, error: await giveUp(input, lease, error) };
+    return { kind: 'failed', render: captured, error: await giveUp(input, lease, error, began) };
   }
   // What this isolate holds of the entry is the generation the render replaces. Let go of it with
   // the answer rather than with the commit, so that a request after the answer asks the host —
   // which says the same until the commit has landed, and the replacement from then on — however
   // long this isolate then takes to hear the commit answered.
   forgetRecord(runtime, lease.entryId);
-  const published = publish(input, lease, { render: captured, observedTagRevision }, stopHeartbeat);
+  const published = publish(
+    input,
+    lease,
+    { render: captured, observedTagRevision, began },
+    stopHeartbeat,
+  );
   input.waitUntil(published);
   return { kind: 'accepted', render: captured, published };
 }
