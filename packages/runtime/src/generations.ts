@@ -188,18 +188,43 @@ export async function handleDetached(input: RoutedInput, store: Store): Promise<
   });
 }
 
-/** Once the response has gone out in full, do this: the visitor's bytes come first. */
+/**
+ * Once the response is done with, do this, once: the visitor's bytes come first. Done with is sent
+ * in full, or given up by the client. A client cancels prefetches as a matter of course — every
+ * one a navigation overtakes — and a regeneration begun only once the body had been read to its
+ * end was never begun behind one that was cancelled: an entry only ever prefetched stayed stale,
+ * or expired, and each expired prefetch paid for a render of its own every time.
+ */
 function afterBody(response: Response, then: () => void): Response {
-  if (response.body === null) {
+  const { body } = response;
+  if (body === null) {
     then();
     return response;
   }
-  const through = new TransformStream<Uint8Array, Uint8Array>({
-    flush() {
+  let done = false;
+  const once = (): void => {
+    if (!done) {
+      done = true;
       then();
+    }
+  };
+  const reader = body.getReader();
+  const through = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const read = await reader.read();
+      if (read.done) {
+        controller.close();
+        once();
+        return;
+      }
+      controller.enqueue(read.value);
+    },
+    cancel(reason) {
+      once();
+      return reader.cancel(reason);
     },
   });
-  return new Response(response.body.pipeThrough(through), response);
+  return new Response(through, response);
 }
 
 /** `background`: the resume the edge asked for is answered, and the entry regenerated behind it. */
