@@ -104,7 +104,9 @@ export class TagState {
         this.#revision = Math.max(this.#revision, delta.revision);
         truncated = delta.truncated;
       }
-      this.#syncedAt = now;
+      // Pulls overlap, and one that began earlier can answer last: what a later one brought is in
+      // the view already, and its hold stands.
+      this.#syncedAt = Math.max(this.#syncedAt ?? now, now);
     } catch (error) {
       // What is known stays known: a read judged against an older view is a read that may be
       // served stale for one hold, never one that fails.
@@ -130,8 +132,12 @@ export class TagState {
     // The two loops are one turn: there is no `await` between them, so no other read can evict
     // what the first just marked before the second reads it back. A second read of this key
     // would find the mark even if one could — it is read and written together.
+    //
+    // Questions overlap, and one asked earlier can answer last: what a later one was told is in the
+    // view already, and its hold stands.
     for (const value of values) {
-      this.#tags.set(value, { ...this.#tags.get(value), checkedAt: now });
+      const known = this.#tags.get(value);
+      this.#tags.set(value, { ...known, checkedAt: Math.max(known?.checkedAt ?? now, now) });
     }
   }
 
