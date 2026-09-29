@@ -527,6 +527,7 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
           projectDir: input.projectDir,
           workDir,
           entries: input.edgeEntries,
+          ...(input.sourceMaps === true && { sourceMaps: true }),
         }),
   ]);
   const appFile = app.outFile;
@@ -646,16 +647,19 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
       compatibilityFlags: [...FUNCTION_COMPATIBILITY_FLAGS],
     },
     dependencies,
-    sourceMaps: await functionSourceMaps(input, appFile),
+    sourceMaps: await functionSourceMaps(input, [
+      { module: APP_MODULE, file: appFile },
+      ...(edge === undefined ? [] : [{ module: EDGE_MODULE, file: edge.outFile }]),
+    ]),
   };
 }
 
 /**
  * The maps of this Function's own modules.
  *
- * `app.cjs` alone: it is the module the application's own code is in, and the only one a stack
- * frame of a fault in the project can name. The runtime's `index.mjs` is this package's source,
- * built without a map on purpose — a host debugging the runtime has the sources.
+ * The two that hold the application's code — `app.cjs`, and `edge.cjs` for the entrypoints Next.js
+ * built for its edge runtime. The runtime's `index.mjs` is this package's own source, built
+ * without a map on purpose: a host debugging the runtime has the sources.
  *
  * Named `<function>/<module>`, the way the bundle already names a Function: the two Functions of
  * one deployment both hold an `app.cjs`, and a map that named only the module would be two
@@ -663,20 +667,21 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
  */
 async function functionSourceMaps(
   input: BuildFunctionInput,
-  appFile: string,
+  modules: readonly { readonly module: string; readonly file: string }[],
 ): Promise<SourceMapRef[]> {
   if (input.sourceMaps !== true) {
     return [];
   }
-  const mapFile = `${appFile}.map`;
-  if (!(await exists(mapFile))) {
-    return [];
+  const maps: SourceMapRef[] = [];
+  for (const { module, file } of modules) {
+    const mapFile = `${file}.map`;
+    if (await exists(mapFile)) {
+      maps.push({
+        kind: 'function',
+        name: `${input.kind}/${module}`,
+        blob: await input.blobStore.putFile(mapFile, 'application/json'),
+      });
+    }
   }
-  return [
-    {
-      kind: 'function',
-      name: `${input.kind}/${APP_MODULE}`,
-      blob: await input.blobStore.putFile(mapFile, 'application/json'),
-    },
-  ];
+  return maps;
 }
