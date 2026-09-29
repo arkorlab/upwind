@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+
 import { pagesDataPathname, queryDependent } from '@stayingupwind/core/bundle';
 import type { DecodedGenerationPack, RouteEntryDescriptor } from '@stayingupwind/core/cache';
 import {
@@ -201,11 +203,15 @@ function afterBody(response: Response, then: () => void): Response {
     then();
     return response;
   }
+  // Run in the request's context, whoever reads the body: the runtime writing the response out
+  // reads it from outside the request, and a regeneration begun from that read ran outside it too
+  // — under workerd its generation was stamped with the wall clock rather than the request's.
+  const later = AsyncLocalStorage.bind(then);
   let done = false;
   const once = (): void => {
     if (!done) {
       done = true;
-      then();
+      later();
     }
   };
   const reader = body.getReader();
