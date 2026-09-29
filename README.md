@@ -93,8 +93,6 @@ flowchart TB
 > [!NOTE]
 > **upwind stops at the directory.** Uploading `.arkor/` and running the edge in front of its Functions is the job of a host, the platform that runs the deployment; the edge serves files from storage and passes everything else to the Functions. Nothing in this repository does either. What a host implements — the bundle's schema, the manifest an edge reads, and the `x-arkor-*` headers an edge and a Function exchange — is specified in [`@stayingupwind/core`](packages/core).
 
-> **The directory is `.arkor/` from the next release.** [![next release](https://img.shields.io/badge/next_release-f97316)](https://github.com/arkorlab/upwind/compare/v0.2.0...main) 0.2.0 writes the bundle under another name, and a host that finds it by `OUT_DIR_NAME` — the adapter exports it — reads whichever name the version it was given writes.
-
 ## 🎯 Who it's for
 
 - **Next.js teams who want their app built for Cloudflare Workers** without porting it: App Router or Pages Router, Partial Prerendering and `"use cache"`, Server Actions, `next/image`, `next/og`, WebAssembly — built by the `next build` you already run, and served by a host.
@@ -121,11 +119,11 @@ pnpm dev
 ```
 
 ```console
-  upwind 0.2.0 dev
+  upwind 0.3.0 dev
   - Local:     http://localhost:3000
   - Internal:  http://localhost:3000/__upwind
 
-  ✓ Next.js 16.3.6 ready in 1127ms
+  ✓ Next.js 16.3.7 ready in 1127ms
 ```
 
 Open <http://localhost:3000> and edit `app/page.tsx` — it is the Next.js dev server you already know. To build the deployment bundle:
@@ -156,8 +154,8 @@ Dependencies are installed with the package manager you ran `create upwind` with
 ```
 my-app
 ├── .gitignore
-├── AGENTS.md          # next release: Next.js's own agent rules, word for word
-├── CLAUDE.md          # next release
+├── AGENTS.md          # Next.js's own agent rules, word for word
+├── CLAUDE.md
 ├── app/
 │   ├── globals.css    # @import "tailwindcss";
 │   ├── layout.tsx
@@ -210,7 +208,7 @@ Your app needs Next.js in [the supported range](#-which-nextjs), built with Turb
 
    In a CommonJS `next.config.js`, `require.resolve('@stayingupwind/adapter')` does the same. If the same app also deploys to Vercel, set `adapterPath` only when the `VERCEL` environment variable is unset: an adapter named in `next.config` takes over the build on Vercel too. [upwind's readme](packages/upwind/README.md#on-vercel) shows the conditional form.
 
-Then add `.arkor/`, which a build writes, and `.upwind/`, where local storage is kept, to `.gitignore` — both from the next release.
+Then add `.arkor/`, which a build writes, and `.upwind/`, where local storage is kept, to `.gitignore`.
 
 ## 💡 Why upwind
 
@@ -278,13 +276,13 @@ Then add `.arkor/`, which a build writes, and `.upwind/`, where local storage is
 <tr>
 <td valign="top">
 
-**💾 Storage with nothing to configure** [![next release](https://img.shields.io/badge/next_release-f97316)](https://github.com/arkorlab/upwind/compare/v0.2.0...main)<br>
+**💾 Storage with nothing to configure**<br>
 A D1 database, a KV namespace and an R2 bucket, run locally on the runtime a deployment uses and read with `import db from '@stayingupwind/sdk/db'`. [More below](#-storage).
 
 </td>
 <td valign="top">
 
-**🤖 Ready for coding agents** [![next release](https://img.shields.io/badge/next_release-f97316)](https://github.com/arkorlab/upwind/compare/v0.2.0...main)<br>
+**🤖 Ready for coding agents**<br>
 New projects get Next.js's own `AGENTS.md` and `CLAUDE.md`, and `upwind dev` keeps them current the way `next dev` does. [More in the FAQ](#-faq).
 
 </td>
@@ -295,20 +293,20 @@ New projects get Next.js's own `AGENTS.md` and `CLAUDE.md`, and `upwind dev` kee
 
 **upwind does not replace Next.js — it runs yours.** It carries no copy of the framework: `upwind dev` and `upwind build` use the Next.js your project depends on, and refuse to start without one. What changes is what surrounds your app — the front door in development, and what a build becomes in production.
 
-|                                         | Next.js on its own                                   | Next.js with upwind                                                                                                                                                                                                                        |
-| --------------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Your code**                           | App Router, Pages Router, `next.config`              | **The same.** Nothing to port beyond [what is not supported](#-what-it-serves), and nothing you have to import from upwind                                                                                                                 |
-| **Development**                         | `next dev`                                           | `upwind dev`: the same dev server, in the same process, behind a front door that answers `/__upwind`                                                                                                                                       |
-| **Build**                               | `next build` → `.next/`                              | `upwind build`: the same `next build`, whose adapter also writes `.arkor/` — that name from the next release [![next release](https://img.shields.io/badge/next_release-f97316)](https://github.com/arkorlab/upwind/compare/v0.2.0...main) |
-| **Production**                          | `next start`: one long-running Node.js server        | No server of your own: an `app` Function on workerd, and a `middleware` one when there is a proxy, behind a host's edge                                                                                                                    |
-| **Static files and prerenders**         | Served by that server                                | Blobs named by content, served from storage by the edge                                                                                                                                                                                    |
-| **Partial Prerendering**                | The server sends the shell, then streams the rest    | The edge sends the shell from storage; the Function sends only the dynamic part                                                                                                                                                            |
-| **Middleware / `proxy.ts`**             | Runs inside the server                               | Also a Function of its own, which an edge can run before waking the application                                                                                                                                                            |
-| **`/_next/image`**                      | Optimized by the server                              | Optimized by the edge                                                                                                                                                                                                                      |
-| **Cache** (ISR, `"use cache"`, `fetch`) | In memory and on disk, or a `cacheHandler` you write | Kept by the host, through a cache module named when the bundle is built; with the default adapter, a bundle caches nothing                                                                                                                 |
-| **Cron jobs**                           | —                                                    | `crons` in `upwind.config.ts` or `vercel.json`, checked at build time                                                                                                                                                                      |
-| **Local storage**                       | —                                                    | D1, KV and R2 under `.upwind/`, read through `@stayingupwind/sdk` [![next release](https://img.shields.io/badge/next_release-f97316)](https://github.com/arkorlab/upwind/compare/v0.2.0...main)                                            |
-| **Bundler**                             | Turbopack or webpack                                 | Turbopack                                                                                                                                                                                                                                  |
+|                                         | Next.js on its own                                   | Next.js with upwind                                                                                                        |
+| --------------------------------------- | ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| **Your code**                           | App Router, Pages Router, `next.config`              | **The same.** Nothing to port beyond [what is not supported](#-what-it-serves), and nothing you have to import from upwind |
+| **Development**                         | `next dev`                                           | `upwind dev`: the same dev server, in the same process, behind a front door that answers `/__upwind`                       |
+| **Build**                               | `next build` → `.next/`                              | `upwind build`: the same `next build`, whose adapter also writes `.arkor/`                                                 |
+| **Production**                          | `next start`: one long-running Node.js server        | No server of your own: an `app` Function on workerd, and a `middleware` one when there is a proxy, behind a host's edge    |
+| **Static files and prerenders**         | Served by that server                                | Blobs named by content, served from storage by the edge                                                                    |
+| **Partial Prerendering**                | The server sends the shell, then streams the rest    | The edge sends the shell from storage; the Function sends only the dynamic part                                            |
+| **Middleware / `proxy.ts`**             | Runs inside the server                               | Also a Function of its own, which an edge can run before waking the application                                            |
+| **`/_next/image`**                      | Optimized by the server                              | Optimized by the edge                                                                                                      |
+| **Cache** (ISR, `"use cache"`, `fetch`) | In memory and on disk, or a `cacheHandler` you write | Kept by the host, through a cache module named when the bundle is built; with the default adapter, a bundle caches nothing |
+| **Cron jobs**                           | —                                                    | `crons` in `upwind.config.ts` or `vercel.json`, checked at build time                                                      |
+| **Local storage**                       | —                                                    | D1, KV and R2 under `.upwind/`, read through `@stayingupwind/sdk`                                                          |
+| **Bundler**                             | Turbopack or webpack                                 | Turbopack                                                                                                                  |
 
 **Leaving takes one diff.** Put `next dev` and `next build` back in `package.json`, and remove the two devDependencies and the `adapterPath` line. What you would have to replace is code that reads storage through `@stayingupwind/sdk`, and any crons in `upwind.config.*`.
 
@@ -365,9 +363,6 @@ The adapter's readme lists [every field it reads from Next.js](packages/adapter/
 
 ## 💾 Storage
 
-> [!NOTE]
-> **On `main`, and in the next release.** `@stayingupwind/sdk` is not on npm yet, and `upwind` 0.2.0 publishes no storage.
-
 An app gets a D1 database, a KV namespace and an R2 bucket without writing a line of configuration. Locally, `upwind dev` and `upwind build` run them on workerd — the runtime a deployment's Functions run on — keep their data in `.upwind/`, and publish them to your code. In a deployment, the Function publishes the storage the host attached. The SDK reads what was published, the same way in both.
 
 ```tsx
@@ -421,15 +416,13 @@ The adapter looks for `upwind.config.ts`, `upwind.jsonc`, `upwind.json` and `ver
 | [`@stayingupwind/adapter`](packages/adapter) | [![@stayingupwind/adapter](https://img.shields.io/npm/v/@stayingupwind/adapter?label=&color=cb3837)](https://www.npmjs.com/package/@stayingupwind/adapter) | Runs inside `next build`, writes the bundle, and builds the Functions that serve it                        |
 | [`@stayingupwind/runtime`](packages/runtime) | [![@stayingupwind/runtime](https://img.shields.io/npm/v/@stayingupwind/runtime?label=&color=cb3837)](https://www.npmjs.com/package/@stayingupwind/runtime) | The code a deployment's Functions run — bundled into them by the adapter, never installed by hand          |
 | [`@stayingupwind/core`](packages/core)       | [![@stayingupwind/core](https://img.shields.io/npm/v/@stayingupwind/core?label=&color=cb3837)](https://www.npmjs.com/package/@stayingupwind/core)          | The contract: the bundle's schema, the cache's terms, request classification, the edge ↔ Function protocol |
-| [`@stayingupwind/sdk`](packages/sdk)         | [![next release](https://img.shields.io/badge/next_release-f97316)](https://github.com/arkorlab/upwind/compare/v0.2.0...main)                              | What an app reads its own D1, KV and R2 through, with no configuration                                     |
-
-<!-- When the next release ships: give the SDK's row the npm badge its siblings have; drop every other "next release" mark — the badges, the note under Storage, the two comments in the create-upwind tree, the note and the Build row's badge about the bundle directory's name, and the timing in the `.gitignore` step; and in Which Next.js, say the published release supports 16.2 and later, which is what the Next.js badge will then read from npm. README.ja.md has the same. -->
+| [`@stayingupwind/sdk`](packages/sdk)         | [![@stayingupwind/sdk](https://img.shields.io/npm/v/@stayingupwind/sdk?label=&color=cb3837)](https://www.npmjs.com/package/@stayingupwind/sdk)             | What an app reads its own D1, KV and R2 through, with no configuration                                     |
 
 An app depends on two of them — `upwind` and `@stayingupwind/adapter` — plus the SDK once it reads storage. All of them share one version, and `create-upwind` asks for its own version of both (`^x.y.z`), so what scaffolds a project and what runs it start out as the same generation.
 
 ## 📐 Which Next.js
 
-The published release supports **Next.js 16.3 and later 16.x** (the Next.js badge at the top reads this range from npm). `main` also supports **16.2**, where Next.js's Adapter API became stable; earlier versions only have an experimental hook of a different shape, and supporting them would take a different adapter.
+The published release supports **Next.js 16.2 and later 16.x** (the Next.js badge at the top reads this range from npm). 16.2 is where Next.js's Adapter API became stable; earlier versions only have an experimental hook of a different shape, and supporting them would take a different adapter.
 
 Where the Adapter API is not enough, the adapter patches Next.js's own output. The patches live under [`packages/adapter/src/patches/`](packages/adapter/src/patches), and each one is checked against Next.js itself rather than trusted by version number:
 
@@ -472,8 +465,6 @@ Like `next dev`, it listens on every network interface unless told otherwise, so
 
 <details>
 <summary><b>Why does a new project have <code>AGENTS.md</code> and <code>CLAUDE.md</code>?</b></summary>
-
-[![next release](https://img.shields.io/badge/next_release-f97316)](https://github.com/arkorlab/upwind/compare/v0.2.0...main)
 
 They are Next.js's own, word for word: the block that tells a coding agent this Next.js is newer than the one it was trained on, and to read the docs in `node_modules/next/dist/docs/` before writing code. `create-upwind` writes them the way `create-next-app` does, and when a coding agent runs `upwind dev`, your Next.js brings them up to date. `--no-agents-md` leaves them out of the scaffold, though the first `upwind dev` an agent runs writes them anyway, as `next dev` would. The switch that lasts is `agentRules: false` in `next.config`, which `upwind dev` and `next dev` both obey.
 

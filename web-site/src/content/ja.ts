@@ -31,7 +31,7 @@ export const ja = {
   },
   bundle: {
     title: 'ビルドが書き出すもの',
-    body: 'Next.js は自身の Adapter API を通じてアダプターを呼びます。ビルド前に `modifyConfig`、ビルド後に `onBuildComplete`。デプロイに必要なものはすべて 1 つのディレクトリーの下に書き出されます。そのディレクトリーは、次のリリースから `.arkor/` です。',
+    body: 'Next.js は自身の Adapter API を通じてアダプターを呼びます。ビルド前に `modifyConfig`、ビルド後に `onBuildComplete`。デプロイに必要なものはすべて 1 つのディレクトリー `.arkor/` の下に書き出されます。',
     items: [
       {
         term: '`bundle.json`',
@@ -130,6 +130,7 @@ export const ja = {
       runtime:
         'デプロイされた Function の中身。ルーティング表、middleware、プリレンダー、キャッシュを workerd 向けに書いたもの。',
       core: '他のパッケージが話す語彙。バンドルの形、キャッシュの用語、エッジと Function のあいだのプロトコル。',
+      sdk: 'アプリ自身の D1、KV、R2。ローカルでもデプロイ先でも同じ書き方で読め、設定はいりません。',
       create: '`pnpm create upwind` と、それが書き出すアプリ。',
     },
     npmLabel: 'npm',
