@@ -1,5 +1,5 @@
 import type { Stats } from 'node:fs';
-import { readdir, readFile, realpath, stat } from 'node:fs/promises';
+import { open, readdir, readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import { isImmutableCacheControl } from '@stayingupwind/core/assets';
@@ -9,6 +9,7 @@ import {
   type Prerender,
   primaryPrerenders,
   type Route,
+  type BlobRef,
   type SourceMapRef,
   type SourcePage,
   type StaticFile,
@@ -22,8 +23,12 @@ import type { EdgeEntry } from './edge.ts';
 import type { EntryModule } from './function.ts';
 import { segmentPathOf, withBasePath } from './segments.ts';
 
-/** What Next.js names a browser map: the file it describes, plus this. */
+/** What Next.js names a browser map: a file name, plus this. */
 const SOURCE_MAP_SUFFIX = '.map';
+/** The comment a chunk names its map in; the only thing that ties the two together. */
+const SOURCE_MAPPING_URL = '//# sourceMappingURL=';
+/** How far back the comment is looked for. It is the last line of a file, or near it. */
+const SOURCE_MAP_TAIL_BYTES = 512;
 
 /**
  * What the adapter reads from `onBuildComplete`, and what it makes of it. Each function here
@@ -662,6 +667,71 @@ export interface CollectedStaticFiles {
   readonly sourceMaps: SourceMapRef[];
 }
 
+/**
+ * The map a built file names, by the map's own served pathname, or nothing.
+ *
+ * The only thing that ties a chunk to its map. With content-addressed assets the two are named
+ * independently — `01giaql8az_p-.js` names `11yysmhf277n1.js.map` — so a map cannot be found by
+ * taking `.map` off a chunk's name, and a name arrived at that way belongs to no file at all.
+ */
+async function mapNamedBy(file: string, pathname: string): Promise<string | undefined> {
+  let tail: string;
+  try {
+    const handle = await open(file, 'r');
+    try {
+      const size = (await handle.stat()).size;
+      const length = Math.min(size, SOURCE_MAP_TAIL_BYTES);
+      const buffer = Buffer.alloc(length);
+      await handle.read(buffer, 0, length, size - length);
+      tail = buffer.toString('utf8');
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return undefined;
+  }
+  const marker = tail.lastIndexOf(SOURCE_MAPPING_URL);
+  if (marker < 0) {
+    return undefined;
+  }
+  const named =
+    tail
+      .slice(marker + SOURCE_MAPPING_URL.length)
+      .trim()
+      .split('\n')[0]
+      ?.trim() ?? '';
+  if (named === '' || named.includes('/') || named.startsWith('data:')) {
+    // A map beside the file it describes is the only shape a build here writes; anything else is
+    // one this cannot place, and a wrong association would be worse than none.
+    return undefined;
+  }
+  return `${pathname.slice(0, pathname.lastIndexOf('/') + 1)}${named}`;
+}
+
+/**
+ * Each map under the name of the file it describes, which is what a browser's stack frame says.
+ *
+ * A map nothing names is dropped: nothing could ever look it up, and carrying it would be bytes
+ * in every deployment for no reader.
+ */
+async function linkClientMaps(
+  built: readonly { readonly pathname: string; readonly filePath: string }[],
+  maps: ReadonlyMap<string, BlobRef>,
+): Promise<SourceMapRef[]> {
+  if (maps.size === 0) {
+    return [];
+  }
+  const linked: SourceMapRef[] = [];
+  for (const file of built) {
+    const named = await mapNamedBy(file.filePath, file.pathname);
+    const blob = named === undefined ? undefined : maps.get(named);
+    if (blob !== undefined) {
+      linked.push({ kind: 'client', name: file.pathname, blob });
+    }
+  }
+  return linked;
+}
+
 export async function collectStaticFiles(
   ctx: BuildContext,
   blobs: BlobStore,
@@ -670,18 +740,18 @@ export async function collectStaticFiles(
   const exported = isStaticExport(ctx.config);
   const naming = { basePath, trailingSlash: orDefault(ctx.config.trailingSlash, false) };
   const files: StaticFile[] = [];
-  const sourceMaps: SourceMapRef[] = [];
+  /** Maps by their own served pathname, until `linkClientMaps` says which file each describes. */
+  const maps = new Map<string, BlobRef>();
+  /** The built JavaScript, for the same pass: only these carry a `sourceMappingURL`. */
+  const scripts: { pathname: string; filePath: string }[] = [];
   for (const output of ctx.outputs.staticFiles) {
     const blob = await blobs.putFile(output.filePath, staticFileContentType(output));
     if (output.pathname.endsWith(SOURCE_MAP_SUFFIX)) {
-      // Named by the file it describes rather than by itself: a browser's stack frame says
-      // `/_next/static/chunks/x.js`, and that is what a reader has to look a map up by.
-      sourceMaps.push({
-        kind: 'client',
-        name: output.pathname.slice(0, -SOURCE_MAP_SUFFIX.length),
-        blob,
-      });
+      maps.set(output.pathname, blob);
       continue;
+    }
+    if (output.pathname.endsWith('.js')) {
+      scripts.push({ pathname: output.pathname, filePath: output.filePath });
     }
     // The name the file is served under, which is the name a rule is judged against: a document
     // moves from `/index` to `/` and from `/about/index` to `/about/`, and the edge matches the
@@ -716,7 +786,7 @@ export async function collectStaticFiles(
       });
     }
   }
-  return { files, sourceMaps };
+  return { files, sourceMaps: await linkClientMaps(scripts, maps) };
 }
 
 export function middlewareMatchers(middleware: AdapterOutput['MIDDLEWARE'] | undefined): Route[] {
