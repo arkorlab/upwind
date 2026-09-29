@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <title>upwind</title>
+  <!--
+    The site's rising chevron (web-site/src/app/icon.svg) on a tile, for the readme. Two files rather
+    than one with a media query: an image's own `prefers-color-scheme` follows the reader's system,
+    while the readme's `<picture>` follows the theme GitHub is drawn in, which is the one that counts.
+    This is the light theme's.
+  -->
+  <rect width="128" height="128" rx="28" fill="#0a0a0a" />
+  <path
+    d="M32 79 64 43 96 79"
+    fill="none"
+    stroke="#fafafa"
+    stroke-width="10"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+</svg>
