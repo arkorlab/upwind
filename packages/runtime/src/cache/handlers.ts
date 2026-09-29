@@ -1,4 +1,4 @@
-import { NEXT_ONE_YEAR_SECONDS } from '@stayingupwind/core/cache';
+import { type InvalidationState, NEXT_ONE_YEAR_SECONDS } from '@stayingupwind/core/cache';
 
 import { readWithin } from './body.ts';
 import { nowMs } from './clock.ts';
@@ -122,17 +122,36 @@ function isFetchValue(value: unknown): value is CachedFetchValue {
   );
 }
 
-/** A write the fetch cache handed over: it settles as the write is answered, or has failed. */
-interface FetchWrite {
+/**
+ * A fetch cache value as a read judges it: the entry's metadata, the bytes, and what an
+ * invalidation made of the entry, where the host said.
+ */
+interface HeldFetch {
+  readonly entry: DataEntryMetadata;
+  readonly bytes: Uint8Array;
+  readonly invalidation?: InvalidationState | undefined;
+}
+
+/**
+ * A write the fetch cache handed over: what it writes, and a promise that settles as the write is
+ * answered, or has failed.
+ */
+interface FetchWrite extends HeldFetch {
   settled: Promise<void> | undefined;
 }
 
 /**
- * The fetch cache's writes still out in this isolate: for each key, the last one handed over.
- * An entry leaves as its write settles, so there are only ever as many as there are keys with a
- * write out.
+ * The fetch cache's writes still out in this isolate: for each key, the last one handed over, which
+ * is what a read of the key is answered with meanwhile (`get`). An entry leaves as its write
+ * settles, so there are only ever as many as there are keys with a write out.
  */
 const fetchWrites = new WeakMap<CacheRuntime, Map<string, FetchWrite>>();
+
+function heldIn(memo: DataMemo): HeldFetch | undefined {
+  return memo.kind === 'found'
+    ? { entry: memo.response.entry, bytes: memo.bytes, invalidation: memo.response.invalidation }
+    : undefined;
+}
 
 /**
  * Write what a `fetch` answered, under the key and the entry its render gave it, once the write of
@@ -150,12 +169,12 @@ function keepFetch(
   runtime: CacheRuntime,
   key: string,
   entry: DataEntryMetadata,
-  data: CachedFetchValue,
+  bytes: Uint8Array,
 ): Promise<void> {
   const writes = fetchWrites.get(runtime) ?? new Map<string, FetchWrite>();
   fetchWrites.set(runtime, writes);
   const before = writes.get(key)?.settled;
-  const write: FetchWrite = { settled: undefined };
+  const write: FetchWrite = { entry, bytes, settled: undefined };
   writes.set(key, write);
   write.settled = (async () => {
     try {
@@ -164,11 +183,7 @@ function keepFetch(
       if (before !== undefined) {
         await before;
       }
-      await writeData(runtime, {
-        key,
-        entry,
-        bytes: new TextEncoder().encode(JSON.stringify(data)),
-      });
+      await writeData(runtime, { key, entry, bytes });
     } catch (error) {
       // The render has its data; what failed is keeping it for the next one.
       runtime.log('fetch cache write failed', { detail: detail(error) });
@@ -195,6 +210,13 @@ function keepFetch(
  * Next.js's own platform tells the render which tags were revalidated
  * (`x-next-revalidated-tags`), and `IncrementalCache` misses those tags' entries for it; a miss
  * here is that, for the tags that made this entry stale.
+ *
+ * A key with a write of this isolate's still out is answered with the value that write carries,
+ * and the host is not asked (`fetchWrites`). Next.js held such a read behind its lock on the key
+ * until the write had landed, and the read then found that value; the lock lets go as `set`
+ * answers now, which is before the write lands, and the host would answer with what the write
+ * replaces, or with nothing. The value is judged against the tags like any other, so an
+ * invalidation this isolate has made or learned of since the fetch began still makes it stale.
  */
 export class PlatformFetchCache {
   // Next.js constructs it with its own context (fs, dev, revalidatedTags, …); none of it applies
@@ -214,13 +236,15 @@ export class PlatformFetchCache {
     if (context !== undefined && !context.fetchStarts.has(cacheKey)) {
       context.fetchStarts.set(cacheKey, now);
     }
-    let memo: DataMemo;
+    let held: HeldFetch | undefined;
     try {
-      memo = await readData(runtime, { key: cacheKey, kind: DATA_FETCH });
-      if (memo.kind === 'found') {
+      held =
+        fetchWrites.get(runtime)?.get(cacheKey) ??
+        heldIn(await readData(runtime, { key: cacheKey, kind: DATA_FETCH }));
+      if (held !== undefined) {
         await runtime.tags.syncLocal(
           runtime.host,
-          [...memo.response.entry.tags, ...(ctx.tags ?? []), ...(ctx.softTags ?? [])],
+          [...held.entry.tags, ...(ctx.tags ?? []), ...(ctx.softTags ?? [])],
           now,
         );
       }
@@ -228,23 +252,23 @@ export class PlatformFetchCache {
       runtime.log('fetch cache read failed', { detail: detail(error) });
       return null;
     }
-    if (memo.kind === 'missing') {
+    if (held === undefined) {
       return null;
     }
     let value: unknown;
     try {
-      value = JSON.parse(new TextDecoder().decode(memo.bytes));
+      value = JSON.parse(new TextDecoder().decode(held.bytes));
     } catch {
       return null;
     }
     if (!isFetchValue(value)) {
       return null;
     }
-    const { entry } = memo.response;
+    const { entry } = held;
     const validity = recordValidity(runtime.tags, {
       tags: [...entry.tags, ...(ctx.tags ?? []), ...(ctx.softTags ?? [])],
       timestamp: entry.timestamp,
-      invalidation: memo.response.invalidation,
+      invalidation: held.invalidation,
       now,
     });
     if (validity === 'expired' || (validity === 'stale' && isRegeneration())) {
@@ -277,11 +301,10 @@ export class PlatformFetchCache {
    * be answered first (`keepFetch`); and the entry carries the moment the fetch began, by which the
    * host fences the write.
    *
-   * A read of the key while the write is out — Next.js lets one past its lock on the key as this
-   * answers — is answered what was there before, as a read in any other isolate would be, and that
-   * answer is not kept past the write's reply. So a render of the key in this isolate while the
-   * write is out can miss, or find the value the write replaces, and fetch the origin again; its own
-   * write then lands after this one.
+   * A read of the key in this isolate while the write is out — Next.js lets one past its lock on
+   * the key as this answers, where it held it until the write had landed — is answered with the
+   * value the write carries (`get`), without a trip to the host. A read in any other isolate is
+   * answered with what was there before, as it always was.
    */
   set(cacheKey: string, data: CachedFetchValue | null, ctx: FetchSetContext): Promise<void> {
     const current = state.current;
@@ -305,7 +328,8 @@ export class PlatformFetchCache {
         expire: NEXT_ONE_YEAR_SECONDS,
         revalidate: data.revalidate,
       };
-      context.waitUntil(keepFetch(current.runtime, cacheKey, entry, data));
+      const bytes = new TextEncoder().encode(JSON.stringify(data));
+      context.waitUntil(keepFetch(current.runtime, cacheKey, entry, bytes));
       return Promise.resolve();
     } catch (error) {
       // A promise either way, as when this was async: a host whose `waitUntil` throws once its
