@@ -16,7 +16,7 @@ arrangement below as well, where the prefix is reserved inside Next.js's own rou
   - Local:     http://localhost:3000
   - Internal:  http://localhost:3000/__upwind
 
-  ✓ Next.js 16.3.6 ready in 1127ms
+  ✓ Next.js 16.3.7 ready in 1127ms
 ```
 
 A deployment has an edge in front of it, and the platform's own paths are the edge's to serve. Under
