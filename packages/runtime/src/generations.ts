@@ -412,7 +412,10 @@ function sameEntry(a: RouteEntryDescriptor | undefined, b: RouteEntryDescriptor)
 const renderRequest = (job: Job, url: string): Promise<Response> =>
   resume({ input: job.input, handler: job.target.handler, postponed: undefined, url });
 
-/** A prefetch of a page or of one of its segments: asked for ahead of a navigation that may not come. */
+/**
+ * A prefetch of a page or of one of its segments: asked for ahead of a navigation that may not
+ * come.
+ */
 function speculative(want: Want): boolean {
   return want.prefetch === true || want.representation.startsWith(SEGMENT_PREFIX);
 }
@@ -445,9 +448,10 @@ async function renderSpeculative(
 /**
  * What the Function answers itself, from the entry's current generation: fresh or stale it is
  * served (stale, regenerated behind); expired, it is regenerated first, or rendered for a prefetch
- * and regenerated behind; missing, rendered now where the build made none. `undefined` leaves the build's own output to answer: no generation
- * where the build has one, a host out of reach (an answer is still given, and the record
- * asked for again on the next hold), a Pages Router class shell, or an entry dynamic here.
+ * and regenerated behind; missing, rendered now where the build made none. `undefined` leaves the
+ * build's own output to answer: no generation where the build has one, a host out of reach (an
+ * answer is still given, and the record asked for again on the next hold), a Pages Router class
+ * shell, or an entry dynamic here.
  */
 export async function serveFromGeneration(
   input: RoutedInput,
@@ -496,6 +500,13 @@ export async function serveFromGeneration(
   // this isolate beside the visitor's own render — their resume, where the page has one — and the
   // two shared its time. Where the generation leads to no output, the build's answers instead,
   // from the caller, and nothing here sees that answer end: the regeneration is begun at once.
+  //
+  // A prefetch's too, where Next.js 16.3.6 answers a stale entry to a prefetch and revalidates
+  // nothing (`ResponseCache.handleGet`, `!isStale || isPrefetch`), and leaves it to the
+  // navigation after. Kept on purpose: it costs the prefetch nothing, begun after its answer and
+  // once a generation, and a page whose visitors mostly prefetch it — a link on every page,
+  // seldom followed — would otherwise be prefetched as it was until it expired, and then cost
+  // every prefetch a render of its own.
   const behind = (): boolean => once && scheduleJob(job, 'stale', pack.header.generationId);
   if (validity === 'stale' && answer !== undefined) {
     return afterBody(answer, behind);
