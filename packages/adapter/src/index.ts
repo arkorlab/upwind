@@ -149,6 +149,28 @@ function filesRead(
   };
 }
 
+/**
+ * Which bundler built the server is only of interest where the Function carries the server's
+ * code; a static export carries none, so the check that would refuse a webpack build is the wrong
+ * question to ask of one.
+ */
+async function refuseOtherBundlers(distDir: string, exported: boolean): Promise<void> {
+  const runtimeChunk = path.join(distDir, 'server', 'chunks', 'ssr', '[turbopack]_runtime.js');
+  if (!exported && !(await exists(runtimeChunk))) {
+    throw new Error(
+      '@stayingupwind/adapter: only Turbopack builds are supported (no server runtime chunk found)',
+    );
+  }
+}
+
+/** The build's own directory, emptied: what this build writes is all that is ever in it. */
+async function emptyOutDir(projectDir: string): Promise<string> {
+  const outDir = path.join(projectDir, OUT_DIR_NAME);
+  await rm(outDir, { recursive: true, force: true });
+  await mkdir(outDir, { recursive: true });
+  return outDir;
+}
+
 async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Promise<void> {
   const exported = isStaticExport(ctx.config);
   // A custom handler is refused because the platform runs its own in the Function and two cannot
@@ -160,21 +182,11 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
   // Read before anything is written: a cron this platform cannot run fails the build here, where
   // the message is about the file the author wrote, rather than at the upload or never.
   const projectConfig = await readProjectConfig(ctx.projectDir, options.hostConfigFiles);
-  const outDir = path.join(ctx.projectDir, OUT_DIR_NAME);
-  await rm(outDir, { recursive: true, force: true });
-  await mkdir(outDir, { recursive: true });
+  const outDir = await emptyOutDir(ctx.projectDir);
   const blobs = new BlobStore(outDir);
   await blobs.init();
 
-  // Which bundler built the server is only of interest where the Function carries the server's
-  // code; a static export carries none, so the check that would refuse a webpack build is the
-  // wrong question to ask of one.
-  const runtimeChunk = path.join(ctx.distDir, 'server', 'chunks', 'ssr', '[turbopack]_runtime.js');
-  if (!exported && !(await exists(runtimeChunk))) {
-    throw new Error(
-      '@stayingupwind/adapter: only Turbopack builds are supported (no server runtime chunk found)',
-    );
-  }
+  await refuseOtherBundlers(ctx.distDir, exported);
   const instrumentation = await instrumentationOf(
     ctx.distDir,
     outDir,
@@ -626,10 +638,7 @@ export function createAdapter(options: AdapterOptions = {}): NextAdapter {
           });
           // Appended, never replacing: a project may have entries of its own, and Next.js runs
           // them in array order with its own `instrumentation-client` file last.
-          config.instrumentationClientInject = [
-            ...(config.instrumentationClientInject ?? []),
-            entry,
-          ];
+          config.instrumentationClientInject = [...config.instrumentationClientInject, entry];
         }
       }
       return config;

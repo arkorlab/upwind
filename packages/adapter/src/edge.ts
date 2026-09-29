@@ -7,7 +7,7 @@ import { jsLiteral } from './codegen.ts';
 import { bundled, type BundleTrace } from './dependencies.ts';
 import { dynamicLoadsInChunk } from './dynamic-loads.ts';
 import { externalsPlugin, FUNCTION_BANNER } from './patches/index.ts';
-import { sourceMapsPlugin } from './source-maps.ts';
+import { sourceMapsPlugin, sourcemapOutput } from './source-maps.ts';
 import { projectModuleName } from './traced-files.ts';
 
 /**
@@ -219,9 +219,7 @@ export async function bundleEdge(
     banner: FUNCTION_BANNER,
     minify: { compress: true, mangle: false, codegen: { removeWhitespace: true } },
     comments: { legal: false },
-    ...(input.sourceMaps === true
-      ? { sourcemap: 'hidden' as const, sourcemapExcludeSources: true }
-      : { sourcemap: false as const }),
+    ...sourcemapOutput(input.sourceMaps === true),
   });
   const chunk = output.find((item): item is OutputChunk => item.type === 'chunk');
   if (chunk === undefined) {

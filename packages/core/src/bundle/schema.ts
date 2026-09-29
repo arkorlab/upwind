@@ -483,8 +483,10 @@ function forEachBlob(bundle: DeploymentBundle, visit: (ref: BlobRef) => void): v
   for (const file of bundle.staticFiles) {
     add(file.blob);
   }
-  for (const map of bundle.sourceMaps ?? []) {
-    add(map.blob);
+  if (bundle.sourceMaps !== undefined) {
+    for (const map of bundle.sourceMaps) {
+      add(map.blob);
+    }
   }
   const functions = [bundle.functions.app, bundle.functions.middleware];
   for (const spec of functions) {

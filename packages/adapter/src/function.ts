@@ -15,7 +15,6 @@ import {
 
 import { type BlobStore, contentTypeFor } from './blobs.ts';
 import { jsLiteral } from './codegen.ts';
-import { exists } from './collect.ts';
 import {
   auditTracedFiles,
   auditFunction,
@@ -48,7 +47,7 @@ import {
   wasmModulePlugin,
   FUNCTION_BANNER,
 } from './patches/index.ts';
-import { sourceMapsPlugin } from './source-maps.ts';
+import { functionSourceMaps, sourceMapsPlugin, sourcemapOutput } from './source-maps.ts';
 import type { TracedFile } from './traced-files.ts';
 import { WASM_ENTRY_MODULE, type WasmCollector, wasmEntrySource, wasmModuleName } from './wasm.ts';
 
@@ -324,16 +323,7 @@ async function bundleApp(
     banner: FUNCTION_BANNER,
     minify: { compress: true, mangle: false, codegen: { removeWhitespace: true } },
     comments: { legal: false },
-    // `hidden`, when the host asked for maps: a separate file, and no `sourceMappingURL` comment
-    // in the Function — nothing inside a Worker could load one, and a comment naming a file that
-    // is not there is a line that only ever misleads.
-    //
-    // `sourcemapExcludeSources` leaves the sources out. A map that carried them would carry the
-    // whole application a second time, and what a stack needs is the name of a file and a line in
-    // it, not the line's text. A build with no maps asked for pays none of it.
-    ...(input.sourceMaps === true
-      ? { sourcemap: 'hidden' as const, sourcemapExcludeSources: true }
-      : { sourcemap: false as const }),
+    ...sourcemapOutput(input.sourceMaps === true),
   });
   const chunk = output.find((item): item is OutputChunk => item.type === 'chunk');
   if (chunk === undefined) {
@@ -647,41 +637,12 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
       compatibilityFlags: [...FUNCTION_COMPATIBILITY_FLAGS],
     },
     dependencies,
-    sourceMaps: await functionSourceMaps(input, [
-      { module: APP_MODULE, file: appFile },
-      ...(edge === undefined ? [] : [{ module: EDGE_MODULE, file: edge.outFile }]),
-    ]),
+    sourceMaps:
+      input.sourceMaps === true
+        ? await functionSourceMaps(input.blobStore, input.kind, {
+            app: appFile,
+            edge: edge?.outFile,
+          })
+        : [],
   };
-}
-
-/**
- * The maps of this Function's own modules.
- *
- * The two that hold the application's code — `app.cjs`, and `edge.cjs` for the entrypoints Next.js
- * built for its edge runtime. The runtime's `index.mjs` is this package's own source, built
- * without a map on purpose: a host debugging the runtime has the sources.
- *
- * Named `<function>/<module>`, the way the bundle already names a Function: the two Functions of
- * one deployment both hold an `app.cjs`, and a map that named only the module would be two
- * different maps under one name.
- */
-async function functionSourceMaps(
-  input: BuildFunctionInput,
-  modules: readonly { readonly module: string; readonly file: string }[],
-): Promise<SourceMapRef[]> {
-  if (input.sourceMaps !== true) {
-    return [];
-  }
-  const maps: SourceMapRef[] = [];
-  for (const { module, file } of modules) {
-    const mapFile = `${file}.map`;
-    if (await exists(mapFile)) {
-      maps.push({
-        kind: 'function',
-        name: `${input.kind}/${module}`,
-        blob: await input.blobStore.putFile(mapFile, 'application/json'),
-      });
-    }
-  }
-  return maps;
 }

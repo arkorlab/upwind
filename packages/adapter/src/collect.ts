@@ -1,5 +1,5 @@
 import type { Stats } from 'node:fs';
-import { open, readdir, readFile, realpath, stat } from 'node:fs/promises';
+import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import { isImmutableCacheControl } from '@stayingupwind/core/assets';
@@ -22,13 +22,7 @@ import { type BlobStore, contentTypeFor } from './blobs.ts';
 import type { EdgeEntry } from './edge.ts';
 import type { EntryModule } from './function.ts';
 import { segmentPathOf, withBasePath } from './segments.ts';
-
-/** What Next.js names a browser map: a file name, plus this. */
-const SOURCE_MAP_SUFFIX = '.map';
-/** The comment a chunk names its map in; the only thing that ties the two together. */
-const SOURCE_MAPPING_URL = '//# sourceMappingURL=';
-/** How far back the comment is looked for. It is the last line of a file, or near it. */
-const SOURCE_MAP_TAIL_BYTES = 512;
+import { linkClientMaps, SOURCE_MAP_SUFFIX } from './source-maps.ts';
 
 /**
  * What the adapter reads from `onBuildComplete`, and what it makes of it. Each function here
@@ -668,68 +662,34 @@ export interface CollectedStaticFiles {
 }
 
 /**
- * The map a built file names, by the map's own served pathname, or nothing.
- *
- * The only thing that ties a chunk to its map. With content-addressed assets the two are named
- * independently — `01giaql8az_p-.js` names `11yysmhf277n1.js.map` — so a map cannot be found by
- * taking `.map` off a chunk's name, and a name arrived at that way belongs to no file at all.
+ * What `public/` holds, each named as a URL names it: the edge and the runtime look a file up by
+ * the request's own pathname. A static export needs none of this — `next build` copied the
+ * directory into `out/` and handed every file over already.
  */
-async function mapNamedBy(file: string, pathname: string): Promise<string | undefined> {
-  let tail: string;
-  try {
-    const handle = await open(file, 'r');
-    try {
-      const size = (await handle.stat()).size;
-      const length = Math.min(size, SOURCE_MAP_TAIL_BYTES);
-      const buffer = Buffer.alloc(length);
-      await handle.read(buffer, 0, length, size - length);
-      tail = buffer.toString('utf8');
-    } finally {
-      await handle.close();
-    }
-  } catch {
-    return undefined;
-  }
-  const marker = tail.lastIndexOf(SOURCE_MAPPING_URL);
-  if (marker < 0) {
-    return undefined;
-  }
-  const named =
-    tail
-      .slice(marker + SOURCE_MAPPING_URL.length)
-      .trim()
-      .split('\n')[0]
-      ?.trim() ?? '';
-  if (named === '' || named.includes('/') || named.startsWith('data:')) {
-    // A map beside the file it describes is the only shape a build here writes; anything else is
-    // one this cannot place, and a wrong association would be worse than none.
-    return undefined;
-  }
-  return `${pathname.slice(0, pathname.lastIndexOf('/') + 1)}${named}`;
-}
-
-/**
- * Each map under the name of the file it describes, which is what a browser's stack frame says.
- *
- * A map nothing names is dropped: nothing could ever look it up, and carrying it would be bytes
- * in every deployment for no reader.
- */
-async function linkClientMaps(
-  built: readonly { readonly pathname: string; readonly filePath: string }[],
-  maps: ReadonlyMap<string, BlobRef>,
-): Promise<SourceMapRef[]> {
-  if (maps.size === 0) {
+async function publicFiles(
+  projectDir: string,
+  basePath: string,
+  blobs: BlobStore,
+): Promise<StaticFile[]> {
+  const publicDir = path.join(projectDir, 'public');
+  if (!(await exists(publicDir))) {
     return [];
   }
-  const linked: SourceMapRef[] = [];
-  for (const file of built) {
-    const named = await mapNamedBy(file.filePath, file.pathname);
-    const blob = named === undefined ? undefined : maps.get(named);
-    if (blob !== undefined) {
-      linked.push({ kind: 'client', name: file.pathname, blob });
-    }
+  const collected: StaticFile[] = [];
+  const found = await walk(publicDir);
+  for (const file of found) {
+    const pathname = `/${path
+      .relative(publicDir, file)
+      .split(path.sep)
+      .map((segment) => encodeURIComponent(segment))
+      .join('/')}`;
+    collected.push({
+      pathname: withBasePath(basePath, pathname),
+      blob: await blobs.putFile(file, contentTypeFor(file)),
+      immutable: false,
+    });
   }
-  return linked;
+  return collected;
 }
 
 export async function collectStaticFiles(
@@ -769,23 +729,7 @@ export async function collectStaticFiles(
       files.push({ pathname: alias, blob, immutable });
     }
   }
-  const publicDir = path.join(ctx.projectDir, 'public');
-  if (!exported && (await exists(publicDir))) {
-    const publicFiles = await walk(publicDir);
-    for (const file of publicFiles) {
-      // As a URL names it: the edge and the runtime look a file up by the request's own pathname.
-      const pathname = `/${path
-        .relative(publicDir, file)
-        .split(path.sep)
-        .map((segment) => encodeURIComponent(segment))
-        .join('/')}`;
-      files.push({
-        pathname: withBasePath(basePath, pathname),
-        blob: await blobs.putFile(file, contentTypeFor(file)),
-        immutable: false,
-      });
-    }
-  }
+  files.push(...(exported ? [] : await publicFiles(ctx.projectDir, basePath, blobs)));
   return { files, sourceMaps: await linkClientMaps(scripts, maps) };
 }
 

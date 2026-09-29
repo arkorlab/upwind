@@ -45,7 +45,7 @@ function composition(hook: string): string {
     `          await module.${hook}(...args);`,
     '        } catch (error) {',
     "          // A host's own hook must not change what the application does.",
-    `          console.error('upwind: the host\\'s ${hook} failed', error);`,
+    `          console.error("upwind: the host's ${hook} failed", error);`,
     '        }',
     '      }',
     '    }',
