@@ -1,5 +1,9 @@
 export { negotiateContentEncoding } from './accept.ts';
-export { bypassForHolds, wantsBlockingMetadata } from './blocking-metadata.ts';
+export {
+  bypassForHolds,
+  judgesHtmlLimitedBots,
+  wantsBlockingMetadata,
+} from './blocking-metadata.ts';
 export {
   acceptsCspNonce,
   allowRecoveryScript,

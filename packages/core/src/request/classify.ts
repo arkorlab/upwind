@@ -11,7 +11,7 @@ import {
   type StaticFileEntry,
 } from '../manifest/index.ts';
 import { acceptsHtml } from './accept.ts';
-import { wantsBlockingMetadata } from './blocking-metadata.ts';
+import { blockingMetadataReason } from './blocking-metadata.ts';
 import {
   BYPASS_COOKIE_NAMES,
   BYPASS_QUERY_KEYS,
@@ -42,6 +42,7 @@ export type PassthroughReason =
   | 'router-header'
   | 'internal-header'
   | 'bot'
+  | 'html-limited-bots'
   | 'bypass-cookie'
   | 'vdpl-mismatch'
   | 'cookie'
@@ -351,12 +352,11 @@ export function classifyRequest(input: ClassifyInput): RequestClass {
   // finished: Next.js renders no page whole for this but a partially prerendered one, and resolves
   // a prerendered page's metadata at build time, so the finished document is what such a visitor
   // is sent either way. Of a pathname that names no proved route, though: the middleware may
-  // rewrite it onto one.
-  if (
-    entry?.cache?.delivery !== 'complete' &&
-    wantsBlockingMetadata(headers.get('user-agent'), input.manifest)
-  ) {
-    return passthrough('bot');
+  // rewrite it onto one. Under a list the edge will not run, every visitor that names an agent is
+  // passed on, and says so: for the list, not for being a crawler (`blockingMetadataReason`).
+  const blocking = blockingMetadataReason(entry, headers.get('user-agent'), input.manifest);
+  if (blocking !== undefined) {
+    return passthrough(blocking);
   }
   return entry === undefined ? passthrough('route-not-proved') : { kind: 'document', entry };
 }
