@@ -182,7 +182,20 @@ jobs:
               continue
             fi
             name="$(node -p "require('./${manifest}').name")"
-            code="$(curl -fsS -o /dev/null -w '%{http_code}' "https://registry.npmjs.org/${name/\//%2f}" || true)"
+            # Two answers are answers — it is there, or it never was — and everything else is the
+            # registry not saying. `-f` is left off so that 404 is one of the answers rather than an
+            # error with a `curl: (22)` beside it; the timeouts are so that a host which accepts the
+            # connection and then says nothing costs half a minute instead of this job's whole five;
+            # and the retry is because one 500 on the way to a release should not be the end of it.
+            code=000
+            for _ in 1 2 3; do
+              code="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 10 --max-time 30 \
+                "https://registry.npmjs.org/${name/\//%2f}" || echo 000)"
+              case "${code}" in
+                200 | 404) break ;;
+              esac
+              sleep 5
+            done
             case "${code}" in
               200) ;;
               404)
