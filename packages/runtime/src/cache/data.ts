@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { toBase64 } from '@stayingupwind/core/util';
 
+import { requestContext } from './context.ts';
 import type { DataEntryMetadata, DataRead, DataReadRequest } from './host.ts';
 import type { CacheRuntime, DataMemo, DataState } from './runtime.ts';
 
@@ -58,13 +59,32 @@ async function withBytes(runtime: CacheRuntime, response: DataRead): Promise<Dat
   return bytes === undefined ? { kind: 'missing' } : { kind: 'found', response, bytes };
 }
 
-/** The regional projection, coalesced per key and rejected if a local write overtook the read. */
+/** The read settled, whichever way: what is kept is the read, and its failure is its waiters'. */
+async function kept(read: Promise<unknown>): Promise<void> {
+  try {
+    await read;
+  } catch {
+    // Said to whoever waits on the read, as it always was.
+  }
+}
+
+/**
+ * The regional projection, coalesced per key and rejected if a local write overtook the read.
+ *
+ * A read another request of this isolate began is joined for a hold at most, and the request that
+ * begins one hands it to its `waitUntil`. A request's own I/O is cut off with it — its client gone,
+ * its invocation over — and what it left out then never settles: a read joined for good would hang
+ * every later request for the key, for as long as the isolate lived. Handed over, it outlives the
+ * request that began it by as long as the runtime lets that request's work go on; begun more than
+ * a hold ago, it is not joined but begun again.
+ */
 export async function readData(runtime: CacheRuntime, request: DataReadRequest): Promise<DataMemo> {
   const key = keyOf(request);
   const remembered = runtime.dataMemo.get(key);
   if (remembered !== undefined) return remembered;
+  const now = performance.now();
   const pending = runtime.dataReads.get(key);
-  if (pending !== undefined) return pending.promise;
+  if (pending !== undefined && now - pending.startedAt < runtime.holdMs) return pending.promise;
   const stateKey = stateKeyOf(key);
   const state = stateFor(runtime, key, stateKey);
   const epoch = state.epoch;
@@ -77,29 +97,31 @@ export async function readData(runtime: CacheRuntime, request: DataReadRequest):
     );
   };
   const read = (async (): Promise<DataMemo> => {
-    const answer = await runtime.host.getData(request);
-    if (!current() || (answer !== undefined && answer.dependencyRevision < state.revision)) {
-      return currentOrMissing(runtime, key);
+    try {
+      const answer = await runtime.host.getData(request);
+      if (!current() || (answer !== undefined && answer.dependencyRevision < state.revision)) {
+        return currentOrMissing(runtime, key);
+      }
+      // Observe ordering before a potentially slow artifact read, even if its bytes are missing.
+      if (answer !== undefined) state.revision = answer.dependencyRevision;
+      const memo =
+        answer === undefined ? { kind: 'missing' as const } : await withBytes(runtime, answer);
+      if (
+        !current() ||
+        (memo.kind === 'found' && memo.response.dependencyRevision < state.revision)
+      ) {
+        return currentOrMissing(runtime, key);
+      }
+      runtime.dataMemo.set(key, memo);
+      return memo;
+    } finally {
+      // Here rather than in the request that began it, which may have ended before it settled.
+      if (runtime.dataReads.get(key)?.identity === identity) runtime.dataReads.delete(key);
     }
-    // Observe ordering before a potentially slow artifact read, even if its bytes are missing.
-    if (answer !== undefined) state.revision = answer.dependencyRevision;
-    const memo =
-      answer === undefined ? { kind: 'missing' as const } : await withBytes(runtime, answer);
-    if (
-      !current() ||
-      (memo.kind === 'found' && memo.response.dependencyRevision < state.revision)
-    ) {
-      return currentOrMissing(runtime, key);
-    }
-    runtime.dataMemo.set(key, memo);
-    return memo;
   })();
-  runtime.dataReads.set(key, { identity, promise: read });
-  try {
-    return await read;
-  } finally {
-    if (runtime.dataReads.get(key)?.identity === identity) runtime.dataReads.delete(key);
-  }
+  runtime.dataReads.set(key, { identity, promise: read, startedAt: now });
+  requestContext()?.waitUntil(kept(read));
+  return read;
 }
 
 /** A write in flight: the key, and the state it holds out of the LRU's reach. */

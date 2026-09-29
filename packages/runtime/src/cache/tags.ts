@@ -5,6 +5,7 @@ import {
 } from '@stayingupwind/core/cache';
 import { Lru } from '@stayingupwind/core/util';
 
+import { requestContext } from './context.ts';
 import type { CacheHost } from './host.ts';
 
 /**
@@ -74,6 +75,34 @@ const MAX_TAGS_HELD = 4096;
  */
 const MAX_APPLIED_MARKS = 4096;
 
+/**
+ * A read of the host in flight, which other requests of the isolate join, and when it began by
+ * `performance.now()` — the request clock a test hands a request does not move.
+ */
+interface Flight {
+  readonly identity: symbol;
+  readonly promise: Promise<void>;
+  readonly startedAt: number;
+}
+
+/**
+ * Hand a read other requests may join to the `waitUntil` of the request that began it, so that it
+ * outlives that request by as long as the runtime lets its work go on: cut off with it, it would
+ * never settle for the requests that joined it.
+ */
+function keep(read: Promise<void>): void {
+  requestContext()?.waitUntil(settled(read));
+}
+
+/** The read settled, whichever way: what is kept is the read, and its failure is its waiters'. */
+async function settled(read: Promise<void>): Promise<void> {
+  try {
+    await read;
+  } catch {
+    // Said to whoever waits on the read, as it always was.
+  }
+}
+
 /** What this isolate knows of one tag: its latest invalidation, and when the host last said so. */
 interface TagKnowledge {
   readonly mark?: TagMark | undefined;
@@ -85,10 +114,10 @@ export class TagState {
   readonly #applied = new Lru<string, TagMark>(MAX_APPLIED_MARKS);
   readonly #holdMs: number;
   readonly #log: TagStateOptions['log'];
-  readonly #localReads = new Map<string, Promise<void>>();
+  readonly #localReads = new Map<string, Flight>();
   #revision = 0;
   #syncedAt: number | undefined;
-  #inflight: Promise<void> | undefined;
+  #inflight: Flight | undefined;
 
   constructor(options: TagStateOptions) {
     this.#holdMs = options.holdMs;
@@ -122,23 +151,28 @@ export class TagState {
   }
 
   async #pullLocal(host: TagHost, values: readonly string[], now: number): Promise<void> {
-    try {
-      const result = await host.getTags(values);
-      for (const tag of result.tags) {
-        this.#mark(tag.value, { staleAt: tag.staleAt, hardExpireAt: tag.hardExpireAt });
-      }
-      // Every tag asked about, not only the ones the host had something to say about: the answer
-      // that a tag has no invalidation is worth the same hold as the answer that it has one.
-      //
-      // The two loops are one turn: there is no `await` between them, so no other read can evict
-      // what the first just marked before the second reads it back. A second read of this key
-      // would find the mark even if one could — it is read and written together.
-      for (const value of values) {
-        this.#tags.set(value, { ...this.#tags.get(value), checkedAt: now });
-      }
-    } finally {
-      for (const value of values) this.#localReads.delete(value);
+    const result = await host.getTags(values);
+    for (const tag of result.tags) {
+      this.#mark(tag.value, { staleAt: tag.staleAt, hardExpireAt: tag.hardExpireAt });
     }
+    // Every tag asked about, not only the ones the host had something to say about: the answer
+    // that a tag has no invalidation is worth the same hold as the answer that it has one.
+    //
+    // The two loops are one turn: there is no `await` between them, so no other read can evict
+    // what the first just marked before the second reads it back. A second read of this key
+    // would find the mark even if one could — it is read and written together.
+    for (const value of values) {
+      this.#tags.set(value, { ...this.#tags.get(value), checkedAt: now });
+    }
+  }
+
+  /**
+   * Whether a read of the host another request began is one to wait for: begun within a hold. A
+   * request's own I/O is cut off with it, and what it left out then never settles — joined for
+   * good, it would hang every later request that asked the same, for as long as the isolate lived.
+   */
+  #joinable(flight: Flight | undefined): flight is Flight {
+    return flight !== undefined && performance.now() - flight.startedAt < this.#holdMs;
   }
 
   /**
@@ -173,13 +207,24 @@ export class TagState {
     if (held && options.force !== true) {
       return;
     }
-    // One pull at a time: whoever arrives while it runs waits for the same one.
-    this.#inflight ??= this.#pull(host, now);
-    try {
-      await this.#inflight;
-    } finally {
-      this.#inflight = undefined;
+    // One pull at a time: whoever arrives while it runs waits for the same one, within a hold.
+    const joined = this.#inflight;
+    if (this.#joinable(joined)) {
+      await joined.promise;
+      return;
     }
+    const identity = Symbol('tag pull');
+    const promise = (async (): Promise<void> => {
+      try {
+        await this.#pull(host, now);
+      } finally {
+        // Let go of here, since the request that began it may end before it settles.
+        if (this.#inflight?.identity === identity) this.#inflight = undefined;
+      }
+    })();
+    this.#inflight = { identity, promise, startedAt: performance.now() };
+    keep(promise);
+    await promise;
   }
 
   /**
@@ -199,13 +244,25 @@ export class TagState {
     const unread: string[] = [];
     for (const value of needed) {
       const pending = this.#localReads.get(value);
-      if (pending === undefined) unread.push(value);
-      else waiting.add(pending);
+      if (this.#joinable(pending)) waiting.add(pending.promise);
+      else unread.push(value);
     }
     for (let offset = 0; offset < unread.length; offset += MAX_TAGS_PER_CALL) {
       const batch = unread.slice(offset, offset + MAX_TAGS_PER_CALL);
-      const read = this.#pullLocal(host, batch, now);
-      for (const value of batch) this.#localReads.set(value, read);
+      const identity = Symbol('tag read');
+      const read = (async (): Promise<void> => {
+        try {
+          await this.#pullLocal(host, batch, now);
+        } finally {
+          // Let go of here, since the request that began it may end before it settles.
+          for (const value of batch) {
+            if (this.#localReads.get(value)?.identity === identity) this.#localReads.delete(value);
+          }
+        }
+      })();
+      const flight = { identity, promise: read, startedAt: performance.now() };
+      for (const value of batch) this.#localReads.set(value, flight);
+      keep(read);
       waiting.add(read);
     }
     await Promise.all(waiting);

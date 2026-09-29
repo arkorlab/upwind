@@ -51,9 +51,13 @@ export interface CacheRuntime {
    * of its own, whose floor the older write's reply never learns.
    */
   readonly dataWrites: Map<string, DataState>;
+  /**
+   * Reads in flight, joined by the requests that want the same key meanwhile — for one hold at
+   * most, by `startedAt` (`performance.now()`): what a request left out may never settle.
+   */
   readonly dataReads: Map<
     string,
-    { readonly identity: symbol; readonly promise: Promise<DataMemo> }
+    { readonly identity: symbol; readonly promise: Promise<DataMemo>; readonly startedAt: number }
   >;
   /** Delivery records by entry, decoded, for one hold. */
   readonly recordMemo: TtlCache<string, DecodedGenerationPack | null>;
