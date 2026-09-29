@@ -122,19 +122,64 @@ function isFetchValue(value: unknown): value is CachedFetchValue {
   );
 }
 
-/** Write what a `fetch` answered, under the key and the entry its render gave it. */
-async function keepFetch(
+/** A write the fetch cache handed over: it settles as the write is answered, or has failed. */
+interface FetchWrite {
+  settled: Promise<void> | undefined;
+}
+
+/**
+ * The fetch cache's writes still out in this isolate: for each key, the last one handed over.
+ * An entry leaves as its write settles, so there are only ever as many as there are keys with a
+ * write out.
+ */
+const fetchWrites = new WeakMap<CacheRuntime, Map<string, FetchWrite>>();
+
+/**
+ * Write what a `fetch` answered, under the key and the entry its render gave it, once the write of
+ * the key handed over before it has been answered.
+ *
+ * Next.js ordered a key's writes itself while it waited on them: a render's writes of one key ran
+ * one after another (`cache-set-<key>`, in `createCachedDynamicResponse`), and its lock on the key
+ * held a second render's until the first had landed. Both now let go as `set()` answers, which is
+ * before the write lands; two writes of a key out at once would reach the host in whichever order
+ * the network gave them, and the last to land is what the host keeps. Each waits for the one before
+ * it here instead, so the key's writes land in the order they were handed over, and the render
+ * waits on none of them.
+ */
+function keepFetch(
   runtime: CacheRuntime,
   key: string,
   entry: DataEntryMetadata,
   data: CachedFetchValue,
 ): Promise<void> {
-  try {
-    await writeData(runtime, { key, entry, bytes: new TextEncoder().encode(JSON.stringify(data)) });
-  } catch (error) {
-    // The render has its data; what failed is keeping it for the next one.
-    runtime.log('fetch cache write failed', { detail: detail(error) });
-  }
+  const writes = fetchWrites.get(runtime) ?? new Map<string, FetchWrite>();
+  fetchWrites.set(runtime, writes);
+  const before = writes.get(key)?.settled;
+  const write: FetchWrite = { settled: undefined };
+  writes.set(key, write);
+  write.settled = (async () => {
+    try {
+      // Never rejects: a write that failed is logged below, and the next one goes on. With none
+      // before it, the write takes the key's state before this first waits (`writeData`).
+      if (before !== undefined) {
+        await before;
+      }
+      await writeData(runtime, {
+        key,
+        entry,
+        bytes: new TextEncoder().encode(JSON.stringify(data)),
+      });
+    } catch (error) {
+      // The render has its data; what failed is keeping it for the next one.
+      runtime.log('fetch cache write failed', { detail: detail(error) });
+    } finally {
+      // A later write of the key, handed over meanwhile, keeps its place.
+      if (writes.get(key) === write) {
+        writes.delete(key);
+      }
+    }
+  })();
+  return write.settled;
 }
 
 /**
@@ -212,34 +257,44 @@ export class PlatformFetchCache {
    * Start keeping what a `fetch` answered, and answer at once: the write goes on behind the render
    * that fetched it, in the request's `waitUntil`.
    *
-   * Where Next.js prerenders — every regeneration, and the render a visitor waits on when an entry
-   * has expired or has none — it hands the render the response a `fetch` got only once this has
-   * answered (`createCachedPrerenderResponse`, in `server/lib/patch-fetch.ts`). A write awaited
-   * here would put a round trip to wherever the host keeps its entries in front of the render, once
-   * for every value the page fetched. A dynamic render writes behind its response already, and
-   * what Next.js registers for that write (`fetch-cache-writes.ts`) settles as this answers — so
-   * the write is handed to `waitUntil` here, and nothing ends the request's work under it.
+   * Where Next.js prerenders a Cache Components page — every regeneration of one, and the render a
+   * visitor waits on when its entry has expired or has none (the `prerender`, `prerender-client`,
+   * `prerender-runtime` and `validation-client` work units) — it hands the render the response a
+   * `fetch` got only once this has answered (`createCachedPrerenderResponse`, in
+   * `server/lib/patch-fetch.ts`). A write awaited here would put a round trip to wherever the host
+   * keeps its entries in front of the render, once for every value the page fetched. Any other
+   * render writes behind its response already, and what Next.js registers for that write
+   * (`fetch-cache-writes.ts`) settles as this answers — so the write is handed to `waitUntil` here,
+   * and nothing ends the request's work under it.
    *
    * Nothing after the render needs the write to have landed. A prerender has the value in its
    * resume data cache before Next.js calls this (`IncrementalCache.set`): a later read of the key
    * in the same render is answered from there, and so is the resume of what the render postponed,
    * whose state carries that cache. A generation is committed against the tag revision its render
-   * synced, not against anything here. And what orders the write is in place before this answers:
-   * `writeData` takes the key's state, fences the reads under way and forgets what was remembered
-   * before it first waits, and the entry carries the moment the fetch began, by which the host
-   * fences the write. A read of the key while the write is out — Next.js lets one past its lock on
-   * the key as this answers — is answered what was there before, as a read in any other isolate
-   * would be, and that answer is not kept past the write's reply.
+   * synced, not against anything here. And the write is ordered without the render waiting on it:
+   * with no other write of the key out, `writeData` takes the key's state, fences the reads under
+   * way and forgets what was remembered before this answers; with one out, it waits for that one to
+   * be answered first (`keepFetch`); and the entry carries the moment the fetch began, by which the
+   * host fences the write.
+   *
+   * A read of the key while the write is out — Next.js lets one past its lock on the key as this
+   * answers — is answered what was there before, as a read in any other isolate would be, and that
+   * answer is not kept past the write's reply. So a render of the key in this isolate while the
+   * write is out can miss, or find the value the write replaces, and fetch the origin again; its own
+   * write then lands after this one.
    */
   set(cacheKey: string, data: CachedFetchValue | null, ctx: FetchSetContext): Promise<void> {
     const current = state.current;
     const context = requestContext();
     if (
-      current !== undefined &&
-      context !== undefined &&
-      data !== null &&
-      ctx.fetchCache === true
+      current === undefined ||
+      context === undefined ||
+      data === null ||
+      ctx.fetchCache !== true
     ) {
+      return Promise.resolve();
+    }
+    try {
       const entry: DataEntryMetadata = {
         kind: DATA_FETCH,
         tags: mergeTags(data.tags, ctx.tags),
@@ -251,8 +306,12 @@ export class PlatformFetchCache {
         revalidate: data.revalidate,
       };
       context.waitUntil(keepFetch(current.runtime, cacheKey, entry, data));
+      return Promise.resolve();
+    } catch (error) {
+      // A promise either way, as when this was async: a host whose `waitUntil` throws once its
+      // invocation has ended fails the call, not the caller's frame.
+      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
     }
-    return Promise.resolve();
   }
 
   async revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void> {
