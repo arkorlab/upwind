@@ -45,6 +45,12 @@ export interface RoutedInput extends HandleInput {
   readonly initURL: string;
   /** The context every render of the request runs in: its clock and its platform hooks. */
   readonly run: Run;
+  /**
+   * Whether the request has had its regeneration already: one in the foreground whose render
+   * answered nothing, which leaves the request to the usual path. Nothing on that path begins
+   * another (`serveFromGeneration`).
+   */
+  readonly regenerated?: boolean | undefined;
 }
 
 export { initUrlOf, resumeUrl, stripPlatformHeaders } from './incoming.ts';
