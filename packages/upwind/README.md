@@ -69,7 +69,7 @@ is not working.
 $ curl -s localhost:3000/__upwind
 {
   "upwind": "0.3.0",
-  "next": "16.3.6",
+  "next": "16.3.7",
   "ready": true,
   "address": "http://localhost:3000",
   "prefix": "/__upwind",

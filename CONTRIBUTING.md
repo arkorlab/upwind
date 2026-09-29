@@ -126,6 +126,11 @@ git tag -s v0.3.0 -m v0.3.0
 git push origin v0.3.0
 ```
 
+Pushing the tag starts the release. **Unless the release publishes a package for the first time** —
+then the run the tag starts has no token, refuses to publish, and the release is made by dispatching
+**Release** with that tag, `dry-run: false` and `bootstrap: true`. Cancel the tag's own run rather
+than leaving it to fail; the paragraph below says what that one release needs.
+
 Everything else is in [`publish.yaml`](.github/workflows/publish.yaml). A release refuses a tag that
 is not signed by a key in [`release-signers.asc`](.github/release-signers.asc), that does not stand
 on `main`, or that names a version the packages do not — which is why the bump has to be merged
