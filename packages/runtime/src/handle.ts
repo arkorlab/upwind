@@ -594,7 +594,7 @@ async function routeRequest(input: RoutedInput, store: Store): Promise<Response>
     // render of the visitor's own that was dynamic too — and the usual path answers. That path
     // reads the same expired record and regenerated again from it: a second lease, and a second
     // render that could say nothing the first did not.
-    const usual = foreground.regenerated ? { ...input, regenerated: true } : input;
+    const usual = { ...input, regenerated: foreground.regenerated };
     return outcomeOn(await handleFull(usual, store), foreground.outcome);
   }
   const prerenderId =

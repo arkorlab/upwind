@@ -1,4 +1,5 @@
 import type { Prerender } from '@stayingupwind/core/bundle';
+import type { RouteEntryDescriptor } from '@stayingupwind/core/cache';
 import { anyConditionHolds, NULL_BODY_STATUSES } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
@@ -46,11 +47,13 @@ export interface RoutedInput extends HandleInput {
   /** The context every render of the request runs in: its clock and its platform hooks. */
   readonly run: Run;
   /**
-   * Whether the request has had its regeneration already: one in the foreground whose render
+   * The entry the request has had its regeneration of already: one in the foreground whose render
    * answered nothing, which leaves the request to the usual path. Nothing on that path begins
-   * another (`serveFromGeneration`).
+   * another of it (`serveFromGeneration`). The entry, not the request: the usual path can land on
+   * another one — the class shell a member the edge asked to upgrade is answered from, the route
+   * a rewrite leads to — whose own regeneration no one has begun.
    */
-  readonly regenerated?: boolean | undefined;
+  readonly regenerated?: RouteEntryDescriptor | undefined;
 }
 
 export { initUrlOf, resumeUrl, stripPlatformHeaders } from './incoming.ts';

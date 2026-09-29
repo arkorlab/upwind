@@ -276,8 +276,8 @@ export interface ForegroundAnswer {
   readonly response: Response | undefined;
   /** What to say of the regeneration when the usual path answers instead. */
   readonly outcome: string;
-  /** Whether a regeneration was begun: the usual path, answering instead, begins none of its own. */
-  readonly regenerated: boolean;
+  /** The entry a regeneration was begun of: the usual path, answering instead, begins no other. */
+  readonly regenerated: RouteEntryDescriptor | undefined;
 }
 
 /**
@@ -291,13 +291,13 @@ export async function handleForeground(
 ): Promise<ForegroundAnswer> {
   const job = await jobOf(input, store);
   if (job === undefined) {
-    return { response: undefined, outcome: 'skipped', regenerated: false };
+    return { response: undefined, outcome: 'skipped', regenerated: undefined };
   }
   const outcome = await runJob(job, 'expired');
   return {
     response: await answerFromJob(job, outcome, documentWant(input)),
     outcome: outcome.kind,
-    regenerated: true,
+    regenerated: job.target.descriptor,
   };
 }
 
@@ -401,6 +401,10 @@ function answerableEntry(input: RoutedInput, store: Store, source: GenerationSou
   return regenerable(descriptor) ? { runtime, descriptor } : undefined;
 }
 
+function sameEntry(a: RouteEntryDescriptor | undefined, b: RouteEntryDescriptor): boolean {
+  return a?.kind === b.kind && a.route === b.route && a.pathname === b.pathname;
+}
+
 /**
  * The request rendered as it came. Once a runtime generation exists, its missing/rejected output
  * must never fall back to a different generation's build artifact: this answers instead.
@@ -463,10 +467,10 @@ export async function serveFromGeneration(
     url: source.url,
     prefetch: source.prefetch,
   };
-  // One regeneration a request. A foreground one that answered nothing has had it (`routeRequest`),
-  // and found the entry dynamic here, which is all another would find: what is left is a render of
-  // the request as it came — the build's path, for an entry with no record.
-  const once = input.regenerated !== true;
+  // One regeneration of an entry a request. A foreground one that answered nothing has had it
+  // (`routeRequest`), and found the entry dynamic here, which is all another would find: what is
+  // left is a render of the request as it came — the build's path, for an entry with no record.
+  const once = !sameEntry(input.regenerated, descriptor);
   if (lookup.kind === 'none' && source.onMiss === 'render') {
     return once ? answerFromJob(job, await runJob(job, 'miss'), want) : undefined;
   }
