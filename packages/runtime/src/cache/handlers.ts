@@ -305,6 +305,10 @@ function keepFetch(
  * answers now, which is before the write lands, and the host would answer with what the write
  * replaces, or with nothing. The value is judged against the tags like any other, so an
  * invalidation this isolate has made or learned of since the fetch began still makes it stale.
+ *
+ * Not for a regeneration, which asks the host. What the host says of the entry — an invalidation it
+ * holds against the write, fenced by the moment the fetch began — reaches this isolate only with
+ * the write's answer, and a regeneration renders what the host will keep.
  */
 export class PlatformFetchCache {
   // Next.js constructs it with its own context (fs, dev, revalidatedTags, …); none of it applies
@@ -327,7 +331,7 @@ export class PlatformFetchCache {
     let held: HeldFetch | undefined;
     try {
       held =
-        heldOut(runtime, cacheKey) ??
+        (isRegeneration() ? undefined : heldOut(runtime, cacheKey)) ??
         heldIn(await readData(runtime, { key: cacheKey, kind: DATA_FETCH }));
       if (held !== undefined) {
         await runtime.tags.syncLocal(
