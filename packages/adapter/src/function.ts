@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createGzip } from 'node:zlib';
 
-import type { FunctionModule, FunctionSpec } from '@stayingupwind/core/bundle';
+import type { FunctionModule, FunctionSpec, SourceMapRef } from '@stayingupwind/core/bundle';
 import { build, type Plugin } from 'esbuild';
 import {
   type InputOptions,
@@ -47,6 +47,7 @@ import {
   wasmModulePlugin,
   FUNCTION_BANNER,
 } from './patches/index.ts';
+import { functionSourceMaps, sourceMapsPlugin, sourcemapOutput } from './source-maps.ts';
 import type { TracedFile } from './traced-files.ts';
 import { WASM_ENTRY_MODULE, type WasmCollector, wasmEntrySource, wasmModuleName } from './wasm.ts';
 
@@ -89,6 +90,8 @@ export interface BuildFunctionInput {
   /** The files the entries read through `node:fs`, at their paths in the project (`traced-files.ts`). */
   readonly files: readonly TracedFile[];
   readonly blobStore: BlobStore;
+  /** Carry a map from this Function's bundle back to the sources it was built from. */
+  readonly sourceMaps?: boolean | undefined;
 }
 
 /** Module name a blob is shipped under; the runtime reads it back at `/bundle/blobs/<sha256>`. */
@@ -192,6 +195,8 @@ function runtimeEntry(): string {
 export interface AppBundleContext {
   readonly patch: PatchContext;
   readonly wasm: WasmCollector;
+  /** Compose the maps the build already wrote through into this bundle's own. */
+  readonly sourceMaps?: boolean | undefined;
 }
 
 /** What `bundleApp` collects as Rolldown runs, for the dependency record. */
@@ -224,6 +229,10 @@ export function appBundlePlugins(
     patchesPlugin(PATCHES, context.patch, (applied) => {
       sinks.patches.push(applied);
     }),
+    // After the patches, so a file a patch rewrote is never given a map that no longer describes
+    // it; see `sourceMapsPlugin`. Left out entirely for a build carrying no maps: it would read
+    // the tail of every file the bundle loads for a comment nothing would use.
+    ...(context.sourceMaps === true ? [sourceMapsPlugin()] : []),
     stubPlugin((specifier) => {
       sinks.stubs.push(specifier);
     }),
@@ -291,7 +300,16 @@ async function bundleApp(
     linked: new Set(),
   };
   await using bundle = await rolldown(
-    appBundleOptions(input.projectDir, entryFile, { patch: input.patch, wasm: input.wasm }, sinks),
+    appBundleOptions(
+      input.projectDir,
+      entryFile,
+      {
+        patch: input.patch,
+        wasm: input.wasm,
+        ...(input.sourceMaps === true && { sourceMaps: true }),
+      },
+      sinks,
+    ),
   );
   const { output } = await bundle.write({
     format: 'cjs',
@@ -305,8 +323,7 @@ async function bundleApp(
     banner: FUNCTION_BANNER,
     minify: { compress: true, mangle: false, codegen: { removeWhitespace: true } },
     comments: { legal: false },
-    // The build already ran; there is nothing to watch and no sourcemap consumer in the Function.
-    sourcemap: false,
+    ...sourcemapOutput(input.sourceMaps === true),
   });
   const chunk = output.find((item): item is OutputChunk => item.type === 'chunk');
   if (chunk === undefined) {
@@ -362,6 +379,8 @@ async function bundleRuntime(input: BuildFunctionInput, workDir: string): Promis
 export interface BuiltFunction {
   readonly spec: FunctionSpec;
   readonly dependencies: FunctionDependencies;
+  /** The maps of this Function's own modules; empty unless the host asked for them. */
+  readonly sourceMaps: SourceMapRef[];
 }
 
 /**
@@ -498,6 +517,7 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
           projectDir: input.projectDir,
           workDir,
           entries: input.edgeEntries,
+          ...(input.sourceMaps === true && { sourceMaps: true }),
         }),
   ]);
   const appFile = app.outFile;
@@ -617,5 +637,12 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
       compatibilityFlags: [...FUNCTION_COMPATIBILITY_FLAGS],
     },
     dependencies,
+    sourceMaps:
+      input.sourceMaps === true
+        ? await functionSourceMaps(input.blobStore, input.kind, {
+            app: appFile,
+            edge: edge?.outFile,
+          })
+        : [],
   };
 }
