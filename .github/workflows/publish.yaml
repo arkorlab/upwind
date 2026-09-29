@@ -328,8 +328,10 @@ jobs:
       # run among them — has already happened; and the publish below runs no package code either,
       # because `--ignore-scripts` is what makes that true. Without it `pnpm publish` would run each
       # `prepack` *after* this step, in a process that loads a bundler, with the token on disk.
+      # `dry-run` as well as `bootstrap`: a rehearsal uploads nothing, so writing a token to the
+      # runner's disk for it would be a credential at rest with nothing to do.
       - name: A credential for a package that does not exist yet
-        if: ${{ inputs.bootstrap }}
+        if: ${{ inputs.bootstrap && !inputs.dry-run }}
         env:
           NPM_TOKEN: ${{ secrets.npm-token }}
         run: |
