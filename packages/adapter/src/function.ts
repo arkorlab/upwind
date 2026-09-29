@@ -4,7 +4,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createGzip } from 'node:zlib';
 
-import type { FunctionModule, FunctionSpec } from '@stayingupwind/core/bundle';
+import {
+  type FunctionModule,
+  type FunctionSpec,
+  type ManifestHead,
+  manifestHead,
+} from '@stayingupwind/core/bundle';
 import { build, type Plugin } from 'esbuild';
 import {
   type InputOptions,
@@ -91,11 +96,6 @@ export interface BuildFunctionInput {
   readonly blobStore: BlobStore;
 }
 
-/** The fields of the runtime manifest that say which deployment and build it is, and its config. */
-type ManifestHead = Readonly<
-  Record<'v' | 'deploymentId' | 'nextVersion' | 'buildId' | 'config', unknown>
->;
-
 /**
  * The runtime manifest as the middleware Function is given it: which deployment and build it is,
  * and its configuration — none of the routes, prerenders and files the app Function answers by.
@@ -103,11 +103,13 @@ type ManifestHead = Readonly<
  * The middleware Function answers the middleware alone, run ahead of a shell the edge serves, and
  * reads the base path of the manifest to do it (`deploymentConfig`, in the runtime). The rest would
  * be parsed all the same on its first request — the manifest of an application with a few thousand
- * prerenders runs to megabytes — on the Function whose cold start that shell waits on.
+ * prerenders runs to megabytes — on the Function whose cold start that shell waits on. The runtime
+ * reads it by the same list of fields (`MANIFEST_HEAD_KEYS`).
  */
-export function middlewareManifest(manifest: ManifestHead): ManifestHead {
-  const { v, deploymentId, nextVersion, buildId, config } = manifest;
-  return { v, deploymentId, nextVersion, buildId, config };
+export function middlewareManifest<T extends Readonly<Record<keyof ManifestHead, unknown>>>(
+  manifest: T,
+): Pick<T, keyof ManifestHead> {
+  return manifestHead(manifest);
 }
 
 /** Module name a blob is shipped under; the runtime reads it back at `/bundle/blobs/<sha256>`. */

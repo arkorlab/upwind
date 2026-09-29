@@ -37,6 +37,7 @@ export {
   functionSchema,
   type FunctionSpec,
 } from './schema.ts';
+export { type ManifestHead, manifestHead } from './head.ts';
 export {
   isPagesDataPathname,
   isPagesDataRequestPath,

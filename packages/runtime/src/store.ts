@@ -5,6 +5,7 @@ import {
   documentPrerenders,
   type EntrypointKind,
   isPagesDataPathname,
+  type ManifestHead,
   type Prerender,
   type Route,
   type StaticFile,
@@ -46,17 +47,6 @@ const BLOB_MEMO_BYTES = BLOB_MEMO_MIB * MIB;
  * `staticFiles` are the few shipped with the Function (documents and `public/`), not `_next/static`.
  */
 type RuntimeManifest = Omit<DeploymentBundle, 'functions' | 'projectDir' | 'generatedAt'>;
-
-/**
- * The part of the manifest every Function carries: which deployment and build it is, and its
- * configuration. The middleware Function carries this and no more (`middlewareManifest`, in the
- * adapter): it runs the middleware and nothing else, and none of the routes, prerenders or files
- * bear on that.
- */
-type ManifestHead = Pick<
-  RuntimeManifest,
-  'v' | 'deploymentId' | 'nextVersion' | 'buildId' | 'config'
->;
 
 interface RouteShells {
   /** Prerenders whose URL has no dynamic segment left, by pathname (`/en` → shell). */
@@ -352,7 +342,11 @@ const shared: { manifest: ManifestHead | undefined; store: Store | undefined } =
   store: undefined,
 };
 
-/** The manifest this Function carries: its head in the middleware Function, whole in the app's. */
+/**
+ * The manifest this Function carries: whole in the app Function, and in the middleware Function
+ * its head alone — the fields the adapter writes it from (`MANIFEST_HEAD_KEYS`), which are all that
+ * is typed here.
+ */
 function readManifest(): ManifestHead {
   shared.manifest ??= JSON.parse(
     new TextDecoder().decode(readBundleFile(RUNTIME_MANIFEST)),
