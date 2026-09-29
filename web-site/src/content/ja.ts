@@ -31,7 +31,7 @@ export const ja = {
   },
   bundle: {
     title: 'ビルドが書き出すもの',
-    body: 'Next.js は自身の Adapter API を通じてアダプターを呼びます。ビルド前に `modifyConfig`、ビルド後に `onBuildComplete`。デプロイに必要なものはすべて 1 つのディレクトリーの下に書き出されます。そのディレクトリーは、次のリリースから `.arkor/` です。',
+    body: 'Next.js は自身の Adapter API を通じてアダプターを呼びます。ビルド前に `modifyConfig`、ビルド後に `onBuildComplete`。デプロイに必要なものはすべて 1 つのディレクトリー `.arkor/` の下に書き出されます。',
     items: [
       {
         term: '`bundle.json`',
