@@ -14,9 +14,9 @@ name: Publish
 # attestation fails loudly instead of quietly.
 #
 # Adding a package takes one release that cannot come through here, because npm will not hold a
-# trusted publisher for a name that does not exist yet. Twice now the answer has been a `bootstrap`
-# input carrying a token for that one release, removed again afterwards; the history has the shape of
-# it. Publishing the new names by hand instead would leave a version of each that no provenance
+# trusted publisher for a name that does not exist yet. Three times now the answer has been a
+# `bootstrap` input carrying a token for that one release, removed again afterwards; the history has
+# the shape of it, and `@stayingupwind/sdk` is the one it is here for today. Publishing the new names by hand instead would leave a version of each that no provenance
 # covers — a statement is signed with this workflow's identity and nothing on a laptop has one — and
 # the `provenance` job below would then fail a release over packages that are permanently unattested.
 #
@@ -43,6 +43,25 @@ on:
         required: false
         default: false
         type: boolean
+      bootstrap:
+        description: >
+          Hand the publish step a token as well, for a package npm holds no trusted publisher for
+          because it does not exist yet. The packages that do have one still use theirs: pnpm asks per
+          package and falls back per package, so a release can carry both kinds at once, and the
+          attestation is the same either way — provenance is signed with this workflow's identity,
+          which is a separate thing from what publishing authenticated by.
+        required: false
+        default: false
+        type: boolean
+    secrets:
+      npm-token:
+        description: >
+          Needed by `bootstrap`, and by nothing else. A *scoped* new name can be named in a granular
+          token before it exists, through its scope — so this one needs write on `@stayingupwind` and
+          nothing wider, unlike the release that first published `upwind` and `create-upwind`, whose
+          unscoped names left no way to ask for less than everything. Short-lived all the same, and
+          revoked as soon as the release lands.
+        required: false
 
 permissions: {}
 
@@ -216,6 +235,9 @@ jobs:
       # And for the same reason: a `create-upwind` released with last version's agent rules writes
       # every new project an uncommitted change, which nothing downstream would catch.
       - run: pnpm check:agent-rules
+      # CI runs this and the release did not, which made a release the less-checked of the two. The
+      # deploy-mode hooks against a host that is not one: no credential, no network.
+      - run: pnpm check:deploy-tests
       - run: pnpm build
 
       # Made here, and before the publish, for two reasons. The install above populated pnpm's store,
@@ -301,6 +323,22 @@ jobs:
                 ;;
             esac
           fi
+
+      # Last, and alone. Everything above — `pnpm install` and the lifecycle scripts it is allowed to
+      # run among them — has already happened; and the publish below runs no package code either,
+      # because `--ignore-scripts` is what makes that true. Without it `pnpm publish` would run each
+      # `prepack` *after* this step, in a process that loads a bundler, with the token on disk.
+      - name: A credential for a package that does not exist yet
+        if: ${{ inputs.bootstrap }}
+        env:
+          NPM_TOKEN: ${{ secrets.npm-token }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NPM_TOKEN:-}" ]; then
+            echo '::error::bootstrap was asked for, but no npm-token was passed'
+            exit 1
+          fi
+          printf '//registry.npmjs.org/:_authToken=%s\n' "${NPM_TOKEN}" >> ~/.npmrc
 
       - name: Publish
         env:
