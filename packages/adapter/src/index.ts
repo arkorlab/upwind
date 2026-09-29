@@ -36,6 +36,7 @@ import {
 import { reserveUpwindPrefix } from './dev-prefix.ts';
 import type { EdgeEntry } from './edge.ts';
 import { buildFunction, type EntryModule } from './function.ts';
+import { composedInstrumentation, writeClientInstrumentation } from './instrumentation.ts';
 import { collectManifests } from './manifests.ts';
 import type { PatchContext } from './patches/index.ts';
 import { readProjectConfig } from './project-config.ts';
@@ -88,7 +89,9 @@ function refuseCustomCacheHandlers(config: BuildContext['config']): void {
  */
 async function instrumentationOf(
   distDir: string,
+  outDir: string,
   exported: boolean,
+  hosts: readonly string[],
 ): Promise<{
   readonly file: string | undefined;
   readonly chunks: readonly string[];
@@ -96,15 +99,26 @@ async function instrumentationOf(
   readonly assets: Readonly<Record<string, string>>;
 }> {
   const file = path.join(distDir, 'server', 'instrumentation.js');
-  if (exported || !(await exists(file))) {
+  const own = (await exists(file)) ? file : undefined;
+  if (exported) {
     return { file: undefined, chunks: [], wasm: [], assets: {} };
+  }
+  // The host's module goes in front of the project's, or stands alone where the project wrote no
+  // hook (`composedInstrumentation`). What is traced is still the project's own file: the chunks,
+  // the WebAssembly and the files it reads are its, and the generated module only requires it.
+  const composed = await composedInstrumentation({ outDir, own, hosts });
+  if (composed === undefined) {
+    return { file: undefined, chunks: [], wasm: [], assets: {} };
+  }
+  if (own === undefined) {
+    return { file: composed, chunks: [], wasm: [], assets: {} };
   }
   // All of these go into both Functions: the hook runs before any entrypoint, in each of them.
   return {
-    file,
-    chunks: await nftChunks(file),
-    wasm: await nftWasm(file),
-    assets: await nftAssets(file),
+    file: composed,
+    chunks: await nftChunks(own),
+    wasm: await nftWasm(own),
+    assets: await nftAssets(own),
   };
 }
 
@@ -161,7 +175,12 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
       '@stayingupwind/adapter: only Turbopack builds are supported (no server runtime chunk found)',
     );
   }
-  const instrumentation = await instrumentationOf(ctx.distDir, exported);
+  const instrumentation = await instrumentationOf(
+    ctx.distDir,
+    outDir,
+    exported,
+    options.instrumentationModules ?? [],
+  );
   const id = deploymentId();
   // Next.js's build manifests are what its route modules read at request time. A static export
   // has no route module in the Function, so nothing would ever read one: shipping them would be
@@ -181,7 +200,7 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     ctx.config.basePath,
     ctx.routing.rsc,
   );
-  const staticFiles = await collectStaticFiles(ctx, blobs);
+  const { files: staticFiles, sourceMaps: clientMaps } = await collectStaticFiles(ctx, blobs);
   const middleware = middlewareOutput(ctx.outputs);
   const {
     node: nodeMiddleware,
@@ -254,6 +273,7 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     manifests,
     runtimeManifest: runtimeManifestJson,
     cacheHostModule: options.cacheHostModule,
+    ...(options.sourceMaps === true && { sourceMaps: true }),
     blobs: [...shippedBlobs.values()],
     files: [
       ...files.app,
@@ -279,11 +299,14 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
       manifests,
       runtimeManifest: runtimeManifestJson,
       cacheHostModule: options.cacheHostModule,
+      ...(options.sourceMaps === true && { sourceMaps: true }),
       blobs: [],
       files: [...files.middleware, ...inlineAssetFiles(middlewareEdgeEntries, ctx.projectDir)],
       blobStore: blobs,
     });
   }
+
+  const sourceMaps = [...clientMaps, ...app.sourceMaps, ...(middlewareFunction?.sourceMaps ?? [])];
 
   // Two things the bundle carries and `runtimeManifest` does not, for the same reason: nothing in
   // the Function reads either, and every byte of its manifest is parsed before its first response.
@@ -298,6 +321,10 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     projectDir: path.relative(ctx.repoRoot, ctx.projectDir).split(path.sep).join('/'),
     generatedAt: new Date().toISOString(),
     staticFiles,
+    // The maps of everything this deployment carries: the browser chunks, taken out of what is
+    // served, and each Function's own bundle. Left out entirely when the host asked for none, so
+    // a bundle without them is a bundle without the field rather than one with an empty list.
+    ...(sourceMaps.length > 0 && { sourceMaps }),
     functions: {
       app: app.spec,
       ...(middlewareFunction !== undefined && { middleware: middlewareFunction.spec }),
@@ -451,6 +478,41 @@ export interface AdapterOptions {
    * configuration from a project that wrote one, and take the crons it declared as withdrawn.
    */
   readonly hostConfigFiles?: readonly string[] | undefined;
+  /**
+   * Modules of the host's own whose instrumentation hooks run beside the project's, as absolute
+   * paths. Bundled into both Functions, and composed with the project's `instrumentation` file if
+   * it wrote one (`composedInstrumentation`): the host's `register` and `onRequestError` run
+   * first, inside a `try`, and the project's runs after.
+   *
+   * For a host that wants to see what an application does — an error as it is thrown, a request as
+   * it is served. Next.js loads one hook from one file, and taking that file away from the project
+   * is not an option: it is the documented way for an application to instrument itself.
+   */
+  readonly instrumentationModules?: readonly string[] | undefined;
+  /**
+   * A module of the host's own, as source, run in the browser before React hydrates.
+   *
+   * Written into the build's own directory and named in `instrumentationClientInject`, which
+   * Next.js provides for exactly this — "primarily intended for `next.config.js` plugins… without
+   * requiring every project to author or modify an `instrumentation-client` file". Source rather
+   * than a path, because a host's module lives outside the project and Next.js resolves an entry
+   * from the project's `node_modules` or relative to its root.
+   *
+   * Production builds only. A development server is the developer's own, and a module of the
+   * host's running in it would be a line in their console that their project did not put there.
+   */
+  readonly clientInstrumentationSource?: string | undefined;
+  /**
+   * Carry the deployment's source maps, so a host can show a stack against the code it was
+   * written as.
+   *
+   * Turns on `productionBrowserSourceMaps` and `experimental.serverSourceMaps`, builds the
+   * Functions with maps, and — this is the half that matters — **moves every `.map` out of the
+   * static files**. Next.js serves the browser maps it emits, and a deployment that published
+   * them would publish the application's source with them; here they travel as blobs the host
+   * stores and nothing serves.
+   */
+  readonly sourceMaps?: boolean | undefined;
 }
 
 /** The config `modifyConfig` is handed, as Next.js declares it. */
@@ -521,7 +583,7 @@ function renderInOneProcessForStorage(config: BuildConfig): void {
 export function createAdapter(options: AdapterOptions = {}): NextAdapter {
   return {
     name: 'upwind',
-    modifyConfig(config, { phase }) {
+    async modifyConfig(config, { phase, projectDir }) {
       if (phase === 'phase-development-server') {
         // `/__upwind` belongs to `upwind dev`, which is in front of this server. See `dev-prefix.ts`
         // for why a front door that already holds the path still wants the reservation, and why
@@ -549,6 +611,26 @@ export function createAdapter(options: AdapterOptions = {}): NextAdapter {
         // `immutableByBuild`).
         config.supportsImmutableAssets = true;
         renderInOneProcessForStorage(config);
+        if (options.sourceMaps === true) {
+          // Both halves, because a stack has both in it: a page's frames are in the browser
+          // chunks, and a render's are in the server ones. What keeps the browser maps from being
+          // served is `onBuildComplete`, which takes them out of the static files.
+          config.productionBrowserSourceMaps = true;
+          config.experimental.serverSourceMaps = true;
+        }
+        if (options.clientInstrumentationSource !== undefined) {
+          const entry = await writeClientInstrumentation({
+            outDir: path.join(projectDir, OUT_DIR_NAME),
+            outDirName: OUT_DIR_NAME,
+            source: options.clientInstrumentationSource,
+          });
+          // Appended, never replacing: a project may have entries of its own, and Next.js runs
+          // them in array order with its own `instrumentation-client` file last.
+          config.instrumentationClientInject = [
+            ...(config.instrumentationClientInject ?? []),
+            entry,
+          ];
+        }
       }
       return config;
     },

@@ -243,6 +243,29 @@ export const staticFileSchema = z.object({
 });
 export type StaticFile = z.infer<typeof staticFileSchema>;
 
+export const sourceMapKindSchema = z.enum(['client', 'function']);
+export type SourceMapKind = z.infer<typeof sourceMapKindSchema>;
+
+/**
+ * A source map the deployment carries but nothing serves.
+ *
+ * `client` maps are named by the pathname of the file they describe (`/_next/static/chunks/x.js`),
+ * because that is what a browser's stack frame says. `function` maps are named by the module
+ * inside the Function (`app.cjs`), because that is what a server's stack frame says. Either way
+ * the name is what a reader looks the map up by, having read a frame.
+ *
+ * Deliberately not a `StaticFile`. Next.js serves the browser maps it emits, and a deployment
+ * that published them would publish the application's source with it; these travel as blobs, are
+ * stored by the host, and are served to nobody.
+ */
+export const sourceMapSchema = z.object({
+  kind: sourceMapKindSchema,
+  /** What a stack frame names: a served pathname, or a module inside the Function. */
+  name: z.string().min(1),
+  blob: blobRefSchema,
+});
+export type SourceMapRef = z.infer<typeof sourceMapSchema>;
+
 export const functionModuleTypeSchema = z.enum(['esm', 'commonjs', 'text', 'json', 'wasm', 'data']);
 export type FunctionModuleType = z.infer<typeof functionModuleTypeSchema>;
 
@@ -355,6 +378,11 @@ const bundleSchema = z.object({
   middleware: z.object({ matchers: z.array(routeSchema) }).optional(),
   prerenders: z.array(prerenderSchema),
   staticFiles: z.array(staticFileSchema),
+  /**
+   * The maps from what the build emitted back to what the project wrote. Optional: a bundle from
+   * an adapter that did not carry them has none, and a host that does not ask for them gets none.
+   */
+  sourceMaps: z.array(sourceMapSchema).optional(),
   functions: z.object({
     app: functionSchema,
     middleware: functionSchema.optional(),
@@ -454,6 +482,9 @@ function forEachBlob(bundle: DeploymentBundle, visit: (ref: BlobRef) => void): v
   }
   for (const file of bundle.staticFiles) {
     add(file.blob);
+  }
+  for (const map of bundle.sourceMaps ?? []) {
+    add(map.blob);
   }
   const functions = [bundle.functions.app, bundle.functions.middleware];
   for (const spec of functions) {

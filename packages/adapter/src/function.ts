@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createGzip } from 'node:zlib';
 
-import type { FunctionModule, FunctionSpec } from '@stayingupwind/core/bundle';
+import type { FunctionModule, FunctionSpec, SourceMapRef } from '@stayingupwind/core/bundle';
 import { build, type Plugin } from 'esbuild';
 import {
   type InputOptions,
@@ -15,6 +15,7 @@ import {
 
 import { type BlobStore, contentTypeFor } from './blobs.ts';
 import { jsLiteral } from './codegen.ts';
+import { exists } from './collect.ts';
 import {
   auditTracedFiles,
   auditFunction,
@@ -47,6 +48,7 @@ import {
   wasmModulePlugin,
   FUNCTION_BANNER,
 } from './patches/index.ts';
+import { sourceMapsPlugin } from './source-maps.ts';
 import type { TracedFile } from './traced-files.ts';
 import { WASM_ENTRY_MODULE, type WasmCollector, wasmEntrySource, wasmModuleName } from './wasm.ts';
 
@@ -89,6 +91,8 @@ export interface BuildFunctionInput {
   /** The files the entries read through `node:fs`, at their paths in the project (`traced-files.ts`). */
   readonly files: readonly TracedFile[];
   readonly blobStore: BlobStore;
+  /** Carry a map from this Function's bundle back to the sources it was built from. */
+  readonly sourceMaps?: boolean | undefined;
 }
 
 /** Module name a blob is shipped under; the runtime reads it back at `/bundle/blobs/<sha256>`. */
@@ -192,6 +196,8 @@ function runtimeEntry(): string {
 export interface AppBundleContext {
   readonly patch: PatchContext;
   readonly wasm: WasmCollector;
+  /** Compose the maps the build already wrote through into this bundle's own. */
+  readonly sourceMaps?: boolean | undefined;
 }
 
 /** What `bundleApp` collects as Rolldown runs, for the dependency record. */
@@ -224,6 +230,10 @@ export function appBundlePlugins(
     patchesPlugin(PATCHES, context.patch, (applied) => {
       sinks.patches.push(applied);
     }),
+    // After the patches, so a file a patch rewrote is never given a map that no longer describes
+    // it; see `sourceMapsPlugin`. Left out entirely for a build carrying no maps: it would read
+    // the tail of every file the bundle loads for a comment nothing would use.
+    ...(context.sourceMaps === true ? [sourceMapsPlugin()] : []),
     stubPlugin((specifier) => {
       sinks.stubs.push(specifier);
     }),
@@ -291,7 +301,16 @@ async function bundleApp(
     linked: new Set(),
   };
   await using bundle = await rolldown(
-    appBundleOptions(input.projectDir, entryFile, { patch: input.patch, wasm: input.wasm }, sinks),
+    appBundleOptions(
+      input.projectDir,
+      entryFile,
+      {
+        patch: input.patch,
+        wasm: input.wasm,
+        ...(input.sourceMaps === true && { sourceMaps: true }),
+      },
+      sinks,
+    ),
   );
   const { output } = await bundle.write({
     format: 'cjs',
@@ -305,8 +324,16 @@ async function bundleApp(
     banner: FUNCTION_BANNER,
     minify: { compress: true, mangle: false, codegen: { removeWhitespace: true } },
     comments: { legal: false },
-    // The build already ran; there is nothing to watch and no sourcemap consumer in the Function.
-    sourcemap: false,
+    // `hidden`, when the host asked for maps: a separate file, and no `sourceMappingURL` comment
+    // in the Function — nothing inside a Worker could load one, and a comment naming a file that
+    // is not there is a line that only ever misleads.
+    //
+    // `sourcemapExcludeSources` leaves the sources out. A map that carried them would carry the
+    // whole application a second time, and what a stack needs is the name of a file and a line in
+    // it, not the line's text. A build with no maps asked for pays none of it.
+    ...(input.sourceMaps === true
+      ? { sourcemap: 'hidden' as const, sourcemapExcludeSources: true }
+      : { sourcemap: false as const }),
   });
   const chunk = output.find((item): item is OutputChunk => item.type === 'chunk');
   if (chunk === undefined) {
@@ -362,6 +389,8 @@ async function bundleRuntime(input: BuildFunctionInput, workDir: string): Promis
 export interface BuiltFunction {
   readonly spec: FunctionSpec;
   readonly dependencies: FunctionDependencies;
+  /** The maps of this Function's own modules; empty unless the host asked for them. */
+  readonly sourceMaps: SourceMapRef[];
 }
 
 /**
@@ -617,5 +646,37 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
       compatibilityFlags: [...FUNCTION_COMPATIBILITY_FLAGS],
     },
     dependencies,
+    sourceMaps: await functionSourceMaps(input, appFile),
   };
+}
+
+/**
+ * The maps of this Function's own modules.
+ *
+ * `app.cjs` alone: it is the module the application's own code is in, and the only one a stack
+ * frame of a fault in the project can name. The runtime's `index.mjs` is this package's source,
+ * built without a map on purpose — a host debugging the runtime has the sources.
+ *
+ * Named `<function>/<module>`, the way the bundle already names a Function: the two Functions of
+ * one deployment both hold an `app.cjs`, and a map that named only the module would be two
+ * different maps under one name.
+ */
+async function functionSourceMaps(
+  input: BuildFunctionInput,
+  appFile: string,
+): Promise<SourceMapRef[]> {
+  if (input.sourceMaps !== true) {
+    return [];
+  }
+  const mapFile = `${appFile}.map`;
+  if (!(await exists(mapFile))) {
+    return [];
+  }
+  return [
+    {
+      kind: 'function',
+      name: `${input.kind}/${APP_MODULE}`,
+      blob: await input.blobStore.putFile(mapFile, 'application/json'),
+    },
+  ];
 }

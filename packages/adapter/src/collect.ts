@@ -9,6 +9,7 @@ import {
   type Prerender,
   primaryPrerenders,
   type Route,
+  type SourceMapRef,
   type SourcePage,
   type StaticFile,
 } from '@stayingupwind/core/bundle';
@@ -20,6 +21,9 @@ import { type BlobStore, contentTypeFor } from './blobs.ts';
 import type { EdgeEntry } from './edge.ts';
 import type { EntryModule } from './function.ts';
 import { segmentPathOf, withBasePath } from './segments.ts';
+
+/** What Next.js names a browser map: the file it describes, plus this. */
+const SOURCE_MAP_SUFFIX = '.map';
 
 /**
  * What the adapter reads from `onBuildComplete`, and what it makes of it. Each function here
@@ -647,16 +651,38 @@ function staticFileContentType(
  * `out/`, `public/` copied in and all, so the directory is not walked a second time, and each file
  * is named where a static host would serve it (`exportedPathname`).
  */
+export interface CollectedStaticFiles {
+  readonly files: StaticFile[];
+  /**
+   * The browser maps, taken out of what is served. Next.js emits one beside every client chunk
+   * when `productionBrowserSourceMaps` is on and serves them; a deployment that published them
+   * would publish the application's source, so they are carried as blobs and served to nobody.
+   * Empty unless the host asked for maps.
+   */
+  readonly sourceMaps: SourceMapRef[];
+}
+
 export async function collectStaticFiles(
   ctx: BuildContext,
   blobs: BlobStore,
-): Promise<StaticFile[]> {
+): Promise<CollectedStaticFiles> {
   const basePath = orDefault(ctx.config.basePath, '');
   const exported = isStaticExport(ctx.config);
   const naming = { basePath, trailingSlash: orDefault(ctx.config.trailingSlash, false) };
   const files: StaticFile[] = [];
+  const sourceMaps: SourceMapRef[] = [];
   for (const output of ctx.outputs.staticFiles) {
     const blob = await blobs.putFile(output.filePath, staticFileContentType(output));
+    if (output.pathname.endsWith(SOURCE_MAP_SUFFIX)) {
+      // Named by the file it describes rather than by itself: a browser's stack frame says
+      // `/_next/static/chunks/x.js`, and that is what a reader has to look a map up by.
+      sourceMaps.push({
+        kind: 'client',
+        name: output.pathname.slice(0, -SOURCE_MAP_SUFFIX.length),
+        blob,
+      });
+      continue;
+    }
     // The name the file is served under, which is the name a rule is judged against: a document
     // moves from `/index` to `/` and from `/about/index` to `/about/`, and the edge matches the
     // header rules on the request's own pathname, not on the one the build handed over.
@@ -690,7 +716,7 @@ export async function collectStaticFiles(
       });
     }
   }
-  return files;
+  return { files, sourceMaps };
 }
 
 export function middlewareMatchers(middleware: AdapterOutput['MIDDLEWARE'] | undefined): Route[] {
