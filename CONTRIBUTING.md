@@ -122,8 +122,8 @@ the bump is the moment those two agree. Once the bump is on `main`:
 ```bash
 git switch main && git pull
 # The name is `v` and the version every package now says — nothing else is accepted.
-git tag -s v0.2.0 -m v0.2.0
-git push origin v0.2.0
+git tag -s v0.3.0 -m v0.3.0
+git push origin v0.3.0
 ```
 
 Everything else is in [`publish.yaml`](.github/workflows/publish.yaml). A release refuses a tag that

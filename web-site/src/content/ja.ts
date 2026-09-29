@@ -130,6 +130,7 @@ export const ja = {
       runtime:
         'デプロイされた Function の中身。ルーティング表、middleware、プリレンダー、キャッシュを workerd 向けに書いたもの。',
       core: '他のパッケージが話す語彙。バンドルの形、キャッシュの用語、エッジと Function のあいだのプロトコル。',
+      sdk: 'アプリ自身の D1、KV、R2。ローカルでもデプロイ先でも同じ書き方で読め、設定はいりません。',
       create: '`pnpm create upwind` と、それが書き出すアプリ。',
     },
     npmLabel: 'npm',

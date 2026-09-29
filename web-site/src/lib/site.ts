@@ -64,6 +64,7 @@ export const PACKAGES = [
   { id: 'adapter', name: `${SCOPE}/adapter`, directory: 'packages/adapter' },
   { id: 'runtime', name: `${SCOPE}/runtime`, directory: 'packages/runtime' },
   { id: 'core', name: `${SCOPE}/core`, directory: 'packages/core' },
+  { id: 'sdk', name: `${SCOPE}/sdk`, directory: 'packages/sdk' },
   { id: 'create', name: 'create-upwind', directory: 'packages/create-upwind' },
 ] as const;
 

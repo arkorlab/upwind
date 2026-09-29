@@ -12,7 +12,7 @@ pnpm upwind dev
 arrangement below as well, where the prefix is reserved inside Next.js's own routing.
 
 ```
-  upwind 0.2.0 dev
+  upwind 0.3.0 dev
   - Local:     http://localhost:3000
   - Internal:  http://localhost:3000/__upwind
 
@@ -68,7 +68,7 @@ is not working.
 ```console
 $ curl -s localhost:3000/__upwind
 {
-  "upwind": "0.2.0",
+  "upwind": "0.3.0",
   "next": "16.3.6",
   "ready": true,
   "address": "http://localhost:3000",

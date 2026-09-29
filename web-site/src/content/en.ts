@@ -133,6 +133,7 @@ export const en = {
       runtime:
         'What a deployment’s Function is: the routing tables, the middleware, the prerenders and the cache, written for workerd.',
       core: 'The vocabulary the others speak — the bundle’s shape, the cache’s terms, and the protocol between an edge and a Function.',
+      sdk: 'An application’s own D1, KV and R2, read the same way locally and in a deployment, with nothing to configure.',
       create: '`pnpm create upwind`, and the application it writes.',
     },
     npmLabel: 'npm',

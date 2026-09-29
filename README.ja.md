@@ -93,8 +93,6 @@ flowchart TB
 > [!NOTE]
 > **upwind はディレクトリーを書き出したところで止まります。** `.arkor/` をアップロードし、Function の前でエッジを動かすのは、デプロイを運用するプラットフォーム、つまりホストの仕事です。エッジはストレージからファイルを配信し、それ以外を Function に渡します。このリポジトリには、そのどちらを行うコードも含まれていません。ホストが実装するもの（バンドルのスキーマ、エッジが読むマニフェスト、エッジと Function が交わす `x-arkor-*` ヘッダー）は [`@stayingupwind/core`](packages/core) に定められています。
 
-> **ディレクトリーが `.arkor/` になるのは次のリリースからです。** [![次のリリース](https://img.shields.io/badge/%E6%AC%A1%E3%81%AE%E3%83%AA%E3%83%AA%E3%83%BC%E3%82%B9-f97316)](https://github.com/arkorlab/upwind/compare/v0.2.0...main) 0.2.0 はバンドルを別の名前で書き出します。ホストがアダプターの export する `OUT_DIR_NAME` で探しているなら、渡されたバージョンが書き出す名前をそのまま読みます。
-
 ## 🎯 だれのためのものか
 
 - **Cloudflare Workers 向けに、アプリを移植せずにビルドしたい Next.js のチーム。** App Router でも Pages Router でも、Partial Prerendering、`"use cache"`、Server Actions、`next/image`、`next/og`、WebAssembly を使っていても、いつもの `next build` でそのままビルドでき、ホストが配信します。
@@ -156,8 +154,8 @@ bun create upwind my-app
 ```
 my-app
 ├── .gitignore
-├── AGENTS.md          # 次のリリースから: Next.js 自身のエージェント向けルールを一字一句そのまま
-├── CLAUDE.md          # 次のリリースから
+├── AGENTS.md          # Next.js 自身のエージェント向けルールを一字一句そのまま
+├── CLAUDE.md
 ├── app/
 │   ├── globals.css    # @import "tailwindcss";
 │   ├── layout.tsx
@@ -210,7 +208,7 @@ my-app
 
    CommonJS の `next.config.js` なら、`require.resolve('@stayingupwind/adapter')` で同じことができます。同じアプリを Vercel にもデプロイするなら、`adapterPath` は環境変数 `VERCEL` が設定されていないときだけ指定してください。`next.config` で指定したアダプターは、Vercel 上のビルドでも使われてしまうからです。条件付きの書き方は [upwind の README](packages/upwind/README.md#on-vercel)（英語）にあります。
 
-最後に、ビルドが書き出す `.arkor/` と、ローカルのストレージが置かれる `.upwind/` を `.gitignore` に加えてください。どちらも次のリリースからです。
+最後に、ビルドが書き出す `.arkor/` と、ローカルのストレージが置かれる `.upwind/` を `.gitignore` に加えてください。
 
 ## 💡 なぜ upwind なのか
 
@@ -278,13 +276,13 @@ my-app
 <tr>
 <td valign="top">
 
-**💾 設定のいらないストレージ** [![次のリリース](https://img.shields.io/badge/%E6%AC%A1%E3%81%AE%E3%83%AA%E3%83%AA%E3%83%BC%E3%82%B9-f97316)](https://github.com/arkorlab/upwind/compare/v0.2.0...main)<br>
+**💾 設定のいらないストレージ**<br>
 D1 データベース、KV 名前空間、R2 バケットを、デプロイと同じランタイムの上でローカルに動かし、`import db from '@stayingupwind/sdk/db'` で読めます。[詳しくは下へ](#-ストレージ)。
 
 </td>
 <td valign="top">
 
-**🤖 コーディングエージェントに対応** [![次のリリース](https://img.shields.io/badge/%E6%AC%A1%E3%81%AE%E3%83%AA%E3%83%AA%E3%83%BC%E3%82%B9-f97316)](https://github.com/arkorlab/upwind/compare/v0.2.0...main)<br>
+**🤖 コーディングエージェントに対応**<br>
 新しいプロジェクトには Next.js 自身の `AGENTS.md` と `CLAUDE.md` が入り、`next dev` と同じように最新の状態に保たれます。[詳しくは FAQ へ](#-よくある質問)。
 
 </td>
@@ -295,20 +293,20 @@ D1 データベース、KV 名前空間、R2 バケットを、デプロイと�
 
 **upwind は Next.js を置き換えません。あなたの Next.js を動かします。** フレームワークのコピーは持たず、`upwind dev` も `upwind build` もプロジェクトが依存する Next.js を使い、それがなければ起動を拒みます。変わるのはアプリを取り囲むもの、つまり開発中の玄関と、本番でビルドが何になるかです。
 
-|                                               | Next.js 単体                                       | upwind と組み合わせた Next.js                                                                                                                                                                                                                                                     |
-| --------------------------------------------- | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **あなたのコード**                            | App Router、Pages Router、`next.config`            | **同じです。** [対応していないもの](#-配信できるもの)を除けば移植は不要で、upwind から import しなければならないものもありません                                                                                                                                                  |
-| **開発**                                      | `next dev`                                         | `upwind dev`: 同じ開発サーバーを同じプロセスで。その前に `/__upwind` に答える玄関があります                                                                                                                                                                                       |
-| **ビルド**                                    | `next build` → `.next/`                            | `upwind build`: 同じ `next build`。そのアダプターが `.arkor/` も書き出します（その名前は次のリリースから）[![次のリリース](https://img.shields.io/badge/%E6%AC%A1%E3%81%AE%E3%83%AA%E3%83%AA%E3%83%BC%E3%82%B9-f97316)](https://github.com/arkorlab/upwind/compare/v0.2.0...main) |
-| **本番**                                      | `next start`: 常駐する 1 つの Node.js サーバー     | 自前のサーバーはなし。workerd 上の `app` Function（proxy があれば `middleware` Function も）が、ホストのエッジの後ろで動きます                                                                                                                                                    |
-| **静的ファイルとプリレンダー**                | そのサーバーが配信                                 | 中身のハッシュを名前にした blob を、エッジがストレージから配信                                                                                                                                                                                                                    |
-| **Partial Prerendering**                      | サーバーがシェルを送り、続けて残りをストリーミング | エッジがストレージからシェルを送り、Function は動的な部分だけを送る                                                                                                                                                                                                               |
-| **middleware / `proxy.ts`**                   | サーバーの中で動く                                 | 独立した Function にもなり、エッジがアプリを起こす前に動かせる                                                                                                                                                                                                                    |
-| **`/_next/image`**                            | サーバーが最適化                                   | エッジが最適化                                                                                                                                                                                                                                                                    |
-| **キャッシュ**（ISR、`"use cache"`、`fetch`） | メモリーとディスク、または自作の `cacheHandler`    | ホストが保持。キャッシュのモジュールはビルド時に指定し、既定のアダプターで作ったバンドルは何もキャッシュしません                                                                                                                                                                  |
-| **cron ジョブ**                               | —                                                  | `upwind.config.ts` か `vercel.json` の `crons`。ビルド時に検査されます                                                                                                                                                                                                            |
-| **ローカルのストレージ**                      | —                                                  | `.upwind/` 以下の D1、KV、R2 を `@stayingupwind/sdk` で読む [![次のリリース](https://img.shields.io/badge/%E6%AC%A1%E3%81%AE%E3%83%AA%E3%83%AA%E3%83%BC%E3%82%B9-f97316)](https://github.com/arkorlab/upwind/compare/v0.2.0...main)                                               |
-| **バンドラー**                                | Turbopack か webpack                               | Turbopack                                                                                                                                                                                                                                                                         |
+|                                               | Next.js 単体                                       | upwind と組み合わせた Next.js                                                                                                    |
+| --------------------------------------------- | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| **あなたのコード**                            | App Router、Pages Router、`next.config`            | **同じです。** [対応していないもの](#-配信できるもの)を除けば移植は不要で、upwind から import しなければならないものもありません |
+| **開発**                                      | `next dev`                                         | `upwind dev`: 同じ開発サーバーを同じプロセスで。その前に `/__upwind` に答える玄関があります                                      |
+| **ビルド**                                    | `next build` → `.next/`                            | `upwind build`: 同じ `next build`。そのアダプターが `.arkor/` も書き出します                                                     |
+| **本番**                                      | `next start`: 常駐する 1 つの Node.js サーバー     | 自前のサーバーはなし。workerd 上の `app` Function（proxy があれば `middleware` Function も）が、ホストのエッジの後ろで動きます   |
+| **静的ファイルとプリレンダー**                | そのサーバーが配信                                 | 中身のハッシュを名前にした blob を、エッジがストレージから配信                                                                   |
+| **Partial Prerendering**                      | サーバーがシェルを送り、続けて残りをストリーミング | エッジがストレージからシェルを送り、Function は動的な部分だけを送る                                                              |
+| **middleware / `proxy.ts`**                   | サーバーの中で動く                                 | 独立した Function にもなり、エッジがアプリを起こす前に動かせる                                                                   |
+| **`/_next/image`**                            | サーバーが最適化                                   | エッジが最適化                                                                                                                   |
+| **キャッシュ**（ISR、`"use cache"`、`fetch`） | メモリーとディスク、または自作の `cacheHandler`    | ホストが保持。キャッシュのモジュールはビルド時に指定し、既定のアダプターで作ったバンドルは何もキャッシュしません                 |
+| **cron ジョブ**                               | —                                                  | `upwind.config.ts` か `vercel.json` の `crons`。ビルド時に検査されます                                                           |
+| **ローカルのストレージ**                      | —                                                  | `.upwind/` 以下の D1、KV、R2 を `@stayingupwind/sdk` で読む                                                                      |
+| **バンドラー**                                | Turbopack か webpack                               | Turbopack                                                                                                                        |
 
 **やめるときは差分 1 つ。** `package.json` のスクリプトを `next dev` と `next build` に戻し、2 つの devDependencies と `adapterPath` の行を消してください。置き換えが要るのは、`@stayingupwind/sdk` でストレージを読んでいるコードと、`upwind.config.*` に書いた cron だけです。
 
@@ -365,9 +363,6 @@ upwind が待ち受け、Next.js はその後ろの同じプロセスで、Next.
 
 ## 💾 ストレージ
 
-> [!NOTE]
-> **`main` にあり、次のリリースに入ります。** `@stayingupwind/sdk` はまだ npm にありません。`upwind` 0.2.0 はストレージを提供しません。
-
 アプリは設定を 1 行も書かずに、D1 データベース、KV 名前空間、R2 バケットを使えます。ローカルでは `upwind dev` と `upwind build` が、デプロイされた Function と同じ workerd の上でそれらを動かし、データを `.upwind/` に保存して、アプリに提供します。本番では、ホストが割り当てたストレージを Function がアプリに提供します。SDK は、提供されたものをどちらでも同じやり方で読みます。
 
 ```tsx
@@ -414,22 +409,20 @@ export default {
 
 ## 📦 パッケージ
 
-| パッケージ                                   | バージョン                                                                                                                                                              | 説明                                                                                                 |
-| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| [`upwind`](packages/upwind)                  | [![upwind](https://img.shields.io/npm/v/upwind?label=&color=cb3837)](https://www.npmjs.com/package/upwind)                                                              | CLI。`upwind dev` と `upwind build`                                                                  |
-| [`create-upwind`](packages/create-upwind)    | [![create-upwind](https://img.shields.io/npm/v/create-upwind?label=&color=cb3837)](https://www.npmjs.com/package/create-upwind)                                         | `pnpm create upwind` と、それが書き出すアプリ                                                        |
-| [`@stayingupwind/adapter`](packages/adapter) | [![@stayingupwind/adapter](https://img.shields.io/npm/v/@stayingupwind/adapter?label=&color=cb3837)](https://www.npmjs.com/package/@stayingupwind/adapter)              | `next build` の中で動き、バンドルを書き出し、それを配信する Function を組み立てる                    |
-| [`@stayingupwind/runtime`](packages/runtime) | [![@stayingupwind/runtime](https://img.shields.io/npm/v/@stayingupwind/runtime?label=&color=cb3837)](https://www.npmjs.com/package/@stayingupwind/runtime)              | デプロイされた Function が動かすコード。アダプターが組み込むもので、手でインストールするものではない |
-| [`@stayingupwind/core`](packages/core)       | [![@stayingupwind/core](https://img.shields.io/npm/v/@stayingupwind/core?label=&color=cb3837)](https://www.npmjs.com/package/@stayingupwind/core)                       | 契約そのもの。バンドルのスキーマ、キャッシュの用語、リクエストの分類、エッジと Function のプロトコル |
-| [`@stayingupwind/sdk`](packages/sdk)         | [![次のリリース](https://img.shields.io/badge/%E6%AC%A1%E3%81%AE%E3%83%AA%E3%83%AA%E3%83%BC%E3%82%B9-f97316)](https://github.com/arkorlab/upwind/compare/v0.2.0...main) | アプリが自分の D1、KV、R2 を設定なしで読むためのもの                                                 |
-
-<!-- When the next release ships: give the SDK's row the npm badge its siblings have; drop every other 次のリリース mark — the badges, the note under ストレージ, the two comments in the create-upwind tree, the note and the Build row's badge about the bundle directory's name, and the timing in the `.gitignore` step; and in 対応する Next.js, say the published release supports 16.2 and later, which is what the Next.js badge will then read from npm. README.md has the same. -->
+| パッケージ                                   | バージョン                                                                                                                                                 | 説明                                                                                                 |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| [`upwind`](packages/upwind)                  | [![upwind](https://img.shields.io/npm/v/upwind?label=&color=cb3837)](https://www.npmjs.com/package/upwind)                                                 | CLI。`upwind dev` と `upwind build`                                                                  |
+| [`create-upwind`](packages/create-upwind)    | [![create-upwind](https://img.shields.io/npm/v/create-upwind?label=&color=cb3837)](https://www.npmjs.com/package/create-upwind)                            | `pnpm create upwind` と、それが書き出すアプリ                                                        |
+| [`@stayingupwind/adapter`](packages/adapter) | [![@stayingupwind/adapter](https://img.shields.io/npm/v/@stayingupwind/adapter?label=&color=cb3837)](https://www.npmjs.com/package/@stayingupwind/adapter) | `next build` の中で動き、バンドルを書き出し、それを配信する Function を組み立てる                    |
+| [`@stayingupwind/runtime`](packages/runtime) | [![@stayingupwind/runtime](https://img.shields.io/npm/v/@stayingupwind/runtime?label=&color=cb3837)](https://www.npmjs.com/package/@stayingupwind/runtime) | デプロイされた Function が動かすコード。アダプターが組み込むもので、手でインストールするものではない |
+| [`@stayingupwind/core`](packages/core)       | [![@stayingupwind/core](https://img.shields.io/npm/v/@stayingupwind/core?label=&color=cb3837)](https://www.npmjs.com/package/@stayingupwind/core)          | 契約そのもの。バンドルのスキーマ、キャッシュの用語、リクエストの分類、エッジと Function のプロトコル |
+| [`@stayingupwind/sdk`](packages/sdk)         | [![@stayingupwind/sdk](https://img.shields.io/npm/v/@stayingupwind/sdk?label=&color=cb3837)](https://www.npmjs.com/package/@stayingupwind/sdk)             | アプリが自分の D1、KV、R2 を設定なしで読むためのもの                                                 |
 
 アプリが依存するのはこのうち 2 つ、`upwind` と `@stayingupwind/adapter` です（ストレージを読むなら SDK も）。すべてのパッケージは 1 つのバージョンを共有し、新しいプロジェクトは `create-upwind` 自身のバージョン（`^x.y.z`）でそれらを指定するので、プロジェクトを作るものと動かすものは、同じ世代から始まります。
 
 ## 📐 対応する Next.js
 
-公開済みのリリースが対応するのは **Next.js 16.3 以降の 16 系** です（冒頭の Next.js バッジは、この範囲を npm から読み取って表示しています）。`main` は **16.2** にも対応しています。16.2 は Next.js の Adapter API が安定版になったバージョンで、それより前には形の違う実験的なフックしかないため、対応するには別のアダプターが必要です。
+公開済みのリリースが対応するのは **Next.js 16.2 以降の 16 系** です（冒頭の Next.js バッジは、この範囲を npm から読み取って表示しています）。16.2 は Next.js の Adapter API が安定版になったバージョンで、それより前には形の違う実験的なフックしかないため、対応するには別のアダプターが必要です。
 
 Adapter API だけでは足りない箇所では、アダプターが Next.js 自身の出力にパッチを当てます。パッチは [`packages/adapter/src/patches/`](packages/adapter/src/patches) の下にあり、どれもバージョン番号を当てにせず、実際の Next.js に対して検査しています:
 
@@ -472,8 +465,6 @@ Adapter API だけでは足りない箇所では、アダプターが Next.js �
 
 <details>
 <summary><b>新しいプロジェクトに <code>AGENTS.md</code> と <code>CLAUDE.md</code> があるのはなぜですか？</b></summary>
-
-[![次のリリース](https://img.shields.io/badge/%E6%AC%A1%E3%81%AE%E3%83%AA%E3%83%AA%E3%83%BC%E3%82%B9-f97316)](https://github.com/arkorlab/upwind/compare/v0.2.0...main)
 
 Next.js 自身のものを、一字一句そのまま使っています。コーディングエージェントに、この Next.js は学習したものより新しいこと、コードを書く前に `node_modules/next/dist/docs/` のドキュメントを読むことを伝えるブロックです。`create-upwind` は `create-next-app` と同じようにこれらを書き、コーディングエージェントが `upwind dev` を動かすと、Next.js がこれらを最新にします。`--no-agents-md` を付けるとスキャフォールドには含めませんが、エージェントが最初に `upwind dev` を動かしたときに、`next dev` と同じく書き出されます。ずっと止めておくスイッチは `next.config` の `agentRules: false` で、`upwind dev` も `next dev` もこれに従います。
 
