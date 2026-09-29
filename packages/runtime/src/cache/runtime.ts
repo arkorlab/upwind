@@ -21,6 +21,7 @@ const DEFAULT_HOLD_MS = 5000;
 const MEMO_ENTRIES = 512;
 const RECORD_MEMO_ENTRIES = 256;
 const ARTIFACT_MEMO_ENTRIES = 64;
+const ENTRY_ID_ENTRIES = 1024;
 const KIB = 1024;
 const MIB = KIB * KIB;
 const PAYLOAD_MEMO_MIB = 8;
@@ -28,6 +29,8 @@ const ARTIFACT_MEMO_MIB = 4;
 const DATA_STATE_KIB = 128;
 const DATA_STATE_BYTES = DATA_STATE_KIB * KIB;
 const DATA_STATE_ENTRY_BYTES = 128;
+const ENTRY_IDS_KIB = 256;
+const ENTRY_IDS_BYTES = ENTRY_IDS_KIB * KIB;
 /** Leave the rest of a Function's 128 MB for Next.js, rendering and concurrent requests. */
 const DATA_MEMO_BYTES = PAYLOAD_MEMO_MIB * MIB;
 const RECORD_MEMO_BYTES = PAYLOAD_MEMO_MIB * MIB;
@@ -55,6 +58,13 @@ export interface CacheRuntime {
     string,
     { readonly identity: symbol; readonly promise: Promise<DataMemo> }
   >;
+  /**
+   * The entry id each entry a request named derives to, by the entry's kind, route and pathname:
+   * two SHA-256 digests a request for it would otherwise make (`deriveEntry`) before its record
+   * can be looked up. An id never changes for the scope, so it is kept until the budget needs the
+   * room; the pathnames are the visitors', so the budget is in bytes as well as entries.
+   */
+  readonly entryIds: TtlCache<string, string>;
   /** Delivery records by entry, decoded, for one hold. */
   readonly recordMemo: TtlCache<string, DecodedGenerationPack | null>;
   /**
@@ -158,6 +168,10 @@ export function createCacheRuntime(options: CacheRuntimeOptions): CacheRuntime |
     dataMemo: new TtlCache(holdMs, MEMO_ENTRIES, options.now, {
       maxBytes: DATA_MEMO_BYTES,
       sizeOf: (memo, key) => dataBytes(memo) + key.length * UTF16_BYTES,
+    }),
+    entryIds: new TtlCache(Infinity, ENTRY_ID_ENTRIES, options.now, {
+      maxBytes: ENTRY_IDS_BYTES,
+      sizeOf: (entryId, key) => (entryId.length + key.length) * UTF16_BYTES,
     }),
     recordMemo: new TtlCache(holdMs, RECORD_MEMO_ENTRIES, options.now, {
       maxBytes: RECORD_MEMO_BYTES,

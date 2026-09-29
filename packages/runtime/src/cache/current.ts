@@ -126,6 +126,18 @@ export function forgetRecord(runtime: CacheRuntime, entryId: string): void {
   runtime.recordReads.delete(entryId);
 }
 
+/** The entry's id, derived once per isolate: it is the same for the scope's every request. */
+async function entryIdOf(runtime: CacheRuntime, descriptor: RouteEntryDescriptor): Promise<string> {
+  const key = JSON.stringify([descriptor.kind, descriptor.route, descriptor.pathname]);
+  const known = runtime.entryIds.get(key);
+  if (known !== undefined) {
+    return known;
+  }
+  const { entryId } = await deriveEntry(runtime.scopeId, descriptor);
+  runtime.entryIds.set(key, entryId);
+  return entryId;
+}
+
 /** How far each state keeps a generation from being answered; `unknown` is served as `fresh` is. */
 const SEVERITY: Readonly<Record<Validity, number>> = { fresh: 0, unknown: 0, stale: 1, expired: 2 };
 
@@ -143,7 +155,7 @@ export async function currentGeneration(
   now: number,
   waitUntil: (promise: Promise<unknown>) => void,
 ): Promise<CurrentLookup> {
-  const { entryId } = await deriveEntry(runtime.scopeId, descriptor);
+  const entryId = await entryIdOf(runtime, descriptor);
   let pack: DecodedGenerationPack | null;
   try {
     pack = await readPack(runtime, entryId, now, waitUntil);
