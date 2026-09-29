@@ -460,6 +460,38 @@ const HEARTBEAT_DIVISOR = 3;
 const MIN_HEARTBEAT_MS = 5000;
 
 /**
+ * How long a regeneration that holds its lease waits for the tags to be synced before it gives the
+ * lease back. The pull pages through the scope's delta, which a fresh isolate reads from the
+ * start; past this it is taken for lost — the request that began it may have ended under it, and
+ * what a request left out never settles once it has — and the attempt ends as failed rather than
+ * holding its lease, renewed by its heartbeat, for as long as the request lives.
+ */
+const TAG_SYNC_DEADLINE_MS = 10_000;
+
+/** `promise` settled, or a `RegenerationError` saying `what` once `ms` have gone by. */
+async function within(
+  promise: Promise<void>,
+  ms: number,
+  what: { readonly code: string; readonly message: string },
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(
+            new RegenerationError(`${what.message} within ${String(ms)} ms`, { code: what.code }),
+          );
+        }, ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Keep the lease while the render, the uploads and the commit run.
  *
  * The host hands a lease out for a fixed time and gives it to someone else when it runs out,
@@ -521,7 +553,6 @@ async function publish(
       commitRequest(input, lease, render, { uploads, tags, observedTagRevision }),
     );
     if (committed.kind === 'published') {
-      forgetRecord(runtime, lease.entryId);
       return { kind: 'published', generationId: committed.generationId };
     }
     runtime.log('regeneration not published', {
@@ -534,6 +565,10 @@ async function publish(
     return { kind: 'failed', error: await giveUp(input, lease, error, began) };
   } finally {
     stopHeartbeat();
+    // Whatever came of it. A read begun since the render let go of the entry may have kept the
+    // generation it replaces; published, that is not what the host serves, and refused — another
+    // attempt's won — or failed with its commit landed and the answer lost, it may not be either.
+    forgetRecord(runtime, lease.entryId);
   }
 }
 
@@ -577,10 +612,14 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   }
   const began = performance.now();
   const stopHeartbeat = heartbeat(input, lease);
-  await synced;
-  const observedTagRevision = runtime.tags.revision;
+  let observedTagRevision: number;
   let captured: CapturedRender | undefined;
   try {
+    await within(synced, TAG_SYNC_DEADLINE_MS, {
+      code: 'tags_not_synced',
+      message: 'the tags were not synced',
+    });
+    observedTagRevision = runtime.tags.revision;
     captured = await renderStatic(input, lease.attemptId);
     if (captured === undefined) {
       stopHeartbeat();
