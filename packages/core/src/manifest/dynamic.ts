@@ -29,7 +29,9 @@ function namesNoFile(pathname: string): boolean {
  * keeps none — Next.js redirects the other way there — and neither does the root, which is a slash.
  */
 export function withTrailingSlash(pathname: string): string {
-  return namesNoFile(pathname) ? `${pathname}/` : pathname;
+  // The redirect leaves a path that begins `/.well-known` alone, whatever follows — at the root of
+  // the path only: under a base path, `/docs/.well-known/…` gains the slash like any other.
+  return namesNoFile(pathname) && !pathname.startsWith('/.well-known') ? `${pathname}/` : pathname;
 }
 
 /**

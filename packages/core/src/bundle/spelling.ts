@@ -14,6 +14,17 @@ export function isTemplate(pathname: string): boolean {
 }
 
 /**
+ * Whether the build keeps its pages behind a trailing slash: `trailingSlash`, and the redirect
+ * `next build` adds to put every page there. Where `skipTrailingSlashRedirect` leaves that redirect
+ * out, Next.js serves a page at both spellings, and the edge serves it at the one the build named
+ * it by, as it always did — the spelling without the slash stays the edge's.
+ */
+export function keepsTrailingSlash(bundle: DeploymentBundle): boolean {
+  const { skipTrailingSlashRedirect, trailingSlash } = bundle.config;
+  return trailingSlash && !skipTrailingSlashRedirect;
+}
+
+/**
  * The spelling a request asks for a pathname of the build by: behind the trailing slash an
  * application keeps its pages behind (`withTrailingSlash`), and as the build named it otherwise.
  * The base path's own root gains the slash whatever its last segment reads like — `next build`
@@ -24,10 +35,10 @@ export function isTemplate(pathname: string): boolean {
  * `trailingSlash` claimed every page but the root, and kept all of them off the edge.
  */
 export function requestedPathname(bundle: DeploymentBundle, pathname: string): string {
-  const { basePath, trailingSlash } = bundle.config;
-  if (!trailingSlash) {
+  if (!keepsTrailingSlash(bundle)) {
     return pathname;
   }
+  const { basePath } = bundle.config;
   return basePath !== '' && pathname === basePath ? `${pathname}/` : withTrailingSlash(pathname);
 }
 

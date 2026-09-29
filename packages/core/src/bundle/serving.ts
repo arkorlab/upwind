@@ -13,7 +13,7 @@ import { filterShellResponseHeaders, rendersInline } from '../request/headers.ts
 import { isInternalPage, nextNamespaceRoutes } from './base-path.ts';
 import { queryDependent } from './query.ts';
 import type { DeploymentBundle, Entrypoint, Prerender, Route, StaticFile } from './schema.ts';
-import { isTemplate, requestedPathname } from './spelling.ts';
+import { isTemplate, keepsTrailingSlash, requestedPathname } from './spelling.ts';
 
 /**
  * What of a deployment's build the edge serves, and under which headers: the prerenders with a
@@ -248,9 +248,11 @@ function generationIn(bundle: DeploymentBundle): (prerender: Prerender) => boole
   const isDocument = documentPrerenders(bundle.prerenders, bundle.entrypoints);
   return (prerender) => {
     return (
-      // A beforeFiles alias hides the page at this pathname. Publishing its shell too would ask
-      // deployment validation to prove a document where live routing correctly serves the file.
+      // A beforeFiles alias hides the page at this pathname, or at the spelling it is asked for by.
+      // Publishing its shell too would ask deployment validation to prove a document where live
+      // routing correctly serves the file.
       !rewritten.has(prerender.pathname) &&
+      !rewritten.has(requestedPathname(bundle, prerender.pathname)) &&
       !edgeRuntime.has(prerender.route) &&
       !(isTemplate(prerender.pathname) && pages.has(prerender.route)) &&
       // A page's own shell: exact, or the class shell of a dynamic route. Where a build classifies
@@ -745,7 +747,7 @@ export function dynamicRouting(
   'dynamicRoutes' | 'exactPathnames' | 'reservedRoutes' | 'trailingSlash'
 > {
   const { routing } = bundle;
-  const spelled = bundle.config.trailingSlash && { trailingSlash: true };
+  const spelled = keepsTrailingSlash(bundle) && { trailingSlash: true };
   if (!reproducesDynamicRouting(bundle)) {
     return { ...spelled };
   }
