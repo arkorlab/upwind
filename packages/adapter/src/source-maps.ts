@@ -5,8 +5,8 @@ import type { BlobRef, SourceMapRef } from '@stayingupwind/core/bundle';
 import type { Plugin } from 'rolldown';
 
 import type { BlobStore } from './blobs.ts';
-import { exists } from './collect.ts';
 import { EDGE_MODULE } from './edge.ts';
+import { exists } from './fs.ts';
 
 /** The module the application's own code is in, as `buildFunction` names it. */
 const APP_MODULE = 'app.cjs';

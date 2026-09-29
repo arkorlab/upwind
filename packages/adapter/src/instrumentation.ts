@@ -32,8 +32,29 @@ const MODULE_NAME = 'instrumentation.cjs';
 /** Hooks composed by calling every implementation; each returns nothing a caller reads. */
 const COMPOSED_HOOKS = ['register', 'onRequestError'] as const;
 
+/**
+ * Each host module, loaded inside a `try`.
+ *
+ * A module that throws while it is being evaluated would otherwise take the whole Function down
+ * with it: this runs at the top of the generated hook, which Next.js requires before any
+ * entrypoint. A host that cannot even load is a host that sees nothing, which is the same
+ * outcome as a host that was never configured — and is the application's to survive.
+ */
 function requireList(modules: readonly string[]): string {
-  return modules.map((module) => `  require(${jsLiteral(module)}),`).join('\n');
+  return modules
+    .map((module) => {
+      return [
+        '  (() => {',
+        '    try {',
+        `      return require(${jsLiteral(module)});`,
+        '    } catch (error) {',
+        `      console.error("upwind: a host's instrumentation could not be loaded", error);`,
+        '      return undefined;',
+        '    }',
+        '  })(),',
+      ].join('\n');
+    })
+    .join('\n');
 }
 
 function composition(hook: string): string {

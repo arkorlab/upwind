@@ -6,7 +6,7 @@ import { type CronJob, cronsSchema } from '@stayingupwind/core/cron';
 import { parse as parseJsonc, type ParseError, printParseErrorCode } from 'jsonc-parser';
 import { z } from 'zod';
 
-import { exists } from './collect.ts';
+import { exists } from './fs.ts';
 
 /**
  * What a project declares about its deployment beyond `next.config`.

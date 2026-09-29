@@ -19,10 +19,8 @@ import {
   bypassTokenOf,
   collectEntrypoints,
   collectPrerenders,
-  collectStaticFiles,
   deploymentId,
   edgeEntryOf,
-  exists,
   imagesConfig,
   isStaticExport,
   middlewareMatchers,
@@ -35,11 +33,13 @@ import {
 } from './collect.ts';
 import { reserveUpwindPrefix } from './dev-prefix.ts';
 import type { EdgeEntry } from './edge.ts';
+import { exists } from './fs.ts';
 import { buildFunction, type EntryModule } from './function.ts';
 import { composedInstrumentation, writeClientInstrumentation } from './instrumentation.ts';
 import { collectManifests } from './manifests.ts';
 import type { PatchContext } from './patches/index.ts';
 import { readProjectConfig } from './project-config.ts';
+import { collectStaticFiles } from './static-files.ts';
 import { inlineAssetFiles, type TracedFile, tracedFiles } from './traced-files.ts';
 import { arkorWasmGlobal, WasmCollector, type WasmChunk, wasmChunks } from './wasm.ts';
 
@@ -212,7 +212,11 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     ctx.config.basePath,
     ctx.routing.rsc,
   );
-  const { files: staticFiles, sourceMaps: clientMaps } = await collectStaticFiles(ctx, blobs);
+  const { files: staticFiles, sourceMaps: clientMaps } = await collectStaticFiles(
+    ctx,
+    blobs,
+    options.sourceMaps === true,
+  );
   const middleware = middlewareOutput(ctx.outputs);
   const {
     node: nodeMiddleware,
@@ -527,6 +531,37 @@ export interface AdapterOptions {
   readonly sourceMaps?: boolean | undefined;
 }
 
+/**
+ * Name the host's browser module in the config, or refuse the build.
+ *
+ * `instrumentationClientInject` arrived in Next.js 16.3 and this adapter supports 16.2 as well,
+ * where the field does not exist — and a config Next.js never reads is a build that completes
+ * while silently shipping none of the host's instrumentation. Asked of the config rather than of
+ * the version, because the config is what decides; refused rather than skipped, because a host
+ * that asked for this and did not get it should hear so at the build and not from an empty
+ * dashboard.
+ */
+async function injectClientInstrumentation(
+  config: BuildConfig,
+  projectDir: string,
+  source: string,
+): Promise<void> {
+  const own = config.instrumentationClientInject as string[] | undefined;
+  if (!Array.isArray(own)) {
+    throw new TypeError(
+      '@stayingupwind/adapter: this Next.js has no `instrumentationClientInject`, which arrived in 16.3; a host that needs `clientInstrumentationSource` needs that release',
+    );
+  }
+  const entry = await writeClientInstrumentation({
+    outDir: path.join(projectDir, OUT_DIR_NAME),
+    outDirName: OUT_DIR_NAME,
+    source,
+  });
+  // Appended, never replacing: a project may have entries of its own, and Next.js runs them in
+  // array order with its own `instrumentation-client` file last.
+  config.instrumentationClientInject = [...own, entry];
+}
+
 /** The config `modifyConfig` is handed, as Next.js declares it. */
 type BuildConfig = Parameters<NonNullable<NextAdapter['modifyConfig']>>[0];
 
@@ -631,14 +666,11 @@ export function createAdapter(options: AdapterOptions = {}): NextAdapter {
           config.experimental.serverSourceMaps = true;
         }
         if (options.clientInstrumentationSource !== undefined) {
-          const entry = await writeClientInstrumentation({
-            outDir: path.join(projectDir, OUT_DIR_NAME),
-            outDirName: OUT_DIR_NAME,
-            source: options.clientInstrumentationSource,
-          });
-          // Appended, never replacing: a project may have entries of its own, and Next.js runs
-          // them in array order with its own `instrumentation-client` file last.
-          config.instrumentationClientInject = [...config.instrumentationClientInject, entry];
+          await injectClientInstrumentation(
+            config,
+            projectDir,
+            options.clientInstrumentationSource,
+          );
         }
       }
       return config;

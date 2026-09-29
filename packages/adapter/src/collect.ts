@@ -9,10 +9,7 @@ import {
   type Prerender,
   primaryPrerenders,
   type Route,
-  type BlobRef,
-  type SourceMapRef,
   type SourcePage,
-  type StaticFile,
 } from '@stayingupwind/core/bundle';
 import { type ImagesConfig, imagesConfigFromNextManifest } from '@stayingupwind/core/images';
 import { createId, isId } from '@stayingupwind/core/util';
@@ -20,9 +17,9 @@ import type { AdapterOutput, NextAdapter } from 'next';
 
 import { type BlobStore, contentTypeFor } from './blobs.ts';
 import type { EdgeEntry } from './edge.ts';
+import { exists } from './fs.ts';
 import type { EntryModule } from './function.ts';
 import { segmentPathOf, withBasePath } from './segments.ts';
-import { linkClientMaps, SOURCE_MAP_SUFFIX } from './source-maps.ts';
 
 /**
  * What the adapter reads from `onBuildComplete`, and what it makes of it. Each function here
@@ -78,15 +75,6 @@ const RSC_SUFFIX = '.rsc';
  */
 export function isStaticExport(config: BuildContext['config']): boolean {
   return config.output === 'export';
-}
-
-export async function exists(file: string): Promise<boolean> {
-  try {
-    await stat(file);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 export function deploymentId(): string {
@@ -489,7 +477,7 @@ export async function collectPrerenders(
  * `stat` follows the link, and `realpath` is what keeps a link that points at an ancestor from
  * walking for ever: a directory already on the way here is not descended into again.
  */
-async function walk(dir: string, seen: ReadonlySet<string> = new Set()): Promise<string[]> {
+export async function walk(dir: string, seen: ReadonlySet<string> = new Set()): Promise<string[]> {
   const here = await realpath(dir);
   if (seen.has(here)) {
     return [];
@@ -626,7 +614,7 @@ function matchesPath(sourceRegex: string, pathname: string): boolean {
  * the path it is asked for. The file is offered under the application's root as well; the name
  * the build gave it stays, since a rewrite in `next.config` may still name it.
  */
-function aliasPathname(pathname: string, basePath: string): string | undefined {
+export function aliasPathname(pathname: string, basePath: string): string | undefined {
   return pathname === `${basePath}/index` ? basePath || '/' : undefined;
 }
 
@@ -635,102 +623,10 @@ function aliasPathname(pathname: string, basePath: string): string | undefined {
  * (`/robots.txt`, `/favicon.ico`, `/manifest.webmanifest`) is written as `<route>.body`, a name
  * that says nothing about what it holds, so its type comes from the name it is served under.
  */
-function staticFileContentType(
+export function staticFileContentType(
   output: Pick<AdapterOutput['STATIC_FILE'], 'filePath' | 'pathname'>,
 ): string {
   return contentTypeFor(output.filePath.endsWith('.body') ? output.pathname : output.filePath);
-}
-
-/**
- * `_next/static` from the build output, plus everything under `public/`. Next.js names its own
- * outputs under the `basePath`; a public file is requested under it too (`/docs/manual.pdf`),
- * and is named so here.
- *
- * A static export is the whole site instead: `next build` hands over everything it wrote to
- * `out/`, `public/` copied in and all, so the directory is not walked a second time, and each file
- * is named where a static host would serve it (`exportedPathname`).
- */
-export interface CollectedStaticFiles {
-  readonly files: StaticFile[];
-  /**
-   * The browser maps, taken out of what is served. Next.js emits one beside every client chunk
-   * when `productionBrowserSourceMaps` is on and serves them; a deployment that published them
-   * would publish the application's source, so they are carried as blobs and served to nobody.
-   * Empty unless the host asked for maps.
-   */
-  readonly sourceMaps: SourceMapRef[];
-}
-
-/**
- * What `public/` holds, each named as a URL names it: the edge and the runtime look a file up by
- * the request's own pathname. A static export needs none of this — `next build` copied the
- * directory into `out/` and handed every file over already.
- */
-async function publicFiles(
-  projectDir: string,
-  basePath: string,
-  blobs: BlobStore,
-): Promise<StaticFile[]> {
-  const publicDir = path.join(projectDir, 'public');
-  if (!(await exists(publicDir))) {
-    return [];
-  }
-  const collected: StaticFile[] = [];
-  const found = await walk(publicDir);
-  for (const file of found) {
-    const pathname = `/${path
-      .relative(publicDir, file)
-      .split(path.sep)
-      .map((segment) => encodeURIComponent(segment))
-      .join('/')}`;
-    collected.push({
-      pathname: withBasePath(basePath, pathname),
-      blob: await blobs.putFile(file, contentTypeFor(file)),
-      immutable: false,
-    });
-  }
-  return collected;
-}
-
-export async function collectStaticFiles(
-  ctx: BuildContext,
-  blobs: BlobStore,
-): Promise<CollectedStaticFiles> {
-  const basePath = orDefault(ctx.config.basePath, '');
-  const exported = isStaticExport(ctx.config);
-  const naming = { basePath, trailingSlash: orDefault(ctx.config.trailingSlash, false) };
-  const files: StaticFile[] = [];
-  /** Maps by their own served pathname, until `linkClientMaps` says which file each describes. */
-  const maps = new Map<string, BlobRef>();
-  /** The built JavaScript, for the same pass: only these carry a `sourceMappingURL`. */
-  const scripts: { pathname: string; filePath: string }[] = [];
-  for (const output of ctx.outputs.staticFiles) {
-    const blob = await blobs.putFile(output.filePath, staticFileContentType(output));
-    if (output.pathname.endsWith(SOURCE_MAP_SUFFIX)) {
-      maps.set(output.pathname, blob);
-      continue;
-    }
-    if (output.pathname.endsWith('.js')) {
-      scripts.push({ pathname: output.pathname, filePath: output.filePath });
-    }
-    // The name the file is served under, which is the name a rule is judged against: a document
-    // moves from `/index` to `/` and from `/about/index` to `/about/`, and the edge matches the
-    // header rules on the request's own pathname, not on the one the build handed over.
-    const pathname = exported ? exportedPathname(output, naming) : output.pathname;
-    const immutable = exported
-      ? immutableByBuild(ctx.routing.onMatch, pathname)
-      : output.immutableHash !== undefined;
-    files.push({ pathname, blob, immutable });
-    // A Pages Router page written as `/index` answers the application's root under both names. An
-    // export needs no alias: every document of one is already named where a static host serves it,
-    // and a rewrite — the reason the build's own name is kept — is not followed for one anyway.
-    const alias = exported ? undefined : aliasPathname(output.pathname, basePath);
-    if (alias !== undefined) {
-      files.push({ pathname: alias, blob, immutable });
-    }
-  }
-  files.push(...(exported ? [] : await publicFiles(ctx.projectDir, basePath, blobs)));
-  return { files, sourceMaps: await linkClientMaps(scripts, maps) };
 }
 
 export function middlewareMatchers(middleware: AdapterOutput['MIDDLEWARE'] | undefined): Route[] {
