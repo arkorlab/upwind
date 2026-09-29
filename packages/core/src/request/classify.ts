@@ -327,11 +327,6 @@ export function classifyRequest(input: ClassifyInput): RequestClass {
   if (hasInternalDocumentHeader(headers)) {
     return passthrough('internal-header');
   }
-  // Only a visitor Next.js renders the page whole for, by the application's list or its own: any
-  // other crawler is served the shell as a browser is (`wantsBlockingMetadata`).
-  if (wantsBlockingMetadata(headers.get('user-agent'), input.manifest)) {
-    return passthrough('bot');
-  }
   const late =
     classifyByCookies(headers, input.deployment) ??
     classifyByQuery(url, headers, input.deployment) ??
@@ -348,7 +343,22 @@ export function classifyRequest(input: ClassifyInput): RequestClass {
   if (url.pathname.includes('//')) {
     return passthrough('repeated-slash');
   }
-  return routeFor(input.manifest, url, headers) ?? passthrough('route-not-proved');
+  const entry = routeFor(input.manifest, url, headers);
+  // Only a visitor Next.js renders a partially prerendered page whole for, by the application's
+  // list or its own, is passed on here (`wantsBlockingMetadata`): any other crawler, Googlebot
+  // included, is served the shell as a browser is. Asked last, of a navigation the edge would
+  // otherwise answer, so the application's pattern runs for nothing else. Not of a page the build
+  // finished: Next.js renders no page whole for this but a partially prerendered one, and resolves
+  // a prerendered page's metadata at build time, so the finished document is what such a visitor
+  // is sent either way. Of a pathname that names no proved route, though: the middleware may
+  // rewrite it onto one.
+  if (
+    entry?.cache?.delivery !== 'complete' &&
+    wantsBlockingMetadata(headers.get('user-agent'), input.manifest)
+  ) {
+    return passthrough('bot');
+  }
+  return entry === undefined ? passthrough('route-not-proved') : { kind: 'document', entry };
 }
 
 /**
@@ -363,13 +373,12 @@ export function classifyRequest(input: ClassifyInput): RequestClass {
  * kind of answer that step decides: a dynamic class carries the gate in `matchDynamicRoute`,
  * and a claimed pathname matches no class there either.
  */
-function routeFor(manifest: ProjectManifest, url: URL, headers: Headers): RequestClass | undefined {
+function routeFor(manifest: ProjectManifest, url: URL, headers: Headers): RouteEntry | undefined {
   const exact = findRouteEntry(manifest, url.pathname);
   if (exact !== undefined && isReserved(manifest, url, headers, true)) {
     return undefined;
   }
-  const entry = exact ?? dynamicEntry(manifest, url, headers);
-  return entry === undefined ? undefined : { kind: 'document', entry };
+  return exact ?? dynamicEntry(manifest, url, headers);
 }
 
 function dynamicEntry(

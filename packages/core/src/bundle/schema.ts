@@ -300,7 +300,8 @@ export const bundleConfigSchema = z.looseObject({
   /**
    * The user agents Next.js sends blocking metadata to, as the pattern it tests them with
    * (`htmlLimitedBots`, its own list when the app names none): the Function renders a partially
-   * prerendered page whole for them, as Next.js does. Read by the Function alone.
+   * prerendered page whole for them, as Next.js does; a manifest carries it on for the edge to
+   * judge them by (`ProjectManifest.htmlLimitedBots`).
    */
   htmlLimitedBots: z.string().optional(),
   poweredByHeader: z.boolean(),
