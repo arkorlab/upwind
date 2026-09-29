@@ -120,7 +120,12 @@ export async function readData(runtime: CacheRuntime, request: DataReadRequest):
     }
   })();
   runtime.dataReads.set(key, { identity, promise: read, startedAt: now });
-  requestContext()?.waitUntil(kept(read));
+  try {
+    requestContext()?.waitUntil(kept(read));
+  } catch {
+    // A host whose `waitUntil` throws once its invocation has ended: the read goes on regardless,
+    // and a request that joins it is still bounded by the hold.
+  }
   return read;
 }
 

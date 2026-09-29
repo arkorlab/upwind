@@ -91,7 +91,12 @@ interface Flight {
  * never settle for the requests that joined it.
  */
 function keep(read: Promise<void>): void {
-  requestContext()?.waitUntil(settled(read));
+  try {
+    requestContext()?.waitUntil(settled(read));
+  } catch {
+    // A host whose `waitUntil` throws once its invocation has ended: the read goes on regardless,
+    // and a request that joins it is still bounded by the hold.
+  }
 }
 
 /** The read settled, whichever way: what is kept is the read, and its failure is its waiters'. */
