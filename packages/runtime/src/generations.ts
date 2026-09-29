@@ -350,8 +350,14 @@ async function outputOf(
 
 /**
  * The entry a request may be answered from, and the cache it is kept in; `undefined` where no
- * generation answers: no cache, a draft or a bypass condition, an output that depends on a query
- * its route does not name (no one generation stands for it), or an entry never regenerated.
+ * generation answers: no cache, a route the build prerendered nothing of, a draft or a bypass
+ * condition, an output that depends on a query its route does not name (no one generation stands
+ * for it), or an entry never regenerated.
+ *
+ * A route with no prerender — no output of its own, no shell of its class — is one Next.js renders
+ * for every request, and no generation of it is ever seeded or made: its record was asked for all
+ * the same, on every navigation's payload, and each of them waited on that read, up to its
+ * deadline, for an answer that could only say there was none.
  */
 function answerableEntry(input: RoutedInput, store: Store, source: GenerationSource) {
   const runtime = input.cache;
@@ -360,6 +366,7 @@ function answerableEntry(input: RoutedInput, store: Store, source: GenerationSou
     findShell(store, source.route, source.pathname);
   if (
     runtime === undefined ||
+    shell === undefined ||
     bypassesPrerender(store, input.request, shell, source.url) ||
     queryDependent(shell, source.route, source.pathname)
   ) {
