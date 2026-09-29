@@ -72,6 +72,25 @@ async function land(runtime: CacheRuntime, entryId: string, read: RecordRead): P
   }
 }
 
+/** How many reads of records may be in flight at once, as many as their memory keeps records. */
+const MAX_RECORD_READS = 256;
+
+/**
+ * Let go of the reads begun more than a hold ago, which no request joins any more, and of the
+ * oldest beyond the budget. A read leaves on its own only once it settles (`land`), and one the
+ * host never answers — or whose `waitUntil` the runtime cut short — never does: every entry a
+ * visitor named while the host hung was otherwise kept for as long as the isolate lived.
+ */
+function sweepReads(runtime: CacheRuntime, now: number): void {
+  const reads = runtime.recordReads;
+  for (const [entryId, read] of reads) {
+    if (reads.size < MAX_RECORD_READS && now - read.startedAt < runtime.holdMs) {
+      return;
+    }
+    reads.delete(entryId);
+  }
+}
+
 /**
  * The entry's read in flight, joined; or one begun, and handed to the runtime (`waitUntil`) so that
  * it lands in memory whenever it answers.
@@ -94,6 +113,10 @@ function sharedRead(
     return joined.pack;
   }
   const read: RecordRead = { startedAt: now, pack: readRecordPack(runtime, entryId) };
+  // Taken out before it is put back, so that the reads stand in the order they were begun, and
+  // the ones past their hold are the first to be let go.
+  runtime.recordReads.delete(entryId);
+  sweepReads(runtime, now);
   runtime.recordReads.set(entryId, read);
   waitUntil(land(runtime, entryId, read));
   return read.pack;

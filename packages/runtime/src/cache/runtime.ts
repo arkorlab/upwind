@@ -69,7 +69,8 @@ export interface CacheRuntime {
   readonly recordMemo: TtlCache<string, DecodedGenerationPack | null>;
   /**
    * The reads of delivery records in flight, one per entry, which every request that wants the
-   * record while it runs shares (`cache/current.ts`).
+   * record while it runs shares (`cache/current.ts`): kept for a hold at most, and within a budget
+   * of their own, whether or not the host ever answers them (`sweepReads`).
    */
   readonly recordReads: Map<string, RecordRead>;
   /** Entries a regeneration was asked for lately; a second ask within the hold is not repeated. */
