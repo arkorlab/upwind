@@ -189,8 +189,12 @@ jobs:
             # and the retry is because one 500 on the way to a release should not be the end of it.
             code=000
             for _ in 1 2 3; do
+              # `|| true` and not `|| echo 000`: `-w` prints after completion, successful or not, so a
+              # connection that never got a response has already said `000` and a second one would
+              # make it `000000`. What the `||` is for is `set -e`, which would otherwise end the
+              # loop on the first failure it is there to survive.
               code="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 10 --max-time 30 \
-                "https://registry.npmjs.org/${name/\//%2f}" || echo 000)"
+                "https://registry.npmjs.org/${name/\//%2f}" || true)"
               case "${code}" in
                 200 | 404) break ;;
               esac
