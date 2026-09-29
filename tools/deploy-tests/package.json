@@ -1,0 +1,21 @@
+{
+  "name": "@upwind-tools/deploy-tests",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Deploys Next.js's own deploy-mode test applications to a host over its public API, for that suite to run against.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@stayingupwind/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
