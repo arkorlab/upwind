@@ -35,6 +35,7 @@ function stateFor(runtime: CacheRuntime, key: string, stateKey = stateKeyOf(key)
     epoch: 0,
     revision: memo?.kind === 'found' ? memo.response.dependencyRevision : 0,
     writes: 0,
+    finds: 0,
   };
   runtime.dataStates.set(stateKey, state);
   return state;
@@ -76,7 +77,9 @@ export async function readData(runtime: CacheRuntime, request: DataReadRequest):
   if (remembered !== undefined) return remembered;
   const stateKey = stateKeyOf(key);
   const state = stateFor(runtime, key, stateKey);
+  // Read now, and weighed against the live state once the read answers.
   const epoch = state.epoch;
+  const finds = state.finds;
   // What keeps a read from overwriting a write is the key's state, whose epoch every write moves,
   // and the revision floor: a read that answers after either moved is not remembered.
   const current = (): boolean => liveState(runtime, stateKey) === state && state.epoch === epoch;
@@ -91,10 +94,12 @@ export async function readData(runtime: CacheRuntime, request: DataReadRequest):
   if (!current() || (memo.kind === 'found' && memo.response.dependencyRevision < state.revision)) {
     return currentOrMissing(runtime, key);
   }
-  // Nothing was remembered when this read began, so what is remembered now another read put there
-  // meanwhile. A value is ordered against it by the revision floor above; a miss carries no
-  // revision to be ordered by, and does not take the place of what that read found.
-  if (memo.kind === 'missing' && runtime.dataMemo.get(key) !== undefined) {
+  // Another read of the key can have found the value while this one was under way. A value is
+  // ordered against it by the revision floor above; a miss carries no revision to be ordered by,
+  // and is not remembered in its place — whether or not the value was small enough to be kept.
+  if (memo.kind === 'found') {
+    state.finds += 1;
+  } else if (state.finds !== finds) {
     return currentOrMissing(runtime, key);
   }
   runtime.dataMemo.set(key, memo);

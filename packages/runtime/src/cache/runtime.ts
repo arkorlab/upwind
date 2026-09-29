@@ -70,6 +70,12 @@ export interface DataState {
   revision: number;
   /** Writes in flight on the state; while there are any, `dataWrites` holds it. */
   writes: number;
+  /**
+   * Reads of the key that have found a value, whether or not `dataMemo` could keep it: a miss
+   * answered after another read found the value is not remembered, even when the value itself
+   * was too large to be.
+   */
+  finds: number;
 }
 
 export interface CacheRuntimeOptions {
