@@ -188,7 +188,7 @@ jobs:
             # connection and then says nothing costs half a minute instead of this job's whole five;
             # and the retry is because one 500 on the way to a release should not be the end of it.
             code=000
-            for _ in 1 2 3; do
+            for attempt in 1 2 3; do
               # `|| true` and not `|| echo 000`: `-w` prints after completion, successful or not, so a
               # connection that never got a response has already said `000` and a second one would
               # make it `000000`. What the `||` is for is `set -e`, which would otherwise end the
@@ -198,7 +198,10 @@ jobs:
               case "${code}" in
                 200 | 404) break ;;
               esac
-              sleep 5
+              # Not after the last one: there is no next request for it to be spacing out from.
+              if [ "${attempt}" != 3 ]; then
+                sleep 5
+              fi
             done
             case "${code}" in
               200) ;;
