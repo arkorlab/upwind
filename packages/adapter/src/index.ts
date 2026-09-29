@@ -39,6 +39,7 @@ import { buildFunction, type EntryModule } from './function.ts';
 import { collectManifests } from './manifests.ts';
 import type { PatchContext } from './patches/index.ts';
 import { readProjectConfig } from './project-config.ts';
+import { sameChunks } from './same-chunks.ts';
 import { inlineAssetFiles, type TracedFile, tracedFiles } from './traced-files.ts';
 import { arkorWasmGlobal, WasmCollector, type WasmChunk, wasmChunks } from './wasm.ts';
 
@@ -192,7 +193,12 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
   const files = filesRead(ctx, middleware, instrumentation.assets, exported);
   // Each Function's chunk table names only what its entries can reach: the table is what Rolldown
   // bundles, so the middleware Function stays small and the app Function carries no middleware.
-  const patchFor = (own: readonly string[], wasm: readonly WasmChunk[]): PatchContext => {
+  // A chunk whose code another chunk of the table has is loaded from that one's file, so the code
+  // is bundled once (`same-chunks.ts`).
+  const patchFor = async (
+    own: readonly string[],
+    wasm: readonly WasmChunk[],
+  ): Promise<PatchContext> => {
     const table = new Set(own);
     for (const chunk of instrumentation.chunks) {
       table.add(chunk);
@@ -200,6 +206,7 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     return {
       distDir: ctx.distDir,
       chunks: [...table],
+      copies: await sameChunks([...table]),
       instrumentation: instrumentation.file,
       wasm,
     };
@@ -247,7 +254,7 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     kind: 'app',
     projectDir: ctx.projectDir,
     outDir,
-    patch: patchFor([...chunks, ...middlewareChunks], appWasm.chunks),
+    patch: await patchFor([...chunks, ...middlewareChunks], appWasm.chunks),
     entries: [...modules, ...nodeMiddleware],
     edgeEntries: [...edgeEntries, ...middlewareEdgeEntries],
     wasm: appWasm.collector,
@@ -275,7 +282,7 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
       kind: 'middleware',
       projectDir: ctx.projectDir,
       outDir,
-      patch: patchFor(middlewareChunks, wasm.chunks),
+      patch: await patchFor(middlewareChunks, wasm.chunks),
       entries: nodeMiddleware,
       edgeEntries: middlewareEdgeEntries,
       wasm: wasm.collector,
