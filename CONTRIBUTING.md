@@ -143,8 +143,8 @@ would leave a version no provenance covers — which the release after it fails 
 times now, has been a temporary `bootstrap` input carrying a token for that one release and removed
 again afterwards. It is not in the workflow today, because no name needs it today: the shape is in
 [`publish.yaml`](.github/workflows/publish.yaml)'s history, and that file opens with what those
-releases taught — including which npm token permission actually publishes, which is not the one its
-name suggests.
+releases taught — among them that the token needs npm's **Packages and scopes** permission, and that
+granting **Organizations** instead buys nothing a publish can use.
 
 The last thing it does is draft a GitHub Release for the tag. Notes written; the tarballs npm is
 serving attached, each checked against the digest npm published beside it; and a bill of materials
