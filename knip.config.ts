@@ -18,9 +18,9 @@ const config: KnipConfig = {
     'packages/core': {},
     // `templates/` is what this package copies, not what it runs: files nothing imports, on purpose.
     'packages/create-upwind': { ignore: ['templates/**'] },
-    // `ppr-cdn:*` are the modules the adapter generates beside the runtime and resolves for it;
+    // `arkor:*` are the modules the adapter generates beside the runtime and resolves for it;
     // `cloudflare:*` are the Workers runtime's own. Neither is an npm package.
-    'packages/runtime': { ignoreDependencies: ['cloudflare', 'ppr-cdn'] },
+    'packages/runtime': { ignoreDependencies: ['cloudflare', 'arkor'] },
     // Four entry points, and `exports` names the `dist` they are built into — so the sources behind
     // them are named here rather than looked for through files this has not built.
     'packages/sdk': { entry: ['src/{index,db,kv,blob}.ts'] },

@@ -34,7 +34,7 @@ import { fixtureEnvironment } from './fixture-env.ts';
  * asked of the host is a project to put fixtures in.
  */
 
-const BUNDLE_DIRECTORY = '.ppr-cdn';
+const BUNDLE_DIRECTORY = '.arkor';
 const BLOBS_DIRECTORY = 'blobs';
 const UPLOAD_CONCURRENCY = 8;
 const POLL_INTERVAL_MS = 3000;
