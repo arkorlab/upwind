@@ -127,7 +127,7 @@ function storageEnv(projectDir: string): Record<string, string> {
  * A build on Vercel, where the one thing this command adds is the one thing not to do.
  *
  * Vercel sets `VERCEL` on every build it runs, and a build there is Vercel's. An adapter named in it
- * takes the deployment over: `next build` writes a bundle under `.ppr-cdn/`, which Vercel does not
+ * takes the deployment over: `next build` writes a bundle under `.arkor/`, which Vercel does not
  * read — and on the Next.js this repository builds against, 16.3, it stops writing the file traces
  * Vercel's own build does (`next-server.js.nft.json` and `next-minimal-server.js.nft.json` are
  * absent from `.next/` when an adapter is named, and written when none is). So on Vercel this
@@ -194,7 +194,7 @@ export async function runBuild(options: BuildOptions): Promise<never> {
     stdio: 'inherit',
   });
   // A signal this process is sent is the build's too. Without this, a `kill` on `upwind build` would
-  // leave `next build` running — writing into `.next` and `.ppr-cdn` with nothing left waiting for
+  // leave `next build` running — writing into `.next` and `.arkor` with nothing left waiting for
   // it. The terminal's own Ctrl-C reaches both anyway; this is for everything else.
   const forward = (signal: NodeJS.Signals): void => {
     child.kill(signal);

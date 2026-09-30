@@ -122,9 +122,16 @@ the bump is the moment those two agree. Once the bump is on `main`:
 ```bash
 git switch main && git pull
 # The name is `v` and the version every package now says — nothing else is accepted.
-git tag -s v0.2.0 -m v0.2.0
-git push origin v0.2.0
+git tag -s v0.3.0 -m v0.3.0
+git push origin v0.3.0
 ```
+
+Pushing the tag starts the release, and for most releases that is all of it. **A release that
+publishes a package for the first time is dispatched instead**, with that tag, `dry-run: false` and
+`bootstrap: true` — the run a tag push starts carries no token, and would publish everything npm
+already holds a trusted publisher for before failing on the one it does not. `verify` refuses that
+run rather than letting it happen, so the tag can be pushed first and the dispatch made after; the
+paragraph below says what that one release needs.
 
 Everything else is in [`publish.yaml`](.github/workflows/publish.yaml). A release refuses a tag that
 is not signed by a key in [`release-signers.asc`](.github/release-signers.asc), that does not stand

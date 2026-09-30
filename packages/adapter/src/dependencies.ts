@@ -6,7 +6,7 @@ import type { DynamicLoad } from './dynamic-loads.ts';
 import type { AppliedPatch } from './patches/index.ts';
 
 /**
- * What went into a Function, and what was done to it: written to `.ppr-cdn/dependencies.json` so
+ * What went into a Function, and what was done to it: written to `.arkor/dependencies.json` so
  * that a change in the bundle's makeup — a package newly pulled in, a Next.js file the patches
  * no longer find, a `require` the bundler could not follow — is visible in a diff and not only
  * in a failing Function. The same record is what the audit reads: a Function that would fail to

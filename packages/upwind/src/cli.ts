@@ -41,7 +41,7 @@ Options
 /__upwind itself: a request for that prefix is never handed to Next.js.
 
 \`upwind build\` runs the project's own \`next build\` with the deployment adapter named, which
-writes the deployment bundle under .ppr-cdn/. On Vercel (VERCEL set, NEXT_ADAPTER_PATH not) it
+writes the deployment bundle under .arkor/. On Vercel (VERCEL set, NEXT_ADAPTER_PATH not) it
 names no adapter and writes no bundle: the build there is Vercel's.
 `;
 
