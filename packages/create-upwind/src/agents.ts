@@ -68,7 +68,7 @@ export async function writeAgentRules(target: string): Promise<void> {
 /**
  * Hand the block over to the Next.js the install actually brought, and let it have the last word.
  *
- * The text above is the one this release was built against, and the manifest asks for `^16.3.6` —
+ * The text above is the one this release was built against, and the manifest asks for `^16.3.7` —
  * so a project made once a later 16 is out installs a Next.js this scaffolder has never seen. If
  * that release words the block differently, everything written above is last version's wording, and
  * the project's first `next dev` rewrites two files that were committed a minute earlier. Which is

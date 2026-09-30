@@ -318,7 +318,7 @@ export interface CacheHostBinding {
 
 /**
  * What a host module answers: how the cache is reached, or nothing when these bindings reach
- * none. Named rather than written as a union at the ambient declaration of `ppr-cdn:cache-host`,
+ * none. Named rather than written as a union at the ambient declaration of `arkor:cache-host`,
  * where a union of a type that module cannot resolve reads as `any`.
  */
 export type CacheHostLookup = CacheHostBinding | undefined;

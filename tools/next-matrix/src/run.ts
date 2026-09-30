@@ -51,7 +51,7 @@ const TAIL_LINES = 20;
 /** The tags whose meaning is "whatever it is today", which is what the matrix means to check. */
 const TAGS = new Set(['beta', 'canary', 'latest', 'rc']);
 /** Where `next build` leaves what the adapter wrote. */
-const OUT_DIR = '.ppr-cdn';
+const OUT_DIR = '.arkor';
 /**
  * npm, as something `execFile` can start without a shell: its own JavaScript, run by this Node.
  *

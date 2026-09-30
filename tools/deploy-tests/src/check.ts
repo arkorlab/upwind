@@ -178,10 +178,10 @@ writeFileSync('.next/BUILD_ID', process.env.CHECK_OUTPUT_DIRECTORY_BUILD_ID);
 
 const bytes = Buffer.from('a function\n');
 const sha256 = createHash('sha256').update(bytes).digest('hex');
-mkdirSync('.ppr-cdn/blobs', { recursive: true });
-writeFileSync('.ppr-cdn/blobs/' + sha256, bytes);
+mkdirSync('.arkor/blobs', { recursive: true });
+writeFileSync('.arkor/blobs/' + sha256, bytes);
 writeFileSync(
-  '.ppr-cdn/bundle.json',
+  '.arkor/bundle.json',
   JSON.stringify({
     v: 1,
     deploymentId: process.env.NEXT_DEPLOYMENT_ID,
@@ -522,9 +522,7 @@ async function main(): Promise<void> {
     holds('nor the file holding it', build.includes('ARKOR_API_TOKEN_FILE: no'));
     holds("the application's own post-build ran", build.includes('the fixture post-build ran'));
     holds('and it saw no token either', build.includes('it saw ARKOR_API_TOKEN: no'));
-    const bundle = JSON.parse(
-      readFileSync(path.join(appDir, '.ppr-cdn', 'bundle.json'), 'utf8'),
-    ) as {
+    const bundle = JSON.parse(readFileSync(path.join(appDir, '.arkor', 'bundle.json'), 'utf8')) as {
       staticFiles: { pathname: string; immutable: boolean }[];
     };
     // Computed from what the build wrote and then compared with what the hook said: the marker is

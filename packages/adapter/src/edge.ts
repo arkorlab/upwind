@@ -7,6 +7,7 @@ import { jsLiteral } from './codegen.ts';
 import { bundled, type BundleTrace } from './dependencies.ts';
 import { dynamicLoadsInChunk } from './dynamic-loads.ts';
 import { externalsPlugin, FUNCTION_BANNER } from './patches/index.ts';
+import { sourceMapsPlugin, sourcemapOutput } from './source-maps.ts';
 import { projectModuleName } from './traced-files.ts';
 
 /**
@@ -159,13 +160,19 @@ export function edgeBundleOptions(
   projectDir: string,
   entryFile: string,
   onExternal: (specifier: string) => void,
+  sourceMaps = false,
 ): InputOptions {
   return {
     cwd: projectDir,
     input: entryFile,
     // Node built-ins, with or without the `node:` prefix, are the Function's own to resolve.
     platform: 'node',
-    plugins: [externalsPlugin(onExternal)],
+    plugins: [
+      externalsPlugin(onExternal),
+      // No patch reaches this bundle, so there is nothing for the map to be wrong about; see
+      // `sourceMapsPlugin` for why order matters where one does.
+      ...(sourceMaps ? [sourceMapsPlugin()] : []),
+    ],
     transform: {
       define: {
         'process.env.NEXT_RUNTIME': '"edge"',
@@ -185,6 +192,8 @@ export interface BundleEdgeInput {
   readonly projectDir: string;
   readonly workDir: string;
   readonly entries: readonly EdgeEntry[];
+  /** Compose the maps the build already wrote through into this bundle's own. */
+  readonly sourceMaps?: boolean | undefined;
 }
 
 export async function bundleEdge(
@@ -195,7 +204,12 @@ export async function bundleEdge(
   await writeFile(entryFile, edgeEntrySource(input.entries, input.projectDir));
   const externals = new Set<string>();
   await using bundle = await rolldown(
-    edgeBundleOptions(input.projectDir, entryFile, (specifier) => externals.add(specifier)),
+    edgeBundleOptions(
+      input.projectDir,
+      entryFile,
+      (specifier) => externals.add(specifier),
+      input.sourceMaps === true,
+    ),
   );
   const { output } = await bundle.write({
     format: 'cjs',
@@ -205,7 +219,7 @@ export async function bundleEdge(
     banner: FUNCTION_BANNER,
     minify: { compress: true, mangle: false, codegen: { removeWhitespace: true } },
     comments: { legal: false },
-    sourcemap: false,
+    ...sourcemapOutput(input.sourceMaps === true),
   });
   const chunk = output.find((item): item is OutputChunk => item.type === 'chunk');
   if (chunk === undefined) {
