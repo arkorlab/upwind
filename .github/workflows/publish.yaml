@@ -15,23 +15,25 @@ name: Publish
 #
 # Adding a package takes one release that cannot come through here, because npm will not hold a
 # trusted publisher for a name that does not exist yet. Three times now the answer has been a
-# `bootstrap` input carrying a token for that one release, removed again afterwards; the history has
-# the shape of it, and every package has a publisher of its own again.
+# `bootstrap` input carrying a token for that one release and removed again afterwards; the history
+# has the shape of it, and every package has a publisher of its own again. Publishing a new name by
+# hand instead would leave a version no provenance covers — a statement is signed with this
+# workflow's identity, and nothing on a laptop has one — which the `provenance` job below then fails
+# the next release over.
 #
-# What the third one taught, for whoever does the fourth. A granular token needs **Packages and
-# scopes**, not **Organizations**: the second grants the org's membership and nothing about
-# publishing, and npm answers a token without rights `404 Not Found` rather than `403`, so the log
-# says the package does not exist. And a release that fails partway is resumed rather than restarted:
-# a recursive publish skips what is already up, and a version that failed to publish is not recorded,
-# so nothing is burned by dispatching it again. Publishing the new names by hand instead would leave a version of each that no provenance
-# covers — a statement is signed with this workflow's identity and nothing on a laptop has one — and
-# the `provenance` job below would then fail a release over packages that are permanently unattested.
+# What those releases taught, for whoever adds the seventh package:
 #
-# Two things that release taught, for whoever does it next. npm answers 409 `Failed to save packument`
-# when a run publishes one brand-new package straight after another, so expect to re-run once the
-# first has settled; a recursive publish skips what is already up, and a version that 409s is not
-# recorded, so nothing is burned by trying again. And a token beside a trusted publisher does not
-# override it: pnpm asks per package, and only the one with no publisher fell back.
+#   * A granular token needs **Packages and scopes**, not **Organizations**. The second grants the
+#     org's membership and says nothing about publishing, and npm answers a token without rights
+#     `404 Not Found` rather than `403` — so the log reads as though the package does not exist
+#     rather than as though you may not touch it. That cost one release a failed attempt.
+#   * npm answers `409 Failed to save packument` when a run publishes one brand-new package straight
+#     after another. Wait for the first to settle and dispatch again.
+#   * A release that stopped partway is resumed rather than restarted. A recursive publish skips what
+#     is already up, and a version that failed to publish is not recorded — so nothing is burned by
+#     dispatching it again, which is worth checking before you do.
+#   * A token beside a trusted publisher does not override it. pnpm asks per package and falls back
+#     per package: in the release that carried both, only the package without a publisher fell back.
 #
 # Either way it has to be pnpm and not npm that packs. Three packages describe what they ship through
 # `publishConfig` — the `bin` of `upwind` and of `create-upwind`, and the adapter's `exports`, each

@@ -126,12 +126,10 @@ git tag -s v0.3.0 -m v0.3.0
 git push origin v0.3.0
 ```
 
-Pushing the tag starts the release, and for most releases that is all of it. **A release that
-publishes a package for the first time is dispatched instead**, with that tag, `dry-run: false` and
-`bootstrap: true` — the run a tag push starts carries no token, and would publish everything npm
-already holds a trusted publisher for before failing on the one it does not. `verify` refuses that
-run rather than letting it happen, so the tag can be pushed first and the dispatch made after; the
-paragraph below says what that one release needs.
+Pushing the tag is the whole of a release, for every release that publishes no new name. `verify`
+refuses a tag whose packages include one npm has never heard of, because there is no credential here
+that could publish it — which is a refusal and not a half-made release. The paragraph below is what
+to do when that is the release you are making.
 
 Everything else is in [`publish.yaml`](.github/workflows/publish.yaml). A release refuses a tag that
 is not signed by a key in [`release-signers.asc`](.github/release-signers.asc), that does not stand
@@ -141,10 +139,12 @@ a provenance attestation it reads back off the registry afterwards.
 
 **A package published for the first time takes one release that cannot come through there.** npm will
 not hold a trusted publisher for a name that does not exist yet, and publishing such a name by hand
-would leave a version no provenance covers — which the release after it fails over. The answer, twice
-now, has been a temporary `bootstrap` input carrying a token for that one release and removed again
-afterwards; [`publish.yaml`](.github/workflows/publish.yaml) opens by saying what that release taught.
-`@stayingupwind/sdk` is a name in that position today.
+would leave a version no provenance covers — which the release after it fails over. The answer, three
+times now, has been a temporary `bootstrap` input carrying a token for that one release and removed
+again afterwards. It is not in the workflow today, because no name needs it today: the shape is in
+[`publish.yaml`](.github/workflows/publish.yaml)'s history, and that file opens with what those
+releases taught — including which npm token permission actually publishes, which is not the one its
+name suggests.
 
 The last thing it does is draft a GitHub Release for the tag. Notes written; the tarballs npm is
 serving attached, each checked against the digest npm published beside it; and a bill of materials
