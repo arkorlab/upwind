@@ -10,7 +10,7 @@ page describes is the adapter that shipped the page.
 ```bash
 pnpm install
 pnpm dev        # upwind dev, on http://localhost:3000
-pnpm build      # upwind build, writes .ppr-cdn/
+pnpm build      # upwind build, writes the deployment bundle
 pnpm typecheck  # tsc; `next build` type-checks too
 ```
 
@@ -43,7 +43,7 @@ formats these files with the repository's settings, and sorts the Tailwind class
 `src/content/copy.ts` is the interface and `en.ts` / `ja.ts` are the two objects that satisfy it, so
 a string added to one and forgotten in the other is a type error rather than a page that quietly
 falls back to English. Backticks are inline code (`src/components/prose.tsx`); names a reader types —
-`next build`, `.ppr-cdn/` — stay in the dictionary in both languages, because they are the same name
+`next build`, `.arkor/` — stay in the dictionary in both languages, because they are the same name
 in both.
 
 Tailwind finds the utilities it must generate by reading these files as text. Write whole class
@@ -58,8 +58,13 @@ that is the whole edit — no sentence counts the packages.
 ## Deployment
 
 Arkor builds `main` from GitHub — root directory `web-site`, `pnpm install --frozen-lockfile`,
-`pnpm build`, and the bundle it serves is `.ppr-cdn/`. Nothing about that lives in this repository:
-there are no credentials here and no workflow that deploys.
+`pnpm build`, and the bundle it serves is the directory that build writes. Nothing about that lives
+in this repository: there are no credentials here and no workflow that deploys.
+
+That directory is `.arkor/` from the release this project installs next. The dependencies here are
+the **published** ones, so what the build writes today is what the version in `pnpm-lock.yaml`
+writes, and whoever holds the deployment has to know the name before this project moves to a release
+that changed it — `OUT_DIR_NAME`, which `@stayingupwind/adapter` exports, is that name.
 
 The canonical host is `www.stayingupwind.com` and the apex redirects to it, so every absolute URL the
 site emits — canonical, hreflang, the sitemap, the Open Graph card — names `www` (`src/lib/site.ts`).
@@ -67,7 +72,7 @@ site emits — canonical, hreflang, the sitemap, the Open Graph card — names `
 ### And on Vercel
 
 The same commit deploys there too. An adapter named in a build takes the deployment over: the build
-writes a bundle under `.ppr-cdn/` that Vercel does not read, and — on Next.js 16.3 — stops writing
+writes a bundle Vercel does not read, and — on Next.js 16.3 — stops writing
 the file traces Vercel's own build does (`next-server.js.nft.json`). `next.config.ts` is what notices `VERCEL`,
 because a config that names an adapter outranks anything the environment says.
 

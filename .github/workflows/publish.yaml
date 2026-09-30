@@ -14,9 +14,9 @@ name: Publish
 # attestation fails loudly instead of quietly.
 #
 # Adding a package takes one release that cannot come through here, because npm will not hold a
-# trusted publisher for a name that does not exist yet. Twice now the answer has been a `bootstrap`
-# input carrying a token for that one release, removed again afterwards; the history has the shape of
-# it. Publishing the new names by hand instead would leave a version of each that no provenance
+# trusted publisher for a name that does not exist yet. Three times now the answer has been a
+# `bootstrap` input carrying a token for that one release, removed again afterwards; the history has
+# the shape of it, and `@stayingupwind/sdk` is the one it is here for today. Publishing the new names by hand instead would leave a version of each that no provenance
 # covers — a statement is signed with this workflow's identity and nothing on a laptop has one — and
 # the `provenance` job below would then fail a release over packages that are permanently unattested.
 #
@@ -43,6 +43,25 @@ on:
         required: false
         default: false
         type: boolean
+      bootstrap:
+        description: >
+          Hand the publish step a token as well, for a package npm holds no trusted publisher for
+          because it does not exist yet. The packages that do have one still use theirs: pnpm asks per
+          package and falls back per package, so a release can carry both kinds at once, and the
+          attestation is the same either way — provenance is signed with this workflow's identity,
+          which is a separate thing from what publishing authenticated by.
+        required: false
+        default: false
+        type: boolean
+    secrets:
+      npm-token:
+        description: >
+          Needed by `bootstrap`, and by nothing else. A *scoped* new name can be named in a granular
+          token before it exists, through its scope — so this one needs write on `@stayingupwind` and
+          nothing wider, unlike the release that first published `upwind` and `create-upwind`, whose
+          unscoped names left no way to ask for less than everything. Short-lived all the same, and
+          revoked as soon as the release lands.
+        required: false
 
 permissions: {}
 
@@ -150,6 +169,68 @@ jobs:
             esac
           fi
 
+      # A release that would publish a name npm has never seen needs `bootstrap`, and a tag push
+      # cannot ask for it. Without this the run would publish every package that does have a trusted
+      # publisher and fail on the one that does not — a release half made, and the half that landed
+      # cannot be taken back. Asked here, where nothing has been published yet.
+      - name: Nothing is being published for the first time without being asked for
+        if: ${{ !inputs.bootstrap }}
+        run: |
+          set -euo pipefail
+          # A budget for the whole step, not for each request. Per-request deadlines alone say
+          # nothing about the total: multiply them by the attempts and by however many packages this
+          # repository has grown to, and a registry that accepts connections and then says nothing
+          # costs more than this job is allowed (`timeout-minutes` above), which kills the run with
+          # GitHub's message instead of the one below. With a budget, the arithmetic does not depend
+          # on the number of packages, and what a reader gets is the error that explains itself.
+          #
+          # The bound is the budget plus one request: an attempt that started a moment before the
+          # deadline still gets its fifteen seconds, and nothing waits after that. A hundred and
+          # thirty-five seconds against this job's five minutes, whatever the registry is doing.
+          deadline=$((SECONDS + 120))
+          for manifest in packages/*/package.json; do
+            if [ "$(node -p "require('./${manifest}').private === true")" = true ]; then
+              continue
+            fi
+            name="$(node -p "require('./${manifest}').name")"
+            # Two answers are answers — it is there, or it never was — and everything else is the
+            # registry not saying. `-f` is left off so that 404 is one of the answers rather than an
+            # error with a `curl: (22)` beside it; the timeouts are so that a host which accepts the
+            # connection and then says nothing costs half a minute instead of this job's whole five;
+            # and the retry is because one 500 on the way to a release should not be the end of it.
+            code=000
+            for attempt in 1 2 3; do
+              if [ "${SECONDS}" -ge "${deadline}" ]; then
+                break
+              fi
+              # `|| true` and not `|| echo 000`: `-w` prints after completion, successful or not, so a
+              # connection that never got a response has already said `000` and a second one would
+              # make it `000000`. What the `||` is for is `set -e`, which would otherwise end the
+              # loop on the first failure it is there to survive.
+              code="$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 15 \
+                "https://registry.npmjs.org/${name/\//%2f}" || true)"
+              case "${code}" in
+                200 | 404) break ;;
+              esac
+              # Not after the last one, and not once the budget is spent: in both cases there is no
+              # next request for the wait to be spacing out from.
+              if [ "${attempt}" != 3 ] && [ "${SECONDS}" -lt "${deadline}" ]; then
+                sleep 5
+              fi
+            done
+            case "${code}" in
+              200) ;;
+              404)
+                echo "::error::${name} has never been published, and this run cannot publish it: a first publish needs a token, which only a dispatch with bootstrap: true carries. Cancel this run and dispatch Release with that tag instead."
+                exit 1
+                ;;
+              *)
+                echo "::error::could not tell whether ${name} has ever been published (HTTP ${code})"
+                exit 1
+                ;;
+            esac
+          done
+
       - name: The tag says the version the packages say
         env:
           TAG: ${{ inputs.tag }}
@@ -216,6 +297,9 @@ jobs:
       # And for the same reason: a `create-upwind` released with last version's agent rules writes
       # every new project an uncommitted change, which nothing downstream would catch.
       - run: pnpm check:agent-rules
+      # CI runs this and the release did not, which made a release the less-checked of the two. The
+      # deploy-mode hooks against a host that is not one: no credential, no network.
+      - run: pnpm check:deploy-tests
       - run: pnpm build
 
       # Made here, and before the publish, for two reasons. The install above populated pnpm's store,
@@ -301,6 +385,24 @@ jobs:
                 ;;
             esac
           fi
+
+      # Last, and alone. Everything above — `pnpm install` and the lifecycle scripts it is allowed to
+      # run among them — has already happened; and the publish below runs no package code either,
+      # because `--ignore-scripts` is what makes that true. Without it `pnpm publish` would run each
+      # `prepack` *after* this step, in a process that loads a bundler, with the token on disk.
+      # `dry-run` as well as `bootstrap`: a rehearsal uploads nothing, so writing a token to the
+      # runner's disk for it would be a credential at rest with nothing to do.
+      - name: A credential for a package that does not exist yet
+        if: ${{ inputs.bootstrap && !inputs.dry-run }}
+        env:
+          NPM_TOKEN: ${{ secrets.npm-token }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NPM_TOKEN:-}" ]; then
+            echo '::error::bootstrap was asked for, but no npm-token was passed'
+            exit 1
+          fi
+          printf '//registry.npmjs.org/:_authToken=%s\n' "${NPM_TOKEN}" >> ~/.npmrc
 
       - name: Publish
         env:

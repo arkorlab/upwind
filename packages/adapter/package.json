@@ -1,6 +1,6 @@
 {
   "name": "@stayingupwind/adapter",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Next.js deployment adapter: turns `next build` output into a content-addressed deployment bundle and the Functions that serve it.",
   "license": "MIT OR Apache-2.0",
   "repository": {
