@@ -48,7 +48,8 @@ const SCOPE = '@stayingupwind';
 
 /**
  * The packages a reader can install, in the order they meet them: the command you run, the thing
- * that builds, the thing that serves, the vocabulary underneath, and the scaffolder.
+ * that builds, the thing that serves, the vocabulary underneath, what an application reads its own
+ * storage through, and the scaffolder.
  *
  * **This list follows the registry, not `packages/`.** The repository can hold a package that has
  * not shipped yet — every row here is a link to npm, and a link to a version nobody can install is
@@ -64,6 +65,7 @@ export const PACKAGES = [
   { id: 'adapter', name: `${SCOPE}/adapter`, directory: 'packages/adapter' },
   { id: 'runtime', name: `${SCOPE}/runtime`, directory: 'packages/runtime' },
   { id: 'core', name: `${SCOPE}/core`, directory: 'packages/core' },
+  { id: 'sdk', name: `${SCOPE}/sdk`, directory: 'packages/sdk' },
   { id: 'create', name: 'create-upwind', directory: 'packages/create-upwind' },
 ] as const;
 
