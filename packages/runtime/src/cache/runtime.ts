@@ -1,6 +1,6 @@
 import type { DecodedGenerationPack } from '@stayingupwind/core/cache';
 import { TtlCache } from '@stayingupwind/core/util';
-import { createCacheHost } from 'ppr-cdn:cache-host';
+import { createCacheHost } from 'arkor:cache-host';
 
 import type { CacheHost, CacheHostLookup, DataRead, FetchLike } from './host.ts';
 import { TagState } from './tags.ts';
@@ -10,7 +10,7 @@ import { TagState } from './tags.ts';
  * that stores the entries, the tags it has synced, and the small memories that keep a hot read
  * from being a round trip on every request.
  *
- * The host comes from `ppr-cdn:cache-host`, which is handed the Function's environment and finds
+ * The host comes from `arkor:cache-host`, which is handed the Function's environment and finds
  * its own way to whatever stores the entries; a build whose host answers nothing leaves the
  * Function as it was before any cache existed. Per isolate, not per request, because an isolate's
  * bindings do not change underneath a deployment.
@@ -142,7 +142,7 @@ function log(message: string, fields: Record<string, string | number> = {}): voi
  * without them — so this asks it and believes the answer.
  */
 export function createCacheRuntime(options: CacheRuntimeOptions): CacheRuntime | undefined {
-  // Asserted at the boundary, as `ppr-cdn:app` is where it is imported: the type the ambient
+  // Asserted at the boundary, as `arkor:app` is where it is imported: the type the ambient
   // declaration names resolves for `tsc` and not for the type-aware lint's own program, and
   // without this every field read off it would be an `any` from there on.
   const binding = createCacheHost({

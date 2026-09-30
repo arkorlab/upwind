@@ -25,6 +25,13 @@ minimumReleaseAge: 1440
 minimumReleaseAgeExclude:
   - upwind
   - '@stayingupwind/*'
+  # And Next.js, for the reason the root workspace gives: the cooldown exists so that a compromised
+  # release is somebody else's problem first, and a security release is the one case where waiting is
+  # the larger risk, because the fix is public and so is what it fixes. This is the deployed thing
+  # here, which is where that matters most — and without this line the site is a day behind every
+  # Next.js security release, having been told to be.
+  - next
+  - '@next/*'
 
 # A peer range that is not satisfied is a refusal here, as it is at the root. This project's whole
 # reason to exist outside the workspace is to install what a reader installs, and a peer warning
