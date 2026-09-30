@@ -12,11 +12,11 @@ pnpm upwind dev
 arrangement below as well, where the prefix is reserved inside Next.js's own routing.
 
 ```
-  upwind 0.2.0 dev
+  upwind 0.3.0 dev
   - Local:     http://localhost:3000
   - Internal:  http://localhost:3000/__upwind
 
-  ✓ Next.js 16.3.6 ready in 1127ms
+  ✓ Next.js 16.3.7 ready in 1127ms
 ```
 
 A deployment has an edge in front of it, and the platform's own paths are the edge's to serve. Under
@@ -68,8 +68,8 @@ is not working.
 ```console
 $ curl -s localhost:3000/__upwind
 {
-  "upwind": "0.2.0",
-  "next": "16.3.6",
+  "upwind": "0.3.0",
+  "next": "16.3.7",
   "ready": true,
   "address": "http://localhost:3000",
   "prefix": "/__upwind",
@@ -118,7 +118,7 @@ pnpm upwind build
 ```
 
 The project's own `next build`, with the adapter named and with the project's storage bound. The
-bundle under `.ppr-cdn/` is `@stayingupwind/adapter`'s work and the build is Next.js's; what was
+bundle under `.arkor/` is `@stayingupwind/adapter`'s work and the build is Next.js's; what was
 missing was the thing `upwind dev` already does, which is to say _which_ adapter, resolved from the
 project rather than from wherever this CLI is installed.
 
@@ -160,7 +160,7 @@ produced none.
 ## On Vercel
 
 **`VERCEL` is set, so this command names nothing.** An adapter named in a build takes the deployment
-over, and on Vercel the deployment is Vercel's: `next build` writes a bundle under `.ppr-cdn/` that
+over, and on Vercel the deployment is Vercel's: `next build` writes a bundle under `.arkor/` that
 Vercel does not read, and — on Next.js 16.3, which is what this was measured against — stops writing
 the file traces Vercel's own build does: `next-server.js.nft.json` and
 `next-minimal-server.js.nft.json` are absent from `.next/` when an adapter is named, and written when

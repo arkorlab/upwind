@@ -1,7 +1,7 @@
 # @stayingupwind/adapter
 
 `next build` calls this adapter with a description of the application, and it writes a deployment
-bundle under `<projectDir>/.ppr-cdn/` — `bundle.json`, the blobs it names, and the two Functions
+bundle under `<projectDir>/.arkor/` — `bundle.json`, the blobs it names, and the two Functions
 (`app`, `middleware`) that run the application's code under `@stayingupwind/runtime`. Nothing here talks
 to Cloudflare: a build needs no credentials, and uploading the bundle is the host's job.
 
@@ -142,7 +142,7 @@ support rewrites under Next.js either).
 Beyond the API, the Function build depends on these files of Next.js's output and package. Each
 dependency is one module under `src/patches/`, held to every Next.js in the supported range by
 the two checks described under "Which Next.js" below, and recorded per build in
-`.ppr-cdn/dependencies.json`.
+`.arkor/dependencies.json`.
 
 | Where                                                                                                                                                                      | What                                                                                                                                                                                                                                                                                                                                                                                                             | Why, and what guards it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -169,7 +169,7 @@ sooner (see EXPERIMENTS.md, V-03); the runtime module (`index.mjs`) by esbuild, 
 conditions; the edge bundle (`edge.cjs`), where a build produced one, by Rolldown as well. All three
 are minified in whitespace and syntax and not in names, so a stack trace still names its function.
 
-`.ppr-cdn/dependencies.json` records, per Function — and under `edge`, for its edge bundle — the
+`.arkor/dependencies.json` records, per Function — and under `edge`, for its edge bundle — the
 files bundled from the build output and from each package (with the bytes each puts in the
 bundle), the built-ins left external, the stubs, the patches applied with their edit counts,
 every use of the loader the bundler could not follow — a `require` or `import()` made with

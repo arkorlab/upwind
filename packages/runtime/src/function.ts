@@ -6,10 +6,10 @@ import './cache/install.ts';
 // only export is that side effect, and it has to happen before either bundle below is evaluated,
 // which is what naming it above them says: modules are evaluated in the order they are named. A
 // deployment that reached no WebAssembly has no such module, and this import is then empty.
-import 'ppr-cdn:wasm';
+import 'arkor:wasm';
 import { publishFunctionEnv } from '@stayingupwind/core/paas';
-import app from 'ppr-cdn:app';
-import edge from 'ppr-cdn:edge';
+import app from 'arkor:app';
+import edge from 'arkor:edge';
 
 import type { AppModule, EdgeModule } from './app-module.ts';
 import { nowMs } from './cache/clock.ts';
@@ -24,9 +24,9 @@ import {
 } from './request-context.ts';
 
 /**
- * Entry of a deployment's Function. The adapter bundles this file, with `ppr-cdn:app` resolved to the
+ * Entry of a deployment's Function. The adapter bundles this file, with `arkor:app` resolved to the
  * generated `app.cjs` that holds the application's own code, and uploads both as one user Function.
- * `ppr-cdn:edge` is the same for the entrypoints built for Next.js's edge runtime — a module of
+ * `arkor:edge` is the same for the entrypoints built for Next.js's edge runtime — a module of
  * the Function when the build produced any, and an empty table when it did not.
  */
 const HTTP_INTERNAL_ERROR = 500;

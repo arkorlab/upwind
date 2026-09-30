@@ -21,7 +21,7 @@ pnpm build
 ```
 
 `pnpm build` is `upwind build`: the project's own `next build`, with the deployment adapter named. It
-writes a deployment bundle under `.ppr-cdn/` — every route, prerender and static file by content,
+writes a deployment bundle under `.arkor/` — every route, prerender and static file by content,
 and the Functions that run the application's code. `next.config.ts` names the same adapter, so a
 plain `next build` from CI or from any other tool produces the same bundle.
 
