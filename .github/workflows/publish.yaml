@@ -16,7 +16,14 @@ name: Publish
 # Adding a package takes one release that cannot come through here, because npm will not hold a
 # trusted publisher for a name that does not exist yet. Three times now the answer has been a
 # `bootstrap` input carrying a token for that one release, removed again afterwards; the history has
-# the shape of it, and `@stayingupwind/sdk` is the one it is here for today. Publishing the new names by hand instead would leave a version of each that no provenance
+# the shape of it, and every package has a publisher of its own again.
+#
+# What the third one taught, for whoever does the fourth. A granular token needs **Packages and
+# scopes**, not **Organizations**: the second grants the org's membership and nothing about
+# publishing, and npm answers a token without rights `404 Not Found` rather than `403`, so the log
+# says the package does not exist. And a release that fails partway is resumed rather than restarted:
+# a recursive publish skips what is already up, and a version that failed to publish is not recorded,
+# so nothing is burned by dispatching it again. Publishing the new names by hand instead would leave a version of each that no provenance
 # covers — a statement is signed with this workflow's identity and nothing on a laptop has one — and
 # the `provenance` job below would then fail a release over packages that are permanently unattested.
 #
@@ -43,25 +50,6 @@ on:
         required: false
         default: false
         type: boolean
-      bootstrap:
-        description: >
-          Hand the publish step a token as well, for a package npm holds no trusted publisher for
-          because it does not exist yet. The packages that do have one still use theirs: pnpm asks per
-          package and falls back per package, so a release can carry both kinds at once, and the
-          attestation is the same either way — provenance is signed with this workflow's identity,
-          which is a separate thing from what publishing authenticated by.
-        required: false
-        default: false
-        type: boolean
-    secrets:
-      npm-token:
-        description: >
-          Needed by `bootstrap`, and by nothing else. A *scoped* new name can be named in a granular
-          token before it exists, through its scope — so this one needs write on `@stayingupwind` and
-          nothing wider, unlike the release that first published `upwind` and `create-upwind`, whose
-          unscoped names left no way to ask for less than everything. Short-lived all the same, and
-          revoked as soon as the release lands.
-        required: false
 
 permissions: {}
 
@@ -169,12 +157,11 @@ jobs:
             esac
           fi
 
-      # A release that would publish a name npm has never seen needs `bootstrap`, and a tag push
-      # cannot ask for it. Without this the run would publish every package that does have a trusted
-      # publisher and fail on the one that does not — a release half made, and the half that landed
-      # cannot be taken back. Asked here, where nothing has been published yet.
-      - name: Nothing is being published for the first time without being asked for
-        if: ${{ !inputs.bootstrap }}
+      # This workflow cannot publish a name npm has never seen: a first publish needs a token, and
+      # there is none here by design. Without this check the run would publish every package that does
+      # have a trusted publisher and fail on the one that does not — a release half made, and the half
+      # that landed cannot be taken back. Asked here, where nothing has been published yet.
+      - name: Nothing is being published for the first time
         run: |
           set -euo pipefail
           # A budget for the whole step, not for each request. Per-request deadlines alone say
@@ -221,7 +208,7 @@ jobs:
             case "${code}" in
               200) ;;
               404)
-                echo "::error::${name} has never been published, and this run cannot publish it: a first publish needs a token, which only a dispatch with bootstrap: true carries. Cancel this run and dispatch Release with that tag instead."
+                echo "::error::${name} has never been published, and no release can publish it from here: npm holds no trusted publisher for a name that does not exist, so the first one needs a token. The shape that carries one is in this file's history — see the note at the top."
                 exit 1
                 ;;
               *)
@@ -385,24 +372,6 @@ jobs:
                 ;;
             esac
           fi
-
-      # Last, and alone. Everything above — `pnpm install` and the lifecycle scripts it is allowed to
-      # run among them — has already happened; and the publish below runs no package code either,
-      # because `--ignore-scripts` is what makes that true. Without it `pnpm publish` would run each
-      # `prepack` *after* this step, in a process that loads a bundler, with the token on disk.
-      # `dry-run` as well as `bootstrap`: a rehearsal uploads nothing, so writing a token to the
-      # runner's disk for it would be a credential at rest with nothing to do.
-      - name: A credential for a package that does not exist yet
-        if: ${{ inputs.bootstrap && !inputs.dry-run }}
-        env:
-          NPM_TOKEN: ${{ secrets.npm-token }}
-        run: |
-          set -euo pipefail
-          if [ -z "${NPM_TOKEN:-}" ]; then
-            echo '::error::bootstrap was asked for, but no npm-token was passed'
-            exit 1
-          fi
-          printf '//registry.npmjs.org/:_authToken=%s\n' "${NPM_TOKEN}" >> ~/.npmrc
 
       - name: Publish
         env:
