@@ -2,7 +2,7 @@
 
 Builds `fixtures/next-minimal` and `fixtures/next-edge` with each Next.js it is given, and holds
 each build to what the adapter promises: the bundle parses against `deploymentBundleSchema`, every
-patch the fixture was written to reach appears in `.ppr-cdn/dependencies.json`, and the outputs
+patch the fixture was written to reach appears in `.arkor/dependencies.json`, and the outputs
 that fixture exists to produce are there.
 
 ```console

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createGzip } from 'node:zlib';
 
-import type { FunctionModule, FunctionSpec } from '@stayingupwind/core/bundle';
+import type { FunctionModule, FunctionSpec, SourceMapRef } from '@stayingupwind/core/bundle';
 import { build, type Plugin } from 'esbuild';
 import {
   type InputOptions,
@@ -47,6 +47,7 @@ import {
   wasmModulePlugin,
   FUNCTION_BANNER,
 } from './patches/index.ts';
+import { functionSourceMaps, sourceMapsPlugin, sourcemapOutput } from './source-maps.ts';
 import type { TracedFile } from './traced-files.ts';
 import { WASM_ENTRY_MODULE, type WasmCollector, wasmEntrySource, wasmModuleName } from './wasm.ts';
 
@@ -82,13 +83,15 @@ export interface BuildFunctionInput {
   readonly manifests: readonly TextModule[];
   /** Contents of `runtime.json`: what the runtime needs to know about the deployment. */
   readonly runtimeManifest: string;
-  /** The module `ppr-cdn:cache-host` resolves to; a build given none gets no runtime cache. */
+  /** The module `arkor:cache-host` resolves to; a build given none gets no runtime cache. */
   readonly cacheHostModule: string | undefined;
   /** Blobs to ship inside the Function (prerendered bodies and postponed states). */
   readonly blobs: readonly { sha256: string; bytes: Uint8Array }[];
   /** The files the entries read through `node:fs`, at their paths in the project (`traced-files.ts`). */
   readonly files: readonly TracedFile[];
   readonly blobStore: BlobStore;
+  /** Carry a map from this Function's bundle back to the sources it was built from. */
+  readonly sourceMaps?: boolean | undefined;
 }
 
 /** Module name a blob is shipped under; the runtime reads it back at `/bundle/blobs/<sha256>`. */
@@ -121,13 +124,13 @@ const EMPTY_WASM_MODULE = '// This deployment carries no WebAssembly.';
 const NO_CACHE_HOST_MODULE = 'export function createCacheHost() { return undefined; }';
 
 /**
- * The generated modules the runtime source names: `ppr-cdn:app` is the `app.cjs` next to it in
- * the Function, `ppr-cdn:edge` the `edge.cjs` — which a deployment with no edge entrypoint does
+ * The generated modules the runtime source names: `arkor:app` is the `app.cjs` next to it in
+ * the Function, `arkor:edge` the `edge.cjs` — which a deployment with no edge entrypoint does
  * not have, and whose import is then the empty table above rather than a module the Function would
- * carry and never use — and `ppr-cdn:wasm` the `wasm.mjs` that publishes the compiled
+ * carry and never use — and `arkor:wasm` the `wasm.mjs` that publishes the compiled
  * WebAssembly, which a deployment with none does not have either.
  *
- * `ppr-cdn:cache-host` is the one module of the four that comes from outside the build:
+ * `arkor:cache-host` is the one module of the four that comes from outside the build:
  * `cacheHostModule` names what the runtime's cache reads and writes through, and it is bundled
  * into the runtime rather than shipped beside it, since it is source like the rest of the
  * runtime. A build told of none resolves to the stub above.
@@ -138,46 +141,46 @@ function generatedModulesPlugin(has: {
   cacheHostModule: string | undefined;
 }): Plugin {
   return {
-    name: 'ppr-cdn-generated-modules',
+    name: 'arkor-generated-modules',
     setup(bundler) {
       // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-      bundler.onResolve({ filter: /^ppr-cdn:app$/ }, () => {
+      bundler.onResolve({ filter: /^arkor:app$/ }, () => {
         return {
           path: `./${APP_MODULE}`,
           external: true,
         };
       });
       // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-      bundler.onResolve({ filter: /^ppr-cdn:edge$/ }, () => {
+      bundler.onResolve({ filter: /^arkor:edge$/ }, () => {
         return has.edge
           ? { path: `./${EDGE_MODULE}`, external: true }
-          : { path: 'ppr-cdn:edge', namespace: 'ppr-cdn-edge' };
+          : { path: 'arkor:edge', namespace: 'arkor-edge' };
       });
       bundler.onLoad(
         // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-        { filter: /^ppr-cdn:edge$/, namespace: 'ppr-cdn-edge' },
+        { filter: /^arkor:edge$/, namespace: 'arkor-edge' },
         () => ({ contents: EMPTY_EDGE_MODULE, loader: 'js' }),
       );
       // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-      bundler.onResolve({ filter: /^ppr-cdn:wasm$/ }, () => {
+      bundler.onResolve({ filter: /^arkor:wasm$/ }, () => {
         return has.wasm
           ? { path: `./${WASM_ENTRY_MODULE}`, external: true }
-          : { path: 'ppr-cdn:wasm', namespace: 'ppr-cdn-wasm' };
+          : { path: 'arkor:wasm', namespace: 'arkor-wasm' };
       });
       bundler.onLoad(
         // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-        { filter: /^ppr-cdn:wasm$/, namespace: 'ppr-cdn-wasm' },
+        { filter: /^arkor:wasm$/, namespace: 'arkor-wasm' },
         () => ({ contents: EMPTY_WASM_MODULE, loader: 'js' }),
       );
       // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-      bundler.onResolve({ filter: /^ppr-cdn:cache-host$/ }, () => {
+      bundler.onResolve({ filter: /^arkor:cache-host$/ }, () => {
         return has.cacheHostModule === undefined
-          ? { path: 'ppr-cdn:cache-host', namespace: 'ppr-cdn-cache-host' }
+          ? { path: 'arkor:cache-host', namespace: 'arkor-cache-host' }
           : { path: has.cacheHostModule };
       });
       bundler.onLoad(
         // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-        { filter: /^ppr-cdn:cache-host$/, namespace: 'ppr-cdn-cache-host' },
+        { filter: /^arkor:cache-host$/, namespace: 'arkor-cache-host' },
         () => ({ contents: NO_CACHE_HOST_MODULE, loader: 'js' }),
       );
     },
@@ -192,6 +195,8 @@ function runtimeEntry(): string {
 export interface AppBundleContext {
   readonly patch: PatchContext;
   readonly wasm: WasmCollector;
+  /** Compose the maps the build already wrote through into this bundle's own. */
+  readonly sourceMaps?: boolean | undefined;
 }
 
 /** What `bundleApp` collects as Rolldown runs, for the dependency record. */
@@ -224,6 +229,10 @@ export function appBundlePlugins(
     patchesPlugin(PATCHES, context.patch, (applied) => {
       sinks.patches.push(applied);
     }),
+    // After the patches, so a file a patch rewrote is never given a map that no longer describes
+    // it; see `sourceMapsPlugin`. Left out entirely for a build carrying no maps: it would read
+    // the tail of every file the bundle loads for a comment nothing would use.
+    ...(context.sourceMaps === true ? [sourceMapsPlugin()] : []),
     stubPlugin((specifier) => {
       sinks.stubs.push(specifier);
     }),
@@ -291,7 +300,16 @@ async function bundleApp(
     linked: new Set(),
   };
   await using bundle = await rolldown(
-    appBundleOptions(input.projectDir, entryFile, { patch: input.patch, wasm: input.wasm }, sinks),
+    appBundleOptions(
+      input.projectDir,
+      entryFile,
+      {
+        patch: input.patch,
+        wasm: input.wasm,
+        ...(input.sourceMaps === true && { sourceMaps: true }),
+      },
+      sinks,
+    ),
   );
   const { output } = await bundle.write({
     format: 'cjs',
@@ -305,8 +323,7 @@ async function bundleApp(
     banner: FUNCTION_BANNER,
     minify: { compress: true, mangle: false, codegen: { removeWhitespace: true } },
     comments: { legal: false },
-    // The build already ran; there is nothing to watch and no sourcemap consumer in the Function.
-    sourcemap: false,
+    ...sourcemapOutput(input.sourceMaps === true),
   });
   const chunk = output.find((item): item is OutputChunk => item.type === 'chunk');
   if (chunk === undefined) {
@@ -362,6 +379,8 @@ async function bundleRuntime(input: BuildFunctionInput, workDir: string): Promis
 export interface BuiltFunction {
   readonly spec: FunctionSpec;
   readonly dependencies: FunctionDependencies;
+  /** The maps of this Function's own modules; empty unless the host asked for them. */
+  readonly sourceMaps: SourceMapRef[];
 }
 
 /**
@@ -498,6 +517,7 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
           projectDir: input.projectDir,
           workDir,
           entries: input.edgeEntries,
+          ...(input.sourceMaps === true && { sourceMaps: true }),
         }),
   ]);
   const appFile = app.outFile;
@@ -617,5 +637,12 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
       compatibilityFlags: [...FUNCTION_COMPATIBILITY_FLAGS],
     },
     dependencies,
+    sourceMaps:
+      input.sourceMaps === true
+        ? await functionSourceMaps(input.blobStore, input.kind, {
+            app: appFile,
+            edge: edge?.outFile,
+          })
+        : [],
   };
 }

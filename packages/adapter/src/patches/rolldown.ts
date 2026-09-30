@@ -30,7 +30,7 @@ export function patchesPlugin(
   onApplied?: (applied: AppliedPatch) => void,
 ): Plugin {
   return {
-    name: 'ppr-cdn-patches',
+    name: 'arkor-patches',
     load: {
       // Tested against the id with `/` separators, whatever the platform's; so are the targets.
       filter: { id: patches.map((patch) => patch.target) },
@@ -57,7 +57,7 @@ export function patchesPlugin(
 }
 
 /** The id a stubbed module is bundled under; what the dependency record lists it as. */
-const STUB_ID_PREFIX = 'ppr-cdn-stub:';
+const STUB_ID_PREFIX = 'arkor-stub:';
 
 function stubModule(id: string): { code: string; moduleType: 'js' } {
   return { code: stubSourceFor(id.slice(STUB_ID_PREFIX.length)), moduleType: 'js' };
@@ -71,7 +71,7 @@ function stubModule(id: string): { code: string; moduleType: 'js' } {
  */
 export function stubPlugin(onStubbed?: (specifier: string) => void): Plugin {
   return {
-    name: 'ppr-cdn-stubs',
+    name: 'arkor-stubs',
     resolveId: {
       filter: {
         id: /^(?:require|import)-in-the-middle|^critters$|compiled\/raw-body$|^(?:node:)?process$/u,
@@ -85,7 +85,7 @@ export function stubPlugin(onStubbed?: (specifier: string) => void): Plugin {
       },
     },
     load: {
-      filter: { id: /^ppr-cdn-stub:/u },
+      filter: { id: /^arkor-stub:/u },
       handler: (id) => stubModule(id),
     },
   };
@@ -99,7 +99,7 @@ export function stubPlugin(onStubbed?: (specifier: string) => void): Plugin {
  */
 export function externalsPlugin(onExternal: (specifier: string) => void): Plugin {
   return {
-    name: 'ppr-cdn-externals',
+    name: 'arkor-externals',
     resolveId(source) {
       if (isBuiltin(source)) {
         onExternal(source);
@@ -110,7 +110,7 @@ export function externalsPlugin(onExternal: (specifier: string) => void): Plugin
 }
 
 /** The id a `?module` import is bundled under; what the dependency record lists it as. */
-const WASM_ID_PREFIX = 'ppr-cdn-wasm:';
+const WASM_ID_PREFIX = 'arkor-wasm:';
 /** The suffix that asks for the compiled module rather than an instantiated one. */
 const MODULE_QUERY = '?module';
 
@@ -137,7 +137,7 @@ export function wasmModulePlugin(
   onResolved?: (file: string, global: string) => void,
 ): Plugin {
   return {
-    name: 'ppr-cdn-wasm-modules',
+    name: 'arkor-wasm-modules',
     resolveId: {
       filter: { id: /\.wasm\?module$/u },
       async handler(source, importer, options) {
@@ -162,7 +162,7 @@ export function wasmModulePlugin(
       },
     },
     load: {
-      filter: { id: /^ppr-cdn-wasm:/u },
+      filter: { id: /^arkor-wasm:/u },
       handler: (id) => {
         return {
           code: `export default globalThis.${id.slice(WASM_ID_PREFIX.length)};\n`,
@@ -176,7 +176,7 @@ export function wasmModulePlugin(
 /** `@opentelemetry/api` falls back to Next.js's own copy, as Next.js falls back to it. */
 export function vendoredOtelPlugin(onFallback?: (specifier: string) => void): Plugin {
   return {
-    name: 'ppr-cdn-vendored-otel',
+    name: 'arkor-vendored-otel',
     resolveId: {
       filter: { id: /^@opentelemetry\/api$/u },
       async handler(source, importer, options) {

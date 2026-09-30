@@ -32,7 +32,7 @@ import { publishResources } from './publish.ts';
 
 /**
  * Where a project's local storage is kept: one directory of its own, beside `.next` and
- * `.ppr-cdn`. The runtime keeps a subdirectory per kind under it (`d1/`, `kv/`, `r2/`).
+ * `.arkor`. The runtime keeps a subdirectory per kind under it (`d1/`, `kv/`, `r2/`).
  */
 const PERSIST_DIR = '.upwind';
 
