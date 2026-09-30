@@ -13,6 +13,7 @@ packages: []
 # the adapter runs esbuild during `next build` — without the script there is no binary to run.
 allowBuilds:
   esbuild: true
+  workerd: set this to true or false
 
 # The supply-chain cooldown the repository holds every other install to (pnpm's default is a day;
 # written out so the policy is visible here too, as it is in the root workspace).
