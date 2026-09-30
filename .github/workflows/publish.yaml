@@ -648,8 +648,16 @@ jobs:
           done
           set -- "${TAG}" "${RUNNER_TEMP}"/assets/*.tgz "${RUNNER_TEMP}"/sbom/*.json
           set -- "$@" --repo "${GITHUB_REPOSITORY}" --draft --verify-tag --title "${TAG}" --notes-file "${notes}"
-          case "${version}" in
-            *-*) set -- "$@" --prerelease ;;
-          esac
+            # Everything before 1.0 is a prerelease here, and so is anything with a prerelease part.
+            # Set on the draft rather than left to whoever publishes it: a release cannot be changed
+            # once it is published, so a flag that waits on somebody remembering a checkbox is one
+            # that will be wrong eventually, and wrong permanently.
+            #
+            # Not the same question as the dist-tag above, and deliberately not the same answer.
+            # `0.3.0` is what `npm install` should give you — `latest` — while being a release this
+            # repository has not called stable. Only a prerelease part holds a version back on npm.
+            case "${version}" in
+              0.* | *-*) set -- "$@" --prerelease ;;
+            esac
           gh release create "$@"
           echo "::notice::a draft release for ${TAG} is ready; publishing it is a person's job"
