@@ -45,12 +45,18 @@ type RouteHandler = (request: Request) => Promise<Response>;
 /** A configuration this cannot serve is this application's fault, not the caller's. */
 const STATUS_MISCONFIGURED = 500;
 
+/**
+ * Both halves are checked, not just the handler: everything below reads `options` off this, and an
+ * object with a `handler` and nothing else would get past a looser test and then fail on a property
+ * — which reads as a bug in this package rather than as the "that is not a Better Auth instance"
+ * that it is.
+ */
 function isMountable(value: unknown): value is MountableAuth {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    typeof (value as { handler?: unknown }).handler === 'function'
-  );
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const candidate = value as { handler?: unknown; options?: unknown };
+  return typeof candidate.handler === 'function' && typeof candidate.options === 'object';
 }
 
 /** A refusal with a reason a developer can act on, and headers that keep it out of every cache. */
@@ -89,7 +95,12 @@ async function answer(config: Record<string, unknown>, request: Request): Promis
       `@stayingupwind/auth: the auth config beside this app exports no Better Auth instance. Export it as \`auth\`, or as the module's default:\n\n  export const auth = defineAuth();\n`,
     );
   }
-  if ((mounted.options.basePath ?? UPWIND_AUTH_BASE_PATH) !== UPWIND_AUTH_BASE_PATH) {
+  // Compared to what the config says and to nothing else. A config with no base path at all is a
+  // plain `betterAuth(…)`, whose own default is `/api/auth` — so this route is not where it is
+  // mounted, and serving it here would hand Better Auth a request under a prefix it would strip
+  // the wrong number of segments from. `defineAuth` always writes one, so the only configs this
+  // turns away are the ones that really are mounted somewhere else.
+  if (mounted.options.basePath !== UPWIND_AUTH_BASE_PATH) {
     return notFound();
   }
   const missing = missingProductionSecret(mounted.options.secret);

@@ -148,6 +148,24 @@ export async function ensureAuthRoute(
     );
     return;
   }
+  // A route of the other language first, because two of them in one directory is not a project
+  // Next.js will build: `route.ts` and `route.js` both claim the segment. A project that moved from
+  // JavaScript to TypeScript has the older one standing, and it is this that put it there — so this
+  // takes it back. One somebody else wrote is a different matter: they have mounted this path
+  // themselves, and the right thing is to add nothing beside it.
+  const stale = routeFile(layout.appDir, !layout.typescript);
+  const beside = await contentsOf(stale);
+  if (beside === SOURCE) {
+    try {
+      await rm(stale, { force: true });
+    } catch {
+      // Still there, and about to be joined by its replacement. Next.js will say so more clearly
+      // than this could, and naming the one that could not be removed is all there is to add.
+      console.warn(`upwind: could not remove ${stale}, which the route beside it now replaces`);
+    }
+  } else if (beside !== undefined) {
+    return;
+  }
   const file = routeFile(layout.appDir, layout.typescript);
   const existing = await contentsOf(file);
   if (existing !== undefined) {

@@ -57,8 +57,16 @@ URL to whitelist, and no network to be on.
 if it somehow is. A production run with no `AUTH_SECRET` does not fall back to anything — it answers
 `500` and names the variable to set.
 
-It goes away on its own: the moment any of `AUTH_SECRET`, a client id or a client secret exists, the
-real provider answers and the stand-in is not built.
+It goes away on its own, and it is deliberately easy to make it go away. Any one of these is enough:
+
+- `secret` or `secrets` in the config, or `AUTH_SECRET` / `BETTER_AUTH_SECRET` in the environment;
+- a `clientId`, `clientSecret` or `clientKey` on any provider you declared, or a provider declared
+  as a function;
+- **any** environment variable whose name ends in `CLIENT_ID` or `CLIENT_SECRET`.
+
+The last one is broader than it needs to be, on purpose: standing in for a provider in a project
+that has real credentials to hand would be the worse mistake. If you are surprised to find the
+stand-in missing, an unrelated `…_CLIENT_ID` in your shell is the thing to look for.
 
 Declared no providers at all? Then it answers to `upwind`:
 
@@ -89,6 +97,14 @@ import { toNextJsHandler } from 'better-auth/next-js';
 import { auth } from '../../../../auth';
 
 export const { GET, POST } = toNextJsHandler(auth);
+```
+
+**If your app has a Next.js `basePath`**, say `/docs`, then everything it serves is under it and
+`/__upwind/auth` is not where this ends up. Set Better Auth's base path to the whole of it and mount
+it yourself:
+
+```ts
+export const auth = defineAuth({ basePath: '/docs/__upwind/auth' });
 ```
 
 ## The client

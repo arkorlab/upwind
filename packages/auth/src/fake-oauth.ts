@@ -193,7 +193,14 @@ export function fakeOAuth(): BetterAuthPlugin {
         // accepted from a caller would be an open redirect with a signature attached, on a server
         // whose whole security model is that it is only reachable from this machine — and the one
         // correct value is derivable: the base path is what this request's own path sits under.
-        const basePath = url.pathname.slice(0, -AUTHORIZE_PATH.length);
+        //
+        // Taken off the request where the request has it, and from the configuration where it does
+        // not — a trailing slash, or a router that matched this endpoint under some other spelling,
+        // would otherwise cut the path in the wrong place and send the browser to a callback that
+        // does not exist.
+        const basePath = url.pathname.endsWith(AUTHORIZE_PATH)
+          ? url.pathname.slice(0, -AUTHORIZE_PATH.length)
+          : (c.context.options.basePath ?? UPWIND_AUTH_BASE_PATH);
         const callback = new URL(`${basePath}/callback/${provider}`, url.origin);
         callback.searchParams.set(
           'code',

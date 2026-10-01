@@ -38,6 +38,7 @@ import { isZeroConfig } from './zero-config.ts';
  */
 
 export { DEV_PROVIDER_ID } from './fake-oauth.ts';
+export { overrideProviders, type ReplaceProviders } from './override-providers.ts';
 export { missingProductionSecret } from './secret.ts';
 
 /**
@@ -52,9 +53,15 @@ export { missingProductionSecret } from './secret.ts';
  */
 const PLACEHOLDER_CREDENTIAL = 'upwind-development';
 
-/** Is this plugin already in the list the project gave? Matched by id, which is what Better Auth has. */
-function declares(declared: readonly BetterAuthPlugin[], id: string): boolean {
-  return declared.some((plugin) => plugin.id === id);
+/**
+ * Is this plugin already in the list the project gave?
+ *
+ * By id, and by an id read off the plugin rather than written out here — including Better Auth's
+ * own, which is a name this package has no business knowing twice. A project that added one of
+ * these itself keeps its own, and keeps the options it passed to it.
+ */
+function declares(declared: readonly BetterAuthPlugin[], plugin: BetterAuthPlugin): boolean {
+  return declared.some((other) => other.id === plugin.id);
 }
 
 /**
@@ -62,13 +69,16 @@ function declares(declared: readonly BetterAuthPlugin[], id: string): boolean {
  *
  * `nextCookies` goes last, as its own documentation requires: it works by reading the headers
  * everything before it produced. The project's own come first, so a plugin of theirs sees the
- * context before upwind's stand-in has replaced anything — and a project that added either of these
- * itself keeps its own.
+ * context before upwind's stand-in has replaced anything.
  */
 function plugins(declared: readonly BetterAuthPlugin[], zeroConfig: boolean): BetterAuthPlugin[] {
-  const fake = zeroConfig && !declares(declared, 'upwind-fake-oauth') ? [fakeOAuth()] : [];
-  const cookies = declares(declared, 'next-cookies') ? [] : [nextCookies()];
-  return [...declared, ...fake, ...cookies];
+  const cookies = nextCookies();
+  const fake = zeroConfig ? [fakeOAuth()] : [];
+  return [
+    ...declared,
+    ...fake.filter((plugin) => !declares(declared, plugin)),
+    ...(declares(declared, cookies) ? [] : [cookies]),
+  ];
 }
 
 /**
