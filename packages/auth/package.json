@@ -1,0 +1,54 @@
+{
+  "name": "@stayingupwind/auth",
+  "version": "0.3.0",
+  "description": "Better Auth with nothing to configure: the config beside your app is found, mounted at /__upwind/auth, given the project's own database, and — until you have real credentials — signed in against a provider upwind plays itself.",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arkorlab/upwind.git",
+    "directory": "packages/auth"
+  },
+  "files": [
+    "dist",
+    "src",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "NOTICE"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./next": {
+      "types": "./dist/next.d.ts",
+      "default": "./dist/next.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "default": "./dist/client.js"
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.ts",
+    "prepack": "node scripts/build.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@stayingupwind/sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@stayingupwind/core": "workspace:*",
+    "@types/node": "catalog:",
+    "better-auth": "catalog:",
+    "next": "catalog:",
+    "rolldown": "catalog:",
+    "typescript": "catalog:"
+  },
+  "peerDependencies": {
+    "better-auth": ">=1.7.0 <2",
+    "next": ">=16.2.0 <17"
+  }
+}
