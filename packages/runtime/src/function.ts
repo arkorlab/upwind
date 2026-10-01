@@ -54,10 +54,40 @@ function cacheRuntimeFor(env: unknown): CacheRuntime | undefined {
   return shared.runtime;
 }
 
-/** How much of a failure's own words the body carries; a message, not a stack. */
-const FAILURE_MESSAGE_BYTES = 200;
-/** Below this, a code point is a control character and is not what a message meant to say. */
-const CONTROL_CHARACTERS = 0x20;
+/**
+ * How much of a failure's own words the body carries; a message, not a stack. Characters, which is
+ * what the loop below counts — a bound in bytes would have to encode the message to know it had
+ * been reached, and nothing here needs one that exact.
+ */
+const FAILURE_MESSAGE_CHARACTERS = 200;
+/**
+ * Under this a code point is a C0 control character, and `DEL` through the C1 range are the rest of
+ * them. None is what a message meant to say, and `U+0085` ends a line to a reader that honours it,
+ * which would let a message put a second line in a log that only wrote one.
+ */
+const CONTROL_FLOOR = 0x20;
+const DELETE_FLOOR = 0x7f;
+const CONTROL_CEILING = 0x9f;
+
+function isControlPoint(point: number): boolean {
+  return point < CONTROL_FLOOR || (point >= DELETE_FLOOR && point <= CONTROL_CEILING);
+}
+
+/**
+ * What a failure says about itself, and nothing at all when it will not say.
+ *
+ * `String` throws on a value that reaches no primitive — `Object.create(null)` is thrown as readily
+ * as anything else — and a `message` is a property like any other, so a getter there may throw too.
+ * Either would leave this catch rejecting instead of answering, which is the whole of what the
+ * Function has to do here.
+ */
+function failureMessage(error: unknown): string {
+  try {
+    return error instanceof Error ? error.message : String(error);
+  } catch {
+    return '';
+  }
+}
 
 /**
  * What the Function answers with when it fails before Next.js does.
@@ -75,14 +105,19 @@ const CONTROL_CHARACTERS = 0x20;
  * travels to whatever asked. It is the kind of thing an error page says about itself.
  */
 function failureBody(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  // Control characters out one code unit at a time: a header refuses them and a log line is easier
-  // to read without them. Not by pattern — a regular expression over this range is the kind the
-  // linter asks about every time — and not by spreading the string, which splits a surrogate pair.
+  const message = failureMessage(error);
+  // Control characters out, one character at a time: a log line is easier to read without them.
+  // Not by pattern — a regular expression over this range is the kind the linter asks about every
+  // time — and not over `[...message]`, which walks and allocates the whole message, however long,
+  // to then throw all but the first two hundred away. `for…of` walks code points and stops at the
+  // bound, so a message cut at one cannot end in half a surrogate pair, which a body encodes as
+  // `U+FFFD` and reads as damage rather than as a sentence that ran out.
   let said = '';
-  for (let at = 0; at < Math.min(message.length, FAILURE_MESSAGE_BYTES); at += 1) {
-    const point = message.codePointAt(at) ?? 0;
-    said += point < CONTROL_CHARACTERS ? ' ' : message.charAt(at);
+  let taken = 0;
+  for (const character of message) {
+    if (taken >= FAILURE_MESSAGE_CHARACTERS) break;
+    said += isControlPoint(character.codePointAt(0) ?? 0) ? ' ' : character;
+    taken += 1;
   }
   const trimmed = said.trim();
   return trimmed === '' ? 'Internal Server Error' : `Internal Server Error: ${trimmed}`;
