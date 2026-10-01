@@ -1,8 +1,6 @@
 import { existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 
-import { UPWIND_AUTH_BASE_PATH } from '@stayingupwind/core/paas';
-
 /**
  * Where a project keeps its authentication config, and where a route of its own would go.
  *
@@ -114,7 +112,7 @@ export function authLayout(projectDir: string): AuthLayout | undefined {
     const elsewhere = findConfig(otherRoot);
     if (elsewhere !== undefined) {
       console.warn(
-        `upwind: ${elsewhere} is not where Next.js looks for a root file — it reads them from ${rootDir}, beside \`app\`. Move it there and ${UPWIND_AUTH_BASE_PATH} is served for you.`,
+        `upwind: ${elsewhere} is not where Next.js looks for a root file — it reads them from ${rootDir}, which is where \`app\` or \`pages\` is. Nothing reads it where it is, upwind included.`,
       );
     }
     return undefined;

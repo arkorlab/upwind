@@ -23,8 +23,20 @@ import { envValue, isProduction } from './environment.ts';
  * naming what is missing — never a key that this machine generated and no other machine has.
  */
 
-/** The names Better Auth itself reads, in its own order. */
-const DEVELOPER_SECRET_NAMES: readonly string[] = ['BETTER_AUTH_SECRET', 'AUTH_SECRET'];
+/**
+ * Every name Better Auth itself reads a key out of.
+ *
+ * Three, not two: `BETTER_AUTH_SECRETS` is the rotation form — `2:key,1:key` — and Better Auth
+ * reads it in the same breath as the other two (`options.secrets ?? parseSecretsEnv(…)`). A
+ * deployment that rotates keys has its key *there* and nowhere else, so a reading that knew only
+ * about the singular names would call it unconfigured: refused in production, and in development
+ * handed a generated key over the top of its rotation.
+ */
+const SECRET_NAMES: readonly string[] = [
+  'BETTER_AUTH_SECRET',
+  'AUTH_SECRET',
+  'BETTER_AUTH_SECRETS',
+];
 
 /**
  * What the project itself said about its signing key, in either of the two places it can say it.
@@ -39,23 +51,18 @@ export interface ConfiguredSecret {
   readonly secrets?: unknown;
 }
 
-/** A secret the developer chose, wherever they chose it. */
-function configured(options: ConfiguredSecret): boolean {
+/**
+ * Did the developer name a signing key, anywhere they are allowed to name one?
+ *
+ * The one question, asked from one place. Whether a run may be stood in for, whether a production
+ * run may answer at all, and whether upwind's generated key is read — all three turn on it, and
+ * three readings of it would be three chances to disagree.
+ */
+export function hasConfiguredSecret(options: ConfiguredSecret): boolean {
   if (options.secret !== undefined || options.secrets !== undefined) {
     return true;
   }
-  return DEVELOPER_SECRET_NAMES.some((name) => envValue(name) !== undefined);
-}
-
-/** A secret in the environment, for the one caller that asks about the environment alone. */
-export function developerSecret(): string | undefined {
-  for (const name of DEVELOPER_SECRET_NAMES) {
-    const value = envValue(name);
-    if (value !== undefined) {
-      return value;
-    }
-  }
-  return undefined;
+  return SECRET_NAMES.some((name) => envValue(name) !== undefined);
 }
 
 /**
@@ -67,7 +74,7 @@ export function developerSecret(): string | undefined {
  * precedence is the one that applies, including any it grows later.
  */
 export function resolveSecret(options: ConfiguredSecret): string | undefined {
-  if (configured(options) || isProduction()) {
+  if (hasConfiguredSecret(options) || isProduction()) {
     return undefined;
   }
   return envValue(UPWIND_AUTH_SECRET_ENV);
@@ -83,7 +90,7 @@ export function resolveSecret(options: ConfiguredSecret): string | undefined {
  * instruction it is.
  */
 export function missingProductionSecret(options: ConfiguredSecret): string | undefined {
-  if (!isProduction() || configured(options)) {
+  if (!isProduction() || hasConfiguredSecret(options)) {
     return undefined;
   }
   return `@stayingupwind/auth: this is a production run with no signing key, so ${UPWIND_AUTH_BASE_PATH} cannot answer. Set AUTH_SECRET in the deployment's environment — the value upwind keeps in .upwind/ is this machine's own and is deliberately not read here.`;

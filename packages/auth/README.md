@@ -94,16 +94,24 @@ does telling the client**, which otherwise keeps asking `/__upwind/auth`:
 
 ```ts
 // auth.ts
-export const auth = defineAuth({ basePath: '/api/auth' });
+import { defineAuth } from '@stayingupwind/auth';
 
+export const auth = defineAuth({ basePath: '/api/auth' });
+```
+
+```ts
 // app/api/auth/[...all]/route.ts
 import { toNextJsHandler } from 'better-auth/next-js';
 
 import { auth } from '../../../../auth';
 
 export const { GET, POST } = toNextJsHandler(auth);
+```
 
+```ts
 // auth-client.ts — the same path, or the browser calls one place and the server answers another
+import { createAuthClient } from '@stayingupwind/auth/client';
+
 export const authClient = createAuthClient({ basePath: '/api/auth' });
 ```
 

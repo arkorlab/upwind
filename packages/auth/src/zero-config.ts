@@ -1,7 +1,7 @@
 import type { BetterAuthOptions } from 'better-auth';
 
 import { envNames, envValue, isProduction } from './environment.ts';
-import { developerSecret } from './secret.ts';
+import { hasConfiguredSecret } from './secret.ts';
 
 /**
  * Has anybody configured this project's authentication yet?
@@ -92,13 +92,8 @@ function credentialsInOptions(options: BetterAuthOptions): boolean {
  * rather than to make it appear to work.
  */
 export function isZeroConfig(options: BetterAuthOptions): boolean {
-  if (isProduction()) {
+  if (isProduction() || hasConfiguredSecret(options)) {
     return false;
   }
-  if (options.secret !== undefined || options.secrets !== undefined) {
-    return false;
-  }
-  return (
-    developerSecret() === undefined && !credentialsInOptions(options) && !credentialsInEnvironment()
-  );
+  return !credentialsInOptions(options) && !credentialsInEnvironment();
 }

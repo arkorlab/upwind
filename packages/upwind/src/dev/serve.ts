@@ -102,14 +102,18 @@ function decodedPathname(pathname: string): string | undefined {
  * belonging to upwind and the request belonging to the application are the same request — and the
  * adapter's reservation leaves the same subtree out, so handing it on does not send it back here.
  *
- * As written, and not as it decodes: `/__upwind/%61uth/sign-in` is answered here, with this prefix's
- * 404. That looks like an oversight and is the opposite of one. The two sides of the seam have to
- * agree about which spellings are the application's, and the adapter's side is a rewrite whose
- * `source` is matched against the raw pathname — it can exclude `auth`, and it cannot exclude the
+ * Which spelling counts follows from where the prefix was recognised, and is not the same on both
+ * branches. Under a *literal* `/__upwind`, the subtree is the application's only when `auth` is
+ * literal too: `/__upwind/%61uth/sign-in` is answered here, with this prefix's 404. That looks like
+ * an oversight and is the opposite of one — the adapter's half of the seam is a rewrite whose
+ * `source` is matched against the raw pathname, so it can exclude `auth` and cannot exclude the
  * unbounded set of ways to encode it (the same reason `dev-prefix.ts` gives for leaving an escaped
- * `/__upwind` alone). A front door that handed the escaped spelling on would meet a reservation that
- * still claimed it, and the request would go round between them. One spelling reaches the route;
- * every other spelling of it is this prefix's, and gets this prefix's answer.
+ * `/__upwind` alone). A front door that handed that spelling on would meet a reservation that still
+ * claimed it, and the request would go round between them.
+ *
+ * Below, where the prefix itself was only found by decoding, the reservation never matched in the
+ * first place — so there is no loop to avoid, and the decoded spelling of the subtree is handed on
+ * like any other request of the application's.
  *
  * `..` needs no handling of its own: `pathnameOf` parses through `URL`, which resolves dot segments
  * before any of this sees them, so `/app/../__upwind` arrives here as `/__upwind`. What is deliberately
