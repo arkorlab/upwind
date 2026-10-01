@@ -4,6 +4,7 @@ import { createAuthEndpoint } from 'better-auth/api';
 
 import { authorizePage } from './authorize-page.ts';
 import { type Identity, readCode, signCode } from './code.ts';
+import { DEV_PROVIDER_ID } from './dev-provider.ts';
 import { isProduction } from './environment.ts';
 import { overrideProviders } from './override-providers.ts';
 
@@ -38,16 +39,7 @@ const PLUGIN_ID = 'upwind-fake-oauth';
 /** The endpoint, relative to the base path — so `/__upwind/auth/fake/authorize` by default. */
 const AUTHORIZE_PATH = '/fake/authorize';
 
-/**
- * What the stand-in is called for a project that declared no providers at all.
- *
- * Better Auth's `provider` is any string, not only one of the providers it ships, so a project that
- * has not decided between GitHub and Google yet can still sign somebody in. Exported, because an
- * application that calls it has to spell it, and spelling it twice is how the two come apart.
- */
-export const DEV_PROVIDER_ID = 'upwind';
-
-/** And what that one is called on the page, where a provider's real name would be. */
+/** What the one provider is called on the page, where a provider's real name would be. */
 const DEV_PROVIDER_NAME = 'a provider you have not chosen yet';
 
 /** The identity the page starts on. A name nobody will mistake for a real address. */

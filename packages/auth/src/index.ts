@@ -37,7 +37,7 @@ import { isZeroConfig } from './zero-config.ts';
  * also fine — `toNextHandler` serves whatever the config file exports.
  */
 
-export { DEV_PROVIDER_ID } from './fake-oauth.ts';
+export { DEV_PROVIDER_ID } from './dev-provider.ts';
 export { overrideProviders, type ReplaceProviders } from './override-providers.ts';
 export { missingProductionSecret } from './secret.ts';
 

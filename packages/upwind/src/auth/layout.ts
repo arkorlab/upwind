@@ -62,8 +62,9 @@ function findConfig(rootDir: string): string | undefined {
 
 /**
  * What this project has to say about authentication, or nothing at all — which is every project
- * that has not asked for any, and is the case this is written to be cheap in: two `existsSync` calls
- * and no further work.
+ * that has not asked for any, and is the case this is written to be cheap in: a handful of
+ * `existsSync` calls on paths the filesystem has cached, and no further work. `pages` is only
+ * looked for when there is no `app`, since it is wanted for one thing and `app` already answers it.
  *
  * The root is taken from `app` where there is one and from `pages` otherwise, so that a project with
  * both is read the way Next.js reads it (they must share a parent, and Next.js refuses the build if
@@ -72,8 +73,9 @@ function findConfig(rootDir: string): string | undefined {
  */
 export function authLayout(projectDir: string): AuthLayout | undefined {
   const appDir = findDir(projectDir, 'app');
-  const pagesDir = findDir(projectDir, 'pages');
-  const rootDir = path.dirname(appDir ?? pagesDir ?? path.join(projectDir, 'app'));
+  const rootDir = path.dirname(
+    appDir ?? findDir(projectDir, 'pages') ?? path.join(projectDir, 'app'),
+  );
   const configFile = findConfig(rootDir);
   if (configFile === undefined) {
     return undefined;

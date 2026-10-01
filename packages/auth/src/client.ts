@@ -27,7 +27,7 @@ import { createAuthClient as createBetterAuthClient } from 'better-auth/react';
  */
 
 export { UPWIND_AUTH_BASE_PATH } from '@stayingupwind/core/paas';
-export { DEV_PROVIDER_ID } from './fake-oauth.ts';
+export { DEV_PROVIDER_ID } from './dev-provider.ts';
 
 type ClientOptions = NonNullable<Parameters<typeof createBetterAuthClient>[0]>;
 
