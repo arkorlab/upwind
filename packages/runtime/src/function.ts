@@ -54,6 +54,40 @@ function cacheRuntimeFor(env: unknown): CacheRuntime | undefined {
   return shared.runtime;
 }
 
+/** How much of a failure's own words the body carries; a message, not a stack. */
+const FAILURE_MESSAGE_BYTES = 200;
+/** Below this, a code point is a control character and is not what a message meant to say. */
+const CONTROL_CHARACTERS = 0x20;
+
+/**
+ * What the Function answers with when it fails before Next.js does.
+ *
+ * The message, not only `Internal Server Error`. This catch is the one place that knows why such a
+ * request failed — Next.js's `onRequestError` is for errors Next.js itself sees, and this one comes
+ * from around it — and the `console.error` beside it reaches whoever can read a Function's console,
+ * which on a platform that runs Functions in a dispatch namespace is nobody.
+ *
+ * Found the hard way: a deployment answered 500 on every one of its two hundred routes, and the
+ * body said `Internal Server Error` and nothing else. Two days went on candidates that the first
+ * line of this message would have settled.
+ *
+ * The message alone, bounded, and no stack: a stack names the application's own files and this body
+ * travels to whatever asked. It is the kind of thing an error page says about itself.
+ */
+function failureBody(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  // Control characters out one code unit at a time: a header refuses them and a log line is easier
+  // to read without them. Not by pattern — a regular expression over this range is the kind the
+  // linter asks about every time — and not by spreading the string, which splits a surrogate pair.
+  let said = '';
+  for (let at = 0; at < Math.min(message.length, FAILURE_MESSAGE_BYTES); at += 1) {
+    const point = message.codePointAt(at) ?? 0;
+    said += point < CONTROL_CHARACTERS ? ' ' : message.charAt(at);
+  }
+  const trimmed = said.trim();
+  return trimmed === '' ? 'Internal Server Error' : `Internal Server Error: ${trimmed}`;
+}
+
 const entry = {
   async fetch(request: Request, env: unknown, ctx: ExecutionContext): Promise<Response> {
     installRequestContext();
@@ -84,7 +118,10 @@ const entry = {
       // The Function's own log: nothing else sees a request that failed before Next.js answered.
       // eslint-disable-next-line no-console
       console.error('next-runtime: request failed', error);
-      return new Response('Internal Server Error', { status: HTTP_INTERNAL_ERROR });
+      return new Response(failureBody(error), {
+        status: HTTP_INTERNAL_ERROR,
+        headers: { 'content-type': 'text/plain; charset=utf-8' },
+      });
     }
   },
 };
