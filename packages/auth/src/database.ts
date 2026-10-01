@@ -29,32 +29,39 @@ import db from '@stayingupwind/sdk/db';
  */
 
 /** As much of Cloudflare's object as Better Auth ever looks for. */
-type ProjectDatabase = Pick<typeof db, 'batch' | 'exec' | 'prepare'>;
+export type ProjectDatabase = Pick<typeof db, 'batch' | 'exec' | 'prepare'>;
 
 /**
- * Which databases upwind chose rather than the project.
+ * The one this run hands out, built here rather than per call.
  *
- * Kept so that one later decision can be made honestly: whether it is upwind's place to create the
- * tables (`schema.ts`). Creating them in a database upwind picked out of this run's own storage is
- * housekeeping; creating them in one a developer configured — which may be a database a team
- * shares — is not upwind's to do. A `WeakSet` rather than a flag on the object, so that nothing
- * about the answer is visible to Better Auth or reachable from the application.
+ * There is one database behind it — the one D1 the deployment published — so there is no sense in
+ * two objects standing for it, and one real consequence if there were: creating the tables is
+ * guarded per database (`schema.ts`), and two facades would be two guards over one schema, each
+ * able to run the migration while the other was running it.
+ *
+ * Building it at module evaluation costs nothing and touches nothing. The three methods close over
+ * the SDK's stand-in, which resolves when one of them is *called* — so this is three function
+ * objects, made before any request, that between them have not asked about storage.
  */
-const chosenByUpwind = new WeakSet<ProjectDatabase>();
+const CHOSEN: ProjectDatabase = {
+  prepare: (query) => db.prepare(query),
+  batch: async (statements) => db.batch(statements),
+  exec: async (query) => db.exec(query),
+};
 
 export function projectDatabase(): ProjectDatabase {
-  const database: ProjectDatabase = {
-    prepare: (query) => db.prepare(query),
-    batch: async (statements) => db.batch(statements),
-    exec: async (query) => db.exec(query),
-  };
-  chosenByUpwind.add(database);
-  return database;
+  return CHOSEN;
 }
 
-/** Did this database come from `projectDatabase`, rather than from the project's own config? */
-export function isProjectDatabase(value: unknown): boolean {
-  return (
-    typeof value === 'object' && value !== null && chosenByUpwind.has(value as ProjectDatabase)
-  );
+/**
+ * Did this database come from `projectDatabase`, rather than from the project's own config?
+ *
+ * Identity, which is the whole of the question: there is one object this hands out, and anything
+ * else — a dialect, a Kysely instance, another D1 — is the project's. What rests on the answer is
+ * whether it is upwind's place to create the tables (`schema.ts`): doing it in a database upwind
+ * picked out of this run's own storage is housekeeping, and doing it in one a developer configured,
+ * which may be a database a team shares, is not upwind's to do.
+ */
+export function isProjectDatabase(value: unknown): value is ProjectDatabase {
+  return value === CHOSEN;
 }

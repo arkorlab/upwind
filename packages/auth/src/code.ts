@@ -26,6 +26,27 @@ export interface Identity {
   readonly provider: string;
 }
 
+/** The identity, plus what bounds it. What is actually signed. */
+interface SignedCode extends Identity {
+  /** When it was issued, as epoch milliseconds. */
+  readonly at: number;
+}
+
+/**
+ * How long a code is worth anything.
+ *
+ * Five minutes, which is what Better Auth gives the state cookie this flow is paired with
+ * (`Max-Age=300`) — so the two halves of one authorization go stale together. A code is signed and
+ * carries its own identity, which is what lets it survive a dev-server restart; the other side of
+ * that is that nothing has a record of it being spent, so a callback URL left in a shell's history
+ * or a terminal's scrollback would otherwise be an identity anybody on this machine could present
+ * for as long as the project's key lasted.
+ */
+const LIFETIME_MINUTES = 5;
+const SECONDS_IN_MINUTE = 60;
+const MS_IN_SECOND = 1000;
+const LIFETIME_MS = LIFETIME_MINUTES * SECONDS_IN_MINUTE * MS_IN_SECOND;
+
 const ALGORITHM = { name: 'HMAC', hash: 'SHA-256' } as const;
 /** `payload.signature`, which is one separator that appears in neither half. */
 const SEPARATOR = '.';
@@ -65,9 +86,10 @@ async function signingKey(secret: string): Promise<CryptoKey> {
   ]);
 }
 
-/** A code carrying this identity, signed with this secret. */
+/** A code carrying this identity, signed with this secret and good for the next few minutes. */
 export async function signCode(secret: string, identity: Identity): Promise<string> {
-  const payload = toBase64Url(new TextEncoder().encode(JSON.stringify(identity)));
+  const signed: SignedCode = { ...identity, at: Date.now() };
+  const payload = toBase64Url(new TextEncoder().encode(JSON.stringify(signed)));
   const key = await signingKey(secret);
   const signature = await crypto.subtle.sign(ALGORITHM, key, new TextEncoder().encode(payload));
   return `${payload}${SEPARATOR}${toBase64Url(new Uint8Array(signature))}`;
@@ -75,11 +97,15 @@ export async function signCode(secret: string, identity: Identity): Promise<stri
 
 /**
  * The identity a code carries, or nothing for a code that is not one of ours — unsigned, signed with
- * another key, altered since, or shaped like something else entirely.
+ * another key, altered since, expired, or shaped like something else entirely.
  *
  * One answer for every way of being wrong, on purpose: the caller has the same thing to do in each
  * case, and a message distinguishing them would only describe this application's key material to
  * whoever was guessing at it.
+ *
+ * A code from the future is as wrong as one from too far in the past. The clock is this machine's
+ * and the code was signed on it, so the two cannot honestly disagree; a value that says they do is
+ * a value somebody chose.
  */
 export async function readCode(secret: string, code: string): Promise<Identity | undefined> {
   const separator = code.lastIndexOf(SEPARATOR);
@@ -106,9 +132,16 @@ export async function readCode(secret: string, code: string): Promise<Identity |
     return undefined;
   }
   try {
-    const read = JSON.parse(new TextDecoder().decode(bytes)) as Partial<Identity>;
-    const { email, name, provider } = read;
+    const read = JSON.parse(new TextDecoder().decode(bytes)) as Partial<SignedCode>;
+    const { email, name, provider, at } = read;
     if (typeof email !== 'string' || typeof name !== 'string' || typeof provider !== 'string') {
+      return undefined;
+    }
+    if (typeof at !== 'number' || !Number.isFinite(at)) {
+      return undefined;
+    }
+    const age = Date.now() - at;
+    if (age < 0 || age > LIFETIME_MS) {
       return undefined;
     }
     return { email, name, provider };

@@ -97,11 +97,19 @@ function decodedPathname(pathname: string): string | undefined {
  * matched raw. So a path that *means* the prefix would otherwise reach a catch-all route of the
  * project's, past the front door and past the reservation both.
  *
- * `/__upwind/auth` is the application's, in either spelling, and so is nothing this answers. That
- * subtree is served by a route the project builds (`UPWIND_AUTH_BASE_PATH`), which is the one place
- * where the prefix belonging to upwind and the request belonging to the application are the same
- * request — and the adapter's reservation leaves the same subtree out, so handing it on does not send
- * it back here.
+ * `/__upwind/auth` is the application's, and so is nothing this answers. That subtree is served by a
+ * route the project builds (`UPWIND_AUTH_BASE_PATH`), which is the one place where the prefix
+ * belonging to upwind and the request belonging to the application are the same request — and the
+ * adapter's reservation leaves the same subtree out, so handing it on does not send it back here.
+ *
+ * As written, and not as it decodes: `/__upwind/%61uth/sign-in` is answered here, with this prefix's
+ * 404. That looks like an oversight and is the opposite of one. The two sides of the seam have to
+ * agree about which spellings are the application's, and the adapter's side is a rewrite whose
+ * `source` is matched against the raw pathname — it can exclude `auth`, and it cannot exclude the
+ * unbounded set of ways to encode it (the same reason `dev-prefix.ts` gives for leaving an escaped
+ * `/__upwind` alone). A front door that handed the escaped spelling on would meet a reservation that
+ * still claimed it, and the request would go round between them. One spelling reaches the route;
+ * every other spelling of it is this prefix's, and gets this prefix's answer.
  *
  * `..` needs no handling of its own: `pathnameOf` parses through `URL`, which resolves dot segments
  * before any of this sees them, so `/app/../__upwind` arrives here as `/__upwind`. What is deliberately

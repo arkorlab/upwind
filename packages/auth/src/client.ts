@@ -1,4 +1,4 @@
-import { UPWIND_AUTH_BASE_PATH } from '@stayingupwind/core/paas';
+import { UPWIND_AUTH_BASE_PATH as BASE_PATH } from '@stayingupwind/core/paas';
 import { createAuthClient as createBetterAuthClient } from 'better-auth/react';
 
 /**
@@ -26,16 +26,31 @@ import { createAuthClient as createBetterAuthClient } from 'better-auth/react';
  * same constant.
  */
 
-export { UPWIND_AUTH_BASE_PATH } from '@stayingupwind/core/paas';
 export { DEV_PROVIDER_ID } from './dev-provider.ts';
+
+/**
+ * Re-declared here rather than re-exported from `@stayingupwind/core`.
+ *
+ * Core is published as the TypeScript it is and is bundled into this package rather than installed
+ * beside it, so it is a devDependency and no project that installs this has it. A declaration that
+ * said `export … from '@stayingupwind/core/paas'` — or that typed this as `typeof BASE_PATH`, which
+ * keeps the import for the type alone — would be a public type nobody could resolve.
+ *
+ * So the path is written out, and then checked: the annotation is the literal and the value is
+ * core's, so a release that moves the base path and not this line does not compile. The duplication
+ * is the assertion.
+ */
+export const UPWIND_AUTH_BASE_PATH: '/__upwind/auth' = BASE_PATH;
 
 type ClientOptions = NonNullable<Parameters<typeof createBetterAuthClient>[0]>;
 
 export function createAuthClient<O extends ClientOptions>(
   options?: O,
 ): ReturnType<typeof createBetterAuthClient<O>> {
-  // The base path first, so a project that names one of its own still wins — which is the same
-  // precedence `defineAuth` gives the server's `basePath`, and has to be, since the two are one
-  // decision made in two places.
-  return createBetterAuthClient<O>({ basePath: UPWIND_AUTH_BASE_PATH, ...options } as O);
+  // Applied after the spread and only to an absent value, so that a project naming its own base
+  // path wins and one that passed `basePath: undefined` — meaning "I have not chosen" exactly as
+  // `defineAuth` reads it on the server — is not left pointing at Better Auth's `/api/auth`.
+  const asked: ClientOptions = { ...options };
+  const basePath = asked.basePath ?? BASE_PATH;
+  return createBetterAuthClient<O>({ ...asked, basePath } as O);
 }

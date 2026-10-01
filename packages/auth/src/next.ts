@@ -56,7 +56,11 @@ function isMountable(value: unknown): value is MountableAuth {
     return false;
   }
   const candidate = value as { handler?: unknown; options?: unknown };
-  return typeof candidate.handler === 'function' && typeof candidate.options === 'object';
+  return (
+    typeof candidate.handler === 'function' &&
+    typeof candidate.options === 'object' &&
+    candidate.options !== null
+  );
 }
 
 /** A refusal with a reason a developer can act on, and headers that keep it out of every cache. */
@@ -103,7 +107,7 @@ async function answer(config: Record<string, unknown>, request: Request): Promis
   if (mounted.options.basePath !== UPWIND_AUTH_BASE_PATH) {
     return notFound();
   }
-  const missing = missingProductionSecret(mounted.options.secret);
+  const missing = missingProductionSecret(mounted.options);
   if (missing !== undefined) {
     return refuse(STATUS_MISCONFIGURED, missing);
   }

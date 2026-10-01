@@ -22,12 +22,12 @@ route to mount — press your sign-in button and you are signed in.
 
 Four decisions, each made only if you have not made it yourself.
 
-|                         | Default                                                     | Yours instead                        |
-| ----------------------- | ----------------------------------------------------------- | ------------------------------------ |
-| **Where it is served**  | `/__upwind/auth`, and the route is written for you          | set `basePath` and mount it yourself |
-| **What it signs with**  | a key kept in `.upwind/`, regenerated only if you delete it | `AUTH_SECRET`, or `secret`           |
-| **What it stores in**   | the one D1 database your deployment published               | set `database`                       |
-| **Who signs people in** | upwind, until real credentials exist                        | `clientId` / `clientSecret`          |
+|                         | Default                                                     | Yours instead                                                          |
+| ----------------------- | ----------------------------------------------------------- | ---------------------------------------------------------------------- |
+| **Where it is served**  | `/__upwind/auth`, and the route is written for you          | `basePath` on both halves, and mount it yourself ([below](#the-route)) |
+| **What it signs with**  | a key kept in `.upwind/`, regenerated only if you delete it | `AUTH_SECRET`, or `secret` / `secrets`                                 |
+| **What it stores in**   | the one D1 database your deployment published               | set `database`                                                         |
+| **Who signs people in** | upwind, until real credentials exist                        | `clientId` / `clientSecret`                                            |
 
 Everything else is Better Auth exactly as its documentation describes it. Options go through
 untouched, plugins keep their types, and `auth.api` is inferred from what _you_ declared.
@@ -88,24 +88,28 @@ It is four lines, and it is yours: commit it, edit it, or delete `auth.ts` and i
 have changed it, upwind never touches it again. (The `%5F` is Next.js's own escape — a folder whose
 name starts with `_` is private and would not be routable.)
 
-If you set a `basePath` of your own, that route answers `404` and mounting becomes yours:
+If you set a `basePath` of your own, that route answers `404` and mounting becomes yours — **and so
+does telling the client**, which otherwise keeps asking `/__upwind/auth`:
 
 ```ts
+// auth.ts
+export const auth = defineAuth({ basePath: '/api/auth' });
+
 // app/api/auth/[...all]/route.ts
 import { toNextJsHandler } from 'better-auth/next-js';
 
 import { auth } from '../../../../auth';
 
 export const { GET, POST } = toNextJsHandler(auth);
+
+// auth-client.ts — the same path, or the browser calls one place and the server answers another
+export const authClient = createAuthClient({ basePath: '/api/auth' });
 ```
 
 **If your app has a Next.js `basePath`**, say `/docs`, then everything it serves is under it and
-`/__upwind/auth` is not where this ends up. Set Better Auth's base path to the whole of it and mount
-it yourself:
-
-```ts
-export const auth = defineAuth({ basePath: '/docs/__upwind/auth' });
-```
+`/__upwind/auth` is not where this ends up. Set the whole of it on both halves and mount it
+yourself, as above: `defineAuth({ basePath: '/docs/__upwind/auth' })` and
+`createAuthClient({ basePath: '/docs/__upwind/auth' })`.
 
 ## The client
 

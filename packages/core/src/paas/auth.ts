@@ -45,6 +45,13 @@ export const UPWIND_AUTH_SECRET_ENV = 'UPWIND_AUTH_SECRET';
  *
  * `/__upwind/authorize` is neither — the same rule as `isUpwindInternalPath`, for the same reason:
  * a prefix match alone would take a path from whichever side does not own it.
+ *
+ * The path as written, and no normalising. An escaped spelling of this subtree — `/__upwind/%61uth`
+ * — is not this subtree, and the reason is on the other side of the seam: the adapter excludes this
+ * path from its reservation through a rewrite pattern, and a rewrite's `source` is matched raw. It
+ * can name `auth`; it cannot name every encoding of `auth`. A caller that normalised here while the
+ * reservation did not would send the request round between the two. `upwind dev` says the same thing
+ * from its end (`serve.ts`).
  */
 export function isUpwindAuthPath(pathname: string): boolean {
   return pathname === UPWIND_AUTH_BASE_PATH || pathname.startsWith(`${UPWIND_AUTH_BASE_PATH}/`);

@@ -1,5 +1,7 @@
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import path from 'node:path';
+
+import { UPWIND_AUTH_BASE_PATH } from '@stayingupwind/core/paas';
 
 /**
  * Where a project keeps its authentication config, and where a route of its own would go.
@@ -49,12 +51,22 @@ function findDir(projectDir: string, name: string): string | undefined {
   return existsSync(underSrc) ? underSrc : undefined;
 }
 
-/** The first of the names that is there, or nothing when the project has no auth config. */
+/**
+ * The first of the names that is there, or nothing when the project has no auth config.
+ *
+ * A file, not merely an entry: a directory called `auth.ts` is not a module, and taking it for one
+ * would have upwind write a route importing something that cannot be imported — a build failure
+ * about a file the developer never wrote.
+ */
 function findConfig(rootDir: string): string | undefined {
   for (const extension of EXTENSIONS) {
     const candidate = path.join(rootDir, `${CONFIG_NAME}.${extension}`);
-    if (existsSync(candidate)) {
-      return candidate;
+    try {
+      if (statSync(candidate).isFile()) {
+        return candidate;
+      }
+    } catch {
+      // Not there. The next name, or none.
     }
   }
   return undefined;
@@ -78,6 +90,18 @@ export function authLayout(projectDir: string): AuthLayout | undefined {
   );
   const configFile = findConfig(rootDir);
   if (configFile === undefined) {
+    // One case where "no auth config" is the wrong thing to conclude silently: a project half way
+    // through moving into `src`, whose `app` is still at the root and whose `auth.ts` has already
+    // gone. Next.js reads root files the same way and would ignore a `src/proxy.ts` just as
+    // quietly, which is exactly why it is worth saying out loud rather than leaving a developer to
+    // wonder why nothing is mounted.
+    const otherRoot = rootDir === projectDir ? path.join(projectDir, 'src') : projectDir;
+    const elsewhere = findConfig(otherRoot);
+    if (elsewhere !== undefined) {
+      console.warn(
+        `upwind: ${elsewhere} is not where Next.js looks for a root file — it reads them from ${rootDir}, beside \`app\`. Move it there and ${UPWIND_AUTH_BASE_PATH} is served for you.`,
+      );
+    }
     return undefined;
   }
   return {

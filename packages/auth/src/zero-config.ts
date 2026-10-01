@@ -44,7 +44,21 @@ interface DeclaredProvider {
   clientKey?: unknown;
 }
 
-function isConfigured(value: unknown): boolean {
+/**
+ * Is this a credential somebody filled in?
+ *
+ * A non-empty string, or a list holding one: Better Auth's `clientId` takes `string | string[]`,
+ * because some providers issue one id per platform. A reading that only knew about strings would
+ * call a project with `clientId: ['…ios', '…android']` unconfigured and replace a provider it had
+ * really set up.
+ *
+ * The empty string is nothing, and is the usual way a credential arrives half-written:
+ * `process.env.GITHUB_CLIENT_ID ?? ''` is what the key looks like before the variable exists.
+ */
+export function hasCredential(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.some((entry) => hasCredential(entry));
+  }
   return typeof value === 'string' && value !== '';
 }
 
@@ -66,7 +80,7 @@ function credentialsInOptions(options: BetterAuthOptions): boolean {
       return false;
     }
     const { clientId, clientSecret, clientKey } = provider as DeclaredProvider;
-    return isConfigured(clientId) || isConfigured(clientSecret) || isConfigured(clientKey);
+    return hasCredential(clientId) || hasCredential(clientSecret) || hasCredential(clientKey);
   });
 }
 

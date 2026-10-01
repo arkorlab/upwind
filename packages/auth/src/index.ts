@@ -5,7 +5,7 @@ import { nextCookies } from 'better-auth/next-js';
 import { projectDatabase } from './database.ts';
 import { fakeOAuth } from './fake-oauth.ts';
 import { resolveSecret } from './secret.ts';
-import { isZeroConfig } from './zero-config.ts';
+import { hasCredential, isZeroConfig } from './zero-config.ts';
 
 /**
  * Better Auth, with the four decisions a project has to make already made.
@@ -97,10 +97,16 @@ function socialProviders(options: BetterAuthOptions): Record<string, unknown> {
     if (typeof provider !== 'object' || provider === null) {
       return [name, provider] as const;
     }
-    return [
-      name,
-      { clientId: PLACEHOLDER_CREDENTIAL, clientSecret: PLACEHOLDER_CREDENTIAL, ...provider },
-    ] as const;
+    // Per key, rather than as a default the declaration spreads over. The ordinary way to write
+    // this is `clientId: process.env.GITHUB_CLIENT_ID ?? ''`, which declares the key and leaves it
+    // empty — so a placeholder underneath the spread would be overwritten by the empty string, and
+    // the warning the placeholder exists to prevent is the one that project would get.
+    const credentials = Object.fromEntries(
+      (['clientId', 'clientSecret'] as const)
+        .filter((key) => !hasCredential((provider as Record<string, unknown>)[key]))
+        .map((key) => [key, PLACEHOLDER_CREDENTIAL]),
+    );
+    return [name, { ...provider, ...credentials }] as const;
   });
   return Object.fromEntries(filled);
 }
@@ -116,7 +122,7 @@ function socialProviders(options: BetterAuthOptions): Record<string, unknown> {
  */
 function withUpwindDefaults<O extends BetterAuthOptions>(options: O): O {
   const zeroConfig = isZeroConfig(options);
-  const secret = resolveSecret(options.secret);
+  const secret = resolveSecret(options);
   // Every default is a conditional spread rather than a `??`, so that a key the project did not
   // write is the only key this writes. The difference matters for `database`, whose declared type
   // reaches into optional driver packages that may not be installed: reading the value would mean

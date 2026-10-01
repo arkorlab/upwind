@@ -78,12 +78,23 @@ function routeFile(appDir: string, typescript: boolean): string {
   return path.join(appDir, ...ROUTE_SEGMENTS, typescript ? 'route.ts' : 'route.js');
 }
 
-/** What is there now, or nothing for a file that is not — which is not an error, and not a warning. */
+/**
+ * What is there now, or nothing for a file that is not there.
+ *
+ * Only absence answers `undefined`. Everything else is raised, and `prepareAuth` turns it into a
+ * warning and a run with no route (`prepare.ts`) — because the whole rule here rests on this answer:
+ * "nothing is there" is what allows a write, and a file that merely could not be *read* is still a
+ * file somebody owns. Treating a permissions error as absence would mean overwriting it wherever the
+ * directory happened to be writable.
+ */
 async function contentsOf(file: string): Promise<string | undefined> {
   try {
     return await readFile(file, 'utf8');
-  } catch {
-    return undefined;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return undefined;
+    }
+    throw error;
   }
 }
 

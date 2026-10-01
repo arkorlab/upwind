@@ -9,6 +9,15 @@
  *
  * No framework, no assets, no network: one document, styled inline, that works before the
  * application has rendered anything of its own and works with the dev server's bundler still busy.
+ *
+ * Two things in the stylesheet are load-bearing rather than taste. `box-sizing: border-box` on the
+ * card and the field, because without it their padding and border are added to the hundred per cent
+ * and the page runs off the side of a narrow window — which is the width a second browser window
+ * tends to be. And `color-scheme: light dark`, so the form controls are drawn in the scheme the rest
+ * of the page is.
+ *
+ * Nothing interpolated below may contain a backtick: this is a template literal, and one would end
+ * it. Explanations go here, where they also do not ship to a browser.
  */
 
 /** What the page needs to know; everything else it decides. */
@@ -55,7 +64,10 @@ export function authorizePage(page: AuthorizePage): string {
     margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 1.5rem;
     font: 15px/1.5 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   }
-  main { width: 100%; max-width: 26rem; border: 1px solid var(--edge); padding: 1.75rem; }
+  main {
+    width: 100%; max-width: 26rem; box-sizing: border-box;
+    border: 1px solid var(--edge); padding: 1.75rem;
+  }
   h1 { font-size: 1.0625rem; font-weight: 600; margin: 0 0 0.25rem; }
   p { margin: 0 0 1.25rem; color: var(--dim); font-size: 0.875rem; }
   label { display: block; font-size: 0.8125rem; font-weight: 500; margin-bottom: 0.375rem; }

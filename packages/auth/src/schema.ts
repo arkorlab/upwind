@@ -1,6 +1,6 @@
 import type { AuthContext } from 'better-auth';
 
-import { isProjectDatabase } from './database.ts';
+import { isProjectDatabase, type ProjectDatabase } from './database.ts';
 import { isProduction } from './environment.ts';
 
 /**
@@ -33,8 +33,16 @@ export interface Migratable {
   readonly $context: Promise<AuthContext>;
 }
 
-/** What is being done about each instance's schema, so it is done once and waited for by all. */
-const running = new WeakMap<Migratable, Promise<void>>();
+/**
+ * What is being done about each database's schema, so it is done once and waited for by all.
+ *
+ * Keyed on the database rather than on the auth instance, because the schema belongs to the
+ * database: two instances over one D1 would otherwise each think the tables were theirs to create,
+ * and both would be issuing DDL at the same time on a project's first request. `projectDatabase`
+ * hands out one object per run, so in the ordinary case the two keyings are the same key — this is
+ * the one that stays right when they are not.
+ */
+const running = new WeakMap<ProjectDatabase, Promise<void>>();
 
 /**
  * The migration itself, which forgets itself if it fails.
@@ -43,24 +51,25 @@ const running = new WeakMap<Migratable, Promise<void>>();
  * storage was ready would otherwise have to be restarted to get past one bad moment. Forgotten
  * here, inside the work, so that nothing outside has to hold a promise only to watch it.
  */
-async function migrate(auth: Migratable): Promise<void> {
+async function migrate(auth: Migratable, database: ProjectDatabase): Promise<void> {
   try {
     const ctx = await auth.$context;
     await ctx.runMigrations();
   } catch (error) {
-    running.delete(auth);
+    running.delete(database);
     throw error;
   }
 }
 
 export async function ensureSchema(auth: Migratable): Promise<void> {
-  if (isProduction() || !isProjectDatabase(auth.options.database)) {
+  const { database } = auth.options;
+  if (isProduction() || !isProjectDatabase(database)) {
     return;
   }
-  let pending = running.get(auth);
+  let pending = running.get(database);
   if (pending === undefined) {
-    pending = migrate(auth);
-    running.set(auth, pending);
+    pending = migrate(auth, database);
+    running.set(database, pending);
   }
   await pending;
 }
