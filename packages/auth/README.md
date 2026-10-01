@@ -54,8 +54,9 @@ userinfo call are function calls, not requests. There is no provider to register
 URL to whitelist, and no network to be on.
 
 **It cannot appear in production.** It is not added to a production build at all, and refuses again
-if it somehow is. A production run with no `AUTH_SECRET` does not fall back to anything — it answers
-`500` and names the variable to set.
+if it somehow is. A production run with no signing key — nothing in the config, and neither
+`AUTH_SECRET` nor `BETTER_AUTH_SECRET` in the environment — does not fall back to anything. It
+answers `500` and names the variable to set.
 
 It goes away on its own, and it is deliberately easy to make it go away. Any one of these is enough:
 

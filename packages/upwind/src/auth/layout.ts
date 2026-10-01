@@ -52,6 +52,21 @@ function findDir(projectDir: string, name: string): string | undefined {
 }
 
 /**
+ * Every path an auth config could be at, whether or not one is.
+ *
+ * Both roots, rather than the one that applies: this is what a run *watches*
+ * (`dev/config-watch.ts`), and a watch has to be set before the thing it watches for exists. A
+ * project that gains its first `auth.ts` an hour into a dev session is the case this is for —
+ * without it the route is written by the next restart and by nothing else, and a project that
+ * *loses* its config keeps a generated route importing a module that is no longer there.
+ */
+export function authConfigPaths(projectDir: string): readonly string[] {
+  return [projectDir, path.join(projectDir, 'src')].flatMap((root) =>
+    EXTENSIONS.map((extension) => path.join(root, `${CONFIG_NAME}.${extension}`)),
+  );
+}
+
+/**
  * The first of the names that is there, or nothing when the project has no auth config.
  *
  * A file, not merely an entry: a directory called `auth.ts` is not a module, and taking it for one

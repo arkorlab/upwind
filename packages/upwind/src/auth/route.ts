@@ -98,6 +98,15 @@ async function contentsOf(file: string): Promise<string | undefined> {
   }
 }
 
+/** Take back a route this wrote, saying which one and why if it cannot. */
+async function remove(file: string, because: string): Promise<void> {
+  try {
+    await rm(file, { force: true });
+  } catch {
+    console.warn(`upwind: could not remove ${file}, and ${because}`);
+  }
+}
+
 /**
  * Remove a route this wrote, for a project whose auth config has gone.
  *
@@ -159,25 +168,23 @@ export async function ensureAuthRoute(
     );
     return;
   }
-  // A route of the other language first, because two of them in one directory is not a project
-  // Next.js will build: `route.ts` and `route.js` both claim the segment. A project that moved from
-  // JavaScript to TypeScript has the older one standing, and it is this that put it there — so this
-  // takes it back. One somebody else wrote is a different matter: they have mounted this path
-  // themselves, and the right thing is to add nothing beside it.
-  const stale = routeFile(layout.appDir, !layout.typescript);
-  const beside = await contentsOf(stale);
+  const file = routeFile(layout.appDir, layout.typescript);
+  // The other language first, because two routes in one directory is not a project Next.js will
+  // build: `route.ts` and `route.js` both claim the segment, whoever wrote them. Which of the two
+  // has to go depends on who owns it — and the one case with no good answer is both being
+  // somebody's, which is a directory this will not touch at all.
+  const other = routeFile(layout.appDir, !layout.typescript);
+  const beside = await contentsOf(other);
   if (beside === SOURCE) {
-    try {
-      await rm(stale, { force: true });
-    } catch {
-      // Still there, and about to be joined by its replacement. Next.js will say so more clearly
-      // than this could, and naming the one that could not be removed is all there is to add.
-      console.warn(`upwind: could not remove ${stale}, which the route beside it now replaces`);
-    }
+    await remove(other, `the route beside it now replaces it`);
   } else if (beside !== undefined) {
+    // Theirs. They have mounted this path themselves, so the right thing is for upwind's to go and
+    // for nothing to be added beside it — leaving ours would be two modules and a failed build.
+    if ((await contentsOf(file)) === SOURCE) {
+      await remove(file, `${other} is mounted by hand`);
+    }
     return;
   }
-  const file = routeFile(layout.appDir, layout.typescript);
   const existing = await contentsOf(file);
   if (existing !== undefined) {
     // Already ours and unchanged, or theirs now. Neither is written to, and neither is spoken about:
@@ -187,8 +194,15 @@ export async function ensureAuthRoute(
   }
   try {
     await mkdir(path.dirname(file), { recursive: true });
-    await writeFile(file, SOURCE);
+    // Exclusively: between the read above and this line, an editor or a second `upwind` run may
+    // have put a file here, and the whole rule is that a file this did not write is not this one's
+    // to replace. `wx` is what makes the check and the write one decision instead of two.
+    await writeFile(file, SOURCE, { flag: 'wx' });
   } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+      // Somebody got there in the interval, and whatever they put there is theirs.
+      return;
+    }
     const reason = error instanceof Error ? error.message : String(error);
     console.warn(
       `upwind: could not write ${file}, so ${UPWIND_AUTH_BASE_PATH} is served by whatever is there now (${reason})`,

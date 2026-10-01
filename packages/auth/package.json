@@ -50,5 +50,8 @@
   "peerDependencies": {
     "better-auth": ">=1.7.0 <2",
     "next": ">=16.2.0 <17"
+  },
+  "engines": {
+    "node": ">=24"
   }
 }

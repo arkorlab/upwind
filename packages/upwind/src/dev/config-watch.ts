@@ -2,16 +2,21 @@ import { type FSWatcher, lstatSync, readlinkSync, statSync, watch } from 'node:f
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { authConfigPaths } from '../auth/layout.ts';
 import { resolveFromProject } from './next-app.ts';
 import { restart } from './restart.ts';
 
 /**
- * Restart the run when `next.config` changes.
+ * Restart the run when a config this run read at startup changes.
  *
- * `next dev` does this in `startServer`, which a custom server does not go through — so without it a
- * developer would edit `next.config.ts` and go on being served by a server that read the old one.
- * Next.js restarts rather than reloads for the same reason this does: the config is what the bundler
- * was set up from.
+ * `next.config` first. `next dev` does this in `startServer`, which a custom server does not go
+ * through — so without it a developer would edit `next.config.ts` and go on being served by a server
+ * that read the old one. Next.js restarts rather than reloads for the same reason this does: the
+ * config is what the bundler was set up from.
+ *
+ * And the auth config, which upwind reads at startup and nowhere else: a project that gains one has
+ * a route nobody wrote, and a project that loses one has a route importing a module that is gone.
+ * Both are the same kind of staleness as the first, and the same restart settles them.
  *
  * Which names count is Next.js's own list, read from the project's copy of Next.js rather than
  * written out here, so a release that learns a new config extension is not one this quietly stops
@@ -177,21 +182,30 @@ function watchFor(target: string): { directory: string; name: string } {
 /**
  * The directories to watch, and the names to listen for in each.
  *
- * The project's own directory, for a config file being created, edited or removed there. And, for a
- * config file that is a symlink, the directory its target is in: editing that target changes nothing
- * about the link or about the entry beside the project, so nothing of it reaches a watch on the project
+ * The directory each file would be in, for one being created, edited or removed there. And, for a
+ * file that is a symlink, the directory its target is in: editing that target changes nothing about
+ * the link or about the entry beside the project, so nothing of it reaches a watch on the project
  * alone. A directory rather than the file, in both cases, because an editor that replaces a file writes
  * a new one over the name and the old inode hears nothing.
+ *
+ * Absolute paths rather than names under one directory, because what is watched is no longer only the
+ * project's own: an auth config sits beside `app`, which may be `src` (`auth/layout.ts`). A path whose
+ * directory is not there yet is watched where it would appear — `watchFor` walks up to the nearest
+ * directory that exists, so a project that has no `src` is watched for one being made.
  */
-function watchPoints(projectDir: string, names: readonly string[]): Map<string, Set<string>> {
-  const points = new Map<string, Set<string>>([[projectDir, new Set(names)]]);
-  for (const name of names) {
-    const reached = linkPoints(path.join(projectDir, name));
-    for (const point of reached) {
-      const { directory, name: listenFor } = watchFor(point);
-      const listening = points.get(directory) ?? new Set<string>();
-      listening.add(listenFor);
-      points.set(directory, listening);
+function watchPoints(files: readonly string[]): Map<string, Set<string>> {
+  const points = new Map<string, Set<string>>();
+  const listen = (directory: string, name: string): void => {
+    const listening = points.get(directory) ?? new Set<string>();
+    listening.add(name);
+    points.set(directory, listening);
+  };
+  for (const file of files) {
+    const { directory, name } = watchFor(file);
+    listen(directory, name);
+    for (const point of linkPoints(file)) {
+      const reached = watchFor(point);
+      listen(reached.directory, reached.name);
     }
   }
   return points;
@@ -320,13 +334,21 @@ export async function watchConfigFiles(projectDir: string): Promise<StopWatching
     );
     return watchNothing;
   }
+  // The auth config too, and for the same reason: what a run does about it, it does at startup
+  // (`auth/prepare.ts`). A config that appears is one whose route nothing would write, and a config
+  // that goes leaves a route importing it — both of which a restart settles, because startup is
+  // where the route is decided.
+  const files = [
+    ...names.map((name) => path.join(projectDir, name)),
+    ...authConfigPaths(projectDir),
+  ];
   // A watch this cannot have is not worth the server, whether it is refused at the start — a machine
   // out of inotify watches refuses with `ENOSPC` — or lost later: a dev server that stops restarting
   // on a config change is still a dev server, and taking one down over this would be the worse
   // failure.
   const settling: Settling = { timer: undefined };
   const watchers: FSWatcher[] = [];
-  for (const [directory, listening] of watchPoints(projectDir, names)) {
+  for (const [directory, listening] of watchPoints(files)) {
     const watcher = watchDirectory(directory, listening, settling);
     if (watcher !== undefined) {
       watchers.push(watcher);

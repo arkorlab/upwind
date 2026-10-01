@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { PERSIST_DIR } from '../resources/local.ts';
@@ -45,7 +45,21 @@ const SECRET_MODE = 0o600;
 async function stored(file: string): Promise<string | undefined> {
   try {
     const read = (await readFile(file, 'utf8')).trim();
-    return read === '' ? undefined : read;
+    if (read === '') {
+      return undefined;
+    }
+    // The mode is put back on every reuse, not only at creation. `writeFile`'s `mode` applies to a
+    // file it creates, so a key written before this rule existed — or by a run with a looser
+    // `umask`, or restored from a backup — keeps whatever it had, and a world-readable signing key
+    // on a shared machine is a session anybody logged in there can forge. Best effort: a filesystem
+    // with no such notion refuses, and a key that is readable is still the key this project has.
+    try {
+      await chmod(file, SECRET_MODE);
+    } catch {
+      // A filesystem with no such notion, or a file this user does not own. A key that is readable
+      // is still the key this project has, and refusing to use it would be the worse answer.
+    }
+    return read;
   } catch {
     return undefined;
   }
