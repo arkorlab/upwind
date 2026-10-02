@@ -2,12 +2,15 @@ import type { Prerender } from '@stayingupwind/core/bundle';
 import { NO_STORE_CACHE_CONTROL } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
+import { renderCaptured } from './cache/capture.ts';
 import { isDraftRequest } from './draft.ts';
 import { type Entry, entryFor } from './entries.ts';
 import { failureAnswer } from './error-pages.ts';
-import { isCrawler, isRscRequest, rscBase } from './incoming.ts';
+import { isCrawler, isRscRequest, rscBase, stripPlatformHeaders } from './incoming.ts';
+import { invokeNodeHandler } from './node-bridge.ts';
 import type { Resolved } from './outputs.ts';
 import {
+  baseRequestMeta,
   bypassesPrerender,
   concatShell,
   HTML_CONTENT_TYPE,
@@ -163,26 +166,79 @@ export async function documentFromBuild(
  * here. The caller falls through to the resume, which renders the segment — what it already does
  * for a document whose shell the build did not write.
  */
-function builtSegment(store: Store, request: Request, pathname: string): Response | undefined {
+function segmentAnswer(
+  store: Store,
+  prerender: Prerender,
+  bytes: Uint8Array<ArrayBuffer>,
+): Response {
+  const headers = prerenderHeaders(prerender, RSC_CONTENT_TYPE);
+  headers.set(PRERENDER_HEADER, '1');
+  headers.set(POSTPONED_HEADER, '2');
+  headers.set(CACHE_CONTROL, NO_STORE_CACHE_CONTROL);
+  headers.set('vary', store.manifest.routing.rsc.varyHeader);
+  return new Response(bytes, { status: HTTP_OK, headers });
+}
+
+/**
+ * One prefetch segment of a prerendered page: the bytes the build shipped, or the segment taken
+ * out of a render made for it.
+ *
+ * `undefined` only when the request asks for no segment, or the build wrote none under this key —
+ * then the caller carries on as it does for a document whose shell the build did not write.
+ *
+ * The render is the other half of `AdapterOptions.unshippedOutputs`. A build may record a segment
+ * and leave its bytes to the host, which is most of what a Function weighs; the record is what a
+ * host places from, so it stays, and a reference is then no longer a promise that the file is
+ * here. Falling through to the next branch was tried and is wrong: it answers the **document's**
+ * payload — measured at 143,658 bytes against the segment's 716, with no `x-nextjs-postponed` on
+ * it. So the segment is rendered, the way a regeneration produces one
+ * (`CapturedRender.segments`, keyed by the value of the header that asked), and the answer is a
+ * segment either way.
+ */
+async function builtSegment(
+  input: RoutedInput,
+  store: Store,
+  entry: Entry,
+  pathname: string,
+): Promise<Response | undefined> {
   const { rsc } = store.manifest.routing;
-  const segment = request.headers.get(rsc.prefetchSegmentHeader);
+  const segment = input.request.headers.get(rsc.prefetchSegmentHeader);
   if (segment === null) {
     return undefined;
   }
   const dir = rsc.prefetchSegmentDirSuffix;
   const key = `${rscBase(pathname)}${dir}${segment}${rsc.prefetchSegmentSuffix}`;
   const prerender = store.prerendersByPathname.get(key);
-  const bytes =
-    prerender?.body === undefined ? undefined : store.tryReadBlob(prerender.body.sha256);
-  if (prerender === undefined || bytes === undefined) {
+  if (prerender === undefined) {
     return undefined;
   }
-  const headers = prerenderHeaders(prerender, RSC_CONTENT_TYPE);
-  headers.set(PRERENDER_HEADER, '1');
-  headers.set(POSTPONED_HEADER, '2');
-  headers.set(CACHE_CONTROL, NO_STORE_CACHE_CONTROL);
-  headers.set('vary', rsc.varyHeader);
-  return new Response(bytes, { status: HTTP_OK, headers });
+  const shipped =
+    prerender.body === undefined ? undefined : store.tryReadBlob(prerender.body.sha256);
+  if (shipped !== undefined) {
+    return segmentAnswer(store, prerender, shipped);
+  }
+  if (entry.kind !== 'node') {
+    return undefined;
+  }
+  const headers = stripPlatformHeaders(input.request.headers);
+  const url = new URL(pathname, input.request.url);
+  const render = await renderCaptured('app-page', (meta) => {
+    return invokeNodeHandler({
+      handler: entry.handler,
+      request: new Request(url, { headers }),
+      url: pathname,
+      requestMeta: { ...baseRequestMeta(input), ...meta.requestMeta },
+      waitUntil: input.waitUntil,
+      run: input.run,
+      expectNoResponse: meta.expectNoResponse,
+    });
+  });
+  const rendered = render?.segments.get(segment);
+  // A copy on its own `ArrayBuffer`: a captured render's segment is a plain `Uint8Array`, which
+  // widens to a view on a buffer `Response` will not take.
+  return rendered === undefined
+    ? undefined
+    : segmentAnswer(store, prerender, new Uint8Array(rendered));
 }
 
 export async function rscFromBuild(
@@ -195,7 +251,7 @@ export async function rscFromBuild(
   if (bypassesPrerender(store, input.request, shell, resolved.url)) {
     return invokeEntry(input, entry, resolved.url);
   }
-  const built = builtSegment(store, input.request, shell?.pathname ?? resolved.pathname);
+  const built = await builtSegment(input, store, entry, shell?.pathname ?? resolved.pathname);
   if (built !== undefined) {
     return built;
   }
