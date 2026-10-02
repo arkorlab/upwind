@@ -82,6 +82,12 @@ function authorizeUrl(redirectURI: string, provider: string, state: string): URL
  * the user back is reading it again. `emailVerified` is true because the address was typed into a
  * page this served — there is nobody else to have verified it, and a stand-in that reported
  * unverified would trip `requireEmailVerification` on every sign-in.
+ *
+ * `getUserInfo` takes its argument as given. A `null` from `validateAuthorizationCode` does not
+ * reach it: Better Auth's callback tests the tokens and redirects with `INVALID_CODE` before the
+ * next call, and what it then passes is a fresh object spread from them. The parameter is typed
+ * non-nullable for that reason, and a guard against it here would be a guard against the contract
+ * rather than against anything that happens.
  */
 function standIn(id: string, name: string, secret: string): OAuthProvider<FakeProfile> {
   return {
