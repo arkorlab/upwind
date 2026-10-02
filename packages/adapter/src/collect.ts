@@ -431,6 +431,17 @@ export interface PrerenderCollection {
   readonly rsc: BuildContext['routing']['rsc'];
   /** Outputs recorded without their bytes; `'none'` by default (`AdapterOptions`). */
   readonly unshipped?: 'none' | 'prefetch-segments' | undefined;
+  /**
+   * The routes whose entrypoint is on Next.js's edge runtime, by the pathname a prerender names
+   * them with — `entrypoints` filtered on `runtime === 'edge'`.
+   *
+   * Their segments stay shipped whatever `unshipped` says. A host does not serve them —
+   * `prefetchSegments` passes over a document that is not resumable, and `generationIn` excludes
+   * an edge-runtime route — and the Function cannot render one either, since the capture a segment
+   * comes out of is an `app-page`'s. Unshipping them would leave a prefetch with neither, which is
+   * the one case this option must not create.
+   */
+  readonly edgeRuntimeRoutes?: ReadonlySet<string> | undefined;
 }
 
 export async function collectPrerenders(
@@ -438,6 +449,7 @@ export async function collectPrerenders(
 ): Promise<{ prerenders: Prerender[]; shipped: { sha256: string; bytes: Uint8Array }[] }> {
   const { outputs, blobs, basePath, rsc } = input;
   const unshipped = input.unshipped ?? 'none';
+  const onTheEdge = input.edgeRuntimeRoutes ?? new Set<string>();
   const shipped = new Map<string, Uint8Array>();
   const entryIds = entryIdsByOutputId(outputs);
   const collected = outputs.prerenders.map((output) => {
@@ -456,7 +468,8 @@ export async function collectPrerenders(
     // also go to the Function. A host reads them out of the bundle to place them, and
     // `prefetchSegments` passes over a segment with no `body` — so dropping the reference would
     // leave the host unable to serve one, which is the opposite of the point.
-    const embeds = unshipped === 'none' || prerender.segmentPath === undefined;
+    const embeds =
+      unshipped === 'none' || prerender.segmentPath === undefined || onTheEdge.has(prerender.route);
     const filePath = output.fallback?.filePath;
     if (filePath !== undefined && (await exists(filePath))) {
       const bytes = new Uint8Array(await readFile(filePath));

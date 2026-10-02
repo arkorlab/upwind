@@ -217,6 +217,11 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     basePath: ctx.config.basePath,
     rsc: ctx.routing.rsc,
     unshipped: options.unshippedOutputs ?? 'none',
+    // The host serves no segment of an edge-runtime page and the Function cannot render one, so
+    // those stay shipped whatever the option says (`PrerenderCollection.edgeRuntimeRoutes`).
+    edgeRuntimeRoutes: new Set(
+      entrypoints.flatMap((entry) => (entry.runtime === 'edge' ? [entry.pathname] : [])),
+    ),
   });
   const { files: staticFiles, sourceMaps: clientMaps } = await collectStaticFiles(
     ctx,

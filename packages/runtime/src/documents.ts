@@ -199,7 +199,7 @@ async function builtSegment(
   input: RoutedInput,
   store: Store,
   entry: Entry,
-  pathname: string,
+  at: { readonly key: string; readonly url: string },
 ): Promise<Response | undefined> {
   const { rsc } = store.manifest.routing;
   const segment = input.request.headers.get(rsc.prefetchSegmentHeader);
@@ -207,7 +207,7 @@ async function builtSegment(
     return undefined;
   }
   const dir = rsc.prefetchSegmentDirSuffix;
-  const key = `${rscBase(pathname)}${dir}${segment}${rsc.prefetchSegmentSuffix}`;
+  const key = `${rscBase(at.key)}${dir}${segment}${rsc.prefetchSegmentSuffix}`;
   const prerender = store.prerendersByPathname.get(key);
   if (prerender === undefined) {
     return undefined;
@@ -221,12 +221,15 @@ async function builtSegment(
     return undefined;
   }
   const headers = stripPlatformHeaders(input.request.headers);
-  const url = new URL(pathname, input.request.url);
+  // The URL the visitor asked for, not the key: a class shell's pathname is the template
+  // (`/en/[orgSlug]`), and rendering that would render the brackets and drop the query with them.
+  // The key stays the shell's, because that is what the build filed the segment under.
+  const url = new URL(at.url, input.request.url);
   const render = await renderCaptured('app-page', (meta) => {
     return invokeNodeHandler({
       handler: entry.handler,
       request: new Request(url, { headers }),
-      url: pathname,
+      url: at.url,
       requestMeta: { ...baseRequestMeta(input), ...meta.requestMeta },
       waitUntil: input.waitUntil,
       run: input.run,
@@ -251,7 +254,10 @@ export async function rscFromBuild(
   if (bypassesPrerender(store, input.request, shell, resolved.url)) {
     return invokeEntry(input, entry, resolved.url);
   }
-  const built = await builtSegment(input, store, entry, shell?.pathname ?? resolved.pathname);
+  const built = await builtSegment(input, store, entry, {
+    key: shell?.pathname ?? resolved.pathname,
+    url: resolved.url,
+  });
   if (built !== undefined) {
     return built;
   }
