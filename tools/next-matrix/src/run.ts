@@ -158,10 +158,40 @@ function edgeHolds(bundle: DeploymentBundle, dependencies: Dependencies): string
   return problems;
 }
 
+const FLOW_ROUTE = '/.well-known/workflow/v1/flow';
+
+/** The Workflow SDK, whose flow route is a Function of its own and the engine's only home. */
+function workflowHolds(bundle: DeploymentBundle, dependencies: Dependencies): string[] {
+  const problems: string[] = [];
+  if (bundle.workflow?.route !== FLOW_ROUTE) {
+    problems.push(`the bundle names no flow route at ${FLOW_ROUTE}`);
+  }
+  if (bundle.functions.workflow === undefined) {
+    problems.push('no workflow Function: the flow route should have made one');
+  }
+  if (bundle.entrypoints.some((one) => one.id.includes(FLOW_ROUTE))) {
+    problems.push("the flow route is among the application's entrypoints");
+  }
+  const quickjs = (name: string): boolean => {
+    return (
+      dependencies[name]?.patches.some((applied) => applied.patch === 'workflow-quickjs-wasm') ===
+      true
+    );
+  };
+  if (quickjs('app')) {
+    problems.push("the app Function carries the SDK's engine");
+  }
+  if (!quickjs('workflow')) {
+    problems.push("the workflow Function does not carry the SDK's engine compiled");
+  }
+  return problems;
+}
+
 /** What each fixture has to show, by name — every name `coverage.ts` has, and no other. */
 const HOLDS: Readonly<Record<FixtureName, Holds>> = {
   'next-minimal': minimalHolds,
   'next-edge': edgeHolds,
+  'next-workflow': workflowHolds,
 };
 
 /**
