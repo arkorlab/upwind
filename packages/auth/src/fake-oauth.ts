@@ -157,10 +157,15 @@ export function fakeOAuth(): BetterAuthPlugin {
     ...overrideProviders(standIns),
     endpoints: {
       upwindFakeAuthorize: createAuthEndpoint(AUTHORIZE_PATH, { method: 'GET' }, async (c) => {
-        if (isProduction()) {
+        if (isProduction() || c.request === undefined) {
+          // No request at all means this was reached through `auth.api`, where a Better Auth
+          // endpoint is an ordinary function call. Everything below is about a browser arriving
+          // somewhere — the origin to come back to, the query the form filled in — so there is
+          // nothing here to answer with, and `new URL('')` would make that a `TypeError` instead
+          // of an answer.
           return notFound();
         }
-        const url = new URL(c.request?.url ?? '');
+        const url = new URL(c.request.url);
         const provider = url.searchParams.get('provider') ?? '';
         const state = url.searchParams.get('state') ?? '';
         const standingIn = c.context.socialProviders.find((known) => known.id === provider);

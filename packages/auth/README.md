@@ -54,20 +54,21 @@ userinfo call are function calls, not requests. There is no provider to register
 URL to whitelist, and no network to be on.
 
 **It cannot appear in production.** It is not added to a production build at all, and refuses again
-if it somehow is. A production run with no signing key — nothing in the config, and neither
-`AUTH_SECRET` nor `BETTER_AUTH_SECRET` in the environment — does not fall back to anything. It
-answers `500` and names the variable to set.
+if it somehow is. A production run with no signing key does not fall back to anything: it answers
+`500` and names the variable to set.
 
 It goes away on its own, and it is deliberately easy to make it go away. Any one of these is enough:
 
-- `secret` or `secrets` in the config, or `AUTH_SECRET` / `BETTER_AUTH_SECRET` in the environment;
-- a `clientId`, `clientSecret` or `clientKey` on any provider you declared, or a provider declared
-  as a function;
-- **any** environment variable whose name ends in `CLIENT_ID` or `CLIENT_SECRET`.
+- a signing key — `secret` or `secrets` in the config, or `AUTH_SECRET`, `BETTER_AUTH_SECRET` or
+  `BETTER_AUTH_SECRETS` in the environment;
+- a `clientId`, `clientSecret` or `clientKey` on a provider you declared, or a provider declared as
+  a function;
+- `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` or `GITHUB_CLIENT_KEY` in the environment — that is,
+  `<PROVIDER>_` and one of the three, for a provider you declared.
 
-The last one is broader than it needs to be, on purpose: standing in for a provider in a project
-that has real credentials to hand would be the worse mistake. If you are surprised to find the
-stand-in missing, an unrelated `…_CLIENT_ID` in your shell is the thing to look for.
+A signing key counts because it is what sessions outlive a restart by: a project that has named one
+has decided how it wants authentication to work, and replacing its provider after that would be
+upwind deciding it knew better.
 
 Declared no providers at all? Then it answers to `upwind`:
 

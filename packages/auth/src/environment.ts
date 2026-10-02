@@ -19,11 +19,6 @@ export function envValue(name: string): string | undefined {
   return value === undefined || value === '' ? undefined : value;
 }
 
-/** Every variable name the environment holds, for the questions that are about a shape of name. */
-export function envNames(): readonly string[] {
-  return Object.keys(process.env);
-}
-
 /**
  * Is this a production run?
  *
