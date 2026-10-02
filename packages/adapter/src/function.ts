@@ -1,8 +1,6 @@
-import { once } from 'node:events';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createGzip } from 'node:zlib';
 
 import type { FunctionModule, FunctionSpec, SourceMapRef } from '@stayingupwind/core/bundle';
 import { build, type Plugin } from 'esbuild';
@@ -24,10 +22,10 @@ import {
   type BundleTrace,
   type FunctionDependencies,
   functionDependencies,
-  type FunctionSize,
 } from './dependencies.ts';
 import { dynamicLoadsInChunk } from './dynamic-loads.ts';
 import { bundleEdge, EDGE_MODULE, type EdgeEntry } from './edge.ts';
+import { functionSize } from './function-size.ts';
 import {
   bundleLinkedExternals,
   type LinkedExternals,
@@ -70,8 +68,14 @@ export interface EntryModule {
   readonly filePath: string;
 }
 
+/**
+ * The Functions a deployment may have: `app` always, `middleware` when the project has a proxy, and
+ * `workflow` when it uses the Workflow SDK (`workflow.ts`).
+ */
+export type FunctionKind = 'app' | 'middleware' | 'workflow';
+
 export interface BuildFunctionInput {
-  readonly kind: 'app' | 'middleware';
+  readonly kind: FunctionKind;
   readonly projectDir: string;
   readonly outDir: string;
   readonly patch: PatchContext;
@@ -92,6 +96,8 @@ export interface BuildFunctionInput {
   readonly blobStore: BlobStore;
   /** Carry a map from this Function's bundle back to the sources it was built from. */
   readonly sourceMaps?: boolean | undefined;
+  /** Whether the build carries the Workflow SDK, in any of its Functions (`workflow.ts`). */
+  readonly workflowSdk?: boolean | undefined;
 }
 
 /** Module name a blob is shipped under; the runtime reads it back at `/bundle/blobs/<sha256>`. */
@@ -197,6 +203,11 @@ export interface AppBundleContext {
   readonly wasm: WasmCollector;
   /** Compose the maps the build already wrote through into this bundle's own. */
   readonly sourceMaps?: boolean | undefined;
+  /**
+   * Whether this is the workflow Function: the one Function the Workflow SDK's engine is in, and the
+   * one whose `node:vm` import is stubbed (`workflow.ts`). Anywhere else the audit refuses it.
+   */
+  readonly workflowFunction?: boolean | undefined;
 }
 
 /** What `bundleApp` collects as Rolldown runs, for the dependency record. */
@@ -235,7 +246,7 @@ export function appBundlePlugins(
     ...(context.sourceMaps === true ? [sourceMapsPlugin()] : []),
     stubPlugin((specifier) => {
       sinks.stubs.push(specifier);
-    }),
+    }, context.workflowFunction === true),
     wasmModulePlugin(context.wasm, (file, global) => {
       sinks.wasm.push(`${file} -> ${global}`);
     }),
@@ -307,6 +318,7 @@ async function bundleApp(
         patch: input.patch,
         wasm: input.wasm,
         ...(input.sourceMaps === true && { sourceMaps: true }),
+        ...(input.kind === 'workflow' && { workflowFunction: true }),
       },
       sinks,
     ),
@@ -364,6 +376,8 @@ async function bundleRuntime(input: BuildFunctionInput, workDir: string): Promis
     define: {
       'process.env.NODE_ENV': '"production"',
       __ARKOR_FUNCTION_KIND__: jsLiteral(input.kind),
+      // A build without the Workflow SDK leaves the runtime's part for it out entirely.
+      __ARKOR_WORKFLOW_SDK__: jsLiteral(input.workflowSdk === true),
       // CommonJS conveniences that `@next/routing`'s build references at module scope.
       __dirname: '"/bundle"',
       __filename: `"/bundle/${RUNTIME_MODULE}"`,
@@ -390,47 +404,6 @@ export interface BuiltFunction {
  */
 const WASM_LOADER_PATCHES: ReadonlySet<string> = new Set(['runtime-wasm-loader', 'wasm-loader']);
 const OG_FONT_PATCH = 'vercel-og-font';
-
-/**
- * What the Function weighs, as Cloudflare weighs it: the modules it will be uploaded with, through
- * one gzip stream. One stream rather than one per module, because that is how the upload is
- * compressed, and a `.wasm` next to a bundle of the same library compresses with it.
- */
-async function functionSize(
-  outDir: string,
-  modules: readonly FunctionModule[],
-): Promise<FunctionSize> {
-  // What each module weighs is already on its blob; only the compressed size needs the bytes.
-  const bytes = modules.reduce((total, module) => total + module.blob.byteLength, 0);
-  const blobs = path.join(outDir, 'blobs');
-  const gzip = createGzip();
-  let gzipBytes = 0;
-  let failure: unknown;
-  gzip.on('data', (chunk: Buffer) => {
-    gzipBytes += chunk.byteLength;
-  });
-  // A stream with no `error` listener takes the process down with it, and this one spends most of
-  // its life waiting on a read; `once` only listens while it is awaited.
-  gzip.on('error', (error: unknown) => {
-    failure ??= error;
-  });
-  try {
-    for (const module of modules) {
-      const content = await readFile(path.join(blobs, module.blob.sha256));
-      if (!gzip.write(content)) {
-        await once(gzip, 'drain');
-      }
-    }
-    gzip.end();
-    await once(gzip, 'end');
-  } finally {
-    gzip.destroy();
-  }
-  if (failure !== undefined) {
-    throw new Error(`@stayingupwind/adapter: could not measure the Function`, { cause: failure });
-  }
-  return { bytes, gzipBytes };
-}
 
 /**
  * The bytes of `next/og`'s fallback font, read from the very file the patch was applied to, or

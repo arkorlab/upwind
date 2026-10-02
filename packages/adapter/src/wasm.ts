@@ -4,6 +4,8 @@ import path from 'node:path';
 import { sha256Hex } from '@stayingupwind/core/artifact';
 import { compareCodeUnits } from '@stayingupwind/core/util';
 
+import type { EdgeEntry } from './edge.ts';
+
 /**
  * The WebAssembly a build produced, and how it reaches the code that asks for it.
  *
@@ -92,6 +94,19 @@ export class WasmCollector {
     return sha256;
   }
 
+  /**
+   * Remember WebAssembly a chunk carries in its own source rather than as a file of its own — the
+   * Workflow SDK's QuickJS engine, which ships as base64 strings (`workflow.ts`). The digest names
+   * it as it would a file's, so the same module offered both ways is one module.
+   */
+  async offerBytes(bytes: Uint8Array): Promise<string> {
+    const sha256 = await sha256Hex(bytes);
+    if (!this.#bySha.has(sha256)) {
+      this.#bySha.set(sha256, { bytes, globals: [] });
+    }
+    return sha256;
+  }
+
   /** Name a module the Function publishes: this is what makes it ship. */
   publish(sha256: string, global: string): void {
     const entry = this.#bySha.get(sha256);
@@ -169,4 +184,57 @@ export function wasmChunks(
     }
   }
   return [...byPath.values()];
+}
+
+/**
+ * Is `file` a file `next build` itself wrote, rather than one a trace found in a package?
+ *
+ * `..` has to be a segment of its own to mean "above": a sibling directory named `..next` is a
+ * path that starts with `..` and is not outside anything.
+ */
+function inside(dir: string, file: string): boolean {
+  const relative = path.relative(dir, file);
+  return (
+    relative !== '' &&
+    relative !== '..' &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
+}
+
+/**
+ * The WebAssembly one Function carries, and what Turbopack's Node.js loader asks for it under.
+ *
+ * Two sources, because Next.js describes the two runtimes differently. An entrypoint on the edge
+ * runtime has `wasmAssets`, keyed by the global its chunks read the module from. An entrypoint on
+ * the Node.js runtime has nothing: its WebAssembly is a `.wasm` among the traced `assets`, and
+ * the loader Turbopack bundled reads it off disk by a path relative to `distDir` — which is what
+ * the table here names, for the `wasm-loader` patch to switch on. A `.wasm` a trace found outside
+ * `distDir` is not one `next build` emitted for that loader (`@vercel/og`'s two are the case in
+ * point); it is reached by a `?module` import the app bundler resolves, and needs no table entry,
+ * only a module and a name.
+ */
+export async function collectWasm(
+  distDir: string,
+  nodeFiles: readonly string[],
+  edgeEntries: readonly EdgeEntry[],
+): Promise<{ collector: WasmCollector; chunks: WasmChunk[] }> {
+  const collector = new WasmCollector();
+  // By file, because a `.wasm` a route and the middleware both reach arrives twice: two lists,
+  // each without repeats of its own. A table with the same path in it twice would say the Function
+  // carries more than it does, and would put a dead `case` in the code the patch generates.
+  const emitted = new Map<string, { filePath: string; sha256: string }>();
+  for (const filePath of nodeFiles) {
+    const sha256 = await collector.offer(filePath);
+    if (inside(distDir, filePath)) {
+      collector.publish(sha256, arkorWasmGlobal(sha256));
+      emitted.set(path.resolve(filePath), { filePath, sha256 });
+    }
+  }
+  for (const entry of edgeEntries) {
+    for (const asset of entry.wasm) {
+      collector.publish(await collector.offer(asset.filePath), asset.global);
+    }
+  }
+  return { collector, chunks: wasmChunks(distDir, [...emitted.values()]) };
 }

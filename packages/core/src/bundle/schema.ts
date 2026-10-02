@@ -286,6 +286,19 @@ export const functionSchema = z.object({
 });
 export type FunctionSpec = z.infer<typeof functionSchema>;
 
+/**
+ * What a host needs to know of the Workflow SDK a deployment runs: where the workflow Function
+ * takes a queue's messages (`route`, the SDK's flow route under the project's `basePath`), and the
+ * `workflow` release the project installed (`sdk`), so that a host whose queue and storage speak
+ * one version of the SDK's protocol can refuse a deployment built against another before it
+ * takes traffic, rather than fail every run it starts.
+ */
+export const workflowSchema = z.object({
+  route: z.string().startsWith('/'),
+  sdk: z.string().min(1),
+});
+export type WorkflowSpec = z.infer<typeof workflowSchema>;
+
 const i18nDomainSchema = z.object({
   defaultLocale: z.string(),
   domain: z.string(),
@@ -376,6 +389,14 @@ const bundleSchema = z.object({
    */
   crons: cronsSchema.optional(),
   middleware: z.object({ matchers: z.array(routeSchema) }).optional(),
+  /**
+   * The Workflow SDK, when the project uses it (`withWorkflow` from `workflow/next`): the route its
+   * queue delivers to, and the SDK it was built with. That route is answered by the workflow
+   * Function and by nothing else — the app Function does not carry it — so a host delivers its
+   * queue's messages there, and a request from outside never reaches it. Absent for a build that
+   * does not use the SDK, which is every build made before this field existed.
+   */
+  workflow: workflowSchema.optional(),
   prerenders: z.array(prerenderSchema),
   staticFiles: z.array(staticFileSchema),
   /**
@@ -386,6 +407,8 @@ const bundleSchema = z.object({
   functions: z.object({
     app: functionSchema,
     middleware: functionSchema.optional(),
+    /** Present exactly when `workflow` is: the Function that runs the project's workflows. */
+    workflow: functionSchema.optional(),
   }),
 });
 export type DeploymentBundle = z.infer<typeof bundleSchema>;
@@ -467,6 +490,16 @@ export const deploymentBundleSchema = bundleSchema
     for (const message of limitsPassed(bundle)) {
       ctx.addIssue({ code: 'custom', message });
     }
+  })
+  .superRefine((bundle, ctx) => {
+    // One without the other is a bundle a host cannot act on: a route with no Function to deliver
+    // to, or a Function nothing says how to reach.
+    if ((bundle.workflow === undefined) !== (bundle.functions.workflow === undefined)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'a bundle carries `workflow` and `functions.workflow` together or neither',
+      });
+    }
   });
 
 /** The complete reference walk shared by validation and collection. */
@@ -488,7 +521,7 @@ function forEachBlob(bundle: DeploymentBundle, visit: (ref: BlobRef) => void): v
       add(map.blob);
     }
   }
-  const functions = [bundle.functions.app, bundle.functions.middleware];
+  const functions = [bundle.functions.app, bundle.functions.middleware, bundle.functions.workflow];
   for (const spec of functions) {
     if (spec === undefined) {
       continue;

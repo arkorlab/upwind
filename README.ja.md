@@ -344,8 +344,11 @@ upwind が待ち受け、Next.js はその後ろの同じプロセスで、Next.
 | ✅  | `basePath`、`trailingSlash`、`i18n`                                         |                                                                        |
 | ✅  | 静的エクスポート（`output: 'export'`）                                      | 同じバンドルを、サーバー側を空にして                                   |
 | ✅  | cron ジョブ                                                                 | [`next.config` の隣で宣言](#-定期実行)                                 |
+| ✅  | Workflow SDK（`"use workflow"`、`workflow` 5.x）                            | flow ルートは独立した Function に。World はホストが用意（下を参照）    |
 
 **キャッシュはホストのもので、ビルド時に決まります。** ランタイムはキャッシュの読み書きをすべて、ホストが独自のアダプター（`createAdapter({ cacheHostModule })`）で指定したモジュールに渡します。上の手順で使う既定のアダプターは何も指定しないので、そのバンドルはビルドが作ったものを配信し、再検証は行いません。
+
+**ワークフローの World も同じです。** Workflow SDK を使うビルドは、ワークフローとステップを専用の Function の中で SDK の QuickJS エンジンを使って実行し、Run はホストが指定した World（`createAdapter({ workflowWorldModule })`）に保存します。SDK のキューをその Function に届けるのはホストで、訪問者のリクエストがそこに届くことはありません。ホストが用意するものは[アダプターの README（英語）](packages/adapter/README.md#the-workflow-sdk)にあります。
 
 <details>
 <summary><b>対応していないもの</b></summary>

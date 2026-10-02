@@ -263,10 +263,15 @@ function moduleRecord(module: FunctionModule): { name: string; type: string; byt
  */
 const ALLOWED_BUILTINS: ReadonlySet<string> = new Set([
   'assert',
+  // workerd provides these four natively (`src/node/` in workerd); the Workflow SDK's runtime
+  // imports each of them, and the match is exact, so each subpath needs a line of its own.
+  'assert/strict',
   'async_hooks',
   'buffer',
   // Imported by Sentry's Node SDK and never called from a Function: a stub in workerd.
   'child_process',
+  'console',
+  'constants',
   'crypto',
   // Imported by OpenTelemetry's Node.js SDK, for an exporter a Function does not send through: a
   // stub in workerd. Like `dns` and `http2`, it is found by `require` under the Function's
@@ -305,6 +310,7 @@ const ALLOWED_BUILTINS: ReadonlySet<string> = new Set([
   'tty',
   'url',
   'util',
+  'util/types',
   'worker_threads',
   'zlib',
 ]);
@@ -347,6 +353,12 @@ function isAllowedExternal(specifier: string): boolean {
  * something.
  */
 const ALLOWED_DYNAMIC_LOADS: readonly RegExp[] = [
+  // The Workflow SDK's loader for a World named by `WORKFLOW_TARGET_WORLD` (`createWorld` in
+  // `@workflow/core`'s `runtime/world.ts`), which turns a path into a `file://` URL to import. It is
+  // reached only when no World was registered, and a deployment that carries the SDK has its host's
+  // registered before any route runs (`workflowWorldModule`); in a Function it could only fail, as
+  // there is no file to import. Turbopack puts the SDK in whichever chunk it likes.
+  /^\.next\/server\/chunks\/[^:]+:\d+: import\(function\([\w$]+\) \{\s*if \([\w$]+\.startsWith\("file:\/\/"\)\) return [\w$]+;/u,
   /^\.next\/server\/chunks\/(?:ssr\/)?\[turbopack\]_runtime\.js:\d+: (?:import\(|require\.resolve\(|contextPrototype\.t = typeof require )/u,
   /^\.next\/server\/edge\/chunks\/(?:ssr\/)?[^/]+_next_dist_esm_build_templates_edge-wrapper_[^/]+\.js:\d+: (?:import\(|require\.resolve\(|\w+\.t = "function" == typeof require \? require :|contextPrototype\.t = typeof require === "function" \? require :)/u,
   /^next\/dist\/compiled\/next-server\/[\w-]+\.runtime\.prod\.js:\d+: import\(/u,

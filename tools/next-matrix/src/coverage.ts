@@ -16,6 +16,8 @@
 const FETCH_CACHE_WAIT_UNTIL = 'fetch-cache-wait-until';
 const GRAPH_MANIFESTS = 'graph-manifests';
 const TURBOPACK_RUNTIME = 'turbopack-runtime';
+/** The Workflow SDK's QuickJS engine, its WebAssembly shipped compiled (`patches/workflow-quickjs.ts`). */
+const WORKFLOW_QUICKJS = 'workflow-quickjs-wasm';
 /**
  * The Turbopack WebAssembly loader, in the two shapes the range holds it: a module of its own from
  * 16.3, and the Turbopack runtime itself in 16.2 (`patches/wasm-loader.ts`).
@@ -64,7 +66,8 @@ export function namesIn(expected: readonly Expected[]): string[] {
 }
 
 export const FIXTURE_COVERAGE = {
-  // Every patch there is: this fixture exists to be the one build that reaches all of them.
+  // Every patch an application reaches without the Workflow SDK: this fixture exists to be the one
+  // build that reaches all of them. The SDK's own patch is `next-workflow`'s, below.
   'next-minimal': {
     expected: [
       ...PACKAGE_PATCHES,
@@ -90,6 +93,12 @@ export const FIXTURE_COVERAGE = {
   'next-edge': {
     expected: [...PACKAGE_PATCHES, TURBOPACK_RUNTIME],
     chunks: [FETCH_CACHE_WAIT_UNTIL, GRAPH_MANIFESTS, TURBOPACK_RUNTIME],
+  },
+  // The Workflow SDK, whose engine embeds its WebAssembly in a chunk of the flow route's: the one
+  // patch here that `next-minimal` cannot reach, and it fires in the workflow Function alone.
+  'next-workflow': {
+    expected: [...PACKAGE_PATCHES, TURBOPACK_RUNTIME, WORKFLOW_QUICKJS],
+    chunks: [FETCH_CACHE_WAIT_UNTIL, GRAPH_MANIFESTS, TURBOPACK_RUNTIME, WORKFLOW_QUICKJS],
   },
 } as const satisfies Readonly<Record<string, FixtureCoverage>>;
 

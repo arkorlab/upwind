@@ -344,8 +344,11 @@ Apart from `--port` and `--hostname`, `next dev`'s flags — `--experimental-htt
 | ✅  | `basePath`, `trailingSlash`, `i18n`                               |                                                                   |
 | ✅  | Static export (`output: 'export'`)                                | the same bundle, with the server parts empty                      |
 | ✅  | Cron jobs                                                         | [declared beside `next.config`](#-scheduled-work)                 |
+| ✅  | The Workflow SDK (`"use workflow"`, `workflow` 5.x)               | its flow route a Function of its own; the World a host's (below)  |
 
 **The cache is a host's, and it is chosen at build time.** The runtime hands every cache read and write to a module the host names in an adapter of its own, `createAdapter({ cacheHostModule })`. The default adapter — the one the steps above use — names none, so its bundle serves what the build produced and revalidates nothing.
+
+**So is a workflow's World.** A build that uses the Workflow SDK runs its workflows and steps in a Function of their own, on the SDK's QuickJS engine, and keeps its runs in a World the host names, `createAdapter({ workflowWorldModule })`: the host delivers the SDK's queue to that Function, and nothing a visitor sends reaches it. The adapter's readme says [what the host provides](packages/adapter/README.md#the-workflow-sdk).
 
 <details>
 <summary><b>Not supported</b></summary>

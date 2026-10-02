@@ -5,7 +5,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-import { type DeploymentBundle, deploymentBundleSchema } from '@stayingupwind/core/bundle';
+import {
+  type DeploymentBundle,
+  deploymentBundleSchema,
+  type FunctionSpec,
+} from '@stayingupwind/core/bundle';
 
 import {
   type Expected,
@@ -93,6 +97,7 @@ type Dependencies = Readonly<
     string,
     {
       readonly patches: readonly AppliedPatch[];
+      readonly stubs?: readonly string[];
       readonly edge?: { readonly patches: readonly AppliedPatch[] };
     }
   >
@@ -107,8 +112,15 @@ interface AppliedPatch {
 /** What a build wrote, as the record names it; anything else is a file of Next.js's own package. */
 const BUILD_DIR = '.next/';
 
-/** What else has to be true of a fixture's bundle, beyond its schema. */
-type Holds = (bundle: DeploymentBundle, dependencies: Dependencies) => string[];
+/**
+ * What else has to be true of a fixture's bundle, beyond its schema. `out` is the directory the
+ * adapter wrote, for a check that reads what a Function carries.
+ */
+type Holds = (
+  bundle: DeploymentBundle,
+  dependencies: Dependencies,
+  out: string,
+) => string[] | Promise<string[]>;
 
 interface Fixture extends FixtureCoverage {
   readonly name: string;
@@ -158,10 +170,100 @@ function edgeHolds(bundle: DeploymentBundle, dependencies: Dependencies): string
   return problems;
 }
 
+const FLOW_ROUTE = '/.well-known/workflow/v1/flow';
+/** The module a Function's runtime manifest is shipped as (`function.ts` in the adapter). */
+const RUNTIME_MANIFEST_MODULE = 'runtime.json';
+/** The routing tables a visitor's request is matched against, which a delivery goes through none of. */
+const VISITOR_ROUTING = [
+  'beforeMiddleware',
+  'middlewareMatchers',
+  'beforeFiles',
+  'afterFiles',
+  'dynamicRoutes',
+  'onMatch',
+  'fallback',
+] as const;
+const NODE_VM = /^(?:node:)?vm$/u;
+
+interface FunctionManifest {
+  readonly entrypoints?: readonly { readonly pathname?: string }[];
+  readonly routing?: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * What the workflow Function's own manifest says: that it answers the flow route and nothing else,
+ * through none of the rules the application wrote for a visitor's requests. The bundle's
+ * `entrypoints` are the application's, so this is read from the Function itself.
+ */
+async function workflowManifestHolds(out: string, spec: FunctionSpec): Promise<string[]> {
+  const module = spec.modules.find((one) => one.name === RUNTIME_MANIFEST_MODULE);
+  if (module === undefined) {
+    return ['the workflow Function carries no runtime manifest'];
+  }
+  const manifest = (await readJson(
+    path.join(out, 'blobs', module.blob.sha256),
+  )) as FunctionManifest;
+  const problems: string[] = [];
+  const routes = (manifest.entrypoints ?? []).map((one) => one.pathname);
+  if (routes.length !== 1 || routes[0] !== FLOW_ROUTE) {
+    problems.push(
+      `the workflow Function answers ${JSON.stringify(routes)}, not the flow route alone`,
+    );
+  }
+  for (const table of VISITOR_ROUTING) {
+    const rules = manifest.routing?.[table];
+    if (!Array.isArray(rules) || rules.length > 0) {
+      problems.push(
+        `the workflow Function's \`${table}\` is not an empty list: a delivery would be routed by it`,
+      );
+    }
+  }
+  return problems;
+}
+
+/** The Workflow SDK, whose flow route is a Function of its own and the engine's only home. */
+async function workflowHolds(
+  bundle: DeploymentBundle,
+  dependencies: Dependencies,
+  out: string,
+): Promise<string[]> {
+  const problems: string[] = [];
+  if (bundle.workflow?.route !== FLOW_ROUTE) {
+    problems.push(`the bundle names no flow route at ${FLOW_ROUTE}`);
+  }
+  if (bundle.entrypoints.some((one) => one.id.includes(FLOW_ROUTE))) {
+    problems.push("the flow route is among the application's entrypoints");
+  }
+  const quickjs = (name: string): boolean => {
+    return (
+      dependencies[name]?.patches.some((applied) => applied.patch === 'workflow-quickjs-wasm') ===
+      true
+    );
+  };
+  if (quickjs('app')) {
+    problems.push("the app Function carries the SDK's engine");
+  }
+  if (!quickjs('workflow')) {
+    problems.push("the workflow Function does not carry the SDK's engine compiled");
+  }
+  // The audit still refuses `node:vm` in every Function but the workflow one.
+  for (const name of ['app', 'middleware']) {
+    if (dependencies[name]?.stubs?.some((one) => NODE_VM.test(one)) === true) {
+      problems.push(`the ${name} Function stubbed \`node:vm\`, which only the workflow one may`);
+    }
+  }
+  if (bundle.functions.workflow === undefined) {
+    problems.push('no workflow Function: the flow route should have made one');
+    return problems;
+  }
+  return [...problems, ...(await workflowManifestHolds(out, bundle.functions.workflow))];
+}
+
 /** What each fixture has to show, by name — every name `coverage.ts` has, and no other. */
 const HOLDS: Readonly<Record<FixtureName, Holds>> = {
   'next-minimal': minimalHolds,
   'next-edge': edgeHolds,
+  'next-workflow': workflowHolds,
 };
 
 /**
@@ -332,7 +434,7 @@ async function checkOutput(fixture: Fixture, app: string): Promise<string[]> {
       firedOnce(patch, inChunks, 'rewrote nothing this build wrote'),
     ),
   ];
-  return [...problems, ...fixture.holds(parsed.data, dependencies)];
+  return [...problems, ...(await fixture.holds(parsed.data, dependencies, out))];
 }
 
 /**
