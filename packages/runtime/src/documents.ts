@@ -153,6 +153,38 @@ export async function documentFromBuild(
  * A route's React Server Components: a prefetched segment as built, else its payload resumed —
  * and, for a route on the edge runtime, which resumes nothing, rendered whole.
  */
+/**
+ * The segment a prefetch asks for, as the build wrote it; `undefined` when it asks for none, the
+ * build wrote none, or the build recorded one and left its bytes to the host.
+ *
+ * That last case is why the read is `tryReadBlob` and not `readBlob`
+ * (`AdapterOptions.unshippedOutputs`): a recorded segment is what a host places from, so the record
+ * stays even where the bytes do not, and a reference is then no longer a promise that the file is
+ * here. The caller falls through to the resume, which renders the segment — what it already does
+ * for a document whose shell the build did not write.
+ */
+function builtSegment(store: Store, request: Request, pathname: string): Response | undefined {
+  const { rsc } = store.manifest.routing;
+  const segment = request.headers.get(rsc.prefetchSegmentHeader);
+  if (segment === null) {
+    return undefined;
+  }
+  const dir = rsc.prefetchSegmentDirSuffix;
+  const key = `${rscBase(pathname)}${dir}${segment}${rsc.prefetchSegmentSuffix}`;
+  const prerender = store.prerendersByPathname.get(key);
+  const bytes =
+    prerender?.body === undefined ? undefined : store.tryReadBlob(prerender.body.sha256);
+  if (prerender === undefined || bytes === undefined) {
+    return undefined;
+  }
+  const headers = prerenderHeaders(prerender, RSC_CONTENT_TYPE);
+  headers.set(PRERENDER_HEADER, '1');
+  headers.set(POSTPONED_HEADER, '2');
+  headers.set(CACHE_CONTROL, NO_STORE_CACHE_CONTROL);
+  headers.set('vary', rsc.varyHeader);
+  return new Response(bytes, { status: HTTP_OK, headers });
+}
+
 export async function rscFromBuild(
   input: RoutedInput,
   store: Store,
@@ -163,20 +195,9 @@ export async function rscFromBuild(
   if (bypassesPrerender(store, input.request, shell, resolved.url)) {
     return invokeEntry(input, entry, resolved.url);
   }
-  const segment = input.request.headers.get(store.manifest.routing.rsc.prefetchSegmentHeader);
-  if (segment !== null) {
-    const suffix = store.manifest.routing.rsc.prefetchSegmentSuffix;
-    const dir = store.manifest.routing.rsc.prefetchSegmentDirSuffix;
-    const base = rscBase(shell?.pathname ?? resolved.pathname);
-    const staticSegment = store.prerendersByPathname.get(`${base}${dir}${segment}${suffix}`);
-    if (staticSegment?.body !== undefined) {
-      const headers = prerenderHeaders(staticSegment, RSC_CONTENT_TYPE);
-      headers.set(PRERENDER_HEADER, '1');
-      headers.set(POSTPONED_HEADER, '2');
-      headers.set(CACHE_CONTROL, NO_STORE_CACHE_CONTROL);
-      headers.set('vary', store.manifest.routing.rsc.varyHeader);
-      return new Response(store.readBlob(staticSegment.body.sha256), { status: HTTP_OK, headers });
-    }
+  const built = builtSegment(store, input.request, shell?.pathname ?? resolved.pathname);
+  if (built !== undefined) {
+    return built;
   }
   const twin =
     shell === undefined

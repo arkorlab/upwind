@@ -452,24 +452,29 @@ export async function collectPrerenders(
     if (segmentPath !== undefined) {
       prerender.segmentPath = segmentPath;
     }
-    // Recorded either way — a host places a segment from `segmentPath` and `parentOutputId`, not
-    // from its bytes — and only the bytes are left behind. The Function renders a segment it has
-    // none for (`AdapterOptions.unshippedOutputs`).
-    const carries = unshipped === 'none' || prerender.segmentPath === undefined;
-    const filePath = carries ? output.fallback?.filePath : undefined;
+    // Written to the bundle and referenced either way; `unshipped` decides only whether the bytes
+    // also go to the Function. A host reads them out of the bundle to place them, and
+    // `prefetchSegments` passes over a segment with no `body` — so dropping the reference would
+    // leave the host unable to serve one, which is the opposite of the point.
+    const embeds = unshipped === 'none' || prerender.segmentPath === undefined;
+    const filePath = output.fallback?.filePath;
     if (filePath !== undefined && (await exists(filePath))) {
       const bytes = new Uint8Array(await readFile(filePath));
       const ref = await blobs.put(bytes, contentTypeFor(filePath));
-      shipped.set(ref.sha256, bytes);
+      if (embeds) {
+        shipped.set(ref.sha256, bytes);
+      }
       prerender.body = ref;
     }
-    const postponed = carries ? output.fallback?.postponedState : undefined;
+    const postponed = output.fallback?.postponedState;
     if (postponed === undefined || postponed === '') {
       continue;
     }
     const bytes = new TextEncoder().encode(postponed);
     const ref = await blobs.put(bytes, 'text/plain; charset=utf-8');
-    shipped.set(ref.sha256, bytes);
+    if (embeds) {
+      shipped.set(ref.sha256, bytes);
+    }
     prerender.postponed = ref;
   }
   return {
