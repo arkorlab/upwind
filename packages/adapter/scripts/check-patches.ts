@@ -5,6 +5,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
+import { SECURITY_FLOOR } from '@stayingupwind/core/next';
+
 import {
   FIXTURE_COVERAGE,
   type FixtureCoverage,
@@ -419,6 +421,12 @@ async function installedVersion(): Promise<string> {
  * The catalog pin matters most quietly. With no flags this script checks that version and no
  * other, so a pin that had wandered outside the range would leave the whole of CI agreeing with
  * something the range does not admit.
+ *
+ * `SECURITY_FLOOR` is held to the range as well. It is the version a build warns for being older
+ * than, so a floor under the range's own floor is one no build could ever be older than, and one
+ * over its ceiling is a warning on every build there is — either way a line that reads as a policy
+ * and does nothing. What it is for and when it moves is in `@stayingupwind/core/next`; that it can
+ * still fire is this.
  */
 async function checkDeclarations(): Promise<string[]> {
   const problems: string[] = [];
@@ -439,6 +447,12 @@ async function checkDeclarations(): Promise<string[]> {
   if (parsed === undefined || !satisfies(parsed, comparatorsOf(SUPPORTED_NEXT_RANGE))) {
     problems.push(
       `the installed next is ${installed}, which ${SUPPORTED_NEXT_RANGE} does not admit; the catalog pin has to be inside the range it declares`,
+    );
+  }
+  const floor = release(SECURITY_FLOOR);
+  if (floor === undefined || !satisfies(floor, comparatorsOf(SUPPORTED_NEXT_RANGE))) {
+    problems.push(
+      `SECURITY_FLOOR is ${SECURITY_FLOOR}, which ${SUPPORTED_NEXT_RANGE} does not admit; a floor outside the range is one no build can be judged against`,
     );
   }
   return problems;
