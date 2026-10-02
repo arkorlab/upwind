@@ -479,8 +479,11 @@ function floorJudgements(): string[] {
     [`${SECURITY_FLOOR}-canary.1`, false],
     ['0.0.0', true],
     ['999.0.0', false],
-    // Not a release, and so nothing to warn about: a suffix that is not one, and no version at all.
-    [`${SECURITY_FLOOR}nonsense`, false],
+    // Not a release, and so nothing to warn about. The numbers have to be *under* the floor for the
+    // first of these to mean anything: a pattern that read the leading numbers and stopped would
+    // call it old, where the same suffix on the floor itself comes out equal either way and pins
+    // nothing. The second matches no pattern at all, and is here for the path it takes.
+    ['0.0.0garbage', false],
     ['not a version', false],
   ];
   const problems: string[] = [];
