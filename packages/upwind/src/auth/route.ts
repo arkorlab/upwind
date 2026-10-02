@@ -98,12 +98,21 @@ async function contentsOf(file: string): Promise<string | undefined> {
   }
 }
 
-/** Take back a route this wrote, saying which one and why if it cannot. */
-async function remove(file: string, because: string): Promise<void> {
+/**
+ * Take back a route this wrote, saying which one and why if it cannot.
+ *
+ * The one way this module removes anything, and it always says so when it fails: a generated route
+ * left standing is a module Next.js will try to build, and every reason this is called is a reason
+ * that build will now go wrong. `because` is that reason, which is what makes the warning worth
+ * reading.
+ */
+async function remove(file: string, because: string): Promise<boolean> {
   try {
     await rm(file, { force: true });
+    return true;
   } catch {
     console.warn(`upwind: could not remove ${file}, and ${because}`);
+    return false;
   }
 }
 
@@ -122,12 +131,7 @@ async function removeGenerated(appDir: string): Promise<void> {
     if ((await contentsOf(file)) !== SOURCE) {
       continue;
     }
-    try {
-      await rm(file, { force: true });
-      removed = true;
-    } catch {
-      // Gone already, or not this run's to remove. Either way there is nothing left to do about it.
-    }
+    removed = (await remove(file, 'the auth config it imports is gone')) || removed;
   }
   if (!removed) {
     return;
