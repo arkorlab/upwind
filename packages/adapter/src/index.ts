@@ -211,12 +211,13 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     wasm: nodeWasm,
     edgeEntries,
   } = collectEntrypoints(ctx.outputs);
-  const { prerenders, shipped } = await collectPrerenders(
-    ctx.outputs,
+  const { prerenders, shipped } = await collectPrerenders({
+    outputs: ctx.outputs,
     blobs,
-    ctx.config.basePath,
-    ctx.routing.rsc,
-  );
+    basePath: ctx.config.basePath,
+    rsc: ctx.routing.rsc,
+    unshipped: options.unshippedOutputs ?? 'none',
+  });
   const { files: staticFiles, sourceMaps: clientMaps } = await collectStaticFiles(
     ctx,
     blobs,
@@ -504,6 +505,30 @@ export interface AdapterOptions {
    * generations names its own module here.
    */
   readonly cacheHostModule?: string | undefined;
+  /**
+   * Prefetch segments whose bytes the Function does **not** carry, for a host that serves them
+   * itself.
+   *
+   * Next.js 16.3's Partial Prefetching writes one output per prefetchable segment of every
+   * prerendered page, and they are most of what a Function weighs: measured on a 1,486-module
+   * build, 826 of them at **19.74 MiB — 37% of the whole Function**, against 4.4 MiB of the
+   * documents it serves. A host that answers `next-router-segment-prefetch` from its own storage
+   * (`prefetchSegments`) reads none of them, and the Function carries them for nothing.
+   *
+   * `'none'`, the default, ships every output as this adapter always has. **It is the default
+   * because leaving it out is not free**: a host that does not serve segments has only the
+   * Function to answer them, and then the bytes are the answer.
+   *
+   * `'prefetch-segments'` records every segment in the bundle exactly as before — `segmentPath`,
+   * `parentOutputId`, the lot, which is what a host places them from — and ships no body for one.
+   * Asked for a segment it has no bytes for, the Function renders it: `documents.ts` guards the
+   * static segment on its body and falls through to the resume when there is none. Measured on the
+   * same build, with the body of one segment taken out of its bundle and nothing else changed, the
+   * answer was **byte for byte the 682 bytes the build had shipped**, under the same content type
+   * and the same `x-nextjs-postponed`. So this costs no correctness and no network read; what it
+   * costs is a render where there was a read, on the path a host falls back to.
+   */
+  readonly unshippedOutputs?: 'none' | 'prefetch-segments' | undefined;
   /**
    * Names the host reads a project's configuration under besides this adapter's own, for a host
    * that once called that file something else. Looked for after `upwind.*` and before

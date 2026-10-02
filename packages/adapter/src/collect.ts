@@ -424,12 +424,20 @@ export function bypassTokenOf(outputs: BuildContext['outputs']): string | undefi
   return undefined;
 }
 
+export interface PrerenderCollection {
+  readonly outputs: BuildContext['outputs'];
+  readonly blobs: BlobStore;
+  readonly basePath: string;
+  readonly rsc: BuildContext['routing']['rsc'];
+  /** Outputs recorded without their bytes; `'none'` by default (`AdapterOptions`). */
+  readonly unshipped?: 'none' | 'prefetch-segments' | undefined;
+}
+
 export async function collectPrerenders(
-  outputs: BuildContext['outputs'],
-  blobs: BlobStore,
-  basePath: string,
-  rsc: BuildContext['routing']['rsc'],
+  input: PrerenderCollection,
 ): Promise<{ prerenders: Prerender[]; shipped: { sha256: string; bytes: Uint8Array }[] }> {
+  const { outputs, blobs, basePath, rsc } = input;
+  const unshipped = input.unshipped ?? 'none';
   const shipped = new Map<string, Uint8Array>();
   const entryIds = entryIdsByOutputId(outputs);
   const collected = outputs.prerenders.map((output) => {
@@ -444,14 +452,18 @@ export async function collectPrerenders(
     if (segmentPath !== undefined) {
       prerender.segmentPath = segmentPath;
     }
-    const filePath = output.fallback?.filePath;
+    // Recorded either way — a host places a segment from `segmentPath` and `parentOutputId`, not
+    // from its bytes — and only the bytes are left behind. The Function renders a segment it has
+    // none for (`AdapterOptions.unshippedOutputs`).
+    const carries = unshipped === 'none' || prerender.segmentPath === undefined;
+    const filePath = carries ? output.fallback?.filePath : undefined;
     if (filePath !== undefined && (await exists(filePath))) {
       const bytes = new Uint8Array(await readFile(filePath));
       const ref = await blobs.put(bytes, contentTypeFor(filePath));
       shipped.set(ref.sha256, bytes);
       prerender.body = ref;
     }
-    const postponed = output.fallback?.postponedState;
+    const postponed = carries ? output.fallback?.postponedState : undefined;
     if (postponed === undefined || postponed === '') {
       continue;
     }
