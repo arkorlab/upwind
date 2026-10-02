@@ -15,7 +15,7 @@ packages:
 catalog:
   # Cloudflare's own types for the storage objects `@stayingupwind/sdk` hands an application. They
   # are in that package's public declarations, so they are a dependency of it and not a dev one.
-  '@cloudflare/workers-types': 5.20260926.1
+  '@cloudflare/workers-types': 5.20261001.1
   '@eslint/js': 10.0.1
   '@next/routing': 16.3.8
   # The AST Rolldown's `this.parse` hands a plugin: the version Rolldown itself depends on.
