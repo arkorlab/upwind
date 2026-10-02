@@ -252,13 +252,23 @@ function builtinWorldSource(name: string, why: string): string {
   ].join('\n');
 }
 
-/** Whether the project can resolve the SDK, which is what puts its Worlds in the build. */
-function resolvesSdk(projectDir: string): boolean {
-  try {
-    createRequire(path.join(projectDir, PACKAGE_MANIFEST)).resolve(SDK_PACKAGE);
-    return true;
-  } catch {
-    return false;
+/**
+ * Whether the project installed the SDK, which is what puts its Worlds in the build: found where
+ * Node looks from the project — its own `node_modules` and each one above it — and not through
+ * `NODE_PATH`, which a package manager running the build may point at a store holding every package
+ * of a workspace, the SDK among them, whether this project depends on it or not.
+ */
+async function installsSdk(projectDir: string): Promise<boolean> {
+  let dir = path.resolve(projectDir);
+  for (;;) {
+    if (await exists(path.join(dir, 'node_modules', SDK_PACKAGE, PACKAGE_MANIFEST))) {
+      return true;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) {
+      return false;
+    }
+    dir = parent;
   }
 }
 
@@ -278,7 +288,7 @@ export async function aliasBuiltinWorlds(
   projectDir: string,
   outDirName: string,
 ): Promise<void> {
-  if (!resolvesSdk(projectDir)) {
+  if (!(await installsSdk(projectDir))) {
     return;
   }
   const own = config.turbopack?.resolveAlias ?? {};
