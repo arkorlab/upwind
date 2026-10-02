@@ -40,6 +40,8 @@ export {
   functionModuleTypeSchema,
   functionSchema,
   type FunctionSpec,
+  workflowSchema,
+  type WorkflowSpec,
 } from './schema.ts';
 export {
   isPagesDataPathname,

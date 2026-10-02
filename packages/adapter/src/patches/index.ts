@@ -10,6 +10,7 @@ import { turbopackRuntimePatch } from './turbopack-runtime.ts';
 import type { Patch } from './types.ts';
 import { vercelOgFontPatch, vercelOgImageResponsePatch, vercelOgPatch } from './vercel-og.ts';
 import { runtimeWasmLoaderPatch, wasmLoaderPatch } from './wasm-loader.ts';
+import { workflowQuickjsWasmPatch } from './workflow-quickjs.ts';
 
 export { FUNCTION_BANNER } from './banner.ts';
 export {
@@ -38,6 +39,7 @@ export const PATCHES: readonly Patch[] = [
   resumeCacheLimitPatch,
   taskTimersPatch,
   graphManifestsPatch,
+  workflowQuickjsWasmPatch,
 ];
 
 export { OG_FONT_FILE, OG_FONT_MODULE } from './vercel-og.ts';

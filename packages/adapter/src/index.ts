@@ -46,7 +46,15 @@ import type { PatchContext } from './patches/index.ts';
 import { readProjectConfig } from './project-config.ts';
 import { collectStaticFiles } from './static-files.ts';
 import { inlineAssetFiles, type TracedFile, tracedFiles } from './traced-files.ts';
-import { arkorWasmGlobal, WasmCollector, type WasmChunk, wasmChunks } from './wasm.ts';
+import { collectWasm, type WasmChunk } from './wasm.ts';
+import {
+  buildWorkflowFunction,
+  warnOfNoWorld,
+  type WorkflowBuild,
+  workflowBuildOf,
+  workflowPartsOf,
+} from './workflow-function.ts';
+import { aliasBuiltinWorlds, offerEmbeddedWasm } from './workflow.ts';
 
 /**
  * The upwind deployment adapter.
@@ -135,15 +143,23 @@ async function instrumentationOf(
  */
 function filesRead(
   ctx: BuildContext,
-  middleware: AdapterOutput['MIDDLEWARE'] | undefined,
-  hookAssets: Readonly<Record<string, string>>,
-  exported: boolean,
-): { readonly app: readonly TracedFile[]; readonly middleware: readonly TracedFile[] } {
-  const own = middleware === undefined ? [] : [middleware];
-  const hook = [{ assets: hookAssets }];
-  const { appPages, appRoutes, pages, pagesApi } = ctx.outputs;
+  build: {
+    readonly workflow: WorkflowBuild;
+    readonly middleware: AdapterOutput['MIDDLEWARE'] | undefined;
+    readonly hookAssets: Readonly<Record<string, string>>;
+    readonly exported: boolean;
+  },
+): {
+  readonly app: readonly TracedFile[];
+  readonly middleware: readonly TracedFile[];
+  readonly workflow: readonly TracedFile[];
+} {
+  const own = build.middleware === undefined ? [] : [build.middleware];
+  const hook = [{ assets: build.hookAssets }];
+  const { flow, outputs } = build.workflow;
+  const { appPages, appRoutes, pages, pagesApi } = outputs;
   return {
-    app: exported
+    app: build.exported
       ? []
       : tracedFiles(
           [...appPages, ...appRoutes, ...pages, ...pagesApi, ...own, ...hook],
@@ -151,6 +167,7 @@ function filesRead(
           ctx.distDir,
         ),
     middleware: tracedFiles([...own, ...hook], ctx.projectDir, ctx.distDir),
+    workflow: flow === undefined ? [] : tracedFiles([flow, ...hook], ctx.projectDir, ctx.distDir),
   };
 }
 
@@ -192,12 +209,16 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
   await blobs.init();
 
   await refuseOtherBundlers(ctx.distDir, exported);
-  const instrumentation = await instrumentationOf(
-    ctx.distDir,
-    outDir,
+  // The Workflow SDK's flow route, when the project uses the SDK: built into a Function of its own,
+  // and nowhere else (`workflow-function.ts`).
+  const workflow = await workflowBuildOf(ctx, {
     exported,
-    options.instrumentationModules ?? [],
-  );
+    outDir,
+    hosts: options.instrumentationModules ?? [],
+    worldModule: options.workflowWorldModule,
+  });
+  const { flow, outputs } = workflow;
+  const instrumentation = await instrumentationOf(ctx.distDir, outDir, exported, workflow.hosts);
   const id = deploymentId();
   // Next.js's build manifests are what its route modules read at request time. A static export
   // has no route module in the Function, so nothing would ever read one: shipping them would be
@@ -210,7 +231,7 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     chunks,
     wasm: nodeWasm,
     edgeEntries,
-  } = collectEntrypoints(ctx.outputs);
+  } = collectEntrypoints(outputs);
   const { prerenders, shipped } = await collectPrerenders(
     ctx.outputs,
     blobs,
@@ -229,19 +250,32 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     chunks: middlewareChunks,
     wasm: middlewareWasm,
   } = middlewarePlacement(middleware);
-  const files = filesRead(ctx, middleware, instrumentation.assets, exported);
+  const files = filesRead(ctx, {
+    workflow,
+    middleware,
+    hookAssets: instrumentation.assets,
+    exported,
+  });
   // Each Function's chunk table names only what its entries can reach: the table is what Rolldown
   // bundles, so the middleware Function stays small and the app Function carries no middleware.
-  const patchFor = (own: readonly string[], wasm: readonly WasmChunk[]): PatchContext => {
+  const chunkTable = (own: readonly string[]): string[] => {
     const table = new Set(own);
     for (const chunk of instrumentation.chunks) {
       table.add(chunk);
     }
+    return [...table];
+  };
+  const patchFor = (
+    table: readonly string[],
+    wasm: readonly WasmChunk[],
+    embeddedWasm: ReadonlySet<string>,
+  ): PatchContext => {
     return {
       distDir: ctx.distDir,
       chunks: [...table],
       instrumentation: instrumentation.file,
       wasm,
+      embeddedWasm,
     };
   };
 
@@ -283,11 +317,12 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     [...nodeWasm, ...middlewareWasm, ...instrumentation.wasm],
     [...edgeEntries, ...middlewareEdgeEntries],
   );
+  const appTable = chunkTable([...chunks, ...middlewareChunks]);
   const app = await buildFunction({
     kind: 'app',
     projectDir: ctx.projectDir,
     outDir,
-    patch: patchFor([...chunks, ...middlewareChunks], appWasm.chunks),
+    patch: patchFor(appTable, appWasm.chunks, await offerEmbeddedWasm(appTable, appWasm.collector)),
     entries: [...modules, ...nodeMiddleware],
     edgeEntries: [...edgeEntries, ...middlewareEdgeEntries],
     wasm: appWasm.collector,
@@ -301,6 +336,7 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
       ...inlineAssetFiles([...edgeEntries, ...middlewareEdgeEntries], ctx.projectDir),
     ],
     blobStore: blobs,
+    workflowSdk: flow !== undefined,
   });
   let middlewareFunction;
   if (middleware !== undefined) {
@@ -309,11 +345,12 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
       [...middlewareWasm, ...instrumentation.wasm],
       middlewareEdgeEntries,
     );
+    const table = chunkTable(middlewareChunks);
     middlewareFunction = await buildFunction({
       kind: 'middleware',
       projectDir: ctx.projectDir,
       outDir,
-      patch: patchFor(middlewareChunks, wasm.chunks),
+      patch: patchFor(table, wasm.chunks, await offerEmbeddedWasm(table, wasm.collector)),
       entries: nodeMiddleware,
       edgeEntries: middlewareEdgeEntries,
       wasm: wasm.collector,
@@ -324,10 +361,32 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
       blobs: [],
       files: [...files.middleware, ...inlineAssetFiles(middlewareEdgeEntries, ctx.projectDir)],
       blobStore: blobs,
+      workflowSdk: flow !== undefined,
     });
   }
+  const workflowParts = workflowPartsOf(
+    workflow,
+    await buildWorkflowFunction(workflow, {
+      ctx,
+      outDir,
+      blobs,
+      runtimeManifest,
+      manifests,
+      files: files.workflow,
+      instrumentationWasm: instrumentation.wasm,
+      chunkTable,
+      patchFor,
+      cacheHostModule: options.cacheHostModule,
+      sourceMaps: options.sourceMaps === true,
+    }),
+  );
 
-  const sourceMaps = [...clientMaps, ...app.sourceMaps, ...(middlewareFunction?.sourceMaps ?? [])];
+  const sourceMaps = [
+    ...clientMaps,
+    ...app.sourceMaps,
+    ...(middlewareFunction?.sourceMaps ?? []),
+    ...workflowParts.sourceMaps,
+  ];
 
   // Two things the bundle carries and `runtimeManifest` does not, for the same reason: nothing in
   // the Function reads either, and every byte of its manifest is parsed before its first response.
@@ -339,6 +398,8 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     // The cron jobs the project declared: the host schedules them, and the Function they reach
     // answers the request they make like any other.
     ...(projectConfig.crons.length > 0 && { crons: projectConfig.crons }),
+    // Where the workflow Function takes the SDK's queue, and which SDK it was built with.
+    ...workflowParts.bundle,
     projectDir: path.relative(ctx.repoRoot, ctx.projectDir).split(path.sep).join('/'),
     generatedAt: new Date().toISOString(),
     staticFiles,
@@ -349,12 +410,14 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     functions: {
       app: app.spec,
       ...(middlewareFunction !== undefined && { middleware: middlewareFunction.spec }),
+      ...workflowParts.functions,
     },
   });
   await writeFile(path.join(outDir, BUNDLE_FILE), JSON.stringify(bundle, null, 2));
   const dependencies = {
     app: app.dependencies,
     ...(middlewareFunction !== undefined && { middleware: middlewareFunction.dependencies }),
+    ...workflowParts.dependencies,
   };
   await writeFile(path.join(outDir, DEPENDENCIES_FILE), JSON.stringify(dependencies, null, 2));
   await rm(path.join(outDir, 'work'), { recursive: true, force: true });
@@ -362,6 +425,7 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     `@stayingupwind/adapter: wrote ${OUT_DIR_NAME}/${BUNDLE_FILE} (${bundle.prerenders.length} prerenders, ${bundle.staticFiles.length} static files, ${blobs.count} blobs)`,
   );
   reportWhatTravels(bundle, edgeEntries, ctx.nextVersion, exported);
+  warnOfNoWorld(workflow, options.workflowWorldModule);
 }
 
 /**
@@ -406,59 +470,6 @@ function reportWhatTravels(
       `@stayingupwind/adapter: Next.js ${nextVersion} is older than ${SECURITY_FLOOR}, the newest Next.js release with security fixes in it that this adapter knows of. What answers a request is the Next.js this project installed: its \`use cache\` keying, its draft-mode fills and the ownership checks a route template makes of a prerender all travel into the Function, and nothing here stands in for them. Upgrade and build again — ${SECURITY_RELEASE_URL}`,
     );
   }
-}
-
-/**
- * Is `file` a file `next build` itself wrote, rather than one a trace found in a package?
- *
- * `..` has to be a segment of its own to mean "above": a sibling directory named `..next` is a
- * path that starts with `..` and is not outside anything.
- */
-function inside(dir: string, file: string): boolean {
-  const relative = path.relative(dir, file);
-  return (
-    relative !== '' &&
-    relative !== '..' &&
-    !relative.startsWith(`..${path.sep}`) &&
-    !path.isAbsolute(relative)
-  );
-}
-
-/**
- * The WebAssembly one Function carries, and what Turbopack's Node.js loader asks for it under.
- *
- * Two sources, because Next.js describes the two runtimes differently. An entrypoint on the edge
- * runtime has `wasmAssets`, keyed by the global its chunks read the module from. An entrypoint on
- * the Node.js runtime has nothing: its WebAssembly is a `.wasm` among the traced `assets`, and
- * the loader Turbopack bundled reads it off disk by a path relative to `distDir` — which is what
- * the table here names, for the `wasm-loader` patch to switch on. A `.wasm` a trace found outside
- * `distDir` is not one `next build` emitted for that loader (`@vercel/og`'s two are the case in
- * point); it is reached by a `?module` import the app bundler resolves, and needs no table entry,
- * only a module and a name.
- */
-async function collectWasm(
-  distDir: string,
-  nodeFiles: readonly string[],
-  edgeEntries: readonly EdgeEntry[],
-): Promise<{ collector: WasmCollector; chunks: WasmChunk[] }> {
-  const collector = new WasmCollector();
-  // By file, because a `.wasm` a route and the middleware both reach arrives twice: two lists,
-  // each without repeats of its own. A table with the same path in it twice would say the Function
-  // carries more than it does, and would put a dead `case` in the code the patch generates.
-  const emitted = new Map<string, { filePath: string; sha256: string }>();
-  for (const filePath of nodeFiles) {
-    const sha256 = await collector.offer(filePath);
-    if (inside(distDir, filePath)) {
-      collector.publish(sha256, arkorWasmGlobal(sha256));
-      emitted.set(path.resolve(filePath), { filePath, sha256 });
-    }
-  }
-  for (const entry of edgeEntries) {
-    for (const asset of entry.wasm) {
-      collector.publish(await collector.offer(asset.filePath), asset.global);
-    }
-  }
-  return { collector, chunks: wasmChunks(distDir, [...emitted.values()]) };
 }
 
 /**
@@ -535,6 +546,17 @@ export interface AdapterOptions {
    * host's running in it would be a line in their console that their project did not put there.
    */
   readonly clientInstrumentationSource?: string | undefined;
+  /**
+   * The module a deployment's Workflow SDK keeps its runs in, as an absolute path: one that exports
+   * `createWorld()`, answering a World (`@workflow/world`) or a promise of one.
+   *
+   * Only a build that uses the SDK carries it. Registered from the instrumentation hook, before any
+   * route of the deployment runs (`writeWorldRegistration` in `workflow.ts`); the World is the
+   * host's own, since what stores a run and delivers its messages is the platform's to provide —
+   * the SDK's own Worlds keep their state on a file system or reach Vercel, and a Function has
+   * neither.
+   */
+  readonly workflowWorldModule?: string | undefined;
   /**
    * Carry the deployment's source maps, so a host can show a stack against the code it was
    * written as.
@@ -675,6 +697,8 @@ export function createAdapter(options: AdapterOptions = {}): NextAdapter {
         // `immutableByBuild`).
         config.supportsImmutableAssets = true;
         renderInOneProcessForStorage(config);
+        // The Workflow SDK's own Worlds stay out of the Functions: neither can run there.
+        await aliasBuiltinWorlds(config, projectDir, OUT_DIR_NAME);
         if (options.sourceMaps === true) {
           // Both halves, because a stack has both in it: a page's frames are in the browser
           // chunks, and a render's are in the server ones. What keeps the browser maps from being
