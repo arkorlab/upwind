@@ -8,6 +8,11 @@ import {
   deploymentBundleSchema,
   travelsWithFunction,
 } from '@stayingupwind/core/bundle';
+import {
+  isBeforeSecurityFloor,
+  SECURITY_FLOOR,
+  SECURITY_RELEASE_URL,
+} from '@stayingupwind/core/next';
 import { UPWIND_LOCAL_RESOURCES_ENV } from '@stayingupwind/core/paas';
 import type { AdapterOutput, NextAdapter } from 'next';
 
@@ -356,7 +361,7 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
   console.log(
     `@stayingupwind/adapter: wrote ${OUT_DIR_NAME}/${BUNDLE_FILE} (${bundle.prerenders.length} prerenders, ${bundle.staticFiles.length} static files, ${blobs.count} blobs)`,
   );
-  reportWhatTravels(bundle, edgeEntries, ctx.nextVersion);
+  reportWhatTravels(bundle, edgeEntries, ctx.nextVersion, exported);
 }
 
 /**
@@ -370,11 +375,18 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
  * (`@stayingupwind/core/bundle`, `documentPrerenders`), and while that answers the same as the
  * classification wherever there is one to compare it with, there is no classification here to
  * compare it with.
+ *
+ * And a Next.js older than the newest release that carried security fixes (`SECURITY_FLOOR`,
+ * `@stayingupwind/core/next`) is said here rather than refused, because the range this adapter
+ * supports is a claim about what its rewrites still find and not a judgement about advisories. A
+ * static export is the one build this says nothing to: it carries no Next.js server code for a fix
+ * inside Next.js to be missing from.
  */
 function reportWhatTravels(
   bundle: DeploymentBundle,
   edgeEntries: readonly EdgeEntry[],
   nextVersion: string,
+  exported: boolean,
 ): void {
   if (edgeEntries.length > 0) {
     const ids = edgeEntries.map((entry) => entry.id).join(', ');
@@ -387,6 +399,11 @@ function reportWhatTravels(
   if (unclassified) {
     console.warn(
       `@stayingupwind/adapter: Next.js ${nextVersion} does not classify its prerenders, which Next.js 16.3 is the first to do. This deployment's ${String(bundle.prerenders.length)} prerenders are read as their outputs describe them instead; \`/_next/static/immutable/*\` is off, since 16.2 does not offer it.`,
+    );
+  }
+  if (!exported && isBeforeSecurityFloor(nextVersion)) {
+    console.warn(
+      `@stayingupwind/adapter: Next.js ${nextVersion} is older than ${SECURITY_FLOOR}, the newest Next.js release with security fixes in it that this adapter knows of. What answers a request is the Next.js this project installed: its \`use cache\` keying, its draft-mode fills and the ownership checks a route template makes of a prerender all travel into the Function, and nothing here stands in for them. Upgrade and build again — ${SECURITY_RELEASE_URL}`,
     );
   }
 }
