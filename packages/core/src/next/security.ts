@@ -38,8 +38,14 @@ export const SECURITY_FLOOR = '16.3.8';
  */
 export const SECURITY_RELEASE_URL = 'https://nextjs.org/blog/september-2026-security-release';
 
-/** `major.minor.patch`, and nothing a prerelease suffix adds to it. */
-const RELEASE = /^(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)/u;
+/**
+ * `major.minor.patch`, and nothing a prerelease or build suffix adds to it.
+ *
+ * Anchored at both ends, with the suffix having to begin the way a suffix does. Reading the leading
+ * numbers and stopping would make `16.3.8nonsense` a release and warn about it, and a version this
+ * cannot read is one it has to say nothing about rather than guess at.
+ */
+const RELEASE = /^(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)(?:[-+].*)?$/u;
 
 interface Release {
   readonly major: number;

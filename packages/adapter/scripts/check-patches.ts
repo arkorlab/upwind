@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-import { SECURITY_FLOOR } from '@stayingupwind/core/next';
+import { isBeforeSecurityFloor, SECURITY_FLOOR } from '@stayingupwind/core/next';
 
 import {
   FIXTURE_COVERAGE,
@@ -426,7 +426,7 @@ async function installedVersion(): Promise<string> {
  * than, so a floor under the range's own floor is one no build could ever be older than, and one
  * over its ceiling is a warning on every build there is — either way a line that reads as a policy
  * and does nothing. What it is for and when it moves is in `@stayingupwind/core/next`; that it can
- * still fire is this.
+ * still fire is this, and that it fires on the right versions is `floorJudgements`.
  */
 async function checkDeclarations(): Promise<string[]> {
   const problems: string[] = [];
@@ -454,6 +454,42 @@ async function checkDeclarations(): Promise<string[]> {
     problems.push(
       `SECURITY_FLOOR is ${SECURITY_FLOOR}, which ${SUPPORTED_NEXT_RANGE} does not admit; a floor outside the range is one no build can be judged against`,
     );
+  }
+  problems.push(...floorJudgements());
+  return problems;
+}
+
+/**
+ * What `isBeforeSecurityFloor` has to answer, whatever the floor is.
+ *
+ * The warnings it decides are the only thing that tells a build or a development run that its
+ * Next.js is missing fixes, and a comparison that quietly stopped working would take them both out
+ * at once while every check here still passed. So the edges it is written for are asked here, where
+ * CI already runs: the floor itself and a prerelease of it, something under it, something over it,
+ * and the two kinds of string that are not a release at all.
+ *
+ * Phrased against `SECURITY_FLOOR` rather than against literal versions, so moving the floor does
+ * not come with a table of expectations to move with it.
+ */
+function floorJudgements(): string[] {
+  const expected: readonly [version: string, old: boolean][] = [
+    // A version is not older than itself, and a prerelease is judged by the release it is numbered
+    // as — a canary of the floor is not a build without the fixes.
+    [SECURITY_FLOOR, false],
+    [`${SECURITY_FLOOR}-canary.1`, false],
+    ['0.0.0', true],
+    ['999.0.0', false],
+    // Not a release, and so nothing to warn about: a suffix that is not one, and no version at all.
+    [`${SECURITY_FLOOR}nonsense`, false],
+    ['not a version', false],
+  ];
+  const problems: string[] = [];
+  for (const [version, old] of expected) {
+    if (isBeforeSecurityFloor(version) !== old) {
+      problems.push(
+        `isBeforeSecurityFloor("${version}") is ${String(!old)} against a floor of ${SECURITY_FLOOR}, and has to be ${String(old)}`,
+      );
+    }
   }
   return problems;
 }
