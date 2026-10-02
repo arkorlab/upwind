@@ -121,12 +121,29 @@ export interface WorkflowFunctionInput {
 }
 
 /**
+ * The routing a delivery goes through, which is none: every table of rules a visitor's request is
+ * matched against, empty. A delivery is the host's own request to the flow route, as Vercel's queue
+ * invokes the function itself, so a redirect or rewrite the application wrote for its pages — a
+ * catch-all one included — must not send it anywhere else, and a header rule has no one to tell.
+ * What is left is the match of the one route this Function has.
+ */
+const DELIVERY_ROUTING = {
+  beforeMiddleware: [],
+  middlewareMatchers: [],
+  beforeFiles: [],
+  afterFiles: [],
+  dynamicRoutes: [],
+  onMatch: [],
+  fallback: [],
+  shouldNormalizeNextData: false,
+} as const;
+
+/**
  * The workflow Function: the SDK's flow route, and nothing else of the application's — every run's
  * messages are delivered to it, its steps run in it, and no visitor's request reaches it.
  *
  * Its manifest is the deployment's with that one route in it and nothing to serve besides: no
- * prerender, no file, and no middleware — a queue's delivery is the host's own request to the
- * route, as Vercel's is to its function, and goes through none of the routing a visitor's does.
+ * prerender, no file, no middleware and no routing rules (`DELIVERY_ROUTING`).
  */
 export async function buildWorkflowFunction(
   build: WorkflowBuild,
@@ -155,7 +172,7 @@ export async function buildWorkflowFunction(
   );
   const manifest = {
     ...shared,
-    routing: { ...input.runtimeManifest.routing, middlewareMatchers: [] },
+    routing: { ...input.runtimeManifest.routing, ...DELIVERY_ROUTING },
     entrypoints: entry.entrypoints,
     prerenders: [],
     staticFiles: [],

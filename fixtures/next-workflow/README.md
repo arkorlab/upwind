@@ -4,7 +4,8 @@ An application that uses the Workflow SDK (`workflow`, 5.x): a workflow with ste
 started from a route handler, and `withWorkflow` around an otherwise empty configuration.
 
 What it is here to show: that the SDK's flow route comes out of the application's Function and into
-one of its own (`functions.workflow`, with `workflow.route` naming it), and that the
+one of its own (`functions.workflow`, with `workflow.route` naming it), which answers that route
+alone and routes a delivery through none of the application's rules; and that the
 `workflow-quickjs-wasm` patch reaches the chunk the SDK's QuickJS engine embeds its WebAssembly in —
 in that Function and in no other, since nothing else of the application runs a workflow.
 

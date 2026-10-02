@@ -67,9 +67,13 @@ function stubModule(id: string): { code: string; moduleType: 'js' } {
  * Module-loader hooks have nothing to hook in a Function, and resolve to an empty module; an
  * optional module of a feature the platform does not run resolves to one that says so; a module
  * workerd cannot load resolves to the adapter's own copy, and `node:process`, which its `require`
- * does not find, to the global it is (`loader-hooks.ts`).
+ * does not find, to the global it is (`loader-hooks.ts`). In the workflow Function alone,
+ * `node:vm` as the server chunks import it resolves to a module that throws when called.
  */
-export function stubPlugin(onStubbed?: (specifier: string) => void, workflowSdk = false): Plugin {
+export function stubPlugin(
+  onStubbed?: (specifier: string) => void,
+  workflowFunction = false,
+): Plugin {
   return {
     name: 'arkor-stubs',
     resolveId: {
@@ -77,7 +81,10 @@ export function stubPlugin(onStubbed?: (specifier: string) => void, workflowSdk 
         id: /^(?:require|import)-in-the-middle|^critters$|compiled\/raw-body$|^(?:node:)?(?:process|vm)$/u,
       },
       handler(source, importer) {
-        if (!isStubbedModule(source) && !(workflowSdk && isWorkflowVmImport(source, importer))) {
+        if (
+          !isStubbedModule(source) &&
+          !(workflowFunction && isWorkflowVmImport(source, importer))
+        ) {
           return null;
         }
         onStubbed?.(source);
@@ -95,10 +102,12 @@ export function stubPlugin(onStubbed?: (specifier: string) => void, workflowSdk 
 const SERVER_CHUNK = /[/\\]server[/\\]chunks[/\\]/u;
 
 /**
- * `node:vm`, as the application's own chunks import it — stubbed (`NODE_VM_SOURCE` in
- * `loader-hooks.ts`) in a build that carries the Workflow SDK, the one thing in an application
- * known to import it and never call it. Only there, and only for those chunks: Next.js's own
- * modules reaching for it are still left to the audit, which refuses them.
+ * `node:vm`, as the server chunks import it — stubbed (`NODE_VM_SOURCE` in `loader-hooks.ts`) in
+ * the workflow Function, whose chunks are the Workflow SDK's flow route: the SDK imports it for an
+ * engine it does not run there, and calls nothing of it. Only there, and only for those chunks:
+ * the application's and the middleware's Functions — where `start()` and the rest of the SDK's
+ * client import no `node:vm` — still leave it to the audit, which refuses it, as it refuses
+ * Next.js's own modules reaching for it anywhere.
  */
 function isWorkflowVmImport(source: string, importer: string | undefined): boolean {
   return importer !== undefined && NODE_VM_MODULE.test(source) && SERVER_CHUNK.test(importer);

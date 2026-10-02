@@ -177,8 +177,9 @@ const REGISTRATION_MODULE = 'workflow-world.cjs';
  * It does what the SDK's own `setWorld()` does (`@workflow/core`, `runtime/world.ts`): the World
  * is kept on `globalThis` under the SDK's keys, which every copy of the SDK in the Function reads —
  * Next.js compiles one per layer, and `getWorld()` in each of them finds it there. A factory that
- * answers a promise is registered as the promise the SDK awaits. The project's own hook runs after
- * the host's, so a project that calls `setWorld()` itself still has the last word.
+ * answers a promise is registered as the promise the SDK awaits, its rejection handled meanwhile so
+ * that it waits there for the SDK rather than being reported unhandled. The project's own hook runs
+ * after the host's, so a project that calls `setWorld()` itself still has the last word.
  *
  * Importing `workflow/runtime` to call `setWorld()` would do the same thing at the price of a
  * second copy of the SDK in the Function: the copy the routes use is compiled into Turbopack's
@@ -196,6 +197,9 @@ export async function writeWorldRegistration(outDir: string, worldModule: string
     '  register() {',
     '    const world = host.createWorld();',
     "    if (typeof world?.then === 'function') {",
+    // Awaited by the SDK only when a route first asks for its World: until then a rejection would
+    // be one nobody handled, reported as such, though the SDK will see it as soon as it looks.
+    '      Promise.resolve(world).catch(() => {});',
     '      globalThis[CACHE] = undefined;',
     '      globalThis[STUBBED_CACHE] = undefined;',
     '      globalThis[CACHE_PROMISE] = world;',

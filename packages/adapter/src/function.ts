@@ -203,8 +203,11 @@ export interface AppBundleContext {
   readonly wasm: WasmCollector;
   /** Compose the maps the build already wrote through into this bundle's own. */
   readonly sourceMaps?: boolean | undefined;
-  /** Whether the build carries the Workflow SDK, whose `node:vm` import is stubbed. */
-  readonly workflowSdk?: boolean | undefined;
+  /**
+   * Whether this is the workflow Function: the one Function the Workflow SDK's engine is in, and the
+   * one whose `node:vm` import is stubbed (`workflow.ts`). Anywhere else the audit refuses it.
+   */
+  readonly workflowFunction?: boolean | undefined;
 }
 
 /** What `bundleApp` collects as Rolldown runs, for the dependency record. */
@@ -243,7 +246,7 @@ export function appBundlePlugins(
     ...(context.sourceMaps === true ? [sourceMapsPlugin()] : []),
     stubPlugin((specifier) => {
       sinks.stubs.push(specifier);
-    }, context.workflowSdk === true),
+    }, context.workflowFunction === true),
     wasmModulePlugin(context.wasm, (file, global) => {
       sinks.wasm.push(`${file} -> ${global}`);
     }),
@@ -315,7 +318,7 @@ async function bundleApp(
         patch: input.patch,
         wasm: input.wasm,
         ...(input.sourceMaps === true && { sourceMaps: true }),
-        ...(input.workflowSdk === true && { workflowSdk: true }),
+        ...(input.kind === 'workflow' && { workflowFunction: true }),
       },
       sinks,
     ),

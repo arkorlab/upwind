@@ -271,15 +271,18 @@ generates — `/.well-known/workflow/v1/flow` under the `basePath`, where 5.x ru
 steps — is taken out of the application's routes and built into `functions.workflow` alone, and the
 bundle records it as `workflow: { route, sdk }`. Nothing a visitor sends reaches it: the
 application's Function has no such route, and what calls it is the host, delivering the SDK's
-queue. The webhook route the SDK generates stays an application route.
+queue. A delivery goes through none of the application's routing rules — its redirects, rewrites
+and header rules are left out of this Function — as Vercel's queue reaches the function itself.
+The webhook route the SDK generates stays an application route.
 
 - **The engine is QuickJS.** workerd's `node:vm` is a stub that throws, and 4.x of the SDK runs
   workflows on nothing else, so a build with `workflow` older than 5 fails, saying so. The runtime
   sets `WORKFLOW_VM=quickjs` (a project's own value wins), and the `workflow-quickjs-wasm` patch
   ships the WebAssembly the engine embeds as a base64 string as a compiled module of its own,
-  as every other `.wasm` is: Cloudflare forbids compiling WebAssembly at run time. In a build that
-  carries the SDK, the `node:vm` its chunks import — and never call, on that engine — resolves to a
-  module that throws if it ever is.
+  as every other `.wasm` is: Cloudflare forbids compiling WebAssembly at run time. In the workflow
+  Function, the `node:vm` its chunks import — and never call, on that engine — resolves to a module
+  that throws if it ever is; the application's and the middleware's Functions still refuse it at
+  build time.
 - **The SDK's own Worlds stay out.** `@workflow/world-local` keeps its state on a file system and
   `@workflow/world-vercel` reaches Vercel; neither can run in a Function, so `modifyConfig` aliases
   both to modules that refuse (`turbopack.resolveAlias`), which keeps about a megabyte out of every

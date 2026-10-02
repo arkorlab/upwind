@@ -66,7 +66,8 @@ export function namesIn(expected: readonly Expected[]): string[] {
 }
 
 export const FIXTURE_COVERAGE = {
-  // Every patch there is: this fixture exists to be the one build that reaches all of them.
+  // Every patch an application reaches without the Workflow SDK: this fixture exists to be the one
+  // build that reaches all of them. The SDK's own patch is `next-workflow`'s, below.
   'next-minimal': {
     expected: [
       ...PACKAGE_PATCHES,
