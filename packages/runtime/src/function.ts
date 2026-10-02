@@ -54,10 +54,54 @@ function cacheRuntimeFor(env: unknown): CacheRuntime | undefined {
   return shared.runtime;
 }
 
-/** How much of a failure's own words the body carries; a message, not a stack. */
-const FAILURE_MESSAGE_BYTES = 200;
-/** Below this, a code point is a control character and is not what a message meant to say. */
-const CONTROL_CHARACTERS = 0x20;
+/**
+ * How much of a failure's own words the body carries; a message, not a stack. Characters, which is
+ * what the loop below counts — a bound in bytes would have to encode the message to know it had
+ * been reached, and nothing here needs one that exact.
+ */
+const FAILURE_MESSAGE_CHARACTERS = 200;
+/**
+ * Under this a code point is a C0 control character, and `DEL` through the C1 range are the rest of
+ * them. The two separators stand outside that: `U+2028` and `U+2029` are not control characters at
+ * all, but a reader that honours either ends a line on it, which is the one thing kept out here —
+ * a message is not to put a second line in a log that only wrote one. `U+0085` is the same story
+ * from inside C1, and `trim` reaches none of them anywhere but the ends.
+ */
+const CONTROL_FLOOR = 0x20;
+const DELETE_FLOOR = 0x7f;
+const CONTROL_CEILING = 0x9f;
+const LINE_SEPARATOR = '\u{2028}';
+const PARAGRAPH_SEPARATOR = '\u{2029}';
+
+function isControlOrSeparator(character: string): boolean {
+  const point = character.codePointAt(0) ?? 0;
+  return (
+    point < CONTROL_FLOOR ||
+    (point >= DELETE_FLOOR && point <= CONTROL_CEILING) ||
+    character === LINE_SEPARATOR ||
+    character === PARAGRAPH_SEPARATOR
+  );
+}
+
+/**
+ * What a failure says about itself, and nothing at all when it will not say.
+ *
+ * Three ways a thrown value declines to be read, all of them inside the one guard. `String` throws
+ * on a value that reaches no primitive, and `Object.create(null)` is thrown as readily as anything
+ * else. A `message` is a property like any other, so a getter there may throw too. And it may hold
+ * any value at all rather than a string — a number is a string's shape to the type system here and
+ * nothing the walk below can iterate — which is why it is converted rather than returned.
+ *
+ * Any of the three would leave this catch rejecting instead of answering, which is the whole of
+ * what the Function has to do at that point.
+ */
+function failureMessage(error: unknown): string {
+  try {
+    return String(error instanceof Error ? error.message : error);
+  } catch {
+    return '';
+  }
+}
 
 /**
  * What the Function answers with when it fails before Next.js does.
@@ -75,14 +119,19 @@ const CONTROL_CHARACTERS = 0x20;
  * travels to whatever asked. It is the kind of thing an error page says about itself.
  */
 function failureBody(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  // Control characters out one code unit at a time: a header refuses them and a log line is easier
-  // to read without them. Not by pattern — a regular expression over this range is the kind the
-  // linter asks about every time — and not by spreading the string, which splits a surrogate pair.
+  const message = failureMessage(error);
+  // Control characters out, one character at a time: a log line is easier to read without them.
+  // Not by pattern — a regular expression over these ranges is the kind the linter asks about every
+  // time — and not over `[...message]`, which walks and allocates the whole message, however long,
+  // to then throw all but the first two hundred away. `for…of` walks code points and stops at the
+  // bound, so a message cut at one cannot end in half a surrogate pair, which a body encodes as
+  // `U+FFFD` and reads as damage rather than as a sentence that ran out.
   let said = '';
-  for (let at = 0; at < Math.min(message.length, FAILURE_MESSAGE_BYTES); at += 1) {
-    const point = message.codePointAt(at) ?? 0;
-    said += point < CONTROL_CHARACTERS ? ' ' : message.charAt(at);
+  let taken = 0;
+  for (const character of message) {
+    if (taken >= FAILURE_MESSAGE_CHARACTERS) break;
+    said += isControlOrSeparator(character) ? ' ' : character;
+    taken += 1;
   }
   const trimmed = said.trim();
   return trimmed === '' ? 'Internal Server Error' : `Internal Server Error: ${trimmed}`;
