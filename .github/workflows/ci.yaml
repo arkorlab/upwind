@@ -21,6 +21,13 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # First, because two packages are read through the `dist` they are built into rather than
+      # through their sources — `@stayingupwind/sdk` and `@stayingupwind/auth`, both of which an
+      # *application's* bundler reads, and neither of which can therefore name `src` in `exports`.
+      # A sibling that imports one of them resolves it to declarations that do not exist until this
+      # has run, so everything type-aware below has to come after it. `pnpm -r` builds in dependency
+      # order, so this is also what proves that order is right.
+      - run: pnpm build
       - run: pnpm typecheck
       # Type-aware linting of every package holds more than Node's default heap.
       - run: pnpm lint
@@ -28,7 +35,6 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=8192
       - run: pnpm format
       - run: pnpm knip
-      - run: pnpm build
       # Every rewrite of Next.js's output still finds what it insists on, in the version this
       # repository builds against. The whole supported range, and the canary, are the
       # `next-matrix` workflow's: they cost a download per version.

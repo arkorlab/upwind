@@ -6,6 +6,7 @@ import path from 'node:path';
 
 import { UPWIND_LOCAL_RESOURCES_ENV } from '@stayingupwind/core/paas';
 
+import { prepareAuth } from '../auth/prepare.ts';
 import { ADAPTER_PACKAGE, ADAPTER_PATH_ENV, resolveAdapterPath } from '../dev/adapter.ts';
 import { resolveFromProject } from '../dev/next-app.ts';
 import { localResourcesEntry, PROJECT_DIR_ENV } from '../resources/entry-path.ts';
@@ -186,11 +187,20 @@ export async function runBuild(options: BuildOptions): Promise<never> {
     adapter === undefined
       ? { [ADAPTER_PATH_ENV]: '' }
       : { [ADAPTER_PATH_ENV]: adapter, ...storageEnv(options.projectDir) };
+  // Before the child, because the route it mounts has to be on disk when Next.js reads `app`. This
+  // runs for a Vercel build too: what that build must not have is upwind's adapter and upwind's
+  // storage, and a route the project would need either way is neither of those — leaving it out
+  // would make `upwind build` produce a different application depending on where it ran.
+  //
+  // The secret goes into the child's environment and no further. A build that has a real
+  // `AUTH_SECRET` never reads it; one that does not is rendering a development application, and
+  // rendering it with a key that survives to the next build is what makes that useful at all.
+  const authEnv = await prepareAuth(options.projectDir);
   // The same Node that is running this, so the command is reached without a shebang, a PATH lookup or
   // a shell.
   const child = spawn(process.execPath, [command, 'build', options.projectDir], {
     cwd: options.projectDir,
-    env: { ...process.env, ...adapterEnv },
+    env: { ...process.env, ...adapterEnv, ...authEnv },
     stdio: 'inherit',
   });
   // A signal this process is sent is the build's too. Without this, a `kill` on `upwind build` would

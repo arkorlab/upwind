@@ -417,8 +417,9 @@ The adapter looks for `upwind.config.ts`, `upwind.jsonc`, `upwind.json` and `ver
 | [`@stayingupwind/runtime`](packages/runtime) | [![@stayingupwind/runtime](https://img.shields.io/npm/v/@stayingupwind/runtime?label=&color=cb3837)](https://www.npmjs.com/package/@stayingupwind/runtime) | The code a deployment's Functions run — bundled into them by the adapter, never installed by hand          |
 | [`@stayingupwind/core`](packages/core)       | [![@stayingupwind/core](https://img.shields.io/npm/v/@stayingupwind/core?label=&color=cb3837)](https://www.npmjs.com/package/@stayingupwind/core)          | The contract: the bundle's schema, the cache's terms, request classification, the edge ↔ Function protocol |
 | [`@stayingupwind/sdk`](packages/sdk)         | [![@stayingupwind/sdk](https://img.shields.io/npm/v/@stayingupwind/sdk?label=&color=cb3837)](https://www.npmjs.com/package/@stayingupwind/sdk)             | What an app reads its own D1, KV and R2 through, with no configuration                                     |
+| [`@stayingupwind/auth`](packages/auth)       | [![@stayingupwind/auth](https://img.shields.io/npm/v/@stayingupwind/auth?label=&color=cb3837)](https://www.npmjs.com/package/@stayingupwind/auth)          | Better Auth with nothing to configure — including the OAuth provider, until you have one                   |
 
-An app depends on two of them — `upwind` and `@stayingupwind/adapter` — plus the SDK once it reads storage. All of them share one version, and `create-upwind` asks for its own version of both (`^x.y.z`), so what scaffolds a project and what runs it start out as the same generation.
+An app depends on two of them — `upwind` and `@stayingupwind/adapter` — plus the SDK once it reads storage, and the auth wrapper once it signs anybody in. All of them share one version, and `create-upwind` asks for its own version of both (`^x.y.z`), so what scaffolds a project and what runs it start out as the same generation.
 
 ## 📐 Which Next.js
 
