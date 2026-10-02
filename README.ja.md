@@ -123,7 +123,7 @@ pnpm dev
   - Local:     http://localhost:3000
   - Internal:  http://localhost:3000/__upwind
 
-  ✓ Next.js 16.3.7 ready in 1127ms
+  ✓ Next.js 16.3.8 ready in 1127ms
 ```
 
 <http://localhost:3000> を開いて、`app/page.tsx` を編集してみてください。いつもの Next.js の開発サーバーです。デプロイ用バンドルをビルドするには:
