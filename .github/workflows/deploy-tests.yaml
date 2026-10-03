@@ -13,16 +13,17 @@ name: Deploy tests
 # of ids in `ADAPTER_TEST_PROJECT_IDS` is the parallelism, and with one id the shards queue behind each
 # other.
 #
-# **That is what bounds a full run.** The manifest selects around 1,100 suites — measured at 47–74s each
-# for small ones, so 18–28 hours of deployments — against two limits: 6 hours of execution per job, and
+# **That is what bounds a full run.** The manifest selects around 1,100 suites, about six hundred of
+# which deploy (the rest declare `skipDeployment`), against two limits: 6 hours of execution per job, and
 # **24 hours in the queue before a job is cancelled**. Queueing behind one project, the shards have to
-# satisfy both at once, and they pull in opposite directions: a shard runs for `total / n + 3min` of its
-# own setup (measured: two checkouts, two installs, Next.js built, Chromium), which wants `n` large, and
-# the last one starts after the other `n - 1` of those, which wants `n` small. At 18 hours six shards
-# start the last at about 15½; at 28 they start it at about 23½, which is inside the day by less than
-# half an hour. So `6` is the default because it satisfies both at the estimate, not because it divides
-# nicely — and a run at the top of that range, or past it, wants as many projects as it has shards, or
-# the slices taken one dispatch at a time with `only`.
+# satisfy both at once, and they pull in opposite directions: a shard runs for `total / n` plus about three
+# minutes of its own setup (two checkouts, two installs, Next.js built, Chromium), which wants `n` large,
+# and the last one starts after the other `n - 1` of those, which wants `n` small. Measured: a full pass in
+# six shards took 11h41m, about two hours a shard, the last starting nine and three-quarter hours in. A
+# settle (`ADAPTER_TEST_SETTLE_SECONDS`) is paid by every deploying suite, so at its one-minute ceiling it
+# adds about a hundred minutes a shard — still well inside both limits at six. A run much longer than the
+# measured one wants as many projects as it has shards, or the slices taken one dispatch at a time with
+# `only`.
 
 on:
   workflow_dispatch:

@@ -78,16 +78,19 @@ many pieces (upstream's own `-g n/total`), and `only` runs one piece on its own,
 after it was cut short.
 
 **Queueing behind one project, a full run is bounded by two of GitHub's limits at once**, and they pull in
-opposite directions. The manifest selects around 1,100 suites, so 18–28 hours of deployments. A shard runs
-for `total / n` plus about three minutes of its own setup, and must stay under the 6 hours a job may
-execute; the last shard waits for the other `n - 1` of those, and must start within the 24 hours a job may
-sit in the queue before it is cancelled. Six shards start the last one at about 15½ hours for an 18-hour
-run and about 23½ for a 28-hour one — inside the day, in the second case by under half an hour, which is
-why the default is `6`.
+opposite directions. The manifest selects around 1,100 suites, about six hundred of which deploy — the
+rest declare `skipDeployment` upstream and pass in a couple of seconds. A shard runs for `total / n` plus
+about three minutes of its own setup, and must stay under the 6 hours a job may execute; the last shard
+waits for the other `n - 1` of those, and must start within the 24 hours a job may sit in the queue before
+it is cancelled. Measured: a full pass in six shards took 11h41m, about two hours a shard, the last one
+starting nine and three-quarter hours in — which is why the default is `6`, with room on both sides.
+
+A settle is paid by every deploying suite: at its one-minute ceiling, about six hundred minutes across the
+run, a hundred or so a shard — about four hours a shard at most, at six, still inside both limits.
 
 Given a project per shard, none of that applies: the jobs all start at once, the queue limit never comes
-near, and the run is one shard long. That is the section below, and it is the answer for a run at the top
-of the range rather than a different number of shards.
+near, and the run is one shard long. That is the section below, and it is the answer for a run much longer
+than the measured one rather than a different number of shards.
 
 Without a host at all, `pnpm check:deploy-tests` runs the three hooks against a fake one: a fake
 application, a fake API, and the real scripts. It is what CI runs, and what keeps the shell contract
@@ -155,7 +158,10 @@ Beyond that, four limits are worth knowing before reading a failure as this adap
   page names a deployment either, the probe is the best there is and the log says so. It is paid once
   per fixture, so it is worth setting to the host's real bound rather than to a round number above it,
   and it stops at a minute: around six hundred of the manifest's suites deploy, and a minute each is as
-  much as the workflow's default split has room for — a host that needs longer wants more projects.
+  much as the workflow's default split has room for. A host that takes longer than that to bring a
+  deployment in everywhere is not one this setting can serve — more projects shorten the queue, not the
+  wait. The page is asked for only when a settle is set, and is a request the application's own tests did
+  not make: a fixture whose tests count its first visit may see one more.
 - **The Next.js under test must be inside `SUPPORTED_NEXT_RANGE`.** Outside it the host refuses every
   deployment, and the suite reports every suite as failed for a reason that has nothing to do with the
   test. Inside it, 16.2 does without the content-addressed `/_next/static/immutable/*` — it ignores the

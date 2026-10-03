@@ -23,11 +23,12 @@ const NAMES = {
 
 const MS_PER_SECOND = 1000;
 /**
- * The longest settle this takes. It is paid once per deployment, and a full run of the manifest is
- * around six hundred of them, in shards that each have a few hours to finish: a minute is already up to
- * three hours more in each of the six the workflow cuts the manifest into by default, which is what that
- * plan has room for. A host that needs longer than a minute to bring a deployment in everywhere is a
- * slower run than any shard can absorb — the answer there is more projects, not a longer wait.
+ * The longest settle this takes. It is paid once per deployment, and a full run of the manifest is around
+ * six hundred of them: a minute each is some six hundred minutes across the run, a hundred or so in each
+ * of the six shards the workflow cuts it into by default — on top of the two hours a shard measured
+ * without one, which is what that plan has room for. A host that needs longer than a minute to bring a
+ * deployment in everywhere is not one this setting can serve: more projects shorten the queue, not the
+ * wait.
  */
 const MAX_SETTLE_SECONDS = 60;
 
