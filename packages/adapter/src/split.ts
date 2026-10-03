@@ -1,4 +1,4 @@
-import { stat } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
@@ -11,6 +11,7 @@ import type { RouteCode, ShippedBlob } from './collect.ts';
 import { MAX_FUNCTION_BYTES } from './dependencies.ts';
 import type { EdgeEntry } from './edge.ts';
 import type { BuiltFunction } from './function.ts';
+import { linkedImportsIn } from './linked-externals.ts';
 import {
   type PlanBudget,
   type PlanItem,
@@ -191,6 +192,13 @@ interface Weights {
   readonly code: ReadonlyMap<string, number>;
   readonly items: Map<string, PlanItem>;
   readonly blobsOf: ReadonlyMap<string, readonly string[]>;
+  /**
+   * The ES modules the one Function carried, by name and size: among them each package the chunks
+   * linked from `.next/node_modules` (`linked-externals.ts`), under the name a chunk imports it by.
+   */
+  readonly modules: ReadonlyMap<string, number>;
+  /** The linked packages each server chunk imports, as read so far. */
+  readonly linkedIn: Map<string, readonly string[]>;
 }
 
 /**
@@ -227,7 +235,46 @@ function weightsOf(input: SplitInput): Weights {
       blobsOf.set(route, named);
     }
   }
-  return { code, items, blobsOf };
+  const modules = new Map(
+    input.single.spec.modules
+      .filter((module) => module.type === 'esm')
+      .map((module) => [module.name, module.blob.byteLength]),
+  );
+  return { code, items, blobsOf, modules, linkedIn: new Map() };
+}
+
+const SERVER_CHUNKS_SEGMENT = `${path.sep}server${path.sep}chunks${path.sep}`;
+
+/** A file's text, or nothing for one that is not there to read. */
+async function textOf(file: string): Promise<string> {
+  try {
+    return await readFile(file, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * The linked packages a route's code imports. Each is a module of its own, outside the code the
+ * bundler reported, and goes to a Function only with the routes whose chunks import it — so it is
+ * theirs to weigh, not the base's. What two of them share (`__linked/`) is left in the base.
+ */
+async function linkedOf(files: readonly string[], weights: Weights): Promise<string[]> {
+  const ids = new Set<string>();
+  for (const file of files) {
+    if (!file.endsWith('.js') || !file.includes(SERVER_CHUNKS_SEGMENT)) {
+      continue;
+    }
+    let imported = weights.linkedIn.get(file);
+    if (imported === undefined) {
+      imported = linkedImportsIn(await textOf(file));
+      weights.linkedIn.set(file, imported);
+    }
+    for (const id of imported) {
+      ids.add(id);
+    }
+  }
+  return [...ids];
 }
 
 /** Every file of a route's code its trace names: what the one Function's code was weighed by. */
@@ -253,11 +300,21 @@ function wasmOf(route: RouteCode): string[] {
 
 /**
  * The pieces one route needs, by the name the planner weighs them under: the code its trace reaches
- * (`c:`), its WebAssembly (`w:`), the files it reads (`f:`) and the blobs its prerenders name (`b:`).
+ * (`c:`), the linked packages that code imports (`l:`), its WebAssembly (`w:`), the files it reads
+ * (`f:`) and the blobs its prerenders name (`b:`).
  */
 async function piecesOf(route: RouteCode, input: SplitInput, weights: Weights): Promise<string[]> {
   const pieces: string[] = [];
-  for (const file of codeFilesOf(route)) {
+  const files = codeFilesOf(route);
+  const linked = await linkedOf(files, weights);
+  for (const id of linked) {
+    const bytes = weights.modules.get(id);
+    if (bytes !== undefined) {
+      pieces.push(`l:${id}`);
+      weights.items.set(`l:${id}`, { bytes, code: true });
+    }
+  }
+  for (const file of files) {
     const resolved = path.resolve(file);
     const bytes = weights.code.get(resolved);
     if (bytes !== undefined) {
