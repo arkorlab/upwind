@@ -33,12 +33,19 @@ export async function functionSize(
   try {
     for (const module of modules) {
       const content = await readFile(path.join(blobs, module.blob.sha256));
+      // An error raised while the read was awaited was only saved, and a stream that has failed
+      // neither drains nor ends: waiting for either would never return.
+      if (failure !== undefined) {
+        break;
+      }
       if (!gzip.write(content)) {
         await once(gzip, 'drain');
       }
     }
-    gzip.end();
-    await once(gzip, 'end');
+    if (failure === undefined) {
+      gzip.end();
+      await once(gzip, 'end');
+    }
   } finally {
     gzip.destroy();
   }
