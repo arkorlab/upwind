@@ -88,7 +88,11 @@ export class TagState {
   readonly #localReads = new Map<string, Promise<void>>();
   #revision = 0;
   #syncedAt: number | undefined;
-  #inflight: Promise<void> | undefined;
+  /**
+   * The pull under way, and when it began (`sync`). A pull is cut off with the request whose work
+   * it is, and never settles then: one begun longer ago than the hold is not joined but begun again.
+   */
+  #inflight: { readonly pull: Promise<void>; readonly startedAt: number } | undefined;
 
   constructor(options: TagStateOptions) {
     this.#holdMs = options.holdMs;
@@ -173,12 +177,22 @@ export class TagState {
     if (held && options.force !== true) {
       return;
     }
-    // One pull at a time: whoever arrives while it runs waits for the same one.
-    this.#inflight ??= this.#pull(host, now);
+    // One pull at a time: whoever arrives while it runs waits for the same one — while it is younger
+    // than the hold. A pull whose request ended under it never answers, and a sync joining it would
+    // wait for as long as its caller lets it, every later sync of this isolate with it; past the
+    // hold, a sync begins a pull of its own, which the host answers if it can.
+    let inflight = this.#inflight;
+    if (inflight === undefined || now - inflight.startedAt >= this.#holdMs) {
+      inflight = { pull: this.#pull(host, now), startedAt: now };
+      this.#inflight = inflight;
+    }
     try {
-      await this.#inflight;
+      await inflight.pull;
     } finally {
-      this.#inflight = undefined;
+      // A pull begun since, past this one's hold, keeps its place.
+      if (this.#inflight === inflight) {
+        this.#inflight = undefined;
+      }
     }
   }
 

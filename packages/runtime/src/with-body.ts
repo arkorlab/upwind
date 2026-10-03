@@ -3,7 +3,6 @@ import { NEXT_ACTION_HEADER } from '@stayingupwind/core/request';
 
 import { nowMs } from './cache/clock.ts';
 import { currentGeneration } from './cache/current.ts';
-import type { CacheRuntime } from './cache/runtime.ts';
 import { postponedOf } from './documents.ts';
 import { isDraftRequest } from './draft.ts';
 import { type Entry, entryFor } from './entries.ts';
@@ -54,18 +53,22 @@ interface AnsweredFrom {
  * The generation a page was answered from, for an action posted to it: the member's own where the
  * edge had one made for it (`concreteUpgrade`, `generations.ts`), else the class shell's the
  * member was answered from, for a member of a route whose shell has a body. The two are read at
- * once, so a member costs the action no more than one read's wait.
+ * once, so a member costs the action no more than one read's wait. None without a cache.
  */
 async function answeredFrom(
-  runtime: CacheRuntime,
+  input: RoutedInput,
   store: Store,
   shell: Prerender,
   pathname: string,
 ): Promise<AnsweredFrom | undefined> {
+  const runtime = input.cache;
+  if (runtime === undefined) {
+    return undefined;
+  }
   const now = nowMs();
   const generationOf = async (entryPathname: string): Promise<AnsweredFrom | undefined> => {
     const descriptor = descriptorFor(store, shell.route, entryPathname);
-    const lookup = await currentGeneration(runtime, descriptor, now);
+    const lookup = await currentGeneration(runtime, descriptor, now, input.waitUntil);
     return lookup.kind === 'generation' ? { postponed: lookup.current.pack.postponed } : undefined;
   };
   if (shell.body === undefined || shell.pathname === pathname) {
@@ -105,11 +108,7 @@ async function actionPostponedFor(
   if (shell === undefined) {
     return undefined;
   }
-  const runtime = input.cache;
-  const generation =
-    runtime === undefined
-      ? undefined
-      : await answeredFrom(runtime, store, shell, resolved.pathname);
+  const generation = await answeredFrom(input, store, shell, resolved.pathname);
   if (generation === undefined) {
     return postponedOf(store, shell);
   }
