@@ -16,6 +16,7 @@
   ],
   "type": "module",
   "exports": {
+    "./bundle-blobs": "./src/bundle-blobs.ts",
     "./cache-host": "./src/cache/host.ts",
     "./function": "./src/function.ts"
   },

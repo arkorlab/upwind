@@ -5,6 +5,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
+import { isBeforeSecurityFloor, SECURITY_FLOOR } from '@stayingupwind/core/next';
+
 import {
   FIXTURE_COVERAGE,
   type FixtureCoverage,
@@ -419,6 +421,12 @@ async function installedVersion(): Promise<string> {
  * The catalog pin matters most quietly. With no flags this script checks that version and no
  * other, so a pin that had wandered outside the range would leave the whole of CI agreeing with
  * something the range does not admit.
+ *
+ * `SECURITY_FLOOR` is held to the range as well. It is the version a build warns for being older
+ * than, so a floor under the range's own floor is one no build could ever be older than, and one
+ * over its ceiling is a warning on every build there is — either way a line that reads as a policy
+ * and does nothing. What it is for and when it moves is in `@stayingupwind/core/next`; that it can
+ * still fire is this, and that it fires on the right versions is `floorJudgements`.
  */
 async function checkDeclarations(): Promise<string[]> {
   const problems: string[] = [];
@@ -440,6 +448,51 @@ async function checkDeclarations(): Promise<string[]> {
     problems.push(
       `the installed next is ${installed}, which ${SUPPORTED_NEXT_RANGE} does not admit; the catalog pin has to be inside the range it declares`,
     );
+  }
+  const floor = release(SECURITY_FLOOR);
+  if (floor === undefined || !satisfies(floor, comparatorsOf(SUPPORTED_NEXT_RANGE))) {
+    problems.push(
+      `SECURITY_FLOOR is ${SECURITY_FLOOR}, which ${SUPPORTED_NEXT_RANGE} does not admit; a floor outside the range is one no build can be judged against`,
+    );
+  }
+  problems.push(...floorJudgements());
+  return problems;
+}
+
+/**
+ * What `isBeforeSecurityFloor` has to answer, whatever the floor is.
+ *
+ * The warnings it decides are the only thing that tells a build or a development run that its
+ * Next.js is missing fixes, and a comparison that quietly stopped working would take them both out
+ * at once while every check here still passed. So the edges it is written for are asked here, where
+ * CI already runs: the floor itself and a prerelease of it, something under it, something over it,
+ * and the two kinds of string that are not a release at all.
+ *
+ * Phrased against `SECURITY_FLOOR` rather than against literal versions, so moving the floor does
+ * not come with a table of expectations to move with it.
+ */
+function floorJudgements(): string[] {
+  const expected: readonly [version: string, old: boolean][] = [
+    // A version is not older than itself, and a prerelease is judged by the release it is numbered
+    // as — a canary of the floor is not a build without the fixes.
+    [SECURITY_FLOOR, false],
+    [`${SECURITY_FLOOR}-canary.1`, false],
+    ['0.0.0', true],
+    ['999.0.0', false],
+    // Not a release, and so nothing to warn about. The numbers have to be *under* the floor for the
+    // first of these to mean anything: a pattern that read the leading numbers and stopped would
+    // call it old, where the same suffix on the floor itself comes out equal either way and pins
+    // nothing. The second matches no pattern at all, and is here for the path it takes.
+    ['0.0.0garbage', false],
+    ['not a version', false],
+  ];
+  const problems: string[] = [];
+  for (const [version, old] of expected) {
+    if (isBeforeSecurityFloor(version) !== old) {
+      problems.push(
+        `isBeforeSecurityFloor("${version}") is ${String(!old)} against a floor of ${SECURITY_FLOOR}, and has to be ${String(old)}`,
+      );
+    }
   }
   return problems;
 }

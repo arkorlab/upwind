@@ -13,6 +13,11 @@ import { isTrustedHost } from './host.ts';
  * That is the point of it — what a developer asks when nothing is working must not depend on the
  * thing that is not working.
  *
+ * `/__upwind/auth` never reaches this module. It is upwind's path and the application's request, and
+ * `serve.ts` hands it to Next.js before any of the rules below could apply to it — which is why they
+ * can stay as strict as they are. Everything here is still `GET`/`HEAD` and still answers for this
+ * machine alone; authentication is neither, and is not answered here.
+ *
  * The rules:
  *
  * - `GET` and `HEAD` only, until something here has a reason to change state. Then it will need more

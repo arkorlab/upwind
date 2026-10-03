@@ -31,6 +31,7 @@ const CLI_FILES = ['packages/upwind/**/*.ts', 'packages/create-upwind/**/*.ts'];
 const NODE_ONLY_FILES = [
   'packages/adapter/**/*.ts',
   ...CLI_FILES,
+  'packages/auth/scripts/**/*.ts',
   'packages/sdk/scripts/**/*.ts',
   'tools/**/*.ts',
   '*.config.ts',
@@ -38,9 +39,15 @@ const NODE_ONLY_FILES = [
 ];
 /**
  * What has to hold wherever it is evaluated, so it can be read by both of the above — and, for the
- * SDK, by an application, which is a Function as often as it is a development server.
+ * SDK and the auth wrapper, by an application, which is a Function as often as it is a development
+ * server. The restriction that follows from it — no Node.js built-ins — is what holds the auth
+ * package to reading its secret off the environment rather than off the disk the CLI keeps it on.
  */
-const RUNTIME_NEUTRAL_FILES = ['packages/core/**/*.ts', 'packages/sdk/src/**/*.ts'];
+const RUNTIME_NEUTRAL_FILES = [
+  'packages/auth/src/**/*.ts',
+  'packages/core/**/*.ts',
+  'packages/sdk/src/**/*.ts',
+];
 
 /**
  * Plugin `configs` maps are index signatures typed as unions of legacy and flat shapes; resolve one
@@ -447,7 +454,7 @@ export default defineConfig([
   // A build script is the same kind of program: it says what it produced, and the only paths it
   // touches are the ones it is about to write, under its own package.
   {
-    files: ['packages/sdk/scripts/**/*.ts'],
+    files: ['packages/auth/scripts/**/*.ts', 'packages/sdk/scripts/**/*.ts'],
     rules: {
       'no-console': 'off',
       'security/detect-child-process': 'off', // `tsc`, resolved from this package's own install

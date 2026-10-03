@@ -123,7 +123,7 @@ pnpm dev
   - Local:     http://localhost:3000
   - Internal:  http://localhost:3000/__upwind
 
-  ✓ Next.js 16.3.7 ready in 1127ms
+  ✓ Next.js 16.3.8 ready in 1127ms
 ```
 
 <http://localhost:3000> を開いて、`app/page.tsx` を編集してみてください。いつもの Next.js の開発サーバーです。デプロイ用バンドルをビルドするには:
@@ -417,8 +417,9 @@ export default {
 | [`@stayingupwind/runtime`](packages/runtime) | [![@stayingupwind/runtime](https://img.shields.io/npm/v/@stayingupwind/runtime?label=&color=cb3837)](https://www.npmjs.com/package/@stayingupwind/runtime) | デプロイされた Function が動かすコード。アダプターが組み込むもので、手でインストールするものではない |
 | [`@stayingupwind/core`](packages/core)       | [![@stayingupwind/core](https://img.shields.io/npm/v/@stayingupwind/core?label=&color=cb3837)](https://www.npmjs.com/package/@stayingupwind/core)          | 契約そのもの。バンドルのスキーマ、キャッシュの用語、リクエストの分類、エッジと Function のプロトコル |
 | [`@stayingupwind/sdk`](packages/sdk)         | [![@stayingupwind/sdk](https://img.shields.io/npm/v/@stayingupwind/sdk?label=&color=cb3837)](https://www.npmjs.com/package/@stayingupwind/sdk)             | アプリが自分の D1、KV、R2 を設定なしで読むためのもの                                                 |
+| [`@stayingupwind/auth`](packages/auth)       | [![@stayingupwind/auth](https://img.shields.io/npm/v/@stayingupwind/auth?label=&color=cb3837)](https://www.npmjs.com/package/@stayingupwind/auth)          | Better Auth を設定なしで — OAuth プロバイダーが手元にない間は、それも含めて                          |
 
-アプリが依存するのはこのうち 2 つ、`upwind` と `@stayingupwind/adapter` です（ストレージを読むなら SDK も）。すべてのパッケージは 1 つのバージョンを共有し、新しいプロジェクトは `create-upwind` 自身のバージョン（`^x.y.z`）でそれらを指定するので、プロジェクトを作るものと動かすものは、同じ世代から始まります。
+アプリが依存するのはこのうち 2 つ、`upwind` と `@stayingupwind/adapter` です（ストレージを読むなら SDK も、サインインさせるなら auth も）。すべてのパッケージは 1 つのバージョンを共有し、新しいプロジェクトは `create-upwind` 自身のバージョン（`^x.y.z`）でそれらを指定するので、プロジェクトを作るものと動かすものは、同じ世代から始まります。
 
 ## 📐 対応する Next.js
 
