@@ -19,8 +19,9 @@ import { compareCodeUnits } from '@stayingupwind/core/util';
  *    routes that share nothing are merged last, smallest first, while there is still room.
  * 3. It stops when no two units fit together. What is left is the plan: one Function per unit.
  *
- * A unit past a budget on its own stands in a Function of its own — but takes in another unit whose
- * code it mostly has, since leaving the two apart would carry that code twice for nothing.
+ * A unit past the code budget on its own stands in a Function of its own — but takes in another
+ * unit whose code it mostly has, within the size budget, since leaving the two apart would carry
+ * that code twice for nothing.
  *
  * Nothing here measures anything or reads a file. It is handed what each route is made of and what
  * every piece weighs — the build measured both — and it answers the same for the same input in any
@@ -245,23 +246,24 @@ class Planner {
     const bytes = a.bytes + b.bytes - sharedBytes;
     const codeBytes = a.codeBytes + b.codeBytes - sharedCode;
     const added = codeBytes - Math.max(a.codeBytes, b.codeBytes);
-    // Within both budgets — or past one already, and taking on a cluster whose code it mostly has:
-    // the merge adds no more code than the two share, so what they share is carried once rather
-    // than in two Functions, and no Function within the budgets is pushed past them.
-    const absorbed = (this.#past(a) || this.#past(b)) && added <= sharedCode;
-    if (!absorbed && this.#past({ bytes, codeBytes })) {
+    // Within the size budget always: what a Function weighs has a limit of its own past the budget.
+    // Within the code budget too — or past it already, and taking on a cluster whose code it mostly
+    // has: the merge adds no more code than the two share, so what they share is carried once
+    // rather than in two Functions, and no Function within the budget is pushed past it.
+    const { base } = this.#input;
+    if (base.bytes + bytes > this.#budget.maxBytes) {
+      return undefined;
+    }
+    const absorbed = (this.#pastCode(a) || this.#pastCode(b)) && added <= sharedCode;
+    if (!absorbed && this.#pastCode({ codeBytes })) {
       return undefined;
     }
     return { other: j, added, shared: sharedCode, prefix: commonPrefix(a.first, b.first) };
   }
 
-  /** Whether a cluster, with what every Function carries, is past either budget. */
-  #past(cluster: { readonly bytes: number; readonly codeBytes: number }): boolean {
-    const { base } = this.#input;
-    return (
-      base.bytes + cluster.bytes > this.#budget.maxBytes ||
-      base.codeBytes + cluster.codeBytes > this.#budget.maxCodeBytes
-    );
+  /** Whether a cluster, with what every Function carries, is past the code budget. */
+  #pastCode(cluster: { readonly codeBytes: number }): boolean {
+    return this.#input.base.codeBytes + cluster.codeBytes > this.#budget.maxCodeBytes;
   }
 
   /** The best merge for one cluster among all the others. */
