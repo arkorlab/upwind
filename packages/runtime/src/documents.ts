@@ -14,6 +14,7 @@ import {
   HTTP_NOT_FOUND,
   HTTP_OK,
   invokeEntry,
+  notFoundResponse,
   POSTPONED_HEADER,
   PRERENDER_HEADER,
   prerenderHeaders,
@@ -32,6 +33,8 @@ import { entrypointKindOf, findShell, isClassShell, type Store } from './store.t
  */
 
 const NOT_FOUND_ENTRY_ID = '/_not-found';
+/** The page every status of the Pages Router falls back to, a not-found's among them. */
+const ERROR_ENTRY_ID = '/_error';
 /** Next.js writes the static not-found document as the `/404` static file, under the `basePath`. */
 const NOT_FOUND_PAGE = '/404';
 const RSC_SUFFIX = '.rsc';
@@ -119,10 +122,14 @@ export async function documentFromBuild(
     bypassesPrerender(store, input.request, shell, resolved.url) ||
     (shell !== undefined && crawlerWantsWholePage(store, shell, resolved, input.request))
   ) {
-    return invokeEntry(input, entry, resolved.url, failureAnswer(store, entry, resolved.route));
+    return invokeEntry(input, entry, resolved.url, {
+      onFailure: failureAnswer(store, entry, resolved.route),
+    });
   }
   if (shell?.body === undefined) {
-    return invokeEntry(input, entry, resolved.url, failureAnswer(store, entry, resolved.route));
+    return invokeEntry(input, entry, resolved.url, {
+      onFailure: failureAnswer(store, entry, resolved.route),
+    });
   }
   const status = shell.initialStatus ?? fallbackStatus;
   if (shell.postponed === undefined) {
@@ -336,13 +343,59 @@ async function notFoundEntry(
 }
 
 /**
+ * The Pages Router's error page, for a document that landed nowhere in an application with no page
+ * of its own for that: Next.js's own server sets 404 and renders `/_error` when there is neither a
+ * `/_not-found` nor a `/404` (`renderErrorToResponseImpl`, `server/base-server.ts`). A build has no
+ * `/404` when it could not write one at build time — an `_app` with `getInitialProps` is the common
+ * case — and its error page then reads the 404 off the response (`pages/_error.tsx`), which is why
+ * it is set before the render rather than put on its answer afterwards.
+ *
+ * Not for React Server Components: only the App Router's client asks for them, and its application
+ * has a `/_not-found` of its own.
+ */
+async function errorPageEntry(
+  input: RoutedInput,
+  store: Store,
+): Promise<{ readonly entry: Entry; readonly route: string } | undefined> {
+  const route = `${store.manifest.config.basePath}${ERROR_ENTRY_ID}`;
+  if (entrypointKindOf(store, route) !== 'pages') {
+    return undefined;
+  }
+  const entry = await entryFor(input, route);
+  return entry?.kind === 'node' ? { entry, route } : undefined;
+}
+
+/**
+ * The not-found where no page of the application's own renders one: the Pages Router's error page
+ * under a 404 (`errorPageEntry`), and failing that, a plain 404.
+ */
+async function lastNotFound(
+  input: RoutedInput,
+  store: Store,
+  at: URL,
+  rsc: boolean,
+): Promise<Response> {
+  const fallback = rsc ? undefined : await errorPageEntry(input, store);
+  if (fallback !== undefined) {
+    return invokeEntry(input, fallback.entry, `${at.pathname}${at.search}`, {
+      onFailure: failureAnswer(store, fallback.entry, fallback.route),
+      status: HTTP_NOT_FOUND,
+    });
+  }
+  // Nothing below will read the body, and leaving it queued keeps the whole upload in the isolate
+  // for an answer that has none.
+  releaseStream(input.request.body, 'not found: handler body unused');
+  return notFoundResponse();
+}
+
+/**
  * The not-found, as the request asks for it. A document: the file `next build` wrote when the
  * page was complete at build time, else the page's own shell resumed — a not-found page that
  * reads the request renders no differently from any other. React Server Components, for a
  * navigation on the client that landed nowhere: the page's payload resumed from the build's
- * state, as any route's is, under the status the not-found stands for. Failing every one, a
- * plain 404. Rendered for `at`, the URL routing ended on, as a route is rendered for the URL it
- * resolved to.
+ * state, as any route's is, under the status the not-found stands for. Failing those, the Pages
+ * Router's error page under a 404 (`errorPageEntry`), and failing that too, a plain 404. Rendered
+ * for `at`, the URL routing ended on, as a route is rendered for the URL it resolved to.
  */
 export async function notFound(input: RoutedInput, store: Store, at: URL): Promise<Response> {
   const { basePath } = store.manifest.config;
@@ -370,10 +423,7 @@ export async function notFound(input: RoutedInput, store: Store, at: URL): Promi
     }
   }
   if (rendered === undefined) {
-    // Nothing below will read the body, and leaving it queued keeps the whole upload in the
-    // isolate for an answer that has none.
-    releaseStream(input.request.body, 'not found: handler body unused');
-    return new Response('Not Found', { status: HTTP_NOT_FOUND });
+    return lastNotFound(input, store, at, rsc);
   }
   const { entry, route } = rendered;
   const resolved: Resolved = { route, pathname: route, url: `${at.pathname}${at.search}` };

@@ -45,6 +45,12 @@ export interface InvokeInput {
   readonly expectNoResponse?: boolean | undefined;
   /** The route's own answer to a failure, when it has one: the Pages Router's error page. */
   readonly onFailure?: FailureAnswer | undefined;
+  /**
+   * The status the response starts at, for a render that reads it: Next.js sets a not-found's 404
+   * before it renders the Pages Router's error page, whose `getInitialProps` reads the status off
+   * the response, and sends whatever status the response then has.
+   */
+  readonly status?: number | undefined;
 }
 
 /** A port on the Function's own loopback: nothing listens there but this server. */
@@ -115,6 +121,9 @@ async function invoke(
   const keepalive = setTimeout(() => {
     // Nothing. Its being pending is the whole of it.
   }, RENDER_KEEPALIVE_MS);
+  if (input.status !== undefined) {
+    res.statusCode = input.status;
+  }
   try {
     await runWithTaskScheduler(() => {
       return run(() =>
