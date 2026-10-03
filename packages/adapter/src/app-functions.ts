@@ -10,10 +10,12 @@ import type { BuildContext, RouteCode, ShippedBlob } from './collect.ts';
 import { auditFunctionSize } from './dependencies.ts';
 import type { EdgeEntry } from './edge.ts';
 import { buildFunction, type BuiltFunction, type EntryModule } from './function.ts';
+import type { KeptMaps } from './kept-maps.ts';
 import type { TextModule } from './manifests.ts';
 import type { PatchContext } from './patches/index.ts';
 import type { PlanBudget } from './plan.ts';
 import { sameChunks } from './same-chunks.ts';
+import { carriesMaps, type SourceMapsOption } from './source-maps.ts';
 import {
   carriesBlob,
   everyFunction,
@@ -60,7 +62,9 @@ export interface FunctionsContext {
   readonly outDir: string;
   readonly blobs: BlobStore;
   readonly cacheHostModule: string | undefined;
-  readonly sourceMaps: boolean;
+  readonly sourceMaps: SourceMapsOption;
+  /** The maps that came through the build's `runAfterProductionCompile` (`kept-maps.ts`). */
+  readonly keptMaps: KeptMaps | undefined;
   readonly manifests: readonly TextModule[];
   readonly hook: HookParts;
   readonly middleware: MiddlewareParts;
@@ -207,7 +211,10 @@ export async function buildAppFunction(
     manifests: context.manifests,
     runtimeManifest,
     cacheHostModule: context.cacheHostModule,
-    ...(context.sourceMaps && { sourceMaps: true }),
+    ...(carriesMaps(context.sourceMaps) && {
+      sourceMaps: context.sourceMaps,
+      keptMaps: context.keptMaps,
+    }),
     blobs: parts.blobs,
     files: [...parts.files, ...inlineAssetFiles(edgeEntries, ctx.projectDir)],
     blobStore: context.blobs,
@@ -242,7 +249,10 @@ export async function buildMiddlewareFunction(
     runtimeManifest,
     cacheHostModule: undefined,
     // Its own maps all the same: a middleware frame is only resolvable where they were built.
-    ...(context.sourceMaps && { sourceMaps: true }),
+    ...(carriesMaps(context.sourceMaps) && {
+      sourceMaps: context.sourceMaps,
+      keptMaps: context.keptMaps,
+    }),
     blobs: [],
     files: [...context.files.middleware, ...inlineAssetFiles(middleware.edge, ctx.projectDir)],
     blobStore: context.blobs,

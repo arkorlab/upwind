@@ -49,9 +49,11 @@ import type { EdgeEntry } from './edge.ts';
 import { exists } from './fs.ts';
 import { type BuiltFunction, type EntryModule, middlewareManifest } from './function.ts';
 import { composedInstrumentation, writeClientInstrumentation } from './instrumentation.ts';
+import { keepMapsThrough, readKeptMaps } from './kept-maps.ts';
 import { collectManifests } from './manifests.ts';
 import type { PlanBudget } from './plan.ts';
 import { readProjectConfig } from './project-config.ts';
+import { carriesMaps, type SourceMapsOption } from './source-maps.ts';
 import { checkSplitOptions, type SplitOptions, splitBudget } from './split.ts';
 import { collectStaticFiles } from './static-files.ts';
 import { type TracedFile, tracedFiles } from './traced-files.ts';
@@ -225,10 +227,14 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
       entrypoints.flatMap((entry) => (entry.runtime === 'edge' ? [entry.pathname] : [])),
     ),
   });
+  // What came through the build's `runAfterProductionCompile`, for every part of this build that
+  // looks for a chunk's map (`kept-maps.ts`).
+  const keptMaps = carriesMaps(options.sourceMaps) ? await readKeptMaps(ctx.distDir) : undefined;
   const { files: staticFiles, sourceMaps: clientMaps } = await collectStaticFiles(
     ctx,
     blobs,
-    options.sourceMaps === true,
+    carriesMaps(options.sourceMaps),
+    keptMaps,
   );
   const middleware = middlewareOutput(ctx.outputs);
 
@@ -259,7 +265,8 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     outDir,
     blobs,
     cacheHostModule: options.cacheHostModule,
-    sourceMaps: options.sourceMaps === true,
+    sourceMaps: options.sourceMaps,
+    keptMaps,
     manifests,
     hook: instrumentation,
     middleware: { output: middleware, ...middlewarePlacement(middleware) },
@@ -550,8 +557,16 @@ export interface AdapterOptions {
    * static files**. Next.js serves the browser maps it emits, and a deployment that published
    * them would publish the application's source with them; here they travel as blobs the host
    * stores and nothing serves.
+   *
+   * The maps are kept through the project's own `runAfterProductionCompile`, where a plugin that
+   * uploads them elsewhere deletes them (`kept-maps.ts`), and carried flat: an index map, which
+   * Turbopack writes when debug IDs are on, is made one list of mappings (`flattened`).
+   *
+   * `'project'` is the same, with each Function's map kept to the files the project wrote
+   * (`projectOnly`): a frame inside a package, or inside the build's own output, reads as built,
+   * and the map is a fraction of the size. A browser map describes one chunk and is kept whole.
    */
-  readonly sourceMaps?: boolean | undefined;
+  readonly sourceMaps?: SourceMapsOption;
   /**
    * How the application's routes are spread across app Functions.
    *
@@ -701,12 +716,20 @@ export function createAdapter(options: AdapterOptions = {}): NextAdapter {
         // `immutableByBuild`).
         config.supportsImmutableAssets = true;
         renderInOneProcessForStorage(config);
-        if (options.sourceMaps === true) {
+        if (carriesMaps(options.sourceMaps)) {
           // Both halves, because a stack has both in it: a page's frames are in the browser
           // chunks, and a render's are in the server ones. What keeps the browser maps from being
           // served is `onBuildComplete`, which takes them out of the static files.
           config.productionBrowserSourceMaps = true;
           config.experimental.serverSourceMaps = true;
+          // And what keeps them at all, where the project's own hook would take them away first.
+          // `compiler` is `{}` among Next.js's defaults, but asked of rather than assumed: this
+          // adapter takes a Next.js as old as 16.2, and an absent one has no hook to wrap anyway.
+          const compiler = config.compiler as BuildConfig['compiler'] | undefined;
+          const kept = keepMapsThrough(compiler?.runAfterProductionCompile);
+          if (compiler !== undefined && kept !== undefined) {
+            compiler.runAfterProductionCompile = kept;
+          }
         }
         if (options.clientInstrumentationSource !== undefined) {
           await injectClientInstrumentation(
