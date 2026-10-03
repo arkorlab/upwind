@@ -1,6 +1,6 @@
 import type { ProjectManifest, RouteEntry } from '../manifest/index.ts';
 import { anyConditionHolds } from './conditions.ts';
-import { isBotUserAgent, isHtmlLimitedBotUserAgent } from './constants.ts';
+import { isHtmlLimitedBotUserAgent } from './constants.ts';
 import {
   afterCharacterClass,
   afterGroup,
@@ -30,24 +30,6 @@ import {
 const MAX_TESTED_USER_AGENT_LENGTH = 512;
 
 /**
- * Next.js's own list, run as an application's is, no further than `MAX_TESTED_USER_AGENT_LENGTH`.
- * Its leading alternative (`[\w-]+-Google`) backtracks from every position of an agent it does
- * not name, at a cost that grows with the square of the agent's length, and a request may carry
- * headers of a hundred kilobytes: a longer agent is taken to be named, and left to the Function.
- */
-function namedByNextList(userAgent: string): boolean {
-  return userAgent.length > MAX_TESTED_USER_AGENT_LENGTH || isHtmlLimitedBotUserAgent(userAgent);
-}
-
-/**
- * Whether an agent names a crawler, as Next.js tells one (`isBot`), bounded as the lists are: a
- * longer agent is taken for one, and left to the Function.
- */
-export function namesCrawler(userAgent: string): boolean {
-  return userAgent.length > MAX_TESTED_USER_AGENT_LENGTH || isBotUserAgent(userAgent);
-}
-
-/**
  * The longest pattern run here. Its alternatives without a repetition cost at most their own
  * length at each position of the user agent, so this bounds them all together: well past Next.js's
  * list (about 300 characters) with an application's own names added to it.
@@ -75,7 +57,10 @@ const MAX_BACKTRACKING_REPETITIONS = 2;
  * Next.js's own list, as the source it tests (`HTML_LIMITED_BOT_UA_RE_STRING`, `is-bot.js`).
  * Loading the config puts it in `htmlLimitedBots` when an application names no list, so it is the
  * pattern nearly every build records. It is the list `isHtmlLimitedBotUserAgent` reads without
- * backtracking, so it is read that way, at any length, rather than compiled.
+ * backtracking, so it is read that way, at any length, rather than compiled. Compiled, its leading
+ * `[\w-]+-Google` backtracks from every position of an agent it does not name, at a cost that grows
+ * with the square of the agent's length: four seconds at 50 KB, measured. Read without, it costs
+ * a millisecond at 128 KB, and no agent is too long to be judged.
  */
 const NEXT_HTML_LIMITED_BOTS = String.raw`[\w-]+-Google|Google-[\w-]+|Chrome-Lighthouse|Slurp|DuckDuckBot|baiduspider|yandex|sogou|bitlybot|tumblr|vkShare|quora link preview|redditbot|ia_archiver|Bingbot|BingPreview|applebot|facebookexternalhit|facebookcatalog|Twitterbot|LinkedInBot|Slackbot|Discordbot|WhatsApp|SkypeUriPreview|Yeti|googleweblight`;
 
@@ -165,7 +150,10 @@ interface Piece {
   readonly contents?: number | undefined;
 }
 
-/** The repetition of a `.` whose quantifier is spelled from `from` to `to`, lazy or not. */
+/**
+ * The repetition a quantifier spelled from `from` to `to` allows, lazy or not: of a `.`, the run of
+ * anything it makes.
+ */
 function anyRunOf(pattern: string, from: number, to: number): AnyRun {
   const spelled = pattern.slice(from, to - (to - from > 1 && pattern[to - 1] === '?' ? 1 : 0));
   switch (spelled) {
@@ -381,7 +369,7 @@ function compiled(pattern: string): RegExp | undefined {
  */
 function judgeOf(pattern: string): BlockingJudge | undefined {
   if (pattern === NEXT_HTML_LIMITED_BOTS) {
-    return namedByNextList;
+    return isHtmlLimitedBotUserAgent;
   }
   // A pattern Next.js could not compile is not run here either, simplified or not.
   if (pattern.length > MAX_READ_PATTERN_LENGTH || compiled(pattern) === undefined) {
@@ -423,7 +411,7 @@ interface ListJudgement {
 const judgements = new WeakMap<ProjectManifest, ListJudgement>();
 
 /** Next.js's own list, as the edge judges it: an application that names none. */
-const NEXT_JUDGEMENT: ListJudgement = { judge: namedByNextList, runs: true };
+const NEXT_JUDGEMENT: ListJudgement = { judge: isHtmlLimitedBotUserAgent, runs: true };
 
 /**
  * The judgement of the list a manifest's application sends blocking metadata by: the one it
@@ -603,9 +591,9 @@ function writtenFrom(value: string, list: string): boolean {
  * Whether the edge passes on every request that names an agent, for this route: the list it judges
  * the route's agents by — the manifest's, or the crawler condition `next build` wrote from it in a
  * manifest that records none — is one it will not run (`namesEveryAgent`), or one that names every
- * agent there is, an alternative of it simplified to nothing (`simplifiedPattern`). Then, and only
- * then, a request that names no agent is the one visitor the route's shell goes to. Of a page the
- * build finished, the list is not asked, and no agent is passed on for it.
+ * agent there is (`namesAll`). Then, and only then, a request that names no agent is the one
+ * visitor the route's shell goes to. Of a page the build finished, the list is not asked, and no
+ * agent is passed on for it.
  */
 export function passesOnEveryAgent(
   entry: Pick<RouteEntry, 'bypassFor' | 'cache'>,
@@ -618,12 +606,62 @@ export function passesOnEveryAgent(
   return pattern !== undefined && pattern !== '' && namesAll(pattern);
 }
 
-/** Whether a list names every agent as the edge judges it: run nowhere, or simplified to nothing. */
+/**
+ * Whether a list names every agent as the edge judges it: run nowhere, or run as a pattern one of
+ * whose alternatives names every agent alone (`namesEveryAgentAlone`) — as the empty one does, which
+ * simplification leaves where an alternative matched anything (`simplifiedPattern`).
+ */
 function namesAll(pattern: string): boolean {
-  return (
-    pattern !== NEXT_HTML_LIMITED_BOTS &&
-    (judgeOf(pattern) === undefined || simplifiedPattern(pattern) === '')
+  if (pattern === NEXT_HTML_LIMITED_BOTS) {
+    return false;
+  }
+  if (judgeOf(pattern) === undefined) {
+    return true;
+  }
+  const alternatives = alternativesOf(simplifiedPattern(pattern));
+  return alternatives.some((alternative) => namesEveryAgentAlone(alternative));
+}
+
+/**
+ * Whether one alternative of a pattern the edge runs names every agent, tested anywhere in it: it
+ * matches any agent while taking one character of it at most. Each of its pieces may take nothing —
+ * an anchor, or an atom whose quantifier allows none (`a*`, `x?`) — but for one `.` at most, which
+ * takes a character every agent holds: its first, with every `^` before it, or its last, with every
+ * `$` after it. With anchors of both kinds the match is the whole agent, which the rest of the
+ * alternative has to name. `a*`, `^`, `$` and `.` name every agent; `^$`, `^.$`, `..` and `\b` do
+ * not. A piece that takes a character other than `.` is not counted as one any agent holds, though
+ * one may be (`[\s\S]`): an alternative is taken to name some agents only, where in doubt.
+ */
+function namesEveryAgentAlone(alternative: string): boolean {
+  const pieces = piecesOf(alternative);
+  if (pieces === undefined || new Set(pieces.flatMap((piece) => piece.anchor ?? [])).size > 1) {
+    return false;
+  }
+  const taking = pieces.filter(
+    (piece) => piece.anchor === undefined && fewestTaken(alternative, piece) !== 0,
   );
+  const [taken] = taking;
+  if (taken === undefined) {
+    return true;
+  }
+  if (taking.length > 1 || taken.any?.fewest !== 1) {
+    return false;
+  }
+  return pieces.every((piece) => {
+    if (piece.anchor === undefined) {
+      return true;
+    }
+    return piece.anchor === '^' ? piece.end <= taken.start : piece.start >= taken.end;
+  });
+}
+
+/**
+ * The fewest times a piece of an alternative is taken — its quantifier's least, or once — or
+ * `undefined` for one that is no single atom, such as a group.
+ */
+function fewestTaken(alternative: string, piece: Piece): number | undefined {
+  const atom = atomAt(alternative, piece.start);
+  return atom === undefined ? undefined : anyRunOf(alternative, atom.end, piece.end).fewest;
 }
 
 /** What Next.js 16.4 wraps the list in, as the route's condition: anywhere in the agent. */
