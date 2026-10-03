@@ -2,9 +2,9 @@ import { responseToMiddlewareResult } from '@next/routing';
 
 import { middlewareHandler } from './entries.ts';
 import { hasBody } from './incoming.ts';
-import type { MiddlewareInvoker } from './routing.ts';
+import { type MiddlewareInvoker, routedHeaders } from './routing.ts';
 import type { HandleInput, RoutedInput } from './serve.ts';
-import type { Store } from './store.ts';
+import { deploymentConfig, type Store } from './store.ts';
 
 /**
  * Running the application's middleware: on its own, when the edge asks for that alone, and for the
@@ -108,4 +108,18 @@ export function middlewareInvoker(
     }
     return result;
   };
+}
+
+/**
+ * The middleware alone, run ahead of a shell the edge serves itself: its raw response, for the edge
+ * to apply. It reads one thing of the manifest — the base path, which tells a data request apart
+ * (`routedHeaders`) — and reads it without the store, which is built over every route, prerender
+ * and file the deployment has: the middleware Function, whose first request that shell waits on,
+ * carries only the head of the manifest (`deploymentConfig`).
+ */
+export async function answerMiddlewareOnly(input: RoutedInput): Promise<Response> {
+  const { request } = input;
+  const headers = routedHeaders(request, new URL(request.url), deploymentConfig().basePath);
+  const response = await runMiddleware(input, new Request(request, { headers }));
+  return response ?? new Response(null, { status: HTTP_OK, headers: { 'x-middleware-next': '1' } });
 }

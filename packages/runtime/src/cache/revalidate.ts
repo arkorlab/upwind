@@ -90,7 +90,10 @@ export async function platformRevalidate(input: RevalidateInput): Promise<void> 
     waitUntil: context.waitUntil,
     run: context.run,
   });
-  if (outcome.kind !== 'published') {
-    throw new Error(`revalidate: ${pathname} was not regenerated (${outcome.kind})`);
+  // A regeneration answers once its render is made; this caller is the one that waits for the
+  // commit behind it, since what it answers its own caller is that the page has been published.
+  const published = outcome.kind === 'accepted' ? await outcome.published : outcome;
+  if (published.kind !== 'published') {
+    throw new Error(`revalidate: ${pathname} was not regenerated (${published.kind})`);
   }
 }

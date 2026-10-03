@@ -48,10 +48,10 @@ import {
 } from './image-fallback.ts';
 import { hasBody, isRscRequest, wantsBlockingMetadata } from './incoming.ts';
 import {
+  answerMiddlewareOnly,
   MIDDLEWARE_ENTRY_ID,
   middlewareInvoker,
   type MiddlewareTrace,
-  runMiddleware,
 } from './middleware-invoke.ts';
 import { type Resolved, servePagesData, serveRouteHandler } from './outputs.ts';
 import {
@@ -296,7 +296,7 @@ async function handleFull(input: RoutedInput, store: Store): Promise<Response> {
   if (collapsed !== undefined) {
     return redirectResponse(collapsed, HTTP_PERMANENT_REDIRECT, undefined);
   }
-  const headers = routedHeaders(input.request, url, store);
+  const headers = routedHeaders(input.request, url, store.manifest.config.basePath);
   return (await internalRedirect(store, url, headers)) ?? routeAndServe(input, store, url, headers);
 }
 
@@ -489,7 +489,10 @@ async function serveHandedOff(
   if (owner !== undefined) {
     return misdirected(owner, input.request.body, value);
   }
-  const headers = applyRequestChanges(routedHeaders(input.request, url, store), handOff);
+  const headers = applyRequestChanges(
+    routedHeaders(input.request, url, store.manifest.config.basePath),
+    handOff,
+  );
   const forwarded: RoutedInput = { ...input, request: new Request(input.request, { headers }) };
   return answerResolved(forwarded, store, url, {
     resolved,
@@ -553,18 +556,15 @@ async function handleAnyResume(
   return await withBackgroundRegeneration(input, store, response);
 }
 
-async function routeRequest(input: RoutedInput, store: Store): Promise<Response> {
+async function routeRequest(input: RoutedInput): Promise<Response> {
   const { request } = input;
   if (request.headers.get(MIDDLEWARE_ONLY_HEADER) === '1') {
-    const headers = routedHeaders(request, new URL(request.url), store);
-    const response = await runMiddleware(input, new Request(request, { headers }));
-    return (
-      response ?? new Response(null, { status: HTTP_OK, headers: { 'x-middleware-next': '1' } })
-    );
+    return answerMiddlewareOnly(input);
   }
   if (__ARKOR_FUNCTION_KIND__ === 'middleware') {
     return new Response('middleware function', { status: HTTP_NOT_FOUND });
   }
+  const store = getStore();
   const elsewhere = misdirectedAhead(store, request);
   if (elsewhere !== undefined) {
     return elsewhere;
@@ -575,7 +575,15 @@ async function routeRequest(input: RoutedInput, store: Store): Promise<Response>
   }
   if (mode === 'foreground') {
     const foreground = await handleForeground(input, store);
-    return foreground.response ?? outcomeOn(await handleFull(input, store), foreground.outcome);
+    if (foreground.response !== undefined) {
+      return foreground.response;
+    }
+    // The regeneration answered nothing — a render dynamic here, a lease held elsewhere and a
+    // render of the visitor's own that was dynamic too — and the usual path answers. That path
+    // reads the same expired record and regenerated again from it: a second lease, and a second
+    // render that could say nothing the first did not.
+    const usual = { ...input, regenerated: foreground.regenerated };
+    return outcomeOn(await handleFull(usual, store), foreground.outcome);
   }
   const prerenderId =
     pathFromHeaders(request.headers, RESUME_PRERENDER_HEADER, RESUME_PRERENDER_ESCAPED_HEADER) ??
@@ -597,7 +605,7 @@ export async function handleRequest(handled: HandleInput): Promise<Response> {
   });
   const input: RoutedInput = { ...handled, initURL: initUrlOf(handled.request), run: context.run };
   return context.run(async () => {
-    const response = withoutPlacementHeaders(await routeRequest(input, getStore()));
+    const response = withoutPlacementHeaders(await routeRequest(input));
     return withoutBody(handled.request, response);
   });
 }
