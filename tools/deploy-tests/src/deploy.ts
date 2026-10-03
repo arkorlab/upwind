@@ -59,6 +59,8 @@ const REDIRECT_GRACE_MS = 30_000;
 /** Asked for by the probe, and judged by it: see `probeHeaders`. */
 const PROBE_ENCODING = 'identity';
 const MS_PER_SECOND = 1000;
+/** How much of a page is read looking for `data-dpl-id`, which is on its first element. */
+const MAX_PAGE_PREFIX = 65_536;
 
 export interface DeployInput {
   /** The isolated copy of the test application the suite's harness made; the hook's own directory. */
@@ -271,6 +273,13 @@ interface Probe {
    * than the pointer this is read beside. What it is not is called proof.
    */
   readonly onlyThisBuild: boolean;
+  /**
+   * The application's own root, asked for when the file above cannot say whose deployment answered.
+   *
+   * A page Next.js rendered names its deployment itself — `data-dpl-id` on `<html>`, the mark its own
+   * skew protection reads — so where one comes back, it is the evidence the file could not give.
+   */
+  readonly page: URL;
   readonly deploymentId: string;
 }
 
@@ -377,6 +386,7 @@ function probeOf(publicUrl: URL, bundle: DeploymentBundle): Probe {
     url: asked(file?.pathname ?? (bundle.config.basePath || '/')),
     etag: file === undefined ? undefined : `"${file.blob.sha256}"`,
     onlyThisBuild: named !== undefined,
+    page: asked(bundle.config.basePath || '/'),
     deploymentId: bundle.deploymentId,
   };
 }
@@ -554,17 +564,106 @@ function redirectedSince(probe: Probe, since: number | undefined): number {
 }
 
 /**
- * The settle the host was said to need (`Config.settleMs`), all of it, from the moment the probe got
- * through.
+ * The settle the host was said to need (`Config.settleMs`), all of it, from the first request this
+ * deployment is known to have answered.
  *
- * Not from when the host first named this deployment as current, though that comes earlier and would
- * cost less: a host may name a deployment before the switch has reached any request at all, so the
- * naming is no evidence of where the switch has got to. A probe that reached the new deployment is —
- * the switch had begun by then — so the whole settle counted from there covers it, whichever of the two
- * the host did first. Why it is needed at all: suites of a full run whose received pages carried
- * Next.js's own `data-dpl-id` named an earlier fixture's deployment on some requests, while other
- * requests of the same suite reached their own.
+ * Known: the probe's file where it is this build's alone, the page's own `data-dpl-id` where it is not
+ * (`pageProvesIt`). Not from when the host first named the deployment as current, though that comes
+ * earlier and would cost less — a host may name a deployment before the switch has reached any request,
+ * so the naming is no evidence of where the switch has got to, and neither is a probe that any
+ * deployment could have answered. A request this deployment answered is: the switch had begun by then.
+ * Why it is needed at all: suites of a full run whose received pages carried `data-dpl-id` named an
+ * earlier fixture's deployment on some requests, while other requests of the same suite reached their
+ * own.
  */
+/**
+ * The deployment a page names on its `<html>`, or nothing where no page came back to name one.
+ *
+ * Read only as far as the mark: it is on the first element, so the first chunk has it, and a page that
+ * streams for as long as it likes is cancelled rather than waited out. A redirect, an error, a route
+ * that answers with something other than HTML — none of those name anyone, and none is a reason to wait.
+ */
+async function pageNames(probe: Probe, remainingMs: number): Promise<string | undefined> {
+  const within = Math.max(1, Math.min(REQUEST_TIMEOUT_MS, remainingMs));
+  let response: Response;
+  try {
+    response = await fetch(probe.page, {
+      headers: { 'accept-encoding': PROBE_ENCODING, 'user-agent': USER_AGENT },
+      redirect: 'manual',
+      signal: AbortSignal.timeout(within),
+    });
+  } catch {
+    return undefined;
+  }
+  if (!response.ok || !(response.headers.get('content-type') ?? '').includes('text/html')) {
+    await response.body?.cancel();
+    return undefined;
+  }
+  const reader = response.body?.getReader();
+  if (reader === undefined) {
+    return undefined;
+  }
+  const decoder = new TextDecoder();
+  let read = '';
+  try {
+    while (read.length < MAX_PAGE_PREFIX) {
+      const chunk = await reader.read();
+      if (chunk.done) {
+        break;
+      }
+      read += decoder.decode(chunk.value, { stream: true });
+      const named = /data-dpl-id="([^"]+)"/u.exec(read)?.[1];
+      if (named !== undefined) {
+        return named;
+      }
+    }
+    return undefined;
+  } catch {
+    // The read was cut short — the timeout firing on a page still streaming, or the connection going —
+    // and a page that never got as far as its first element names nobody. Not the deployment's failure.
+    return undefined;
+  } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      // Already over, which is all the cancel was for.
+    }
+  }
+}
+
+/**
+ * Whether the application's own page names this deployment, waited for while it names another.
+ *
+ * Asked only when the probe's file could not say whose deployment answered — a file shared across
+ * deployments, or none at all — so that the settle still starts from a request this deployment is known
+ * to have answered. A page that names an earlier one is the very thing the settle is for: the host has
+ * named this deployment and not yet brought it to every request. A page that names nobody leaves the
+ * probe as the best there is, and says so.
+ */
+async function pageProvesIt(input: DeployInput, probe: Probe, deadline: number): Promise<boolean> {
+  let said = false;
+  for (;;) {
+    const named = await pageNames(probe, deadline - Date.now());
+    if (named === undefined) {
+      return false;
+    }
+    if (named === probe.deploymentId) {
+      input.log(`${probe.page.href} names this deployment`);
+      return true;
+    }
+    if (!said) {
+      input.log(
+        `${probe.page.href} still names another deployment (${named}); waiting for it to move`,
+      );
+      said = true;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(`${probe.page.href} went on naming another deployment (${named})`);
+    }
+    await sleepFor(POLL_INTERVAL_MS);
+  }
+}
+
 async function letItSettle(input: DeployInput): Promise<void> {
   const { settleMs } = input.config;
   if (settleMs > 0) {
@@ -595,6 +694,9 @@ async function waitUntilServed(
     const observation = await served(input, detail, probe, deadline - Date.now());
     if (observation === undefined) {
       sayItIsServed(input, probe);
+      if (!probe.onlyThisBuild && !(await pageProvesIt(input, probe, deadline))) {
+        input.log('its page names no deployment either, so the settle runs from the probe');
+      }
       await letItSettle(input);
       return;
     }

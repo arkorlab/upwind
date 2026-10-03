@@ -23,10 +23,13 @@ const NAMES = {
 
 const MS_PER_SECOND = 1000;
 /**
- * The longest settle this takes. It is paid once per deployment, and a full run of the manifest is six
- * hundred of them: ten minutes each would be four days.
+ * The longest settle this takes. It is paid once per deployment, and a full run of the manifest is
+ * around six hundred of them, in shards that each have a few hours to finish: a minute is already up to
+ * three hours more in each of the six the workflow cuts the manifest into by default, which is what that
+ * plan has room for. A host that needs longer than a minute to bring a deployment in everywhere is a
+ * slower run than any shard can absorb — the answer there is more projects, not a longer wait.
  */
-const MAX_SETTLE_SECONDS = 600;
+const MAX_SETTLE_SECONDS = 60;
 
 /** Which project on which host, which is all that naming a claim takes. */
 export interface ProjectConfig {
@@ -45,8 +48,8 @@ export interface Config extends ProjectConfig {
   /** A token with the `write` scope. Never logged, never written down, never passed as an argument. */
   readonly token: string;
   /**
-   * How long, once a request has reached a new deployment, before every request can be trusted to —
-   * zero for a host that switches over everywhere at once.
+   * How long, once a request has reached a new deployment, before every request can be trusted to reach
+   * it — zero for a host that switches over everywhere at once.
    *
    * Not something this tool can find out by asking. Its readiness check is a request, and a request
    * that reaches the new deployment proves that *it* did; on a host that brings a deployment in place by
@@ -122,7 +125,7 @@ function settleIn(env: NodeJS.ProcessEnv): number {
   // Digits and nothing else, and no more of them than the ceiling has: `Number` would take `1e3`,
   // `0x10` and `Infinity` as seconds. The value is not quoted back — it arrives the way the host's
   // other settings do, and nothing that comes in through them is echoed into a log.
-  if (!/^\d{1,3}$/u.test(given) || Number(given) > MAX_SETTLE_SECONDS) {
+  if (!/^\d{1,2}$/u.test(given) || Number(given) > MAX_SETTLE_SECONDS) {
     throw new Error(
       `${NAMES.settle} must be a whole number of seconds, at most ${String(MAX_SETTLE_SECONDS)}`,
     );

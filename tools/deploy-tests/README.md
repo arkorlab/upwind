@@ -148,10 +148,14 @@ Beyond that, four limits are worth knowing before reading a failure as this adap
   the one before — seen in a full run, where pages a suite received carried Next.js's own `data-dpl-id`
   naming an earlier fixture's deployment while other requests of the same suite reached their own. How
   long that lasts is the host's to know, so it is the operator's to say: `ADAPTER_TEST_SETTLE_SECONDS`
-  is waited out in full once the probe has got through, before the suite starts. From the probe rather
-  than from the host naming the deployment, because a host may name one before the switch has reached
-  any request, while a probe that reached the new deployment shows the switch had begun. It is paid once
-  per fixture, so it is worth setting to the host's real bound rather than to a round number above it.
+  is waited out in full before the suite starts, from the first request this deployment is known to have
+  answered — the probe's file where it is this build's alone, and otherwise the application's own page,
+  whose `data-dpl-id` is waited on while it still names the deployment before. Not from the host naming
+  the deployment, because a host may name one before the switch has reached any request; and where no
+  page names a deployment either, the probe is the best there is and the log says so. It is paid once
+  per fixture, so it is worth setting to the host's real bound rather than to a round number above it,
+  and it stops at a minute: around six hundred of the manifest's suites deploy, and a minute each is as
+  much as the workflow's default split has room for — a host that needs longer wants more projects.
 - **The Next.js under test must be inside `SUPPORTED_NEXT_RANGE`.** Outside it the host refuses every
   deployment, and the suite reports every suite as failed for a reason that has nothing to do with the
   test. Inside it, 16.2 does without the content-addressed `/_next/static/immutable/*` — it ignores the

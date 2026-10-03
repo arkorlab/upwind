@@ -269,8 +269,8 @@ interface FakeHost {
   readonly uploaded: () => string[];
   /** Whatever this host refused, because it was asked out of order. */
   readonly refusals: () => string[];
-  /** When this host first answered the readiness probe with the file it asked for. */
-  readonly servedAt: () => number | undefined;
+  /** When this host's root page first named this deployment rather than the one before. */
+  readonly namedAt: () => number | undefined;
   close: () => void;
 }
 
@@ -291,7 +291,9 @@ async function fakeHost(deploymentId: string): Promise<FakeHost> {
   const uploaded: string[] = [];
   const refusals: string[] = [];
   let finalized = false;
-  let servedAt: number | undefined;
+  let namedAt: number | undefined;
+  /** How many times the page has been asked for; the first answer is the deployment before. */
+  let pages = 0;
   let port = 0;
 
   /** Refuse, and remember: the check reads these back rather than trusting a status alone. */
@@ -347,6 +349,21 @@ async function fakeHost(deploymentId: string): Promise<FakeHost> {
     };
   }
 
+  /**
+   * The application's own root, which is what a host that brings a deployment in place by place looks
+   * like from outside: the file the probe asks for is already the new deployment's, and the first page
+   * asked for after that is still the one before — named in it, as Next.js names every page it renders.
+   */
+  function servePage(response: ServerResponse): void {
+    pages += 1;
+    const named = pages === 1 ? 'dpl_thedeploymentbefore' : deploymentId;
+    if (named === deploymentId) {
+      namedAt ??= Date.now();
+    }
+    response.writeHead(OK, { 'content-type': 'text/html; charset=utf-8' });
+    response.end(`<!DOCTYPE html><html data-dpl-id="${named}"><body>a page</body></html>`);
+  }
+
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     if (request.method === 'HEAD') {
       // Only the file the bundle named, and only once the deployment is finalized: a host that answered
@@ -358,12 +375,15 @@ async function fakeHost(deploymentId: string): Promise<FakeHost> {
         response.end();
         return;
       }
-      servedAt ??= Date.now();
       response.writeHead(OK, { etag: `"${asset.sha256}"` });
       response.end();
       return;
     }
     const pathname = (request.url ?? '/').split('?', 1)[0] ?? '/';
+    if (finalized && pathname === '/' && request.method === 'GET') {
+      servePage(response);
+      return;
+    }
     const answer = (status: number, said: unknown): void => {
       response.writeHead(status, { 'content-type': 'application/json' });
       response.end(JSON.stringify(said));
@@ -430,7 +450,7 @@ async function fakeHost(deploymentId: string): Promise<FakeHost> {
     environment: () => environment,
     uploaded: () => [...uploaded],
     refusals: () => [...refusals],
-    servedAt: () => servedAt,
+    namedAt: () => namedAt,
     close: () => {
       server.close();
     },
@@ -501,15 +521,20 @@ async function main(): Promise<void> {
       'and its account of the deployment goes to standard error, which is what reaches the suite',
       deployed.stderr.includes('answers with this deployment'),
     );
-    const probed = host.servedAt();
     holds(
-      'the settle the host was given is waited out before the suite starts',
-      // Measured from the probe being answered to the hook finishing, which nothing but the wait fills:
-      // the hook's own build comes before the probe, so a build slower than the settle cannot pass for
-      // it, and a log line without the wait behind it would not either.
+      'a page that still names the deployment before is waited for, since the file could not say',
+      deployed.stderr.includes('still names another deployment') &&
+        deployed.stderr.includes('names this deployment'),
+    );
+    const named = host.namedAt();
+    holds(
+      'and the settle is waited out in full from there, before the suite starts',
+      // Measured from the page first naming this deployment to the hook finishing, which nothing but the
+      // wait fills: the hook's own build comes before it, so a build slower than the settle cannot pass
+      // for it, and a log line without the wait behind it would not either.
       deployed.stderr.includes('letting the host settle') &&
-        probed !== undefined &&
-        deployedAt - probed >= Number(env.ADAPTER_TEST_SETTLE_SECONDS) * MS_PER_SECOND,
+        named !== undefined &&
+        deployedAt - named >= Number(env.ADAPTER_TEST_SETTLE_SECONDS) * MS_PER_SECOND,
     );
     holds(
       "the registration carries the bundle's own build id",
