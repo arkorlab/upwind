@@ -82,6 +82,11 @@ async function invalidate(
   }
 }
 
+/** Invalidate `tags` at once, as `updateTag` does: in force for the next read anywhere, and here. */
+export function invalidateNow(runtime: CacheRuntime, tags: readonly string[]): Promise<void> {
+  return invalidate(runtime, tags, undefined);
+}
+
 /** Both lists as one, in order, without repeats. */
 function mergeTags(first: readonly string[] | undefined, second: readonly string[] | undefined) {
   const tags = new Set(first);

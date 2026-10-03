@@ -176,7 +176,7 @@ const RAW_LIMIT_MIB = 64;
  * A Function held to a limit its platform has dropped is one this adapter refuses to build for no
  * reason anybody can act on, which is what the compressed check had become.
  */
-const MAX_FUNCTION_BYTES = RAW_LIMIT_MIB * MIB;
+export const MAX_FUNCTION_BYTES = RAW_LIMIT_MIB * MIB;
 const MIB_DIGITS = 1;
 /** Enough to show where the room went without printing the whole record. */
 const HEAVIEST_MODULES = 5;
@@ -404,8 +404,9 @@ export function auditTracedFiles(
  * build throws here, before that file is written, so in exactly the case where the breakdown is
  * wanted there would be none to read.
  */
-export function auditFunctionSize(kind: string, upload: FunctionUpload): void {
-  const over = overLimit(upload.size);
+export function auditFunctionSize(kind: string, upload: FunctionUpload, deferred = false): void {
+  // A Function the caller is still weighing (`deferSizeAudit`) is held to the limit once it is final.
+  const over = deferred ? undefined : overLimit(upload.size);
   if (over === undefined) {
     return;
   }
