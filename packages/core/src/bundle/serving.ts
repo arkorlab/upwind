@@ -169,9 +169,10 @@ function headersReproducible(bundle: DeploymentBundle, prerender: Prerender): bo
       rule.headers !== undefined &&
       isConditional(rule) &&
       mayHoldForDocument(rule) &&
-      // Compiled by Next.js for its own router, which runs them without the unicode flag.
+      // Compiled by Next.js for its own router, which runs them without the unicode flag, and
+      // without regard to case (`claimedBeforeFiles`).
       // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-      new RegExp(rule.sourceRegex).test(requestedPathname(bundle, prerender.pathname)),
+      new RegExp(rule.sourceRegex, 'i').test(requestedPathname(bundle, prerender.pathname)),
   );
 }
 
@@ -351,9 +352,12 @@ function applicableHeaders(
     if (!applies || rule.headers === undefined) {
       continue;
     }
-    // Compiled by Next.js for its own router, which runs them without the unicode flag.
+    // Compiled by Next.js for its own router, which runs them without the unicode flag, and
+    // without regard to case: a rule for `/Shop/:slug` sets its headers on `/shop/x` too.
     // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-    const match = new RegExp(rule.sourceRegex).exec(requestedPathname(bundle, prerender.pathname));
+    const match = new RegExp(rule.sourceRegex, 'i').exec(
+      requestedPathname(bundle, prerender.pathname),
+    );
     if (match === null) {
       continue;
     }
