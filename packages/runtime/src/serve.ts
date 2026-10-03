@@ -3,6 +3,7 @@ import { anyConditionHolds, NULL_BODY_STATUSES } from '@stayingupwind/core/reque
 import { releaseStream } from '@stayingupwind/core/util';
 
 import type { NodeHandler } from './app-module.ts';
+import type { BundleBlobReader } from './bundle-blobs.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
 import { isDraftRequest } from './draft.ts';
 import { invokeEdgeHandler } from './edge-invoke.ts';
@@ -31,6 +32,12 @@ export interface HandleInput extends EntryTables {
   readonly waitUntil: (promise: Promise<unknown>) => void;
   /** The deployment's runtime cache; absent when it was given none. */
   readonly cache?: CacheRuntime | undefined;
+  /**
+   * One blob of this deployment's own bundle from the host that kept it; absent where the host
+   * keeps none. Beside the cache rather than on it, because a bundle blob is not a cache entry
+   * and a deployment with no cache still has a bundle (`bundle-blobs.ts`).
+   */
+  readonly blobs?: BundleBlobReader | undefined;
   /** The clock a test configuration handed the request; the wall clock otherwise. */
   readonly clock?: number | undefined;
 }
