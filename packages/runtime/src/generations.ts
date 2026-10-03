@@ -470,9 +470,10 @@ const SPECULATIVE_TAG_SYNC_MS = 1000;
  * The pull is made where the invalidation that expired the entry is one this isolate's view of the
  * tags is behind (`revision`): the render reads its data values through that view, and a value the
  * invalidation reached would be taken for current and sent to the navigation that adopts the
- * prefetch. Pulled first, as a regeneration pulls it — joined with any pull under way, so a page's
- * segments prefetched together pull it once — for a second at the most (`SPECULATIVE_TAG_SYNC_MS`),
- * past which the render reads the view as it stands.
+ * prefetch. Pulled first, as a regeneration pulls it — joined with any pull out, so a page's
+ * segments prefetched together pull it once, and again where a pull left the view short of the
+ * record (`catchUp`) — for a second at the most (`SPECULATIVE_TAG_SYNC_MS`), past which the render
+ * reads the view as it stands.
  */
 async function renderSpeculative(
   job: Job,
@@ -482,7 +483,7 @@ async function renderSpeculative(
 ): Promise<Response> {
   const { runtime } = job;
   if (invalidation !== undefined && invalidation.revision > runtime.tags.revision) {
-    await settledWithin(speculativePull(runtime), SPECULATIVE_TAG_SYNC_MS);
+    await settledWithin(catchUp(runtime, invalidation.revision), SPECULATIVE_TAG_SYNC_MS);
   }
   return (
     (await renderForVisitor(job.input, job.target, want)) ?? (await renderRequest(job, source.url))
@@ -490,26 +491,57 @@ async function renderSpeculative(
 }
 
 /**
- * The pull of the tag delta each runtime's expired prefetches have under way, and when it went out
- * on the isolate's own clock: the segments of a page prefetched together are behind the same
- * invalidation, and the first of them to find it pulls it for all of them. Joined while younger
- * than the hold; older, it may be a pull whose request ended under it, which never answers, and a
- * prefetch begins one of its own. Each waits for it a second at the most either way.
+ * The pull of the tag delta each runtime's expired prefetches have out, when it went out on the
+ * isolate's own clock, and whether it has settled: the segments of a page prefetched together are
+ * behind the same invalidation, and the first of them to find it pulls it for all of them. Joined
+ * while it is out and younger than the hold; older, it may be a pull whose request ended under it,
+ * which never answers.
  */
-const speculativePulls = new WeakMap<
-  CacheRuntime,
-  { readonly pull: Promise<void>; readonly since: number }
->();
+interface SpeculativePull {
+  readonly pull: Promise<void>;
+  readonly since: number;
+  settled: boolean;
+}
 
-function speculativePull(runtime: CacheRuntime): Promise<void> {
-  const now = performance.now();
-  const underWay = speculativePulls.get(runtime);
-  if (underWay !== undefined && now - underWay.since < runtime.holdMs) {
-    return underWay.pull;
+const speculativePulls = new WeakMap<CacheRuntime, SpeculativePull>();
+
+/** How many pulls a prefetch makes or joins to bring the view up to its record's revision. */
+const SPECULATIVE_PULLS = 2;
+
+/** A pull of the delta for the prefetches after it to join while it is out. Never rejects. */
+function startPull(runtime: CacheRuntime): Promise<void> {
+  const underWay: { pull: Promise<void>; readonly since: number; settled: boolean } = {
+    pull: Promise.resolve(),
+    since: performance.now(),
+    settled: false,
+  };
+  underWay.pull = (async () => {
+    try {
+      await runtime.tags.sync(runtime.host, nowMs(), { force: true });
+    } catch {
+      // A pull that fails leaves the view as it stood, as a regeneration's does.
+    } finally {
+      underWay.settled = true;
+    }
+  })();
+  speculativePulls.set(runtime, underWay);
+  return underWay.pull;
+}
+
+/**
+ * Bring this isolate's view of the tags up to the revision a prefetch's record was invalidated at
+ * (`required`): joining a pull that is out, or making one, and again where it left the view short —
+ * a pull that went out before the invalidation answers with the revision before it.
+ */
+async function catchUp(runtime: CacheRuntime, required: number): Promise<void> {
+  for (let tries = 0; tries < SPECULATIVE_PULLS && runtime.tags.revision < required; tries += 1) {
+    const underWay = speculativePulls.get(runtime);
+    const joinable =
+      underWay !== undefined &&
+      !underWay.settled &&
+      performance.now() - underWay.since < runtime.holdMs;
+    await (joinable ? underWay.pull : startPull(runtime));
   }
-  const pull = runtime.tags.sync(runtime.host, nowMs(), { force: true });
-  speculativePulls.set(runtime, { pull, since: now });
-  return pull;
 }
 
 /** Once `promise` has settled, whichever way, or `ms` have gone by. */
