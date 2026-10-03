@@ -34,6 +34,7 @@ export async function unrouted(
   // `notFound` on a data request with exactly this, and so does the platform for a page that is
   // not there at all.
   if (isPagesDataPathname(new URL(forwarded.request.url).pathname)) {
+    releaseStream(forwarded.request.body, 'pages data not found: handler body unused');
     return withRoutingHeaders(notFoundData(), routed.resolvedHeaders);
   }
   if (missesInPlainText(forwarded.request, at, store.manifest.config)) {
