@@ -124,7 +124,10 @@ the budgets, never loosen them.
 
 **How the routes are placed** (`plan.ts`). The unit is a module — entrypoints that share a built
 file go together — except the Pages Router, which goes whole, since `res.revalidate()` renders any
-of its pages in the Function that calls it. Every app Function carries the same base: the middleware,
+of its pages in the Function that calls it. (An App Router page it asks for may be in another
+Function, which the one asking can neither render nor reach; that page is invalidated instead, as
+`revalidatePath` invalidates one, and its own Function renders it for the next request.) Every app
+Function carries the same base: the middleware,
 the instrumentation hook, the not-found page and the Pages Router's error pages, every manifest, and
 the same `runtime.json`, so that each routes a request as Next.js would and knows where every route
 is. The units are then merged two at a time, always the pair whose union adds the least code to the
@@ -134,17 +137,19 @@ budgets, each holding routes that share their code. Few, not the fewest: the mer
 pair taken early can leave two units that would each have fitted beside another without a partner
 — finding the fewest is bin packing, which no build should wait on. Each piece is weighed with what
 the one Function measured: a chunk at the bytes it put into that Function's code (the bundler's
-per-module figures, scaled to the module they went into), a prerendered body, a file a route reads,
-a WebAssembly module at its size. Code and WebAssembly count against both budgets; the rest against
+per-module figures, scaled to the module they went into), a package linked from `.next/node_modules`
+with the routes whose chunks import it, a prerendered body, a file a route reads, a WebAssembly module
+at its size. Code and WebAssembly count against both budgets; the rest against
 the size alone. What the middleware and the instrumentation hook reach — their code, their
 WebAssembly, the files they read — is in every Function, and is weighed there, whichever routes
 reach it too.
 
 Three rules keep a plan from being worse than not splitting. A budget the base and the smallest unit
 already pass is one no Function could meet, and is dropped rather than leave every route in a
-Function of its own. A unit past a budget the others meet stands alone, as small as it can be. And a
-plan is never more than `MAX_APP_FUNCTIONS` Functions: past that, the cheapest merges go on whatever
-the budgets say.
+Function of its own. A unit past a budget the others meet stands alone, as small as it can be —
+but takes in a unit whose code it mostly has, one that adds no more code than the two share, since
+leaving them apart would carry that code twice. And a plan is never more than `MAX_APP_FUNCTIONS`
+Functions: past that, the cheapest merges go on whatever the budgets say.
 
 **What is built.** Each Function of the plan with its own routes' chunks, WebAssembly, files and
 prerendered bodies, and the base. The first — the one holding the most documents — is `app`, as
