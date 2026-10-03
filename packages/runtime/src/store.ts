@@ -5,6 +5,7 @@ import {
   documentPrerenders,
   type EntrypointKind,
   isPagesDataPathname,
+  type ManifestHead,
   type Prerender,
   type Route,
   type StaticFile,
@@ -363,16 +364,39 @@ function unlocalizedApiRoutes(manifest: {
   });
 }
 
-/** The store for this isolate; parsed on first use and kept for its lifetime. */
-const shared: { store: Store | undefined } = { store: undefined };
+/** The manifest this isolate read, and the store built over it: each made once, on first use. */
+const shared: { manifest: ManifestHead | undefined; store: Store | undefined } = {
+  manifest: undefined,
+  store: undefined,
+};
+
+/**
+ * The manifest this Function carries: whole in the app Function, and in the middleware Function
+ * its head alone — the fields the adapter writes it from (`MANIFEST_HEAD_KEYS`), which are all that
+ * is typed here.
+ */
+function readManifest(): ManifestHead {
+  shared.manifest ??= JSON.parse(
+    new TextDecoder().decode(readBundleFile(RUNTIME_MANIFEST)),
+  ) as ManifestHead;
+  return shared.manifest;
+}
+
+/**
+ * The deployment's configuration, read without building the store: what a request for the
+ * middleware alone reads of the manifest, and all the middleware Function's manifest holds besides
+ * which deployment and build it is (`ManifestHead`).
+ */
+export function deploymentConfig(): ManifestHead['config'] {
+  return readManifest().config;
+}
 
 export function getStore(): Store {
   if (shared.store !== undefined) {
     return shared.store;
   }
-  const manifest = JSON.parse(
-    new TextDecoder().decode(readBundleFile(RUNTIME_MANIFEST)),
-  ) as RuntimeManifest;
+  // The whole manifest: the app Function's, since nothing in the middleware Function builds one.
+  const manifest = readManifest() as RuntimeManifest;
   const prerendersById = new Map(manifest.prerenders.map((prerender) => [prerender.id, prerender]));
   const prerendersByPathname = new Map(
     manifest.prerenders.map((prerender) => [prerender.pathname, prerender]),
