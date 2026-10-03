@@ -55,7 +55,8 @@ export NEXT_PRIVATE_TEST_MODE=e2e
 # the same machine, and a process can read what another process of its own user can. What it removes is
 # the ordinary way a secret escapes — something dumping the environment it was handed.
 fixture() {
-  env -u ARKOR_API_URL -u ARKOR_API_TOKEN -u ARKOR_API_TOKEN_FILE -u ADAPTER_TEST_PROJECT_ID "$@"
+  env -u ARKOR_API_URL -u ARKOR_API_TOKEN -u ARKOR_API_TOKEN_FILE -u ADAPTER_TEST_PROJECT_ID \
+    -u ADAPTER_TEST_SETTLE_SECONDS "$@"
 }
 
 # Deploy mode makes the isolated copy with `skipInstall: true` (`test/lib/next-modes/next-deploy.ts`),

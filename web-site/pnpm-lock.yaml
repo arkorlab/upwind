@@ -10,7 +10,7 @@ importers:
     dependencies:
       next:
         specifier: ^16.3.8
-        version: 16.3.8(@types/node@24.19.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+        version: 16.3.8(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       react:
         specifier: ^19.3.0
         version: 19.3.0
@@ -20,13 +20,13 @@ importers:
     devDependencies:
       '@stayingupwind/adapter':
         specifier: ^0.3.0
-        version: 0.3.0(next@16.3.8(@types/node@24.19.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))
+        version: 0.3.0(next@16.3.8(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))
       '@tailwindcss/postcss':
         specifier: ^4.3.3
         version: 4.3.3
       '@types/node':
-        specifier: ^24.13.4
-        version: 24.19.0
+        specifier: ^24.19.1
+        version: 24.19.1
       '@types/react':
         specifier: ^19.3.0
         version: 19.3.0
@@ -41,7 +41,7 @@ importers:
         version: 5.9.3
       upwind:
         specifier: ^0.3.0
-        version: 0.3.0(@types/node@24.19.0)(next@16.3.8(@types/node@24.19.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))
+        version: 0.3.0(@types/node@24.19.1)(next@16.3.8(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))
 
 packages:
 
@@ -707,8 +707,8 @@ packages:
   '@tailwindcss/postcss@4.3.3':
     resolution: {integrity: sha512-JTSZZGQi1AyKirbLN3azmjVzef92tcX7h+iSqPdaeStyFpGpDlKvvpxeOE8njhbUanbRwr3z8DyzhICWnMtQeg==}
 
-  '@types/node@24.19.0':
-    resolution: {integrity: sha512-zY+5tKxXdhGh1PYI0ac+7juvEu4OI6vWtVVoj5i2m42jxAY1U+zHGt6QCyOFwykdP62sM3MJ9stoYYUw5aCWew==}
+  '@types/node@24.19.1':
+    resolution: {integrity: sha512-aS3/DG0oM05K0RIXXP+hKjinGG5IgSSVGzswZxW3O0sS3pH4/fycXundUC9XsszgKCk4gHXylTEK6hyFxVxnoQ==}
 
   '@types/react-dom@19.3.0':
     resolution: {integrity: sha512-ZI7bU42mZXXKHn/qNLEw2IrbiINU7X5+vfgdixBHkCNpYWXjKgfQ/P+uyGb5CjOLB9UcnTeg3rylQtV2hym44Q==}
@@ -1320,13 +1320,13 @@ snapshots:
 
   '@speed-highlight/core@1.2.24': {}
 
-  '@stayingupwind/adapter@0.3.0(next@16.3.8(@types/node@24.19.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))':
+  '@stayingupwind/adapter@0.3.0(next@16.3.8(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))':
     dependencies:
       '@stayingupwind/core': 0.3.0
       '@stayingupwind/runtime': 0.3.0
       esbuild: 0.28.2
       jsonc-parser: 3.3.1
-      next: 16.3.8(@types/node@24.19.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+      next: 16.3.8(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       rolldown: 1.2.11
       zod: 4.6.5
 
@@ -1412,7 +1412,7 @@ snapshots:
       postcss: 8.5.28
       tailwindcss: 4.3.3
 
-  '@types/node@24.19.0':
+  '@types/node@24.19.1':
     dependencies:
       undici-types: 7.24.6
 
@@ -1533,10 +1533,10 @@ snapshots:
     dependencies:
       '@jridgewell/sourcemap-codec': 1.6.0
 
-  miniflare@5.20260925.0-alpha(@types/node@24.19.0):
+  miniflare@5.20260925.0-alpha(@types/node@24.19.1):
     dependencies:
       '@cspotcode/source-map-support': 0.8.1
-      sharp: 0.35.4(@types/node@24.19.0)
+      sharp: 0.35.4(@types/node@24.19.1)
       undici: 7.29.0
       workerd: 1.20260925.1
       ws: 8.21.0
@@ -1548,7 +1548,7 @@ snapshots:
 
   nanoid@3.3.19: {}
 
-  next@16.3.8(@types/node@24.19.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0):
+  next@16.3.8(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0):
     dependencies:
       '@next/env': 16.3.8
       '@swc/helpers': 0.5.23
@@ -1567,7 +1567,7 @@ snapshots:
       '@next/swc-linux-x64-musl': 16.3.8
       '@next/swc-win32-arm64-msvc': 16.3.8
       '@next/swc-win32-x64-msvc': 16.3.8
-      sharp: 0.35.4(@types/node@24.19.0)
+      sharp: 0.35.4(@types/node@24.19.1)
     transitivePeerDependencies:
       - '@babel/core'
       - '@types/node'
@@ -1619,7 +1619,7 @@ snapshots:
 
   semver@7.8.5: {}
 
-  sharp@0.35.4(@types/node@24.19.0):
+  sharp@0.35.4(@types/node@24.19.1):
     dependencies:
       '@img/colour': 1.1.0
       detect-libc: 2.1.2
@@ -1650,7 +1650,7 @@ snapshots:
       '@img/sharp-win32-arm64': 0.35.4
       '@img/sharp-win32-ia32': 0.35.4
       '@img/sharp-win32-x64': 0.35.4
-      '@types/node': 24.19.0
+      '@types/node': 24.19.1
 
   source-map-js@1.2.1: {}
 
@@ -1673,11 +1673,11 @@ snapshots:
 
   undici@7.29.0: {}
 
-  upwind@0.3.0(@types/node@24.19.0)(next@16.3.8(@types/node@24.19.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)):
+  upwind@0.3.0(@types/node@24.19.1)(next@16.3.8(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)):
     dependencies:
       '@stayingupwind/core': 0.3.0
-      miniflare: 5.20260925.0-alpha(@types/node@24.19.0)
-      next: 16.3.8(@types/node@24.19.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+      miniflare: 5.20260925.0-alpha(@types/node@24.19.1)
+      next: 16.3.8(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
     transitivePeerDependencies:
       - '@types/node'
       - bufferutil

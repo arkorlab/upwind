@@ -173,7 +173,9 @@ async function serveDocument(input: RoutedInput, store: Store, asked: Resolved):
     shell?.postponed !== undefined &&
     wantsBlockingMetadata(input.request, store.manifest.config.htmlLimitedBots)
   ) {
-    return invokeEntry(input, entry, resolved.url, failureAnswer(store, entry, resolved.route));
+    return invokeEntry(input, entry, resolved.url, {
+      onFailure: failureAnswer(store, entry, resolved.route),
+    });
   }
   const crawled =
     shell !== undefined && crawlerWantsWholePage(store, shell, resolved, input.request);
