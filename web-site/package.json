@@ -8,18 +8,18 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "next": "^16.3.7",
+    "next": "^16.3.8",
     "react": "^19.3.0",
     "react-dom": "^19.3.0"
   },
   "devDependencies": {
-    "@stayingupwind/adapter": "^0.2.0",
+    "@stayingupwind/adapter": "^0.3.0",
     "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "^24.13.4",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "tailwindcss": "^4.3.3",
     "typescript": "^5.9.3",
-    "upwind": "^0.2.0"
+    "upwind": "^0.3.0"
   }
 }

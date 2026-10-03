@@ -8,6 +8,11 @@ import {
   deploymentBundleSchema,
   travelsWithFunction,
 } from '@stayingupwind/core/bundle';
+import {
+  isBeforeSecurityFloor,
+  SECURITY_FLOOR,
+  SECURITY_RELEASE_URL,
+} from '@stayingupwind/core/next';
 import { UPWIND_LOCAL_RESOURCES_ENV } from '@stayingupwind/core/paas';
 import type { AdapterOutput, NextAdapter } from 'next';
 
@@ -206,12 +211,18 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     wasm: nodeWasm,
     edgeEntries,
   } = collectEntrypoints(ctx.outputs);
-  const { prerenders, shipped } = await collectPrerenders(
-    ctx.outputs,
+  const { prerenders, shipped } = await collectPrerenders({
+    outputs: ctx.outputs,
     blobs,
-    ctx.config.basePath,
-    ctx.routing.rsc,
-  );
+    basePath: ctx.config.basePath,
+    rsc: ctx.routing.rsc,
+    unshipped: options.unshippedOutputs ?? 'none',
+    // The host serves no segment of an edge-runtime page and the Function cannot render one, so
+    // those stay shipped whatever the option says (`PrerenderCollection.edgeRuntimeRoutes`).
+    edgeRuntimeRoutes: new Set(
+      entrypoints.flatMap((entry) => (entry.runtime === 'edge' ? [entry.pathname] : [])),
+    ),
+  });
   const { files: staticFiles, sourceMaps: clientMaps } = await collectStaticFiles(
     ctx,
     blobs,
@@ -356,7 +367,7 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
   console.log(
     `@stayingupwind/adapter: wrote ${OUT_DIR_NAME}/${BUNDLE_FILE} (${bundle.prerenders.length} prerenders, ${bundle.staticFiles.length} static files, ${blobs.count} blobs)`,
   );
-  reportWhatTravels(bundle, edgeEntries, ctx.nextVersion);
+  reportWhatTravels(bundle, edgeEntries, ctx.nextVersion, exported);
 }
 
 /**
@@ -370,11 +381,18 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
  * (`@stayingupwind/core/bundle`, `documentPrerenders`), and while that answers the same as the
  * classification wherever there is one to compare it with, there is no classification here to
  * compare it with.
+ *
+ * And a Next.js older than the newest release that carried security fixes (`SECURITY_FLOOR`,
+ * `@stayingupwind/core/next`) is said here rather than refused, because the range this adapter
+ * supports is a claim about what its rewrites still find and not a judgement about advisories. A
+ * static export is the one build this says nothing to: it carries no Next.js server code for a fix
+ * inside Next.js to be missing from.
  */
 function reportWhatTravels(
   bundle: DeploymentBundle,
   edgeEntries: readonly EdgeEntry[],
   nextVersion: string,
+  exported: boolean,
 ): void {
   if (edgeEntries.length > 0) {
     const ids = edgeEntries.map((entry) => entry.id).join(', ');
@@ -387,6 +405,11 @@ function reportWhatTravels(
   if (unclassified) {
     console.warn(
       `@stayingupwind/adapter: Next.js ${nextVersion} does not classify its prerenders, which Next.js 16.3 is the first to do. This deployment's ${String(bundle.prerenders.length)} prerenders are read as their outputs describe them instead; \`/_next/static/immutable/*\` is off, since 16.2 does not offer it.`,
+    );
+  }
+  if (!exported && isBeforeSecurityFloor(nextVersion)) {
+    console.warn(
+      `@stayingupwind/adapter: Next.js ${nextVersion} is older than ${SECURITY_FLOOR}, the newest Next.js release with security fixes in it that this adapter knows of. What answers a request is the Next.js this project installed: its \`use cache\` keying, its draft-mode fills and the ownership checks a route template makes of a prerender all travel into the Function, and nothing here stands in for them. Upgrade and build again — ${SECURITY_RELEASE_URL}`,
     );
   }
 }
@@ -487,6 +510,41 @@ export interface AdapterOptions {
    * generations names its own module here.
    */
   readonly cacheHostModule?: string | undefined;
+  /**
+   * Prefetch segments whose bytes the Function does **not** carry, for a host that serves them
+   * itself.
+   *
+   * Next.js 16.3's Partial Prefetching writes one output per prefetchable segment of every
+   * prerendered page, and they are most of what a Function weighs: measured on a 1,486-module
+   * build, 826 of them at **19.74 MiB — 37% of the whole Function**, against 4.4 MiB of the
+   * documents it serves. A host that answers `next-router-segment-prefetch` from its own storage
+   * (`prefetchSegments`) reads none of them, and the Function carries them for nothing.
+   *
+   * `'none'`, the default, ships every output as this adapter always has. **It is the default
+   * because leaving it out is not free**: a host that does not serve segments has only the
+   * Function to answer them, and then the bytes are the answer.
+   *
+   * `'prefetch-segments'` records every segment in the bundle exactly as before — `segmentPath`,
+   * `parentOutputId`, the lot, which is what a host places them from — and ships no body for one.
+   *
+   * **A host that chooses this must export `createBundleBlobReader`** from its `cacheHostModule`
+   * (`@stayingupwind/runtime/bundle-blobs`), which is how the Function gets the bytes of a segment
+   * it was not given. Not part of the cache: a deployment the host gave no cache still has a
+   * bundle, and a build that left blobs out of its Function needs them read all the same.
+   *
+   * That read is off every path that works — the host answers these prefetches itself, and the
+   * Function sees only the ones it could not: a middleware that failed, a host with nothing to
+   * serve the prefetch from, a request that reached the Worker without the host having served it at
+   * all. (Not a draft request, which `bypassesPrerender` sends to the route itself, and which
+   * should render rather than be handed a build's segment.) But on that path the host's reader is
+   * the only source there is. Neither of the two ways of producing the segment locally exists:
+   * `renderCaptured` answers `undefined` whenever the render responded instead of being captured,
+   * which a segment prefetch always does, and a resume carries the *document's* postponed state,
+   * which Next.js refuses for a segment it has no prerendered output for. Both were measured, both
+   * 404. A host that exports no reader gets that 404 — a prefetch the client navigates through
+   * instead, not a broken page, but not the bytes either.
+   */
+  readonly unshippedOutputs?: 'none' | 'prefetch-segments' | undefined;
   /**
    * Names the host reads a project's configuration under besides this adapter's own, for a host
    * that once called that file something else. Looked for after `upwind.*` and before
