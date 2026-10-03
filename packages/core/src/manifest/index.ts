@@ -1,6 +1,7 @@
 export {
   type ConfiguredHeaders,
   documentHeaderRulesFor,
+  dynamicRouteFor,
   foldedHeadersFor,
   headerRulesFor,
   isExactPathname,
@@ -23,6 +24,7 @@ export {
   parseProjectManifest,
   serializeManifest,
 } from './manifest.ts';
+export { functionFor, functionScript } from './functions.ts';
 export { parsePreloads, serializePreloads } from './preloads.ts';
 export {
   type AppRuntime,

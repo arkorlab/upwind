@@ -1,7 +1,25 @@
-import { z } from 'zod';
-
 import { canonicalJson, sha256HexOfText } from '../artifact/hash.ts';
 import { createDerivedId } from '../util/id.ts';
+import type {
+  CacheEntryKind,
+  EntryDescriptor,
+  KeyDescriptor,
+  RouteEntryDescriptor,
+  RouteEntryKind,
+  TagKind,
+} from './schema.ts';
+
+export type {
+  CacheEntryKind,
+  DataEntryDescriptor,
+  EntryDescriptor,
+  GenerationTag,
+  KeyDescriptor,
+  OutputRepresentation,
+  RouteEntryDescriptor,
+  RouteEntryKind,
+  TagKind,
+} from './schema.ts';
 
 /**
  * How a cache entry is named.
@@ -13,6 +31,10 @@ import { createDerivedId } from '../util/id.ts';
  * body hash alone. The raw material of a data entry is Next.js's own key, which may embed what a
  * request contained; only its digest is stored, and the descriptor shown on a screen names the
  * kind and the handler, never the key.
+ *
+ * The shapes these name are checked in `schema.ts`, and nothing here imports it: a Function's
+ * runtime names entries on every request and validates none of them, so it does not have to load a
+ * schema library to start (see `schema.ts`).
  */
 
 export const KEY_SCHEMA_VERSION = 1;
@@ -53,62 +75,14 @@ export const MAX_TAGS_PER_CALL = 128;
 export const MAX_TAGS_PER_ENTRY = 1024;
 const REVISION_DIGITS = 12;
 
-/** Route outputs by router and kind, and the two data caches Next.js keeps. */
-export const cacheEntryKindSchema = z.enum([
-  'app-page',
-  'pages',
-  'app-route',
-  'data:fetch',
-  'data:use-cache',
-]);
-export type CacheEntryKind = z.infer<typeof cacheEntryKindSchema>;
-export const routeEntryKindSchema = z.enum(['app-page', 'pages', 'app-route']);
-export type RouteEntryKind = z.infer<typeof routeEntryKindSchema>;
-
-/**
- * One output of an entry's generation: the document, its RSC twin, a segment, the Pages data, a
- * route handler's body, or a data value. Never part of the entry's key.
- */
-export const outputRepresentationSchema = z.union([
-  z.enum(['html', 'rsc', 'pages-data', 'route-body', 'data-value']),
-  z.templateLiteral(['segment:', z.string()]),
-]);
-export type OutputRepresentation = z.infer<typeof outputRepresentationSchema>;
-
-export const routeEntryDescriptorSchema = z.object({
-  kind: routeEntryKindSchema,
-  /** The source route, with its dynamic segments: `/blog/[slug]`. */
-  route: z.string().startsWith('/'),
-  /** The concrete pathname, or the class template for a shell that serves a class of URLs. */
-  pathname: z.string().startsWith('/'),
-});
-export type RouteEntryDescriptor = z.infer<typeof routeEntryDescriptorSchema>;
-
-export const dataEntryDescriptorSchema = z.object({
-  kind: z.enum(['data:fetch', 'data:use-cache']),
-  /** The `use cache` handler kind (`default`, `remote`, a custom name); absent for the fetch cache. */
-  handler: z.string().min(1).optional(),
-  /** Next.js's own cache key; digested, never stored or shown. */
-  key: z.string().min(1),
-});
-export type DataEntryDescriptor = z.infer<typeof dataEntryDescriptorSchema>;
-
-export const entryDescriptorSchema = z.union([
-  routeEntryDescriptorSchema,
-  dataEntryDescriptorSchema,
-]);
-export type EntryDescriptor = z.infer<typeof entryDescriptorSchema>;
-
-/** What a screen may show of a key: never a header value, a query value or the raw key. */
-export const keyDescriptorSchema = z.object({
-  kind: cacheEntryKindSchema,
-  route: z.string().optional(),
-  pathname: z.string().optional(),
-  handler: z.string().optional(),
-  /** The query names Next.js lets an ISR render see; recorded, not part of the key. */
-  allowQuery: z.array(z.string()).optional(),
-});
-export type KeyDescriptor = z.infer<typeof keyDescriptorSchema>;
+/** A route's output, by router and kind. */
+export const ROUTE_ENTRY_KINDS = ['app-page', 'pages', 'app-route'] as const;
+/** The two data caches Next.js keeps. */
+export const DATA_ENTRY_KINDS = ['data:fetch', 'data:use-cache'] as const;
+/** Every kind of entry: the route outputs and the data caches. */
+export const CACHE_ENTRY_KINDS = [...ROUTE_ENTRY_KINDS, ...DATA_ENTRY_KINDS] as const;
+/** What a tag a generation carries says it is (`generationTagSchema`). */
+export const TAG_KINDS = ['next-explicit', 'next-implicit', 'platform-delivery'] as const;
 
 export function isRouteDescriptor(descriptor: EntryDescriptor): descriptor is RouteEntryDescriptor {
   return 'pathname' in descriptor;
@@ -200,18 +174,7 @@ export function artifactIdFor(scopeId: string, sha256: string): Promise<string> 
   return createDerivedId(ARTIFACT_ID_PREFIX, `${scopeId}|${sha256}`);
 }
 
-export const tagKindSchema = z.enum(['next-explicit', 'next-implicit', 'platform-delivery']);
-export type TagKind = z.infer<typeof tagKindSchema>;
-
 /** A tag Next.js supplied: derived from the route when it carries the implicit prefix. */
-/** One tag a generation carries, as the generation records it. */
-export const generationTagSchema = z.object({
-  kind: tagKindSchema,
-  /** Exact, case-sensitive; never normalised. */
-  value: z.string().min(1).max(MAX_TAG_LENGTH),
-});
-export type GenerationTag = z.infer<typeof generationTagSchema>;
-
 export function tagKindOf(value: string): 'next-explicit' | 'next-implicit' {
   return value.startsWith(IMPLICIT_TAG_PREFIX) ? 'next-implicit' : 'next-explicit';
 }

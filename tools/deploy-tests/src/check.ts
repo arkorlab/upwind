@@ -34,7 +34,6 @@ const NOT_FOUND = 404;
 const HOOK_TIMEOUT_MS = 60_000;
 /** About a megabyte of each stream, which is what `execFile` would have held. */
 const MAX_CAPTURED = 1_000_000;
-const SERVER_LOG = '.adapter-server.log';
 const MS_PER_SECOND = 1000;
 
 /**
@@ -76,21 +75,6 @@ function orNothing(said: string | undefined): string {
 /** Whatever the hook had written to standard error by the time it failed. */
 function saidBy(error: unknown): string {
   return orNothing(error instanceof HookFailureError ? error.said : undefined);
-}
-
-/**
- * What the deploy tool itself said, which is not on the hook's standard error.
- *
- * The hook keeps it in a file for the logs hook to show the suite (`2>>`), so a failure in the
- * deployment — the API calls, what readiness was waiting for, why it gave up — is in there and nowhere
- * else. Without this, a broken deployment reads here as a hook that failed after a successful build.
- */
-function keptBy(appDir: string): string {
-  try {
-    return orNothing(readFileSync(path.join(appDir, SERVER_LOG), 'utf8'));
-  } catch {
-    return '(no log; it failed before the deployment)';
-  }
 }
 
 /**
@@ -479,17 +463,15 @@ async function main(): Promise<void> {
     CHECK_BUNDLE_BUILD_ID: BUNDLE_BUILD_ID,
     CHECK_OUTPUT_DIRECTORY_BUILD_ID: OUTPUT_DIRECTORY_BUILD_ID,
   };
-  const hook = async (name: string): Promise<{ stdout: string }> => {
+  const hook = async (name: string): Promise<{ stdout: string; stderr: string }> => {
     try {
       return await bounded(name, appDir, env);
     } catch (error) {
-      // Rethrown with the hook's own account of itself in the message. A child process that failed
-      // arrives as an error whose `stderr` Node prints truncated, and the deploy tool does not write
-      // there at all — its account goes to a file, for the logs hook to show the suite. Between them is
-      // everything worth knowing: the API calls it made, what it was waiting for, why it gave up.
+      // Rethrown with the hook's own account of itself in the message, which a child process that
+      // failed otherwise arrives without: Node prints its `stderr` truncated. Everything worth knowing
+      // is there — the build, the API calls the deployment made, what it waited for, why it gave up.
       throw new Error(
-        `${name} ${error instanceof Error ? error.message : String(error)}. It said:\n` +
-          `${saidBy(error)}\nand its own log says:\n${keptBy(appDir)}`,
+        `${name} ${error instanceof Error ? error.message : String(error)}. It said:\n${saidBy(error)}`,
         { cause: error },
       );
     }
@@ -503,6 +485,10 @@ async function main(): Promise<void> {
     holds(
       'the deploy hook prints the URL, and only the URL',
       deployed.stdout.trim() === `http://127.0.0.1:${String(host.port)}`,
+    );
+    holds(
+      'and its account of the deployment goes to standard error, which is what reaches the suite',
+      deployed.stderr.includes('answers with this deployment'),
     );
     holds(
       "the registration carries the bundle's own build id",
@@ -546,6 +532,26 @@ async function main(): Promise<void> {
       markers[2] === `NEXT_SUPPORTS_IMMUTABLE_ASSETS: ${immutable}`,
     );
     holds('which, for this application, is yes', immutable === '1');
+
+    /*
+     * Last, because it builds the application again over the files read above.
+     *
+     * A deployment that fails has to fail the hook and say why where the suite's log will show it —
+     * which, for a harness that quotes only standard output and does not call the logs hook when setup
+     * failed, is standard error. A project the host does not have is the cheapest failure to arrange: it
+     * is the first thing the tool asks for, and the refusal comes back before anything is uploaded.
+     */
+    let refused: unknown;
+    try {
+      await bounded('e2e-deploy.sh', appDir, { ...env, ADAPTER_TEST_PROJECT_ID: 'q' });
+    } catch (error) {
+      refused = error;
+    }
+    holds('a deployment that fails fails the hook', refused instanceof HookFailureError);
+    holds(
+      'and says why on standard error',
+      refused instanceof HookFailureError && refused.said.includes('HTTP 404 (not_found)'),
+    );
   } finally {
     host.close();
     rmSync(workDir, { recursive: true, force: true });
