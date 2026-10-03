@@ -404,19 +404,51 @@ interface ListJudgement {
  */
 const judgements = new WeakMap<ProjectManifest, ListJudgement>();
 
-function judgementOf(manifest: ProjectManifest): ListJudgement | undefined {
-  const pattern = manifest.htmlLimitedBots;
-  if (pattern === undefined || pattern === '') {
-    return undefined;
-  }
+/** Next.js's own list, as the edge judges it: an application that names none. */
+const NEXT_JUDGEMENT: ListJudgement = { judge: isHtmlLimitedBotUserAgent, runs: true };
+
+/**
+ * The judgement of the list a manifest's application sends blocking metadata by: the one it
+ * records, or — in a manifest made before the list was recorded — the one `next build` wrote into
+ * its routes' crawler condition (`listWrittenInto`), which is the application's own; Next.js's
+ * where there is neither. Read off the routes, an application's own list keeps the agents it
+ * leaves out of Next.js's out of it here too: they are streamed to, and served the shell.
+ */
+function judgementOf(manifest: ProjectManifest): ListJudgement {
   let judgement = judgements.get(manifest);
   if (judgement === undefined) {
-    const judge = judgeOf(pattern);
-    judgement =
-      judge === undefined ? { judge: namesEveryAgent, runs: false } : { judge, runs: true };
+    const pattern = manifest.htmlLimitedBots ?? listWrittenInto(manifest);
+    if (pattern === undefined || pattern === '') {
+      judgement = NEXT_JUDGEMENT;
+    } else {
+      const judge = judgeOf(pattern);
+      judgement =
+        judge === undefined ? { judge: namesEveryAgent, runs: false } : { judge, runs: true };
+    }
     judgements.set(manifest, judgement);
   }
   return judgement;
+}
+
+/**
+ * The list `next build` wrote into a manifest's routes as their crawler condition, unwrapped
+ * (`listWritten`): the application's `htmlLimitedBots`, or Next.js's where it names none — the
+ * same for every route that carries one.
+ */
+function listWrittenInto(manifest: ProjectManifest): string | undefined {
+  for (const entry of Object.values(manifest.routes)) {
+    const conditions = entry.bypassFor;
+    if (conditions === undefined) {
+      continue;
+    }
+    for (const condition of conditions) {
+      const value = userAgentCondition(condition);
+      if (value !== undefined) {
+        return listWritten(value);
+      }
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -426,7 +458,7 @@ function judgementOf(manifest: ProjectManifest): ListJudgement | undefined {
  * agent, and a visitor passed on for that is passed on for the list, not for being named by it.
  */
 export function judgesHtmlLimitedBots(manifest: ProjectManifest | undefined): boolean {
-  return manifest === undefined || (judgementOf(manifest)?.runs ?? true);
+  return manifest === undefined || judgementOf(manifest).runs;
 }
 
 /**
@@ -443,8 +475,7 @@ export function wantsBlockingMetadata(
   if (userAgent === null || userAgent === '') {
     return false;
   }
-  const judgement = manifest === undefined ? undefined : judgementOf(manifest);
-  return (judgement?.judge ?? isHtmlLimitedBotUserAgent)(userAgent);
+  return (manifest === undefined ? NEXT_JUDGEMENT : judgementOf(manifest)).judge(userAgent);
 }
 
 /**
