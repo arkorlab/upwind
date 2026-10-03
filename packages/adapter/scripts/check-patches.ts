@@ -35,10 +35,11 @@ import { copyOf, missedRuntimes } from './copies.ts';
  *   `package.json`. Hundreds of megabytes, so it runs on its own schedule.
  * - `--canary`: the current canary as well, as a forecast. See `Target.forecast`.
  *
- * What it cannot reach: three patches rewrite `next build`'s *output* rather than Next.js's
- * package — `turbopack-runtime` and `wasm-loader` (the Turbopack runtime and the WebAssembly
- * loader it bundles) and `vercel-og` (the chunk Turbopack emits for the external import). They
- * find nothing here and are reported as such; `tools/next-matrix` builds real applications and
+ * What it cannot reach: five patches rewrite `next build`'s *output* rather than Next.js's
+ * package — `turbopack-runtime` and `turbopack-root` (the Turbopack runtime's chunk loader and its
+ * roots), `wasm-loader` and `runtime-wasm-loader` (the WebAssembly loader, in the two places a
+ * supported version keeps it) and `vercel-og` (the chunk Turbopack emits for the external import).
+ * They find nothing here and are reported as such; `tools/next-matrix` builds real applications and
  * covers them.
  */
 
@@ -100,6 +101,7 @@ async function npmCli(): Promise<string> {
 
 /** The context a patch is handed. Only `instrumentation` reads any of it from a package file. */
 const CONTEXT: PatchContext = {
+  projectDir: REPO,
   distDir: path.join(REPO, '.next'),
   chunks: [],
   instrumentation: undefined,

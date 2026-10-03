@@ -16,6 +16,8 @@
 const FETCH_CACHE_WAIT_UNTIL = 'fetch-cache-wait-until';
 const GRAPH_MANIFESTS = 'graph-manifests';
 const TURBOPACK_RUNTIME = 'turbopack-runtime';
+/** The same runtime chunk's roots, rewritten wherever the runtime is (`patches/turbopack-root.ts`). */
+const TURBOPACK_ROOT = 'turbopack-root';
 /**
  * The Turbopack WebAssembly loader, in the two shapes the range holds it: a module of its own from
  * 16.3, and the Turbopack runtime itself in 16.2 (`patches/wasm-loader.ts`).
@@ -69,6 +71,7 @@ export const FIXTURE_COVERAGE = {
     expected: [
       ...PACKAGE_PATCHES,
       TURBOPACK_RUNTIME,
+      TURBOPACK_ROOT,
       WASM_LOADER,
       'vercel-og',
       'vercel-og-font',
@@ -79,6 +82,7 @@ export const FIXTURE_COVERAGE = {
       GRAPH_MANIFESTS,
       'hanging-input-abort',
       TURBOPACK_RUNTIME,
+      TURBOPACK_ROOT,
       'vercel-og',
       WASM_LOADER,
     ],
@@ -88,8 +92,8 @@ export const FIXTURE_COVERAGE = {
   // here renders an image. And `hanging-input-abort` reaches no chunk: this build put the module it
   // rewrites in none of its own.
   'next-edge': {
-    expected: [...PACKAGE_PATCHES, TURBOPACK_RUNTIME],
-    chunks: [FETCH_CACHE_WAIT_UNTIL, GRAPH_MANIFESTS, TURBOPACK_RUNTIME],
+    expected: [...PACKAGE_PATCHES, TURBOPACK_RUNTIME, TURBOPACK_ROOT],
+    chunks: [FETCH_CACHE_WAIT_UNTIL, GRAPH_MANIFESTS, TURBOPACK_RUNTIME, TURBOPACK_ROOT],
   },
 } as const satisfies Readonly<Record<string, FixtureCoverage>>;
 
