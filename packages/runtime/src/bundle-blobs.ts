@@ -40,30 +40,55 @@ function log(message: string, fields: Record<string, string | number> = {}): voi
 }
 
 /**
+ * A failure in as many words as it has, and never a failure of its own: a rejection need not be an
+ * `Error`, and one that is an object with no prototype throws when it is read as a string — which
+ * would turn a prefetch nobody can serve into a 500 (`failureMessage` in `function.ts`, for the
+ * same reason).
+ */
+function detail(error: unknown): string {
+  try {
+    return String(error instanceof Error ? error.message : error);
+  } catch {
+    return '';
+  }
+}
+
+/**
  * The host's reader, held to what the runtime does with a failure; `undefined` for a host that
  * exports none or reaches nothing, which is a build that ships every blob.
  *
- * A read that throws is answered `undefined` and logged, once per read: to the caller a host that
- * cannot answer and a blob that was never there mean the same thing — the segment is served by
- * nobody and the client navigates instead of prefetching — but a host that offers this and is
- * failing would otherwise be indistinguishable from one that never offered it.
+ * **Nothing here fails a request.** A factory that throws — and it is handed the Function's whole
+ * environment, so it may — leaves a Function with no reader rather than one that answers 500 to
+ * every route, the routes that read no blob included. A read that throws is answered `undefined`
+ * the same way: to the caller a host that cannot answer and a blob that was never there mean the
+ * same thing, the segment is served by nobody and the client navigates instead of prefetching.
+ * Both are logged, because a host that offers this and is failing would otherwise be
+ * indistinguishable from one that never offered it.
  *
  * Nothing is memoised. A read happens once per request, on a path the host could not serve, and a
  * cache of a build's bytes in an isolate serving every other request is not worth that; the host
  * is also the one that knows how to cache it.
  */
-export function bundleBlobReader(read: BundleBlobReader | undefined): BundleBlobReader | undefined {
-  if (read === undefined) {
+export function bundleBlobReader(
+  create: BundleBlobsExport,
+  init: BundleBlobsInit,
+): BundleBlobReader | undefined {
+  let made: BundleBlobReader | undefined;
+  try {
+    made = create?.(init);
+  } catch (error) {
+    log('bundle blob reader not made', { detail: detail(error) });
     return undefined;
   }
+  if (made === undefined) {
+    return undefined;
+  }
+  const read = made;
   return async (sha256) => {
     try {
       return await read(sha256);
     } catch (error) {
-      log('bundle blob not read', {
-        sha256,
-        detail: error instanceof Error ? error.message : String(error),
-      });
+      log('bundle blob not read', { sha256, detail: detail(error) });
       return;
     }
   };

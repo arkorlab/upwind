@@ -67,8 +67,10 @@ function hostFor(env: unknown): {
     // build that left blobs out of its Function needs them read whether or not anything is cached.
     // Asserted at the boundary, as `createCacheHost` is: the ambient declaration resolves for
     // `tsc` and not for the type-aware lint's own program.
+    // Calling it is the wrapper's job, which is where a host that throws on being asked is kept
+    // from failing every request this isolate goes on to serve.
     const create = cacheHost.createBundleBlobReader as BundleBlobsExport;
-    shared.blobs = bundleBlobReader(create?.({ env: bindings }));
+    shared.blobs = bundleBlobReader(create, { env: bindings });
     shared.configured = true;
     configureCacheHandlers(shared.runtime);
   }
