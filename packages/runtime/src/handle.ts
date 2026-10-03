@@ -598,7 +598,15 @@ async function routeRequest(input: RoutedInput): Promise<Response> {
   }
   if (mode === 'foreground') {
     const foreground = await handleForeground(input, store);
-    return foreground.response ?? outcomeOn(await handleFull(input, store), foreground.outcome);
+    if (foreground.response !== undefined) {
+      return foreground.response;
+    }
+    // The regeneration answered nothing — a render dynamic here, a lease held elsewhere and a
+    // render of the visitor's own that was dynamic too — and the usual path answers. That path
+    // reads the same expired record and regenerated again from it: a second lease, and a second
+    // render that could say nothing the first did not.
+    const usual = { ...input, regenerated: foreground.regenerated };
+    return outcomeOn(await handleFull(usual, store), foreground.outcome);
   }
   const prerenderId =
     pathFromHeaders(request.headers, RESUME_PRERENDER_HEADER, RESUME_PRERENDER_ESCAPED_HEADER) ??

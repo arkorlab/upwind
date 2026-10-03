@@ -1,5 +1,12 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+
 import { pagesDataPathname, queryDependent } from '@stayingupwind/core/bundle';
-import type { DecodedGenerationPack, RouteEntryDescriptor } from '@stayingupwind/core/cache';
+import {
+  type DecodedGenerationPack,
+  type InvalidationState,
+  normalizeRoutePathname,
+  type RouteEntryDescriptor,
+} from '@stayingupwind/core/cache';
 import {
   CACHE_OUTCOME_HEADER,
   CACHE_ROUTE_ESCAPED_HEADER,
@@ -11,37 +18,26 @@ import {
   REGENERATE_HEADER,
   type RegenerateMode,
 } from '@stayingupwind/core/paas';
-import { NULL_BODY_STATUSES } from '@stayingupwind/core/request';
-import { releaseStream } from '@stayingupwind/core/util';
 
+import {
+  answerFromRender,
+  answerWith,
+  documentWant,
+  renderForVisitor,
+  resumeRsc,
+  type Target,
+  type Want,
+} from './answers.ts';
 import type { NodeHandler } from './app-module.ts';
-import { cacheLifetimeOf, type CapturedRender, renderCaptured } from './cache/capture.ts';
 import { nowMs } from './cache/clock.ts';
-import { currentGeneration } from './cache/current.ts';
+import { type CurrentGeneration, currentGeneration } from './cache/current.ts';
 import type { AttemptReason } from './cache/host.ts';
 import { regenerate, type RegenerationOutcome, servable } from './cache/regenerate.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
 import { nodeHandlerOf } from './entries.ts';
 import { observationOf } from './incoming.ts';
-import { invokeNodeHandler } from './node-bridge.ts';
-import {
-  answerHeaders,
-  PAGES_DATA,
-  type Representation,
-  ROUTE_BODY,
-  SEGMENT_PREFIX,
-} from './representations.ts';
-import {
-  baseRequestMeta,
-  bypassesPrerender,
-  concatShell,
-  NEXT_CACHE_HEADER,
-  type NextCacheState,
-  resume,
-  resumeUrl,
-  type RoutedInput,
-  stripPlatformHeaders,
-} from './serve.ts';
+import { PAGES_DATA, ROUTE_BODY, SEGMENT_PREFIX } from './representations.ts';
+import { bypassesPrerender, resume, type RoutedInput } from './serve.ts';
 import { entrypointKindOf, findShell, isClassShell, type Store } from './store.ts';
 
 /**
@@ -85,11 +81,6 @@ export function descriptorFor(store: Store, route: string, pathname: string): Ro
     return { kind: 'pages', route, pathname };
   }
   return { kind: entrypoint === 'app-route' ? 'app-route' : 'app-page', route, pathname };
-}
-
-interface Target {
-  readonly descriptor: RouteEntryDescriptor;
-  readonly handler: NodeHandler;
 }
 
 /** One regeneration as a request asks for it: the entry, and what it takes to render it. */
@@ -204,18 +195,55 @@ export async function handleDetached(input: RoutedInput, store: Store): Promise<
   });
 }
 
-/** Once the response has gone out in full, do this: the visitor's bytes come first. */
+/**
+ * Once the response is done with, do this, once: the visitor's bytes come first. Done with is sent
+ * in full, or given up by the client. A client cancels prefetches as a matter of course — every
+ * one a navigation overtakes — and a regeneration begun only once the body had been read to its
+ * end was never begun behind one that was cancelled: an entry only ever prefetched stayed stale,
+ * or expired, and each expired prefetch paid for a render of its own every time.
+ */
 function afterBody(response: Response, then: () => void): Response {
-  if (response.body === null) {
+  const { body } = response;
+  if (body === null) {
     then();
     return response;
   }
-  const through = new TransformStream<Uint8Array, Uint8Array>({
-    flush() {
-      then();
+  // Run in the request's context, whoever reads the body: the runtime writing the response out
+  // reads it from outside the request, and a regeneration begun from that read ran outside it too
+  // — under workerd its generation was stamped with the wall clock rather than the request's.
+  const later = AsyncLocalStorage.bind(then);
+  let done = false;
+  const once = (): void => {
+    if (!done) {
+      done = true;
+      later();
+    }
+  };
+  const reader = body.getReader();
+  const through = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      let read: ReadableStreamReadResult<Uint8Array>;
+      try {
+        read = await reader.read();
+      } catch (error) {
+        // A body that fails part way has still been sent all it will be: the entry is as stale as
+        // it was, and its regeneration no less due.
+        once();
+        throw error;
+      }
+      if (read.done) {
+        controller.close();
+        once();
+        return;
+      }
+      controller.enqueue(read.value);
+    },
+    cancel(reason) {
+      once();
+      return reader.cancel(reason);
     },
   });
-  return new Response(response.body.pipeThrough(through), response);
+  return new Response(through, response);
 }
 
 /** `background`: the resume the edge asked for is answered, and the entry regenerated behind it. */
@@ -236,217 +264,30 @@ export async function withBackgroundRegeneration(
   });
 }
 
-/** What a request wants of an entry: which output, for which URL. */
-interface Want {
-  readonly representation: Representation;
-  /** The path and query the resume renders for. */
-  readonly url: string;
-  /** A static RSC prefetch may use the captured payload without rendering its dynamic holes. */
-  readonly prefetch?: boolean | undefined;
-}
-
-interface Answer extends Want {
-  readonly body: Uint8Array;
-  readonly postponed: string | undefined;
-  /** Whether the page leaves parts of itself to a resume: it has a postponed state. */
-  readonly partial: boolean;
-  readonly status: number;
-  readonly headers: Readonly<Record<string, string>>;
-  /** Where the answer came from, said only of one complete without a resume (`NEXT_CACHE_HEADER`). */
-  readonly cache: NextCacheState;
-}
-
-/** The visitor's answer: a document — a shell, then their own resume of it — or an output whole. */
-function answerWith(input: RoutedInput, handler: NodeHandler, answer: Answer): Response {
-  const headers = answerHeaders(answer.representation, answer.headers, answer.partial);
-  if (answer.postponed === undefined) {
-    headers.set(NEXT_CACHE_HEADER, answer.cache);
-  }
-  const { status } = answer;
-  // A `204` a handler answered is kept with the empty body it was captured as, and a `Response`
-  // refuses a body under such a status even when it is empty.
-  if (input.request.method === 'HEAD' || NULL_BODY_STATUSES.has(status)) {
-    return new Response(null, { status, headers });
-  }
-  if (answer.postponed === undefined) {
-    return new Response(answer.body as BodyInit, { status, headers });
-  }
-  const rest = resume({ input, handler, postponed: answer.postponed, url: answer.url });
-  return new Response(concatShell(answer.body, rest), { status, headers });
-}
-
-/** The output of a render a want names, as the render captured it. */
-function renderedOutput(
-  render: CapturedRender,
-  representation: Representation,
-): Uint8Array | undefined {
-  if (representation === PAGES_DATA) {
-    return render.data;
-  }
-  if (representation === 'rsc') {
-    return render.rscData;
-  }
-  return representation.startsWith(SEGMENT_PREFIX)
-    ? render.segments.get(representation.slice(SEGMENT_PREFIX.length))
-    : render.html;
-}
-
-/** The visitor's answer from a render; `undefined` when the render has no such output. */
-async function answerFromRender(
-  input: RoutedInput,
-  handler: NodeHandler,
-  render: CapturedRender,
-  want: Want,
-): Promise<Response | undefined> {
-  const resumed = resumeRsc(input, handler, want, render.postponed);
-  if (resumed !== undefined) {
-    return resumed;
-  }
-  const body = renderedOutput(render, want.representation);
-  if (body === undefined) {
-    return undefined;
-  }
-  return answerWith(input, handler, {
-    ...want,
-    body,
-    postponed: want.representation === 'html' ? render.postponed : undefined,
-    partial: render.postponed !== undefined,
-    status: render.status,
-    headers: render.headers,
-    cache: 'MISS',
-  });
-}
-
 /**
- * A captured RSC payload contains only the static prerender. An actual navigation needs Next.js
- * to render the whole Flight response using this generation's resume cache and this visitor's
- * request. That response is complete in its own right: concatenating the captured payload would
- * duplicate its Flight records. Prefetches and individual segments keep their static artifacts.
- */
-function resumeRsc(
-  input: RoutedInput,
-  handler: NodeHandler,
-  want: Want,
-  postponed: string | Uint8Array | undefined,
-): Promise<Response> | undefined {
-  if (postponed === undefined || want.prefetch === true || want.representation !== 'rsc') {
-    return undefined;
-  }
-  return resume({
-    input,
-    handler,
-    postponed: typeof postponed === 'string' ? postponed : new TextDecoder().decode(postponed),
-    url: want.url,
-  });
-}
-
-/** What the edge asks for on a document's behalf: the document itself. */
-function documentWant(input: RoutedInput): Want {
-  return { representation: 'html', url: resumeUrl(input.request) };
-}
-
-/**
- * A render off its response for this visitor alone, streamed as it is rendered: a Pages Router
- * page's, at its data route when its data is what is wanted, or a route handler's. `undefined`
- * when it turns out to be dynamic here, as a capture would have said.
- */
-async function streamForVisitor(
-  input: RoutedInput,
-  target: Target,
-  want: Want,
-  headers: Headers,
-): Promise<Response | undefined> {
-  // One output is all such a render is, and a payload or a segment is none it has, as a capture
-  // of it found: a page's is the only kind that has those.
-  if (want.representation === 'rsc' || want.representation.startsWith(SEGMENT_PREFIX)) {
-    return undefined;
-  }
-  const path = want.representation === PAGES_DATA ? want.url : target.descriptor.pathname;
-  const response = await invokeNodeHandler({
-    handler: target.handler,
-    request: new Request(new URL(path, input.request.url), { headers }),
-    url: path,
-    requestMeta: baseRequestMeta(input),
-    waitUntil: input.waitUntil,
-    run: input.run,
-  });
-  if (cacheLifetimeOf(response) === undefined) {
-    releaseStream(response.body, 'dynamic here: the usual path answers');
-    return undefined;
-  }
-  const init = {
-    status: response.status,
-    headers: answerHeaders(want.representation, Object.fromEntries(response.headers), false),
-  };
-  // The render is a `GET`'s, as a generation's is: a `HEAD` is told what that says of the entity,
-  // as `answerWith` tells it, and is sent none of it.
-  if (input.request.method === 'HEAD') {
-    releaseStream(response.body, 'a HEAD is answered without the body');
-    return new Response(null, init);
-  }
-  return new Response(response.body, init);
-}
-
-/**
- * A static render for this visitor alone, when the entry cannot be regenerated right now (a
- * lease held elsewhere, a host out of reach, a render too large for any generation): the
- * entry as a regeneration would have made it, kept by no one. `undefined` when it turns out to be
- * dynamic here.
+ * The visitor's answer from a regeneration just made: the render, as soon as it is made, its
+ * publish still under way behind the answer — which the outcome says (`accepted`) rather than claim
+ * a commit the bytes went out ahead of; their own render when the entry could not be published
+ * now; nothing when the entry is dynamic here, which leaves the request to the usual path.
  *
- * Only a page's render is captured for it, since the answer is assembled from it: a shell, then
- * the visitor's own resume. A Pages Router page's render and a route handler's are the answer as
- * they stand, and are streamed rather than read whole first — read, a body too large to publish
- * would be held whole again, on every request, for as long as the entry could not be published.
- */
-async function renderForVisitor(
-  input: RoutedInput,
-  target: Target,
-  want: Want,
-): Promise<Response | undefined> {
-  const headers = stripPlatformHeaders(input.request.headers);
-  headers.delete('cookie');
-  const { kind, pathname } = target.descriptor;
-  if (kind !== 'app-page') {
-    return streamForVisitor(input, target, want, headers);
-  }
-  const url = new URL(pathname, input.request.url);
-  const render = await renderCaptured(kind, (meta) => {
-    return invokeNodeHandler({
-      handler: target.handler,
-      request: new Request(url, { headers }),
-      url: pathname,
-      requestMeta: { ...baseRequestMeta(input), ...meta.requestMeta },
-      waitUntil: input.waitUntil,
-      run: input.run,
-      expectNoResponse: meta.expectNoResponse,
-    });
-  });
-  return render === undefined ? undefined : answerFromRender(input, target.handler, render, want);
-}
-
-/**
- * The visitor's answer from a regeneration just made: the render published, when one was; their
- * own render when the entry could not be published now; nothing when the entry is dynamic here,
- * which leaves the request to the usual path.
- *
- * A generation published as something a visitor may not be answered with — a redirect that does
- * not say where it leads — is one the visitor never saw, so the outcome the response carries says
- * so rather than `published`, which whatever reads it would take for the bytes that went out.
+ * A render published as something a visitor may not be answered with — a redirect that does not
+ * say where it leads — is one the visitor never saw, so the outcome the response carries says so
+ * rather than `accepted`, which whatever reads it would take for the bytes that went out.
  */
 async function answerFromJob(
   job: Job,
   outcome: RegenerationOutcome,
   want: Want,
 ): Promise<Response | undefined> {
-  if (outcome.kind === 'published' && servable(outcome.render.status, outcome.render.headers)) {
+  if (outcome.kind === 'accepted' && servable(outcome.render.status, outcome.render.headers)) {
     const answered = await answerFromRender(job.input, job.target.handler, outcome.render, want);
-    return answered === undefined ? undefined : withOutcome(answered, 'committed');
+    return answered === undefined ? undefined : withOutcome(answered, 'accepted');
   }
   if (outcome.kind === 'skipped') {
     return undefined;
   }
   const own = await renderForVisitor(job.input, job.target, want);
-  const said = outcome.kind === 'published' ? 'unservable' : outcome.kind;
+  const said = outcome.kind === 'accepted' ? 'unservable' : outcome.kind;
   return own === undefined ? undefined : withOutcome(own, said);
 }
 
@@ -454,11 +295,14 @@ export interface ForegroundAnswer {
   readonly response: Response | undefined;
   /** What to say of the regeneration when the usual path answers instead. */
   readonly outcome: string;
+  /** The entry a regeneration was begun of: the usual path, answering instead, begins no other. */
+  readonly regenerated: RouteEntryDescriptor | undefined;
 }
 
 /**
- * No valid generation exists: render one now, publish it, and answer the visitor from it. A page
- * that cannot be regenerated, or that is not one a cache may hold, is left to the usual path.
+ * No valid generation exists: render one now, answer the visitor from it, and publish it behind the
+ * answer. A page that cannot be regenerated, or that is not one a cache may hold, is left to the
+ * usual path.
  */
 export async function handleForeground(
   input: RoutedInput,
@@ -466,12 +310,13 @@ export async function handleForeground(
 ): Promise<ForegroundAnswer> {
   const job = await jobOf(input, store);
   if (job === undefined) {
-    return { response: undefined, outcome: 'skipped' };
+    return { response: undefined, outcome: 'skipped', regenerated: undefined };
   }
   const outcome = await runJob(job, 'expired');
   return {
     response: await answerFromJob(job, outcome, documentWant(input)),
     outcome: outcome.kind,
+    regenerated: job.target.descriptor,
   };
 }
 
@@ -549,8 +394,14 @@ async function outputOf(
 
 /**
  * The entry a request may be answered from, and the cache it is kept in; `undefined` where no
- * generation answers: no cache, a draft or a bypass condition, an output that depends on a query
- * its route does not name (no one generation stands for it), or an entry never regenerated.
+ * generation answers: no cache, a route the build prerendered nothing of, a draft or a bypass
+ * condition, an output that depends on a query its route does not name (no one generation stands
+ * for it), or an entry never regenerated.
+ *
+ * A route with no prerender — no output of its own, no shell of its class — is one Next.js renders
+ * for every request, and no generation of it is ever seeded or made: its record was asked for all
+ * the same, on every navigation's payload, and each of them waited on that read, up to its
+ * deadline, for an answer that could only say there was none.
  */
 function answerableEntry(input: RoutedInput, store: Store, source: GenerationSource) {
   const runtime = input.cache;
@@ -559,6 +410,7 @@ function answerableEntry(input: RoutedInput, store: Store, source: GenerationSou
     findShell(store, source.route, source.pathname);
   if (
     runtime === undefined ||
+    shell === undefined ||
     bypassesPrerender(store, input.request, shell, source.url) ||
     queryDependent(shell, source.route, source.pathname)
   ) {
@@ -569,11 +421,170 @@ function answerableEntry(input: RoutedInput, store: Store, source: GenerationSou
 }
 
 /**
+ * The same entry, as the cache keys it (`keyDescriptorFor`): a pathname with a trailing slash names
+ * the entry without one. The foreground regenerates the entry by the pathname the edge asked for,
+ * which keeps the slash in an application that keeps its pages there (`trailingSlash`); the usual
+ * path routes it without.
+ */
+function sameEntry(a: RouteEntryDescriptor | undefined, b: RouteEntryDescriptor): boolean {
+  return (
+    a?.kind === b.kind &&
+    a.route === b.route &&
+    normalizeRoutePathname(a.pathname) === normalizeRoutePathname(b.pathname)
+  );
+}
+
+/**
+ * The request rendered as it came. Once a runtime generation exists, its missing/rejected output
+ * must never fall back to a different generation's build artifact: this answers instead.
+ */
+const renderRequest = (job: Job, url: string): Promise<Response> =>
+  resume({ input: job.input, handler: job.target.handler, postponed: undefined, url });
+
+/**
+ * A prefetch of a page or of one of its segments: asked for ahead of a navigation that may not
+ * come.
+ */
+function speculative(want: Want): boolean {
+  return want.prefetch === true || want.representation.startsWith(SEGMENT_PREFIX);
+}
+
+/** How long an expired prefetch waits for the tag delta it is behind (`renderSpeculative`). */
+const SPECULATIVE_TAG_SYNC_MS = 1000;
+
+/**
+ * A prefetch's answer where the entry's generation has expired: a static render of the page made
+ * for it and kept by no one, the regeneration left to after the answer.
+ *
+ * Next.js 16.3.6 answers such a prefetch the way it answers a document: an entry past its `expire`
+ * is never early-resolved, stale bytes and all, but revalidated in the foreground, and the
+ * prefetch is sent the fresh render (`ResponseCache.handleGet`, `isStale === -1`; a prefetch that
+ * finds no entry runs its own render, `isPrefetch`). What the visitor is sent here is that same
+ * render — the expired record is not served — but the lease, the pull of the tag delta and the
+ * publish behind it are not made in front of a request the client makes speculatively, many at a
+ * time, one for each segment of a page it may never visit: those segments' requests each held the
+ * lease or found it held, and every one of them waited for that before it rendered. The
+ * regeneration begins once the answer has gone out in full, once per generation of the entry
+ * (`scheduleJob`), as a stale one's does.
+ *
+ * The pull is made where the invalidation that expired the entry is one this isolate's view of the
+ * tags is behind (`revision`): the render reads its data values through that view, and a value the
+ * invalidation reached would be taken for current and sent to the navigation that adopts the
+ * prefetch. Pulled first, as a regeneration pulls it — joined with any pull out, so a page's
+ * segments prefetched together pull it once, and again where a pull left the view short of the
+ * record (`catchUp`) — for a second at the most (`SPECULATIVE_TAG_SYNC_MS`), past which the render
+ * reads the view as it stands. A pull still out then is kept going behind the answer for as long as
+ * the prefetches after it may join it (the hold), so that they join one that answers rather than one
+ * cut off with this request; no longer, so that a gateway that does not answer is not left with a
+ * pull kept going for each hold that passes.
+ */
+async function renderSpeculative(
+  job: Job,
+  want: Want,
+  source: GenerationSource,
+  invalidation: InvalidationState | undefined,
+): Promise<Response> {
+  const { runtime } = job;
+  if (invalidation !== undefined && invalidation.revision > runtime.tags.revision) {
+    const until = performance.now() + SPECULATIVE_TAG_SYNC_MS;
+    const caughtUp = catchUp(runtime, invalidation.revision, until);
+    job.input.waitUntil(settledWithin(caughtUp, runtime.holdMs));
+    await settledWithin(caughtUp, SPECULATIVE_TAG_SYNC_MS);
+  }
+  return (
+    (await renderForVisitor(job.input, job.target, want)) ?? (await renderRequest(job, source.url))
+  );
+}
+
+/**
+ * The pull of the tag delta each runtime's expired prefetches have out, when it went out on the
+ * isolate's own clock, and whether it has settled: the segments of a page prefetched together are
+ * behind the same invalidation, and the first of them to find it pulls it for all of them. Joined
+ * while it is out and younger than the hold; older, it may be a pull whose request ended under it,
+ * which never answers.
+ */
+interface SpeculativePull {
+  readonly pull: Promise<void>;
+  readonly since: number;
+  settled: boolean;
+}
+
+const speculativePulls = new WeakMap<CacheRuntime, SpeculativePull>();
+
+/** How many pulls a prefetch makes or joins to bring the view up to its record's revision. */
+const SPECULATIVE_PULLS = 2;
+
+/** A pull of the delta for the prefetches after it to join while it is out. Never rejects. */
+function startPull(runtime: CacheRuntime): Promise<void> {
+  const underWay: { pull: Promise<void>; readonly since: number; settled: boolean } = {
+    pull: Promise.resolve(),
+    since: performance.now(),
+    settled: false,
+  };
+  underWay.pull = (async () => {
+    try {
+      await runtime.tags.sync(runtime.host, nowMs(), { force: true });
+    } catch {
+      // A pull that fails leaves the view as it stood, as a regeneration's does.
+    } finally {
+      underWay.settled = true;
+    }
+  })();
+  speculativePulls.set(runtime, underWay);
+  return underWay.pull;
+}
+
+/**
+ * Bring this isolate's view of the tags up to the revision a prefetch's record was invalidated at
+ * (`required`): joining a pull that is out, or making one, and again where it left the view short —
+ * a pull that went out before the invalidation answers with the revision before it. None is made
+ * or joined past `until`, on the isolate's own clock: the prefetch has rendered without the view
+ * by then, and a pull made for it would be one no request waits for.
+ */
+async function catchUp(runtime: CacheRuntime, required: number, until: number): Promise<void> {
+  for (
+    let tries = 0;
+    tries < SPECULATIVE_PULLS && runtime.tags.revision < required && performance.now() < until;
+    tries += 1
+  ) {
+    const underWay = speculativePulls.get(runtime);
+    const joinable =
+      underWay !== undefined &&
+      !underWay.settled &&
+      performance.now() - underWay.since < runtime.holdMs;
+    await (joinable ? underWay.pull : startPull(runtime));
+  }
+}
+
+/** Once `promise` has settled, whichever way, or `ms` have gone by. */
+async function settledWithin(promise: Promise<unknown>, ms: number): Promise<void> {
+  const settled = (async () => {
+    try {
+      await promise;
+    } catch {
+      // A pull that fails leaves the view as it stood, as a regeneration's does.
+    }
+  })();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      settled,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * What the Function answers itself, from the entry's current generation: fresh or stale it is
- * served (stale, regenerated behind); expired, it is regenerated first; missing, rendered now
- * where the build made none. `undefined` leaves the build's own output to answer: no generation
- * where the build has one, a host out of reach (an answer is still given, and the record
- * asked for again on the next hold), a Pages Router class shell, or an entry dynamic here.
+ * served (stale, regenerated behind); expired, it is regenerated first, or rendered for a prefetch
+ * and regenerated behind; missing, rendered now where the build made none. `undefined` leaves the
+ * build's own output to answer: no generation where the build has one, a host out of reach (an
+ * answer is still given, and the record asked for again on the next hold), a Pages Router class
+ * shell, or an entry dynamic here.
  */
 export async function serveFromGeneration(
   input: RoutedInput,
@@ -586,33 +597,75 @@ export async function serveFromGeneration(
     return undefined;
   }
   const { runtime, descriptor } = answerable;
-  const lookup = await currentGeneration(runtime, descriptor, nowMs());
+  const lookup = await currentGeneration(runtime, descriptor, nowMs(), input.waitUntil);
   const job: Job = { input, store, runtime, target: { descriptor, handler } };
   const want: Want = {
     representation: source.representation,
     url: source.url,
     prefetch: source.prefetch,
   };
+  // One regeneration of an entry a request. A foreground one that answered nothing has had it
+  // (`routeRequest`), and found the entry dynamic here, which is all another would find: what is
+  // left is a render of the request as it came — the build's path, for an entry with no record.
+  const once = !sameEntry(input.regenerated, descriptor);
   if (lookup.kind === 'none' && source.onMiss === 'render') {
-    return answerFromJob(job, await runJob(job, 'miss'), want);
+    return once ? answerFromJob(job, await runJob(job, 'miss'), want) : undefined;
   }
   if (lookup.kind !== 'generation') {
     return undefined;
   }
   const { pack, validity } = lookup.current;
-  // Once a runtime generation exists, its missing/rejected output must never fall back to
-  // a different generation's build artifact. Render the original request instead.
-  const renderRequest = () => resume({ input, handler, postponed: undefined, url: source.url });
+  if (validity === 'expired' && !once) {
+    return renderRequest(job, source.url);
+  }
+  if (validity === 'expired' && speculative(want)) {
+    return afterBody(await renderSpeculative(job, want, source, pack.header.invalidation), () => {
+      scheduleJob(job, 'expired', pack.header.generationId);
+    });
+  }
   if (validity === 'expired') {
-    return (await answerFromJob(job, await runJob(job, 'expired'), want)) ?? renderRequest();
+    const regenerated = await answerFromJob(job, await runJob(job, 'expired'), want);
+    return regenerated ?? renderRequest(job, source.url);
+  }
+  const answer = await answerFromGeneration(job, lookup.current, source, want);
+  // A stale one is regenerated once the answer has gone out in full, as it is behind a resume the
+  // edge dispatched (`withBackgroundRegeneration`). Begun at once, the regeneration rendered on
+  // this isolate beside the visitor's own render — their resume, where the page has one — and the
+  // two shared its time. Where the generation leads to no output, the build's answers instead,
+  // from the caller, and nothing here sees that answer end: the regeneration is begun at once.
+  //
+  // A prefetch's too, where Next.js 16.3.6 answers a stale entry to a prefetch and revalidates
+  // nothing (`ResponseCache.handleGet`, `!isStale || isPrefetch`), and leaves it to the
+  // navigation after. Kept on purpose: it costs the prefetch nothing, begun after its answer and
+  // once a generation, and a page whose visitors mostly prefetch it — a link on every page,
+  // seldom followed — would otherwise be prefetched as it was until it expired, and then cost
+  // every prefetch a render of its own.
+  const behind = (): boolean => once && scheduleJob(job, 'stale', pack.header.generationId);
+  if (validity === 'stale' && answer !== undefined) {
+    return afterBody(answer, behind);
   }
   if (validity === 'stale') {
-    scheduleJob(job, 'stale', pack.header.generationId);
+    behind();
   }
+  return answer;
+}
+
+/**
+ * The visitor's answer from a generation that may be served, fresh or stale; `undefined` where it
+ * leads to no output of its own, which leaves the build's to answer.
+ */
+async function answerFromGeneration(
+  job: Job,
+  { pack, validity }: CurrentGeneration,
+  source: GenerationSource,
+  want: Want,
+): Promise<Response | undefined> {
+  const { input, runtime, store } = job;
+  const { handler } = job.target;
   // What the record says is what the visitor would be told, and a record that cannot be answered
   // as written is not: the visitor gets a render of their own, as they would from a publish of it.
   if (!servable(pack.header.status, pack.header.headers)) {
-    return (await renderForVisitor(input, job.target, want)) ?? renderRequest();
+    return (await renderForVisitor(input, job.target, want)) ?? renderRequest(job, source.url);
   }
   // Build records hold only the document's state; let rscFromBuild choose the RSC twin's own
   // state. A runtime navigation resumes directly, without reading its static RSC artifact first.
@@ -623,7 +676,7 @@ export async function serveFromGeneration(
   }
   const body = await outputOf(runtime, store, pack, source);
   if (body === undefined) {
-    return pack.header.source === 'runtime' ? renderRequest() : undefined;
+    return pack.header.source === 'runtime' ? renderRequest(job, source.url) : undefined;
   }
   return answerWith(input, handler, {
     ...want,
