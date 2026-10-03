@@ -19,12 +19,13 @@ which suites deploy mode selects.
 
 ## What it needs
 
-| Variable                  | What it is                                                 |
-| ------------------------- | ---------------------------------------------------------- |
-| `ARKOR_API_URL`           | The host's public API, for example `https://api.arkor.dev` |
-| `ARKOR_API_TOKEN`         | A token of that host with the `write` scope                |
-| `ARKOR_API_TOKEN_FILE`    | Or a file holding that token, read instead of the variable |
-| `ADAPTER_TEST_PROJECT_ID` | A project on that host, **used by nothing else**           |
+| Variable                      | What it is                                                                    |
+| ----------------------------- | ----------------------------------------------------------------------------- |
+| `ARKOR_API_URL`               | The host's public API, for example `https://api.example.com`                  |
+| `ARKOR_API_TOKEN`             | A token of that host with the `write` scope                                   |
+| `ARKOR_API_TOKEN_FILE`        | Or a file holding that token, read instead of the variable                    |
+| `ADAPTER_TEST_PROJECT_ID`     | A project on that host, **used by nothing else**                              |
+| `ADAPTER_TEST_SETTLE_SECONDS` | Optional: how long that host takes to bring a deployment in for every request |
 
 The names are the host's own, so that the script an operator already drives this suite with drives this
 too. Nothing is passed on a command line, which is in every process list on the machine.
@@ -138,10 +139,18 @@ Beyond that, four limits are worth knowing before reading a failure as this adap
   Where the build has no such file, the host's own account of which deployment is current is the whole
   of the evidence, and then any answer at all — including a `5xx`, which a route-only application may
   mean — counts as served. Both cases say so in the log. A redirect is the one answer that can never
-  become the digest, so it is given thirty seconds — the pointer flips before every part of the host has
-  caught up, and what answers in between is the previous fixture, which may redirect everything — and
+  become the digest, so it is given thirty seconds — a host can name the new deployment before every part
+  of it has caught up, and what answers in between is the previous fixture, which may redirect everything — and
   then said plainly: a project that is access-protected, or something in front of it redirecting static
   files, rather than a quarter of an hour of polling.
+- **A request that reached the new deployment proves that it did, and no more.** A host that brings a
+  deployment in place by place can answer the probe with the new one and the suite's next request with
+  the one before — seen in a full run, where pages a suite received carried Next.js's own `data-dpl-id`
+  naming an earlier fixture's deployment while other requests of the same suite reached their own. How
+  long that lasts is the host's to know, so it is the operator's to say: `ADAPTER_TEST_SETTLE_SECONDS`,
+  counted from when the host first names the deployment as current, is waited out before the suite
+  starts. It is paid once per fixture, so it is worth setting to the host's real bound rather than to a
+  round number above it.
 - **The Next.js under test must be inside `SUPPORTED_NEXT_RANGE`.** Outside it the host refuses every
   deployment, and the suite reports every suite as failed for a reason that has nothing to do with the
   test. Inside it, 16.2 does without the content-addressed `/_next/static/immutable/*` — it ignores the

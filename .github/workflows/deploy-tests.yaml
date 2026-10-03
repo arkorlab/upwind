@@ -253,6 +253,8 @@ jobs:
         env:
           ARKOR_API_URL: ${{ secrets.ARKOR_API_URL }}
           ARKOR_API_TOKEN_FILE: ${{ runner.temp }}/deploy-token
+          # Read here too, so that a value the tool would refuse is refused before the long part.
+          ADAPTER_TEST_SETTLE_SECONDS: ${{ secrets.ADAPTER_TEST_SETTLE_SECONDS }}
         run: pnpm test:deploy preflight
 
       # Next.js is built from source, and installed again afterwards, because its test harness runs out
@@ -292,6 +294,9 @@ jobs:
           # came from the step above through the environment.
           ARKOR_API_URL: ${{ secrets.ARKOR_API_URL }}
           ARKOR_API_TOKEN_FILE: ${{ runner.temp }}/deploy-token
+          # How long the host takes to bring a deployment in for every request, which only whoever runs
+          # the host knows; unset is "at once". A secret like the rest, so that it is not printed either.
+          ADAPTER_TEST_SETTLE_SECONDS: ${{ secrets.ADAPTER_TEST_SETTLE_SECONDS }}
           # Through the environment rather than into the command: the selection is a string this workflow
           # was handed, and a `run:` that interpolates one is a shell that was handed it too.
           TESTS: ${{ inputs.tests }}

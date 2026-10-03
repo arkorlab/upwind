@@ -34,6 +34,7 @@ const NOT_FOUND = 404;
 const HOOK_TIMEOUT_MS = 60_000;
 /** About a megabyte of each stream, which is what `execFile` would have held. */
 const MAX_CAPTURED = 1_000_000;
+const DEPLOY_HOOK = 'e2e-deploy.sh';
 const MS_PER_SECOND = 1000;
 
 /**
@@ -82,8 +83,9 @@ function saidBy(error: unknown): string {
  *
  * Bounded because the deploy hook's own patience is fifteen minutes of a host that never becomes ready.
  * That is the right answer against a real host and the wrong shape of failure here: a readiness check
- * that asks this fake host something it will never say would hold the whole run open for it. Six seconds
- * is the whole of this file against a warm store, so a minute is failure rather than slowness.
+ * that asks this fake host something it will never say would hold the whole run open for it. Eight seconds
+ * is the whole of this file against a warm store, the longest hook in it a few, so a minute is failure
+ * rather than slowness.
  *
  * `detached`, so that the hook and everything below it are one process group and the bound can end all
  * of it. The shell is only the shell: the deployment is a `node` grandchild of it, and a signal to the
@@ -458,6 +460,9 @@ async function main(): Promise<void> {
     ARKOR_API_URL: `http://127.0.0.1:${String(host.port)}`,
     ARKOR_API_TOKEN_FILE: tokenFile,
     ADAPTER_TEST_PROJECT_ID: 'p',
+    // Short, but long enough that the wait cannot fit inside the probe: the fake host answers in
+    // milliseconds, so most of these two seconds are still owed when the probe gets through.
+    ADAPTER_TEST_SETTLE_SECONDS: '2',
     ADAPTER_DIR: REPO,
     NEXT_DEPLOYMENT_ID: deploymentId,
     CHECK_BUNDLE_BUILD_ID: BUNDLE_BUILD_ID,
@@ -477,7 +482,7 @@ async function main(): Promise<void> {
     }
   };
   try {
-    const deployed = await hook('e2e-deploy.sh');
+    const deployed = await hook(DEPLOY_HOOK);
     const logs = await hook('e2e-logs.sh');
     await hook('e2e-cleanup.sh');
     const build = readFileSync(path.join(appDir, '.adapter-build.log'), 'utf8');
@@ -489,6 +494,10 @@ async function main(): Promise<void> {
     holds(
       'and its account of the deployment goes to standard error, which is what reaches the suite',
       deployed.stderr.includes('answers with this deployment'),
+    );
+    holds(
+      'the settle the host was given is waited out before the suite starts',
+      deployed.stderr.includes('letting the host settle'),
     );
     holds(
       "the registration carries the bundle's own build id",
@@ -543,7 +552,7 @@ async function main(): Promise<void> {
      */
     let refused: unknown;
     try {
-      await bounded('e2e-deploy.sh', appDir, { ...env, ADAPTER_TEST_PROJECT_ID: 'q' });
+      await bounded(DEPLOY_HOOK, appDir, { ...env, ADAPTER_TEST_PROJECT_ID: 'q' });
     } catch (error) {
       refused = error;
     }
@@ -551,6 +560,24 @@ async function main(): Promise<void> {
     holds(
       'and says why on standard error',
       refused instanceof HookFailureError && refused.said.includes('HTTP 404 (not_found)'),
+    );
+
+    // A settle that is not a number of seconds is refused before anything is asked of the host, and
+    // without being repeated: it arrives as the other host settings do, and none of them is echoed.
+    let unsettled: unknown;
+    try {
+      await bounded(DEPLOY_HOOK, appDir, { ...env, ADAPTER_TEST_SETTLE_SECONDS: 'soon' });
+    } catch (error) {
+      unsettled = error;
+    }
+    holds(
+      'a settle that is not a number of seconds is refused, by name',
+      unsettled instanceof HookFailureError &&
+        unsettled.said.includes('ADAPTER_TEST_SETTLE_SECONDS must be a whole number of seconds'),
+    );
+    holds(
+      'and is not repeated back',
+      unsettled instanceof HookFailureError && !unsettled.said.includes('soon'),
     );
   } finally {
     host.close();
