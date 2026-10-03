@@ -47,7 +47,7 @@ import {
 import { reserveUpwindPrefix } from './dev-prefix.ts';
 import type { EdgeEntry } from './edge.ts';
 import { exists } from './fs.ts';
-import type { BuiltFunction, EntryModule } from './function.ts';
+import { type BuiltFunction, type EntryModule, middlewareManifest } from './function.ts';
 import { composedInstrumentation, writeClientInstrumentation } from './instrumentation.ts';
 import { collectManifests } from './manifests.ts';
 import type { PlanBudget } from './plan.ts';
@@ -273,9 +273,9 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     runtimeManifest,
     exported ? undefined : buildSplitBudget(options, projectConfig),
   );
-  // What the middleware's path reads and nothing more (`middlewareManifest`): no route lists, and —
-  // in `buildMiddlewareFunction` — no build manifest, which only a route module reads, and no
-  // cache, which nothing on that path reads or writes.
+  // What the middleware's path reads and nothing more: the manifest's head alone
+  // (`middlewareManifest`), and — in `buildMiddlewareFunction` — no build manifest, which only a
+  // route module reads, and no cache, which nothing on that path reads or writes.
   const middlewareFunction = await buildMiddlewareFunction(
     context,
     JSON.stringify(middlewareManifest(functions.runtimeManifest)),
@@ -384,34 +384,6 @@ function dependencyRecord(
     ...Object.fromEntries(functions.built.map((each) => [each.name, each.built.dependencies])),
     ...(middleware !== undefined && { middleware: middleware.dependencies }),
     ...(functions.plan !== undefined && { plan: functions.plan }),
-  };
-}
-
-/**
- * The runtime manifest of the middleware Function: the deployment's configuration and its
- * `next.config` rules, without the lists that grow with the application — its entrypoints,
- * prerenders, files and dynamic routes.
- *
- * That Function answers one request, the one that runs the middleware and hands back its response,
- * and on that path the runtime reads the configuration and looks nothing up by route. Parsed before
- * its first answer, the lists are time on the first byte of every document the middleware matches:
- * megabytes, in a large application, that the Function never reads. Its files would be wrong
- * besides, since it carries no blob to serve one from.
- */
-function middlewareManifest<
-  T extends {
-    readonly routing: { readonly dynamicRoutes: readonly unknown[] };
-    readonly entrypoints: readonly unknown[];
-    readonly prerenders: readonly unknown[];
-    readonly staticFiles: readonly unknown[];
-  },
->(manifest: T): T {
-  return {
-    ...manifest,
-    routing: { ...manifest.routing, dynamicRoutes: [] },
-    entrypoints: [],
-    prerenders: [],
-    staticFiles: [],
   };
 }
 

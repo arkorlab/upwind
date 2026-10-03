@@ -45,6 +45,7 @@ export {
   SPLIT_BUNDLE_VERSION,
   splitFunctionNameSchema,
 } from './schema.ts';
+export { type ManifestHead, manifestHead } from './head.ts';
 export {
   appFunctions,
   functionOfEntrypoint,
