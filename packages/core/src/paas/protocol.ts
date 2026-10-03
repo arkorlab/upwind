@@ -81,6 +81,20 @@ export const PLATFORM_REQUEST_HEADERS: readonly string[] = [
  */
 export const CACHE_OUTCOME_HEADER = 'x-arkor-cache-outcome';
 /**
+ * The tags a request invalidated at once — `updateTag`, or `revalidateTag` with no window — on its
+ * response. An edge that holds what carries them would otherwise serve it on until it heard of the
+ * invalidation the way it hears of any other, and Next.js has the next request read what the
+ * invalidation wrote: a Server Action's caller reloading the page it changed. Removed before
+ * anything reaches a client, as every header of the platform's is. Written by
+ * `invalidatedTagsValue`, read by `invalidatedTagsMatcher`.
+ */
+export const INVALIDATED_TAGS_HEADER = 'x-arkor-invalidated-tags';
+/** In `INVALIDATED_TAGS_HEADER`, for more tags than the header carries: every tag. */
+const EVERY_TAG = '*';
+/** The longest `INVALIDATED_TAGS_HEADER` a response carries; past it, `EVERY_TAG`. */
+const INVALIDATED_TAGS_MAX_LENGTH = 8192;
+
+/**
  * The status an app Function answers a request with when the route it is for is in another of the
  * deployment's app Functions — a deployment whose build split its routes across several
  * (`functions.split`). `421 Misdirected Request` says exactly that: this server is not the one to
@@ -166,4 +180,38 @@ export function pathFromHeaders(
 ): string | undefined {
   const escaped = headers.get(escapedName);
   return escaped === null ? (headers.get(name) ?? undefined) : pathFromHeader(escaped);
+}
+
+/**
+ * The value of `INVALIDATED_TAGS_HEADER` for `tags`: each escaped as a URI component — a comma, a
+ * character no header carries, and `*`, which stands for every tag, with it — and separated by
+ * commas. `EVERY_TAG` for a list longer than the header carries.
+ */
+export function invalidatedTagsValue(tags: Iterable<string>): string {
+  const value = [...tags].map((tag) => encodeURIComponent(tag).replaceAll('*', '%2A')).join(',');
+  return value.length > INVALIDATED_TAGS_MAX_LENGTH ? EVERY_TAG : value;
+}
+
+/** The tags an `INVALIDATED_TAGS_HEADER` names; `undefined` for every tag. */
+function namedTags(value: string): ReadonlySet<string> | undefined {
+  if (value === EVERY_TAG) {
+    return undefined;
+  }
+  try {
+    return new Set(value.split(',').map((tag) => decodeURIComponent(tag)));
+  } catch {
+    // What it named cannot be told, so it may have named any.
+    return undefined;
+  }
+}
+
+/**
+ * Whether what carries `tags` is touched by an `INVALIDATED_TAGS_HEADER` of `value`: one of them is
+ * among those it names — any, where it names every tag or cannot be read.
+ */
+export function invalidatedTagsMatcher(value: string): (tags: readonly string[]) => boolean {
+  const named = namedTags(value);
+  return named === undefined
+    ? (tags) => tags.length > 0
+    : (tags) => tags.some((tag) => named.has(tag));
 }

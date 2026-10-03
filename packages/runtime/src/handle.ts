@@ -89,6 +89,7 @@ import {
   resume,
   resumeUrl,
   type RoutedInput,
+  withInvalidatedTags,
   withoutBody,
 } from './serve.ts';
 import { entrypointKindOf, findShell, getStore, type Store } from './store.ts';
@@ -608,6 +609,6 @@ export async function handleRequest(handled: HandleInput): Promise<Response> {
   const input: RoutedInput = { ...handled, initURL: initUrlOf(handled.request), run: context.run };
   return context.run(async () => {
     const response = withoutPlacementHeaders(await routeRequest(input));
-    return withoutBody(handled.request, response);
+    return withoutBody(handled.request, withInvalidatedTags(response, context.invalidated));
   });
 }

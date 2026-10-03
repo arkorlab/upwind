@@ -21,6 +21,11 @@ export interface RequestContext {
   readonly fetchStarts: Map<string, number>;
   readonly waitUntil: (promise: Promise<unknown>) => void;
   readonly run: Run;
+  /**
+   * The tags the request invalidated at once — `updateTag`, `revalidateTag` with no window — told
+   * on its response to the edge, which may hold what carries them (`INVALIDATED_TAGS_HEADER`).
+   */
+  readonly invalidated: Set<string>;
 }
 
 /**
@@ -44,6 +49,7 @@ export function requestContextFor(input: {
     fetchStarts: new Map(),
     waitUntil: input.waitUntil,
     run: (work) => withClock(input.clock, () => withRequestContext(context, work)),
+    invalidated: new Set(),
   };
   return context;
 }
