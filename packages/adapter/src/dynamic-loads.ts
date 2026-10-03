@@ -26,9 +26,9 @@ import { parseAst } from 'rolldown/parseAst';
  * is not looked at.
  *
  * A use is *guarded* where the code handles its failure itself: a call of the loader, or of a
- * method of it that loads, in the block of a `try` whose `catch` and `finally` throw nothing out —
- * no `throw` that runs when they do, outside a `try` of their own that catches it — and an
- * `import()` too, where it is awaited there. Such a load fails in the Function as it fails under
+ * method of it that loads, in the block of a `try` whose `catch` and `finally` let nothing out —
+ * no `throw` or `Promise.reject(…)` that runs when they do, outside a `try` of their own that
+ * catches it — and an `import()` too, where it, or a promise chained from it, is awaited there. Such a load fails in the Function as it fails under
  * Node.js when the module is not installed, into the code's own `catch`: `@protobufjs/inquire`,
  * which every `protobufjs` loads its optional modules through, and TypeScript's `sys.require`,
  * which loads a compiler plugin, are written that way. Not across code that runs later — a
@@ -190,13 +190,24 @@ const FUNCTION_TYPES: ReadonlySet<string> = new Set([
 /** The methods of a function that call it: `(function () { … }).call(this)` runs it at once. */
 const CALLING_METHODS: ReadonlySet<string> = new Set(['apply', 'call']);
 
-/** `node`, out of the parentheses around it, where the parser keeps them. */
+/**
+ * `node` as the value it stands for: out of the parentheses around it, where the parser keeps them,
+ * and the last of a sequence — `(0, function () { … })()` calls the function.
+ */
 function unwrapped(node: Node): Node {
   let at = node;
-  while (at.type === 'ParenthesizedExpression') {
-    at = at.expression;
+  for (let inner = innerOf(at); inner !== undefined; inner = innerOf(at)) {
+    at = inner;
   }
   return at;
+}
+
+/** What `node` evaluates to, where it is a wrapper: the parenthesized, the last of a sequence. */
+function innerOf(node: Node): Node | undefined {
+  if (node.type === 'ParenthesizedExpression') {
+    return node.expression;
+  }
+  return node.type === 'SequenceExpression' ? node.expressions.at(-1) : undefined;
 }
 
 /**
@@ -222,10 +233,17 @@ function calledAtOnce(call: Node): Node | undefined {
   return callee.async || callee.generator ? undefined : callee;
 }
 
-/** The call above `visit` — through parentheses and a `call` or `apply` — that may run it. */
+/** What a call may reach its function through: parentheses, a sequence, a `call` or `apply`. */
+const WRAPPING_TYPES: ReadonlySet<string> = new Set([
+  'MemberExpression',
+  'ParenthesizedExpression',
+  'SequenceExpression',
+]);
+
+/** The call above `visit` — through what may wrap the function it calls — that may run it. */
 function callAbove(visit: Visit): Node | undefined {
   let at = visit.up;
-  while (at?.node.type === 'ParenthesizedExpression' || at?.node.type === 'MemberExpression') {
+  while (at !== undefined && WRAPPING_TYPES.has(at.node.type)) {
     at = at.up;
   }
   return at?.node;
@@ -334,16 +352,39 @@ function throwingChildrenOf(node: Node): Node[] {
   return [...childrenOf(node), ...ran];
 }
 
-/** Whether running `node` may throw out of it: a `throw` among what it runs, outside a `try` of its own. */
+/**
+ * Whether running `node` may let a failure out of it (`letsFailureOut`), among what it runs and
+ * outside a `try` of its own.
+ */
 function throwsOut(node: Node | null): boolean {
   const pending: Node[] = node === null ? [] : [node];
   for (let at = pending.pop(); at !== undefined; at = pending.pop()) {
-    if (at.type === 'ThrowStatement') {
+    if (letsFailureOut(at)) {
       return true;
     }
     pending.push(...throwingChildrenOf(at));
   }
   return false;
+}
+
+/**
+ * Whether `node` lets a failure out of the code it is in: a `throw`, and a `Promise.reject(…)`,
+ * which is how a function that answers with a promise throws.
+ */
+function letsFailureOut(node: Node): boolean {
+  if (node.type === 'ThrowStatement') {
+    return true;
+  }
+  if (node.type !== 'CallExpression') {
+    return false;
+  }
+  const callee = unwrapped(node.callee);
+  return (
+    callee.type === 'MemberExpression' &&
+    callee.object.type === 'Identifier' &&
+    callee.object.name === 'Promise' &&
+    propertyName(callee) === 'reject'
+  );
 }
 
 /**
@@ -440,15 +481,44 @@ function useOfLoader(visit: Visit): Use | undefined {
   return { node, text: keeperOf(visit), guarded: false };
 }
 
+/** A promise's methods: each passes a rejection on to the promise it makes, or handles it. */
+const PROMISE_METHODS: ReadonlySet<string> = new Set(['catch', 'finally', 'then']);
+
+/** What carries on the promise `at` makes: the parentheses around it, or a call of its method. */
+function chainedFrom(at: Visit): Visit | undefined {
+  const { up } = at;
+  if (up === undefined) {
+    return undefined;
+  }
+  if (up.node.type === 'ParenthesizedExpression') {
+    return up;
+  }
+  const name = propertyName(up.node);
+  const method = at.key === 'object' && name !== undefined && PROMISE_METHODS.has(name);
+  return method && up.key === 'callee' && up.up?.node.type === 'CallExpression' ? up.up : undefined;
+}
+
+/**
+ * The `await` of the promise `visit` makes, or of one chained from it — `import(name).then(use)` —
+ * or `undefined` where nothing awaits it.
+ */
+function awaitOf(visit: Visit): Visit | undefined {
+  let at: Visit | undefined = visit;
+  while (at !== undefined && at.up?.node.type !== 'AwaitExpression') {
+    at = chainedFrom(at);
+  }
+  return at?.up;
+}
+
 /** A use of the loader, of a module object's, or an `import()`, that `visit` is. */
 function useAt(visit: Visit): Use | undefined {
   const { node } = visit;
   if (node.type === 'ImportExpression') {
     // Its failure is a rejection, which a `try` sees only where it is awaited in the block.
-    const awaited = visit.up?.node.type === 'AwaitExpression';
+    const awaited = awaitOf(visit);
     return namesOneModule(node.source)
       ? undefined
-      : { node, text: node, guarded: awaited && inGuardedBlock(visit.up) };
+      : { node, text: node, guarded: awaited !== undefined && inGuardedBlock(awaited) };
   }
   if (node.type !== 'Identifier' || node.name !== 'require') {
     return undefined;
