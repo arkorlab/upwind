@@ -27,8 +27,9 @@ import { parseAst } from 'rolldown/parseAst';
  *
  * A use is *guarded* where the code handles its failure itself: a call of the loader, or of a
  * method of it that loads, in the block of a `try` whose `catch` and `finally` let nothing out —
- * no `throw` or `Promise.reject(…)` that runs when they do, outside a `try` of their own that
- * catches it — and an `import()` too, where it, or a promise chained from it, is awaited there. Such a load fails in the Function as it fails under
+ * no `throw`, nor a rejection returned or awaited (a `Promise.reject(…)`, an `async` function called
+ * at once that throws), that runs when they do, outside a `try` of their own that catches it — and
+ * an `import()` too, where it, or a promise chained from it, is awaited there. Such a load fails in the Function as it fails under
  * Node.js when the module is not installed, into the code's own `catch`: `@protobufjs/inquire`,
  * which every `protobufjs` loads its optional modules through, and TypeScript's `sys.require`,
  * which loads a compiler plugin, are written that way. Not across code that runs later — a
@@ -265,7 +266,7 @@ function ofClassConstructedAtOnce(member: Visit): boolean {
     return false;
   }
   let at: Visit | undefined = made.up;
-  while (at?.node.type === 'ParenthesizedExpression') {
+  while (at?.node.type === 'ParenthesizedExpression' || at?.node.type === 'SequenceExpression') {
     at = at.up;
   }
   return at !== undefined && constructedAtOnce(at.node) === made.node;
@@ -368,23 +369,43 @@ function throwsOut(node: Node | null): boolean {
 }
 
 /**
- * Whether `node` lets a failure out of the code it is in: a `throw`, and a `Promise.reject(…)`,
- * which is how a function that answers with a promise throws.
+ * Whether `expression` makes a promise that rejects, where it stands: a `Promise.reject(…)`, or an
+ * `async` function called at once whose body lets a failure out — what it throws, it rejects with.
+ */
+function rejects(expression: Node | null): boolean {
+  if (expression?.type !== 'CallExpression') {
+    return false;
+  }
+  const callee = unwrapped(expression.callee);
+  if (callee.type === 'MemberExpression') {
+    return (
+      callee.object.type === 'Identifier' &&
+      callee.object.name === 'Promise' &&
+      propertyName(callee) === 'reject'
+    );
+  }
+  if (callee.type !== 'ArrowFunctionExpression' && callee.type !== 'FunctionExpression') {
+    return false;
+  }
+  const { body } = callee;
+  const answered =
+    body?.type !== 'BlockStatement' && rejects(body === null ? null : unwrapped(body));
+  return callee.async && !callee.generator && (answered || throwsOut(body));
+}
+
+/**
+ * Whether `node` lets a failure out of the code it is in: a `throw`, and a `Promise.reject(…)`
+ * returned or awaited — how a function that answers with a promise throws. One handled where it is
+ * made (`Promise.reject(error).catch(…)`) is not.
  */
 function letsFailureOut(node: Node): boolean {
   if (node.type === 'ThrowStatement') {
     return true;
   }
-  if (node.type !== 'CallExpression') {
-    return false;
+  if (node.type === 'ReturnStatement') {
+    return rejects(node.argument === null ? null : unwrapped(node.argument));
   }
-  const callee = unwrapped(node.callee);
-  return (
-    callee.type === 'MemberExpression' &&
-    callee.object.type === 'Identifier' &&
-    callee.object.name === 'Promise' &&
-    propertyName(callee) === 'reject'
-  );
+  return node.type === 'AwaitExpression' && rejects(unwrapped(node.argument));
 }
 
 /**
@@ -492,6 +513,10 @@ function chainedFrom(at: Visit): Visit | undefined {
   }
   if (up.node.type === 'ParenthesizedExpression') {
     return up;
+  }
+  // `(0, import(name))` is the promise, as the last of a sequence.
+  if (up.node.type === 'SequenceExpression') {
+    return Object.is(up.node.expressions.at(-1), at.node) ? up : undefined;
   }
   const name = propertyName(up.node);
   const method = at.key === 'object' && name !== undefined && PROMISE_METHODS.has(name);

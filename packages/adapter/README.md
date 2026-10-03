@@ -251,8 +251,9 @@ module as Rolldown rendered it into the bundle, once it had followed what it cou
 a module itself calls `require`, which Rolldown renames, is not taken for the loader, and a call
 in code the bundle left out is not reported — of those, under `guardedRequires`, the ones whose
 failure the code handles itself, a call that loads in the block of a `try` whose `catch` and
-`finally` let nothing out — no `throw` or `Promise.reject(…)`, and what they call is taken not to
-throw — with nothing between them that runs later: a function's body, unless the function is
+`finally` let nothing out — no `throw`, nor a rejection returned or awaited (a `Promise.reject(…)`,
+an `async` function called at once that throws), and what they call is taken not to throw — with
+nothing between them that runs later: a function's body, unless the function is
 neither `async` nor a generator and is called where it is made, or an instance field's initializer
 or a constructor, unless the class is constructed where it is made (an `import()` too, where it,
 or a promise chained from it, is awaited there) — the `.wasm` the bundler resolved itself, each with the global the Function publishes it under — and the Function's
