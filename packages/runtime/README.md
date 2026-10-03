@@ -26,6 +26,7 @@ constant the adapter defines:
 | `arkor:wasm`              | Publishes each compiled WebAssembly module under the global its code reads it from; empty where a build reached none                                                                                                                            |
 | `arkor:cache-host`        | `createCacheHost(env)` — the one of the four that comes from outside the build, and the whole of how a host gives its cache to a deployment. A build that names none resolves to a stub returning nothing, and the Function then caches nothing |
 | `__ARKOR_FUNCTION_KIND__` | `'app'` or `'middleware'` — which of a deployment's two Functions this bundle became. The middleware one runs the middleware and answers everything else `404`                                                                                  |
+| `__ARKOR_FUNCTION_NAME__` | The Function's own name: `app`, or `app-2`, `app-3`… in a deployment whose routes the build split across app Functions; what a request for another Function's route is told apart by                                                            |
 
 Module order matters at the top of `./function`: the scheduler a prerender's tasks run on, and the
 hooks Next.js reads off the global at its first request, are installed before any Next.js module is
@@ -44,6 +45,14 @@ made of — and hands every read and write to a `CacheHost`. A deployment whose 
 host runs as it did before any cache existed, answering every read a miss. And it holds **no
 knowledge of the host** in front of it: what arrives is the wire protocol in `@stayingupwind/core`'s
 `./paas`, and nothing more.
+
+In a deployment whose routes the build split across app Functions, every Function routes every
+request — each carries the whole `runtime.json` — and answers only its own routes. A request that
+lands on another's, after the middleware and every rewrite, is answered `421` with that Function's
+name, the routing it came to, and the request's body as it arrived (`placement.ts`, `handoff.ts`); a
+resume or a regeneration naming another's route is answered so before anything is read. Handed the
+routing back, the Function that holds the route serves it without routing it again: the middleware
+has run, and what it decided travels with the request.
 
 A resume is the one exchange worth naming here. The edge serves the build's shell and asks the
 Function for the rest of the document, which comes back as the postponed part alone — so the visitor
