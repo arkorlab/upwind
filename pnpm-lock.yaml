@@ -177,8 +177,8 @@ catalogs:
       specifier: 0.151.0
       version: 0.151.0
     '@types/node':
-      specifier: 24.19.0
-      version: 24.19.0
+      specifier: 24.19.1
+      version: 24.19.1
     better-auth:
       specifier: 1.7.6
       version: 1.7.6
@@ -261,7 +261,7 @@ importers:
         version: 10.0.1(eslint@10.11.0(jiti@2.7.0)(supports-color@10.2.2))
       '@types/node':
         specifier: 'catalog:'
-        version: 24.19.0
+        version: 24.19.1
       eslint:
         specifier: 'catalog:'
         version: 10.11.0(jiti@2.7.0)(supports-color@10.2.2)
@@ -340,10 +340,10 @@ importers:
         version: 0.151.0
       '@types/node':
         specifier: 'catalog:'
-        version: 24.19.0
+        version: 24.19.1
       next:
         specifier: 'catalog:'
-        version: 16.3.8(@types/node@24.19.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+        version: 16.3.8(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       typescript:
         specifier: 'catalog:'
         version: 5.9.3
@@ -359,13 +359,13 @@ importers:
         version: link:../core
       '@types/node':
         specifier: 'catalog:'
-        version: 24.19.0
+        version: 24.19.1
       better-auth:
         specifier: 'catalog:'
-        version: 1.7.6(next@16.3.7(@types/node@24.19.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+        version: 1.7.6(next@16.3.8(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       next:
         specifier: 'catalog:'
-        version: 16.3.7(@types/node@24.19.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+        version: 16.3.8(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       rolldown:
         specifier: 'catalog:'
         version: 1.2.11
@@ -387,10 +387,10 @@ importers:
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
-        version: 24.19.0
+        version: 24.19.1
       next:
         specifier: 'catalog:'
-        version: 16.3.8(@types/node@24.19.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+        version: 16.3.8(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       rolldown:
         specifier: 'catalog:'
         version: 1.2.11
@@ -409,7 +409,7 @@ importers:
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
-        version: 24.19.0
+        version: 24.19.1
       typescript:
         specifier: 'catalog:'
         version: 5.9.3
@@ -425,7 +425,7 @@ importers:
         version: link:../core
       '@types/node':
         specifier: 'catalog:'
-        version: 24.19.0
+        version: 24.19.1
       rolldown:
         specifier: 'catalog:'
         version: 1.2.11
@@ -440,14 +440,14 @@ importers:
         version: link:../core
       miniflare:
         specifier: 'catalog:'
-        version: 5.20260925.0-alpha(@types/node@24.19.0)
+        version: 5.20260925.0-alpha(@types/node@24.19.1)
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
-        version: 24.19.0
+        version: 24.19.1
       next:
         specifier: 'catalog:'
-        version: 16.3.8(@types/node@24.19.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+        version: 16.3.8(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       rolldown:
         specifier: 'catalog:'
         version: 1.2.11
@@ -463,7 +463,7 @@ importers:
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
-        version: 24.19.0
+        version: 24.19.1
       typescript:
         specifier: 'catalog:'
         version: 5.9.3
@@ -476,7 +476,7 @@ importers:
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
-        version: 24.19.0
+        version: 24.19.1
       typescript:
         specifier: 'catalog:'
         version: 5.9.3
@@ -1596,8 +1596,8 @@ packages:
   '@types/json-schema@7.0.15':
     resolution: {integrity: sha512-5+fP8P8MFNC+AyZCDxrB2pkZFPGzqQWUzpSeuuVLvm8VMcorNYavBqoFcxK8bQz4Qsbn4oUEEem4wDLfcysGHA==}
 
-  '@types/node@24.19.0':
-    resolution: {integrity: sha512-zY+5tKxXdhGh1PYI0ac+7juvEu4OI6vWtVVoj5i2m42jxAY1U+zHGt6QCyOFwykdP62sM3MJ9stoYYUw5aCWew==}
+  '@types/node@24.19.1':
+    resolution: {integrity: sha512-aS3/DG0oM05K0RIXXP+hKjinGG5IgSSVGzswZxW3O0sS3pH4/fycXundUC9XsszgKCk4gHXylTEK6hyFxVxnoQ==}
 
   '@types/node@26.6.2':
     resolution: {integrity: sha512-X1P21scMv4zGKLYqjdGjaKa7COa0RKVYYZZN/NfvLQ1JegxFhdhpZG/Lyn8AXx6CDUavKAd11v6BvfpkDByK8g==}
@@ -3376,7 +3376,7 @@ snapshots:
 
   '@types/json-schema@7.0.15': {}
 
-  '@types/node@24.19.0':
+  '@types/node@24.19.1':
     dependencies:
       undici-types: 7.24.6
 
@@ -3562,7 +3562,7 @@ snapshots:
 
   baseline-browser-mapping@2.11.25: {}
 
-  better-auth@1.7.6(next@16.3.7(@types/node@24.19.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react-dom@19.3.0(react@19.3.0))(react@19.3.0):
+  better-auth@1.7.6(next@16.3.8(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))(react-dom@19.3.0(react@19.3.0))(react@19.3.0):
     dependencies:
       '@better-auth/core': 1.7.6(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.29.6)(nanostores@1.5.4)
       '@better-auth/drizzle-adapter': 1.7.6(@better-auth/core@1.7.6(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.2)(better-call@1.4.0(zod@4.6.5))(jose@6.2.12)(kysely@0.29.6)(nanostores@1.5.4))(@better-auth/utils@0.4.2)
@@ -3582,7 +3582,7 @@ snapshots:
       nanostores: 1.5.4
       zod: 4.6.5
     optionalDependencies:
-      next: 16.3.7(@types/node@24.19.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+      next: 16.3.8(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       react: 19.3.0
       react-dom: 19.3.0(react@19.3.0)
     transitivePeerDependencies:
@@ -4064,10 +4064,10 @@ snapshots:
 
   mdn-data@2.35.0: {}
 
-  miniflare@5.20260925.0-alpha(@types/node@24.19.0):
+  miniflare@5.20260925.0-alpha(@types/node@24.19.1):
     dependencies:
       '@cspotcode/source-map-support': 0.8.1
-      sharp: 0.35.4(@types/node@24.19.0)
+      sharp: 0.35.4(@types/node@24.19.1)
       undici: 7.29.0
       workerd: 1.20260925.1
       ws: 8.21.0
@@ -4093,7 +4093,7 @@ snapshots:
 
   natural-orderby@5.0.0: {}
 
-  next@16.3.8(@types/node@24.19.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0):
+  next@16.3.8(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0):
     dependencies:
       '@next/env': 16.3.8
       '@swc/helpers': 0.5.23
@@ -4112,7 +4112,7 @@ snapshots:
       '@next/swc-linux-x64-musl': 16.3.8
       '@next/swc-win32-arm64-msvc': 16.3.8
       '@next/swc-win32-x64-msvc': 16.3.8
-      sharp: 0.35.4(@types/node@24.19.0)
+      sharp: 0.35.4(@types/node@24.19.1)
     transitivePeerDependencies:
       - '@babel/core'
       - '@types/node'
@@ -4325,7 +4325,7 @@ snapshots:
 
   set-cookie-parser@3.1.2: {}
 
-  sharp@0.35.4(@types/node@24.19.0):
+  sharp@0.35.4(@types/node@24.19.1):
     dependencies:
       '@img/colour': 1.1.0
       detect-libc: 2.1.2
@@ -4356,7 +4356,7 @@ snapshots:
       '@img/sharp-win32-arm64': 0.35.4
       '@img/sharp-win32-ia32': 0.35.4
       '@img/sharp-win32-x64': 0.35.4
-      '@types/node': 24.19.0
+      '@types/node': 24.19.1
 
   shebang-command@2.0.0:
     dependencies:
