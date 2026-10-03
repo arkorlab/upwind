@@ -210,9 +210,11 @@ function claimedBeforeFiles(bundle: DeploymentBundle, prerender: Prerender): boo
   return beforeFilesPhases(bundle).some(
     (rule) =>
       (reproducesDynamicRouting(bundle) ? !isConditional(rule) : mayHoldForDocument(rule)) &&
-      // Compiled by Next.js for its own router, which runs them without the unicode flag.
+      // Compiled by Next.js for its own router, which runs them without the unicode flag, and
+      // without regard to case, as `mayRoutePath` matches them: a rule for `/Account` claims the
+      // page at `/account`, and `.well-known`'s exemption from a slash redirect is any case's.
       // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-      new RegExp(rule.sourceRegex).test(requestedPathname(bundle, prerender.pathname)),
+      new RegExp(rule.sourceRegex, 'i').test(requestedPathname(bundle, prerender.pathname)),
   );
 }
 

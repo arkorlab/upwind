@@ -33,6 +33,9 @@ const EXTERNAL = [
   '@oxc-project/types',
   'jsonc-parser',
   'zod',
+  // The source map readers, which are dependencies of their own rather than code of this package's.
+  '@jridgewell/sourcemap-codec',
+  '@jridgewell/trace-mapping',
   // The build this adapter is called by.
   'next',
 ];
