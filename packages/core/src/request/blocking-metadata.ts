@@ -588,6 +588,15 @@ function writtenFrom(value: string, list: string): boolean {
 }
 
 /**
+ * Whether a manifest's list names every agent (`namesAll`), once worked out for it: reading the
+ * list off the routes and simplifying it is the manifest's to pay once, as its judgement is
+ * (`judgements`), not once for each route asked about. Kept apart from that judgement, and worked
+ * out only when asked, since no request asks it: the edge judges a manifest on a request's way in,
+ * and has no use for this answer there.
+ */
+const namingEveryAgent = new WeakMap<ProjectManifest, boolean>();
+
+/**
  * Whether the edge passes on every request that names an agent, for this route: the list it judges
  * the route's agents by — the manifest's, or the crawler condition `next build` wrote from it in a
  * manifest that records none — is one it will not run (`namesEveryAgent`), or one that names every
@@ -602,8 +611,13 @@ export function passesOnEveryAgent(
   if (entry.cache?.delivery === 'complete') {
     return false;
   }
-  const pattern = manifest.htmlLimitedBots ?? listWrittenInto(manifest);
-  return pattern !== undefined && pattern !== '' && namesAll(pattern);
+  let names = namingEveryAgent.get(manifest);
+  if (names === undefined) {
+    const pattern = manifest.htmlLimitedBots ?? listWrittenInto(manifest);
+    names = pattern !== undefined && pattern !== '' && namesAll(pattern);
+    namingEveryAgent.set(manifest, names);
+  }
+  return names;
 }
 
 /**
