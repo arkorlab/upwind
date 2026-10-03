@@ -195,7 +195,10 @@ async function builtSegment(
   headers.set(POSTPONED_HEADER, '2');
   headers.set(CACHE_CONTROL, NO_STORE_CACHE_CONTROL);
   headers.set('vary', rsc.varyHeader);
-  return new Response(new Uint8Array(bytes), { status: HTTP_OK, headers });
+  // The bytes as the store holds them: a view onto the bundle's own buffer, which is what every
+  // other blob is answered with here. Copying would be a copy per prefetch of a file the store is
+  // holding on purpose; only the host's bytes are copied, and only where they come from.
+  return new Response(bytes, { status: HTTP_OK, headers });
 }
 
 /**
@@ -210,17 +213,32 @@ async function builtSegment(
  * Not memoised. A read that happens once per request on a fallback is not worth a cache that would
  * hold a build's bytes in an isolate serving every other request — and the host is the one that
  * knows how to cache it.
+ *
+ * Answered on a buffer of its own, because a host's `Uint8Array` is backed by `ArrayBufferLike` and
+ * a response body may not be: that is one copy of a few hundred bytes, on the path that has just
+ * been to the network, and it keeps the shipped segment — every other prefetch — a plain view onto
+ * the bundle the store is already holding.
  */
-async function fromHost(input: RoutedInput, ref: BlobRef): Promise<Uint8Array | undefined> {
-  const host = input.cache?.host;
-  if (host === undefined) {
+async function fromHost(
+  input: RoutedInput,
+  ref: BlobRef,
+): Promise<Uint8Array<ArrayBuffer> | undefined> {
+  const cache = input.cache;
+  if (cache === undefined) {
     return undefined;
   }
   try {
-    return await host.readBundleBlob?.(ref.sha256);
-  } catch {
-    // A host that cannot answer is a segment the Function does not have, not a failed request:
-    // the caller resumes, and the client that asked for a prefetch navigates instead.
+    const bytes = await cache.host.readBundleBlob?.(ref.sha256);
+    return bytes === undefined ? undefined : new Uint8Array(bytes);
+  } catch (error) {
+    // A host that cannot answer is a segment the Function does not have, not a failed request: the
+    // client that asked for a prefetch navigates instead. But a host that *does* answer these and
+    // is failing looks exactly like one that never offered to, and would go on looking like it, so
+    // the one thing that distinguishes them is said out loud.
+    cache.log('segment blob not read', {
+      sha256: ref.sha256,
+      detail: error instanceof Error ? error.message : String(error),
+    });
     return undefined;
   }
 }
