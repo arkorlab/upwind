@@ -13,6 +13,7 @@ import { buildFunction, type BuiltFunction, type EntryModule } from './function.
 import type { TextModule } from './manifests.ts';
 import type { PatchContext } from './patches/index.ts';
 import type { PlanBudget } from './plan.ts';
+import { sameChunks } from './same-chunks.ts';
 import {
   carriesBlob,
   overBudget,
@@ -81,12 +82,14 @@ export interface FunctionsContext {
 /**
  * Each Function's chunk table names only what its entries can reach: the table is what Rolldown
  * bundles, so the middleware Function stays small and an app Function carries no other's routes.
+ * A chunk whose code another chunk of the table has is loaded from that one's file, so the code is
+ * bundled once (`same-chunks.ts`).
  */
-function patchFor(
+async function patchFor(
   context: FunctionsContext,
   own: readonly string[],
   wasm: readonly WasmChunk[],
-): PatchContext {
+): Promise<PatchContext> {
   const table = new Set(own);
   for (const chunk of context.hook.chunks) {
     table.add(chunk);
@@ -94,6 +97,7 @@ function patchFor(
   return {
     distDir: context.ctx.distDir,
     chunks: [...table],
+    copies: await sameChunks([...table]),
     instrumentation: context.hook.file,
     wasm,
   };
@@ -180,7 +184,7 @@ export async function buildAppFunction(
     ...(held !== undefined && held.name !== PRIMARY_FUNCTION && { name: held.name }),
     projectDir: ctx.projectDir,
     outDir: context.outDir,
-    patch: patchFor(context, [...parts.chunks, ...middleware.chunks], wasm.chunks),
+    patch: await patchFor(context, [...parts.chunks, ...middleware.chunks], wasm.chunks),
     entries: [...parts.modules, ...middleware.node],
     edgeEntries,
     wasm: wasm.collector,
@@ -195,7 +199,12 @@ export async function buildAppFunction(
   });
 }
 
-/** The middleware's own Function, when the project has a middleware. */
+/**
+ * The middleware's own Function, when the project has a middleware: what its path reads and nothing
+ * more — `runtimeManifest` is the trimmed one (`middlewareManifest`), there is no build manifest,
+ * which only a route module reads, and no cache, which nothing on that path reads or writes; the
+ * cache handlers are installed in the app Functions alone.
+ */
 export async function buildMiddlewareFunction(
   context: FunctionsContext,
   runtimeManifest: string,
@@ -209,13 +218,14 @@ export async function buildMiddlewareFunction(
     kind: 'middleware',
     projectDir: ctx.projectDir,
     outDir: context.outDir,
-    patch: patchFor(context, middleware.chunks, wasm.chunks),
+    patch: await patchFor(context, middleware.chunks, wasm.chunks),
     entries: middleware.node,
     edgeEntries: middleware.edge,
     wasm: wasm.collector,
-    manifests: context.manifests,
+    manifests: [],
     runtimeManifest,
-    cacheHostModule: context.cacheHostModule,
+    cacheHostModule: undefined,
+    // Its own maps all the same: a middleware frame is only resolvable where they were built.
     ...(context.sourceMaps && { sourceMaps: true }),
     blobs: [],
     files: [...context.files.middleware, ...inlineAssetFiles(middleware.edge, ctx.projectDir)],

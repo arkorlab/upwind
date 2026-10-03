@@ -1,6 +1,20 @@
-import { z } from 'zod';
+import type {
+  CacheArtifactRef,
+  OutputSnapshot,
+  PublicArtifactRef,
+  PublicOutputSnapshot,
+} from './schema.ts';
 
-import { sha256HexSchema } from '../artifact/artifact.ts';
+export type {
+  ArtifactEncoding,
+  ArtifactRole,
+  CacheArtifactRef,
+  OutputCompute,
+  OutputResponse,
+  OutputSnapshot,
+  PublicArtifactRef,
+  PublicOutputSnapshot,
+} from './schema.ts';
 
 /**
  * The outputs of one generation and the bytes behind them.
@@ -11,9 +25,12 @@ import { sha256HexSchema } from '../artifact/artifact.ts';
  * its RSC twin, a segment, the Pages data, a route body), with the status and headers it is served
  * with and the artifacts it is made of. A legitimate zero-byte body is an artifact of length zero;
  * an output with no artifacts is one that has no body to keep, which is a different thing.
+ *
+ * The shapes are checked in `schema.ts`, which nothing here imports (see `keys.ts`).
  */
 
-export const artifactRoleSchema = z.enum([
+/** What an artifact is to its generation (`artifactRoleSchema`). */
+export const ARTIFACT_ROLES = [
   'html',
   'rsc',
   'segment',
@@ -21,27 +38,10 @@ export const artifactRoleSchema = z.enum([
   'route-body',
   'data-value',
   'postponed',
-]);
-export type ArtifactRole = z.infer<typeof artifactRoleSchema>;
+] as const;
 
-export const artifactEncodingSchema = z.enum(['identity', 'gzip', 'br']);
-export type ArtifactEncoding = z.infer<typeof artifactEncodingSchema>;
-
-export const cacheArtifactRefSchema = z.object({
-  /** Resolvable only through an authorized scope; says nothing about where the bytes are. */
-  artifactId: z.string().min(1),
-  sha256: sha256HexSchema,
-  byteLength: z.number().int().nonnegative(),
-  contentType: z.string().min(1),
-  encoding: artifactEncodingSchema,
-  role: artifactRoleSchema,
-  /** Internal: the storage key. Stripped before anything reaches a browser. */
-  storageRef: z.string().min(1),
-});
-export type CacheArtifactRef = z.infer<typeof cacheArtifactRefSchema>;
-
-export const publicArtifactRefSchema = cacheArtifactRefSchema.omit({ storageRef: true });
-export type PublicArtifactRef = z.infer<typeof publicArtifactRefSchema>;
+/** How an artifact's bytes are stored (`artifactEncodingSchema`). */
+export const ARTIFACT_ENCODINGS = ['identity', 'gzip', 'br'] as const;
 
 /** The same reference without its storage key: the form that may leave a Function. */
 export function publicArtifactRef(ref: CacheArtifactRef): PublicArtifactRef {
@@ -54,35 +54,6 @@ export function publicArtifactRef(ref: CacheArtifactRef): PublicArtifactRef {
     role: ref.role,
   };
 }
-
-export const outputComputeSchema = z.enum(['static', 'resuming', 'blocking', 'unknown']);
-export type OutputCompute = z.infer<typeof outputComputeSchema>;
-export const outputResponseSchema = z.enum(['empty', 'initial', 'complete', 'unknown']);
-export type OutputResponse = z.infer<typeof outputResponseSchema>;
-
-const headerValueSchema = z.union([z.string(), z.array(z.string())]);
-/** Response headers as Next.js records them: a header set more than once is an array. */
-export const headerValuesSchema = z.record(z.string(), headerValueSchema);
-
-export const outputSnapshotSchema = z.object({
-  outputId: z.string().min(1),
-  /** Which representation of the entry this is: `html`, `rsc`, `segment:<path>`, `pages-data`, … */
-  representationKey: z.string().min(1),
-  pathname: z.string().nullable(),
-  status: z.number().int().nullable(),
-  headers: headerValuesSchema,
-  compute: outputComputeSchema,
-  response: outputResponseSchema,
-  /** Only the App Router document carries one. */
-  htmlSize: z.number().int().nonnegative().nullable(),
-  artifacts: z.array(cacheArtifactRefSchema),
-});
-export type OutputSnapshot = z.infer<typeof outputSnapshotSchema>;
-
-export const publicOutputSnapshotSchema = outputSnapshotSchema.extend({
-  artifacts: z.array(publicArtifactRefSchema),
-});
-export type PublicOutputSnapshot = z.infer<typeof publicOutputSnapshotSchema>;
 
 export function publicOutputSnapshot(output: OutputSnapshot): PublicOutputSnapshot {
   return { ...output, artifacts: output.artifacts.map((artifact) => publicArtifactRef(artifact)) };

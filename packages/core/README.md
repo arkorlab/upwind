@@ -10,6 +10,12 @@ It has one dependency, `zod`, because most of this package is schemas. A schema 
 `deploymentBundleSchema` is what a bundle is, and a bundle that does not parse is not one.
 `BUNDLE_VERSION` says which shape a reader was written for.
 
+The cache's schemas are kept in `cache/schema.ts`, apart from the code that names, times and reads
+entries, which imports only their types: a Function's runtime runs that code on every request, and
+importing it no longer brings zod into the runtime. The one check the runtime makes, of a delivery
+record's header, is written out by hand in `cache/pack-header.ts`, and answers as
+`generationPackHeaderSchema` does.
+
 The published package is TypeScript sources — `exports` names `.ts` files, and there is no build
 step. A reader bundles it (the adapter bundles it into itself; the runtime is bundled by the
 adapter), which is also why `sideEffects: false` is true of it: nothing here initializes anything.
