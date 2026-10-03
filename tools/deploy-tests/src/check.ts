@@ -315,7 +315,7 @@ async function main(): Promise<void> {
   };
   try {
     const deployed = await hook(DEPLOY_HOOK);
-    const deployedAt = Date.now();
+    const deployedAt = performance.now();
     const logs = await hook('e2e-logs.sh');
     await hook('e2e-cleanup.sh');
     const build = readFileSync(path.join(appDir, '.adapter-build.log'), 'utf8');
@@ -432,7 +432,7 @@ async function main(): Promise<void> {
       ...env,
       ARKOR_API_URL: `http://127.0.0.1:${String(quiet.port)}`,
     });
-    const unprovenAt = Date.now();
+    const unprovenAt = performance.now();
     const probed = quiet.probedAt();
     holds(
       'a page that names nobody leaves the probe as the evidence, and says so',

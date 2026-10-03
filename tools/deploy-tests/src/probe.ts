@@ -22,6 +22,8 @@ import { USER_AGENT } from './client.ts';
 export const PROBE_ENCODING = 'identity';
 /** How much of a page is read looking for `data-dpl-id`, which is on its first element. */
 const MAX_PAGE_PREFIX = 65_536;
+/** How many redirects of the page are followed, on its own host, to the page behind them. */
+const MAX_PAGE_HOPS = 2;
 const REDIRECTION = 300;
 const CLIENT_ERROR = 400;
 const SERVER_ERROR = 500;
@@ -161,8 +163,9 @@ export function probeOf(publicUrl: URL, bundle: DeploymentBundle): Probe {
   const quiet = bundle.staticFiles.filter((entry) =>
     showsTheDigest(could, asked(entry.pathname), headers),
   );
-  // A path carrying the build id first, because that is the one digest another build cannot have — a
-  // deployment of the same build can, which is why the page is asked as well.
+  // A path carrying the build id first, as the likeliest to be this build's: not certainly, since a
+  // constant `generateBuildId` lets two builds share it, and a deployment of the same build always does —
+  // which is why the page is what says whose deployment answered.
   const named = quiet.find((entry) => entry.pathname.includes(`/${bundle.buildId}/`));
   const file = named ?? quiet.find((entry) => entry.immutable) ?? quiet[0];
   return {
@@ -218,32 +221,70 @@ async function discard(response: Response): Promise<void> {
  * of the deployment.
  */
 export async function askThePage(probe: Probe, withinMs: number): Promise<PageAnswer> {
-  let response: Response;
-  try {
-    response = await fetch(probe.page, {
-      headers: { 'accept-encoding': PROBE_ENCODING, 'user-agent': USER_AGENT },
-      redirect: 'manual',
-      signal: AbortSignal.timeout(withinMs),
-    });
-  } catch {
-    return UNREACHABLE;
+  const until = Date.now() + withinMs;
+  let url = probe.page;
+  for (let hops = 0; ; hops += 1) {
+    const left = Math.max(1, until - Date.now());
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        headers: { 'accept-encoding': PROBE_ENCODING, 'user-agent': USER_AGENT },
+        redirect: 'manual',
+        signal: AbortSignal.timeout(left),
+      });
+    } catch {
+      return UNREACHABLE;
+    }
+    if (response.status >= REDIRECTION && response.status < CLIENT_ERROR) {
+      await discard(response);
+      const next = onward(response, url);
+      if (next === undefined || hops >= MAX_PAGE_HOPS) {
+        return UNNAMED;
+      }
+      url = next;
+      continue;
+    }
+    if (!(response.headers.get('content-type') ?? '').toLowerCase().includes('text/html')) {
+      await discard(response);
+      return response.status >= SERVER_ERROR ? UNREACHABLE : UNNAMED;
+    }
+    return markOn(response, response.status >= SERVER_ERROR);
   }
-  const html = (response.headers.get('content-type') ?? '').toLowerCase().includes('text/html');
-  if (response.status >= REDIRECTION && response.status < CLIENT_ERROR) {
-    await discard(response);
-    return UNNAMED;
-  }
-  if (!html) {
-    await discard(response);
-    return response.status >= SERVER_ERROR ? UNREACHABLE : UNNAMED;
-  }
-  return markOn(response);
 }
 
-async function markOn(response: Response): Promise<PageAnswer> {
+/**
+ * Where a redirect of the page points, when it stays on the page's own host.
+ *
+ * Followed by hand, a hop or two, because a root that redirects is still a root with a page behind it:
+ * a base path served with a trailing slash redirects the spelling without one, and a localised
+ * application sends its root to a locale. Off the host it is somebody else's page, which says nothing
+ * about this deployment.
+ */
+function onward(response: Response, from: URL): URL | undefined {
+  const location = response.headers.get('location');
+  if (location === null) {
+    return undefined;
+  }
+  try {
+    const next = new URL(location, from);
+    return next.origin === from.origin ? next : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The mark on an HTML page, read only as far as it.
+ *
+ * `failed` for a `5xx`: Next.js's own error page carries the mark like any other, so an error page
+ * without one is not the application's — a gateway's, or the host's — and is a moment rather than an
+ * answer, the same as one that is not HTML at all.
+ */
+async function markOn(response: Response, failed: boolean): Promise<PageAnswer> {
+  const unmarked = failed ? UNREACHABLE : UNNAMED;
   const reader = response.body?.getReader();
   if (reader === undefined) {
-    return UNNAMED;
+    return unmarked;
   }
   const decoder = new TextDecoder();
   let read = '';
@@ -259,7 +300,7 @@ async function markOn(response: Response): Promise<PageAnswer> {
         return { kind: 'named', deploymentId: named };
       }
     }
-    return UNNAMED;
+    return unmarked;
   } catch {
     return UNREACHABLE;
   } finally {

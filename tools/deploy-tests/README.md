@@ -152,8 +152,9 @@ Beyond that, four limits are worth knowing before reading a failure as this adap
   naming an earlier fixture's deployment while other requests of the same suite reached their own. How
   long that lasts is the host's to know, so it is the operator's to say: `ADAPTER_TEST_SETTLE_SECONDS`
   is waited out in full before the suite starts, from the first request this deployment is known to have
-  answered: the application's own page, whose `data-dpl-id` is waited on while it still names the
-  deployment before. Not the probe's file — a file is at best this build's, and two deployments of one
+  answered: the application's own page — through a redirect or two on its own host, since a root with a
+  base path or a locale redirects to where the page is — whose `data-dpl-id` is waited on while it still
+  names the deployment before. Not the probe's file — a file is at best this build's, and two deployments of one
   build share all of them (the same fixture deployed again, or a constant `generateBuildId`). Not from the host naming
   the deployment, because a host may name one before the switch has reached any request; and where no
   page names a deployment either, the probe is the best there is and the log says so. It is paid once

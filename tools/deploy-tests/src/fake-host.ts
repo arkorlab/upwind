@@ -13,7 +13,16 @@ const CONFLICT = 409;
 const NOT_FOUND = 404;
 const SERVICE_UNAVAILABLE = 503;
 /** What the root page says on each request of a `moves` host, the last repeated from then on. */
-const PAGE_SEQUENCE = ['a moment', 'the deployment before', 'a moment', 'this deployment'] as const;
+const PAGE_SEQUENCE = [
+  'a moment',
+  'the deployment before',
+  "a gateway's error page",
+  'this deployment',
+] as const;
+const PERMANENT_REDIRECT = 308;
+const BAD_GATEWAY = 502;
+/** Where the root page actually is: `/` redirects here, as a base path with a trailing slash does. */
+const ROOT_PAGE = '/index/';
 
 export interface FakeHost {
   readonly port: number;
@@ -25,7 +34,14 @@ export interface FakeHost {
   readonly uploaded: () => string[];
   /** Whatever this host refused, because it was asked out of order. */
   readonly refusals: () => string[];
-  /** When this host's root page first named this deployment rather than the one before. */
+  /**
+   * When this host's root page first named this deployment rather than the one before.
+   *
+   * On `performance.now()`, as is `probedAt`, and the check measures against the same clock: these are
+   * spans, and the wall clock can be stepped while one is being measured. Measured on a development VM:
+   * `Date.now()` moved more than four seconds away from the monotonic clock within a minute and a half,
+   * in steps — enough to make a two-second wait read as less, which it did, now and then.
+   */
   readonly namedAt: () => number | undefined;
   /** When this host first answered the readiness probe with the file it asked for. */
   readonly probedAt: () => number | undefined;
@@ -38,9 +54,10 @@ export interface FakeHost {
  * `moves`: what a host that brings a deployment in place by place looks like from outside — the file the
  * probe asks for is already the new deployment's, while the page goes through everything a page can say
  * on the way: an error before anything (a moment, to be asked again rather than given up on), the
- * deployment before (named in it, as Next.js names every page it renders), an error again (silence, which
- * must not be taken for the switch), and at last this deployment's own `404`, which names it as well as
- * any page would. `names nobody`: a root that answers without the mark, which leaves the probe as the only
+ * deployment before (named in it, as Next.js names every page it renders), a gateway's HTML error page
+ * without the mark (silence, which must not be taken for the switch), and at last this deployment's own
+ * `404`, which names it as well as any page would. All of it behind a redirect of `/` to `/index/`, as a
+ * base path with a trailing slash puts it, so that the page is only reached by following one. `names nobody`: a root that answers without the mark, which leaves the probe as the only
  * evidence there is.
  */
 type PageBehaviour = 'moves' | 'names nobody';
@@ -147,6 +164,13 @@ export async function fakeHost(
       return;
     }
     const said = PAGE_SEQUENCE[Math.min(pages, PAGE_SEQUENCE.length) - 1];
+    if (said === "a gateway's error page") {
+      // HTML, but not the application's: Next.js's own error pages carry the mark, so one without it is
+      // something in front of the application failing — a moment, and not an answer about the page.
+      response.writeHead(BAD_GATEWAY, { 'content-type': 'text/html' });
+      response.end('<!DOCTYPE html><html><body>bad gateway</body></html>');
+      return;
+    }
     if (said === 'a moment') {
       response.writeHead(SERVICE_UNAVAILABLE, { 'content-type': 'text/plain' });
       response.end('a moment');
@@ -154,7 +178,7 @@ export async function fakeHost(
     }
     const before = said === 'the deployment before';
     if (!before) {
-      namedAt ??= Date.now();
+      namedAt ??= performance.now();
     }
     // Upper case on purpose: a media type is case-insensitive, and the probe has to read it as one.
     response.writeHead(before ? OK : NOT_FOUND, { 'content-type': 'Text/HTML; charset=utf-8' });
@@ -162,6 +186,20 @@ export async function fakeHost(
       `<!DOCTYPE html><html data-dpl-id="${before ? 'dpl_thedeploymentbefore' : deploymentId}">` +
         '<body>a page</body></html>',
     );
+  }
+
+  /** The application's own routes: its root, which redirects, and the page behind it. */
+  function servesTheApplication(pathname: string, response: ServerResponse): boolean {
+    if (pathname === '/') {
+      response.writeHead(PERMANENT_REDIRECT, { location: ROOT_PAGE });
+      response.end();
+      return true;
+    }
+    if (pathname === ROOT_PAGE) {
+      servePage(response);
+      return true;
+    }
+    return false;
   }
 
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -175,14 +213,13 @@ export async function fakeHost(
         response.end();
         return;
       }
-      probedAt ??= Date.now();
+      probedAt ??= performance.now();
       response.writeHead(OK, { etag: `"${asset.sha256}"` });
       response.end();
       return;
     }
     const pathname = (request.url ?? '/').split('?', 1)[0] ?? '/';
-    if (finalized && pathname === '/' && request.method === 'GET') {
-      servePage(response);
+    if (finalized && request.method === 'GET' && servesTheApplication(pathname, response)) {
       return;
     }
     const answer = (status: number, said: unknown): void => {
