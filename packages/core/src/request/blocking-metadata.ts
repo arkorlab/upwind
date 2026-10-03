@@ -475,9 +475,10 @@ function blockingMetadataPattern(manifest: ProjectManifest): string {
  * the list (`anyConditionHolds`), except the one `next build` writes from `htmlLimitedBots`.
  *
  * `next build` gives every App Router page a user-agent condition whose pattern is the
- * application's list verbatim, or Next.js's own where the application names none, whenever
- * partial prerendering is on for its routes — a page it finished included — so that a visitor it
- * sends blocking metadata to skips the shell. Run as a condition, that pattern is tested whole and
+ * application's list verbatim, or Next.js's own where the application names none — wrapped, from
+ * Next.js 16.4, to be found anywhere in the agent (`listWritten`) — whenever partial prerendering
+ * is on for its routes, a page it finished included, so that a visitor it sends blocking metadata
+ * to skips the shell. Run as a condition, that pattern is tested whole and
  * then anywhere in the agent, with no bound on its shape — before the first byte of every
  * navigation to such a route. It is asked of `wantsBlockingMetadata` instead, the bounded judge
  * that already answers the same question for the classification, so the two cannot disagree
@@ -514,11 +515,13 @@ export function bypassForHolds(
   const recorded = manifest.htmlLimitedBots !== undefined;
   const finished = entry.cache?.delivery === 'complete';
   return conditions.some((condition) => {
-    const userAgent =
+    const listed =
       condition.type === 'header' &&
       condition.key?.toLowerCase() === 'user-agent' &&
-      condition.value !== undefined;
-    if (!userAgent || (recorded && condition.value !== pattern)) {
+      condition.value !== undefined
+        ? listWritten(condition.value)
+        : undefined;
+    if (listed === undefined || (recorded && listed !== pattern)) {
       return anyConditionHolds([condition], url, headers);
     }
     if (finished) {
@@ -527,10 +530,26 @@ export function bypassForHolds(
     // A manifest made before the list was recorded: the user-agent condition `next build` wrote is
     // the list, and the only one it writes, so it is judged as one — by its own pattern.
     const agent = headers.get('user-agent');
-    return recorded || condition.value === undefined
+    return recorded
       ? wantsBlockingMetadata(agent, manifest)
-      : wantsBlockingMetadataBy(agent, condition.value);
+      : wantsBlockingMetadataBy(agent, listed);
   });
+}
+
+/** What Next.js 16.4 wraps the list in, as the route's condition: anywhere in the agent. */
+const WRAPPED_LIST_PREFIX = '.*(?:';
+const WRAPPED_LIST_SUFFIX = ').*';
+
+/**
+ * The list a route's user-agent condition was written from. Next.js 16.3 writes the pattern as it
+ * is; from 16.4 its route matchers anchor a header's value, so it writes it wrapped to be found
+ * anywhere in the agent (`.*(?:pattern).*`), which names the agents the pattern does. Either is the
+ * list, and is judged as one rather than run as a condition is.
+ */
+function listWritten(value: string): string {
+  return value.startsWith(WRAPPED_LIST_PREFIX) && value.endsWith(WRAPPED_LIST_SUFFIX)
+    ? value.slice(WRAPPED_LIST_PREFIX.length, -WRAPPED_LIST_SUFFIX.length)
+    : value;
 }
 
 /** The judgements of patterns read off a route's condition, by the pattern: a few per isolate. */
