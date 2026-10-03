@@ -2,6 +2,7 @@ import { canonicalJson, sha256HexOfText } from '../artifact/hash.ts';
 import { MAX_IMMUTABLE_ASSET_BYTES } from '../assets/admission.ts';
 import type { DeploymentFingerprint } from '../deployment/fingerprint.ts';
 import type { ImagesConfig } from '../images/config.ts';
+import { compareCodeUnits } from '../util/bytes.ts';
 import {
   type AppRuntime,
   type AssetPolicy,
@@ -58,8 +59,45 @@ export interface BuildProjectManifestInput {
   readonly cache?: ManifestCache | undefined;
 }
 
+/**
+ * The app Functions the routes are placed in that `app` gives no name to reach by. An edge could
+ * send such a route nowhere, so a manifest naming one is refused where it is built rather than where
+ * it is read: the edge reads a manifest on a request's way in, and a check there would cost every
+ * deployment, split or not, for what only the host that built it could get wrong.
+ */
+function unreachableFunctions(input: BuildProjectManifestInput): string[] {
+  const reachable = input.app.functions ?? {};
+  const unreachable = new Set<string>();
+  const check = (name: string | undefined): void => {
+    if (name !== undefined && !Object.hasOwn(reachable, name)) {
+      unreachable.add(name);
+    }
+  };
+  for (const route of input.routes) {
+    check(route.function);
+  }
+  if (input.dynamicRoutes !== undefined) {
+    for (const route of input.dynamicRoutes) {
+      check(route.function);
+    }
+  }
+  if (input.exactFunctions !== undefined) {
+    const named = Object.values(input.exactFunctions);
+    for (const name of named) {
+      check(name);
+    }
+  }
+  return [...unreachable].toSorted(compareCodeUnits);
+}
+
 /** Assemble a manifest from a build's routes; validates the result against the schema. */
 export function buildProjectManifest(input: BuildProjectManifestInput): ProjectManifest {
+  const unreachable = unreachableFunctions(input);
+  if (unreachable.length > 0) {
+    throw new Error(
+      `routes are placed in ${unreachable.join(', ')}, which the manifest's app gives no name to reach by (app.functions)`,
+    );
+  }
   const routes: Record<string, RouteEntry> = {};
   for (const entry of input.routes) {
     routes[entry.pathname] = entry;

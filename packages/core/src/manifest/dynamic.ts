@@ -101,33 +101,12 @@ export function matchDynamicRoute(
   url: URL,
   headers: Headers,
 ): RouteEntry | undefined {
-  if (manifest.dynamicRoutes === undefined) {
+  // The route Next.js picks, whatever its class holds; one whose class has no shell has none to serve.
+  const route = dynamicRouteFor(manifest, url, headers)?.route;
+  if (route === undefined) {
     return undefined;
   }
-  const { pathname } = url;
-  if (!isCanonicalPathname(pathname)) {
-    return undefined;
-  }
-  // A redirect or a rewrite Next.js evaluates ahead of its dynamic routes claims the request first.
-  if (isReserved(manifest, url, headers, false)) {
-    return undefined;
-  }
-  for (const candidate of manifest.dynamicRoutes) {
-    if (!patternMatches(candidate.sourceRegex, pathname)) {
-      continue;
-    }
-    // A pattern that matches but whose conditions fail is passed over, as Next.js passes it over.
-    if (!conditionsHold(candidate, url, headers)) {
-      continue;
-    }
-    if (candidate.route === undefined) {
-      return undefined;
-    }
-    return Object.hasOwn(manifest.routes, candidate.route)
-      ? manifest.routes[candidate.route]
-      : undefined;
-  }
-  return undefined;
+  return Object.hasOwn(manifest.routes, route) ? manifest.routes[route] : undefined;
 }
 
 /**
@@ -136,8 +115,8 @@ export function matchDynamicRoute(
  * rewrite of `next.config` claims the request ahead of the dynamic routes. `undefined` for none, and
  * for a pathname the edge leaves alone (`isCanonicalPathname`).
  *
- * `matchDynamicRoute` asks the same of the class and wants its shell; this is for a reader that
- * wants the route itself — which app Function its code is in, say (`functionFor`).
+ * `matchDynamicRoute` reads the class's shell off it; a reader that wants the route itself — which
+ * app Function its code is in, say (`functionFor`) — asks this, and so the two never disagree.
  */
 export function dynamicRouteFor(
   manifest: ProjectManifest,
@@ -147,10 +126,12 @@ export function dynamicRouteFor(
   if (manifest.dynamicRoutes === undefined || !isCanonicalPathname(url.pathname)) {
     return undefined;
   }
+  // A redirect or a rewrite Next.js evaluates ahead of its dynamic routes claims the request first.
   if (isReserved(manifest, url, headers, false)) {
     return undefined;
   }
   for (const candidate of manifest.dynamicRoutes) {
+    // A pattern that matches but whose conditions fail is passed over, as Next.js passes it over.
     if (
       patternMatches(candidate.sourceRegex, url.pathname) &&
       conditionsHold(candidate, url, headers)
