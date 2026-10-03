@@ -40,18 +40,22 @@ export interface Probe {
   readonly url: URL;
   readonly etag: string | undefined;
   /**
-   * Whether that digest is this build's alone.
+   * Whether that digest is this build's alone — which is the most any file can be.
    *
    * A content-addressed asset is shared across deployments on purpose — that is what the path means —
    * and an unchanged `public/` file is byte for byte what the fixture before it served. Either can be
-   * answered by the deployment before this one while the pointer's move is still reaching the edge, so
-   * neither proves which deployment answered. Both are still worth asking for: where the other
-   * deployment does not have the file, the digest is proof, and where it does, the answer is no weaker
-   * than the pointer this is read beside. What it is not is called proof.
+   * answered by the deployment before this one while the switch to this one is still reaching every
+   * request, so neither proves which deployment answered. A path carrying the build id is this build's,
+   * and still not this deployment's: two deployments of one build share it — the same fixture deployed
+   * again, or one whose `generateBuildId` returns a constant. All of them are worth asking for, since
+   * where the other deployment does not have the file the digest settles it, and where it does the answer
+   * is no weaker than the host's own account of which deployment is current, which this is read beside.
+   * What none of them is, is proof of whose deployment answered: that is the page's to say.
    */
   readonly onlyThisBuild: boolean;
   /**
-   * The application's own root, asked for when the file above cannot say whose deployment answered.
+   * The application's own root, asked whenever there is a settle to anchor, since no file can say
+   * whose deployment answered — at best whose build.
    *
    * A page Next.js rendered names its deployment itself — `data-dpl-id` on `<html>`, the mark its own
    * skew protection reads — so where one comes back, it is the evidence the file could not give.
@@ -127,7 +131,8 @@ function probeHeaders(url: URL): Headers {
  * Next.js compiled it, the conditions as Next.js reads them, and a path that matches only once decoded.
  * Asking it rather than reading the patterns here is what keeps a *conditional* catch-all rule from
  * disqualifying every asset a build has — and what that would cost is not caution but evidence, since
- * the probe would fall back to the pointer, which is the weakest thing it can rest on.
+ * the probe would fall back to the host's own account of which deployment is current, which is the
+ * weakest thing it can rest on.
  *
  * Used for the rules as well as the matchers, because the shape is the same one. The rules get the
  * decoded retry too, which the host would not give them; it can only make this answer more cautious, and
@@ -156,7 +161,8 @@ export function probeOf(publicUrl: URL, bundle: DeploymentBundle): Probe {
   const quiet = bundle.staticFiles.filter((entry) =>
     showsTheDigest(could, asked(entry.pathname), headers),
   );
-  // A path carrying the build id first, because that is the one digest another deployment cannot have.
+  // A path carrying the build id first, because that is the one digest another build cannot have — a
+  // deployment of the same build can, which is why the page is asked as well.
   const named = quiet.find((entry) => entry.pathname.includes(`/${bundle.buildId}/`));
   const file = named ?? quiet.find((entry) => entry.immutable) ?? quiet[0];
   return {

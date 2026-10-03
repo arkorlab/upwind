@@ -201,6 +201,14 @@ writeFileSync(
     entrypoints: [],
     prerenders: [],
     staticFiles: [
+      // First, so that it is the file the host serves and the one the probe prefers: a path carrying the
+      // build id is as strong as a file gets, and still not proof of whose deployment answered — the
+      // check's page assertions are what hold the probe to asking the page all the same.
+      {
+        pathname: '/_next/static/' + process.env.CHECK_BUNDLE_BUILD_ID + '/chunk.js',
+        blob: { sha256, byteLength: bytes.byteLength, contentType: 'text/javascript' },
+        immutable: false,
+      },
       {
         pathname: '/_next/static/immutable/' + sha256 + '.js',
         blob: { sha256, byteLength: bytes.byteLength, contentType: 'text/javascript' },
@@ -424,10 +432,17 @@ async function main(): Promise<void> {
       ...env,
       ARKOR_API_URL: `http://127.0.0.1:${String(quiet.port)}`,
     });
+    const unprovenAt = Date.now();
+    const probed = quiet.probedAt();
     holds(
       'a page that names nobody leaves the probe as the evidence, and says so',
       unproven.stdout.trim() === `http://127.0.0.1:${String(quiet.port)}` &&
         unproven.stderr.includes('no page names a deployment either'),
+    );
+    holds(
+      'and the settle is still waited out in full, from after the probe',
+      probed !== undefined &&
+        unprovenAt - probed >= Number(env.ADAPTER_TEST_SETTLE_SECONDS) * MS_PER_SECOND,
     );
   } finally {
     host.close();

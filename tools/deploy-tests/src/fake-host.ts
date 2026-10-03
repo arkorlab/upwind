@@ -27,6 +27,8 @@ export interface FakeHost {
   readonly refusals: () => string[];
   /** When this host's root page first named this deployment rather than the one before. */
   readonly namedAt: () => number | undefined;
+  /** When this host first answered the readiness probe with the file it asked for. */
+  readonly probedAt: () => number | undefined;
   close: () => void;
 }
 
@@ -64,7 +66,8 @@ export async function fakeHost(
   const refusals: string[] = [];
   let finalized = false;
   let namedAt: number | undefined;
-  /** How many times the page has been asked for; the first answer is the deployment before. */
+  let probedAt: number | undefined;
+  /** How many times the page has been asked for, which is where it is in `PAGE_SEQUENCE`. */
   let pages = 0;
   let port = 0;
 
@@ -85,17 +88,25 @@ export async function fakeHost(
     return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
   }
 
-  /** The deployment's own half of the protocol: registered, uploaded into, finalized, then polled. */
+  /**
+   * The deployment's own half of the protocol: registered, uploaded into, finalized, then polled.
+   *
+   * Matched whole — every path in full and every verb — because a fake that answered anything ending in
+   * `/finalize`, or any method on the deployment's path, would pass a client that had the protocol wrong.
+   */
   function aboutTheDeployment(pathname: string, method: string): { status: number; body: unknown } {
-    const blob = /\/blobs\/(?<sha256>[0-9a-f]{64})$/u.exec(pathname)?.groups?.['sha256'];
-    if (blob !== undefined && method === 'PUT') {
+    const deployment = `/v1/projects/p/deployments/${deploymentId}`;
+    const blob = pathname.startsWith(`${deployment}/blobs/`)
+      ? /^[0-9a-f]{64}$/u.exec(pathname.slice(`${deployment}/blobs/`.length))?.[0]
+      : undefined;
+    if (method === 'PUT' && blob !== undefined) {
       if (registered === undefined) {
         return outOfOrder('a blob arrived before the deployment was registered');
       }
       uploaded.push(blob);
       return { status: OK, body: { sha256: blob } };
     }
-    if (pathname.endsWith('/finalize')) {
+    if (method === 'POST' && pathname === `${deployment}/finalize`) {
       const missing = wanted.filter((sha256) => !uploaded.includes(sha256));
       if (registered === undefined || missing.length > 0) {
         return outOfOrder(`a finalize arrived with ${String(missing.length)} blobs still missing`);
@@ -103,7 +114,7 @@ export async function fakeHost(
       finalized = true;
       return { status: ACCEPTED, body: { run: { id: 'run_checked' } } };
     }
-    if (pathname.endsWith(deploymentId)) {
+    if (method === 'GET' && pathname === deployment) {
       if (!finalized) {
         return outOfOrder('the deployment was polled before it was finalized');
       }
@@ -164,6 +175,7 @@ export async function fakeHost(
         response.end();
         return;
       }
+      probedAt ??= Date.now();
       response.writeHead(OK, { etag: `"${asset.sha256}"` });
       response.end();
       return;
@@ -240,6 +252,7 @@ export async function fakeHost(
     uploaded: () => [...uploaded],
     refusals: () => [...refusals],
     namedAt: () => namedAt,
+    probedAt: () => probedAt,
     close: () => {
       server.close();
     },

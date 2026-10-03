@@ -98,7 +98,7 @@ application, a fake API, and the real scripts. It is what CI runs, and what keep
 the order of the calls from breaking quietly between runs against a real host.
 
 **Serially, `-c 1`.** One project takes one fixture at a time, because a deployment replaces the
-project's environment and moves the pointer its requests follow; a second fixture deploying while the
+project's environment and changes which deployment its requests reach; a second fixture deploying while the
 first is under test makes the _first_ fail, for a reason nothing in its own output explains. The deploy
 hook refuses rather than let that happen, and says which application holds the project.
 
@@ -152,8 +152,9 @@ Beyond that, four limits are worth knowing before reading a failure as this adap
   naming an earlier fixture's deployment while other requests of the same suite reached their own. How
   long that lasts is the host's to know, so it is the operator's to say: `ADAPTER_TEST_SETTLE_SECONDS`
   is waited out in full before the suite starts, from the first request this deployment is known to have
-  answered — the probe's file where it is this build's alone, and otherwise the application's own page,
-  whose `data-dpl-id` is waited on while it still names the deployment before. Not from the host naming
+  answered: the application's own page, whose `data-dpl-id` is waited on while it still names the
+  deployment before. Not the probe's file — a file is at best this build's, and two deployments of one
+  build share all of them (the same fixture deployed again, or a constant `generateBuildId`). Not from the host naming
   the deployment, because a host may name one before the switch has reached any request; and where no
   page names a deployment either, the probe is the best there is and the log says so. It is paid once
   per fixture, so it is worth setting to the host's real bound rather than to a round number above it,

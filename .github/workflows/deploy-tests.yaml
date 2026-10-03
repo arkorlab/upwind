@@ -7,7 +7,7 @@ name: Deploy tests
 # uploaded and served, a minute of it at the least.
 #
 # **One project takes one fixture at a time.** Every deployment replaces the project's whole runtime
-# environment and moves the pointer the suite's requests follow, so two shards sharing a project would
+# environment and changes which deployment the suite's requests reach, so two shards sharing a project would
 # take each other's application away mid-test. Splitting the *list* is upstream's own `-g n/total`;
 # running the pieces at the same time is what has to be bought, with a project per shard. So the number
 # of ids in `ADAPTER_TEST_PROJECT_IDS` is the parallelism, and with one id the shards queue behind each

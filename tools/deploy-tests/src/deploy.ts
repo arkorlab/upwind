@@ -54,7 +54,7 @@ const SERVER_ERROR = 500;
  * How long the asset's path may be redirected before that is taken as the answer it is.
  *
  * A redirect can never carry the file's digest, so this is not a wait that ends by waiting — except in
- * one window, which is why it is a wait at all: the pointer flips before every part of the host has
+ * one window, which is why it is a wait at all: a host names the new deployment before every part of it has
  * caught up, and what answers in between is the deployment before this one, which in this project is
  * the previous fixture and may be a Next.js test application that redirects everything.
  */
@@ -320,7 +320,7 @@ async function answered(
   //
   // A redirect gets no grace on this path, deliberately: the probe is the application's own root, and
   // fixtures redirect that on purpose — a trailing slash, a locale, middleware. Failing those after
-  // thirty seconds, to catch a previous deployment still answering a moment after the pointer moved,
+  // thirty seconds, to catch a previous deployment still answering a moment after the host named this one,
   // would cost more than it saves where no digest can tell the two apart.
   if (response.status >= SERVER_ERROR) {
     input.log(
@@ -416,8 +416,8 @@ function redirectedSince(probe: Probe, since: number | undefined): number {
  * The settle the host was said to need (`Config.settleMs`), all of it, from the first request this
  * deployment is known to have answered.
  *
- * Known: the probe's file where it is this build's alone, the page's own `data-dpl-id` where it is not
- * (`pageProvesIt`). Not from when the host first named the deployment as current, though that comes
+ * Known: the page's own `data-dpl-id` (`pageProvesIt`), since no file can be one deployment's alone;
+ * where no page names a deployment, the probe is the best there is. Not from when the host first named the deployment as current, though that comes
  * earlier and would cost less — a host may name a deployment before the switch has reached any request,
  * so the naming is no evidence of where the switch has got to, and neither is a probe that any
  * deployment could have answered. A request this deployment answered is: the switch had begun by then.
@@ -428,9 +428,9 @@ function redirectedSince(probe: Probe, since: number | undefined): number {
 /**
  * Whether the application's own page names this deployment, waited for while it names another.
  *
- * Asked only when the probe's file could not say whose deployment answered — a file shared across
- * deployments, or none at all — so that the settle still starts from a request this deployment is known
- * to have answered. A page that names an earlier one is the very thing the settle is for: the host has
+ * Asked whenever a settle is set, because the probe's file cannot say whose deployment answered — a
+ * file is at best this build's, and two deployments of one build share all of them — so that the settle
+ * starts from a request this deployment is known to have answered. A page that names an earlier one is the very thing the settle is for: the host has
  * named this deployment and not yet brought it to every request.
  *
  * What ends the wait without proof is a page that answered and names nobody: that route carries no mark,
@@ -517,14 +517,12 @@ async function waitUntilServed(
     const observation = await served(input, detail, probe, deadline - Date.now());
     if (observation === undefined) {
       sayItIsServed(input, probe);
-      // Only when there is a settle to anchor. The page is the application's own route, so asking for it
-      // is a request its tests did not make — one that renders, and may revalidate or count — and with
-      // nothing to wait out afterwards, the evidence would buy nothing for that.
-      if (
-        input.config.settleMs > 0 &&
-        !probe.onlyThisBuild &&
-        !(await pageProvesIt(input, probe, deadline))
-      ) {
+      // Whenever there is a settle to anchor, and only then. The probe's file says at best whose build
+      // answered — two deployments of one build share every file — so whose deployment it was is the
+      // page's to say, whatever kind of file the probe found. And the page is the application's own route:
+      // asking for it is a request its tests did not make, one that renders and may revalidate or count,
+      // which is worth it for the settle and for nothing else.
+      if (input.config.settleMs > 0 && !(await pageProvesIt(input, probe, deadline))) {
         input.log(
           'no page names a deployment either, so the settle starts now, on the probe alone',
         );
