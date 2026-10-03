@@ -1,5 +1,5 @@
 import type { BlobRef, Prerender } from '@stayingupwind/core/bundle';
-import { NO_STORE_CACHE_CONTROL } from '@stayingupwind/core/request';
+import { NO_STORE_CACHE_CONTROL, SEGMENT_TREE_PATH } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
 import { isDraftRequest } from './draft.ts';
@@ -150,12 +150,24 @@ export async function documentFromBuild(
 }
 
 /**
- * One prefetch segment of a prerendered page: the bytes the build shipped, or the same bytes from
- * the host that kept them.
+ * One prefetch segment of a prerendered page: the bytes the build shipped, the same bytes from the
+ * host that kept them, or a 404.
  *
- * `undefined` when the request asks for no segment, when the build wrote none under this key, or
- * when neither the Function nor the host has the bytes — the caller then carries on as it does for
- * a document whose shell the build did not write.
+ * `undefined` only when the request asks for no segment — no header, or an empty one — or when the
+ * build wrote no segment of the page at all: the caller then answers it as any request for the
+ * page's React Server Components, which is what Next.js does for a page it has no segments of. A
+ * page it has segments of, Next.js answers from them alone (`app-page-runtime.ts`, "Cache miss"):
+ * the segment asked for, or a 404 where there is none. A segment the build recorded and whose bytes
+ * neither the Function nor the host has is the same miss to the client, and gets the same answer.
+ * The page's payload in its place is not: a client router read it as the route's tree, found
+ * nothing it asked for and asked again straight away, for as long as the page was open — measured,
+ * some 250 requests a second from one tab. A 404 it leaves alone for ten seconds, and a navigation
+ * fetches what it needs.
+ *
+ * A record is this page's segment only as the adapter anchored it (`segmentPathOf`): the segment
+ * path it answers, in the document's own group. The name alone is not enough — an application may
+ * have a page of its own at a pathname that reads like another page's segment, and that page
+ * neither gives the other segments nor is one.
  *
  * The host read is `AdapterOptions.unshippedOutputs`' other half. A build may record a segment and
  * leave its bytes out of the Function, which is 37% of one measured on a real application; the
@@ -169,22 +181,35 @@ export async function documentFromBuild(
 async function builtSegment(
   input: RoutedInput,
   store: Store,
-  pathname: string,
+  document: Prerender | undefined,
 ): Promise<Response | undefined> {
   const { rsc } = store.manifest.routing;
   const segment = input.request.headers.get(rsc.prefetchSegmentHeader);
-  if (segment === null) {
+  // An empty header names no part, as the classification reads it (`segmentPrefetchOf`): the
+  // request is the plain RSC request it is, and is answered as one.
+  if (segment === null || segment === '' || document === undefined) {
     return undefined;
   }
-  const dir = rsc.prefetchSegmentDirSuffix;
-  const key = `${rscBase(pathname)}${dir}${segment}${rsc.prefetchSegmentSuffix}`;
-  const prerender = store.prerendersByPathname.get(key);
-  if (prerender?.body === undefined) {
+  const segmentOf = (segmentPath: string): Prerender | undefined => {
+    const name = `${rscBase(document.pathname)}${rsc.prefetchSegmentDirSuffix}${segmentPath}`;
+    const prerender = store.prerendersByPathname.get(`${name}${rsc.prefetchSegmentSuffix}`);
+    return prerender?.segmentPath === segmentPath &&
+      prerender.route === document.route &&
+      prerender.groupId === document.groupId
+      ? prerender
+      : undefined;
+  };
+  // Next.js writes the route's tree for every page it writes segments of.
+  if (segmentOf(SEGMENT_TREE_PATH) === undefined) {
     return undefined;
   }
-  const bytes = store.tryReadBlob(prerender.body.sha256) ?? (await fromHost(input, prerender.body));
-  if (bytes === undefined) {
-    return undefined;
+  const prerender = segmentOf(segment);
+  const bytes =
+    prerender?.body === undefined
+      ? undefined
+      : (store.tryReadBlob(prerender.body.sha256) ?? (await fromHost(input, prerender.body)));
+  if (prerender === undefined || bytes === undefined) {
+    return segmentMissed(rsc.varyHeader);
   }
   const headers = prerenderHeaders(prerender, RSC_CONTENT_TYPE);
   headers.set(PRERENDER_HEADER, '1');
@@ -195,6 +220,18 @@ async function builtSegment(
   // other blob is answered with here. Copying would be a copy per prefetch of a file the store is
   // holding on purpose; only the host's bytes are copied, and only where they come from.
   return new Response(bytes, { status: HTTP_OK, headers });
+}
+
+/**
+ * Next.js's answer for a segment it has none of, on a page it has segments of: an empty 404 that
+ * still says the route has them (`x-nextjs-postponed: 2`, set before the lookup), and that no
+ * cache keeps — the next prefetch may find the bytes where this one did not.
+ */
+function segmentMissed(vary: string): Response {
+  return new Response(null, {
+    status: HTTP_NOT_FOUND,
+    headers: { [POSTPONED_HEADER]: '2', [CACHE_CONTROL]: NO_STORE_CACHE_CONTROL, vary },
+  });
 }
 
 /**
@@ -233,7 +270,7 @@ export async function rscFromBuild(
   if (bypassesPrerender(store, input.request, shell, resolved.url)) {
     return invokeEntry(input, entry, resolved.url);
   }
-  const built = await builtSegment(input, store, shell?.pathname ?? resolved.pathname);
+  const built = await builtSegment(input, store, shell);
   if (built !== undefined) {
     return built;
   }
