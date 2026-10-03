@@ -47,6 +47,13 @@ export const GENERATION_SEQ_HEADER = 'x-arkor-generation-seq';
 export const SERVED_GENERATION_HEADER = 'x-arkor-served';
 /** Present only under a test binding: the clock the runtime's cache handlers use for this request. */
 export const TEST_CLOCK_HEADER = 'x-arkor-test-clock';
+/**
+ * A request an app Function was handed for a route another of the deployment's app Functions holds,
+ * routed already (`MISDIRECTED_STATUS`): what the routing came to, for the Function that holds the
+ * route to answer from without routing it again. Opaque to the edge, which copies it from the
+ * answer it got onto the request it sends on; the runtime writes and reads it (`handoff.ts`).
+ */
+export const ROUTED_HEADER = 'x-arkor-routed';
 /** The headers that tell the runtime what to do; stripped before the application sees a request. */
 export const PLATFORM_REQUEST_HEADERS: readonly string[] = [
   MIDDLEWARE_ONLY_HEADER,
@@ -66,12 +73,27 @@ export const PLATFORM_REQUEST_HEADERS: readonly string[] = [
   GENERATION_SEQ_HEADER,
   SERVED_GENERATION_HEADER,
   TEST_CLOCK_HEADER,
+  ROUTED_HEADER,
 ];
 /**
  * What the runtime says about the regeneration a request asked for, on its response: for the
  * edge's metrics only, and removed before anything reaches a client.
  */
 export const CACHE_OUTCOME_HEADER = 'x-arkor-cache-outcome';
+/**
+ * The status an app Function answers a request with when the route it is for is in another of the
+ * deployment's app Functions — a deployment whose build split its routes across several
+ * (`functions.split`). `421 Misdirected Request` says exactly that: this server is not the one to
+ * produce the response.
+ *
+ * Only ever sent with `FUNCTION_HEADER`, naming the Function that holds the route, and with
+ * `ROUTED_HEADER` where the request was routed on the way here. The body is the request's own, as
+ * it arrived and unread, for the edge to send on. A 421 without `FUNCTION_HEADER` is the
+ * application's own, and is no business of the edge's.
+ */
+export const MISDIRECTED_STATUS = 421;
+/** On a `MISDIRECTED_STATUS` answer: the name of the app Function that holds the route. */
+export const FUNCTION_HEADER = 'x-arkor-function';
 /**
  * The visitor's country as the platform observed it. Left on the request for the application to
  * read, where a Vercel-hosted one read `x-vercel-ip-country`.
