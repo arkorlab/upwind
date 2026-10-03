@@ -4,22 +4,22 @@ import { type RequestContext, requestContext } from './context.ts';
 export type Turn = <T>(call: () => Promise<T>) => Promise<T>;
 
 /**
- * How many calls a request has out to the host behind its work at once: a regeneration's uploads
- * and the fetch cache's writes, between them. A Function has six calls waiting for their headers at
- * the most, and the runtime holds any more back until one is done, without saying which. These come
- * in bursts — a page's every output once it is rendered, a value for each `fetch` a render made —
- * and the lease's heartbeat, the commit and the reads a render waits on would wait behind them:
- * slow enough, and the lease ran out under a render that had succeeded.
+ * How many writes and uploads a request has out to the host at once, a `use cache` value's among
+ * them. A Function has six calls waiting for their headers at the most, and the runtime holds any
+ * more back until one is done, without saying which. Writes and uploads come in bursts — a page's
+ * every output once it is rendered, a value for each `fetch` a render made — and the reads a render
+ * waits on, the lease's heartbeat and the commit would wait behind them: slow enough, and the lease
+ * ran out under a render that had succeeded. Four leave two of the six for those, whatever is out.
  */
-export const CALLS_BEHIND_AT_ONCE = 4;
+export const WRITES_AT_ONCE = 4;
 
 /**
- * How many writes and uploads a request has out at once, a `use cache` value's among them, so that
- * one of the six is the heartbeat's and the commit's whatever else is out. Next.js waits for a `use
- * cache` write before it has the render the value was made in: that write goes ahead of the calls
- * behind the work, past their four, and waits only where it would take the last of the six.
+ * How many of those are the calls behind the work — a regeneration's uploads and the fetch cache's
+ * writes — so that a `use cache` write always has one of the four. Next.js waits for a `use cache`
+ * write before it has the render the value was made in: it goes ahead of the calls behind the
+ * work, and waits only behind writes the render waits on too.
  */
-export const WRITES_AT_ONCE = 5;
+export const CALLS_BEHIND_AT_ONCE = 3;
 
 /**
  * A request's turns at the host: for the calls behind its work, and for a write its render waits
