@@ -56,10 +56,6 @@ export interface CacheRuntime {
    * ended under it never answers.
    */
   readonly dataWrites: Map<string, DataHold>;
-  readonly dataReads: Map<
-    string,
-    { readonly identity: symbol; readonly promise: Promise<DataMemo> }
-  >;
   /**
    * The entry id each entry a request named derives to, by the entry's kind, route and pathname:
    * two SHA-256 digests a request for it would otherwise make (`deriveEntry`) before its record
@@ -95,6 +91,12 @@ export type DataMemo =
 export interface DataState {
   epoch: number;
   revision: number;
+  /**
+   * Reads of the key that have found a value, whether or not `dataMemo` could keep it: a miss
+   * answered after another read found the value is not remembered, even when the value itself
+   * was too large to be.
+   */
+  finds: number;
 }
 
 /** A state held out of the LRU's reach for the writes in flight on it (`dataWrites`). */
@@ -176,7 +178,6 @@ export function createCacheRuntime(options: CacheRuntimeOptions): CacheRuntime |
       },
     }),
     holdMs,
-    dataReads: new Map(),
     dataWrites: new Map(),
     dataStates: new TtlCache(Infinity, MEMO_ENTRIES, options.now, {
       maxBytes: DATA_STATE_BYTES,

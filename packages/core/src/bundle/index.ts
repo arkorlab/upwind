@@ -40,8 +40,20 @@ export {
   functionModuleTypeSchema,
   functionSchema,
   type FunctionSpec,
+  MAX_APP_FUNCTIONS,
+  PRIMARY_FUNCTION,
+  SPLIT_BUNDLE_VERSION,
+  splitFunctionNameSchema,
 } from './schema.ts';
 export { type ManifestHead, manifestHead } from './head.ts';
+export {
+  appFunctions,
+  functionOfEntrypoint,
+  functionOfPrerender,
+  functionOfRoute,
+  isSplitBundle,
+  placedRoutes,
+} from './functions.ts';
 export {
   isPagesDataPathname,
   isPagesDataRequestPath,

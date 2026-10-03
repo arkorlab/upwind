@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { artifactRefSchema, sha256HexSchema, shellEncodingsSchema } from '../artifact/artifact.ts';
-import { routeHasSchema } from '../bundle/schema.ts';
+import { routeHasSchema, splitFunctionNameSchema } from '../bundle/schema.ts';
 import { KEY_SCHEMA_VERSION } from '../cache/keys.ts';
 import { deploymentFingerprintSchema } from '../deployment/fingerprint.ts';
 import { imagesConfigSchema } from '../images/config.ts';
@@ -126,6 +126,12 @@ export const routeEntrySchema = z.object({
    * advertised, so the canonical JSON the manifest id is taken over is unchanged there.
    */
   preloads: preloadLinksSchema.optional(),
+  /**
+   * The app Function the route's code is in, when the build split the routes across more than one
+   * (`AppRuntime.functions`): where its resume and its regeneration go. Absent for the first
+   * Function's routes, which is every route of a deployment that was not split.
+   */
+  function: splitFunctionNameSchema.optional(),
 });
 export type RouteEntry = z.infer<typeof routeEntrySchema>;
 
@@ -168,6 +174,20 @@ export const appRuntimeSchema = z.object({
   scriptName: z.string().min(1),
   /** A small Function holding only the middleware, dispatched before a shell is served. */
   middlewareScriptName: z.string().min(1).optional(),
+  /**
+   * The app Functions after the first, by the name the bundle gives each (`app-2`, …), with the
+   * name each is reached by — `scriptName` being the first's. Present only for a deployment whose
+   * build split its routes across them (`functions.split`): each route is answered by the Function
+   * its entrypoint is placed in, and a request no table places goes to the first, which answers it
+   * or names the Function that does.
+   *
+   * An edge that does not know the field drops it and sends every request to the first Function,
+   * which then names another for the routes it does not hold — an answer only an edge that knows
+   * the field can act on. No schema version turns on it, because none would help: an edge that
+   * refused the manifest would send everything to the first Function all the same. What keeps such
+   * an edge from serving a split deployment is the order a host rolls out in.
+   */
+  functions: z.record(splitFunctionNameSchema, z.string().min(1)).optional(),
 });
 export type AppRuntime = z.infer<typeof appRuntimeSchema>;
 
@@ -235,6 +255,11 @@ export const dynamicRouteSchema = z.object({
   has: z.array(routeHasSchema).optional(),
   missing: z.array(routeHasSchema).optional(),
   route: z.string().startsWith('/').optional(),
+  /**
+   * The app Function the route's code is in, when that is not the first (`AppRuntime.functions`):
+   * where a request of the class goes when nothing ahead of the dynamic routes claims it.
+   */
+  function: splitFunctionNameSchema.optional(),
 });
 export type DynamicRoute = z.infer<typeof dynamicRouteSchema>;
 /**
@@ -248,6 +273,12 @@ const reservedRouteSchema = middlewareMatcherSchema.extend({
 export type ReservedRoute = z.infer<typeof reservedRouteSchema>;
 /** Pathnames Next.js resolves exactly, ahead of its dynamic routes, that hold no shell. */
 const exactPathnamesSchema = z.record(z.string().startsWith('/'), z.literal(true));
+/**
+ * Of the pathnames Next.js resolves exactly — `exactPathnames`, and the members of a route the build
+ * prerendered without a shell — the ones an app Function other than the first answers, with its
+ * name. Present only for a deployment whose routes are split (`AppRuntime.functions`).
+ */
+const exactFunctionsSchema = z.record(z.string().startsWith('/'), splitFunctionNameSchema);
 /**
  * A `next.config` header rule, as Next.js compiled it: judged on each request, in the order the
  * rules were declared, for a shell and for a shipped file alike. An unconditional rule is folded
@@ -324,6 +355,7 @@ export const projectManifestSchema = z.object({
   trailingSlash: z.literal(true).optional(),
   reservedRoutes: z.array(reservedRouteSchema).optional(),
   exactPathnames: exactPathnamesSchema.optional(),
+  exactFunctions: exactFunctionsSchema.optional(),
   headerRules: z.array(headerRuleSchema).optional(),
   /**
    * The unconditional header rules of a build whose routing the edge does not reproduce (one with
@@ -336,6 +368,26 @@ export const projectManifestSchema = z.object({
   foldedHeaderRules: z.array(headerRuleSchema).optional(),
   /** The application's `next/image` configuration: the edge answers `/_next/image` with it. */
   images: imagesConfigSchema.optional(),
+  /**
+   * The user agents the application sends blocking metadata to, as the pattern Next.js tests them
+   * with (`htmlLimitedBots`) — its own list, or Next.js's, which loading the config fills in where
+   * the application names none: Next.js renders a partially prerendered page whole for them, so no
+   * shell is served to them. Absent where the build recorded none, and Next.js's list applies.
+   * Carried as the build recorded it, a pattern the edge will not run included: whether it runs
+   * one is decided where it is read (`wantsBlockingMetadata`).
+   *
+   * A reader that does not know the field drops it and judges every visitor by the list it has, as
+   * every reader did before the field existed — so no schema version turns on it.
+   */
+  htmlLimitedBots: z.string().optional(),
+  /**
+   * Whether the build's Next.js streams a partially prerendered page to the crawlers it sends no
+   * blocking metadata to: from 16.3, which renders such a page whole only for the ones it does
+   * (`shouldForceDynamicPPRRender`). Next.js 16.2 renders it whole for every crawler, the ones that
+   * run scripts included (`shouldWaitOnAllReady`), and no shell is served to any crawler where this
+   * is absent — on a manifest of such a build, and on one from before the field existed.
+   */
+  crawlersStreamed: z.literal(true).optional(),
   /**
    * Where a shipped file is found as well, in an application with `i18n`: behind one of its
    * default locales — its own, and each domain's — under its base path (`findStaticFile`).
