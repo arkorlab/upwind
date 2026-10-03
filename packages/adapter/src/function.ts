@@ -4,8 +4,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createGzip } from 'node:zlib';
 
-import type { FunctionModule, FunctionSpec, SourceMapRef } from '@stayingupwind/core/bundle';
-import { build, type Plugin } from 'esbuild';
+import {
+  type FunctionModule,
+  type FunctionSpec,
+  type ManifestHead,
+  manifestHead,
+  type SourceMapRef,
+} from '@stayingupwind/core/bundle';
+import { build } from 'esbuild';
 import {
   type InputOptions,
   type OutputChunk,
@@ -28,6 +34,7 @@ import {
 } from './dependencies.ts';
 import { dynamicLoadsInChunk } from './dynamic-loads.ts';
 import { bundleEdge, EDGE_MODULE, type EdgeEntry } from './edge.ts';
+import { APP_MODULE, generatedModulesPlugin } from './generated-modules.ts';
 import {
   bundleLinkedExternals,
   type LinkedExternals,
@@ -58,7 +65,6 @@ import { WASM_ENTRY_MODULE, type WasmCollector, wasmEntrySource, wasmModuleName 
 const FUNCTION_COMPATIBILITY_DATE = '2026-09-15';
 const FUNCTION_COMPATIBILITY_FLAGS: readonly string[] = ['nodejs_compat'];
 
-const APP_MODULE = 'app.cjs';
 const RUNTIME_MODULE = 'index.mjs';
 const RUNTIME_MANIFEST_MODULE = 'runtime.json';
 const BLOB_MODULE_PREFIX = 'blobs/';
@@ -94,6 +100,22 @@ export interface BuildFunctionInput {
   readonly sourceMaps?: boolean | undefined;
 }
 
+/**
+ * The runtime manifest as the middleware Function is given it: which deployment and build it is,
+ * and its configuration — none of the routes, prerenders and files the app Function answers by.
+ *
+ * The middleware Function answers the middleware alone, run ahead of a shell the edge serves, and
+ * reads the base path of the manifest to do it (`deploymentConfig`, in the runtime). The rest would
+ * be parsed all the same on its first request — the manifest of an application with a few thousand
+ * prerenders runs to megabytes — on the Function whose cold start that shell waits on. The runtime
+ * reads it by the same list of fields (`MANIFEST_HEAD_KEYS`).
+ */
+export function middlewareManifest<T extends Readonly<Record<keyof ManifestHead, unknown>>>(
+  manifest: T,
+): Pick<T, keyof ManifestHead> {
+  return manifestHead(manifest);
+}
+
 /** Module name a blob is shipped under; the runtime reads it back at `/bundle/blobs/<sha256>`. */
 function blobModuleName(sha256: string): string {
   return `${BLOB_MODULE_PREFIX}${sha256}`;
@@ -112,84 +134,6 @@ function appEntrySource(entries: readonly EntryModule[]): string {
     '};',
     '',
   ].join('\n');
-}
-
-const EMPTY_EDGE_MODULE = 'module.exports = { entries: {} };';
-const EMPTY_WASM_MODULE = '// This deployment carries no WebAssembly.';
-/**
- * A build told of no cache host: the runtime asks, is answered nothing, and runs as it did
- * before any cache existed. An export rather than an empty module, because the runtime imports
- * the name and a bundler must find it.
- *
- * The one name, and not the blob reader a host may also export (`unshippedOutputs`): the runtime
- * reads that one off a namespace import, which is `undefined` for a module that does not export it
- * — and a build with no cache host reads no blob of its own bundle from anywhere either. esbuild
- * says so as a warning and bundles it (`logLevel: 'silent'` here keeps the warning to itself).
- */
-const NO_CACHE_HOST_MODULE = 'export function createCacheHost() { return undefined; }';
-
-/**
- * The generated modules the runtime source names: `arkor:app` is the `app.cjs` next to it in
- * the Function, `arkor:edge` the `edge.cjs` — which a deployment with no edge entrypoint does
- * not have, and whose import is then the empty table above rather than a module the Function would
- * carry and never use — and `arkor:wasm` the `wasm.mjs` that publishes the compiled
- * WebAssembly, which a deployment with none does not have either.
- *
- * `arkor:cache-host` is the one module of the four that comes from outside the build:
- * `cacheHostModule` names what the runtime's cache reads and writes through, and it is bundled
- * into the runtime rather than shipped beside it, since it is source like the rest of the
- * runtime. A build told of none resolves to the stub above.
- */
-function generatedModulesPlugin(has: {
-  edge: boolean;
-  wasm: boolean;
-  cacheHostModule: string | undefined;
-}): Plugin {
-  return {
-    name: 'arkor-generated-modules',
-    setup(bundler) {
-      // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-      bundler.onResolve({ filter: /^arkor:app$/ }, () => {
-        return {
-          path: `./${APP_MODULE}`,
-          external: true,
-        };
-      });
-      // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-      bundler.onResolve({ filter: /^arkor:edge$/ }, () => {
-        return has.edge
-          ? { path: `./${EDGE_MODULE}`, external: true }
-          : { path: 'arkor:edge', namespace: 'arkor-edge' };
-      });
-      bundler.onLoad(
-        // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-        { filter: /^arkor:edge$/, namespace: 'arkor-edge' },
-        () => ({ contents: EMPTY_EDGE_MODULE, loader: 'js' }),
-      );
-      // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-      bundler.onResolve({ filter: /^arkor:wasm$/ }, () => {
-        return has.wasm
-          ? { path: `./${WASM_ENTRY_MODULE}`, external: true }
-          : { path: 'arkor:wasm', namespace: 'arkor-wasm' };
-      });
-      bundler.onLoad(
-        // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-        { filter: /^arkor:wasm$/, namespace: 'arkor-wasm' },
-        () => ({ contents: EMPTY_WASM_MODULE, loader: 'js' }),
-      );
-      // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-      bundler.onResolve({ filter: /^arkor:cache-host$/ }, () => {
-        return has.cacheHostModule === undefined
-          ? { path: 'arkor:cache-host', namespace: 'arkor-cache-host' }
-          : { path: has.cacheHostModule };
-      });
-      bundler.onLoad(
-        // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-        { filter: /^arkor:cache-host$/, namespace: 'arkor-cache-host' },
-        () => ({ contents: NO_CACHE_HOST_MODULE, loader: 'js' }),
-      );
-    },
-  };
 }
 
 function runtimeEntry(): string {
