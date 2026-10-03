@@ -482,14 +482,34 @@ async function renderSpeculative(
 ): Promise<Response> {
   const { runtime } = job;
   if (invalidation !== undefined && invalidation.revision > runtime.tags.revision) {
-    await settledWithin(
-      runtime.tags.sync(runtime.host, nowMs(), { force: true }),
-      SPECULATIVE_TAG_SYNC_MS,
-    );
+    await settledWithin(speculativePull(runtime), SPECULATIVE_TAG_SYNC_MS);
   }
   return (
     (await renderForVisitor(job.input, job.target, want)) ?? (await renderRequest(job, source.url))
   );
+}
+
+/**
+ * The pull of the tag delta each runtime's expired prefetches have under way, and when it went out
+ * on the isolate's own clock: the segments of a page prefetched together are behind the same
+ * invalidation, and the first of them to find it pulls it for all of them. Joined while younger
+ * than the hold; older, it may be a pull whose request ended under it, which never answers, and a
+ * prefetch begins one of its own. Each waits for it a second at the most either way.
+ */
+const speculativePulls = new WeakMap<
+  CacheRuntime,
+  { readonly pull: Promise<void>; readonly since: number }
+>();
+
+function speculativePull(runtime: CacheRuntime): Promise<void> {
+  const now = performance.now();
+  const underWay = speculativePulls.get(runtime);
+  if (underWay !== undefined && now - underWay.since < runtime.holdMs) {
+    return underWay.pull;
+  }
+  const pull = runtime.tags.sync(runtime.host, nowMs(), { force: true });
+  speculativePulls.set(runtime, { pull, since: now });
+  return pull;
 }
 
 /** Once `promise` has settled, whichever way, or `ms` have gone by. */

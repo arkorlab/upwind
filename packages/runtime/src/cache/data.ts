@@ -225,14 +225,25 @@ export async function writeData(
   const write = startWrite(runtime, key);
   const { state } = write;
   runtime.dataMemo.delete(key);
-  const valueBase64 = toBase64(input.bytes);
   // Its place in the order as it is handed over, before it waits for its turn to go out.
   const order = input.order ?? nextWriteOrder();
-  const set = async (): Promise<DataWritten> =>
-    runtime.host.setData({ key: input.key, entry: input.entry, valueBase64, order });
-  let written;
+  // Encoded once its turn has come, so that a write waiting for one holds no second copy.
+  const set = async (): Promise<{
+    readonly written: DataWritten;
+    readonly valueBase64: string;
+  }> => {
+    const valueBase64 = toBase64(input.bytes);
+    const written = await runtime.host.setData({
+      key: input.key,
+      entry: input.entry,
+      valueBase64,
+      order,
+    });
+    return { written, valueBase64 };
+  };
+  let sent;
   try {
-    written = await (turn === undefined ? set() : turn(set));
+    sent = await (turn === undefined ? set() : turn(set));
   } catch (error) {
     // A failure does not prove the host rejected the mutation: also discard a value
     // value read during the write.
@@ -240,6 +251,7 @@ export async function writeData(
     runtime.dataMemo.delete(key);
     throw error;
   }
+  const { written, valueBase64 } = sent;
   finishWrite(runtime, write, written.revision);
   const memo = runtime.dataMemo.get(key);
   if (memo?.kind !== 'found' || memo.response.dependencyRevision < state.revision) {
