@@ -31,6 +31,18 @@ const LINKED_IMPORT =
   // eslint-disable-next-line sonarjs/super-linear-regex -- run once per build over a chunk `next build` wrote, never over anything a request carries
   /[\w$]+\.y\("(?<id>(?:@[\w.-]+\/)?[\w.-]+-[0-9a-f]{16}(?:\/[^"\\]*)?)"\)/gu;
 
+/** The names a chunk's code imports linked packages by, each once, in the order they appear. */
+export function linkedImportsIn(code: string): string[] {
+  const ids = new Set<string>();
+  for (const match of code.matchAll(LINKED_IMPORT)) {
+    const id = match.groups?.['id'];
+    if (id !== undefined) {
+      ids.add(id);
+    }
+  }
+  return [...ids];
+}
+
 /** Shared code between two of them, beside the modules named for what imports them. */
 const SHARED_CHUNKS = '__linked/[name]-[hash].js';
 
@@ -41,11 +53,8 @@ export function linkedImportsPlugin(onLinked: (id: string) => void): Plugin {
     transform: {
       filter: { id: /\/server\/chunks\/.*\.js$/u, code: /\.y\("/u },
       handler(code) {
-        for (const match of code.matchAll(LINKED_IMPORT)) {
-          const id = match.groups?.['id'];
-          if (id !== undefined) {
-            onLinked(id);
-          }
+        for (const id of linkedImportsIn(code)) {
+          onLinked(id);
         }
         return null;
       },
