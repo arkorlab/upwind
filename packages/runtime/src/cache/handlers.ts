@@ -7,6 +7,7 @@ import { nextWriteOrder, readData, type WriteOrder, writeData } from './data.ts'
 import type { DataEntryMetadata } from './host.ts';
 import type { CacheRuntime, DataMemo } from './runtime.ts';
 import { recordValidity } from './tags.ts';
+import { callsBehind } from './turns.ts';
 
 /**
  * The cache handlers Next.js runs its data caches through, installed on the global symbol Next.js
@@ -328,7 +329,10 @@ async function send(
     }
     write.sent = true;
     trimWrites(runtime, writes);
-    await writeData(runtime, { key, entry: write.entry, bytes, order: write.order });
+    // Behind the render, in the request's turns for the calls behind its work
+    // (`CALLS_BEHIND_AT_ONCE`): a render's writes, one for each `fetch` it made, would otherwise
+    // take every call a Function may have out.
+    await writeData(runtime, { key, entry: write.entry, bytes, order: write.order }, callsBehind());
   } catch (error) {
     // The render has its data; what failed is keeping it for the next one.
     runtime.log('fetch cache write failed', { detail: detail(error) });

@@ -2,9 +2,9 @@ import { createHash } from 'node:crypto';
 
 import { fromBase64, toBase64 } from '@stayingupwind/core/util';
 
-import type { DataEntryMetadata, DataRead, DataReadRequest } from './host.ts';
+import type { DataEntryMetadata, DataRead, DataReadRequest, DataWritten } from './host.ts';
 import type { CacheRuntime, DataHold, DataMemo, DataState } from './runtime.ts';
-import { callsBehind } from './turns.ts';
+import type { Turn } from './turns.ts';
 
 /** Data bytes and mutation ordering have separate budgets: eviction must never erase a fence. */
 const MILLISECONDS_PER_SECOND = 1000;
@@ -215,9 +215,15 @@ export function nextWriteOrder(): WriteOrder {
   return { writer: writer.id, seq: writer.handed };
 }
 
+/**
+ * Write a value under its key, as the host's next revision of the entry. A write that goes behind
+ * the work (`turn`, the request's `callsBehind`) waits there for its call to the host; one the
+ * render waits on goes at once.
+ */
 export async function writeData(
   runtime: CacheRuntime,
   input: { key: string; entry: DataEntryMetadata; bytes: Uint8Array; order?: WriteOrder },
+  turn?: Turn,
 ): Promise<void> {
   const key = keyOf({ key: input.key, kind: input.entry.kind, handler: input.entry.handler });
   const write = startWrite(runtime, key);
@@ -226,13 +232,11 @@ export async function writeData(
   const valueBase64 = toBase64(input.bytes);
   // Its place in the order as it is handed over, before it waits for its turn to go out.
   const order = input.order ?? nextWriteOrder();
+  const set = async (): Promise<DataWritten> =>
+    runtime.host.setData({ key: input.key, entry: input.entry, valueBase64, order });
   let written;
   try {
-    // In the request's turns for the calls behind its work (`CALLS_BEHIND_AT_ONCE`): a render's
-    // writes, one per key it fetched, would otherwise take every call a Function may have out.
-    written = await callsBehind()(async () =>
-      runtime.host.setData({ key: input.key, entry: input.entry, valueBase64, order }),
-    );
+    written = await (turn === undefined ? set() : turn(set));
   } catch (error) {
     // A failure does not prove the host rejected the mutation: also discard a value
     // value read during the write.
