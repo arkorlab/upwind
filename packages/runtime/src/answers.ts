@@ -1,5 +1,5 @@
 import type { RouteEntryDescriptor } from '@stayingupwind/core/cache';
-import { NULL_BODY_STATUSES } from '@stayingupwind/core/request';
+import { NULL_BODY_STATUSES, ROUTER_PROTOCOL_HEADERS } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
 import type { NodeHandler } from './app-module.ts';
@@ -206,6 +206,14 @@ export async function renderForVisitor(
   const { kind, pathname } = target.descriptor;
   if (kind !== 'app-page') {
     return streamForVisitor(input, target, want, headers);
+  }
+  // Rendered as a regeneration renders the page — the document, whatever the visitor asked for of
+  // it. Given a prefetch's or a navigation's own headers, Next.js answers the segment or the payload
+  // itself and captures nothing (`builtSegment`), and the visitor was left the build's answer, an
+  // older generation's or none; captured whole, the render holds the payload and every segment, and
+  // the visitor is sent the one it asked for (`answerFromRender`).
+  for (const name of ROUTER_PROTOCOL_HEADERS) {
+    headers.delete(name);
   }
   const url = new URL(pathname, input.request.url);
   const render = await renderCaptured(kind, (meta) => {
