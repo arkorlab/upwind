@@ -1,5 +1,4 @@
 import { interpolateHeader } from '../manifest/dynamic.ts';
-import type { BuildProjectManifestInput } from '../manifest/manifest.ts';
 import type {
   DynamicRoute,
   HeaderRule,
@@ -11,6 +10,7 @@ import { mayHoldForDocument } from '../request/conditions.ts';
 import { BEHAVIORAL_RESPONSE_HEADERS, CONTENT_DISPOSITION_HEADER } from '../request/constants.ts';
 import { filterShellResponseHeaders, rendersInline } from '../request/headers.ts';
 import { isInternalPage, nextNamespaceRoutes } from './base-path.ts';
+import { type DynamicRouting, withFunctions } from './functions.ts';
 import { queryDependent } from './query.ts';
 import type { DeploymentBundle, Entrypoint, Prerender, Route, StaticFile } from './schema.ts';
 
@@ -764,11 +764,14 @@ export function edgeServedRewrites(bundle: DeploymentBundle): ServedRewrite[] {
   return served;
 }
 
-/** What the edge needs to pick a dynamic route's class the way Next.js picks the route. */
+/**
+ * What the edge needs to pick a dynamic route's class the way Next.js picks the route — and, for a
+ * bundle whose routes are split across app Functions, which Function each route it picks is in.
+ */
 export function dynamicRouting(
   bundle: DeploymentBundle,
   routeKeys: ReadonlySet<string>,
-): Pick<BuildProjectManifestInput, 'dynamicRoutes' | 'exactPathnames' | 'reservedRoutes'> {
+): DynamicRouting {
   const { routing } = bundle;
   if (!reproducesDynamicRouting(bundle)) {
     return {};
@@ -832,7 +835,11 @@ export function dynamicRouting(
       exact.add(pathname);
     }
   }
-  return { dynamicRoutes, reservedRoutes, exactPathnames: [...exact] };
+  return withFunctions(bundle, routeKeys, {
+    dynamicRoutes,
+    reservedRoutes,
+    exactPathnames: [...exact],
+  });
 }
 
 function headerValue(value: string | readonly string[]): string {

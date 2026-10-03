@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { toBase64 } from '@stayingupwind/core/util';
+import { fromBase64, toBase64 } from '@stayingupwind/core/util';
 
 import type { DataEntryMetadata, DataRead, DataReadRequest, DataWritten } from './host.ts';
 import type { CacheRuntime, DataHold, DataMemo, DataState } from './runtime.ts';
@@ -35,14 +35,15 @@ function stateFor(runtime: CacheRuntime, key: string, stateKey = stateKeyOf(key)
   const state = {
     epoch: 0,
     revision: memo?.kind === 'found' ? memo.response.dependencyRevision : 0,
+    finds: 0,
   };
   runtime.dataStates.set(stateKey, state);
   return state;
 }
 
-function fenceReads(runtime: CacheRuntime, key: string, state: DataState): void {
+/** Every read of the key under way now answers too late to be remembered. */
+function fenceReads(state: DataState): void {
   state.epoch += 1;
-  runtime.dataReads.delete(key);
 }
 
 function currentOrMissing(runtime: CacheRuntime, key: string): DataMemo {
@@ -51,55 +52,58 @@ function currentOrMissing(runtime: CacheRuntime, key: string): DataMemo {
 
 async function withBytes(runtime: CacheRuntime, response: DataRead): Promise<DataMemo> {
   if (response.value.kind === 'inline') {
-    const bytes = Uint8Array.from(atob(response.value.base64), (char) => char.codePointAt(0) ?? 0);
-    return { kind: 'found', response, bytes };
+    // Not `Uint8Array.from` over what `atob` makes, which collected every byte into a list of
+    // numbers first, several times the size of the value it was decoding (`fromBase64`).
+    return { kind: 'found', response, bytes: fromBase64(response.value.base64) };
   }
   const bytes = await runtime.host.readArtifact(response.value.artifactId);
   return bytes === undefined ? { kind: 'missing' } : { kind: 'found', response, bytes };
 }
 
-/** The regional projection, coalesced per key and rejected if a local write overtook the read. */
+/**
+ * The regional projection, rejected if a local write overtook the read.
+ *
+ * Read by every call the memo cannot answer, however many reads of the key are under way. A read is
+ * I/O of the request that started it, which the Workers runtime cancels once that request is over:
+ * a render of another request that joined it would wait on it for as long as its own request was
+ * let run, and so would every later miss of the key in the isolate. Only what a read found is
+ * shared, through the memo. Nor is a read shared within a request, where Next.js mostly asks for a
+ * key once at a time already: `use cache` joins the call under way, and a `fetch` waits for the
+ * lock its `IncrementalCache` holds on the key.
+ */
 export async function readData(runtime: CacheRuntime, request: DataReadRequest): Promise<DataMemo> {
   const key = keyOf(request);
   const remembered = runtime.dataMemo.get(key);
   if (remembered !== undefined) return remembered;
-  const pending = runtime.dataReads.get(key);
-  if (pending !== undefined) return pending.promise;
   const stateKey = stateKeyOf(key);
   const state = stateFor(runtime, key, stateKey);
+  // Read now, and weighed against the live state once the read answers.
   const epoch = state.epoch;
-  const identity = Symbol('cache read');
-  const current = (): boolean => {
-    return (
-      liveState(runtime, stateKey) === state &&
-      state.epoch === epoch &&
-      runtime.dataReads.get(key)?.identity === identity
-    );
-  };
-  const read = (async (): Promise<DataMemo> => {
-    const answer = await runtime.host.getData(request);
-    if (!current() || (answer !== undefined && answer.dependencyRevision < state.revision)) {
-      return currentOrMissing(runtime, key);
-    }
-    // Observe ordering before a potentially slow artifact read, even if its bytes are missing.
-    if (answer !== undefined) state.revision = answer.dependencyRevision;
-    const memo =
-      answer === undefined ? { kind: 'missing' as const } : await withBytes(runtime, answer);
-    if (
-      !current() ||
-      (memo.kind === 'found' && memo.response.dependencyRevision < state.revision)
-    ) {
-      return currentOrMissing(runtime, key);
-    }
-    runtime.dataMemo.set(key, memo);
-    return memo;
-  })();
-  runtime.dataReads.set(key, { identity, promise: read });
-  try {
-    return await read;
-  } finally {
-    if (runtime.dataReads.get(key)?.identity === identity) runtime.dataReads.delete(key);
+  const finds = state.finds;
+  // What keeps a read from overwriting a write is the key's state, whose epoch every write moves,
+  // and the revision floor: a read that answers after either moved is not remembered.
+  const current = (): boolean => liveState(runtime, stateKey) === state && state.epoch === epoch;
+  const answer = await runtime.host.getData(request);
+  if (!current() || (answer !== undefined && answer.dependencyRevision < state.revision)) {
+    return currentOrMissing(runtime, key);
   }
+  // Observe ordering before a potentially slow artifact read, even if its bytes are missing.
+  if (answer !== undefined) state.revision = answer.dependencyRevision;
+  const memo =
+    answer === undefined ? { kind: 'missing' as const } : await withBytes(runtime, answer);
+  if (!current() || (memo.kind === 'found' && memo.response.dependencyRevision < state.revision)) {
+    return currentOrMissing(runtime, key);
+  }
+  // Another read of the key can have found the value while this one was under way. A value is
+  // ordered against it by the revision floor above; a miss carries no revision to be ordered by,
+  // and is not remembered in its place — whether or not the value was small enough to be kept.
+  if (memo.kind === 'found') {
+    state.finds += 1;
+  } else if (state.finds !== finds) {
+    return currentOrMissing(runtime, key);
+  }
+  runtime.dataMemo.set(key, memo);
+  return memo;
 }
 
 /**
@@ -134,7 +138,7 @@ function releaseHolds(runtime: CacheRuntime, now: number): void {
       return;
     }
     runtime.dataWrites.delete(stateKey);
-    fenceReads(runtime, hold.key, hold.state);
+    fenceReads(hold.state);
     runtime.dataMemo.delete(hold.key);
     runtime.dataStates.set(stateKey, hold.state);
   }
@@ -156,7 +160,7 @@ function startWrite(runtime: CacheRuntime, key: string): Write {
   // let go of first are the oldest.
   runtime.dataWrites.delete(stateKey);
   runtime.dataWrites.set(stateKey, hold);
-  fenceReads(runtime, key, state);
+  fenceReads(state);
   return { key, stateKey, state, hold };
 }
 
@@ -169,7 +173,7 @@ function startWrite(runtime: CacheRuntime, key: string): Write {
 function finishWrite(runtime: CacheRuntime, write: Write, revision = write.state.revision): void {
   const { key, stateKey, state, hold } = write;
   state.revision = Math.max(state.revision, revision);
-  fenceReads(runtime, key, state);
+  fenceReads(state);
   if (runtime.dataWrites.get(stateKey) !== hold) {
     // What it committed is the key's floor all the same, on whichever state the key has now: the
     // one let go of may have left the LRU since, and a read on a state of its own would otherwise
@@ -177,7 +181,7 @@ function finishWrite(runtime: CacheRuntime, write: Write, revision = write.state
     const live = stateFor(runtime, key, stateKey);
     if (live !== state) {
       live.revision = Math.max(live.revision, state.revision);
-      fenceReads(runtime, key, live);
+      fenceReads(live);
     }
     return;
   }

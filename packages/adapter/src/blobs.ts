@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { sha256Hex } from '@stayingupwind/core/artifact';
@@ -37,6 +37,21 @@ export class BlobStore {
 
   async putFile(filePath: string, contentType: string): Promise<BlobRef> {
     return this.put(new Uint8Array(await readFile(filePath)), contentType);
+  }
+
+  /**
+   * Remove every blob this build wrote that `keep` does not name. A build that weighed its
+   * application as one Function before splitting it wrote that Function's modules too, and a blob
+   * nothing in the bundle names is one a host would have no reason to keep.
+   */
+  async prune(keep: ReadonlySet<string>): Promise<void> {
+    // Deleting from a set while it is iterated is defined: what is deleted is not visited again.
+    for (const sha256 of this.#seen) {
+      if (!keep.has(sha256)) {
+        await rm(path.join(this.#dir, sha256), { force: true });
+        this.#seen.delete(sha256);
+      }
+    }
   }
 
   get count(): number {

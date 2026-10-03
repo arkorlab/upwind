@@ -149,6 +149,25 @@ export function commonPrefixLength(reference: Uint8Array, candidate: Uint8Array)
 
 const HEX_RADIX = 16;
 const BASE64_GROUP = 4;
+/**
+ * How many bytes `toBase64` turns into characters in one call where it makes the string itself: far
+ * below the number of arguments any engine takes in one call, and large enough that the calls are
+ * not the cost.
+ */
+const BASE64_CHUNK_BYTES = 8192;
+
+/**
+ * The platform's own base64 — `Uint8Array.prototype.toBase64` and `Uint8Array.fromBase64` — where
+ * it has it: workerd does, Node.js 24 does not. Declared here because TypeScript's library does not
+ * declare it yet.
+ */
+interface NativeBase64Encoding {
+  readonly toBase64?: () => string;
+}
+
+interface NativeBase64Decoding {
+  readonly fromBase64?: (value: string) => Uint8Array;
+}
 
 /** Hex encode bytes (lower-case). */
 export function toHex(bytes: Uint8Array): string {
@@ -175,13 +194,24 @@ export function fromHex(hex: string): Uint8Array<ArrayBuffer> | undefined {
   return bytes;
 }
 
-/** Base64 encode with the standard alphabet and padding (CSP hash sources need this form). */
+/**
+ * Base64 encode with the standard alphabet and padding (CSP hash sources need this form).
+ *
+ * The platform's own encoder where there is one. Elsewhere the string `btoa` reads is made a chunk
+ * of bytes at a time and joined once: made a character at a time, it was a concatenation per byte,
+ * which for a value of the data cache — up to 25 MiB of it — is millions of intermediate strings on
+ * the path that stores the value.
+ */
 export function toBase64(bytes: Uint8Array): string {
-  let binary = '';
-  for (const byte of bytes) {
-    binary += String.fromCodePoint(byte);
+  const native = (bytes as NativeBase64Encoding & Uint8Array).toBase64?.();
+  if (native !== undefined) {
+    return native;
   }
-  return btoa(binary);
+  const parts: string[] = [];
+  for (let offset = 0; offset < bytes.byteLength; offset += BASE64_CHUNK_BYTES) {
+    parts.push(String.fromCodePoint(...bytes.subarray(offset, offset + BASE64_CHUNK_BYTES)));
+  }
+  return btoa(parts.join(''));
 }
 
 /** Base64url encode (no padding). */
@@ -192,10 +222,16 @@ export function toBase64Url(bytes: Uint8Array): string {
 /**
  * Base64 decode, standard alphabet, padding optional as `atob` takes it; throws on anything else.
  *
- * Into bytes allocated once, from the one string `atob` makes. `Uint8Array.from` over that string
- * would collect every byte into a list first, which costs many times the value it is decoding.
+ * The platform's own decoder where there is one, which takes and refuses what `atob` does, throwing
+ * a `SyntaxError` where `atob` throws a `DOMException`. Elsewhere into bytes allocated once, from the
+ * one string `atob` makes: `Uint8Array.from` over that string would collect every byte into a list
+ * first, which costs many times the value it is decoding.
  */
 export function fromBase64(value: string): Uint8Array {
+  const native = (Uint8Array as NativeBase64Decoding & Uint8ArrayConstructor).fromBase64?.(value);
+  if (native !== undefined) {
+    return native;
+  }
   const binary = atob(value);
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index += 1) {
