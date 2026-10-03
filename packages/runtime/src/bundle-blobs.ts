@@ -84,12 +84,17 @@ export function bundleBlobReader(
     return undefined;
   }
   const read = made;
-  return async (sha256) => {
+  // The return type written out, though it is the alias's own: without it `return undefined` below
+  // is read as a `void` function saying nothing, and the lint asks for it to be dropped — which
+  // `noImplicitReturns` then refuses. It is the answer, not an absence.
+  return async (sha256): Promise<Uint8Array | undefined> => {
     try {
       return await read(sha256);
     } catch (error) {
+      // To the caller a read that failed and a blob nobody holds are the same answer; the line
+      // below is the only place the two differ.
       log('bundle blob not read', { sha256, detail: detail(error) });
-      return;
+      return undefined;
     }
   };
 }
