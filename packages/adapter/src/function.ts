@@ -33,6 +33,7 @@ import { dynamicLoadsInChunk } from './dynamic-loads.ts';
 import { bundleEdge, type EdgeEntry } from './edge.ts';
 import { functionSize } from './function-size.ts';
 import { APP_MODULE, generatedModulesPlugin } from './generated-modules.ts';
+import type { KeptMaps } from './kept-maps.ts';
 import {
   bundleLinkedExternals,
   type LinkedExternals,
@@ -53,8 +54,10 @@ import {
   FUNCTION_BANNER,
 } from './patches/index.ts';
 import {
+  carriesMaps,
   codeModules,
   functionSourceMaps,
+  type SourceMapsOption,
   sourceMapsPlugin,
   sourcemapOutput,
 } from './source-maps.ts';
@@ -106,8 +109,13 @@ export interface BuildFunctionInput {
   /** The files the entries read through `node:fs`, at their paths in the project (`traced-files.ts`). */
   readonly files: readonly TracedFile[];
   readonly blobStore: BlobStore;
-  /** Carry a map from this Function's bundle back to the sources it was built from. */
-  readonly sourceMaps?: boolean | undefined;
+  /**
+   * Carry a map from this Function's bundle back to the sources it was built from; `'project'`, to
+   * the project's own files only (`projectOnly`).
+   */
+  readonly sourceMaps?: SourceMapsOption;
+  /** The maps that came through the build's `runAfterProductionCompile` (`kept-maps.ts`). */
+  readonly keptMaps?: KeptMaps | undefined;
   /**
    * Leave the Function's size to the caller to judge: a build that may yet split its routes builds
    * one Function first to weigh, and a Function too large is then a reason to split it rather than
@@ -166,6 +174,8 @@ export interface AppBundleContext {
   readonly wasm: WasmCollector;
   /** Compose the maps the build already wrote through into this bundle's own. */
   readonly sourceMaps?: boolean | undefined;
+  /** Where to find a chunk's map that a hook took away (`kept-maps.ts`). */
+  readonly keptMaps?: KeptMaps | undefined;
 }
 
 /** What `bundleApp` collects as Rolldown runs, for the dependency record. */
@@ -201,7 +211,7 @@ export function appBundlePlugins(
     // After the patches, so a file a patch rewrote is never given a map that no longer describes
     // it; see `sourceMapsPlugin`. Left out entirely for a build carrying no maps: it would read
     // the tail of every file the bundle loads for a comment nothing would use.
-    ...(context.sourceMaps === true ? [sourceMapsPlugin()] : []),
+    ...(context.sourceMaps === true ? [sourceMapsPlugin(context.keptMaps)] : []),
     stubPlugin((specifier) => {
       sinks.stubs.push(specifier);
     }),
@@ -275,7 +285,7 @@ async function bundleApp(
       {
         patch: input.patch,
         wasm: input.wasm,
-        ...(input.sourceMaps === true && { sourceMaps: true }),
+        ...(carriesMaps(input.sourceMaps) && { sourceMaps: true, keptMaps: input.keptMaps }),
       },
       sinks,
     ),
@@ -292,7 +302,7 @@ async function bundleApp(
     banner: FUNCTION_BANNER,
     minify: { compress: true, mangle: false, codegen: { removeWhitespace: true } },
     comments: { legal: false },
-    ...sourcemapOutput(input.sourceMaps === true),
+    ...sourcemapOutput(carriesMaps(input.sourceMaps)),
   });
   const chunk = output.find((item): item is OutputChunk => item.type === 'chunk');
   if (chunk === undefined) {
@@ -466,7 +476,7 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
           projectDir: input.projectDir,
           workDir,
           entries: input.edgeEntries,
-          ...(input.sourceMaps === true && { sourceMaps: true }),
+          ...(carriesMaps(input.sourceMaps) && { sourceMaps: true, keptMaps: input.keptMaps }),
         }),
   ]);
   const appFile = app.outFile;
@@ -596,7 +606,7 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
   };
 }
 
-/** The maps of a Function's own code, when the host asked for them. */
+/** The maps of a Function's own code, as the host asked for them: none, whole, or the project's. */
 async function builtSourceMaps(
   input: BuildFunctionInput,
   built: {
@@ -605,11 +615,17 @@ async function builtSourceMaps(
     readonly edge: { readonly outFile: string } | undefined;
   },
 ): Promise<SourceMapRef[]> {
-  if (input.sourceMaps !== true) {
+  if (!carriesMaps(input.sourceMaps)) {
     return [];
   }
-  return functionSourceMaps(input.blobStore, built.name, {
-    app: built.app,
-    edge: built.edge?.outFile,
-  });
+  const project =
+    input.sourceMaps === 'project'
+      ? { projectDir: input.projectDir, distDir: input.patch.distDir, outDir: input.outDir }
+      : undefined;
+  return functionSourceMaps(
+    input.blobStore,
+    built.name,
+    { app: built.app, edge: built.edge?.outFile },
+    project,
+  );
 }
