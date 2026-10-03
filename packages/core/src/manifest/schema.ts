@@ -18,8 +18,15 @@ import { imagesConfigSchema } from '../images/config.ts';
  * writer of it wrote, so that a rollout of the edge never refuses a manifest it served the day
  * before. What a manifest may not carry is refused where it is written — at the build and at
  * the upload — not where it is read.
+ *
+ * 4: a build with a `basePath` is routed at the edge, its dynamic routes and its rules with it, and
+ * a rule of `next.config` is matched without regard to case, as Next.js's router matches it. A
+ * reader of 3 matched rules by case: given such a build, it would serve a class's shell where a
+ * rule spelled in another case claims the path (`/Shop/:slug` for `/docs/shop/x`).
  */
-export const MANIFEST_SCHEMA_VERSION = 3;
+export const MANIFEST_SCHEMA_VERSION = 4;
+/** The version before, which every manifest published until this one was: still read (above). */
+const PREVIOUS_MANIFEST_SCHEMA_VERSION = 3;
 const HTTP_OK = 200;
 
 /**
@@ -332,7 +339,10 @@ const manifestFields = {
  */
 export const projectManifestSchema = z.object({
   ...manifestFields,
-  schemaVersion: z.literal(MANIFEST_SCHEMA_VERSION),
+  schemaVersion: z.union([
+    z.literal(PREVIOUS_MANIFEST_SCHEMA_VERSION),
+    z.literal(MANIFEST_SCHEMA_VERSION),
+  ]),
   /** The Functions this deployment runs as: the application's, and its middleware's. */
   app: appRuntimeSchema,
   /** Files served straight from storage, by pathname. */
