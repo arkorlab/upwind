@@ -7,8 +7,9 @@ import { compareCodeUnits } from '@stayingupwind/core/util';
  * Every Function a deployment runs as is a Function that starts on its own: the more there are, the
  * more of a site's traffic each one misses, and a Function that is asked less often is a Function
  * that has gone cold more often. A Function holding fewer routes, on the other hand, holds less
- * code, and code is what a Function's start is spent compiling. So the plan makes as few Functions
- * as the budgets allow, and fills each with routes that share their code:
+ * code, and code is what a Function's start is spent compiling. So the plan makes few Functions
+ * within the budgets, and fills each with routes that share their code. Few, not the fewest: the
+ * merge below is greedy, and the fewest is a bin-packing problem no build should wait on.
  *
  * 1. Every route starts as a unit of its own. A unit is the smallest thing a Function holds: the
  *    entrypoints that have to travel together (`PlanUnit`).

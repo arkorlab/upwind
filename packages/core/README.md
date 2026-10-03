@@ -53,8 +53,12 @@ that the runtime reads back.
 
 One answer goes the other way. In a deployment whose routes the build split across app Functions
 (`functions.split`), a Function handed a request for a route it does not hold answers
-`MISDIRECTED_STATUS` (421) with `FUNCTION_HEADER`, naming the Function that does, and `ROUTED_HEADER`,
-the routing it already did; the host sends the request on to that Function with that header. Which
+`MISDIRECTED_STATUS` (421) with `FUNCTION_HEADER`, naming the Function that does, and the request's
+body, unread; the host sends the request on to that Function with that body. Where the Function
+routed the request before it found the route elsewhere, the answer also carries `ROUTED_HEADER`, the
+routing it already did, and the host sends that header on too. A resume or a regeneration names its
+route up front and is answered before any routing, so it comes back without one and goes on as it
+was asked. Which
 Function a request should go to in the first place is the manifest's to say (`./manifest`,
 `functionFor`), as far as a table can; and where a split bundle puts each route, `./bundle`
 (`placedRoutes`, `functionOfRoute`, `appFunctions`).

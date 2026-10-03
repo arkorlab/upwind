@@ -115,7 +115,9 @@ a host then has to send each request to the Function its route is in.
 **When.** The application is built as one Function first, exactly as it would be otherwise, and
 weighed. Within the budgets — `maxMiB`, what a Function may weigh, and `maxCodeMiB`, how much of
 that may be code — that Function is the build, and the bundle is the version-1 bundle it always
-was. Past either, the routes are split. A host can split every application that is past the budgets
+was. Past either, the routes are split — where they can be: an application whose routes are one
+unit (see below), or whose plan comes to one Function, stays one Function over the budgets, and the
+build says so. A host can split every application that is past the budgets
 (`projects: 'all'`, the default) or only those whose own configuration asks
 (`projects: 'opted-in'`); a project can turn the split off with `functions.split: false`, or tighten
 the budgets, never loosen them.
@@ -127,12 +129,16 @@ the instrumentation hook, the not-found page and the Pages Router's error pages,
 the same `runtime.json`, so that each routes a request as Next.js would and knows where every route
 is. The units are then merged two at a time, always the pair whose union adds the least code to the
 larger of them — routes that share a layout and its libraries first, routes that share nothing last
-— while the result stays within both budgets. What remains is the plan: as few Functions as the
-budgets allow, each holding routes that share their code. Each piece is weighed with what the one
-Function measured: a chunk at the bytes it put into that Function's code (the bundler's per-module
-figures, scaled to the module they went into), a prerendered body, a file a route reads, a
-WebAssembly module at its size. Code and WebAssembly count against both budgets; the rest against
-the size alone.
+— while the result stays within both budgets. What remains is the plan: few Functions within the
+budgets, each holding routes that share their code. Few, not the fewest: the merge is greedy, and a
+pair taken early can leave two units that would each have fitted beside another without a partner
+— finding the fewest is bin packing, which no build should wait on. Each piece is weighed with what
+the one Function measured: a chunk at the bytes it put into that Function's code (the bundler's
+per-module figures, scaled to the module they went into), a prerendered body, a file a route reads,
+a WebAssembly module at its size. Code and WebAssembly count against both budgets; the rest against
+the size alone. What the middleware and the instrumentation hook reach — their code, their
+WebAssembly, the files they read — is in every Function, and is weighed there, whichever routes
+reach it too.
 
 Three rules keep a plan from being worse than not splitting. A budget the base and the smallest unit
 already pass is one no Function could meet, and is dropped rather than leave every route in a
@@ -154,10 +160,12 @@ says which, as far as a table can: `functionFor` reads the request the way Next.
 rewrite ahead of the filesystem, the exact pathnames, the dynamic routes — and answers `undefined`
 where it cannot, for the first Function to take. A Function handed a request for a route it does not
 hold answers `421` (`MISDIRECTED_STATUS`) with the name of the Function that does
-(`x-arkor-function`), the routing it came to (`x-arkor-routed`), and the request's own body, unread.
-The host sends the request on, once, with that header and that body; the Function that receives it
-answers from where the routing left off, and the response is the one a single Function would have
-given. A second `421` is the host's own mistake and is not followed.
+(`x-arkor-function`), the request's own body, unread, and — where it routed the request before it
+found that out — the routing it came to (`x-arkor-routed`). The host sends the request on, once,
+with that body and that header; a resume or a regeneration, answered before any routing, goes on as
+it was asked. The Function that receives it answers from where the routing left off, and the
+response is the one a single Function would have given. A second `421` is the host's own mistake
+and is not followed.
 
 ## A static export
 

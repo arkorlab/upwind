@@ -186,12 +186,13 @@ export function codeModules(name: string): { readonly app: string; readonly edge
  * The maps of this Function's own modules.
  *
  * The two that hold the application's code — `app.cjs`, and `edge.cjs` for the entrypoints Next.js
- * built for its edge runtime. The runtime's `index.mjs` is this package's own source, built
- * without a map on purpose: a host debugging the runtime has the sources.
+ * built for its edge runtime; `app-2.cjs` and `edge-2.cjs` in the app Function `app-2` of a split
+ * build (`codeModules`). The runtime's `index.mjs` is this package's own source, built without a
+ * map on purpose: a host debugging the runtime has the sources.
  *
- * Named `<function>/<module>`, the way the bundle already names a Function: the two Functions of
- * one deployment both hold an `app.cjs`, and a map that named only the module would be two
- * different maps under one name.
+ * Named `<function>/<module>`, the way the bundle already names a Function: the app and the
+ * middleware Function of one deployment both hold an `app.cjs`, and a map that named only the
+ * module would be two different maps under one name.
  */
 export async function functionSourceMaps(
   blobs: BlobStore,
