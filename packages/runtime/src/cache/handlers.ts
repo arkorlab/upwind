@@ -7,6 +7,7 @@ import { nextWriteOrder, readData, type WriteOrder, writeData } from './data.ts'
 import type { DataEntryMetadata } from './host.ts';
 import type { CacheRuntime, DataMemo } from './runtime.ts';
 import { recordValidity } from './tags.ts';
+import { callsBehind, callsWaitedOn } from './turns.ts';
 
 /**
  * The cache handlers Next.js runs its data caches through, installed on the global symbol Next.js
@@ -80,6 +81,11 @@ async function invalidate(
             ),
     });
   }
+}
+
+/** Invalidate `tags` at once, as `updateTag` does: in force for the next read anywhere, and here. */
+export function invalidateNow(runtime: CacheRuntime, tags: readonly string[]): Promise<void> {
+  return invalidate(runtime, tags, undefined);
 }
 
 /** Both lists as one, in order, without repeats. */
@@ -328,7 +334,10 @@ async function send(
     }
     write.sent = true;
     trimWrites(runtime, writes);
-    await writeData(runtime, { key, entry: write.entry, bytes, order: write.order });
+    // Behind the render, in the request's turns for the calls behind its work
+    // (`CALLS_BEHIND_AT_ONCE`): a render's writes, one for each `fetch` it made, would otherwise
+    // take every call a Function may have out.
+    await writeData(runtime, { key, entry: write.entry, bytes, order: write.order }, callsBehind());
   } catch (error) {
     // The render has its data; what failed is keeping it for the next one.
     runtime.log('fetch cache write failed', { detail: detail(error) });
@@ -626,19 +635,24 @@ async function setUseCache(
     runtime.log('use cache value not stored: too large', { key: cacheKey });
     return;
   }
-  await writeData(runtime, {
-    key: cacheKey,
-    entry: {
-      kind: USE_CACHE,
-      handler: kind,
-      tags: [...entry.tags],
-      stale: entry.stale,
-      timestamp: entry.timestamp,
-      expire: entry.expire,
-      revalidate: entry.revalidate,
+  await writeData(
+    runtime,
+    {
+      key: cacheKey,
+      entry: {
+        kind: USE_CACHE,
+        handler: kind,
+        tags: [...entry.tags],
+        stale: entry.stale,
+        timestamp: entry.timestamp,
+        expire: entry.expire,
+        revalidate: entry.revalidate,
+      },
+      bytes,
     },
-    bytes,
-  });
+    // Ahead of the calls behind the render (`callsWaitedOn`): Next.js waits for this write.
+    callsWaitedOn(),
+  );
 }
 
 /** The `use cache` handler of one kind (`default`, `remote`), reading and writing the same scope. */

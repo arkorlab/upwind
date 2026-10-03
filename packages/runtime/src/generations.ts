@@ -3,6 +3,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { pagesDataPathname, queryDependent } from '@stayingupwind/core/bundle';
 import {
   type DecodedGenerationPack,
+  type InvalidationState,
   normalizeRoutePathname,
   type RouteEntryDescriptor,
 } from '@stayingupwind/core/cache';
@@ -448,6 +449,9 @@ function speculative(want: Want): boolean {
   return want.prefetch === true || want.representation.startsWith(SEGMENT_PREFIX);
 }
 
+/** How long an expired prefetch waits for the tag delta it is behind (`renderSpeculative`). */
+const SPECULATIVE_TAG_SYNC_MS = 1000;
+
 /**
  * A prefetch's answer where the entry's generation has expired: a static render of the page made
  * for it and kept by no one, the regeneration left to after the answer.
@@ -462,15 +466,116 @@ function speculative(want: Want): boolean {
  * lease or found it held, and every one of them waited for that before it rendered. The
  * regeneration begins once the answer has gone out in full, once per generation of the entry
  * (`scheduleJob`), as a stale one's does.
+ *
+ * The pull is made where the invalidation that expired the entry is one this isolate's view of the
+ * tags is behind (`revision`): the render reads its data values through that view, and a value the
+ * invalidation reached would be taken for current and sent to the navigation that adopts the
+ * prefetch. Pulled first, as a regeneration pulls it — joined with any pull out, so a page's
+ * segments prefetched together pull it once, and again where a pull left the view short of the
+ * record (`catchUp`) — for a second at the most (`SPECULATIVE_TAG_SYNC_MS`), past which the render
+ * reads the view as it stands. A pull still out then is kept going behind the answer for as long as
+ * the prefetches after it may join it (the hold), so that they join one that answers rather than one
+ * cut off with this request; no longer, so that a gateway that does not answer is not left with a
+ * pull kept going for each hold that passes.
  */
 async function renderSpeculative(
   job: Job,
   want: Want,
   source: GenerationSource,
+  invalidation: InvalidationState | undefined,
 ): Promise<Response> {
+  const { runtime } = job;
+  if (invalidation !== undefined && invalidation.revision > runtime.tags.revision) {
+    const until = performance.now() + SPECULATIVE_TAG_SYNC_MS;
+    const caughtUp = catchUp(runtime, invalidation.revision, until);
+    job.input.waitUntil(settledWithin(caughtUp, runtime.holdMs));
+    await settledWithin(caughtUp, SPECULATIVE_TAG_SYNC_MS);
+  }
   return (
     (await renderForVisitor(job.input, job.target, want)) ?? (await renderRequest(job, source.url))
   );
+}
+
+/**
+ * The pull of the tag delta each runtime's expired prefetches have out, when it went out on the
+ * isolate's own clock, and whether it has settled: the segments of a page prefetched together are
+ * behind the same invalidation, and the first of them to find it pulls it for all of them. Joined
+ * while it is out and younger than the hold; older, it may be a pull whose request ended under it,
+ * which never answers.
+ */
+interface SpeculativePull {
+  readonly pull: Promise<void>;
+  readonly since: number;
+  settled: boolean;
+}
+
+const speculativePulls = new WeakMap<CacheRuntime, SpeculativePull>();
+
+/** How many pulls a prefetch makes or joins to bring the view up to its record's revision. */
+const SPECULATIVE_PULLS = 2;
+
+/** A pull of the delta for the prefetches after it to join while it is out. Never rejects. */
+function startPull(runtime: CacheRuntime): Promise<void> {
+  const underWay: { pull: Promise<void>; readonly since: number; settled: boolean } = {
+    pull: Promise.resolve(),
+    since: performance.now(),
+    settled: false,
+  };
+  underWay.pull = (async () => {
+    try {
+      await runtime.tags.sync(runtime.host, nowMs(), { force: true });
+    } catch {
+      // A pull that fails leaves the view as it stood, as a regeneration's does.
+    } finally {
+      underWay.settled = true;
+    }
+  })();
+  speculativePulls.set(runtime, underWay);
+  return underWay.pull;
+}
+
+/**
+ * Bring this isolate's view of the tags up to the revision a prefetch's record was invalidated at
+ * (`required`): joining a pull that is out, or making one, and again where it left the view short —
+ * a pull that went out before the invalidation answers with the revision before it. None is made
+ * or joined past `until`, on the isolate's own clock: the prefetch has rendered without the view
+ * by then, and a pull made for it would be one no request waits for.
+ */
+async function catchUp(runtime: CacheRuntime, required: number, until: number): Promise<void> {
+  for (
+    let tries = 0;
+    tries < SPECULATIVE_PULLS && runtime.tags.revision < required && performance.now() < until;
+    tries += 1
+  ) {
+    const underWay = speculativePulls.get(runtime);
+    const joinable =
+      underWay !== undefined &&
+      !underWay.settled &&
+      performance.now() - underWay.since < runtime.holdMs;
+    await (joinable ? underWay.pull : startPull(runtime));
+  }
+}
+
+/** Once `promise` has settled, whichever way, or `ms` have gone by. */
+async function settledWithin(promise: Promise<unknown>, ms: number): Promise<void> {
+  const settled = (async () => {
+    try {
+      await promise;
+    } catch {
+      // A pull that fails leaves the view as it stood, as a regeneration's does.
+    }
+  })();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      settled,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -514,7 +619,7 @@ export async function serveFromGeneration(
     return renderRequest(job, source.url);
   }
   if (validity === 'expired' && speculative(want)) {
-    return afterBody(await renderSpeculative(job, want, source), () => {
+    return afterBody(await renderSpeculative(job, want, source, pack.header.invalidation), () => {
       scheduleJob(job, 'expired', pack.header.generationId);
     });
   }
