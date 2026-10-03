@@ -490,10 +490,15 @@ function blockingMetadataPattern(manifest: ProjectManifest): string {
  * metadata was resolved at build time, into the document, so what that render sends is the
  * finished document. This departs from Next.js knowingly, for the cost of a render.
  *
+ * A manifest made before the list was recorded (`htmlLimitedBots` absent) still carries the
+ * condition `next build` wrote, under the application's own pattern where it had one. That condition
+ * is the list, and the only user-agent condition `next build` writes, so it is judged as the list is
+ * — by its own pattern, bounded, case-insensitive, and naming every agent where it will not run —
+ * rather than run as written: the same agents passed on as by a manifest that records it.
+ *
  * Every other condition — a Server Action's header, a multipart body, or a user-agent condition
- * with another pattern (a manifest that records no `htmlLimitedBots` while its build wrote one of
- * the application's own) — is still run as Next.js's router runs it, unbounded in its shape as
- * every `has` and `missing` condition is. Bounding those is separate work.
+ * with another pattern beside a recorded list — is still run as Next.js's router runs it, unbounded
+ * in its shape as every `has` and `missing` condition is. Bounding those is separate work.
  */
 export function bypassForHolds(
   entry: Pick<RouteEntry, 'bypassFor' | 'cache'>,
@@ -506,15 +511,46 @@ export function bypassForHolds(
     return false;
   }
   const pattern = blockingMetadataPattern(manifest);
+  const recorded = manifest.htmlLimitedBots !== undefined;
   const finished = entry.cache?.delivery === 'complete';
   return conditions.some((condition) => {
-    const listed =
+    const userAgent =
       condition.type === 'header' &&
       condition.key?.toLowerCase() === 'user-agent' &&
-      condition.value === pattern;
-    if (!listed) {
+      condition.value !== undefined;
+    if (!userAgent || (recorded && condition.value !== pattern)) {
       return anyConditionHolds([condition], url, headers);
     }
-    return !finished && wantsBlockingMetadata(headers.get('user-agent'), manifest);
+    if (finished) {
+      return false;
+    }
+    // A manifest made before the list was recorded: the user-agent condition `next build` wrote is
+    // the list, and the only one it writes, so it is judged as one — by its own pattern.
+    const agent = headers.get('user-agent');
+    return recorded || condition.value === undefined
+      ? wantsBlockingMetadata(agent, manifest)
+      : wantsBlockingMetadataBy(agent, condition.value);
   });
+}
+
+/** The judgements of patterns read off a route's condition, by the pattern: a few per isolate. */
+const patternJudgements = new Map<string, ListJudgement>();
+const MAX_PATTERN_JUDGEMENTS = 64;
+
+/** Whether this agent is named by a list read off a route's condition (`bypassForHolds`). */
+function wantsBlockingMetadataBy(userAgent: string | null, pattern: string): boolean {
+  if (userAgent === null || userAgent === '') {
+    return false;
+  }
+  let judgement = patternJudgements.get(pattern);
+  if (judgement === undefined) {
+    const judge = judgeOf(pattern);
+    judgement =
+      judge === undefined ? { judge: namesEveryAgent, runs: false } : { judge, runs: true };
+    if (patternJudgements.size >= MAX_PATTERN_JUDGEMENTS) {
+      patternJudgements.clear();
+    }
+    patternJudgements.set(pattern, judgement);
+  }
+  return judgement.judge(userAgent);
 }

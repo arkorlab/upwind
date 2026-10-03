@@ -19,6 +19,7 @@ import {
   DEPLOYMENT_ID_QUERY,
   DEPLOYMENT_ID_REQUEST_HEADER,
   INTERNAL_REQUEST_HEADERS,
+  isBotUserAgent,
   NAVIGATION_REQUEST_HEADERS,
   NEXT_ACTION_HEADER,
   NEXT_RESUME_HEADER,
@@ -263,8 +264,30 @@ function classifyByQuery(
 
 /** What a browser puts on a top-level navigation, and what nothing else sends. */
 const NAVIGATION_FETCH_MODE = NAVIGATION_REQUEST_HEADERS['sec-fetch-mode'];
+const FETCH_DEST_HEADER = 'sec-fetch-dest';
+const FETCH_MODE_HEADER = 'sec-fetch-mode';
 
 /**
+ * A crawler's own fetch of a page: an agent that names a crawler, with no Fetch Metadata at all.
+ * A crawler is no browser and sends none — Googlebot's crawl fetch, whose document its renderer
+ * then runs, among them — so the metadata a browser's navigation carries cannot tell it apart.
+ */
+function crawlerFetch(headers: Headers): boolean {
+  const userAgent = headers.get('user-agent');
+  return (
+    userAgent !== null &&
+    !headers.has(FETCH_DEST_HEADER) &&
+    !headers.has(FETCH_MODE_HEADER) &&
+    isBotUserAgent(userAgent)
+  );
+}
+
+/**
+ * A top-level navigation by what a browser says of it, or a crawler's fetch of the page
+ * (`crawlerFetch`), taken for one by its agent. Whether a crawler is then served the shell is for
+ * its blocking metadata to say (`blockingMetadataReason`): Googlebot is streamed to, as Next.js
+ * streams to it, and a crawler on the HTML-limited list is passed on.
+ *
  * A navigation the browser made on a guess — a prefetch or a prerender, which says so in
  * `sec-purpose` (`PREFETCH_HINT_HEADERS`) — is one all the same, and is served as one. A browser
  * adopts such a load still in flight as the navigation when the visitor follows the link, so its
@@ -272,11 +295,14 @@ const NAVIGATION_FETCH_MODE = NAVIGATION_REQUEST_HEADERS['sec-fetch-mode'];
  * `<link rel=prefetch>` is not a navigation at all, and says so in `sec-fetch-dest`.
  */
 function classifyByNavigationHints(headers: Headers): RequestClass | undefined {
-  if (headers.get('sec-fetch-dest') !== DOCUMENT_FETCH_DESTINATION) {
-    return passthrough('sec-fetch-dest');
+  if (crawlerFetch(headers)) {
+    return acceptsHtml(headers.get('accept')) ? undefined : passthrough('accept');
   }
-  if (headers.get('sec-fetch-mode') !== NAVIGATION_FETCH_MODE) {
-    return passthrough('sec-fetch-mode');
+  if (headers.get(FETCH_DEST_HEADER) !== DOCUMENT_FETCH_DESTINATION) {
+    return passthrough(FETCH_DEST_HEADER);
+  }
+  if (headers.get(FETCH_MODE_HEADER) !== NAVIGATION_FETCH_MODE) {
+    return passthrough(FETCH_MODE_HEADER);
   }
   if (!acceptsHtml(headers.get('accept'))) {
     return passthrough('accept');
