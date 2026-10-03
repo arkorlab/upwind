@@ -526,12 +526,23 @@ export interface AdapterOptions {
    *
    * `'prefetch-segments'` records every segment in the bundle exactly as before — `segmentPath`,
    * `parentOutputId`, the lot, which is what a host places them from — and ships no body for one.
-   * Asked for a segment it has no bytes for, the Function renders it: `documents.ts` guards the
-   * static segment on its body and falls through to the resume when there is none. Measured on the
-   * same build, with the body of one segment taken out of its bundle and nothing else changed, the
-   * answer was **byte for byte the 682 bytes the build had shipped**, under the same content type
-   * and the same `x-nextjs-postponed`. So this costs no correctness and no network read; what it
-   * costs is a render where there was a read, on the path a host falls back to.
+   *
+   * **A host that chooses this must export `createBundleBlobReader`** from its `cacheHostModule`
+   * (`@stayingupwind/runtime/bundle-blobs`), which is how the Function gets the bytes of a segment
+   * it was not given. Not part of the cache: a deployment the host gave no cache still has a
+   * bundle, and a build that left blobs out of its Function needs them read all the same.
+   *
+   * That read is off every path that works — the host answers these prefetches itself, and the
+   * Function sees only the ones it could not: a middleware that failed, a host with nothing to
+   * serve the prefetch from, a request that reached the Worker without the host having served it at
+   * all. (Not a draft request, which `bypassesPrerender` sends to the route itself, and which
+   * should render rather than be handed a build's segment.) But on that path the host's reader is
+   * the only source there is. Neither of the two ways of producing the segment locally exists:
+   * `renderCaptured` answers `undefined` whenever the render responded instead of being captured,
+   * which a segment prefetch always does, and a resume carries the *document's* postponed state,
+   * which Next.js refuses for a segment it has no prerendered output for. Both were measured, both
+   * 404. A host that exports no reader gets that 404 — a prefetch the client navigates through
+   * instead, not a broken page, but not the bytes either.
    */
   readonly unshippedOutputs?: 'none' | 'prefetch-segments' | undefined;
   /**
