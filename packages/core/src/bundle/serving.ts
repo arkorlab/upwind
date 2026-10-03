@@ -13,7 +13,7 @@ import { filterShellResponseHeaders, rendersInline } from '../request/headers.ts
 import { isInternalPage, nextNamespaceRoutes } from './base-path.ts';
 import { queryDependent } from './query.ts';
 import type { DeploymentBundle, Entrypoint, Prerender, Route, StaticFile } from './schema.ts';
-import { isTemplate, keepsTrailingSlash, requestedPathname } from './spelling.ts';
+import { isTemplate, keepsTrailingSlash, requestedPathname, routerSpellings } from './spelling.ts';
 
 /**
  * What of a deployment's build the edge serves, and under which headers: the prerenders with a
@@ -717,12 +717,12 @@ export function edgeServedRewrites(bundle: DeploymentBundle): ServedRewrite[] {
   }
   const { basePath } = bundle.config;
   const files = new Map(bundle.staticFiles.map((file) => [file.pathname, file]));
-  const claimed = new Set<string>(files.keys());
-  // A page is found under the spelling a request asks for it by as well: `/about/` is `/about`.
+  // A page or a file is found under every spelling the router finds it by (`routerSpellings`):
+  // `/about/` is the page `/about`, and `/manual/` the file `/manual`, ahead of `afterFiles`.
   const named = [...bundle.entrypoints, ...bundle.prerenders].map((output) => output.pathname);
-  for (const pathname of named) {
-    claimed.add(pathname).add(requestedPathname(bundle, pathname));
-  }
+  const claimed = new Set(
+    [...files.keys(), ...named].flatMap((pathname) => routerSpellings(bundle, pathname)),
+  );
   const served: ServedRewrite[] = [];
   // Every earlier rule counts, including one serving a small file, a conditional rule and a
   // redirect before middleware. Failing to promote one does not mean routing skipped it.
@@ -822,8 +822,9 @@ export function dynamicRouting(
     ...nextNamespaceRoutes(bundle),
   ];
   // Pathnames Next.js resolves exactly, ahead of its dynamic routes, that have no shell — under
-  // each spelling a request may ask for one by: `/stream/` is the page `/stream` where the
-  // application keeps its pages behind the slash, and no member of a class that also matches it.
+  // each spelling the router finds one by (`routerSpellings`): `/stream/` is the page `/stream`
+  // where the application keeps its pages behind the slash, and no member of a class that also
+  // matches it.
   const pathnames = [
     ...bundle.entrypoints.map((entry) => entry.pathname),
     ...bundle.prerenders.map((prerender) => prerender.pathname),
@@ -831,8 +832,16 @@ export function dynamicRouting(
     ...aliases.map((served) => served.pathname),
   ]
     .filter((pathname) => !isTemplate(pathname))
-    .flatMap((pathname) => [pathname, requestedPathname(bundle, pathname)]);
-  const exact = new Set(pathnames.filter((pathname) => !routeKeys.has(pathname)));
+    .flatMap((pathname) => routerSpellings(bundle, pathname));
+  // A shipped file is the edge's under its own name, which it looks up before any of this; under
+  // another spelling the router finds it by (`/manual/` for `/manual`), it is exact, and no member
+  // of a class.
+  const fileSpellings = bundle.staticFiles.flatMap((file) =>
+    routerSpellings(bundle, file.pathname).filter((spelling) => spelling !== file.pathname),
+  );
+  const exact = new Set(
+    [...pathnames, ...fileSpellings].filter((pathname) => !routeKeys.has(pathname)),
+  );
   return { dynamicRoutes, reservedRoutes, exactPathnames: [...exact], ...spelled };
 }
 
