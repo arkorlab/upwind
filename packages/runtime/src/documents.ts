@@ -14,6 +14,7 @@ import {
   HTTP_NOT_FOUND,
   HTTP_OK,
   invokeEntry,
+  notFoundResponse,
   POSTPONED_HEADER,
   PRERENDER_HEADER,
   prerenderHeaders,
@@ -384,7 +385,7 @@ async function lastNotFound(
   // Nothing below will read the body, and leaving it queued keeps the whole upload in the isolate
   // for an answer that has none.
   releaseStream(input.request.body, 'not found: handler body unused');
-  return new Response('Not Found', { status: HTTP_NOT_FOUND });
+  return notFoundResponse();
 }
 
 /**
