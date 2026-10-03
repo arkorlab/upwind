@@ -283,7 +283,7 @@ export function staticFileKey(manifest: ProjectManifest, pathname: string): stri
   if (staticFiles === undefined) {
     return undefined;
   }
-  const named = keyOf(staticFiles, pathname);
+  const named = keyOf(staticFiles, pathname) ?? slashedFileKey(manifest, staticFiles, pathname);
   if (named !== undefined) {
     return named;
   }
@@ -302,6 +302,33 @@ export function staticFileKey(manifest: ProjectManifest, pathname: string): stri
       ? undefined
       : withoutAssetPrefix(staticFileAssetPrefix, unlocalized));
   return unprefixed === undefined ? undefined : keyOf(staticFiles, unprefixed);
+}
+
+/**
+ * Whether a pathname's last segment names no file: nothing in it Next.js reads as an extension. A
+ * dynamic segment's own brackets and dots (`[...slug]`) say nothing of the member it stands for.
+ */
+export function namesNoFile(pathname: string): boolean {
+  const last = pathname.slice(pathname.lastIndexOf('/') + 1);
+  return last !== '' && !last.replaceAll(/\[[^[\]]*\]/gu, '').includes('.');
+}
+
+/**
+ * A file whose last segment names no file, in an application that keeps its pages behind the slash,
+ * by the spelling the router finds it by: Next.js redirects `/manual` to `/manual/` and answers the
+ * file there, so `/manual/` is the file `/manual` (`routerSpellings`). A name with an extension has
+ * no such spelling: the redirect takes the slash off it.
+ */
+function slashedFileKey(
+  manifest: ProjectManifest,
+  staticFiles: Record<string, StaticFileEntry>,
+  pathname: string,
+): string | undefined {
+  if (manifest.trailingSlash !== true || pathname.length < 2 || !pathname.endsWith('/')) {
+    return undefined;
+  }
+  const unslashed = pathname.slice(0, -1);
+  return namesNoFile(unslashed) ? keyOf(staticFiles, unslashed) : undefined;
 }
 
 /** The file shipped under a pathname a request names (`staticFileKey`). */
