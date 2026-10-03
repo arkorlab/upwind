@@ -163,6 +163,11 @@ export async function documentFromBuild(
  * again straight away, for as long as the page was open — measured, some 250 requests a second
  * from one tab. A 404 it leaves alone for ten seconds, and a navigation fetches what it needs.
  *
+ * A record is this page's segment only as the adapter anchored it (`segmentPathOf`): the segment
+ * path it answers, in the document's own group. The name alone is not enough — an application may
+ * have a page of its own at a pathname that reads like another page's segment, and that page
+ * neither gives the other segments nor is one.
+ *
  * The host read is `AdapterOptions.unshippedOutputs`' other half. A build may record a segment and
  * leave its bytes out of the Function, which is 37% of one measured on a real application; the
  * record is what a host places from, so it stays, and a reference is then no longer a promise that
@@ -175,20 +180,27 @@ export async function documentFromBuild(
 async function builtSegment(
   input: RoutedInput,
   store: Store,
-  pathname: string,
+  document: Prerender | undefined,
 ): Promise<Response | undefined> {
   const { rsc } = store.manifest.routing;
   const segment = input.request.headers.get(rsc.prefetchSegmentHeader);
-  if (segment === null) {
+  if (segment === null || document === undefined) {
     return undefined;
   }
-  const keyOf = (segmentPath: string): string =>
-    `${rscBase(pathname)}${rsc.prefetchSegmentDirSuffix}${segmentPath}${rsc.prefetchSegmentSuffix}`;
+  const segmentOf = (segmentPath: string): Prerender | undefined => {
+    const name = `${rscBase(document.pathname)}${rsc.prefetchSegmentDirSuffix}${segmentPath}`;
+    const prerender = store.prerendersByPathname.get(`${name}${rsc.prefetchSegmentSuffix}`);
+    return prerender?.segmentPath === segmentPath &&
+      prerender.route === document.route &&
+      prerender.groupId === document.groupId
+      ? prerender
+      : undefined;
+  };
   // Next.js writes the route's tree for every page it writes segments of.
-  if (!store.prerendersByPathname.has(keyOf(SEGMENT_TREE_PATH))) {
+  if (segmentOf(SEGMENT_TREE_PATH) === undefined) {
     return undefined;
   }
-  const prerender = store.prerendersByPathname.get(keyOf(segment));
+  const prerender = segmentOf(segment);
   const bytes =
     prerender?.body === undefined
       ? undefined
@@ -255,7 +267,7 @@ export async function rscFromBuild(
   if (bypassesPrerender(store, input.request, shell, resolved.url)) {
     return invokeEntry(input, entry, resolved.url);
   }
-  const built = await builtSegment(input, store, shell?.pathname ?? resolved.pathname);
+  const built = await builtSegment(input, store, shell);
   if (built !== undefined) {
     return built;
   }
