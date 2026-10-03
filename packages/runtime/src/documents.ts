@@ -1,16 +1,13 @@
-import type { Prerender } from '@stayingupwind/core/bundle';
+import type { BlobRef, Prerender } from '@stayingupwind/core/bundle';
 import { NO_STORE_CACHE_CONTROL } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
-import { renderCaptured } from './cache/capture.ts';
 import { isDraftRequest } from './draft.ts';
 import { type Entry, entryFor } from './entries.ts';
 import { failureAnswer } from './error-pages.ts';
-import { isCrawler, isRscRequest, rscBase, stripPlatformHeaders } from './incoming.ts';
-import { invokeNodeHandler } from './node-bridge.ts';
+import { isCrawler, isRscRequest, rscBase } from './incoming.ts';
 import type { Resolved } from './outputs.ts';
 import {
-  baseRequestMeta,
   bypassesPrerender,
   concatShell,
   HTML_CONTENT_TYPE,
@@ -157,49 +154,26 @@ export async function documentFromBuild(
  * and, for a route on the edge runtime, which resumes nothing, rendered whole.
  */
 /**
- * The segment a prefetch asks for, as the build wrote it; `undefined` when it asks for none, the
- * build wrote none, or the build recorded one and left its bytes to the host.
+ * One prefetch segment of a prerendered page: the bytes the build shipped, or the same bytes from
+ * the host that kept them.
  *
- * That last case is why the read is `tryReadBlob` and not `readBlob`
- * (`AdapterOptions.unshippedOutputs`): a recorded segment is what a host places from, so the record
- * stays even where the bytes do not, and a reference is then no longer a promise that the file is
- * here. The caller falls through to the resume, which renders the segment — what it already does
- * for a document whose shell the build did not write.
- */
-function segmentAnswer(
-  store: Store,
-  prerender: Prerender,
-  bytes: Uint8Array<ArrayBuffer>,
-): Response {
-  const headers = prerenderHeaders(prerender, RSC_CONTENT_TYPE);
-  headers.set(PRERENDER_HEADER, '1');
-  headers.set(POSTPONED_HEADER, '2');
-  headers.set(CACHE_CONTROL, NO_STORE_CACHE_CONTROL);
-  headers.set('vary', store.manifest.routing.rsc.varyHeader);
-  return new Response(bytes, { status: HTTP_OK, headers });
-}
-
-/**
- * One prefetch segment of a prerendered page: the bytes the build shipped, or the segment taken
- * out of a render made for it.
+ * `undefined` when the request asks for no segment, when the build wrote none under this key, or
+ * when neither the Function nor the host has the bytes — the caller then carries on as it does for
+ * a document whose shell the build did not write.
  *
- * `undefined` only when the request asks for no segment, or the build wrote none under this key —
- * then the caller carries on as it does for a document whose shell the build did not write.
- *
- * The render is the other half of `AdapterOptions.unshippedOutputs`. A build may record a segment
- * and leave its bytes to the host, which is most of what a Function weighs; the record is what a
- * host places from, so it stays, and a reference is then no longer a promise that the file is
- * here. Falling through to the next branch was tried and is wrong: it answers the **document's**
- * payload — measured at 143,658 bytes against the segment's 716, with no `x-nextjs-postponed` on
- * it. So the segment is rendered, the way a regeneration produces one
- * (`CapturedRender.segments`, keyed by the value of the header that asked), and the answer is a
- * segment either way.
+ * The host read is `AdapterOptions.unshippedOutputs`' other half. A build may record a segment and
+ * leave its bytes out of the Function, which is 37% of one measured on a real application; the
+ * record is what a host places from, so it stays, and a reference is then no longer a promise that
+ * the file is here. **Rendering it instead was tried and cannot work**: `renderCaptured` answers
+ * `undefined` whenever the render responded rather than being captured, and a segment prefetch is
+ * always answered directly — measured, every time, with nothing captured to read. Resuming cannot
+ * either: the postponed state is the document's, and Next.js refuses a segment it has no
+ * prerendered output for with a 404.
  */
 async function builtSegment(
   input: RoutedInput,
   store: Store,
-  entry: Entry,
-  at: { readonly key: string; readonly url: string },
+  pathname: string,
 ): Promise<Response | undefined> {
   const { rsc } = store.manifest.routing;
   const segment = input.request.headers.get(rsc.prefetchSegmentHeader);
@@ -207,41 +181,48 @@ async function builtSegment(
     return undefined;
   }
   const dir = rsc.prefetchSegmentDirSuffix;
-  const key = `${rscBase(at.key)}${dir}${segment}${rsc.prefetchSegmentSuffix}`;
+  const key = `${rscBase(pathname)}${dir}${segment}${rsc.prefetchSegmentSuffix}`;
   const prerender = store.prerendersByPathname.get(key);
-  if (prerender === undefined) {
+  if (prerender?.body === undefined) {
     return undefined;
   }
-  const shipped =
-    prerender.body === undefined ? undefined : store.tryReadBlob(prerender.body.sha256);
-  if (shipped !== undefined) {
-    return segmentAnswer(store, prerender, shipped);
-  }
-  if (entry.kind !== 'node') {
+  const bytes = store.tryReadBlob(prerender.body.sha256) ?? (await fromHost(input, prerender.body));
+  if (bytes === undefined) {
     return undefined;
   }
-  const headers = stripPlatformHeaders(input.request.headers);
-  // The URL the visitor asked for, not the key: a class shell's pathname is the template
-  // (`/en/[orgSlug]`), and rendering that would render the brackets and drop the query with them.
-  // The key stays the shell's, because that is what the build filed the segment under.
-  const url = new URL(at.url, input.request.url);
-  const render = await renderCaptured('app-page', (meta) => {
-    return invokeNodeHandler({
-      handler: entry.handler,
-      request: new Request(url, { headers }),
-      url: at.url,
-      requestMeta: { ...baseRequestMeta(input), ...meta.requestMeta },
-      waitUntil: input.waitUntil,
-      run: input.run,
-      expectNoResponse: meta.expectNoResponse,
-    });
-  });
-  const rendered = render?.segments.get(segment);
-  // A copy on its own `ArrayBuffer`: a captured render's segment is a plain `Uint8Array`, which
-  // widens to a view on a buffer `Response` will not take.
-  return rendered === undefined
-    ? undefined
-    : segmentAnswer(store, prerender, new Uint8Array(rendered));
+  const headers = prerenderHeaders(prerender, RSC_CONTENT_TYPE);
+  headers.set(PRERENDER_HEADER, '1');
+  headers.set(POSTPONED_HEADER, '2');
+  headers.set(CACHE_CONTROL, NO_STORE_CACHE_CONTROL);
+  headers.set('vary', rsc.varyHeader);
+  return new Response(new Uint8Array(bytes), { status: HTTP_OK, headers });
+}
+
+/**
+ * One blob of this bundle from the host that keeps it, for a build whose Function was not given it
+ * (`AdapterOptions.unshippedOutputs`).
+ *
+ * `undefined` where there is no host, where the host does not answer this, or where it has no such
+ * blob — all three mean the same thing to the caller, which carries on as it does for a segment the
+ * build never wrote. Nothing reaches here on a path that works: the host answers these prefetches
+ * from its own storage, and the Function is asked only for the ones it could not.
+ *
+ * Not memoised. A read that happens once per request on a fallback is not worth a cache that would
+ * hold a build's bytes in an isolate serving every other request — and the host is the one that
+ * knows how to cache it.
+ */
+async function fromHost(input: RoutedInput, ref: BlobRef): Promise<Uint8Array | undefined> {
+  const host = input.cache?.host;
+  if (host === undefined) {
+    return undefined;
+  }
+  try {
+    return await host.readBundleBlob?.(ref.sha256);
+  } catch {
+    // A host that cannot answer is a segment the Function does not have, not a failed request:
+    // the caller resumes, and the client that asked for a prefetch navigates instead.
+    return undefined;
+  }
 }
 
 export async function rscFromBuild(
@@ -254,10 +235,7 @@ export async function rscFromBuild(
   if (bypassesPrerender(store, input.request, shell, resolved.url)) {
     return invokeEntry(input, entry, resolved.url);
   }
-  const built = await builtSegment(input, store, entry, {
-    key: shell?.pathname ?? resolved.pathname,
-    url: resolved.url,
-  });
+  const built = await builtSegment(input, store, shell?.pathname ?? resolved.pathname);
   if (built !== undefined) {
     return built;
   }
