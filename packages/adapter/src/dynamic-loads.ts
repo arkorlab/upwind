@@ -26,12 +26,13 @@ import { parseAst } from 'rolldown/parseAst';
  * is not looked at.
  *
  * A use is *guarded* where the code handles its failure itself: a call of the loader, or of a
- * method of it, in the block of a `try` that has a `catch`, within the same function — an
+ * method of it that loads, in the block of a `try` whose `catch` has no `throw` of its own — an
  * `import()` too, where it is awaited there. Such a load fails in the Function as it fails under
  * Node.js when the module is not installed, into the code's own `catch`: `@protobufjs/inquire`,
  * which every `protobufjs` loads its optional modules through, and TypeScript's `sys.require`,
- * which loads a compiler plugin, are written that way. Not across a function's boundary: a `try`
- * around a function's definition catches nothing its later calls throw.
+ * which loads a compiler plugin, are written that way. Not across code that runs later — a
+ * function's body, a class field's initializer: a `try` around their definition catches nothing
+ * they throw when they run — and never `require.bind`, which makes a loader rather than loading.
  */
 
 /** A use of the loader the bundler could not follow, in the module that makes it. */
@@ -168,26 +169,67 @@ function keeperOf(visit: Visit): Node {
   return visit.statement;
 }
 
-/** Where a function begins: a `try` outside it catches nothing a later call of it throws. */
-const FUNCTION_TYPES: ReadonlySet<string> = new Set([
+/**
+ * Where code begins that runs later than the code around it: a function's body, and a class
+ * field's initializer, which runs when an instance is made. A `try` outside one catches nothing it
+ * throws then.
+ */
+const DEFERRED_TYPES: ReadonlySet<string> = new Set([
+  'AccessorProperty',
   'ArrowFunctionExpression',
   'FunctionDeclaration',
   'FunctionExpression',
+  'PropertyDefinition',
 ]);
 
+/** The nodes directly under `node`: each field that is one, or a list of them. */
+function childrenOf(node: Node): Node[] {
+  const children: Node[] = [];
+  for (const [key, value] of Object.entries(node)) {
+    // A parent link, when the parser adds one, would lead back up.
+    if (key === 'parent') {
+      continue;
+    }
+    const values: unknown[] = Array.isArray(value) ? value : [value];
+    children.push(...values.filter((child) => isNode(child)));
+  }
+  return children;
+}
+
+/** Every node under `node`, without the code under it that runs later (`DEFERRED_TYPES`). */
+function nowNodes(node: Node): Node[] {
+  const found: Node[] = [];
+  const pending: Node[] = [node];
+  for (let at = pending.pop(); at !== undefined; at = pending.pop()) {
+    found.push(at);
+    if (at === node || !DEFERRED_TYPES.has(at.type)) {
+      pending.push(...childrenOf(at));
+    }
+  }
+  return found;
+}
+
 /**
- * Whether what `visit` is part of runs in the block of a `try` that has a `catch`, without a
- * function's boundary between them. A `try` whose `catch` or `finally` it is in does not count;
- * one around that may.
+ * Whether a `catch` keeps the failure in: it has no `throw` of its own. One that throws — the same
+ * error, or another made of it — lets the load's failure out as surely as no `catch` at all.
+ */
+function absorbs(handler: Node | null): boolean {
+  return handler !== null && nowNodes(handler).every((node) => node.type !== 'ThrowStatement');
+}
+
+/**
+ * Whether what `visit` is part of runs in the block of a `try` whose `catch` keeps the failure in,
+ * with nothing that runs later between them. A `try` whose `catch` or `finally` it is in does not
+ * count; one around that may.
  */
 function inGuardedBlock(visit: Visit): boolean {
   let at = visit;
   while (at.up !== undefined) {
     const { node } = at.up;
-    if (FUNCTION_TYPES.has(node.type)) {
+    if (DEFERRED_TYPES.has(node.type)) {
       return false;
     }
-    if (node.type === 'TryStatement' && at.key === 'block' && node.handler !== null) {
+    if (node.type === 'TryStatement' && at.key === 'block' && absorbs(node.handler)) {
       return true;
     }
     at = at.up;
@@ -200,12 +242,27 @@ function guardedCall(visit: Visit, call: Node): boolean {
   return call.type === 'CallExpression' && inGuardedBlock(visit);
 }
 
+/**
+ * The loader's methods that load or resolve when they are called — and a module object's own
+ * `require`. `bind` is not one: it makes a loader for a call the record cannot see, and is kept.
+ */
+const LOADING_METHODS: ReadonlySet<string> = new Set(['apply', 'call', 'require', 'resolve']);
+
+function loadsWhenCalled(member: Node): boolean {
+  return (
+    member.type === 'MemberExpression' &&
+    !member.computed &&
+    member.property.type === 'Identifier' &&
+    LOADING_METHODS.has(member.property.name)
+  );
+}
+
 /** A method called is reported as the call; one kept, as what keeps it. */
 function methodUse(visit: Visit, member: Node): Use {
   const above = visit.up?.node;
   const called = visit.key === 'callee' && above?.type === 'CallExpression';
   return called
-    ? { node: above, text: above, guarded: guardedCall(visit, above) }
+    ? { node: above, text: above, guarded: loadsWhenCalled(member) && guardedCall(visit, above) }
     : { node: member, text: keeperOf(visit), guarded: false };
 }
 

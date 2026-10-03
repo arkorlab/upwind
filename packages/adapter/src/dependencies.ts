@@ -60,10 +60,11 @@ export interface BundleDependencies {
    */
   readonly dynamicRequires: readonly string[];
   /**
-   * Of those, the loads whose failure the code handles itself: a call of the loader in the block of
-   * a `try` that has a `catch`, within the same function (`dynamic-loads.ts`). Recorded, not
-   * refused — in the Function such a load fails into that `catch`, as it does under Node.js when
-   * the module is not installed. Absent where there are none.
+   * Of those, the loads whose failure the code handles itself: a call that loads, in the block of a
+   * `try` whose `catch` has no `throw` of its own, with nothing between them that runs later
+   * (`dynamic-loads.ts`). Recorded, not refused — in the Function such a load fails into that
+   * `catch`, as it does under Node.js when the module is not installed. One entry per load, as in
+   * `dynamicRequires`; absent where there are none.
    */
   readonly guardedRequires?: readonly string[];
   /**
@@ -449,9 +450,19 @@ function problemsIn(source: string, bundle: BundleDependencies): string[] {
       problems.push(`${external} is imported but not known to be provided by the Workers runtime`);
     }
   }
-  const guarded = new Set(bundle.guardedRequires);
+  // Counted rather than looked up: two loads on one line of a minified module read the same, and
+  // one of them being guarded says nothing of the other.
+  const guarded = new Map<string, number>();
+  if (bundle.guardedRequires !== undefined) {
+    for (const load of bundle.guardedRequires) {
+      guarded.set(load, (guarded.get(load) ?? 0) + 1);
+    }
+  }
   for (const dynamic of bundle.dynamicRequires) {
-    if (!isAllowedDynamicLoad(dynamic) && !guarded.has(dynamic)) {
+    const left = guarded.get(dynamic) ?? 0;
+    if (left > 0) {
+      guarded.set(dynamic, left - 1);
+    } else if (!isAllowedDynamicLoad(dynamic)) {
       problems.push(`a load the bundler could not follow: ${dynamic}`);
     }
   }
