@@ -42,19 +42,19 @@ export function withTrailingSlash(pathname: string): string {
  * repeated slashes and trailing slashes with a redirect before routing, and the runtime's shell
  * lookup does not admit a trailing slash either, so neither is a member of any class here — save
  * the one trailing slash of an application that keeps its pages behind one (`trailingSlash`), which
- * is the spelling its members are asked for by, where the last segment names no file: the build's
- * redirect takes the slash off any other (`withTrailingSlash`), so that spelling is the redirect's.
- * Nor is a pathname that does not decode: Next.js answers a route parameter that does not with 400,
- * not with the class's shell, and the Function is what answers it so.
+ * is the spelling its members are asked for by. Whatever the last segment reads like: the redirect
+ * the build writes to take the slash off a file's name is a reserved route, which claims the path
+ * ahead of every class (`dynamicRouteFor`) by Next.js's own pattern — `.well-known` left alone, and
+ * a dotted name it does not read as a file's (`/v1.2-beta/`) left to the class. Nor is a pathname
+ * that does not decode: Next.js answers a route parameter that does not with 400, not with the
+ * class's shell, and the Function is what answers it so.
  */
 function isCanonicalPathname(pathname: string, trailingSlash: boolean): boolean {
   if (pathname === '/') {
     return true;
   }
   // A repeated slash is refused as asked for, before the one trailing slash allowed comes off.
-  const unslashed = pathname.slice(0, -1);
-  const bare =
-    trailingSlash && pathname.endsWith('/') && namesNoFile(unslashed) ? unslashed : pathname;
+  const bare = trailingSlash && pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
   return !pathname.includes('//') && !bare.includes('\\') && !bare.endsWith('/') && decodes(bare);
 }
 
