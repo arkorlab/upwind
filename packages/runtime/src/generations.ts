@@ -1,7 +1,11 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 import { pagesDataPathname, queryDependent } from '@stayingupwind/core/bundle';
-import type { DecodedGenerationPack, RouteEntryDescriptor } from '@stayingupwind/core/cache';
+import {
+  type DecodedGenerationPack,
+  normalizeRoutePathname,
+  type RouteEntryDescriptor,
+} from '@stayingupwind/core/cache';
 import {
   CACHE_OUTCOME_HEADER,
   CACHE_ROUTE_ESCAPED_HEADER,
@@ -415,8 +419,18 @@ function answerableEntry(input: RoutedInput, store: Store, source: GenerationSou
   return regenerable(descriptor) ? { runtime, descriptor } : undefined;
 }
 
+/**
+ * The same entry, as the cache keys it (`keyDescriptorFor`): a pathname with a trailing slash names
+ * the entry without one. The foreground regenerates the entry by the pathname the edge asked for,
+ * which keeps the slash in an application that keeps its pages there (`trailingSlash`); the usual
+ * path routes it without.
+ */
 function sameEntry(a: RouteEntryDescriptor | undefined, b: RouteEntryDescriptor): boolean {
-  return a?.kind === b.kind && a.route === b.route && a.pathname === b.pathname;
+  return (
+    a?.kind === b.kind &&
+    a.route === b.route &&
+    normalizeRoutePathname(a.pathname) === normalizeRoutePathname(b.pathname)
+  );
 }
 
 /**
