@@ -48,41 +48,34 @@ export function postponedOf(store: Store, prerender: Prerender): string | undefi
 }
 
 /**
- * A file the Function carries, under `status`. `undefined` for one the manifest does not name, and
- * for one it names without carrying — a file of the build a rewrite may land on, which
- * `hostedFileResponse` reads from the host instead.
+ * A file the manifest names, under `status`: with the bytes the Function carries, or — for one it
+ * does not carry, a file under `_next/static` a rewrite of the build's may land on, which the
+ * adapter lists for such a build only — with the host's, which keeps every file of the build. Not
+ * for a `HEAD`, which has no use for them: the host's bytes are a read of the whole file.
+ * `undefined` where the host has none to give.
  */
-export function staticFileResponse(
-  store: Store,
-  pathname: string,
-  status: number,
-): Response | undefined {
-  const file = store.staticFiles.get(pathname);
-  const bytes = file === undefined ? undefined : store.tryReadBlob(file.blob.sha256);
-  return file === undefined || bytes === undefined ? undefined : fileResponse(file, bytes, status);
-}
-
-/**
- * A file the manifest names and the Function does not carry, from the host that keeps every file of
- * the build: one under `_next/static` that a rewrite of the build's landed on (the adapter lists
- * those, and only for a build with such a rewrite). `undefined` where the manifest names no such
- * file, or where the host has none to give.
- */
-export async function hostedFileResponse(
+export async function staticFileResponse(
   input: RoutedInput,
   store: Store,
-  pathname: string,
+  file: StaticFile,
   status: number,
 ): Promise<Response | undefined> {
-  const file = store.staticFiles.get(pathname);
-  if (file === undefined || store.tryReadBlob(file.blob.sha256) !== undefined) {
-    return undefined;
+  const carried = store.tryReadBlob(file.blob.sha256);
+  if (carried !== undefined) {
+    return fileResponse(file, carried, status);
   }
-  const bytes = await fromHost(input, file.blob);
-  return bytes === undefined ? undefined : fileResponse(file, bytes, status);
+  if (input.request.method === 'HEAD') {
+    return fileResponse(file, null, status);
+  }
+  const hosted = await fromHost(input, file.blob);
+  return hosted === undefined ? undefined : fileResponse(file, hosted, status);
 }
 
-function fileResponse(file: StaticFile, bytes: Uint8Array<ArrayBuffer>, status: number): Response {
+function fileResponse(
+  file: StaticFile,
+  bytes: Uint8Array<ArrayBuffer> | null,
+  status: number,
+): Response {
   return new Response(bytes, {
     status,
     headers: {
@@ -438,9 +431,12 @@ export async function notFound(input: RoutedInput, store: Store, at: URL): Promi
     // The file for a not-found page that needs nothing of the request, and the prerender for one
     // the Pages Router built with `getStaticProps`: both are the document this build wrote.
     const pathname = `${basePath}${NOT_FOUND_PAGE}`;
+    const file = store.staticFiles.get(pathname);
     const stored = store.prerendersByPathname.get(pathname);
     const page =
-      staticFileResponse(store, pathname, HTTP_NOT_FOUND) ??
+      (file === undefined
+        ? undefined
+        : await staticFileResponse(input, store, file, HTTP_NOT_FOUND)) ??
       (stored?.body === undefined
         ? undefined
         : staticResponse(store, stored, HTML_CONTENT_TYPE, stored.initialStatus ?? HTTP_NOT_FOUND));

@@ -83,7 +83,8 @@ export interface Store {
    * the Function (`AdapterOptions.unshippedOutputs`). The record is what the host places from, so
    * it stays — and then a reference is no longer a promise that the file exists. `readBlob` throws
    * for one that does not, which is right everywhere the bundle is the only source; this is for
-   * the one path that has somewhere else to go.
+   * the paths that have somewhere else to go. A blob found absent is remembered so: the bundle does
+   * not change while the isolate lives, and a read that fails costs a thrown error.
    */
   tryReadBlob(sha256: string): Uint8Array<ArrayBuffer> | undefined;
 }
@@ -405,6 +406,8 @@ export function getStore(): Store {
   // recently read goes first, and one larger than the whole budget is copied afresh every time.
   const blobs = new ByteLru<string, Uint8Array<ArrayBuffer>>(BLOB_MEMO_BYTES);
   const staticFiles = new Map(manifest.staticFiles.map((file) => [file.pathname, file]));
+  // At most one entry for each blob the manifest names.
+  const absent = new Set<string>();
   shared.store = {
     manifest,
     prerendersById,
@@ -426,11 +429,13 @@ export function getStore(): Store {
     },
     tryReadBlob(sha256) {
       const held = blobs.get(sha256);
-      if (held !== undefined) {
+      if (held !== undefined || absent.has(sha256)) {
         return held;
       }
       const bytes = readBundleFileIfThere(`blobs/${sha256}`);
-      if (bytes !== undefined) {
+      if (bytes === undefined) {
+        absent.add(sha256);
+      } else {
         blobs.set(sha256, bytes, bytes.byteLength);
       }
       return bytes;
