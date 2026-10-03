@@ -5,11 +5,13 @@ export type Turn = <T>(call: () => Promise<T>) => Promise<T>;
 
 /**
  * How many calls a request has out to the host behind its work at once: a regeneration's uploads
- * and the data cache's writes, between them. A Function has six calls waiting for their headers at
+ * and the fetch cache's writes, between them. A Function has six calls waiting for their headers at
  * the most, and the runtime holds any more back until one is done, without saying which. These come
- * in bursts — a page's every output once it is rendered, a value for each key a render fetched —
+ * in bursts — a page's every output once it is rendered, a value for each `fetch` a render made —
  * and the lease's heartbeat, the commit and the reads a render waits on would wait behind them:
  * slow enough, and the lease ran out under a render that had succeeded. Four leave two for those.
+ * A `use cache` value is not among them: Next.js waits for its write before it has the render the
+ * value was made in, so it goes at once, as the reads do.
  */
 export const CALLS_BEHIND_AT_ONCE = 4;
 
