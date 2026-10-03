@@ -53,6 +53,8 @@ export interface BuildProjectManifestInput {
   readonly images?: ImagesConfig | undefined;
   /** The application's `htmlLimitedBots`, as the build recorded it. */
   readonly htmlLimitedBots?: string | undefined;
+  /** Whether the build's Next.js streams a partially prerendered page to crawlers it lists not. */
+  readonly crawlersStreamed?: boolean | undefined;
   readonly staticFileLocales?: StaticFileLocales | undefined;
   readonly staticFileAssetPrefix?: StaticFileAssetPrefix | undefined;
   readonly cache?: ManifestCache | undefined;
@@ -86,6 +88,7 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
     ...(input.foldedHeaderRules !== undefined && { foldedHeaderRules: input.foldedHeaderRules }),
     ...(input.images !== undefined && { images: input.images }),
     ...(input.htmlLimitedBots !== undefined && { htmlLimitedBots: input.htmlLimitedBots }),
+    ...(input.crawlersStreamed === true && { crawlersStreamed: true }),
     ...(input.staticFileLocales !== undefined && { staticFileLocales: input.staticFileLocales }),
     ...(input.staticFileAssetPrefix !== undefined && {
       staticFileAssetPrefix: input.staticFileAssetPrefix,
