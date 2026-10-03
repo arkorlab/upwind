@@ -1,4 +1,5 @@
-import { namesNoFile, withTrailingSlash } from '../manifest/dynamic.ts';
+import { withTrailingSlash } from '../manifest/dynamic.ts';
+import { namesNoFile } from '../manifest/manifest.ts';
 import type { DeploymentBundle, Prerender } from './schema.ts';
 
 /**

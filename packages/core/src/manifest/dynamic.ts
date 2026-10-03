@@ -6,7 +6,7 @@ import {
 } from '../request/compiled-patterns.ts';
 import { conditionsHold } from '../request/conditions.ts';
 import { requiresLiteral } from '../request/required-literal.ts';
-import { keyOf, withoutAssetPrefix } from './manifest.ts';
+import { keyOf, namesNoFile, withoutAssetPrefix } from './manifest.ts';
 import type { DynamicRoute, ProjectManifest, ReservedRoute, RouteEntry } from './schema.ts';
 
 /**
@@ -19,15 +19,6 @@ import type { DynamicRoute, ProjectManifest, ReservedRoute, RouteEntry } from '.
  * does not — a page that renders blocking, a route handler — the request is Next.js's to answer,
  * and the edge does not go looking for a later class that happens to match too.
  */
-
-/**
- * Whether a pathname's last segment names no file: nothing in it Next.js reads as an extension. A
- * dynamic segment's own brackets and dots (`[...slug]`) say nothing of the member it stands for.
- */
-export function namesNoFile(pathname: string): boolean {
-  const last = pathname.slice(pathname.lastIndexOf('/') + 1);
-  return last !== '' && !last.replaceAll(/\[[^[\]]*\]/gu, '').includes('.');
-}
 
 /** A path that begins with the name the trailing-slash redirect leaves alone, in any case. */
 const WELL_KNOWN = /^\/\.well-known/iu;
