@@ -354,8 +354,11 @@ function slashedFileKey(
   if (manifest.staticFileTrailingSlash !== true || pathname.length < 2 || !pathname.endsWith('/')) {
     return undefined;
   }
-  const unslashed = pathname.slice(0, -1);
-  return namesNoFile(unslashed) ? keyOf(staticFiles, unslashed) : undefined;
+  // Judged on the file's own name, which the runtime makes the alias of: a request may escape the
+  // dot that makes a name a file's (`/manual%2Etxt/`), and the file it decodes to takes no slash.
+  // Nor does one whose name has a bracket in it, which the runtime reads as a template's.
+  const key = keyOf(staticFiles, pathname.slice(0, -1));
+  return key !== undefined && namesNoFile(key) && !key.includes('[') ? key : undefined;
 }
 
 /** The file shipped under a pathname a request names (`staticFileKey`). */
