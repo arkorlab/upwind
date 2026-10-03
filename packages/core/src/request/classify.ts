@@ -27,6 +27,7 @@ import {
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   NEXT_ROUTER_STATE_TREE_HEADER,
+  PREFETCH_HINT_HEADERS,
   RSC_CACHE_BUSTING_QUERY,
   RSC_HEADER,
   SKEW_PROTECTION_COOKIE,
@@ -282,6 +283,29 @@ function crawlerFetch(headers: Headers): boolean {
   );
 }
 
+/** What a resource fetched with no CORS says of itself: what a page's prefetch says, in Firefox. */
+const RESOURCE_FETCH_DESTINATION = 'empty';
+const NO_CORS_FETCH_MODE = 'no-cors';
+const PREFETCH_PURPOSE = 'prefetch';
+
+/**
+ * A page prefetched with the metadata of a resource rather than a navigation's: it says it is a
+ * prefetch (`PREFETCH_HINT_HEADERS`), with `sec-fetch-dest: empty` and `sec-fetch-mode: no-cors`.
+ * Firefox sends a speculation rule's prefetch so (Mozilla bug 2074629: the specification has it
+ * say `document` and `navigate`), as browsers send a `<link rel=prefetch>`. A browser adopts either
+ * as the navigation the visitor then makes, so it is taken for that navigation; whether it is for
+ * a document at all is still for the accept header to say.
+ */
+function prefetchAsResource(headers: Headers): boolean {
+  return (
+    headers.get(FETCH_DEST_HEADER) === RESOURCE_FETCH_DESTINATION &&
+    headers.get(FETCH_MODE_HEADER) === NO_CORS_FETCH_MODE &&
+    PREFETCH_HINT_HEADERS.some(
+      (name) => headers.get(name)?.toLowerCase().includes(PREFETCH_PURPOSE) === true,
+    )
+  );
+}
+
 /**
  * A top-level navigation by what a browser says of it, or a crawler's fetch of the page
  * (`crawlerFetch`), taken for one by its agent. Whether a crawler is then served the shell is for
@@ -291,11 +315,11 @@ function crawlerFetch(headers: Headers): boolean {
  * A navigation the browser made on a guess — a prefetch or a prerender, which says so in
  * `sec-purpose` (`PREFETCH_HINT_HEADERS`) — is one all the same, and is served as one. A browser
  * adopts such a load still in flight as the navigation when the visitor follows the link, so its
- * first byte is that navigation's; and Next.js answers it as it answers any other. A
- * `<link rel=prefetch>` is not a navigation at all, and says so in `sec-fetch-dest`.
+ * first byte is that navigation's; and Next.js answers it as it answers any other. So is a page's
+ * prefetch that says what a resource fetch does (`prefetchAsResource`).
  */
 function classifyByNavigationHints(headers: Headers): RequestClass | undefined {
-  if (crawlerFetch(headers)) {
+  if (crawlerFetch(headers) || prefetchAsResource(headers)) {
     return acceptsHtml(headers.get('accept')) ? undefined : passthrough('accept');
   }
   if (headers.get(FETCH_DEST_HEADER) !== DOCUMENT_FETCH_DESTINATION) {
