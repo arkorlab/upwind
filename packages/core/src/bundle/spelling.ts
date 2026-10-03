@@ -1,4 +1,4 @@
-import { withTrailingSlash } from '../manifest/dynamic.ts';
+import { namesNoFile, withTrailingSlash } from '../manifest/dynamic.ts';
 import type { DeploymentBundle, Prerender } from './schema.ts';
 
 /**
@@ -40,6 +40,28 @@ export function requestedPathname(bundle: DeploymentBundle, pathname: string): s
   }
   const { basePath } = bundle.config;
   return basePath !== '' && pathname === basePath ? `${pathname}/` : withTrailingSlash(pathname);
+}
+
+/**
+ * Every spelling the router finds a pathname of the build by: as the build named it, as a request
+ * asks for it (`requestedPathname`), and — where the application keeps its pages behind a trailing
+ * slash — with the slash, wherever its last segment names no file. That takes in a shipped file
+ * (`/manual/` is the file `/manual`) and a path under `/.well-known`, which Next.js's redirect gives
+ * no slash but which its router finds by one all the same, as a page or a file of that name.
+ */
+export function routerSpellings(bundle: DeploymentBundle, pathname: string): string[] {
+  const takesSlash =
+    keepsTrailingSlash(bundle) &&
+    namesNoFile(pathname) &&
+    !isTemplate(pathname) &&
+    !pathname.endsWith('/');
+  return [
+    ...new Set([
+      pathname,
+      requestedPathname(bundle, pathname),
+      ...(takesSlash ? [`${pathname}/`] : []),
+    ]),
+  ];
 }
 
 /**

@@ -6,6 +6,7 @@ import { type InputOptions, type OutputChunk, rolldown } from 'rolldown';
 import { jsLiteral } from './codegen.ts';
 import { bundled, type BundleTrace } from './dependencies.ts';
 import { dynamicLoadsInChunk } from './dynamic-loads.ts';
+import type { KeptMaps } from './kept-maps.ts';
 import { externalsPlugin, FUNCTION_BANNER } from './patches/index.ts';
 import { sourceMapsPlugin, sourcemapOutput } from './source-maps.ts';
 import { projectModuleName } from './traced-files.ts';
@@ -160,7 +161,8 @@ export function edgeBundleOptions(
   projectDir: string,
   entryFile: string,
   onExternal: (specifier: string) => void,
-  sourceMaps = false,
+  /** Compose the maps the build wrote into this bundle's; `kept`, the ones a hook took away. */
+  sourceMaps?: { readonly kept?: KeptMaps | undefined },
 ): InputOptions {
   return {
     cwd: projectDir,
@@ -171,7 +173,7 @@ export function edgeBundleOptions(
       externalsPlugin(onExternal),
       // No patch reaches this bundle, so there is nothing for the map to be wrong about; see
       // `sourceMapsPlugin` for why order matters where one does.
-      ...(sourceMaps ? [sourceMapsPlugin()] : []),
+      ...(sourceMaps === undefined ? [] : [sourceMapsPlugin(sourceMaps.kept)]),
     ],
     transform: {
       define: {
@@ -194,6 +196,8 @@ export interface BundleEdgeInput {
   readonly entries: readonly EdgeEntry[];
   /** Compose the maps the build already wrote through into this bundle's own. */
   readonly sourceMaps?: boolean | undefined;
+  /** Where to find a chunk's map that a hook took away (`kept-maps.ts`). */
+  readonly keptMaps?: KeptMaps | undefined;
 }
 
 export async function bundleEdge(
@@ -208,7 +212,7 @@ export async function bundleEdge(
       input.projectDir,
       entryFile,
       (specifier) => externals.add(specifier),
-      input.sourceMaps === true,
+      input.sourceMaps === true ? { kept: input.keptMaps } : undefined,
     ),
   );
   const { output } = await bundle.write({

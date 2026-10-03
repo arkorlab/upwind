@@ -30,6 +30,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@jridgewell/sourcemap-codec": "catalog:",
+    "@jridgewell/trace-mapping": "catalog:",
     "@stayingupwind/core": "workspace:*",
     "@stayingupwind/runtime": "workspace:*",
     "esbuild": "catalog:",
