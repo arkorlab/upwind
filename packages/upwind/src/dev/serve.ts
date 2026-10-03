@@ -3,11 +3,13 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { setTimeout as delay } from 'node:timers/promises';
 
 import {
+  isUpwindAuthPath,
   isUpwindInternalPath,
   UPWIND_DEV_ADDRESS_ENV,
   UPWIND_INTERNAL_PREFIX,
 } from '@stayingupwind/core/paas';
 
+import { prepareAuth } from '../auth/prepare.ts';
 import { answerInternal } from '../internal/router.ts';
 import { ownVersion } from '../manifest.ts';
 import { type LocalResources, startLocalResources } from '../resources/local.ts';
@@ -33,6 +35,9 @@ import { createSession } from './session.ts';
  * `/__upwind` is answered here rather than handed to Next.js and rewritten back out. That is the whole
  * arrangement: the prefix never enters the application's router, so no page, middleware or rewrite of
  * the project's can answer for it, shadow it, or see it.
+ *
+ * With one exception, written down where it is made (`internalPathname`): `/__upwind/auth` is handed
+ * to Next.js like any other request, because the route that serves it is one the project built.
  */
 
 export interface DevOptions {
@@ -92,6 +97,24 @@ function decodedPathname(pathname: string): string | undefined {
  * matched raw. So a path that *means* the prefix would otherwise reach a catch-all route of the
  * project's, past the front door and past the reservation both.
  *
+ * `/__upwind/auth` is the application's, and so is nothing this answers. That subtree is served by a
+ * route the project builds (`UPWIND_AUTH_BASE_PATH`), which is the one place where the prefix
+ * belonging to upwind and the request belonging to the application are the same request — and the
+ * adapter's reservation leaves the same subtree out, so handing it on does not send it back here.
+ *
+ * Which spelling counts follows from where the prefix was recognised, and is not the same on both
+ * branches. Under a *literal* `/__upwind`, the subtree is the application's only when `auth` is
+ * literal too: `/__upwind/%61uth/sign-in` is answered here, with this prefix's 404. That looks like
+ * an oversight and is the opposite of one — the adapter's half of the seam is a rewrite whose
+ * `source` is matched against the raw pathname, so it can exclude `auth` and cannot exclude the
+ * unbounded set of ways to encode it (the same reason `dev-prefix.ts` gives for leaving an escaped
+ * `/__upwind` alone). A front door that handed that spelling on would meet a reservation that still
+ * claimed it, and the request would go round between them.
+ *
+ * Below, where the prefix itself was only found by decoding, the reservation never matched in the
+ * first place — so there is no loop to avoid, and the decoded spelling of the subtree is handed on
+ * like any other request of the application's.
+ *
  * `..` needs no handling of its own: `pathnameOf` parses through `URL`, which resolves dot segments
  * before any of this sees them, so `/app/../__upwind` arrives here as `/__upwind`. What is deliberately
  * *not* done is resolving them again after decoding, for the same reason `%2F` is left alone above: the
@@ -100,13 +123,13 @@ function decodedPathname(pathname: string): string | undefined {
  */
 function internalPathname(pathname: string): string | undefined {
   if (isUpwindInternalPath(pathname)) {
-    return pathname;
+    return isUpwindAuthPath(pathname) ? undefined : pathname;
   }
   const decoded = decodedPathname(pathname);
-  if (decoded === undefined) {
+  if (decoded === undefined || !isUpwindInternalPath(decoded)) {
     return undefined;
   }
-  return isUpwindInternalPath(decoded) ? decoded : undefined;
+  return isUpwindAuthPath(decoded) ? undefined : decoded;
 }
 
 /** How far along a run is, for the signal handler to know what there is to close. */
@@ -221,6 +244,13 @@ export async function serveDev(options: DevOptions): Promise<void> {
   // config written during those seconds would otherwise be one this run never hears about — it would
   // serve the old config until something changed again.
   const stopWatching: StopWatching = await watchConfigFiles(options.projectDir);
+  // Before Next.js as well, and for the plainest reason of the three: the route that serves
+  // `/__upwind/auth` has to be on disk before the bundler reads `app`, and the secret it signs with
+  // has to be in the environment before a module that reads it is evaluated. Assigned rather than
+  // set through `env.ts`, which puts a variable back once the config is loaded: this one is read at
+  // request time, which is after that. It reaches the project's own child processes, which is right
+  // — it is the project's secret, for this machine, and they are the project's processes.
+  Object.assign(process.env, await prepareAuth(options.projectDir));
   // Also before Next.js, and for a harder reason: the application's own modules may look for their
   // storage as they are evaluated, and everything Next.js evaluates it evaluates after this line.
   // In this process, because Next.js runs in this one — a supervisor's bindings would reach nothing.

@@ -41,7 +41,7 @@ export const CREATE_COMMAND = 'pnpm create upwind';
  * thing to check it against is one directory away — `web-site/pnpm-lock.yaml`, under
  * `@stayingupwind/adapter` — so a bump that moves the range moves it in the same diff as this line.
  */
-export const SUPPORTED_NEXT_RANGE = '>=16.3.0 <17';
+export const SUPPORTED_NEXT_RANGE = '>=16.2.0 <17';
 
 /** The npm scope the scoped libraries share; `upwind` and `create-upwind` sit outside it. */
 const SCOPE = '@stayingupwind';
