@@ -74,7 +74,7 @@ import {
   type RoutedInput,
   withoutBody,
 } from './serve.ts';
-import { entrypointKindOf, findShell, getStore, type Store } from './store.ts';
+import { deploymentConfig, entrypointKindOf, findShell, getStore, type Store } from './store.ts';
 import { renderedBy, serveWithBody } from './with-body.ts';
 
 /**
@@ -393,7 +393,7 @@ async function handleFull(input: RoutedInput, store: Store): Promise<Response> {
   if (collapsed !== undefined) {
     return redirectResponse(collapsed, HTTP_PERMANENT_REDIRECT, undefined);
   }
-  const headers = routedHeaders(input.request, url, store);
+  const headers = routedHeaders(input.request, url, store.manifest.config.basePath);
   return (await internalRedirect(store, url, headers)) ?? routeAndServe(input, store, url, headers);
 }
 
@@ -569,18 +569,29 @@ async function handleAnyResume(
   return await withBackgroundRegeneration(input, store, response);
 }
 
-async function routeRequest(input: RoutedInput, store: Store): Promise<Response> {
+/**
+ * The middleware alone, run ahead of a shell the edge serves itself: its raw response, for the edge
+ * to apply. It reads one thing of the manifest — the base path, which tells a data request apart
+ * (`routedHeaders`) — and reads it without the store, which is built over every route, prerender
+ * and file the deployment has: the middleware Function, whose first request that shell waits on,
+ * carries only the head of the manifest (`deploymentConfig`).
+ */
+async function answerMiddlewareOnly(input: RoutedInput): Promise<Response> {
+  const { request } = input;
+  const headers = routedHeaders(request, new URL(request.url), deploymentConfig().basePath);
+  const response = await runMiddleware(input, new Request(request, { headers }));
+  return response ?? new Response(null, { status: HTTP_OK, headers: { 'x-middleware-next': '1' } });
+}
+
+async function routeRequest(input: RoutedInput): Promise<Response> {
   const { request } = input;
   if (request.headers.get(MIDDLEWARE_ONLY_HEADER) === '1') {
-    const headers = routedHeaders(request, new URL(request.url), store);
-    const response = await runMiddleware(input, new Request(request, { headers }));
-    return (
-      response ?? new Response(null, { status: HTTP_OK, headers: { 'x-middleware-next': '1' } })
-    );
+    return answerMiddlewareOnly(input);
   }
   if (__ARKOR_FUNCTION_KIND__ === 'middleware') {
     return new Response('middleware function', { status: HTTP_NOT_FOUND });
   }
+  const store = getStore();
   const mode = regenerateMode(request);
   if (mode === 'detached') {
     return await handleDetached(input, store);
@@ -608,7 +619,5 @@ export async function handleRequest(handled: HandleInput): Promise<Response> {
     clock: handled.clock,
   });
   const input: RoutedInput = { ...handled, initURL: initUrlOf(handled.request), run: context.run };
-  return context.run(async () =>
-    withoutBody(handled.request, await routeRequest(input, getStore())),
-  );
+  return context.run(async () => withoutBody(handled.request, await routeRequest(input)));
 }
