@@ -470,6 +470,17 @@ function blockingMetadataPattern(manifest: ProjectManifest): string {
   return pattern === undefined || pattern === '' ? NEXT_HTML_LIMITED_BOTS : pattern;
 }
 
+const USER_AGENT_HEADER = 'user-agent';
+
+/** The pattern of a route's user-agent condition, or `undefined` for any other condition. */
+function userAgentCondition(
+  condition: NonNullable<RouteEntry['bypassFor']>[number],
+): string | undefined {
+  return condition.type === 'header' && condition.key?.toLowerCase() === USER_AGENT_HEADER
+    ? condition.value
+    : undefined;
+}
+
 /**
  * Whether a prerender's `bypassFor` holds for a request: any one of its conditions, as Next.js reads
  * the list (`anyConditionHolds`), except the one `next build` writes from `htmlLimitedBots`.
@@ -515,10 +526,7 @@ export function bypassForHolds(
   const recorded = manifest.htmlLimitedBots !== undefined;
   const finished = entry.cache?.delivery === 'complete';
   return conditions.some((condition) => {
-    const value =
-      condition.type === 'header' && condition.key?.toLowerCase() === 'user-agent'
-        ? condition.value
-        : undefined;
+    const value = userAgentCondition(condition);
     if (value === undefined || (recorded && !writtenFrom(value, pattern))) {
       return anyConditionHolds([condition], url, headers);
     }
@@ -527,7 +535,7 @@ export function bypassForHolds(
     }
     // A manifest made before the list was recorded: the user-agent condition `next build` wrote is
     // the list, and the only one it writes, so it is judged as one — by its own pattern.
-    const agent = headers.get('user-agent');
+    const agent = headers.get(USER_AGENT_HEADER);
     return recorded
       ? wantsBlockingMetadata(agent, manifest)
       : wantsBlockingMetadataBy(agent, listWritten(value));
@@ -542,6 +550,38 @@ export function bypassForHolds(
  */
 function writtenFrom(value: string, list: string): boolean {
   return value === list || listWritten(value) === list;
+}
+
+/**
+ * Whether the edge passes on every request that names an agent, for this route: the list it judges
+ * the route's agents by — the manifest's, or the crawler condition `next build` wrote from it in a
+ * manifest that records none — is one it will not run (`namesEveryAgent`), or one that names every
+ * agent there is, an alternative of it simplified to nothing (`simplifiedPattern`). Then, and only
+ * then, a request that names no agent is the one visitor the route's shell goes to. Of a page the
+ * build finished, the list is not asked, and no agent is passed on for it.
+ */
+export function passesOnEveryAgent(
+  entry: Pick<RouteEntry, 'bypassFor' | 'cache'>,
+  manifest: ProjectManifest,
+): boolean {
+  if (entry.cache?.delivery === 'complete') {
+    return false;
+  }
+  if (manifest.htmlLimitedBots !== undefined) {
+    return namesAll(blockingMetadataPattern(manifest));
+  }
+  return (entry.bypassFor ?? []).some((condition) => {
+    const value = userAgentCondition(condition);
+    return value !== undefined && namesAll(listWritten(value));
+  });
+}
+
+/** Whether a list names every agent as the edge judges it: run nowhere, or simplified to nothing. */
+function namesAll(pattern: string): boolean {
+  return (
+    pattern !== NEXT_HTML_LIMITED_BOTS &&
+    (judgeOf(pattern) === undefined || simplifiedPattern(pattern) === '')
+  );
 }
 
 /** What Next.js 16.4 wraps the list in, as the route's condition: anywhere in the agent. */
