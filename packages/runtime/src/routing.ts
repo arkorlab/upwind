@@ -119,10 +119,10 @@ function queryString(query: Record<string, string | string[]>): string {
  * redirect comes back as a `Location` the fetch cannot use and a rewrite comes back unnamed, and
  * the router gives up and loads the whole page.
  */
-export function routedHeaders(request: Request, url: URL, store: Store): Headers {
+export function routedHeaders(request: Request, url: URL, basePath: string): Headers {
   const headers = stripPlatformHeaders(request.headers);
   headers.delete(NEXT_DATA_HEADER);
-  if (isPagesDataRequestPath(store.manifest.config.basePath, url.pathname)) {
+  if (isPagesDataRequestPath(basePath, url.pathname)) {
     headers.set(NEXT_DATA_HEADER, '1');
   }
   return headers;
