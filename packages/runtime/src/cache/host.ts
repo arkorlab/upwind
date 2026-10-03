@@ -265,6 +265,14 @@ export interface DataWritten {
    * than as freshly written.
    */
   readonly invalidation?: InvalidationState | undefined;
+  /**
+   * Set when the entry already held a value made after this one, which the host kept: nothing was
+   * written, and the generation named is the newer value's. Writes of a key may cross on their way
+   * to the host — one held up behind its upload, or sent once the writer would wait no longer for
+   * the one before it — so a host keeps the value made last (`entry.timestamp`), not the value
+   * written last, and says so; the writer then does not remember what it wrote as the entry's.
+   */
+  readonly superseded?: true | undefined;
 }
 
 /**

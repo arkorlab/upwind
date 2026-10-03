@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { toBase64 } from '@stayingupwind/core/util';
 
 import type { DataEntryMetadata, DataRead, DataReadRequest } from './host.ts';
-import type { CacheRuntime, DataMemo, DataState } from './runtime.ts';
+import type { CacheRuntime, DataHold, DataMemo, DataState } from './runtime.ts';
 
 /** Data bytes and mutation ordering have separate budgets: eviction must never erase a fence. */
 const MILLISECONDS_PER_SECOND = 1000;
@@ -24,7 +24,7 @@ function stateKeyOf(key: string): string {
 
 /** The key's state as it stands: held by a write in flight, else under the LRU. */
 function liveState(runtime: CacheRuntime, stateKey: string): DataState | undefined {
-  return runtime.dataWrites.get(stateKey) ?? runtime.dataStates.get(stateKey);
+  return runtime.dataWrites.get(stateKey)?.state ?? runtime.dataStates.get(stateKey);
 }
 
 function stateFor(runtime: CacheRuntime, key: string, stateKey = stateKeyOf(key)): DataState {
@@ -34,7 +34,6 @@ function stateFor(runtime: CacheRuntime, key: string, stateKey = stateKeyOf(key)
   const state = {
     epoch: 0,
     revision: memo?.kind === 'found' ? memo.response.dependencyRevision : 0,
-    writes: 0,
   };
   runtime.dataStates.set(stateKey, state);
   return state;
@@ -102,11 +101,42 @@ export async function readData(runtime: CacheRuntime, request: DataReadRequest):
   }
 }
 
-/** A write in flight: the key, and the state it holds out of the LRU's reach. */
+/**
+ * How long a write is taken to be in flight at the most: the time a request may go on for once it
+ * has answered (`waitUntil`). A write whose request ended under it never answers, and would hold its
+ * key's state out of the LRU's reach for as long as the isolate lives.
+ */
+const WRITE_LIFETIME_MS = 30_000;
+
+/** How many keys' states writes in flight hold at once. Past it, the oldest holds are let go of. */
+const MAX_HELD_STATES = 512;
+
+/** A write in flight: the key, and the hold that keeps its state out of the LRU's reach. */
 interface Write {
   readonly key: string;
   readonly stateKey: string;
   readonly state: DataState;
+  readonly hold: DataHold;
+}
+
+/**
+ * Let go of the holds whose latest write began longer ago than a write can be in flight, and of the
+ * oldest beyond the budget, before another is taken: keys each written once, under a host that
+ * answers none of them, would otherwise each hold a state, and its key, for good. Whether their
+ * writes landed is not known, as for a write that failed: a read of the key under way is fenced,
+ * what was remembered of the key is forgotten, and the state goes back to the LRU. A reply that
+ * comes after all still raises the state's floor (`finishWrite`).
+ */
+function releaseHolds(runtime: CacheRuntime, now: number): void {
+  for (const [stateKey, hold] of runtime.dataWrites) {
+    if (runtime.dataWrites.size < MAX_HELD_STATES && now - hold.since < WRITE_LIFETIME_MS) {
+      return;
+    }
+    runtime.dataWrites.delete(stateKey);
+    fenceReads(runtime, hold.key, hold.state);
+    runtime.dataMemo.delete(hold.key);
+    runtime.dataStates.set(stateKey, hold.state);
+  }
 }
 
 /**
@@ -114,24 +144,36 @@ interface Write {
  * raises one floor, however many other keys pass through the LRU meanwhile.
  */
 function startWrite(runtime: CacheRuntime, key: string): Write {
+  const now = performance.now();
+  releaseHolds(runtime, now);
   const stateKey = stateKeyOf(key);
   const state = stateFor(runtime, key, stateKey);
-  state.writes += 1;
-  runtime.dataWrites.set(stateKey, state);
+  const hold = runtime.dataWrites.get(stateKey) ?? { key, state, writes: 0, since: now };
+  hold.writes += 1;
+  hold.since = now;
+  // Put back last, so that the holds stand in the order their latest writes began in, and the ones
+  // let go of first are the oldest.
+  runtime.dataWrites.delete(stateKey);
+  runtime.dataWrites.set(stateKey, hold);
   fenceReads(runtime, key, state);
-  return { key, stateKey, state };
+  return { key, stateKey, state, hold };
 }
 
 /**
  * A write's answer, or its failure: raise the floor to what it committed, fence the reads that
- * began meanwhile, and hand the state back to the LRU once no other write is in flight on it.
+ * began meanwhile, and hand the state back to the LRU once no other write is in flight on it. A
+ * hold let go of as lost (`releaseHolds`), and maybe taken again since by a write of its own, is
+ * not this write's to end.
  */
 function finishWrite(runtime: CacheRuntime, write: Write, revision = write.state.revision): void {
-  const { key, stateKey, state } = write;
+  const { key, stateKey, state, hold } = write;
   state.revision = Math.max(state.revision, revision);
   fenceReads(runtime, key, state);
-  state.writes -= 1;
-  if (state.writes === 0) {
+  if (runtime.dataWrites.get(stateKey) !== hold) {
+    return;
+  }
+  hold.writes -= 1;
+  if (hold.writes === 0) {
     runtime.dataWrites.delete(stateKey);
     runtime.dataStates.set(stateKey, state);
   }
@@ -161,9 +203,10 @@ export async function writeData(
   if (memo?.kind !== 'found' || memo.response.dependencyRevision < state.revision) {
     runtime.dataMemo.delete(key);
   }
-  // A newer write or read raised the floor past this one. The floor remains independent of
-  // oversized, evicted or expired byte payloads.
-  if (written.revision < state.revision) return;
+  // A newer write or read raised the floor past this one, or the host kept a value made after this
+  // one (`superseded`): what a read of the key finds is the host's to say. The floor remains
+  // independent of oversized, evicted or expired byte payloads.
+  if (written.revision < state.revision || written.superseded === true) return;
   runtime.dataMemo.set(
     key,
     {
