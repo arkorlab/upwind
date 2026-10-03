@@ -216,9 +216,9 @@ export function nextWriteOrder(): WriteOrder {
 }
 
 /**
- * Write a value under its key, as the host's next revision of the entry. A write that goes behind
- * the work (`turn`, the request's `callsBehind`) waits there for its call to the host; one the
- * render waits on goes at once.
+ * Write a value under its key, as the host's next revision of the entry, its call to the host in
+ * the request's `turn`: behind the work (`callsBehind`), or ahead of it, for a write the render
+ * waits on (`callsWaitedOn`).
  */
 export async function writeData(
   runtime: CacheRuntime,

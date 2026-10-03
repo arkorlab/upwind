@@ -9,31 +9,102 @@ export type Turn = <T>(call: () => Promise<T>) => Promise<T>;
  * the most, and the runtime holds any more back until one is done, without saying which. These come
  * in bursts — a page's every output once it is rendered, a value for each `fetch` a render made —
  * and the lease's heartbeat, the commit and the reads a render waits on would wait behind them:
- * slow enough, and the lease ran out under a render that had succeeded. Four leave two for those.
- * A `use cache` value is not among them: Next.js waits for its write before it has the render the
- * value was made in, so it goes at once, as the reads do.
+ * slow enough, and the lease ran out under a render that had succeeded.
  */
 export const CALLS_BEHIND_AT_ONCE = 4;
 
-/** Each request's turns for the calls behind its work, gone with the request. */
-const behindByRequest = new WeakMap<RequestContext, Turn>();
+/**
+ * How many writes and uploads a request has out at once, a `use cache` value's among them, so that
+ * one of the six is the heartbeat's and the commit's whatever else is out. Next.js waits for a `use
+ * cache` write before it has the render the value was made in: that write goes ahead of the calls
+ * behind the work, past their four, and waits only where it would take the last of the six.
+ */
+export const WRITES_AT_ONCE = 5;
 
 /**
- * The turns of the request under way for the calls behind its work, which all of them share
- * (`CALLS_BEHIND_AT_ONCE`). With no request in context — a suite that runs a piece of the runtime
- * alone — the calls take turns of their own.
+ * A request's turns at the host: for the calls behind its work, and for a write its render waits
+ * on.
  */
-export function callsBehind(): Turn {
+interface Lanes {
+  readonly behind: Turn;
+  readonly waitedOn: Turn;
+}
+
+/** Each request's lanes, gone with the request. */
+const lanesByRequest = new WeakMap<RequestContext, Lanes>();
+
+/**
+ * The lanes of the request under way. With no request in context — a suite that runs a piece of
+ * the runtime alone — each piece of work takes turns of its own, behind the work, and a write a
+ * render waits on goes at once.
+ */
+function lanesOfRequest(): Lanes {
   const context = requestContext();
   if (context === undefined) {
-    return inTurns(CALLS_BEHIND_AT_ONCE);
+    return { behind: inTurns(CALLS_BEHIND_AT_ONCE), waitedOn: async (call) => call() };
   }
-  let turn = behindByRequest.get(context);
-  if (turn === undefined) {
-    turn = inTurns(CALLS_BEHIND_AT_ONCE);
-    behindByRequest.set(context, turn);
+  let lanes = lanesByRequest.get(context);
+  if (lanes === undefined) {
+    lanes = twoLanes(WRITES_AT_ONCE, CALLS_BEHIND_AT_ONCE);
+    lanesByRequest.set(context, lanes);
   }
-  return turn;
+  return lanes;
+}
+
+/** The turns of the request under way for the calls behind its work (`CALLS_BEHIND_AT_ONCE`). */
+export function callsBehind(): Turn {
+  return lanesOfRequest().behind;
+}
+
+/** The turns of the request under way for a write its render waits on (`WRITES_AT_ONCE`). */
+export function callsWaitedOn(): Turn {
+  return lanesOfRequest().waitedOn;
+}
+
+/**
+ * One gate with two lanes: no more than `all` calls out at once, no more than `behindAtMost` of
+ * them from behind the work, and a call the render waits on let out ahead of any still waiting
+ * there.
+ */
+function twoLanes(all: number, behindAtMost: number): Lanes {
+  const lanes = { out: 0, behindOut: 0 };
+  const waitingOn: (() => void)[] = [];
+  const waitingBehind: (() => void)[] = [];
+  const letOut = (): void => {
+    while (lanes.out < all) {
+      const waitedOn = waitingOn.shift();
+      if (waitedOn !== undefined) {
+        lanes.out += 1;
+        waitedOn();
+        continue;
+      }
+      const behind = lanes.behindOut < behindAtMost ? waitingBehind.shift() : undefined;
+      if (behind === undefined) {
+        return;
+      }
+      lanes.out += 1;
+      lanes.behindOut += 1;
+      behind();
+    }
+  };
+  const lane = (isBehind: boolean): Turn => {
+    return async (call) => {
+      await new Promise<void>((resolve) => {
+        (isBehind ? waitingBehind : waitingOn).push(resolve);
+        letOut();
+      });
+      try {
+        return await call();
+      } finally {
+        lanes.out -= 1;
+        if (isBehind) {
+          lanes.behindOut -= 1;
+        }
+        letOut();
+      }
+    };
+  };
+  return { behind: lane(true), waitedOn: lane(false) };
 }
 
 /**
