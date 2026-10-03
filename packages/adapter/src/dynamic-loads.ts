@@ -26,16 +26,17 @@ import { parseAst } from 'rolldown/parseAst';
  * is not looked at.
  *
  * A use is *guarded* where the code handles its failure itself: a call of the loader, or of a
- * method of it that loads, in the block of a `try` whose `catch` throws nothing out — no `throw`
- * that runs when it does, outside a `try` of its own that catches it — and an `import()` too,
- * where it is awaited there. Such a load fails in the Function as it fails under Node.js when the
- * module is not installed, into the code's own `catch`: `@protobufjs/inquire`, which every
- * `protobufjs` loads its optional modules through, and TypeScript's `sys.require`, which loads a
- * compiler plugin, are written that way. Not across code that runs later — a function's body,
- * unless the function is called where it is made, and an instance field's initializer: a `try`
- * around their definition catches nothing they throw when they run — and never `require.bind`,
- * which makes a loader rather than loading. What a `catch` calls is taken not to throw: a
- * function called by its name is not followed.
+ * method of it that loads, in the block of a `try` whose `catch` and `finally` throw nothing out —
+ * no `throw` that runs when they do, outside a `try` of their own that catches it — and an
+ * `import()` too, where it is awaited there. Such a load fails in the Function as it fails under
+ * Node.js when the module is not installed, into the code's own `catch`: `@protobufjs/inquire`,
+ * which every `protobufjs` loads its optional modules through, and TypeScript's `sys.require`,
+ * which loads a compiler plugin, are written that way. Not across code that runs later — a
+ * function's body, unless the function is neither `async` nor a generator and is called where it
+ * is made, and an instance field's initializer or a constructor, unless the class is constructed
+ * where it is made: a `try` around their definition catches nothing they throw when they run —
+ * and never `require.bind`, which makes a loader rather than loading. What a `catch` or a
+ * `finally` calls is taken not to throw: a function called by its name is not followed.
  */
 
 /** A use of the loader the bundler could not follow, in the module that makes it. */
@@ -158,8 +159,7 @@ function isModuleObject(node: Node): boolean {
   const { name } = node.object;
   const property = propertyName(node);
   return (
-    (name === 'require' && property === 'main') ||
-    (name === 'process' && property === 'mainModule')
+    (name === 'require' && property === 'main') || (name === 'process' && property === 'mainModule')
   );
 }
 
@@ -231,19 +231,51 @@ function callAbove(visit: Visit): Node | undefined {
   return at?.node;
 }
 
+/** The class `node` constructs where it is made — `new (class { … })()` — or `undefined`. */
+function constructedAtOnce(node: Node): Node | undefined {
+  if (node.type !== 'NewExpression') {
+    return undefined;
+  }
+  const callee = unwrapped(node.callee);
+  return callee.type === 'ClassExpression' ? callee : undefined;
+}
+
+/** Whether `member`, a member of a class, is one of a class constructed where it is made. */
+function ofClassConstructedAtOnce(member: Visit): boolean {
+  const made = member.up?.up;
+  if (made === undefined) {
+    return false;
+  }
+  let at: Visit | undefined = made.up;
+  while (at?.node.type === 'ParenthesizedExpression') {
+    at = at.up;
+  }
+  return at !== undefined && constructedAtOnce(at.node) === made.node;
+}
+
+/** Whether `fn`, a function's visit, is a class's constructor: what constructing the class runs. */
+function isConstructor(fn: Visit): boolean {
+  const method = fn.up?.node;
+  return method?.type === 'MethodDefinition' && method.kind === 'constructor' && fn.key === 'value';
+}
+
 /**
  * Whether the code under `parent`, by its field `key`, runs later than the code around `parent`:
  * a function's, unless it is called at once, and an instance field's initializer, which runs when
- * an instance is made. A static field's runs as the class is made, and so does a computed key.
+ * an instance is made — both at once for a class constructed where it is made. A static field's
+ * runs as the class is made, and so does a computed key.
  */
 function runsLater(parent: Visit, key: string | undefined): boolean {
   const { node } = parent;
   if (FUNCTION_TYPES.has(node.type)) {
     const call = callAbove(parent);
-    return call === undefined || calledAtOnce(call) !== node;
+    const atOnce =
+      (call !== undefined && calledAtOnce(call) === node) ||
+      (isConstructor(parent) && parent.up !== undefined && ofClassConstructedAtOnce(parent.up));
+    return !atOnce;
   }
   if (node.type === 'PropertyDefinition' || node.type === 'AccessorProperty') {
-    return !node.static && key === 'value';
+    return !node.static && key === 'value' && !ofClassConstructedAtOnce(parent);
   }
   return false;
 }
@@ -262,10 +294,27 @@ function childrenOf(node: Node): Node[] {
   return children;
 }
 
+/** What constructing `made`, a class, runs of it: its instance fields' initializers and constructor. */
+function constructionOf(made: Node): Node[] {
+  if (made.type !== 'ClassExpression') {
+    return [];
+  }
+  return made.body.body.flatMap((member): Node[] => {
+    if (member.type === 'MethodDefinition') {
+      return member.kind === 'constructor' ? childrenOf(member.value) : [];
+    }
+    if (member.type !== 'PropertyDefinition' && member.type !== 'AccessorProperty') {
+      return [];
+    }
+    return member.static || member.value === null ? [] : [member.value];
+  });
+}
+
 /**
  * The nodes under `node` that run when it runs and may throw out of it. Not a function's body, nor
- * an instance field's initializer (`runsLater`) — but the body of a function a call runs at once —
- * and not the block of a `try` with a `catch`, which catches what it throws.
+ * an instance field's initializer (`runsLater`) — but the body of a function a call runs at once,
+ * and what constructing a class constructed at once runs — and not the block of a `try` with a
+ * `catch`, which catches what it throws.
  */
 function throwingChildrenOf(node: Node): Node[] {
   if (FUNCTION_TYPES.has(node.type)) {
@@ -277,26 +326,39 @@ function throwingChildrenOf(node: Node): Node[] {
   if (node.type === 'TryStatement' && node.handler !== null) {
     return node.finalizer === null ? [node.handler] : [node.handler, node.finalizer];
   }
-  const called = calledAtOnce(node);
-  return called === undefined ? childrenOf(node) : [...childrenOf(node), ...childrenOf(called)];
+  const called = calledAtOnce(node) ?? constructedAtOnce(node);
+  if (called === undefined) {
+    return childrenOf(node);
+  }
+  const ran = called.type === 'ClassExpression' ? constructionOf(called) : childrenOf(called);
+  return [...childrenOf(node), ...ran];
 }
 
-/**
- * Whether a `catch` keeps the failure in: nothing it runs throws out of it. One that throws — the
- * same error, or another made of it — lets the load's failure out as surely as no `catch` at all.
- */
-function absorbs(handler: Node | null): boolean {
-  if (handler === null) {
-    return false;
-  }
-  const pending: Node[] = [handler];
+/** Whether running `node` may throw out of it: a `throw` among what it runs, outside a `try` of its own. */
+function throwsOut(node: Node | null): boolean {
+  const pending: Node[] = node === null ? [] : [node];
   for (let at = pending.pop(); at !== undefined; at = pending.pop()) {
     if (at.type === 'ThrowStatement') {
-      return false;
+      return true;
     }
     pending.push(...throwingChildrenOf(at));
   }
-  return true;
+  return false;
+}
+
+/**
+ * Whether a `try` keeps in the failure of what its block runs: it has a `catch`, and neither that
+ * nor its `finally` throws out. One that throws — the same error, another made of it, or what the
+ * `catch` put aside, thrown again by the `finally` — lets the load's failure out as surely as no
+ * `catch` at all.
+ */
+function keepsFailureIn(statement: Node): boolean {
+  return (
+    statement.type === 'TryStatement' &&
+    statement.handler !== null &&
+    !throwsOut(statement.handler) &&
+    !throwsOut(statement.finalizer)
+  );
 }
 
 /**
@@ -309,8 +371,7 @@ function inGuardedBlock(visit: Visit): boolean {
     if (runsLater(at.up, at.key)) {
       return false;
     }
-    const { node } = at.up;
-    if (node.type === 'TryStatement' && at.key === 'block' && absorbs(node.handler)) {
+    if (at.key === 'block' && keepsFailureIn(at.up.node)) {
       return true;
     }
   }
