@@ -89,14 +89,15 @@ function botsRegexOf(pattern: string): RegExp | undefined {
  * Whether Next.js sends this visitor blocking metadata rather than streaming it: a user agent the
  * application's `htmlLimitedBots` names, tested as Next.js tests it — case-insensitive, anywhere in
  * the value (`shouldServeStreamingMetadata`, `server/lib/streaming-metadata.ts`) — or one on
- * Next.js's own list when the build recorded no pattern.
+ * Next.js's own list when the build recorded no pattern, or an empty one, which Next.js reads as
+ * none (`htmlLimitedBots || HTML_LIMITED_BOT_UA_RE_STRING`) rather than as naming everyone.
  */
 export function wantsBlockingMetadata(request: Request, pattern: string | undefined): boolean {
   const userAgent = request.headers.get('user-agent');
   if (userAgent === null || userAgent === '') {
     return false;
   }
-  if (pattern === undefined) {
+  if (pattern === undefined || pattern === '') {
     return isHtmlLimitedBotUserAgent(userAgent);
   }
   return botsRegexOf(pattern)?.test(userAgent) ?? false;
