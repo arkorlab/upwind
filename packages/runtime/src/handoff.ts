@@ -81,7 +81,26 @@ export function decodeHandOff(value: string): HandOff | undefined {
   }
 }
 
-/** What a middleware changed of the request headers it was handed, for `applyRequestChanges`. */
+/**
+ * Every value a header holds under a name. `Headers` joins the values of one name into one, except
+ * `set-cookie`'s, whose commas are the cookies' own; those are each a value of their own.
+ */
+function valuesOf(headers: Headers, name: string): string[] {
+  if (name === 'set-cookie') {
+    return headers.getSetCookie();
+  }
+  const value = headers.get(name);
+  return value === null ? [] : [value];
+}
+
+function sameValues(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((value, at) => value === b[at]);
+}
+
+/**
+ * What a middleware changed of the request headers it was handed, for `applyRequestChanges`: each
+ * name whose values changed, with every value it holds now.
+ */
 export function requestChanges(
   before: Headers,
   after: Headers | undefined,
@@ -90,12 +109,16 @@ export function requestChanges(
     return {};
   }
   const set: [string, string][] = [];
-  for (const [name, value] of after) {
-    if (before.get(name) !== value) {
-      set.push([name, value]);
+  const names = new Set(after.keys());
+  for (const name of names) {
+    const now = valuesOf(after, name);
+    if (!sameValues(now, valuesOf(before, name))) {
+      for (const value of now) {
+        set.push([name, value]);
+      }
     }
   }
-  const removed = [...before.keys()].filter((name) => !after.has(name));
+  const removed = [...new Set(before.keys())].filter((name) => !after.has(name));
   return {
     ...(set.length > 0 && { set }),
     ...(removed.length > 0 && { removed }),
@@ -112,8 +135,13 @@ export function applyRequestChanges(headers: Headers, handOff: HandOff): Headers
     }
   }
   if (set !== undefined) {
+    // Each name changed is replaced whole, by every value it holds now.
+    const changed = new Set(set.map(([name]) => name));
+    for (const name of changed) {
+      out.delete(name);
+    }
     for (const [name, value] of set) {
-      out.set(name, value);
+      out.append(name, value);
     }
   }
   return out;
