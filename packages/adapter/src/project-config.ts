@@ -59,10 +59,21 @@ export function configFileOrder(hostConfigFiles: readonly string[] = []): readon
   return [...own, ...hostConfigFiles, VERCEL_CONFIG];
 }
 
+/**
+ * What a project asks of how its routes are spread across Functions (`AdapterOptions.functions`):
+ * `false` keeps every route in one, whatever it weighs; `true` asks for the split on the host's
+ * budgets; an object asks for it on budgets of its own, which can only be tighter than the host's.
+ */
+export type ProjectSplit =
+  | boolean
+  | { readonly maxMiB?: number | undefined; readonly maxCodeMiB?: number | undefined };
+
 export interface ProjectConfig {
   /** The file the configuration came from, relative to the project directory; for messages. */
   readonly file: string | undefined;
   readonly crons: readonly CronJob[];
+  /** Read from this adapter's own files and a host's, never from `vercel.json`. */
+  readonly split?: ProjectSplit | undefined;
 }
 
 const EMPTY_PROJECT_CONFIG: ProjectConfig = { file: undefined, crons: [] };
@@ -79,6 +90,22 @@ const EMPTY_PROJECT_CONFIG: ProjectConfig = { file: undefined, crons: [] };
 const projectConfigSchema = z.object({
   crons: cronsSchema.optional(),
 });
+
+/**
+ * `functions`, which only this adapter's own files carry. `vercel.json` has a `functions` too, and
+ * there it is Vercel's per-file settings — memory, duration, regions — keyed by glob: read through
+ * this schema it would fail the build of every project that moved here with one. So it is not read
+ * from that file at all, and a budget a project writes in its own file is held to exactly these
+ * keys, since a misspelled one would be a budget silently not applied.
+ */
+const splitBudgetSchema = z
+  .object({
+    maxMiB: z.number().positive().optional(),
+    maxCodeMiB: z.number().positive().optional(),
+  })
+  .strict();
+const functionsSchema = z.object({ split: z.union([z.boolean(), splitBudgetSchema]).optional() });
+const upwindConfigSchema = projectConfigSchema.extend({ functions: functionsSchema.optional() });
 
 function configError(file: string, detail: string): Error {
   return new Error(`@stayingupwind/adapter: ${file}: ${detail}`);
@@ -187,9 +214,17 @@ export async function readProjectConfig(
   const value = file.endsWith('.ts')
     ? await importConfigModule(file, absolute)
     : parseJsonFile(file, await readFile(absolute, 'utf8'), file.endsWith('.jsonc'));
-  const parsed = projectConfigSchema.safeParse(value);
+  if (file === VERCEL_CONFIG) {
+    const parsed = projectConfigSchema.safeParse(value);
+    if (!parsed.success) {
+      throw configError(file, describeIssues(parsed.error));
+    }
+    return { file, crons: parsed.data.crons ?? [] };
+  }
+  const parsed = upwindConfigSchema.safeParse(value);
   if (!parsed.success) {
     throw configError(file, describeIssues(parsed.error));
   }
-  return { file, crons: parsed.data.crons ?? [] };
+  const split = parsed.data.functions?.split;
+  return { file, crons: parsed.data.crons ?? [], ...(split !== undefined && { split }) };
 }

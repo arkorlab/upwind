@@ -1,8 +1,6 @@
-import { once } from 'node:events';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createGzip } from 'node:zlib';
 
 import {
   type FunctionModule,
@@ -30,10 +28,10 @@ import {
   type BundleTrace,
   type FunctionDependencies,
   functionDependencies,
-  type FunctionSize,
 } from './dependencies.ts';
 import { dynamicLoadsInChunk } from './dynamic-loads.ts';
-import { bundleEdge, EDGE_MODULE, type EdgeEntry } from './edge.ts';
+import { bundleEdge, type EdgeEntry } from './edge.ts';
+import { functionSize } from './function-size.ts';
 import { APP_MODULE, generatedModulesPlugin } from './generated-modules.ts';
 import type { KeptMaps } from './kept-maps.ts';
 import {
@@ -57,6 +55,7 @@ import {
 } from './patches/index.ts';
 import {
   carriesMaps,
+  codeModules,
   functionSourceMaps,
   type SourceMapsOption,
   sourceMapsPlugin,
@@ -85,6 +84,13 @@ export interface EntryModule {
 
 export interface BuildFunctionInput {
   readonly kind: 'app' | 'middleware';
+  /**
+   * The Function's own name, where it is not its kind: `app-2`, `app-3`… for the app Functions
+   * after the first of a build that split its routes across several (`split.ts`). It names the
+   * Function's code modules, its source maps and everything the build writes for it, so that no two
+   * Functions of one deployment name one thing alike.
+   */
+  readonly name?: string | undefined;
   readonly projectDir: string;
   readonly outDir: string;
   readonly patch: PatchContext;
@@ -110,6 +116,16 @@ export interface BuildFunctionInput {
   readonly sourceMaps?: SourceMapsOption;
   /** The maps that came through the build's `runAfterProductionCompile` (`kept-maps.ts`). */
   readonly keptMaps?: KeptMaps | undefined;
+  /**
+   * Leave the Function's size to the caller to judge: a build that may yet split its routes builds
+   * one Function first to weigh, and a Function too large is then a reason to split it rather than
+   * a failure. Whatever is finally uploaded is held to the limit all the same.
+   */
+  readonly deferSizeAudit?: boolean | undefined;
+}
+
+function nameOf(input: BuildFunctionInput): string {
+  return input.name ?? input.kind;
 }
 
 /**
@@ -252,8 +268,8 @@ async function bundleApp(
   input: BuildFunctionInput,
   workDir: string,
 ): Promise<{ outFile: string; trace: BundleTrace; linked: ReadonlySet<string> }> {
-  const entryFile = path.join(workDir, `${input.kind}-entry.cjs`);
-  const outFile = path.join(workDir, `${input.kind}-${APP_MODULE}`);
+  const entryFile = path.join(workDir, `${nameOf(input)}-entry.cjs`);
+  const outFile = path.join(workDir, `${nameOf(input)}-${APP_MODULE}`);
   await writeFile(entryFile, appEntrySource(input.entries));
   const sinks: AppBundleSinks = {
     patches: [],
@@ -290,7 +306,7 @@ async function bundleApp(
   });
   const chunk = output.find((item): item is OutputChunk => item.type === 'chunk');
   if (chunk === undefined) {
-    throw new Error(`@stayingupwind/adapter: the ${input.kind} Function bundled to no chunk`);
+    throw new Error(`@stayingupwind/adapter: the ${nameOf(input)} Function bundled to no chunk`);
   }
   return {
     outFile,
@@ -307,7 +323,8 @@ async function bundleApp(
 }
 
 async function bundleRuntime(input: BuildFunctionInput, workDir: string): Promise<string> {
-  const outFile = path.join(workDir, `${input.kind}-${RUNTIME_MODULE}`);
+  const outFile = path.join(workDir, `${nameOf(input)}-${RUNTIME_MODULE}`);
+  const modules = codeModules(nameOf(input));
   await build({
     entryPoints: [runtimeEntry()],
     bundle: true,
@@ -319,6 +336,7 @@ async function bundleRuntime(input: BuildFunctionInput, workDir: string): Promis
     conditions: ['workerd', 'worker'],
     plugins: [
       generatedModulesPlugin({
+        modules,
         edge: input.edgeEntries.length > 0,
         wasm: input.wasm.hasCandidates,
         cacheHostModule: input.cacheHostModule,
@@ -327,6 +345,9 @@ async function bundleRuntime(input: BuildFunctionInput, workDir: string): Promis
     define: {
       'process.env.NODE_ENV': '"production"',
       __ARKOR_FUNCTION_KIND__: jsLiteral(input.kind),
+      // Which Function this is, among a deployment's app Functions: what a request for a route of
+      // another one is told apart by (`placement.ts`).
+      __ARKOR_FUNCTION_NAME__: jsLiteral(nameOf(input)),
       // CommonJS conveniences that `@next/routing`'s build references at module scope.
       __dirname: '"/bundle"',
       __filename: `"/bundle/${RUNTIME_MODULE}"`,
@@ -348,6 +369,16 @@ export interface BuiltFunction {
   readonly dependencies: FunctionDependencies;
   /** The maps of this Function's own modules; empty unless the host asked for them. */
   readonly sourceMaps: SourceMapRef[];
+  /**
+   * What each file put into the Function's code, by the path the bundler read it at: `app.cjs`'s
+   * and `edge.cjs`'s modules. What a plan weighs a route's code with (`split.ts`).
+   */
+  readonly inputs: readonly {
+    readonly file: string;
+    readonly bytes: number;
+    /** Bundled into `edge.cjs` rather than `app.cjs`: a file both bundle is in each, weighed twice. */
+    readonly edge?: true | undefined;
+  }[];
 }
 
 /**
@@ -357,47 +388,6 @@ export interface BuiltFunction {
  */
 const WASM_LOADER_PATCHES: ReadonlySet<string> = new Set(['runtime-wasm-loader', 'wasm-loader']);
 const OG_FONT_PATCH = 'vercel-og-font';
-
-/**
- * What the Function weighs, as Cloudflare weighs it: the modules it will be uploaded with, through
- * one gzip stream. One stream rather than one per module, because that is how the upload is
- * compressed, and a `.wasm` next to a bundle of the same library compresses with it.
- */
-async function functionSize(
-  outDir: string,
-  modules: readonly FunctionModule[],
-): Promise<FunctionSize> {
-  // What each module weighs is already on its blob; only the compressed size needs the bytes.
-  const bytes = modules.reduce((total, module) => total + module.blob.byteLength, 0);
-  const blobs = path.join(outDir, 'blobs');
-  const gzip = createGzip();
-  let gzipBytes = 0;
-  let failure: unknown;
-  gzip.on('data', (chunk: Buffer) => {
-    gzipBytes += chunk.byteLength;
-  });
-  // A stream with no `error` listener takes the process down with it, and this one spends most of
-  // its life waiting on a read; `once` only listens while it is awaited.
-  gzip.on('error', (error: unknown) => {
-    failure ??= error;
-  });
-  try {
-    for (const module of modules) {
-      const content = await readFile(path.join(blobs, module.blob.sha256));
-      if (!gzip.write(content)) {
-        await once(gzip, 'drain');
-      }
-    }
-    gzip.end();
-    await once(gzip, 'end');
-  } finally {
-    gzip.destroy();
-  }
-  if (failure !== undefined) {
-    throw new Error(`@stayingupwind/adapter: could not measure the Function`, { cause: failure });
-  }
-  return { bytes, gzipBytes };
-}
 
 /**
  * The bytes of `next/og`'s fallback font, read from the very file the patch was applied to, or
@@ -474,13 +464,15 @@ async function linkedSource(linked: LinkedExternals): Promise<string> {
 export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFunction> {
   const workDir = path.join(input.outDir, 'work');
   await mkdir(workDir, { recursive: true });
+  const name = nameOf(input);
+  const names = codeModules(name);
   const [app, runtimeFile, edge] = await Promise.all([
     bundleApp(input, workDir),
     bundleRuntime(input, workDir),
     input.edgeEntries.length === 0
       ? undefined
       : bundleEdge({
-          kind: input.kind,
+          kind: name,
           projectDir: input.projectDir,
           workDir,
           entries: input.edgeEntries,
@@ -492,7 +484,7 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
   const linked = await bundleLinkedExternals({
     distDir: input.patch.distDir,
     workDir,
-    kind: input.kind,
+    kind: name,
     ids: app.linked,
   });
   const modules: FunctionModule[] = [
@@ -502,7 +494,7 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
       blob: await input.blobStore.putFile(runtimeFile, contentTypeFor(runtimeFile)),
     },
     {
-      name: APP_MODULE,
+      name: names.app,
       type: 'commonjs',
       blob: await input.blobStore.putFile(appFile, contentTypeFor(appFile)),
     },
@@ -510,7 +502,7 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
       ? []
       : [
           {
-            name: EDGE_MODULE,
+            name: names.edge,
             type: 'commonjs' as const,
             blob: await input.blobStore.putFile(edge.outFile, contentTypeFor(edge.outFile)),
           },
@@ -566,7 +558,7 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
   }
   // A file the application reads is found at its path in the project, which no module of the
   // Function's own may hold as well (`auditTracedFiles`).
-  auditTracedFiles(input.kind, modules, input.files);
+  auditTracedFiles(name, modules, input.files);
   for (const file of input.files) {
     modules.push({
       name: file.name,
@@ -585,10 +577,10 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
       linked: bundleDependencies(input.projectDir, distDir, linked.trace),
     }),
   };
-  auditWasmLoader(input.kind, input.patch, app.trace.patches);
-  auditFunctionSize(input.kind, { modules, size });
+  auditWasmLoader(name, input.patch, app.trace.patches);
+  auditFunctionSize(name, { modules, size }, input.deferSizeAudit === true);
   auditFunction(
-    input.kind,
+    name,
     {
       app: await readFile(appFile, 'utf8'),
       ...(edge !== undefined && { edge: await readFile(edge.outFile, 'utf8') }),
@@ -604,14 +596,24 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
       compatibilityFlags: [...FUNCTION_COMPATIBILITY_FLAGS],
     },
     dependencies,
-    sourceMaps: await builtMaps(input, { app: appFile, edge: edge?.outFile }),
+    sourceMaps: await builtSourceMaps(input, { name, app: appFile, edge }),
+    inputs: [
+      ...app.trace.inputs,
+      ...(edge === undefined
+        ? []
+        : edge.trace.inputs.map((each) => ({ ...each, edge: true as const }))),
+    ],
   };
 }
 
-/** The maps of the Function just built, as the host asked for them: none, whole, or the project's. */
-async function builtMaps(
+/** The maps of a Function's own code, as the host asked for them: none, whole, or the project's. */
+async function builtSourceMaps(
   input: BuildFunctionInput,
-  built: { readonly app: string; readonly edge: string | undefined },
+  built: {
+    readonly name: string;
+    readonly app: string;
+    readonly edge: { readonly outFile: string } | undefined;
+  },
 ): Promise<SourceMapRef[]> {
   if (!carriesMaps(input.sourceMaps)) {
     return [];
@@ -620,5 +622,10 @@ async function builtMaps(
     input.sourceMaps === 'project'
       ? { projectDir: input.projectDir, distDir: input.patch.distDir, outDir: input.outDir }
       : undefined;
-  return functionSourceMaps(input.blobStore, input.kind, built, project);
+  return functionSourceMaps(
+    input.blobStore,
+    built.name,
+    { app: built.app, edge: built.edge?.outFile },
+    project,
+  );
 }
