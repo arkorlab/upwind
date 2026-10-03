@@ -43,9 +43,10 @@ function routerRulePatterns(bundle: DeploymentBundle): RegExp[] {
   ].flatMap((rule) =>
     mayHoldForDocument(rule)
       ? []
-      : // Compiled by Next.js for its own router, which runs them without the unicode flag.
+      : // Compiled by Next.js for its own router, which runs them without the unicode flag and
+        // without regard to case, as `mayRoutePath` does: a rule for `/Account` covers `/account`.
         // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-        [new RegExp(rule.sourceRegex)],
+        [new RegExp(rule.sourceRegex, 'i')],
   );
 }
 
