@@ -53,6 +53,14 @@ export interface InvokeInput {
   readonly status?: number | undefined;
 }
 
+/** The methods that ask for something and change nothing (RFC 9110, "Safe Methods"). */
+const SAFE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS', 'TRACE']);
+
+/** Whether a request with this method may change something: whether it is held to its end. */
+export function changesSomething(method: string): boolean {
+  return !SAFE_METHODS.has(method);
+}
+
 /** A port on the Function's own loopback: nothing listens there but this server. */
 const BRIDGE_PORT = 18_080;
 
@@ -236,10 +244,30 @@ function onRequest(req: IncomingMessage, res: ServerResponse): void {
   req.url = dispatch.url;
   restoreHeaders(req, dispatch.input.request.headers);
   settableSocket(req);
-  // Every failure is caught in `invoke`; a rejection past it would leave the response hanging.
-  void invoke(dispatch, req, res).catch((error: unknown) => {
+  const handled = handle(dispatch, req, res);
+  // The handler held to its own end for a request that may change something: its response leaves
+  // as soon as its headers commit, and a handler that goes on after them — a `POST` API route that
+  // writes and then updates a database — would otherwise be cancelled with a client that went away
+  // (`function.ts`).
+  if (changesSomething(dispatch.input.request.method)) {
+    dispatch.input.waitUntil(handled);
+  }
+}
+
+/**
+ * `invoke`, never rejecting: every failure is caught in it, and one that got past it would leave
+ * the response hanging, so it ends the response instead.
+ */
+async function handle(
+  dispatch: Dispatch,
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  try {
+    await invoke(dispatch, req, res);
+  } catch (error) {
     res.destroy(error instanceof Error ? error : new Error(String(error)));
-  });
+  }
 }
 
 /** The server, started by the first request that needs it. */
