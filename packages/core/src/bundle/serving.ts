@@ -266,13 +266,37 @@ function generationIn(bundle: DeploymentBundle): (prerender: Prerender) => boole
   };
 }
 
+/**
+ * Whether Next.js picks the locale a page is answered in when the request comes, which the edge
+ * does not: with `i18n`, the root redirects a visitor to the locale their `NEXT_LOCALE` cookie or
+ * `Accept-Language` names, unless `localeDetection` is `false`; with `domains`, every page is in the
+ * locale of the host it is asked on, which a route keyed by its pathname alone cannot tell apart.
+ * Such a page stays with the deployment's Function, which picks it.
+ */
+function localePickedPerRequest(bundle: DeploymentBundle): (prerender: Prerender) => boolean {
+  const { basePath, i18n } = bundle.config;
+  if (i18n === null || i18n === undefined) {
+    return () => false;
+  }
+  if ((i18n.domains ?? []).length > 0) {
+    return () => true;
+  }
+  if (i18n.localeDetection === false) {
+    return () => false;
+  }
+  const root = basePath === '' ? '/' : basePath;
+  return (prerender) => prerender.pathname === root;
+}
+
 function servableIn(bundle: DeploymentBundle): (prerender: Prerender) => boolean {
   const generation = generationIn(bundle);
   const templates = reachableTemplates(bundle);
+  const localePicked = localePickedPerRequest(bundle);
   return (prerender) => {
     return (
       generation(prerender) &&
       (!isTemplate(prerender.pathname) || templates.has(prerender.pathname)) &&
+      !localePicked(prerender) &&
       !claimedBeforeFiles(bundle, prerender) &&
       headersReproducible(bundle, prerender)
     );
