@@ -267,6 +267,9 @@ const ALLOWED_BUILTINS: ReadonlySet<string> = new Set([
   'buffer',
   // Imported by Sentry's Node SDK and never called from a Function: a stub in workerd.
   'child_process',
+  // workerd implements it with the real values — `O_RDONLY`, `SIGTERM` and the rest — rather than a
+  // stub. Required by `graceful-fs`, so by `fs-extra` and everything built on it.
+  'constants',
   'crypto',
   // Imported by OpenTelemetry's Node.js SDK, for an exporter a Function does not send through: a
   // stub in workerd. Like `dns` and `http2`, it is found by `require` under the Function's
@@ -290,6 +293,9 @@ const ALLOWED_BUILTINS: ReadonlySet<string> = new Set([
   // workerd provides it natively; the match is exact, so the subpath needs a line of its own.
   'path/posix',
   'perf_hooks',
+  // workerd implements it in full, encoding and decoding both. Deprecated in Node.js and still
+  // imported by `tough-cookie`, so by `request` and the HTTP clients that kept its cookie jar.
+  'punycode',
   'querystring',
   // Imported by Sentry's context-lines integration, never called from a Function: a stub in workerd.
   'readline',

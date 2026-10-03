@@ -39,6 +39,8 @@
 export type Copy = 'build-output' | 'esm-module' | 'module' | 'server-runtime' | 'vendored';
 
 export interface PatchContext {
+  /** Absolute project directory: what the Function carries is under `/bundle` by its path here. */
+  readonly projectDir: string;
   /** Absolute `.next` directory. */
   readonly distDir: string;
   /** Absolute paths of every server chunk the Turbopack runtime may load. */
