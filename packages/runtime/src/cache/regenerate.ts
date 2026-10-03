@@ -30,7 +30,7 @@ import {
   type UploadedArtifact,
 } from './host.ts';
 import type { CacheRuntime } from './runtime.ts';
-import { inTurns } from './turns.ts';
+import { callsBehind } from './turns.ts';
 
 /**
  * A regeneration: one attempt at publishing a new generation of an entry. The lease is taken
@@ -257,29 +257,22 @@ function bodyArtifact(target: RegenerationTarget, render: CapturedRender): BodyA
     : { role: 'html', contentType: HTML_TYPE };
 }
 
-/**
- * How many of a render's outputs are uploaded at once. A Function may have six calls waiting for
- * their headers; past that the runtime holds a call back until another is done. A page's every
- * output at once — its document, its payload and a segment each — took all six while they went,
- * and the lease's heartbeat waited behind them: slow enough, and the lease ran out under a render
- * that had succeeded. Four leave two for the heartbeat, the commit and the rest of the request.
- */
-const UPLOADS_AT_ONCE = 4;
-
 async function upload(
   input: RegenerationInput,
   lease: { attemptId: string; fencingToken: number },
   render: CapturedRender,
 ): Promise<Uploads> {
   const { host } = input.runtime;
-  const turn = inTurns(UPLOADS_AT_ONCE);
+  // In the request's turns for the calls behind its work, which the data cache's writes take too
+  // (`CALLS_BEHIND_AT_ONCE`): a page's every output at once took all six a Function has.
+  const turn = callsBehind();
   const one = (role: ArtifactUpload['role'], bytes: Uint8Array, contentType: string) =>
     turn(() => host.uploadArtifact({ ...lease, role, bytes, contentType }));
   const encoder = new TextEncoder();
   const primary = bodyArtifact(input.target, render);
-  // The outputs together, the segments with the rest, as many at once as `UPLOADS_AT_ONCE` lets
-  // out. Each is a call of its own to the host, which none of the others waits on, and one after
-  // another a page's segments were a round trip each between the render and its commit.
+  // The outputs together, the segments with the rest, as many at once as the turns let out. Each
+  // is a call of its own to the host, which none of the others waits on, and one after another a
+  // page's segments were a round trip each between the render and its commit.
   const [body, postponed, rsc, data, segments] = await Promise.all([
     one(primary.role, render.html, primary.contentType),
     render.postponed === undefined

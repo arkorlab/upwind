@@ -4,6 +4,7 @@ import { fromBase64, toBase64 } from '@stayingupwind/core/util';
 
 import type { DataEntryMetadata, DataRead, DataReadRequest } from './host.ts';
 import type { CacheRuntime, DataHold, DataMemo, DataState } from './runtime.ts';
+import { callsBehind } from './turns.ts';
 
 /** Data bytes and mutation ordering have separate budgets: eviction must never erase a fence. */
 const MILLISECONDS_PER_SECOND = 1000;
@@ -223,14 +224,15 @@ export async function writeData(
   const { state } = write;
   runtime.dataMemo.delete(key);
   const valueBase64 = toBase64(input.bytes);
+  // Its place in the order as it is handed over, before it waits for its turn to go out.
+  const order = input.order ?? nextWriteOrder();
   let written;
   try {
-    written = await runtime.host.setData({
-      key: input.key,
-      entry: input.entry,
-      valueBase64,
-      order: input.order ?? nextWriteOrder(),
-    });
+    // In the request's turns for the calls behind its work (`CALLS_BEHIND_AT_ONCE`): a render's
+    // writes, one per key it fetched, would otherwise take every call a Function may have out.
+    written = await callsBehind()(async () =>
+      runtime.host.setData({ key: input.key, entry: input.entry, valueBase64, order }),
+    );
   } catch (error) {
     // A failure does not prove the host rejected the mutation: also discard a value
     // value read during the write.
