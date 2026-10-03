@@ -13,6 +13,12 @@ packages: []
 # the adapter runs esbuild during `next build` — without the script there is no binary to run.
 allowBuilds:
   esbuild: true
+  # `false`, the same answer and for the same reason as the root workspace, which says it at length:
+  # `upwind` brings `miniflare`, which requires `workerd`, whose binary is resolved out of the
+  # platform package when the module loads. The install script only copies it to `workerd/bin`, for a
+  # command nothing here runs. A project that installs `upwind` gets this answer too, which is why
+  # local storage does not ask anybody to approve a build script.
+  workerd: false
 
 # The supply-chain cooldown the repository holds every other install to (pnpm's default is a day;
 # written out so the policy is visible here too, as it is in the root workspace).
