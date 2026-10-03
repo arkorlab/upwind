@@ -39,24 +39,33 @@ function isRunner(value: unknown): value is Runner {
   return typeof value === 'function';
 }
 
-function runInRequestEntry<T>(read: () => T): T {
-  const attempt = { began: false };
+/** The request's entry, or nothing where it cannot be entered to make its snapshot. */
+function enterableEntry(): ReturnType<typeof requestEntry> {
   try {
-    // Inside the `try` as well: the first read in a request makes the snapshot by entering the
-    // request's entry, which can be refused just as entering the snapshot can.
-    const entry = requestEntry();
-    if (entry !== undefined) {
+    // The first read in a request makes the snapshot by entering the request's entry, which can
+    // be refused just as entering the snapshot can.
+    return requestEntry();
+  } catch {
+    return undefined;
+  }
+}
+
+function runInRequestEntry<T>(read: () => T): T {
+  const entry = enterableEntry();
+  if (entry !== undefined) {
+    const attempt = { began: false };
+    try {
       return entry(() => {
         attempt.began = true;
         return read();
       });
-    }
-  } catch (error) {
-    // What the read threw is the caller's to see. Only a context that would not be entered — the
-    // code running here for some request other than the one the context belongs to — falls
-    // through to the runner the SDK set, as it would have run without this one.
-    if (attempt.began) {
-      throw error;
+    } catch (error) {
+      // What the read threw is the caller's to see. Only a context that would not be entered —
+      // the code running here for some request other than the one the context belongs to — falls
+      // through to the runner the SDK set, as it would have run without this one.
+      if (attempt.began) {
+        throw error;
+      }
     }
   }
   return shared.sdk === undefined ? read() : shared.sdk(read);
