@@ -26,18 +26,20 @@ import { parseAst } from 'rolldown/parseAst';
  * is not looked at.
  *
  * A use is *guarded* where the code handles its failure itself: a call of the loader, or of a
- * method of it that loads, in the block of a `try` whose `catch` and `finally` let nothing out —
- * no `throw`, nor a rejection returned or awaited (a `Promise.reject(…)`, an `async` function called
- * at once that throws), that runs when they do, outside a `try` of their own that catches it — and
- * an `import()` too, where it, or a promise chained from it, is awaited there. Such a load fails in the Function as it fails under
- * Node.js when the module is not installed, into the code's own `catch`: `@protobufjs/inquire`,
- * which every `protobufjs` loads its optional modules through, and TypeScript's `sys.require`,
- * which loads a compiler plugin, are written that way. Not across code that runs later — a
- * function's body, unless the function is neither `async` nor a generator and is called where it
- * is made, and an instance field's initializer or a constructor, unless the class is constructed
+ * method of it that loads, in the block of a `try` whose `catch` and `finally` are plain code — no
+ * `throw`, `await` or `try` of their own, nothing made and run where it stands, no
+ * `Promise.reject(…)`, and calls only of what they name — and an `import()` too, where it, or a
+ * promise chained from it or aggregated with others, is awaited there. Such a load fails in the
+ * Function as it fails under Node.js when the module is not installed, into the code's own `catch`:
+ * `@protobufjs/inquire`, which every `protobufjs` loads its optional modules through, and
+ * TypeScript's `sys.require`, which loads a compiler plugin, are written that way. Plain, because
+ * whether a `catch` lets a failure out cannot be told of code in general: what is not plain is not
+ * trusted, and what a `catch` or a `finally` calls by name is taken not to throw, nor to answer
+ * with a rejection — it is not followed. Not across code that runs later — a function's body,
+ * unless the function is neither `async` nor a generator and is called or constructed where it is
+ * made, and an instance field's initializer or a constructor, unless the class is constructed
  * where it is made: a `try` around their definition catches nothing they throw when they run —
- * and never `require.bind`, which makes a loader rather than loading. What a `catch` or a
- * `finally` calls is taken not to throw: a function called by its name is not followed.
+ * and never `require.bind`, which makes a loader rather than loading.
  */
 
 /** A use of the loader the bundler could not follow, in the module that makes it. */
@@ -181,7 +183,7 @@ function keeperOf(visit: Visit): Node {
   return visit.statement;
 }
 
-/** A function's body runs when the function is called, which is later unless it is called at once. */
+/** A function's body runs when the function is called: later, unless it is called at once. */
 const FUNCTION_TYPES: ReadonlySet<string> = new Set([
   'ArrowFunctionExpression',
   'FunctionDeclaration',
@@ -250,13 +252,21 @@ function callAbove(visit: Visit): Node | undefined {
   return at?.node;
 }
 
-/** The class `node` constructs where it is made — `new (class { … })()` — or `undefined`. */
+/**
+ * What `node` constructs where it is made — a class, `new (class { … })()`, or a function,
+ * `new (function () { … })()` — or `undefined`.
+ */
 function constructedAtOnce(node: Node): Node | undefined {
   if (node.type !== 'NewExpression') {
     return undefined;
   }
   const callee = unwrapped(node.callee);
-  return callee.type === 'ClassExpression' ? callee : undefined;
+  if (callee.type === 'ClassExpression') {
+    return callee;
+  }
+  return callee.type === 'FunctionExpression' && !callee.async && !callee.generator
+    ? callee
+    : undefined;
 }
 
 /** Whether `member`, a member of a class, is one of a class constructed where it is made. */
@@ -289,7 +299,7 @@ function runsLater(parent: Visit, key: string | undefined): boolean {
   if (FUNCTION_TYPES.has(node.type)) {
     const call = callAbove(parent);
     const atOnce =
-      (call !== undefined && calledAtOnce(call) === node) ||
+      (call !== undefined && (calledAtOnce(call) === node || constructedAtOnce(call) === node)) ||
       (isConstructor(parent) && parent.up !== undefined && ofClassConstructedAtOnce(parent.up));
     return !atOnce;
   }
@@ -313,113 +323,119 @@ function childrenOf(node: Node): Node[] {
   return children;
 }
 
-/** What constructing `made`, a class, runs of it: its instance fields' initializers and constructor. */
-function constructionOf(made: Node): Node[] {
-  if (made.type !== 'ClassExpression') {
-    return [];
-  }
-  return made.body.body.flatMap((member): Node[] => {
-    if (member.type === 'MethodDefinition') {
-      return member.kind === 'constructor' ? childrenOf(member.value) : [];
-    }
-    if (member.type !== 'PropertyDefinition' && member.type !== 'AccessorProperty') {
-      return [];
-    }
-    return member.static || member.value === null ? [] : [member.value];
-  });
-}
+/**
+ * What a `catch` or a `finally` may be made of and be trusted to keep a failure in: statements that
+ * only go on or return, and expressions that only compute — a function among them as a value, its
+ * body run later if at all. Everything else — `throw`, `await`, `yield`, a `try` of its own, a
+ * class, a pattern to take the error apart with — is not plain, and the `try` guards nothing.
+ */
+const PLAIN_TYPES: ReadonlySet<string> = new Set([
+  'ArrayExpression',
+  'ArrowFunctionExpression',
+  'AssignmentExpression',
+  'BinaryExpression',
+  'BlockStatement',
+  'BreakStatement',
+  'CatchClause',
+  'ChainExpression',
+  'ConditionalExpression',
+  'ContinueStatement',
+  'EmptyStatement',
+  'ExpressionStatement',
+  'FunctionExpression',
+  'Identifier',
+  'IfStatement',
+  'Literal',
+  'LogicalExpression',
+  'MemberExpression',
+  'ObjectExpression',
+  'ParenthesizedExpression',
+  'Property',
+  'ReturnStatement',
+  'SequenceExpression',
+  'SpreadElement',
+  'TemplateElement',
+  'TemplateLiteral',
+  'ThisExpression',
+  'UnaryExpression',
+  'UpdateExpression',
+  'VariableDeclaration',
+  'VariableDeclarator',
+]);
+
+/** What a name a function is called by starts from: a binding, or the object a method runs on. */
+const NAMED_BASES: ReadonlySet<string> = new Set(['Identifier', 'Super', 'ThisExpression']);
 
 /**
- * The nodes under `node` that run when it runs and may throw out of it. Not a function's body, nor
- * an instance field's initializer (`runsLater`) — but the body of a function a call runs at once,
- * and what constructing a class constructed at once runs — and not the block of a `try` with a
- * `catch`, which catches what it throws.
+ * Whether `call` — a call or a `new` — calls a function by its name (`log(error)`,
+ * `this.logger.warn(error)`, `new Error(message)`), rather than one made where it stands, which
+ * would run there; and not `Promise.reject`, which is how a function that answers with a promise
+ * throws.
  */
-function throwingChildrenOf(node: Node): Node[] {
-  if (FUNCTION_TYPES.has(node.type)) {
-    return [];
-  }
-  if (node.type === 'PropertyDefinition' || node.type === 'AccessorProperty') {
-    return node.static ? childrenOf(node) : [node.key];
-  }
-  if (node.type === 'TryStatement' && node.handler !== null) {
-    return node.finalizer === null ? [node.handler] : [node.handler, node.finalizer];
-  }
-  const called = calledAtOnce(node) ?? constructedAtOnce(node);
-  if (called === undefined) {
-    return childrenOf(node);
-  }
-  const ran = called.type === 'ClassExpression' ? constructionOf(called) : childrenOf(called);
-  return [...childrenOf(node), ...ran];
-}
-
-/**
- * Whether running `node` may let a failure out of it (`letsFailureOut`), among what it runs and
- * outside a `try` of its own.
- */
-function throwsOut(node: Node | null): boolean {
-  const pending: Node[] = node === null ? [] : [node];
-  for (let at = pending.pop(); at !== undefined; at = pending.pop()) {
-    if (letsFailureOut(at)) {
-      return true;
-    }
-    pending.push(...throwingChildrenOf(at));
-  }
-  return false;
-}
-
-/**
- * Whether `expression` makes a promise that rejects, where it stands: a `Promise.reject(…)`, or an
- * `async` function called at once whose body lets a failure out — what it throws, it rejects with.
- */
-function rejects(expression: Node | null): boolean {
-  if (expression?.type !== 'CallExpression') {
+function callsByName(call: Node): boolean {
+  if (call.type !== 'CallExpression' && call.type !== 'NewExpression') {
     return false;
   }
-  const callee = unwrapped(expression.callee);
-  if (callee.type === 'MemberExpression') {
-    return (
+  if (call.type === 'CallExpression') {
+    const callee = unwrapped(call.callee);
+    const rejects =
+      callee.type === 'MemberExpression' &&
       callee.object.type === 'Identifier' &&
       callee.object.name === 'Promise' &&
-      propertyName(callee) === 'reject'
-    );
+      propertyName(callee) === 'reject';
+    if (rejects) {
+      return false;
+    }
   }
-  if (callee.type !== 'ArrowFunctionExpression' && callee.type !== 'FunctionExpression') {
-    return false;
+  let base: Node = call.callee;
+  for (let next = towardTheName(base); next !== undefined; next = towardTheName(base)) {
+    base = next;
   }
-  const { body } = callee;
-  const answered =
-    body?.type !== 'BlockStatement' && rejects(body === null ? null : unwrapped(body));
-  return callee.async && !callee.generator && (answered || throwsOut(body));
+  return NAMED_BASES.has(base.type);
 }
 
 /**
- * Whether `node` lets a failure out of the code it is in: a `throw`, and a `Promise.reject(…)`
- * returned or awaited — how a function that answers with a promise throws. One handled where it is
- * made (`Promise.reject(error).catch(…)`) is not.
+ * One step down a callee toward the name it is called by: out of parentheses, to the last of a
+ * sequence, a member's object, a call's callee. `undefined` where there is no step left.
  */
-function letsFailureOut(node: Node): boolean {
-  if (node.type === 'ThrowStatement') {
-    return true;
+function towardTheName(node: Node): Node | undefined {
+  if (node.type === 'MemberExpression') {
+    return node.object;
   }
-  if (node.type === 'ReturnStatement') {
-    return rejects(node.argument === null ? null : unwrapped(node.argument));
-  }
-  return node.type === 'AwaitExpression' && rejects(unwrapped(node.argument));
+  return node.type === 'CallExpression' ? node.callee : innerOf(node);
 }
 
 /**
- * Whether a `try` keeps in the failure of what its block runs: it has a `catch`, and neither that
- * nor its `finally` throws out. One that throws — the same error, another made of it, or what the
- * `catch` put aside, thrown again by the `finally` — lets the load's failure out as surely as no
- * `catch` at all.
+ * Whether running `node` keeps a failure in: it is plain code (`PLAIN_TYPES`), and what it calls it
+ * calls by name (`callsByName`) — which is taken not to throw, nor to answer with a rejection. A
+ * function among it is a value; its body runs later, if at all, and is not read.
+ */
+function keepsIn(node: Node | null): boolean {
+  const pending: Node[] = node === null ? [] : [node];
+  for (let at = pending.pop(); at !== undefined; at = pending.pop()) {
+    const call = at.type === 'CallExpression' || at.type === 'NewExpression';
+    if (call ? !callsByName(at) : !PLAIN_TYPES.has(at.type)) {
+      return false;
+    }
+    if (!FUNCTION_TYPES.has(at.type)) {
+      pending.push(...childrenOf(at));
+    }
+  }
+  return true;
+}
+
+/**
+ * Whether a `try` keeps in the failure of what its block runs: it has a `catch`, and that and its
+ * `finally` are plain code (`keepsIn`). One that throws — the same error, another made of it, or
+ * what the `catch` put aside, thrown again by the `finally` — lets the load's failure out as surely
+ * as no `catch` at all, and so may anything that is not plain.
  */
 function keepsFailureIn(statement: Node): boolean {
   return (
     statement.type === 'TryStatement' &&
     statement.handler !== null &&
-    !throwsOut(statement.handler) &&
-    !throwsOut(statement.finalizer)
+    keepsIn(statement.handler) &&
+    keepsIn(statement.finalizer)
   );
 }
 
@@ -505,11 +521,37 @@ function useOfLoader(visit: Visit): Use | undefined {
 /** A promise's methods: each passes a rejection on to the promise it makes, or handles it. */
 const PROMISE_METHODS: ReadonlySet<string> = new Set(['catch', 'finally', 'then']);
 
-/** What carries on the promise `at` makes: the parentheses around it, or a call of its method. */
+/** Promise aggregates: each rejects as the first of its promises to reject does, or keeps it. */
+const AGGREGATES: ReadonlySet<string> = new Set(['all', 'allSettled', 'any', 'race']);
+
+/** The aggregate (`Promise.all([…])`, say) the array `elements` is handed to, or `undefined`. */
+function aggregateOf(elements: Visit): Visit | undefined {
+  const call = elements.up;
+  if (elements.key !== 'arguments' || call?.node.type !== 'CallExpression') {
+    return undefined;
+  }
+  const callee = unwrapped(call.node.callee);
+  const name = propertyName(callee);
+  const aggregates =
+    callee.type === 'MemberExpression' &&
+    callee.object.type === 'Identifier' &&
+    callee.object.name === 'Promise' &&
+    name !== undefined &&
+    AGGREGATES.has(name);
+  return aggregates ? call : undefined;
+}
+
+/**
+ * What carries on the promise `at` makes: the parentheses around it, a call of its method, or an
+ * aggregate it is handed to in an array.
+ */
 function chainedFrom(at: Visit): Visit | undefined {
   const { up } = at;
   if (up === undefined) {
     return undefined;
+  }
+  if (up.node.type === 'ArrayExpression') {
+    return aggregateOf(up);
   }
   if (up.node.type === 'ParenthesizedExpression') {
     return up;
