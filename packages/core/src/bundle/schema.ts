@@ -28,9 +28,6 @@ export const BUNDLE_VERSION = 1;
  */
 export const SPLIT_BUNDLE_VERSION = 2;
 
-/** The app Function every route of an unsplit bundle is in, and the first of a split one. */
-export const PRIMARY_FUNCTION = 'app';
-
 /**
  * How many app Functions one bundle may run as. Each is a Function a host uploads, keeps and wakes
  * apart from the others, so a split is meant to come to a handful; this is far past any the
