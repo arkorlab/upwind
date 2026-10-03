@@ -515,13 +515,11 @@ export function bypassForHolds(
   const recorded = manifest.htmlLimitedBots !== undefined;
   const finished = entry.cache?.delivery === 'complete';
   return conditions.some((condition) => {
-    const listed =
-      condition.type === 'header' &&
-      condition.key?.toLowerCase() === 'user-agent' &&
-      condition.value !== undefined
-        ? listWritten(condition.value)
+    const value =
+      condition.type === 'header' && condition.key?.toLowerCase() === 'user-agent'
+        ? condition.value
         : undefined;
-    if (listed === undefined || (recorded && listed !== pattern)) {
+    if (value === undefined || (recorded && !writtenFrom(value, pattern))) {
       return anyConditionHolds([condition], url, headers);
     }
     if (finished) {
@@ -532,8 +530,18 @@ export function bypassForHolds(
     const agent = headers.get('user-agent');
     return recorded
       ? wantsBlockingMetadata(agent, manifest)
-      : wantsBlockingMetadataBy(agent, listed);
+      : wantsBlockingMetadataBy(agent, listWritten(value));
   });
+}
+
+/**
+ * Whether a route's user-agent condition was written from the recorded list: as it is, or wrapped
+ * (`listWritten`). The condition is compared as it is first. Next.js 16.3 writes a list of the
+ * wrapper's own shape (`.*(?:…).*`) as it is, and stripped, it would be taken for some other
+ * pattern and run as written, unbounded, even on a page the build finished.
+ */
+function writtenFrom(value: string, list: string): boolean {
+  return value === list || listWritten(value) === list;
 }
 
 /** What Next.js 16.4 wraps the list in, as the route's condition: anywhere in the agent. */
