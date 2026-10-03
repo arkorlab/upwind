@@ -79,7 +79,9 @@ export {
   type ServableOptions,
   type ServedRewrite,
   shellHeaders,
+} from './serving.ts';
+export {
   staticFileAssetPrefixOf,
   staticFileLocalesOf,
   travelsWithFunction,
-} from './serving.ts';
+} from './static-files.ts';

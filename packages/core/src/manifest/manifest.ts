@@ -75,6 +75,22 @@ function crawlerFields(
   };
 }
 
+/** Where a shipped file is found besides its own name: behind a locale, a prefix, a slash. */
+function staticFileFields(
+  input: BuildProjectManifestInput,
+): Pick<
+  ProjectManifest,
+  'staticFileLocales' | 'staticFileAssetPrefix' | 'staticFileTrailingSlash'
+> {
+  return {
+    ...(input.staticFileLocales !== undefined && { staticFileLocales: input.staticFileLocales }),
+    ...(input.staticFileAssetPrefix !== undefined && {
+      staticFileAssetPrefix: input.staticFileAssetPrefix,
+    }),
+    ...(input.staticFileTrailingSlash === true && { staticFileTrailingSlash: true as const }),
+  };
+}
+
 /**
  * The app Functions the routes are placed in that `app` gives no name to reach by. An edge could
  * send such a route nowhere, so a manifest naming one is refused where it is built rather than where
@@ -142,11 +158,7 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
     ...(input.foldedHeaderRules !== undefined && { foldedHeaderRules: input.foldedHeaderRules }),
     ...(input.images !== undefined && { images: input.images }),
     ...crawlerFields(input),
-    ...(input.staticFileLocales !== undefined && { staticFileLocales: input.staticFileLocales }),
-    ...(input.staticFileAssetPrefix !== undefined && {
-      staticFileAssetPrefix: input.staticFileAssetPrefix,
-    }),
-    ...(input.staticFileTrailingSlash === true && { staticFileTrailingSlash: true }),
+    ...staticFileFields(input),
     ...(input.cache !== undefined && { cache: input.cache }),
   });
 }
