@@ -39,7 +39,7 @@ import {
 import { reserveUpwindPrefix } from './dev-prefix.ts';
 import type { EdgeEntry } from './edge.ts';
 import { exists } from './fs.ts';
-import { buildFunction, type EntryModule } from './function.ts';
+import { buildFunction, type EntryModule, middlewareManifest } from './function.ts';
 import { composedInstrumentation, writeClientInstrumentation } from './instrumentation.ts';
 import { collectManifests } from './manifests.ts';
 import type { PatchContext } from './patches/index.ts';
@@ -334,6 +334,7 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
       edgeEntries: middlewareEdgeEntries,
       wasm: wasm.collector,
       manifests: [],
+      // The manifest's head alone: nothing the middleware Function answers reads the rest.
       runtimeManifest: JSON.stringify(middlewareManifest(runtimeManifest)),
       cacheHostModule: undefined,
       // Its own maps all the same: `sourceMaps` below reads this Function's, and a middleware
@@ -380,34 +381,6 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     `@stayingupwind/adapter: wrote ${OUT_DIR_NAME}/${BUNDLE_FILE} (${bundle.prerenders.length} prerenders, ${bundle.staticFiles.length} static files, ${blobs.count} blobs)`,
   );
   reportWhatTravels(bundle, edgeEntries, ctx.nextVersion, exported);
-}
-
-/**
- * The runtime manifest of the middleware Function: the deployment's configuration and its
- * `next.config` rules, without the lists that grow with the application — its entrypoints,
- * prerenders, files and dynamic routes.
- *
- * That Function answers one request, the one that runs the middleware and hands back its response,
- * and on that path the runtime reads the configuration and looks nothing up by route. Parsed before
- * its first answer, the lists are time on the first byte of every document the middleware matches:
- * megabytes, in a large application, that the Function never reads. Its files would be wrong
- * besides, since it carries no blob to serve one from.
- */
-function middlewareManifest<
-  T extends {
-    readonly routing: { readonly dynamicRoutes: readonly unknown[] };
-    readonly entrypoints: readonly unknown[];
-    readonly prerenders: readonly unknown[];
-    readonly staticFiles: readonly unknown[];
-  },
->(manifest: T): T {
-  return {
-    ...manifest,
-    routing: { ...manifest.routing, dynamicRoutes: [] },
-    entrypoints: [],
-    prerenders: [],
-    staticFiles: [],
-  };
 }
 
 /**
