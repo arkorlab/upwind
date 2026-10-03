@@ -30,7 +30,7 @@ import { parseAst } from 'rolldown/parseAst';
  * `throw`, `await`, `yield` or `try` of their own, no pattern taking the error apart, nothing made
  * and run where it stands, no `Promise.reject(…)` or `eval`, and calls only of what they name — and
  * an `import()` too, where it, or a promise chained from it, is awaited there, or where a `catch` of
- * its own chain handles its rejection plainly. Such a load fails in the Function as it fails under
+ * its own chain hands its rejection to a function made there whose body is plain. Such a load fails in the Function as it fails under
  * Node.js when the module is not installed, into the code's own `catch`:
  * `@protobufjs/inquire`, which every `protobufjs` loads its optional modules through, and
  * TypeScript's `sys.require`, which loads a compiler plugin, are written that way. Plain, because
@@ -341,6 +341,7 @@ const PLAIN_TYPES: ReadonlySet<string> = new Set([
   'ChainExpression',
   'ConditionalExpression',
   'ContinueStatement',
+  'DebuggerStatement',
   'EmptyStatement',
   'ExpressionStatement',
   'FunctionDeclaration',
@@ -355,7 +356,6 @@ const PLAIN_TYPES: ReadonlySet<string> = new Set([
   'Property',
   'ReturnStatement',
   'SequenceExpression',
-  'SpreadElement',
   'TemplateElement',
   'TemplateLiteral',
   'ThisExpression',
@@ -428,7 +428,9 @@ function readsOffNothing(node: Node): boolean {
 /**
  * Whether running `node` keeps a failure in: it is plain code (`PLAIN_TYPES`), and what it calls it
  * calls by name (`callsByName`) — which is taken not to throw, nor to answer with a rejection. A
- * function among it is a value; its body runs later, if at all, and is not read.
+ * function among it is a value; its body runs later, if at all, and is not read. Plain code is
+ * taken not to throw of itself: beyond a read off `null` or `undefined`, an expression written to
+ * throw on its own is no way to handle a failure, and is not looked for.
  */
 function keepsIn(node: Node | null): boolean {
   const pending: Node[] = node === null ? [] : [node];
@@ -560,18 +562,14 @@ function chainedFrom(at: Visit): Visit | undefined {
 }
 
 /**
- * Whether `handler`, handed a rejection, keeps it in: a function named (taken not to throw, as a
- * call by name is), or one made there whose parameters are plain and whose body is plain code.
+ * Whether `handler`, handed a rejection, keeps it in: a function made there, whose parameters are
+ * plain names and whose body is plain code. A handler passed by name is not read, and so not
+ * trusted: what the name holds may be no function at all, and the rejection then goes on.
  */
 function handlesPlainly(handler: Node | undefined): boolean {
-  if (handler === undefined) {
+  const fn = handler === undefined ? undefined : unwrapped(handler);
+  if (fn?.type !== 'ArrowFunctionExpression' && fn?.type !== 'FunctionExpression') {
     return false;
-  }
-  const fn = unwrapped(handler);
-  if (fn.type !== 'ArrowFunctionExpression' && fn.type !== 'FunctionExpression') {
-    // `undefined` is no handler: the rejection goes on.
-    const none = fn.type === 'Identifier' && fn.name === 'undefined';
-    return !none && (NAMED_BASES.has(fn.type) || fn.type === 'MemberExpression');
   }
   return fn.params.every((param) => param.type === 'Identifier') && keepsIn(fn.body);
 }
