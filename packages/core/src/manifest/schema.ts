@@ -399,6 +399,14 @@ export const projectManifestSchema = z.object({
    * filesystem is checked (`findStaticFile`).
    */
   staticFileAssetPrefix: staticFileAssetPrefixSchema.optional(),
+  /**
+   * Where a shipped file whose last segment names no file is found as well, in an application with
+   * `trailingSlash`: by its spelling with the slash (`/manual/` is the file `/manual`), which the
+   * router finds it by whether or not the build writes the redirect to the slash
+   * (`findStaticFile`). Absent for any other application, and on a manifest from before it was
+   * published, whose reader leaves that spelling to the Function.
+   */
+  staticFileTrailingSlash: z.literal(true).optional(),
   /** The runtime cache the routes' entries live in. */
   cache: manifestCacheSchema.optional(),
 });

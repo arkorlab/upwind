@@ -61,6 +61,7 @@ export interface BuildProjectManifestInput {
   readonly crawlersStreamed?: boolean | undefined;
   readonly staticFileLocales?: StaticFileLocales | undefined;
   readonly staticFileAssetPrefix?: StaticFileAssetPrefix | undefined;
+  readonly staticFileTrailingSlash?: boolean | undefined;
   readonly cache?: ManifestCache | undefined;
 }
 
@@ -145,6 +146,7 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
     ...(input.staticFileAssetPrefix !== undefined && {
       staticFileAssetPrefix: input.staticFileAssetPrefix,
     }),
+    ...(input.staticFileTrailingSlash === true && { staticFileTrailingSlash: true }),
     ...(input.cache !== undefined && { cache: input.cache }),
   });
 }
@@ -269,27 +271,30 @@ export function withoutAssetPrefix(
 
 /**
  * The pathname the manifest ships a file under, for a pathname a request names: as spelled or
- * decoded (`keyOf`), and in an application with `i18n` behind a default locale as well
- * (`withoutDefaultLocale`). Next.js's middleware puts the locale in front of every path it
- * rewrites to (`forceLocale`), a file's among them, so the rewrite a middleware makes of
- * `/_next/static/…` to itself names `/en/_next/static/…`, which Next.js serves as the file. In an
- * application with an `assetPrefix`, a file under `_next` is found under the prefix as well
- * (`withoutAssetPrefix`): its pages load their scripts from there. Behind a default locale too,
- * in one with both: the same rewrite of `/assets/_next/static/…` names `/en/assets/_next/static/…`,
- * and Next.js takes the default locale off before it matches the prefix's rewrite.
+ * decoded (`keyOf`), by the slash the router finds it by too (`slashedFileKey`), and in an
+ * application with `i18n` behind a default locale as well (`withoutDefaultLocale`) — by the slash
+ * there too, which Next.js takes off before the locale (`getItem`). Next.js's middleware puts the
+ * locale in front of every path it rewrites to (`forceLocale`), a file's among them, so the rewrite
+ * a middleware makes of `/_next/static/…` to itself names `/en/_next/static/…`, which Next.js serves
+ * as the file. In an application with an `assetPrefix`, a file under `_next` is found under the
+ * prefix as well (`withoutAssetPrefix`): its pages load their scripts from there. Behind a default
+ * locale too, in one with both: the same rewrite of `/assets/_next/static/…` names
+ * `/en/assets/_next/static/…`, and Next.js takes the default locale off before it matches the
+ * prefix's rewrite.
  */
 export function staticFileKey(manifest: ProjectManifest, pathname: string): string | undefined {
   const { staticFiles, staticFileLocales, staticFileAssetPrefix } = manifest;
   if (staticFiles === undefined) {
     return undefined;
   }
-  const named = keyOf(staticFiles, pathname) ?? slashedFileKey(manifest, staticFiles, pathname);
+  const named = namedFileKey(manifest, staticFiles, pathname);
   if (named !== undefined) {
     return named;
   }
   const unlocalized =
     staticFileLocales === undefined ? undefined : withoutDefaultLocale(staticFileLocales, pathname);
-  const localized = unlocalized === undefined ? undefined : keyOf(staticFiles, unlocalized);
+  const localized =
+    unlocalized === undefined ? undefined : namedFileKey(manifest, staticFiles, unlocalized);
   if (localized !== undefined) {
     return localized;
   }
@@ -313,18 +318,28 @@ export function namesNoFile(pathname: string): boolean {
   return last !== '' && !last.replaceAll(/\[[^[\]]*\]/gu, '').includes('.');
 }
 
+/** The file a pathname names as spelled or decoded (`keyOf`), or by the slash (`slashedFileKey`). */
+function namedFileKey(
+  manifest: ProjectManifest,
+  staticFiles: Record<string, StaticFileEntry>,
+  pathname: string,
+): string | undefined {
+  return keyOf(staticFiles, pathname) ?? slashedFileKey(manifest, staticFiles, pathname);
+}
+
 /**
- * A file whose last segment names no file, in an application that keeps its pages behind the slash,
- * by the spelling the router finds it by: Next.js redirects `/manual` to `/manual/` and answers the
- * file there, so `/manual/` is the file `/manual` (`routerSpellings`). A name with an extension has
- * no such spelling: the redirect takes the slash off it.
+ * A file whose last segment names no file, in an application with `trailingSlash`, by the spelling
+ * the router finds it by (`staticFileTrailingSlash`): Next.js redirects `/manual` to `/manual/`
+ * and answers the file there, so `/manual/` is the file `/manual` (`routerSpellings`) — and where
+ * `skipTrailingSlashRedirect` leaves the redirect out, the router still finds the file so. A name
+ * with an extension has no such spelling: the redirect takes the slash off it.
  */
 function slashedFileKey(
   manifest: ProjectManifest,
   staticFiles: Record<string, StaticFileEntry>,
   pathname: string,
 ): string | undefined {
-  if (manifest.trailingSlash !== true || pathname.length < 2 || !pathname.endsWith('/')) {
+  if (manifest.staticFileTrailingSlash !== true || pathname.length < 2 || !pathname.endsWith('/')) {
     return undefined;
   }
   const unslashed = pathname.slice(0, -1);
