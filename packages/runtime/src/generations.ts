@@ -473,8 +473,10 @@ const SPECULATIVE_TAG_SYNC_MS = 1000;
  * prefetch. Pulled first, as a regeneration pulls it — joined with any pull out, so a page's
  * segments prefetched together pull it once, and again where a pull left the view short of the
  * record (`catchUp`) — for a second at the most (`SPECULATIVE_TAG_SYNC_MS`), past which the render
- * reads the view as it stands. A pull still out then is seen to its end behind the answer: cut off
- * with the request, it would never settle, and the prefetches after it would join it for nothing.
+ * reads the view as it stands. A pull still out then is kept going behind the answer for as long as
+ * the prefetches after it may join it (the hold), so that they join one that answers rather than one
+ * cut off with this request; no longer, so that a gateway that does not answer is not left with a
+ * pull kept going for each hold that passes.
  */
 async function renderSpeculative(
   job: Job,
@@ -486,7 +488,7 @@ async function renderSpeculative(
   if (invalidation !== undefined && invalidation.revision > runtime.tags.revision) {
     const until = performance.now() + SPECULATIVE_TAG_SYNC_MS;
     const caughtUp = catchUp(runtime, invalidation.revision, until);
-    job.input.waitUntil(caughtUp);
+    job.input.waitUntil(settledWithin(caughtUp, runtime.holdMs));
     await settledWithin(caughtUp, SPECULATIVE_TAG_SYNC_MS);
   }
   return (
