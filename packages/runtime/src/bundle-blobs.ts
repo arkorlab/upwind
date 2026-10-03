@@ -1,0 +1,60 @@
+/**
+ * One blob of **this deployment's own bundle** from the host that kept it, for a build whose
+ * Function was not given it (`AdapterOptions.unshippedOutputs`).
+ *
+ * The host module may export `createBundleBlobReader` beside `createCacheHost`; `function.ts` is
+ * where that export is read, as the other generated modules are, which keeps this file importable
+ * by a host — nothing here resolves `arkor:cache-host`.
+ *
+ * Deliberately not part of `CacheHost`. A bundle blob is not a cache entry: it was written once by
+ * the build, it never expires and no tag withdraws it — and a deployment the host gave no cache
+ * still has a bundle, so a reader that lived on the cache would be absent exactly where the cache
+ * is, for a Function that needs the bytes just as much. The two know nothing of each other.
+ *
+ * Addressed by content, which is what makes it answerable at all: a caller can ask only for bytes
+ * whose hash it already holds, and a Function's bundle names its own.
+ */
+
+/** The bytes of one blob, or `undefined` where the host does not hold it. */
+export type BundleBlobReader = (sha256: string) => Promise<Uint8Array | undefined>;
+
+/** What the host is handed to find its own way to wherever the build's outputs are kept. */
+export interface BundleBlobsInit {
+  readonly env: Record<string, unknown> | undefined;
+}
+
+function log(message: string, fields: Record<string, string | number> = {}): void {
+  // The Function's own log; nothing else records what its bundle reads did.
+  // eslint-disable-next-line no-console
+  console.warn(JSON.stringify({ level: 'warn', msg: `next-runtime: ${message}`, ...fields }));
+}
+
+/**
+ * The host's reader, held to what the runtime does with a failure; `undefined` for a host that
+ * exports none or reaches nothing, which is a build that ships every blob.
+ *
+ * A read that throws is answered `undefined` and logged, once per read: to the caller a host that
+ * cannot answer and a blob that was never there mean the same thing — the segment is served by
+ * nobody and the client navigates instead of prefetching — but a host that offers this and is
+ * failing would otherwise be indistinguishable from one that never offered it.
+ *
+ * Nothing is memoised. A read happens once per request, on a path the host could not serve, and a
+ * cache of a build's bytes in an isolate serving every other request is not worth that; the host
+ * is also the one that knows how to cache it.
+ */
+export function bundleBlobReader(read: BundleBlobReader | undefined): BundleBlobReader | undefined {
+  if (read === undefined) {
+    return undefined;
+  }
+  return async (sha256) => {
+    try {
+      return await read(sha256);
+    } catch (error) {
+      log('bundle blob not read', {
+        sha256,
+        detail: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
+  };
+}

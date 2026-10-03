@@ -118,10 +118,14 @@ const EMPTY_EDGE_MODULE = 'module.exports = { entries: {} };';
 const EMPTY_WASM_MODULE = '// This deployment carries no WebAssembly.';
 /**
  * A build told of no cache host: the runtime asks, is answered nothing, and runs as it did
- * before any cache existed. An export rather than an empty module, because the runtime imports
- * the name and a bundler must find it.
+ * before any cache existed. Exports rather than an empty module, because the runtime names both
+ * and a bundler must find them — the second says this build reads no blob of its own bundle from
+ * anywhere, which is what a build that ships every blob does (`unshippedOutputs`).
  */
-const NO_CACHE_HOST_MODULE = 'export function createCacheHost() { return undefined; }';
+const NO_CACHE_HOST_MODULE = [
+  'export function createCacheHost() { return undefined; }',
+  'export const createBundleBlobReader = undefined;',
+].join('\n');
 
 /**
  * The generated modules the runtime source names: `arkor:app` is the `app.cjs` next to it in

@@ -9,9 +9,14 @@ import './cache/install.ts';
 import 'arkor:wasm';
 import { publishFunctionEnv } from '@stayingupwind/core/paas';
 import app from 'arkor:app';
+// A namespace import: a host module that exports no blob reader — one written before there was one
+// to export, or one that keeps no build outputs — leaves a Function that runs rather than one that
+// fails to link. The adapter's own stub exports it as `undefined` for the same reason.
+import * as cacheHost from 'arkor:cache-host';
 import edge from 'arkor:edge';
 
 import type { AppModule, EdgeModule } from './app-module.ts';
+import { type BundleBlobReader, bundleBlobReader } from './bundle-blobs.ts';
 import { nowMs } from './cache/clock.ts';
 import { configureCacheHandlers } from './cache/handlers.ts';
 import { type CacheRuntime, createCacheRuntime } from './cache/runtime.ts';
@@ -35,23 +40,36 @@ interface ExecutionContext {
   waitUntil(promise: Promise<unknown>): void;
 }
 
-/** One runtime per isolate: the bindings never change underneath a deployment. */
-const shared: { runtime: CacheRuntime | undefined; configured: boolean } = {
+/** One runtime and one blob reader per isolate: the bindings never change underneath a deployment. */
+const shared: {
+  runtime: CacheRuntime | undefined;
+  blobs: BundleBlobReader | undefined;
+  configured: boolean;
+} = {
   runtime: undefined,
+  blobs: undefined,
   configured: false,
 };
 
-function cacheRuntimeFor(env: unknown): CacheRuntime | undefined {
+function hostFor(env: unknown): {
+  readonly runtime: CacheRuntime | undefined;
+  readonly blobs: BundleBlobReader | undefined;
+} {
   if (!shared.configured) {
+    const bindings =
+      typeof env === 'object' && env !== null ? (env as Record<string, unknown>) : undefined;
     shared.runtime = createCacheRuntime({
-      env: typeof env === 'object' && env !== null ? (env as Record<string, unknown>) : undefined,
+      env: bindings,
       // What the isolate remembers ages by the clock the request acts at.
       now: nowMs,
     });
+    // Asked for independently of the cache: a deployment given no cache still has a bundle, and a
+    // build that left blobs out of its Function needs them read whether or not anything is cached.
+    shared.blobs = bundleBlobReader(cacheHost.createBundleBlobReader?.({ env: bindings }));
     shared.configured = true;
     configureCacheHandlers(shared.runtime);
   }
-  return shared.runtime;
+  return shared;
 }
 
 /**
@@ -148,7 +166,7 @@ const entry = {
       // neither `process.env` nor any other place Next.js server code can look. The dashboard's
       // control-plane and database clients read theirs back out of here.
       publishFunctionEnv(env);
-      const runtime = cacheRuntimeFor(env);
+      const { blobs, runtime } = hostFor(env);
       return await withRequestContext(
         { headers: plainHeaders(request.headers), url: publicUrl(request), waitUntil },
         () => {
@@ -157,6 +175,7 @@ const entry = {
             edge: edge as EdgeModule,
             request,
             cache: runtime,
+            blobs,
             // The clock a test configuration hands the request; the host decides whether one may.
             clock: runtime?.clockOf(request),
             waitUntil,

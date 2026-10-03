@@ -201,42 +201,22 @@ async function builtSegment(
  * One blob of this bundle from the host that keeps it, for a build whose Function was not given it
  * (`AdapterOptions.unshippedOutputs`).
  *
- * `undefined` where there is no host, where the host does not answer this, or where it has no such
- * blob — all three mean the same thing to the caller, which carries on as it does for a segment the
- * build never wrote. Nothing reaches here on a path that works: the host answers these prefetches
- * from its own storage, and the Function is asked only for the ones it could not.
+ * `undefined` where the host keeps none, where it has no such blob, or where the read failed —
+ * all three mean the same thing to the caller, which carries on as it does for a segment the build
+ * never wrote. A failure is logged where the reader is built (`bundle-blobs.ts`), so a host that
+ * offers this and is failing does not look like one that never offered it.
  *
- * Not memoised. A read that happens once per request on a fallback is not worth a cache that would
- * hold a build's bytes in an isolate serving every other request — and the host is the one that
- * knows how to cache it.
- *
- * Answered on a buffer of its own, because a host's `Uint8Array` is backed by `ArrayBufferLike` and
- * a response body may not be: that is one copy of a few hundred bytes, on the path that has just
- * been to the network, and it keeps the shipped segment — every other prefetch — a plain view onto
- * the bundle the store is already holding.
+ * On a buffer of its own, because a host's `Uint8Array` is backed by `ArrayBufferLike` and a
+ * response body may not be: one copy of a few hundred bytes, on a path that has just been to the
+ * host, which keeps the shipped segment — every other prefetch — a plain view onto the bundle the
+ * store is already holding.
  */
 async function fromHost(
   input: RoutedInput,
   ref: BlobRef,
 ): Promise<Uint8Array<ArrayBuffer> | undefined> {
-  const cache = input.cache;
-  if (cache === undefined) {
-    return undefined;
-  }
-  try {
-    const bytes = await cache.host.readBundleBlob?.(ref.sha256);
-    return bytes === undefined ? undefined : new Uint8Array(bytes);
-  } catch (error) {
-    // A host that cannot answer is a segment the Function does not have, not a failed request: the
-    // client that asked for a prefetch navigates instead. But a host that *does* answer these and
-    // is failing looks exactly like one that never offered to, and would go on looking like it, so
-    // the one thing that distinguishes them is said out loud.
-    cache.log('segment blob not read', {
-      sha256: ref.sha256,
-      detail: error instanceof Error ? error.message : String(error),
-    });
-    return undefined;
-  }
+  const bytes = await input.blobs?.(ref.sha256);
+  return bytes === undefined ? undefined : new Uint8Array(bytes);
 }
 
 /**

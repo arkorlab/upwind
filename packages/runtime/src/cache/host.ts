@@ -65,25 +65,6 @@ export interface CacheHost {
   /** The bytes of an artifact by id: a value too large to have travelled inline. */
   readArtifact(artifactId: string): Promise<Uint8Array | undefined>;
 
-  /**
-   * The bytes of one blob of **this deployment's own bundle**, by the sha256 the bundle names it
-   * with; `undefined` where the host does not hold it.
-   *
-   * For a host that keeps a build's outputs itself and has the adapter leave some of them out of
-   * the Function (`AdapterOptions.unshippedOutputs`). The prefetch segments are what that is for:
-   * measured on a real application, 37% of a Function is segments the host serves from its own
-   * storage and the Function never reads.
-   *
-   * Optional, and absent means today's behaviour: a build that shipped every blob never asks, and
-   * a host with nothing to answer from says nothing rather than pretending. Asked only where the
-   * bundle names a blob it does not carry, which is off every path that works — the host answers
-   * the prefetch itself, and this is for the requests it could not.
-   *
-   * Addressed by content, which is what makes it safe to answer at all: a caller can ask only for
-   * bytes whose hash it already has, and a Function's bundle names its own.
-   */
-  readBundleBlob?(sha256: string): Promise<Uint8Array | undefined>;
-
   /** One value of the data cache, or nothing when the host holds none under that key. */
   getData(request: DataReadRequest): Promise<DataRead | undefined>;
 
