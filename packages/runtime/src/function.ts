@@ -35,6 +35,8 @@ import {
  * the Function when the build produced any, and an empty table when it did not.
  */
 const HTTP_INTERNAL_ERROR = 500;
+/** The methods that ask for something and change nothing (RFC 9110, "Safe Methods"). */
+const SAFE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS', 'TRACE']);
 
 interface ExecutionContext {
   waitUntil(promise: Promise<unknown>): void;
@@ -160,6 +162,18 @@ function failureBody(error: unknown): string {
   return trimmed === '' ? 'Internal Server Error' : `Internal Server Error: ${trimmed}`;
 }
 
+/**
+ * `work`, never rejecting: held past the response, it has nobody to hand a failure to, and the
+ * request's own path is what answers one.
+ */
+async function settled(work: Promise<unknown>): Promise<void> {
+  try {
+    await work;
+  } catch {
+    // Answered where the request awaits the same work.
+  }
+}
+
 const entry = {
   async fetch(request: Request, env: unknown, ctx: ExecutionContext): Promise<Response> {
     installRequestContext();
@@ -172,7 +186,7 @@ const entry = {
       // control-plane and database clients read theirs back out of here.
       publishFunctionEnv(env);
       const { blobs, runtime } = hostFor(env);
-      return await withRequestContext(
+      const answer = withRequestContext(
         { headers: plainHeaders(request.headers), url: publicUrl(request), waitUntil },
         () => {
           return handleRequest({
@@ -187,6 +201,19 @@ const entry = {
           });
         },
       );
+      // A request that may change something is seen through to its answer, whether or not anyone
+      // is still waiting for it. workerd cancels a request's work when its client goes away — at
+      // the next thing the work waits on — and keeps only what `waitUntil` holds: measured, a write
+      // a handler made 300 ms in never happened when its client went away at 50 ms, and did with
+      // the work held. So a Server Action whose page reloaded or closed under it stopped between
+      // one write and the next, where Next.js on Node.js runs it to its end whatever became of the
+      // client. The answer is what is held, not its body: by then the action has run and its
+      // revalidation has been applied, and what streams after it is for a reader — with none,
+      // there is nothing to finish.
+      if (!SAFE_METHODS.has(request.method)) {
+        ctx.waitUntil(settled(answer));
+      }
+      return await answer;
     } catch (error) {
       // The Function's own log: nothing else sees a request that failed before Next.js answered.
       // eslint-disable-next-line no-console
