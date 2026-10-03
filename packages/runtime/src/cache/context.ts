@@ -40,6 +40,7 @@ export function requestContextFor(input: {
   readonly startedAt: number;
   readonly waitUntil: (promise: Promise<unknown>) => void;
   readonly clock: number | undefined;
+  readonly invalidated?: Set<string> | undefined;
 }): RequestContext {
   const context: RequestContext = {
     tables: input.tables,
@@ -49,7 +50,7 @@ export function requestContextFor(input: {
     fetchStarts: new Map(),
     waitUntil: input.waitUntil,
     run: (work) => withClock(input.clock, () => withRequestContext(context, work)),
-    invalidated: new Set(),
+    invalidated: input.invalidated ?? new Set(),
   };
   return context;
 }

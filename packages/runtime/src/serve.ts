@@ -42,6 +42,12 @@ export interface HandleInput extends EntryTables {
   readonly blobs?: BundleBlobReader | undefined;
   /** The clock a test configuration handed the request; the wall clock otherwise. */
   readonly clock?: number | undefined;
+  /**
+   * Where the tags the request invalidates at once are kept (`RequestContext.invalidated`): a host
+   * that answers a failure of the request itself hands its own, to say them on that answer too —
+   * the invalidation stands whatever became of the request after it.
+   */
+  readonly invalidated?: Set<string> | undefined;
 }
 
 /**
@@ -337,7 +343,11 @@ export function withInvalidatedTags(
   response: Response,
   invalidated: ReadonlySet<string>,
 ): Response {
-  if (invalidated.size === 0 && !response.headers.has(INVALIDATED_TAGS_HEADER)) {
+  // A network error (`Response.error()`, status 0) has no headers to carry anything on.
+  const unchanged =
+    response.status === 0 ||
+    (invalidated.size === 0 && !response.headers.has(INVALIDATED_TAGS_HEADER));
+  if (unchanged) {
     return response;
   }
   const headers = new Headers(response.headers);

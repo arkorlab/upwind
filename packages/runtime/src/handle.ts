@@ -605,6 +605,7 @@ export async function handleRequest(handled: HandleInput): Promise<Response> {
     startedAt: handled.clock ?? nowMs(),
     waitUntil: handled.waitUntil,
     clock: handled.clock,
+    invalidated: handled.invalidated,
   });
   const input: RoutedInput = { ...handled, initURL: initUrlOf(handled.request), run: context.run };
   return context.run(async () => {

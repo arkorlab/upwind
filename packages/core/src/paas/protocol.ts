@@ -182,13 +182,31 @@ export function pathFromHeaders(
   return escaped === null ? (headers.get(name) ?? undefined) : pathFromHeader(escaped);
 }
 
+/** `tag` escaped as a URI component, `*` with it; `undefined` for one with half a surrogate pair. */
+function escapedTag(tag: string): string | undefined {
+  try {
+    return encodeURIComponent(tag).replaceAll('*', '%2A');
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * The value of `INVALIDATED_TAGS_HEADER` for `tags`: each escaped as a URI component — a comma, a
  * character no header carries, and `*`, which stands for every tag, with it — and separated by
- * commas. `EVERY_TAG` for a list longer than the header carries.
+ * commas. `EVERY_TAG` for a list longer than the header carries, and for one with a tag no escape
+ * can say (half a surrogate pair).
  */
 export function invalidatedTagsValue(tags: Iterable<string>): string {
-  const value = [...tags].map((tag) => encodeURIComponent(tag).replaceAll('*', '%2A')).join(',');
+  const escaped: string[] = [];
+  for (const tag of tags) {
+    const one = escapedTag(tag);
+    if (one === undefined) {
+      return EVERY_TAG;
+    }
+    escaped.push(one);
+  }
+  const value = escaped.join(',');
   return value.length > INVALIDATED_TAGS_MAX_LENGTH ? EVERY_TAG : value;
 }
 
