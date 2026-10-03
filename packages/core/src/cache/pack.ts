@@ -1,16 +1,10 @@
-import { z } from 'zod';
-
-import { sha256HexSchema } from '../artifact/artifact.ts';
 import { sha256Hex } from '../artifact/hash.ts';
 import { concatBytes, decodeUtf8, encodeUtf8 } from '../util/bytes.ts';
-import { publicArtifactRefSchema } from './artifacts.ts';
-import { invalidationStateSchema } from './freshness.ts';
-import { generationTagSchema, MAX_TAGS_PER_ENTRY, routeEntryKindSchema } from './keys.ts';
-import { cachePolicySchema } from './timing.ts';
+import { PACK_SCHEMA_VERSION, packHeaderOf } from './pack-header.ts';
+import type { GenerationPackHeader } from './schema.ts';
 
-/** Whether a generation came out of a build or out of a regeneration at runtime. */
-export const generationSourceKindSchema = z.enum(['build', 'runtime']);
-export type GenerationSourceKind = z.infer<typeof generationSourceKindSchema>;
+export { PACK_SCHEMA_VERSION } from './pack-header.ts';
+export type { GenerationPackHeader, GenerationSourceKind, PackArtifactRef } from './schema.ts';
 
 /**
  * The delivery record of an entry's current generation: what the edge reads, in one read.
@@ -19,10 +13,10 @@ export type GenerationSourceKind = z.infer<typeof generationSourceKindSchema>;
  * postponed state the resume needs, so the shell's first byte never waits on a second lookup and
  * a shell is never paired with another generation's state. The layout is a fixed prefix — a magic,
  * a version, the header's length — then the header as JSON, then the two byte ranges the header
- * measures. A version this code does not know is `unsupported`, never a record to serve.
+ * measures. A version this code does not know is `unsupported`, never a record to serve. The
+ * header is checked as `generationPackHeaderSchema` would check it, by `packHeaderOf`.
  */
 
-export const PACK_SCHEMA_VERSION = 1;
 const MAGIC = encodeUtf8('PPRG');
 const MAGIC_LENGTH = MAGIC.byteLength;
 const VERSION_LENGTH = 1;
@@ -53,52 +47,6 @@ export const MAX_PACK_BYTES = PACK_LIMIT_MIB * KIB * KIB;
 export function packBytesAtMost(htmlLength: number, postponedLength: number): number {
   return PREFIX_LENGTH + MAX_PACK_HEADER_BYTES + htmlLength + postponedLength;
 }
-
-/** An artifact as a record names it: the reference, and which of the generation's outputs it is. */
-export const packArtifactRefSchema = publicArtifactRefSchema.extend({
-  representationKey: z.string().min(1),
-});
-export type PackArtifactRef = z.infer<typeof packArtifactRefSchema>;
-
-export const generationPackHeaderSchema = z.object({
-  schemaVersion: z.literal(PACK_SCHEMA_VERSION),
-  scopeId: z.string().min(1),
-  entryId: z.string().min(1),
-  generationId: z.string().min(1),
-  seq: z.number().int().positive(),
-  source: generationSourceKindSchema,
-  kind: routeEntryKindSchema,
-  route: z.string().startsWith('/'),
-  pathname: z.string().startsWith('/'),
-  cacheTimestamp: z.number().int().nullable(),
-  producedAt: z.number().int().nullable(),
-  policy: cachePolicySchema,
-  status: z.number().int(),
-  /**
-   * What the entry is answered with, already filtered for the kind of entry it is
-   * (`generationResponseHeaders`): a page's to what an edge-served shell may replay, and a
-   * redirect's to where it leads as well; a route handler's — which only its Function serves — to
-   * what a response replayed whole may.
-   */
-  headers: z.record(z.string(), z.string()),
-  /** Lifted from the render's own `x-next-cache-tags` before that header was filtered away. */
-  tags: z.array(generationTagSchema).max(MAX_TAGS_PER_ENTRY),
-  htmlSha256: sha256HexSchema,
-  htmlLength: z.number().int().nonnegative(),
-  /** `null` and a length of zero for a page complete at render time: nothing resumes it. */
-  postponedSha256: sha256HexSchema.nullable(),
-  postponedLength: z.number().int().nonnegative(),
-  /**
-   * The generation's other outputs (a page's data, the RSC payload, each prefetched segment);
-   * read through the host, not from here. Each carries the key of the output it belongs to,
-   * which is what a request for one of them names — the role alone cannot tell two segments apart.
-   */
-  artifacts: z.array(packArtifactRefSchema),
-  /** The scope revision this record was written at. */
-  revision: z.number().int().nonnegative(),
-  invalidation: invalidationStateSchema.optional(),
-});
-export type GenerationPackHeader = z.infer<typeof generationPackHeaderSchema>;
 
 export interface DecodedGenerationPack {
   readonly header: GenerationPackHeader;
@@ -170,10 +118,10 @@ function parseHeader(bytes: Uint8Array): ParsedHeader {
   } catch {
     return { ok: false, reason: 'header is not JSON' };
   }
-  const parsed = generationPackHeaderSchema.safeParse(json);
-  return parsed.success
-    ? { ok: true, header: parsed.data }
-    : { ok: false, reason: 'header does not match its schema' };
+  const header = packHeaderOf(json);
+  return header === undefined
+    ? { ok: false, reason: 'header does not match its schema' }
+    : { ok: true, header };
 }
 
 export function decodeGenerationPack(bytes: Uint8Array): DecodeGenerationPackResult {
