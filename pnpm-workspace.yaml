@@ -17,6 +17,11 @@ catalog:
   # are in that package's public declarations, so they are a dependency of it and not a dev one.
   '@cloudflare/workers-types': 5.20260926.1
   '@eslint/js': 10.0.1
+  # What the adapter reads a build's source maps with: `sourcemap-codec` for a map's mappings as
+  # numbers and back (`projectOnly`), `trace-mapping` for the index maps Turbopack writes when debug
+  # IDs are on, which a bundler does not compose through until they are one list (`flattened`).
+  '@jridgewell/sourcemap-codec': 1.6.0
+  '@jridgewell/trace-mapping': 0.3.31
   '@next/routing': 16.3.8
   # The AST Rolldown's `this.parse` hands a plugin: the version Rolldown itself depends on.
   '@oxc-project/types': 0.151.0

@@ -24,7 +24,7 @@ import type { DynamicRoute, ProjectManifest, ReservedRoute, RouteEntry } from '.
  * Whether a pathname's last segment names no file: nothing in it Next.js reads as an extension. A
  * dynamic segment's own brackets and dots (`[...slug]`) say nothing of the member it stands for.
  */
-function namesNoFile(pathname: string): boolean {
+export function namesNoFile(pathname: string): boolean {
   const last = pathname.slice(pathname.lastIndexOf('/') + 1);
   return last !== '' && !last.replaceAll(/\[[^[\]]*\]/gu, '').includes('.');
 }

@@ -1,6 +1,6 @@
 import path from 'node:path';
 
-import type { BlobRef, SourceMapRef, StaticFile } from '@stayingupwind/core/bundle';
+import type { SourceMapRef, StaticFile } from '@stayingupwind/core/bundle';
 import type { AdapterOutput } from 'next';
 
 import { type BlobStore, contentTypeFor } from './blobs.ts';
@@ -15,6 +15,7 @@ import {
   walk,
 } from './collect.ts';
 import { exists } from './fs.ts';
+import type { KeptMaps } from './kept-maps.ts';
 import { withBasePath } from './segments.ts';
 import { linkClientMaps, SOURCE_MAP_SUFFIX } from './source-maps.ts';
 
@@ -80,16 +81,16 @@ async function publicFiles(
  * A map put aside, or a script noted for the pass that ties the two together.
  *
  * Answers whether this output was a map, which is the one case the caller stops on: a map is not
- * a file the deployment serves.
+ * a file the deployment serves. It is put aside as the file, not yet as a blob: only a map some
+ * chunk names is carried, and it is carried as `linkClientMaps` writes it.
  */
 function sorted(
   output: AdapterOutput['STATIC_FILE'],
-  blob: BlobRef,
-  maps: Map<string, BlobRef>,
+  maps: Map<string, string>,
   scripts: { pathname: string; filePath: string }[],
 ): boolean {
   if (output.pathname.endsWith(SOURCE_MAP_SUFFIX)) {
-    maps.set(output.pathname, blob);
+    maps.set(output.pathname, output.filePath);
     return true;
   }
   if (output.pathname.endsWith('.js')) {
@@ -107,20 +108,22 @@ export async function collectStaticFiles(
    * static export ships whatever `public/` held.
    */
   carryMaps = false,
+  /** The maps that came through the build's `runAfterProductionCompile` (`kept-maps.ts`). */
+  kept?: KeptMaps,
 ): Promise<CollectedStaticFiles> {
   const basePath = orDefault(ctx.config.basePath, '');
   const exported = isStaticExport(ctx.config);
   const naming = { basePath, trailingSlash: orDefault(ctx.config.trailingSlash, false) };
   const files: StaticFile[] = [];
-  /** Maps by their own served pathname, until `linkClientMaps` says which file each describes. */
-  const maps = new Map<string, BlobRef>();
+  /** Map files by their own served pathname, until `linkClientMaps` says which file each describes. */
+  const maps = new Map<string, string>();
   /** The built JavaScript, for the same pass: only these carry a `sourceMappingURL`. */
   const scripts: { pathname: string; filePath: string }[] = [];
   for (const output of ctx.outputs.staticFiles) {
-    const blob = await blobs.putFile(output.filePath, staticFileContentType(output));
-    if (carryMaps && sorted(output, blob, maps, scripts)) {
+    if (carryMaps && sorted(output, maps, scripts)) {
       continue;
     }
+    const blob = await blobs.putFile(output.filePath, staticFileContentType(output));
     // The name the file is served under, which is the name a rule is judged against: a document
     // moves from `/index` to `/` and from `/about/index` to `/about/`, and the edge matches the
     // header rules on the request's own pathname, not on the one the build handed over.
@@ -138,5 +141,8 @@ export async function collectStaticFiles(
     }
   }
   files.push(...(exported ? [] : await publicFiles(ctx.projectDir, basePath, blobs)));
-  return { files, sourceMaps: await linkClientMaps(scripts, maps) };
+  return {
+    files,
+    sourceMaps: carryMaps ? await linkClientMaps(scripts, maps, blobs, kept) : [],
+  };
 }
