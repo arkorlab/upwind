@@ -83,6 +83,16 @@ function patternMatches(sourceRegex: string, pathname: string): boolean {
 }
 
 /**
+ * A rule of `next.config` — a reservation, a header rule — matched as Next.js's router matches its
+ * rules: without the unicode flag, and without regard to case (`sensitive: false`). A rule for
+ * `/Shop/:slug` claims `/shop/x`. The dynamic classes keep their case (`patternMatch`).
+ */
+function ruleMatch(sourceRegex: string, pathname: string): RegExpExecArray | null {
+  // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
+  return new RegExp(sourceRegex, 'i').exec(pathname);
+}
+
+/**
  * A compiled header key or value with its captures filled in as Next's router fills them.
  *
  * Next's adapter converts `source: '/docs/:slug', value: ':slug'` to a positional capture and
@@ -173,7 +183,7 @@ export function pathIsReserved(
   return reserved.some((rule) => {
     return (
       (!beforeFilesOnly || rule.beforeFiles === true) &&
-      patternMatches(rule.sourceRegex, url.pathname) &&
+      ruleMatch(rule.sourceRegex, url.pathname) !== null &&
       conditionsHold(rule, url, headers)
     );
   });
@@ -255,7 +265,7 @@ function configuredHeaders(
     return { headers: out, conditioned };
   }
   for (const rule of manifest.headerRules) {
-    const match = patternMatch(rule.sourceRegex, url.pathname);
+    const match = ruleMatch(rule.sourceRegex, url.pathname);
     if (match === null || !conditionsHold(rule, url, headers)) {
       continue;
     }
@@ -296,7 +306,7 @@ export function foldedHeadersFor(
   }
   const out: Record<string, string> = {};
   for (const rule of manifest.foldedHeaderRules) {
-    const match = patternMatch(rule.sourceRegex, pathname);
+    const match = ruleMatch(rule.sourceRegex, pathname);
     if (match === null) {
       continue;
     }
