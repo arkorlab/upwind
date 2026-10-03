@@ -1,6 +1,6 @@
 import type { ProjectManifest, RouteEntry } from '../manifest/index.ts';
 import { anyConditionHolds } from './conditions.ts';
-import { isHtmlLimitedBotUserAgent } from './constants.ts';
+import { isBotUserAgent, isHtmlLimitedBotUserAgent } from './constants.ts';
 import {
   afterCharacterClass,
   afterGroup,
@@ -28,6 +28,24 @@ import {
  * crawler's, runs to a couple of hundred characters.
  */
 const MAX_TESTED_USER_AGENT_LENGTH = 512;
+
+/**
+ * Next.js's own list, run as an application's is, no further than `MAX_TESTED_USER_AGENT_LENGTH`.
+ * Its leading alternative (`[\w-]+-Google`) backtracks from every position of an agent it does
+ * not name, at a cost that grows with the square of the agent's length, and a request may carry
+ * headers of a hundred kilobytes: a longer agent is taken to be named, and left to the Function.
+ */
+function namedByNextList(userAgent: string): boolean {
+  return userAgent.length > MAX_TESTED_USER_AGENT_LENGTH || isHtmlLimitedBotUserAgent(userAgent);
+}
+
+/**
+ * Whether an agent names a crawler, as Next.js tells one (`isBot`), bounded as the lists are: a
+ * longer agent is taken for one, and left to the Function.
+ */
+export function namesCrawler(userAgent: string): boolean {
+  return userAgent.length > MAX_TESTED_USER_AGENT_LENGTH || isBotUserAgent(userAgent);
+}
 
 /**
  * The longest pattern run here. Its alternatives without a repetition cost at most their own
@@ -363,7 +381,7 @@ function compiled(pattern: string): RegExp | undefined {
  */
 function judgeOf(pattern: string): BlockingJudge | undefined {
   if (pattern === NEXT_HTML_LIMITED_BOTS) {
-    return isHtmlLimitedBotUserAgent;
+    return namedByNextList;
   }
   // A pattern Next.js could not compile is not run here either, simplified or not.
   if (pattern.length > MAX_READ_PATTERN_LENGTH || compiled(pattern) === undefined) {
@@ -405,7 +423,7 @@ interface ListJudgement {
 const judgements = new WeakMap<ProjectManifest, ListJudgement>();
 
 /** Next.js's own list, as the edge judges it: an application that names none. */
-const NEXT_JUDGEMENT: ListJudgement = { judge: isHtmlLimitedBotUserAgent, runs: true };
+const NEXT_JUDGEMENT: ListJudgement = { judge: namedByNextList, runs: true };
 
 /**
  * The judgement of the list a manifest's application sends blocking metadata by: the one it
@@ -565,11 +583,9 @@ export function bypassForHolds(
       return false;
     }
     // A manifest made before the list was recorded: the user-agent condition `next build` wrote is
-    // the list, and the only one it writes, so it is judged as one — by its own pattern.
-    const agent = headers.get(USER_AGENT_HEADER);
-    return recorded
-      ? wantsBlockingMetadata(agent, manifest)
-      : wantsBlockingMetadataBy(agent, listWritten(value));
+    // the list, and the only one it writes, which is what the manifest is judged by
+    // (`listWrittenInto`), once for every route of it.
+    return wantsBlockingMetadata(headers.get(USER_AGENT_HEADER), manifest);
   });
 }
 
@@ -598,13 +614,8 @@ export function passesOnEveryAgent(
   if (entry.cache?.delivery === 'complete') {
     return false;
   }
-  if (manifest.htmlLimitedBots !== undefined) {
-    return namesAll(blockingMetadataPattern(manifest));
-  }
-  return (entry.bypassFor ?? []).some((condition) => {
-    const value = userAgentCondition(condition);
-    return value !== undefined && namesAll(listWritten(value));
-  });
+  const pattern = manifest.htmlLimitedBots ?? listWrittenInto(manifest);
+  return pattern !== undefined && pattern !== '' && namesAll(pattern);
 }
 
 /** Whether a list names every agent as the edge judges it: run nowhere, or simplified to nothing. */
@@ -629,26 +640,4 @@ function listWritten(value: string): string {
   return value.startsWith(WRAPPED_LIST_PREFIX) && value.endsWith(WRAPPED_LIST_SUFFIX)
     ? value.slice(WRAPPED_LIST_PREFIX.length, -WRAPPED_LIST_SUFFIX.length)
     : value;
-}
-
-/** The judgements of patterns read off a route's condition, by the pattern: a few per isolate. */
-const patternJudgements = new Map<string, ListJudgement>();
-const MAX_PATTERN_JUDGEMENTS = 64;
-
-/** Whether this agent is named by a list read off a route's condition (`bypassForHolds`). */
-function wantsBlockingMetadataBy(userAgent: string | null, pattern: string): boolean {
-  if (userAgent === null || userAgent === '') {
-    return false;
-  }
-  let judgement = patternJudgements.get(pattern);
-  if (judgement === undefined) {
-    const judge = judgeOf(pattern);
-    judgement =
-      judge === undefined ? { judge: namesEveryAgent, runs: false } : { judge, runs: true };
-    if (patternJudgements.size >= MAX_PATTERN_JUDGEMENTS) {
-      patternJudgements.clear();
-    }
-    patternJudgements.set(pattern, judgement);
-  }
-  return judgement.judge(userAgent);
 }

@@ -11,7 +11,7 @@ import {
   type StaticFileEntry,
 } from '../manifest/index.ts';
 import { acceptsHtml } from './accept.ts';
-import { blockingMetadataReason } from './blocking-metadata.ts';
+import { blockingMetadataReason, namesCrawler } from './blocking-metadata.ts';
 import {
   BYPASS_COOKIE_NAMES,
   BYPASS_QUERY_KEYS,
@@ -19,7 +19,6 @@ import {
   DEPLOYMENT_ID_QUERY,
   DEPLOYMENT_ID_REQUEST_HEADER,
   INTERNAL_REQUEST_HEADERS,
-  isBotUserAgent,
   NAVIGATION_REQUEST_HEADERS,
   NEXT_ACTION_HEADER,
   NEXT_RESUME_HEADER,
@@ -279,7 +278,7 @@ function crawlerFetch(headers: Headers): boolean {
     userAgent !== null &&
     !headers.has(FETCH_DEST_HEADER) &&
     !headers.has(FETCH_MODE_HEADER) &&
-    isBotUserAgent(userAgent)
+    namesCrawler(userAgent)
   );
 }
 
@@ -474,7 +473,7 @@ function renderedWholeForCrawlers(
     userAgent !== null &&
     manifest.crawlersStreamed !== true &&
     entry?.cache?.delivery !== 'complete' &&
-    isBotUserAgent(userAgent)
+    namesCrawler(userAgent)
   );
 }
 
