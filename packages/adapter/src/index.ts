@@ -723,9 +723,12 @@ export function createAdapter(options: AdapterOptions = {}): NextAdapter {
           config.productionBrowserSourceMaps = true;
           config.experimental.serverSourceMaps = true;
           // And what keeps them at all, where the project's own hook would take them away first.
-          const kept = keepMapsThrough(config.compiler.runAfterProductionCompile);
-          if (kept !== undefined) {
-            config.compiler.runAfterProductionCompile = kept;
+          // `compiler` is `{}` among Next.js's defaults, but asked of rather than assumed: this
+          // adapter takes a Next.js as old as 16.2, and an absent one has no hook to wrap anyway.
+          const compiler = config.compiler as BuildConfig['compiler'] | undefined;
+          const kept = keepMapsThrough(compiler?.runAfterProductionCompile);
+          if (compiler !== undefined && kept !== undefined) {
+            compiler.runAfterProductionCompile = kept;
           }
         }
         if (options.clientInstrumentationSource !== undefined) {
