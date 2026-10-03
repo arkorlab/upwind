@@ -12,6 +12,9 @@ import { type Patch, Rewrite } from './types.ts';
  * Two runtimes come out of a build — `chunks/[turbopack]_runtime.js` for the instrumentation
  * hook and the middleware, `chunks/ssr/[turbopack]_runtime.js` for the app — and each has two
  * loading sites (chunks for a module, chunks for an entry).
+ *
+ * A chunk whose code is another's is loaded from the other's file (`PatchContext.copies`), so the
+ * bundle carries that code once however many names Turbopack wrote it under.
  */
 
 const NAME = 'turbopack-runtime';
@@ -27,10 +30,14 @@ const CHUNK_REQUIRE =
  */
 const LEFTOVERS = [/require\(resolved\)/u];
 
-function chunkTable(distDir: string, chunks: readonly string[]): string {
+function chunkTable(
+  distDir: string,
+  chunks: readonly string[],
+  copies: ReadonlyMap<string, string>,
+): string {
   const cases = chunks.map(
     (chunk) =>
-      `    case ${jsLiteral(path.relative(distDir, chunk).split(path.sep).join('/'))}: return require(${jsLiteral(chunk)});`,
+      `    case ${jsLiteral(path.relative(distDir, chunk).split(path.sep).join('/'))}: return require(${jsLiteral(copies.get(chunk) ?? chunk)});`,
   );
   return [
     '',
@@ -54,6 +61,7 @@ export const turbopackRuntimePatch: Patch = {
     if (ctx.chunks.length === 0) {
       throw rewrite.fail('no server chunks to load; the build has some');
     }
+    const copies = ctx.copies ?? new Map<string, string>();
     const result = rewrite
       .replace(
         CHUNK_REQUIRE,
@@ -62,11 +70,16 @@ export const turbopackRuntimePatch: Patch = {
         'the chunk loader',
       )
       .forbid(LEFTOVERS, 'a resolved chunk require')
-      .append(chunkTable(ctx.distDir, ctx.chunks));
+      .append(chunkTable(ctx.distDir, ctx.chunks, copies));
+    const copied = ctx.chunks.filter((chunk) => copies.has(chunk)).length;
     return {
       contents: result.contents,
       edits: result.edits,
-      notes: [`chunk table: ${ctx.chunks.length} entries`],
+      notes: [
+        copied === 0
+          ? `chunk table: ${ctx.chunks.length} entries`
+          : `chunk table: ${ctx.chunks.length} entries, ${copied} loaded from a copy of their code`,
+      ],
     };
   },
 };
