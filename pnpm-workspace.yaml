@@ -24,7 +24,7 @@ catalog:
   '@jridgewell/trace-mapping': 0.3.31
   '@next/routing': 16.3.8
   # The AST Rolldown's `this.parse` hands a plugin: the version Rolldown itself depends on.
-  '@oxc-project/types': 0.151.0
+  '@oxc-project/types': 0.152.0
   '@types/node': 24.19.0
   # What `@stayingupwind/auth` wraps. A peer dependency there, so a project brings its own copy and
   # this pin is what the repository builds and typechecks against — the same arrangement as `next`.
