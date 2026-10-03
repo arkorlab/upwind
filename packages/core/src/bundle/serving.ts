@@ -131,7 +131,7 @@ function isTemplate(pathname: string): boolean {
  * matched as it arrives, prefix and all, and lands on the class shell whose name carries the same
  * prefix.
  */
-function reproducesDynamicRouting(bundle: DeploymentBundle): boolean {
+export function reproducesDynamicRouting(bundle: DeploymentBundle): boolean {
   const { i18n } = bundle.config;
   return i18n === null || i18n === undefined;
 }
@@ -182,7 +182,7 @@ function headersReproducible(bundle: DeploymentBundle, prerender: Prerender): bo
  * The phases Next.js evaluates before it looks at the filesystem: the redirects and the rewrites
  * of `next.config` that claim a path outright, whatever the build wrote under it.
  */
-function beforeFilesPhases(bundle: DeploymentBundle): Route[] {
+export function beforeFilesPhases(bundle: DeploymentBundle): Route[] {
   const { routing } = bundle;
   return [
     // A `beforeMiddleware` rule that neither answers nor rewrites is a header rule and claims
@@ -812,7 +812,7 @@ function headerValue(value: string | readonly string[]): string {
 }
 
 /** The routing phases whose header rules apply to a document, in the order Next.js applies them. */
-function headerPhases(bundle: DeploymentBundle): Route[] {
+export function headerPhases(bundle: DeploymentBundle): Route[] {
   return [
     ...bundle.routing.beforeMiddleware,
     ...bundle.routing.afterFiles,
