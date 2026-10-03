@@ -473,7 +473,8 @@ const SPECULATIVE_TAG_SYNC_MS = 1000;
  * prefetch. Pulled first, as a regeneration pulls it — joined with any pull out, so a page's
  * segments prefetched together pull it once, and again where a pull left the view short of the
  * record (`catchUp`) — for a second at the most (`SPECULATIVE_TAG_SYNC_MS`), past which the render
- * reads the view as it stands.
+ * reads the view as it stands. A pull still out then is seen to its end behind the answer: cut off
+ * with the request, it would never settle, and the prefetches after it would join it for nothing.
  */
 async function renderSpeculative(
   job: Job,
@@ -483,7 +484,10 @@ async function renderSpeculative(
 ): Promise<Response> {
   const { runtime } = job;
   if (invalidation !== undefined && invalidation.revision > runtime.tags.revision) {
-    await settledWithin(catchUp(runtime, invalidation.revision), SPECULATIVE_TAG_SYNC_MS);
+    const until = performance.now() + SPECULATIVE_TAG_SYNC_MS;
+    const caughtUp = catchUp(runtime, invalidation.revision, until);
+    job.input.waitUntil(caughtUp);
+    await settledWithin(caughtUp, SPECULATIVE_TAG_SYNC_MS);
   }
   return (
     (await renderForVisitor(job.input, job.target, want)) ?? (await renderRequest(job, source.url))
@@ -531,10 +535,16 @@ function startPull(runtime: CacheRuntime): Promise<void> {
 /**
  * Bring this isolate's view of the tags up to the revision a prefetch's record was invalidated at
  * (`required`): joining a pull that is out, or making one, and again where it left the view short —
- * a pull that went out before the invalidation answers with the revision before it.
+ * a pull that went out before the invalidation answers with the revision before it. None is made
+ * or joined past `until`, on the isolate's own clock: the prefetch has rendered without the view
+ * by then, and a pull made for it would be one no request waits for.
  */
-async function catchUp(runtime: CacheRuntime, required: number): Promise<void> {
-  for (let tries = 0; tries < SPECULATIVE_PULLS && runtime.tags.revision < required; tries += 1) {
+async function catchUp(runtime: CacheRuntime, required: number, until: number): Promise<void> {
+  for (
+    let tries = 0;
+    tries < SPECULATIVE_PULLS && runtime.tags.revision < required && performance.now() < until;
+    tries += 1
+  ) {
     const underWay = speculativePulls.get(runtime);
     const joinable =
       underWay !== undefined &&
