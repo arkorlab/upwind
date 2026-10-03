@@ -26,13 +26,16 @@ import { parseAst } from 'rolldown/parseAst';
  * is not looked at.
  *
  * A use is *guarded* where the code handles its failure itself: a call of the loader, or of a
- * method of it that loads, in the block of a `try` whose `catch` has no `throw` of its own — an
- * `import()` too, where it is awaited there. Such a load fails in the Function as it fails under
- * Node.js when the module is not installed, into the code's own `catch`: `@protobufjs/inquire`,
- * which every `protobufjs` loads its optional modules through, and TypeScript's `sys.require`,
- * which loads a compiler plugin, are written that way. Not across code that runs later — a
- * function's body, a class field's initializer: a `try` around their definition catches nothing
- * they throw when they run — and never `require.bind`, which makes a loader rather than loading.
+ * method of it that loads, in the block of a `try` whose `catch` throws nothing out — no `throw`
+ * that runs when it does, outside a `try` of its own that catches it — and an `import()` too,
+ * where it is awaited there. Such a load fails in the Function as it fails under Node.js when the
+ * module is not installed, into the code's own `catch`: `@protobufjs/inquire`, which every
+ * `protobufjs` loads its optional modules through, and TypeScript's `sys.require`, which loads a
+ * compiler plugin, are written that way. Not across code that runs later — a function's body,
+ * unless the function is called where it is made, and an instance field's initializer: a `try`
+ * around their definition catches nothing they throw when they run — and never `require.bind`,
+ * which makes a loader rather than loading. What a `catch` calls is taken not to throw: a
+ * function called by its name is not followed.
  */
 
 /** A use of the loader the bundler could not follow, in the module that makes it. */
@@ -124,14 +127,24 @@ const PASSIVE_PROPERTIES: ReadonlySet<string> = new Set([
   'toString',
 ]);
 
+/** The name of the property `member` reads, where the code spells it: `a.name` or `a['name']`. */
+function propertyName(member: Node): string | undefined {
+  if (member.type !== 'MemberExpression') {
+    return undefined;
+  }
+  const { property } = member;
+  if (!member.computed) {
+    return property.type === 'Identifier' ? property.name : undefined;
+  }
+  return property.type === 'Literal' && typeof property.value === 'string'
+    ? property.value
+    : undefined;
+}
+
 /** Whether `member`, read off the loader, is one of the properties that resolve nothing. */
 function isPassive(member: Node): boolean {
-  return (
-    member.type === 'MemberExpression' &&
-    !member.computed &&
-    member.property.type === 'Identifier' &&
-    PASSIVE_PROPERTIES.has(member.property.name)
-  );
+  const name = propertyName(member);
+  return name !== undefined && PASSIVE_PROPERTIES.has(name);
 }
 
 /** Whether `node` is a module object: `module`, or the main one through `require` or `process`. */
@@ -139,16 +152,14 @@ function isModuleObject(node: Node): boolean {
   if (node.type === 'Identifier') {
     return node.name === 'module';
   }
-  if (node.type !== 'MemberExpression' || node.computed) {
+  if (node.type !== 'MemberExpression' || node.object.type !== 'Identifier') {
     return false;
   }
-  const { object, property } = node;
-  if (object.type !== 'Identifier' || property.type !== 'Identifier') {
-    return false;
-  }
+  const { name } = node.object;
+  const property = propertyName(node);
   return (
-    (object.name === 'require' && property.name === 'main') ||
-    (object.name === 'process' && property.name === 'mainModule')
+    (name === 'require' && property === 'main') ||
+    (name === 'process' && property === 'mainModule')
   );
 }
 
@@ -169,18 +180,73 @@ function keeperOf(visit: Visit): Node {
   return visit.statement;
 }
 
-/**
- * Where code begins that runs later than the code around it: a function's body, and a class
- * field's initializer, which runs when an instance is made. A `try` outside one catches nothing it
- * throws then.
- */
-const DEFERRED_TYPES: ReadonlySet<string> = new Set([
-  'AccessorProperty',
+/** A function's body runs when the function is called, which is later unless it is called at once. */
+const FUNCTION_TYPES: ReadonlySet<string> = new Set([
   'ArrowFunctionExpression',
   'FunctionDeclaration',
   'FunctionExpression',
-  'PropertyDefinition',
 ]);
+
+/** The methods of a function that call it: `(function () { … }).call(this)` runs it at once. */
+const CALLING_METHODS: ReadonlySet<string> = new Set(['apply', 'call']);
+
+/** `node`, out of the parentheses around it, where the parser keeps them. */
+function unwrapped(node: Node): Node {
+  let at = node;
+  while (at.type === 'ParenthesizedExpression') {
+    at = at.expression;
+  }
+  return at;
+}
+
+/**
+ * The function `call` runs where it is made — `(() => { … })()`, or through its `call` or
+ * `apply` — or `undefined`. Not an `async` function or a generator: what an `async` one throws is a
+ * rejection, and a generator's body has not run when the call returns.
+ */
+function calledAtOnce(call: Node): Node | undefined {
+  if (call.type !== 'CallExpression') {
+    return undefined;
+  }
+  let callee = unwrapped(call.callee);
+  if (callee.type === 'MemberExpression') {
+    const name = propertyName(callee);
+    if (name === undefined || !CALLING_METHODS.has(name)) {
+      return undefined;
+    }
+    callee = unwrapped(callee.object);
+  }
+  if (callee.type !== 'ArrowFunctionExpression' && callee.type !== 'FunctionExpression') {
+    return undefined;
+  }
+  return callee.async || callee.generator ? undefined : callee;
+}
+
+/** The call above `visit` — through parentheses and a `call` or `apply` — that may run it. */
+function callAbove(visit: Visit): Node | undefined {
+  let at = visit.up;
+  while (at?.node.type === 'ParenthesizedExpression' || at?.node.type === 'MemberExpression') {
+    at = at.up;
+  }
+  return at?.node;
+}
+
+/**
+ * Whether the code under `parent`, by its field `key`, runs later than the code around `parent`:
+ * a function's, unless it is called at once, and an instance field's initializer, which runs when
+ * an instance is made. A static field's runs as the class is made, and so does a computed key.
+ */
+function runsLater(parent: Visit, key: string | undefined): boolean {
+  const { node } = parent;
+  if (FUNCTION_TYPES.has(node.type)) {
+    const call = callAbove(parent);
+    return call === undefined || calledAtOnce(call) !== node;
+  }
+  if (node.type === 'PropertyDefinition' || node.type === 'AccessorProperty') {
+    return !node.static && key === 'value';
+  }
+  return false;
+}
 
 /** The nodes directly under `node`: each field that is one, or a list of them. */
 function childrenOf(node: Node): Node[] {
@@ -196,25 +262,41 @@ function childrenOf(node: Node): Node[] {
   return children;
 }
 
-/** Every node under `node`, without the code under it that runs later (`DEFERRED_TYPES`). */
-function nowNodes(node: Node): Node[] {
-  const found: Node[] = [];
-  const pending: Node[] = [node];
-  for (let at = pending.pop(); at !== undefined; at = pending.pop()) {
-    found.push(at);
-    if (at === node || !DEFERRED_TYPES.has(at.type)) {
-      pending.push(...childrenOf(at));
-    }
+/**
+ * The nodes under `node` that run when it runs and may throw out of it. Not a function's body, nor
+ * an instance field's initializer (`runsLater`) — but the body of a function a call runs at once —
+ * and not the block of a `try` with a `catch`, which catches what it throws.
+ */
+function throwingChildrenOf(node: Node): Node[] {
+  if (FUNCTION_TYPES.has(node.type)) {
+    return [];
   }
-  return found;
+  if (node.type === 'PropertyDefinition' || node.type === 'AccessorProperty') {
+    return node.static ? childrenOf(node) : [node.key];
+  }
+  if (node.type === 'TryStatement' && node.handler !== null) {
+    return node.finalizer === null ? [node.handler] : [node.handler, node.finalizer];
+  }
+  const called = calledAtOnce(node);
+  return called === undefined ? childrenOf(node) : [...childrenOf(node), ...childrenOf(called)];
 }
 
 /**
- * Whether a `catch` keeps the failure in: it has no `throw` of its own. One that throws — the same
- * error, or another made of it — lets the load's failure out as surely as no `catch` at all.
+ * Whether a `catch` keeps the failure in: nothing it runs throws out of it. One that throws — the
+ * same error, or another made of it — lets the load's failure out as surely as no `catch` at all.
  */
 function absorbs(handler: Node | null): boolean {
-  return handler !== null && nowNodes(handler).every((node) => node.type !== 'ThrowStatement');
+  if (handler === null) {
+    return false;
+  }
+  const pending: Node[] = [handler];
+  for (let at = pending.pop(); at !== undefined; at = pending.pop()) {
+    if (at.type === 'ThrowStatement') {
+      return false;
+    }
+    pending.push(...throwingChildrenOf(at));
+  }
+  return true;
 }
 
 /**
@@ -223,16 +305,14 @@ function absorbs(handler: Node | null): boolean {
  * count; one around that may.
  */
 function inGuardedBlock(visit: Visit): boolean {
-  let at = visit;
-  while (at.up !== undefined) {
-    const { node } = at.up;
-    if (DEFERRED_TYPES.has(node.type)) {
+  for (let at = visit; at.up !== undefined; at = at.up) {
+    if (runsLater(at.up, at.key)) {
       return false;
     }
+    const { node } = at.up;
     if (node.type === 'TryStatement' && at.key === 'block' && absorbs(node.handler)) {
       return true;
     }
-    at = at.up;
   }
   return false;
 }
@@ -249,12 +329,8 @@ function guardedCall(visit: Visit, call: Node): boolean {
 const LOADING_METHODS: ReadonlySet<string> = new Set(['apply', 'call', 'require', 'resolve']);
 
 function loadsWhenCalled(member: Node): boolean {
-  return (
-    member.type === 'MemberExpression' &&
-    !member.computed &&
-    member.property.type === 'Identifier' &&
-    LOADING_METHODS.has(member.property.name)
-  );
+  const name = propertyName(member);
+  return name !== undefined && LOADING_METHODS.has(name);
 }
 
 /** A method called is reported as the call; one kept, as what keeps it. */

@@ -250,9 +250,10 @@ a minified module being one comma expression per statement — a module object's
 module as Rolldown rendered it into the bundle, once it had followed what it could, so a binding
 a module itself calls `require`, which Rolldown renames, is not taken for the loader, and a call
 in code the bundle left out is not reported — of those, under `guardedRequires`, the ones whose
-failure the code handles itself, a call that loads in the block of a `try` whose `catch` has no
-`throw` of its own, with no function body or class field between them (an `import()` too, where it
-is awaited there) — the `.wasm` the bundler
+failure the code handles itself, a call that loads in the block of a `try` whose `catch` throws
+nothing out, with nothing between them that runs later — a function's body, unless the function
+is called where it is made, or an instance field's initializer (an `import()` too, where it is
+awaited there) — the `.wasm` the bundler
 resolved itself, each with the global the Function publishes it under — and the Function's
 modules, with what they weigh together before and after gzip. The audit (`auditFunction`), which
 each of a Function's bundles goes through, fails the build on a `require("vm")` or
