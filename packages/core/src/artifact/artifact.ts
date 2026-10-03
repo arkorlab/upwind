@@ -1,6 +1,9 @@
 import { z } from 'zod';
 
 import { deploymentFingerprintSchema } from '../deployment/fingerprint.ts';
+import { SHA256_HEX_LENGTH } from './hash.ts';
+
+export { SHA256_HEX_LENGTH } from './hash.ts';
 
 /** What an artifact is, independent of where it is placed. */
 export const artifactKindSchema = z.enum([
@@ -11,7 +14,6 @@ export const artifactKindSchema = z.enum([
 ]);
 export type ArtifactKind = z.infer<typeof artifactKindSchema>;
 
-export const SHA256_HEX_LENGTH = 64;
 export const sha256HexSchema = z
   .string()
   .length(SHA256_HEX_LENGTH)
