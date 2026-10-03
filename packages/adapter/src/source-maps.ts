@@ -171,6 +171,18 @@ export async function linkClientMaps(
 }
 
 /**
+ * The names a Function's code is uploaded under: `app.cjs` and `edge.cjs`, as they always were, and
+ * `app-2.cjs` and `edge-2.cjs` for the Function `app-2`. A server's stack frame names the module,
+ * so a frame from one app Function is not read against another's map.
+ */
+export function codeModules(name: string): { readonly app: string; readonly edge: string } {
+  const suffix = /^app(-\d+)$/u.exec(name)?.[1];
+  return suffix === undefined
+    ? { app: APP_MODULE, edge: EDGE_MODULE }
+    : { app: `app${suffix}.cjs`, edge: `edge${suffix}.cjs` };
+}
+
+/**
  * The maps of this Function's own modules.
  *
  * The two that hold the application's code — `app.cjs`, and `edge.cjs` for the entrypoints Next.js
@@ -186,9 +198,10 @@ export async function functionSourceMaps(
   kind: string,
   built: { readonly app: string; readonly edge: string | undefined },
 ): Promise<SourceMapRef[]> {
+  const names = codeModules(kind);
   const modules = [
-    { module: APP_MODULE, file: built.app },
-    ...(built.edge === undefined ? [] : [{ module: EDGE_MODULE, file: built.edge }]),
+    { module: names.app, file: built.app },
+    ...(built.edge === undefined ? [] : [{ module: names.edge, file: built.edge }]),
   ];
   const maps: SourceMapRef[] = [];
   for (const { module, file } of modules) {
