@@ -163,13 +163,21 @@ function startWrite(runtime: CacheRuntime, key: string): Write {
  * A write's answer, or its failure: raise the floor to what it committed, fence the reads that
  * began meanwhile, and hand the state back to the LRU once no other write is in flight on it. A
  * hold let go of as lost (`releaseHolds`), and maybe taken again since by a write of its own, is
- * not this write's to end.
+ * not this write's to end; the floor it raises is raised on the key's state as it is now too.
  */
 function finishWrite(runtime: CacheRuntime, write: Write, revision = write.state.revision): void {
   const { key, stateKey, state, hold } = write;
   state.revision = Math.max(state.revision, revision);
   fenceReads(runtime, key, state);
   if (runtime.dataWrites.get(stateKey) !== hold) {
+    // What it committed is the key's floor all the same, on whichever state the key has now: the
+    // one let go of may have left the LRU since, and a read on a state of its own would otherwise
+    // take an answer older than this write for current.
+    const live = stateFor(runtime, key, stateKey);
+    if (live !== state) {
+      live.revision = Math.max(live.revision, state.revision);
+      fenceReads(runtime, key, live);
+    }
     return;
   }
   hold.writes -= 1;
@@ -179,22 +187,32 @@ function finishWrite(runtime: CacheRuntime, write: Write, revision = write.state
   }
 }
 
+/** Where a write stands among the writes this isolate handed over (`DataWriteRequest.order`). */
+export interface WriteOrder {
+  readonly writer: string;
+  readonly seq: number;
+}
+
 /**
  * This isolate as the writer of what it writes (`DataWriteRequest.order`): an id drawn on its first
- * write — never as the module loads, where a Worker may draw nothing at random — and the writes it
- * has sent since.
+ * write — never as the module loads, where a Worker may draw nothing at random — and the writes
+ * handed over since.
  */
-const writer: { id: string | undefined; sent: number } = { id: undefined, sent: 0 };
+const writer: { id: string | undefined; handed: number } = { id: undefined, handed: 0 };
 
-function nextOrder(): { readonly writer: string; readonly seq: number } {
+/**
+ * The next place in this isolate's order, taken as a value is handed over and before it waits to
+ * go: a write sent after one handed over after it is still the earlier of the two.
+ */
+export function nextWriteOrder(): WriteOrder {
   writer.id ??= crypto.randomUUID();
-  writer.sent += 1;
-  return { writer: writer.id, seq: writer.sent };
+  writer.handed += 1;
+  return { writer: writer.id, seq: writer.handed };
 }
 
 export async function writeData(
   runtime: CacheRuntime,
-  input: { key: string; entry: DataEntryMetadata; bytes: Uint8Array },
+  input: { key: string; entry: DataEntryMetadata; bytes: Uint8Array; order?: WriteOrder },
 ): Promise<void> {
   const key = keyOf({ key: input.key, kind: input.entry.kind, handler: input.entry.handler });
   const write = startWrite(runtime, key);
@@ -207,7 +225,7 @@ export async function writeData(
       key: input.key,
       entry: input.entry,
       valueBase64,
-      order: nextOrder(),
+      order: input.order ?? nextWriteOrder(),
     });
   } catch (error) {
     // A failure does not prove the host rejected the mutation: also discard a value

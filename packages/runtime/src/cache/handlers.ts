@@ -3,7 +3,7 @@ import { type InvalidationState, NEXT_ONE_YEAR_SECONDS } from '@stayingupwind/co
 import { readWithin } from './body.ts';
 import { nowMs } from './clock.ts';
 import { isRegeneration, requestContext } from './context.ts';
-import { readData, writeData } from './data.ts';
+import { nextWriteOrder, readData, type WriteOrder, writeData } from './data.ts';
 import type { DataEntryMetadata } from './host.ts';
 import type { CacheRuntime, DataMemo } from './runtime.ts';
 import { recordValidity } from './tags.ts';
@@ -172,15 +172,17 @@ const FETCH_WRITE_MIB = 8;
 const FETCH_WRITE_BYTES = FETCH_WRITE_MIB * MIB;
 
 /**
- * A write the fetch cache handed over: what it writes, when, the write of its key it goes after,
- * whether it has gone out, and a promise that settles as it is answered, has failed, or will not
- * go. A write that a newer one of its key took the place of before it went out lets its bytes go,
- * and so does one gone out once the table lets go of it, or its bytes are past the budget.
+ * A write the fetch cache handed over: what it writes, when, where it stands among the writes this
+ * isolate handed over (`nextWriteOrder`), the write of its key it goes after, whether it has gone
+ * out, and a promise that settles as it is answered, has failed, or will not go. It lets its bytes
+ * go once a newer write of its key takes its place before it went out, once the table lets go of
+ * it — one that had yet to go then never goes — or once its bytes are past the budget.
  */
 interface FetchWrite {
   readonly entry: DataEntryMetadata;
   bytes: Uint8Array | undefined;
   readonly handedAt: number;
+  readonly order: WriteOrder;
   readonly after: Promise<void> | undefined;
   sent: boolean;
   settled: Promise<void> | undefined;
@@ -200,24 +202,30 @@ interface FetchWrites {
 
 const fetchWrites = new WeakMap<CacheRuntime, FetchWrites>();
 
-/** A write's value no longer kept for reads: let go of, unless it has yet to go out with it. */
-function letGo(writes: FetchWrites, write: FetchWrite, sending = write.sent): void {
+/**
+ * A write's value no longer kept: what it keeps for reads, or, where it has yet to go, what it goes
+ * with — it then never goes. Whether it was one that had yet to go.
+ */
+function letGo(writes: FetchWrites, write: FetchWrite): boolean {
   if (write.bytes === undefined) {
-    return;
+    return false;
   }
   writes.held -= write.bytes.byteLength;
-  if (sending) {
-    write.bytes = undefined;
-  }
+  write.bytes = undefined;
+  return !write.sent;
 }
 
-/** Take a write out of the table, if it is still the key's. */
-function forget(writes: FetchWrites, key: string, write: FetchWrite): void {
+/**
+ * Take a write out of the table, if it is still the key's, and let go of its value. One that had yet
+ * to go never goes: a later write of the key, with nothing before it in the table, may be sent
+ * first, and this one would land after it. Whether it was one.
+ */
+function forget(writes: FetchWrites, key: string, write: FetchWrite): boolean {
   if (writes.byKey.get(key) !== write) {
-    return;
+    return false;
   }
   writes.byKey.delete(key);
-  letGo(writes, write);
+  return letGo(writes, write);
 }
 
 /** The key's write still out, if there is one: none handed over longer ago than a write can be. */
@@ -235,13 +243,18 @@ function writeOut(writes: FetchWrites, key: string): FetchWrite | undefined {
  * budget, before another is kept: a write that never settles never leaves on its own, and its key
  * may never be asked for again.
  */
-function sweepWrites(writes: FetchWrites): void {
+function sweepWrites(runtime: CacheRuntime, writes: FetchWrites): void {
   const now = performance.now();
   for (const [key, write] of writes.byKey) {
-    if (writes.byKey.size < MAX_FETCH_WRITES && now - write.handedAt < FETCH_WRITE_LIFETIME_MS) {
+    const lost = now - write.handedAt >= FETCH_WRITE_LIFETIME_MS;
+    if (!lost && writes.byKey.size < MAX_FETCH_WRITES) {
       return;
     }
-    forget(writes, key, write);
+    // One past the lifetime was cut off with its request: nothing of it was going to go.
+    const dropped = forget(writes, key, write);
+    if (!lost && dropped) {
+      runtime.log('fetch cache write dropped', { detail: 'waiting past the keys kept' });
+    }
   }
 }
 
@@ -262,8 +275,7 @@ function trimWrites(runtime: CacheRuntime, writes: FetchWrites): void {
     if (writes.held <= FETCH_WRITE_BYTES) {
       return;
     }
-    if (write.bytes !== undefined) {
-      letGo(writes, write, true);
+    if (letGo(writes, write)) {
       runtime.log('fetch cache write dropped', { detail: 'waiting past the byte budget' });
     }
   }
@@ -316,7 +328,7 @@ async function send(
     }
     write.sent = true;
     trimWrites(runtime, writes);
-    await writeData(runtime, { key, entry: write.entry, bytes });
+    await writeData(runtime, { key, entry: write.entry, bytes, order: write.order });
   } catch (error) {
     // The render has its data; what failed is keeping it for the next one.
     runtime.log('fetch cache write failed', { detail: detail(error) });
@@ -356,17 +368,18 @@ function keepFetch(
   const writes = fetchWrites.get(runtime) ?? { byKey: new Map<string, FetchWrite>(), held: 0 };
   fetchWrites.set(runtime, writes);
   const previous = writeOut(writes, key);
-  sweepWrites(writes);
+  sweepWrites(runtime, writes);
   let after = previous?.settled;
   if (previous?.sent === false) {
     // It never went out: this one takes its place, behind the write it was waiting for.
-    letGo(writes, previous, true);
+    letGo(writes, previous);
     ({ after } = previous);
   }
   const write: FetchWrite = {
     entry,
     bytes,
     handedAt: performance.now(),
+    order: nextWriteOrder(),
     after,
     sent: false,
     settled: undefined,
