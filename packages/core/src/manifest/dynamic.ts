@@ -146,16 +146,16 @@ export function matchDynamicRoute(
  *
  * `matchDynamicRoute` reads the class's shell off it; a reader that wants the route itself — which
  * app Function its code is in, say (`functionFor`) — asks this, and so the two never disagree.
+ * One trailing slash is admitted where the pages are kept behind it (`trailingSlash`), unless the
+ * reader says otherwise (`slashAdmitted`).
  */
 export function dynamicRouteFor(
   manifest: ProjectManifest,
   url: URL,
   headers: Headers,
+  slashAdmitted = manifest.trailingSlash === true,
 ): DynamicRoute | undefined {
-  if (
-    manifest.dynamicRoutes === undefined ||
-    !isCanonicalPathname(url.pathname, manifest.trailingSlash === true)
-  ) {
+  if (manifest.dynamicRoutes === undefined || !isCanonicalPathname(url.pathname, slashAdmitted)) {
     return undefined;
   }
   // A redirect or a rewrite Next.js evaluates ahead of its dynamic routes claims the request first.
