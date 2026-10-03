@@ -216,11 +216,20 @@ function inputScale(single: BuiltFunction): number {
   return reported === 0 ? 1 : bundled / reported;
 }
 
+/** The name a file's code is weighed under: in `app.cjs` (`c:`) or in `edge.cjs` (`e:`). */
+function codeKey(file: string, edge: boolean): string {
+  return `${edge ? 'e' : 'c'}:${path.resolve(file)}`;
+}
+
 function weightsOf(input: SplitInput): Weights {
   const scale = inputScale(input.single);
-  const code = new Map(
-    input.single.inputs.map((each) => [path.resolve(each.file), Math.round(each.bytes * scale)]),
-  );
+  // Each bundle's copy apart: a file both bundle went into both, and a Function that holds routes of
+  // one runtime only carries one of them.
+  const code = new Map<string, number>();
+  for (const each of input.single.inputs) {
+    const key = codeKey(each.file, each.edge === true);
+    code.set(key, (code.get(key) ?? 0) + Math.round(each.bytes * scale));
+  }
   const items = new Map<string, PlanItem>();
   const blobsOf = new Map<string, string[]>();
   for (const blob of input.shipped) {
@@ -277,16 +286,16 @@ async function linkedOf(files: readonly string[], weights: Weights): Promise<str
   return [...ids];
 }
 
-/** Every file of a route's code its trace names: what the one Function's code was weighed by. */
-function codeFilesOf(route: RouteCode): string[] {
-  const files = Object.values(route.assets);
-  if (route.edge !== undefined) {
-    files.push(...route.edge.files);
-  }
+/**
+ * Every file of a route's code its trace names, by the bundle it went into: what the one
+ * Function's code was weighed by. A route on the edge runtime is built into `edge.cjs`.
+ */
+function codeFilesOf(route: RouteCode): { readonly app: string[]; readonly edge: string[] } {
+  const app = Object.values(route.assets);
   if (route.module !== undefined) {
-    files.push(route.module.filePath);
+    app.push(route.module.filePath);
   }
-  return files;
+  return { app, edge: route.edge === undefined ? [] : [...route.edge.files] };
 }
 
 /** The WebAssembly a route reaches, on either runtime. */
@@ -300,13 +309,13 @@ function wasmOf(route: RouteCode): string[] {
 
 /**
  * The pieces one route needs, by the name the planner weighs them under: the code its trace reaches
- * (`c:`), the linked packages that code imports (`l:`), its WebAssembly (`w:`), the files it reads
- * (`f:`) and the blobs its prerenders name (`b:`).
+ * (`c:` in `app.cjs`, `e:` in `edge.cjs`), the linked packages that code imports (`l:`), its
+ * WebAssembly (`w:`), the files it reads (`f:`) and the blobs its prerenders name (`b:`).
  */
 async function piecesOf(route: RouteCode, input: SplitInput, weights: Weights): Promise<string[]> {
   const pieces: string[] = [];
   const files = codeFilesOf(route);
-  const linked = await linkedOf(files, weights);
+  const linked = await linkedOf(files.app, weights);
   for (const id of linked) {
     const bytes = weights.modules.get(id);
     if (bytes !== undefined) {
@@ -314,12 +323,15 @@ async function piecesOf(route: RouteCode, input: SplitInput, weights: Weights): 
       weights.items.set(`l:${id}`, { bytes, code: true });
     }
   }
-  for (const file of files) {
-    const resolved = path.resolve(file);
-    const bytes = weights.code.get(resolved);
+  const keys = [
+    ...files.app.map((file) => codeKey(file, false)),
+    ...files.edge.map((file) => codeKey(file, true)),
+  ];
+  for (const key of keys) {
+    const bytes = weights.code.get(key);
     if (bytes !== undefined) {
-      pieces.push(`c:${resolved}`);
-      weights.items.set(`c:${resolved}`, { bytes, code: true });
+      pieces.push(key);
+      weights.items.set(key, { bytes, code: true });
     }
   }
   for (const file of wasmOf(route)) {

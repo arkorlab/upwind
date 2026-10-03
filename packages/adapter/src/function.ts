@@ -341,7 +341,12 @@ export interface BuiltFunction {
    * What each file put into the Function's code, by the path the bundler read it at: `app.cjs`'s
    * and `edge.cjs`'s modules. What a plan weighs a route's code with (`split.ts`).
    */
-  readonly inputs: readonly { readonly file: string; readonly bytes: number }[];
+  readonly inputs: readonly {
+    readonly file: string;
+    readonly bytes: number;
+    /** Bundled into `edge.cjs` rather than `app.cjs`: a file both bundle is in each, weighed twice. */
+    readonly edge?: true | undefined;
+  }[];
 }
 
 /**
@@ -560,7 +565,12 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
     },
     dependencies,
     sourceMaps: await builtSourceMaps(input, { name, app: appFile, edge }),
-    inputs: [...app.trace.inputs, ...(edge === undefined ? [] : edge.trace.inputs)],
+    inputs: [
+      ...app.trace.inputs,
+      ...(edge === undefined
+        ? []
+        : edge.trace.inputs.map((each) => ({ ...each, edge: true as const }))),
+    ],
   };
 }
 
