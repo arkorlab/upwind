@@ -44,14 +44,16 @@ export function requestedPathname(bundle: DeploymentBundle, pathname: string): s
 
 /**
  * Every spelling the router finds a pathname of the build by: as the build named it, as a request
- * asks for it (`requestedPathname`), and — where the application keeps its pages behind a trailing
- * slash — with the slash, wherever its last segment names no file. That takes in a shipped file
- * (`/manual/` is the file `/manual`) and a path under `/.well-known`, which Next.js's redirect gives
- * no slash but which its router finds by one all the same, as a page or a file of that name.
+ * asks for it (`requestedPathname`), and — where the application has `trailingSlash` — with the
+ * slash, wherever its last segment names no file. That takes in a shipped file (`/manual/` is the
+ * file `/manual`) and a path under `/.well-known`, which Next.js's redirect gives no slash but which
+ * its router finds by one all the same, as a page or a file of that name. The router finds them so
+ * whether or not the build writes the redirect: `skipTrailingSlashRedirect` leaves the page named
+ * without the slash, and the router still finds it by both spellings.
  */
 export function routerSpellings(bundle: DeploymentBundle, pathname: string): string[] {
   const takesSlash =
-    keepsTrailingSlash(bundle) &&
+    bundle.config.trailingSlash &&
     namesNoFile(pathname) &&
     !isTemplate(pathname) &&
     !pathname.endsWith('/');
