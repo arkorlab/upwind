@@ -15,6 +15,37 @@ import { isId } from '../util/id.ts';
 
 export const BUNDLE_VERSION = 1;
 
+/**
+ * The version of a bundle whose routes the build split across more than one app Function
+ * (`functions.split`). Everything a version-1 bundle says, a version-2 one says the same way; what
+ * it adds is that the app Function is no longer the only place a route's code is.
+ *
+ * A version of its own, rather than an optional field a version-1 reader could drop, because
+ * dropping it is the one wrong thing to do: a reader that knew nothing of the split would take the
+ * first Function for the whole application and run it, and every route of the others would answer
+ * not-found. A reader that knows only version 1 refuses this one outright. A bundle that was not
+ * split stays version 1, byte for byte what it was.
+ */
+export const SPLIT_BUNDLE_VERSION = 2;
+
+/** The app Function every route of an unsplit bundle is in, and the first of a split one. */
+export const PRIMARY_FUNCTION = 'app';
+
+/**
+ * How many app Functions one bundle may run as. Each is a Function a host uploads, keeps and wakes
+ * apart from the others, so a split is meant to come to a handful; this is far past any the
+ * adapter's planner makes, and is here so that no bundle can ask for thousands.
+ */
+export const MAX_APP_FUNCTIONS = 32;
+
+/**
+ * The name of an app Function after the first: `app-2`, `app-3` and on, which is how the adapter
+ * names them. The first is `app`, and is `functions.app` itself rather than a key of `split`.
+ */
+export const splitFunctionNameSchema = z
+  .string()
+  .regex(/^app-(?:[2-9]|[1-9]\d+)$/u, 'expected app-2, app-3, …');
+
 export const DEPLOYMENT_ID_PREFIX = 'dpl';
 
 export const deploymentIdSchema = z
@@ -152,6 +183,13 @@ export const entrypointSchema = z.object({
    * `postponed: undefined`, so nothing it renders is the rest of a document.
    */
   runtime: z.literal('edge').optional(),
+  /**
+   * The app Function this route's code is in, when the build split the routes across more than
+   * one: a key of `functions.split`. Absent for a route of the first, `app` — which is every route
+   * of a bundle that was not split. A host sends the route's requests to that Function, and the
+   * Function that is handed a request for a route it does not hold says which one does.
+   */
+  function: splitFunctionNameSchema.optional(),
 });
 export type Entrypoint = z.infer<typeof entrypointSchema>;
 
@@ -347,7 +385,7 @@ export const bundleConfigSchema = z.looseObject({
 export type BundleConfig = z.infer<typeof bundleConfigSchema>;
 
 const bundleSchema = z.object({
-  v: z.literal(BUNDLE_VERSION),
+  v: z.union([z.literal(BUNDLE_VERSION), z.literal(SPLIT_BUNDLE_VERSION)]),
   deploymentId: deploymentIdSchema,
   nextVersion: z.string().min(1),
   buildId: z.string().min(1),
@@ -384,8 +422,15 @@ const bundleSchema = z.object({
    */
   sourceMaps: z.array(sourceMapSchema).optional(),
   functions: z.object({
+    /** The application's code: every route's, or — when `split` is there — the first group's. */
     app: functionSchema,
     middleware: functionSchema.optional(),
+    /**
+     * The app Functions after the first, by name, when the build split the routes across them
+     * (`SPLIT_BUNDLE_VERSION`). Each carries its own routes' code and prerendered bodies, and every
+     * one of them carries the same `runtime.json`, so each knows where every route is.
+     */
+    split: z.record(splitFunctionNameSchema, functionSchema).optional(),
   }),
 });
 export type DeploymentBundle = z.infer<typeof bundleSchema>;
@@ -446,6 +491,51 @@ function limitsPassed(bundle: DeploymentBundle): string[] {
 }
 
 /**
+ * What of a split is not as a host has to be able to read it: a version that does not say whether
+ * the bundle is split, a route placed in a Function the bundle does not carry, a Function that
+ * holds no route at all.
+ *
+ * A route with no `function` is the first Function's, so an unsplit bundle — no `split`, no route
+ * placed — passes untouched, and so does a split one whose every named Function answers a route.
+ */
+function splitIssues(bundle: DeploymentBundle): string[] {
+  const split = bundle.functions.split;
+  const names = Object.keys(split ?? {});
+  const issues: string[] = [];
+  if (split !== undefined && names.length === 0) {
+    issues.push('functions.split names no Function; a bundle that was not split leaves it out');
+  }
+  if ((bundle.v === SPLIT_BUNDLE_VERSION) !== names.length > 0) {
+    issues.push(
+      `a bundle with functions.split is version ${SPLIT_BUNDLE_VERSION}, and only such a bundle is`,
+    );
+  }
+  if (names.length + 1 > MAX_APP_FUNCTIONS) {
+    issues.push(
+      `a deployment may run as at most ${MAX_APP_FUNCTIONS} app Functions; this one runs as ${names.length + 1}`,
+    );
+  }
+  const placed = new Set<string>();
+  for (const entry of bundle.entrypoints) {
+    if (entry.function === undefined) {
+      continue;
+    }
+    if (!names.includes(entry.function)) {
+      issues.push(
+        `${entry.id} is placed in ${entry.function}, which functions.split does not carry`,
+      );
+    }
+    placed.add(entry.function);
+  }
+  for (const name of names) {
+    if (!placed.has(name)) {
+      issues.push(`functions.split carries ${name}, which no entrypoint is placed in`);
+    }
+  }
+  return issues;
+}
+
+/**
  * Every occurrence is checked before collection can collapse references with the same digest, and
  * the tables the edge walks per request are held to what a request can afford.
  */
@@ -465,6 +555,11 @@ export const deploymentBundleSchema = bundleSchema
   })
   .superRefine((bundle, ctx) => {
     for (const message of limitsPassed(bundle)) {
+      ctx.addIssue({ code: 'custom', message });
+    }
+  })
+  .superRefine((bundle, ctx) => {
+    for (const message of splitIssues(bundle)) {
       ctx.addIssue({ code: 'custom', message });
     }
   });
@@ -488,7 +583,11 @@ function forEachBlob(bundle: DeploymentBundle, visit: (ref: BlobRef) => void): v
       add(map.blob);
     }
   }
-  const functions = [bundle.functions.app, bundle.functions.middleware];
+  const functions = [
+    bundle.functions.app,
+    bundle.functions.middleware,
+    ...Object.values(bundle.functions.split ?? {}),
+  ];
   for (const spec of functions) {
     if (spec === undefined) {
       continue;

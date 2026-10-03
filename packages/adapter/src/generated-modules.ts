@@ -1,6 +1,5 @@
 import type { Plugin } from 'esbuild';
 
-import { EDGE_MODULE } from './edge.ts';
 import { WASM_ENTRY_MODULE } from './wasm.ts';
 
 /** The app bundle's name in the Function, which the runtime resolves `arkor:app` to. */
@@ -33,6 +32,8 @@ const NO_CACHE_HOST_MODULE = 'export function createCacheHost() { return undefin
  * runtime. A build told of none resolves to the stub above.
  */
 export function generatedModulesPlugin(has: {
+  /** The names this Function's code is uploaded under (`codeModules`): `app.cjs`, or `app-2.cjs`. */
+  modules: { readonly app: string; readonly edge: string };
   edge: boolean;
   wasm: boolean;
   cacheHostModule: string | undefined;
@@ -43,14 +44,14 @@ export function generatedModulesPlugin(has: {
       // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
       bundler.onResolve({ filter: /^arkor:app$/ }, () => {
         return {
-          path: `./${APP_MODULE}`,
+          path: `./${has.modules.app}`,
           external: true,
         };
       });
       // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
       bundler.onResolve({ filter: /^arkor:edge$/ }, () => {
         return has.edge
-          ? { path: `./${EDGE_MODULE}`, external: true }
+          ? { path: `./${has.modules.edge}`, external: true }
           : { path: 'arkor:edge', namespace: 'arkor-edge' };
       });
       bundler.onLoad(
