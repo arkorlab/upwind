@@ -105,7 +105,10 @@ export class TagState {
         truncated = delta.truncated;
       }
       // Pulls overlap, and one that began earlier can answer last: what a later one brought is in
-      // the view already, and its hold stands.
+      // the view already, and its hold stands. So does a page another pull took of a delta it has
+      // not finished: this pull's last answer held every invalidation the host had made when this
+      // pull began, which is all `#syncedAt` claims, and what the other pull still has to bring
+      // was made after that — a change the hold lets wait, as it lets wait one made after any pull.
       this.#syncedAt = Math.max(this.#syncedAt ?? now, now);
     } catch (error) {
       // What is known stays known: a read judged against an older view is a read that may be
