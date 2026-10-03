@@ -153,15 +153,16 @@ export async function documentFromBuild(
  * One prefetch segment of a prerendered page: the bytes the build shipped, the same bytes from the
  * host that kept them, or a 404.
  *
- * `undefined` only when the request asks for no segment, or when the build wrote no segment of the
- * page at all — the caller then answers it as any request for the page's React Server Components,
- * which is what Next.js does for a page it has no segments of. A page it has segments of, Next.js
- * answers from them alone (`app-page-runtime.ts`, "Cache miss"): the segment asked for, or a 404
- * where there is none. A segment the build recorded and whose bytes neither the Function nor the
- * host has is the same miss to the client, and gets the same answer. The page's payload in its
- * place is not: a client router read it as the route's tree, found nothing it asked for and asked
- * again straight away, for as long as the page was open — measured, some 250 requests a second
- * from one tab. A 404 it leaves alone for ten seconds, and a navigation fetches what it needs.
+ * `undefined` only when the request asks for no segment — no header, or an empty one — or when the
+ * build wrote no segment of the page at all: the caller then answers it as any request for the
+ * page's React Server Components, which is what Next.js does for a page it has no segments of. A
+ * page it has segments of, Next.js answers from them alone (`app-page-runtime.ts`, "Cache miss"):
+ * the segment asked for, or a 404 where there is none. A segment the build recorded and whose bytes
+ * neither the Function nor the host has is the same miss to the client, and gets the same answer.
+ * The page's payload in its place is not: a client router read it as the route's tree, found
+ * nothing it asked for and asked again straight away, for as long as the page was open — measured,
+ * some 250 requests a second from one tab. A 404 it leaves alone for ten seconds, and a navigation
+ * fetches what it needs.
  *
  * A record is this page's segment only as the adapter anchored it (`segmentPathOf`): the segment
  * path it answers, in the document's own group. The name alone is not enough — an application may
@@ -184,7 +185,9 @@ async function builtSegment(
 ): Promise<Response | undefined> {
   const { rsc } = store.manifest.routing;
   const segment = input.request.headers.get(rsc.prefetchSegmentHeader);
-  if (segment === null || document === undefined) {
+  // An empty header names no part, as the classification reads it (`segmentPrefetchOf`): the
+  // request is the plain RSC request it is, and is answered as one.
+  if (segment === null || segment === '' || document === undefined) {
     return undefined;
   }
   const segmentOf = (segmentPath: string): Prerender | undefined => {
