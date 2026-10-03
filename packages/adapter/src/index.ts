@@ -530,8 +530,10 @@ export interface AdapterOptions {
    * **A host that chooses this must implement `CacheHost.readBundleBlob`**, which is how the
    * Function gets the bytes of a segment it was not given. That request is off every path that
    * works — the host answers these prefetches itself, and the Function sees only the ones it could
-   * not: a failed middleware, a draft request, a client naming a deployment the host no longer
-   * points at. But on that path `readBundleBlob` is the only source there is. Neither of the two
+   * not: a middleware that failed, a host with nothing to serve the prefetch from, a request that
+   * reached the Worker without the host having served it at all. (Not a draft request, which
+   * `bypassesPrerender` sends to the route itself, and which should render rather than be served a
+   * build's segment.) But on that path `readBundleBlob` is the only source there is. Neither of the two
    * ways of producing the segment locally exists: `renderCaptured` answers `undefined` whenever
    * the render responded instead of being captured, which a segment prefetch always does, and a
    * resume carries the *document's* postponed state, which Next.js refuses for a segment it has no

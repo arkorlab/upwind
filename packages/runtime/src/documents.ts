@@ -150,10 +150,6 @@ export async function documentFromBuild(
 }
 
 /**
- * A route's React Server Components: a prefetched segment as built, else its payload resumed —
- * and, for a route on the edge runtime, which resumes nothing, rendered whole.
- */
-/**
  * One prefetch segment of a prerendered page: the bytes the build shipped, or the same bytes from
  * the host that kept them.
  *
@@ -243,6 +239,10 @@ async function fromHost(
   }
 }
 
+/**
+ * A route's React Server Components: a prefetched segment as built, else its payload resumed —
+ * and, for a route on the edge runtime, which resumes nothing, rendered whole.
+ */
 export async function rscFromBuild(
   input: RoutedInput,
   store: Store,
