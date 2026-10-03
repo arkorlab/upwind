@@ -588,7 +588,7 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   // keeps the claim true: the commit claims the revision the view stood at when the render began,
   // and every read the render makes is judged against that view or one brought further along
   // since. Handed to the runtime as well, whatever the lease says: a pull cut off with its request
-  // would be the one every later sync of this isolate joins.
+  // would be the one every later sync of this isolate joins for a hold (`TagState.sync`).
   const synced = runtime.tags.sync(runtime.host, nowMs(), { force: true });
   input.waitUntil(synced);
   let lease: AttemptOutcome;
