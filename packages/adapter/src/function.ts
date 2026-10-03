@@ -317,7 +317,11 @@ async function bundleRuntime(input: BuildFunctionInput, workDir: string): Promis
       __dirname: '"/bundle"',
       __filename: `"/bundle/${RUNTIME_MODULE}"`,
     },
-    minify: false,
+    // Whitespace and syntax, as `app.cjs` is minified, and not names: a stack trace out of the
+    // runtime still says which function it came from.
+    minifyWhitespace: true,
+    minifySyntax: true,
+    minifyIdentifiers: false,
     legalComments: 'none',
     logLevel: 'silent',
     sourcemap: false,
