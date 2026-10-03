@@ -55,7 +55,7 @@ catalog:
   oxfmt: 0.70.0
   rolldown: 1.2.11
   typescript: 5.9.3
-  typescript-eslint: 8.70.1
+  typescript-eslint: 8.71.0
   zod: 4.6.5
 
 # Only these dependencies may run install scripts.
