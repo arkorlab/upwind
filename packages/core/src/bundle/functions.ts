@@ -1,12 +1,7 @@
 import type { BuildProjectManifestInput } from '../manifest/manifest.ts';
 import type { DynamicRoute } from '../manifest/schema.ts';
-import {
-  type DeploymentBundle,
-  type Entrypoint,
-  type FunctionSpec,
-  PRIMARY_FUNCTION,
-  type Prerender,
-} from './schema.ts';
+import { PRIMARY_FUNCTION } from './function-name.ts';
+import type { DeploymentBundle, Entrypoint, FunctionSpec, Prerender } from './schema.ts';
 
 /** A route's own name in brackets (`/[id]`): a class of pathnames, not one of them. */
 function isTemplate(pathname: string): boolean {
