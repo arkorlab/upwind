@@ -375,8 +375,8 @@ const NAMED_BASES: ReadonlySet<string> = new Set(['Identifier', 'Super', 'ThisEx
  * Whether `call` — a call or a `new` — calls a function by its name (`log(error)`,
  * `this.logger.warn(error)`, `new Error(message)`), rather than one made where it stands, which
  * would run there; and not `Promise.reject`, which is how a function that answers with a promise
- * throws, nor `eval` or `Function`, which run code they are handed as text, nor `new Promise(…)`,
- * which runs its executor there.
+ * throws, nor `eval` or `Function` — by their names or as a property (`globalThis.eval`) — which
+ * run code they are handed as text, nor `new Promise(…)`, which runs its executor there.
  */
 function callsByName(call: Node): boolean {
   if (call.type !== 'CallExpression' && call.type !== 'NewExpression') {
@@ -393,10 +393,13 @@ function callsByName(call: Node): boolean {
     return false;
   }
   let base: Node = call.callee;
+  let runsCode = false;
   for (let next = towardTheName(base); next !== undefined; next = towardTheName(base)) {
+    const name = propertyName(base);
+    runsCode ||= name !== undefined && CODE_RUNNERS.has(name);
     base = next;
   }
-  const runsCode = base.type === 'Identifier' && CODE_RUNNERS.has(base.name);
+  runsCode ||= base.type === 'Identifier' && CODE_RUNNERS.has(base.name);
   return !rejects && !runsCode && NAMED_BASES.has(base.type);
 }
 /**
@@ -594,6 +597,10 @@ function handledInChain(visit: Visit): boolean {
   for (let at = chainedFrom(visit); at !== undefined; at = chainedFrom(at)) {
     if (at.node.type !== 'CallExpression') {
       continue;
+    }
+    // An argument that throws as it is evaluated stops the call before its handler is attached.
+    if (at.node.arguments.some((argument) => !keepsIn(argument))) {
+      return false;
     }
     if (handlesPlainly(rejectionHandlerOf(at.node))) {
       return true;
