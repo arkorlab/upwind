@@ -57,14 +57,17 @@ function beneath(dir: string, file: string): string | undefined {
 
 function nameOf(projectDir: string, distDir: string, filePath: string): string | undefined {
   const relative = beneath(projectDir, filePath);
-  const built = beneath(distDir, filePath);
-  if (
-    relative === undefined ||
-    (built !== undefined && beneath(SERVER_ASSETS_DIR, built) === undefined)
-  ) {
+  if (relative === undefined) {
     return undefined;
   }
   const segments = relative.split(path.sep);
+  const built = beneath(distDir, filePath);
+  if (built !== undefined) {
+    // Of what the build wrote, only a copy of a file a server module refers to by URL, and that one
+    // whatever it is called: it is read as data — a `.js` read as a template is still bytes — and it
+    // travels as data, never as code the bundler would have to follow.
+    return beneath(SERVER_ASSETS_DIR, built) === undefined ? undefined : segments.join('/');
+  }
   if (segments.includes(PACKAGES_DIR) || NOT_DATA.has(path.extname(relative).toLowerCase())) {
     return undefined;
   }

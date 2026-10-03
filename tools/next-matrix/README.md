@@ -25,10 +25,10 @@ the catalog's single Next.js — the one thing the matrix exists to look past.
 package, which is far cheaper and covers most of the same ground. Two things are only reachable
 from a real build:
 
-- the four patches that rewrite what `next build` **writes** rather than what Next.js ships —
-  `turbopack-runtime`, `vercel-og`, and the two that are the Turbopack WebAssembly loader in the
-  two shapes a supported version can hold it (`wasm-loader` from 16.3, `runtime-wasm-loader` in
-  16.2). No reading of a tarball produces a Turbopack runtime.
+- the five patches that rewrite what `next build` **writes** rather than what Next.js ships —
+  `turbopack-runtime`, `turbopack-root`, `vercel-og`, and the two that are the Turbopack
+  WebAssembly loader in the two shapes a supported version can hold it (`wasm-loader` from 16.3,
+  `runtime-wasm-loader` in 16.2). No reading of a tarball produces a Turbopack runtime.
 - that a patch still finds its file **in a bundle**. A rewrite can apply perfectly to a module no
   build ever loads, which is what the `instrumentation` patch's target did until this was written:
   it claimed Next.js's ESM copy too, and no Function has ever bundled that.
