@@ -28,6 +28,11 @@ export interface HandOff {
   readonly status?: number | undefined;
   /** Routing landed on `/_next/image`, whose source the Function handed the request fetches. */
   readonly image?: true | undefined;
+  /**
+   * The routing of that source, where the Function that routed the image routed its source as well
+   * and found it another's: the source is answered from there, its middleware not run twice.
+   */
+  readonly source?: string | undefined;
   /** The request headers the middleware set or replaced, by name, as it left them. */
   readonly set?: readonly (readonly [string, string])[] | undefined;
   /** The request headers the middleware removed. */
@@ -59,6 +64,7 @@ function isHandOff(value: unknown): value is HandOff {
     isPairs(handOff['headers']) &&
     (handOff['status'] === undefined || typeof handOff['status'] === 'number') &&
     (handOff['image'] === undefined || handOff['image'] === true) &&
+    (handOff['source'] === undefined || typeof handOff['source'] === 'string') &&
     (handOff['set'] === undefined || isPairs(handOff['set'])) &&
     (handOff['removed'] === undefined ||
       (Array.isArray(handOff['removed']) &&
@@ -95,6 +101,35 @@ function valuesOf(headers: Headers, name: string): string[] {
 
 function sameValues(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((value, at) => value === b[at]);
+}
+
+/** What routing came to, as the Function that answers it is handed it — here, or by another. */
+export interface Routed {
+  readonly resolved: Resolved;
+  /** Routing landed on `/_next/image`, whose source this Function fetches. */
+  readonly image: boolean;
+  /** The routing of that source, where another Function routed it (`HandOff.source`). */
+  readonly source?: string | undefined;
+  readonly headers: Headers | undefined;
+  readonly status: number | undefined;
+}
+
+/** The routing as another Function is handed it (`handoff.ts`), with the request headers it changed. */
+export function handOffOf(
+  routed: Routed,
+  changes: () => ReturnType<typeof requestChanges>,
+): string {
+  const { resolved, headers, status, image, source } = routed;
+  return encodeHandOff({
+    route: resolved.route,
+    pathname: resolved.pathname,
+    url: resolved.url,
+    headers: [...(headers ?? [])],
+    ...(status !== undefined && { status }),
+    ...(image && { image }),
+    ...(source !== undefined && { source }),
+    ...changes(),
+  });
 }
 
 /**

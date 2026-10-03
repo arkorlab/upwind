@@ -32,7 +32,13 @@ import {
   serveFromGeneration,
   withBackgroundRegeneration,
 } from './generations.ts';
-import { applyRequestChanges, decodeHandOff, encodeHandOff, requestChanges } from './handoff.ts';
+import {
+  applyRequestChanges,
+  decodeHandOff,
+  handOffOf,
+  requestChanges,
+  type Routed,
+} from './handoff.ts';
 import {
   applicationHosts,
   fetchRemoteSource,
@@ -245,8 +251,9 @@ async function serveImageSource(
   input: RoutedInput,
   store: Store,
   images: ImagesConfig,
-  resolved: Resolved,
+  routed: Pick<Routed, 'resolved' | 'source'>,
 ): Promise<Response> {
+  const { resolved } = routed;
   const { request } = input;
   const query = new URL(resolved.url, request.url).searchParams;
   const fallback = imageFallback(request, query, images);
@@ -266,6 +273,10 @@ async function serveImageSource(
       : sourceResponse({ source: remote.response, params, images, internal: false, method });
   }
   const source = sourceRequest(request, params.href);
+  // Routed already, by the Function that handed the image here: answered from there.
+  if (routed.source !== undefined) {
+    source.headers.set(ROUTED_HEADER, routed.source);
+  }
   const answered = await handleFull({ ...input, request: source, initURL: source.url }, store);
   // A source another app Function holds is that Function's to fetch: the request for the image goes
   // there whole, and its source is local when it arrives (`answerResolved`).
@@ -425,34 +436,15 @@ async function serveLanded(
     return misdirected(owner, forwarded.request.body, handOffOf(routed, landing.changes));
   }
   const answer = await answerResolved(forwarded, store, url, routed);
-  // An image whose source another Function holds: the image request goes there, routed as it was.
+  // An image whose source another Function holds: the image request goes there, routed as it was,
+  // with the routing its source came to here.
   const source = misdirectedTo(answer);
-  return source === undefined
-    ? answer
-    : misdirected(source, null, handOffOf(routed, landing.changes));
-}
-
-/** What routing came to, as the Function that answers it is handed it — here, or by another. */
-interface Routed {
-  readonly resolved: Resolved;
-  /** Routing landed on `/_next/image`, whose source this Function fetches. */
-  readonly image: boolean;
-  readonly headers: Headers | undefined;
-  readonly status: number | undefined;
-}
-
-/** The routing as another Function is handed it (`handoff.ts`), with the request headers it changed. */
-function handOffOf(routed: Routed, changes: () => ReturnType<typeof requestChanges>): string {
-  const { resolved, headers, status, image } = routed;
-  return encodeHandOff({
-    route: resolved.route,
-    pathname: resolved.pathname,
-    url: resolved.url,
-    headers: [...(headers ?? [])],
-    ...(status !== undefined && { status }),
-    ...(image && { image }),
-    ...changes(),
-  });
+  if (source === undefined) {
+    return answer;
+  }
+  releaseStream(answer.body, 'image source handed on');
+  const sourceRouted = answer.headers.get(ROUTED_HEADER) ?? undefined;
+  return misdirected(source, null, handOffOf({ ...routed, source: sourceRouted }, landing.changes));
 }
 
 /** The answer for a routed request: the image route's, or the resolved route's, with routing's headers. */
@@ -465,7 +457,7 @@ async function answerResolved(
   const { resolved } = routed;
   const { images } = store.manifest.config;
   if (images !== undefined && routed.image) {
-    const image = await serveImageSource(forwarded, store, images, resolved);
+    const image = await serveImageSource(forwarded, store, images, routed);
     return misdirectedTo(image) === undefined ? withRoutingHeaders(image, routed.headers) : image;
   }
   return withRewriteStatus(
@@ -502,6 +494,7 @@ async function serveHandedOff(
   return answerResolved(forwarded, store, url, {
     resolved,
     image: handOff.image === true,
+    source: handOff.source,
     headers: new Headers(handOff.headers.map(([name, field]): [string, string] => [name, field])),
     status: handOff.status,
   });
