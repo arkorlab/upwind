@@ -174,8 +174,8 @@ async function answered(
 ): Promise<Response> {
   try {
     // Before anything of the application runs: a service binding is an object, so it reaches
-    // neither `process.env` nor any other place Next.js server code can look. The dashboard's
-    // control-plane and database clients read theirs back out of here.
+    // neither `process.env` nor any other place Next.js server code can look. An application's
+    // clients for the services it is bound to read theirs back out of here.
     publishFunctionEnv(env);
     const { blobs, runtime } = hostFor(env);
     return await withRequestContext(
