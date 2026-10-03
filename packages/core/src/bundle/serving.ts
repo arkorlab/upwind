@@ -1,5 +1,4 @@
 import { interpolateHeader } from '../manifest/dynamic.ts';
-import type { BuildProjectManifestInput } from '../manifest/manifest.ts';
 import type {
   DynamicRoute,
   HeaderRule,
@@ -11,6 +10,7 @@ import { mayHoldForDocument } from '../request/conditions.ts';
 import { BEHAVIORAL_RESPONSE_HEADERS, CONTENT_DISPOSITION_HEADER } from '../request/constants.ts';
 import { filterShellResponseHeaders, rendersInline } from '../request/headers.ts';
 import { isInternalPage, nextNamespaceRoutes } from './base-path.ts';
+import { type DynamicRouting, withFunctions } from './functions.ts';
 import { queryDependent } from './query.ts';
 import type { DeploymentBundle, Entrypoint, Prerender, Route, StaticFile } from './schema.ts';
 import { isTemplate, keepsTrailingSlash, requestedPathname, routerSpellings } from './spelling.ts';
@@ -765,17 +765,15 @@ export function edgeServedRewrites(bundle: DeploymentBundle): ServedRewrite[] {
 }
 
 /**
- * What the edge needs to pick a dynamic route's class the way Next.js picks the route — and, where
- * the application keeps its pages behind a trailing slash, that it does, since a member of a class
- * is asked for with the slash too.
+ * What the edge needs to pick a dynamic route's class the way Next.js picks the route; for a
+ * bundle whose routes are split across app Functions, which Function each route it picks is in;
+ * and, where the application keeps its pages behind a trailing slash, that it does, since a member
+ * of a class is asked for with the slash too.
  */
 export function dynamicRouting(
   bundle: DeploymentBundle,
   routeKeys: ReadonlySet<string>,
-): Pick<
-  BuildProjectManifestInput,
-  'dynamicRoutes' | 'exactPathnames' | 'reservedRoutes' | 'trailingSlash'
-> {
+): DynamicRouting & { readonly trailingSlash?: boolean } {
   const { routing } = bundle;
   const spelled = keepsTrailingSlash(bundle) && { trailingSlash: true };
   if (!reproducesDynamicRouting(bundle)) {
@@ -848,7 +846,14 @@ export function dynamicRouting(
   const exact = new Set(
     [...pathnames, ...fileSpellings].filter((pathname) => !routeKeys.has(pathname)),
   );
-  return { dynamicRoutes, reservedRoutes, exactPathnames: [...exact], ...spelled };
+  return {
+    ...withFunctions(bundle, routeKeys, {
+      dynamicRoutes,
+      reservedRoutes,
+      exactPathnames: [...exact],
+    }),
+    ...spelled,
+  };
 }
 
 function headerValue(value: string | readonly string[]): string {

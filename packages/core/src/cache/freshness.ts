@@ -1,6 +1,7 @@
-import { z } from 'zod';
+import type { CachePolicy, Deadline, InvalidationState, Validity } from './schema.ts';
+import { deadlineAfter, UNKNOWN_DEADLINE } from './timing.ts';
 
-import { type CachePolicy, type Deadline, deadlineAfter, UNKNOWN_DEADLINE } from './timing.ts';
+export type { InvalidationState, Validity } from './schema.ts';
 
 /**
  * Whether a generation may still be served, from its lifetime, the invalidations recorded against
@@ -13,21 +14,9 @@ import { type CachePolicy, type Deadline, deadlineAfter, UNKNOWN_DEADLINE } from
  * recorded, and expired once the deadline that invalidation set has arrived. A generation whose
  * lifetime is not recorded is `unknown`: served, since nothing says it may not be, and never
  * regenerated on time alone.
+ *
+ * The shapes are checked in `schema.ts`, which nothing here imports (see `keys.ts`).
  */
-
-export const validitySchema = z.enum(['fresh', 'stale', 'expired', 'unknown']);
-export type Validity = z.infer<typeof validitySchema>;
-
-/** What the host recorded against a generation when something it depends on was invalidated. */
-export const invalidationStateSchema = z.object({
-  /** The invalidation's revision, so a later generation is never condemned by an earlier record. */
-  revision: z.number().int().nonnegative(),
-  /** From when the generation is stale (unix ms). */
-  staleAt: z.number().int().optional(),
-  /** From when it may no longer be served at all (unix ms). */
-  hardExpireAt: z.number().int().optional(),
-});
-export type InvalidationState = z.infer<typeof invalidationStateSchema>;
 
 export interface FreshnessInput {
   readonly policy: CachePolicy;
