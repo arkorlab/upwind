@@ -18,7 +18,10 @@ export interface Patterned {
   readonly sourceRegex: string;
 }
 
-/** `''` as the dynamic routes and the rules of `next.config` are matched; `'i'` as a middleware's. */
+/**
+ * `''` as the dynamic routes are matched; `'i'` as Next.js's router matches the rules of
+ * `next.config` (`sensitive: false`) and a middleware's matchers.
+ */
 type PatternFlags = '' | 'i';
 
 export interface CompiledRule<T extends Patterned> {

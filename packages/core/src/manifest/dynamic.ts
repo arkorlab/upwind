@@ -78,10 +78,11 @@ function decodes(pathname: string): boolean {
 }
 
 function patternMatch(compiled: CompiledRule<Patterned>, pathname: string): RegExpExecArray | null {
-  // As Next.js compiled it, without the unicode flag (`compiledRules`). Not case-insensitive,
-  // unlike the router's own matching: the runtime picks a class's shell by a case-sensitive
-  // pattern, so a case variant is served by the Function rather than handed a shell built for
-  // another spelling.
+  // As Next.js compiled it, without the unicode flag, under the flags it was compiled with
+  // (`compiledRules`): with case for a dynamic class — the runtime picks a class's shell by a
+  // case-sensitive pattern, so a case variant is served by the Function rather than handed a shell
+  // built for another spelling — and without, as the router matches them, for a rule of
+  // `next.config`.
   return patternOf(compiled).exec(pathname);
 }
 
@@ -226,7 +227,7 @@ export function pathIsReserved(
   headers: Headers,
   beforeFilesOnly: boolean,
 ): boolean {
-  return compiledRules(reserved).some((compiled) => {
+  return compiledRules(reserved, 'i').some((compiled) => {
     const { rule } = compiled;
     return (
       (!beforeFilesOnly || rule.beforeFiles === true) &&
@@ -311,7 +312,7 @@ function configuredHeaders(
   if (manifest.headerRules === undefined) {
     return { headers: out, conditioned };
   }
-  for (const compiled of compiledRules(manifest.headerRules)) {
+  for (const compiled of compiledRules(manifest.headerRules, 'i')) {
     const { rule } = compiled;
     const match = patternMatch(compiled, url.pathname);
     if (match === null || !conditionsHold(rule, url, headers)) {
@@ -353,7 +354,7 @@ export function foldedHeadersFor(
     return undefined;
   }
   const out: Record<string, string> = {};
-  for (const compiled of compiledRules(manifest.foldedHeaderRules)) {
+  for (const compiled of compiledRules(manifest.foldedHeaderRules, 'i')) {
     const match = patternMatch(compiled, pathname);
     if (match === null) {
       continue;
