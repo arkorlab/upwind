@@ -1,4 +1,6 @@
-import { z } from 'zod';
+import type { CachePolicy, CacheTiming, Deadline, Duration } from './schema.ts';
+
+export type { CachePolicy, CachePolicySource, CacheTiming, Deadline, Duration } from './schema.ts';
 
 /**
  * Time as the cache records it.
@@ -9,51 +11,20 @@ import { z } from 'zod';
  * that Next.js marks `revalidate: false` says `unbounded`, which means no time-based revalidation
  * and nothing about on-demand invalidation. Internal times are UTC unix milliseconds; durations are
  * seconds, as Next.js hands them over. Display and time zones are someone else's concern.
+ *
+ * The shapes are checked in `schema.ts`, which nothing here imports (see `keys.ts`).
  */
 
 const MILLISECONDS_PER_SECOND = 1000;
 /** `CACHE_ONE_YEAR` in Next.js: what `s-maxage` says when a route has no time-based revalidation. */
 export const NEXT_ONE_YEAR_SECONDS = 31_536_000;
 
-export const durationSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('finite'), seconds: z.number().nonnegative() }),
-  z.object({ kind: z.literal('unbounded') }),
-  z.object({ kind: z.literal('unknown') }),
-]);
-export type Duration = z.infer<typeof durationSchema>;
-
-export const deadlineSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('at'), unixMs: z.number().int() }),
-  z.object({ kind: z.literal('never') }),
-  z.object({ kind: z.literal('unknown') }),
-]);
-export type Deadline = z.infer<typeof deadlineSchema>;
-
 const BUILD_OUTPUT = 'build-output';
 const RUNTIME_OUTPUT = 'runtime-output';
 const LEGACY_UNKNOWN = 'legacy-unknown';
 
 /** Where a policy's numbers came from; `legacy-unknown` is a record that predates them. */
-export const cachePolicySourceSchema = z.enum([BUILD_OUTPUT, RUNTIME_OUTPUT, LEGACY_UNKNOWN]);
-export type CachePolicySource = z.infer<typeof cachePolicySourceSchema>;
-
-export const cachePolicySchema = z.object({
-  revalidateAfter: durationSchema,
-  expireAfter: durationSchema,
-  /** For the client router only; never part of a server-side expiry. */
-  clientStale: durationSchema,
-  source: cachePolicySourceSchema,
-});
-export type CachePolicy = z.infer<typeof cachePolicySchema>;
-
-export const cacheTimingSchema = z.object({
-  /** When Next.js says the generation was made; `null` when the origin is not recorded. */
-  cacheTimestamp: z.number().int().nullable(),
-  producedAt: z.number().int().nullable(),
-  revalidateAt: deadlineSchema,
-  expireAt: deadlineSchema,
-});
-export type CacheTiming = z.infer<typeof cacheTimingSchema>;
+export const CACHE_POLICY_SOURCES = [BUILD_OUTPUT, RUNTIME_OUTPUT, LEGACY_UNKNOWN] as const;
 
 export const UNBOUNDED_DURATION: Duration = { kind: 'unbounded' };
 export const UNKNOWN_DURATION: Duration = { kind: 'unknown' };

@@ -51,13 +51,11 @@ export interface CacheRuntime {
   /**
    * The states a write is still in flight on, out of that budget's reach until the last of those
    * writes answers: a state evicted meanwhile would let a later write of the key start on a state
-   * of its own, whose floor the older write's reply never learns.
+   * of its own, whose floor the older write's reply never learns. Held no longer than a write can
+   * be in flight, nor for more keys than a budget of their own (`data.ts`): a write whose request
+   * ended under it never answers.
    */
-  readonly dataWrites: Map<string, DataState>;
-  readonly dataReads: Map<
-    string,
-    { readonly identity: symbol; readonly promise: Promise<DataMemo> }
-  >;
+  readonly dataWrites: Map<string, DataHold>;
   /**
    * The entry id each entry a request named derives to, by the entry's kind, route and pathname:
    * two SHA-256 digests a request for it would otherwise make (`deriveEntry`) before its record
@@ -93,8 +91,23 @@ export type DataMemo =
 export interface DataState {
   epoch: number;
   revision: number;
-  /** Writes in flight on the state; while there are any, `dataWrites` holds it. */
+  /**
+   * Reads of the key that have found a value, whether or not `dataMemo` could keep it: a miss
+   * answered after another read found the value is not remembered, even when the value itself
+   * was too large to be.
+   */
+  finds: number;
+}
+
+/** A state held out of the LRU's reach for the writes in flight on it (`dataWrites`). */
+export interface DataHold {
+  /** The key the state is of: a hold let go of as lost fences its reads and forgets its memo. */
+  readonly key: string;
+  readonly state: DataState;
+  /** Writes in flight under the hold. */
   writes: number;
+  /** When the latest of them began. */
+  since: number;
 }
 
 /** A read of an entry's delivery record in flight: when it began, and what it will say. */
@@ -165,7 +178,6 @@ export function createCacheRuntime(options: CacheRuntimeOptions): CacheRuntime |
       },
     }),
     holdMs,
-    dataReads: new Map(),
     dataWrites: new Map(),
     dataStates: new TtlCache(Infinity, MEMO_ENTRIES, options.now, {
       maxBytes: DATA_STATE_BYTES,
