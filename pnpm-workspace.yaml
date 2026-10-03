@@ -38,7 +38,7 @@ catalog:
   # quadratic, and neither `regexp/no-super-linear-backtracking` nor `no-super-linear-move` says so.
   eslint-plugin-redos: 4.5.0
   eslint-plugin-regexp: 3.3.1
-  eslint-plugin-security: 4.0.1
+  eslint-plugin-security: 4.2.0
   eslint-plugin-sonarjs: 4.2.1
   eslint-plugin-unicorn: 76.0.0
   globals: 17.12.0
