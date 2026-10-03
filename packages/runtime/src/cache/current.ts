@@ -39,12 +39,32 @@ function detail(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** An entry's record as the pack it holds; `null` for none, or for bytes that are not one. */
+/**
+ * How long a read of a record is out at the most: what the runtime gives work behind a response
+ * (`waitUntil`). It is called off then (`readRecordPack`); one whose request ended first never
+ * settles here, and is taken for lost.
+ */
+const RECORD_READ_LIFETIME_MS = 30_000;
+
+/**
+ * An entry's record as the pack it holds; `null` for none, or for bytes that are not one. The read
+ * is called off once it has been out for as long as a read can be (`RECORD_READ_LIFETIME_MS`): the
+ * request that began it may go on for longer, and a read out that long is not coming back.
+ */
 async function readRecordPack(
   runtime: CacheRuntime,
   entryId: string,
 ): Promise<DecodedGenerationPack | null> {
-  const bytes = await runtime.host.readRecord(entryId);
+  const calledOff = new AbortController();
+  const timer = setTimeout(() => {
+    calledOff.abort(new Error('a read of a record out past its lifetime'));
+  }, RECORD_READ_LIFETIME_MS);
+  let bytes: Uint8Array | undefined;
+  try {
+    bytes = await runtime.host.readRecord(entryId, calledOff.signal);
+  } finally {
+    clearTimeout(timer);
+  }
   if (bytes === undefined) {
     return null;
   }
@@ -53,11 +73,12 @@ async function readRecordPack(
 }
 
 /**
- * The reads of records each runtime has out, joined or not: a read the table let go of
- * (`sweepReads`) goes on until it settles or its request ends, and it is these that
- * `MAX_RECORD_READS` bounds.
+ * The reads of records each runtime has out, joined or not, each with when it went out on the
+ * isolate's own clock (`performance.now()`), not the clock a request acts at: a read the table let
+ * go of (`sweepReads`) goes on until it settles, is called off (`readRecordPack`), or its request
+ * ends, and it is these that `MAX_RECORD_READS` bounds.
  */
-const readsOut = new WeakMap<CacheRuntime, Set<RecordRead>>();
+const readsOut = new WeakMap<CacheRuntime, Map<RecordRead, number>>();
 
 /**
  * Keep what a read said for the requests after it, once it has said it, and only while it is still
@@ -83,21 +104,16 @@ async function land(runtime: CacheRuntime, entryId: string, read: RecordRead): P
 /** How many reads of records may be in flight at once, as many as their memory keeps records. */
 const MAX_RECORD_READS = 256;
 
-/**
- * How long a read of a record is taken to be out at the most: what the runtime gives work behind a
- * response (`waitUntil`). One whose request ended under it never settles here.
- */
-const RECORD_READ_LIFETIME_MS = 30_000;
-
-/** The runtime's reads still out, once those begun longer ago than a read can be out are let go. */
-function stillOut(runtime: CacheRuntime, now: number): Set<RecordRead> {
+/** The runtime's reads still out, once those out longer than a read can be are let go. */
+function stillOut(runtime: CacheRuntime): Map<RecordRead, number> {
   let reads = readsOut.get(runtime);
   if (reads === undefined) {
-    reads = new Set();
+    reads = new Map();
     readsOut.set(runtime, reads);
   }
-  for (const read of reads) {
-    if (now - read.startedAt >= RECORD_READ_LIFETIME_MS) {
+  const now = performance.now();
+  for (const [read, since] of reads) {
+    if (now - since >= RECORD_READ_LIFETIME_MS) {
       reads.delete(read);
     }
   }
@@ -143,14 +159,14 @@ function sharedRead(
   }
   // As many out as the budget lets, joined or not: past it the host is not answering them, and
   // another read would wait out its deadline as they do, for nothing.
-  const out = stillOut(runtime, now);
+  const out = stillOut(runtime);
   if (out.size >= MAX_RECORD_READS) {
     return Promise.reject(
       new Error(`${String(MAX_RECORD_READS)} reads of records are out already`),
     );
   }
   const read: RecordRead = { startedAt: now, pack: readRecordPack(runtime, entryId) };
-  out.add(read);
+  out.set(read, performance.now());
   // Taken out before it is put back, so that the reads stand in the order they were begun, and
   // the ones past their hold are the first to be let go.
   runtime.recordReads.delete(entryId);
