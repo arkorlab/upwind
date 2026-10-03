@@ -6,12 +6,7 @@ import {
   bundleBlobs,
   type DeploymentBundle,
   deploymentBundleSchema,
-  foldedHeaderRulesOf,
-  headerRulesOf,
-  type Route,
 } from '@stayingupwind/core/bundle';
-import type { MiddlewareMatcher } from '@stayingupwind/core/manifest';
-import { middlewareApplies } from '@stayingupwind/core/paas';
 
 import {
   ApiError,
@@ -22,6 +17,14 @@ import {
 } from './client.ts';
 import type { Config } from './config.ts';
 import { fixtureEnvironment } from './fixture-env.ts';
+import {
+  askThePage,
+  type PageAnswer,
+  PROBE_ENCODING,
+  type Probe,
+  probeOf,
+  sameFile,
+} from './probe.ts';
 
 /**
  * A test application deployed the way anybody deploys: its bundle uploaded to a host over that host's
@@ -51,13 +54,13 @@ const SERVER_ERROR = 500;
  * How long the asset's path may be redirected before that is taken as the answer it is.
  *
  * A redirect can never carry the file's digest, so this is not a wait that ends by waiting — except in
- * one window, which is why it is a wait at all: the pointer flips before every part of the host has
+ * one window, which is why it is a wait at all: a host names the new deployment before every part of it has
  * caught up, and what answers in between is the deployment before this one, which in this project is
  * the previous fixture and may be a Next.js test application that redirects everything.
  */
 const REDIRECT_GRACE_MS = 30_000;
-/** Asked for by the probe, and judged by it: see `probeHeaders`. */
-const PROBE_ENCODING = 'identity';
+/** How many times a page that could not be asked is asked again, before it has named anything. */
+const PAGE_ATTEMPTS = 3;
 const MS_PER_SECOND = 1000;
 
 export interface DeployInput {
@@ -248,150 +251,6 @@ async function waitForHost(input: DeployInput, deploymentId: string): Promise<vo
 }
 
 /**
- * One request to prove the host is answering with *this* deployment.
- *
- * A static file of the bundle, by preference one whose path carries the build id, and its digest as the
- * expected `ETag`: a `HEAD` for it neither renders a page nor moves the body. A fixture with no static
- * file at all — a route handler and nothing else — has only the host's own account of which deployment
- * is current to go by, which is why that case is said out loud rather than passed off as the same
- * evidence.
- */
-/** What one readiness check needs: where to ask, what would prove it, and whose deployment it is. */
-interface Probe {
-  readonly url: URL;
-  readonly etag: string | undefined;
-  /**
-   * Whether that digest is this build's alone.
-   *
-   * A content-addressed asset is shared across deployments on purpose — that is what the path means —
-   * and an unchanged `public/` file is byte for byte what the fixture before it served. Either can be
-   * answered by the deployment before this one while the pointer's move is still reaching the edge, so
-   * neither proves which deployment answered. Both are still worth asking for: where the other
-   * deployment does not have the file, the digest is proof, and where it does, the answer is no weaker
-   * than the pointer this is read beside. What it is not is called proof.
-   */
-  readonly onlyThisBuild: boolean;
-  readonly deploymentId: string;
-}
-
-/** A rule is ahead of the file only if it answers or rewrites; one that does neither sets headers. */
-function answersOrRewrites(route: Route): boolean {
-  return route.status !== undefined || route.destination !== undefined;
-}
-
-function setsEtag(rule: { headers?: Record<string, string> | undefined }): boolean {
-  return Object.keys(rule.headers ?? {}).some((name) => name.toLowerCase() === 'etag');
-}
-
-/**
- * Everything that could stop a file's own digest from coming back, as one list.
- *
- * Three kinds of thing, and all three are matcher-shaped — a pattern and its conditions — which is what
- * lets the host's own reading of that shape answer for all of them. **Middleware** answers whatever it
- * matches, and a catch-all matcher includes `/_next/static`. A **redirect or rewrite ahead of the
- * filesystem** answers instead of the file; one after it does not, because by then the file has won. And
- * a **header rule that sets `ETag`** leaves the file where it is and replaces the one thing being
- * compared — from `headerRulesOf` and `foldedHeaderRulesOf`, which is where the host looks for them, both
- * read because which one it consults depends on whether it reproduces the build's own routing.
- */
-function couldAnswer(bundle: DeploymentBundle): MiddlewareMatcher[] {
-  const { routing } = bundle;
-  return [
-    ...routing.middlewareMatchers,
-    ...[...routing.beforeMiddleware, ...routing.beforeFiles].filter((route) =>
-      answersOrRewrites(route),
-    ),
-    ...[...headerRulesOf(bundle), ...(foldedHeaderRulesOf(bundle) ?? [])].filter((rule) =>
-      setsEtag(rule),
-    ),
-  ];
-}
-
-/**
- * The headers the probe's request carries, to judge a rule's conditions by the request that will be made.
- *
- * Judging them against no headers at all would be judging a different request: a condition on
- * `user-agent` or `accept` holds for the probe and would read as failing, and the asset it disqualifies
- * would be chosen and then intercepted. Measured on Node 24 — `fetch` adds `host`, `connection`,
- * `accept`, `accept-language`, `sec-fetch-mode`, `user-agent` and `accept-encoding`, and nothing else.
- *
- * Two of them are set on the request rather than left to the runtime, because a default is not a thing
- * this file can state: `user-agent`, which would otherwise be `node`, and `accept-encoding`, whose
- * default turned out to depend on the scheme — `br, gzip, deflate` over HTTPS and `gzip, deflate` over
- * plain HTTP, both measured. `identity` earns its place twice over: it is the one value that is the same
- * under either scheme, and a response nobody compressed is a response whose `ETag` no proxy had a reason
- * to touch.
- */
-function probeHeaders(url: URL): Headers {
-  return new Headers({
-    accept: '*/*',
-    'accept-encoding': PROBE_ENCODING,
-    'accept-language': '*',
-    connection: 'close',
-    host: url.host,
-    'sec-fetch-mode': 'cors',
-    'user-agent': USER_AGENT,
-  });
-}
-
-/**
- * Whether a `HEAD` of this URL would come back with the file's own digest, as far as the bundle says.
- *
- * `middlewareApplies` is the host's own answer to "would this apply to this request": the pattern as
- * Next.js compiled it, the conditions as Next.js reads them, and a path that matches only once decoded.
- * Asking it rather than reading the patterns here is what keeps a *conditional* catch-all rule from
- * disqualifying every asset a build has — and what that would cost is not caution but evidence, since
- * the probe would fall back to the pointer, which is the weakest thing it can rest on.
- *
- * Used for the rules as well as the matchers, because the shape is the same one. The rules get the
- * decoded retry too, which the host would not give them; it can only make this answer more cautious, and
- * the alternative is a second reading of the same patterns kept in step with the host's by hand.
- */
-function showsTheDigest(could: readonly MiddlewareMatcher[], url: URL, headers: Headers): boolean {
-  try {
-    return !middlewareApplies(could, url, headers);
-  } catch {
-    // A pattern this engine will not take. The schema refuses what is unsafe to run, and every ordinary
-    // one compiles, so this is the last resort — read as applying, which loses a candidate rather than
-    // the deployment.
-    return false;
-  }
-}
-
-function probeOf(publicUrl: URL, bundle: DeploymentBundle): Probe {
-  // Assigned rather than resolved, so that a fixture's `//path` stays on this host.
-  const asked = (pathname: string): URL => {
-    const url = new URL(publicUrl.origin);
-    url.pathname = pathname;
-    return url;
-  };
-  const could = couldAnswer(bundle);
-  const headers = probeHeaders(publicUrl);
-  const quiet = bundle.staticFiles.filter((entry) =>
-    showsTheDigest(could, asked(entry.pathname), headers),
-  );
-  // A path carrying the build id first, because that is the one digest another deployment cannot have.
-  const named = quiet.find((entry) => entry.pathname.includes(`/${bundle.buildId}/`));
-  const file = named ?? quiet.find((entry) => entry.immutable) ?? quiet[0];
-  return {
-    url: asked(file?.pathname ?? (bundle.config.basePath || '/')),
-    etag: file === undefined ? undefined : `"${file.blob.sha256}"`,
-    onlyThisBuild: named !== undefined,
-    deploymentId: bundle.deploymentId,
-  };
-}
-
-/**
- * Whether the host answered with the file the probe asked for.
- *
- * `W/` off the front of what came back: a proxy that recompresses a response may mark its `ETag` weak,
- * and a weak one still names this file. The probe asks for no encoding partly so that it rarely has to.
- */
-function sameFile(sent: string | null, expected: string): boolean {
-  return sent !== null && sent.replace(/^W\//u, '') === expected;
-}
-
-/**
  * What one probe saw, when it did not prove the deployment.
  *
  * `redirected` because that one is not a wait like the others. Every other thing a probe sees is a
@@ -461,7 +320,7 @@ async function answered(
   //
   // A redirect gets no grace on this path, deliberately: the probe is the application's own root, and
   // fixtures redirect that on purpose — a trailing slash, a locale, middleware. Failing those after
-  // thirty seconds, to catch a previous deployment still answering a moment after the pointer moved,
+  // thirty seconds, to catch a previous deployment still answering a moment after the host named this one,
   // would cost more than it saves where no digest can tell the two apart.
   if (response.status >= SERVER_ERROR) {
     input.log(
@@ -553,6 +412,92 @@ function redirectedSince(probe: Probe, since: number | undefined): number {
   return started;
 }
 
+/**
+ * The settle the host was said to need (`Config.settleMs`), all of it, from the first request this
+ * deployment is known to have answered.
+ *
+ * Known: the page's own `data-dpl-id` (`pageProvesIt`), since no file can be one deployment's alone;
+ * where no page names a deployment, the probe is the best there is. Not from when the host first named the deployment as current, though that comes
+ * earlier and would cost less — a host may name a deployment before the switch has reached any request,
+ * so the naming is no evidence of where the switch has got to, and neither is a probe that any
+ * deployment could have answered. A request this deployment answered is: the switch had begun by then.
+ * Why it is needed at all: suites of a full run whose received pages carried `data-dpl-id` named an
+ * earlier fixture's deployment on some requests, while other requests of the same suite reached their
+ * own.
+ */
+/**
+ * Whether the application's own page names this deployment, waited for while it names another.
+ *
+ * Asked whenever a settle is set, because the probe's file cannot say whose deployment answered — a
+ * file is at best this build's, and two deployments of one build share all of them — so that the settle
+ * starts from a request this deployment is known to have answered. A page that names an earlier one is the very thing the settle is for: the host has
+ * named this deployment and not yet brought it to every request.
+ *
+ * What ends the wait without proof is a page that answered and names nobody: that route carries no mark,
+ * and the probe is the best there is. A page that could not be asked is not that — before the page has
+ * named anything it is given a few tries, and after it has named the deployment before, silence does not
+ * outweigh that: the wait goes on to the deadline, checked before each request rather than after, since
+ * past it a request would be given no time at all and fail as silence.
+ */
+async function pageProvesIt(input: DeployInput, probe: Probe, deadline: number): Promise<boolean> {
+  let stale: string | undefined;
+  let unreachable = 0;
+  for (;;) {
+    if (stale !== undefined && Date.now() >= deadline) {
+      throw new Error(`${probe.page.href} went on naming another deployment (${stale})`);
+    }
+    const answer = await askThePage(probe, timeLeft(deadline));
+    unreachable += answer.kind === 'unreachable' ? 1 : 0;
+    const next = verdictOn(answer, probe.deploymentId, stale, unreachable);
+    if (next === 'proved') {
+      input.log(`${probe.page.href} names this deployment`);
+      return true;
+    }
+    if (next === 'unproven') {
+      return false;
+    }
+    if (stale === undefined && answer.kind === 'named') {
+      input.log(
+        `${probe.page.href} still names another deployment (${answer.deploymentId}); waiting`,
+      );
+    }
+    stale = answer.kind === 'named' ? answer.deploymentId : stale;
+    await sleepFor(POLL_INTERVAL_MS);
+  }
+}
+
+/** What one answer from the page means for the wait: proof, the end of what it can say, or ask again. */
+function verdictOn(
+  answer: PageAnswer,
+  ours: string,
+  stale: string | undefined,
+  unreachable: number,
+): 'proved' | 'unproven' | 'again' {
+  if (answer.kind === 'unnamed') {
+    return 'unproven';
+  }
+  if (answer.kind === 'named') {
+    return answer.deploymentId === ours ? 'proved' : 'again';
+  }
+  return stale === undefined && unreachable >= PAGE_ATTEMPTS ? 'unproven' : 'again';
+}
+
+/** What a request made now may take: the usual bound, or whatever is left before the deadline. */
+function timeLeft(deadline: number): number {
+  return Math.max(1, Math.min(REQUEST_TIMEOUT_MS, deadline - Date.now()));
+}
+
+async function letItSettle(input: DeployInput): Promise<void> {
+  const { settleMs } = input.config;
+  if (settleMs > 0) {
+    input.log(
+      `letting the host settle: ${String(settleMs / MS_PER_SECOND)}s before the suite starts, so ` +
+        'that every request reaches this deployment',
+    );
+    await sleepFor(settleMs);
+  }
+}
+
 async function waitUntilServed(
   input: DeployInput,
   bundle: DeploymentBundle,
@@ -572,6 +517,17 @@ async function waitUntilServed(
     const observation = await served(input, detail, probe, deadline - Date.now());
     if (observation === undefined) {
       sayItIsServed(input, probe);
+      // Whenever there is a settle to anchor, and only then. The probe's file says at best whose build
+      // answered — two deployments of one build share every file — so whose deployment it was is the
+      // page's to say, whatever kind of file the probe found. And the page is the application's own route:
+      // asking for it is a request its tests did not make, one that renders and may revalidate or count,
+      // which is worth it for the settle and for nothing else.
+      if (input.config.settleMs > 0 && !(await pageProvesIt(input, probe, deadline))) {
+        input.log(
+          'no page names a deployment either, so the settle starts now, on the probe alone',
+        );
+      }
+      await letItSettle(input);
       return;
     }
     if (observation.said !== said) {
