@@ -179,6 +179,9 @@ export const SHELL_RESPONSE_HEADER_ALLOWLIST: readonly string[] = [
   'accept-ch',
   'critical-ch',
   'origin-agent-cluster',
+  // Says a document may be prerendered from another origin of the site: without it, a browser
+  // cancels a speculation rule's cross-origin prerender, which is served the shell like any other.
+  'supports-loading-mode',
 ];
 
 /**
