@@ -58,9 +58,10 @@ export interface CacheHost {
   /**
    * The delivery record of an entry's current generation — the bytes the edge would serve — or
    * nothing when the entry has no generation. The runtime reads this when it answers a document
-   * itself, so that what it serves is what the edge would have served.
+   * itself, so that what it serves is what the edge would have served. A read the runtime has given
+   * up on is called off through `signal`.
    */
-  readRecord(entryId: string): Promise<Uint8Array | undefined>;
+  readRecord(entryId: string, signal?: AbortSignal): Promise<Uint8Array | undefined>;
 
   /** The bytes of an artifact by id: a value too large to have travelled inline. */
   readArtifact(artifactId: string): Promise<Uint8Array | undefined>;
