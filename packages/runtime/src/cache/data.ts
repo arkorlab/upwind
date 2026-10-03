@@ -2,8 +2,9 @@ import { createHash } from 'node:crypto';
 
 import { fromBase64, toBase64 } from '@stayingupwind/core/util';
 
-import type { DataEntryMetadata, DataRead, DataReadRequest } from './host.ts';
+import type { DataEntryMetadata, DataRead, DataReadRequest, DataWritten } from './host.ts';
 import type { CacheRuntime, DataHold, DataMemo, DataState } from './runtime.ts';
+import type { Turn } from './turns.ts';
 
 /** Data bytes and mutation ordering have separate budgets: eviction must never erase a fence. */
 const MILLISECONDS_PER_SECOND = 1000;
@@ -214,23 +215,39 @@ export function nextWriteOrder(): WriteOrder {
   return { writer: writer.id, seq: writer.handed };
 }
 
+/**
+ * Write a value under its key, as the host's next revision of the entry, its call to the host in
+ * the request's `turn`: behind the work (`callsBehind`), or ahead of it, for a write the render
+ * waits on (`callsWaitedOn`).
+ */
 export async function writeData(
   runtime: CacheRuntime,
   input: { key: string; entry: DataEntryMetadata; bytes: Uint8Array; order?: WriteOrder },
+  turn?: Turn,
 ): Promise<void> {
   const key = keyOf({ key: input.key, kind: input.entry.kind, handler: input.entry.handler });
   const write = startWrite(runtime, key);
   const { state } = write;
   runtime.dataMemo.delete(key);
-  const valueBase64 = toBase64(input.bytes);
-  let written;
-  try {
-    written = await runtime.host.setData({
+  // Its place in the order as it is handed over, before it waits for its turn to go out.
+  const order = input.order ?? nextWriteOrder();
+  // Encoded once its turn has come, so that a write waiting for one holds no second copy.
+  const set = async (): Promise<{
+    readonly written: DataWritten;
+    readonly valueBase64: string;
+  }> => {
+    const valueBase64 = toBase64(input.bytes);
+    const written = await runtime.host.setData({
       key: input.key,
       entry: input.entry,
       valueBase64,
-      order: input.order ?? nextWriteOrder(),
+      order,
     });
+    return { written, valueBase64 };
+  };
+  let sent;
+  try {
+    sent = await (turn === undefined ? set() : turn(set));
   } catch (error) {
     // A failure does not prove the host rejected the mutation: also discard a value
     // value read during the write.
@@ -238,6 +255,7 @@ export async function writeData(
     runtime.dataMemo.delete(key);
     throw error;
   }
+  const { written, valueBase64 } = sent;
   finishWrite(runtime, write, written.revision);
   const memo = runtime.dataMemo.get(key);
   if (memo?.kind !== 'found' || memo.response.dependencyRevision < state.revision) {
