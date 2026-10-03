@@ -27,10 +27,11 @@ import { parseAst } from 'rolldown/parseAst';
  *
  * A use is *guarded* where the code handles its failure itself: a call of the loader, or of a
  * method of it that loads, in the block of a `try` whose `catch` and `finally` are plain code — no
- * `throw`, `await` or `try` of their own, nothing made and run where it stands, no
- * `Promise.reject(…)`, and calls only of what they name — and an `import()` too, where it, or a
- * promise chained from it or aggregated with others, is awaited there. Such a load fails in the
- * Function as it fails under Node.js when the module is not installed, into the code's own `catch`:
+ * `throw`, `await`, `yield` or `try` of their own, no pattern taking the error apart, nothing made
+ * and run where it stands, no `Promise.reject(…)` or `eval`, and calls only of what they name — and
+ * an `import()` too, where it, or a promise chained from it, is awaited there, or where a `catch` of
+ * its own chain handles its rejection plainly. Such a load fails in the Function as it fails under
+ * Node.js when the module is not installed, into the code's own `catch`:
  * `@protobufjs/inquire`, which every `protobufjs` loads its optional modules through, and
  * TypeScript's `sys.require`, which loads a compiler plugin, are written that way. Plain, because
  * whether a `catch` lets a failure out cannot be told of code in general: what is not plain is not
@@ -342,6 +343,7 @@ const PLAIN_TYPES: ReadonlySet<string> = new Set([
   'ContinueStatement',
   'EmptyStatement',
   'ExpressionStatement',
+  'FunctionDeclaration',
   'FunctionExpression',
   'Identifier',
   'IfStatement',
@@ -363,6 +365,9 @@ const PLAIN_TYPES: ReadonlySet<string> = new Set([
   'VariableDeclarator',
 ]);
 
+/** The globals that run code they are handed as text, which may throw anything: not trusted. */
+const CODE_RUNNERS: ReadonlySet<string> = new Set(['eval', 'Function']);
+
 /** What a name a function is called by starts from: a binding, or the object a method runs on. */
 const NAMED_BASES: ReadonlySet<string> = new Set(['Identifier', 'Super', 'ThisExpression']);
 
@@ -370,30 +375,30 @@ const NAMED_BASES: ReadonlySet<string> = new Set(['Identifier', 'Super', 'ThisEx
  * Whether `call` — a call or a `new` — calls a function by its name (`log(error)`,
  * `this.logger.warn(error)`, `new Error(message)`), rather than one made where it stands, which
  * would run there; and not `Promise.reject`, which is how a function that answers with a promise
- * throws.
+ * throws, nor `eval` or `Function`, which run code they are handed as text, nor `new Promise(…)`,
+ * which runs its executor there.
  */
 function callsByName(call: Node): boolean {
   if (call.type !== 'CallExpression' && call.type !== 'NewExpression') {
     return false;
   }
-  if (call.type === 'CallExpression') {
-    const callee = unwrapped(call.callee);
-    const rejects =
-      callee.type === 'MemberExpression' &&
-      callee.object.type === 'Identifier' &&
-      callee.object.name === 'Promise' &&
-      propertyName(callee) === 'reject';
-    if (rejects) {
-      return false;
-    }
+  const callee = unwrapped(call.callee);
+  const rejects =
+    callee.type === 'MemberExpression' &&
+    callee.object.type === 'Identifier' &&
+    callee.object.name === 'Promise' &&
+    propertyName(callee) === 'reject';
+  // `new Promise(executor)` runs the executor where it stands, and it may reject.
+  if (call.type === 'NewExpression' && callee.type === 'Identifier' && callee.name === 'Promise') {
+    return false;
   }
   let base: Node = call.callee;
   for (let next = towardTheName(base); next !== undefined; next = towardTheName(base)) {
     base = next;
   }
-  return NAMED_BASES.has(base.type);
+  const runsCode = base.type === 'Identifier' && CODE_RUNNERS.has(base.name);
+  return !rejects && !runsCode && NAMED_BASES.has(base.type);
 }
-
 /**
  * One step down a callee toward the name it is called by: out of parentheses, to the last of a
  * sequence, a member's object, a call's callee. `undefined` where there is no step left.
@@ -405,6 +410,21 @@ function towardTheName(node: Node): Node | undefined {
   return node.type === 'CallExpression' ? node.callee : innerOf(node);
 }
 
+/** Whether `node` reads a property off `null` or `undefined` as written, which always throws. */
+function readsOffNothing(node: Node): boolean {
+  if (node.type !== 'MemberExpression' || node.optional) {
+    return false;
+  }
+  const base = unwrapped(node.object);
+  if (base.type === 'Literal') {
+    return base.value === null;
+  }
+  if (base.type === 'UnaryExpression') {
+    return base.operator === 'void';
+  }
+  return base.type === 'Identifier' && base.name === 'undefined';
+}
+
 /**
  * Whether running `node` keeps a failure in: it is plain code (`PLAIN_TYPES`), and what it calls it
  * calls by name (`callsByName`) — which is taken not to throw, nor to answer with a rejection. A
@@ -414,7 +434,7 @@ function keepsIn(node: Node | null): boolean {
   const pending: Node[] = node === null ? [] : [node];
   for (let at = pending.pop(); at !== undefined; at = pending.pop()) {
     const call = at.type === 'CallExpression' || at.type === 'NewExpression';
-    if (call ? !callsByName(at) : !PLAIN_TYPES.has(at.type)) {
+    if (call ? !callsByName(at) : !PLAIN_TYPES.has(at.type) || readsOffNothing(at)) {
       return false;
     }
     if (!FUNCTION_TYPES.has(at.type)) {
@@ -521,37 +541,11 @@ function useOfLoader(visit: Visit): Use | undefined {
 /** A promise's methods: each passes a rejection on to the promise it makes, or handles it. */
 const PROMISE_METHODS: ReadonlySet<string> = new Set(['catch', 'finally', 'then']);
 
-/** Promise aggregates: each rejects as the first of its promises to reject does, or keeps it. */
-const AGGREGATES: ReadonlySet<string> = new Set(['all', 'allSettled', 'any', 'race']);
-
-/** The aggregate (`Promise.all([…])`, say) the array `elements` is handed to, or `undefined`. */
-function aggregateOf(elements: Visit): Visit | undefined {
-  const call = elements.up;
-  if (elements.key !== 'arguments' || call?.node.type !== 'CallExpression') {
-    return undefined;
-  }
-  const callee = unwrapped(call.node.callee);
-  const name = propertyName(callee);
-  const aggregates =
-    callee.type === 'MemberExpression' &&
-    callee.object.type === 'Identifier' &&
-    callee.object.name === 'Promise' &&
-    name !== undefined &&
-    AGGREGATES.has(name);
-  return aggregates ? call : undefined;
-}
-
-/**
- * What carries on the promise `at` makes: the parentheses around it, a call of its method, or an
- * aggregate it is handed to in an array.
- */
+/** What carries on the promise `at` makes: the parentheses around it, or a call of its method. */
 function chainedFrom(at: Visit): Visit | undefined {
   const { up } = at;
   if (up === undefined) {
     return undefined;
-  }
-  if (up.node.type === 'ArrayExpression') {
-    return aggregateOf(up);
   }
   if (up.node.type === 'ParenthesizedExpression') {
     return up;
@@ -563,6 +557,51 @@ function chainedFrom(at: Visit): Visit | undefined {
   const name = propertyName(up.node);
   const method = at.key === 'object' && name !== undefined && PROMISE_METHODS.has(name);
   return method && up.key === 'callee' && up.up?.node.type === 'CallExpression' ? up.up : undefined;
+}
+
+/**
+ * Whether `handler`, handed a rejection, keeps it in: a function named (taken not to throw, as a
+ * call by name is), or one made there whose parameters are plain and whose body is plain code.
+ */
+function handlesPlainly(handler: Node | undefined): boolean {
+  if (handler === undefined) {
+    return false;
+  }
+  const fn = unwrapped(handler);
+  if (fn.type !== 'ArrowFunctionExpression' && fn.type !== 'FunctionExpression') {
+    // `undefined` is no handler: the rejection goes on.
+    const none = fn.type === 'Identifier' && fn.name === 'undefined';
+    return !none && (NAMED_BASES.has(fn.type) || fn.type === 'MemberExpression');
+  }
+  return fn.params.every((param) => param.type === 'Identifier') && keepsIn(fn.body);
+}
+
+/** The handler `call` — a promise's `catch`, or its `then` with two — gives a rejection, if any. */
+function rejectionHandlerOf(call: Node): Node | undefined {
+  if (call.type !== 'CallExpression') {
+    return undefined;
+  }
+  const name = propertyName(unwrapped(call.callee));
+  if (name === 'catch') {
+    return call.arguments[0];
+  }
+  return name === 'then' ? call.arguments[1] : undefined;
+}
+
+/**
+ * Whether a call of the promise's own methods, in the chain from `visit`, takes its rejection: a
+ * `catch`, or a `then` with a second handler, that handles it plainly (`handlesPlainly`).
+ */
+function handledInChain(visit: Visit): boolean {
+  for (let at = chainedFrom(visit); at !== undefined; at = chainedFrom(at)) {
+    if (at.node.type !== 'CallExpression') {
+      continue;
+    }
+    if (handlesPlainly(rejectionHandlerOf(at.node))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -581,11 +620,11 @@ function awaitOf(visit: Visit): Visit | undefined {
 function useAt(visit: Visit): Use | undefined {
   const { node } = visit;
   if (node.type === 'ImportExpression') {
-    // Its failure is a rejection, which a `try` sees only where it is awaited in the block.
+    // Its failure is a rejection, which a `try` sees only where it is awaited in the block, and a
+    // handler of its own sees wherever it is.
     const awaited = awaitOf(visit);
-    return namesOneModule(node.source)
-      ? undefined
-      : { node, text: node, guarded: awaited !== undefined && inGuardedBlock(awaited) };
+    const guarded = (awaited !== undefined && inGuardedBlock(awaited)) || handledInChain(visit);
+    return namesOneModule(node.source) ? undefined : { node, text: node, guarded };
   }
   if (node.type !== 'Identifier' || node.name !== 'require') {
     return undefined;
