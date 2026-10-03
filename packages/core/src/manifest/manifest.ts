@@ -48,6 +48,8 @@ export interface BuildProjectManifestInput {
   readonly dynamicRoutes?: readonly DynamicRoute[] | undefined;
   readonly reservedRoutes?: readonly ReservedRoute[] | undefined;
   readonly exactPathnames?: readonly string[] | undefined;
+  /** Exact pathnames an app Function other than the first answers, with its name. */
+  readonly exactFunctions?: Readonly<Record<string, string>> | undefined;
   readonly headerRules?: readonly HeaderRule[] | undefined;
   readonly foldedHeaderRules?: readonly HeaderRule[] | undefined;
   readonly images?: ImagesConfig | undefined;
@@ -80,6 +82,7 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
     ...(input.exactPathnames !== undefined && {
       exactPathnames: Object.fromEntries(input.exactPathnames.map((pathname) => [pathname, true])),
     }),
+    ...(input.exactFunctions !== undefined && { exactFunctions: input.exactFunctions }),
     ...(input.headerRules !== undefined && { headerRules: input.headerRules }),
     ...(input.foldedHeaderRules !== undefined && { foldedHeaderRules: input.foldedHeaderRules }),
     ...(input.images !== undefined && { images: input.images }),

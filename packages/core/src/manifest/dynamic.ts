@@ -1,6 +1,6 @@
 import { conditionsHold } from '../request/conditions.ts';
 import { keyOf, withoutAssetPrefix } from './manifest.ts';
-import type { ProjectManifest, ReservedRoute, RouteEntry } from './schema.ts';
+import type { DynamicRoute, ProjectManifest, ReservedRoute, RouteEntry } from './schema.ts';
 
 /**
  * Serving a dynamic route's shell to a pathname no exact route names.
@@ -126,6 +126,37 @@ export function matchDynamicRoute(
     return Object.hasOwn(manifest.routes, candidate.route)
       ? manifest.routes[candidate.route]
       : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * The dynamic route Next.js would pick for a pathname no exact route names, whatever the class
+ * holds — a shell or nothing: the first whose pattern and conditions hold, unless a redirect or a
+ * rewrite of `next.config` claims the request ahead of the dynamic routes. `undefined` for none, and
+ * for a pathname the edge leaves alone (`isCanonicalPathname`).
+ *
+ * `matchDynamicRoute` asks the same of the class and wants its shell; this is for a reader that
+ * wants the route itself — which app Function its code is in, say (`functionFor`).
+ */
+export function dynamicRouteFor(
+  manifest: ProjectManifest,
+  url: URL,
+  headers: Headers,
+): DynamicRoute | undefined {
+  if (manifest.dynamicRoutes === undefined || !isCanonicalPathname(url.pathname)) {
+    return undefined;
+  }
+  if (isReserved(manifest, url, headers, false)) {
+    return undefined;
+  }
+  for (const candidate of manifest.dynamicRoutes) {
+    if (
+      patternMatches(candidate.sourceRegex, url.pathname) &&
+      conditionsHold(candidate, url, headers)
+    ) {
+      return candidate;
+    }
   }
   return undefined;
 }
