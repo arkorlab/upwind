@@ -29,6 +29,9 @@ function namesNoFile(pathname: string): boolean {
   return last !== '' && !last.replaceAll(/\[[^[\]]*\]/gu, '').includes('.');
 }
 
+/** A path that begins with the name the trailing-slash redirect leaves alone, in any case. */
+const WELL_KNOWN = /^\/\.well-known/iu;
+
 /**
  * The spelling a request asks for a pathname by, in an application that keeps its pages behind a
  * trailing slash (`trailingSlash`): with the slash, which Next.js redirects the pathname without it
@@ -37,8 +40,10 @@ function namesNoFile(pathname: string): boolean {
  */
 export function withTrailingSlash(pathname: string): string {
   // The redirect leaves a path that begins `/.well-known` alone, whatever follows — at the root of
-  // the path only: under a base path, `/docs/.well-known/…` gains the slash like any other.
-  return namesNoFile(pathname) && !pathname.startsWith('/.well-known') ? `${pathname}/` : pathname;
+  // the path only: under a base path, `/docs/.well-known/…` gains the slash like any other. In any
+  // case, too: Next.js's router matches its rules without regard to case (`sensitive: false`), and
+  // the redirect's exemption with them, so `/.WELL-KNOWN/acme` keeps no slash either.
+  return namesNoFile(pathname) && !WELL_KNOWN.test(pathname) ? `${pathname}/` : pathname;
 }
 
 /**
