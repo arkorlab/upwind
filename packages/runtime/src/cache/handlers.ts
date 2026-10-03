@@ -136,8 +136,8 @@ interface HeldFetch {
  * How long a write waits for the write of its key that was out when it was handed over. Past this
  * the earlier one is taken for lost — its request may have ended under it, and what a request that
  * has ended left out never settles in another — and the write goes regardless, so it may land
- * first. Should the earlier one land after it all the same, the host keeps the value made later
- * (`DataWritten.superseded`), whichever was written last.
+ * first. Should the earlier one land after it all the same, the host keeps the later of the two,
+ * which this isolate sent after it (`DataWriteRequest.order`, `DataWritten.superseded`).
  */
 const FETCH_WRITE_PATIENCE_MS = 5000;
 
@@ -154,17 +154,19 @@ const FETCH_WRITE_LIFETIME_MS = 30_000;
  * keys that are each fetched once, would otherwise have the table hold a write per key for as long
  * as the lifetime lets it — and past it, for a key nothing asks for again. Past this the oldest go:
  * their writes go on, and only their place in the order, and the reads they answer, are given up.
- * One that lands after a later write of its key is then not kept: the host keeps the value made
- * later (`DataWritten.superseded`), as for a write that waited its patience out.
+ * One that lands after a later write of its key is then not kept: the host keeps the write this
+ * isolate sent later (`DataWritten.superseded`), as for a write that waited its patience out.
  */
 const MAX_FETCH_WRITES = 512;
 
 /**
- * How many bytes of the values writes carry the table keeps for reads of their keys, as the data
- * memo keeps what it read within a budget of its own: a value may be tens of MiB, and the table's
- * keys alone bound none of that. Past it, the writes that have gone out let theirs go, oldest first
- * — their requests hold them while they are in flight, and no longer — and a read of their keys
- * asks the host meanwhile. A write still waiting to go keeps what it goes with.
+ * How many bytes of the values writes carry the table keeps, as the data memo keeps what it read
+ * within a budget of its own: a value may be tens of MiB, and the table's keys alone bound none of
+ * that. Past it, the writes that have gone out let go of what they keep for reads, oldest first —
+ * their requests hold it while they are in flight, and no longer — and a read of their keys asks
+ * the host meanwhile. Then the writes still waiting to go are dropped, oldest first: a value of
+ * their keys not kept, as when the host fails a write, rather than an isolate's memory spent on
+ * what a stalled host holds back.
  */
 const FETCH_WRITE_MIB = 8;
 const FETCH_WRITE_BYTES = FETCH_WRITE_MIB * MIB;
@@ -243,14 +245,26 @@ function sweepWrites(writes: FetchWrites): void {
   }
 }
 
-/** Keep no more of the values writes carry than the budget, letting go first of the oldest sent. */
-function trimWrites(writes: FetchWrites): void {
+/**
+ * Keep no more of the values writes carry than the budget (`FETCH_WRITE_BYTES`): what the writes
+ * gone out keep for reads first, and then the writes still waiting to go, which then never go.
+ */
+function trimWrites(runtime: CacheRuntime, writes: FetchWrites): void {
   for (const write of writes.byKey.values()) {
     if (writes.held <= FETCH_WRITE_BYTES) {
       return;
     }
     if (write.sent) {
       letGo(writes, write);
+    }
+  }
+  for (const write of writes.byKey.values()) {
+    if (writes.held <= FETCH_WRITE_BYTES) {
+      return;
+    }
+    if (write.bytes !== undefined) {
+      letGo(writes, write, true);
+      runtime.log('fetch cache write dropped', { detail: 'waiting past the byte budget' });
     }
   }
 }
@@ -301,7 +315,7 @@ async function send(
       return;
     }
     write.sent = true;
-    trimWrites(writes);
+    trimWrites(runtime, writes);
     await writeData(runtime, { key, entry: write.entry, bytes });
   } catch (error) {
     // The render has its data; what failed is keeping it for the next one.
@@ -322,8 +336,8 @@ async function send(
  * before the write lands; two writes of a key out at once would reach the host in whichever order
  * the network gave them. So a write goes out only once the one before it has been answered, and the
  * render waits on none of them. Where they cross all the same — one waited its patience out, or the
- * table let go of the one before it — the host keeps the value made later, not the one that landed
- * last (`DataWritten.superseded`).
+ * table let go of the one before it — the host keeps the one this isolate sent later, not the one
+ * that landed last (`DataWritten.superseded`).
  *
  * At most one waits: a write handed over while another of its key is still waiting takes that one's
  * place, and the one it replaces never goes out. The host would keep the newer anyway, and a key
@@ -365,7 +379,7 @@ function keepFetch(
   writes.byKey.set(key, write);
   writes.held += bytes.byteLength;
   write.settled = send(runtime, writes, key, write);
-  trimWrites(writes);
+  trimWrites(runtime, writes);
   return write.settled;
 }
 
