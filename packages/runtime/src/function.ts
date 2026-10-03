@@ -21,6 +21,7 @@ import { nowMs } from './cache/clock.ts';
 import { configureCacheHandlers } from './cache/handlers.ts';
 import { type CacheRuntime, createCacheRuntime } from './cache/runtime.ts';
 import { handleRequest } from './handle.ts';
+import { changesSomething } from './node-bridge.ts';
 import {
   installRequestContext,
   plainHeaders,
@@ -160,42 +161,68 @@ function failureBody(error: unknown): string {
   return trimmed === '' ? 'Internal Server Error' : `Internal Server Error: ${trimmed}`;
 }
 
+/**
+ * The request answered, and never a rejection: a failure before Next.js answered is logged here and
+ * answered with a 500. Here rather than around the caller's `await`, because for a request that is
+ * held (below) this is the work that survives a client that went away, and a failure in it is still
+ * one to see in the log.
+ */
+async function answered(
+  request: Request,
+  env: unknown,
+  waitUntil: (promise: Promise<unknown>) => void,
+): Promise<Response> {
+  try {
+    // Before anything of the application runs: a service binding is an object, so it reaches
+    // neither `process.env` nor any other place Next.js server code can look. The dashboard's
+    // control-plane and database clients read theirs back out of here.
+    publishFunctionEnv(env);
+    const { blobs, runtime } = hostFor(env);
+    return await withRequestContext(
+      { headers: plainHeaders(request.headers), url: publicUrl(request), waitUntil },
+      () => {
+        return handleRequest({
+          app: app as AppModule,
+          edge: edge as EdgeModule,
+          request,
+          cache: runtime,
+          blobs,
+          // The clock a test configuration hands the request; the host decides whether one may.
+          clock: runtime?.clockOf(request),
+          waitUntil,
+        });
+      },
+    );
+  } catch (error) {
+    // The Function's own log: nothing else sees a request that failed before Next.js answered.
+    // eslint-disable-next-line no-console
+    console.error('next-runtime: request failed', error);
+    return new Response(failureBody(error), {
+      status: HTTP_INTERNAL_ERROR,
+      headers: { 'content-type': 'text/plain; charset=utf-8' },
+    });
+  }
+}
+
 const entry = {
-  async fetch(request: Request, env: unknown, ctx: ExecutionContext): Promise<Response> {
+  fetch(request: Request, env: unknown, ctx: ExecutionContext): Promise<Response> {
     installRequestContext();
     const waitUntil = (promise: Promise<unknown>): void => {
       ctx.waitUntil(promise);
     };
-    try {
-      // Before anything of the application runs: a service binding is an object, so it reaches
-      // neither `process.env` nor any other place Next.js server code can look. The dashboard's
-      // control-plane and database clients read theirs back out of here.
-      publishFunctionEnv(env);
-      const { blobs, runtime } = hostFor(env);
-      return await withRequestContext(
-        { headers: plainHeaders(request.headers), url: publicUrl(request), waitUntil },
-        () => {
-          return handleRequest({
-            app: app as AppModule,
-            edge: edge as EdgeModule,
-            request,
-            cache: runtime,
-            blobs,
-            // The clock a test configuration hands the request; the host decides whether one may.
-            clock: runtime?.clockOf(request),
-            waitUntil,
-          });
-        },
-      );
-    } catch (error) {
-      // The Function's own log: nothing else sees a request that failed before Next.js answered.
-      // eslint-disable-next-line no-console
-      console.error('next-runtime: request failed', error);
-      return new Response(failureBody(error), {
-        status: HTTP_INTERNAL_ERROR,
-        headers: { 'content-type': 'text/plain; charset=utf-8' },
-      });
+    const answer = answered(request, env, waitUntil);
+    // A request that may change something is seen through, whether or not anyone is still waiting
+    // for it. workerd cancels a request's work when its client goes away — at the next thing the
+    // work waits on — and keeps only what `waitUntil` holds: measured, a write a handler made 300 ms
+    // in never happened when its client went away at 50 ms, and did with the work held. So a Server
+    // Action whose page reloaded or closed under it stopped between one write and the next, where
+    // Next.js on Node.js runs it to its end whatever became of the client. This holds the request to
+    // its answer; a Node.js handler that goes on after its headers is held to its own end where it
+    // runs (`invokeNodeHandler`).
+    if (changesSomething(request.method)) {
+      ctx.waitUntil(answer);
     }
+    return answer;
   },
 };
 
