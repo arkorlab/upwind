@@ -65,7 +65,9 @@ export async function platformRevalidate(input: RevalidateInput): Promise<void> 
     // (`split.ts`). This Function cannot render it, nor ask the one that holds it to; it is
     // invalidated instead, as `revalidatePath` invalidates a page, and rendered anew by its own
     // Function for the next request that asks for it.
-    if (elsewhere(store, descriptor.route) === undefined) {
+    // A route on the edge runtime has no generation to invalidate, here or there.
+    const entry = store.manifest.entrypoints.find((one) => one.id === descriptor.route);
+    if (entry?.runtime === 'edge' || elsewhere(store, descriptor.route) === undefined) {
       throw new Error(`revalidate: no Node.js entrypoint for ${descriptor.route}`);
     }
     await invalidateNow(context.runtime, pathTags(pathname));
