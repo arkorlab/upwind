@@ -7,22 +7,23 @@ name: Deploy tests
 # uploaded and served, a minute of it at the least.
 #
 # **One project takes one fixture at a time.** Every deployment replaces the project's whole runtime
-# environment and moves the pointer the suite's requests follow, so two shards sharing a project would
+# environment and changes which deployment the suite's requests reach, so two shards sharing a project would
 # take each other's application away mid-test. Splitting the *list* is upstream's own `-g n/total`;
 # running the pieces at the same time is what has to be bought, with a project per shard. So the number
 # of ids in `ADAPTER_TEST_PROJECT_IDS` is the parallelism, and with one id the shards queue behind each
 # other.
 #
-# **That is what bounds a full run.** The manifest selects around 1,100 suites — measured at 47–74s each
-# for small ones, so 18–28 hours of deployments — against two limits: 6 hours of execution per job, and
+# **That is what bounds a full run.** The manifest selects around 1,100 suites, about six hundred of
+# which deploy (the rest declare `skipDeployment`), against two limits: 6 hours of execution per job, and
 # **24 hours in the queue before a job is cancelled**. Queueing behind one project, the shards have to
-# satisfy both at once, and they pull in opposite directions: a shard runs for `total / n + 3min` of its
-# own setup (measured: two checkouts, two installs, Next.js built, Chromium), which wants `n` large, and
-# the last one starts after the other `n - 1` of those, which wants `n` small. At 18 hours six shards
-# start the last at about 15½; at 28 they start it at about 23½, which is inside the day by less than
-# half an hour. So `6` is the default because it satisfies both at the estimate, not because it divides
-# nicely — and a run at the top of that range, or past it, wants as many projects as it has shards, or
-# the slices taken one dispatch at a time with `only`.
+# satisfy both at once, and they pull in opposite directions: a shard runs for `total / n` plus about three
+# minutes of its own setup (two checkouts, two installs, Next.js built, Chromium), which wants `n` large,
+# and the last one starts after the other `n - 1` of those, which wants `n` small. Measured: a full pass in
+# six shards took 11h41m, about two hours a shard, the last starting nine and three-quarter hours in. A
+# settle (`ADAPTER_TEST_SETTLE_SECONDS`) is paid by every deploying suite, so at its one-minute ceiling it
+# adds about a hundred minutes a shard — still well inside both limits at six. A run much longer than the
+# measured one wants as many projects as it has shards, or the slices taken one dispatch at a time with
+# `only`.
 
 on:
   workflow_dispatch:
@@ -253,6 +254,8 @@ jobs:
         env:
           ARKOR_API_URL: ${{ secrets.ARKOR_API_URL }}
           ARKOR_API_TOKEN_FILE: ${{ runner.temp }}/deploy-token
+          # Read here too, so that a value the tool would refuse is refused before the long part.
+          ADAPTER_TEST_SETTLE_SECONDS: ${{ secrets.ADAPTER_TEST_SETTLE_SECONDS }}
         run: pnpm test:deploy preflight
 
       # Next.js is built from source, and installed again afterwards, because its test harness runs out
@@ -292,6 +295,9 @@ jobs:
           # came from the step above through the environment.
           ARKOR_API_URL: ${{ secrets.ARKOR_API_URL }}
           ARKOR_API_TOKEN_FILE: ${{ runner.temp }}/deploy-token
+          # How long the host takes to bring a deployment in for every request, which only whoever runs
+          # the host knows; unset is "at once". A secret like the rest, so that it is not printed either.
+          ADAPTER_TEST_SETTLE_SECONDS: ${{ secrets.ADAPTER_TEST_SETTLE_SECONDS }}
           # Through the environment rather than into the command: the selection is a string this workflow
           # was handed, and a `run:` that interpolates one is a shell that was handed it too.
           TESTS: ${{ inputs.tests }}

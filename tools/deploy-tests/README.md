@@ -19,12 +19,13 @@ which suites deploy mode selects.
 
 ## What it needs
 
-| Variable                  | What it is                                                 |
-| ------------------------- | ---------------------------------------------------------- |
-| `ARKOR_API_URL`           | The host's public API, for example `https://api.arkor.dev` |
-| `ARKOR_API_TOKEN`         | A token of that host with the `write` scope                |
-| `ARKOR_API_TOKEN_FILE`    | Or a file holding that token, read instead of the variable |
-| `ADAPTER_TEST_PROJECT_ID` | A project on that host, **used by nothing else**           |
+| Variable                      | What it is                                                             |
+| ----------------------------- | ---------------------------------------------------------------------- |
+| `ARKOR_API_URL`               | The host's public API, for example `https://api.example.com`           |
+| `ARKOR_API_TOKEN`             | A token of that host with the `write` scope                            |
+| `ARKOR_API_TOKEN_FILE`        | Or a file holding that token, read instead of the variable             |
+| `ADAPTER_TEST_PROJECT_ID`     | A project on that host, **used by nothing else**                       |
+| `ADAPTER_TEST_SETTLE_SECONDS` | Seconds waited once per fixture, before its suite starts; `0` if unset |
 
 The names are the host's own, so that the script an operator already drives this suite with drives this
 too. Nothing is passed on a command line, which is in every process list on the machine.
@@ -77,16 +78,19 @@ many pieces (upstream's own `-g n/total`), and `only` runs one piece on its own,
 after it was cut short.
 
 **Queueing behind one project, a full run is bounded by two of GitHub's limits at once**, and they pull in
-opposite directions. The manifest selects around 1,100 suites, so 18–28 hours of deployments. A shard runs
-for `total / n` plus about three minutes of its own setup, and must stay under the 6 hours a job may
-execute; the last shard waits for the other `n - 1` of those, and must start within the 24 hours a job may
-sit in the queue before it is cancelled. Six shards start the last one at about 15½ hours for an 18-hour
-run and about 23½ for a 28-hour one — inside the day, in the second case by under half an hour, which is
-why the default is `6`.
+opposite directions. The manifest selects around 1,100 suites, about six hundred of which deploy — the
+rest declare `skipDeployment` upstream and pass in a couple of seconds. A shard runs for `total / n` plus
+about three minutes of its own setup, and must stay under the 6 hours a job may execute; the last shard
+waits for the other `n - 1` of those, and must start within the 24 hours a job may sit in the queue before
+it is cancelled. Measured: a full pass in six shards took 11h41m, about two hours a shard, the last one
+starting nine and three-quarter hours in — which is why the default is `6`, with room on both sides.
+
+A settle is paid by every deploying suite: at its one-minute ceiling, about six hundred minutes across the
+run, a hundred or so a shard — about four hours a shard at most, at six, still inside both limits.
 
 Given a project per shard, none of that applies: the jobs all start at once, the queue limit never comes
-near, and the run is one shard long. That is the section below, and it is the answer for a run at the top
-of the range rather than a different number of shards.
+near, and the run is one shard long. That is the section below, and it is the answer for a run much longer
+than the measured one rather than a different number of shards.
 
 Without a host at all, `pnpm check:deploy-tests` runs the three hooks against a fake one: a fake
 application, a fake API, and the real scripts. It is what CI runs, and what keeps the shell contract
@@ -94,7 +98,7 @@ application, a fake API, and the real scripts. It is what CI runs, and what keep
 the order of the calls from breaking quietly between runs against a real host.
 
 **Serially, `-c 1`.** One project takes one fixture at a time, because a deployment replaces the
-project's environment and moves the pointer its requests follow; a second fixture deploying while the
+project's environment and changes which deployment its requests reach; a second fixture deploying while the
 first is under test makes the _first_ fail, for a reason nothing in its own output explains. The deploy
 hook refuses rather than let that happen, and says which application holds the project.
 
@@ -138,10 +142,28 @@ Beyond that, four limits are worth knowing before reading a failure as this adap
   Where the build has no such file, the host's own account of which deployment is current is the whole
   of the evidence, and then any answer at all — including a `5xx`, which a route-only application may
   mean — counts as served. Both cases say so in the log. A redirect is the one answer that can never
-  become the digest, so it is given thirty seconds — the pointer flips before every part of the host has
-  caught up, and what answers in between is the previous fixture, which may redirect everything — and
+  become the digest, so it is given thirty seconds — a host can name the new deployment before every part
+  of it has caught up, and what answers in between is the previous fixture, which may redirect everything — and
   then said plainly: a project that is access-protected, or something in front of it redirecting static
   files, rather than a quarter of an hour of polling.
+- **A request that reached the new deployment proves that it did, and no more.** A host that brings a
+  deployment in place by place can answer the probe with the new one and the suite's next request with
+  the one before — seen in a full run, where pages a suite received carried Next.js's own `data-dpl-id`
+  naming an earlier fixture's deployment while other requests of the same suite reached their own. How
+  long that lasts is the host's to know, so it is the operator's to say: `ADAPTER_TEST_SETTLE_SECONDS`
+  is waited out in full before the suite starts, from the first request this deployment is known to have
+  answered: the application's own page — through a redirect or two on its own host, since a root with a
+  base path or a locale redirects to where the page is — whose `data-dpl-id` is waited on while it still
+  names the deployment before. Not the probe's file — a file is at best this build's, and two deployments of one
+  build share all of them (the same fixture deployed again, or a constant `generateBuildId`). Not from the host naming
+  the deployment, because a host may name one before the switch has reached any request; and where no
+  page names a deployment either, the probe is the best there is and the log says so. It is paid once
+  per fixture, so it is worth setting to the host's real bound rather than to a round number above it,
+  and it stops at a minute: around six hundred of the manifest's suites deploy, and a minute each is as
+  much as the workflow's default split has room for. A host that takes longer than that to bring a
+  deployment in everywhere is not one this setting can serve — more projects shorten the queue, not the
+  wait. The page is asked for only when a settle is set, and is a request the application's own tests did
+  not make: a fixture whose tests count its first visit may see one more.
 - **The Next.js under test must be inside `SUPPORTED_NEXT_RANGE`.** Outside it the host refuses every
   deployment, and the suite reports every suite as failed for a reason that has nothing to do with the
   test. Inside it, 16.2 does without the content-addressed `/_next/static/immutable/*` — it ignores the

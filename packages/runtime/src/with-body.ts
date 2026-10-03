@@ -132,7 +132,7 @@ export async function serveWithBody(
   const postponed =
     entry.kind === 'node' ? await actionPostponedFor(input, store, rendered.resolved) : undefined;
   if (postponed === undefined || entry.kind === 'edge') {
-    return invokeEntry(input, entry, rendered.resolved.url, onFailure);
+    return invokeEntry(input, entry, rendered.resolved.url, { onFailure });
   }
   return invokeNodeHandler({
     handler: entry.handler,

@@ -15,7 +15,7 @@ packages:
 catalog:
   # Cloudflare's own types for the storage objects `@stayingupwind/sdk` hands an application. They
   # are in that package's public declarations, so they are a dependency of it and not a dev one.
-  '@cloudflare/workers-types': 5.20260926.1
+  '@cloudflare/workers-types': 5.20261002.1
   '@eslint/js': 10.0.1
   # What the adapter reads a build's source maps with: `sourcemap-codec` for a map's mappings as
   # numbers and back (`projectOnly`), `trace-mapping` for the index maps Turbopack writes when debug
@@ -24,17 +24,17 @@ catalog:
   '@jridgewell/trace-mapping': 0.3.31
   '@next/routing': 16.3.8
   # The AST Rolldown's `this.parse` hands a plugin: the version Rolldown itself depends on.
-  '@oxc-project/types': 0.151.0
-  '@types/node': 24.19.0
+  '@oxc-project/types': 0.152.0
+  '@types/node': 24.19.1
   # What `@stayingupwind/auth` wraps. A peer dependency there, so a project brings its own copy and
   # this pin is what the repository builds and typechecks against — the same arrangement as `next`.
-  better-auth: 1.7.6
+  better-auth: 1.7.7
   esbuild: 0.28.2
   eslint: 10.11.0
   eslint-config-prettier: 10.1.8
   eslint-import-resolver-typescript: 4.4.5
   eslint-plugin-import-x: 4.17.1
-  eslint-plugin-n: 18.3.0
+  eslint-plugin-n: 18.4.0
   eslint-plugin-perfectionist: 5.12.1
   eslint-plugin-promise: 7.3.0
   # `recheck`, which decides a regular expression's worst case rather than guessing at its shape.
@@ -43,24 +43,24 @@ catalog:
   # quadratic, and neither `regexp/no-super-linear-backtracking` nor `no-super-linear-move` says so.
   eslint-plugin-redos: 4.5.0
   eslint-plugin-regexp: 3.3.1
-  eslint-plugin-security: 4.0.1
-  eslint-plugin-sonarjs: 4.2.1
+  eslint-plugin-security: 4.2.0
+  eslint-plugin-sonarjs: 4.2.2
   eslint-plugin-unicorn: 76.0.0
-  globals: 17.12.0
+  globals: 17.13.0
   # Reads a project's own config at build time, the way wrangler reads its own. Build-time only:
   # nothing of it reaches a Function.
   jsonc-parser: 3.3.1
-  knip: 6.38.0
+  knip: 6.39.0
   # The workerd `upwind dev` and `upwind build` bind a project's local storage to. The version is
   # the registry's `latest`, which is a prerelease: the last non-prerelease carries a workerd from
   # July, and a compatibility date a Function is built against (`FUNCTION_COMPATIBILITY_DATE` in
   # `@stayingupwind/adapter`) is newer than that — a local run must not be the older runtime.
   miniflare: 5.20260925.0-alpha
   next: 16.3.8
-  oxfmt: 0.70.0
-  rolldown: 1.2.11
+  oxfmt: 0.71.0
+  rolldown: 1.2.12
   typescript: 5.9.3
-  typescript-eslint: 8.70.1
+  typescript-eslint: 8.71.0
   zod: 4.6.5
 
 # Only these dependencies may run install scripts.
