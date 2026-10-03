@@ -53,6 +53,13 @@ async function readRecordPack(
 }
 
 /**
+ * The reads of records each runtime has out, joined or not: a read the table let go of
+ * (`sweepReads`) goes on until it settles or its request ends, and it is these that
+ * `MAX_RECORD_READS` bounds.
+ */
+const readsOut = new WeakMap<CacheRuntime, Set<RecordRead>>();
+
+/**
  * Keep what a read said for the requests after it, once it has said it, and only while it is still
  * the entry's read: one a regeneration overtook (`forgetRecord`) says what the entry was. A read
  * that failed is not kept, and the next request asks again.
@@ -69,11 +76,33 @@ async function land(runtime: CacheRuntime, entryId: string, read: RecordRead): P
     if (runtime.recordReads.get(entryId) === read) {
       runtime.recordReads.delete(entryId);
     }
+    readsOut.get(runtime)?.delete(read);
   }
 }
 
 /** How many reads of records may be in flight at once, as many as their memory keeps records. */
 const MAX_RECORD_READS = 256;
+
+/**
+ * How long a read of a record is taken to be out at the most: what the runtime gives work behind a
+ * response (`waitUntil`). One whose request ended under it never settles here.
+ */
+const RECORD_READ_LIFETIME_MS = 30_000;
+
+/** The runtime's reads still out, once those begun longer ago than a read can be out are let go. */
+function stillOut(runtime: CacheRuntime, now: number): Set<RecordRead> {
+  let reads = readsOut.get(runtime);
+  if (reads === undefined) {
+    reads = new Set();
+    readsOut.set(runtime, reads);
+  }
+  for (const read of reads) {
+    if (now - read.startedAt >= RECORD_READ_LIFETIME_MS) {
+      reads.delete(read);
+    }
+  }
+  return reads;
+}
 
 /**
  * Let go of the reads begun more than a hold ago, which no request joins any more, and of the
@@ -112,7 +141,16 @@ function sharedRead(
   if (joined !== undefined && now - joined.startedAt < runtime.holdMs) {
     return joined.pack;
   }
+  // As many out as the budget lets, joined or not: past it the host is not answering them, and
+  // another read would wait out its deadline as they do, for nothing.
+  const out = stillOut(runtime, now);
+  if (out.size >= MAX_RECORD_READS) {
+    return Promise.reject(
+      new Error(`${String(MAX_RECORD_READS)} reads of records are out already`),
+    );
+  }
   const read: RecordRead = { startedAt: now, pack: readRecordPack(runtime, entryId) };
+  out.add(read);
   // Taken out before it is put back, so that the reads stand in the order they were begun, and
   // the ones past their hold are the first to be let go.
   runtime.recordReads.delete(entryId);

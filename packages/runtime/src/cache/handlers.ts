@@ -7,7 +7,7 @@ import { nextWriteOrder, readData, type WriteOrder, writeData } from './data.ts'
 import type { DataEntryMetadata } from './host.ts';
 import type { CacheRuntime, DataMemo } from './runtime.ts';
 import { recordValidity } from './tags.ts';
-import { callsBehind } from './turns.ts';
+import { callsBehind, callsWaitedOn } from './turns.ts';
 
 /**
  * The cache handlers Next.js runs its data caches through, installed on the global symbol Next.js
@@ -630,19 +630,24 @@ async function setUseCache(
     runtime.log('use cache value not stored: too large', { key: cacheKey });
     return;
   }
-  await writeData(runtime, {
-    key: cacheKey,
-    entry: {
-      kind: USE_CACHE,
-      handler: kind,
-      tags: [...entry.tags],
-      stale: entry.stale,
-      timestamp: entry.timestamp,
-      expire: entry.expire,
-      revalidate: entry.revalidate,
+  await writeData(
+    runtime,
+    {
+      key: cacheKey,
+      entry: {
+        kind: USE_CACHE,
+        handler: kind,
+        tags: [...entry.tags],
+        stale: entry.stale,
+        timestamp: entry.timestamp,
+        expire: entry.expire,
+        revalidate: entry.revalidate,
+      },
+      bytes,
     },
-    bytes,
-  });
+    // Ahead of the calls behind the render (`callsWaitedOn`): Next.js waits for this write.
+    callsWaitedOn(),
+  );
 }
 
 /** The `use cache` handler of one kind (`default`, `remote`), reading and writing the same scope. */
