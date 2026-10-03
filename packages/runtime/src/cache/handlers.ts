@@ -149,6 +149,14 @@ const FETCH_WRITE_PATIENCE_MS = 5000;
 const FETCH_WRITE_LIFETIME_MS = 30_000;
 
 /**
+ * How many keys' writes the isolate keeps track of at once. A host that answers no write, under
+ * keys that are each fetched once, would otherwise have the table hold a value per key for as long
+ * as the lifetime lets it — and past it, for a key nothing asks for again. Past this the oldest go:
+ * their writes go on, and only their place in the order, and the reads they answer, are given up.
+ */
+const MAX_FETCH_WRITES = 512;
+
+/**
  * A write the fetch cache handed over: what it writes, when, the write of its key it goes after,
  * whether it has gone out, and a promise that settles as it is answered, has failed, or will not
  * go. A write that a newer one of its key took the place of before it went out lets its bytes go.
@@ -164,9 +172,9 @@ interface FetchWrite {
 
 /**
  * The fetch cache's writes still out in this isolate: for each key, the last one handed over, which
- * is what a read of the key is answered with meanwhile (`get`). An entry leaves as its write
- * settles, or once it is older than a write can be out (`FETCH_WRITE_LIFETIME_MS`), so there are
- * only ever as many as there are keys with a write out.
+ * is what a read of the key is answered with meanwhile (`get`), oldest first. An entry leaves as its
+ * write settles, or once it is older than a write can be out (`FETCH_WRITE_LIFETIME_MS`) — swept as
+ * any write is handed over, whatever its key — or once `MAX_FETCH_WRITES` newer ones are kept.
  */
 const fetchWrites = new WeakMap<CacheRuntime, Map<string, FetchWrite>>();
 
@@ -178,6 +186,21 @@ function writeOut(writes: Map<string, FetchWrite>, key: string): FetchWrite | un
     return undefined;
   }
   return write;
+}
+
+/**
+ * Let go of the writes handed over longer ago than a write can be out, and of the oldest beyond the
+ * budget, before another is kept: a write that never settles never leaves on its own, and its key
+ * may never be asked for again.
+ */
+function sweepWrites(writes: Map<string, FetchWrite>): void {
+  const now = performance.now();
+  for (const [key, write] of writes) {
+    if (writes.size < MAX_FETCH_WRITES && now - write.handedAt < FETCH_WRITE_LIFETIME_MS) {
+      return;
+    }
+    writes.delete(key);
+  }
 }
 
 /** What the key's write still out in this isolate carries, if there is one. */
@@ -266,6 +289,7 @@ function keepFetch(
   const writes = fetchWrites.get(runtime) ?? new Map<string, FetchWrite>();
   fetchWrites.set(runtime, writes);
   const previous = writeOut(writes, key);
+  sweepWrites(writes);
   let after = previous?.settled;
   if (previous?.sent === false) {
     // It never went out: this one takes its place, behind the write it was waiting for.
@@ -280,6 +304,9 @@ function keepFetch(
     sent: false,
     settled: undefined,
   };
+  // Taken out before it is put back, so that the writes stand in the order they were handed over,
+  // and the ones the sweep lets go of first are the oldest.
+  writes.delete(key);
   writes.set(key, write);
   write.settled = send(runtime, writes, key, write);
   return write.settled;
