@@ -41,7 +41,7 @@ catalog:
   eslint-plugin-security: 4.0.1
   eslint-plugin-sonarjs: 4.2.1
   eslint-plugin-unicorn: 76.0.0
-  globals: 17.12.0
+  globals: 17.13.0
   # Reads a project's own config at build time, the way wrangler reads its own. Build-time only:
   # nothing of it reaches a Function.
   jsonc-parser: 3.3.1
