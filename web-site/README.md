@@ -59,8 +59,8 @@ that is the whole edit — no sentence counts the packages.
 
 Arkor builds `main` from GitHub — root directory `web-site`, `pnpm install --frozen-lockfile`,
 `pnpm build`, and the bundle it serves is `.arkor/`, the name `@stayingupwind/adapter` exports as
-`OUT_DIR_NAME`. Nothing about that lives in this repository: there are no credentials here and no
-workflow that deploys.
+`OUT_DIR_NAME`. Those are settings on Arkor's side, not in this repository: there are no credentials
+here and no workflow that deploys.
 
 The canonical host is `www.stayingupwind.com` and the apex redirects to it, so every absolute URL the
 site emits — canonical, hreflang, the sitemap, the Open Graph card — names `www` (`src/lib/site.ts`).
