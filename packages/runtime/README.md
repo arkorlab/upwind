@@ -66,9 +66,10 @@ served, since a Function isolate serves many at once:
 
 - `Symbol.for('@vercel/request-context')`: the request's headers, its URL and `waitUntil`, which
   `track()` from `@vercel/analytics/server` reads (`request-context.ts`).
-- `Symbol.for('__SENTRY_SAFE_RANDOM_ID_WRAPPER__')`: where Sentry's Next.js SDK reads its random
-  values and its clock, so that a prerender does not read them. The SDK's own runner keeps one
-  snapshot of the async context for the whole isolate, which workerd refuses outside the request
-  that took it, and what it falls back to reads inside whichever render is running — which, during
-  a prerender, Next.js aborts. Here each read runs in the context the current request entered the
-  Function in (`random-safe-context.ts`).
+- `Symbol.for('__SENTRY_SAFE_RANDOM_ID_WRAPPER__')`: what Sentry's Next.js SDK runs its reads of
+  random values and of the clock through, so that a read made while Next.js prerenders runs outside
+  the prerender's store — Next.js aborts a prerender that makes one in it. The SDK's own runner
+  keeps one snapshot of the async context for the whole isolate, which workerd refuses outside the
+  request that took it, and what it falls back to runs the read in whichever render is under way.
+  Here each read runs in the context the current request entered the Function in, outside anything
+  Next.js has entered since (`random-safe-context.ts`).
