@@ -51,9 +51,23 @@ export interface BuildProjectManifestInput {
   readonly headerRules?: readonly HeaderRule[] | undefined;
   readonly foldedHeaderRules?: readonly HeaderRule[] | undefined;
   readonly images?: ImagesConfig | undefined;
+  /** The application's `htmlLimitedBots`, as the build recorded it. */
+  readonly htmlLimitedBots?: string | undefined;
+  /** Whether the build's Next.js streams a partially prerendered page to crawlers it lists not. */
+  readonly crawlersStreamed?: boolean | undefined;
   readonly staticFileLocales?: StaticFileLocales | undefined;
   readonly staticFileAssetPrefix?: StaticFileAssetPrefix | undefined;
   readonly cache?: ManifestCache | undefined;
+}
+
+/** Who the application sends blocking metadata to, and whether its Next.js streams to the rest. */
+function crawlerFields(
+  input: BuildProjectManifestInput,
+): Pick<ProjectManifest, 'htmlLimitedBots' | 'crawlersStreamed'> {
+  return {
+    ...(input.htmlLimitedBots !== undefined && { htmlLimitedBots: input.htmlLimitedBots }),
+    ...(input.crawlersStreamed === true && { crawlersStreamed: true as const }),
+  };
 }
 
 /** Assemble a manifest from a build's routes; validates the result against the schema. */
@@ -83,6 +97,7 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
     ...(input.headerRules !== undefined && { headerRules: input.headerRules }),
     ...(input.foldedHeaderRules !== undefined && { foldedHeaderRules: input.foldedHeaderRules }),
     ...(input.images !== undefined && { images: input.images }),
+    ...crawlerFields(input),
     ...(input.staticFileLocales !== undefined && { staticFileLocales: input.staticFileLocales }),
     ...(input.staticFileAssetPrefix !== undefined && {
       staticFileAssetPrefix: input.staticFileAssetPrefix,
