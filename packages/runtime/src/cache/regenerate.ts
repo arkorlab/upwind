@@ -266,8 +266,23 @@ async function upload(
   // In the request's turns for the calls behind its work, which the data cache's writes take too
   // (`CALLS_BEHIND_AT_ONCE`): a page's every output at once took all six a Function has.
   const turn = callsBehind();
-  const one = (role: ArtifactUpload['role'], bytes: Uint8Array, contentType: string) =>
-    turn(() => host.uploadArtifact({ ...lease, role, bytes, contentType }));
+  // An output that fails to upload fails the attempt (`publish`), and the outputs still waiting
+  // for their turn are not sent after it: no commit would name them, and they would hold the turns
+  // the request's writes wait for.
+  let failed = false;
+  const one = async (role: ArtifactUpload['role'], bytes: Uint8Array, contentType: string) => {
+    try {
+      return await turn(() => {
+        if (failed) {
+          return Promise.reject(new Error('not uploaded: an output beside it failed to upload'));
+        }
+        return host.uploadArtifact({ ...lease, role, bytes, contentType });
+      });
+    } catch (error) {
+      failed = true;
+      throw error;
+    }
+  };
   const encoder = new TextEncoder();
   const primary = bodyArtifact(input.target, render);
   // The outputs together, the segments with the rest, as many at once as the turns let out. Each
