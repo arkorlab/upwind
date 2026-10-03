@@ -50,9 +50,9 @@ export function postponedOf(store: Store, prerender: Prerender): string | undefi
 /**
  * A file the manifest names, under `status`: with the bytes the Function carries, or — for one it
  * does not carry, a file under `_next/static` a rewrite of the build's may land on, which the
- * adapter lists for such a build only — with the host's, which keeps every file of the build. Not
- * for a `HEAD`, which has no use for them: the host's bytes are a read of the whole file.
- * `undefined` where the host has none to give.
+ * adapter lists for such a build only — with the host's, which keeps every file of the build.
+ * `undefined` where neither has it. A `HEAD` is answered with the headers alone, and reads nothing
+ * where the host could give the file: the host's bytes are a read of the whole of it.
  */
 export async function staticFileResponse(
   input: RoutedInput,
@@ -60,15 +60,13 @@ export async function staticFileResponse(
   file: StaticFile,
   status: number,
 ): Promise<Response | undefined> {
-  const carried = store.tryReadBlob(file.blob.sha256);
-  if (carried !== undefined) {
-    return fileResponse(file, carried, status);
-  }
+  const { sha256 } = file.blob;
   if (input.request.method === 'HEAD') {
-    return fileResponse(file, null, status);
+    const answerable = input.blobs !== undefined || store.tryReadBlob(sha256) !== undefined;
+    return answerable ? fileResponse(file, null, status) : undefined;
   }
-  const hosted = await fromHost(input, file.blob);
-  return hosted === undefined ? undefined : fileResponse(file, hosted, status);
+  const bytes = store.tryReadBlob(sha256) ?? (await fromHost(input, file.blob));
+  return bytes === undefined ? undefined : fileResponse(file, bytes, status);
 }
 
 function fileResponse(
