@@ -16,6 +16,7 @@ import type { PlanBudget } from './plan.ts';
 import { sameChunks } from './same-chunks.ts';
 import {
   carriesBlob,
+  everyFunction,
   overBudget,
   placedEntrypoints,
   placementsOf,
@@ -114,6 +115,22 @@ function runtimeOf(route: RouteCode): 'edge' | 'nodejs' {
   return route.edge === undefined ? 'nodejs' : 'edge';
 }
 
+/**
+ * Each blob once, the first of a digest kept: a file the Function answers itself can be a
+ * prerendered body byte for byte, and one module name cannot be uploaded twice.
+ */
+function distinct<B extends { readonly sha256: string }>(blobs: readonly B[]): B[] {
+  const seen = new Set<string>();
+  const once: B[] = [];
+  for (const blob of blobs) {
+    if (!seen.has(blob.sha256)) {
+      seen.add(blob.sha256);
+      once.push(blob);
+    }
+  }
+  return once;
+}
+
 /** What an app Function holding `held` — or every route — is made of. */
 function partsOf(
   context: FunctionsContext,
@@ -132,23 +149,22 @@ function partsOf(
       edge: context.edgeEntries,
       chunks: context.chunks,
       wasm: context.wasm,
-      blobs: [...context.shipped, ...context.staticBlobs],
+      blobs: distinct([...context.shipped, ...context.staticBlobs]),
       files: context.files.app,
     };
   }
   const own = context.routes.filter((route) => held.routes.has(route.id));
   const known = new Set(context.routes.map((route) => route.id));
-  const primary = held.name === PRIMARY_FUNCTION;
   const { output } = context.middleware;
   return {
     modules: own.flatMap((route) => (route.module === undefined ? [] : [route.module])),
     edge: own.flatMap((route) => (route.edge === undefined ? [] : [route.edge])),
     chunks: [...new Set(own.flatMap((route) => route.chunks))],
     wasm: [...new Set(own.flatMap((route) => route.wasm))],
-    blobs: [
-      ...context.shipped.filter((blob) => carriesBlob(blob, held.routes, known, primary)),
+    blobs: distinct([
+      ...context.shipped.filter((blob) => carriesBlob(blob, held.routes, known)),
       ...context.staticBlobs,
-    ],
+    ]),
     files: tracedFiles(
       [
         ...own.map((route) => ({ runtime: runtimeOf(route), assets: route.assets })),
@@ -280,13 +296,18 @@ export async function appFunctionsOf<
     return whole;
   }
   const { middleware, hook, ctx } = context;
+  const every = everyFunction(ctx.config.basePath);
   const plan = await planSplit({
     routes: context.routes,
     shipped: context.shipped,
+    staticDigests: new Set(context.staticBlobs.map((blob) => blob.sha256)),
     single,
-    baseAssets: [
-      ...(middleware.output === undefined ? [] : [middleware.output.assets]),
-      hook.assets,
+    every,
+    base: [
+      ...(middleware.output === undefined
+        ? []
+        : [{ assets: middleware.output.assets, wasm: middleware.wasm, edge: middleware.edge[0] }]),
+      { assets: hook.assets, wasm: hook.wasm },
     ],
     projectDir: ctx.projectDir,
     distDir: ctx.distDir,
@@ -308,7 +329,7 @@ export async function appFunctionsOf<
   const json = JSON.stringify(split);
   const built: { name: string; built: BuiltFunction }[] = [];
   for (const planned of plan) {
-    const routes = routesOf(planned, context.routes, placements);
+    const routes = routesOf(planned, context.routes, placements, every);
     built.push({
       name: planned.name,
       built: await buildAppFunction(context, json, { name: planned.name, routes }, false),

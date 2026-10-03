@@ -9,6 +9,7 @@ import {
 
 import type { RouteCode, ShippedBlob } from './collect.ts';
 import { MAX_FUNCTION_BYTES } from './dependencies.ts';
+import type { EdgeEntry } from './edge.ts';
 import type { BuiltFunction } from './function.ts';
 import {
   type PlanBudget,
@@ -29,9 +30,9 @@ import { tracedFiles } from './traced-files.ts';
  * Function that answers that the route is another's (`MISDIRECTED_STATUS`), so nothing here happens
  * unless the host asks for it (`AdapterOptions.functions`). Then the application is first built as
  * one Function, exactly as it would be otherwise, and weighed: within the budgets, that Function is
- * the build, byte for byte. Past them, the routes are planned into as few Functions as the budgets
- * allow (`plan.ts`), weighed with what that one build measured, and each Function is built with its
- * own routes and what every Function needs.
+ * the build, byte for byte. Past them, the routes are planned into few Functions within the budgets
+ * (`plan.ts`), weighed with what that one build measured, and each Function is built with its own
+ * routes and what every Function needs.
  */
 
 const KIB = 1024;
@@ -56,6 +57,15 @@ export function checkSplitOptions(options: SplitOptions | undefined): void {
     return;
   }
   const { maxMiB, maxCodeMiB } = options;
+  // Checked as much as the numbers, since configuration need not be typed: a misspelt `opted-in`
+  // would split every application past the budgets, the one thing a host bringing the split in
+  // gradually asked not to happen.
+  const projects: unknown = options.projects;
+  if (projects !== undefined && projects !== 'all' && projects !== 'opted-in') {
+    throw new RangeError(
+      `@stayingupwind/adapter: functions.split.projects must be 'all' or 'opted-in', got ${JSON.stringify(projects)}`,
+    );
+  }
   if (!Number.isFinite(maxMiB) || maxMiB <= 0 || maxMiB * MIB > MAX_FUNCTION_BYTES) {
     throw new RangeError(
       `@stayingupwind/adapter: functions.split.maxMiB must be more than 0 and at most ${String(MAX_FUNCTION_BYTES / MIB)}, got ${String(maxMiB)}`,
@@ -115,30 +125,50 @@ export function overBudget(built: BuiltFunction, budget: PlanBudget): boolean {
   return bytes > budget.maxBytes || codeBytes > budget.maxCodeBytes;
 }
 
+/** The pages that answer a request no route of a Function's own does. */
+const ERROR_PAGES = ['/404', '/500', '/_error', '/_not-found'];
+
+/** The id this package gives the middleware's entrypoint, whatever the `basePath`. */
+const MIDDLEWARE_ENTRY_ID = '/_middleware';
+
 /**
  * The entrypoints every app Function carries, whatever routes it holds: what answers a request no
- * route of its own does — the not-found page, and the Pages Router's error pages — and the
- * middleware, which a Function runs itself whenever the edge did not.
+ * route of its own does — the not-found page, and the Pages Router's error pages, each under the
+ * `basePath` as Next.js names every output and the runtime looks them up — and the middleware,
+ * which a Function runs itself whenever the edge did not.
  */
-export const EVERY_FUNCTION: ReadonlySet<string> = new Set([
-  '/404',
-  '/500',
-  '/_error',
-  '/_middleware',
-  '/_not-found',
-]);
+export function everyFunction(basePath: string): ReadonlySet<string> {
+  return new Set([MIDDLEWARE_ENTRY_ID, ...ERROR_PAGES.map((page) => `${basePath}${page}`)]);
+}
 
 /** The Pages Router's kinds: its pages travel together (`unitsOf`). */
 const PAGES_ROUTER: ReadonlySet<Entrypoint['kind']> = new Set(['pages', 'pages-api']);
+
+/** Code every Function carries besides its routes': the middleware's, the hook's. */
+export interface BasePart {
+  /** Its trace. */
+  readonly assets: Readonly<Record<string, string>>;
+  /** The WebAssembly it reaches on the Node.js runtime. */
+  readonly wasm: readonly string[];
+  /** Its code built for the edge runtime, with that code's WebAssembly. */
+  readonly edge?: EdgeEntry | undefined;
+}
 
 /** What the planner is handed, beyond the routes and the budgets. */
 export interface SplitInput {
   readonly routes: readonly RouteCode[];
   readonly shipped: readonly ShippedBlob[];
+  /**
+   * The digests of the files a Function answers itself (`travelsWithFunction`). Every Function
+   * carries those, so a prerendered body that is one of them byte for byte is no route's to weigh.
+   */
+  readonly staticDigests: ReadonlySet<string>;
   /** The application built as one Function: what every piece of its code weighs. */
   readonly single: BuiltFunction;
-  /** What every Function reads besides its routes': the middleware's and the hook's traces. */
-  readonly baseAssets: readonly Readonly<Record<string, string>>[];
+  /** The entrypoints every Function holds (`everyFunction`). */
+  readonly every: ReadonlySet<string>;
+  /** What every Function carries besides its routes. */
+  readonly base: readonly BasePart[];
   readonly projectDir: string;
   readonly distDir: string;
   readonly budget: PlanBudget;
@@ -186,6 +216,9 @@ function weightsOf(input: SplitInput): Weights {
   const items = new Map<string, PlanItem>();
   const blobsOf = new Map<string, string[]>();
   for (const blob of input.shipped) {
+    if (input.staticDigests.has(blob.sha256)) {
+      continue;
+    }
     const name = `b:${blob.sha256}`;
     items.set(name, { bytes: blob.bytes.byteLength, code: false });
     for (const route of blob.routes) {
@@ -247,16 +280,16 @@ async function piecesOf(route: RouteCode, input: SplitInput, weights: Weights): 
   return pieces;
 }
 
-/** A trace with no entrypoint behind it — the middleware's, the hook's — as a route to weigh. */
-function tracedOnly(assets: Readonly<Record<string, string>>): RouteCode {
+/** Code with no entrypoint behind it — the middleware's, the hook's — as a route to weigh. */
+function baseRoute(part: BasePart): RouteCode {
   return {
     id: '',
     kind: 'app-route',
     module: undefined,
-    edge: undefined,
+    edge: part.edge,
     chunks: [],
-    wasm: [],
-    assets,
+    wasm: [...part.wasm],
+    assets: part.assets,
   };
 }
 
@@ -264,8 +297,8 @@ function tracedOnly(assets: Readonly<Record<string, string>>): RouteCode {
 async function basePieces(input: SplitInput, weights: Weights): Promise<ReadonlySet<string>> {
   const base = new Set<string>();
   const traced = [
-    ...input.baseAssets.map((assets) => tracedOnly(assets)),
-    ...input.routes.filter((route) => EVERY_FUNCTION.has(route.id)),
+    ...input.base.map((part) => baseRoute(part)),
+    ...input.routes.filter((route) => input.every.has(route.id)),
   ];
   for (const route of traced) {
     const pieces = await piecesOf(route, input, weights);
@@ -281,10 +314,10 @@ async function basePieces(input: SplitInput, weights: Weights): Promise<Readonly
  * module, required once — and one for the whole Pages Router, whose `res.revalidate()` renders any
  * of its pages in the Function that calls it.
  */
-function unitsOf(routes: readonly RouteCode[]): RouteCode[][] {
+function unitsOf(routes: readonly RouteCode[], every: ReadonlySet<string>): RouteCode[][] {
   const units = new Map<string, RouteCode[]>();
   for (const route of routes) {
-    if (EVERY_FUNCTION.has(route.id)) {
+    if (every.has(route.id)) {
       continue;
     }
     const key = PAGES_ROUTER.has(route.kind)
@@ -321,7 +354,8 @@ async function planUnit(
 
 /**
  * What the one Function weighed beyond what any route can be credited with: what every Function of
- * the plan will weigh — Next.js's own server, the runtime, the manifests, the error pages.
+ * the plan will weigh — Next.js's own server, the runtime, the manifests, the error pages, and a
+ * prerendered body no route of the build names (`carriesBlob`).
  */
 function baseWeight(
   input: SplitInput,
@@ -348,7 +382,7 @@ export async function planSplit(input: SplitInput): Promise<PlannedFunction[]> {
   const weights = weightsOf(input);
   const base = await basePieces(input, weights);
   const units: PlanUnit[] = [];
-  for (const unit of unitsOf(input.routes)) {
+  for (const unit of unitsOf(input.routes, input.every)) {
     units.push(await planUnit(unit, input, weights, base));
   }
   return planFunctions({
@@ -393,11 +427,12 @@ export function routesOf(
   planned: PlannedFunction,
   routes: readonly RouteCode[],
   placements: ReadonlyMap<string, string>,
+  every: ReadonlySet<string>,
 ): ReadonlySet<string> {
   return new Set(
     routes
       .filter((route) => {
-        if (EVERY_FUNCTION.has(route.id)) {
+        if (every.has(route.id)) {
           return true;
         }
         return (placements.get(route.id) ?? PRIMARY_FUNCTION) === planned.name;
@@ -407,16 +442,18 @@ export function routesOf(
 }
 
 /**
- * Whether a Function carries a shipped blob: when it holds a route that names it, and — for a blob
- * whose routes have no entrypoint in this build — when it is the first.
+ * Whether a Function carries a shipped blob: when it holds a route that names it — or, for a blob
+ * named by a route with no entrypoint in this build, always. The plan counts such a blob where it
+ * counts everything no route can be credited with, among what every Function weighs
+ * (`baseWeight`), and a Function carries what it was weighed with. Next.js names a prerender's page
+ * among the entrypoints, so in practice there is none.
  */
 export function carriesBlob(
   blob: ShippedBlob,
   held: ReadonlySet<string>,
   known: ReadonlySet<string>,
-  primary: boolean,
 ): boolean {
-  return blob.routes.some((route) => (known.has(route) ? held.has(route) : primary));
+  return blob.routes.some((route) => !known.has(route) || held.has(route));
 }
 
 /** The plan as the build's record keeps it: per Function, its routes, and what it was expected to weigh. */

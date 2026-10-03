@@ -265,7 +265,7 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     middleware: { output: middleware, ...middlewarePlacement(middleware) },
     ...collected,
     shipped,
-    staticBlobs: await staticBlobsOf(shippedStatic, shipped, outDir),
+    staticBlobs: await staticBlobsOf(shippedStatic, outDir),
     files: filesRead(ctx, middleware, instrumentation.assets, exported),
   };
   const functions = await appFunctionsOf(
@@ -323,18 +323,18 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
 }
 
 /**
- * The blobs of the files a Function answers itself (`travelsWithFunction`) that it does not carry
- * already as a prerendered body, once each, in the order the files come in.
+ * The blobs of the files a Function answers itself (`travelsWithFunction`), once each, in the order
+ * the files come in. Every app Function carries all of them — including one that is a prerendered
+ * body byte for byte, which a Function holding none of that body's routes would otherwise lack; each
+ * Function carries a digest once (`distinct`).
  */
 async function staticBlobsOf(
   files: readonly { readonly blob: { readonly sha256: string } }[],
-  shipped: readonly { readonly sha256: string }[],
   outDir: string,
 ): Promise<{ sha256: string; bytes: Uint8Array }[]> {
   const blobs = new Map<string, { sha256: string; bytes: Uint8Array }>();
-  const carried = new Set(shipped.map((blob) => blob.sha256));
   for (const { blob } of files) {
-    if (carried.has(blob.sha256) || blobs.has(blob.sha256)) {
+    if (blobs.has(blob.sha256)) {
       continue;
     }
     const bytes = await readFile(path.join(outDir, 'blobs', blob.sha256));
