@@ -74,7 +74,13 @@ export function mapFileOf(code: string, id: string): string | undefined {
   }
   // As a URL, because that is how the comment spells it: Turbopack percent-encodes the brackets
   // in a chunk named `[root-of-the-server]__….js`, and a path taken literally would not exist.
-  return path.join(path.dirname(id), decodeURIComponent(named));
+  try {
+    return path.join(path.dirname(id), decodeURIComponent(named));
+  } catch {
+    // An escape that decodes to nothing: a comment naming no file this could find, which is no
+    // reason to fail the bundle it is read for.
+    return undefined;
+  }
 }
 
 /**
@@ -94,8 +100,11 @@ export function sourcemapOutput(carry: boolean): {
   return carry ? { sourcemap: 'hidden', sourcemapExcludeSources: true } : { sourcemap: false };
 }
 
-/** A map as an object, flattened when it was written as sections; nothing when it is not a map. */
-function parsedMap(text: string): Record<string, unknown> | undefined {
+/**
+ * A map as an object, flattened when it was written as sections; nothing when it is not a map.
+ * `file` names it in the warning an index map that will not flatten is given.
+ */
+function parsedMap(text: string, file: string): Record<string, unknown> | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -111,7 +120,11 @@ function parsedMap(text: string): Record<string, unknown> | undefined {
   }
   try {
     return { ...encodedMap(new FlattenMap(map as unknown as SectionedSourceMapInput)) };
-  } catch {
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.warn(
+      `@stayingupwind/adapter: ${path.basename(file)} is an index map that would not flatten (${reason}); a frame in its chunk reads as far as the chunk`,
+    );
     return undefined;
   }
 }
@@ -129,13 +142,13 @@ function parsedMap(text: string): Record<string, unknown> | undefined {
  * A plain map is handed on as it was read — it is most of them, and there is nothing to do — and so
  * is an index map that will not flatten, which a bundler then makes no worse of than before.
  */
-function flattened(text: string): string {
+function flattened(text: string, file: string): string {
   // A plain map never has the key; the substring is the cheap test, and a parse is only for a map
   // it cannot rule out, such as one whose `sourcesContent` happens to say the word.
   if (!text.includes('"sections"')) {
     return text;
   }
-  const map = parsedMap(text);
+  const map = parsedMap(text, file);
   return map === undefined || typeof map['mappings'] !== 'string' ? text : JSON.stringify(map);
 }
 
@@ -148,9 +161,26 @@ async function readText(file: string): Promise<string | undefined> {
 }
 
 /**
- * `kept` is what came through the build's `runAfterProductionCompile` (`kept-maps.ts`): asked only
- * when the chunk names no map, or one that is no longer there — a chunk whose comment a plugin
- * stripped, or whose map it deleted. A map still beside its chunk is the newest there is.
+ * A module of a chunk the bundle is loading, handed over with the map at `mapFile` where there is
+ * one to read. Where there is not — a comment naming a map the build did not write, or a chunk the
+ * hook left with none — the file is still the file, and the code already read is handed over
+ * rather than read again.
+ */
+async function withMap(
+  code: string,
+  mapFile: string | undefined,
+): Promise<{ code: string; map?: string; moduleType: 'js' }> {
+  const map = mapFile === undefined ? undefined : await readText(mapFile);
+  return map === undefined || mapFile === undefined
+    ? { code, moduleType: 'js' }
+    : { code, map: flattened(map, mapFile), moduleType: 'js' };
+}
+
+/**
+ * `kept` is what the build's `runAfterProductionCompile` left each chunk it saw (`kept-maps.ts`), and
+ * is the word on that chunk's map: the map that describes it, or none — not the comment, which a
+ * plugin may have stripped, or left naming a map it deleted or made stale. A chunk it did not see
+ * is read by its comment, as it always was.
  */
 export function sourceMapsPlugin(kept?: KeptMaps): Plugin {
   return {
@@ -167,17 +197,14 @@ export function sourceMapsPlugin(kept?: KeptMaps): Plugin {
           // Not a file on disk: a virtual module another plugin resolved, which has no map.
           return null;
         }
-        const mapFile = mapFileOf(code, id);
-        const keptFile = kept?.mapFor(id);
-        const map =
-          (mapFile === undefined ? undefined : await readText(mapFile)) ??
-          (keptFile === undefined ? undefined : await readText(keptFile));
-        if (map === undefined) {
-          // No map at all, or a comment naming one the build did not write. The file is still the
-          // file, and the one already read is handed over rather than read again.
-          return mapFile === undefined ? null : { code, moduleType: 'js' as const };
+        const left = kept?.mapFor(id);
+        if (left?.seen === true) {
+          // Not the map beside the chunk, where the hook left none that describes it: that one is
+          // stale.
+          return withMap(code, left.file);
         }
-        return { code, map: flattened(map), moduleType: 'js' as const };
+        const named = mapFileOf(code, id);
+        return named === undefined ? null : withMap(code, named);
       },
     },
   };
@@ -229,7 +256,7 @@ async function mapNamedBy(file: string, pathname: string): Promise<string | unde
  */
 async function carriedClientMap(file: string): Promise<string | undefined> {
   const text = await readText(file);
-  const map = text === undefined ? undefined : parsedMap(text);
+  const map = text === undefined ? undefined : parsedMap(text, file);
   if (map === undefined || typeof map['mappings'] !== 'string') {
     return undefined;
   }
@@ -238,12 +265,26 @@ async function carriedClientMap(file: string): Promise<string | undefined> {
   );
 }
 
+/** The map file of a built browser chunk: what the hook left it where it saw it, else what it names. */
+async function browserMapOf(
+  file: { readonly pathname: string; readonly filePath: string },
+  maps: ReadonlyMap<string, string>,
+  kept: KeptMaps | undefined,
+): Promise<string | undefined> {
+  const left = kept?.mapFor(file.filePath);
+  if (left?.seen === true) {
+    return left.file;
+  }
+  const named = await mapNamedBy(file.filePath, file.pathname);
+  return named === undefined ? undefined : maps.get(named);
+}
+
 /**
  * Each map under the name of the file it describes, which is what a browser's stack frame says.
  *
- * `maps` are the maps among the static files, by their own served pathname, as files; `kept`, the
- * ones that came through the build's `runAfterProductionCompile` (`kept-maps.ts`), asked for a
- * chunk whose map is not among them — deleted, or no longer named because the comment went too.
+ * `maps` are the maps among the static files, by their own served pathname, as files; `kept`, what
+ * the build's `runAfterProductionCompile` left each chunk it saw (`kept-maps.ts`), which is the word
+ * on that chunk's map where there is one — as in `sourceMapsPlugin`.
  *
  * A map nothing names is dropped: nothing could ever look it up, and carrying it would be bytes
  * in every deployment for no reader.
@@ -259,9 +300,7 @@ export async function linkClientMaps(
   }
   const linked: SourceMapRef[] = [];
   for (const file of built) {
-    const named = await mapNamedBy(file.filePath, file.pathname);
-    const mapFile =
-      (named === undefined ? undefined : maps.get(named)) ?? kept?.mapFor(file.filePath);
+    const mapFile = await browserMapOf(file, maps, kept);
     const text = mapFile === undefined ? undefined : await carriedClientMap(mapFile);
     if (text !== undefined) {
       linked.push({
