@@ -3,6 +3,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { pagesDataPathname, queryDependent } from '@stayingupwind/core/bundle';
 import {
   type DecodedGenerationPack,
+  type InvalidationState,
   normalizeRoutePathname,
   type RouteEntryDescriptor,
 } from '@stayingupwind/core/cache';
@@ -448,6 +449,9 @@ function speculative(want: Want): boolean {
   return want.prefetch === true || want.representation.startsWith(SEGMENT_PREFIX);
 }
 
+/** How long an expired prefetch waits for the tag delta it is behind (`renderSpeculative`). */
+const SPECULATIVE_TAG_SYNC_MS = 1000;
+
 /**
  * A prefetch's answer where the entry's generation has expired: a static render of the page made
  * for it and kept by no one, the regeneration left to after the answer.
@@ -462,15 +466,52 @@ function speculative(want: Want): boolean {
  * lease or found it held, and every one of them waited for that before it rendered. The
  * regeneration begins once the answer has gone out in full, once per generation of the entry
  * (`scheduleJob`), as a stale one's does.
+ *
+ * The pull is made where the invalidation that expired the entry is one this isolate's view of the
+ * tags is behind (`revision`): the render reads its data values through that view, and a value the
+ * invalidation reached would be taken for current and sent to the navigation that adopts the
+ * prefetch. Pulled first, as a regeneration pulls it — joined with any pull under way, so a page's
+ * segments prefetched together pull it once — for a second at the most (`SPECULATIVE_TAG_SYNC_MS`),
+ * past which the render reads the view as it stands.
  */
 async function renderSpeculative(
   job: Job,
   want: Want,
   source: GenerationSource,
+  invalidation: InvalidationState | undefined,
 ): Promise<Response> {
+  const { runtime } = job;
+  if (invalidation !== undefined && invalidation.revision > runtime.tags.revision) {
+    await settledWithin(
+      runtime.tags.sync(runtime.host, nowMs(), { force: true }),
+      SPECULATIVE_TAG_SYNC_MS,
+    );
+  }
   return (
     (await renderForVisitor(job.input, job.target, want)) ?? (await renderRequest(job, source.url))
   );
+}
+
+/** Once `promise` has settled, whichever way, or `ms` have gone by. */
+async function settledWithin(promise: Promise<unknown>, ms: number): Promise<void> {
+  const settled = (async () => {
+    try {
+      await promise;
+    } catch {
+      // A pull that fails leaves the view as it stood, as a regeneration's does.
+    }
+  })();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      settled,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -514,7 +555,7 @@ export async function serveFromGeneration(
     return renderRequest(job, source.url);
   }
   if (validity === 'expired' && speculative(want)) {
-    return afterBody(await renderSpeculative(job, want, source), () => {
+    return afterBody(await renderSpeculative(job, want, source, pack.header.invalidation), () => {
       scheduleJob(job, 'expired', pack.header.generationId);
     });
   }
