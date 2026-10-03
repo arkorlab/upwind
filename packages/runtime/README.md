@@ -58,3 +58,18 @@ A resume is the one exchange worth naming here. The edge serves the build's shel
 Function for the rest of the document, which comes back as the postponed part alone — so the visitor
 is not sent the shell twice. A route that cannot resume one (an entrypoint on the edge runtime never
 can) is not among the shells an edge is told it may serve.
+
+## What libraries find on the global
+
+Two things an application's libraries look for on the global, answered from the request being
+served, since a Function isolate serves many at once:
+
+- `Symbol.for('@vercel/request-context')`: the request's headers, its URL and `waitUntil`, which
+  `track()` from `@vercel/analytics/server` reads (`request-context.ts`).
+- `Symbol.for('__SENTRY_SAFE_RANDOM_ID_WRAPPER__')`: what Sentry's Next.js SDK runs its reads of
+  random values and of the clock through, so that a read made while Next.js prerenders runs outside
+  the prerender's store — Next.js aborts a prerender that makes one in it. The SDK's own runner
+  keeps one snapshot of the async context for the whole isolate, which workerd refuses outside the
+  request that took it, and what it falls back to runs the read in whichever render is under way.
+  Here each read runs in the context the current request entered the Function in, outside anything
+  Next.js has entered since (`random-safe-context.ts`).
