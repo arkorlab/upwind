@@ -33,8 +33,12 @@ import { publishResources } from './publish.ts';
 /**
  * Where a project's local storage is kept: one directory of its own, beside `.next` and
  * `.arkor`. The runtime keeps a subdirectory per kind under it (`d1/`, `kv/`, `r2/`).
+ *
+ * Exported because it is not only storage's: it is the name of *this machine's copy of this
+ * project*, which is also what an auth secret generated for a development run is (`auth/secret.ts`).
+ * One definition, so that a release moving the directory moves everything under it at once.
  */
-const PERSIST_DIR = '.upwind';
+export const PERSIST_DIR = '.upwind';
 
 /**
  * One directory of storage, one runtime that may write to it.

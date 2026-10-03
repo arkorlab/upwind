@@ -1,12 +1,15 @@
 import {
+  isUpwindAuthPath,
   isUpwindInternalPath,
+  UPWIND_AUTH_BASE_PATH,
   UPWIND_DEV_ADDRESS_ENV,
   UPWIND_INTERNAL_PREFIX,
 } from '@stayingupwind/core/paas';
 import type { NextAdapter } from 'next';
 
 /**
- * `/__upwind`, reserved inside a development server's own routing table.
+ * `/__upwind`, reserved inside a development server's own routing table — except for the one
+ * subtree that is the application's.
  *
  * `upwind dev` is the front door: it holds the port, answers this prefix itself, and hands
  * everything else to Next.js. So in the ordinary case *nothing* here ever fires — the request has
@@ -15,6 +18,13 @@ import type { NextAdapter } from 'next';
  * the router rather than at the front door, and without a reservation a page the project happens to
  * have written under that prefix would answer it. A rule in `beforeFiles` comes before the
  * filesystem, so the prefix belongs to upwind wherever a request reaches the router from.
+ *
+ * `/__upwind/auth` is left out of all of it, and has to be. That subtree is served by a route of
+ * the project's own (`@stayingupwind/core/paas`'s `UPWIND_AUTH_BASE_PATH` says why), which means the
+ * front door hands it *to* Next.js — so a reservation that took it would send it back out to the
+ * front door, which would hand it in again. A loop, with a request in it. The exclusion is written
+ * into the source pattern rather than checked afterwards, because a rewrite has no way to say
+ * "except": `:path((?!auth$|auth/).*)` is the same `:path*` with the one segment removed.
  *
  * Read from the environment rather than configured, because the address is not something a project
  * writes: `upwind dev` knows the port it settled on and sets it in the process that loads
@@ -125,6 +135,10 @@ function originOf(address: string): string {
  * `{ source: '/legacy/:path*', destination: '/:path*' }` does for `/legacy/__upwind/health`. What the
  * pattern resolves to is known when the request is, which is not here — and a rule whose destination is
  * a bare parameter is a rule about everything, not about this prefix.
+ *
+ * A destination under `/__upwind/auth` is left where it points, for the same reason the reservation
+ * leaves it alone: that subtree is the application's, served by a route of its own, and sending it
+ * to the front door would send it straight back here.
  */
 function pointAtFrontDoor(rule: RewriteRule, origin: string, scope: ProjectScope): RewriteRule {
   const { destination } = rule;
@@ -141,13 +155,23 @@ function pointAtFrontDoor(rule: RewriteRule, origin: string, scope: ProjectScope
   const cut = destination.search(/[?#]/u);
   const [pathname, rest] =
     cut === -1 ? [destination, ''] : [destination.slice(0, cut), destination.slice(cut)];
-  if (!isUpwindInternalPath(pathname)) {
+  if (!isUpwindInternalPath(pathname) || isUpwindAuthPath(pathname)) {
     return rule;
   }
   return { ...rule, destination: `${origin}${pathname}${rest}` };
 }
 
-/** The prefix itself, and everything under it. Both, because one rule cannot say both. */
+/**
+ * The segment of the authentication base path that sits under the prefix — `auth`, as the pattern
+ * below has to spell it.
+ *
+ * Taken from the constant rather than written out, so that a release which moves the base path
+ * moves this with it. It is a segment and not a path because that is all a `path-to-regexp` pattern
+ * can be given here: the exclusion is applied to what follows `/__upwind/`.
+ */
+const AUTH_SEGMENT = UPWIND_AUTH_BASE_PATH.slice(UPWIND_INTERNAL_PREFIX.length + 1);
+
+/** The prefix itself, and everything under it but the application's own subtree. */
 function reservation(origin: string): RewriteRule[] {
   const destination = `${origin}${UPWIND_INTERNAL_PREFIX}`;
   // `basePath: false` and `locale: false` for one reason between them: the front door answers this
@@ -156,9 +180,14 @@ function reservation(origin: string): RewriteRule[] {
   // `locale: false`, Next.js would expand the source across every locale of an `i18n` project and the
   // reservation would take `/fr/__upwind` — a path that is the application's.
   const scope = { basePath: false, locale: false } as const;
+  // `.*` rather than a repeating `:path*`, because a parameter carrying its own pattern cannot also
+  // repeat. It matches across separators all the same, and Next.js compiles a destination's params
+  // without encoding them, so `/__upwind/a/b` arrives at the front door as `/__upwind/a/b` and not
+  // as one segment with an escaped slash in it.
+  const under = `:path((?!${AUTH_SEGMENT}$|${AUTH_SEGMENT}/).*)`;
   return [
     { source: UPWIND_INTERNAL_PREFIX, destination, ...scope },
-    { source: `${UPWIND_INTERNAL_PREFIX}/:path*`, destination: `${destination}/:path*`, ...scope },
+    { source: `${UPWIND_INTERNAL_PREFIX}/${under}`, destination: `${destination}/:path`, ...scope },
   ];
 }
 

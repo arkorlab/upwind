@@ -29,5 +29,10 @@
  *
  * `packages/adapter/package.json` and `packages/upwind/package.json` declare this same range as
  * their `peerDependencies.next`, and the check holds all three to each other.
+ *
+ * What this range is not is a judgement about advisories: its floor is where the Adapter API became
+ * stable, so the range admits Next.js releases with known vulnerabilities in them. `SECURITY_FLOOR`
+ * (`@stayingupwind/core/next`) is what a build and a development run warn against instead, and
+ * `scripts/check-patches.ts` holds that floor to being inside this range.
  */
 export const SUPPORTED_NEXT_RANGE = '>=16.2.0 <17';

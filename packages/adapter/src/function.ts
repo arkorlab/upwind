@@ -120,6 +120,11 @@ const EMPTY_WASM_MODULE = '// This deployment carries no WebAssembly.';
  * A build told of no cache host: the runtime asks, is answered nothing, and runs as it did
  * before any cache existed. An export rather than an empty module, because the runtime imports
  * the name and a bundler must find it.
+ *
+ * The one name, and not the blob reader a host may also export (`unshippedOutputs`): the runtime
+ * reads that one off a namespace import, which is `undefined` for a module that does not export it
+ * — and a build with no cache host reads no blob of its own bundle from anywhere either. esbuild
+ * says so as a warning and bundles it (`logLevel: 'silent'` here keeps the warning to itself).
  */
 const NO_CACHE_HOST_MODULE = 'export function createCacheHost() { return undefined; }';
 

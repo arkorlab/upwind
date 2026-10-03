@@ -1,3 +1,4 @@
+export { isUpwindAuthPath, UPWIND_AUTH_BASE_PATH, UPWIND_AUTH_SECRET_ENV } from './auth.ts';
 export {
   isUpwindInternalPath,
   UPWIND_DEV_ADDRESS_ENV,

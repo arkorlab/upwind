@@ -1,4 +1,4 @@
-import type { Prerender } from '@stayingupwind/core/bundle';
+import type { BlobRef, Prerender } from '@stayingupwind/core/bundle';
 import { NO_STORE_CACHE_CONTROL } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
@@ -150,6 +150,76 @@ export async function documentFromBuild(
 }
 
 /**
+ * One prefetch segment of a prerendered page: the bytes the build shipped, or the same bytes from
+ * the host that kept them.
+ *
+ * `undefined` when the request asks for no segment, when the build wrote none under this key, or
+ * when neither the Function nor the host has the bytes — the caller then carries on as it does for
+ * a document whose shell the build did not write.
+ *
+ * The host read is `AdapterOptions.unshippedOutputs`' other half. A build may record a segment and
+ * leave its bytes out of the Function, which is 37% of one measured on a real application; the
+ * record is what a host places from, so it stays, and a reference is then no longer a promise that
+ * the file is here. **Rendering it instead was tried and cannot work**: `renderCaptured` answers
+ * `undefined` whenever the render responded rather than being captured, and a segment prefetch is
+ * always answered directly — measured, every time, with nothing captured to read. Resuming cannot
+ * either: the postponed state is the document's, and Next.js refuses a segment it has no
+ * prerendered output for with a 404.
+ */
+async function builtSegment(
+  input: RoutedInput,
+  store: Store,
+  pathname: string,
+): Promise<Response | undefined> {
+  const { rsc } = store.manifest.routing;
+  const segment = input.request.headers.get(rsc.prefetchSegmentHeader);
+  if (segment === null) {
+    return undefined;
+  }
+  const dir = rsc.prefetchSegmentDirSuffix;
+  const key = `${rscBase(pathname)}${dir}${segment}${rsc.prefetchSegmentSuffix}`;
+  const prerender = store.prerendersByPathname.get(key);
+  if (prerender?.body === undefined) {
+    return undefined;
+  }
+  const bytes = store.tryReadBlob(prerender.body.sha256) ?? (await fromHost(input, prerender.body));
+  if (bytes === undefined) {
+    return undefined;
+  }
+  const headers = prerenderHeaders(prerender, RSC_CONTENT_TYPE);
+  headers.set(PRERENDER_HEADER, '1');
+  headers.set(POSTPONED_HEADER, '2');
+  headers.set(CACHE_CONTROL, NO_STORE_CACHE_CONTROL);
+  headers.set('vary', rsc.varyHeader);
+  // The bytes as the store holds them: a view onto the bundle's own buffer, which is what every
+  // other blob is answered with here. Copying would be a copy per prefetch of a file the store is
+  // holding on purpose; only the host's bytes are copied, and only where they come from.
+  return new Response(bytes, { status: HTTP_OK, headers });
+}
+
+/**
+ * One blob of this bundle from the host that keeps it, for a build whose Function was not given it
+ * (`AdapterOptions.unshippedOutputs`).
+ *
+ * `undefined` where the host keeps none, where it has no such blob, or where the read failed —
+ * all three mean the same thing to the caller, which carries on as it does for a segment the build
+ * never wrote. A failure is logged where the reader is built (`bundle-blobs.ts`), so a host that
+ * offers this and is failing does not look like one that never offered it.
+ *
+ * On a buffer of its own, because a host's `Uint8Array` is backed by `ArrayBufferLike` and a
+ * response body may not be: one copy of a few hundred bytes, on a path that has just been to the
+ * host, which keeps the shipped segment — every other prefetch — a plain view onto the bundle the
+ * store is already holding.
+ */
+async function fromHost(
+  input: RoutedInput,
+  ref: BlobRef,
+): Promise<Uint8Array<ArrayBuffer> | undefined> {
+  const bytes = await input.blobs?.(ref.sha256);
+  return bytes === undefined ? undefined : new Uint8Array(bytes);
+}
+
+/**
  * A route's React Server Components: a prefetched segment as built, else its payload resumed —
  * and, for a route on the edge runtime, which resumes nothing, rendered whole.
  */
@@ -163,20 +233,9 @@ export async function rscFromBuild(
   if (bypassesPrerender(store, input.request, shell, resolved.url)) {
     return invokeEntry(input, entry, resolved.url);
   }
-  const segment = input.request.headers.get(store.manifest.routing.rsc.prefetchSegmentHeader);
-  if (segment !== null) {
-    const suffix = store.manifest.routing.rsc.prefetchSegmentSuffix;
-    const dir = store.manifest.routing.rsc.prefetchSegmentDirSuffix;
-    const base = rscBase(shell?.pathname ?? resolved.pathname);
-    const staticSegment = store.prerendersByPathname.get(`${base}${dir}${segment}${suffix}`);
-    if (staticSegment?.body !== undefined) {
-      const headers = prerenderHeaders(staticSegment, RSC_CONTENT_TYPE);
-      headers.set(PRERENDER_HEADER, '1');
-      headers.set(POSTPONED_HEADER, '2');
-      headers.set(CACHE_CONTROL, NO_STORE_CACHE_CONTROL);
-      headers.set('vary', store.manifest.routing.rsc.varyHeader);
-      return new Response(store.readBlob(staticSegment.body.sha256), { status: HTTP_OK, headers });
-    }
+  const built = await builtSegment(input, store, shell?.pathname ?? resolved.pathname);
+  if (built !== undefined) {
+    return built;
   }
   const twin =
     shell === undefined
