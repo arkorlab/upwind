@@ -113,8 +113,19 @@ function passthrough(reason: PassthroughReason): RequestClass {
   return { kind: 'passthrough', reason };
 }
 
-function hasInternalDocumentHeader(headers: Headers): boolean {
+/**
+ * A prefetch of part of a page has `x-deployment-id` let through, for `classifyByDeploymentHeader`
+ * to judge: on a prefetch it is the client's router saying which deployment it is running, not a
+ * platform's header. Next.js's router sends it with every request it makes once the build has a
+ * deployment id (`createFetch`, `fetch-server-response.ts`), so read as internal it turned every
+ * prefetch a browser makes away from the edge, and the parts of pages the build wrote were only
+ * ever answered by the Function.
+ */
+function hasInternalDocumentHeader(headers: Headers, segmentPath: string | undefined): boolean {
   for (const [name] of headers) {
+    if (segmentPath !== undefined && name === DEPLOYMENT_ID_REQUEST_HEADER) {
+      continue;
+    }
     if (DOCUMENT_REQUEST_INTERNAL_HEADERS.has(name)) {
       return true;
     }
@@ -263,6 +274,39 @@ function classifyByQuery(
   return undefined;
 }
 
+/**
+ * The deployment a prefetch's router says it is running, judged as a `dpl` is: the one being
+ * served, or the Function's to answer. A repeated header is one value to `Headers`, joined, and
+ * names no deployment. Asked only of a prefetch of part of a page; of anything else the header is
+ * internal, and was turned away before this.
+ */
+function classifyByDeploymentHeader(
+  headers: Headers,
+  segmentPath: string | undefined,
+  deployment: DeploymentFingerprint | undefined,
+): RequestClass | undefined {
+  const named = segmentPath === undefined ? null : headers.get(DEPLOYMENT_ID_REQUEST_HEADER);
+  return named === null || named === deployment?.dplId ? undefined : passthrough(DPL_MISMATCH);
+}
+
+/**
+ * What a request's cookies, its query and — on a prefetch of part of a page — its `x-deployment-id`
+ * ask for that the deployment being served may not hold: draft mode, another kind of response,
+ * another deployment.
+ */
+function classifyByPins(
+  url: URL,
+  headers: Headers,
+  segmentPath: string | undefined,
+  deployment: DeploymentFingerprint | undefined,
+): RequestClass | undefined {
+  return (
+    classifyByCookies(headers, deployment) ??
+    classifyByQuery(url, headers, deployment) ??
+    classifyByDeploymentHeader(headers, segmentPath, deployment)
+  );
+}
+
 /** What a browser puts on a top-level navigation, and what nothing else sends. */
 const NAVIGATION_FETCH_MODE = NAVIGATION_REQUEST_HEADERS['sec-fetch-mode'];
 const FETCH_DEST_HEADER = 'sec-fetch-dest';
@@ -404,18 +448,17 @@ export function classifyRequest(input: ClassifyInput): RequestClass {
   if (early !== undefined) {
     return early;
   }
-  if (hasInternalDocumentHeader(headers)) {
+  const segmentPath = segmentPrefetchOf(headers);
+  if (hasInternalDocumentHeader(headers, segmentPath)) {
     return passthrough('internal-header');
   }
-  const late =
-    classifyByCookies(headers, input.deployment) ?? classifyByQuery(url, headers, input.deployment);
+  const late = classifyByPins(url, headers, segmentPath, input.deployment);
   if (late !== undefined) {
     return late;
   }
   // What a browser puts on a top-level navigation is asked only of one. A prefetch is fetched by
   // the router rather than navigated to, so it carries none of those hints and every one of them
   // would turn it away.
-  const segmentPath = segmentPrefetchOf(headers);
   const hints = segmentPath === undefined ? classifyByNavigationHints(headers) : undefined;
   if (hints !== undefined) {
     return hints;
