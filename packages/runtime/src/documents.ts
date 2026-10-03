@@ -1,4 +1,4 @@
-import type { BlobRef, Prerender } from '@stayingupwind/core/bundle';
+import type { BlobRef, Prerender, StaticFile } from '@stayingupwind/core/bundle';
 import { NO_STORE_CACHE_CONTROL, SEGMENT_TREE_PATH } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
@@ -47,16 +47,43 @@ export function postponedOf(store: Store, prerender: Prerender): string | undefi
     : new TextDecoder().decode(store.readBlob(prerender.postponed.sha256));
 }
 
+/**
+ * A file the Function carries, under `status`. `undefined` for one the manifest does not name, and
+ * for one it names without carrying — a file of the build a rewrite may land on, which
+ * `hostedFileResponse` reads from the host instead.
+ */
 export function staticFileResponse(
   store: Store,
   pathname: string,
   status: number,
 ): Response | undefined {
   const file = store.staticFiles.get(pathname);
-  if (file === undefined) {
+  const bytes = file === undefined ? undefined : store.tryReadBlob(file.blob.sha256);
+  return file === undefined || bytes === undefined ? undefined : fileResponse(file, bytes, status);
+}
+
+/**
+ * A file the manifest names and the Function does not carry, from the host that keeps every file of
+ * the build: one under `_next/static` that a rewrite of the build's landed on (the adapter lists
+ * those, and only for a build with such a rewrite). `undefined` where the manifest names no such
+ * file, or where the host has none to give.
+ */
+export async function hostedFileResponse(
+  input: RoutedInput,
+  store: Store,
+  pathname: string,
+  status: number,
+): Promise<Response | undefined> {
+  const file = store.staticFiles.get(pathname);
+  if (file === undefined || store.tryReadBlob(file.blob.sha256) !== undefined) {
     return undefined;
   }
-  return new Response(store.readBlob(file.blob.sha256), {
+  const bytes = await fromHost(input, file.blob);
+  return bytes === undefined ? undefined : fileResponse(file, bytes, status);
+}
+
+function fileResponse(file: StaticFile, bytes: Uint8Array<ArrayBuffer>, status: number): Response {
+  return new Response(bytes, {
     status,
     headers: {
       'content-type': file.blob.contentType,

@@ -1,6 +1,6 @@
 import path from 'node:path';
 
-import type { SourceMapRef, StaticFile } from '@stayingupwind/core/bundle';
+import type { Routing, SourceMapRef, StaticFile } from '@stayingupwind/core/bundle';
 import type { AdapterOutput } from 'next';
 
 import { type BlobStore, contentTypeFor } from './blobs.ts';
@@ -145,4 +145,50 @@ export async function collectStaticFiles(
     files,
     sourceMaps: carryMaps ? await linkClientMaps(scripts, maps, blobs, kept) : [],
   };
+}
+
+/** Where the build's own files are served from, under the base path. */
+const BUILD_FILES = '/_next/static';
+/** Where a destination names a value the request supplies: a pattern's group or a parameter. */
+const FROM_REQUEST = /^[$:]/u;
+
+/**
+ * Whether a rewrite of the build's may land a request on a file under `_next/static`: a
+ * destination that names one, or one whose first segment the request supplies — `/:path*`, which
+ * `next build` writes `/$1`. A catch-all that mounts the application under another path
+ * (`/docs/:path*` → `/:path*`) is the case: its `/docs/_next/static/…` is the build's own file.
+ * An absolute destination is another origin's, and a redirect sends the client elsewhere.
+ */
+function mayRewriteToBuildFiles(routing: Routing, basePath: string): boolean {
+  return [...routing.beforeFiles, ...routing.afterFiles, ...routing.fallback].some((route) => {
+    const destination = route.destination?.split('?', 1)[0];
+    if (destination === undefined || route.status !== undefined || !destination.startsWith('/')) {
+      return false;
+    }
+    const inApp =
+      basePath !== '' && destination.startsWith(`${basePath}/`)
+        ? destination.slice(basePath.length)
+        : destination;
+    return inApp.startsWith(`${BUILD_FILES}/`) || FROM_REQUEST.test(inApp.slice(1));
+  });
+}
+
+/**
+ * The files under `_next/static` the Function answers itself, though it does not carry them: what
+ * a rewrite of the build's may land on (`mayRewriteToBuildFiles`), read from the host that keeps
+ * every file of the build when one is asked for. The edge serves these files by their own names;
+ * under a rewrite's source name a request reaches the Function, which routes it, and before this
+ * found no file there and answered the not-found page. None for a build with no such rewrite: each
+ * is a line of the manifest the Function parses before its first response.
+ */
+export function rewriteTargetFiles(
+  files: readonly StaticFile[],
+  routing: Routing,
+  basePath: string,
+): StaticFile[] {
+  if (!mayRewriteToBuildFiles(routing, basePath)) {
+    return [];
+  }
+  const prefix = `${basePath}${BUILD_FILES}/`;
+  return files.filter((file) => file.pathname.startsWith(prefix));
 }

@@ -20,6 +20,7 @@ import {
   notFound,
   postponedOf,
   rscFromBuild,
+  hostedFileResponse,
   staticFileResponse,
 } from './documents.ts';
 import { entryFor, hasEntry } from './entries.ts';
@@ -513,11 +514,10 @@ async function serveResolved(
   asked: URL,
 ): Promise<Response> {
   const { request } = input;
-  const staticFile = staticFileResponse(
-    store,
-    resolved.route,
-    staticFileStatus(resolved.route, store.manifest.config.basePath),
-  );
+  const fileStatus = staticFileStatus(resolved.route, store.manifest.config.basePath);
+  const staticFile =
+    staticFileResponse(store, resolved.route, fileStatus) ??
+    (await hostedFileResponse(input, store, resolved.route, fileStatus));
   if (staticFile !== undefined) {
     // A file answers a read and nothing else; the edge sends every other method here.
     return FILE_METHODS.has(request.method)

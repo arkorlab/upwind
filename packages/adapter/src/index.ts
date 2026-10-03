@@ -55,7 +55,7 @@ import type { PlanBudget } from './plan.ts';
 import { readProjectConfig } from './project-config.ts';
 import { carriesMaps, type SourceMapsOption } from './source-maps.ts';
 import { checkSplitOptions, type SplitOptions, splitBudget } from './split.ts';
-import { collectStaticFiles } from './static-files.ts';
+import { collectStaticFiles, rewriteTargetFiles } from './static-files.ts';
 import { type TracedFile, tracedFiles } from './traced-files.ts';
 
 /**
@@ -247,18 +247,27 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
   );
 
   const bypassToken = bypassTokenOf(ctx.outputs);
+  const routing = bundleRouting(ctx.routing, middleware);
   const runtimeManifest = {
     v: BUNDLE_VERSION as number,
     deploymentId: id,
     nextVersion: ctx.nextVersion,
     buildId: ctx.buildId,
     config: bundleConfig(ctx.config, await imagesConfig(ctx)),
-    routing: bundleRouting(ctx.routing, middleware),
+    routing,
     ...(bypassToken !== undefined && { bypassToken }),
     entrypoints,
     ...(middleware !== undefined && { middleware: { matchers: middlewareMatchers(middleware) } }),
     prerenders,
-    staticFiles: shippedStatic,
+    // What it carries, and what a rewrite may land on that it reads from the host instead.
+    staticFiles: [
+      ...shippedStatic,
+      ...rewriteTargetFiles(
+        staticFiles.filter((file) => !shippedStatic.includes(file)),
+        routing,
+        ctx.config.basePath,
+      ),
+    ],
   };
   const context: FunctionsContext = {
     ctx,
