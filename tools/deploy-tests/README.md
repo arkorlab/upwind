@@ -19,13 +19,13 @@ which suites deploy mode selects.
 
 ## What it needs
 
-| Variable                      | What it is                                                                    |
-| ----------------------------- | ----------------------------------------------------------------------------- |
-| `ARKOR_API_URL`               | The host's public API, for example `https://api.example.com`                  |
-| `ARKOR_API_TOKEN`             | A token of that host with the `write` scope                                   |
-| `ARKOR_API_TOKEN_FILE`        | Or a file holding that token, read instead of the variable                    |
-| `ADAPTER_TEST_PROJECT_ID`     | A project on that host, **used by nothing else**                              |
-| `ADAPTER_TEST_SETTLE_SECONDS` | Optional: how long that host takes to bring a deployment in for every request |
+| Variable                      | What it is                                                             |
+| ----------------------------- | ---------------------------------------------------------------------- |
+| `ARKOR_API_URL`               | The host's public API, for example `https://api.example.com`           |
+| `ARKOR_API_TOKEN`             | A token of that host with the `write` scope                            |
+| `ARKOR_API_TOKEN_FILE`        | Or a file holding that token, read instead of the variable             |
+| `ADAPTER_TEST_PROJECT_ID`     | A project on that host, **used by nothing else**                       |
+| `ADAPTER_TEST_SETTLE_SECONDS` | Seconds waited once per fixture, before its suite starts; `0` if unset |
 
 The names are the host's own, so that the script an operator already drives this suite with drives this
 too. Nothing is passed on a command line, which is in every process list on the machine.
@@ -147,10 +147,11 @@ Beyond that, four limits are worth knowing before reading a failure as this adap
   deployment in place by place can answer the probe with the new one and the suite's next request with
   the one before — seen in a full run, where pages a suite received carried Next.js's own `data-dpl-id`
   naming an earlier fixture's deployment while other requests of the same suite reached their own. How
-  long that lasts is the host's to know, so it is the operator's to say: `ADAPTER_TEST_SETTLE_SECONDS`,
-  counted from when the host first names the deployment as current, is waited out before the suite
-  starts. It is paid once per fixture, so it is worth setting to the host's real bound rather than to a
-  round number above it.
+  long that lasts is the host's to know, so it is the operator's to say: `ADAPTER_TEST_SETTLE_SECONDS`
+  is waited out in full once the probe has got through, before the suite starts. From the probe rather
+  than from the host naming the deployment, because a host may name one before the switch has reached
+  any request, while a probe that reached the new deployment shows the switch had begun. It is paid once
+  per fixture, so it is worth setting to the host's real bound rather than to a round number above it.
 - **The Next.js under test must be inside `SUPPORTED_NEXT_RANGE`.** Outside it the host refuses every
   deployment, and the suite reports every suite as failed for a reason that has nothing to do with the
   test. Inside it, 16.2 does without the content-addressed `/_next/static/immutable/*` — it ignores the

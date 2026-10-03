@@ -45,8 +45,8 @@ export interface Config extends ProjectConfig {
   /** A token with the `write` scope. Never logged, never written down, never passed as an argument. */
   readonly token: string;
   /**
-   * How long after the host first names a deployment as the one it serves before every request can be
-   * trusted to reach it — zero for a host that switches over everywhere at once.
+   * How long, once a request has reached a new deployment, before every request can be trusted to —
+   * zero for a host that switches over everywhere at once.
    *
    * Not something this tool can find out by asking. Its readiness check is a request, and a request
    * that reaches the new deployment proves that *it* did; on a host that brings a deployment in place by

@@ -554,23 +554,25 @@ function redirectedSince(probe: Probe, since: number | undefined): number {
 }
 
 /**
- * The rest of the settle the host was said to need (`Config.settleMs`), counted from when it first named
- * this deployment as current rather than from when the probe got through.
+ * The settle the host was said to need (`Config.settleMs`), all of it, from the moment the probe got
+ * through.
  *
- * From the naming, because that is when the switch began: a request that reached the old deployment a
- * moment later was the host still bringing the new one in, and the probe succeeding in between says
- * nothing about the requests that come after it. Seen, before there was a way to ask for this: suites of
- * a full run whose received pages carried Next.js's own `data-dpl-id` named an earlier fixture's
- * deployment on some requests, while other requests of the same suite reached their own.
+ * Not from when the host first named this deployment as current, though that comes earlier and would
+ * cost less: a host may name a deployment before the switch has reached any request at all, so the
+ * naming is no evidence of where the switch has got to. A probe that reached the new deployment is —
+ * the switch had begun by then — so the whole settle counted from there covers it, whichever of the two
+ * the host did first. Why it is needed at all: suites of a full run whose received pages carried
+ * Next.js's own `data-dpl-id` named an earlier fixture's deployment on some requests, while other
+ * requests of the same suite reached their own.
  */
-async function letItSettle(input: DeployInput, since: number): Promise<void> {
-  const remaining = since + input.config.settleMs - Date.now();
-  if (remaining > 0) {
+async function letItSettle(input: DeployInput): Promise<void> {
+  const { settleMs } = input.config;
+  if (settleMs > 0) {
     input.log(
-      `letting the host settle: ${String(Math.ceil(remaining / MS_PER_SECOND))}s more before ` +
-        'the suite starts, so that every request reaches this deployment',
+      `letting the host settle: ${String(settleMs / MS_PER_SECOND)}s before the suite starts, so ` +
+        'that every request reaches this deployment',
     );
-    await sleepFor(remaining);
+    await sleepFor(settleMs);
   }
 }
 
@@ -583,11 +585,8 @@ async function waitUntilServed(
   const deadline = Date.now() + NO_PROGRESS_TIMEOUT_MS;
   let said: string | undefined;
   let redirecting: number | undefined;
-  // When the host first named this deployment as current: the settle is counted from there.
-  let named: number | undefined;
   for (;;) {
     const detail = await answering(input, deadline);
-    named ??= detail.active?.deploymentId === probe.deploymentId ? Date.now() : undefined;
     // Validated outside that tolerance on purpose: a project that answers as a different project, or
     // with no public URL, is an answer and not a moment.
     if (previewUrlOf(detail, input.config).origin !== publicUrl.origin) {
@@ -596,9 +595,7 @@ async function waitUntilServed(
     const observation = await served(input, detail, probe, deadline - Date.now());
     if (observation === undefined) {
       sayItIsServed(input, probe);
-      // `named` is set by now — nothing is served before the host names it — so the fallback is for the
-      // type alone; were it ever taken, counting from now would wait the whole settle, the safe side.
-      await letItSettle(input, named ?? Date.now());
+      await letItSettle(input);
       return;
     }
     if (observation.said !== said) {

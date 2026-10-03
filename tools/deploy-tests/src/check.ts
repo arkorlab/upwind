@@ -269,6 +269,8 @@ interface FakeHost {
   readonly uploaded: () => string[];
   /** Whatever this host refused, because it was asked out of order. */
   readonly refusals: () => string[];
+  /** When this host first answered the readiness probe with the file it asked for. */
+  readonly servedAt: () => number | undefined;
   close: () => void;
 }
 
@@ -289,6 +291,7 @@ async function fakeHost(deploymentId: string): Promise<FakeHost> {
   const uploaded: string[] = [];
   const refusals: string[] = [];
   let finalized = false;
+  let servedAt: number | undefined;
   let port = 0;
 
   /** Refuse, and remember: the check reads these back rather than trusting a status alone. */
@@ -355,6 +358,7 @@ async function fakeHost(deploymentId: string): Promise<FakeHost> {
         response.end();
         return;
       }
+      servedAt ??= Date.now();
       response.writeHead(OK, { etag: `"${asset.sha256}"` });
       response.end();
       return;
@@ -426,6 +430,7 @@ async function fakeHost(deploymentId: string): Promise<FakeHost> {
     environment: () => environment,
     uploaded: () => [...uploaded],
     refusals: () => [...refusals],
+    servedAt: () => servedAt,
     close: () => {
       server.close();
     },
@@ -483,6 +488,7 @@ async function main(): Promise<void> {
   };
   try {
     const deployed = await hook(DEPLOY_HOOK);
+    const deployedAt = Date.now();
     const logs = await hook('e2e-logs.sh');
     await hook('e2e-cleanup.sh');
     const build = readFileSync(path.join(appDir, '.adapter-build.log'), 'utf8');
@@ -495,9 +501,15 @@ async function main(): Promise<void> {
       'and its account of the deployment goes to standard error, which is what reaches the suite',
       deployed.stderr.includes('answers with this deployment'),
     );
+    const probed = host.servedAt();
     holds(
       'the settle the host was given is waited out before the suite starts',
-      deployed.stderr.includes('letting the host settle'),
+      // Measured from the probe being answered to the hook finishing, which nothing but the wait fills:
+      // the hook's own build comes before the probe, so a build slower than the settle cannot pass for
+      // it, and a log line without the wait behind it would not either.
+      deployed.stderr.includes('letting the host settle') &&
+        probed !== undefined &&
+        deployedAt - probed >= Number(env.ADAPTER_TEST_SETTLE_SECONDS) * MS_PER_SECOND,
     );
     holds(
       "the registration carries the bundle's own build id",
