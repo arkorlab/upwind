@@ -179,6 +179,19 @@ function finishWrite(runtime: CacheRuntime, write: Write, revision = write.state
   }
 }
 
+/**
+ * This isolate as the writer of what it writes (`DataWriteRequest.order`): an id drawn on its first
+ * write — never as the module loads, where a Worker may draw nothing at random — and the writes it
+ * has sent since.
+ */
+const writer: { id: string | undefined; sent: number } = { id: undefined, sent: 0 };
+
+function nextOrder(): { readonly writer: string; readonly seq: number } {
+  writer.id ??= crypto.randomUUID();
+  writer.sent += 1;
+  return { writer: writer.id, seq: writer.sent };
+}
+
 export async function writeData(
   runtime: CacheRuntime,
   input: { key: string; entry: DataEntryMetadata; bytes: Uint8Array },
@@ -190,7 +203,12 @@ export async function writeData(
   const valueBase64 = toBase64(input.bytes);
   let written;
   try {
-    written = await runtime.host.setData({ key: input.key, entry: input.entry, valueBase64 });
+    written = await runtime.host.setData({
+      key: input.key,
+      entry: input.entry,
+      valueBase64,
+      order: nextOrder(),
+    });
   } catch (error) {
     // A failure does not prove the host rejected the mutation: also discard a value
     // value read during the write.
@@ -203,9 +221,9 @@ export async function writeData(
   if (memo?.kind !== 'found' || memo.response.dependencyRevision < state.revision) {
     runtime.dataMemo.delete(key);
   }
-  // A newer write or read raised the floor past this one, or the host kept a value made after this
-  // one (`superseded`): what a read of the key finds is the host's to say. The floor remains
-  // independent of oversized, evicted or expired byte payloads.
+  // A newer write or read raised the floor past this one, or the host kept a write this isolate
+  // sent after this one (`superseded`): what a read of the key finds is the host's to say. The floor
+  // remains independent of oversized, evicted or expired byte payloads.
   if (written.revision < state.revision || written.superseded === true) return;
   runtime.dataMemo.set(
     key,

@@ -253,6 +253,14 @@ export interface DataWriteRequest {
   readonly key: string;
   readonly entry: DataEntryMetadata;
   readonly valueBase64: string;
+  /**
+   * Where the write stands among the writes this isolate sent: an id the isolate drew for itself,
+   * and a count it raises with each write. Writes of a key can cross on their way to the host — one
+   * held up behind its upload, or sent once its writer would wait no longer for the one before it
+   * — and the host keeps a writer's later write over its earlier one, whichever lands last
+   * (`DataWritten.superseded`).
+   */
+  readonly order?: { readonly writer: string; readonly seq: number } | undefined;
 }
 
 export interface DataWritten {
@@ -266,11 +274,9 @@ export interface DataWritten {
    */
   readonly invalidation?: InvalidationState | undefined;
   /**
-   * Set when the entry already held a value made after this one, which the host kept: nothing was
-   * written, and the generation named is the newer value's. Writes of a key may cross on their way
-   * to the host — one held up behind its upload, or sent once the writer would wait no longer for
-   * the one before it — so a host keeps the value made last (`entry.timestamp`), not the value
-   * written last, and says so; the writer then does not remember what it wrote as the entry's.
+   * Set when the entry already held a value its writer sent after this one (`order`), which the
+   * host kept: nothing was written, and the generation named is that value's. The writer then does
+   * not remember what it wrote as the entry's.
    */
   readonly superseded?: true | undefined;
 }
