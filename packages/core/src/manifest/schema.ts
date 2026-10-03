@@ -340,6 +340,14 @@ export const projectManifestSchema = z.object({
    */
   htmlLimitedBots: z.string().optional(),
   /**
+   * Whether the build's Next.js streams a partially prerendered page to the crawlers it sends no
+   * blocking metadata to: from 16.3, which renders such a page whole only for the ones it does
+   * (`shouldForceDynamicPPRRender`). Next.js 16.2 renders it whole for every crawler, the ones that
+   * run scripts included (`shouldWaitOnAllReady`), and no shell is served to any crawler where this
+   * is absent — on a manifest of such a build, and on one from before the field existed.
+   */
+  crawlersStreamed: z.literal(true).optional(),
+  /**
    * Where a shipped file is found as well, in an application with `i18n`: behind one of its
    * default locales — its own, and each domain's — under its base path (`findStaticFile`).
    */

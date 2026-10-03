@@ -448,11 +448,34 @@ export function classifyRequest(input: ClassifyInput): RequestClass {
   // is sent either way. Of a pathname that names no proved route, though: the middleware may
   // rewrite it onto one. Under a list the edge will not run, every visitor that names an agent is
   // passed on, and says so: for the list, not for being a crawler (`blockingMetadataReason`).
-  const blocking = blockingMetadataReason(entry, headers.get('user-agent'), input.manifest);
+  const userAgent = headers.get('user-agent');
+  if (renderedWholeForCrawlers(input.manifest, entry, userAgent)) {
+    return passthrough('bot');
+  }
+  const blocking = blockingMetadataReason(entry, userAgent, input.manifest);
   if (blocking !== undefined) {
     return passthrough(blocking);
   }
   return entry === undefined ? passthrough('route-not-proved') : { kind: 'document', entry };
+}
+
+/**
+ * Whether the build's Next.js renders this page whole for a crawler of this agent whatever its
+ * list says: before 16.3, it does for every crawler on a partially prerendered page
+ * (`crawlersStreamed`), and each of them is passed on, as every crawler was before. Not a page the
+ * build finished, which is served whole to any agent.
+ */
+function renderedWholeForCrawlers(
+  manifest: ProjectManifest,
+  entry: RouteEntry | undefined,
+  userAgent: string | null,
+): boolean {
+  return (
+    userAgent !== null &&
+    manifest.crawlersStreamed !== true &&
+    entry?.cache?.delivery !== 'complete' &&
+    isBotUserAgent(userAgent)
+  );
 }
 
 /**
