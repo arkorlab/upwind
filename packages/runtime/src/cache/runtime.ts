@@ -21,6 +21,7 @@ const DEFAULT_HOLD_MS = 5000;
 const MEMO_ENTRIES = 512;
 const RECORD_MEMO_ENTRIES = 256;
 const ARTIFACT_MEMO_ENTRIES = 64;
+const ENTRY_ID_ENTRIES = 1024;
 const KIB = 1024;
 const MIB = KIB * KIB;
 const PAYLOAD_MEMO_MIB = 8;
@@ -28,6 +29,8 @@ const ARTIFACT_MEMO_MIB = 4;
 const DATA_STATE_KIB = 128;
 const DATA_STATE_BYTES = DATA_STATE_KIB * KIB;
 const DATA_STATE_ENTRY_BYTES = 128;
+const ENTRY_IDS_KIB = 256;
+const ENTRY_IDS_BYTES = ENTRY_IDS_KIB * KIB;
 /** Leave the rest of a Function's 128 MB for Next.js, rendering and concurrent requests. */
 const DATA_MEMO_BYTES = PAYLOAD_MEMO_MIB * MIB;
 const RECORD_MEMO_BYTES = PAYLOAD_MEMO_MIB * MIB;
@@ -51,11 +54,29 @@ export interface CacheRuntime {
    * of its own, whose floor the older write's reply never learns.
    */
   readonly dataWrites: Map<string, DataState>;
+  /**
+   * The entry id each entry a request named derives to, by the entry's kind, route and pathname:
+   * two SHA-256 digests a request for it would otherwise make (`deriveEntry`) before its record
+   * can be looked up. An id never changes for the scope, so it is kept until the budget needs the
+   * room; the pathnames are the visitors', so the budget is in bytes as well as entries.
+   */
+  readonly entryIds: TtlCache<string, string>;
   /** Delivery records by entry, decoded, for one hold. */
   readonly recordMemo: TtlCache<string, DecodedGenerationPack | null>;
+  /**
+   * The reads of delivery records in flight, one per entry, which every request that wants the
+   * record while it runs shares (`cache/current.ts`): kept for a hold at most, and within a budget
+   * of their own, whether or not the host ever answers them (`sweepReads`).
+   */
+  readonly recordReads: Map<string, RecordRead>;
   /** Entries a regeneration was asked for lately; a second ask within the hold is not repeated. */
   readonly regenerationMemo: TtlCache<string, true>;
-  /** Artifacts of current generations read for a data route, by id, for one hold. */
+  /**
+   * Artifacts of current generations, by id, read for an output other than the record's own. An
+   * artifact is named by its content and never rewritten, so what an id read once says it says for
+   * good: kept until the budget needs the room rather than for a hold, after which every request
+   * that found the record again read the same bytes again, a round trip to the host each time.
+   */
   readonly artifactMemo: TtlCache<string, Uint8Array>;
   readonly log: (message: string, fields?: Record<string, string | number>) => void;
 }
@@ -76,6 +97,12 @@ export interface DataState {
    * was too large to be.
    */
   finds: number;
+}
+
+/** A read of an entry's delivery record in flight: when it began, and what it will say. */
+export interface RecordRead {
+  readonly startedAt: number;
+  readonly pack: Promise<DecodedGenerationPack | null>;
 }
 
 export interface CacheRuntimeOptions {
@@ -149,12 +176,17 @@ export function createCacheRuntime(options: CacheRuntimeOptions): CacheRuntime |
       maxBytes: DATA_MEMO_BYTES,
       sizeOf: (memo, key) => dataBytes(memo) + key.length * UTF16_BYTES,
     }),
+    entryIds: new TtlCache(Infinity, ENTRY_ID_ENTRIES, options.now, {
+      maxBytes: ENTRY_IDS_BYTES,
+      sizeOf: (entryId, key) => (entryId.length + key.length) * UTF16_BYTES,
+    }),
     recordMemo: new TtlCache(holdMs, RECORD_MEMO_ENTRIES, options.now, {
       maxBytes: RECORD_MEMO_BYTES,
       sizeOf: (pack, key) => recordBytes(pack) + key.length * UTF16_BYTES,
     }),
+    recordReads: new Map(),
     regenerationMemo: new TtlCache(holdMs, MEMO_ENTRIES, options.now),
-    artifactMemo: new TtlCache(holdMs, ARTIFACT_MEMO_ENTRIES, options.now, {
+    artifactMemo: new TtlCache(Infinity, ARTIFACT_MEMO_ENTRIES, options.now, {
       maxBytes: ARTIFACT_MEMO_BYTES,
       sizeOf: (bytes, key) => bytes.buffer.byteLength + key.length * UTF16_BYTES,
     }),
