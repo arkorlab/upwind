@@ -60,6 +60,16 @@ export interface BuildProjectManifestInput {
   readonly cache?: ManifestCache | undefined;
 }
 
+/** Who the application sends blocking metadata to, and whether its Next.js streams to the rest. */
+function crawlerFields(
+  input: BuildProjectManifestInput,
+): Pick<ProjectManifest, 'htmlLimitedBots' | 'crawlersStreamed'> {
+  return {
+    ...(input.htmlLimitedBots !== undefined && { htmlLimitedBots: input.htmlLimitedBots }),
+    ...(input.crawlersStreamed === true && { crawlersStreamed: true as const }),
+  };
+}
+
 /** Assemble a manifest from a build's routes; validates the result against the schema. */
 export function buildProjectManifest(input: BuildProjectManifestInput): ProjectManifest {
   const routes: Record<string, RouteEntry> = {};
@@ -87,8 +97,7 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
     ...(input.headerRules !== undefined && { headerRules: input.headerRules }),
     ...(input.foldedHeaderRules !== undefined && { foldedHeaderRules: input.foldedHeaderRules }),
     ...(input.images !== undefined && { images: input.images }),
-    ...(input.htmlLimitedBots !== undefined && { htmlLimitedBots: input.htmlLimitedBots }),
-    ...(input.crawlersStreamed === true && { crawlersStreamed: true }),
+    ...crawlerFields(input),
     ...(input.staticFileLocales !== undefined && { staticFileLocales: input.staticFileLocales }),
     ...(input.staticFileAssetPrefix !== undefined && {
       staticFileAssetPrefix: input.staticFileAssetPrefix,
