@@ -60,6 +60,13 @@ export interface BundleDependencies {
    */
   readonly dynamicRequires: readonly string[];
   /**
+   * Of those, the loads whose failure the code handles itself: a call of the loader in the block of
+   * a `try` that has a `catch`, within the same function (`dynamic-loads.ts`). Recorded, not
+   * refused — in the Function such a load fails into that `catch`, as it does under Node.js when
+   * the module is not installed. Absent where there are none.
+   */
+  readonly guardedRequires?: readonly string[];
+  /**
    * The `.wasm` this bundle imported as WebAssembly, each with the global the Function publishes it
    * under. Only what the bundler resolved itself; what Turbopack's own loader asks for is in
    * `patches` instead, as the `wasm-loader` patch's table.
@@ -215,6 +222,9 @@ export function bundleDependencies(
     const entry = packages[pkg] ?? { files: 0, bytes: 0 };
     packages[pkg] = { files: entry.files + 1, bytes: entry.bytes + bytes };
   }
+  const guarded = trace.dynamicLoads
+    .filter((load) => load.guarded)
+    .map((load) => describeLoad(projectDir, load));
   return {
     buildOutput: buildOutput.toSorted((a, b) => a.file.localeCompare(b.file)),
     packages: Object.fromEntries(
@@ -235,6 +245,7 @@ export function bundleDependencies(
       };
     }),
     dynamicRequires: trace.dynamicLoads.map((load) => describeLoad(projectDir, load)),
+    ...(guarded.length > 0 && { guardedRequires: guarded }),
     wasmModules: [...new Set(trace.wasmModules)]
       .map((entry) => {
         const [file, global] = entry.split(' -> ', 2);
@@ -438,8 +449,9 @@ function problemsIn(source: string, bundle: BundleDependencies): string[] {
       problems.push(`${external} is imported but not known to be provided by the Workers runtime`);
     }
   }
+  const guarded = new Set(bundle.guardedRequires);
   for (const dynamic of bundle.dynamicRequires) {
-    if (!isAllowedDynamicLoad(dynamic)) {
+    if (!isAllowedDynamicLoad(dynamic) && !guarded.has(dynamic)) {
       problems.push(`a load the bundler could not follow: ${dynamic}`);
     }
   }

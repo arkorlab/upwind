@@ -24,6 +24,14 @@ import { parseAst } from 'rolldown/parseAst';
  * throws where the file it was written in would have loaded. An `import()` of anything but one
  * module's name is a load the bundler could not follow too. A module the chunk does not carry
  * is not looked at.
+ *
+ * A use is *guarded* where the code handles its failure itself: a call of the loader, or of a
+ * method of it, in the block of a `try` that has a `catch`, within the same function — an
+ * `import()` too, where it is awaited there. Such a load fails in the Function as it fails under
+ * Node.js when the module is not installed, into the code's own `catch`: `@protobufjs/inquire`,
+ * which every `protobufjs` loads its optional modules through, and TypeScript's `sys.require`,
+ * which loads a compiler plugin, are written that way. Not across a function's boundary: a `try`
+ * around a function's definition catches nothing its later calls throw.
  */
 
 /** A use of the loader the bundler could not follow, in the module that makes it. */
@@ -36,6 +44,8 @@ export interface DynamicLoad {
   readonly line: number;
   /** The call, or the assignment or statement that keeps the loader. */
   readonly text: string;
+  /** Whether the code handles the load's failure itself (see above). */
+  readonly guarded: boolean;
 }
 
 /** As much of a use as the record shows. */
@@ -53,6 +63,7 @@ interface Visit {
 interface Use {
   readonly node: Node;
   readonly text: Node;
+  readonly guarded: boolean;
 }
 
 /**
@@ -157,11 +168,45 @@ function keeperOf(visit: Visit): Node {
   return visit.statement;
 }
 
+/** Where a function begins: a `try` outside it catches nothing a later call of it throws. */
+const FUNCTION_TYPES: ReadonlySet<string> = new Set([
+  'ArrowFunctionExpression',
+  'FunctionDeclaration',
+  'FunctionExpression',
+]);
+
+/**
+ * Whether what `visit` is part of runs in the block of a `try` that has a `catch`, without a
+ * function's boundary between them. A `try` whose `catch` or `finally` it is in does not count;
+ * one around that may.
+ */
+function inGuardedBlock(visit: Visit): boolean {
+  let at = visit;
+  while (at.up !== undefined) {
+    const { node } = at.up;
+    if (FUNCTION_TYPES.has(node.type)) {
+      return false;
+    }
+    if (node.type === 'TryStatement' && at.key === 'block' && node.handler !== null) {
+      return true;
+    }
+    at = at.up;
+  }
+  return false;
+}
+
+/** A use that fails where it is made, into a `catch` around it: a call, made in a guarded block. */
+function guardedCall(visit: Visit, call: Node): boolean {
+  return call.type === 'CallExpression' && inGuardedBlock(visit);
+}
+
 /** A method called is reported as the call; one kept, as what keeps it. */
 function methodUse(visit: Visit, member: Node): Use {
   const above = visit.up?.node;
   const called = visit.key === 'callee' && above?.type === 'CallExpression';
-  return called ? { node: above, text: above } : { node: member, text: keeperOf(visit) };
+  return called
+    ? { node: above, text: above, guarded: guardedCall(visit, above) }
+    : { node: member, text: keeperOf(visit), guarded: false };
 }
 
 /**
@@ -188,7 +233,9 @@ function useOfLoader(visit: Visit): Use | undefined {
   }
   const parent = up.node;
   if (key === 'callee' && parent.type === 'CallExpression') {
-    return namesOneModule(parent.arguments[0]) ? undefined : { node: parent, text: parent };
+    return namesOneModule(parent.arguments[0])
+      ? undefined
+      : { node: parent, text: parent, guarded: guardedCall(visit, parent) };
   }
   if (parent.type === 'UnaryExpression' && parent.operator === 'typeof') {
     return undefined;
@@ -196,14 +243,18 @@ function useOfLoader(visit: Visit): Use | undefined {
   if (key === 'object' && parent.type === 'MemberExpression') {
     return isPassive(parent) ? undefined : methodUse(up, parent);
   }
-  return { node, text: keeperOf(visit) };
+  return { node, text: keeperOf(visit), guarded: false };
 }
 
 /** A use of the loader, of a module object's, or an `import()`, that `visit` is. */
 function useAt(visit: Visit): Use | undefined {
   const { node } = visit;
   if (node.type === 'ImportExpression') {
-    return namesOneModule(node.source) ? undefined : { node, text: node };
+    // Its failure is a rejection, which a `try` sees only where it is awaited in the block.
+    const awaited = visit.up?.node.type === 'AwaitExpression';
+    return namesOneModule(node.source)
+      ? undefined
+      : { node, text: node, guarded: awaited && inGuardedBlock(visit.up) };
   }
   if (node.type !== 'Identifier' || node.name !== 'require') {
     return undefined;
@@ -257,6 +308,7 @@ function describe(file: string, code: string, use: Use): DynamicLoad {
     file,
     line: code.slice(0, use.node.start).split('\n').length,
     text: code.slice(start, Math.min(use.text.end, start + DYNAMIC_LOAD_TEXT)),
+    guarded: use.guarded,
   };
 }
 
