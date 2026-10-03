@@ -100,6 +100,7 @@ async function npmCli(): Promise<string> {
 
 /** The context a patch is handed. Only `instrumentation` reads any of it from a package file. */
 const CONTEXT: PatchContext = {
+  projectDir: REPO,
   distDir: path.join(REPO, '.next'),
   chunks: [],
   instrumentation: undefined,

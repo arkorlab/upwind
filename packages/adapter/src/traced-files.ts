@@ -11,8 +11,14 @@ import path from 'node:path';
  *
  * So each such file goes up as a module named by its path in the project, which is where the
  * application's own path to it lands. Code is not among them — it is bundled — nor is anything a
- * package carries, nor anything `next build` wrote: those reach the Function the ways they always
- * have, or not at all.
+ * package carries, nor anything `next build` wrote, with one exception: those reach the Function
+ * the ways they always have, or not at all.
+ *
+ * The exception is a file a server module refers to by URL — `new URL('./data.json',
+ * import.meta.url)` — which Turbopack copies into the build output's `server/assets` and lists
+ * among the output's `assets`, and which the module then reads through `node:fs` at the path the
+ * Turbopack runtime resolves it to (`patches/turbopack-root.ts`). It is the application's file
+ * under a name the build gave it, so it travels as the others do, under its path in the project.
  */
 export interface TracedFile {
   /** The module's name, and so its path under `/bundle`: the file's path in the project. */
@@ -35,6 +41,8 @@ const NOT_DATA = new Set([
   '.wasm',
 ]);
 const PACKAGES_DIR = 'node_modules';
+/** Where Turbopack writes a file a server module refers to by URL, beneath the build output. */
+const SERVER_ASSETS_DIR = path.join('server', 'assets');
 
 /** `file` beneath `dir`, as a relative path; `undefined` when it is not beneath it. */
 function beneath(dir: string, file: string): string | undefined {
@@ -49,7 +57,11 @@ function beneath(dir: string, file: string): string | undefined {
 
 function nameOf(projectDir: string, distDir: string, filePath: string): string | undefined {
   const relative = beneath(projectDir, filePath);
-  if (relative === undefined || beneath(distDir, filePath) !== undefined) {
+  const built = beneath(distDir, filePath);
+  if (
+    relative === undefined ||
+    (built !== undefined && beneath(SERVER_ASSETS_DIR, built) === undefined)
+  ) {
     return undefined;
   }
   const segments = relative.split(path.sep);

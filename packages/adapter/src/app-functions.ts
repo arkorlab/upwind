@@ -100,6 +100,7 @@ async function patchFor(
     table.add(chunk);
   }
   return {
+    projectDir: context.ctx.projectDir,
     distDir: context.ctx.distDir,
     chunks: [...table],
     copies: await sameChunks([...table]),
