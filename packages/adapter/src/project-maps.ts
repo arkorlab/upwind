@@ -86,6 +86,18 @@ function sourceFile(source: string, base: string): string | undefined {
   return path.resolve(base, decoded);
 }
 
+/**
+ * A source as its map names it, `sourceRoot` and all: the specification prepends the root to every
+ * source, so a root that is a URL makes every source one — classified as such rather than as a
+ * path made up from it.
+ */
+function withRoot(sourceRoot: string | undefined, source: string): string {
+  if (sourceRoot === undefined || sourceRoot === '') {
+    return source;
+  }
+  return sourceRoot.endsWith('/') ? `${sourceRoot}${source}` : `${sourceRoot}/${source}`;
+}
+
 function isProjectFile(file: string, bounds: ProjectBounds): boolean {
   // Relative to the project, so a project that itself sits somewhere below a `node_modules` is
   // not taken for a package.
@@ -123,9 +135,9 @@ function reindexed(
  */
 export function projectOnly(text: string, mapFile: string, bounds: ProjectBounds): string {
   const map = JSON.parse(text) as RawMap;
-  const base = path.resolve(path.dirname(mapFile), map.sourceRoot ?? '');
+  const base = path.dirname(mapFile);
   const kept = map.sources.map((source) => {
-    const file = source === null ? undefined : sourceFile(source, base);
+    const file = source === null ? undefined : sourceFile(withRoot(map.sourceRoot, source), base);
     return file !== undefined && isProjectFile(file, bounds);
   });
   const sources: string[] = [];

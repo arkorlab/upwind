@@ -23,19 +23,19 @@ import { mapFileOf } from './source-maps.ts';
  *
  * So the hook is wrapped. Before it runs, every map a chunk names is linked into a directory of
  * this adapter's own under the build directory (copied where the filesystem will not link), with
- * which chunk named it and what that chunk's code was. After it runs, a map is kept only where it
- * still describes its chunk as the build will ship it:
+ * which chunk named it and what that chunk's code was. After it runs, every chunk it saw is given a
+ * verdict, written down in an index the rest of the build reads instead of the chunk's comment:
  *
- * - the chunk's code is as it was (a comment at its end may have gone, which moves nothing), or
- * - the chunk changed and its map was rewritten with it — which the link sees, being the same file:
- *   a tool that writes a file in place writes the one the link names.
+ * - the chunk's code is as it was (a comment at its end may have gone, which moves nothing): the
+ *   kept map, which describes that code whatever happened to the file beside it;
+ * - the chunk changed and its map was rewritten with it, in place — which the link sees, being the
+ *   same file: the kept map, as rewritten;
+ * - the chunk changed and the map beside it was replaced by another file: that file;
+ * - the chunk changed and nothing rewrote its map: **no map**, even where the old one is still
+ *   beside it. A frame read as built is honest, and one read against the wrong map is not.
  *
- * A chunk that changed under a map nobody rewrote is one whose map would place every frame
- * somewhere else, and it is left with none: a frame read as built is honest, and one read against
- * the wrong map is not. The same goes for a tool that replaces a map with a new file rather than
- * writing the one there — the link keeps the old one, which cannot be told from a map left behind.
- *
- * Nothing here can fail a build. A map that could not be kept is a frame read as built.
+ * Nothing here can fail a build, and no chunk takes another down with it: a chunk whose map could
+ * not be kept or judged is a chunk whose frames read as built.
  */
 
 /** The directory, under the build's own: Next.js empties that before every build. */
@@ -71,11 +71,23 @@ export type AfterProductionCompile = (metadata: {
   distDir: string;
 }) => Promise<void>;
 
-/** The maps that came through, for the parts of the build that read a chunk's map. */
-export interface KeptMaps {
-  /** The kept map of the chunk at `chunk`, or `undefined` when none was kept for it. */
-  mapFor(chunk: string): string | undefined;
+/** What the hook left one chunk. */
+export interface KeptMap {
+  /**
+   * Whether the hook saw the chunk, so that `file` is the word on its map. A chunk it did not see —
+   * which named no map before it ran, or has been written since — is read by its own comment.
+   */
+  readonly seen: boolean;
+  /** The map that describes the chunk now, where the hook saw it; nothing where none does. */
+  readonly file: string | undefined;
 }
+
+/** What the hook left the chunks it saw, for the parts of the build that read a chunk's map. */
+export interface KeptMaps {
+  mapFor(chunk: string): KeptMap;
+}
+
+const UNSEEN: KeptMap = { seen: false, file: undefined };
 
 /** A file's size and when it was last written: what tells a file written since from one not. */
 interface Written {
@@ -86,14 +98,20 @@ interface Written {
 interface Recorded {
   /** The chunk, relative to `distDir`. */
   readonly chunk: string;
-  /** Its map, relative to the kept directory — where it is relative to `distDir`. */
-  readonly kept: string;
+  /** The map it named, relative to `distDir` — and to the kept directory, where it was linked. */
+  readonly map: string;
   /** A digest of the chunk's code, without the directives at its end. */
   readonly code: string;
   /** Whether the kept map is the build's own file under a second name, or a copy of it. */
   readonly linked: boolean;
   readonly chunkWritten: Written;
+  /** The map as the hook found it, at its own path. */
   readonly mapWritten: Written;
+}
+
+/** A verdict as the index holds it: the map to read, relative to `distDir`, or none. */
+interface IndexEntry extends Written {
+  readonly map: string | null;
 }
 
 /** Hooks this module returned, so one handed back to it is not wrapped a second time. */
@@ -123,6 +141,15 @@ function codeDigest(bytes: Buffer): string {
 async function written(file: string): Promise<Written> {
   const { size, mtimeMs } = await stat(file);
   return { size, mtimeMs };
+}
+
+/** `written`, or nothing for a file that is not there. */
+async function writtenIfThere(file: string): Promise<Written | undefined> {
+  try {
+    return await written(file);
+  } catch {
+    return undefined;
+  }
 }
 
 function sameWrite(a: Written, b: Written): boolean {
@@ -178,85 +205,110 @@ async function linkOrCopy(from: string, to: string): Promise<boolean | undefined
   }
 }
 
+/** One chunk as it was before the hook, with its map linked aside; nothing for one without. */
+async function recordChunk(
+  distDir: string,
+  chunk: string,
+  linkOnce: (map: string) => Promise<boolean | undefined>,
+): Promise<Recorded | undefined> {
+  const bytes = await readFile(chunk);
+  const mapFile = mapFileOf(bytes.toString('utf8', Math.max(0, bytes.length - TAIL_BYTES)), chunk);
+  if (mapFile === undefined || !isUnder(distDir, mapFile)) {
+    return undefined;
+  }
+  const map = path.relative(distDir, mapFile);
+  const linked = await linkOnce(map);
+  if (linked === undefined) {
+    return undefined;
+  }
+  return {
+    chunk: path.relative(distDir, chunk),
+    map,
+    code: codeDigest(bytes),
+    linked,
+    chunkWritten: await written(chunk),
+    mapWritten: await written(path.join(distDir, map)),
+  };
+}
+
 /** Link every map a chunk names into the kept directory, and note what each chunk was. */
 async function recordMaps(distDir: string, keptDir: string): Promise<Recorded[]> {
   // What a previous build left, for a project that keeps its build directory between builds.
   await rm(keptDir, { recursive: true, force: true });
   const recorded: Recorded[] = [];
   /**
-   * The link of each map, by where it is kept: taken before anything is awaited, so two chunks
-   * naming one map — read at once — share one link rather than racing to make it.
+   * The link of each map, by where it is: taken before anything is awaited, so two chunks naming
+   * one map — read at once — share one link rather than racing to make it.
    */
   const taken = new Map<string, Promise<boolean | undefined>>();
-  const linkOnce = (
-    mapFile: string,
-    keptFile: string,
-    kept: string,
-  ): Promise<boolean | undefined> => {
-    const known = taken.get(kept);
+  const linkOnce = (map: string): Promise<boolean | undefined> => {
+    const known = taken.get(map);
     if (known !== undefined) {
       return known;
     }
+    const keptFile = path.join(keptDir, map);
     const linking = (async () => {
       await mkdir(path.dirname(keptFile), { recursive: true });
-      return linkOrCopy(mapFile, keptFile);
+      return linkOrCopy(path.join(distDir, map), keptFile);
     })();
-    taken.set(kept, linking);
+    taken.set(map, linking);
     return linking;
   };
   await eachAtMost(await chunksIn(distDir), CONCURRENCY, async (chunk) => {
-    const bytes = await readFile(chunk);
-    const tail = bytes.toString('utf8', Math.max(0, bytes.length - TAIL_BYTES));
-    const mapFile = mapFileOf(tail, chunk);
-    if (mapFile === undefined || !isUnder(distDir, mapFile)) {
-      return;
+    try {
+      const entry = await recordChunk(distDir, chunk, linkOnce);
+      if (entry !== undefined) {
+        recorded.push(entry);
+      }
+    } catch {
+      // A chunk that cannot be read, or names its map in a way that is not a path, is one the
+      // hook is not watched for; the others still are.
     }
-    const kept = path.relative(distDir, mapFile);
-    const keptFile = path.join(keptDir, kept);
-    const linked = await linkOnce(mapFile, keptFile, kept);
-    if (linked === undefined) {
-      return;
-    }
-    recorded.push({
-      chunk: path.relative(distDir, chunk),
-      kept,
-      code: codeDigest(bytes),
-      linked,
-      chunkWritten: await written(chunk),
-      mapWritten: await written(keptFile),
-    });
   });
   return recorded;
 }
 
+/** Whether a chunk's code is what it was before the hook, a comment at its end aside. */
+async function sameCode(distDir: string, entry: Recorded, now: Written): Promise<boolean> {
+  // A chunk nobody wrote to is the chunk it was, and is not read again — most of a build's.
+  if (sameWrite(now, entry.chunkWritten)) {
+    return true;
+  }
+  return codeDigest(await readFile(path.join(distDir, entry.chunk))) === entry.code;
+}
+
 /**
- * Whether a recorded map still describes its chunk as the build now holds it; if it does, the chunk
- * as it is now, for the index to hold the map to.
+ * The map that describes a recorded chunk now, relative to `distDir`, or `null` for none.
+ *
+ * `shared` when another chunk names the same map: rewritten, it may have been rewritten for that
+ * one, and describes neither for certain.
  */
-async function stillDescribes(
+async function verdict(
   distDir: string,
   keptDir: string,
   entry: Recorded,
-): Promise<Written | undefined> {
-  const chunk = path.join(distDir, entry.chunk);
-  let now: Written;
-  let bytes: Buffer;
-  try {
-    now = await written(chunk);
-    // A chunk nobody wrote to is the chunk it was, and is not read again — most of a build's.
-    if (sameWrite(now, entry.chunkWritten)) {
-      return now;
-    }
-    bytes = await readFile(chunk);
-  } catch {
-    return undefined;
-  }
-  if (codeDigest(bytes) === entry.code) {
-    return now;
-  }
+  shared: boolean,
+): Promise<string | null> {
+  const now = await written(path.join(distDir, entry.chunk));
+  const kept = path.relative(distDir, path.join(keptDir, entry.map));
+  // A link is the build's own file, so a map written in place since shows through it; a copy is
+  // the map as it was, whatever happened to the build's.
+  const keptNow = entry.linked ? await writtenIfThere(path.join(keptDir, entry.map)) : undefined;
   const rewritten =
-    entry.linked && !sameWrite(await written(path.join(keptDir, entry.kept)), entry.mapWritten);
-  return rewritten ? now : undefined;
+    entry.linked && (keptNow === undefined || !sameWrite(keptNow, entry.mapWritten));
+  if (await sameCode(distDir, entry, now)) {
+    return shared && rewritten ? null : kept;
+  }
+  if (shared) {
+    return null;
+  }
+  if (rewritten) {
+    return kept;
+  }
+  // Replaced rather than rewritten — a new file where the map was, which a link does not follow —
+  // or rewritten where only a copy was kept.
+  const liveNow = await writtenIfThere(path.join(distDir, entry.map));
+  return liveNow !== undefined && !sameWrite(liveNow, entry.mapWritten) ? entry.map : null;
 }
 
 /** Posix separators in the index, so it reads the same wherever it was written. */
@@ -264,27 +316,34 @@ function indexKey(relative: string): string {
   return relative.split(path.sep).join('/');
 }
 
-/** A map that came through, as the index holds it: where it is kept, and the chunk it is for. */
-interface IndexEntry extends Written {
-  readonly map: string;
-}
-
 /**
- * Write down the maps that came through: by chunk, relative to the build directory, each with the
- * chunk as it was when the hook was done. A chunk written since — by a later build into a build
- * directory that is not emptied between them (`cleanDistDir: false`), say — is not the chunk the
- * map was kept for, and `readKeptMaps` gives it none.
+ * Write down what the hook left each recorded chunk: by chunk, relative to the build directory, each
+ * with the chunk as it was when the hook was done. A chunk written since — by a later build into a
+ * build directory that is not emptied between them (`cleanDistDir: false`), say — is not the chunk
+ * the verdict was about, and `readKeptMaps` leaves it to its own comment.
+ *
+ * A map two chunks name is kept for them only where neither chunk nor map has changed: rewritten
+ * for one of them, it no longer says which code it describes.
  */
 async function settleMaps(
   distDir: string,
   keptDir: string,
   recorded: readonly Recorded[],
 ): Promise<void> {
+  const sharers = new Map<string, number>();
+  for (const entry of recorded) {
+    sharers.set(entry.map, (sharers.get(entry.map) ?? 0) + 1);
+  }
   const maps: Record<string, IndexEntry> = {};
   await eachAtMost(recorded, CONCURRENCY, async (entry) => {
-    const now = await stillDescribes(distDir, keptDir, entry);
-    if (now !== undefined) {
-      maps[indexKey(entry.chunk)] = { map: indexKey(entry.kept), ...now };
+    try {
+      const map = await verdict(distDir, keptDir, entry, (sharers.get(entry.map) ?? 0) > 1);
+      // The chunk as the verdict saw it, asked again after: what `readKeptMaps` checks it against.
+      const now = await written(path.join(distDir, entry.chunk));
+      maps[indexKey(entry.chunk)] = { map: map === null ? null : indexKey(map), ...now };
+    } catch {
+      // A chunk that cannot be judged is left out, and reads its own comment: what it would have
+      // been given had the hook not been watched at all.
     }
   });
   await mkdir(keptDir, { recursive: true });
@@ -332,15 +391,36 @@ export function keepMapsThrough(hook: unknown): AfterProductionCompile | undefin
   return wrapped;
 }
 
+function isIndexEntry(value: unknown): value is IndexEntry {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const entry = value as Record<string, unknown>;
+  return (
+    (typeof entry['map'] === 'string' || entry['map'] === null) &&
+    typeof entry['size'] === 'number' &&
+    typeof entry['mtimeMs'] === 'number'
+  );
+}
+
+/** Whether `chunk` is as it was when its verdict was written. Synchronous: asked as a bundler loads. */
+function stillWritten(chunk: string, entry: Written): boolean {
+  try {
+    const { size, mtimeMs } = statSync(chunk);
+    return sameWrite({ size, mtimeMs }, entry);
+  } catch {
+    return false;
+  }
+}
+
 /**
- * The maps kept for this build, or `undefined` when none were: no hook ran, or the index could not
- * be written. A chunk the index does not name has no map of its own to fall back to.
+ * What the hook left this build's chunks, or `undefined` when there is no word of it: no hook ran,
+ * or the index could not be written.
  */
 export async function readKeptMaps(distDir: string): Promise<KeptMaps | undefined> {
-  const keptDir = path.join(distDir, KEPT_DIR);
   let parsed: unknown;
   try {
-    parsed = JSON.parse(await readFile(path.join(keptDir, INDEX_FILE), 'utf8'));
+    parsed = JSON.parse(await readFile(path.join(distDir, KEPT_DIR, INDEX_FILE), 'utf8'));
   } catch {
     return undefined;
   }
@@ -356,35 +436,13 @@ export async function readKeptMaps(distDir: string): Promise<KeptMaps | undefine
     }
   }
   return {
-    mapFor(chunk): string | undefined {
+    mapFor(chunk) {
       const entry = table.get(indexKey(path.relative(distDir, chunk)));
       if (entry === undefined || !stillWritten(chunk, entry)) {
-        return undefined;
+        return UNSEEN;
       }
-      const file = path.join(keptDir, entry.map);
-      return isUnder(keptDir, file) ? file : undefined;
+      const file = entry.map === null ? undefined : path.join(distDir, entry.map);
+      return { seen: true, file: file !== undefined && isUnder(distDir, file) ? file : undefined };
     },
   };
-}
-
-function isIndexEntry(value: unknown): value is IndexEntry {
-  if (typeof value !== 'object' || value === null) {
-    return false;
-  }
-  const entry = value as Record<string, unknown>;
-  return (
-    typeof entry['map'] === 'string' &&
-    typeof entry['size'] === 'number' &&
-    typeof entry['mtimeMs'] === 'number'
-  );
-}
-
-/** Whether `chunk` is as it was when its map was kept. Synchronous, being asked as a bundler loads. */
-function stillWritten(chunk: string, entry: Written): boolean {
-  try {
-    const { size, mtimeMs } = statSync(chunk);
-    return sameWrite({ size, mtimeMs }, entry);
-  } catch {
-    return false;
-  }
 }
