@@ -3,6 +3,7 @@ import type { RouteEntryDescriptor } from '@stayingupwind/core/cache';
 
 import { nodeHandlerOf } from '../entries.ts';
 import { descriptorFor } from '../generations.ts';
+import { elsewhere } from '../placement.ts';
 import { findShell, getStore, type Store } from '../store.ts';
 import { requestContext } from './context.ts';
 import { regenerate } from './regenerate.ts';
@@ -46,7 +47,14 @@ export async function platformRevalidate(input: RevalidateInput): Promise<void> 
   // A page on the edge runtime has no generation to make: nothing here captures its render.
   const handler = await nodeHandlerOf(context.tables, descriptor.route);
   if (handler === undefined) {
-    throw new Error(`revalidate: no Node.js entrypoint for ${descriptor.route}`);
+    // The Pages Router's routes travel together whenever a build splits its routes across app
+    // Functions (`split.ts`), so a page this can be asked to revalidate is never in another one.
+    const owner = elsewhere(store, descriptor.route);
+    throw new Error(
+      owner === undefined
+        ? `revalidate: no Node.js entrypoint for ${descriptor.route}`
+        : `revalidate: ${descriptor.route} is in the app Function ${owner}, not this one`,
+    );
   }
   const outcome = await regenerate({
     runtime: context.runtime,
