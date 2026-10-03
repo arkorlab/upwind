@@ -94,15 +94,83 @@ the project's own (`src/project-config.ts`). Four names are looked for directly 
 **the first that exists is the whole of the configuration**; they are not merged, because merging
 means deciding which file wins a key neither meant to share.
 
-| Read          | Bundle field | Held to                                                                                                  |
-| ------------- | ------------ | -------------------------------------------------------------------------------------------------------- |
-| `crons[]`     | `crons`      | Vercel's dialect, at build time: a path, and a five-field UTC expression (`@stayingupwind/core/cron`)    |
-| anything else | —            | ignored, so a `vercel.json` full of Vercel's own deployment configuration is not read twice, differently |
+| Read              | Bundle field             | Held to                                                                                                                                                                           |
+| ----------------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `crons[]`         | `crons`                  | Vercel's dialect, at build time: a path, and a five-field UTC expression (`@stayingupwind/core/cron`)                                                                             |
+| `functions.split` | (how the bundle is made) | `false`, `true`, or `{ maxMiB?, maxCodeMiB? }`, which can only tighten the host's budgets (below). Never read from `vercel.json`, where `functions` is Vercel's per-file settings |
+| anything else     | —                        | ignored, so a `vercel.json` full of Vercel's own deployment configuration is not read twice, differently                                                                          |
 
 An `upwind.config.ts` is evaluated by Node itself — type stripping, no build step, erasable syntax
 only — and may export a function, so what a project declares can be computed. A file that will not
 parse, a key whose shape is wrong, or a schedule that cannot be run fails the build with the file
 named: the alternative is a deployment whose jobs quietly never fire.
+
+## A large application, split across Functions
+
+A Function has a size limit, and every byte of its code is compiled when it starts. An application
+whose routes between them outgrow one Function can be built as several instead, each holding some of
+the routes — **only where the host asks for it** (`createAdapter({ functions: { split } })`), since
+a host then has to send each request to the Function its route is in.
+
+**When.** The application is built as one Function first, exactly as it would be otherwise, and
+weighed. Within the budgets — `maxMiB`, what a Function may weigh, and `maxCodeMiB`, how much of
+that may be code — that Function is the build, and the bundle is the version-1 bundle it always
+was. Past either, the routes are split — where they can be: an application whose routes are one
+unit (see below), or whose plan comes to one Function, stays one Function over the budgets, and the
+build says so. A host can split every application that is past the budgets
+(`projects: 'all'`, the default) or only those whose own configuration asks
+(`projects: 'opted-in'`); a project can turn the split off with `functions.split: false`, or tighten
+the budgets, never loosen them.
+
+**How the routes are placed** (`plan.ts`). The unit is a module — entrypoints that share a built
+file go together — except the Pages Router, which goes whole, since `res.revalidate()` renders any
+of its pages in the Function that calls it. (An App Router page it asks for may be in another
+Function, which the one asking can neither render nor reach; that page is invalidated instead, as
+`revalidatePath` invalidates one, and its own Function renders it for the next request.) Every app
+Function carries the same base: the middleware,
+the instrumentation hook, the not-found page and the Pages Router's error pages, every manifest, and
+the same `runtime.json`, so that each routes a request as Next.js would and knows where every route
+is. The units are then merged two at a time, always the pair whose union adds the least code to the
+larger of them — routes that share a layout and its libraries first, routes that share nothing last
+— while the result stays within both budgets. What remains is the plan: few Functions within the
+budgets, each holding routes that share their code. Few, not the fewest: the merge is greedy, and a
+pair taken early can leave two units that would each have fitted beside another without a partner
+— finding the fewest is bin packing, which no build should wait on. Each piece is weighed with what
+the one Function measured: a chunk at the bytes it put into that Function's code (the bundler's
+per-module figures, scaled to the module they went into), a package linked from `.next/node_modules`
+with the routes whose chunks import it, a prerendered body, a file a route reads, a WebAssembly module
+at its size. Code and WebAssembly count against both budgets; the rest against
+the size alone. What the middleware and the instrumentation hook reach — their code, their
+WebAssembly, the files they read — is in every Function, and is weighed there, whichever routes
+reach it too.
+
+Three rules keep a plan from being worse than not splitting. A budget the base and the smallest unit
+already pass is one no Function could meet, and is dropped rather than leave every route in a
+Function of its own. A unit past a budget the others meet stands alone, as small as it can be —
+but takes in a unit whose code it mostly has, one that adds no more code than the two share, since
+leaving them apart would carry that code twice. And a plan is never more than `MAX_APP_FUNCTIONS`
+Functions: past that, the cheapest merges go on whatever the budgets say.
+
+**What is built.** Each Function of the plan with its own routes' chunks, WebAssembly, files and
+prerendered bodies, and the base. The first — the one holding the most documents — is `app`, as
+always; the others are `app-2`, `app-3`…, carried in `functions.split`, each route placed in its
+Function on its entrypoint (`function`), and the bundle is version 2 (`SPLIT_BUNDLE_VERSION`), which a
+reader of version 1 refuses rather than taking `app` for the whole application. A Function's code
+modules are named after it — `app-2.cjs`, `edge-2.cjs` — and so are its source maps
+(`app-2/app-2.cjs`), so a stack frame says which Function it came from. `dependencies.json` records
+each Function and the `plan`: its routes and what each Function was expected to weigh.
+
+**What a host does with it.** It sends each request to the Function its route is in. The manifest
+says which, as far as a table can: `functionFor` reads the request the way Next.js routes — a
+rewrite ahead of the filesystem, the exact pathnames, the dynamic routes — and answers `undefined`
+where it cannot, for the first Function to take. A Function handed a request for a route it does not
+hold answers `421` (`MISDIRECTED_STATUS`) with the name of the Function that does
+(`x-arkor-function`), the request's own body, unread, and — where it routed the request before it
+found that out — the routing it came to (`x-arkor-routed`). The host sends the request on, once,
+with that body and that header; a resume or a regeneration, answered before any routing, goes on as
+it was asked. The Function that receives it answers from where the routing left off, and the
+response is the one a single Function would have given. A second `421` is the host's own mistake
+and is not followed.
 
 ## A static export
 

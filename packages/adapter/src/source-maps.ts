@@ -1,15 +1,30 @@
 import { open, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { BlobRef, SourceMapRef } from '@stayingupwind/core/bundle';
+import { encodedMap, FlattenMap, type SectionedSourceMapInput } from '@jridgewell/trace-mapping';
+import type { SourceMapRef } from '@stayingupwind/core/bundle';
 import type { Plugin } from 'rolldown';
 
 import type { BlobStore } from './blobs.ts';
 import { EDGE_MODULE } from './edge.ts';
 import { exists } from './fs.ts';
+import type { KeptMaps } from './kept-maps.ts';
+import { type ProjectBounds, projectOnly } from './project-maps.ts';
 
 /** The module the application's own code is in, as `buildFunction` names it. */
 const APP_MODULE = 'app.cjs';
+const MAP_CONTENT_TYPE = 'application/json';
+
+/**
+ * What a host asks for: no maps, the maps whole, or the maps with a Function's kept to the files the
+ * project wrote (`projectOnly`).
+ */
+export type SourceMapsOption = boolean | 'project' | undefined;
+
+/** Whether the host asked for maps at all; `'project'` is a way of asking for them. */
+export function carriesMaps(option: SourceMapsOption): option is true | 'project' {
+  return option === true || option === 'project';
+}
 
 /**
  * The maps a build wrote, and the two things that have to be done with them: given to the bundler
@@ -42,7 +57,7 @@ const TAIL_LENGTH = 512;
 const DATA_URL_PREFIX = 'data:';
 
 /** The map file a source names, or nothing — an inline map needs no reading, and is left alone. */
-function mapFileOf(code: string, id: string): string | undefined {
+export function mapFileOf(code: string, id: string): string | undefined {
   const tail = code.length > TAIL_LENGTH ? code.slice(-TAIL_LENGTH) : code;
   const marker = tail.lastIndexOf(SOURCE_MAPPING_URL);
   if (marker === -1) {
@@ -59,7 +74,13 @@ function mapFileOf(code: string, id: string): string | undefined {
   }
   // As a URL, because that is how the comment spells it: Turbopack percent-encodes the brackets
   // in a chunk named `[root-of-the-server]__….js`, and a path taken literally would not exist.
-  return path.join(path.dirname(id), decodeURIComponent(named));
+  try {
+    return path.join(path.dirname(id), decodeURIComponent(named));
+  } catch {
+    // An escape that decodes to nothing: a comment naming no file this could find, which is no
+    // reason to fail the bundle it is read for.
+    return undefined;
+  }
 }
 
 /**
@@ -79,7 +100,89 @@ export function sourcemapOutput(carry: boolean): {
   return carry ? { sourcemap: 'hidden', sourcemapExcludeSources: true } : { sourcemap: false };
 }
 
-export function sourceMapsPlugin(): Plugin {
+/**
+ * A map as an object, flattened when it was written as sections; nothing when it is not a map.
+ * `file` names it in the warning an index map that will not flatten is given.
+ */
+function parsedMap(text: string, file: string): Record<string, unknown> | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== 'object' || parsed === null) {
+    return undefined;
+  }
+  const map = parsed as Record<string, unknown>;
+  if (!Array.isArray(map['sections'])) {
+    return map;
+  }
+  try {
+    return { ...encodedMap(new FlattenMap(map as unknown as SectionedSourceMapInput)) };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.warn(
+      `@stayingupwind/adapter: ${path.basename(file)} is an index map that would not flatten (${reason}); a frame in its chunk reads as far as the chunk`,
+    );
+    return undefined;
+  }
+}
+
+/**
+ * A map's text as one list of mappings, whatever shape the build wrote it in.
+ *
+ * Turbopack writes an *index map* — `sections`, each a map of its own placed at an offset — for
+ * the chunks of a build with debug IDs, and a plugin can turn those on for every build
+ * (`@sentry/nextjs` sets `turbopack.debugIds`). Rolldown composes an input map only when it has
+ * mappings of its own: given an index map, it maps the bundle to the chunk and stops there, and a
+ * Function built from such chunks carries a map that names none of the project's files. Flattened,
+ * the same map composes as any other.
+ *
+ * A plain map is handed on as it was read — it is most of them, and there is nothing to do — and so
+ * is an index map that will not flatten, which a bundler then makes no worse of than before.
+ */
+function flattened(text: string, file: string): string {
+  // A plain map never has the key; the substring is the cheap test, and a parse is only for a map
+  // it cannot rule out, such as one whose `sourcesContent` happens to say the word.
+  if (!text.includes('"sections"')) {
+    return text;
+  }
+  const map = parsedMap(text, file);
+  return map === undefined || typeof map['mappings'] !== 'string' ? text : JSON.stringify(map);
+}
+
+async function readText(file: string): Promise<string | undefined> {
+  try {
+    return await readFile(file, 'utf8');
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A module of a chunk the bundle is loading, handed over with the map at `mapFile` where there is
+ * one to read. Where there is not — a comment naming a map the build did not write, or a chunk the
+ * hook left with none — the file is still the file, and the code already read is handed over
+ * rather than read again.
+ */
+async function withMap(
+  code: string,
+  mapFile: string | undefined,
+): Promise<{ code: string; map?: string; moduleType: 'js' }> {
+  const map = mapFile === undefined ? undefined : await readText(mapFile);
+  return map === undefined || mapFile === undefined
+    ? { code, moduleType: 'js' }
+    : { code, map: flattened(map, mapFile), moduleType: 'js' };
+}
+
+/**
+ * `kept` is what the build's `runAfterProductionCompile` left each chunk it saw (`kept-maps.ts`), and
+ * is the word on that chunk's map: the map that describes it, or none — not the comment, which a
+ * plugin may have stripped, or left naming a map it deleted or made stale. A chunk it did not see
+ * is read by its comment, as it always was.
+ */
+export function sourceMapsPlugin(kept?: KeptMaps): Plugin {
   return {
     name: 'arkor-source-maps',
     load: {
@@ -94,16 +197,14 @@ export function sourceMapsPlugin(): Plugin {
           // Not a file on disk: a virtual module another plugin resolved, which has no map.
           return null;
         }
-        const mapFile = mapFileOf(code, id);
-        if (mapFile === undefined) {
-          return null;
+        const left = kept?.mapFor(id);
+        if (left?.seen === true) {
+          // Not the map beside the chunk, where the hook left none that describes it: that one is
+          // stale.
+          return withMap(code, left.file);
         }
-        try {
-          return { code, map: await readFile(mapFile, 'utf8'), moduleType: 'js' as const };
-        } catch {
-          // The comment names a map the build did not write. The file is still the file.
-          return { code, moduleType: 'js' as const };
-        }
+        const named = mapFileOf(code, id);
+        return named === undefined ? null : withMap(code, named);
       },
     },
   };
@@ -147,57 +248,136 @@ async function mapNamedBy(file: string, pathname: string): Promise<string | unde
 }
 
 /**
+ * A browser map as it is carried: flattened (`flattened`), and without its sources.
+ *
+ * Without `sourcesContent` for the reason a Function's map is built without it
+ * (`sourcemapOutput`): a stack needs a file and a line in it, and the sources are the whole
+ * application a second time. A file that is not a map is not carried.
+ */
+async function carriedClientMap(file: string): Promise<string | undefined> {
+  const text = await readText(file);
+  const map = text === undefined ? undefined : parsedMap(text, file);
+  if (map === undefined || typeof map['mappings'] !== 'string') {
+    return undefined;
+  }
+  return JSON.stringify(
+    Object.fromEntries(Object.entries(map).filter(([key]) => key !== 'sourcesContent')),
+  );
+}
+
+/** The map file of a built browser chunk: what the hook left it where it saw it, else what it names. */
+async function browserMapOf(
+  file: { readonly pathname: string; readonly filePath: string },
+  maps: ReadonlyMap<string, string>,
+  kept: KeptMaps | undefined,
+): Promise<string | undefined> {
+  const left = kept?.mapFor(file.filePath);
+  if (left?.seen === true) {
+    return left.file;
+  }
+  const named = await mapNamedBy(file.filePath, file.pathname);
+  return named === undefined ? undefined : maps.get(named);
+}
+
+/**
  * Each map under the name of the file it describes, which is what a browser's stack frame says.
+ *
+ * `maps` are the maps among the static files, by their own served pathname, as files; `kept`, what
+ * the build's `runAfterProductionCompile` left each chunk it saw (`kept-maps.ts`), which is the word
+ * on that chunk's map where there is one — as in `sourceMapsPlugin`.
  *
  * A map nothing names is dropped: nothing could ever look it up, and carrying it would be bytes
  * in every deployment for no reader.
  */
 export async function linkClientMaps(
   built: readonly { readonly pathname: string; readonly filePath: string }[],
-  maps: ReadonlyMap<string, BlobRef>,
+  maps: ReadonlyMap<string, string>,
+  blobs: BlobStore,
+  kept?: KeptMaps,
 ): Promise<SourceMapRef[]> {
-  if (maps.size === 0) {
+  if (kept === undefined && maps.size === 0) {
     return [];
   }
   const linked: SourceMapRef[] = [];
   for (const file of built) {
-    const named = await mapNamedBy(file.filePath, file.pathname);
-    const blob = named === undefined ? undefined : maps.get(named);
-    if (blob !== undefined) {
-      linked.push({ kind: 'client', name: file.pathname, blob });
+    const mapFile = await browserMapOf(file, maps, kept);
+    const text = mapFile === undefined ? undefined : await carriedClientMap(mapFile);
+    if (text !== undefined) {
+      linked.push({
+        kind: 'client',
+        name: file.pathname,
+        blob: await blobs.putText(text, MAP_CONTENT_TYPE),
+      });
     }
   }
   return linked;
+}
+
+/** A Function's map kept to the project's own files, or nothing — and a word — when it cannot be. */
+async function keptToProject(mapFile: string, project: ProjectBounds): Promise<string | undefined> {
+  try {
+    return projectOnly(await readFile(mapFile, 'utf8'), mapFile, project);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.warn(
+      `@stayingupwind/adapter: ${path.basename(mapFile)} could not be kept to the project's own files (${reason}); it is carried whole`,
+    );
+    return undefined;
+  }
+}
+
+/**
+ * The names a Function's code is uploaded under: `app.cjs` and `edge.cjs`, as they always were, and
+ * `app-2.cjs` and `edge-2.cjs` for the Function `app-2`. A server's stack frame names the module,
+ * so a frame from one app Function is not read against another's map.
+ */
+export function codeModules(name: string): { readonly app: string; readonly edge: string } {
+  const suffix = /^app(-\d+)$/u.exec(name)?.[1];
+  return suffix === undefined
+    ? { app: APP_MODULE, edge: EDGE_MODULE }
+    : { app: `app${suffix}.cjs`, edge: `edge${suffix}.cjs` };
 }
 
 /**
  * The maps of this Function's own modules.
  *
  * The two that hold the application's code — `app.cjs`, and `edge.cjs` for the entrypoints Next.js
- * built for its edge runtime. The runtime's `index.mjs` is this package's own source, built
- * without a map on purpose: a host debugging the runtime has the sources.
+ * built for its edge runtime; `app-2.cjs` and `edge-2.cjs` in the app Function `app-2` of a split
+ * build (`codeModules`). The runtime's `index.mjs` is this package's own source, built without a
+ * map on purpose: a host debugging the runtime has the sources.
  *
- * Named `<function>/<module>`, the way the bundle already names a Function: the two Functions of
- * one deployment both hold an `app.cjs`, and a map that named only the module would be two
- * different maps under one name.
+ * Named `<function>/<module>`, the way the bundle already names a Function: the app and the
+ * middleware Function of one deployment both hold an `app.cjs`, and a map that named only the
+ * module would be two different maps under one name.
+ *
+ * `project`, when the host asked for maps kept to the project's own files (`projectOnly`): where
+ * the project is, and which directories of it are the build's rather than its own. A map that
+ * cannot be kept so is carried whole, said once: a map is there to read a stack by, and is no
+ * reason for a build that produced one to fail.
  */
 export async function functionSourceMaps(
   blobs: BlobStore,
   kind: string,
   built: { readonly app: string; readonly edge: string | undefined },
+  project?: ProjectBounds,
 ): Promise<SourceMapRef[]> {
+  const names = codeModules(kind);
   const modules = [
-    { module: APP_MODULE, file: built.app },
-    ...(built.edge === undefined ? [] : [{ module: EDGE_MODULE, file: built.edge }]),
+    { module: names.app, file: built.app },
+    ...(built.edge === undefined ? [] : [{ module: names.edge, file: built.edge }]),
   ];
   const maps: SourceMapRef[] = [];
   for (const { module, file } of modules) {
     const mapFile = `${file}.map`;
     if (await exists(mapFile)) {
+      const kept = project === undefined ? undefined : await keptToProject(mapFile, project);
       maps.push({
         kind: 'function',
         name: `${kind}/${module}`,
-        blob: await blobs.putFile(mapFile, 'application/json'),
+        blob:
+          kept === undefined
+            ? await blobs.putFile(mapFile, MAP_CONTENT_TYPE)
+            : await blobs.putText(kept, MAP_CONTENT_TYPE),
       });
     }
   }
