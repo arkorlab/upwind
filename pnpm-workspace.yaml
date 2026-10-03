@@ -23,7 +23,7 @@ catalog:
   '@types/node': 24.19.0
   # What `@stayingupwind/auth` wraps. A peer dependency there, so a project brings its own copy and
   # this pin is what the repository builds and typechecks against — the same arrangement as `next`.
-  better-auth: 1.7.6
+  better-auth: 1.7.7
   esbuild: 0.28.2
   eslint: 10.11.0
   eslint-config-prettier: 10.1.8
