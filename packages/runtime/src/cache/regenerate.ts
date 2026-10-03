@@ -268,20 +268,21 @@ async function upload(
   const turn = callsBehind();
   // An output that fails to upload fails the attempt (`publish`), and the outputs still waiting
   // for their turn are not sent after it: no commit would name them, and they would hold the turns
-  // the request's writes wait for.
+  // the request's writes wait for. Said inside the turn, before it is given back: the turn wakes
+  // the next output as it is given back, ahead of anything that waits on this one.
   let failed = false;
-  const one = async (role: ArtifactUpload['role'], bytes: Uint8Array, contentType: string) => {
-    try {
-      return await turn(() => {
-        if (failed) {
-          return Promise.reject(new Error('not uploaded: an output beside it failed to upload'));
-        }
-        return host.uploadArtifact({ ...lease, role, bytes, contentType });
-      });
-    } catch (error) {
-      failed = true;
-      throw error;
-    }
+  const one = (role: ArtifactUpload['role'], bytes: Uint8Array, contentType: string) => {
+    return turn(async () => {
+      if (failed) {
+        throw new Error('not uploaded: an output beside it failed to upload');
+      }
+      try {
+        return await host.uploadArtifact({ ...lease, role, bytes, contentType });
+      } catch (error) {
+        failed = true;
+        throw error;
+      }
+    });
   };
   const encoder = new TextEncoder();
   const primary = bodyArtifact(input.target, render);
