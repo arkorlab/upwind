@@ -16,7 +16,7 @@ import * as cacheHost from 'arkor:cache-host';
 import edge from 'arkor:edge';
 
 import type { AppModule, EdgeModule } from './app-module.ts';
-import { type BundleBlobReader, bundleBlobReader } from './bundle-blobs.ts';
+import { type BundleBlobReader, bundleBlobReader, type BundleBlobsExport } from './bundle-blobs.ts';
 import { nowMs } from './cache/clock.ts';
 import { configureCacheHandlers } from './cache/handlers.ts';
 import { type CacheRuntime, createCacheRuntime } from './cache/runtime.ts';
@@ -65,7 +65,10 @@ function hostFor(env: unknown): {
     });
     // Asked for independently of the cache: a deployment given no cache still has a bundle, and a
     // build that left blobs out of its Function needs them read whether or not anything is cached.
-    shared.blobs = bundleBlobReader(cacheHost.createBundleBlobReader?.({ env: bindings }));
+    // Asserted at the boundary, as `createCacheHost` is: the ambient declaration resolves for
+    // `tsc` and not for the type-aware lint's own program.
+    const create = cacheHost.createBundleBlobReader as BundleBlobsExport;
+    shared.blobs = bundleBlobReader(create?.({ env: bindings }));
     shared.configured = true;
     configureCacheHandlers(shared.runtime);
   }

@@ -23,6 +23,16 @@ export interface BundleBlobsInit {
   readonly env: Record<string, unknown> | undefined;
 }
 
+/**
+ * What a host module exports as `createBundleBlobReader` — or does not export at all, which is a
+ * build that ships every blob. The optionality is in the type so that the declaration of
+ * `arkor:cache-host` names one type and writes no union there: the type-aware lint reads that file
+ * with a program of its own, which resolves neither this module nor a union mentioning it.
+ */
+export type BundleBlobsExport =
+  | ((init: BundleBlobsInit) => BundleBlobReader | undefined)
+  | undefined;
+
 function log(message: string, fields: Record<string, string | number> = {}): void {
   // The Function's own log; nothing else records what its bundle reads did.
   // eslint-disable-next-line no-console
@@ -54,7 +64,7 @@ export function bundleBlobReader(read: BundleBlobReader | undefined): BundleBlob
         sha256,
         detail: error instanceof Error ? error.message : String(error),
       });
-      return undefined;
+      return;
     }
   };
 }

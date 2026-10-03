@@ -30,7 +30,7 @@ declare module 'arkor:wasm' {}
  * told of none. A build with no host runs as the runtime did before any cache existed.
  */
 declare module 'arkor:cache-host' {
-  import type { BundleBlobReader, BundleBlobsInit } from './bundle-blobs.ts';
+  import type { BundleBlobsExport } from './bundle-blobs.ts';
   import type { CacheHostInit, CacheHostLookup } from './cache/host.ts';
 
   /** The host these bindings reach, or nothing when they name none. */
@@ -43,9 +43,7 @@ declare module 'arkor:cache-host' {
    * Optional, and read through a namespace import (`function.ts`): a host module that exports none
    * ships every blob, which is every build that does not ask for otherwise.
    */
-  export const createBundleBlobReader:
-    | ((init: BundleBlobsInit) => BundleBlobReader | undefined)
-    | undefined;
+  export const createBundleBlobReader: BundleBlobsExport;
 }
 
 /**
