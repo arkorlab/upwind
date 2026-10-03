@@ -89,15 +89,23 @@ export function bypassesPrerender(
   );
 }
 
+/** How a Node.js render is answered beside what it sends (`InvokeInput`). */
+export interface Invocation {
+  /** The route's own answer to a render that fails before it sends anything. */
+  readonly onFailure?: FailureAnswer | undefined;
+  /** The status the response starts at, for a render that reads it. */
+  readonly status?: number | undefined;
+}
+
 /**
- * Render a route whole, through whichever runtime it was built for; a Node.js render that fails
- * before it sends anything is answered by `onFailure` when the route has an answer of its own.
+ * Render a route whole, through whichever runtime it was built for; a Node.js render is answered
+ * as `how` says when it fails, and starts at the status `how` gives.
  */
 export function invokeEntry(
   input: RoutedInput,
   entry: Entry,
   url: string | undefined,
-  onFailure?: FailureAnswer,
+  how: Invocation = {},
 ): Promise<Response> {
   const invocation = {
     request: input.request,
@@ -107,7 +115,7 @@ export function invokeEntry(
   };
   return entry.kind === 'edge'
     ? input.run(() => invokeEdgeHandler({ ...invocation, handler: entry.handler }))
-    : invokeNodeHandler({ ...invocation, handler: entry.handler, run: input.run, onFailure });
+    : invokeNodeHandler({ ...invocation, ...how, handler: entry.handler, run: input.run });
 }
 
 /** A prerender's body as the build wrote it, under the headers it recorded and the type given. */
