@@ -768,14 +768,22 @@ export function edgeServedRewrites(bundle: DeploymentBundle): ServedRewrite[] {
  * What the edge needs to pick a dynamic route's class the way Next.js picks the route; for a
  * bundle whose routes are split across app Functions, which Function each route it picks is in;
  * and, where the application keeps its pages behind a trailing slash, that it does, since a member
- * of a class is asked for with the slash too.
+ * of a class is asked for with the slash too. Where it has `trailingSlash` at all, that a shipped
+ * file is found by the slash as well: the router finds one so with the redirect or without it
+ * (`routerSpellings`), and `skipTrailingSlashRedirect` leaves only the pages at the build's spelling.
  */
 export function dynamicRouting(
   bundle: DeploymentBundle,
   routeKeys: ReadonlySet<string>,
-): DynamicRouting & { readonly trailingSlash?: boolean } {
+): DynamicRouting & {
+  readonly trailingSlash?: boolean;
+  readonly staticFileTrailingSlash?: boolean;
+} {
   const { routing } = bundle;
-  const spelled = keepsTrailingSlash(bundle) && { trailingSlash: true };
+  const spelled = {
+    ...(keepsTrailingSlash(bundle) && { trailingSlash: true }),
+    ...(bundle.config.trailingSlash && { staticFileTrailingSlash: true }),
+  };
   if (!reproducesDynamicRouting(bundle)) {
     return { ...spelled };
   }
