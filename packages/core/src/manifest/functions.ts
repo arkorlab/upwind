@@ -1,4 +1,4 @@
-import { PRIMARY_FUNCTION } from '../bundle/schema.ts';
+import { PRIMARY_FUNCTION } from '../bundle/function-name.ts';
 import { dynamicRouteFor, isExactPathname, isReserved } from './dynamic.ts';
 import { findRouteEntry, keyOf } from './manifest.ts';
 import type { AppRuntime, ProjectManifest } from './schema.ts';
