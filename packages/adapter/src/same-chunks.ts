@@ -5,7 +5,7 @@ import path from 'node:path';
 import { compareCodeUnits } from '@stayingupwind/core/util';
 
 import type { KeptMaps } from './kept-maps.ts';
-import { resolvedSource } from './project-maps.ts';
+import { type ProjectBounds, projectOnly, resolvedSource } from './project-maps.ts';
 import { flattened } from './source-maps.ts';
 
 /**
@@ -42,6 +42,11 @@ export interface ChunkMaps {
   readonly carried: boolean;
   /** What the build's own hook left each chunk it saw (`kept-maps.ts`): the word on that chunk's map. */
   readonly kept?: KeptMaps | undefined;
+  /**
+   * Where the Functions carry the project's own files alone (`'project'`), the bounds of it: a map is
+   * compared as `projectOnly` leaves it, which is all of it the Function's map carries.
+   */
+  readonly project?: ProjectBounds | undefined;
 }
 
 /**
@@ -129,7 +134,7 @@ export async function sameChunks(
     const digest = createHash('sha256')
       .update(chunkCode(source))
       .update('\0')
-      .update(maps.carried ? await comparedMap(source, chunk, maps.kept) : '')
+      .update(maps.carried ? await comparedMap(source, chunk, maps) : '')
       .digest('hex');
     const first = firstByCode.get(digest);
     if (first === undefined) {
@@ -149,21 +154,17 @@ export async function sameChunks(
  * chunk's map is not the same as. Read wider than the plugin follows a comment, never narrower: a map
  * read here that the plugin would not hand on can only keep two chunks apart.
  */
-async function comparedMap(
-  source: string,
-  chunk: string,
-  kept: KeptMaps | undefined,
-): Promise<string> {
-  const left = kept?.mapFor(chunk);
+async function comparedMap(source: string, chunk: string, maps: ChunkMaps): Promise<string> {
+  const left = maps.kept?.mapFor(chunk);
   if (left?.seen === true) {
-    return left.file === undefined ? '' : await mapFileKey(left.file);
+    return left.file === undefined ? '' : await mapFileKey(left.file, maps.project);
   }
   const url = lastMapUrl(source);
   if (url === undefined) {
     return '';
   }
   if (url.startsWith(DATA_URL_PREFIX)) {
-    return canonicalMap(dataOf(url), path.dirname(chunk), chunk);
+    return canonicalMap(dataOf(url), chunk, maps.project);
   }
   let file: string;
   try {
@@ -172,7 +173,7 @@ async function comparedMap(
   } catch {
     return url;
   }
-  return await mapFileKey(file);
+  return await mapFileKey(file, maps.project);
 }
 
 /**
@@ -218,26 +219,28 @@ function dataOf(url: string): string {
 }
 
 /** A map beside a chunk as it is compared (`canonicalMap`), or nothing where it cannot be read. */
-async function mapFileKey(file: string): Promise<string> {
+async function mapFileKey(file: string, project: ProjectBounds | undefined): Promise<string> {
   let text: string;
   try {
     text = await readFile(file, 'utf8');
   } catch {
     return '';
   }
-  return canonicalMap(text, path.dirname(file), file);
+  return canonicalMap(text, file, project);
 }
 
 /**
- * A map as it is compared: flattened as Rolldown is handed it (`flattened`), without what names its
- * file (`MAP_NAMING_KEYS`), and with each source the file it names (`resolvedSource`) — a source is
- * relative to where its map is, and two maps that write one path from two directories name two
- * files. As written where it is no map at all.
+ * A map as it is compared: flattened as Rolldown is handed it (`flattened`), as `projectOnly` leaves
+ * it where the Functions carry the project's files alone, without what names its file
+ * (`MAP_NAMING_KEYS`), and with each source the file it names (`resolvedSource`) — a source is
+ * relative to where its map is (`file`, which an inline map is the chunk itself for), and two maps
+ * that write one path from two directories name two files. As written where it is no map at all.
  */
-function canonicalMap(text: string, base: string, file: string): string {
+function canonicalMap(text: string, file: string, project: ProjectBounds | undefined): string {
   let map: unknown;
   try {
-    map = JSON.parse(flattened(text, file));
+    const flat = flattened(text, file);
+    map = JSON.parse(project === undefined ? flat : projectOnly(flat, file, project));
   } catch {
     return text;
   }
@@ -248,7 +251,7 @@ function canonicalMap(text: string, base: string, file: string): string {
   const root = typeof fields['sourceRoot'] === 'string' ? fields['sourceRoot'] : undefined;
   const sources = Array.isArray(fields['sources'])
     ? fields['sources'].map((source: unknown) =>
-        typeof source === 'string' ? resolvedSource(source, root, base) : source,
+        typeof source === 'string' ? resolvedSource(source, root, path.dirname(file)) : source,
       )
     : fields['sources'];
   return JSON.stringify({
