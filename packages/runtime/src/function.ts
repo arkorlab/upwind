@@ -177,8 +177,8 @@ async function answered(
   const invalidated = new Set<string>();
   try {
     // Before anything of the application runs: a service binding is an object, so it reaches
-    // neither `process.env` nor any other place Next.js server code can look. The dashboard's
-    // control-plane and database clients read theirs back out of here.
+    // neither `process.env` nor any other place Next.js server code can look. An application reads
+    // its service bindings back out of here, for the clients it makes of them.
     publishFunctionEnv(env);
     const { blobs, runtime } = hostFor(env);
     return await withRequestContext(
