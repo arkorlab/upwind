@@ -1,9 +1,12 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 
 import { compareCodeUnits } from '@stayingupwind/core/util';
 
-import { mapFileOf } from './source-maps.ts';
+import type { KeptMaps } from './kept-maps.ts';
+import { resolvedSource } from './project-maps.ts';
+import { flattened, mapFileOf } from './source-maps.ts';
 
 /**
  * The server chunks whose code is another chunk's, each to the file that holds it.
@@ -26,18 +29,27 @@ import { mapFileOf } from './source-maps.ts';
  *   stack of the file that runs it — and inside one bundle every chunk's stack names the same file,
  *   so the identifiers recorded there never told the chunks apart to begin with.
  *
- * And when their maps are the same, but for the same names (`comparedMap`): the Function's map is
- * composed through the map of the file each chunk is loaded from (`source-maps.ts`), so a copy loaded
- * from another chunk's file is read through that chunk's map, which is right only where the two
- * maps say the same.
+ * And, where the Functions carry maps, when their maps are the same, but for the same names
+ * (`comparedMap`): the Function's map is composed through the map of the file each chunk is loaded
+ * from (`source-maps.ts`), so a copy loaded from another chunk's file is read through that chunk's
+ * map, which is right only where the two maps say the same. A build that carries none bundles a copy
+ * once whatever its map says.
  */
+
+/** What a chunk's map is, as the Functions' maps are composed (`sourceMapsPlugin`). */
+export interface ChunkMaps {
+  /** Whether the Functions carry maps at all (`carriesMaps`). */
+  readonly carried: boolean;
+  /** What the build's own hook left each chunk it saw (`kept-maps.ts`): the word on that chunk's map. */
+  readonly kept?: KeptMaps | undefined;
+}
 
 /** What in a map names its file rather than the code it maps: set aside, as the comments are. */
 const MAP_NAMING_KEYS: ReadonlySet<string> = new Set(['debug_id', 'debugId', 'file']);
-/** A map a chunk carries inside its last comment rather than beside it. */
-const INLINE_MAP = /\/\/[#@] sourceMappingURL=(data:\S*)\s*$/u;
-/** How far back an inline map's comment is looked for: the last line, and a map is long. */
-const INLINE_TAIL = 1_048_576;
+/** The comment a build names a chunk's map by, the last of which is the map. */
+const MAP_COMMENTS = ['//# sourceMappingURL=', '//@ sourceMappingURL='];
+const DATA_URL_PREFIX = 'data:';
+const BASE64_MARKER = ';base64,';
 
 /** A comment naming the file, which a build writes last: only there are they set aside. */
 const MAP_OR_ID_COMMENT = /^\/\/[#@] (?:sourceMappingURL|debugId|chunkId)=/u;
@@ -95,7 +107,10 @@ function withoutFileComments(source: string): string {
  * Each chunk of `chunks` whose code another of them has, to that other: the first of the ones that
  * share it, in the order of the paths, so the same build always keeps the same file.
  */
-export async function sameChunks(chunks: readonly string[]): Promise<ReadonlyMap<string, string>> {
+export async function sameChunks(
+  chunks: readonly string[],
+  maps: ChunkMaps,
+): Promise<ReadonlyMap<string, string>> {
   const firstByCode = new Map<string, string>();
   const copies = new Map<string, string>();
   const ordered = [...new Set(chunks)].toSorted((a, b) => compareCodeUnits(a, b));
@@ -104,7 +119,7 @@ export async function sameChunks(chunks: readonly string[]): Promise<ReadonlyMap
     const digest = createHash('sha256')
       .update(chunkCode(source))
       .update('\0')
-      .update(await comparedMap(source, chunk))
+      .update(maps.carried ? await comparedMap(source, chunk, maps.kept) : '')
       .digest('hex');
     const first = firstByCode.get(digest);
     if (first === undefined) {
@@ -117,35 +132,100 @@ export async function sameChunks(chunks: readonly string[]): Promise<ReadonlyMap
 }
 
 /**
- * The map a chunk names, as it is compared with another chunk's (`sameChunks`): beside it, read and
- * written again without what names its file (`MAP_NAMING_KEYS`); inside its last comment, as written;
- * nothing where it names none, or none is there to read — which another chunk's map, read or not, is
- * not the same as.
+ * The map a chunk is composed through, as it is compared with another chunk's (`sameChunks`), found
+ * as `sourceMapsPlugin` finds it: the one the build's hook left the chunk where it saw it (`kept`),
+ * and otherwise the one the chunk's last comment names — inside it, as a data URL, or beside it.
+ * Nothing where there is none, or none to read, which another chunk's map is not the same as.
  */
-async function comparedMap(source: string, chunk: string): Promise<string> {
-  const inline = INLINE_MAP.exec(source.slice(-INLINE_TAIL))?.[1];
+async function comparedMap(
+  source: string,
+  chunk: string,
+  kept: KeptMaps | undefined,
+): Promise<string> {
+  const left = kept?.mapFor(chunk);
+  if (left?.seen === true) {
+    return left.file === undefined ? '' : await mapFileKey(left.file);
+  }
+  const inline = inlineMapOf(source);
   if (inline !== undefined) {
-    return inline;
+    return canonicalMap(inline, path.dirname(chunk), chunk);
   }
   const file = mapFileOf(source, chunk);
-  if (file === undefined) {
-    return '';
+  return file === undefined ? '' : await mapFileKey(file);
+}
+
+/**
+ * The map a chunk carries inside its last comment, decoded; nothing where its last comment names a
+ * file instead, or it has none. Found by the comment's last occurrence anywhere in the chunk, since
+ * a map inside one is as long as the chunk is, or longer.
+ */
+function inlineMapOf(source: string): string | undefined {
+  let at = -1;
+  let comment = '';
+  for (const candidate of MAP_COMMENTS) {
+    const found = source.lastIndexOf(candidate);
+    if (found > at) {
+      at = found;
+      comment = candidate;
+    }
   }
+  if (at === -1) {
+    return undefined;
+  }
+  const rest = source.slice(at + comment.length);
+  const url = rest.split(/\s/u, 1)[0] ?? '';
+  if (!url.startsWith(DATA_URL_PREFIX) || rest.slice(url.length).trim() !== '') {
+    return undefined;
+  }
+  const comma = url.indexOf(',');
+  const payload = url.slice(comma + 1);
+  try {
+    return url.slice(0, comma + 1).endsWith(BASE64_MARKER)
+      ? Buffer.from(payload, 'base64').toString('utf8')
+      : decodeURIComponent(payload);
+  } catch {
+    return url;
+  }
+}
+
+/** A map beside a chunk as it is compared (`canonicalMap`), or nothing where it cannot be read. */
+async function mapFileKey(file: string): Promise<string> {
   let text: string;
   try {
     text = await readFile(file, 'utf8');
   } catch {
     return '';
   }
+  return canonicalMap(text, path.dirname(file), file);
+}
+
+/**
+ * A map as it is compared: flattened as Rolldown is handed it (`flattened`), without what names its
+ * file (`MAP_NAMING_KEYS`), and with each source the file it names (`resolvedSource`) — a source is
+ * relative to where its map is, and two maps that write one path from two directories name two
+ * files. As written where it is no map at all.
+ */
+function canonicalMap(text: string, base: string, file: string): string {
+  let map: unknown;
   try {
-    const map = JSON.parse(text) as unknown;
-    if (typeof map !== 'object' || map === null || Array.isArray(map)) {
-      return text;
-    }
-    return JSON.stringify(
-      Object.fromEntries(Object.entries(map).filter(([key]) => !MAP_NAMING_KEYS.has(key))),
-    );
+    map = JSON.parse(flattened(text, file));
   } catch {
     return text;
   }
+  if (typeof map !== 'object' || map === null || Array.isArray(map)) {
+    return text;
+  }
+  const fields = map as Record<string, unknown>;
+  const root = typeof fields['sourceRoot'] === 'string' ? fields['sourceRoot'] : undefined;
+  const sources = Array.isArray(fields['sources'])
+    ? fields['sources'].map((source: unknown) =>
+        typeof source === 'string' ? resolvedSource(source, root, base) : source,
+      )
+    : fields['sources'];
+  return JSON.stringify({
+    ...Object.fromEntries(
+      Object.entries(fields).filter(([key]) => !MAP_NAMING_KEYS.has(key) && key !== 'sourceRoot'),
+    ),
+    sources,
+  });
 }
