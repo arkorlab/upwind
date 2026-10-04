@@ -1,4 +1,5 @@
 import type { RouteHas } from '../bundle/schema.ts';
+import { ROUTER_REQUEST_HEADERS } from './constants.ts';
 
 /**
  * The `has` / `missing` conditions Next.js attaches to a route or a middleware matcher, evaluated
@@ -117,4 +118,31 @@ export function conditionsHold(rule: Conditioned, url: URL, headers: Headers): b
     (condition) => !conditionMatches(condition, url, headers),
   );
   return has && missing;
+}
+
+/** A condition only a request carrying one of the client router's own headers meets. */
+function requiresRouterHeader(condition: RouteHas): boolean {
+  return (
+    condition.type === 'header' &&
+    condition.key !== undefined &&
+    // A header's name is compared as `Headers` compares it: whatever case the rule spells it in.
+    ROUTER_REQUEST_HEADERS.includes(condition.key.toLowerCase())
+  );
+}
+
+/**
+ * Whether these conditions can hold for a request the edge answers with a document at all.
+ *
+ * Not where one of them requires a header only a client's router sends (`ROUTER_REQUEST_HEADERS`):
+ * a request carrying one is never answered with a document (`classifyRequest`), so a rule it
+ * guards never applies to one, and a page it covers is not a page the rule can change. Next.js
+ * writes one such rule into every build that has a deployment id — the id on each RSC response,
+ * over every path, for a request whose `rsc` is `1` — and read as a condition the build cannot
+ * settle, it took every page of an application whose rules are settled at build time off the edge.
+ *
+ * Only `has` is read so. A `missing` of the same headers holds for every document, which is a
+ * rule that does apply: it is left as the condition it is, for whoever judges conditions to judge.
+ */
+export function mayHoldForDocument(rule: Conditioned): boolean {
+  return (rule.has ?? []).every((condition) => !requiresRouterHeader(condition));
 }

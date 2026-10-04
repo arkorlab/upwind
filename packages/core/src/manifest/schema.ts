@@ -18,8 +18,15 @@ import { imagesConfigSchema } from '../images/config.ts';
  * writer of it wrote, so that a rollout of the edge never refuses a manifest it served the day
  * before. What a manifest may not carry is refused where it is written — at the build and at
  * the upload — not where it is read.
+ *
+ * 4: a build with a `basePath` is routed at the edge, its dynamic routes and its rules with it, and
+ * a rule of `next.config` is matched without regard to case, as Next.js's router matches it. A
+ * reader of 3 matched rules by case: given such a build, it would serve a class's shell where a
+ * rule spelled in another case claims the path (`/Shop/:slug` for `/docs/shop/x`).
  */
-export const MANIFEST_SCHEMA_VERSION = 3;
+export const MANIFEST_SCHEMA_VERSION = 4;
+/** The version before, which every manifest published until this one was: still read (above). */
+const PREVIOUS_MANIFEST_SCHEMA_VERSION = 3;
 const HTTP_OK = 200;
 
 /**
@@ -332,7 +339,10 @@ const manifestFields = {
  */
 export const projectManifestSchema = z.object({
   ...manifestFields,
-  schemaVersion: z.literal(MANIFEST_SCHEMA_VERSION),
+  schemaVersion: z.union([
+    z.literal(PREVIOUS_MANIFEST_SCHEMA_VERSION),
+    z.literal(MANIFEST_SCHEMA_VERSION),
+  ]),
   /** The Functions this deployment runs as: the application's, and its middleware's. */
   app: appRuntimeSchema,
   /** Files served straight from storage, by pathname. */
@@ -345,16 +355,25 @@ export const projectManifestSchema = z.object({
    * would have picked that class.
    */
   dynamicRoutes: z.array(dynamicRouteSchema).optional(),
+  /**
+   * The application keeps its pages behind a trailing slash (`trailingSlash`): a route is named by
+   * the spelling a request asks for it by (`/about/`), and a member of a dynamic route's class is
+   * asked for with the slash as well (`matchDynamicRoute`). Absent for any other application — and
+   * on a manifest from before it was published, whose reader matches no member with the slash,
+   * which leaves such a member to the Function as every one of its pages was left then.
+   */
+  trailingSlash: z.literal(true).optional(),
   reservedRoutes: z.array(reservedRouteSchema).optional(),
   exactPathnames: exactPathnamesSchema.optional(),
   exactFunctions: exactFunctionsSchema.optional(),
   headerRules: z.array(headerRuleSchema).optional(),
   /**
-   * The unconditional header rules of a build whose routing the edge does not reproduce (a
-   * `basePath` or `i18n`), which publishes no `headerRules`: judged against a route's own pathname,
-   * as the deployment judged them when it folded them into the route's headers, and laid over the
-   * headers of a generation the runtime cache answers with. Present, if empty, for every such
-   * build; absent for any other, and on a manifest from before it was published.
+   * The unconditional header rules of a build whose routing the edge does not reproduce (one with
+   * `i18n`, and in a manifest from before the edge routed it, one with a `basePath`), which
+   * publishes no `headerRules` but the ones `next build` writes itself: judged against a route's
+   * own pathname, as the deployment judged them when it folded them into the route's headers, and
+   * laid over the headers of a generation the runtime cache answers with. Present, if empty, for
+   * every such build; absent for any other, and on a manifest from before it was published.
    */
   foldedHeaderRules: z.array(headerRuleSchema).optional(),
   /** The application's `next/image` configuration: the edge answers `/_next/image` with it. */
@@ -390,6 +409,14 @@ export const projectManifestSchema = z.object({
    * filesystem is checked (`findStaticFile`).
    */
   staticFileAssetPrefix: staticFileAssetPrefixSchema.optional(),
+  /**
+   * Where a shipped file whose last segment names no file is found as well, in an application with
+   * `trailingSlash`: by its spelling with the slash (`/manual/` is the file `/manual`), which the
+   * router finds it by whether or not the build writes the redirect to the slash
+   * (`findStaticFile`). Absent for any other application, and on a manifest from before it was
+   * published, whose reader leaves that spelling to the Function.
+   */
+  staticFileTrailingSlash: z.literal(true).optional(),
   /** The runtime cache the routes' entries live in. */
   cache: manifestCacheSchema.optional(),
 });

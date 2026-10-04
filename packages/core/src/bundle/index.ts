@@ -62,6 +62,7 @@ export {
 } from './pages-data.ts';
 export { queryDependent } from './query.ts';
 export { type PrefetchSegment, prefetchSegments } from './segments.ts';
+export { routePathnameOf } from './spelling.ts';
 export {
   cacheablePrerenders,
   completePrerenders,
@@ -78,7 +79,9 @@ export {
   type ServableOptions,
   type ServedRewrite,
   shellHeaders,
+} from './serving.ts';
+export {
   staticFileAssetPrefixOf,
   staticFileLocalesOf,
   travelsWithFunction,
-} from './serving.ts';
+} from './static-files.ts';
