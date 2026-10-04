@@ -86,7 +86,8 @@ it is cancelled. Measured: a full pass in six shards took 11h41m, about two hour
 starting nine and three-quarter hours in — which is why the default is `6`, with room on both sides.
 
 A settle is paid by every deploying suite: at its one-minute ceiling, about six hundred minutes across the
-run, a hundred or so a shard — about four hours a shard at most, at six, still inside both limits.
+run, a hundred or so a shard — about four hours a shard at most, at six, still inside both limits. A host
+that gives each deployment a URL of its own costs none of it (below).
 
 Given a project per shard, none of that applies: the jobs all start at once, the queue limit never comes
 near, and the run is one shard long. That is the section below, and it is the answer for a run much longer
@@ -146,6 +147,11 @@ Beyond that, four limits are worth knowing before reading a failure as this adap
   of it has caught up, and what answers in between is the previous fixture, which may redirect everything — and
   then said plainly: a project that is access-protected, or something in front of it redirecting static
   files, rather than a quarter of an hour of polling.
+- **Where the host gives a deployment a URL of its own, the suite goes there.** Such a URL — the `url`
+  of the deployment as the API answers it — serves that deployment and no other, so nothing below about
+  the deployment before it applies: the probe asks there, and nothing is settled. The answer that says
+  the deployment is live is read once more when it carries no URL yet; a host that gives none leaves the
+  project's URL, and the log says so.
 - **A request that reached the new deployment proves that it did, and no more.** A host that brings a
   deployment in place by place can answer the probe with the new one and the suite's next request with
   the one before — seen in a full run, where pages a suite received carried Next.js's own `data-dpl-id`

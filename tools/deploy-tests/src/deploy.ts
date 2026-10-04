@@ -219,7 +219,7 @@ function settled(input: DeployInput, deploymentId: string, detail: DeploymentDet
  * deadline turns a slower build into a failure reported while the host goes on to succeed. One that is
  * genuinely stuck reaches no further step, so it still gives up — and says where it was.
  */
-async function waitForHost(input: DeployInput, deploymentId: string): Promise<void> {
+async function waitForHost(input: DeployInput, deploymentId: string): Promise<DeploymentDetail> {
   let deadline = Date.now() + NO_PROGRESS_TIMEOUT_MS;
   let seen: string | undefined;
   for (;;) {
@@ -240,7 +240,7 @@ async function waitForHost(input: DeployInput, deploymentId: string): Promise<vo
     }
     if (TERMINAL_STATUSES.has(detail.status)) {
       settled(input, deploymentId, detail);
-      return;
+      return detail;
     }
     if (Date.now() >= deadline) {
       const stalledOn = seen === undefined ? '' : ` on ${seen}`;
@@ -337,23 +337,26 @@ async function answered(
  * A project that is not answering at all is worth telling apart from one that has not caught up: the
  * first is somebody's decision and waiting out the deadline tells nobody anything.
  */
-async function served(
+async function isServed(
   input: DeployInput,
   detail: ProjectDetail,
   probe: Probe,
-  remainingMs: number,
+  own: { readonly remainingMs: number; readonly url: boolean },
 ): Promise<Unproved | undefined> {
-  if (detail.active?.deploymentId !== probe.deploymentId) {
+  const ours = detail.active?.deploymentId === probe.deploymentId;
+  // At the deployment's own URL the probe is the whole of the question: what the project answers with
+  // is a different hostname's, and may come round to this deployment later than its own URL does.
+  if (!ours && !own.url) {
     return { said: 'the project does not answer with this deployment yet', redirected: false };
   }
-  if (detail.active.mode === 'disabled') {
+  if (ours && detail.active.mode === 'disabled') {
     // Not an observation to wait out: nothing this tool does will turn it back on, so the deadline
     // would only be fifteen minutes of asking a question already answered.
     throw new Error(
       `${input.config.projectId} answers with this deployment but is disabled, so nothing is served`,
     );
   }
-  return answered(input, probe, remainingMs);
+  return answered(input, probe, own.remainingMs);
 }
 
 /** What was proved, and what was not, once the host is answering with this deployment. */
@@ -498,12 +501,132 @@ async function letItSettle(input: DeployInput): Promise<void> {
   }
 }
 
+/** Where the suite sends its requests, and whether that is the deployment's own URL. */
+interface Served {
+  readonly url: URL;
+  readonly own: boolean;
+}
+
+/**
+ * How long a deployment that is live may go without a URL of its own before the host is taken to give
+ * none: a host that writes it a moment after it says the deployment is live is waited for, a few reads
+ * at most, and one that gives none costs a fixture no more than this.
+ */
+const OWN_URL_GRACE_MS = 15_000;
+
+/** The deployment's own URL, as a later answer gives it: nothing while a read cannot say. */
+async function ownUrlOf(input: DeployInput, deploymentId: string): Promise<string | undefined> {
+  return (await visible(input, deploymentId))?.url;
+}
+
+/** What `lateBy` settles to: the time was up before the work it raced. */
+const LATE: unique symbol = Symbol('late');
+
+/** `LATE`, once `ms` have passed — or as soon as `signal` says the race is over. */
+async function lateBy(ms: number, signal: AbortSignal): Promise<typeof LATE> {
+  try {
+    await sleepFor(Math.max(0, ms), undefined, { signal });
+  } catch {
+    // Aborted: whatever this raced answered first.
+  }
+  return LATE;
+}
+
+/**
+ * `work`, or `undefined` once `ms` have passed without it — a read the client is still retrying,
+ * say. What it settles to after that is let go of: the race has seen to it, failure included.
+ */
+async function inTime<T>(work: Promise<T>, ms: number): Promise<T | undefined> {
+  const timer = new AbortController();
+  try {
+    const first = await Promise.race([work, lateBy(ms, timer.signal)]);
+    return first === LATE ? undefined : first;
+  } finally {
+    timer.abort();
+  }
+}
+
+/**
+ * Where the suite sends its requests: the deployment's own URL, where the host gives one — it serves
+ * this deployment and no other, so no request of the suite can reach the deployment before it — and
+ * otherwise the project's, where one can (`letItSettle`).
+ */
+async function servedAt(
+  input: DeployInput,
+  settledAs: DeploymentDetail,
+  projectUrl: URL,
+): Promise<Served> {
+  // The answer that said the deployment was live may predate its URL being written: read again, a
+  // moment apart, before taking the host to give none.
+  let own = settledAs.url;
+  const until = Date.now() + OWN_URL_GRACE_MS;
+  while (own === undefined && Date.now() < until) {
+    const left = Math.max(0, until - Date.now());
+    await sleepFor(Math.min(POLL_INTERVAL_MS, left));
+    // Each read bounded by what is left of the grace, which a read the client retries could outlast.
+    own = await inTime(ownUrlOf(input, settledAs.id), until - Date.now());
+  }
+  if (own === undefined) {
+    input.log(
+      "the host gives this deployment no URL of its own, so the suite goes to the project's, where " +
+        'the deployment before it may still answer',
+    );
+    return { url: projectUrl, own: false };
+  }
+  let url: URL;
+  try {
+    url = new URL(own);
+  } catch (error) {
+    throw new Error(`the deployment's own URL is not a URL: ${withoutUserinfo(own)}`, {
+      cause: error,
+    });
+  }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username !== '' || url.password !== '') {
+    throw new Error(`the deployment is not served over public HTTP(S): ${url.origin}`);
+  }
+  // The suite is handed an origin, and joins its own paths to it: a URL that needs a path or a query to
+  // reach the deployment is one it cannot be pointed at, and is refused rather than cut down to a host
+  // that may serve something else.
+  if (url.pathname !== '/' || url.search !== '' || url.hash !== '') {
+    // The path as it is; a query or a fragment only as being there, since either may carry a secret.
+    const pathname = url.pathname === '/' ? '' : url.pathname;
+    const more = `${pathname}${url.search === '' ? '' : '?…'}${url.hash === '' ? '' : '#…'}`;
+    throw new Error(`the deployment's own URL is more than an origin: ${url.origin}${more}`);
+  }
+  input.log(`the deployment has a URL of its own, ${url.origin}, and the suite goes there`);
+  return { url, own: true };
+}
+
+/** What follows the probe proving the deployment: the settle, where the suite goes to the project. */
+async function onceServed(
+  input: DeployInput,
+  probe: Probe,
+  served: Served,
+  deadline: number,
+): Promise<void> {
+  sayItIsServed(input, probe);
+  if (served.own) {
+    // Nothing to settle: no other deployment answers at a deployment's own URL.
+    return;
+  }
+  // Whenever there is a settle to anchor, and only then. The probe's file says at best whose build
+  // answered — two deployments of one build share every file — so whose deployment it was is the
+  // page's to say, whatever kind of file the probe found. And the page is the application's own route:
+  // asking for it is a request its tests did not make, one that renders and may revalidate or count,
+  // which is worth it for the settle and for nothing else.
+  if (input.config.settleMs > 0 && !(await pageProvesIt(input, probe, deadline))) {
+    input.log('no page names a deployment either, so the settle starts now, on the probe alone');
+  }
+  await letItSettle(input);
+}
+
 async function waitUntilServed(
   input: DeployInput,
   bundle: DeploymentBundle,
   publicUrl: URL,
+  served: Served,
 ): Promise<void> {
-  const probe = probeOf(publicUrl, bundle);
+  const probe = probeOf(served.url, bundle);
   const deadline = Date.now() + NO_PROGRESS_TIMEOUT_MS;
   let said: string | undefined;
   let redirecting: number | undefined;
@@ -514,20 +637,12 @@ async function waitUntilServed(
     if (previewUrlOf(detail, input.config).origin !== publicUrl.origin) {
       throw new Error('the project changed the hostname it is served on during the deployment');
     }
-    const observation = await served(input, detail, probe, deadline - Date.now());
+    const observation = await isServed(input, detail, probe, {
+      remainingMs: deadline - Date.now(),
+      url: served.own,
+    });
     if (observation === undefined) {
-      sayItIsServed(input, probe);
-      // Whenever there is a settle to anchor, and only then. The probe's file says at best whose build
-      // answered — two deployments of one build share every file — so whose deployment it was is the
-      // page's to say, whatever kind of file the probe found. And the page is the application's own route:
-      // asking for it is a request its tests did not make, one that renders and may revalidate or count,
-      // which is worth it for the settle and for nothing else.
-      if (input.config.settleMs > 0 && !(await pageProvesIt(input, probe, deadline))) {
-        input.log(
-          'no page names a deployment either, so the settle starts now, on the probe alone',
-        );
-      }
-      await letItSettle(input);
+      await onceServed(input, probe, served, deadline);
       return;
     }
     if (observation.said !== said) {
@@ -576,10 +691,11 @@ export async function deployFixture(input: DeployInput): Promise<Deployment> {
     throw explained(error);
   }
   input.log(`the host is deploying it (${runId})`);
-  await waitForHost(input, bundle.deploymentId);
-  await waitUntilServed(input, bundle, publicUrl);
+  const settledAs = await waitForHost(input, bundle.deploymentId);
+  const served = await servedAt(input, settledAs, publicUrl);
+  await waitUntilServed(input, bundle, publicUrl, served);
   input.log('runtime logs are not available through the API; the deployment is left in place');
-  return { url: publicUrl.origin, deploymentId: bundle.deploymentId, runId };
+  return { url: served.url.origin, deploymentId: bundle.deploymentId, runId };
 }
 
 /**

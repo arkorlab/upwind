@@ -26,6 +26,13 @@ const ROOT_PAGE = '/index/';
 
 export interface FakeHost {
   readonly port: number;
+  /**
+   * The port the deployment's own URL is on, where this host gives it one: a second listener for the
+   * same application, so that which of the two a request went to says which URL the tool used.
+   */
+  readonly ownPort: number | undefined;
+  /** The port the probe's request arrived on, first. */
+  readonly probedOn: () => number | undefined;
   /** What the bundle said its build id was, as the registration carried it. */
   readonly registered: () => string | undefined;
   /** The deployment's environment as it was replaced, names and values. */
@@ -70,9 +77,17 @@ type PageBehaviour = 'moves' | 'names nobody';
  * here fails the check with the call that made it, rather than passing because a fake host was willing
  * to answer anything.
  */
+/**
+ * Whether the deployment has a URL of its own, and how the host gives it: in every answer, only from
+ * the second answer on (written a moment after the deployment is live), with a path after the host,
+ * or while the project still answers with the deployment before.
+ */
+type OwnUrl = 'none' | 'at once' | 'late' | 'with a path' | 'ahead of the project';
+
 export async function fakeHost(
   deploymentId: string,
   page: PageBehaviour = 'moves',
+  ownUrl: OwnUrl = 'none',
 ): Promise<FakeHost> {
   let registered: string | undefined;
   let environment: Record<string, string> = {};
@@ -87,6 +102,11 @@ export async function fakeHost(
   /** How many times the page has been asked for, which is where it is in `PAGE_SEQUENCE`. */
   let pages = 0;
   let port = 0;
+  /** Where the deployment's own URL listens, once it does; read by the deployment's answer. */
+  const ports: { own?: number } = {};
+  /** How many times the deployment has been asked about since it was finalized. */
+  let polled = 0;
+  let probedOn: number | undefined;
 
   /** Refuse, and remember: the check reads these back rather than trusting a status alone. */
   function outOfOrder(said: string): { status: number; body: unknown } {
@@ -103,6 +123,16 @@ export async function fakeHost(
       chunks.push(chunk as Buffer);
     }
     return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
+  }
+
+  /** The deployment's own URL as this answer gives it, if it gives one yet. */
+  function ownUrlNow(): { url?: string } {
+    polled += 1;
+    if (ports.own === undefined || (ownUrl === 'late' && polled === 1)) {
+      return {};
+    }
+    const path = ownUrl === 'with a path' ? 'deployments/this/' : '';
+    return { url: `http://127.0.0.1:${String(ports.own)}/${path}` };
   }
 
   /**
@@ -138,7 +168,7 @@ export async function fakeHost(
       return {
         status: OK,
         body: {
-          deployment: { id: deploymentId, projectId: 'p', status: 'active' },
+          deployment: { id: deploymentId, projectId: 'p', status: 'active', ...ownUrlNow() },
           run: { currentStep: 'activate' },
         },
       };
@@ -202,6 +232,12 @@ export async function fakeHost(
     return false;
   }
 
+  /** When, and on which port, the probe first arrived. */
+  function noteProbe(request: IncomingMessage): void {
+    probedAt ??= performance.now();
+    probedOn ??= request.socket.localPort;
+  }
+
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     if (request.method === 'HEAD') {
       // Only the file the bundle named, and only once the deployment is finalized: a host that answered
@@ -213,7 +249,7 @@ export async function fakeHost(
         response.end();
         return;
       }
-      probedAt ??= performance.now();
+      noteProbe(request);
       response.writeHead(OK, { etag: `"${asset.sha256}"` });
       response.end();
       return;
@@ -229,7 +265,11 @@ export async function fakeHost(
     if (pathname === '/v1/projects/p') {
       answer(OK, {
         project: { id: 'p', previewUrl: `http://127.0.0.1:${String(port)}/` },
-        active: { projectId: 'p', mode: 'live', app: { deploymentId } },
+        active: {
+          projectId: 'p',
+          mode: 'live',
+          app: { deploymentId: ownUrl === 'ahead of the project' ? 'dpl_before' : deploymentId },
+        },
       });
       return;
     }
@@ -272,18 +312,28 @@ export async function fakeHost(
     }
   }
 
-  const server: Server = createServer((request, response) => {
-    // A request listener returns nothing, and this promise cannot reject: `answering` is where a
-    // failure becomes an ended check.
-    // eslint-disable-next-line @typescript-eslint/no-floating-promises -- answered above, not awaited.
-    void answering(request, response);
-  });
-  await new Promise<void>((resolve) => {
-    server.listen(0, '127.0.0.1', resolve);
-  });
+  const listen = async (): Promise<Server> => {
+    const server = createServer((request, response) => {
+      // A request listener returns nothing, and this promise cannot reject: `answering` is where a
+      // failure becomes an ended check.
+      // eslint-disable-next-line @typescript-eslint/no-floating-promises -- answered above, not awaited.
+      void answering(request, response);
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    return server;
+  };
+  const server = await listen();
   port = (server.address() as { port: number }).port;
+  const own = ownUrl === 'none' ? undefined : await listen();
+  if (own !== undefined) {
+    ports.own = (own.address() as { port: number }).port;
+  }
   return {
     port,
+    ownPort: ports.own,
+    probedOn: () => probedOn,
     registered: () => registered,
     environment: () => environment,
     uploaded: () => [...uploaded],
@@ -292,6 +342,7 @@ export async function fakeHost(
     probedAt: () => probedAt,
     close: () => {
       server.close();
+      own?.close();
     },
   };
 }
