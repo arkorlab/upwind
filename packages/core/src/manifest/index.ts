@@ -9,6 +9,7 @@ export {
   matchDynamicRoute,
   pathIsReserved,
   validationPathnameFor,
+  withTrailingSlash,
 } from './dynamic.ts';
 export {
   type BuildProjectManifestInput,

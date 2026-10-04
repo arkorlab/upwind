@@ -355,6 +355,14 @@ export const projectManifestSchema = z.object({
    * would have picked that class.
    */
   dynamicRoutes: z.array(dynamicRouteSchema).optional(),
+  /**
+   * The application keeps its pages behind a trailing slash (`trailingSlash`): a route is named by
+   * the spelling a request asks for it by (`/about/`), and a member of a dynamic route's class is
+   * asked for with the slash as well (`matchDynamicRoute`). Absent for any other application — and
+   * on a manifest from before it was published, whose reader matches no member with the slash,
+   * which leaves such a member to the Function as every one of its pages was left then.
+   */
+  trailingSlash: z.literal(true).optional(),
   reservedRoutes: z.array(reservedRouteSchema).optional(),
   exactPathnames: exactPathnamesSchema.optional(),
   exactFunctions: exactFunctionsSchema.optional(),
@@ -401,6 +409,14 @@ export const projectManifestSchema = z.object({
    * filesystem is checked (`findStaticFile`).
    */
   staticFileAssetPrefix: staticFileAssetPrefixSchema.optional(),
+  /**
+   * Where a shipped file whose last segment names no file is found as well, in an application with
+   * `trailingSlash`: by its spelling with the slash (`/manual/` is the file `/manual`), which the
+   * router finds it by whether or not the build writes the redirect to the slash
+   * (`findStaticFile`). Absent for any other application, and on a manifest from before it was
+   * published, whose reader leaves that spelling to the Function.
+   */
+  staticFileTrailingSlash: z.literal(true).optional(),
   /** The runtime cache the routes' entries live in. */
   cache: manifestCacheSchema.optional(),
 });
