@@ -333,6 +333,7 @@ async function ownUrlScenarios(
       ahead.ownPort !== undefined &&
         onItsOwnFirst.stdout.trim() === `http://127.0.0.1:${String(ahead.ownPort)}`,
     );
+    holds('and the probe asked its own URL, not the project', ahead.probedOn() === ahead.ownPort);
 
     // A URL that needs a path to reach the deployment cannot be handed to the suite, which joins its own
     // paths to an origin: refused, by what is wrong with it.
