@@ -30,8 +30,9 @@ import { parseAst } from 'rolldown/parseAst';
  * `throw`, `await`, `yield` or `try` of their own, no pattern taking the error apart, nothing made
  * and run where it stands, no `Promise.reject(…)` or `eval`, and calls only of what they name — and
  * an `import()` too, where it, or a promise chained from it, is awaited there, or where a `catch` of
- * its own chain hands its rejection to a function made there whose body is plain, and so is each one
- * the chain runs past it. Such a load fails in the Function as it fails under
+ * its own chain hands its rejection to a function made there whose body is plain, and what the chain
+ * calls past that is plain as well, unless such a `catch` further on takes what it throws. Such a
+ * load fails in the Function as it fails under
  * Node.js when the module is not installed, into the code's own `catch`:
  * `@protobufjs/inquire`, which every `protobufjs` loads its optional modules through, and
  * TypeScript's `sys.require`, which loads a compiler plugin, are written that way. Plain, because
@@ -597,9 +598,22 @@ function rejectionHandlerOf(call: Node): Node | undefined {
 }
 
 /**
+ * The callback `call` — a promise's `then`, or its `finally` — runs once the promise has fulfilled,
+ * if any. What else it is handed, past the callbacks it calls, is evaluated and then let be.
+ */
+function fulfilmentCallbackOf(call: Node): Node | undefined {
+  if (call.type !== 'CallExpression') {
+    return undefined;
+  }
+  const name = propertyName(unwrapped(call.callee));
+  return name === 'then' || name === 'finally' ? call.arguments[0] : undefined;
+}
+
+/**
  * Whether what `argument` hands a promise runs plainly when the promise calls it: each function
- * made in it is read as a handler is (`handlesPlainly`), and what it names is taken not to throw,
- * as what a `catch` calls by name is.
+ * made in it is read as a handler is (`handlesPlainly`), and what it names is taken not to throw.
+ * The name is not followed here, as it is not in a `catch` or a `finally`: `then(setModule)` past a
+ * handler is trusted as `finally { setModule(module) }` is.
  */
 function callsBackPlainly(argument: Node): boolean {
   const pending: Node[] = [argument];
@@ -620,11 +634,11 @@ function callsBackPlainly(argument: Node): boolean {
  * fulfils when the load fails. The rejection passes every callback by until a handler has it, and a
  * `catch`, or a `then` with a second handler, that handles it plainly (`handlesPlainly`) keeps it
  * in. Once any handler has had it — a handler by name, or one not plain, may answer too — the chain
- * goes on with the answer, and every callback it is handed from then on has to run plainly
- * (`callsBackPlainly`): one that throws — a `finally` that does, a `then` that throws the error the
- * handler answered with — rejects the promise the chain ends in, unless a handler past it takes
- * that plainly in turn. Only the chain as written is read: a promise kept, and chained on where the
- * record cannot see, is not followed, as the code after a `try` is not.
+ * goes on with the answer, and what it calls with that — a `then`'s first callback, a `finally`'s —
+ * has to run plainly (`callsBackPlainly`): one that throws — a `finally` that does, a `then` that
+ * throws the error the handler answered with — rejects the promise the chain ends in, unless a
+ * handler past it takes that plainly in turn. Only the chain as written is read: a promise kept,
+ * and chained on where the record cannot see, is not followed, as the code after a `try` is not.
  */
 function handledInChain(visit: Visit): boolean {
   // Along the load's failure: whether the promise made so far fulfils, and whether it may — which
@@ -643,8 +657,10 @@ function handledInChain(visit: Visit): boolean {
     const handler = rejectionHandlerOf(call);
     const handles = handlesPlainly(handler);
     if (mayFulfil) {
-      fulfils =
-        (fulfils || handles) && call.arguments.every((argument) => callsBackPlainly(argument));
+      // Fulfilled, the promise runs the callback; rejected, the handler. Neither runs the other.
+      const callback = fulfilmentCallbackOf(call);
+      const goesOn = callback === undefined || callsBackPlainly(callback);
+      fulfils = goesOn && (fulfils || handles);
     } else {
       fulfils = handles;
       mayFulfil = handler !== undefined;
