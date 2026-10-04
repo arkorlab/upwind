@@ -58,6 +58,13 @@ export class ByteLru<K, V> {
     }
   }
 
+  /** What is held, least recently used first, without using any of it. */
+  *values(): Generator<V, void, undefined> {
+    for (const entry of this.#entries.values()) {
+      yield entry.value;
+    }
+  }
+
   get usedBytes(): number {
     return this.#usedBytes;
   }

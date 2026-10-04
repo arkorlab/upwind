@@ -1,5 +1,6 @@
 import type { Prerender } from '@stayingupwind/core/bundle';
 import type { RouteEntryDescriptor } from '@stayingupwind/core/cache';
+import { INVALIDATED_TAGS_HEADER, invalidatedTagsValue } from '@stayingupwind/core/paas';
 import { anyConditionHolds, NULL_BODY_STATUSES } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
@@ -41,6 +42,12 @@ export interface HandleInput extends EntryTables {
   readonly blobs?: BundleBlobReader | undefined;
   /** The clock a test configuration handed the request; the wall clock otherwise. */
   readonly clock?: number | undefined;
+  /**
+   * Where the tags the request invalidates at once are kept (`RequestContext.invalidated`): a host
+   * that answers a failure of the request itself hands its own, to say them on that answer too —
+   * the invalidation stands whatever became of the request after it.
+   */
+  readonly invalidated?: Set<string> | undefined;
 }
 
 /**
@@ -323,4 +330,34 @@ export function withoutBody(request: Request, response: Response): Response {
   // Released, not awaited: a stalled cancellation must not hold back completed headers.
   releaseStream(response.body, 'HEAD: body not sent');
   return new Response(null, response);
+}
+
+/**
+ * `response`, telling the edge the tags the request invalidated at once
+ * (`INVALIDATED_TAGS_HEADER`): those invalidated before its headers were written, which for a
+ * Server Action that answers with the page it changed is every one — Next.js applies what the
+ * action invalidated before it renders. Never what the application said under that name, which is
+ * the platform's to say.
+ */
+export function withInvalidatedTags(
+  response: Response,
+  invalidated: ReadonlySet<string>,
+): Response {
+  // A network error (`Response.error()`, status 0) has no headers to carry anything on.
+  const unchanged =
+    response.status === 0 ||
+    (invalidated.size === 0 && !response.headers.has(INVALIDATED_TAGS_HEADER));
+  if (unchanged) {
+    return response;
+  }
+  const headers = new Headers(response.headers);
+  headers.delete(INVALIDATED_TAGS_HEADER);
+  if (invalidated.size > 0) {
+    headers.set(INVALIDATED_TAGS_HEADER, invalidatedTagsValue(invalidated));
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 }
