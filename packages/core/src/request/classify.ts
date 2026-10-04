@@ -35,7 +35,6 @@ import { parseCookieHeader } from './cookies.ts';
 
 export type PassthroughReason =
   | 'method'
-  | 'head'
   | 'service-worker'
   | 'range'
   | 'well-known'
@@ -139,10 +138,10 @@ function classifyByMethod(method: string, headers: Headers): RequestClass | unde
   if (method === 'POST' && headers.has(NEXT_ACTION_HEADER)) {
     return { kind: 'action' };
   }
-  if (method === 'HEAD') {
-    return passthrough('head');
-  }
-  if (method !== 'GET') {
+  // `HEAD` asks what `GET` asks, and is answered with the headers `GET` would carry and no body
+  // (RFC 9110 §9.3.2). Next.js routes it as it routes `GET`, the middleware included, so it is
+  // classified as `GET` is, and whatever answers it leaves the body off.
+  if (method !== 'GET' && method !== 'HEAD') {
     return passthrough('method');
   }
   return undefined;
