@@ -249,13 +249,23 @@ a minified module being one comma expression per statement — a module object's
 (`module.require`, which the object a module gets in the bundle does not have) — found in each
 module as Rolldown rendered it into the bundle, once it had followed what it could, so a binding
 a module itself calls `require`, which Rolldown renames, is not taken for the loader, and a call
-in code the bundle left out is not reported — the `.wasm` the bundler resolved itself, each with
-the global the Function publishes it under — and the Function's modules, with what they weigh
-together before and after gzip. The audit (`auditFunction`), which each of a Function's bundles goes
-through, fails the build on a `require("vm")` or `runInNewContext` that survived, a built-in
-outside the list, a module the bundler could not resolve, or a use of the loader outside
-Next.js's own; `auditFunctionSize` fails it on a Function over Cloudflare's 64 MiB, so that the
-build says so rather than the upload. That limit is on the uncompressed bundle and is the only one
+in code the bundle left out is not reported — of those, under `guardedRequires`, the ones whose
+failure the code handles itself, a call that loads in the block of a `try` whose `catch` and
+`finally` are plain code — no `throw`, `await`, `yield` or `try` of their own, no pattern taking
+the error apart, nothing made and run where it stands, no `Promise.reject(…)` or `eval`, and calls
+only of what they name, which are taken not to throw — with nothing between them that runs later: a function's body, unless the function is neither
+`async` nor a generator and is called where it is made, or an instance field's initializer or a
+constructor, unless the class is constructed where it is made (an `import()` too, where it, or a
+promise chained from it, is awaited there, or where a `catch` of its own chain hands its rejection
+to a function made there whose body is plain) — the `.wasm` the bundler resolved itself, each with the global the Function publishes it under — and the Function's
+modules, with what they weigh together before and after gzip. The audit (`auditFunction`), which
+each of a Function's bundles goes through, fails the build on a `require("vm")` or
+`runInNewContext` that survived, a built-in outside the list, a module the bundler could not
+resolve, or a use of the loader outside Next.js's own that the code does not guard; a guarded one
+fails in the Function into its own `catch`, as it does under Node.js with the module not installed
+— which is how `@protobufjs/inquire` loads `protobufjs`'s optional modules, and how TypeScript
+loads a compiler plugin. `auditFunctionSize` fails the build on a Function over Cloudflare's
+64 MiB, so that the build says so rather than the upload. That limit is on the uncompressed bundle and is the only one
 there is: Cloudflare dropped the compressed limits — 3 MB free, 10 MB paid — on 2026-09-04, and the
 gzipped figure the record carries is now worth reading rather than being refused for. A Function
 well inside the limit can still be worth making smaller; Cloudflare says of the same change that

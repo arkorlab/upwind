@@ -60,6 +60,14 @@ export interface BundleDependencies {
    */
   readonly dynamicRequires: readonly string[];
   /**
+   * Of those, the loads whose failure the code handles itself: a call that loads, in the block of a
+   * `try` whose `catch` has no `throw` of its own, with nothing between them that runs later
+   * (`dynamic-loads.ts`). Recorded, not refused — in the Function such a load fails into that
+   * `catch`, as it does under Node.js when the module is not installed. One entry per load, as in
+   * `dynamicRequires`; absent where there are none.
+   */
+  readonly guardedRequires?: readonly string[];
+  /**
    * The `.wasm` this bundle imported as WebAssembly, each with the global the Function publishes it
    * under. Only what the bundler resolved itself; what Turbopack's own loader asks for is in
    * `patches` instead, as the `wasm-loader` patch's table.
@@ -215,6 +223,9 @@ export function bundleDependencies(
     const entry = packages[pkg] ?? { files: 0, bytes: 0 };
     packages[pkg] = { files: entry.files + 1, bytes: entry.bytes + bytes };
   }
+  const guarded = trace.dynamicLoads
+    .filter((load) => load.guarded)
+    .map((load) => describeLoad(projectDir, load));
   return {
     buildOutput: buildOutput.toSorted((a, b) => a.file.localeCompare(b.file)),
     packages: Object.fromEntries(
@@ -235,6 +246,7 @@ export function bundleDependencies(
       };
     }),
     dynamicRequires: trace.dynamicLoads.map((load) => describeLoad(projectDir, load)),
+    ...(guarded.length > 0 && { guardedRequires: guarded }),
     wasmModules: [...new Set(trace.wasmModules)]
       .map((entry) => {
         const [file, global] = entry.split(' -> ', 2);
@@ -438,8 +450,19 @@ function problemsIn(source: string, bundle: BundleDependencies): string[] {
       problems.push(`${external} is imported but not known to be provided by the Workers runtime`);
     }
   }
+  // Counted rather than looked up: two loads on one line of a minified module read the same, and
+  // one of them being guarded says nothing of the other.
+  const guarded = new Map<string, number>();
+  if (bundle.guardedRequires !== undefined) {
+    for (const load of bundle.guardedRequires) {
+      guarded.set(load, (guarded.get(load) ?? 0) + 1);
+    }
+  }
   for (const dynamic of bundle.dynamicRequires) {
-    if (!isAllowedDynamicLoad(dynamic)) {
+    const left = guarded.get(dynamic) ?? 0;
+    if (left > 0) {
+      guarded.set(dynamic, left - 1);
+    } else if (!isAllowedDynamicLoad(dynamic)) {
       problems.push(`a load the bundler could not follow: ${dynamic}`);
     }
   }
