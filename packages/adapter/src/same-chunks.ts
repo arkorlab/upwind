@@ -6,7 +6,7 @@ import { compareCodeUnits } from '@stayingupwind/core/util';
 
 import type { KeptMaps } from './kept-maps.ts';
 import { resolvedSource } from './project-maps.ts';
-import { flattened, mapFileOf } from './source-maps.ts';
+import { flattened } from './source-maps.ts';
 
 /**
  * The server chunks whose code is another chunk's, each to the file that holds it.
@@ -44,8 +44,18 @@ export interface ChunkMaps {
   readonly kept?: KeptMaps | undefined;
 }
 
-/** What in a map names its file rather than the code it maps: set aside, as the comments are. */
-const MAP_NAMING_KEYS: ReadonlySet<string> = new Set(['debug_id', 'debugId', 'file']);
+/**
+ * What in a map is set aside: what names its file rather than the code it maps, as the comments are,
+ * and the sources' own text, which the Function's map is written without (`sourcemapOutput`).
+ */
+const MAP_NAMING_KEYS: ReadonlySet<string> = new Set([
+  'debug_id',
+  'debugId',
+  'file',
+  'sourcesContent',
+]);
+/** A comment naming the file a build writes after its map comment: nothing it names is code. */
+const ID_COMMENT = /^\/\/[#@] (?:debugId|chunkId)=/u;
 /** The comment a build names a chunk's map by, the last of which is the map. */
 const MAP_COMMENTS = ['//# sourceMappingURL=', '//@ sourceMappingURL='];
 const DATA_URL_PREFIX = 'data:';
@@ -132,10 +142,12 @@ export async function sameChunks(
 }
 
 /**
- * The map a chunk is composed through, as it is compared with another chunk's (`sameChunks`), found
- * as `sourceMapsPlugin` finds it: the one the build's hook left the chunk where it saw it (`kept`),
- * and otherwise the one the chunk's last comment names — inside it, as a data URL, or beside it.
- * Nothing where there is none, or none to read, which another chunk's map is not the same as.
+ * The map a chunk is composed through, as it is compared with another chunk's (`sameChunks`): the one
+ * the build's hook left the chunk where it saw it (`kept`), as `sourceMapsPlugin` reads it, and
+ * otherwise the one the chunk's last `sourceMappingURL` comment names, in either spelling — inside
+ * it, as a data URL, or beside it. Nothing where there is none, or none to read, which another
+ * chunk's map is not the same as. Read wider than the plugin follows a comment, never narrower: a map
+ * read here that the plugin would not hand on can only keep two chunks apart.
  */
 async function comparedMap(
   source: string,
@@ -146,20 +158,29 @@ async function comparedMap(
   if (left?.seen === true) {
     return left.file === undefined ? '' : await mapFileKey(left.file);
   }
-  const inline = inlineMapOf(source);
-  if (inline !== undefined) {
-    return canonicalMap(inline, path.dirname(chunk), chunk);
+  const url = lastMapUrl(source);
+  if (url === undefined) {
+    return '';
   }
-  const file = mapFileOf(source, chunk);
-  return file === undefined ? '' : await mapFileKey(file);
+  if (url.startsWith(DATA_URL_PREFIX)) {
+    return canonicalMap(dataOf(url), path.dirname(chunk), chunk);
+  }
+  let file: string;
+  try {
+    // As a URL, as `mapFileOf` reads it: Turbopack percent-encodes a chunk's brackets.
+    file = path.join(path.dirname(chunk), decodeURIComponent(url));
+  } catch {
+    return url;
+  }
+  return await mapFileKey(file);
 }
 
 /**
- * The map a chunk carries inside its last comment, decoded; nothing where its last comment names a
- * file instead, or it has none. Found by the comment's last occurrence anywhere in the chunk, since
- * a map inside one is as long as the chunk is, or longer.
+ * What the last `sourceMappingURL` comment of a chunk names, in either spelling (`MAP_COMMENTS`), where
+ * nothing but space and the comments naming the file (`ID_COMMENT`) follows it; nothing otherwise. Found by its last occurrence anywhere in the chunk,
+ * since a map inside one is as long as the chunk is, or longer.
  */
-function inlineMapOf(source: string): string | undefined {
+function lastMapUrl(source: string): string | undefined {
   let at = -1;
   let comment = '';
   for (const candidate of MAP_COMMENTS) {
@@ -174,9 +195,17 @@ function inlineMapOf(source: string): string | undefined {
   }
   const rest = source.slice(at + comment.length);
   const url = rest.split(/\s/u, 1)[0] ?? '';
-  if (!url.startsWith(DATA_URL_PREFIX) || rest.slice(url.length).trim() !== '') {
-    return undefined;
-  }
+  // Nothing but space after it, or the comments that name the file beside it (`debugId`, `chunkId`).
+  const after = rest
+    .slice(url.length)
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '');
+  return url === '' || after.some((line) => !ID_COMMENT.test(line)) ? undefined : url;
+}
+
+/** A data URL's text: base64 where it says so, percent-encoded otherwise. */
+function dataOf(url: string): string {
   const comma = url.indexOf(',');
   const payload = url.slice(comma + 1);
   try {
