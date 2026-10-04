@@ -80,6 +80,11 @@ export interface KeptMap {
   readonly seen: boolean;
   /** The map that describes the chunk now, where the hook saw it; nothing where none does. */
   readonly file: string | undefined;
+  /**
+   * Where the build wrote that map, which is what the files it names are relative to: `file` itself,
+   * or — where `file` is the link or copy kept of it here — the build's own path for it.
+   */
+  readonly origin: string | undefined;
 }
 
 /** What the hook left the chunks it saw, for the parts of the build that read a chunk's map. */
@@ -87,7 +92,8 @@ export interface KeptMaps {
   mapFor(chunk: string): KeptMap;
 }
 
-const UNSEEN: KeptMap = { seen: false, file: undefined };
+const UNSEEN: KeptMap = { seen: false, file: undefined, origin: undefined };
+const NO_MAP: KeptMap = { seen: true, file: undefined, origin: undefined };
 
 /** A file's size and when it was last written: what tells a file written since from one not. */
 interface Written {
@@ -435,6 +441,7 @@ export async function readKeptMaps(distDir: string): Promise<KeptMaps | undefine
       table.set(chunk, entry);
     }
   }
+  const keptDir = path.join(distDir, KEPT_DIR);
   return {
     mapFor(chunk) {
       const entry = table.get(indexKey(path.relative(distDir, chunk)));
@@ -442,7 +449,14 @@ export async function readKeptMaps(distDir: string): Promise<KeptMaps | undefine
         return UNSEEN;
       }
       const file = entry.map === null ? undefined : path.join(distDir, entry.map);
-      return { seen: true, file: file !== undefined && isUnder(distDir, file) ? file : undefined };
+      if (file === undefined || !isUnder(distDir, file)) {
+        return NO_MAP;
+      }
+      // A map kept here is at the build's own path for it, under the kept directory (`recordMaps`).
+      const origin = isUnder(keptDir, file)
+        ? path.join(distDir, path.relative(keptDir, file))
+        : file;
+      return { seen: true, file, origin };
     },
   };
 }

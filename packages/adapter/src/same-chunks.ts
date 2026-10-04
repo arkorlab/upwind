@@ -147,21 +147,26 @@ export async function sameChunks(
 }
 
 /**
- * The map a chunk is composed through, as it is compared with another chunk's (`sameChunks`): the one
- * the build's hook left the chunk where it saw it (`kept`), as `sourceMapsPlugin` reads it; and
- * otherwise both the one the plugin hands on (`mapFileOf`) and the one the chunk's last
- * `sourceMappingURL` comment names, in either spelling, inside it or beside it, which a bundler may
- * read itself. Nothing for one there is none of, or none to read, which another chunk's map is not
- * the same as. Both rather than either: a map read here that the plugin would not hand on can only
- * keep two chunks apart, never take one for another.
+ * The map a chunk is composed through, as it is compared with another chunk's (`sameChunks`): two of
+ * them, the one the plugin hands on and the one a bundler may read itself. Where the build's hook saw
+ * the chunk (`kept`), both are the map it left, as `sourceMapsPlugin` reads it; otherwise, the one the
+ * plugin hands on (`mapFileOf`) and the one the chunk's last `sourceMappingURL` comment names, in
+ * either spelling, inside it or beside it. Nothing for one there is none of, which another chunk's map
+ * is not the same as. Both rather than either: a map read here that the plugin would not hand on can
+ * only keep two chunks apart, never take one for another. And two in either case, so that a chunk
+ * the hook saw and one it did not are the same where one map describes both.
  */
 async function comparedMap(source: string, chunk: string, maps: ChunkMaps): Promise<string> {
   const left = maps.kept?.mapFor(chunk);
   if (left?.seen === true) {
-    return left.file === undefined ? '' : await mapFileKey(left.file, maps.project);
+    const kept =
+      left.file === undefined
+        ? ''
+        : await mapFileKey(left.file, left.origin ?? left.file, maps.project);
+    return `${kept}\0${kept}`;
   }
   const handed = mapFileOf(source, chunk);
-  const loaded = handed === undefined ? '' : await mapFileKey(handed, maps.project);
+  const loaded = handed === undefined ? '' : await mapFileKey(handed, handed, maps.project);
   return `${loaded}\0${await lastCommentKey(source, chunk, maps.project)}`;
 }
 
@@ -185,7 +190,7 @@ async function lastCommentKey(
   } catch {
     return url;
   }
-  return await mapFileKey(file, project);
+  return await mapFileKey(file, file, project);
 }
 
 /**
@@ -230,23 +235,45 @@ function dataOf(url: string): string {
   }
 }
 
-/** A map beside a chunk as it is compared (`canonicalMap`), or nothing where it cannot be read. */
-async function mapFileKey(file: string, project: ProjectBounds | undefined): Promise<string> {
+/**
+ * A map file as it is compared (`canonicalMap`): read at `file`, and naming its sources from `origin`,
+ * where the build wrote it.
+ *
+ * Nothing where there is no file, which is the none the plugin hands on for it too. Its path where
+ * there is one that was not read: read again when the Function is bundled, it may say anything, and
+ * two such maps are only known to say the same where they are one file.
+ */
+async function mapFileKey(
+  file: string,
+  origin: string,
+  project: ProjectBounds | undefined,
+): Promise<string> {
   let text: string;
   try {
     text = await readFile(file, 'utf8');
-  } catch {
-    return '';
+  } catch (error) {
+    return isMissing(error) ? '' : file;
   }
-  return canonicalMap(text, file, project);
+  return canonicalMap(text, origin, project);
+}
+
+/** Whether a read failed for there being no file at the path. */
+function isMissing(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error.code === 'ENOENT' || error.code === 'ENOTDIR')
+  );
 }
 
 /**
  * A map as it is compared: flattened as Rolldown is handed it (`flattened`), as `projectOnly` leaves
  * it where the Functions carry the project's files alone, without what names its file
  * (`MAP_NAMING_KEYS`), and with each source the file it names (`resolvedSource`) — a source is
- * relative to where its map is (`file`, which an inline map is the chunk itself for), and two maps
- * that write one path from two directories name two files. As written where it is no map at all.
+ * relative to where its map was written (`file`, which an inline map is the chunk itself for, and a
+ * map kept through the build's hook its first path), and two maps that write one path from two
+ * directories name two files. As written where it is no map at all.
  */
 function canonicalMap(text: string, file: string, project: ProjectBounds | undefined): string {
   let map: unknown;
