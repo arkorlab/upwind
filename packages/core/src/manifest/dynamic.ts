@@ -1,4 +1,11 @@
+import {
+  type CompiledRule,
+  compiledRules,
+  type Patterned,
+  patternOf,
+} from '../request/compiled-patterns.ts';
 import { conditionsHold } from '../request/conditions.ts';
+import { requiresLiteral } from '../request/required-literal.ts';
 import { keyOf, namesNoFile, withoutAssetPrefix } from './manifest.ts';
 import type { DynamicRoute, ProjectManifest, ReservedRoute, RouteEntry } from './schema.ts';
 
@@ -64,26 +71,65 @@ function decodes(pathname: string): boolean {
   }
 }
 
-function patternMatch(sourceRegex: string, pathname: string): RegExpExecArray | null {
-  // As Next.js compiled it, without the unicode flag. Not case-insensitive, unlike the router's own
-  // matching: the runtime picks a class's shell by a case-sensitive pattern, so a case variant is
-  // served by the Function rather than handed a shell built for another spelling.
-  // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-  return new RegExp(sourceRegex).exec(pathname);
+function patternMatch(compiled: CompiledRule<Patterned>, pathname: string): RegExpExecArray | null {
+  // As Next.js compiled it, without the unicode flag, under the flags it was compiled with
+  // (`compiledRules`): with case for a dynamic class — the runtime picks a class's shell by a
+  // case-sensitive pattern, so a case variant is served by the Function rather than handed a shell
+  // built for another spelling — and without, as the router matches them, for a rule of
+  // `next.config`.
+  return patternOf(compiled).exec(pathname);
 }
 
-function patternMatches(sourceRegex: string, pathname: string): boolean {
-  return patternMatch(sourceRegex, pathname) !== null;
+function patternMatches(compiled: CompiledRule<Patterned>, pathname: string): boolean {
+  return patternOf(compiled).test(pathname);
 }
 
 /**
- * A rule of `next.config` — a reservation, a header rule — matched as Next.js's router matches its
- * rules: without the unicode flag, and without regard to case (`sensitive: false`). A rule for
- * `/Shop/:slug` claims `/shop/x`. The dynamic classes keep their case (`patternMatch`).
+ * What the pathname of a request for a route's data spells, and a page's does not: the RSC payload
+ * and the prefetch segments of an App Router page (`/[slug].rsc`, `/[slug].segments/….rsc`), and
+ * the data of a Pages Router one (`/_next/data/<build>/[slug].json`). Next.js puts a matcher for
+ * each ahead of the page's own, so a real application's list is mostly these — 423 of 637 routes —
+ * and a document was asked every one of them before its own page.
  */
-function ruleMatch(sourceRegex: string, pathname: string): RegExpExecArray | null {
-  // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-  return new RegExp(sourceRegex, 'i').exec(pathname);
+const DATA_ROUTE_MARKERS: readonly string[] = ['.rsc', '/_next/data/'];
+
+interface DynamicRouteTable {
+  /** Every route, in Next.js's order. */
+  readonly all: readonly CompiledRule<DynamicRoute>[];
+  /** The same, less each route only a pathname spelling a data marker can match. */
+  readonly pages: readonly CompiledRule<DynamicRoute>[];
+}
+
+const dynamicRouteTables = new WeakMap<readonly DynamicRoute[], DynamicRouteTable>();
+
+/**
+ * Whether only a pathname that spells a data marker can match the route: proved of its pattern
+ * (`requiresLiteral`), and only of one that compiles, so that a pattern that does not is still
+ * reached — and throws — wherever it was reached before.
+ */
+function matchesOnlyData(compiled: CompiledRule<DynamicRoute>): boolean {
+  return (
+    compiled.pattern !== undefined &&
+    DATA_ROUTE_MARKERS.some((marker) => requiresLiteral(compiled.rule.sourceRegex, marker))
+  );
+}
+
+/**
+ * The routes a pathname is asked of, in Next.js's order: every one, for a pathname that spells a
+ * data marker; for any other — every page a visitor navigates to — all but the routes it cannot
+ * match, which finds the same first match without asking those.
+ */
+function dynamicRoutesFor(
+  routes: readonly DynamicRoute[],
+  pathname: string,
+): readonly CompiledRule<DynamicRoute>[] {
+  let table = dynamicRouteTables.get(routes);
+  if (table === undefined) {
+    const all = compiledRules(routes);
+    table = { all, pages: all.filter((compiled) => !matchesOnlyData(compiled)) };
+    dynamicRouteTables.set(routes, table);
+  }
+  return DATA_ROUTE_MARKERS.some((marker) => pathname.includes(marker)) ? table.all : table.pages;
 }
 
 /**
@@ -162,13 +208,11 @@ export function dynamicRouteFor(
   if (isReserved(manifest, url, headers, false)) {
     return undefined;
   }
-  for (const candidate of manifest.dynamicRoutes) {
+  const { pathname } = url;
+  for (const compiled of dynamicRoutesFor(manifest.dynamicRoutes, pathname)) {
     // A pattern that matches but whose conditions fail is passed over, as Next.js passes it over.
-    if (
-      patternMatches(candidate.sourceRegex, url.pathname) &&
-      conditionsHold(candidate, url, headers)
-    ) {
-      return candidate;
+    if (patternMatches(compiled, pathname) && conditionsHold(compiled.rule, url, headers)) {
+      return compiled.rule;
     }
   }
   return undefined;
@@ -189,10 +233,11 @@ export function pathIsReserved(
   headers: Headers,
   beforeFilesOnly: boolean,
 ): boolean {
-  return reserved.some((rule) => {
+  return compiledRules(reserved, 'i').some((compiled) => {
+    const { rule } = compiled;
     return (
       (!beforeFilesOnly || rule.beforeFiles === true) &&
-      ruleMatch(rule.sourceRegex, url.pathname) !== null &&
+      patternMatches(compiled, url.pathname) &&
       conditionsHold(rule, url, headers)
     );
   });
@@ -273,8 +318,9 @@ function configuredHeaders(
   if (manifest.headerRules === undefined) {
     return { headers: out, conditioned };
   }
-  for (const rule of manifest.headerRules) {
-    const match = ruleMatch(rule.sourceRegex, url.pathname);
+  for (const compiled of compiledRules(manifest.headerRules, 'i')) {
+    const { rule } = compiled;
+    const match = patternMatch(compiled, url.pathname);
     if (match === null || !conditionsHold(rule, url, headers)) {
       continue;
     }
@@ -314,12 +360,12 @@ export function foldedHeadersFor(
     return undefined;
   }
   const out: Record<string, string> = {};
-  for (const rule of manifest.foldedHeaderRules) {
-    const match = ruleMatch(rule.sourceRegex, pathname);
+  for (const compiled of compiledRules(manifest.foldedHeaderRules, 'i')) {
+    const match = patternMatch(compiled, pathname);
     if (match === null) {
       continue;
     }
-    const set = rule.documentHeaders ?? rule.headers;
+    const set = compiled.rule.documentHeaders ?? compiled.rule.headers;
     for (const [name, value] of Object.entries(set)) {
       out[interpolateHeader(name, match).toLowerCase()] = interpolateHeader(value, match);
     }
