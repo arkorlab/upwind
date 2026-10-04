@@ -30,8 +30,10 @@ export interface RequestContext {
 
 /**
  * What a request invalidated at once: the tags, and the latest revision of the scope the host
- * recorded one of them at — below which a record was written before them all. No revision once one
- * invalidation came without one: from a host that keeps none, nothing bounds them.
+ * recorded one of them at — below which a record was written before them all. One bound for all of
+ * them rather than one each: a request's invalidations are made back to back, so nothing is written
+ * between them that a single bound would wrong. No revision once one invalidation came without one:
+ * from a host that keeps none, nothing bounds them.
  */
 export class InvalidatedTags {
   #revision: number | undefined;

@@ -1,6 +1,10 @@
 import type { Prerender } from '@stayingupwind/core/bundle';
 import type { RouteEntryDescriptor } from '@stayingupwind/core/cache';
-import { INVALIDATED_TAGS_HEADER, invalidatedTagsValue } from '@stayingupwind/core/paas';
+import {
+  INVALIDATED_REVISION_HEADER,
+  INVALIDATED_TAGS_HEADER,
+  invalidatedTagsValue,
+} from '@stayingupwind/core/paas';
 import { anyConditionHolds, NULL_BODY_STATUSES } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
@@ -342,16 +346,21 @@ export function withoutBody(request: Request, response: Response): Response {
  */
 export function withInvalidatedTags(response: Response, invalidated: InvalidatedTags): Response {
   const { tags, revision } = invalidated;
+  const said =
+    response.headers.has(INVALIDATED_TAGS_HEADER) ||
+    response.headers.has(INVALIDATED_REVISION_HEADER);
   // A network error (`Response.error()`, status 0) has no headers to carry anything on.
-  const unchanged =
-    response.status === 0 || (tags.size === 0 && !response.headers.has(INVALIDATED_TAGS_HEADER));
-  if (unchanged) {
+  if (response.status === 0 || (!said && tags.size === 0)) {
     return response;
   }
   const headers = new Headers(response.headers);
   headers.delete(INVALIDATED_TAGS_HEADER);
+  headers.delete(INVALIDATED_REVISION_HEADER);
   if (tags.size > 0) {
-    headers.set(INVALIDATED_TAGS_HEADER, invalidatedTagsValue(tags, revision));
+    headers.set(INVALIDATED_TAGS_HEADER, invalidatedTagsValue(tags));
+    if (revision !== undefined) {
+      headers.set(INVALIDATED_REVISION_HEADER, String(revision));
+    }
   }
   return new Response(response.body, {
     status: response.status,
