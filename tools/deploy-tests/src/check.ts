@@ -287,6 +287,7 @@ async function main(): Promise<void> {
   const deploymentId = createId(DEPLOYMENT_ID_PREFIX);
   const host = await fakeHost(deploymentId);
   let quiet: FakeHost | undefined;
+  let own: FakeHost | undefined;
   const env = {
     ...process.env,
     ARKOR_API_URL: `http://127.0.0.1:${String(host.port)}`,
@@ -444,9 +445,28 @@ async function main(): Promise<void> {
       probed !== undefined &&
         unprovenAt - probed >= Number(env.ADAPTER_TEST_SETTLE_SECONDS) * MS_PER_SECOND,
     );
+
+    // A host that gives the deployment a URL of its own: the suite is sent there, the probe asks there,
+    // and nothing is settled, since no other deployment answers at that URL.
+    own = await fakeHost(deploymentId, 'moves', true);
+    const onItsOwn = await bounded(DEPLOY_HOOK, appDir, {
+      ...env,
+      ARKOR_API_URL: `http://127.0.0.1:${String(own.port)}`,
+    });
+    holds(
+      "a deployment's own URL is the one the suite is given",
+      own.ownPort !== undefined &&
+        onItsOwn.stdout.trim() === `http://127.0.0.1:${String(own.ownPort)}`,
+    );
+    holds('and the one the probe asked', own.probedOn() === own.ownPort);
+    holds(
+      'with nothing settled, since no other deployment answers there',
+      !onItsOwn.stderr.includes('letting the host settle'),
+    );
   } finally {
     host.close();
     quiet?.close();
+    own?.close();
     rmSync(workDir, { recursive: true, force: true });
   }
 }

@@ -125,6 +125,11 @@ export interface DeploymentDetail {
   readonly errorMessage: string | undefined;
   /** The step it is on, or nothing between steps: progress, for the wait to be judged by. */
   readonly currentStep: string | undefined;
+  /**
+   * Where the host serves this deployment and no other, where it gives a deployment a URL of its own;
+   * nothing where it gives none, or has not yet.
+   */
+  readonly url: string | undefined;
 }
 
 export interface Client {
@@ -322,6 +327,7 @@ export function createClient(config: Config): Client {
         status: asString(detail['status']),
         errorMessage: optionalString(optionalRecord(detail['error'])?.['message']),
         currentStep: optionalString(run?.['currentStep']),
+        url: optionalString(detail['url']),
       };
     },
   };
