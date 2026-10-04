@@ -77,10 +77,16 @@ type PageBehaviour = 'moves' | 'names nobody';
  * here fails the check with the call that made it, rather than passing because a fake host was willing
  * to answer anything.
  */
+/**
+ * Whether the deployment has a URL of its own, and how the host gives it: in every answer, only from
+ * the second answer on (written a moment after the deployment is live), or with a path after the host.
+ */
+type OwnUrl = 'none' | 'at once' | 'late' | 'with a path';
+
 export async function fakeHost(
   deploymentId: string,
   page: PageBehaviour = 'moves',
-  ownUrl = false,
+  ownUrl: OwnUrl = 'none',
 ): Promise<FakeHost> {
   let registered: string | undefined;
   let environment: Record<string, string> = {};
@@ -97,6 +103,8 @@ export async function fakeHost(
   let port = 0;
   /** Where the deployment's own URL listens, once it does; read by the deployment's answer. */
   const ports: { own?: number } = {};
+  /** How many times the deployment has been asked about since it was finalized. */
+  let polled = 0;
   let probedOn: number | undefined;
 
   /** Refuse, and remember: the check reads these back rather than trusting a status alone. */
@@ -114,6 +122,16 @@ export async function fakeHost(
       chunks.push(chunk as Buffer);
     }
     return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
+  }
+
+  /** The deployment's own URL as this answer gives it, if it gives one yet. */
+  function ownUrlNow(): { url?: string } {
+    polled += 1;
+    if (ports.own === undefined || (ownUrl === 'late' && polled === 1)) {
+      return {};
+    }
+    const path = ownUrl === 'with a path' ? 'deployments/this/' : '';
+    return { url: `http://127.0.0.1:${String(ports.own)}/${path}` };
   }
 
   /**
@@ -149,12 +167,7 @@ export async function fakeHost(
       return {
         status: OK,
         body: {
-          deployment: {
-            id: deploymentId,
-            projectId: 'p',
-            status: 'active',
-            ...(ports.own !== undefined && { url: `http://127.0.0.1:${String(ports.own)}/` }),
-          },
+          deployment: { id: deploymentId, projectId: 'p', status: 'active', ...ownUrlNow() },
           run: { currentStep: 'activate' },
         },
       };
@@ -308,7 +321,7 @@ export async function fakeHost(
   };
   const server = await listen();
   port = (server.address() as { port: number }).port;
-  const own = ownUrl ? await listen() : undefined;
+  const own = ownUrl === 'none' ? undefined : await listen();
   if (own !== undefined) {
     ports.own = (own.address() as { port: number }).port;
   }

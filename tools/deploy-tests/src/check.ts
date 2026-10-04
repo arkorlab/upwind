@@ -277,6 +277,73 @@ function holds(said: string, held: boolean): void {
   }
 }
 
+/**
+ * A host that gives each deployment a URL of its own: at once, a moment late, and with a path the suite
+ * cannot be handed. Each is a host of its own, closed here whatever happened.
+ */
+async function ownUrlScenarios(
+  deploymentId: string,
+  appDir: string,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  const hosts: FakeHost[] = [];
+  try {
+    // A host that gives the deployment a URL of its own: the suite is sent there, the probe asks there,
+    // and nothing is settled, since no other deployment answers at that URL.
+    const own = await fakeHost(deploymentId, 'moves', 'at once');
+    hosts.push(own);
+    const onItsOwn = await bounded(DEPLOY_HOOK, appDir, {
+      ...env,
+      ARKOR_API_URL: `http://127.0.0.1:${String(own.port)}`,
+    });
+    holds(
+      "a deployment's own URL is the one the suite is given",
+      own.ownPort !== undefined &&
+        onItsOwn.stdout.trim() === `http://127.0.0.1:${String(own.ownPort)}`,
+    );
+    holds('and the one the probe asked', own.probedOn() === own.ownPort);
+    holds(
+      'with nothing settled, since no other deployment answers there',
+      !onItsOwn.stderr.includes('letting the host settle'),
+    );
+
+    // A host that writes the URL a moment after it says the deployment is live: waited for, not missed.
+    const late = await fakeHost(deploymentId, 'moves', 'late');
+    hosts.push(late);
+    const lateOwn = await bounded(DEPLOY_HOOK, appDir, {
+      ...env,
+      ARKOR_API_URL: `http://127.0.0.1:${String(late.port)}`,
+    });
+    holds(
+      'a URL the host gives only a moment after the deployment is live is still the one used',
+      late.ownPort !== undefined &&
+        lateOwn.stdout.trim() === `http://127.0.0.1:${String(late.ownPort)}`,
+    );
+
+    // A URL that needs a path to reach the deployment cannot be handed to the suite, which joins its own
+    // paths to an origin: refused, by what is wrong with it.
+    const pathed = await fakeHost(deploymentId, 'moves', 'with a path');
+    hosts.push(pathed);
+    let refusedPath: unknown;
+    try {
+      await bounded(DEPLOY_HOOK, appDir, {
+        ...env,
+        ARKOR_API_URL: `http://127.0.0.1:${String(pathed.port)}`,
+      });
+    } catch (error) {
+      refusedPath = error;
+    }
+    holds(
+      "a deployment's own URL with a path is refused, not cut down to its host",
+      refusedPath instanceof HookFailureError && refusedPath.said.includes('more than an origin'),
+    );
+  } finally {
+    for (const host of hosts) {
+      host.close();
+    }
+  }
+}
+
 async function main(): Promise<void> {
   const workDir = mkdtempSync(path.join(os.tmpdir(), 'upwind-deploy-tests-check-'));
   const appDir = path.join(workDir, 'application');
@@ -287,7 +354,6 @@ async function main(): Promise<void> {
   const deploymentId = createId(DEPLOYMENT_ID_PREFIX);
   const host = await fakeHost(deploymentId);
   let quiet: FakeHost | undefined;
-  let own: FakeHost | undefined;
   const env = {
     ...process.env,
     ARKOR_API_URL: `http://127.0.0.1:${String(host.port)}`,
@@ -446,27 +512,10 @@ async function main(): Promise<void> {
         unprovenAt - probed >= Number(env.ADAPTER_TEST_SETTLE_SECONDS) * MS_PER_SECOND,
     );
 
-    // A host that gives the deployment a URL of its own: the suite is sent there, the probe asks there,
-    // and nothing is settled, since no other deployment answers at that URL.
-    own = await fakeHost(deploymentId, 'moves', true);
-    const onItsOwn = await bounded(DEPLOY_HOOK, appDir, {
-      ...env,
-      ARKOR_API_URL: `http://127.0.0.1:${String(own.port)}`,
-    });
-    holds(
-      "a deployment's own URL is the one the suite is given",
-      own.ownPort !== undefined &&
-        onItsOwn.stdout.trim() === `http://127.0.0.1:${String(own.ownPort)}`,
-    );
-    holds('and the one the probe asked', own.probedOn() === own.ownPort);
-    holds(
-      'with nothing settled, since no other deployment answers there',
-      !onItsOwn.stderr.includes('letting the host settle'),
-    );
+    await ownUrlScenarios(deploymentId, appDir, env);
   } finally {
     host.close();
     quiet?.close();
-    own?.close();
     rmSync(workDir, { recursive: true, force: true });
   }
 }

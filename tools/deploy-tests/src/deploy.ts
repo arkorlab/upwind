@@ -505,6 +505,18 @@ interface Served {
 }
 
 /**
+ * How long a deployment that is live may go without a URL of its own before the host is taken to give
+ * none: a host that writes it a moment after it says the deployment is live is waited for, a few reads
+ * at most, and one that gives none costs a fixture no more than this.
+ */
+const OWN_URL_GRACE_MS = 15_000;
+
+/** The deployment's own URL, as a later answer gives it: nothing while a read cannot say. */
+async function ownUrlOf(input: DeployInput, deploymentId: string): Promise<string | undefined> {
+  return (await visible(input, deploymentId))?.url;
+}
+
+/**
  * Where the suite sends its requests: the deployment's own URL, where the host gives one — it serves
  * this deployment and no other, so no request of the suite can reach the deployment before it — and
  * otherwise the project's, where one can (`letItSettle`).
@@ -514,8 +526,14 @@ async function servedAt(
   settledAs: DeploymentDetail,
   projectUrl: URL,
 ): Promise<Served> {
-  // Asked again once: the answer that said the deployment was live may predate its URL being written.
-  const own = settledAs.url ?? (await input.client.getDeployment(settledAs.id)).url;
+  // The answer that said the deployment was live may predate its URL being written: read again, a
+  // moment apart, before taking the host to give none.
+  let own = settledAs.url;
+  const until = Date.now() + OWN_URL_GRACE_MS;
+  while (own === undefined && Date.now() < until) {
+    await sleepFor(POLL_INTERVAL_MS);
+    own = await ownUrlOf(input, settledAs.id);
+  }
   if (own === undefined) {
     input.log(
       "the host gives this deployment no URL of its own, so the suite goes to the project's, where " +
@@ -533,6 +551,14 @@ async function servedAt(
   }
   if (!['http:', 'https:'].includes(url.protocol) || url.username !== '' || url.password !== '') {
     throw new Error(`the deployment is not served over public HTTP(S): ${url.origin}`);
+  }
+  // The suite is handed an origin, and joins its own paths to it: a URL that needs a path or a query to
+  // reach the deployment is one it cannot be pointed at, and is refused rather than cut down to a host
+  // that may serve something else.
+  if (url.pathname !== '/' || url.search !== '' || url.hash !== '') {
+    throw new Error(
+      `the deployment's own URL is more than an origin: ${url.origin}${url.pathname}…`,
+    );
   }
   input.log(`the deployment has a URL of its own, ${url.origin}, and the suite goes there`);
   return { url, own: true };
