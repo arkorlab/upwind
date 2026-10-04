@@ -6,7 +6,7 @@ import { compareCodeUnits } from '@stayingupwind/core/util';
 
 import type { KeptMaps } from './kept-maps.ts';
 import { resolvedSource } from './project-maps.ts';
-import { flattened, mapFileOf } from './source-maps.ts';
+import { flattened } from './source-maps.ts';
 
 /**
  * The server chunks whose code is another chunk's, each to the file that holds it.
@@ -132,10 +132,12 @@ export async function sameChunks(
 }
 
 /**
- * The map a chunk is composed through, as it is compared with another chunk's (`sameChunks`), found
- * as `sourceMapsPlugin` finds it: the one the build's hook left the chunk where it saw it (`kept`),
- * and otherwise the one the chunk's last comment names — inside it, as a data URL, or beside it.
- * Nothing where there is none, or none to read, which another chunk's map is not the same as.
+ * The map a chunk is composed through, as it is compared with another chunk's (`sameChunks`): the one
+ * the build's hook left the chunk where it saw it (`kept`), as `sourceMapsPlugin` reads it, and
+ * otherwise the one the chunk's last `sourceMappingURL` comment names, in either spelling — inside
+ * it, as a data URL, or beside it. Nothing where there is none, or none to read, which another
+ * chunk's map is not the same as. Read wider than the plugin follows a comment, never narrower: a map
+ * read here that the plugin would not hand on can only keep two chunks apart.
  */
 async function comparedMap(
   source: string,
@@ -146,20 +148,29 @@ async function comparedMap(
   if (left?.seen === true) {
     return left.file === undefined ? '' : await mapFileKey(left.file);
   }
-  const inline = inlineMapOf(source);
-  if (inline !== undefined) {
-    return canonicalMap(inline, path.dirname(chunk), chunk);
+  const url = lastMapUrl(source);
+  if (url === undefined) {
+    return '';
   }
-  const file = mapFileOf(source, chunk);
-  return file === undefined ? '' : await mapFileKey(file);
+  if (url.startsWith(DATA_URL_PREFIX)) {
+    return canonicalMap(dataOf(url), path.dirname(chunk), chunk);
+  }
+  let file: string;
+  try {
+    // As a URL, as `mapFileOf` reads it: Turbopack percent-encodes a chunk's brackets.
+    file = path.join(path.dirname(chunk), decodeURIComponent(url));
+  } catch {
+    return url;
+  }
+  return await mapFileKey(file);
 }
 
 /**
- * The map a chunk carries inside its last comment, decoded; nothing where its last comment names a
- * file instead, or it has none. Found by the comment's last occurrence anywhere in the chunk, since
- * a map inside one is as long as the chunk is, or longer.
+ * What the last `sourceMappingURL` comment of a chunk names, in either spelling (`MAP_COMMENTS`), where
+ * nothing but space follows it; nothing otherwise. Found by its last occurrence anywhere in the chunk,
+ * since a map inside one is as long as the chunk is, or longer.
  */
-function inlineMapOf(source: string): string | undefined {
+function lastMapUrl(source: string): string | undefined {
   let at = -1;
   let comment = '';
   for (const candidate of MAP_COMMENTS) {
@@ -174,9 +185,11 @@ function inlineMapOf(source: string): string | undefined {
   }
   const rest = source.slice(at + comment.length);
   const url = rest.split(/\s/u, 1)[0] ?? '';
-  if (!url.startsWith(DATA_URL_PREFIX) || rest.slice(url.length).trim() !== '') {
-    return undefined;
-  }
+  return url === '' || rest.slice(url.length).trim() !== '' ? undefined : url;
+}
+
+/** A data URL's text: base64 where it says so, percent-encoded otherwise. */
+function dataOf(url: string): string {
   const comma = url.indexOf(',');
   const payload = url.slice(comma + 1);
   try {
