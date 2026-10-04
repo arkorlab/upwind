@@ -1,5 +1,5 @@
 import { conditionsHold } from '../request/conditions.ts';
-import { keyOf, withoutAssetPrefix } from './manifest.ts';
+import { keyOf, namesNoFile, withoutAssetPrefix } from './manifest.ts';
 import type { DynamicRoute, ProjectManifest, ReservedRoute, RouteEntry } from './schema.ts';
 
 /**
@@ -13,23 +13,42 @@ import type { DynamicRoute, ProjectManifest, ReservedRoute, RouteEntry } from '.
  * and the edge does not go looking for a later class that happens to match too.
  */
 
+/** A path that begins with the name the trailing-slash redirect leaves alone, in any case. */
+const WELL_KNOWN = /^\/\.well-known/iu;
+
+/**
+ * The spelling a request asks for a pathname by, in an application that keeps its pages behind a
+ * trailing slash (`trailingSlash`): with the slash, which Next.js redirects the pathname without it
+ * to, and which it takes off again before it looks the page up. A last segment that names a file
+ * keeps none — Next.js redirects the other way there — and neither does the root, which is a slash.
+ */
+export function withTrailingSlash(pathname: string): string {
+  // The redirect leaves a path that begins `/.well-known` alone, whatever follows — at the root of
+  // the path only: under a base path, `/docs/.well-known/…` gains the slash like any other. In any
+  // case, too: Next.js's router matches its rules without regard to case (`sensitive: false`), and
+  // the redirect's exemption with them, so `/.WELL-KNOWN/acme` keeps no slash either.
+  return namesNoFile(pathname) && !WELL_KNOWN.test(pathname) ? `${pathname}/` : pathname;
+}
+
 /**
  * Pathnames the edge leaves alone before it looks at any pattern. Next.js's own server normalizes
  * repeated slashes and trailing slashes with a redirect before routing, and the runtime's shell
- * lookup does not admit a trailing slash either, so neither is a member of any class here. Nor is
- * a pathname that does not decode: Next.js answers a route parameter that does not with 400, not
- * with the class's shell, and the Function is what answers it so.
+ * lookup does not admit a trailing slash either, so neither is a member of any class here — save
+ * the one trailing slash of an application that keeps its pages behind one (`trailingSlash`), which
+ * is the spelling its members are asked for by. Whatever the last segment reads like: the redirect
+ * the build writes to take the slash off a file's name is a reserved route, which claims the path
+ * ahead of every class (`dynamicRouteFor`) by Next.js's own pattern — `.well-known` left alone, and
+ * a dotted name it does not read as a file's (`/v1.2-beta/`) left to the class. Nor is a pathname
+ * that does not decode: Next.js answers a route parameter that does not with 400, not with the
+ * class's shell, and the Function is what answers it so.
  */
-function isCanonicalPathname(pathname: string): boolean {
+function isCanonicalPathname(pathname: string, trailingSlash: boolean): boolean {
   if (pathname === '/') {
     return true;
   }
-  return (
-    !pathname.includes('//') &&
-    !pathname.includes('\\') &&
-    !pathname.endsWith('/') &&
-    decodes(pathname)
-  );
+  // A repeated slash is refused as asked for, before the one trailing slash allowed comes off.
+  const bare = trailingSlash && pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
+  return !pathname.includes('//') && !bare.includes('\\') && !bare.endsWith('/') && decodes(bare);
 }
 
 /** Whether `pathname` decodes; one without an escape does, and is not handed to the decoder. */
@@ -55,6 +74,16 @@ function patternMatch(sourceRegex: string, pathname: string): RegExpExecArray | 
 
 function patternMatches(sourceRegex: string, pathname: string): boolean {
   return patternMatch(sourceRegex, pathname) !== null;
+}
+
+/**
+ * A rule of `next.config` — a reservation, a header rule — matched as Next.js's router matches its
+ * rules: without the unicode flag, and without regard to case (`sensitive: false`). A rule for
+ * `/Shop/:slug` claims `/shop/x`. The dynamic classes keep their case (`patternMatch`).
+ */
+function ruleMatch(sourceRegex: string, pathname: string): RegExpExecArray | null {
+  // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
+  return new RegExp(sourceRegex, 'i').exec(pathname);
 }
 
 /**
@@ -117,13 +146,16 @@ export function matchDynamicRoute(
  *
  * `matchDynamicRoute` reads the class's shell off it; a reader that wants the route itself — which
  * app Function its code is in, say (`functionFor`) — asks this, and so the two never disagree.
+ * One trailing slash is admitted where the pages are kept behind it (`trailingSlash`), unless the
+ * reader says otherwise (`slashAdmitted`).
  */
 export function dynamicRouteFor(
   manifest: ProjectManifest,
   url: URL,
   headers: Headers,
+  slashAdmitted = manifest.trailingSlash === true,
 ): DynamicRoute | undefined {
-  if (manifest.dynamicRoutes === undefined || !isCanonicalPathname(url.pathname)) {
+  if (manifest.dynamicRoutes === undefined || !isCanonicalPathname(url.pathname, slashAdmitted)) {
     return undefined;
   }
   // A redirect or a rewrite Next.js evaluates ahead of its dynamic routes claims the request first.
@@ -160,7 +192,7 @@ export function pathIsReserved(
   return reserved.some((rule) => {
     return (
       (!beforeFilesOnly || rule.beforeFiles === true) &&
-      patternMatches(rule.sourceRegex, url.pathname) &&
+      ruleMatch(rule.sourceRegex, url.pathname) !== null &&
       conditionsHold(rule, url, headers)
     );
   });
@@ -242,7 +274,7 @@ function configuredHeaders(
     return { headers: out, conditioned };
   }
   for (const rule of manifest.headerRules) {
-    const match = patternMatch(rule.sourceRegex, url.pathname);
+    const match = ruleMatch(rule.sourceRegex, url.pathname);
     if (match === null || !conditionsHold(rule, url, headers)) {
       continue;
     }
@@ -283,7 +315,7 @@ export function foldedHeadersFor(
   }
   const out: Record<string, string> = {};
   for (const rule of manifest.foldedHeaderRules) {
-    const match = patternMatch(rule.sourceRegex, pathname);
+    const match = ruleMatch(rule.sourceRegex, pathname);
     if (match === null) {
       continue;
     }
@@ -314,6 +346,11 @@ const VALIDATION_RADIX = 36;
 const PLACEHOLDER_ORIGIN = 'https://validation.invalid';
 const DYNAMIC_SEGMENT = /^\[[^\]]+\]\]?$/u;
 const CATCH_ALL_SEGMENT = /^\[\[?\.\.\.[^\]]+\]\]?$/u;
+
+/** A sample as a visitor asks for it: behind the trailing slash, where the pages are kept there. */
+function askedFor(manifest: ProjectManifest | undefined, pathname: string): string {
+  return manifest?.trailingSlash === true ? withTrailingSlash(pathname) : pathname;
+}
 
 function substitutedPathname(
   parts: readonly string[],
@@ -349,7 +386,7 @@ function* validationCandidates(
   for (const segment of segments) {
     let maxDepth = expandable ? maxAttempts : 1;
     for (let depth = 1; depth <= maxDepth; depth += 1) {
-      const pathname = substitutedPathname(parts, segment, depth);
+      const pathname = askedFor(manifest, substitutedPathname(parts, segment, depth));
       // Exact claims spend no depth budget, but only ones encountered extend the search.
       // Unrelated files cannot make a shadowed class search arbitrarily deeper URLs.
       if (expandable && claimedExactly(manifest, pathname)) {
@@ -380,7 +417,8 @@ export function validationPathnameFor(
   manifest?: ProjectManifest,
 ): string | undefined {
   const parts = route.split('/');
-  const preferred = substitutedPathname(parts, VALIDATION_SEGMENT);
+  // Asked for as a visitor asks for a page: behind the slash, where the application keeps them.
+  const preferred = askedFor(manifest, substitutedPathname(parts, VALIDATION_SEGMENT));
   // Only require a class match when this manifest actually records the class being validated.
   const targetIndex =
     manifest?.dynamicRoutes?.findIndex((candidate) => candidate.route === route) ?? -1;

@@ -48,7 +48,11 @@ export function functionFor(
   if (isExactPathname(manifest, pathname)) {
     return PRIMARY_FUNCTION;
   }
-  const dynamic = dynamicRouteFor(manifest, url, headers);
+  // Where a member is answered, not with what: the router finds one by its slashed spelling wherever
+  // no redirect takes the slash off — `skipTrailingSlashRedirect` writes none — and a redirect that
+  // would is a reserved route, asked above. The edge serves a member at the slash only where the
+  // pages are kept there, but the Function that holds its route is the same either way.
+  const dynamic = dynamicRouteFor(manifest, url, headers, true);
   return dynamic === undefined ? undefined : (dynamic.function ?? PRIMARY_FUNCTION);
 }
 

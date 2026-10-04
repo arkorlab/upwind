@@ -2,6 +2,7 @@ import type { BuildProjectManifestInput } from '../manifest/manifest.ts';
 import type { DynamicRoute } from '../manifest/schema.ts';
 import { PRIMARY_FUNCTION } from './function-name.ts';
 import type { DeploymentBundle, Entrypoint, FunctionSpec, Prerender } from './schema.ts';
+import { routerSpellings } from './spelling.ts';
 
 /** A route's own name in brackets (`/[id]`): a class of pathnames, not one of them. */
 function isTemplate(pathname: string): boolean {
@@ -97,11 +98,17 @@ function exactFunctionsOf(
       exact[pathname] = owner;
     }
   };
+  // Under every spelling the exact pathnames have it by (`routerSpellings`): `/stream/` is the page
+  // `/stream` where the application keeps its pages behind the slash, and is asked of its Function.
   for (const entry of bundle.entrypoints) {
-    add(entry.pathname, entry.id);
+    for (const spelling of routerSpellings(bundle, entry.pathname)) {
+      add(spelling, entry.id);
+    }
   }
   for (const prerender of bundle.prerenders) {
-    add(prerender.pathname, prerender.route);
+    for (const spelling of routerSpellings(bundle, prerender.pathname)) {
+      add(spelling, prerender.route);
+    }
   }
   return Object.keys(exact).length === 0 ? undefined : exact;
 }
