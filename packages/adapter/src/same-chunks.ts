@@ -6,7 +6,7 @@ import { compareCodeUnits } from '@stayingupwind/core/util';
 
 import type { KeptMaps } from './kept-maps.ts';
 import { type ProjectBounds, projectOnly, resolvedSource } from './project-maps.ts';
-import { flattened } from './source-maps.ts';
+import { flattened, mapFileOf } from './source-maps.ts';
 
 /**
  * The server chunks whose code is another chunk's, each to the file that holds it.
@@ -148,23 +148,35 @@ export async function sameChunks(
 
 /**
  * The map a chunk is composed through, as it is compared with another chunk's (`sameChunks`): the one
- * the build's hook left the chunk where it saw it (`kept`), as `sourceMapsPlugin` reads it, and
- * otherwise the one the chunk's last `sourceMappingURL` comment names, in either spelling — inside
- * it, as a data URL, or beside it. Nothing where there is none, or none to read, which another
- * chunk's map is not the same as. Read wider than the plugin follows a comment, never narrower: a map
- * read here that the plugin would not hand on can only keep two chunks apart.
+ * the build's hook left the chunk where it saw it (`kept`), as `sourceMapsPlugin` reads it; and
+ * otherwise both the one the plugin hands on (`mapFileOf`) and the one the chunk's last
+ * `sourceMappingURL` comment names, in either spelling, inside it or beside it, which a bundler may
+ * read itself. Nothing for one there is none of, or none to read, which another chunk's map is not
+ * the same as. Both rather than either: a map read here that the plugin would not hand on can only
+ * keep two chunks apart, never take one for another.
  */
 async function comparedMap(source: string, chunk: string, maps: ChunkMaps): Promise<string> {
   const left = maps.kept?.mapFor(chunk);
   if (left?.seen === true) {
     return left.file === undefined ? '' : await mapFileKey(left.file, maps.project);
   }
+  const handed = mapFileOf(source, chunk);
+  const loaded = handed === undefined ? '' : await mapFileKey(handed, maps.project);
+  return `${loaded}\0${await lastCommentKey(source, chunk, maps.project)}`;
+}
+
+/** What the chunk's last `sourceMappingURL` comment names, as it is compared (`canonicalMap`). */
+async function lastCommentKey(
+  source: string,
+  chunk: string,
+  project: ProjectBounds | undefined,
+): Promise<string> {
   const url = lastMapUrl(source);
   if (url === undefined) {
     return '';
   }
   if (url.startsWith(DATA_URL_PREFIX)) {
-    return canonicalMap(dataOf(url), chunk, maps.project);
+    return canonicalMap(dataOf(url), chunk, project);
   }
   let file: string;
   try {
@@ -173,7 +185,7 @@ async function comparedMap(source: string, chunk: string, maps: ChunkMaps): Prom
   } catch {
     return url;
   }
-  return await mapFileKey(file, maps.project);
+  return await mapFileKey(file, project);
 }
 
 /**
@@ -254,10 +266,10 @@ function canonicalMap(text: string, file: string, project: ProjectBounds | undef
         typeof source === 'string' ? resolvedSource(source, root, path.dirname(file)) : source,
       )
     : fields['sources'];
-  return JSON.stringify({
-    ...Object.fromEntries(
-      Object.entries(fields).filter(([key]) => !MAP_NAMING_KEYS.has(key) && key !== 'sourceRoot'),
-    ),
-    sources,
-  });
+  // In one order, whatever order the map was written in: a hook that rewrote one map of two may
+  // have put its fields in another.
+  const kept = Object.entries({ ...fields, sources })
+    .filter(([key]) => !MAP_NAMING_KEYS.has(key) && key !== 'sourceRoot')
+    .toSorted(([a], [b]) => compareCodeUnits(a, b));
+  return JSON.stringify(Object.fromEntries(kept));
 }
