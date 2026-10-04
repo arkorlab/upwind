@@ -257,7 +257,7 @@ only of what they name, which are taken not to throw — with nothing between th
 `async` nor a generator and is called where it is made, or an instance field's initializer or a
 constructor, unless the class is constructed where it is made (an `import()` too, where it, or a
 promise chained from it, is awaited there, or where a `catch` of its own chain hands its rejection
-to a function made there whose body is plain) — the `.wasm` the bundler resolved itself, each with the global the Function publishes it under — and the Function's
+to a function made there whose body is plain, and so is each one the chain runs past it) — the `.wasm` the bundler resolved itself, each with the global the Function publishes it under — and the Function's
 modules, with what they weigh together before and after gzip. The audit (`auditFunction`), which
 each of a Function's bundles goes through, fails the build on a `require("vm")` or
 `runInNewContext` that survived, a built-in outside the list, a module the bundler could not
