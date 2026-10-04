@@ -103,7 +103,10 @@ async function patchFor(
     projectDir: context.ctx.projectDir,
     distDir: context.ctx.distDir,
     chunks: [...table],
-    copies: await sameChunks([...table]),
+    copies: await sameChunks([...table], {
+      carried: carriesMaps(context.sourceMaps),
+      kept: context.keptMaps,
+    }),
     instrumentation: context.hook.file,
     wasm,
   };

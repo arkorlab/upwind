@@ -98,6 +98,19 @@ function withRoot(sourceRoot: string | undefined, source: string): string {
   return sourceRoot.endsWith('/') ? `${sourceRoot}${source}` : `${sourceRoot}/${source}`;
 }
 
+/**
+ * A source as the file it names, resolved against its map's directory (`base`) with the map's root
+ * before it; as written, the root before it, where it names a bundler's module rather than a path.
+ */
+export function resolvedSource(
+  source: string,
+  sourceRoot: string | undefined,
+  base: string,
+): string {
+  const rooted = withRoot(sourceRoot, source);
+  return sourceFile(rooted, base) ?? rooted;
+}
+
 function isProjectFile(file: string, bounds: ProjectBounds): boolean {
   // Relative to the project, so a project that itself sits somewhere below a `node_modules` is
   // not taken for a package.

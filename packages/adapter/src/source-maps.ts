@@ -142,7 +142,7 @@ function parsedMap(text: string, file: string): Record<string, unknown> | undefi
  * A plain map is handed on as it was read — it is most of them, and there is nothing to do — and so
  * is an index map that will not flatten, which a bundler then makes no worse of than before.
  */
-function flattened(text: string, file: string): string {
+export function flattened(text: string, file: string): string {
   // A plain map never has the key; the substring is the cheap test, and a parse is only for a map
   // it cannot rule out, such as one whose `sourcesContent` happens to say the word.
   if (!text.includes('"sections"')) {
