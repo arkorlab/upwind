@@ -89,6 +89,7 @@ import {
   resume,
   resumeUrl,
   type RoutedInput,
+  withInvalidatedTags,
   withoutBody,
 } from './serve.ts';
 import { entrypointKindOf, findShell, getStore, type Store } from './store.ts';
@@ -513,16 +514,18 @@ async function serveResolved(
   asked: URL,
 ): Promise<Response> {
   const { request } = input;
-  const staticFile = staticFileResponse(
-    store,
-    resolved.route,
-    staticFileStatus(resolved.route, store.manifest.config.basePath),
-  );
-  if (staticFile !== undefined) {
-    // A file answers a read and nothing else; the edge sends every other method here.
-    return FILE_METHODS.has(request.method)
-      ? staticFile
-      : new Response('Method Not Allowed', { status: HTTP_METHOD_NOT_ALLOWED });
+  const file = store.staticFiles.get(resolved.route);
+  if (file !== undefined) {
+    // A file answers a read and nothing else; the edge sends every other method here. Refused
+    // before anything is read.
+    if (!FILE_METHODS.has(request.method)) {
+      return new Response('Method Not Allowed', { status: HTTP_METHOD_NOT_ALLOWED });
+    }
+    const status = staticFileStatus(resolved.route, store.manifest.config.basePath);
+    const answer = await staticFileResponse(input, store, file, status);
+    if (answer !== undefined) {
+      return answer;
+    }
   }
   if (hasBody(request.method)) {
     return (
@@ -604,10 +607,11 @@ export async function handleRequest(handled: HandleInput): Promise<Response> {
     startedAt: handled.clock ?? nowMs(),
     waitUntil: handled.waitUntil,
     clock: handled.clock,
+    invalidated: handled.invalidated,
   });
   const input: RoutedInput = { ...handled, initURL: initUrlOf(handled.request), run: context.run };
   return context.run(async () => {
     const response = withoutPlacementHeaders(await routeRequest(input));
-    return withoutBody(handled.request, response);
+    return withoutBody(handled.request, withInvalidatedTags(response, context.invalidated));
   });
 }

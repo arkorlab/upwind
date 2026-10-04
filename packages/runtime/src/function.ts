@@ -28,6 +28,7 @@ import {
   publicUrl,
   withRequestContext,
 } from './request-context.ts';
+import { withInvalidatedTags } from './serve.ts';
 
 /**
  * Entry of a deployment's Function. The adapter bundles this file, with `arkor:app` resolved to the
@@ -172,10 +173,12 @@ async function answered(
   env: unknown,
   waitUntil: (promise: Promise<unknown>) => void,
 ): Promise<Response> {
+  // Kept here as well as in the request's context: a failure answered below says them too.
+  const invalidated = new Set<string>();
   try {
     // Before anything of the application runs: a service binding is an object, so it reaches
-    // neither `process.env` nor any other place Next.js server code can look. The dashboard's
-    // control-plane and database clients read theirs back out of here.
+    // neither `process.env` nor any other place Next.js server code can look. An application reads
+    // its service bindings back out of here, for the clients it makes of them.
     publishFunctionEnv(env);
     const { blobs, runtime } = hostFor(env);
     return await withRequestContext(
@@ -190,6 +193,7 @@ async function answered(
           // The clock a test configuration hands the request; the host decides whether one may.
           clock: runtime?.clockOf(request),
           waitUntil,
+          invalidated,
         });
       },
     );
@@ -197,10 +201,12 @@ async function answered(
     // The Function's own log: nothing else sees a request that failed before Next.js answered.
     // eslint-disable-next-line no-console
     console.error('next-runtime: request failed', error);
-    return new Response(failureBody(error), {
+    const failure = new Response(failureBody(error), {
       status: HTTP_INTERNAL_ERROR,
       headers: { 'content-type': 'text/plain; charset=utf-8' },
     });
+    // What the request invalidated before it failed is invalidated all the same.
+    return withInvalidatedTags(failure, invalidated);
   }
 }
 

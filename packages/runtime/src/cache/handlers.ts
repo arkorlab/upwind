@@ -63,6 +63,13 @@ async function invalidate(
     ...(expire > 0 && { expire }),
     api: durations === undefined ? 'updateTag' : 'revalidateTag',
   });
+  if (expire === 0) {
+    // And on the response, to the edge: the next request may be one it answers from what it holds.
+    const invalidated = requestContext()?.invalidated;
+    for (const tag of tags) {
+      invalidated?.add(tag);
+    }
+  }
   // In force here at once: the request that invalidated must not read what it invalidated, nor
   // may the next one in this isolate, before the delta says so.
   for (const invalidation of outcome.invalidations) {
