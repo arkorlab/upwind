@@ -43,7 +43,7 @@ adapter), which is also why `sideEffects: false` is true of it: nothing here ini
 `x-arkor-`, and both sides import the names rather than spelling them: what the edge asks of a
 Function (run only the middleware, resume this shell, regenerate this entry) and what the Function
 says back (which generation answered, what the cache did, which tags the request invalidated at
-once). `PLATFORM_REQUEST_HEADERS` is the whole
+once, and at which revision of the scope). `PLATFORM_REQUEST_HEADERS` is the whole
 list of the ones that tell the runtime what to do, which is what lets it strip every one of them
 before the application sees a request.
 

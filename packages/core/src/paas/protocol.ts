@@ -84,13 +84,17 @@ export const CACHE_OUTCOME_HEADER = 'x-arkor-cache-outcome';
  * The tags a request invalidated at once — `updateTag`, or `revalidateTag` with no window — on its
  * response. An edge that holds what carries them would otherwise serve it on until it heard of the
  * invalidation the way it hears of any other, and Next.js has the next request read what the
- * invalidation wrote: a Server Action's caller reloading the page it changed. Removed before
- * anything reaches a client, as every header of the platform's is. Written by
+ * invalidation wrote: a Server Action's caller reloading the page it changed. With the revision of
+ * the scope the host recorded the latest of them at, where it keeps revisions (`;revision=<n>`): a
+ * record the host wrote at that revision or after it was written after them, and is not touched.
+ * Removed before anything reaches a client, as every header of the platform's is. Written by
  * `invalidatedTagsValue`, read by `invalidatedTagsMatcher`.
  */
 export const INVALIDATED_TAGS_HEADER = 'x-arkor-invalidated-tags';
 /** In `INVALIDATED_TAGS_HEADER`, for more tags than the header carries: every tag. */
 const EVERY_TAG = '*';
+/** The parameter of `INVALIDATED_TAGS_HEADER` that names the revision, after the tags and a `;`. */
+const REVISION_PARAMETER = 'revision=';
 /** The longest `INVALIDATED_TAGS_HEADER` a response carries; past it, `EVERY_TAG`. */
 const INVALIDATED_TAGS_MAX_LENGTH = 8192;
 
@@ -193,11 +197,17 @@ function escapedTag(tag: string): string | undefined {
 
 /**
  * The value of `INVALIDATED_TAGS_HEADER` for `tags`: each escaped as a URI component — a comma, a
- * character no header carries, and `*`, which stands for every tag, with it — and separated by
- * commas. `EVERY_TAG` for a list longer than the header carries, and for one with a tag no escape
- * can say (half a surrogate pair).
+ * semicolon, a character no header carries, and `*`, which stands for every tag, with it — and
+ * separated by commas. `EVERY_TAG` for a list longer than the header carries, and for one with a tag
+ * no escape can say (half a surrogate pair). Then the `revision` they were recorded at, where the host
+ * gave one.
  */
-export function invalidatedTagsValue(tags: Iterable<string>): string {
+export function invalidatedTagsValue(tags: Iterable<string>, revision?: number): string {
+  const listed = tagList(tags);
+  return revision === undefined ? listed : `${listed};${REVISION_PARAMETER}${String(revision)}`;
+}
+
+function tagList(tags: Iterable<string>): string {
   const escaped: string[] = [];
   for (const tag of tags) {
     const one = escapedTag(tag);
@@ -210,13 +220,13 @@ export function invalidatedTagsValue(tags: Iterable<string>): string {
   return value.length > INVALIDATED_TAGS_MAX_LENGTH ? EVERY_TAG : value;
 }
 
-/** The tags an `INVALIDATED_TAGS_HEADER` names; `undefined` for every tag. */
-function namedTags(value: string): ReadonlySet<string> | undefined {
-  if (value === EVERY_TAG) {
+/** The tags a list of `INVALIDATED_TAGS_HEADER` names; `undefined` for every tag. */
+function namedTags(list: string): ReadonlySet<string> | undefined {
+  if (list === EVERY_TAG) {
     return undefined;
   }
   try {
-    return new Set(value.split(',').map((tag) => decodeURIComponent(tag)));
+    return new Set(list.split(',').map((tag) => decodeURIComponent(tag)));
   } catch {
     // What it named cannot be told, so it may have named any.
     return undefined;
@@ -224,12 +234,30 @@ function namedTags(value: string): ReadonlySet<string> | undefined {
 }
 
 /**
- * Whether what carries `tags` is touched by an `INVALIDATED_TAGS_HEADER` of `value`: one of them is
- * among those it names — any, where it names every tag or cannot be read.
+ * The revision an `INVALIDATED_TAGS_HEADER`'s parameters name, or `undefined` for none — and for one
+ * that cannot be read, which bounds nothing then.
  */
-export function invalidatedTagsMatcher(value: string): (tags: readonly string[]) => boolean {
-  const named = namedTags(value);
+function namedRevision(parameters: readonly string[]): number | undefined {
+  const given = parameters
+    .find((parameter) => parameter.startsWith(REVISION_PARAMETER))
+    ?.slice(REVISION_PARAMETER.length);
+  const revision = given === undefined || !/^\d+$/u.test(given) ? undefined : Number(given);
+  return revision !== undefined && Number.isSafeInteger(revision) ? revision : undefined;
+}
+
+/**
+ * Whether what carries `tags`, written at `revision`, is touched by an `INVALIDATED_TAGS_HEADER` of
+ * `value`: one of them is among those it names — any, where it names every tag or cannot be read —
+ * and it was written before the revision the header names, where it names one.
+ */
+export function invalidatedTagsMatcher(
+  value: string,
+): (tags: readonly string[], revision: number) => boolean {
+  const [list = '', ...parameters] = value.split(';');
+  const named = namedTags(list);
+  const below = namedRevision(parameters);
+  const before = (revision: number): boolean => below === undefined || revision < below;
   return named === undefined
-    ? (tags) => tags.length > 0
-    : (tags) => tags.some((tag) => named.has(tag));
+    ? (tags, revision) => tags.length > 0 && before(revision)
+    : (tags, revision) => before(revision) && tags.some((tag) => named.has(tag));
 }

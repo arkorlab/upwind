@@ -6,6 +6,7 @@ import { releaseStream } from '@stayingupwind/core/util';
 
 import type { NodeHandler } from './app-module.ts';
 import type { BundleBlobReader } from './bundle-blobs.ts';
+import type { InvalidatedTags } from './cache/context.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
 import { isDraftRequest } from './draft.ts';
 import { invokeEdgeHandler } from './edge-invoke.ts';
@@ -47,7 +48,7 @@ export interface HandleInput extends EntryTables {
    * that answers a failure of the request itself hands its own, to say them on that answer too —
    * the invalidation stands whatever became of the request after it.
    */
-  readonly invalidated?: Set<string> | undefined;
+  readonly invalidated?: InvalidatedTags | undefined;
 }
 
 /**
@@ -339,21 +340,18 @@ export function withoutBody(request: Request, response: Response): Response {
  * action invalidated before it renders. Never what the application said under that name, which is
  * the platform's to say.
  */
-export function withInvalidatedTags(
-  response: Response,
-  invalidated: ReadonlySet<string>,
-): Response {
+export function withInvalidatedTags(response: Response, invalidated: InvalidatedTags): Response {
+  const { tags, revision } = invalidated;
   // A network error (`Response.error()`, status 0) has no headers to carry anything on.
   const unchanged =
-    response.status === 0 ||
-    (invalidated.size === 0 && !response.headers.has(INVALIDATED_TAGS_HEADER));
+    response.status === 0 || (tags.size === 0 && !response.headers.has(INVALIDATED_TAGS_HEADER));
   if (unchanged) {
     return response;
   }
   const headers = new Headers(response.headers);
   headers.delete(INVALIDATED_TAGS_HEADER);
-  if (invalidated.size > 0) {
-    headers.set(INVALIDATED_TAGS_HEADER, invalidatedTagsValue(invalidated));
+  if (tags.size > 0) {
+    headers.set(INVALIDATED_TAGS_HEADER, invalidatedTagsValue(tags, revision));
   }
   return new Response(response.body, {
     status: response.status,

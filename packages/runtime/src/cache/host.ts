@@ -313,6 +313,12 @@ export interface InvalidateRequest {
 
 export interface InvalidateOutcome {
   readonly invalidations: readonly TagInvalidation[];
+  /**
+   * The revision of the scope the host recorded the invalidation at, where it keeps one: every record
+   * it wrote before is at a lower revision, and one written after at a higher. Absent from a host
+   * that keeps no revisions.
+   */
+  readonly revision?: number | undefined;
 }
 
 /** How a host is reached; the runtime holds one per isolate. */
