@@ -1,9 +1,8 @@
 # @stayingupwind/runtime
 
 The code a deployment's Function is: it answers a request out of what `next build` produced, through
-the routing tables, the middleware and the prerenders the bundle carries. It is written for workerd
-with `nodejs_compat`, and it holds the parts of serving a Next.js application that are the same
-whoever hosts it.
+the routing tables, the middleware and the prerenders the bundle carries. It holds the parts of serving a Next.js
+application that are the same whoever hosts it. The deployment runtime requires `nodejs_compat`.
 
 You do not install this to use it. `@stayingupwind/adapter` resolves it to a path and bundles it into
 each Function it builds, which is why it is published as TypeScript sources with no build step of its
@@ -11,7 +10,7 @@ own, and why it must stay a package on disk rather than be inlined into the adap
 
 | Subpath        | What it is                                                                                                                                      |
 | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `./function`   | The entry: one default export with `fetch`, which is what workerd looks for                                                                     |
+| `./function`   | The entry: one default export with `fetch` for the deployment runtime                                                                           |
 | `./cache-host` | `CacheHost` — the interface a host implements so that the Function has a cache, and the `CacheHostError` one raises. Nothing here implements it |
 
 ## What the adapter has to supply
