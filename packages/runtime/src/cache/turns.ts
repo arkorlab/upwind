@@ -15,9 +15,10 @@ export const WRITES_AT_ONCE = 4;
 
 /**
  * How many of those are the calls behind the work — a regeneration's uploads and the fetch cache's
- * writes — so that a `use cache` write always has one of the four. Next.js waits for a `use cache`
- * write before it has the render the value was made in: it goes ahead of the calls behind the
- * work, and waits only behind writes the render waits on too.
+ * writes — so that a `use cache` write always has one of the four. A `use cache` write goes ahead of
+ * the calls behind the work, and waits only behind writes like it: a regeneration waits for it
+ * before it has the render the value was made in, and no other isolate has the value until it has
+ * landed.
  */
 export const CALLS_BEHIND_AT_ONCE = 3;
 
