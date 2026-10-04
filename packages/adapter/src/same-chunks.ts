@@ -3,6 +3,8 @@ import { readFile } from 'node:fs/promises';
 
 import { compareCodeUnits } from '@stayingupwind/core/util';
 
+import { mapFileOf } from './source-maps.ts';
+
 /**
  * The server chunks whose code is another chunk's, each to the file that holds it.
  *
@@ -23,7 +25,19 @@ import { compareCodeUnits } from '@stayingupwind/core/util';
  * - the statement some of them put on the first line, which records that identifier against the
  *   stack of the file that runs it — and inside one bundle every chunk's stack names the same file,
  *   so the identifiers recorded there never told the chunks apart to begin with.
+ *
+ * And when their maps are the same, but for the same names (`comparedMap`): the Function's map is
+ * composed through the map of the file each chunk is loaded from (`source-maps.ts`), so a copy loaded
+ * from another chunk's file is read through that chunk's map, which is right only where the two
+ * maps say the same.
  */
+
+/** What in a map names its file rather than the code it maps: set aside, as the comments are. */
+const MAP_NAMING_KEYS: ReadonlySet<string> = new Set(['debug_id', 'debugId', 'file']);
+/** A map a chunk carries inside its last comment rather than beside it. */
+const INLINE_MAP = /\/\/[#@] sourceMappingURL=(data:\S*)\s*$/u;
+/** How far back an inline map's comment is looked for: the last line, and a map is long. */
+const INLINE_TAIL = 1_048_576;
 
 /** A comment naming the file, which a build writes last: only there are they set aside. */
 const MAP_OR_ID_COMMENT = /^\/\/[#@] (?:sourceMappingURL|debugId|chunkId)=/u;
@@ -86,8 +100,11 @@ export async function sameChunks(chunks: readonly string[]): Promise<ReadonlyMap
   const copies = new Map<string, string>();
   const ordered = [...new Set(chunks)].toSorted((a, b) => compareCodeUnits(a, b));
   for (const chunk of ordered) {
+    const source = await readFile(chunk, 'utf8');
     const digest = createHash('sha256')
-      .update(chunkCode(await readFile(chunk, 'utf8')))
+      .update(chunkCode(source))
+      .update('\0')
+      .update(await comparedMap(source, chunk))
       .digest('hex');
     const first = firstByCode.get(digest);
     if (first === undefined) {
@@ -97,4 +114,38 @@ export async function sameChunks(chunks: readonly string[]): Promise<ReadonlyMap
     }
   }
   return copies;
+}
+
+/**
+ * The map a chunk names, as it is compared with another chunk's (`sameChunks`): beside it, read and
+ * written again without what names its file (`MAP_NAMING_KEYS`); inside its last comment, as written;
+ * nothing where it names none, or none is there to read — which another chunk's map, read or not, is
+ * not the same as.
+ */
+async function comparedMap(source: string, chunk: string): Promise<string> {
+  const inline = INLINE_MAP.exec(source.slice(-INLINE_TAIL))?.[1];
+  if (inline !== undefined) {
+    return inline;
+  }
+  const file = mapFileOf(source, chunk);
+  if (file === undefined) {
+    return '';
+  }
+  let text: string;
+  try {
+    text = await readFile(file, 'utf8');
+  } catch {
+    return '';
+  }
+  try {
+    const map = JSON.parse(text) as unknown;
+    if (typeof map !== 'object' || map === null || Array.isArray(map)) {
+      return text;
+    }
+    return JSON.stringify(
+      Object.fromEntries(Object.entries(map).filter(([key]) => !MAP_NAMING_KEYS.has(key))),
+    );
+  } catch {
+    return text;
+  }
 }
