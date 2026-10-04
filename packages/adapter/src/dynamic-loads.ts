@@ -30,7 +30,9 @@ import { parseAst } from 'rolldown/parseAst';
  * `throw`, `await`, `yield` or `try` of their own, no pattern taking the error apart, nothing made
  * and run where it stands, no `Promise.reject(…)` or `eval`, and calls only of what they name — and
  * an `import()` too, where it, or a promise chained from it, is awaited there, or where a `catch` of
- * its own chain hands its rejection to a function made there whose body is plain. Such a load fails in the Function as it fails under
+ * its own chain hands its rejection to a function made there whose body is plain, and what the chain
+ * calls past that is plain as well, unless such a `catch` further on takes what it throws. Such a
+ * load fails in the Function as it fails under
  * Node.js when the module is not installed, into the code's own `catch`:
  * `@protobufjs/inquire`, which every `protobufjs` loads its optional modules through, and
  * TypeScript's `sys.require`, which loads a compiler plugin, are written that way. Plain, because
@@ -327,8 +329,9 @@ function childrenOf(node: Node): Node[] {
 /**
  * What a `catch` or a `finally` may be made of and be trusted to keep a failure in: statements that
  * only go on or return, and expressions that only compute — a function among them as a value, its
- * body run later if at all. Everything else — `throw`, `await`, `yield`, a `try` of its own, a
- * class, a pattern to take the error apart with — is not plain, and the `try` guards nothing.
+ * body run later if at all. A `switch` goes on: it picks its case by `===`, which cannot throw.
+ * Everything else — `throw`, `await`, `yield`, a `try` of its own, a class, a pattern to take the
+ * error apart with — is not plain, and the `try` guards nothing.
  */
 const PLAIN_TYPES: ReadonlySet<string> = new Set([
   'ArrayExpression',
@@ -356,6 +359,8 @@ const PLAIN_TYPES: ReadonlySet<string> = new Set([
   'Property',
   'ReturnStatement',
   'SequenceExpression',
+  'SwitchCase',
+  'SwitchStatement',
   'TemplateElement',
   'TemplateLiteral',
   'ThisExpression',
@@ -546,13 +551,16 @@ function useOfLoader(visit: Visit): Use | undefined {
 /** A promise's methods: each passes a rejection on to the promise it makes, or handles it. */
 const PROMISE_METHODS: ReadonlySet<string> = new Set(['catch', 'finally', 'then']);
 
-/** What carries on the promise `at` makes: the parentheses around it, or a call of its method. */
+/**
+ * What carries on the promise `at` makes: the parentheses around it, the optional chain it ends
+ * (`import(name)?.then(use)`, which a promise never cuts short), or a call of its method.
+ */
 function chainedFrom(at: Visit): Visit | undefined {
   const { up } = at;
   if (up === undefined) {
     return undefined;
   }
-  if (up.node.type === 'ParenthesizedExpression') {
+  if (up.node.type === 'ParenthesizedExpression' || up.node.type === 'ChainExpression') {
     return up;
   }
   // `(0, import(name))` is the promise, as the last of a sequence.
@@ -590,28 +598,84 @@ function rejectionHandlerOf(call: Node): Node | undefined {
 }
 
 /**
- * Whether a call of the promise's own methods, in the chain from `visit`, takes its rejection: a
- * `catch`, or a `then` with a second handler, that handles it plainly (`handlesPlainly`).
+ * The callback `call` — a promise's `then`, or its `finally` — runs once the promise has fulfilled,
+ * if any. What else it is handed, past the callbacks it calls, is evaluated and then let be.
+ */
+function fulfilmentCallbackOf(call: Node): Node | undefined {
+  if (call.type !== 'CallExpression') {
+    return undefined;
+  }
+  const name = propertyName(unwrapped(call.callee));
+  return name === 'then' || name === 'finally' ? call.arguments[0] : undefined;
+}
+
+/**
+ * Whether what `argument` hands a promise runs plainly when the promise calls it: each function
+ * made in it is read as a handler is (`handlesPlainly`), and what it names is taken not to throw.
+ * The name is not followed here, as it is not in a `catch` or a `finally`: `then(setModule)` past a
+ * handler is trusted as `finally { setModule(module) }` is.
+ */
+function callsBackPlainly(argument: Node): boolean {
+  const pending: Node[] = [argument];
+  for (let at = pending.pop(); at !== undefined; at = pending.pop()) {
+    const made = FUNCTION_TYPES.has(at.type);
+    if (made && !handlesPlainly(at)) {
+      return false;
+    }
+    if (!made) {
+      pending.push(...childrenOf(at));
+    }
+  }
+  return true;
+}
+
+/**
+ * Whether the promise the chain from `visit` ends in — calls of the promise's own methods —
+ * fulfils when the load fails. The rejection passes every callback by until a handler has it, and a
+ * `catch`, or a `then` with a second handler, that handles it plainly (`handlesPlainly`) keeps it
+ * in. Once any handler has had it — a handler by name, or one not plain, may answer too — the chain
+ * goes on with the answer, and what it calls with that — a `then`'s first callback, a `finally`'s —
+ * has to run plainly (`callsBackPlainly`): one that throws — a `finally` that does, a `then` that
+ * throws the error the handler answered with — rejects the promise the chain ends in, unless a
+ * handler past it takes that plainly in turn. Only the chain as written is read: a promise kept,
+ * and chained on where the record cannot see, is not followed, as the code after a `try` is not.
  */
 function handledInChain(visit: Visit): boolean {
+  // Along the load's failure: whether the promise made so far fulfils, and whether it may — which
+  // it may once any handler has had the rejection.
+  let fulfils = false;
+  let mayFulfil = false;
   for (let at = chainedFrom(visit); at !== undefined; at = chainedFrom(at)) {
     if (at.node.type !== 'CallExpression') {
       continue;
     }
+    const call = at.node;
     // An argument that throws as it is evaluated stops the call before its handler is attached.
-    if (at.node.arguments.some((argument) => !keepsIn(argument))) {
+    if (call.arguments.some((argument) => !keepsIn(argument))) {
       return false;
     }
-    if (handlesPlainly(rejectionHandlerOf(at.node))) {
-      return true;
+    const handler = rejectionHandlerOf(call);
+    const handles = handlesPlainly(handler);
+    if (mayFulfil) {
+      // Fulfilled, the promise runs the callback; rejected, the handler. Neither runs the other.
+      const callback = fulfilmentCallbackOf(call);
+      const goesOn = callback === undefined || callsBackPlainly(callback);
+      fulfils = goesOn && (fulfils || handles);
+    } else {
+      fulfils = handles;
+      mayFulfil = handler !== undefined;
     }
   }
-  return false;
+  return fulfils;
 }
 
 /**
  * The `await` of the promise `visit` makes, or of one chained from it — `import(name).then(use)` —
- * or `undefined` where nothing awaits it.
+ * or `undefined` where nothing awaits it. Not through what the promise is handed to or put in, though
+ * that may await it: `Promise.all([…])` is the global's only where no scope binds `Promise` otherwise,
+ * which cannot be told without resolving scopes, and `for await` over a list awaits each promise
+ * only when it reaches it — one past a `break`, or past an earlier one's rejection, rejects with
+ * nothing to see it.
  */
 function awaitOf(visit: Visit): Visit | undefined {
   let at: Visit | undefined = visit;
