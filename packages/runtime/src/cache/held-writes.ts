@@ -237,18 +237,22 @@ async function send(
   write: HeldWrite,
 ): Promise<void> {
   try {
-    // Never rejects: a write that failed is logged below, and the next one goes on. With none
-    // before it, the write takes the key's state before this first waits (`writeData`).
+    // Never rejects: a write that failed is logged below, and the next one goes on.
     if (write.after !== undefined) {
       await patiently(write.after, WRITE_PATIENCE_MS);
     }
-    const { bytes } = write;
-    if (bytes === undefined) {
-      return;
-    }
-    write.sent = true;
-    trimWrites(runtime, writes);
-    await writeData(runtime, { key, entry: write.entry, bytes, order: write.order }, writes.turn());
+    // Its turn among the request's calls to the host first, and out only then: until it goes, the
+    // table's is the one copy of its value, which the budget may let go of (`trimWrites`) — and a
+    // write let go of while it waited never goes.
+    await writes.turn()(async () => {
+      const { bytes } = write;
+      if (bytes === undefined) {
+        return;
+      }
+      write.sent = true;
+      trimWrites(runtime, writes);
+      await writeData(runtime, { key, entry: write.entry, bytes, order: write.order });
+    });
   } catch (error) {
     // The render has its data; what failed is keeping it for the next one.
     runtime.log(`${writes.label} write failed`, { detail: detail(error) });

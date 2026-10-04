@@ -108,23 +108,24 @@ export function invalidateNow(runtime: CacheRuntime, tags: readonly string[]): P
 }
 
 /**
- * The invalidations each request has asked for in the turn under way, by what they invalidate.
+ * The invalidations each request has out with the host, by what they invalidate.
  *
  * Next.js hands every `updateTag` and `revalidateTag` to each cache handler it has, in one turn —
  * the `default` and `remote` `use cache` handlers and the fetch cache (`revalidateTags`, in
  * `server/revalidation-utils.ts`) — and all three are this module's, over one host. Each made its
- * own call for the same invalidation: three calls to the host where one does. The first of a turn
- * now goes, and the others are handed what it comes to.
+ * own call for the same invalidation: three calls to the host where one does. The first now goes,
+ * and the others asked for while it is out are handed what it comes to — whether Next.js asks them
+ * in the same turn, as it does, or a turn later.
  *
- * Only within a request, and only within the turn. A request's response tells the edge what that
- * request invalidated (`RequestContext.invalidated`), which only its own call puts there; and the
- * same tags invalidated again later in a request are invalidated at a later moment.
+ * Only within a request, and only while the call is out. A request's response tells the edge what
+ * that request invalidated (`RequestContext.invalidated`), which only its own call puts there; and
+ * the same tags invalidated again once the call has been answered are invalidated at a later moment.
  */
 const invalidationsOut = new WeakMap<RequestContext, Map<string, Promise<void>>>();
 
 /**
- * Invalidate `tags`, as Next.js asks a handler to, once however many of the handlers it asks in the
- * turn (`invalidationsOut`), and never as a failure of the request that asked.
+ * Invalidate `tags`, as Next.js asks a handler to, once however many of the handlers it asks while
+ * the call is out (`invalidationsOut`), and never as a failure of the request that asked.
  *
  * The request has already done what the invalidation is for — a Server Action has written what it
  * changed — and an invalidation the host could not record failed the action with it: an error over
@@ -142,12 +143,12 @@ function invalidateOnce(
   if (context === undefined) {
     return invalidateLogged(runtime, tags, durations);
   }
-  // Whether it is `updateTag`'s, and the window, beside the tags: Next.js hands every handler the
-  // same list.
+  // Whether it is `updateTag`'s, and the window, beside the tags in one order whatever order they
+  // were named in.
   const asked = JSON.stringify([
     durations === undefined,
     durations?.expire ?? 0,
-    [...new Set(tags)],
+    [...new Set(tags)].toSorted((a, b) => a.localeCompare(b)),
   ]);
   const out = invalidationsOut.get(context) ?? new Map<string, Promise<void>>();
   invalidationsOut.set(context, out);
@@ -155,13 +156,22 @@ function invalidateOnce(
   if (pending !== undefined) {
     return pending;
   }
-  const call = invalidateLogged(runtime, tags, durations);
+  const call = whileOut(out, asked, invalidateLogged(runtime, tags, durations));
   out.set(asked, call);
-  // Gone with the turn: every handler Next.js asks for one invalidation is asked within it.
-  queueMicrotask(() => {
-    out.delete(asked);
-  });
   return call;
+}
+
+/** `call`, kept under `asked` until it has been answered. */
+async function whileOut(
+  out: Map<string, Promise<void>>,
+  asked: string,
+  call: Promise<void>,
+): Promise<void> {
+  try {
+    await call;
+  } finally {
+    out.delete(asked);
+  }
 }
 
 async function invalidateLogged(
