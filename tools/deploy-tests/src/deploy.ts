@@ -341,19 +341,22 @@ async function isServed(
   input: DeployInput,
   detail: ProjectDetail,
   probe: Probe,
-  remainingMs: number,
+  own: { readonly remainingMs: number; readonly url: boolean },
 ): Promise<Unproved | undefined> {
-  if (detail.active?.deploymentId !== probe.deploymentId) {
+  const ours = detail.active?.deploymentId === probe.deploymentId;
+  // At the deployment's own URL the probe is the whole of the question: what the project answers with
+  // is a different hostname's, and may come round to this deployment later than its own URL does.
+  if (!ours && !own.url) {
     return { said: 'the project does not answer with this deployment yet', redirected: false };
   }
-  if (detail.active.mode === 'disabled') {
+  if (ours && detail.active.mode === 'disabled') {
     // Not an observation to wait out: nothing this tool does will turn it back on, so the deadline
     // would only be fifteen minutes of asking a question already answered.
     throw new Error(
       `${input.config.projectId} answers with this deployment but is disabled, so nothing is served`,
     );
   }
-  return answered(input, probe, remainingMs);
+  return answered(input, probe, own.remainingMs);
 }
 
 /** What was proved, and what was not, once the host is answering with this deployment. */
@@ -516,6 +519,33 @@ async function ownUrlOf(input: DeployInput, deploymentId: string): Promise<strin
   return (await visible(input, deploymentId))?.url;
 }
 
+/** What `lateBy` settles to: the time was up before the work it raced. */
+const LATE: unique symbol = Symbol('late');
+
+/** `LATE`, once `ms` have passed — or as soon as `signal` says the race is over. */
+async function lateBy(ms: number, signal: AbortSignal): Promise<typeof LATE> {
+  try {
+    await sleepFor(Math.max(0, ms), undefined, { signal });
+  } catch {
+    // Aborted: whatever this raced answered first.
+  }
+  return LATE;
+}
+
+/**
+ * `work`, or `undefined` once `ms` have passed without it — a read the client is still retrying,
+ * say. What it settles to after that is let go of: the race has seen to it, failure included.
+ */
+async function inTime<T>(work: Promise<T>, ms: number): Promise<T | undefined> {
+  const timer = new AbortController();
+  try {
+    const first = await Promise.race([work, lateBy(ms, timer.signal)]);
+    return first === LATE ? undefined : first;
+  } finally {
+    timer.abort();
+  }
+}
+
 /**
  * Where the suite sends its requests: the deployment's own URL, where the host gives one — it serves
  * this deployment and no other, so no request of the suite can reach the deployment before it — and
@@ -531,8 +561,10 @@ async function servedAt(
   let own = settledAs.url;
   const until = Date.now() + OWN_URL_GRACE_MS;
   while (own === undefined && Date.now() < until) {
-    await sleepFor(POLL_INTERVAL_MS);
-    own = await ownUrlOf(input, settledAs.id);
+    const left = Math.max(0, until - Date.now());
+    await sleepFor(Math.min(POLL_INTERVAL_MS, left));
+    // Each read bounded by what is left of the grace, which a read the client retries could outlast.
+    own = await inTime(ownUrlOf(input, settledAs.id), until - Date.now());
   }
   if (own === undefined) {
     input.log(
@@ -556,9 +588,10 @@ async function servedAt(
   // reach the deployment is one it cannot be pointed at, and is refused rather than cut down to a host
   // that may serve something else.
   if (url.pathname !== '/' || url.search !== '' || url.hash !== '') {
-    throw new Error(
-      `the deployment's own URL is more than an origin: ${url.origin}${url.pathname}…`,
-    );
+    // The path as it is; a query or a fragment only as being there, since either may carry a secret.
+    const pathname = url.pathname === '/' ? '' : url.pathname;
+    const more = `${pathname}${url.search === '' ? '' : '?…'}${url.hash === '' ? '' : '#…'}`;
+    throw new Error(`the deployment's own URL is more than an origin: ${url.origin}${more}`);
   }
   input.log(`the deployment has a URL of its own, ${url.origin}, and the suite goes there`);
   return { url, own: true };
@@ -604,7 +637,10 @@ async function waitUntilServed(
     if (previewUrlOf(detail, input.config).origin !== publicUrl.origin) {
       throw new Error('the project changed the hostname it is served on during the deployment');
     }
-    const observation = await isServed(input, detail, probe, deadline - Date.now());
+    const observation = await isServed(input, detail, probe, {
+      remainingMs: deadline - Date.now(),
+      url: served.own,
+    });
     if (observation === undefined) {
       await onceServed(input, probe, served, deadline);
       return;

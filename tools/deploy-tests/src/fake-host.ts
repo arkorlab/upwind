@@ -79,9 +79,10 @@ type PageBehaviour = 'moves' | 'names nobody';
  */
 /**
  * Whether the deployment has a URL of its own, and how the host gives it: in every answer, only from
- * the second answer on (written a moment after the deployment is live), or with a path after the host.
+ * the second answer on (written a moment after the deployment is live), with a path after the host,
+ * or while the project still answers with the deployment before.
  */
-type OwnUrl = 'none' | 'at once' | 'late' | 'with a path';
+type OwnUrl = 'none' | 'at once' | 'late' | 'with a path' | 'ahead of the project';
 
 export async function fakeHost(
   deploymentId: string,
@@ -264,7 +265,11 @@ export async function fakeHost(
     if (pathname === '/v1/projects/p') {
       answer(OK, {
         project: { id: 'p', previewUrl: `http://127.0.0.1:${String(port)}/` },
-        active: { projectId: 'p', mode: 'live', app: { deploymentId } },
+        active: {
+          projectId: 'p',
+          mode: 'live',
+          app: { deploymentId: ownUrl === 'ahead of the project' ? 'dpl_before' : deploymentId },
+        },
       });
       return;
     }

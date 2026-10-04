@@ -320,6 +320,20 @@ async function ownUrlScenarios(
         lateOwn.stdout.trim() === `http://127.0.0.1:${String(late.ownPort)}`,
     );
 
+    // A deployment whose own URL answers while the project still answers with the one before: its
+    // own URL is the question, and it is not held up by the project's.
+    const ahead = await fakeHost(deploymentId, 'moves', 'ahead of the project');
+    hosts.push(ahead);
+    const onItsOwnFirst = await bounded(DEPLOY_HOOK, appDir, {
+      ...env,
+      ARKOR_API_URL: `http://127.0.0.1:${String(ahead.port)}`,
+    });
+    holds(
+      'a deployment served at its own URL is not held up by what the project answers with',
+      ahead.ownPort !== undefined &&
+        onItsOwnFirst.stdout.trim() === `http://127.0.0.1:${String(ahead.ownPort)}`,
+    );
+
     // A URL that needs a path to reach the deployment cannot be handed to the suite, which joins its own
     // paths to an origin: refused, by what is wrong with it.
     const pathed = await fakeHost(deploymentId, 'moves', 'with a path');
