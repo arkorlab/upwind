@@ -89,6 +89,13 @@ export const CACHE_OUTCOME_HEADER = 'x-arkor-cache-outcome';
  * `invalidatedTagsValue`, read by `invalidatedTagsMatcher`.
  */
 export const INVALIDATED_TAGS_HEADER = 'x-arkor-invalidated-tags';
+/**
+ * Beside `INVALIDATED_TAGS_HEADER`, where the host keeps revisions: the revision of the scope it
+ * recorded the latest of those invalidations at. A record the host wrote at that revision or after
+ * was written after them, and is not touched. A header of its own, so that a reader of the tags
+ * from before it reads them as it did.
+ */
+export const INVALIDATED_REVISION_HEADER = 'x-arkor-invalidated-revision';
 /** In `INVALIDATED_TAGS_HEADER`, for more tags than the header carries: every tag. */
 const EVERY_TAG = '*';
 /** The longest `INVALIDATED_TAGS_HEADER` a response carries; past it, `EVERY_TAG`. */
@@ -224,12 +231,32 @@ function namedTags(value: string): ReadonlySet<string> | undefined {
 }
 
 /**
- * Whether what carries `tags` is touched by an `INVALIDATED_TAGS_HEADER` of `value`: one of them is
- * among those it names — any, where it names every tag or cannot be read.
+ * The revision an `INVALIDATED_REVISION_HEADER` names, or `undefined` for none — and for one that
+ * cannot be read, which then bounds nothing.
  */
-export function invalidatedTagsMatcher(value: string): (tags: readonly string[]) => boolean {
+function namedRevision(value: string | null | undefined): number | undefined {
+  if (value === null || value === undefined || !/^\d+$/u.test(value)) {
+    return undefined;
+  }
+  const revision = Number(value);
+  return Number.isSafeInteger(revision) ? revision : undefined;
+}
+
+/**
+ * Whether what carries `tags`, written at `revision`, is touched by an `INVALIDATED_TAGS_HEADER` of
+ * `value` and an `INVALIDATED_REVISION_HEADER` of `bound`: one of the tags is among those named —
+ * any, where every tag is named or the list cannot be read — and, where the bound names a revision
+ * and the record's is known, it was written before it.
+ */
+export function invalidatedTagsMatcher(
+  value: string,
+  bound?: string | null,
+): (tags: readonly string[], revision?: number) => boolean {
   const named = namedTags(value);
+  const below = namedRevision(bound);
+  const before = (revision: number | undefined): boolean =>
+    below === undefined || revision === undefined || revision < below;
   return named === undefined
-    ? (tags) => tags.length > 0
-    : (tags) => tags.some((tag) => named.has(tag));
+    ? (tags, revision) => tags.length > 0 && before(revision)
+    : (tags, revision) => before(revision) && tags.some((tag) => named.has(tag));
 }

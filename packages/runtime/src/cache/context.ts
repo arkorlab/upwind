@@ -25,7 +25,37 @@ export interface RequestContext {
    * The tags the request invalidated at once — `updateTag`, `revalidateTag` with no window — told
    * on its response to the edge, which may hold what carries them (`INVALIDATED_TAGS_HEADER`).
    */
-  readonly invalidated: Set<string>;
+  readonly invalidated: InvalidatedTags;
+}
+
+/**
+ * What a request invalidated at once: the tags, and the latest revision of the scope the host
+ * recorded one of them at — below which a record was written before them all. One bound for all of
+ * them rather than one each: a request's invalidations are made back to back, so nothing is written
+ * between them that a single bound would wrong. No revision once one invalidation came without one:
+ * from a host that keeps none, nothing bounds them.
+ */
+export class InvalidatedTags {
+  #revision: number | undefined;
+  #bounded = true;
+  readonly tags = new Set<string>();
+
+  /** Record `tags`, invalidated at once at `revision` where the host gave one. */
+  add(tags: readonly string[], revision: number | undefined): void {
+    for (const tag of tags) {
+      this.tags.add(tag);
+    }
+    if (revision === undefined) {
+      this.#bounded = false;
+    } else {
+      this.#revision = Math.max(this.#revision ?? revision, revision);
+    }
+  }
+
+  /** The latest revision they were recorded at, where every one of them came with one. */
+  get revision(): number | undefined {
+    return this.#bounded ? this.#revision : undefined;
+  }
 }
 
 /**
@@ -40,7 +70,7 @@ export function requestContextFor(input: {
   readonly startedAt: number;
   readonly waitUntil: (promise: Promise<unknown>) => void;
   readonly clock: number | undefined;
-  readonly invalidated?: Set<string> | undefined;
+  readonly invalidated?: InvalidatedTags | undefined;
 }): RequestContext {
   const context: RequestContext = {
     tables: input.tables,
@@ -50,7 +80,7 @@ export function requestContextFor(input: {
     fetchStarts: new Map(),
     waitUntil: input.waitUntil,
     run: (work) => withClock(input.clock, () => withRequestContext(context, work)),
-    invalidated: input.invalidated ?? new Set(),
+    invalidated: input.invalidated ?? new InvalidatedTags(),
   };
   return context;
 }

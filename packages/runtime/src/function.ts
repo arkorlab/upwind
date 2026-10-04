@@ -18,6 +18,7 @@ import edge from 'arkor:edge';
 import type { AppModule, EdgeModule } from './app-module.ts';
 import { type BundleBlobReader, bundleBlobReader, type BundleBlobsExport } from './bundle-blobs.ts';
 import { nowMs } from './cache/clock.ts';
+import { InvalidatedTags } from './cache/context.ts';
 import { configureCacheHandlers } from './cache/handlers.ts';
 import { type CacheRuntime, createCacheRuntime } from './cache/runtime.ts';
 import { handleRequest } from './handle.ts';
@@ -174,7 +175,7 @@ async function answered(
   waitUntil: (promise: Promise<unknown>) => void,
 ): Promise<Response> {
   // Kept here as well as in the request's context: a failure answered below says them too.
-  const invalidated = new Set<string>();
+  const invalidated = new InvalidatedTags();
   try {
     // Before anything of the application runs: a service binding is an object, so it reaches
     // neither `process.env` nor any other place Next.js server code can look. An application reads
