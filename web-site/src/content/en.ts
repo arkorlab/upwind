@@ -48,7 +48,7 @@ export const en = {
       {
         term: 'The `app` Function',
         description:
-          'The application’s own code, bundled for workerd with `nodejs_compat`: its pages, its route handlers, its cache.',
+          'The application’s own code, bundled with its pages, route handlers and cache.',
       },
       {
         term: 'The `middleware` Function',
@@ -56,7 +56,7 @@ export const en = {
           'The project’s `proxy.ts`, built on its own, so a request that only needs a rewrite never wakes the application.',
       },
     ],
-    note: 'Nothing in the adapter talks to Cloudflare, and no build needs an account to produce a bundle.',
+    note: 'The adapter makes no service calls, and no build needs an account to produce a bundle.',
   },
   dev: {
     title: 'Development, with the front door in place',
@@ -131,7 +131,7 @@ export const en = {
       adapter:
         'Runs inside `next build`, writes the bundle, and builds the Functions that serve what it wrote.',
       runtime:
-        'What a deployment’s Function is: the routing tables, the middleware, the prerenders and the cache, written for workerd.',
+        'What a deployment’s Function contains: the routing tables, middleware, prerenders and cache used to serve your app.',
       core: 'The vocabulary the others speak — the bundle’s shape, the cache’s terms, and the protocol between an edge and a Function.',
       sdk: 'An application’s own D1, KV and R2, read the same way locally and in a deployment, with nothing to configure.',
       create: '`pnpm create upwind`, and the application it writes.',

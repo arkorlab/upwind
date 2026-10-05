@@ -11,12 +11,11 @@
 
 **A Next.js deployment adapter, and the runtime that serves what it builds.**
 
-Your own `next build` writes one deployment bundle for a host to run on Cloudflare Workers: the routing tables, every prerender and static file named by a hash of its content, and the Functions that run your code. Your app stays plain Next.js.
+Your own `next build` writes one deployment bundle for a host to deploy: the routing tables, every prerender and static file named by a hash of its content, and the Functions that run your code. Your app stays plain Next.js.
 
 [![upwind on npm](https://img.shields.io/npm/v/upwind?logo=npm&label=upwind&color=cb3837)](https://www.npmjs.com/package/upwind)
 [![Next.js](https://img.shields.io/npm/dependency-version/@stayingupwind/adapter/peer/next?logo=nextdotjs&label=Next.js&color=000000)](#-which-nextjs)
 [![Node.js](https://img.shields.io/node/v/upwind?logo=nodedotjs&logoColor=white&label=Node.js&color=5fa04e)](https://nodejs.org/)
-[![Cloudflare Workers](https://img.shields.io/badge/Cloudflare_Workers-workerd-f38020?logo=cloudflareworkers&logoColor=white)](https://developers.cloudflare.com/workers/)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT_OR_Apache--2.0-blue)](#-license)
 <br>
 [![CI](https://img.shields.io/github/actions/workflow/status/arkorlab/upwind/ci.yaml?branch=main&label=CI&logo=githubactions&logoColor=white)](https://github.com/arkorlab/upwind/actions/workflows/ci.yaml)
@@ -46,7 +45,7 @@ upwind does two jobs around your Next.js app: it turns `next build` into a deplo
 
 **🔨 `upwind build`**
 
-Your own `next build`, with upwind's adapter plugged in through Next.js's [Adapter API](https://nextjs.org/docs/app/api-reference/adapters). It writes one directory: a `bundle.json`, every prerender and static file as a blob named by its hash, and the Functions for workerd, the runtime behind Cloudflare Workers — `app`, plus `middleware` when the project has a `proxy.ts` or `middleware.ts`.
+Your own `next build`, with upwind's adapter plugged in through Next.js's [Adapter API](https://nextjs.org/docs/app/api-reference/adapters). It writes one directory: a `bundle.json`, every prerender and static file as a blob named by its hash, and the Functions that serve your app — `app`, plus `middleware` when the project has a `proxy.ts` or `middleware.ts`.
 
 </td>
 <td width="33%" valign="top">
@@ -83,7 +82,7 @@ flowchart TB
     direction LR
     edge{{"edge"}} -- "static files · prerendered shells" --> st[("storage")]
     edge -- "proxy.ts" --> mw["middleware Function"]
-    edge -- "rendering · PPR resume" --> fn["app Function on workerd"]
+    edge -- "rendering · PPR resume" --> fn["app Function"]
   end
 
   build --> bundle
@@ -95,7 +94,7 @@ flowchart TB
 
 ## 🎯 Who it's for
 
-- **Next.js teams who want their app built for Cloudflare Workers** without porting it: App Router or Pages Router, Partial Prerendering and `"use cache"`, Server Actions, `next/image`, `next/og`, WebAssembly — built by the `next build` you already run, and served by a host.
+- **Next.js teams who want a deployment bundle for their app** without porting it: App Router or Pages Router, Partial Prerendering and `"use cache"`, Server Actions, `next/image`, `next/og`, WebAssembly — built by the `next build` you already run, and served by a host.
 - **Teams who want the build to be the artifact.** CI produces one directory you can inspect, diff and keep, and that directory is what a host deploys.
 - **Hosts and platform builders who want to serve Next.js.** The bundle is a versioned schema, the edge ↔ Function protocol is a set of `x-arkor-*` headers, and the Functions are built from [`@stayingupwind/runtime`](packages/runtime) — nothing to reverse-engineer out of `.next/`.
 
@@ -103,7 +102,7 @@ flowchart TB
 <summary><b>Not a fit yet if…</b></summary>
 
 - **you build with webpack, or rely on a custom `cacheHandler`.** Neither is supported; see [what it serves](#-what-it-serves).
-- **you want one command that deploys to your own Cloudflare account.** upwind stops at the bundle; see the note above.
+- **you want one command that builds and deploys your app.** upwind stops at the bundle; see the note above.
 - **you need 1.0 guarantees.** See [the status note](#status).
 
 </details>
@@ -221,7 +220,7 @@ Then add `.arkor/`, which a build writes, and `.upwind/`, where local storage is
 </td>
 <td width="50%" valign="top">
 
-**🔒 Builds need no account and no credentials.** The adapter calls no service while it writes the bundle, Cloudflare included.
+**🔒 Builds need no account and no credentials.** The adapter calls no service while it writes the bundle.
 
 </td>
 </tr>
@@ -245,14 +244,14 @@ Then add `.arkor/`, which a build writes, and `.upwind/`, where local storage is
 </td>
 <td valign="top">
 
-**🧮 WebAssembly, compiled once.** A `.wasm` ships as a module Cloudflare compiles at upload, not as bytes every isolate compiles again on its first request.
+**🧮 WebAssembly, compiled once.** A `.wasm` ships as a module compiled at upload, so each new application instance can use it without recompiling it on its first request.
 
 </td>
 </tr>
 <tr>
 <td valign="top">
 
-**🛑 Fails in the build, not after it.** Every Function is audited — over Cloudflare's size limit, an import the Workers runtime is not known to provide, a `vm` call left in the bundle, a load the bundler could not follow — and the build fails and says why before an upload would.
+**🛑 Fails in the build, not after it.** Every Function is audited — over the size limit, an import the deployment runtime is not known to provide, a `vm` call left in the bundle, a load the bundler could not follow — and the build fails and says why before an upload would.
 
 </td>
 <td valign="top">
@@ -293,20 +292,20 @@ New projects get Next.js's own `AGENTS.md` and `CLAUDE.md`, and `upwind dev` kee
 
 **upwind does not replace Next.js — it runs yours.** It carries no copy of the framework: `upwind dev` and `upwind build` use the Next.js your project depends on, and refuse to start without one. What changes is what surrounds your app — the front door in development, and what a build becomes in production.
 
-|                                         | Next.js on its own                                   | Next.js with upwind                                                                                                                                                                                                                |
-| --------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Your code**                           | App Router, Pages Router, `next.config`              | **The same.** Nothing to port beyond [what is not supported](#-what-it-serves), and nothing you have to import from upwind                                                                                                         |
-| **Development**                         | `next dev`                                           | `upwind dev`: the same dev server, in the same process, behind a front door that answers `/__upwind`                                                                                                                               |
-| **Build**                               | `next build` → `.next/`                              | `upwind build`: the same `next build`, whose adapter also writes `.arkor/`                                                                                                                                                         |
-| **Production**                          | `next start`: one long-running Node.js server        | No server of your own: an `app` Function on workerd — several, split along what the routes share, for an application too large for one, where the host splits — and a `middleware` one when there is a proxy, behind a host's edge |
-| **Static files and prerenders**         | Served by that server                                | Blobs named by content, served from storage by the edge                                                                                                                                                                            |
-| **Partial Prerendering**                | The server sends the shell, then streams the rest    | The edge sends the shell from storage; the Function sends only the dynamic part                                                                                                                                                    |
-| **Middleware / `proxy.ts`**             | Runs inside the server                               | Also a Function of its own, which an edge can run before waking the application                                                                                                                                                    |
-| **`/_next/image`**                      | Optimized by the server                              | Optimized by the edge                                                                                                                                                                                                              |
-| **Cache** (ISR, `"use cache"`, `fetch`) | In memory and on disk, or a `cacheHandler` you write | Kept by the host, through a cache module named when the bundle is built; with the default adapter, a bundle caches nothing                                                                                                         |
-| **Cron jobs**                           | —                                                    | `crons` in `upwind.config.ts` or `vercel.json`, checked at build time                                                                                                                                                              |
-| **Local storage**                       | —                                                    | D1, KV and R2 under `.upwind/`, read through `@stayingupwind/sdk`                                                                                                                                                                  |
-| **Bundler**                             | Turbopack or webpack                                 | Turbopack                                                                                                                                                                                                                          |
+|                                         | Next.js on its own                                   | Next.js with upwind                                                                                                                                                                                                     |
+| --------------------------------------- | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Your code**                           | App Router, Pages Router, `next.config`              | **The same.** Nothing to port beyond [what is not supported](#-what-it-serves), and nothing you have to import from upwind                                                                                              |
+| **Development**                         | `next dev`                                           | `upwind dev`: the same dev server, in the same process, behind a front door that answers `/__upwind`                                                                                                                    |
+| **Build**                               | `next build` → `.next/`                              | `upwind build`: the same `next build`, whose adapter also writes `.arkor/`                                                                                                                                              |
+| **Production**                          | `next start`: one long-running Node.js server        | No server of your own: an `app` Function — several, split along what the routes share, for an application too large for one, where the host splits — and a `middleware` one when there is a proxy, behind a host's edge |
+| **Static files and prerenders**         | Served by that server                                | Blobs named by content, served from storage by the edge                                                                                                                                                                 |
+| **Partial Prerendering**                | The server sends the shell, then streams the rest    | The edge sends the shell from storage; the Function sends only the dynamic part                                                                                                                                         |
+| **Middleware / `proxy.ts`**             | Runs inside the server                               | Also a Function of its own, which an edge can run before waking the application                                                                                                                                         |
+| **`/_next/image`**                      | Optimized by the server                              | Optimized by the edge                                                                                                                                                                                                   |
+| **Cache** (ISR, `"use cache"`, `fetch`) | In memory and on disk, or a `cacheHandler` you write | Kept by the host, through a cache module named when the bundle is built; with the default adapter, a bundle caches nothing                                                                                              |
+| **Cron jobs**                           | —                                                    | `crons` in `upwind.config.ts` or `vercel.json`, checked at build time                                                                                                                                                   |
+| **Local storage**                       | —                                                    | D1, KV and R2 under `.upwind/`, read through `@stayingupwind/sdk`                                                                                                                                                       |
+| **Bundler**                             | Turbopack or webpack                                 | Turbopack                                                                                                                                                                                                               |
 
 **Leaving takes one diff.** Put `next dev` and `next build` back in `package.json`, and remove the two devDependencies and the `adapterPath` line. What you would have to replace is code that reads storage through `@stayingupwind/sdk`, and any crons in `upwind.config.*`.
 
@@ -363,7 +362,7 @@ The adapter's readme lists [every field it reads from Next.js](packages/adapter/
 
 ## 💾 Storage
 
-An app gets a D1 database, a KV namespace and an R2 bucket without writing a line of configuration. Locally, `upwind dev` and `upwind build` run them on workerd — the runtime a deployment's Functions run on — keep their data in `.upwind/`, and publish them to your code. In a deployment, the Function publishes the storage the host attached. The SDK reads what was published, the same way in both.
+An app gets a D1 database, a KV namespace and an R2 bucket without writing a line of configuration. Locally, `upwind dev` and `upwind build` run them, keep their data in `.upwind/`, and publish them to your code. In a deployment, the Function publishes the storage the host attached. The SDK reads what was published, the same way in both.
 
 ```tsx
 import db from '@stayingupwind/sdk/db';
@@ -392,7 +391,7 @@ export default async function Page() {
 | `published()`                                | everything published, and the names it is published under |
 
 - **One of a kind needs no name.** When exactly one D1 database is published, `db` is that database; with several it throws and lists them, and `d1('ORDERS')` picks the one you mean.
-- **The types are Cloudflare's own** — `D1Database`, `KVNamespace`, `R2Bucket`, imported from `@cloudflare/workers-types` — so no `tsconfig` of yours needs to know about them.
+- **The SDK includes the required storage types** — `D1Database`, `KVNamespace`, `R2Bucket`, imported from `@cloudflare/workers-types` — so no `tsconfig` of yours needs to know about them.
 - **Prerendering can read it.** In a project with the SDK installed, `upwind build` publishes the same storage while pages prerender, so `generateStaticParams` can read its slugs out of D1. One directory of storage can be open in only one runtime at a time, so pages are then prerendered by one build worker rather than several — unless the project sets `experimental.cpus` itself, in which case a page that reads storage fails in every worker but one. A plain `next build` publishes none, and the SDK throws an error saying so rather than guessing.
 - **Delete `.upwind/` to start from empty.** It is local data, and no deployment reads it.
 
@@ -446,7 +445,7 @@ Yes — it is your Next.js. With `adapterPath` set in `next.config`, a plain `ne
 <details>
 <summary><b>Why is there no <code>start</code> script?</b></summary>
 
-Because a deployment never runs one: what serves your app is the bundle — Functions on workerd, behind an edge — not a Node.js server of your own.
+Because a deployment never runs one: what serves your app is the bundle — Functions behind an edge — not a Node.js server of your own.
 
 </details>
 
