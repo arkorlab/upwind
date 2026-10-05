@@ -148,7 +148,11 @@ export async function documentFromBuild(
   if (shell?.body === undefined) {
     // An unbuilt App Router member can still prerender a shell. Capture its postponed state and
     // resume it for this request; the exported handler alone sends only that initial shell.
-    if (entry.kind === 'node' && entrypointKindOf(store, resolved.route) === 'app-page') {
+    if (
+      store.manifest.config.cacheComponents === true &&
+      entry.kind === 'node' &&
+      entrypointKindOf(store, resolved.route) === 'app-page'
+    ) {
       const rendered = await renderForVisitor(
         input,
         {
