@@ -280,7 +280,14 @@ jobs:
         working-directory: nextjs
         env:
           NEXT_TEST_MODE: deploy
-          NEXT_E2E_TEST_TIMEOUT: 240000
+          # What a suite's hooks and tests may take. A deploy is the suite's `beforeAll`, and a fixture of
+          # a few hundred prerendered pages takes a host minutes to bring in — four were not enough for
+          # three of a full run's — besides any wait for the project's previous run to end.
+          NEXT_E2E_TEST_TIMEOUT: 600000
+          # What Next.js's own job for adapters sets (`test_e2e_deploy_release.yml`, the adapter matrix):
+          # suites that expect an adapter's deployment to answer otherwise than Vercel's own builder's
+          # read it, and expect the builder's answer without it.
+          NEXT_ENABLE_ADAPTER: 1
           NEXT_EXTERNAL_TESTS_FILTERS: test/deploy-tests-manifest.json
           NEXT_TELEMETRY_DISABLED: 1
           IS_TURBOPACK_TEST: 1

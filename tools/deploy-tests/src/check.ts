@@ -154,6 +154,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 
 const saw = (name) => name + ': ' + (process.env[name] === undefined ? 'no' : 'YES');
 console.log('the build saw ' + saw('ARKOR_API_TOKEN') + ' ' + saw('ARKOR_API_TOKEN_FILE'));
+console.log('the build saw ' + saw('__NEXT_NODE_NATIVE_TS_LOADER_ENABLED'));
 
 mkdirSync('.next', { recursive: true });
 writeFileSync('.next/BUILD_ID', process.env.CHECK_OUTPUT_DIRECTORY_BUILD_ID);
@@ -335,6 +336,20 @@ async function ownUrlScenarios(
     );
     holds('and the probe asked its own URL, not the project', ahead.probedOn() === ahead.ownPort);
 
+    // A project still running the deployment before this one: the finalize is refused until that run
+    // ends, and is made again until it is taken, rather than failing this fixture for the one before.
+    const busy = await fakeHost(deploymentId, 'moves', 'none', 2);
+    hosts.push(busy);
+    const afterTheOther = await bounded(DEPLOY_HOOK, appDir, {
+      ...env,
+      ARKOR_API_URL: `http://127.0.0.1:${String(busy.port)}`,
+    });
+    holds(
+      "a project's run still under way is waited for, and this deployment then deploys",
+      afterTheOther.stdout.trim() === `http://127.0.0.1:${String(busy.port)}` &&
+        afterTheOther.stderr.includes('another run of the project is still under way'),
+    );
+
     // A URL that needs a path to reach the deployment cannot be handed to the suite, which joins its own
     // paths to an origin: refused, by what is wrong with it.
     const pathed = await fakeHost(deploymentId, 'moves', 'with a path');
@@ -356,6 +371,33 @@ async function ownUrlScenarios(
     for (const host of hosts) {
       host.close();
     }
+  }
+}
+
+/**
+ * A suite of a `next.config.ts` that Node.js loads itself is built with that loader, as Next.js's own CI
+ * builds it; any other suite is built without, as every application is.
+ */
+async function nativeConfigScenario(
+  deploymentId: string,
+  appDir: string,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  const host = await fakeHost(deploymentId);
+  try {
+    await bounded(DEPLOY_HOOK, appDir, {
+      ...env,
+      ARKOR_API_URL: `http://127.0.0.1:${String(host.port)}`,
+      JEST_SUITE_NAME:
+        'deploy:e2e:test/e2e/app-dir/next-config-ts-native-ts/export-default/next-config-ts-export-default-esm.test.ts',
+    });
+    const build = readFileSync(path.join(appDir, '.adapter-build.log'), 'utf8');
+    holds(
+      "a suite of a next.config Node.js loads itself is built with Node.js's loader",
+      build.includes('__NEXT_NODE_NATIVE_TS_LOADER_ENABLED: YES'),
+    );
+  } finally {
+    host.close();
   }
 }
 
@@ -440,6 +482,10 @@ async function main(): Promise<void> {
     holds('the blobs the host asked for were uploaded', host.uploaded().length === 1);
     holds('and nothing was asked of it out of order', host.refusals().length === 0);
     holds('the build saw no token', build.includes('ARKOR_API_TOKEN: no'));
+    holds(
+      "and, for any other suite, not Node.js's own loader of next.config",
+      build.includes('__NEXT_NODE_NATIVE_TS_LOADER_ENABLED: no'),
+    );
     holds('nor the file holding it', build.includes('ARKOR_API_TOKEN_FILE: no'));
     holds("the application's own post-build ran", build.includes('the fixture post-build ran'));
     holds('and it saw no token either', build.includes('it saw ARKOR_API_TOKEN: no'));
@@ -528,6 +574,7 @@ async function main(): Promise<void> {
     );
 
     await ownUrlScenarios(deploymentId, appDir, env);
+    await nativeConfigScenario(deploymentId, appDir, env);
   } finally {
     host.close();
     quiet?.close();

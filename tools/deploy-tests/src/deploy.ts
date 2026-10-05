@@ -16,6 +16,7 @@ import {
   USER_AGENT,
 } from './client.ts';
 import type { Config } from './config.ts';
+import { finalizeWhenFree } from './finalize.ts';
 import { fixtureEnvironment } from './fixture-env.ts';
 import {
   askThePage,
@@ -686,7 +687,7 @@ export async function deployFixture(input: DeployInput): Promise<Deployment> {
     if (missing.length > 0) {
       await uploadMissing(input, bundle, missing);
     }
-    runId = await input.client.finalize(bundle.deploymentId);
+    runId = await finalizeWhenFree(input.client, input.log, bundle.deploymentId);
   } catch (error) {
     throw explained(error);
   }

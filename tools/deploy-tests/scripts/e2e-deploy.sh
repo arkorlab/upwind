@@ -54,9 +54,13 @@ export NEXT_PRIVATE_TEST_MODE=e2e
 # This is a reduction, not a boundary: the deploy hook and the fixture's build run as the same user on
 # the same machine, and a process can read what another process of its own user can. What it removes is
 # the ordinary way a secret escapes — something dumping the environment it was handed.
+#
+# Corepack is told not to refuse: the workflow enables it, and in strict mode it refuses to run pnpm in
+# an application whose `packageManager` names another — a fixture may pin npm, and the harness still
+# appends `pnpm post-build` to its build. pnpm, started by Corepack, then leaves the pin alone too.
 fixture() {
   env -u ARKOR_API_URL -u ARKOR_API_TOKEN -u ARKOR_API_TOKEN_FILE -u ADAPTER_TEST_PROJECT_ID \
-    -u ADAPTER_TEST_SETTLE_SECONDS "$@"
+    -u ADAPTER_TEST_SETTLE_SECONDS COREPACK_ENABLE_STRICT=0 "$@"
 }
 
 # Deploy mode makes the isolated copy with `skipInstall: true` (`test/lib/next-modes/next-deploy.ts`),
@@ -81,6 +85,21 @@ build_command="$(
     2>/dev/null || echo 'next build'
 )"
 echo "build command: ${build_command}" >&2
+
+# The suites of a `next.config.ts` that Node.js loads itself are built the way Next.js's own CI builds
+# them, and only they are: with that loader turned on and type transformation allowed
+# (`.github/workflows/build_and_test.yml` sets `__NEXT_NODE_NATIVE_TS_LOADER_ENABLED=true` and
+# `NODE_OPTIONS=--experimental-transform-types` for those directories alone). Their configs await at
+# the top level on purpose — "this is to ensure that the test is running in Native TS mode" — which
+# the loader every other build uses refuses, and the suites skip themselves only on a Node.js without
+# TypeScript of its own. Which suite this is, `run-tests.js` names in `JEST_SUITE_NAME`.
+case "${JEST_SUITE_NAME:-}" in
+  *test/e2e/app-dir/next-config-ts-native-ts/* | *test/e2e/app-dir/next-config-ts-native-mts/*)
+    export __NEXT_NODE_NATIVE_TS_LOADER_ENABLED=true
+    export NODE_OPTIONS="${NODE_OPTIONS:+${NODE_OPTIONS} }--experimental-transform-types"
+    echo 'a suite of a next.config Node.js loads itself: built with that loader, as Next.js builds it' >&2
+    ;;
+esac
 
 # What the build says is what `next.cliOutput` is read from, so it has to be kept and not only shown:
 # `tee` writes it for the logs hook, and standard output stays reserved for the URL.
