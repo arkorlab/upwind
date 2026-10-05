@@ -175,6 +175,7 @@ export const CONTENT_DISPOSITION_HEADER = 'content-disposition';
 
 /** Response headers the build recorded that may be replayed with an edge-served shell. */
 export const SHELL_RESPONSE_HEADER_ALLOWLIST: readonly string[] = [
+  'reporting-endpoints',
   'content-type',
   'content-language',
   'vary',
