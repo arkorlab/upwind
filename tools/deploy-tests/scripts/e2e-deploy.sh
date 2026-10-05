@@ -17,8 +17,12 @@ core_dir="${adapter_dir}/packages/core"
 
 # `dist` is the adapter as a release gives it to a project, which is what should be tested; `src` is
 # what a working copy has before `pnpm build`, and failing over to it beats failing on a forgotten
-# build step.
-if [ -f "${adapter_dir}/packages/adapter/dist/index.js" ]; then
+# build step. An adapter named already is the one tested: this one's default export is configured with
+# nothing, so its Functions answer every cache read a miss, and a host that plugs its own cache in
+# (`createAdapter({ cacheHostModule })`) tests what it deploys by naming the adapter that does.
+if [ -n "${NEXT_ADAPTER_PATH:-}" ]; then
+  echo "the adapter named by NEXT_ADAPTER_PATH: ${NEXT_ADAPTER_PATH}" >&2
+elif [ -f "${adapter_dir}/packages/adapter/dist/index.js" ]; then
   export NEXT_ADAPTER_PATH="${adapter_dir}/packages/adapter/dist/index.js"
 else
   echo 'no built adapter; running it from source (pnpm --filter @stayingupwind/adapter build)' >&2

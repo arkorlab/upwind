@@ -139,6 +139,12 @@ Beyond that, these limits are worth knowing before reading a failure as this ada
   directly and there is no such baseline, so a suite whose application reads a variable that arrives
   only that way will fail. Guessing would be worse: it would hand a deployed Function whatever the
   terminal happened to hold.
+- **The adapter under test has no cache unless one is plugged in.** This repository's adapter, as its
+  default export, is configured with nothing, so its Functions answer every cache read a miss: no
+  data cache, no `use cache`, no page kept between requests and no regeneration seen. Every suite that
+  asserts on caching or revalidation fails for that alone. A host that plugs its cache in
+  (`createAdapter({ cacheHostModule })`) tests what it deploys by naming that adapter in
+  `NEXT_ADAPTER_PATH`, which the deploy hook then uses instead of its own.
 - **A `next.config.ts` that Node.js loads itself is built the way Next.js's own CI builds it.** The
   suites under `next-config-ts-native-ts` and `-mts` await at the top level of their configs on
   purpose, and Next.js's CI builds them alone with Node.js's loader turned on
