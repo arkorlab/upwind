@@ -69,7 +69,18 @@ import { WASM_ENTRY_MODULE, type WasmCollector, wasmEntrySource, wasmModuleName 
  * Functions: a deployment's semantics must not shift underneath it when the platform moves its date.
  */
 const FUNCTION_COMPATIBILITY_DATE = '2026-09-15';
-const FUNCTION_COMPATIBILITY_FLAGS: readonly string[] = ['nodejs_compat'];
+/**
+ * `global_fetch_strictly_public`: a `fetch()` to the application's own hostname goes out the front
+ * door, as it does from `next start` or any other host, and reaches the application. Without it a
+ * request to a hostname on the zone the Function serves goes to the zone's origin, past every Worker
+ * routed there — for a Function served by a Worker on that zone's route, nothing — and fails at once
+ * (`522`). Next.js makes such requests itself: a Server Action forwarded to the page that has it, the
+ * RSC payload of the page an action redirects to; and applications make them to their own API routes.
+ */
+const FUNCTION_COMPATIBILITY_FLAGS: readonly string[] = [
+  'nodejs_compat',
+  'global_fetch_strictly_public',
+];
 
 const RUNTIME_MODULE = 'index.mjs';
 const RUNTIME_MANIFEST_MODULE = 'runtime.json';
