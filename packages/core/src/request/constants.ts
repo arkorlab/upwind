@@ -264,11 +264,17 @@ export const SHARED_CACHE_CONTROL_HEADERS: readonly string[] = [
   'surrogate-control',
 ];
 
-/** Headers hidden from proxied (passthrough) responses. */
+/**
+ * Headers hidden from proxied (passthrough) responses. Among them `x-next-cache-tags`: what Next.js
+ * tells the platform a response was rendered with, which a stored response never keeps either
+ * (`STORED_RESPONSE_HEADER_DENYLIST`) and `next start` never sends — a visitor of a Function's own
+ * answer was handed the page's tags.
+ */
 export const PASSTHROUGH_RESPONSE_HEADER_DENYLIST: readonly string[] = [
   ...HOP_BY_HOP_HEADERS,
   'content-length',
   ...SHARED_CACHE_CONTROL_HEADERS,
+  'x-next-cache-tags',
 ];
 
 /** Header value the edge sends for documents and everything that must not be cached. */
