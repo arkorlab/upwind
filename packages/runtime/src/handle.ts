@@ -47,6 +47,7 @@ import {
   sourceResponse,
 } from './image-fallback.ts';
 import { hasBody, isRscRequest, wantsBlockingMetadata } from './incoming.ts';
+import { isRead, methodNotAllowed, readsOnly } from './methods.ts';
 import {
   answerMiddlewareOnly,
   MIDDLEWARE_ENTRY_ID,
@@ -118,9 +119,6 @@ import { renderedBy, serveWithBody } from './with-body.ts';
 const HTTP_PERMANENT_REDIRECT = 308;
 const HTTP_BAD_REQUEST = 400;
 const HTTP_INTERNAL_ERROR = 500;
-const HTTP_METHOD_NOT_ALLOWED = 405;
-const FILE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD']);
-
 export type { HandleInput } from './serve.ts';
 
 /** The edge holds the build's shell: return only the resumed part. */
@@ -518,8 +516,8 @@ async function serveResolved(
   if (file !== undefined) {
     // A file answers a read and nothing else; the edge sends every other method here. Refused
     // before anything is read.
-    if (!FILE_METHODS.has(request.method)) {
-      return new Response('Method Not Allowed', { status: HTTP_METHOD_NOT_ALLOWED });
+    if (!isRead(request.method)) {
+      return methodNotAllowed();
     }
     const status = staticFileStatus(resolved.route, store.manifest.config.basePath);
     const answer = await staticFileResponse(input, store, file, status);
@@ -528,10 +526,10 @@ async function serveResolved(
     }
   }
   if (hasBody(request.method)) {
-    return (
-      (await serveWithBody(input, store, resolved)) ??
-      new Response('Method Not Allowed', { status: HTTP_METHOD_NOT_ALLOWED })
-    );
+    if (readsOnly(store, resolved.route, request)) {
+      return methodNotAllowed();
+    }
+    return (await serveWithBody(input, store, resolved)) ?? methodNotAllowed();
   }
   // Read off the route when routing resolved to a data output of the build, and off the pathname
   // the client asked for otherwise: a data URL the build left no output for is normalized to its

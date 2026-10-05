@@ -75,6 +75,11 @@ export interface Store {
   readonly slashSpellings: ReadonlyMap<string, string>;
   /** The dynamic routes as the router is handed them (`routerDynamicRoutes`). */
   readonly dynamicRoutes: readonly Route[];
+  /**
+   * The Pages Router routes the build rendered pages of (`getStaticProps`), which Next.js answers
+   * only reads of (`readsOnly`, in `handle.ts`).
+   */
+  readonly renderedPagesRoutes: ReadonlySet<string>;
   readBlob(sha256: string): Uint8Array<ArrayBuffer>;
   /**
    * The same read for a blob the bundle may only *name*: `undefined` where the bytes are not here.
@@ -392,6 +397,15 @@ export function deploymentConfig(): ManifestHead['config'] {
   return readManifest().config;
 }
 
+function renderedPagesRoutes(manifest: RuntimeManifest): ReadonlySet<string> {
+  const pages = new Set(
+    manifest.entrypoints.filter((entry) => entry.kind === 'pages').map((entry) => entry.pathname),
+  );
+  return new Set(
+    manifest.prerenders.map((prerender) => prerender.route).filter((route) => pages.has(route)),
+  );
+}
+
 export function getStore(): Store {
   if (shared.store !== undefined) {
     return shared.store;
@@ -419,6 +433,7 @@ export function getStore(): Store {
     staticFiles,
     ...routerPathnames(manifest),
     dynamicRoutes: routerDynamicRoutes(manifest),
+    renderedPagesRoutes: renderedPagesRoutes(manifest),
     readBlob(sha256) {
       let bytes = blobs.get(sha256);
       if (bytes === undefined) {
