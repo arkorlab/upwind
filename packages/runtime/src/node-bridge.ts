@@ -252,6 +252,7 @@ function singleRedirectLocation(res: ServerResponse): void {
   };
 }
 
+/** Restore a loopback request's inputs and dispatch it to the application's Node handler. */
 function onRequest(req: IncomingMessage, res: ServerResponse): void {
   const dispatch = (req as BridgedRequest).cloudflare?.ctx as Dispatch | undefined;
   if (dispatch === undefined) {
