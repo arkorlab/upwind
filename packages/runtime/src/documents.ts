@@ -2,6 +2,7 @@ import type { BlobRef, Prerender, StaticFile } from '@stayingupwind/core/bundle'
 import { NO_STORE_CACHE_CONTROL, SEGMENT_TREE_PATH } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
+import { documentWant, renderForVisitor } from './answers.ts';
 import { isDraftRequest } from './draft.ts';
 import { type Entry, entryFor } from './entries.ts';
 import { failureAnswer } from './error-pages.ts';
@@ -145,6 +146,21 @@ export async function documentFromBuild(
     });
   }
   if (shell?.body === undefined) {
+    // An unbuilt App Router member can still prerender a shell. Capture its postponed state and
+    // resume it for this request; the exported handler alone sends only that initial shell.
+    if (entry.kind === 'node' && entrypointKindOf(store, resolved.route) === 'app-page') {
+      const rendered = await renderForVisitor(
+        input,
+        {
+          descriptor: { kind: 'app-page', route: resolved.route, pathname: resolved.pathname },
+          handler: entry.handler,
+        },
+        { ...documentWant(input), url: resolved.url },
+      );
+      if (rendered !== undefined) {
+        return rendered;
+      }
+    }
     return invokeEntry(input, entry, resolved.url, {
       onFailure: failureAnswer(store, entry, resolved.route),
     });
