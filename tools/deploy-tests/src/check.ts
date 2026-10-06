@@ -155,6 +155,10 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 const saw = (name) => name + ': ' + (process.env[name] === undefined ? 'no' : 'YES');
 console.log('the build saw ' + saw('ARKOR_API_TOKEN') + ' ' + saw('ARKOR_API_TOKEN_FILE'));
 console.log('the build saw ' + saw('__NEXT_NODE_NATIVE_TS_LOADER_ENABLED'));
+console.log(
+  'the build saw types transformed: ' +
+    ((process.env.NODE_OPTIONS ?? '').includes('--experimental-transform-types') ? 'YES' : 'no'),
+);
 
 mkdirSync('.next', { recursive: true });
 writeFileSync('.next/BUILD_ID', process.env.CHECK_OUTPUT_DIRECTORY_BUILD_ID);
@@ -396,6 +400,7 @@ async function nativeConfigScenario(
       "a suite of a next.config Node.js loads itself is built with Node.js's loader",
       build.includes('__NEXT_NODE_NATIVE_TS_LOADER_ENABLED: YES'),
     );
+    holds('and with types transformed', build.includes('the build saw types transformed: YES'));
   } finally {
     host.close();
   }
@@ -484,7 +489,8 @@ async function main(): Promise<void> {
     holds('the build saw no token', build.includes('ARKOR_API_TOKEN: no'));
     holds(
       "and, for any other suite, not Node.js's own loader of next.config",
-      build.includes('__NEXT_NODE_NATIVE_TS_LOADER_ENABLED: no'),
+      build.includes('__NEXT_NODE_NATIVE_TS_LOADER_ENABLED: no') &&
+        build.includes('the build saw types transformed: no'),
     );
     holds('nor the file holding it', build.includes('ARKOR_API_TOKEN_FILE: no'));
     holds("the application's own post-build ran", build.includes('the fixture post-build ran'));

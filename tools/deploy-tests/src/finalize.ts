@@ -3,11 +3,13 @@ import { setTimeout as sleepFor } from 'node:timers/promises';
 import { ApiError, type Client } from './client.ts';
 
 /**
- * How long a finalize waits for the project's run before it to end, and how often it asks: as long as
- * a deployment may go without moving (`deploy.ts`), since that run is one, and from a few seconds up
- * to a poll's worth of them.
+ * How long a finalize waits for the project's run before it to end, and how often it asks: ten
+ * minutes, which leaves the rest of the suite's hook — twenty minutes in the workflow
+ * (`NEXT_E2E_TEST_TIMEOUT`) — to the fixture's own build, upload and deployment; and from a few
+ * seconds up to a poll's worth of them. The run waited for is the one before, which outlasted the
+ * suite's hook or is finishing its last steps, so it has most of its own deployment behind it.
  */
-const OTHER_RUN_TIMEOUT_MS = 900_000;
+const OTHER_RUN_TIMEOUT_MS = 600_000;
 const OTHER_RUN_FIRST_WAIT_MS = 2000;
 const OTHER_RUN_MAX_WAIT_MS = 15_000;
 

@@ -64,7 +64,7 @@ Then, from a checkout of Next.js that has been built (`pnpm install && pnpm buil
 ```console
 $ NEXT_TEST_MODE=deploy \
   NEXT_ENABLE_ADAPTER=1 \
-  NEXT_E2E_TEST_TIMEOUT=600000 \
+  NEXT_E2E_TEST_TIMEOUT=1200000 \
   NEXT_EXTERNAL_TESTS_FILTERS=test/deploy-tests-manifest.json \
   ADAPTER_DIR=/path/to/upwind \
   NEXT_TEST_DEPLOY_SCRIPT_PATH=$ADAPTER_DIR/tools/deploy-tests/scripts/e2e-deploy.sh \
@@ -119,9 +119,9 @@ into a project and does not create one.
 refuses the next finalize while one is going (`run_in_progress`). That run is the previous fixture's —
 one that outlasted the suite's hook timeout, which the host goes on deploying, or one whose last steps
 the host finishes after it has said the deployment is live — and it ends on its own, so the hook waits
-for it (a quarter of an hour at most) rather than failing the fixture after it. The workflow gives a
-suite's hooks ten minutes (`NEXT_E2E_TEST_TIMEOUT`), since a fixture of a few hundred prerendered
-pages takes a host minutes to bring in.
+for it (ten minutes at most) rather than failing the fixture after it. The workflow gives a suite's
+hooks twenty minutes (`NEXT_E2E_TEST_TIMEOUT`): the wait, and a fixture of a few hundred prerendered
+pages, which takes a host minutes to bring in.
 
 **That refusal is one machine's.** The claims are files in the machine's own temporary directory, so a
 run on a laptop and a dispatched workflow run cannot see each other, and the API has nothing to hold a
