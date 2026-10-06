@@ -285,9 +285,10 @@ jobs:
           # a full run's — and the hook may first wait up to ten for the project's previous run to end
           # (`finalize.ts`), so twenty in all.
           NEXT_E2E_TEST_TIMEOUT: 1200000
-          # What Next.js's own job for adapters sets (`test_e2e_deploy_release.yml`, the adapter matrix):
-          # suites that expect an adapter's deployment to answer otherwise than Vercel's own builder's
-          # read it, and expect the builder's answer without it.
+          # What Next.js's own job for adapters sets (`test_e2e_deploy_release.yml`, the adapter matrix).
+          # A few suites expect a deployment an adapter made to answer otherwise than one Vercel's own
+          # builder made, and read it to know which they are testing: with it set, they expect the
+          # adapter's answers; without it, the builder's.
           NEXT_ENABLE_ADAPTER: 1
           NEXT_EXTERNAL_TESTS_FILTERS: test/deploy-tests-manifest.json
           NEXT_TELEMETRY_DISABLED: 1

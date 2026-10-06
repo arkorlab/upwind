@@ -74,8 +74,9 @@ $ NEXT_TEST_MODE=deploy \
     test/e2e/app-dir/app-simple-routes/app-simple-routes.test.ts
 ```
 
-`NEXT_ENABLE_ADAPTER=1` is what Next.js's own job for adapters sets: a few suites expect an adapter's
-deployment to answer otherwise than Vercel's builder's, and read it to know which they are testing.
+`NEXT_ENABLE_ADAPTER=1` is what Next.js's own job for adapters sets. A few suites expect a deployment
+an adapter made to answer otherwise than one Vercel's own builder made, and read it to know which they
+are testing: with it set, they expect the adapter's answers; without it, the builder's.
 
 `.github/workflows/deploy-tests.yaml` is the same thing on a runner, dispatched by hand. Its `tests`
 input takes upstream paths, or `all` for everything the manifest allows; `shards` cuts `all` into that

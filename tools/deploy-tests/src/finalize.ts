@@ -12,6 +12,7 @@ import { ApiError, type Client } from './client.ts';
 const OTHER_RUN_TIMEOUT_MS = 600_000;
 const OTHER_RUN_FIRST_WAIT_MS = 2000;
 const OTHER_RUN_MAX_WAIT_MS = 15_000;
+const MS_PER_MINUTE = 60_000;
 
 /**
  * Finalize, once the project has no other run under way.
@@ -37,8 +38,14 @@ export async function finalizeWhenFree(
       return await client.finalize(deploymentId);
     } catch (error) {
       const another = error instanceof ApiError && error.code === 'run_in_progress';
-      if (!another || Date.now() + wait > deadline) {
+      if (!another) {
         throw error;
+      }
+      if (Date.now() + wait > deadline) {
+        throw new Error(
+          `the project's previous run did not end within the ${String(OTHER_RUN_TIMEOUT_MS / MS_PER_MINUTE)} minutes a finalize waits for it`,
+          { cause: error },
+        );
       }
       if (!waited) {
         log('another run of the project is still under way; waiting for it to end');

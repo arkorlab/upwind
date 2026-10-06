@@ -418,6 +418,9 @@ async function main(): Promise<void> {
   let quiet: FakeHost | undefined;
   const env = {
     ...process.env,
+    // An ordinary suite's, whatever the shell running the check says: a suite name decides how its
+    // fixture is built (`e2e-deploy.sh`), and the check of that names its own.
+    JEST_SUITE_NAME: 'deploy:e2e:test/e2e/app-dir/app-simple-routes/app-simple-routes.test.ts',
     ARKOR_API_URL: `http://127.0.0.1:${String(host.port)}`,
     ARKOR_API_TOKEN_FILE: tokenFile,
     ADAPTER_TEST_PROJECT_ID: 'p',
