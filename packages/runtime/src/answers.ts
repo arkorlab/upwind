@@ -1,3 +1,4 @@
+import type { Prerender } from '@stayingupwind/core/bundle';
 import type { RouteEntryDescriptor } from '@stayingupwind/core/cache';
 import { NULL_BODY_STATUSES, ROUTER_PROTOCOL_HEADERS } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
@@ -268,4 +269,26 @@ export async function renderForVisitor(
     });
   });
   return render === undefined ? undefined : answerFromRender(input, target.handler, render, want);
+}
+
+/**
+ * A member of a route the build left nothing of, where no cache can keep its render — none, or
+ * none in reach — when the page postpones: rendered as a regeneration renders it, and resumed for
+ * this visitor alone (`renderForVisitor`). `undefined` for any other page, which is whole as it is
+ * rendered and is streamed as it is, and for one dynamic here.
+ *
+ * Asked as it is, Next.js renders such a page's static part, postpones the rest and answers with
+ * the static part alone (`x-nextjs-postponed`): in minimal mode the resume is the platform's, from
+ * what it kept. Nothing was kept, and the visitor was sent a document that ends where the static
+ * part does.
+ */
+export function renderUnkept(
+  input: RoutedInput,
+  target: Target,
+  want: Want,
+  built: Prerender,
+): Promise<Response | undefined> | undefined {
+  return built.renderingMode === 'PARTIALLY_STATIC' && target.descriptor.kind === 'app-page'
+    ? renderForVisitor(input, target, want)
+    : undefined;
 }
