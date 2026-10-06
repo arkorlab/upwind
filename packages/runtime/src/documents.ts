@@ -105,7 +105,7 @@ export function crawlerWantsWholePage(
 ): boolean {
   return (
     shell.pathname !== resolved.pathname &&
-    isClassShell(shell.pathname) &&
+    isClassShell(shell.pathname, shell.route) &&
     entrypointKindOf(store, shell.route) === 'pages' &&
     isCrawler(request)
   );

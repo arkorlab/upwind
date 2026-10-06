@@ -6,8 +6,10 @@ import {
   type EntrypointKind,
   isPagesDataPathname,
   type ManifestHead,
+  placeholderSegments,
   type Prerender,
   type Route,
+  standsForClass,
   type StaticFile,
 } from '@stayingupwind/core/bundle';
 import { ByteLru } from '@stayingupwind/core/util';
@@ -89,11 +91,6 @@ export interface Store {
   tryReadBlob(sha256: string): Uint8Array<ArrayBuffer> | undefined;
 }
 
-/** A `[param]`, `[...rest]` or `[[...rest]]` segment: it starts with a bracket, and no other does. */
-function isDynamicSegment(segment: string): boolean {
-  return segment.startsWith('[');
-}
-
 function escapeRegex(text: string): string {
   return text.replaceAll(/[.*+?^${}()|[\]\\]/gu, String.raw`\$&`);
 }
@@ -114,16 +111,20 @@ function segmentPattern(segment: string): string {
 
 /**
  * `/en/[orgSlug]` → `^/en/[^/]+$`; `/docs/[...slug]` → `^/docs/.+$`; `/docs/[[...slug]]` →
- * `^/docs(?:/.*)?$`, so that `/docs` itself, the empty catch-all, is a member.
+ * `^/docs(?:/.*)?$`, so that `/docs` itself, the empty catch-all, is a member. Only the route's own
+ * placeholders are patterns (`placeholderSegments`): a value that holds a bracket is matched as it is.
  */
-function patternFor(pathname: string): RegExp {
+function patternFor(pathname: string, route: string): RegExp {
+  const placeholders = placeholderSegments(pathname, route);
   const source =
     pathname === '/'
       ? '/'
       : pathname
           .split('/')
+          .map((segment, index) =>
+            placeholders[index] === true ? segmentPattern(segment) : `/${escapeRegex(segment)}`,
+          )
           .slice(1)
-          .map((segment) => segmentPattern(segment))
           .join('');
   // Built from the route's own segments, every literal escaped above.
   // eslint-disable-next-line security/detect-non-literal-regexp
@@ -147,8 +148,8 @@ function buildShells(
       entry = { pages: new Map(), patterns: [] };
       byRoute.set(prerender.route, entry);
     }
-    if (prerender.pathname.split('/').some((segment) => isDynamicSegment(segment))) {
-      entry.patterns.push({ pattern: patternFor(prerender.pathname), prerender });
+    if (standsForClass(prerender)) {
+      entry.patterns.push({ pattern: patternFor(prerender.pathname, prerender.route), prerender });
     } else {
       entry.pages.set(prerender.pathname, prerender);
     }
@@ -158,7 +159,7 @@ function buildShells(
     // More literal segments first: `/en/[orgSlug]` before `/[locale]/[orgSlug]`.
     entry.patterns.sort((a, b) => {
       return (
-        countDynamic(a.prerender.pathname) - countDynamic(b.prerender.pathname) ||
+        countPlaceholders(a.prerender) - countPlaceholders(b.prerender) ||
         b.prerender.pathname.length - a.prerender.pathname.length
       );
     });
@@ -167,8 +168,8 @@ function buildShells(
   return shells;
 }
 
-function countDynamic(pathname: string): number {
-  return pathname.split('/').filter((segment) => isDynamicSegment(segment)).length;
+function countPlaceholders(prerender: Prerender): number {
+  return placeholderSegments(prerender.pathname, prerender.route).filter(Boolean).length;
 }
 
 /**
@@ -473,8 +474,8 @@ function unlocalizedRoute(store: Store, route: string): string | undefined {
  * the fallback shell again. Only an App Router page renders one at request time: a Pages Router
  * `fallback: true` document is the build's alone.
  */
-export function isClassShell(pathname: string): boolean {
-  return pathname.includes('[');
+export function isClassShell(pathname: string, route: string): boolean {
+  return placeholderSegments(pathname, route).includes(true);
 }
 
 /**

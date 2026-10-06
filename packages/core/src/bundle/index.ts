@@ -62,7 +62,7 @@ export {
 } from './pages-data.ts';
 export { queryDependent } from './query.ts';
 export { type PrefetchSegment, prefetchSegments } from './segments.ts';
-export { routePathnameOf } from './spelling.ts';
+export { placeholderSegments, routePathnameOf, standsForClass } from './spelling.ts';
 export {
   cacheablePrerenders,
   completePrerenders,

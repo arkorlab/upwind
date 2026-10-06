@@ -61,7 +61,7 @@ export function regenerateMode(request: Request): RegenerateMode | undefined {
 
 /** Whether the cache may hold a generation of the entry made at request time. */
 function regenerable(descriptor: RouteEntryDescriptor): boolean {
-  return descriptor.kind !== 'pages' || !isClassShell(descriptor.pathname);
+  return descriptor.kind !== 'pages' || !isClassShell(descriptor.pathname, descriptor.route);
 }
 
 /**
@@ -113,7 +113,7 @@ async function targetOf(input: RoutedInput, store: Store): Promise<Target | unde
     return undefined;
   }
   const asked = new URL(input.request.url).pathname;
-  const member = input.request.headers.has(CACHE_UPGRADE_HEADER) && !isClassShell(asked);
+  const member = input.request.headers.has(CACHE_UPGRADE_HEADER) && !isClassShell(asked, route);
   const pathname = member ? asked : entryPathnameOf(store, route, asked);
   const shell = store.prerendersByPathname.get(pathname) ?? findShell(store, route, pathname);
   if (bypassesPrerender(store, input.request, shell) || queryDependent(shell, route, pathname)) {

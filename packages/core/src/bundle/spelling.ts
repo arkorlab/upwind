@@ -14,6 +14,48 @@ export function isTemplate(pathname: string): boolean {
   return pathname.includes('[');
 }
 
+/** A `[param]`, `[...rest]` or `[[...rest]]` segment of a route. */
+function isRouteParameter(segment: string): boolean {
+  return segment.startsWith('[') && segment.endsWith(']');
+}
+
+/**
+ * Which segments of `pathname`, a pathname of `route`, stand for the route's parameters rather than
+ * for values of them: the ones that are, where the route has a parameter, that parameter spelled as
+ * the route spells it — `[post]` in `/blog/[post]`, as Next.js keeps a template's placeholders. A
+ * segment that only holds a bracket is a value: `getStaticPaths` and `generateStaticParams` may name a
+ * page `/blog/[post3]`, and read as a placeholder it stood for every post. So is one spelled as another
+ * of the route's parameters: `/news/[category]` under `/[category]/[slug]` names one page.
+ *
+ * Compared from the end, since a locale's pathname leads with a segment its route may not have.
+ * Where a build says nothing else (`routeType`), a value spelled exactly as its own placeholder —
+ * the page `/blog/[post]` of `/blog/[post]` — cannot be told from the template, and is read as it.
+ */
+export function placeholderSegments(pathname: string, route: string): boolean[] {
+  const segments = pathname.split('/');
+  const routeSegments = route.split('/');
+  const lead = Math.max(0, segments.length - routeSegments.length);
+  return segments.map((segment, index) => {
+    const counterpart = index >= lead ? routeSegments[index - lead] : undefined;
+    return counterpart !== undefined && isRouteParameter(counterpart) && segment === counterpart;
+  });
+}
+
+/**
+ * Whether a prerender stands for a class of its route's URLs — a shell or a fallback, rendered with
+ * some of its parameters unresolved — rather than for one page. Next.js says so itself from 16.3 on
+ * (`routeType`, `shell` or `fallback`); a build that says nothing is read by its placeholders
+ * (`placeholderSegments`), and never by whether its pathname holds a bracket.
+ */
+export function standsForClass(
+  prerender: Pick<Prerender, 'pathname' | 'route' | 'routeType'>,
+): boolean {
+  if (prerender.routeType !== undefined) {
+    return prerender.routeType === 'shell' || prerender.routeType === 'fallback';
+  }
+  return placeholderSegments(prerender.pathname, prerender.route).includes(true);
+}
+
 /**
  * Whether the build keeps its pages behind a trailing slash: `trailingSlash`, and the redirect
  * `next build` adds to put every page there. Where `skipTrailingSlashRedirect` leaves that redirect
