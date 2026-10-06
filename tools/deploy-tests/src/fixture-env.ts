@@ -88,7 +88,10 @@ export async function deploymentEnvironment(
   env: NodeJS.ProcessEnv,
 ): Promise<{ readonly env: Record<string, string>; readonly said: string }> {
   const own = await fixtureEnvironment(directory);
-  const suite = suiteEnvironment(env);
+  // Held to what the files are: a suite's `__NEXT_PROCESSED_ENV` would have the Function skip its own.
+  const suite = Object.fromEntries(
+    Object.entries(suiteEnvironment(env)).filter(([name]) => !keptOut(name)),
+  );
   const merged = { ...own, ...suite };
   return {
     env: merged,

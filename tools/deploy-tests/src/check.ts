@@ -101,11 +101,18 @@ function bounded(
   name: string,
   appDir: string,
   env: NodeJS.ProcessEnv,
+  via?: string,
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     // The script itself, by its own path, rather than a shell found on `PATH`: they are executable and
-    // carry a shebang, and this is how the suite's harness starts them.
-    const child = spawn(path.join(SCRIPTS, name), [], { cwd: appDir, env, detached: true });
+    // carry a shebang, and this is how the suite's harness starts them. Or through `via`, a Node.js
+    // script handed that path, which starts it as a harness of its own would.
+    const script = path.join(SCRIPTS, name);
+    const options = { cwd: appDir, env, detached: true };
+    const child =
+      via === undefined
+        ? spawn(script, [], options)
+        : spawn(process.execPath, [via, script], options);
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (chunk: Buffer) => (stdout = keptTo(stdout, chunk)));
@@ -320,6 +327,16 @@ function ordinaryNodeOptions(options: string | undefined): string | undefined {
   return kept.length === 0 ? undefined : kept.join(' ');
 }
 
+/** A harness as Next.js's is one: it starts the hook it is handed, with a suite's variable on top. */
+const HARNESS = `
+import { spawnSync } from 'node:child_process';
+
+const [hook] = process.argv.slice(2);
+const env = { ...process.env, SUITE_ONLY: 'via-the-parent' };
+const result = spawnSync(hook, [], { env, stdio: 'inherit' });
+process.exit(result.status ?? 1);
+`;
+
 /**
  * A suite's own variables (`createNext({ env })`), which its harness hands the hook on top of its own
  * environment: the deployment is given them, over the application's `.env` files, and nothing else of
@@ -355,6 +372,30 @@ async function suiteEnvScenario(
   } finally {
     host.close();
   }
+  // And as Next.js's harness starts the hook — from its own process, which names no pid — read off
+  // the hook's parent.
+  const parent = await fakeHost(deploymentId);
+  const harness = path.join(path.dirname(appDir), 'harness.mjs');
+  writeFileSync(harness, HARNESS);
+  try {
+    await bounded(
+      DEPLOY_HOOK,
+      appDir,
+      {
+        ...env,
+        ARKOR_API_URL: `http://127.0.0.1:${String(parent.port)}`,
+        ADAPTER_TEST_HARNESS_PID: undefined,
+      },
+      harness,
+    );
+    holds(
+      "and read off the hook's parent where no harness is named",
+      JSON.stringify(parent.environment()) ===
+        JSON.stringify({ OWN: 'yes', SUITE_ONLY: 'via-the-parent' }),
+    );
+  } finally {
+    parent.close();
+  }
 }
 
 async function main(): Promise<void> {
@@ -366,7 +407,6 @@ async function main(): Promise<void> {
   writeFileSync(tokenFile, TOKEN, { mode: 0o600 });
   const deploymentId = createId(DEPLOYMENT_ID_PREFIX);
   const host = await fakeHost(deploymentId);
-  let quiet: FakeHost | undefined;
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     // An ordinary suite's, whatever the shell running the check says: a suite name decides how its
@@ -396,7 +436,15 @@ async function main(): Promise<void> {
     env,
     stdio: 'ignore',
   });
+  harness.on('error', (error) => {
+    console.error(`the stand-in harness failed: ${error.message}`);
+    process.exitCode = 1;
+  });
+  if (harness.pid === undefined) {
+    throw new Error('the stand-in harness did not start');
+  }
   env['ADAPTER_TEST_HARNESS_PID'] = String(harness.pid);
+  let quiet: FakeHost | undefined;
   const hook = async (name: string): Promise<{ stdout: string; stderr: string }> => {
     try {
       return await bounded(name, appDir, env);

@@ -79,14 +79,29 @@ function suiteVariables(
 export function suiteVariablesOf(
   pid: string | undefined,
   given: NodeJS.ProcessEnv,
+  warn: (message: string) => void,
 ): Record<string, string> {
-  if (pid === undefined) {
+  // A process id, and nothing that reads as a path once it is put into one.
+  if (pid === undefined || !/^[1-9]\d*$/u.test(pid)) {
+    warn(`not a process id to read a harness's environment by: ${pid ?? 'none'}`);
     return {};
   }
   let harness: Map<string, string>;
   try {
     harness = environOf(readFileSync(`/proc/${pid}/environ`));
-  } catch {
+  } catch (error) {
+    // No `/proc` is a machine this was never going to read; anything else is one where it should have.
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      warn(
+        `could not read the harness's environment: ${(error as NodeJS.ErrnoException).code ?? String(error)}`,
+      );
+    }
+    return {};
+  }
+  // A process that has gone, or that cleared its environment, gives nothing to read against: every
+  // variable the hook was handed would read as the suite's, the machine's with them.
+  if (harness.size === 0) {
+    warn("the harness's environment reads as empty; no variable is taken for the suite's");
     return {};
   }
   return suiteVariables(given, harness);

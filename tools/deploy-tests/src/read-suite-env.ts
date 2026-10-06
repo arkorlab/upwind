@@ -6,4 +6,9 @@ import { suiteVariablesOf } from './suite-env.ts';
  * so what it reads is what the harness handed it.
  */
 const [pid] = process.argv.slice(2);
-process.stdout.write(JSON.stringify(suiteVariablesOf(pid, process.env)));
+const warn = (message: string): void => {
+  console.error(
+    `suite environment: ${message}; the deployment gets the application's .env files alone`,
+  );
+};
+process.stdout.write(JSON.stringify(suiteVariablesOf(pid, process.env, warn)));
