@@ -2,9 +2,11 @@ import type { BlobRef, Prerender, StaticFile } from '@stayingupwind/core/bundle'
 import { NO_STORE_CACHE_CONTROL, SEGMENT_TREE_PATH } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
+import { renderForVisitor } from './answers.ts';
 import { isDraftRequest } from './draft.ts';
 import { type Entry, entryFor } from './entries.ts';
 import { failureAnswer } from './error-pages.ts';
+import { descriptorFor, sameEntry } from './generations.ts';
 import { isCrawler, isRscRequest, rscBase } from './incoming.ts';
 import type { Resolved } from './outputs.ts';
 import {
@@ -118,9 +120,42 @@ export interface BuiltDocument {
 }
 
 /**
+ * A partially prerendered page the build left with nothing in its shell — one that blocks, each
+ * member rendered when it is first asked for — rendered as a regeneration renders it, and resumed
+ * for this visitor alone; `undefined` for any other page, for one dynamic here, and for one this
+ * request has regenerated already, which found that.
+ *
+ * Asked as it is, the handler renders the static part, postpones the rest and answers with the
+ * static part alone (`x-nextjs-postponed`): in minimal mode the resume is the platform's, from what
+ * it kept. Nothing was kept — no cache, or a cache out of reach — and the visitor was sent a
+ * document that ends where the static part does.
+ */
+async function renderedWhole(
+  input: RoutedInput,
+  store: Store,
+  { pathname, url }: Resolved,
+  { shell, entry }: { readonly shell: Prerender; readonly entry: Entry },
+): Promise<Response | undefined> {
+  if (
+    entry.kind !== 'node' ||
+    shell.renderingMode !== 'PARTIALLY_STATIC' ||
+    entrypointKindOf(store, shell.route) !== 'app-page'
+  ) {
+    return undefined;
+  }
+  const descriptor = descriptorFor(store, shell.route, pathname);
+  if (sameEntry(input.regenerated, descriptor)) {
+    return undefined;
+  }
+  const target = { descriptor, handler: entry.handler };
+  return renderForVisitor(input, target, { representation: 'html', url });
+}
+
+/**
  * A document from the build: its shell, when the build made one, then its resume, as one
  * response. Without a shell, the route is rendered whole — the one kind of render the Functions
- * runtime is asked for from scratch.
+ * runtime is asked for from scratch — and a partially prerendered page as a regeneration renders
+ * it, then resumed (`renderedWhole`).
  *
  * A shell that has to be resumed is of use only where the entrypoint can resume one. Next.js's
  * edge template renders with `postponed: undefined`, so a route on that runtime renders the
@@ -145,9 +180,16 @@ export async function documentFromBuild(
     });
   }
   if (shell?.body === undefined) {
-    return invokeEntry(input, entry, resolved.url, {
-      onFailure: failureAnswer(store, entry, resolved.route),
-    });
+    const whole =
+      shell === undefined
+        ? undefined
+        : await renderedWhole(input, store, resolved, { shell, entry });
+    return (
+      whole ??
+      invokeEntry(input, entry, resolved.url, {
+        onFailure: failureAnswer(store, entry, resolved.route),
+      })
+    );
   }
   const status = shell.initialStatus ?? fallbackStatus;
   if (shell.postponed === undefined) {

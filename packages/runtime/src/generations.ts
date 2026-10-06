@@ -426,7 +426,7 @@ function answerableEntry(input: RoutedInput, store: Store, source: GenerationSou
  * which keeps the slash in an application that keeps its pages there (`trailingSlash`); the usual
  * path routes it without.
  */
-function sameEntry(a: RouteEntryDescriptor | undefined, b: RouteEntryDescriptor): boolean {
+export function sameEntry(a: RouteEntryDescriptor | undefined, b: RouteEntryDescriptor): boolean {
   return (
     a?.kind === b.kind &&
     a.route === b.route &&
