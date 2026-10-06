@@ -149,8 +149,8 @@ Beyond that, these limits are worth knowing before reading a failure as this ada
   `SHLVL`, `_`), Next.js's harness's (`TEST_FILE_PATH`, `NEXT_TEST_*`), Jest's (`JEST_*`),
   `NEXT_DEPLOYMENT_ID` (the host gives a deployment its own), this tool's (`ARKOR_*`,
   `ADAPTER_TEST_*`), and what a `.env` file is never given either (`NODE_ENV`,
-  `__NEXT_PROCESSED_ENV`). A harness whose environment cannot be read — on a machine without `/proc` as
-  anywhere — is said on the hook's standard error.
+  `__NEXT_PROCESSED_ENV`). A harness whose environment cannot be read is said on the hook's standard
+  error; a machine without `/proc` is one such case.
   A machine without `/proc` gives a deployment its `.env` files alone, and a suite whose application
   reads a variable that arrives only through its harness fails there.
 - **The adapter under test has no cache unless one is plugged in.** This repository's adapter, as its
