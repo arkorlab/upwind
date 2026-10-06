@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
-import { pagesDataPathname, queryDependent } from '@stayingupwind/core/bundle';
+import { pagesDataPathname, type Prerender, queryDependent } from '@stayingupwind/core/bundle';
 import {
   type DecodedGenerationPack,
   type InvalidationState,
@@ -24,6 +24,7 @@ import {
   answerWith,
   documentWant,
   renderForVisitor,
+  renderUnkept,
   resumeRsc,
   type Target,
   type Want,
@@ -393,10 +394,10 @@ async function outputOf(
 }
 
 /**
- * The entry a request may be answered from, and the cache it is kept in; `undefined` where no
- * generation answers: no cache, a route the build prerendered nothing of, a draft or a bypass
- * condition, an output that depends on a query its route does not name (no one generation stands
- * for it), or an entry never regenerated.
+ * The entry a request may be answered from, the prerender that stands for it, and the cache it is
+ * kept in, where there is one; `undefined` where no generation answers: a route the build
+ * prerendered nothing of, a draft or a bypass condition, an output that depends on a query its
+ * route does not name (no one generation stands for it), or an entry never regenerated.
  *
  * A route with no prerender — no output of its own, no shell of its class — is one Next.js renders
  * for every request, and no generation of it is ever seeded or made: its record was asked for all
@@ -404,12 +405,10 @@ async function outputOf(
  * deadline, for an answer that could only say there was none.
  */
 function answerableEntry(input: RoutedInput, store: Store, source: GenerationSource) {
-  const runtime = input.cache;
   const shell =
     store.prerendersByPathname.get(source.pathname) ??
     findShell(store, source.route, source.pathname);
   if (
-    runtime === undefined ||
     shell === undefined ||
     bypassesPrerender(store, input.request, shell, source.url) ||
     queryDependent(shell, source.route, source.pathname)
@@ -417,7 +416,34 @@ function answerableEntry(input: RoutedInput, store: Store, source: GenerationSou
     return;
   }
   const descriptor = descriptorFor(store, source.route, source.pathname);
-  return regenerable(descriptor) ? { runtime, descriptor } : undefined;
+  return regenerable(descriptor) ? { runtime: input.cache, descriptor, shell } : undefined;
+}
+
+/** A request the cache has no generation for, and what it asks of the entry. */
+interface Miss {
+  readonly input: RoutedInput;
+  readonly shell: Prerender;
+  readonly target: Target;
+  readonly source: GenerationSource;
+  readonly want: Want;
+  /** Whether this request may still render the entry (`serveFromGeneration`). */
+  readonly once: boolean;
+}
+
+/**
+ * The answer where there is no generation of the entry: for a member the build left to the first
+ * request for it, one rendered now and kept, or — where no cache is in reach to keep it — one
+ * rendered for this visitor alone, for a page that postpones (`renderUnkept`); `undefined`, which
+ * leaves the build's own output to answer, for anything else.
+ */
+async function answerMissing(miss: Miss, job?: Job): Promise<Response | undefined> {
+  const { input, shell, target, source, want, once } = miss;
+  if (!once || source.onMiss !== 'render') {
+    return undefined;
+  }
+  return job === undefined
+    ? renderUnkept(input, target, want, shell)
+    : answerFromJob(job, await runJob(job, 'miss'), want);
 }
 
 /**
@@ -426,7 +452,7 @@ function answerableEntry(input: RoutedInput, store: Store, source: GenerationSou
  * which keeps the slash in an application that keeps its pages there (`trailingSlash`); the usual
  * path routes it without.
  */
-export function sameEntry(a: RouteEntryDescriptor | undefined, b: RouteEntryDescriptor): boolean {
+function sameEntry(a: RouteEntryDescriptor | undefined, b: RouteEntryDescriptor): boolean {
   return (
     a?.kind === b.kind &&
     a.route === b.route &&
@@ -581,10 +607,11 @@ async function settledWithin(promise: Promise<unknown>, ms: number): Promise<voi
 /**
  * What the Function answers itself, from the entry's current generation: fresh or stale it is
  * served (stale, regenerated behind); expired, it is regenerated first, or rendered for a prefetch
- * and regenerated behind; missing, rendered now where the build made none. `undefined` leaves the
- * build's own output to answer: no generation where the build has one, a host out of reach (an
- * answer is still given, and the record asked for again on the next hold), a Pages Router class
- * shell, or an entry dynamic here.
+ * and regenerated behind; missing, rendered now where the build made none — and kept by no one
+ * where no cache is in reach, for a page that postpones (`answerMissing`). `undefined` leaves the
+ * build's own output to answer: no generation where the build has one, no cache, a host out of
+ * reach (an answer is still given, and the record asked for again on the next hold), a Pages
+ * Router class shell, or an entry dynamic here.
  */
 export async function serveFromGeneration(
   input: RoutedInput,
@@ -596,9 +623,8 @@ export async function serveFromGeneration(
   if (answerable === undefined) {
     return undefined;
   }
-  const { runtime, descriptor } = answerable;
-  const lookup = await currentGeneration(runtime, descriptor, nowMs(), input.waitUntil);
-  const job: Job = { input, store, runtime, target: { descriptor, handler } };
+  const { runtime, descriptor, shell } = answerable;
+  const target = { descriptor, handler };
   const want: Want = {
     representation: source.representation,
     url: source.url,
@@ -608,11 +634,15 @@ export async function serveFromGeneration(
   // (`routeRequest`), and found the entry dynamic here, which is all another would find: what is
   // left is a render of the request as it came — the build's path, for an entry with no record.
   const once = !sameEntry(input.regenerated, descriptor);
-  if (lookup.kind === 'none' && source.onMiss === 'render') {
-    return once ? answerFromJob(job, await runJob(job, 'miss'), want) : undefined;
+  const miss: Miss = { input, shell, target, source, want, once };
+  if (runtime === undefined) {
+    return answerMissing(miss);
   }
+  const lookup = await currentGeneration(runtime, descriptor, nowMs(), input.waitUntil);
+  const job: Job = { input, store, runtime, target };
   if (lookup.kind !== 'generation') {
-    return undefined;
+    // A record that could not be read is not one to replace: nothing is kept in its place.
+    return answerMissing(miss, lookup.kind === 'none' ? job : undefined);
   }
   const { pack, validity } = lookup.current;
   if (validity === 'expired' && !once) {
