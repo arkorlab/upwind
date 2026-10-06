@@ -28,8 +28,8 @@ function isRouteParameter(segment: string): boolean {
  * of the route's parameters: `/news/[category]` under `/[category]/[slug]` names one page.
  *
  * Compared from the end, since a locale's pathname leads with a segment its route may not have.
- * Where a build says nothing else (`routeType`), a value spelled exactly as its own placeholder —
- * the page `/blog/[post]` of `/blog/[post]` — cannot be told from the template, and is read as it.
+ * Where a build says nothing else (`standsForClass`), a value spelled exactly as its own placeholder
+ * — the page `/blog/[post]` of `/blog/[post]` — cannot be told from the template, and is read as it.
  */
 export function placeholderSegments(pathname: string, route: string): boolean[] {
   const segments = pathname.split('/');
@@ -43,15 +43,24 @@ export function placeholderSegments(pathname: string, route: string): boolean[] 
 
 /**
  * Whether a prerender stands for a class of its route's URLs — a shell or a fallback, rendered with
- * some of its parameters unresolved — rather than for one page. Next.js says so itself from 16.3 on
- * (`routeType`, `shell` or `fallback`); a build that says nothing is read by its placeholders
+ * some of its parameters unresolved, or the entry of a route that blocks — rather than for one page.
+ *
+ * Next.js 16.3 says which of its outputs are a shell or a fallback (`routeType`), but not of a route
+ * that blocks: that route's own entry, the template no request names, is a `page` to it
+ * (`response: 'empty'`, `compute: 'blocking'`; `getPagesFallbackClassification`, and its App Router
+ * counterpart, in `build/index.js`). What tells the two apart is the route a page belongs to: a member
+ * a dynamic route prerendered carries that route's fallback (`parentFallbackMode`), and the route's
+ * own entry carries none. Anything the build says nothing more of is read by its placeholders
  * (`placeholderSegments`), and never by whether its pathname holds a bracket.
  */
 export function standsForClass(
-  prerender: Pick<Prerender, 'pathname' | 'route' | 'routeType'>,
+  prerender: Pick<Prerender, 'pathname' | 'route' | 'routeType' | 'parentFallbackMode'>,
 ): boolean {
-  if (prerender.routeType !== undefined) {
-    return prerender.routeType === 'shell' || prerender.routeType === 'fallback';
+  if (prerender.routeType === 'shell' || prerender.routeType === 'fallback') {
+    return true;
+  }
+  if (prerender.routeType !== undefined && prerender.parentFallbackMode !== undefined) {
+    return false;
   }
   return placeholderSegments(prerender.pathname, prerender.route).includes(true);
 }
