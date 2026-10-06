@@ -375,11 +375,15 @@ async function ownUrlScenarios(
     } catch (error) {
       outlasted = error;
     }
+    // Half the hook's time at least, rather than all of it: the hook's clock is the wall clock, which
+    // steps, and this one is not. A wait cut short to nothing still fails it.
+    const waitedFor = performance.now() - waitedFrom;
     holds(
       "a run that outlasts the suite's hook is waited for as long as the hook lasts, and said so",
       outlasted instanceof HookFailureError &&
         outlasted.said.includes("the suite's hook timeout came first") &&
-        performance.now() - waitedFrom < HOOK_TIMEOUT_MS / 2,
+        waitedFor >= HOOK_RUN_OUT_MS / 2 &&
+        waitedFor < HOOK_TIMEOUT_MS / 2,
     );
 
     // A URL that needs a path to reach the deployment cannot be handed to the suite, which joins its own

@@ -27,3 +27,10 @@ export function hookOver(deadline: number | undefined): boolean {
 export function withinHook(end: number, deadline: number | undefined): number {
   return Math.min(end, deadline ?? Infinity);
 }
+
+/** What aborts at the hook's end, for a call that cannot be left to run on past it. */
+export function hookSignal(deadline: number | undefined): AbortSignal | undefined {
+  return deadline === undefined
+    ? undefined
+    : AbortSignal.timeout(Math.max(0, deadline - Date.now()));
+}

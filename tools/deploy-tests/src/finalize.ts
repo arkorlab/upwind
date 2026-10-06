@@ -15,14 +15,22 @@ const OTHER_RUN_FIRST_WAIT_MS = 2000;
 const OTHER_RUN_MAX_WAIT_MS = 15_000;
 const MS_PER_MINUTE = 60_000;
 
-/** Why a finalize stopped waiting for the run before it: the suite's hook came to its end, or the wait did. */
-function gaveUp(hookDeadline: number | undefined, refusal: unknown): Error {
-  return new Error(
-    hookOver(hookDeadline)
-      ? "the suite's hook timeout came first; the project's previous run had not ended"
-      : `the project's previous run did not end within the ${String(OTHER_RUN_TIMEOUT_MS / MS_PER_MINUTE)} minutes a finalize waits for it`,
-    { cause: refusal },
-  );
+/**
+ * Why no finalize was made, or none taken: the suite's hook came to its end — before one was asked
+ * for, or while the run before it went on — or the wait for that run did.
+ */
+function gaveUp(hookDeadline: number | undefined, refusal?: unknown): Error {
+  if (!hookOver(hookDeadline)) {
+    return new Error(
+      `the project's previous run did not end within the ${String(OTHER_RUN_TIMEOUT_MS / MS_PER_MINUTE)} minutes a finalize waits for it`,
+      { cause: refusal },
+    );
+  }
+  return refusal === undefined
+    ? new Error("the suite's hook timeout came first; the deployment was not finalized")
+    : new Error("the suite's hook timeout came first; the project's previous run had not ended", {
+        cause: refusal,
+      });
 }
 
 /**
@@ -45,7 +53,13 @@ export async function finalizeWhenFree(
   const deadline = withinHook(Date.now() + OTHER_RUN_TIMEOUT_MS, hookDeadline);
   let wait = OTHER_RUN_FIRST_WAIT_MS;
   let waited = false;
+  let refusal: unknown;
   for (;;) {
+    // A finalize begins a run, and one begun by a hook out of time is one nobody waits for: it goes on
+    // deploying, and the next fixture finds it under way.
+    if (hookOver(hookDeadline)) {
+      throw gaveUp(hookDeadline, refusal);
+    }
     try {
       return await client.finalize(deploymentId);
     } catch (error) {
@@ -53,6 +67,7 @@ export async function finalizeWhenFree(
       if (!another) {
         throw error;
       }
+      refusal = error;
       // The whole of the wait is used: the last sleep is cut to the time that is left, and the run is
       // given up on only once none is.
       const left = deadline - Date.now();

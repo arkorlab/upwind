@@ -2,7 +2,7 @@ import { claimProject, releaseProject } from './claim.ts';
 import { createClient } from './client.ts';
 import { readConfig, readProjectConfig } from './config.ts';
 import { deployFixture, preflight } from './deploy.ts';
-import { hookDeadline } from './hook.ts';
+import { hookDeadline, hookOver, hookSignal } from './hook.ts';
 
 /**
  * The commands the three hooks of Next.js's deploy-mode contract are made of.
@@ -74,7 +74,8 @@ async function main(argv: readonly string[]): Promise<void> {
     return;
   }
   const config = readConfig();
-  const client = createClient(config);
+  const deadline = command === 'deploy' ? hookDeadline(process.env) : undefined;
+  const client = createClient(config, hookSignal(deadline));
   switch (command) {
     case 'preflight': {
       await preflight({ client, config, log: say });
@@ -83,19 +84,16 @@ async function main(argv: readonly string[]): Promise<void> {
     case 'deploy': {
       claimProject(config, appDir);
       try {
-        const deployment = await deployFixture({
-          appDir,
-          client,
-          config,
-          log: say,
-          deadline: hookDeadline(process.env),
-        });
+        const deployment = await deployFixture({ appDir, client, config, log: say, deadline });
         // The one thing on standard output: the harness reads it as the deployment's URL.
         process.stdout.write(`${deployment.url}\n`);
       } catch (error) {
         // The tests never run, so the cleanup hook the harness would have called is not coming.
         releaseProject(config, appDir);
-        throw error;
+        // A call the hook's end cut short says only that it was aborted: what ended it is said here.
+        throw hookOver(deadline) && !String(error).includes("the suite's hook timeout")
+          ? new Error("the suite's hook timeout came first", { cause: error })
+          : error;
       }
     }
   }
