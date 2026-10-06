@@ -16,23 +16,33 @@ import { TOOL_ENV_PREFIXES } from './config.ts';
  * Read by the deploy hook before it sets anything of its own, with the harness's pid
  * (`read-suite-env.ts`); none where there is no `/proc` to read, which leaves a deployment the
  * application's `.env` files alone, as before.
+ *
+ * **Two limits, both of reading a difference.** A suite's variable with the very value the harness
+ * started with is no difference, and is not given: nothing tells it from the harness's own. And a
+ * variable the harness sets in its own process after it starts is one, and is taken for the suite's
+ * unless it is named below — the startup environment is all `/proc` keeps, and the process's current
+ * one is not readable from outside it. Next.js's harness sets `TEST_FILE_PATH` and `NEXT_TEST_*`, and
+ * nothing that holds a credential; a host's runner that loaded one into the harness's process as it
+ * ran would have it uploaded, as a secret, into the test project.
  */
 
 /**
- * Not the suite's, though the hook has them and the harness did not: what the shell running the hook
- * sets for itself, what the harness adds for every hook (`NEXT_TEST_DIR`), and the deployment id,
- * which the host gives a deployment and a suite's own would contradict.
+ * Not the suite's, though the hook has them and the harness did not start with them: what the shell
+ * running the hook sets for itself; what Next.js's harness sets in its own process as it runs — the
+ * test file's path (`TEST_FILE_PATH`, `e2e-utils`) and its `NEXT_TEST_*` settings, `NEXT_TEST_DIR`
+ * among them, which it adds for every hook; and the deployment id, which the host gives a deployment
+ * and a suite's own would contradict.
  */
 const NOT_THE_SUITES: ReadonlySet<string> = new Set([
   '_',
   'NEXT_DEPLOYMENT_ID',
-  'NEXT_TEST_DIR',
   'OLDPWD',
   'PWD',
   'SHLVL',
+  'TEST_FILE_PATH',
 ]);
-/** Jest's own, set in a worker as it runs. */
-const NOT_THE_SUITES_PREFIXES: readonly string[] = ['JEST_', ...TOOL_ENV_PREFIXES];
+/** Jest's own, set in a worker as it runs; Next.js's test settings; and this tool's own. */
+const NOT_THE_SUITES_PREFIXES: readonly string[] = ['JEST_', 'NEXT_TEST_', ...TOOL_ENV_PREFIXES];
 
 /** An environment as `/proc/<pid>/environ` holds one: `NAME=value` entries, each ended by a NUL. */
 function environOf(bytes: Buffer): Map<string, string> {

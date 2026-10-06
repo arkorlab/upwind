@@ -343,9 +343,12 @@ async function suiteEnvScenario(
       ARKOR_API_URL: `http://127.0.0.1:${String(host.port)}`,
       SUITE_ONLY: 'from-the-suite',
       OWN: 'the-suites-over-the-files',
+      // What Next.js's harness sets in its own process as it runs: its, not the suite's.
+      TEST_FILE_PATH: '/next.js/test/e2e/some.test.ts',
+      NEXT_TEST_JOB: '1',
     });
     holds(
-      "a suite's own variables reach the deployment, over the application's .env files",
+      "a suite's own variables reach the deployment, over the application's .env files, and the harness's do not",
       JSON.stringify(host.environment()) ===
         JSON.stringify({ OWN: 'the-suites-over-the-files', SUITE_ONLY: 'from-the-suite' }),
     );

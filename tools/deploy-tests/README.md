@@ -142,8 +142,11 @@ Beyond that, these limits are worth knowing before reading a failure as this ada
   environment; its harness hands it to the hook on top of its own environment. The hook reads the
   harness's environment as that process was started (`/proc/<pid>/environ`) and gives the deployment
   what it was handed beyond it (`src/suite-env.ts`) — nothing of the machine's, which the harness held
-  too. A machine without `/proc` gives a deployment its `.env` files alone, and a suite whose
-  application reads a variable that arrives only through its harness fails there.
+  too. Two limits of reading a difference: a suite's variable with the very value the harness started
+  with is not told apart, and is not given; and a variable the harness's process sets as it runs is
+  taken for the suite's unless it is named (Next.js's own, `TEST_FILE_PATH` and `NEXT_TEST_*`, are).
+  A machine without `/proc` gives a deployment its `.env` files alone, and a suite whose application
+  reads a variable that arrives only through its harness fails there.
 - **The adapter under test has no cache unless one is plugged in.** This repository's adapter, as its
   default export, is configured with nothing, so its Functions answer every cache read a miss: no
   data cache, no `use cache`, no page kept between requests and no regeneration seen. Every suite that
