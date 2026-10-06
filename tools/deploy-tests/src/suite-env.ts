@@ -90,12 +90,12 @@ export function suiteVariablesOf(
   try {
     harness = environOf(readFileSync(`/proc/${pid}/environ`));
   } catch (error) {
-    // No `/proc` is a machine this was never going to read; anything else is one where it should have.
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-      warn(
-        `could not read the harness's environment: ${(error as NodeJS.ErrnoException).code ?? String(error)}`,
-      );
-    }
+    const code = (error as NodeJS.ErrnoException).code;
+    warn(
+      code === 'ENOENT'
+        ? `no /proc/${pid}/environ to read the harness's environment from`
+        : `could not read the harness's environment: ${code ?? String(error)}`,
+    );
     return {};
   }
   // A process that has gone, or that cleared its environment, gives nothing to read against: every

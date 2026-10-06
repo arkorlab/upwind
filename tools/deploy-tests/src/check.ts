@@ -363,6 +363,8 @@ async function suiteEnvScenario(
       // What Next.js's harness sets in its own process as it runs: its, not the suite's.
       TEST_FILE_PATH: '/next.js/test/e2e/some.test.ts',
       NEXT_TEST_JOB: '1',
+      // What no `.env` file gives a deployment either: a Function that started with it skips its own.
+      __NEXT_PROCESSED_ENV: 'true',
     });
     holds(
       "a suite's own variables reach the deployment, over the application's .env files, and the harness's do not",
