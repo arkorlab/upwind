@@ -2,7 +2,7 @@
 
 The code a deployment's Function is: it answers a request out of what `next build` produced, through
 the routing tables, the middleware and the prerenders the bundle carries. It holds the parts of serving a Next.js
-application that are the same whoever hosts it. The deployment runtime requires `nodejs_compat`.
+application that are the same whoever hosts it. The deployment runtime requires `nodejs_compat`, and the adapter uploads every Function — the application's and its middleware's — with `global_fetch_strictly_public` as well, so that a `fetch()` to a hostname of the zone it is served from goes out the front door and reaches whatever answers there, the application itself included.
 
 You do not install this to use it. `@stayingupwind/adapter` resolves it to a path and bundles it into
 each Function it builds, which is why it is published as TypeScript sources with no build step of its

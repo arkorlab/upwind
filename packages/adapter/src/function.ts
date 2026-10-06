@@ -76,6 +76,10 @@ const FUNCTION_COMPATIBILITY_DATE = '2026-09-15';
  * routed there — for a Function served by a Worker on that zone's route, nothing — and fails at once
  * (`522`). Next.js makes such requests itself: a Server Action forwarded to the page that has it, the
  * RSC payload of the page an action redirects to; and applications make them to their own API routes.
+ *
+ * The flag is the zone's, not the hostname's: every `fetch()` to any hostname of that zone goes out the
+ * front door, through whatever Workers and security the zone has, and none goes to its origin. It is
+ * given to every Function the adapter builds, the middleware's as well as the application's.
  */
 const FUNCTION_COMPATIBILITY_FLAGS: readonly string[] = [
   'nodejs_compat',
