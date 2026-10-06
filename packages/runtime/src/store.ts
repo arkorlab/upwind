@@ -77,6 +77,12 @@ export interface Store {
   readonly slashSpellings: ReadonlyMap<string, string>;
   /** The dynamic routes as the router is handed them (`routerDynamicRoutes`). */
   readonly dynamicRoutes: readonly Route[];
+  /**
+   * What the build rendered of the Pages Router (`getStaticProps`), which Next.js answers only reads
+   * of (`readsOnly`, in `methods.ts`): each such page's route and its pathname, since a request for a
+   * member the build prerendered resolves to the member's pathname rather than to its route.
+   */
+  readonly renderedPages: ReadonlySet<string>;
   readBlob(sha256: string): Uint8Array<ArrayBuffer>;
   /**
    * The same read for a blob the bundle may only *name*: `undefined` where the bytes are not here.
@@ -393,6 +399,27 @@ export function deploymentConfig(): ManifestHead['config'] {
   return readManifest().config;
 }
 
+/**
+ * The routes and pathnames of the Pages Router pages the build rendered. Of an application with
+ * `i18n` a page and its entrypoint may be spelled one with its locale and the other without, so each
+ * is compared without one.
+ */
+function renderedPages(manifest: RuntimeManifest): ReadonlySet<string> {
+  const unlocalized = (route: string): string =>
+    unlocalizedRouteOf(manifest.config, route) ?? route;
+  const pages = new Set(
+    manifest.entrypoints
+      .filter((entry) => entry.kind === 'pages')
+      .map((entry) => unlocalized(entry.pathname)),
+  );
+  const isPage = (route: string): boolean => pages.has(unlocalized(route));
+  return new Set(
+    manifest.prerenders.flatMap((prerender) =>
+      isPage(prerender.route) ? [prerender.route, prerender.pathname] : [],
+    ),
+  );
+}
+
 export function getStore(): Store {
   if (shared.store !== undefined) {
     return shared.store;
@@ -420,6 +447,7 @@ export function getStore(): Store {
     staticFiles,
     ...routerPathnames(manifest),
     dynamicRoutes: routerDynamicRoutes(manifest),
+    renderedPages: renderedPages(manifest),
     readBlob(sha256) {
       let bytes = blobs.get(sha256);
       if (bytes === undefined) {
@@ -452,7 +480,15 @@ export function getStore(): Store {
  * (`/blog/[slug]`), with the locale in its pathname. `undefined` where the route names no locale.
  */
 function unlocalizedRoute(store: Store, route: string): string | undefined {
-  const { i18n, basePath } = store.manifest.config;
+  return unlocalizedRouteOf(store.manifest.config, route);
+}
+
+/** `route` without the locale it leads with, where the application has `i18n` and it leads with one. */
+export function unlocalizedRouteOf(
+  config: RuntimeManifest['config'],
+  route: string,
+): string | undefined {
+  const { i18n, basePath } = config;
   if (i18n === null || i18n === undefined || !route.startsWith(`${basePath}/`)) {
     return undefined;
   }
