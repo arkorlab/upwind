@@ -166,19 +166,25 @@ function isServerFailure(error: unknown): boolean {
   return error instanceof ApiError && error.status >= SERVER_ERROR;
 }
 
-async function retrying<T>(
-  call: () => Promise<T>,
-  options: { attempts: number; first: number; max: number; retry: (error: unknown) => boolean },
-): Promise<T> {
+interface Retries {
+  readonly attempts: number;
+  readonly first: number;
+  readonly max: number;
+  readonly retry: (error: unknown) => boolean;
+  /** Where the caller stops waiting: nothing is tried again, nor waited for, past it. */
+  readonly until: AbortSignal | undefined;
+}
+
+async function retrying<T>(call: () => Promise<T>, options: Retries): Promise<T> {
   let wait = options.first;
   for (let attempt = 1; attempt < options.attempts; attempt += 1) {
     try {
       return await call();
     } catch (error) {
-      if (!options.retry(error)) {
+      if (options.until?.aborted === true || !options.retry(error)) {
         throw error;
       }
-      await sleepFor(wait);
+      await sleepFor(wait, undefined, { signal: options.until });
       wait = Math.min(wait * 2, options.max);
     }
   }
@@ -199,7 +205,12 @@ function refusalOf(status: number, body: string): ApiError {
   return new ApiError(`HTTP ${String(status)} (${code})`, { code, status });
 }
 
-export function createClient(config: Config): Client {
+/**
+ * The API, as this tool asks it. `until` is where its caller stops waiting — the suite's hook
+ * (`hook.ts`) — and a request under way then, or a retry not yet made, ends there: an answer that
+ * came after it would come to a hook the harness has already cut off.
+ */
+export function createClient(config: Config, until?: AbortSignal): Client {
   async function once(
     method: string,
     path: string,
@@ -214,7 +225,10 @@ export function createClient(config: Config): Client {
         ...(contentType !== undefined && { 'content-type': contentType }),
       },
       ...(body !== undefined && { body }),
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal:
+        until === undefined
+          ? AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+          : AbortSignal.any([AbortSignal.timeout(REQUEST_TIMEOUT_MS), until]),
     });
     const text = await response.text();
     if (!response.ok) {
@@ -235,6 +249,7 @@ export function createClient(config: Config): Client {
         first: NETWORK_FIRST_WAIT_MS,
         max: NETWORK_FIRST_WAIT_MS * 2 ** NETWORK_ATTEMPTS,
         retry: isNetworkFailure,
+        until,
       });
     }
     function answered(): Promise<unknown> {
@@ -243,6 +258,7 @@ export function createClient(config: Config): Client {
         first: SERVER_FIRST_WAIT_MS,
         max: SERVER_MAX_WAIT_MS,
         retry: isServerFailure,
+        until,
       });
     }
     // Innermost first: a call that never arrived has not used the API's patience at all, a `5xx` has
@@ -253,6 +269,7 @@ export function createClient(config: Config): Client {
       first: RATE_LIMIT_FIRST_WAIT_MS,
       max: RATE_LIMIT_MAX_WAIT_MS,
       retry: isRateLimited,
+      until,
     });
   }
 

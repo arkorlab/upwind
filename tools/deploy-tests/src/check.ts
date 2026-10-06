@@ -8,6 +8,7 @@ import { DEPLOYMENT_ID_PREFIX } from '@stayingupwind/core/bundle';
 import { createId } from '@stayingupwind/core/util';
 
 import { fakeHost, type FakeHost } from './fake-host.ts';
+import { AFTER_SERVED_MS } from './hook.ts';
 
 /**
  * The three hooks, run for real against a host that is not one.
@@ -28,6 +29,11 @@ const BUNDLE_BUILD_ID = 'from-the-bundle';
 const OUTPUT_DIRECTORY_BUILD_ID = 'from-the-output-directory';
 const TOKEN = 'ark_a_token_nothing_may_read';
 const HOOK_TIMEOUT_MS = 60_000;
+/**
+ * How much of a suite's hook the scenario that runs one out leaves the deployment, beyond what is kept
+ * for after it is served: the fake build and the upload, and a few seconds of waiting.
+ */
+const HOOK_RUN_OUT_MS = 8000;
 /** About a megabyte of each stream, which is what `execFile` would have held. */
 const MAX_CAPTURED = 1_000_000;
 const DEPLOY_HOOK = 'e2e-deploy.sh';
@@ -154,6 +160,11 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 
 const saw = (name) => name + ': ' + (process.env[name] === undefined ? 'no' : 'YES');
 console.log('the build saw ' + saw('ARKOR_API_TOKEN') + ' ' + saw('ARKOR_API_TOKEN_FILE'));
+console.log('the build saw ' + saw('__NEXT_NODE_NATIVE_TS_LOADER_ENABLED'));
+console.log(
+  'the build saw types transformed: ' +
+    ((process.env.NODE_OPTIONS ?? '').includes('--experimental-transform-types') ? 'YES' : 'no'),
+);
 
 mkdirSync('.next', { recursive: true });
 writeFileSync('.next/BUILD_ID', process.env.CHECK_OUTPUT_DIRECTORY_BUILD_ID);
@@ -335,6 +346,46 @@ async function ownUrlScenarios(
     );
     holds('and the probe asked its own URL, not the project', ahead.probedOn() === ahead.ownPort);
 
+    // A project still running the deployment before this one: the finalize is refused until that run
+    // ends, and is made again until it is taken, rather than failing this fixture for the one before.
+    const busy = await fakeHost(deploymentId, 'moves', 'none', 2);
+    hosts.push(busy);
+    const afterTheOther = await bounded(DEPLOY_HOOK, appDir, {
+      ...env,
+      ARKOR_API_URL: `http://127.0.0.1:${String(busy.port)}`,
+    });
+    holds(
+      "a project's run still under way is waited for, and this deployment then deploys",
+      afterTheOther.stdout.trim() === `http://127.0.0.1:${String(busy.port)}` &&
+        afterTheOther.stderr.includes('another run of the project is still under way'),
+    );
+
+    // One that does not end before the suite's hook would: the wait ends where the hook's time does,
+    // and says what it was waiting for, rather than being cut off by the harness in the middle of it.
+    const stuck = await fakeHost(deploymentId, 'moves', 'none', Number.MAX_SAFE_INTEGER);
+    hosts.push(stuck);
+    let outlasted: unknown;
+    const waitedFrom = performance.now();
+    try {
+      await bounded(DEPLOY_HOOK, appDir, {
+        ...env,
+        ARKOR_API_URL: `http://127.0.0.1:${String(stuck.port)}`,
+        NEXT_E2E_TEST_TIMEOUT: String(AFTER_SERVED_MS + HOOK_RUN_OUT_MS),
+      });
+    } catch (error) {
+      outlasted = error;
+    }
+    // Half the hook's time at least, rather than all of it: the hook's clock is the wall clock, which
+    // steps, and this one is not. A wait cut short to nothing still fails it.
+    const waitedFor = performance.now() - waitedFrom;
+    holds(
+      "a run that outlasts the suite's hook is waited for as long as the hook lasts, and said so",
+      outlasted instanceof HookFailureError &&
+        outlasted.said.includes("the suite's hook timeout came first") &&
+        waitedFor >= HOOK_RUN_OUT_MS / 2 &&
+        waitedFor < HOOK_TIMEOUT_MS / 2,
+    );
+
     // A URL that needs a path to reach the deployment cannot be handed to the suite, which joins its own
     // paths to an origin: refused, by what is wrong with it.
     const pathed = await fakeHost(deploymentId, 'moves', 'with a path');
@@ -359,6 +410,42 @@ async function ownUrlScenarios(
   }
 }
 
+/**
+ * A suite of a `next.config.ts` that Node.js loads itself is built with that loader, as Next.js's own CI
+ * builds it; any other suite is built without, as every application is.
+ */
+async function nativeConfigScenario(
+  deploymentId: string,
+  appDir: string,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  const host = await fakeHost(deploymentId);
+  try {
+    await bounded(DEPLOY_HOOK, appDir, {
+      ...env,
+      ARKOR_API_URL: `http://127.0.0.1:${String(host.port)}`,
+      JEST_SUITE_NAME:
+        'deploy:e2e:test/e2e/app-dir/next-config-ts-native-ts/export-default/next-config-ts-export-default-esm.test.ts',
+    });
+    const build = readFileSync(path.join(appDir, '.adapter-build.log'), 'utf8');
+    holds(
+      "a suite of a next.config Node.js loads itself is built with Node.js's loader",
+      build.includes('__NEXT_NODE_NATIVE_TS_LOADER_ENABLED: YES'),
+    );
+    holds('and with types transformed', build.includes('the build saw types transformed: YES'));
+  } finally {
+    host.close();
+  }
+}
+
+/** The shell's `NODE_OPTIONS` without the one a native-TS suite's build is given (`e2e-deploy.sh`). */
+function ordinaryNodeOptions(options: string | undefined): string | undefined {
+  const kept = (options ?? '')
+    .split(/\s+/u)
+    .filter((option) => option !== '' && option !== '--experimental-transform-types');
+  return kept.length === 0 ? undefined : kept.join(' ');
+}
+
 async function main(): Promise<void> {
   const workDir = mkdtempSync(path.join(os.tmpdir(), 'upwind-deploy-tests-check-'));
   const appDir = path.join(workDir, 'application');
@@ -371,6 +458,15 @@ async function main(): Promise<void> {
   let quiet: FakeHost | undefined;
   const env = {
     ...process.env,
+    // An ordinary suite's, whatever the shell running the check says: a suite name decides how its
+    // fixture is built (`e2e-deploy.sh`), and the check of that names its own. So do the two settings
+    // that build turns on, which the check has to see the hook add, and a hook's own time, which the
+    // scenario that runs it out sets.
+    JEST_SUITE_NAME: 'deploy:e2e:test/e2e/app-dir/app-simple-routes/app-simple-routes.test.ts',
+    __NEXT_NODE_NATIVE_TS_LOADER_ENABLED: undefined,
+    NODE_OPTIONS: ordinaryNodeOptions(process.env['NODE_OPTIONS']),
+    NEXT_E2E_TEST_TIMEOUT: undefined,
+    ADAPTER_TEST_HOOK_STARTED_MS: undefined,
     ARKOR_API_URL: `http://127.0.0.1:${String(host.port)}`,
     ARKOR_API_TOKEN_FILE: tokenFile,
     ADAPTER_TEST_PROJECT_ID: 'p',
@@ -440,6 +536,11 @@ async function main(): Promise<void> {
     holds('the blobs the host asked for were uploaded', host.uploaded().length === 1);
     holds('and nothing was asked of it out of order', host.refusals().length === 0);
     holds('the build saw no token', build.includes('ARKOR_API_TOKEN: no'));
+    holds(
+      "and, for any other suite, not Node.js's own loader of next.config",
+      build.includes('__NEXT_NODE_NATIVE_TS_LOADER_ENABLED: no') &&
+        build.includes('the build saw types transformed: no'),
+    );
     holds('nor the file holding it', build.includes('ARKOR_API_TOKEN_FILE: no'));
     holds("the application's own post-build ran", build.includes('the fixture post-build ran'));
     holds('and it saw no token either', build.includes('it saw ARKOR_API_TOKEN: no'));
@@ -528,6 +629,7 @@ async function main(): Promise<void> {
     );
 
     await ownUrlScenarios(deploymentId, appDir, env);
+    await nativeConfigScenario(deploymentId, appDir, env);
   } finally {
     host.close();
     quiet?.close();

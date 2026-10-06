@@ -88,7 +88,10 @@ export async function fakeHost(
   deploymentId: string,
   page: PageBehaviour = 'moves',
   ownUrl: OwnUrl = 'none',
+  /** How many finalizes are refused because the project's run before this one is still under way. */
+  busyFor = 0,
 ): Promise<FakeHost> {
+  let busy = busyFor;
   let registered: string | undefined;
   let environment: Record<string, string> = {};
   let wanted: string[] = [];
@@ -157,6 +160,13 @@ export async function fakeHost(
       const missing = wanted.filter((sha256) => !uploaded.includes(sha256));
       if (registered === undefined || missing.length > 0) {
         return outOfOrder(`a finalize arrived with ${String(missing.length)} blobs still missing`);
+      }
+      if (busy > 0) {
+        busy -= 1;
+        return {
+          status: CONFLICT,
+          body: { ok: false, error: { code: 'run_in_progress', message: 'a run is under way' } },
+        };
       }
       finalized = true;
       return { status: ACCEPTED, body: { run: { id: 'run_checked' } } };
