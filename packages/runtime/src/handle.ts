@@ -526,7 +526,7 @@ async function serveResolved(
     }
   }
   if (hasBody(request.method)) {
-    if (readsOnly(store, resolved.route, request)) {
+    if (readsOnly(store, resolved, request)) {
       return methodNotAllowed();
     }
     return (await serveWithBody(input, store, resolved)) ?? methodNotAllowed();

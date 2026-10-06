@@ -1,6 +1,6 @@
 import { NEXT_ACTION_HEADER } from '@stayingupwind/core/request';
 
-import type { Store } from './store.ts';
+import { type Store, unlocalizedRouteOf } from './store.ts';
 
 /**
  * Which methods a page is answered for, where Next.js answers reads only: what `next start` refuses
@@ -45,16 +45,33 @@ function possibleServerAction(request: Request): boolean {
 }
 
 /**
- * Whether Next.js answers only reads of the page a request resolved to: a Pages Router page the build
- * rendered (`getStaticProps`), other than a status page, asked with nothing that may be a Server
- * Action. `next start` refuses every other method there with `405` and `Allow: GET, HEAD`
- * (`base-server.js`); the page handler an adapter calls has no such check, and rendered the page for
- * a `POST` as for a `GET`.
+ * Whether a route is a status page under the application's own spelling of it: `/404`, `/500` and
+ * `/_error` behind the base path, and behind a locale where the application has `i18n`.
  */
-export function readsOnly(store: Store, route: string, request: Request): boolean {
-  return (
-    store.renderedPagesRoutes.has(route) &&
-    !STATUS_PAGES.has(route) &&
-    !possibleServerAction(request)
-  );
+function isStatusPage(store: Store, route: string): boolean {
+  const { basePath } = store.manifest.config;
+  const unlocalized = unlocalizedRouteOf(store.manifest.config, route) ?? route;
+  const bare =
+    basePath !== '' && (unlocalized === basePath || unlocalized.startsWith(`${basePath}/`))
+      ? unlocalized.slice(basePath.length) || '/'
+      : unlocalized;
+  return STATUS_PAGES.has(bare);
+}
+
+/**
+ * Whether Next.js answers only reads of the page a request resolved to: a Pages Router page the build
+ * rendered (`getStaticProps`) — by its route, or by the pathname of a member the build prerendered,
+ * which a request for that member resolves to — other than a status page, asked with nothing that may
+ * be a Server Action. `next start` refuses every other method there with `405` and
+ * `Allow: GET, HEAD` (`base-server.js`); the page handler an adapter calls has no such check, and
+ * rendered the page for a `POST` as for a `GET`.
+ */
+export function readsOnly(
+  store: Store,
+  resolved: { readonly route: string; readonly pathname: string },
+  request: Request,
+): boolean {
+  const rendered =
+    store.renderedPages.has(resolved.route) || store.renderedPages.has(resolved.pathname);
+  return rendered && !isStatusPage(store, resolved.route) && !possibleServerAction(request);
 }
