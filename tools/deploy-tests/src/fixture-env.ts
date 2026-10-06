@@ -3,6 +3,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 
 import { TOOL_ENV_PREFIXES } from './config.ts';
+import { suiteEnvironment } from './suite-env.ts';
 
 /**
  * What a test application's Function is given: the application's own `.env` files, and nothing else.
@@ -12,13 +13,9 @@ import { TOOL_ENV_PREFIXES } from './config.ts';
  * which leaves the `.env*` files — and a deployment's environment is then *replaced* with exactly
  * that, so no value of the fixture before it survives into this one.
  *
- * **A known limit, and the reason for it.** A host's private harness can do better: it starts the
- * deploy hook itself, so it can tell a variable the suite's harness passed through the process
- * environment from one the machine already had, by comparing against a digest of its own environment
- * taken before the run. Here the suite's harness starts the hook directly and there is no such
- * baseline, so a suite whose application reads a variable that arrives *only* that way will fail.
- * Guessing instead would be worse: this tool would be handing a deployed Function whatever the
- * terminal happened to hold.
+ * The suite's own variables, which its harness hands the hook through the process environment, are
+ * read apart from this, against the harness's own environment (`suite-env.ts`), and laid over these
+ * (`deploymentEnvironment`): nothing of the machine is taken either way.
  */
 
 const execFileAsync = promisify(execFile);
@@ -75,4 +72,26 @@ function keptOut(name: string): boolean {
     // has no business inside it, and once was sent there by a harness whose exclusions missed it.
     TOOL_ENV_PREFIXES.some((prefix) => name.startsWith(prefix))
   );
+}
+
+function countOf(variables: Record<string, string>): string {
+  return String(Object.keys(variables).length);
+}
+
+/**
+ * What a deployment's environment is replaced with: the application's own `.env` files, and the
+ * suite's variables over them (`suite-env.ts`), as a variable a process is started with is over a
+ * `.env` file's. With what it is made of, said for the log.
+ */
+export async function deploymentEnvironment(
+  directory: string,
+  env: NodeJS.ProcessEnv,
+): Promise<{ readonly env: Record<string, string>; readonly said: string }> {
+  const own = await fixtureEnvironment(directory);
+  const suite = suiteEnvironment(env);
+  const merged = { ...own, ...suite };
+  return {
+    env: merged,
+    said: `${countOf(merged)}: ${countOf(own)} of the fixture's own, ${countOf(suite)} of the suite's`,
+  };
 }

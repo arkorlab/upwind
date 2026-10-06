@@ -17,7 +17,7 @@ import {
 } from './client.ts';
 import type { Config } from './config.ts';
 import { finalizeWhenFree } from './finalize.ts';
-import { fixtureEnvironment } from './fixture-env.ts';
+import { deploymentEnvironment } from './fixture-env.ts';
 import { hookOver, withinHook } from './hook.ts';
 import {
   askThePage,
@@ -133,11 +133,9 @@ export async function readBundle(appDir: string): Promise<DeploymentBundle> {
  * values cannot be read back out of the project by anything holding a `read` token.
  */
 async function replaceEnvironment(input: DeployInput): Promise<void> {
-  const env = await fixtureEnvironment(input.appDir);
+  const { env, said } = await deploymentEnvironment(input.appDir, process.env);
+  input.log(`replacing the project's environment with ${said}`);
   const names = Object.keys(env);
-  input.log(
-    `replacing the project's environment with ${String(names.length)} of the fixture's own`,
-  );
   await input.client.putEnv(names.map((name) => ({ name, value: env[name] ?? '', secret: true })));
 }
 
