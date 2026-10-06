@@ -1,6 +1,7 @@
 import { setTimeout as sleepFor } from 'node:timers/promises';
 
 import { ApiError, type Client } from './client.ts';
+import { hookOver, withinHook } from './hook.ts';
 
 /**
  * How long a finalize waits for the project's run before it to end, and how often it asks: ten
@@ -13,6 +14,16 @@ const OTHER_RUN_TIMEOUT_MS = 600_000;
 const OTHER_RUN_FIRST_WAIT_MS = 2000;
 const OTHER_RUN_MAX_WAIT_MS = 15_000;
 const MS_PER_MINUTE = 60_000;
+
+/** Why a finalize stopped waiting for the run before it: the suite's hook came to its end, or the wait did. */
+function gaveUp(hookDeadline: number | undefined, refusal: unknown): Error {
+  return new Error(
+    hookOver(hookDeadline)
+      ? "the suite's hook timeout came first; the project's previous run had not ended"
+      : `the project's previous run did not end within the ${String(OTHER_RUN_TIMEOUT_MS / MS_PER_MINUTE)} minutes a finalize waits for it`,
+    { cause: refusal },
+  );
+}
 
 /**
  * Finalize, once the project has no other run under way.
@@ -29,8 +40,9 @@ export async function finalizeWhenFree(
   client: Client,
   log: (message: string) => void,
   deploymentId: string,
+  hookDeadline?: number,
 ): Promise<string> {
-  const deadline = Date.now() + OTHER_RUN_TIMEOUT_MS;
+  const deadline = withinHook(Date.now() + OTHER_RUN_TIMEOUT_MS, hookDeadline);
   let wait = OTHER_RUN_FIRST_WAIT_MS;
   let waited = false;
   for (;;) {
@@ -41,17 +53,17 @@ export async function finalizeWhenFree(
       if (!another) {
         throw error;
       }
-      if (Date.now() + wait > deadline) {
-        throw new Error(
-          `the project's previous run did not end within the ${String(OTHER_RUN_TIMEOUT_MS / MS_PER_MINUTE)} minutes a finalize waits for it`,
-          { cause: error },
-        );
+      // The whole of the wait is used: the last sleep is cut to the time that is left, and the run is
+      // given up on only once none is.
+      const left = deadline - Date.now();
+      if (left <= 0) {
+        throw gaveUp(hookDeadline, error);
       }
       if (!waited) {
         log('another run of the project is still under way; waiting for it to end');
         waited = true;
       }
-      await sleepFor(wait);
+      await sleepFor(Math.min(wait, left));
       wait = Math.min(wait * 2, OTHER_RUN_MAX_WAIT_MS);
     }
   }

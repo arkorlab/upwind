@@ -283,7 +283,8 @@ jobs:
           # What a suite's hooks and tests may take. A deploy is the suite's `beforeAll`: a fixture of a few
           # hundred prerendered pages takes a host minutes to bring in — four were not enough for three of
           # a full run's — and the hook may first wait up to ten for the project's previous run to end
-          # (`finalize.ts`), so twenty in all.
+          # (`finalize.ts`), so twenty in all. The deploy hook ends any wait of its own where this time
+          # does, rather than be cut off in it (`hook.ts`).
           NEXT_E2E_TEST_TIMEOUT: 1200000
           # What Next.js's own job for adapters sets (`test_e2e_deploy_release.yml`, the adapter matrix).
           # A few suites expect a deployment an adapter made to answer otherwise than one Vercel's own

@@ -7,6 +7,10 @@
 # output.
 set -euo pipefail
 
+# When the suite's hook began, for the deployment to end its waits where the hook's timeout would cut it
+# off (`src/hook.ts`): the build below spends the same time.
+export ADAPTER_TEST_HOOK_STARTED_MS="${ADAPTER_TEST_HOOK_STARTED_MS:-$(node -p 'Date.now()')}"
+
 # Where everything is, from this script's own place rather than from one another.
 tool_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 repo_root="$(cd "${tool_dir}/../.." && pwd)"

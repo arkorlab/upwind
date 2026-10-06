@@ -122,7 +122,9 @@ one that outlasted the suite's hook timeout, which the host goes on deploying, o
 the host finishes after it has said the deployment is live — and it ends on its own, so the hook waits
 for it (ten minutes at most) rather than failing the fixture after it. The workflow gives a suite's
 hooks twenty minutes (`NEXT_E2E_TEST_TIMEOUT`): the wait, and a fixture of a few hundred prerendered
-pages, which takes a host minutes to bring in.
+pages, which takes a host minutes to bring in. No wait of the deploy hook goes past that time: the hook
+stamps when it began, and a wait the harness would cut off in the middle is ended first, saying what it
+was waiting for (`src/hook.ts`).
 
 **That refusal is one machine's.** The claims are files in the machine's own temporary directory, so a
 run on a laptop and a dispatched workflow run cannot see each other, and the API has nothing to hold a

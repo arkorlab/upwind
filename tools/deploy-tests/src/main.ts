@@ -2,6 +2,7 @@ import { claimProject, releaseProject } from './claim.ts';
 import { createClient } from './client.ts';
 import { readConfig, readProjectConfig } from './config.ts';
 import { deployFixture, preflight } from './deploy.ts';
+import { hookDeadline } from './hook.ts';
 
 /**
  * The commands the three hooks of Next.js's deploy-mode contract are made of.
@@ -82,7 +83,13 @@ async function main(argv: readonly string[]): Promise<void> {
     case 'deploy': {
       claimProject(config, appDir);
       try {
-        const deployment = await deployFixture({ appDir, client, config, log: say });
+        const deployment = await deployFixture({
+          appDir,
+          client,
+          config,
+          log: say,
+          deadline: hookDeadline(process.env),
+        });
         // The one thing on standard output: the harness reads it as the deployment's URL.
         process.stdout.write(`${deployment.url}\n`);
       } catch (error) {
