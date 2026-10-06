@@ -3,7 +3,12 @@ import { NULL_BODY_STATUSES, ROUTER_PROTOCOL_HEADERS } from '@stayingupwind/core
 import { releaseStream } from '@stayingupwind/core/util';
 
 import type { NodeHandler } from './app-module.ts';
-import { cacheLifetimeOf, type CapturedRender, renderCaptured } from './cache/capture.ts';
+import {
+  cacheLifetimeOf,
+  type CapturedRender,
+  renderAppPage,
+  renderCaptured,
+} from './cache/capture.ts';
 import { invokeNodeHandler } from './node-bridge.ts';
 import {
   answerHeaders,
@@ -141,6 +146,41 @@ export function resumeRsc(
 /** What the edge asks for on a document's behalf: the document itself. */
 export function documentWant(input: RoutedInput): Want {
   return { representation: 'html', url: resumeUrl(input.request) };
+}
+
+/**
+ * Render a visitor's App Router document once. A newly captured shell needs its resume; an
+ * uncaptured response already answers this visitor, with their query and cookies intact.
+ */
+export async function renderDocumentForVisitor(
+  input: RoutedInput,
+  handler: NodeHandler,
+  url: string,
+): Promise<Response> {
+  const render = await renderAppPage((meta) => {
+    return invokeNodeHandler({
+      handler,
+      request: input.request,
+      url,
+      requestMeta: { ...baseRequestMeta(input), ...meta.requestMeta },
+      waitUntil: input.waitUntil,
+      run: input.run,
+      expectNoResponse: meta.expectNoResponse,
+    });
+  });
+  if (render instanceof Response) {
+    return render;
+  }
+  return answerWith(input, handler, {
+    representation: 'html',
+    url,
+    body: render.html,
+    postponed: render.postponed,
+    partial: render.postponed !== undefined,
+    status: render.status,
+    headers: render.headers,
+    cache: 'MISS',
+  });
 }
 
 /**

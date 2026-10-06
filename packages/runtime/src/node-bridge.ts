@@ -232,6 +232,27 @@ function settableSocket(req: IncomingMessage): void {
   });
 }
 
+/**
+ * A redirect has one destination. The exported App Router handler appends the headers captured
+ * during prerendering after the render has already set them on this response. Appending its
+ * `Location` again joins the two destinations with a comma, producing a different, invalid URL.
+ * Replace this singleton header while leaving ordinary appended headers, including cookies, alone.
+ */
+function singleRedirectLocation(res: ServerResponse): void {
+  const appendHeader = res.appendHeader.bind(res);
+  res.appendHeader = (name, value) => {
+    if (name.toLowerCase() !== 'location') {
+      return appendHeader(name, value);
+    }
+    const destination = typeof value === 'string' ? value : value.at(-1);
+    if (destination !== undefined) {
+      res.setHeader(name, destination);
+    }
+    return res;
+  };
+}
+
+/** Restore a loopback request's inputs and dispatch it to the application's Node handler. */
 function onRequest(req: IncomingMessage, res: ServerResponse): void {
   const dispatch = (req as BridgedRequest).cloudflare?.ctx as Dispatch | undefined;
   if (dispatch === undefined) {
@@ -244,6 +265,7 @@ function onRequest(req: IncomingMessage, res: ServerResponse): void {
   req.url = dispatch.url;
   restoreHeaders(req, dispatch.input.request.headers);
   settableSocket(req);
+  singleRedirectLocation(res);
   const handled = handle(dispatch, req, res);
   // The handler held to its own end for a request that may change something: its response leaves
   // as soon as its headers commit, and a handler that goes on after them — a `POST` API route that

@@ -202,6 +202,26 @@ export interface CaptureMeta {
 }
 
 /**
+ * Capture an App Router prerender, or keep the response Next.js wrote when it could not be
+ * captured. A visitor can be answered with that dynamic response without rendering again.
+ */
+export async function renderAppPage(
+  invoke: (meta: CaptureMeta) => Promise<Response>,
+): Promise<CapturedRender | Response> {
+  const capture = captureCallback();
+  const response = await invoke({
+    requestMeta: { onCacheEntry: capture.onCacheEntry, onCacheEntryV2: capture.onCacheEntry },
+    expectNoResponse: true,
+  });
+  const render = capture.captured();
+  if (render === undefined) {
+    return response;
+  }
+  await response.body?.cancel();
+  return render;
+}
+
+/**
  * Render through `invoke` and keep what a cache would: through Next.js's callback for an App
  * Router page, whose render is then never written to the response, and off the response for a
  * Pages Router page or a route handler.
@@ -211,14 +231,13 @@ export async function renderCaptured(
   invoke: (meta: CaptureMeta) => Promise<Response>,
 ): Promise<CapturedRender | undefined> {
   if (kind === 'app-page') {
-    const capture = captureCallback();
-    const response = await invoke({
-      requestMeta: { onCacheEntry: capture.onCacheEntry, onCacheEntryV2: capture.onCacheEntry },
-      expectNoResponse: true,
-    });
+    const render = await renderAppPage(invoke);
     // A render that was answered rather than captured is dynamic; its body is not wanted.
-    await response.body?.cancel();
-    return capture.captured();
+    if (render instanceof Response) {
+      await render.body?.cancel();
+      return undefined;
+    }
+    return render;
   }
   const render = await captureResponse(await invoke({ requestMeta: {}, expectNoResponse: false }));
   if (render === undefined || kind === 'app-route') {
