@@ -49,9 +49,10 @@ export function placeholderSegments(pathname: string, route: string): boolean[] 
  * that blocks: that route's own entry, the template no request names, is a `page` to it
  * (`response: 'empty'`, `compute: 'blocking'`; `getPagesFallbackClassification`, and its App Router
  * counterpart, in `build/index.js`). What tells the two apart is the route a page belongs to: a member
- * a dynamic route prerendered carries that route's fallback (`parentFallbackMode`), and the route's
- * own entry carries none. Anything the build says nothing more of is read by its placeholders
- * (`placeholderSegments`), and never by whether its pathname holds a bracket.
+ * a dynamic route prerendered carries that route's fallback (`parentFallbackMode`), whatever else the
+ * build says of it, and the route's own entry carries none. Anything the build says nothing more of
+ * is read by its placeholders (`placeholderSegments`), and never by whether its pathname holds a
+ * bracket.
  */
 export function standsForClass(
   prerender: Pick<Prerender, 'pathname' | 'route' | 'routeType' | 'parentFallbackMode'>,
@@ -59,7 +60,7 @@ export function standsForClass(
   if (prerender.routeType === 'shell' || prerender.routeType === 'fallback') {
     return true;
   }
-  if (prerender.routeType !== undefined && prerender.parentFallbackMode !== undefined) {
+  if (prerender.parentFallbackMode !== undefined) {
     return false;
   }
   return placeholderSegments(prerender.pathname, prerender.route).includes(true);
