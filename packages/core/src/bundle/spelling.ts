@@ -21,15 +21,24 @@ function isRouteParameter(segment: string): boolean {
 
 /**
  * Which segments of `pathname`, a pathname of `route`, stand for the route's parameters rather than
- * for values of them: the ones that are a parameter segment of the route, spelled as the route spells
- * it — `[post]` in `/blog/[post]`, as Next.js keeps a template's placeholders. A segment that only
- * holds a bracket is a value: `getStaticPaths` and `generateStaticParams` may name a page
- * `/blog/[post3]`, and read as a placeholder it stood for every post. By spelling rather than by
- * position, since a locale's pathname leads with a segment its route may not have.
+ * for values of them: the ones that are, where the route has a parameter, that parameter spelled as
+ * the route spells it — `[post]` in `/blog/[post]`, as Next.js keeps a template's placeholders. A
+ * segment that only holds a bracket is a value: `getStaticPaths` and `generateStaticParams` may name a
+ * page `/blog/[post3]`, and read as a placeholder it stood for every post. So is one spelled as another
+ * of the route's parameters: `/news/[category]` under `/[category]/[slug]` names one page.
+ *
+ * Compared from the end, since a locale's pathname leads with a segment its route may not have.
+ * Where a build says nothing else (`routeType`), a value spelled exactly as its own placeholder —
+ * the page `/blog/[post]` of `/blog/[post]` — cannot be told from the template, and is read as it.
  */
 export function placeholderSegments(pathname: string, route: string): boolean[] {
-  const parameters = new Set(route.split('/').filter((segment) => isRouteParameter(segment)));
-  return pathname.split('/').map((segment) => parameters.has(segment));
+  const segments = pathname.split('/');
+  const routeSegments = route.split('/');
+  const lead = Math.max(0, segments.length - routeSegments.length);
+  return segments.map((segment, index) => {
+    const counterpart = index >= lead ? routeSegments[index - lead] : undefined;
+    return counterpart !== undefined && isRouteParameter(counterpart) && segment === counterpart;
+  });
 }
 
 /**
