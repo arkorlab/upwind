@@ -11,4 +11,11 @@ const warn = (message: string): void => {
     `suite environment: ${message}; the deployment gets the application's .env files alone`,
   );
 };
-process.stdout.write(JSON.stringify(suiteVariablesOf(pid, process.env, warn)));
+const variables = suiteVariablesOf(pid, process.env, warn);
+// DIAGNOSTIC (not for merging): which names were taken, and how long each value is.
+console.error(
+  `suite environment (diagnostic): ${Object.entries(variables)
+    .map(([name, value]) => `${name} (${String(value.length)})`)
+    .join(', ')}`,
+);
+process.stdout.write(JSON.stringify(variables));
