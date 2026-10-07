@@ -24,10 +24,13 @@ import { entrypointKindOf, getStore, type Store } from './store.ts';
 
 /** Next.js names these outputs `/404` and `/500`, under the `basePath` as it names every output. */
 const NOT_FOUND_PAGE = '/404';
+/** The App Router's not-found, which every build with an App Router has: its own or Next.js's. */
+const APP_NOT_FOUND = '/_not-found';
 const SERVER_ERROR_PAGE = '/500';
 /** The page Next.js renders any status with when the application has none of its own for it. */
 const ERROR_PAGE = '/_error';
 const HTTP_NOT_FOUND = 404;
+const CONTENT_TYPE = 'content-type';
 const HTTP_INTERNAL_ERROR = 500;
 /** What Next.js's own server ends with when an application ships no not-found document. */
 const LAST_WORDS = 'This page could not be found';
@@ -58,12 +61,14 @@ function documentOf(
  * `page` rendered by its own entrypoint into `response`, for the request that was being answered,
  * as Next.js's own server renders it; whether the deployment has that entrypoint to render with.
  * The render is not handed `render404`, so a not-found page that asks for one ends in plain text
- * rather than in itself.
+ * rather than in itself. `meta` is laid over the request's: Next.js replaces a request's metadata
+ * with what the invocation hands it, rather than adding to it.
  */
 async function renderedPage(
   page: string,
   request: IncomingMessage,
   response: ServerResponse,
+  meta: Readonly<Record<string, unknown>> = {},
 ): Promise<boolean> {
   const context = requestContext();
   if (context === undefined) {
@@ -80,13 +85,48 @@ async function renderedPage(
       minimalMode: true,
       relativeProjectDir: '.',
       initURL: initUrlOf(context.request),
+      ...meta,
     },
   });
   return true;
 }
 
 /**
- * `requestMeta.render404`, writing into the response the render was already using. The status is
+ * The App Router's not-found, where the application has an App Router: Next.js's own server answers
+ * a 404 with it before it looks for the Pages Router's `/404` (`renderErrorToResponseImpl`,
+ * `server/base-server.ts`), so where the two routers share an application, a Pages Router miss is
+ * answered with the App Router's page — which is what Next.js 16.3's pages handler asks of the
+ * platform's `render404`. The document the build wrote, where the page was complete at build
+ * time; else the page rendered whole, as the pages handler readies it to be under
+ * `cacheComponents` (an empty postponed state): an invocation of its own has no shell to resume.
+ * Whether it answered.
+ */
+async function renderedAppNotFound(
+  store: Store,
+  request: IncomingMessage,
+  response: ServerResponse,
+): Promise<boolean> {
+  const route = `${store.manifest.config.basePath}${APP_NOT_FOUND}`;
+  if (entrypointKindOf(store, route) !== 'app-page') {
+    return false;
+  }
+  const built = store.prerendersByPathname.get(route);
+  if (built?.body !== undefined && built.postponed === undefined) {
+    response.setHeader(CONTENT_TYPE, built.body.contentType);
+    response.end(store.readBlob(built.body.sha256));
+    return true;
+  }
+  return renderedPage(
+    APP_NOT_FOUND,
+    request,
+    response,
+    store.manifest.config.cacheComponents === true ? { postponed: '' } : {},
+  );
+}
+
+/**
+ * `requestMeta.render404`, writing into the response the render was already using: the App Router's
+ * not-found where there is one (`renderedAppNotFound`), else the Pages Router's. The status is
  * Next.js's own — it sets 404 before it asks — and is set here for a caller that did not.
  *
  * One function for every request, which is why it reads the store rather than closing over one:
@@ -100,9 +140,13 @@ export async function render404(request: IncomingMessage, response: ServerRespon
   if (response.statusCode < HTTP_NOT_FOUND) {
     response.statusCode = HTTP_NOT_FOUND;
   }
-  const document = documentOf(getStore(), NOT_FOUND_PAGE);
+  const store = getStore();
+  if (await renderedAppNotFound(store, request, response)) {
+    return;
+  }
+  const document = documentOf(store, NOT_FOUND_PAGE);
   if (document !== undefined) {
-    response.setHeader('content-type', document.contentType);
+    response.setHeader(CONTENT_TYPE, document.contentType);
     response.end(document.bytes);
     return;
   }
@@ -129,7 +173,7 @@ async function renderServerError(
   response.setHeader('cache-control', NEVER_STORED);
   const document = documentOf(getStore(), SERVER_ERROR_PAGE);
   if (document !== undefined) {
-    response.setHeader('content-type', document.contentType);
+    response.setHeader(CONTENT_TYPE, document.contentType);
     response.end(document.bytes);
     return;
   }
