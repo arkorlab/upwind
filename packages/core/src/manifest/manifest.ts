@@ -3,7 +3,7 @@ import { MAX_IMMUTABLE_ASSET_BYTES } from '../assets/admission.ts';
 import type { DeploymentFingerprint } from '../deployment/fingerprint.ts';
 import type { ImagesConfig } from '../images/config.ts';
 import { compareCodeUnits } from '../util/bytes.ts';
-import { basePathOfPagesDataPrefix } from './pages-data-prefix.ts';
+import { isBasePath, isBuildId, pagesDataPrefixOf } from './pages-data-prefix.ts';
 import {
   type AppRuntime,
   type AssetPolicy,
@@ -63,8 +63,11 @@ export interface BuildProjectManifestInput {
   readonly staticFileLocales?: StaticFileLocales | undefined;
   readonly staticFileAssetPrefix?: StaticFileAssetPrefix | undefined;
   readonly staticFileTrailingSlash?: boolean | undefined;
-  /** Where a Pages Router page's props are asked for, where a route holds them. */
-  readonly pagesDataPrefix?: string | undefined;
+  /**
+   * The base path and the build id a Pages Router page's props are asked for under, where a route
+   * holds them: the manifest names where (`pagesDataPrefix`, `pagesDataBasePath`) from these.
+   */
+  readonly pagesDataUnder?: { readonly basePath: string; readonly buildId: string } | undefined;
   readonly cache?: ManifestCache | undefined;
 }
 
@@ -127,31 +130,38 @@ function unreachableFunctions(input: BuildProjectManifestInput): string[] {
 
 /**
  * What is wrong with where the manifest says a client asks for a page's props, if anything. Props
- * no prefix names are asked for at no URL, and a prefix a reader cannot take apart names no
- * request: either way every data request would go to the Function, and nothing would say why. So
+ * no prefix names are asked for at no URL, and a base path or a build id a prefix cannot carry names
+ * no request: either way every data request would go to the Function, and nothing would say why. So
  * a manifest like that is refused where it is built, as one naming an unreachable Function is.
  */
 function unaddressedProps(input: BuildProjectManifestInput): string | undefined {
-  const prefix = input.pagesDataPrefix;
-  if (prefix !== undefined && basePathOfPagesDataPrefix(prefix) === undefined) {
-    return `pagesDataPrefix ${prefix} is not <basePath>/_next/data/<buildId>`;
+  const under = input.pagesDataUnder;
+  if (under !== undefined && !(isBasePath(under.basePath) && isBuildId(under.buildId))) {
+    return `pagesDataUnder names no prefix: base path ${under.basePath}, build ${under.buildId}`;
   }
-  if (prefix === undefined && input.routes.some((route) => route.pagesData !== undefined)) {
-    return "routes hold a page's props (pagesData), and no pagesDataPrefix says where a client asks for them";
+  if (under === undefined && input.routes.some((route) => route.pagesData !== undefined)) {
+    return "routes hold a page's props (pagesData), and no pagesDataUnder says where a client asks for them";
   }
   return undefined;
 }
 
 /**
- * Where a client asks for props, where a route holds some (`RouteEntry.pagesData`): a prefix no
- * route's props sit under answers nothing, and is left out so that the field says what it says.
+ * Where a client asks for props, where a route holds some (`RouteEntry.pagesData`): the prefix as a
+ * request spells it, and the base path it is under, as the build wrote it, for naming the page a
+ * request asks for; neither where no route's props sit under them, so that the fields say what
+ * they say.
  */
 function pagesDataFields(
   input: BuildProjectManifestInput,
-): Pick<ProjectManifest, 'pagesDataPrefix'> {
-  const { pagesDataPrefix } = input;
-  const holds = input.routes.some((route) => route.pagesData !== undefined);
-  return pagesDataPrefix !== undefined && holds ? { pagesDataPrefix } : {};
+): Pick<ProjectManifest, 'pagesDataBasePath' | 'pagesDataPrefix'> {
+  const under = input.pagesDataUnder;
+  if (under === undefined || input.routes.every((route) => route.pagesData === undefined)) {
+    return {};
+  }
+  return {
+    pagesDataPrefix: pagesDataPrefixOf(under.buildId, under.basePath),
+    ...(under.basePath !== '' && { pagesDataBasePath: under.basePath }),
+  };
 }
 
 /** Assemble a manifest from a build's routes; validates the result against the schema. */

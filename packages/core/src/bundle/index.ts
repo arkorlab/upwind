@@ -60,7 +60,6 @@ export {
   pageOfPagesData,
   pagesDataPathname,
   pagesDataPathnameUnder,
-  pagesDataPrefixOf,
   pagesPathnameOfData,
   spellsAsWritten,
 } from './pages-data.ts';

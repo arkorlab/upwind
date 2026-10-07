@@ -1,5 +1,5 @@
 import { withTrailingSlash } from '../manifest/dynamic.ts';
-import { basePathOfPagesDataPrefix, PAGES_DATA_SEGMENT } from '../manifest/pages-data-prefix.ts';
+import { PAGES_DATA_SEGMENT, requestSpelling } from '../manifest/pages-data-prefix.ts';
 
 /**
  * The Pages Router's data route: beside each page a client navigation fetches
@@ -103,20 +103,6 @@ function dataPrefixOf(buildId: string, basePath: string): string {
   return `${basePath}${DATA_PREFIX}${buildId}`;
 }
 
-/** Only for its parser: a path is spelled the same under any origin. */
-const ANY_ORIGIN = 'https://pages-data.invalid';
-
-/**
- * Where a host is asked for a Pages Router page's props, for a manifest (`pagesDataPrefix`):
- * `<basePath>/_next/data/<buildId>`, with no slash after, spelled as a request's URL spells it.
- * That is the build's name for it percent-encoded wherever the base path or the build id holds what
- * a URL's path cannot — a space, anything not ASCII — and what a request's pathname is compared
- * with (`pageOfPagesData`).
- */
-export function pagesDataPrefixOf(buildId: string, basePath: string): string {
-  return new URL(dataPrefixOf(buildId, basePath), ANY_ORIGIN).pathname;
-}
-
 /**
  * Whether a request can ask for a path under the base path by the base path as the build wrote it:
  * a URL gives it no other name than its own, percent-encoded. A dot segment (`/a/../b`), a
@@ -128,7 +114,7 @@ export function spellsAsWritten(basePath: string): boolean {
   if (basePath === '') {
     return true;
   }
-  return decodedPath(new URL(basePath, ANY_ORIGIN).pathname) === basePath;
+  return decodedPath(requestSpelling(basePath)) === basePath;
 }
 
 /**
@@ -145,11 +131,12 @@ export function pagesDataPathnameUnder(
 }
 
 /**
- * The page a data request asks the props of, by a manifest's `pagesDataPrefix`: the page whose
- * props `pagesDataPathnameUnder` names so, named as a manifest names its routes — under the base
- * path, and behind the slash where the application keeps its pages there (`trailingSlash`), which is
- * the spelling a request for the page's document asks by. The client asks for a page's props
- * without that slash (`getDataHref`), and with nothing but the page between the prefix and `.json`.
+ * The page a data request asks the props of, by a manifest's `pagesDataPrefix` and the base path it
+ * is under (`pagesDataBasePath`): the page whose props `pagesDataPathnameUnder` names so, named as a
+ * manifest names its routes — under the base path, and behind the slash where the application keeps
+ * its pages there (`trailingSlash`), which is the spelling a request for the page's document asks
+ * by. The client asks for a page's props without that slash (`getDataHref`), and with nothing but
+ * the page between the prefix and `.json`.
  *
  * Read decoded, and only from the one spelling a URL gives the name: an escape a URL would not write
  * (`%66oo`, `%69ndex`), an escaped slash, or anything that decodes into another name the build
@@ -160,17 +147,15 @@ export function pagesDataPathnameUnder(
  */
 export function pageOfPagesData(
   prefix: string,
+  basePath: string,
   pathname: string,
   trailingSlash: boolean,
 ): string | undefined {
   if (!pathname.startsWith(`${prefix}/`) || !pathname.endsWith(DATA_SUFFIX)) {
     return undefined;
   }
-  const spelled = pathname.slice(prefix.length, -DATA_SUFFIX.length);
-  const page = pageAsSpelled(spelled);
-  const under = basePathOfPagesDataPrefix(prefix);
-  const basePath = under === undefined ? undefined : decodedPath(under);
-  if (page === undefined || basePath === undefined) {
+  const page = pageAsSpelled(pathname.slice(prefix.length, -DATA_SUFFIX.length));
+  if (page === undefined) {
     return undefined;
   }
   if (page !== '/') {
@@ -187,12 +172,13 @@ export function pageOfPagesData(
 
 /**
  * The page a request's spelling of a file's name stands for (`pageOfSpelling`), decoded; `undefined`
- * unless the spelling is the one a URL gives that name. Next.js finds a page's props by the page's
- * own name, which ends in no slash, so one before `.json` names nothing it wrote.
+ * unless the spelling is the one a URL gives that name (`requestSpelling`) — a parameter's `?` or `#`
+ * included, which Next.js's client percent-encodes into it. Next.js finds a page's props by the
+ * page's own name, which ends in no slash, so one before `.json` names nothing it wrote.
  */
 function pageAsSpelled(spelled: string): string | undefined {
   const decoded = spelled.endsWith('/') ? undefined : decodedPath(spelled);
-  if (decoded === undefined || new URL(decoded, ANY_ORIGIN).pathname !== spelled) {
+  if (decoded === undefined || requestSpelling(decoded) !== spelled) {
     return undefined;
   }
   return pageOfSpelling(decoded);

@@ -467,12 +467,20 @@ export const projectManifestSchema = z.object({
    */
   staticFileTrailingSlash: z.literal(true).optional(),
   /**
-   * Where a Pages Router page's props are asked for, under the base path:
-   * `<basePath>/_next/data/<buildId>`, the build's own. Present where a route holds them
-   * (`RouteEntry.pagesData`), absent otherwise; a manifest that names props and no such prefix, or a
-   * prefix of any other shape, is refused where it is built (`buildProjectManifest`).
+   * Where a Pages Router page's props are asked for: `<basePath>/_next/data/<buildId>`, the build's
+   * own, as a request's URL spells it (`pagesDataPrefixOf`) — what a request's pathname is compared
+   * with. Present where a route holds props (`RouteEntry.pagesData`), absent otherwise; a manifest
+   * that names props and nowhere to ask for them is refused where it is built
+   * (`buildProjectManifest`).
    */
   pagesDataPrefix: z.string().startsWith('/').optional(),
+  /**
+   * The base path those props are asked for under, as the build wrote it, which the page a request
+   * asks the props of is named under (`pageOfPagesData`). The prefix is not taken apart for it: a
+   * base path may hold `/_next/data/` itself. Present beside a prefix under a base path, absent for
+   * none.
+   */
+  pagesDataBasePath: z.string().startsWith('/').optional(),
   /** The runtime cache the routes' entries live in. */
   cache: manifestCacheSchema.optional(),
 });

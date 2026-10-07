@@ -553,7 +553,8 @@ function pagesDataRequest(input: ClassifyInput): RequestClass | undefined {
   if (manifest === undefined || prefix === undefined) {
     return undefined;
   }
-  const page = pageOfPagesData(prefix, url.pathname, manifest.trailingSlash === true);
+  const basePath = manifest.pagesDataBasePath ?? '';
+  const page = pageOfPagesData(prefix, basePath, url.pathname, manifest.trailingSlash === true);
   const entry = page === undefined ? undefined : findRouteEntry(manifest, page);
   if (entry?.pagesData === undefined) {
     return undefined;
