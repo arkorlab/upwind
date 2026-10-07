@@ -34,6 +34,7 @@ import {
   SKEW_PROTECTION_COOKIE,
 } from './constants.ts';
 import { parseCookieHeader } from './cookies.ts';
+import { dataRequestHeaders } from './headers.ts';
 
 export type PassthroughReason =
   | 'method'
@@ -539,7 +540,9 @@ function classifyEarly(input: ClassifyInput): RequestClass | undefined {
  *
  * Judged on the data URL itself, which is what Next.js's routing matches its rules against in a
  * build that holds such props — one with no middleware, which leaves a data URL as it is
- * (`routePagesData`): a rule ahead of the filesystem that holds for it claims the request first.
+ * (`routePagesData`) — and with the `x-nextjs-data` that routing puts on it, whatever the client
+ * sent (`dataRequestHeaders`): a rule ahead of the filesystem that holds for it claims the request
+ * first.
  *
  * `undefined` for any other request, which is classified as it always was: a data request for a
  * page with no props here is the Function's (`next-internal`).
@@ -558,7 +561,7 @@ function pagesDataRequest(input: ClassifyInput): RequestClass | undefined {
   if (
     hasInternalDocumentHeader(headers, true, true) ||
     classifyByPins(url, headers, true, input.deployment) !== undefined ||
-    isReserved(manifest, url, headers, true)
+    isReserved(manifest, url, dataRequestHeaders(headers), true)
   ) {
     return undefined;
   }

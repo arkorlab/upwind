@@ -124,6 +124,56 @@ function unreachableFunctions(input: BuildProjectManifestInput): string[] {
   return [...unreachable].toSorted(compareCodeUnits);
 }
 
+/** What a build's data requests are asked under, below its base path and above its build's id. */
+const PAGES_DATA_SEGMENT = '/_next/data/';
+
+/**
+ * Whether a prefix is `<basePath>/_next/data/<buildId>`: a base path that is empty or `/…` with no
+ * empty segment, a build id of one segment, nothing after it — the shape a reader takes back apart
+ * into the two (`pageOfPagesData`), and so the one that names any request.
+ */
+function isPagesDataPrefix(prefix: string): boolean {
+  const at = prefix.lastIndexOf(PAGES_DATA_SEGMENT);
+  if (at === -1) {
+    return false;
+  }
+  const basePath = prefix.slice(0, at);
+  const buildId = prefix.slice(at + PAGES_DATA_SEGMENT.length);
+  const base =
+    basePath === '' ||
+    (basePath.startsWith('/') && !basePath.endsWith('/') && !basePath.includes('//'));
+  return base && buildId !== '' && !buildId.includes('/');
+}
+
+/**
+ * What is wrong with where the manifest says a client asks for a page's props, if anything. Props
+ * no prefix names are asked for at no URL, and a prefix a reader cannot take apart names no
+ * request: either way every data request would go to the Function, and nothing would say why. So
+ * a manifest like that is refused where it is built, as one naming an unreachable Function is.
+ */
+function unaddressedProps(input: BuildProjectManifestInput): string | undefined {
+  const prefix = input.pagesDataPrefix;
+  if (prefix !== undefined && !isPagesDataPrefix(prefix)) {
+    return `pagesDataPrefix ${prefix} is not <basePath>/_next/data/<buildId>`;
+  }
+  if (prefix === undefined && input.routes.some((route) => route.pagesData !== undefined)) {
+    return "routes hold a page's props (pagesData), and no pagesDataPrefix says where a client asks for them";
+  }
+  return undefined;
+}
+
+/**
+ * Where a client asks for props, where a route holds some (`RouteEntry.pagesData`): a prefix no
+ * route's props sit under answers nothing, and is left out so that the field says what it says.
+ */
+function pagesDataFields(
+  input: BuildProjectManifestInput,
+): Pick<ProjectManifest, 'pagesDataPrefix'> {
+  const { pagesDataPrefix } = input;
+  const holds = input.routes.some((route) => route.pagesData !== undefined);
+  return pagesDataPrefix !== undefined && holds ? { pagesDataPrefix } : {};
+}
+
 /** Assemble a manifest from a build's routes; validates the result against the schema. */
 export function buildProjectManifest(input: BuildProjectManifestInput): ProjectManifest {
   const unreachable = unreachableFunctions(input);
@@ -131,6 +181,10 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
     throw new Error(
       `routes are placed in ${unreachable.join(', ')}, which the manifest's app gives no name to reach by (app.functions)`,
     );
+  }
+  const unaddressed = unaddressedProps(input);
+  if (unaddressed !== undefined) {
+    throw new Error(unaddressed);
   }
   const routes: Record<string, RouteEntry> = {};
   for (const entry of input.routes) {
@@ -161,7 +215,7 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
     ...(input.images !== undefined && { images: input.images }),
     ...crawlerFields(input),
     ...staticFileFields(input),
-    ...(input.pagesDataPrefix !== undefined && { pagesDataPrefix: input.pagesDataPrefix }),
+    ...pagesDataFields(input),
     ...(input.cache !== undefined && { cache: input.cache }),
   });
 }

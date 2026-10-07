@@ -123,9 +123,10 @@ export const routeEntrySchema = z.object({
   payload: routeSegmentSchema.optional(),
   /**
    * A Pages Router page's props, as the build wrote them beside a document it finished
-   * (`routePagesData`): what a client navigation's `/_next/data/<buildId>/<page>.json` is answered
-   * with, at the manifest's `pagesDataPrefix`. Absent on every other route and on a manifest from
-   * before the field, whose reader leaves every such request to the Function, as before.
+   * (`routePagesData`): what a client navigation's `<basePath>/_next/data/<buildId>/<page>.json` is
+   * answered with, at the manifest's `pagesDataPrefix`. Absent on every other route and on a
+   * manifest from before the field, whose reader leaves every such request to the Function, as
+   * before.
    */
   pagesData: routeSegmentSchema.optional(),
   headers: z.record(z.string(), z.string()),
@@ -468,7 +469,8 @@ export const projectManifestSchema = z.object({
   /**
    * Where a Pages Router page's props are asked for, under the base path:
    * `<basePath>/_next/data/<buildId>`, the build's own. Present where a route holds them
-   * (`RouteEntry.pagesData`), absent otherwise.
+   * (`RouteEntry.pagesData`), absent otherwise; a manifest that names props and no such prefix, or a
+   * prefix of any other shape, is refused where it is built (`buildProjectManifest`).
    */
   pagesDataPrefix: z.string().startsWith('/').optional(),
   /** The runtime cache the routes' entries live in. */

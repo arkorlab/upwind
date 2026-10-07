@@ -44,6 +44,7 @@ export {
   stripCookies,
 } from './cookies.ts';
 export {
+  dataRequestHeaders,
   filterShellResponseHeaders,
   filterStoredResponseHeaders,
   type ForwardingContext,
