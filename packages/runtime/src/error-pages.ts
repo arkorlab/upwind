@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-import { requestContext } from './cache/context.ts';
+import { isRegeneration, type RequestContext, requestContext } from './cache/context.ts';
 import { invokeEdgeHandler } from './edge-invoke.ts';
 import { type Entry, entryFor, nodeHandlerOf } from './entries.ts';
 import { initUrlOf, stripPlatformHeaders } from './incoming.ts';
@@ -30,6 +30,7 @@ const APP_NOT_FOUND = '/_not-found';
 const SERVER_ERROR_PAGE = '/500';
 /** The page Next.js renders any status with when the application has none of its own for it. */
 const ERROR_PAGE = '/_error';
+const HTTP_OK = 200;
 const HTTP_NOT_FOUND = 404;
 const CONTENT_TYPE = 'content-type';
 const HTTP_INTERNAL_ERROR = 500;
@@ -83,7 +84,7 @@ async function renderedPage(
     requestMeta: {
       minimalMode: true,
       relativeProjectDir: '.',
-      initURL: initUrlOf(context.request),
+      initURL: initUrlFor(context, request),
     },
   });
   return true;
@@ -99,11 +100,45 @@ const NOT_COPIED: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * The URL a render for the request being answered is told the client asked for: the visitor's, and
+ * in a regeneration — which renders for no visitor, under the request's own context — the URL of the
+ * request the render was given (`staticRequest`, `cache/regenerate.ts`).
+ */
+function initUrlFor(context: RequestContext, active: IncomingMessage): string {
+  return isRegeneration()
+    ? new URL(active.url ?? '/', context.request.url).href
+    : initUrlOf(context.request);
+}
+
+/**
+ * The request the edge runtime renders the not-found for: the one being answered, as the render was
+ * given it — in a regeneration, a request with nothing of the visitor's (`staticRequest`), which the
+ * request's own context would put back — without the platform's headers.
+ */
+function edgeRequestOf(context: RequestContext, active: IncomingMessage): Request {
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(active.headers)) {
+    const values = typeof value === 'string' ? [value] : (value ?? []);
+    for (const one of values) {
+      headers.append(name, one);
+    }
+  }
+  return new Request(new URL(active.url ?? '/', context.request.url), {
+    method: active.method === 'HEAD' ? 'HEAD' : 'GET',
+    headers: stripPlatformHeaders(headers),
+  });
+}
+
+/**
  * An answer of the edge runtime, copied into the Node.js response a render was already using: its
  * headers, set over what the response had as a Node.js render's would be, and its body whole —
- * a not-found page is small. The status stays the response's, which is the 404 being answered.
+ * a not-found page is small. A rendered page keeps the 404 being answered; a redirect or a failure
+ * keeps the status that says so, as the not-found of a document that matched no route does.
  */
 async function copyInto(answer: Response, response: ServerResponse): Promise<void> {
+  if (answer.status !== HTTP_OK) {
+    response.statusCode = answer.status;
+  }
   for (const [name, value] of answer.headers) {
     if (!NOT_COPIED.has(name)) {
       response.setHeader(name, value);
@@ -144,20 +179,16 @@ async function renderedAppNotFound(
   const requestMeta = {
     minimalMode: true,
     relativeProjectDir: '.',
-    initURL: initUrlOf(context.request),
+    initURL: initUrlFor(context, request),
     ...(store.manifest.config.cacheComponents === true && { postponed: '' }),
   };
   if (entry.kind === 'node') {
     await entry.handler(request, response, { waitUntil: context.waitUntil, requestMeta });
     return true;
   }
-  const asked = new Request(initUrlOf(context.request), {
-    method: context.request.method === 'HEAD' ? 'HEAD' : 'GET',
-    headers: stripPlatformHeaders(context.request.headers),
-  });
   const answer = await invokeEdgeHandler({
     handler: entry.handler,
-    request: asked,
+    request: edgeRequestOf(context, request),
     requestMeta,
     waitUntil: context.waitUntil,
   });
