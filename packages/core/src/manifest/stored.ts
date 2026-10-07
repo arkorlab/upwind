@@ -1,5 +1,6 @@
 import { canonicalJson } from '../artifact/hash.ts';
-import type { ProjectManifest } from './schema.ts';
+import { compareCodeUnits } from '../util/bytes.ts';
+import { MANIFEST_SCHEMA_VERSION, type ProjectManifest } from './schema.ts';
 
 /**
  * A manifest as it is stored: what a route repeats of every other, said once.
@@ -43,27 +44,47 @@ class TableWriter {
   }
 }
 
-/** The manifest as it is stored and named: each route's repeated values put in `tables`. */
-export function toStoredManifest(manifest: ProjectManifest): Record<string, unknown> {
+/**
+ * The manifest as it is stored and named: each route's repeated values put in `tables`.
+ *
+ * Placed in the order the stored JSON lists them in — the routes by their key as `canonicalJson`
+ * sorts it, then the dynamic routes as listed — so a manifest stores the same bytes however its
+ * routes were inserted, and again once it is read back: its id is a fact about what it says.
+ *
+ * Only a manifest of the version that names places (`MANIFEST_SCHEMA_VERSION`) is stored so. One of
+ * an earlier version — read back from storage, say — is stored route by route, as it was written,
+ * so that it keeps its bytes and its id, and a reader of its own version reads it.
+ */
+export function toStoredManifest(manifest: ProjectManifest): Readonly<Record<string, unknown>> {
+  if (manifest.schemaVersion !== MANIFEST_SCHEMA_VERSION) {
+    return manifest;
+  }
   const headers = new TableWriter();
   const conditions = new TableWriter();
   const preloads = new TableWriter();
+  const keys = Object.keys(manifest.routes).toSorted(compareCodeUnits);
   const routes = Object.fromEntries(
-    Object.entries(manifest.routes).map(([key, entry]) => {
+    keys.flatMap((key) => {
+      const entry = manifest.routes[key];
+      if (entry === undefined) {
+        return [];
+      }
       const stored = {
         ...entry,
         headers: headers.placeOf(entry.headers),
         ...(entry.bypassFor !== undefined && { bypassFor: conditions.placeOf(entry.bypassFor) }),
         ...(entry.preloads !== undefined && { preloads: preloads.placeOf(entry.preloads) }),
       };
-      return [key, stored];
+      return [[key, stored]];
     }),
   );
+  // A class's members carry conditions only where some remain (`memberRoutesOf`).
   const dynamicRoutes = manifest.dynamicRoutes?.map((route) => {
     const { members } = route;
-    return members === undefined
-      ? route
-      : { ...route, members: { ...members, bypassFor: conditions.placeOf(members.bypassFor) } };
+    if (members?.bypassFor === undefined) {
+      return route;
+    }
+    return { ...route, members: { ...members, bypassFor: conditions.placeOf(members.bypassFor) } };
   });
   const tables = {
     headers: headers.values,
@@ -121,10 +142,10 @@ function readRoute(entry: unknown, tables: Tables): unknown {
   };
 }
 
-/** A dynamic route as it is read: its members' conditions put back. */
+/** A dynamic route as it is read: its members' conditions put back, where they carry any. */
 function readDynamicRoute(route: unknown, tables: Tables): unknown {
   const members = isRecord(route) ? route['members'] : undefined;
-  if (!isRecord(route) || !isRecord(members)) {
+  if (!isRecord(route) || !isRecord(members) || members['bypassFor'] === undefined) {
     return route;
   }
   const bypassFor = placed(tables.conditions, members['bypassFor'], 'conditions');
