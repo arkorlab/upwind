@@ -528,6 +528,10 @@ async function main(): Promise<void> {
         build.includes('the build saw types transformed: no'),
     );
     holds('nor the file holding it', build.includes('ARKOR_API_TOKEN_FILE: no'));
+    holds(
+      'and Corepack runs its last known good pnpm for it, not the newest',
+      build.includes('the build saw Corepack fetch the newest: no'),
+    );
     holds("the application's own post-build ran", build.includes('the fixture post-build ran'));
     holds('and it saw no token either', build.includes('it saw ARKOR_API_TOKEN: no'));
     const bundle = JSON.parse(readFileSync(path.join(appDir, '.arkor', 'bundle.json'), 'utf8')) as {
