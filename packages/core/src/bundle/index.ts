@@ -61,7 +61,12 @@ export {
   pagesPathnameOfData,
 } from './pages-data.ts';
 export { queryDependent } from './query.ts';
-export { type PrefetchSegment, prefetchSegments } from './segments.ts';
+export {
+  type PrefetchSegment,
+  prefetchSegments,
+  type RoutePayload,
+  routePayloads,
+} from './segments.ts';
 export { placeholderSegments, routePathnameOf, standsForClass } from './spelling.ts';
 export {
   cacheablePrerenders,

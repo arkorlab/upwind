@@ -111,6 +111,16 @@ export const routeEntrySchema = z.object({
    * is what every reader did before the field existed — so no schema version turns on it.
    */
   segments: z.record(z.string().startsWith('/'), routeSegmentSchema).optional(),
+  /**
+   * The page's whole React Server Components payload, as the build wrote it beside a document it
+   * finished (`routePayloads`): what a router's request for the page — `rsc: 1`, naming no part of
+   * it — is answered with. Held, like `segments`, by a host that answers such a request itself.
+   *
+   * Absent for a page a resume completes, whose payload is rendered for the request, and on a
+   * manifest from before the field: a reader that does not know it hands every such request to the
+   * Function, as every reader did, so no schema version turns on it.
+   */
+  payload: routeSegmentSchema.optional(),
   headers: z.record(z.string(), z.string()),
   /**
    * The route's policy permits any inline script, which the nonce the edge mints stops it doing.

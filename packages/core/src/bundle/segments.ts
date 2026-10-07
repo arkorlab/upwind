@@ -8,19 +8,24 @@ import {
   reproducesDynamicRouting,
   type ServableOptions,
 } from './serving.ts';
+import { isTemplate } from './spelling.ts';
 
 /**
- * Which of a build's router prefetches a host can answer from its own storage.
+ * Which of a build's router requests a host can answer from its own storage: the prefetches of a
+ * page's parts, and the whole payload of a page the build finished.
  *
  * A prefetch asks for part of a page rather than the page — `rsc: 1` with a
  * `next-router-segment-prefetch` naming which part — and the build writes the bytes for each part
- * beside the page's document. They are addressable before any request, so a host that holds a
- * page's document can hold its prefetches too, and every one it holds is a request the deployment's
+ * beside the page's document; it writes the page's whole payload there too, which a navigation
+ * asks for with `rsc: 1` alone. They are addressable before any request, so a host that holds a
+ * page's document can hold these too, and every one it holds is a request the deployment's
  * Function is not woken for.
  *
  * What is served, and under which headers, is `serving.ts`; this is the one question that file does
  * not answer, kept beside it.
  */
+
+const HTTP_OK = 200;
 
 /**
  * The patterns of the rules only the client's router meets — a header rule or a claim whose `has`
@@ -48,6 +53,21 @@ function routerRulePatterns(bundle: DeploymentBundle): RegExp[] {
         // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
         [new RegExp(rule.sourceRegex, 'i')],
   );
+}
+
+/**
+ * Whether a host answers the router's requests for a document's parts and its payload beside the
+ * document: one it serves itself, and one no rule only the client's router meets covers
+ * (`routerRulePatterns`).
+ */
+function partsServed(
+  bundle: DeploymentBundle,
+  options: ServableOptions,
+): (document: Prerender) => boolean {
+  const served = new Set(edgeServablePrerenders(bundle, options).map((prerender) => prerender.id));
+  const routerRules = routerRulePatterns(bundle);
+  return (document) =>
+    served.has(document.id) && routerRules.every((rule) => !rule.test(document.pathname));
 }
 
 /** A prefetch segment a host can answer with, and the document it is a prefetched part of. */
@@ -83,11 +103,8 @@ export function prefetchSegments(
   bundle: DeploymentBundle,
   options: ServableOptions = {},
 ): PrefetchSegment[] {
-  const served = new Set(edgeServablePrerenders(bundle, options).map((prerender) => prerender.id));
   const documents = primaryPrerenders(bundle.prerenders);
-  const routerRules = routerRulePatterns(bundle);
-  const servesParts = (document: Prerender): boolean =>
-    served.has(document.id) && routerRules.every((rule) => !rule.test(document.pathname));
+  const servesParts = partsServed(bundle, options);
   return bundle.prerenders.flatMap((prerender) => {
     const { segmentPath } = prerender;
     const document = documents.get(prerender.id);
@@ -97,5 +114,56 @@ export function prefetchSegments(
     return document === undefined || !servesParts(document)
       ? []
       : [{ segmentPath, document, prerender }];
+  });
+}
+
+/** A page's whole payload a host can answer with, and the document it is the payload of. */
+export interface RoutePayload {
+  /** The document prerender it is the payload of, which names the route it is asked for under. */
+  readonly document: Prerender;
+  /** The prerender holding the payload's own bytes. */
+  readonly prerender: Prerender;
+}
+
+/** The pathname a document's payload is named after: the build names the root's `/index`. */
+function payloadBase(pathname: string): string {
+  return pathname === '/' ? '/index' : pathname;
+}
+
+/**
+ * The payloads a host can answer a router's request for a whole page with: the twin the build
+ * wrote beside a document it finished (`<pathname>.rsc`, in the document's own group), complete in
+ * itself, which is what the deployment's Function answers such a request with from the build.
+ *
+ * Only of a page whose document the host serves complete. A page a resume completes has its
+ * payload rendered for the request as its document is, and a class shell's twin is the payload of
+ * the class's shell rather than of the member asked for. Under the conditions the parts of a page
+ * are answered under (`partsServed`), for the same reasons: a host answers a page's parts and the
+ * page itself from the same place, or neither.
+ *
+ * A twin with a status of its own is left out. The build gives a payload none — a redirect or a
+ * `notFound()` is carried in it, for the client's router to follow — and the host answers `200`.
+ */
+export function routePayloads(
+  bundle: DeploymentBundle,
+  options: ServableOptions = {},
+): RoutePayload[] {
+  const servesParts = partsServed(bundle, options);
+  const byPathname = new Map(bundle.prerenders.map((prerender) => [prerender.pathname, prerender]));
+  const { suffix } = bundle.routing.rsc;
+  return bundle.prerenders.flatMap((document) => {
+    if (document.postponed !== undefined || isTemplate(document.pathname)) {
+      return [];
+    }
+    if (!servesParts(document)) {
+      return [];
+    }
+    const twin = byPathname.get(`${payloadBase(document.pathname)}${suffix}`);
+    const own = twin?.route === document.route && twin.groupId === document.groupId;
+    const whole =
+      twin?.body !== undefined &&
+      twin.postponed === undefined &&
+      (twin.initialStatus === undefined || twin.initialStatus === HTTP_OK);
+    return own && whole ? [{ document, prerender: twin }] : [];
   });
 }
