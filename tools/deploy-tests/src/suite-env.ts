@@ -22,8 +22,9 @@ import { TOOL_ENV_PREFIXES } from './config.ts';
  * variable the harness sets in its own process after it starts is one, and is taken for the suite's
  * unless it is named below — the startup environment is all `/proc` keeps, and the process's current
  * one is not readable from outside it. Next.js's harness sets `TEST_FILE_PATH` and `NEXT_TEST_*`, and
- * nothing that holds a credential; a host's runner that loaded one into the harness's process as it
- * ran would have it uploaded, as a secret, into the test project.
+ * Next.js itself sets `RUST_MIN_STACK` in a process once it has loaded its native bindings, which the
+ * harness has; nothing that holds a credential. A host's runner that loaded one into the harness's
+ * process as it ran would have it uploaded, as a secret, into the test project.
  */
 
 /**
@@ -41,6 +42,14 @@ const NOT_THE_SUITES: ReadonlySet<string> = new Set([
   'SHLVL',
   'TEST_FILE_PATH',
 ]);
+/**
+ * Not the suite's either, at the value Next.js gives it in a harness that started without one: the
+ * stack size it sets in any process that loads its native bindings and has none (`RUST_MIN_STACK`,
+ * `build/swc`), which the harness does for its own transforms. A suite that sets another value through
+ * `createNext({ env })` has it given, and so does one that sets this value over a harness that started
+ * with another, which Next.js then never replaced.
+ */
+const NEXT_JS_SETS: ReadonlyMap<string, string> = new Map([['RUST_MIN_STACK', '8388608']]);
 /** Jest's own, set in a worker as it runs; Next.js's test settings; and this tool's own. */
 const NOT_THE_SUITES_PREFIXES: readonly string[] = ['JEST_', 'NEXT_TEST_', ...TOOL_ENV_PREFIXES];
 
@@ -66,6 +75,7 @@ function suiteVariables(
         value === undefined ||
         harness.get(name) === value ||
         NOT_THE_SUITES.has(name) ||
+        (NEXT_JS_SETS.get(name) === value && !harness.has(name)) ||
         NOT_THE_SUITES_PREFIXES.some((prefix) => name.startsWith(prefix))
       ) {
         return [];

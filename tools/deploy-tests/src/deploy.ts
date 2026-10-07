@@ -128,15 +128,12 @@ export async function readBundle(appDir: string): Promise<DeploymentBundle> {
 
 /**
  * Replace, rather than merge: a value the fixture before this one set must not answer for this one.
- *
- * Every variable goes up as a secret. The API answers a secret's value as `null`, so a fixture's own
- * values cannot be read back out of the project by anything holding a `read` token.
+ * Which of its variables go up as secrets is `deploymentEnvironment`'s to say.
  */
 async function replaceEnvironment(input: DeployInput): Promise<void> {
-  const { env, said } = await deploymentEnvironment(input.appDir, process.env);
+  const { entries, said } = await deploymentEnvironment(input.appDir, process.env);
   input.log(`replacing the project's environment with ${said}`);
-  const names = Object.keys(env);
-  await input.client.putEnv(names.map((name) => ({ name, value: env[name] ?? '', secret: true })));
+  await input.client.putEnv(entries);
 }
 
 async function uploadMissing(
