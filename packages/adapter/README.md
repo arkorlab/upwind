@@ -412,12 +412,13 @@ its file **in a bundle**. A rewrite can apply perfectly to a module no build eve
 `--canary` checks the current canary as a forecast. A prerelease is not in the range — a
 semantic-version range admits no prerelease it does not name — so what it reports is not this
 adapter being wrong about a version somebody can install, but what the next release is about to
-do to these rewrites. It is run as a step of its own that is allowed to fail, and it is failing
-now: `16.4.0-canary`'s `CacheSignal` schedules through an `immediateTracker` that the
-`cache-signal-timers` patch has never seen. A canary is numbered as the next minor whatever it is
-going to become, and which it becomes is decided when it ships: as a major it is outside this
-range already and costs nothing, as a minor it is inside it and that patch has to learn the new
-shape first.
+do to these rewrites. It is run as a step of its own that is allowed to fail. A canary is numbered
+as the next minor whatever it is going to become, and which it becomes is decided when it ships: as
+a major it is outside this range already and costs nothing, as a minor it is inside it and a patch
+it breaks has to learn the new shape first. That is what 16.4 was. Its canaries had `CacheSignal`
+schedule through an `immediateTracker` that `cache-signal-timers` had never seen, it shipped as a
+minor with that shape, and the patch now rewrites both: the helper before 16.4, and the one that
+waits on the tracker from 16.4.
 
 The floor is where the Adapter API became stable, which is 16.2. Below it the hook is
 `experimental.adapterPath` and hands `ctx.routes`, a different shape altogether, with no

@@ -47,6 +47,26 @@ import { occurrencesOf, type Patch, Rewrite } from './types.ts';
  *
  * So this is not about WebAssembly. `next/og` is where the platform met it, and it is reachable
  * by any route handler that loads an async module on demand.
+ *
+ * 16.4 hands a signal a second argument, the render's `ImmediateTracker`, and waits for it to be
+ * idle rather than for one immediate before arming the timeout; the module-loading signal is built
+ * with none (`new CacheSignal(null)`) and schedules as before. Its helper keeps a `cancelled` flag
+ * now, but only to stop a timeout being armed: the timeout already armed does not look at it, and
+ * the clears are still made from whichever request cancels. So the rewrite stays.
+ *
+ * What it does not do is wait through the tracker's `onIdle`. That binds the listener to the
+ * subscriber's async context, and a Function refuses to call a bound function from any request
+ * but the one that made it ("Cannot call this AsyncLocalStorage bound function outside of the
+ * request in which it was created") — which the tracker does as soon as an immediate scheduled
+ * in another request, by a continuation that kept this render's context, wakes it. That is what
+ * suites run against a real application showed, and what follows from it is in the tracker's own
+ * code: the refusal is thrown inside it, so neither the listener it refused nor any after it
+ * runs, and the signal they were to wake never fires. So the helper keeps its own wait — an
+ * immediate, then the timeout — and asks the tracker only whether immediates are still pending
+ * when the timeout fires, waiting again while they are. Not for ever: an immediate of a request
+ * that has ended never runs, and the tracker would report it pending for good, so after
+ * `__arkorMaxWaits` rounds the listeners are told regardless, which is where a release before
+ * 16.4 told them after one.
  */
 
 const NAME = 'cache-signal-timers';
@@ -59,42 +79,89 @@ const TARGET =
 /** The field the signal keeps its cancellation on; no other file this target matches has one. */
 const MARKER = 'pendingTimeoutCleanup';
 
-/**
- * Where the signal arms its task, in the two shapes it reaches a build in: a call of the named
- * helper in the source file Next.js ships, and that helper inlined as one comma expression where
- * a minifier has been through it. Each is the one assignment of `pendingTimeoutCleanup` that is
- * not `null`, and both are replaced by the same call.
- */
-const SCHEDULE_SHAPES: readonly RegExp[] = [
-  /this\.pendingTimeoutCleanup = scheduleImmediateAndTimeoutWithCleanup\(this\.invokeListenersIfNoPendingReads\)/gu,
-  /this\.pendingTimeoutCleanup=\([\w$]+=this\.invokeListenersIfNoPendingReads,[\s\S]{0,200}?,\(\)=>[\w$]+\(\)\)/gu,
-];
+/** One way the signal arms its task, and the call it is replaced by. */
+interface ScheduleShape {
+  readonly pattern: RegExp;
+  readonly scheduled: string;
+}
+
 const SCHEDULED =
   'this.pendingTimeoutCleanup = __arkorSchedule(this.invokeListenersIfNoPendingReads)';
+const SCHEDULED_WITH_TRACKER =
+  'this.pendingTimeoutCleanup = __arkorSchedule(this.invokeListenersIfNoPendingReads, this.immediateTracker)';
 
 /**
- * The same immediate-then-timeout Next.js schedules, with the cancellation moved off the timer.
+ * Where the signal arms its task, in the shapes it reaches a build in: a call of the named helper
+ * in the source file Next.js ships, and that helper inlined where a minifier has been through it —
+ * as one comma expression before 16.4, and as a function called on the spot from 16.4, which
+ * passes the tracker too. Each is the one assignment of `pendingTimeoutCleanup` that is not
+ * `null`, and each is replaced by the same call with the arguments its version passes.
+ */
+const SCHEDULE_SHAPES: readonly ScheduleShape[] = [
+  {
+    pattern:
+      /this\.pendingTimeoutCleanup = scheduleImmediateAndTimeoutWithCleanup\(this\.invokeListenersIfNoPendingReads\)/gu,
+    scheduled: SCHEDULED,
+  },
+  {
+    pattern:
+      /this\.pendingTimeoutCleanup=\([\w$]+=this\.invokeListenersIfNoPendingReads,[\s\S]{0,200}?,\(\)=>[\w$]+\(\)\)/gu,
+    scheduled: SCHEDULED,
+  },
+  {
+    pattern:
+      /this\.pendingTimeoutCleanup = scheduleImmediateAndTimeoutWithCleanup\(this\.invokeListenersIfNoPendingReads, this\.immediateTracker\)/gu,
+    scheduled: SCHEDULED_WITH_TRACKER,
+  },
+  {
+    pattern:
+      /this\.pendingTimeoutCleanup=function\([\w$]+,[\w$]+\)\{[\s\S]{0,600}?\}\(this\.invokeListenersIfNoPendingReads,this\.immediateTracker\)/gu,
+    scheduled: SCHEDULED_WITH_TRACKER,
+  },
+];
+
+/**
+ * The same waits Next.js schedules, with the cancellation moved off the timer.
+ *
+ * The immediate-then-timeout every version arms, and with a tracker (16.4) the same again for as
+ * long as the tracker still reports immediates pending when the timeout fires, up to
+ * `__arkorMaxWaits` rounds. The tracker is only ever asked, never subscribed to: see above.
  *
  * The generation is kept against the callback rather than against the signal because the callback
- * is the one thing both shapes hand over: it is the bound arrow the signal made for itself in its
+ * is the one thing every shape hands over: it is the bound arrow the signal made for itself in its
  * constructor, so it identifies that signal and no other.
  */
 const HELPER = [
   '',
   'const __arkorGenerations = new WeakMap();',
-  'function __arkorSchedule(cb) {',
+  'const __arkorMaxWaits = 100;',
+  'function __arkorSchedule(cb, tracker) {',
   '  const generation = (__arkorGenerations.get(cb) ?? 0) + 1;',
   '  __arkorGenerations.set(cb, generation);',
-  '  let clearPending;',
-  '  const immediate = setImmediate(() => {',
-  '    const timeout = setTimeout(() => {',
-  '      if (__arkorGenerations.get(cb) === generation) {',
-  '        cb();',
-  '      }',
-  '    }, 0);',
-  '    clearPending = clearTimeout.bind(null, timeout);',
-  '  });',
-  '  clearPending = clearImmediate.bind(null, immediate);',
+  '  const nothing = () => {};',
+  '  let clearPending = nothing;',
+  '  let waits = 0;',
+  '  const fire = () => {',
+  '    clearPending = nothing;',
+  '    if (__arkorGenerations.get(cb) !== generation) {',
+  '      return;',
+  '    }',
+  '    if (tracker != null && waits < __arkorMaxWaits && tracker.hasPendingImmediates()) {',
+  '      waits += 1;',
+  '      wait();',
+  '    } else {',
+  '      cb();',
+  '    }',
+  '  };',
+  '  function arm() {',
+  '    if (__arkorGenerations.get(cb) === generation) {',
+  '      clearPending = clearTimeout.bind(null, setTimeout(fire, 0));',
+  '    }',
+  '  }',
+  '  function wait() {',
+  '    clearPending = clearImmediate.bind(null, setImmediate(arm));',
+  '  }',
+  '  wait();',
   '  return () => {',
   '    __arkorGenerations.set(cb, (__arkorGenerations.get(cb) ?? 0) + 1);',
   '    try {',
@@ -117,12 +184,12 @@ export const cacheSignalTimersPatch: Patch = {
   reaches: ['module', 'server-runtime'],
   apply(source, file) {
     const rewrite = new Rewrite(NAME, file, source);
-    const shape = SCHEDULE_SHAPES.find((candidate) => occurrencesOf(source, candidate) > 0);
+    const shape = SCHEDULE_SHAPES.find((candidate) => occurrencesOf(source, candidate.pattern) > 0);
     if (shape === undefined) {
       throw rewrite.fail("expected the cache signal's scheduling 1 time(s), found 0");
     }
     const result = rewrite
-      .replace(shape, SCHEDULED, 1, "the cache signal's scheduling")
+      .replace(shape.pattern, shape.scheduled, 1, "the cache signal's scheduling")
       .append(HELPER);
     return {
       contents: result.contents,
