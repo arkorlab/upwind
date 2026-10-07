@@ -13,6 +13,7 @@ import {
 } from './check-application.ts';
 import { fakeHost, type FakeHost } from './fake-host.ts';
 import { AFTER_SERVED_MS } from './hook.ts';
+import { suiteVariablesOf } from './suite-env.ts';
 
 /**
  * The three hooks, run for real against a host that is not one.
@@ -363,6 +364,15 @@ async function suiteEnvScenario(
     );
     return;
   }
+  // Next.js's own stack size is left out below; a suite that sets another has it given.
+  const stackSize = suiteVariablesOf(
+    env['ADAPTER_TEST_HARNESS_PID'],
+    { ...env, RUST_MIN_STACK: '16777216' },
+    () => {
+      // Nothing to say: the stand-in harness is there to be read.
+    },
+  );
+  holds("a stack size a suite sets itself is the suite's", stackSize['RUST_MIN_STACK'] === '16777216');
   const host = await fakeHost(deploymentId);
   try {
     await bounded(DEPLOY_HOOK, appDir, {

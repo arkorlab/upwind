@@ -100,6 +100,12 @@ function entryOf([name, value]: [string, string]): EnvEntry {
   return { name, value, secret: value.length >= SHORTEST_SECRET };
 }
 
+/** The names that go up as they are, for the log: none, or a clause that names them. */
+function plainOf(entries: readonly EnvEntry[]): string {
+  const plain = entries.filter((entry) => !entry.secret).map((entry) => entry.name);
+  return plain.length === 0 ? '' : `; too short to be secrets, put as they are: ${plain.join(', ')}`;
+}
+
 /**
  * What a deployment's environment is replaced with: the application's own `.env` files, and the
  * suite's variables over them (`suite-env.ts`), as a variable a process is started with is over a
@@ -107,9 +113,11 @@ function entryOf([name, value]: [string, string]): EnvEntry {
  *
  * A variable goes up as a secret wherever the API takes one: it answers a secret's value as `null`, so
  * a fixture's own values cannot be read back out of the project by anything holding a `read` token. A
- * value too short to be one (`SHORTEST_SECRET`) goes up as it is — a flag rather than a credential,
- * and one every fixture kept as a directory has: Next.js's deploy mode gives those
- * `NEXT_PRIVATE_LOCAL_DEV=1`.
+ * value too short to be one (`SHORTEST_SECRET`) goes up as it is, and the log names it. Refusing it
+ * instead would fail the suite on how its value is stored rather than on what the adapter did, and
+ * every value here is one of Next.js's own test suite, its `.env` files and its `createNext({ env })`:
+ * a flag like the `NEXT_PRIVATE_LOCAL_DEV=1` its deploy mode gives every fixture kept as a directory,
+ * not a credential. The API holds that much itself, in refusing to keep a value that short as one.
  */
 export async function deploymentEnvironment(
   directory: string,
@@ -121,8 +129,9 @@ export async function deploymentEnvironment(
     Object.entries(suiteEnvironment(env)).filter(([name]) => !keptOut(name)),
   );
   const merged = { ...own, ...suite };
+  const entries = Object.entries(merged).map((entry) => entryOf(entry));
   return {
-    entries: Object.entries(merged).map((entry) => entryOf(entry)),
-    said: `${countOf(merged)}: ${countOf(own)} of the fixture's own, ${countOf(suite)} of the suite's${namesOf(suite)}`,
+    entries,
+    said: `${countOf(merged)}: ${countOf(own)} of the fixture's own, ${countOf(suite)} of the suite's${namesOf(suite)}${plainOf(entries)}`,
   };
 }

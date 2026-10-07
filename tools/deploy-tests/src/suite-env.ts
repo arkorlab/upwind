@@ -22,7 +22,7 @@ import { TOOL_ENV_PREFIXES } from './config.ts';
  * variable the harness sets in its own process after it starts is one, and is taken for the suite's
  * unless it is named below — the startup environment is all `/proc` keeps, and the process's current
  * one is not readable from outside it. Next.js's harness sets `TEST_FILE_PATH` and `NEXT_TEST_*`, and
- * Next.js itself `RUST_MIN_STACK` in a process once it has loaded its native bindings, which the
+ * Next.js itself sets `RUST_MIN_STACK` in a process once it has loaded its native bindings, which the
  * harness has; nothing that holds a credential. A host's runner that loaded one into the harness's
  * process as it ran would have it uploaded, as a secret, into the test project.
  */
@@ -31,20 +31,23 @@ import { TOOL_ENV_PREFIXES } from './config.ts';
  * Not the suite's, though the hook has them and the harness did not start with them: what the shell
  * running the hook sets for itself; what Next.js's harness sets in its own process as it runs — the
  * test file's path (`TEST_FILE_PATH`, `e2e-utils`) and its `NEXT_TEST_*` settings, `NEXT_TEST_DIR`
- * among them, which it adds for every hook; the stack size Next.js gives any process that loads its
- * native bindings (`RUST_MIN_STACK`, `build/swc`), which the harness does for its own transforms, so
- * that every suite would otherwise hand it to its deployment; and the deployment id, which the host
- * gives a deployment and a suite's own would contradict.
+ * among them, which it adds for every hook; and the deployment id, which the host gives a deployment
+ * and a suite's own would contradict.
  */
 const NOT_THE_SUITES: ReadonlySet<string> = new Set([
   '_',
   'NEXT_DEPLOYMENT_ID',
   'OLDPWD',
   'PWD',
-  'RUST_MIN_STACK',
   'SHLVL',
   'TEST_FILE_PATH',
 ]);
+/**
+ * Not the suite's either, at the value Next.js gives it: the stack size it sets in any process that
+ * loads its native bindings and has none (`RUST_MIN_STACK`, `build/swc`), which the harness does for
+ * its own transforms. A suite that sets another value through `createNext({ env })` has it given.
+ */
+const NEXT_JS_SETS: ReadonlyMap<string, string> = new Map([['RUST_MIN_STACK', '8388608']]);
 /** Jest's own, set in a worker as it runs; Next.js's test settings; and this tool's own. */
 const NOT_THE_SUITES_PREFIXES: readonly string[] = ['JEST_', 'NEXT_TEST_', ...TOOL_ENV_PREFIXES];
 
@@ -70,6 +73,7 @@ function suiteVariables(
         value === undefined ||
         harness.get(name) === value ||
         NOT_THE_SUITES.has(name) ||
+        NEXT_JS_SETS.get(name) === value ||
         NOT_THE_SUITES_PREFIXES.some((prefix) => name.startsWith(prefix))
       ) {
         return [];
