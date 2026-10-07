@@ -1,8 +1,9 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-import { requestContext } from './cache/context.ts';
-import { type Entry, nodeHandlerOf } from './entries.ts';
-import { initUrlOf } from './incoming.ts';
+import { isRegeneration, type RequestContext, requestContext } from './cache/context.ts';
+import { invokeEdgeHandler } from './edge-invoke.ts';
+import { type Entry, entryFor, nodeHandlerOf } from './entries.ts';
+import { initUrlOf, stripPlatformHeaders } from './incoming.ts';
 import type { FailureAnswer } from './node-bridge.ts';
 import { entrypointKindOf, getStore, type Store } from './store.ts';
 
@@ -24,10 +25,14 @@ import { entrypointKindOf, getStore, type Store } from './store.ts';
 
 /** Next.js names these outputs `/404` and `/500`, under the `basePath` as it names every output. */
 const NOT_FOUND_PAGE = '/404';
+/** The App Router's not-found, which every build with an App Router has: its own or Next.js's. */
+const APP_NOT_FOUND = '/_not-found';
 const SERVER_ERROR_PAGE = '/500';
 /** The page Next.js renders any status with when the application has none of its own for it. */
 const ERROR_PAGE = '/_error';
+const HTTP_OK = 200;
 const HTTP_NOT_FOUND = 404;
+const CONTENT_TYPE = 'content-type';
 const HTTP_INTERNAL_ERROR = 500;
 /** What Next.js's own server ends with when an application ships no not-found document. */
 const LAST_WORDS = 'This page could not be found';
@@ -79,14 +84,121 @@ async function renderedPage(
     requestMeta: {
       minimalMode: true,
       relativeProjectDir: '.',
-      initURL: initUrlOf(context.request),
+      initURL: initUrlFor(context, request),
     },
   });
   return true;
 }
 
+/** What an answer from the edge runtime keeps out of the response it is copied into. */
+const NOT_COPIED: ReadonlySet<string> = new Set([
+  'connection',
+  'content-length',
+  'keep-alive',
+  'set-cookie',
+  'transfer-encoding',
+]);
+
 /**
- * `requestMeta.render404`, writing into the response the render was already using. The status is
+ * The URL a render for the request being answered is told the client asked for: the visitor's, and
+ * in a regeneration — which renders for no visitor, under the request's own context — the URL of the
+ * request the render was given (`staticRequest`, `cache/regenerate.ts`).
+ */
+function initUrlFor(context: RequestContext, active: IncomingMessage): string {
+  return isRegeneration()
+    ? new URL(active.url ?? '/', context.request.url).href
+    : initUrlOf(context.request);
+}
+
+/**
+ * The request the edge runtime renders the not-found for: the one being answered, as the render was
+ * given it — in a regeneration, a request with nothing of the visitor's (`staticRequest`), which the
+ * request's own context would put back — without the platform's headers.
+ */
+function edgeRequestOf(context: RequestContext, active: IncomingMessage): Request {
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(active.headers)) {
+    const values = typeof value === 'string' ? [value] : (value ?? []);
+    for (const one of values) {
+      headers.append(name, one);
+    }
+  }
+  return new Request(new URL(active.url ?? '/', context.request.url), {
+    method: active.method === 'HEAD' ? 'HEAD' : 'GET',
+    headers: stripPlatformHeaders(headers),
+  });
+}
+
+/**
+ * An answer of the edge runtime, copied into the Node.js response a render was already using: its
+ * headers, set over what the response had as a Node.js render's would be, and its body whole —
+ * a not-found page is small. A rendered page keeps the 404 being answered; a redirect or a failure
+ * keeps the status that says so, as the not-found of a document that matched no route does.
+ */
+async function copyInto(answer: Response, response: ServerResponse): Promise<void> {
+  if (answer.status !== HTTP_OK) {
+    response.statusCode = answer.status;
+  }
+  for (const [name, value] of answer.headers) {
+    if (!NOT_COPIED.has(name)) {
+      response.setHeader(name, value);
+    }
+  }
+  const cookies = answer.headers.getSetCookie();
+  if (cookies.length > 0) {
+    response.setHeader('set-cookie', cookies);
+  }
+  response.end(new Uint8Array(await answer.arrayBuffer()));
+}
+
+/**
+ * The App Router's not-found, where the application has an App Router: Next.js's own server answers
+ * a 404 with it before it looks for the Pages Router's `/404` (`renderErrorToResponseImpl`,
+ * `server/base-server.ts`), so where the two routers share an application, a Pages Router miss is
+ * answered with the App Router's page — which is what Next.js 16.3's pages handler asks of the
+ * platform's `render404`. Rendered whole for the request, through whichever runtime it was built
+ * for, as Next.js renders it there: under `cacheComponents` with an empty postponed state, which is
+ * what the pages handler readies it with, since an invocation of its own has no shell to resume.
+ * The build's own document of it is not read: where the page was complete, Next.js publishes it as
+ * `/404`, which in an application of both routers is the Pages Router's name. Whether it answered.
+ */
+async function renderedAppNotFound(
+  store: Store,
+  request: IncomingMessage,
+  response: ServerResponse,
+): Promise<boolean> {
+  const route = `${store.manifest.config.basePath}${APP_NOT_FOUND}`;
+  const context = requestContext();
+  if (context === undefined || entrypointKindOf(store, route) !== 'app-page') {
+    return false;
+  }
+  const entry = await entryFor(context.tables, route);
+  if (entry === undefined) {
+    return false;
+  }
+  const requestMeta = {
+    minimalMode: true,
+    relativeProjectDir: '.',
+    initURL: initUrlFor(context, request),
+    ...(store.manifest.config.cacheComponents === true && { postponed: '' }),
+  };
+  if (entry.kind === 'node') {
+    await entry.handler(request, response, { waitUntil: context.waitUntil, requestMeta });
+    return true;
+  }
+  const answer = await invokeEdgeHandler({
+    handler: entry.handler,
+    request: edgeRequestOf(context, request),
+    requestMeta,
+    waitUntil: context.waitUntil,
+  });
+  await copyInto(answer, response);
+  return true;
+}
+
+/**
+ * `requestMeta.render404`, writing into the response the render was already using: the App Router's
+ * not-found where there is one (`renderedAppNotFound`), else the Pages Router's. The status is
  * Next.js's own — it sets 404 before it asks — and is set here for a caller that did not.
  *
  * One function for every request, which is why it reads the store rather than closing over one:
@@ -100,9 +212,13 @@ export async function render404(request: IncomingMessage, response: ServerRespon
   if (response.statusCode < HTTP_NOT_FOUND) {
     response.statusCode = HTTP_NOT_FOUND;
   }
-  const document = documentOf(getStore(), NOT_FOUND_PAGE);
+  const store = getStore();
+  if (await renderedAppNotFound(store, request, response)) {
+    return;
+  }
+  const document = documentOf(store, NOT_FOUND_PAGE);
   if (document !== undefined) {
-    response.setHeader('content-type', document.contentType);
+    response.setHeader(CONTENT_TYPE, document.contentType);
     response.end(document.bytes);
     return;
   }
@@ -129,7 +245,7 @@ async function renderServerError(
   response.setHeader('cache-control', NEVER_STORED);
   const document = documentOf(getStore(), SERVER_ERROR_PAGE);
   if (document !== undefined) {
-    response.setHeader('content-type', document.contentType);
+    response.setHeader(CONTENT_TYPE, document.contentType);
     response.end(document.bytes);
     return;
   }
