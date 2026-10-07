@@ -43,6 +43,13 @@ const TARGET = /\/server\/chunks\/.*\.js$/u;
 const READS_A_FILE = /"content-type":\s*"application\/wasm"/gu;
 /** What only a module reading a `.wasm` off disk as a stream has, on top of the `Content-Type`. */
 const FILE_READ_MARKS = ['createReadStream', '.toWeb('];
+/**
+ * `(e.w,r)`: the file's path resolved against Turbopack's runtime root, which the loader reads off
+ * the module's own context (`__turbopack_runtime_root__`) — the context it requires its modules
+ * through as well (`e.r(…)`). An application module that streams a `.wasm` of its own has the rest
+ * of a file read, and no reason to know where Turbopack's runtime is.
+ */
+const RUNTIME_ROOT_RESOLVE = /\((?<context>[\w$]+)\.w,\s*[\w$]+\)/u;
 /** What a module of a chunk ends with: its registration. One between two places parts modules. */
 const REGISTRATION = '.s([';
 /** How far from its file read the loader module's registration and functions may be. */
@@ -120,8 +127,9 @@ function roleOf(source: string, local: string, before: number): LoaderRole | und
  *
  * Read off the module the read is in and nothing else in the chunk. The registration is the first
  * after the read, which is the one that ends its module; the rest of a file read is in that module
- * too; and each export the registration names is one of the loader's functions — by its name where
- * the build kept the name, and by what the function is where the build mangled it (`roleOf`).
+ * too, its path resolved against Turbopack's runtime root (`RUNTIME_ROOT_RESOLVE`); and each export
+ * the registration names is one of the loader's functions — by its name where the build kept the
+ * name, and by what the function is where the build mangled it (`roleOf`).
  * Another module's export of the same name, or of a function of the same letter, belongs to a
  * module this never looks at, so it is never what gets rewritten.
  */
@@ -132,6 +140,10 @@ function loaderAt(source: string, read: number): LoaderRegistration | undefined 
   }
   const own = source.slice(Math.max(0, source.lastIndexOf(REGISTRATION, read)), at);
   if (FILE_READ_MARKS.some((mark) => !own.includes(mark))) {
+    return undefined;
+  }
+  const context = RUNTIME_ROOT_RESOLVE.exec(own)?.groups?.['context'];
+  if (context === undefined || !own.includes(`${context}.r(`)) {
     return undefined;
   }
   const found = LOADER_EXPORTS.exec(source.slice(at, at + LOADER_SPAN));
