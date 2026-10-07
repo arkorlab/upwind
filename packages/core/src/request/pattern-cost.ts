@@ -3,6 +3,7 @@ import type { Atom } from './pattern-syntax.ts';
 import {
   type Alternatives,
   type Counted,
+  nestingDepth,
   parseAlternatives,
   type PatternNode,
 } from './pattern-tree.ts';
@@ -104,6 +105,11 @@ const MAX_VALUE_LENGTH = 4_294_967_296;
 const UNREAD_FLAGS = /[mv]/u;
 /** Longer than any pattern the upload admits; past it nothing is read. */
 const MAX_ANALYZED_LENGTH = 4096;
+/**
+ * Deeper than any pattern Next.js writes nests its groups, a few levels at most; past it nothing is
+ * read, so that reading a pattern recurses no further than this does.
+ */
+const MAX_NESTING = 32;
 /** The characters `.` does not take, without the `s` flag. */
 const LINE_TERMINATOR = /[\n\r\u{2028}\u{2029}]/u;
 
@@ -252,7 +258,13 @@ function matchesNothing(node: PatternNode, atEnd: boolean): boolean {
       return atEnd && node.at === 'end';
     }
     case 'look': {
-      return false;
+      // One that holds wherever its alternatives can match nothing: positive, and with one such.
+      return (
+        !node.negative &&
+        node.alternatives.some((alternative) =>
+          alternative.every((inner) => matchesNothing(inner, atEnd)),
+        )
+      );
     }
     case 'atom': {
       return node.quantifier?.min === 0;
@@ -578,9 +590,10 @@ function nodeCost(
 /**
  * A pattern's cost against a value (`PatternCost`), or `undefined` for one this does not read: a
  * backreference, a lookaround or an assertion repeated, a repeated group of any other shape than
- * `groupCost` reads, a modifier, a flag it does not read, a degree past `MAX_DEGREE`, or anything
- * longer than `MAX_ANALYZED_LENGTH`. Tried from every place in the value, as `test` and `exec` try
- * a pattern, but where each alternative begins with `^`, which only the first passes.
+ * `groupCost` reads, a modifier, a flag it does not read, a degree past `MAX_DEGREE`, groups nested
+ * past `MAX_NESTING`, or anything longer than `MAX_ANALYZED_LENGTH`. Tried from every place in the
+ * value, as `test` and `exec` try a pattern, but where each alternative begins with `^`, which only
+ * the first passes.
  */
 export function patternCost(
   source: string,
@@ -590,7 +603,12 @@ export function patternCost(
   // And `u` beside `i`, under which a letter matches others past ASCII — `k` the Kelvin sign — that
   // `caseVariants` does not name.
   const folds = flags.includes('u') && flags.includes('i');
-  if (folds || source.length > MAX_ANALYZED_LENGTH || UNREAD_FLAGS.test(flags)) {
+  if (
+    folds ||
+    source.length > MAX_ANALYZED_LENGTH ||
+    UNREAD_FLAGS.test(flags) ||
+    nestingDepth(source) > MAX_NESTING
+  ) {
     return undefined;
   }
   const alternatives = parseAlternatives(source, 0, source.length);

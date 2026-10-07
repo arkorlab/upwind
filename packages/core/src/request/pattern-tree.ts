@@ -42,7 +42,13 @@ export type PatternNode =
       /** From its `(` to before its `)`, as `delimitedRepetition` reads a group. */
       readonly fragment: string;
     }
-  | { readonly kind: 'look'; readonly alternatives: Alternatives; readonly behind: boolean }
+  | {
+      readonly kind: 'look';
+      readonly alternatives: Alternatives;
+      readonly behind: boolean;
+      /** `(?!…)` or `(?<!…)`: holds where its alternatives do not. */
+      readonly negative: boolean;
+    }
   | { readonly kind: 'anchor'; readonly at: 'start' | 'end' | 'boundary' };
 
 interface Parsed {
@@ -76,6 +82,29 @@ function countedAt(pattern: string, index: number): Counted | undefined {
   // `*?`, `+?`, `??`, `{n,m}?`: a `?` after the quantifier itself.
   const lazy = quantifier.end - index > 1 && pattern[quantifier.end - 1] === '?';
   return { ...quantifier, ...countsAt(pattern, index), lazy };
+}
+
+/** How deep a pattern's groups nest, as `afterGroup` reads them: escapes and sets are no group. */
+export function nestingDepth(pattern: string): number {
+  let depth = 0;
+  let deepest = 0;
+  let index = 0;
+  while (index < pattern.length) {
+    const character = pattern[index];
+    if (character === '\\') {
+      index += 2;
+      continue;
+    }
+    if (character === '[') {
+      index = afterCharacterClass(pattern, index);
+      continue;
+    }
+    depth += character === '(' ? 1 : 0;
+    depth -= character === ')' ? 1 : 0;
+    deepest = Math.max(deepest, depth);
+    index += 1;
+  }
+  return deepest;
 }
 
 /** Past one unit of a pattern a `|` cannot split: an escape, a set, a group, or a character. */
@@ -148,10 +177,11 @@ function groupAt(pattern: string, index: number, to: number): Parsed | undefined
     // A lookaround read again and again is no shape this reads.
     const behind = pattern.startsWith('(?<', index);
     const opener = behind ? '(?<='.length : '(?='.length;
+    const negative = pattern[index + opener - 1] === '!';
     const alternatives = parseAlternatives(pattern, index + opener, end - 1);
     return quantifier !== undefined || alternatives === undefined
       ? undefined
-      : { node: { kind: 'look', alternatives, behind }, end };
+      : { node: { kind: 'look', alternatives, behind, negative }, end };
   }
   const contents = groupContents(pattern, index);
   const alternatives =

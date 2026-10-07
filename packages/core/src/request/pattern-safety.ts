@@ -146,14 +146,25 @@ function scanReason(expression: string): string | undefined {
 /**
  * Why the edge could test a pattern against no value at all: a shape whose cost `patternCost` does
  * not read — a backreference, a modifier, a lookaround repeated — or one that costs more than a test
- * is allowed whatever the value (`longestAffordable`). Admitted, every request it is asked of would
- * go to the application's Function, a shipped file among them, which the Function does not carry.
+ * is allowed whatever the value (`longestAffordable`) — under any of the flags it runs with. Admitted,
+ * every request it is asked of would go to the application's Function, a shipped file among them,
+ * which the Function does not carry.
  */
-function unboundedReason(expression: string): string | undefined {
-  return longestAffordable(patternCost(expression, '', false)) < 0
+function unboundedReason(expression: string, flags: readonly string[] = ['']): string | undefined {
+  const unbounded = flags.some(
+    (flag) => longestAffordable(patternCost(expression, flag, false)) < 0,
+  );
+  return unbounded
     ? 'its cost against a value cannot be bounded within what a test is allowed'
     : undefined;
 }
+
+/**
+ * The flags a source is run with: as it is for a dynamic route or an image, and without regard to
+ * case for a middleware's matcher, a rule ahead of the routes and a header rule (`compiledRules`),
+ * under which alternatives one spelling tells apart may not be.
+ */
+const SOURCE_FLAGS = ['', 'i'];
 
 /** `undefined` when the pattern may be run; otherwise why it may not. */
 export function unsafeRoutePatternReason(pattern: string): string | undefined {
@@ -183,7 +194,9 @@ export function unsafeSourcePatternReason(source: string): string | undefined {
   if (source.length > MAX_SOURCE_LENGTH) {
     return `longer than ${MAX_SOURCE_LENGTH} characters`;
   }
-  return compiles(source) ? (scanReason(source) ?? unboundedReason(source)) : undefined;
+  return compiles(source)
+    ? (scanReason(source) ?? unboundedReason(source, SOURCE_FLAGS))
+    : undefined;
 }
 
 /**
