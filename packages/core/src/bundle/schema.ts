@@ -29,6 +29,29 @@ export const BUNDLE_VERSION = 1;
 export const SPLIT_BUNDLE_VERSION = 2;
 
 /**
+ * The versions of a bundle whose Functions fill a header's `$` references in one pass, and which
+ * says so (`routerReferences`): 3, and 4 for one split as 2 is. Versions of their own rather than
+ * the field alone, for the reason the split has one: a reader that knew nothing of the field would
+ * drop it and publish the deployment's headers to be filled the earlier way, which its Functions
+ * no longer fill them — wrong for every header with a reference the two read apart, and for good,
+ * since what it publishes is the deployment's manifest. A reader that knows only 1 and 2 refuses
+ * these outright. A bundle that does not say stays 1 or 2.
+ */
+export const ONE_PASS_BUNDLE_VERSION = 3;
+export const ONE_PASS_SPLIT_BUNDLE_VERSION = 4;
+
+/** The versions of a bundle whose routes the build split across app Functions. */
+const SPLIT_VERSIONS: ReadonlySet<number> = new Set([
+  ONE_PASS_SPLIT_BUNDLE_VERSION,
+  SPLIT_BUNDLE_VERSION,
+]);
+/** The versions of a bundle that says how its Functions fill a header's references. */
+const ONE_PASS_VERSIONS: ReadonlySet<number> = new Set([
+  ONE_PASS_BUNDLE_VERSION,
+  ONE_PASS_SPLIT_BUNDLE_VERSION,
+]);
+
+/**
  * How many app Functions one bundle may run as. Each is a Function a host uploads, keeps and wakes
  * apart from the others, so a split is meant to come to a handful; this is far past any the
  * adapter's planner makes, and is here so that no bundle can ask for thousands.
@@ -406,13 +429,19 @@ export const routerReferencesSchema = z.literal('one-pass');
 export type RouterReferences = z.infer<typeof routerReferencesSchema>;
 
 const bundleSchema = z.object({
-  v: z.union([z.literal(BUNDLE_VERSION), z.literal(SPLIT_BUNDLE_VERSION)]),
+  v: z.literal([
+    BUNDLE_VERSION,
+    SPLIT_BUNDLE_VERSION,
+    ONE_PASS_BUNDLE_VERSION,
+    ONE_PASS_SPLIT_BUNDLE_VERSION,
+  ]),
   deploymentId: deploymentIdSchema,
   nextVersion: z.string().min(1),
   /**
    * How this deployment's Functions fill a header's `$` references (`routerReferencesSchema`), so
-   * that what the edge answers for them carries the values the Function would have given it.
-   * Absent from a bundle an earlier adapter wrote, whose Functions route with the router before.
+   * that what the edge answers for them carries the values the Function would have given it. Said
+   * by a bundle of version 3 or 4 (`ONE_PASS_BUNDLE_VERSION`), and by no other: absent from a
+   * bundle an earlier adapter wrote, whose Functions route with the router before.
    */
   routerReferences: routerReferencesSchema.optional(),
   buildId: z.string().min(1),
@@ -542,9 +571,9 @@ function splitIssues(bundle: DeploymentBundle): string[] {
   if (split !== undefined && names.length === 0) {
     issues.push('functions.split names no Function; a bundle that was not split leaves it out');
   }
-  if ((bundle.v === SPLIT_BUNDLE_VERSION) !== names.length > 0) {
+  if (SPLIT_VERSIONS.has(bundle.v) !== names.length > 0) {
     issues.push(
-      `a bundle with functions.split is version ${SPLIT_BUNDLE_VERSION}, and only such a bundle is`,
+      `a bundle with functions.split is version ${SPLIT_BUNDLE_VERSION} or ${ONE_PASS_SPLIT_BUNDLE_VERSION}, and only such a bundle is`,
     );
   }
   if (names.length + 1 > MAX_APP_FUNCTIONS) {
@@ -598,6 +627,15 @@ export const deploymentBundleSchema = bundleSchema
   .superRefine((bundle, ctx) => {
     for (const message of splitIssues(bundle)) {
       ctx.addIssue({ code: 'custom', message });
+    }
+  })
+  .superRefine((bundle, ctx) => {
+    // The version is what a reader that knows nothing of the field refuses by (above).
+    if (ONE_PASS_VERSIONS.has(bundle.v) !== (bundle.routerReferences !== undefined)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `a bundle says how its Functions fill a header's references at version ${ONE_PASS_BUNDLE_VERSION} or ${ONE_PASS_SPLIT_BUNDLE_VERSION}, and only such a bundle does`,
+      });
     }
   })
   .superRefine((bundle, ctx) => {

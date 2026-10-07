@@ -1,7 +1,7 @@
 import {
   type Entrypoint,
+  ONE_PASS_SPLIT_BUNDLE_VERSION,
   PRIMARY_FUNCTION,
-  SPLIT_BUNDLE_VERSION,
 } from '@stayingupwind/core/bundle';
 import type { AdapterOutput } from 'next';
 
@@ -354,7 +354,7 @@ export async function appFunctionsOf<
   const placements = placementsOf(plan);
   const split: M = {
     ...runtimeManifest,
-    v: SPLIT_BUNDLE_VERSION,
+    v: ONE_PASS_SPLIT_BUNDLE_VERSION,
     entrypoints: placedEntrypoints(runtimeManifest.entrypoints, placements),
   };
   const json = JSON.stringify(split);
