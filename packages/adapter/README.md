@@ -73,6 +73,13 @@ offered under the application's root as well.
 Next.js turns it off again for a static export, in `finalizeConfig`, after the hook has run.
 `next/image` is left as the application configured it: the edge optimizes `/_next/image`.
 
+It also turns `experimental.collapseAdapterRoutes` off, on a release that has it (16.4 on, where it
+is on by default). Collapsed, the table serves a dynamic page and its `.rsc` and per-segment forms
+from one entry whose destination ends in the suffix that matched, and a run of fallback shells from
+one entry whose destination begins with the prefix that matched — and a destination that is no
+longer the template it serves is a route the bundle finds no shell for (`reachableTemplates`,
+`dynamicRouting`). Off, the table is the one every release before 16.4 wrote: one entry a route.
+
 ## The development server
 
 `modifyConfig` is called for every phase, and in `phase-development-server` it does one thing: it
