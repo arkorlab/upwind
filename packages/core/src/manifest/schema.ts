@@ -39,6 +39,13 @@ export const routeCacheSchema = z.object({
   kind: z.enum(['app-page', 'pages']),
   /** `resume`: the deployment's Function completes the document; `complete`: the document is whole. */
   delivery: z.enum(['resume', 'complete']),
+  /**
+   * The route the build filed a class shell under, which the runtime keys the class's entry by and a
+   * member's own entry beside it (`concreteUpgrade`): `/[locale]/[orgSlug]` for `/en/[orgSlug]`.
+   * Absent for a route that is no class, and in a manifest from before it was named, where the
+   * class's pathname stands in for it.
+   */
+  route: z.string().startsWith('/').optional(),
 });
 export type RouteCache = z.infer<typeof routeCacheSchema>;
 
@@ -253,15 +260,39 @@ const middlewareConfigSchema = z.object({ matchers: z.array(middlewareMatcherSch
 const staticFilesSchema = z.record(z.string().startsWith('/'), staticFileEntrySchema);
 
 /**
+ * What a host needs to serve a member of a dynamic route that has no class shell from the record a
+ * runtime cache makes of it: the first request for the member is rendered by the deployment's
+ * Function, which keeps the render — an App Router page whose unknown members block on their
+ * render, or a Pages Router page with `fallback` — and every request after it may be answered from
+ * that record without the Function.
+ *
+ * `route` and `kind` are what the record's entry is keyed by with the member's pathname
+ * (`deriveEntry`): the route the build filed the class under, which is not always the template a
+ * request matches (`/[locale]/blog/[slug]` for `/en/blog/[slug]`). `bypassFor` is the class's, as a
+ * route's is (`routeEntrySchema`).
+ *
+ * A reader that does not know the field drops it and sends every member to the Function, as every
+ * reader did before the field existed — so no schema version turns on it.
+ */
+export const memberRouteSchema = z.object({
+  route: z.string().startsWith('/'),
+  kind: z.enum(['app-page', 'pages']),
+  bypassFor: z.array(routeHasSchema).optional(),
+});
+export type MemberRoute = z.infer<typeof memberRouteSchema>;
+
+/**
  * One of the application's dynamic route matchers, as Next.js compiled and ordered them. The
  * first whose pattern and conditions match a pathname is the route Next.js would serve; `route`
- * names the entry in `routes` holding that class's shell, when the build produced one.
+ * names the entry in `routes` holding that class's shell, when the build produced one, and
+ * `members` what serves a member from its record when it did not.
  */
 export const dynamicRouteSchema = z.object({
   sourceRegex: patternSchema,
   has: z.array(routeHasSchema).optional(),
   missing: z.array(routeHasSchema).optional(),
   route: z.string().startsWith('/').optional(),
+  members: memberRouteSchema.optional(),
   /**
    * The app Function the route's code is in, when that is not the first (`AppRuntime.functions`):
    * where a request of the class goes when nothing ahead of the dynamic routes claims it.
