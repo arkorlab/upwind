@@ -62,6 +62,8 @@ export interface BuildProjectManifestInput {
   readonly staticFileLocales?: StaticFileLocales | undefined;
   readonly staticFileAssetPrefix?: StaticFileAssetPrefix | undefined;
   readonly staticFileTrailingSlash?: boolean | undefined;
+  /** Where a Pages Router page's props are asked for, where a route holds them. */
+  readonly pagesDataPrefix?: string | undefined;
   readonly cache?: ManifestCache | undefined;
 }
 
@@ -159,6 +161,7 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
     ...(input.images !== undefined && { images: input.images }),
     ...crawlerFields(input),
     ...staticFileFields(input),
+    ...(input.pagesDataPrefix !== undefined && { pagesDataPrefix: input.pagesDataPrefix }),
     ...(input.cache !== undefined && { cache: input.cache }),
   });
 }

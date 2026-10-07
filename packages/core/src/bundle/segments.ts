@@ -1,4 +1,5 @@
 import { mayHoldForDocument } from '../request/conditions.ts';
+import { pagesDataPathnameUnder } from './pages-data.ts';
 import type { DeploymentBundle, Prerender } from './schema.ts';
 import {
   beforeFilesPhases,
@@ -162,10 +163,68 @@ export function routePayloads(
     const twin = builtSpellings(document.pathname, basePath)
       .map((spelling) => byPathname.get(`${spelling}${suffix}`))
       .find((found) => found?.route === document.route && found.groupId === document.groupId);
-    const whole =
-      twin?.body !== undefined &&
-      twin.postponed === undefined &&
-      (twin.initialStatus === undefined || twin.initialStatus === HTTP_OK);
-    return whole ? [{ document, prerender: twin }] : [];
+    return wholeTwin(twin) ? [{ document, prerender: twin }] : [];
+  });
+}
+
+/** Whether a twin the build wrote beside a document is whole: bytes, nothing to resume, no status. */
+function wholeTwin(twin: Prerender | undefined): twin is Prerender {
+  return (
+    twin?.body !== undefined &&
+    twin.postponed === undefined &&
+    (twin.initialStatus === undefined || twin.initialStatus === HTTP_OK)
+  );
+}
+
+/** A Pages Router page's props a host can answer with, and the document they are the props of. */
+export interface RoutePagesData {
+  /** The document prerender they are the props of, which names the route they are asked under. */
+  readonly document: Prerender;
+  /** The prerender holding the props' own bytes. */
+  readonly prerender: Prerender;
+}
+
+/**
+ * The props a host can answer a Pages Router client's navigation with: the `_next/data` output the
+ * build wrote beside a document it finished (`pagesDataPathnameUnder`, in the document's own
+ * group), whole, which is what the deployment's Function answers such a request with from the
+ * build.
+ *
+ * Only of a page the Pages Router renders, the host serves complete, and one exact page rather than
+ * a class's shell, under the conditions a page's parts are answered under (`partsServed`). A page
+ * whose props `getServerSideProps` makes has no such output, and stays with the Function.
+ *
+ * And only in a build whose routing the host reproduces and that leaves a data URL as it is. Such
+ * a request is asked at a URL of its own, which none of the page's own headers were judged
+ * against: the host judges every rule of the build against that URL instead, as Next.js's routing
+ * does — which needs every rule in the manifest (`reproducesDynamicRouting`), and a build with no
+ * middleware. A build with one matches its rules against the page a data URL names, and runs its
+ * middleware for it (`shouldNormalizeNextData`); its props stay with the Function.
+ */
+export function routePagesData(
+  bundle: DeploymentBundle,
+  options: ServableOptions = {},
+): RoutePagesData[] {
+  if (!reproducesDynamicRouting(bundle) || bundle.routing.shouldNormalizeNextData) {
+    return [];
+  }
+  const servesParts = partsServed(bundle, options);
+  const pages = new Set(
+    bundle.entrypoints.filter((entry) => entry.kind === 'pages').map((entry) => entry.pathname),
+  );
+  const byPathname = new Map(bundle.prerenders.map((prerender) => [prerender.pathname, prerender]));
+  const { basePath } = bundle.config;
+  return bundle.prerenders.flatMap((document) => {
+    if (!pages.has(document.route) || document.postponed !== undefined) {
+      return [];
+    }
+    if (standsForClass(document) || !servesParts(document)) {
+      return [];
+    }
+    const data = byPathname.get(
+      pagesDataPathnameUnder(bundle.buildId, basePath, document.pathname),
+    );
+    const own = data?.route === document.route && data.groupId === document.groupId;
+    return own && wholeTwin(data) ? [{ document, prerender: data }] : [];
   });
 }

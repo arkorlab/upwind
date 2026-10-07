@@ -1,4 +1,5 @@
 import { isImmutableAssetPath } from '../assets/admission.ts';
+import { pageOfPagesData } from '../bundle/pages-data.ts';
 import type { DeploymentFingerprint } from '../deployment/fingerprint.ts';
 import {
   findRouteEntry,
@@ -22,6 +23,7 @@ import {
   isBotUserAgent,
   NAVIGATION_REQUEST_HEADERS,
   NEXT_ACTION_HEADER,
+  NEXT_DATA_HEADER,
   NEXT_RESUME_HEADER,
   NEXT_RESUME_STATE_LENGTH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
@@ -78,6 +80,12 @@ export type RequestClass =
    * Server Components is `rsc`, as every one was before.
    */
   | { readonly kind: 'rsc-payload'; readonly entry: RouteEntry }
+  /**
+   * A Pages Router client's request for a page's props, at a page whose props the build wrote
+   * (`RouteEntry.pagesData`): `entry` is that page's route. Any other `/_next/data` request is the
+   * Function's, as every one was before.
+   */
+  | { readonly kind: 'pages-data'; readonly entry: RouteEntry }
   | { readonly kind: 'action' }
   | { readonly kind: 'passthrough'; readonly reason: PassthroughReason };
 
@@ -127,9 +135,17 @@ function passthrough(reason: PassthroughReason): RequestClass {
  * browser makes away from the edge, and the parts of pages the build wrote were only ever answered
  * by the Function.
  */
-function hasInternalDocumentHeader(headers: Headers, fromRouter: boolean): boolean {
+function hasInternalDocumentHeader(
+  headers: Headers,
+  fromRouter: boolean,
+  pagesData = false,
+): boolean {
   for (const [name] of headers) {
     if (fromRouter && name === DEPLOYMENT_ID_REQUEST_HEADER) {
+      continue;
+    }
+    // The Pages Router's client marks every request for a page's props so (`x-nextjs-data`).
+    if (pagesData && name === NEXT_DATA_HEADER) {
       continue;
     }
     if (DOCUMENT_REQUEST_INTERNAL_HEADERS.has(name)) {
@@ -510,9 +526,43 @@ function classifyEarly(input: ClassifyInput): RequestClass | undefined {
     classifyByMethod(input.method, headers) ??
     (headers.has('service-worker') ? passthrough('service-worker') : undefined) ??
     (headers.has('range') ? passthrough('range') : undefined) ??
+    pagesDataRequest(input) ??
     classifyByPath(url) ??
     classifyByRouterHeaders(headers);
   return early?.kind === RSC_CLASS ? (payloadRequest(input) ?? early) : early;
+}
+
+/**
+ * A Pages Router client's request for a page's props, where the page has the ones the build wrote
+ * (`RouteEntry.pagesData`), asked at the manifest's `pagesDataPrefix`: past the gates a router's
+ * request passes, with the `x-nextjs-data` its client sends let through.
+ *
+ * Judged on the data URL itself, which is what Next.js's routing matches its rules against in a
+ * build that holds such props — one with no middleware, which leaves a data URL as it is
+ * (`routePagesData`): a rule ahead of the filesystem that holds for it claims the request first.
+ *
+ * `undefined` for any other request, which is classified as it always was: a data request for a
+ * page with no props here is the Function's (`next-internal`).
+ */
+function pagesDataRequest(input: ClassifyInput): RequestClass | undefined {
+  const { headers, url, manifest } = input;
+  const prefix = manifest?.pagesDataPrefix;
+  if (manifest === undefined || prefix === undefined) {
+    return undefined;
+  }
+  const page = pageOfPagesData(prefix, url.pathname, manifest.trailingSlash === true);
+  const entry = page === undefined ? undefined : findRouteEntry(manifest, page);
+  if (entry?.pagesData === undefined) {
+    return undefined;
+  }
+  if (
+    hasInternalDocumentHeader(headers, true, true) ||
+    classifyByPins(url, headers, true, input.deployment) !== undefined ||
+    isReserved(manifest, url, headers, true)
+  ) {
+    return undefined;
+  }
+  return { kind: 'pages-data', entry };
 }
 
 /**

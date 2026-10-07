@@ -1,3 +1,5 @@
+import { withTrailingSlash } from '../manifest/dynamic.ts';
+
 /**
  * The Pages Router's data route: beside each page a client navigation fetches
  * `/_next/data/<buildId>/<page>.json`, the props the page was rendered with. The build writes one
@@ -42,4 +44,88 @@ export function isPagesDataRequestPath(basePath: string, pathname: string): bool
 /** Whether a pathname is a Pages Router data route of any build. */
 export function isPagesDataPathname(pathname: string): boolean {
   return pathname.startsWith(DATA_PREFIX);
+}
+
+/**
+ * A page as `normalizePagePath` spells it in the name of a file it writes: the root is `/index`,
+ * and a page that begins with `/index` is nested under a second one.
+ */
+function spelledPage(page: string): string {
+  if (page === '/') {
+    return INDEX;
+  }
+  return page === INDEX || page.startsWith(`${INDEX}/`) ? `${INDEX}${page}` : page;
+}
+
+/** The page under a base path a pathname of the build names: the root of the base path is `/`. */
+function underBasePath(basePath: string, pathname: string): string {
+  if (basePath === '') {
+    return pathname;
+  }
+  if (pathname === basePath) {
+    return '/';
+  }
+  return pathname.startsWith(`${basePath}/`) ? pathname.slice(basePath.length) : pathname;
+}
+
+/**
+ * Where a host is asked for a Pages Router page's props, for a manifest (`pagesDataPrefix`):
+ * `<basePath>/_next/data/<buildId>`, with no slash after.
+ */
+export function pagesDataPrefixOf(buildId: string, basePath: string): string {
+  return `${basePath}${DATA_PREFIX}${buildId}`;
+}
+
+/**
+ * The data pathname the build writes a page's props under: under the base path,
+ * `/_next/data/<buildId>`, the page as it spells it in a file's name (`spelledPage`), `.json`.
+ */
+export function pagesDataPathnameUnder(
+  buildId: string,
+  basePath: string,
+  pathname: string,
+): string {
+  const page = spelledPage(underBasePath(basePath, pathname));
+  return `${pagesDataPrefixOf(buildId, basePath)}${page}${DATA_SUFFIX}`;
+}
+
+/**
+ * The page a data request asks the props of, by a manifest's `pagesDataPrefix`: the page whose
+ * props `pagesDataPathnameUnder` names so, named as a manifest names its routes — under the base
+ * path, and behind the slash where the application keeps its pages there (`trailingSlash`), which is
+ * the spelling a request for the page's document asks by. The client asks for a page's props
+ * without that slash (`getDataHref`).
+ *
+ * `undefined` for a pathname no page's props are named by — another build's, another spelling —
+ * which is the application's to answer.
+ */
+export function pageOfPagesData(
+  prefix: string,
+  pathname: string,
+  trailingSlash: boolean,
+): string | undefined {
+  if (!pathname.startsWith(`${prefix}/`) || !pathname.endsWith(DATA_SUFFIX)) {
+    return undefined;
+  }
+  const spelled = pathname.slice(prefix.length, -DATA_SUFFIX.length);
+  let page = spelled;
+  if (spelled === INDEX) {
+    page = '/';
+  } else if (spelled.startsWith(`${INDEX}/`)) {
+    page = spelled.slice(INDEX.length);
+  }
+  if (spelledPage(page) !== spelled) {
+    return undefined;
+  }
+  const basePath = prefix.slice(0, prefix.lastIndexOf(DATA_PREFIX));
+  if (page !== '/') {
+    const named = `${basePath}${page}`;
+    return trailingSlash ? withTrailingSlash(named) : named;
+  }
+  if (basePath === '') {
+    return page;
+  }
+  // The root of a base path gains the slash by name, whatever its last segment reads like
+  // (`requestedPathname`).
+  return trailingSlash ? `${basePath}/` : basePath;
 }

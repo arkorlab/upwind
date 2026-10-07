@@ -121,6 +121,13 @@ export const routeEntrySchema = z.object({
    * Function, as every reader did, so no schema version turns on it.
    */
   payload: routeSegmentSchema.optional(),
+  /**
+   * A Pages Router page's props, as the build wrote them beside a document it finished
+   * (`routePagesData`): what a client navigation's `/_next/data/<buildId>/<page>.json` is answered
+   * with, at the manifest's `pagesDataPrefix`. Absent on every other route and on a manifest from
+   * before the field, whose reader leaves every such request to the Function, as before.
+   */
+  pagesData: routeSegmentSchema.optional(),
   headers: z.record(z.string(), z.string()),
   /**
    * The route's policy permits any inline script, which the nonce the edge mints stops it doing.
@@ -458,6 +465,12 @@ export const projectManifestSchema = z.object({
    * published, whose reader leaves that spelling to the Function.
    */
   staticFileTrailingSlash: z.literal(true).optional(),
+  /**
+   * Where a Pages Router page's props are asked for, under the base path:
+   * `<basePath>/_next/data/<buildId>`, the build's own. Present where a route holds them
+   * (`RouteEntry.pagesData`), absent otherwise.
+   */
+  pagesDataPrefix: z.string().startsWith('/').optional(),
   /** The runtime cache the routes' entries live in. */
   cache: manifestCacheSchema.optional(),
 });
