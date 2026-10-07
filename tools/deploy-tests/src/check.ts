@@ -431,8 +431,8 @@ async function main(): Promise<void> {
     // scenario that runs it out sets.
     JEST_SUITE_NAME: 'deploy:e2e:test/e2e/app-dir/app-simple-routes/app-simple-routes.test.ts',
     __NEXT_NODE_NATIVE_TS_LOADER_ENABLED: undefined,
-    // The hook's to set for a fixture, so not handed in from the shell: the check of it would pass
-    // on a shell that exported it.
+    // The hook sets it for a fixture, so the shell's is kept out: the check of it would otherwise
+    // pass on a shell that exported it.
     COREPACK_DEFAULT_TO_LATEST: undefined,
     // Started without one, whatever this machine exports: the scenario of a suite's variables reads
     // the stack size Next.js sets against a harness that had none, as Next.js's harness has none.
