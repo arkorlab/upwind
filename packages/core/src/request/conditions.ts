@@ -1,5 +1,6 @@
 import type { RouteHas } from '../bundle/schema.ts';
 import { ROUTER_REQUEST_HEADERS } from './constants.ts';
+import { assertAffordable } from './pattern-cost.ts';
 
 /**
  * The `has` / `missing` conditions Next.js attaches to a route or a middleware matcher, evaluated
@@ -118,17 +119,29 @@ function conditionMatches(condition: RouteHas, url: URL, headers: Headers): bool
     return true;
   }
   const { whole, part } = patternsOf(condition, condition.value);
-  if (whole === undefined) {
+  // The value as written matches whatever the pattern makes of it, and asks no test to say so.
+  if (whole === undefined || value === condition.value) {
     return value === condition.value;
   }
+  // Each attempt within what a test is allowed (`assertAffordable`), asked before it is made and
+  // outside the `try`: a test the edge does not run is no failure to compare as a literal.
+  assertAffordable(whole, value);
+  if (patternHolds(whole, value)) {
+    return true;
+  }
+  if (part !== undefined && value.length <= MAX_SUBSTRING_MATCH_LENGTH) {
+    assertAffordable(part, value);
+    return patternHolds(part, value);
+  }
+  return false;
+}
+
+/** A test of a condition's pattern. One that throws is read as no match. */
+function patternHolds(pattern: RegExp, value: string): boolean {
   try {
-    return (
-      whole.test(value) ||
-      (value.length <= MAX_SUBSTRING_MATCH_LENGTH && part?.test(value) === true) ||
-      value === condition.value
-    );
+    return pattern.test(value);
   } catch {
-    return value === condition.value;
+    return false;
   }
 }
 
