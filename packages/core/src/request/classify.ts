@@ -525,7 +525,9 @@ function classifyEarly(input: ClassifyInput): RequestClass | undefined {
  * Only an exact route holds a payload (`routePayloads`), so only the exact routes are looked in, and
  * a rule ahead of the filesystem — an intercepting route's, by `next-url` — claims the page first, as
  * it claims a document's (`entryFor`). A request for React Server Components is answered with no
- * dynamic route tested against it, as it was before.
+ * dynamic route tested against it, as it was before. Nor is one that carries a
+ * `next-router-segment-prefetch` at all: an empty one names no part (`segmentPrefetchOf`), and
+ * Next.js answers it as a prefetch of a part it has none of, not with the page.
  *
  * `undefined` for any other, which stays `rsc` and goes to the Function as it always did: a route
  * with no payload to serve is not run past the middleware at the edge for nothing, and a request
@@ -533,7 +535,11 @@ function classifyEarly(input: ClassifyInput): RequestClass | undefined {
  */
 function payloadRequest(input: ClassifyInput): RequestClass | undefined {
   const { headers, url, manifest } = input;
-  if (manifest === undefined || url.pathname.includes('//')) {
+  if (
+    manifest === undefined ||
+    url.pathname.includes('//') ||
+    headers.has(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)
+  ) {
     return undefined;
   }
   const entry = findRouteEntry(manifest, url.pathname);
