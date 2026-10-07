@@ -67,6 +67,104 @@ function exportRegistration(exports: readonly string[]): string {
   return `.s([${entries.join(',')}])`;
 }
 
+/**
+ * `e.s(["A",0,s,"P",0,t])`: the same registration once Turbopack has mangled the export names,
+ * which every production build does from 16.4. The names say nothing any more, and the module
+ * that imports the loader asks for `A` rather than `compileModule`, so the names are kept and what
+ * changes is the function each one registers.
+ *
+ * Which of the loader's two functions a local is gets read off the function itself: `instantiate`
+ * takes the imports as well as the path and calls `WebAssembly.instantiateStreaming`, and
+ * `compileModule` takes the path alone and calls `WebAssembly.compileStreaming`. The registration
+ * looked at is the first after the file read, within the few hundred bytes the module spans, and a
+ * local that is not declared there as such a function means this is not the loader.
+ */
+const MANGLED_EXPORTS = /\.s\(\[(?:"[\w$]+",0,[\w$]+,?){1,2}\]\)/u;
+const MANGLED_ENTRY = /"(?<name>[\w$]+)",0,(?<local>[\w$]+)/gu;
+/** How far from its file read the loader module's registration and functions may be. */
+const LOADER_SPAN = 2048;
+/** What only a module reading a `.wasm` off disk as a stream has, on top of the `Content-Type`. */
+const FILE_READ_MARKS = ['createReadStream', '.toWeb('];
+
+type LoaderRole = 'compileModule' | 'instantiate';
+
+/** What each of the loader's functions takes: the path, and for `instantiate` the imports too. */
+const ROLE_BY_ARITY: Readonly<Partial<Record<number, LoaderRole>>> = {
+  1: 'compileModule',
+  2: 'instantiate',
+};
+
+const STREAMING_CALL: Readonly<Record<LoaderRole, string>> = {
+  compileModule: 'WebAssembly.compileStreaming(',
+  instantiate: 'WebAssembly.instantiateStreaming(',
+};
+
+interface MangledRegistration {
+  readonly at: number;
+  readonly text: string;
+  readonly exports: readonly { readonly name: string; readonly role: LoaderRole }[];
+}
+
+/** The loader role of the function `local` declares before `before`, if it declares one. */
+function roleOf(source: string, local: string, before: number): LoaderRole | undefined {
+  const declaration = `function ${local}(`;
+  const at = source.lastIndexOf(declaration, before);
+  if (at === -1 || before - at > LOADER_SPAN) {
+    return undefined;
+  }
+  const open = at + declaration.length;
+  const close = source.indexOf(')', open);
+  if (close === -1 || close > before) {
+    return undefined;
+  }
+  const parameters = source
+    .slice(open, close)
+    .split(',')
+    .filter((parameter) => parameter.trim() !== '').length;
+  const role = ROLE_BY_ARITY[parameters];
+  return role !== undefined && source.slice(close, before).includes(STREAMING_CALL[role])
+    ? role
+    : undefined;
+}
+
+function mangledRegistration(source: string): MangledRegistration | undefined {
+  const read = source.search(READS_A_FILE);
+  if (read === -1) {
+    return undefined;
+  }
+  const window = source.slice(Math.max(0, read - LOADER_SPAN), read + LOADER_SPAN);
+  if (FILE_READ_MARKS.some((mark) => !window.includes(mark))) {
+    return undefined;
+  }
+  const found = MANGLED_EXPORTS.exec(source.slice(read, read + LOADER_SPAN));
+  if (found === null) {
+    return undefined;
+  }
+  const at = read + found.index;
+  const entries = [...found[0].matchAll(MANGLED_ENTRY)];
+  const exports: { name: string; role: LoaderRole }[] = [];
+  for (const entry of entries) {
+    const name = entry.groups?.['name'];
+    const local = entry.groups?.['local'];
+    const role = local === undefined ? undefined : roleOf(source, local, at);
+    if (name === undefined || role === undefined) {
+      return undefined;
+    }
+    exports.push({ name, role });
+  }
+  // Two exports are the two functions, one of each.
+  if (new Set(exports.map((one) => one.role)).size !== exports.length) {
+    return undefined;
+  }
+  return { at, text: found[0], exports };
+}
+
+/** `.s(["A",0,__arkorWasmCompile,"P",0,__arkorWasmInstantiate])`: the names kept, the functions ours. */
+function mangledExportRegistration(registration: MangledRegistration): string {
+  const entries = registration.exports.map((one) => `"${one.name}",0,${REPLACEMENTS[one.role]}`);
+  return `.s([${entries.join(',')}])`;
+}
+
 function wasmTable(chunks: readonly { chunkPath: string; global: string }[]): string {
   const cases = chunks.map(
     (chunk) => `    case ${jsLiteral(chunk.chunkPath)}: found = globalThis.${chunk.global}; break;`,
@@ -101,20 +199,44 @@ function wasmTable(chunks: readonly { chunkPath: string; global: string }[]): st
 export const wasmLoaderPatch: Patch = {
   name: NAME,
   target: TARGET,
-  marker: (source) => READS_A_FILE.test(source) && registeredExports(source).length > 0,
+  marker: (source) => {
+    if (!READS_A_FILE.test(source)) {
+      return false;
+    }
+    return registeredExports(source).length > 0 || mangledRegistration(source) !== undefined;
+  },
   // The chunk Turbopack put the loader in, which only a build has.
   reaches: ['build-output'],
   apply(source, file, ctx) {
     const exports = registeredExports(source);
     // An empty table is not a failure: a Function may bundle the loader from a shared chunk while
     // none of its own entrypoints reaches WebAssembly, and then nothing ever asks it for one.
-    const result = new Rewrite(NAME, file, source)
-      .replace(EXPORTS, exportRegistration(exports), 1, "the loader's exports")
-      .append(wasmTable(ctx.wasm));
+    if (exports.length > 0) {
+      const result = new Rewrite(NAME, file, source)
+        .replace(EXPORTS, exportRegistration(exports), 1, "the loader's exports")
+        .append(wasmTable(ctx.wasm));
+      return {
+        contents: result.contents,
+        edits: result.edits,
+        notes: [`wasm table: ${ctx.wasm.length} entries; exports: ${exports.join(', ')}`],
+      };
+    }
+    const registration = mangledRegistration(source);
+    if (registration === undefined) {
+      throw new Rewrite(NAME, file, source).fail(
+        "expected the loader's exports 1 time(s), found 0",
+      );
+    }
+    // Spliced at the one place it was found rather than replaced by its text: a mangled
+    // registration is a few characters, and another module of the chunk may well spell the same.
+    const end = registration.at + registration.text.length;
+    const spliced = `${source.slice(0, registration.at)}${mangledExportRegistration(registration)}${source.slice(end)}`;
+    const result = new Rewrite(NAME, file, spliced, 1).append(wasmTable(ctx.wasm));
+    const roles = registration.exports.map((one) => `${one.role} (${one.name})`);
     return {
       contents: result.contents,
       edits: result.edits,
-      notes: [`wasm table: ${ctx.wasm.length} entries; exports: ${exports.join(', ')}`],
+      notes: [`wasm table: ${ctx.wasm.length} entries; exports: ${roles.join(', ')}`],
     };
   },
 };
