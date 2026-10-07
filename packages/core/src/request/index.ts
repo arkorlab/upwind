@@ -24,6 +24,7 @@ export {
   type RequestClass,
 } from './classify.ts';
 export { anyConditionHolds } from './conditions.ts';
+export { budgetPatterns, PatternBudgetExceededError } from './pattern-cost.ts';
 export * from './constants.ts';
 export {
   answeredAsCandidate,
