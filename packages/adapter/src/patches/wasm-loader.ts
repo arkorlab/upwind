@@ -105,11 +105,18 @@ interface MangledRegistration {
   readonly exports: readonly { readonly name: string; readonly role: LoaderRole }[];
 }
 
-/** The loader role of the function `local` declares before `before`, if it declares one. */
+/** What a module of a chunk ends with: its registration. One between two places parts modules. */
+const REGISTRATION = '.s([';
+
+/**
+ * The loader role of the function `local` declares before `before`, if it declares one in the same
+ * module: a local of one letter is everybody's, and the nearest `function s(` back from a
+ * registration is another module's wherever a registration stands between the two.
+ */
 function roleOf(source: string, local: string, before: number): LoaderRole | undefined {
   const declaration = `function ${local}(`;
   const at = source.lastIndexOf(declaration, before);
-  if (at === -1 || before - at > LOADER_SPAN) {
+  if (at === -1 || before - at > LOADER_SPAN || source.slice(at, before).includes(REGISTRATION)) {
     return undefined;
   }
   const open = at + declaration.length;
@@ -159,7 +166,10 @@ function mangledRegistration(source: string): MangledRegistration | undefined {
   return { at, text: found[0], exports };
 }
 
-/** `.s(["A",0,__arkorWasmCompile,"P",0,__arkorWasmInstantiate])`: the names kept, the functions ours. */
+/**
+ * `.s(["A",0,__arkorWasmCompile,"P",0,__arkorWasmInstantiate])`: the names kept, the functions
+ * ours.
+ */
 function mangledExportRegistration(registration: MangledRegistration): string {
   const entries = registration.exports.map((one) => `"${one.name}",0,${REPLACEMENTS[one.role]}`);
   return `.s([${entries.join(',')}])`;
