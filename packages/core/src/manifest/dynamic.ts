@@ -1,3 +1,4 @@
+import type { RouterReferences } from '../bundle/schema.ts';
 import {
   type CompiledRule,
   compiledRules,
@@ -134,13 +135,18 @@ function dynamicRoutesFor(
 }
 
 /**
- * A compiled header key or value with its captures filled in as Next's router fills them.
+ * A compiled header key or value with its captures filled in as the deployment's router fills them
+ * (`references`, as its manifest says; `routerReferencesSchema`).
  *
  * Next's adapter converts `source: '/docs/:slug', value: ':slug'` to a positional capture and
  * `$1`. A colon left in that compiled value can be an escaped literal, so it must not be mapped
  * back through the source. Keep the existing named-group form for older manifests as well.
  */
-export function interpolateHeader(value: string, match: RegExpExecArray): string {
+export function interpolateHeader(
+  value: string,
+  match: RegExpExecArray,
+  references: RouterReferences | undefined,
+): string {
   let out = value;
   const groups = match.groups;
   if (groups !== undefined && value.includes(':')) {
@@ -149,7 +155,34 @@ export function interpolateHeader(value: string, match: RegExpExecArray): string
     );
   }
   if (!value.includes('$')) return out;
-  return replaceReferences(out, match);
+  return references === 'one-pass' ? replaceReferences(out, match) : replaceInTurn(out, match);
+}
+
+/**
+ * Every `$` reference in `template` filled in as `@next/routing` filled them before 16.4, which is
+ * what a deployment whose Functions route with that router answers with: each positional capture in
+ * order and then each named group, replaced over the whole value in turn and as a replacement
+ * string. So `$1` takes the start of `$10` and `$01` stays literal, a name takes the start of a
+ * longer one, and a capture's own `$&` or `$$` is read as well.
+ *
+ * String searches rather than a regular expression compiled for each capture, since this runs on
+ * the request path.
+ */
+function replaceInTurn(template: string, match: RegExpExecArray): string {
+  let out = template;
+  for (let index = 1; index < match.length; index += 1) {
+    // The router reads replacement tokens in a captured value; a callback would not.
+    // eslint-disable-next-line unicorn/no-unsafe-string-replacement
+    out = out.replaceAll(`$${index}`, match[index] ?? '');
+  }
+  // Optional named groups can be undefined even though RegExpExecArray types them as strings.
+  const groups: Record<string, string | undefined> | undefined = match.groups;
+  if (groups === undefined) return out;
+  for (const [name, captured] of Object.entries(groups)) {
+    // eslint-disable-next-line unicorn/no-unsafe-string-replacement
+    out = out.replaceAll(`$${name}`, captured ?? '');
+  }
+  return out;
 }
 
 const POSITIONAL = /^\d+$/u;
@@ -173,9 +206,9 @@ function referenceAt(template: string, at: number, names: readonly string[]): st
  * from 16.4 (`replaceDestination`): in one pass, each reference read as the longest name it spells —
  * a positional capture or a named group — and what that names put in as it is, `$` and all. A
  * reference to nothing is left as it was written, so `$01`, and a `$10` past the last capture, stay
- * literal. Before 16.4 the router replaced each name over the whole value in turn, which let `$1`
- * take the start of `$10` and a name the start of a longer one; the runtime resolves with the
- * router this repository pins, and the edge fills a header the way the runtime does.
+ * literal. What a deployment whose Functions route with that router answers with
+ * (`routerReferences`); one whose Functions route with the router before is filled in turn
+ * (`replaceInTurn`).
  *
  * No regular expression is compiled for it, because this runs on the request path: the names are a
  * handful, and asking each of them at each `$` is cheaper than building a pattern out of them.
@@ -364,7 +397,8 @@ function configuredHeaders(
     conditioned ||= rule.has !== undefined || rule.missing !== undefined;
     const set = forDocument ? (rule.documentHeaders ?? rule.headers) : rule.headers;
     for (const [name, value] of Object.entries(set)) {
-      out[interpolateHeader(name, match).toLowerCase()] = interpolateHeader(value, match);
+      out[interpolateHeader(name, match, manifest.routerReferences).toLowerCase()] =
+        interpolateHeader(value, match, manifest.routerReferences);
     }
   }
   return { headers: out, conditioned };
@@ -404,7 +438,8 @@ export function foldedHeadersFor(
     }
     const set = compiled.rule.documentHeaders ?? compiled.rule.headers;
     for (const [name, value] of Object.entries(set)) {
-      out[interpolateHeader(name, match).toLowerCase()] = interpolateHeader(value, match);
+      out[interpolateHeader(name, match, manifest.routerReferences).toLowerCase()] =
+        interpolateHeader(value, match, manifest.routerReferences);
     }
   }
   return out;

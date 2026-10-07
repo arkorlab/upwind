@@ -347,7 +347,10 @@ function applicableHeaders(
     // With the `:name` references filled in from what the path matched, as the router fills them:
     // a rule written `value: ':slug'` means the value, not the six characters.
     for (const [name, value] of Object.entries(rule.headers)) {
-      headers.set(interpolateHeader(name, match).toLowerCase(), interpolateHeader(value, match));
+      headers.set(
+        interpolateHeader(name, match, bundle.routerReferences).toLowerCase(),
+        interpolateHeader(value, match, bundle.routerReferences),
+      );
     }
   }
   return headers;

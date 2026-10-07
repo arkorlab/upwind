@@ -1,7 +1,11 @@
 import { z } from 'zod';
 
 import { artifactRefSchema, sha256HexSchema, shellEncodingsSchema } from '../artifact/artifact.ts';
-import { routeHasSchema, splitFunctionNameSchema } from '../bundle/schema.ts';
+import {
+  routeHasSchema,
+  routerReferencesSchema,
+  splitFunctionNameSchema,
+} from '../bundle/schema.ts';
 import { KEY_SCHEMA_VERSION } from '../cache/keys.ts';
 import { deploymentFingerprintSchema } from '../deployment/fingerprint.ts';
 import { imagesConfigSchema } from '../images/config.ts';
@@ -367,6 +371,14 @@ export const projectManifestSchema = z.object({
   exactPathnames: exactPathnamesSchema.optional(),
   exactFunctions: exactFunctionsSchema.optional(),
   headerRules: z.array(headerRuleSchema).optional(),
+  /**
+   * How the deployment's Functions fill a header's `$` references (`routerReferencesSchema`): the
+   * edge fills a rule's headers the same way, so a response gets no value from the edge that the
+   * Function would not have given it. Absent on a manifest of a deployment whose Functions route
+   * with the router from before 16.4 — every manifest from before this was published among them —
+   * whose headers the edge fills the way that router did.
+   */
+  routerReferences: routerReferencesSchema.optional(),
   /**
    * The unconditional header rules of a build whose routing the edge does not reproduce (one with
    * `i18n`, and in a manifest from before the edge routed it, one with a `basePath`), which
