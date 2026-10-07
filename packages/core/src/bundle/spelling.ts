@@ -66,6 +66,26 @@ export function standsForClass(
   return placeholderSegments(prerender.pathname, prerender.route).includes(true);
 }
 
+/** A route as `normalizePagePath` spells it in a file's name, both ways where it cannot say. */
+function spelledFrom(route: string): string[] {
+  return route === '/' ? ['/index'] : [route, `/index${route}`];
+}
+
+/**
+ * How the build spells a document in the names of the files it writes beside it, as
+ * `normalizePagePath` does (`shared/lib/page-path/normalize-page-path.ts`), under the `basePath`
+ * that goes on after: the root is written `/index`, and a route that begins with `/index` is nested
+ * under a second one. Both spellings of any other route are given, its own first, so a reader need
+ * not decide which case a route is; the adapter reads a segment's name back the same way.
+ */
+export function builtSpellings(pathname: string, basePath: string): string[] {
+  if (basePath !== '' && (pathname === basePath || pathname.startsWith(`${basePath}/`))) {
+    const bare = pathname === basePath ? '/' : pathname.slice(basePath.length);
+    return spelledFrom(bare).map((spelling) => `${basePath}${spelling}`);
+  }
+  return spelledFrom(pathname);
+}
+
 /**
  * Whether the build keeps its pages behind a trailing slash: `trailingSlash`, and the redirect
  * `next build` adds to put every page there. Where `skipTrailingSlashRedirect` leaves that redirect

@@ -8,7 +8,7 @@ import {
   reproducesDynamicRouting,
   type ServableOptions,
 } from './serving.ts';
-import { isTemplate } from './spelling.ts';
+import { builtSpellings, requestedPathname, standsForClass } from './spelling.ts';
 
 /**
  * Which of a build's router requests a host can answer from its own storage: the prefetches of a
@@ -58,7 +58,8 @@ function routerRulePatterns(bundle: DeploymentBundle): RegExp[] {
 /**
  * Whether a host answers the router's requests for a document's parts and its payload beside the
  * document: one it serves itself, and one no rule only the client's router meets covers
- * (`routerRulePatterns`).
+ * (`routerRulePatterns`) — judged against the spelling the router asks for the page by, as every
+ * rule of the build is (`requestedPathname`).
  */
 function partsServed(
   bundle: DeploymentBundle,
@@ -66,8 +67,10 @@ function partsServed(
 ): (document: Prerender) => boolean {
   const served = new Set(edgeServablePrerenders(bundle, options).map((prerender) => prerender.id));
   const routerRules = routerRulePatterns(bundle);
-  return (document) =>
-    served.has(document.id) && routerRules.every((rule) => !rule.test(document.pathname));
+  return (document) => {
+    const asked = requestedPathname(bundle, document.pathname);
+    return served.has(document.id) && routerRules.every((rule) => !rule.test(asked));
+  };
 }
 
 /** A prefetch segment a host can answer with, and the document it is a prefetched part of. */
@@ -125,19 +128,16 @@ export interface RoutePayload {
   readonly prerender: Prerender;
 }
 
-/** The pathname a document's payload is named after: the build names the root's `/index`. */
-function payloadBase(pathname: string): string {
-  return pathname === '/' ? '/index' : pathname;
-}
-
 /**
  * The payloads a host can answer a router's request for a whole page with: the twin the build
- * wrote beside a document it finished (`<pathname>.rsc`, in the document's own group), complete in
- * itself, which is what the deployment's Function answers such a request with from the build.
+ * wrote beside a document it finished (`<pathname>.rsc` as the build spells the document in a
+ * file's name, in the document's own group), complete in itself, which is what the deployment's
+ * Function answers such a request with from the build.
  *
  * Only of a page whose document the host serves complete. A page a resume completes has its
  * payload rendered for the request as its document is, and a class shell's twin is the payload of
- * the class's shell rather than of the member asked for. Under the conditions the parts of a page
+ * the class's shell rather than of the member asked for (`standsForClass`: a page whose parameter
+ * happens to be written in brackets is a page all the same). Under the conditions the parts of a page
  * are answered under (`partsServed`), for the same reasons: a host answers a page's parts and the
  * page itself from the same place, or neither.
  *
@@ -151,19 +151,21 @@ export function routePayloads(
   const servesParts = partsServed(bundle, options);
   const byPathname = new Map(bundle.prerenders.map((prerender) => [prerender.pathname, prerender]));
   const { suffix } = bundle.routing.rsc;
+  const { basePath } = bundle.config;
   return bundle.prerenders.flatMap((document) => {
-    if (document.postponed !== undefined || isTemplate(document.pathname)) {
+    if (document.postponed !== undefined || standsForClass(document)) {
       return [];
     }
     if (!servesParts(document)) {
       return [];
     }
-    const twin = byPathname.get(`${payloadBase(document.pathname)}${suffix}`);
-    const own = twin?.route === document.route && twin.groupId === document.groupId;
+    const twin = builtSpellings(document.pathname, basePath)
+      .map((spelling) => byPathname.get(`${spelling}${suffix}`))
+      .find((found) => found?.route === document.route && found.groupId === document.groupId);
     const whole =
       twin?.body !== undefined &&
       twin.postponed === undefined &&
       (twin.initialStatus === undefined || twin.initialStatus === HTTP_OK);
-    return own && whole ? [{ document, prerender: twin }] : [];
+    return whole ? [{ document, prerender: twin }] : [];
   });
 }
