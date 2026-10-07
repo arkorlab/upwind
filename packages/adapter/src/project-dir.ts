@@ -1,39 +1,52 @@
+import { createRequire } from 'node:module';
 import path from 'node:path';
 
 import type { NextAdapter } from 'next';
 
 import { orDefault } from './collect.ts';
 
-type ModifyConfig = NonNullable<NextAdapter['modifyConfig']>;
+type ModifyContext = Parameters<NonNullable<NextAdapter['modifyConfig']>>[1];
+
+/** Node.js's registry of the CommonJS modules this process has loaded, Next.js's own among them. */
+const loadedModules = createRequire(import.meta.url).cache;
+/** The module `next build` records what it was asked to build in (`NextBuildContext`). */
+const BUILD_CONTEXT = `${path.sep}${path.join('next', 'dist', 'build', 'build-context.js')}`;
+
+/**
+ * The directory the running `next build` was given, as it recorded it. 16.2's build sets
+ * `NextBuildContext.dir` before it loads the config, and so does the worker it compiles in, from
+ * what the build handed it, before it loads the config again.
+ *
+ * Read off the module the running Next.js loaded rather than one resolved from here, which may be
+ * another copy of Next.js that built nothing. `undefined` in a process no build recorded one in.
+ */
+function recordedBuildDir(): string | undefined {
+  for (const [file, loaded] of Object.entries(loadedModules)) {
+    if (!file.endsWith(BUILD_CONTEXT)) {
+      continue;
+    }
+    const exported = loaded?.exports as { NextBuildContext?: { dir?: unknown } } | undefined;
+    const dir = exported?.NextBuildContext?.dir;
+    if (typeof dir === 'string') {
+      return dir;
+    }
+  }
+  return undefined;
+}
 
 /**
  * The project's directory, which `modifyConfig` is told from 16.3.
  *
- * 16.2 tells the hook its phase and its version, and no directory. What it does hand over is the
- * config file it read (`configFile`), which it found by looking from the project's directory up:
- * the project's own, or an ancestor's where the project has none. So the working directory is the
- * answer where it is inside that file's directory — `upwind build` and a bare `next build` both run
- * from the project — and the file's directory is the answer where it is not, which is a build
- * pointed at a project elsewhere: `next build apps/site` from the root of a repository. With no
- * config file at all, the working directory is all there is. What this still answers wrongly is a
- * 16.2 build pointed elsewhere at a project with no config of its own; every release from 16.3
- * says.
+ * 16.2 tells the hook its phase and its version, and no directory. Its `next build` has recorded
+ * the directory by then (`recordedBuildDir`), and that is the project however the build was
+ * pointed at it: `next build apps/site` from the root of a repository, for a project with a config
+ * of its own or for one that takes the root's. Outside such a build it is the working directory,
+ * which is what `next build` resolves when it is given none.
  */
-export function projectDirOf(
-  config: Parameters<ModifyConfig>[0],
-  context: Parameters<ModifyConfig>[1],
-): string {
-  const told = orDefault<string | undefined>(context.projectDir, undefined);
-  if (told !== undefined) {
-    return told;
-  }
-  const cwd = process.cwd();
-  if (config.configFile === undefined) {
-    return cwd;
-  }
-  const configDir = path.dirname(config.configFile);
-  const fromConfig = path.relative(configDir, cwd);
-  const runsInside =
-    fromConfig !== '..' && !fromConfig.startsWith(`..${path.sep}`) && !path.isAbsolute(fromConfig);
-  return runsInside ? cwd : configDir;
+export function projectDirOf(context: ModifyContext): string {
+  return (
+    orDefault<string | undefined>(context.projectDir, undefined) ??
+    recordedBuildDir() ??
+    process.cwd()
+  );
 }

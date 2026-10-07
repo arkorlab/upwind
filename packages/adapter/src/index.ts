@@ -784,7 +784,7 @@ export function createAdapter(options: AdapterOptions = {}): NextAdapter {
     name: 'upwind',
     async modifyConfig(config, context) {
       const { phase } = context;
-      const projectDir = projectDirOf(config, context);
+      const projectDir = projectDirOf(context);
       if (phase === 'phase-development-server') {
         // `/__upwind` belongs to `upwind dev`, which is in front of this server. See `dev-prefix.ts`
         // for why a front door that already holds the path still wants the reservation, and why
