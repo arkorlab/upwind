@@ -7,8 +7,14 @@ import {
 import { conditionsHold } from '../request/conditions.ts';
 import { execWithin, testWithin } from '../request/pattern-cost.ts';
 import { requiresLiteral } from '../request/required-literal.ts';
-import { keyOf, namesNoFile, withoutAssetPrefix } from './manifest.ts';
-import type { DynamicRoute, ProjectManifest, ReservedRoute, RouteEntry } from './schema.ts';
+import { findRouteEntry, keyOf, namesNoFile, withoutAssetPrefix } from './manifest.ts';
+import type {
+  DynamicRoute,
+  MemberRoute,
+  ProjectManifest,
+  ReservedRoute,
+  RouteEntry,
+} from './schema.ts';
 
 /**
  * Serving a dynamic route's shell to a pathname no exact route names.
@@ -18,7 +24,8 @@ import type { DynamicRoute, ProjectManifest, ReservedRoute, RouteEntry } from '.
  * own order. The edge picks the class the way Next.js would pick the route: the first matcher
  * whose pattern and conditions hold. When that class has a shell, the shell is served; when it
  * does not — a page that renders blocking, a route handler — the request is Next.js's to answer,
- * and the edge does not go looking for a later class that happens to match too.
+ * and the edge does not go looking for a later class that happens to match too. A member of a page
+ * with no shell may still be answered from the record its first render left (`memberRouteFor`).
  */
 
 /** A path that begins with the name the trailing-slash redirect leaves alone, in any case. */
@@ -219,6 +226,36 @@ export function matchDynamicRoute(
     return undefined;
   }
   return Object.hasOwn(manifest.routes, route) ? manifest.routes[route] : undefined;
+}
+
+/** A dynamic route the build made no class shell of, whose members a host serves from records. */
+export type MemberOfClass = DynamicRoute & { readonly members: MemberRoute };
+
+/**
+ * The class a pathname is a member of, when Next.js would serve that class, the build made no
+ * shell of it, and its members are served from the records their renders leave (`MemberRoute`):
+ * the dynamic route Next.js picks (`dynamicRouteFor`), where no exact route and no pathname Next.js
+ * resolves exactly comes first. `undefined` for a class with a shell, which `matchDynamicRoute`
+ * answers.
+ */
+export function memberRouteFor(
+  manifest: ProjectManifest,
+  url: URL,
+  headers: Headers,
+): MemberOfClass | undefined {
+  if (
+    findRouteEntry(manifest, url.pathname) !== undefined ||
+    isExactPathname(manifest, url.pathname)
+  ) {
+    return undefined;
+  }
+  const dynamic = dynamicRouteFor(manifest, url, headers);
+  const members = dynamic?.members;
+  if (dynamic === undefined || members === undefined) {
+    return undefined;
+  }
+  const shell = dynamic.route !== undefined && Object.hasOwn(manifest.routes, dynamic.route);
+  return shell ? undefined : { ...dynamic, members };
 }
 
 /**

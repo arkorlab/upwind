@@ -74,6 +74,11 @@ $ NEXT_TEST_MODE=deploy \
     test/e2e/app-dir/app-simple-routes/app-simple-routes.test.ts
 ```
 
+A fixture that pins another package manager than pnpm (`handle-non-hoisted-swc-helpers` pins npm) is
+run with Corepack's last known good pnpm, and pnpm 11 and 12 refuse such a project. Make that the
+version Next.js pins every other fixture to, from the Next.js checkout, as the workflow does:
+`corepack install -g "$(node -p "require('./package.json').packageManager")"`.
+
 `NEXT_ENABLE_ADAPTER=1` is what Next.js's own job for adapters sets. A few suites expect a deployment
 an adapter made to answer otherwise than one Vercel's own builder made, and read it to know which they
 are testing: with it set, they expect the adapter's answers; without it, the builder's.

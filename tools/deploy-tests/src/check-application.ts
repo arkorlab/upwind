@@ -29,6 +29,10 @@ const saw = (name) => name + ': ' + (process.env[name] === undefined ? 'no' : 'Y
 console.log('the build saw ' + saw('ARKOR_API_TOKEN') + ' ' + saw('ARKOR_API_TOKEN_FILE'));
 console.log('the build saw ' + saw('__NEXT_NODE_NATIVE_TS_LOADER_ENABLED'));
 console.log(
+  'the build saw Corepack fetch the newest: ' +
+    (process.env.COREPACK_DEFAULT_TO_LATEST === '0' ? 'no' : 'YES'),
+);
+console.log(
   'the build saw types transformed: ' +
     ((process.env.NODE_OPTIONS ?? '').includes('--experimental-transform-types') ? 'YES' : 'no'),
 );
