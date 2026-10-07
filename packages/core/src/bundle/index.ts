@@ -43,6 +43,8 @@ export {
   MAX_APP_FUNCTIONS,
   SPLIT_BUNDLE_VERSION,
   splitFunctionNameSchema,
+  workflowSchema,
+  type WorkflowSpec,
 } from './schema.ts';
 export { PRIMARY_FUNCTION } from './function-name.ts';
 export { type ManifestHead, manifestHead } from './head.ts';

@@ -57,6 +57,14 @@ import { carriesMaps, type SourceMapsOption } from './source-maps.ts';
 import { checkSplitOptions, type SplitOptions, splitBudget } from './split.ts';
 import { collectStaticFiles, rewriteTargetFiles } from './static-files.ts';
 import { type TracedFile, tracedFiles } from './traced-files.ts';
+import {
+  buildWorkflowFunction,
+  warnOfNoWorld,
+  type WorkflowBuild,
+  workflowBuildOf,
+  workflowPartsOf,
+} from './workflow-function.ts';
+import { aliasBuiltinWorlds } from './workflow.ts';
 
 /**
  * The upwind deployment adapter.
@@ -139,21 +147,30 @@ async function instrumentationOf(
 
 /**
  * What the Node.js entries read through `node:fs`, for each Function to carry what its own entries
- * read: the app Function carries the middleware as well, and both carry what the instrumentation
- * hook reads, since it runs before any entrypoint in each of them (`instrumentationOf`). A static
- * export runs none of the application's code, and reads nothing.
+ * read: the app Function carries the middleware as well, and every one carries what the
+ * instrumentation hook reads, since it runs before any entrypoint in each of them
+ * (`instrumentationOf`). The Workflow SDK's flow route is its own Function's alone. A static export
+ * runs none of the application's code, and reads nothing.
  */
 function filesRead(
   ctx: BuildContext,
-  middleware: AdapterOutput['MIDDLEWARE'] | undefined,
-  hookAssets: Readonly<Record<string, string>>,
-  exported: boolean,
-): { readonly app: readonly TracedFile[]; readonly middleware: readonly TracedFile[] } {
-  const own = middleware === undefined ? [] : [middleware];
-  const hook = [{ assets: hookAssets }];
-  const { appPages, appRoutes, pages, pagesApi } = ctx.outputs;
+  build: {
+    readonly workflow: WorkflowBuild;
+    readonly middleware: AdapterOutput['MIDDLEWARE'] | undefined;
+    readonly hookAssets: Readonly<Record<string, string>>;
+    readonly exported: boolean;
+  },
+): {
+  readonly app: readonly TracedFile[];
+  readonly middleware: readonly TracedFile[];
+  readonly workflow: readonly TracedFile[];
+} {
+  const own = build.middleware === undefined ? [] : [build.middleware];
+  const hook = [{ assets: build.hookAssets }];
+  const { flow, outputs } = build.workflow;
+  const { appPages, appRoutes, pages, pagesApi } = outputs;
   return {
-    app: exported
+    app: build.exported
       ? []
       : tracedFiles(
           [...appPages, ...appRoutes, ...pages, ...pagesApi, ...own, ...hook],
@@ -161,6 +178,7 @@ function filesRead(
           ctx.distDir,
         ),
     middleware: tracedFiles([...own, ...hook], ctx.projectDir, ctx.distDir),
+    workflow: flow === undefined ? [] : tracedFiles([flow, ...hook], ctx.projectDir, ctx.distDir),
   };
 }
 
@@ -202,18 +220,21 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
   await blobs.init();
 
   await refuseOtherBundlers(ctx.distDir, exported);
-  const instrumentation = await instrumentationOf(
-    ctx.distDir,
-    outDir,
+  // The Workflow SDK's flow route, when the project uses the SDK: built into a Function of its own,
+  // and nowhere else (`workflow-function.ts`).
+  const workflow = await workflowBuildOf(ctx, {
     exported,
-    options.instrumentationModules ?? [],
-  );
+    outDir,
+    hosts: options.instrumentationModules ?? [],
+    worldModule: options.workflowWorldModule,
+  });
+  const instrumentation = await instrumentationOf(ctx.distDir, outDir, exported, workflow.hosts);
   const id = deploymentId();
   // Next.js's build manifests are what its route modules read at request time. A static export
   // has no route module in the Function, and the middleware Function has none either, so nothing
   // there would ever read one: shipping them would be bytes in a Function that never opens them.
   const manifests = exported ? [] : await collectManifests(ctx.projectDir, ctx.distDir, id);
-  const collected = collectEntrypoints(ctx.outputs);
+  const collected = collectEntrypoints(workflow.outputs);
   const { entrypoints, sourcePages, edgeEntries } = collected;
   const { prerenders, shipped } = await collectPrerenders({
     outputs: ctx.outputs,
@@ -269,6 +290,12 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
       ),
     ],
   };
+  const files = filesRead(ctx, {
+    workflow,
+    middleware,
+    hookAssets: instrumentation.assets,
+    exported,
+  });
   const context: FunctionsContext = {
     ctx,
     outDir,
@@ -282,7 +309,8 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     ...collected,
     shipped,
     staticBlobs: await staticBlobsOf(shippedStatic, outDir),
-    files: filesRead(ctx, middleware, instrumentation.assets, exported),
+    files,
+    workflowSdk: workflow.flow !== undefined,
   };
   const functions = await appFunctionsOf(
     context,
@@ -296,10 +324,19 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     context,
     JSON.stringify(middlewareManifest(functions.runtimeManifest)),
   );
+  // The flow route's own Function, its manifest cut from the one every app Function carries.
+  const workflowParts = workflowPartsOf(
+    workflow,
+    await buildWorkflowFunction(workflow, context, {
+      runtimeManifest: functions.runtimeManifest,
+      files: files.workflow,
+    }),
+  );
   const sourceMaps = [
     ...clientMaps,
     ...functions.built.flatMap((each) => each.built.sourceMaps),
     ...(middlewareFunction?.sourceMaps ?? []),
+    ...workflowParts.sourceMaps,
   ];
 
   // Two things the bundle carries and `runtimeManifest` does not, for the same reason: nothing in
@@ -312,6 +349,8 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     // The cron jobs the project declared: the host schedules them, and the Function they reach
     // answers the request they make like any other.
     ...(projectConfig.crons.length > 0 && { crons: projectConfig.crons }),
+    // Where the workflow Function takes the SDK's queue, and which SDK it was built with.
+    ...workflowParts.bundle,
     projectDir: path.relative(ctx.repoRoot, ctx.projectDir).split(path.sep).join('/'),
     generatedAt: new Date().toISOString(),
     staticFiles,
@@ -319,12 +358,19 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     // served, and each Function's own bundle. Left out entirely when the host asked for none, so
     // a bundle without them is a bundle without the field rather than one with an empty list.
     ...(sourceMaps.length > 0 && { sourceMaps }),
-    functions: bundleFunctions(functions.built, middlewareFunction),
+    functions: {
+      ...bundleFunctions(functions.built, middlewareFunction),
+      ...workflowParts.functions,
+    },
   });
   await writeFile(path.join(outDir, BUNDLE_FILE), JSON.stringify(bundle, null, 2));
   await writeFile(
     path.join(outDir, DEPENDENCIES_FILE),
-    JSON.stringify(dependencyRecord(functions, middlewareFunction), null, 2),
+    JSON.stringify(
+      { ...dependencyRecord(functions, middlewareFunction), ...workflowParts.dependencies },
+      null,
+      2,
+    ),
   );
   await rm(path.join(outDir, 'work'), { recursive: true, force: true });
   if (functions.built.length > 1) {
@@ -336,6 +382,7 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
   );
   reportWhatTravels(bundle, edgeEntries, ctx.nextVersion, exported);
   reportSplit(functions.built);
+  warnOfNoWorld(workflow, options.workflowWorldModule);
 }
 
 /**
@@ -558,6 +605,17 @@ export interface AdapterOptions {
    */
   readonly clientInstrumentationSource?: string | undefined;
   /**
+   * The module a deployment's Workflow SDK keeps its runs in, as an absolute path: one that exports
+   * `createWorld()`, answering a World (`@workflow/world`) or a promise of one.
+   *
+   * Only a build that uses the SDK carries it. Registered from the instrumentation hook, before any
+   * route of the deployment runs (`writeWorldRegistration` in `workflow.ts`); the World is the
+   * host's own, since what stores a run and delivers its messages is the platform's to provide —
+   * the SDK's own Worlds keep their state on a file system or reach Vercel, and a Function has
+   * neither.
+   */
+  readonly workflowWorldModule?: string | undefined;
+  /**
    * Carry the deployment's source maps, so a host can show a stack against the code it was
    * written as.
    *
@@ -725,6 +783,8 @@ export function createAdapter(options: AdapterOptions = {}): NextAdapter {
         // `immutableByBuild`).
         config.supportsImmutableAssets = true;
         renderInOneProcessForStorage(config);
+        // The Workflow SDK's own Worlds stay out of the Functions: neither can run there.
+        await aliasBuiltinWorlds(config, projectDir, OUT_DIR_NAME);
         if (carriesMaps(options.sourceMaps)) {
           // Both halves, because a stack has both in it: a page's frames are in the browser
           // chunks, and a render's are in the server ones. What keeps the browser maps from being

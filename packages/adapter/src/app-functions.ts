@@ -28,11 +28,13 @@ import {
   weighs,
 } from './split.ts';
 import { inlineAssetFiles, type TracedFile, tracedFiles } from './traced-files.ts';
-import { collectWasm, type WasmChunk } from './wasm.ts';
+import { collectWasm, type WasmChunk, type WasmCollector } from './wasm.ts';
+import { offerEmbeddedWasm } from './workflow.ts';
 
 /**
  * Building a deployment's Functions out of what the build collected: the app Function holding every
- * route, an app Function holding some of them, and the middleware's.
+ * route, an app Function holding some of them, and the middleware's. (The Workflow SDK's own is
+ * built from the same, in `workflow-function.ts`.)
  *
  * One way of building, whichever it is, so that a Function holding every route is built exactly as
  * it was before any could hold fewer: given no set of routes, every input below is the one the
@@ -82,28 +84,33 @@ export interface FunctionsContext {
     readonly app: readonly TracedFile[];
     readonly middleware: readonly TracedFile[];
   };
+  /** Whether the build carries the Workflow SDK, which every one of its Functions is told. */
+  readonly workflowSdk: boolean;
 }
 
 /**
  * Each Function's chunk table names only what its entries can reach: the table is what Rolldown
  * bundles, so the middleware Function stays small and an app Function carries no other's routes.
  * A chunk whose code another chunk of the table has is loaded from that one's file, so the code is
- * bundled once (`same-chunks.ts`).
+ * bundled once (`same-chunks.ts`). The WebAssembly a chunk of the table embeds in its own source is
+ * offered to the Function's `wasm`, for the patch that takes it out to read it from there
+ * (`offerEmbeddedWasm`).
  */
-async function patchFor(
+export async function patchFor(
   context: FunctionsContext,
   own: readonly string[],
-  wasm: readonly WasmChunk[],
+  wasm: { readonly collector: WasmCollector; readonly chunks: readonly WasmChunk[] },
 ): Promise<PatchContext> {
   const table = new Set(own);
   for (const chunk of context.hook.chunks) {
     table.add(chunk);
   }
+  const chunks = [...table];
   return {
     projectDir: context.ctx.projectDir,
     distDir: context.ctx.distDir,
-    chunks: [...table],
-    copies: await sameChunks([...table], {
+    chunks,
+    copies: await sameChunks(chunks, {
       carried: carriesMaps(context.sourceMaps),
       kept: context.keptMaps,
       ...(context.sourceMaps === 'project' && {
@@ -115,7 +122,8 @@ async function patchFor(
       }),
     }),
     instrumentation: context.hook.file,
-    wasm,
+    wasm: wasm.chunks,
+    embeddedWasm: await offerEmbeddedWasm(chunks, wasm.collector),
   };
 }
 
@@ -215,7 +223,7 @@ export async function buildAppFunction(
     ...(held !== undefined && held.name !== PRIMARY_FUNCTION && { name: held.name }),
     projectDir: ctx.projectDir,
     outDir: context.outDir,
-    patch: await patchFor(context, [...parts.chunks, ...middleware.chunks], wasm.chunks),
+    patch: await patchFor(context, [...parts.chunks, ...middleware.chunks], wasm),
     entries: [...parts.modules, ...middleware.node],
     edgeEntries,
     wasm: wasm.collector,
@@ -230,6 +238,7 @@ export async function buildAppFunction(
     files: [...parts.files, ...inlineAssetFiles(edgeEntries, ctx.projectDir)],
     blobStore: context.blobs,
     deferSizeAudit,
+    workflowSdk: context.workflowSdk,
   });
 }
 
@@ -252,7 +261,7 @@ export async function buildMiddlewareFunction(
     kind: 'middleware',
     projectDir: ctx.projectDir,
     outDir: context.outDir,
-    patch: await patchFor(context, middleware.chunks, wasm.chunks),
+    patch: await patchFor(context, middleware.chunks, wasm),
     entries: middleware.node,
     edgeEntries: middleware.edge,
     wasm: wasm.collector,
@@ -267,6 +276,7 @@ export async function buildMiddlewareFunction(
     blobs: [],
     files: [...context.files.middleware, ...inlineAssetFiles(middleware.edge, ctx.projectDir)],
     blobStore: context.blobs,
+    workflowSdk: context.workflowSdk,
   });
 }
 

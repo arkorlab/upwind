@@ -54,6 +54,11 @@ export interface PatchContext {
   readonly instrumentation: string | undefined;
   /** The WebAssembly Turbopack's Node.js loader asks for, by the path it asks for it under. */
   readonly wasm: readonly { readonly chunkPath: string; readonly global: string }[];
+  /**
+   * The sha256 of each WebAssembly module a chunk embeds as base64 — the Workflow SDK's engine — and
+   * this Function was given to carry (`offerEmbeddedWasm` in `workflow.ts`). Absent, none was.
+   */
+  readonly embeddedWasm?: ReadonlySet<string> | undefined;
 }
 
 export interface PatchResult {
