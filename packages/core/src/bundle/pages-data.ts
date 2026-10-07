@@ -1,5 +1,5 @@
 import { withTrailingSlash } from '../manifest/dynamic.ts';
-import { PAGES_DATA_SEGMENT, requestSpelling } from '../manifest/pages-data-prefix.ts';
+import { decodedPath, PAGES_DATA_SEGMENT, requestSpelling } from '../manifest/pages-data-prefix.ts';
 
 /**
  * The Pages Router's data route: beside each page a client navigation fetches
@@ -78,15 +78,6 @@ function pageOfSpelling(spelled: string): string | undefined {
   return candidates.find((page) => spelledPage(page) === spelled);
 }
 
-/** A path with its escapes decoded; `undefined` for one that does not decode. */
-function decodedPath(path: string): string | undefined {
-  try {
-    return decodeURIComponent(path);
-  } catch {
-    return undefined;
-  }
-}
-
 /** The page under a base path a pathname of the build names: the root of the base path is `/`. */
 function underBasePath(basePath: string, pathname: string): string {
   if (basePath === '') {
@@ -101,20 +92,6 @@ function underBasePath(basePath: string, pathname: string): string {
 /** `<basePath>/_next/data/<buildId>`, as the build names what it writes there. */
 function dataPrefixOf(buildId: string, basePath: string): string {
   return `${basePath}${DATA_PREFIX}${buildId}`;
-}
-
-/**
- * Whether a request can ask for a path under the base path by the base path as the build wrote it:
- * a URL gives it no other name than its own, percent-encoded. A dot segment (`/a/../b`), a
- * backslash, an escape already in it — a URL resolves or rewrites each, so a request never names
- * what the build wrote under such a base path, and a prefix spelled from it names nothing the
- * build wrote (`pagesDataPrefixOf`).
- */
-export function spellsAsWritten(basePath: string): boolean {
-  if (basePath === '') {
-    return true;
-  }
-  return decodedPath(requestSpelling(basePath)) === basePath;
 }
 
 /**
@@ -170,16 +147,54 @@ export function pageOfPagesData(
   return trailingSlash ? `${basePath}/` : basePath;
 }
 
+/** What `escapePathDelimiters` escapes in a page's name: a delimiter, or one already escaped. */
+const PATH_DELIMITER = /[/#?\\]|%(?:2f|23|3f|5c)/giu;
+
 /**
- * The page a request's spelling of a file's name stands for (`pageOfSpelling`), decoded; `undefined`
- * unless the spelling is the one a URL gives that name (`requestSpelling`) — a parameter's `?` or `#`
- * included, which Next.js's client percent-encodes into it. Next.js finds a page's props by the
- * page's own name, which ends in no slash, so one before `.json` names nothing it wrote.
+ * A segment of a page's name as Next.js names a page it builds: decoded, with what would delimit a
+ * path escaped back (`escapePathDelimiters(…, true)`), so that a parameter's `/` stays inside its
+ * segment.
  */
-function pageAsSpelled(spelled: string): string | undefined {
-  const decoded = spelled.endsWith('/') ? undefined : decodedPath(spelled);
-  if (decoded === undefined || requestSpelling(decoded) !== spelled) {
+function builtSegment(decoded: string): string {
+  return decoded.replaceAll(PATH_DELIMITER, (found) => encodeURIComponent(found));
+}
+
+/** A segment as a URL's own parser spells it, where it stays one segment; `undefined` where not. */
+function parsedSegment(decoded: string): string | undefined {
+  if (decoded === '.' || decoded === '..' || /[/\\]/u.test(decoded)) {
     return undefined;
   }
-  return pageOfSpelling(decoded);
+  return requestSpelling(`/${decoded}`).slice(1);
+}
+
+/**
+ * The name a request's spelling of a file's name stands for, as Next.js names a page it builds,
+ * segment by segment (`builtSegment`); `undefined` unless each segment is spelled as a client
+ * spells one. Next.js's client percent-encodes a parameter's value whole (`encodeURIComponent`, as
+ * `interpolateAs` does) and leaves the rest of a page's name to the URL's parser: an escape neither
+ * writes (`%66oo`, `%69ndex`) names nothing either asks for, and is not read as what it decodes to.
+ */
+function builtName(spelled: string): string | undefined {
+  const segments: string[] = [];
+  for (const segment of spelled.split('/').slice(1)) {
+    const decoded = decodedPath(segment);
+    const asked =
+      decoded !== undefined &&
+      (segment === encodeURIComponent(decoded) || segment === parsedSegment(decoded));
+    if (decoded === undefined || !asked) {
+      return undefined;
+    }
+    segments.push(builtSegment(decoded));
+  }
+  return `/${segments.join('/')}`;
+}
+
+/**
+ * The page a request's spelling of a file's name stands for (`pageOfSpelling`), named as Next.js
+ * names it (`builtName`); `undefined` for a spelling no client writes. Next.js finds a page's props
+ * by the page's own name, which ends in no slash, so one before `.json` names nothing it wrote.
+ */
+function pageAsSpelled(spelled: string): string | undefined {
+  const name = spelled.endsWith('/') ? undefined : builtName(spelled);
+  return name === undefined ? undefined : pageOfSpelling(name);
 }

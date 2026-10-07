@@ -1,5 +1,6 @@
+import { namesPagesDataPrefix } from '../manifest/pages-data-prefix.ts';
 import { mayHoldForDocument } from '../request/conditions.ts';
-import { pagesDataPathnameUnder, spellsAsWritten } from './pages-data.ts';
+import { pagesDataPathnameUnder } from './pages-data.ts';
 import type { DeploymentBundle, Prerender } from './schema.ts';
 import {
   beforeFilesPhases,
@@ -200,8 +201,8 @@ export interface RoutePagesData {
  * does — which needs every rule in the manifest (`reproducesDynamicRouting`), and a build with no
  * middleware. A build with one matches its rules against the page a data URL names, and runs its
  * middleware for it (`shouldNormalizeNextData`); its props stay with the Function. So do the props
- * of a build under a base path no request spells as written (`spellsAsWritten`), which no request
- * asks for under the names the build gave them.
+ * of a build whose base path or build id no request spells as written (`namesPagesDataPrefix`),
+ * which no request asks for under the names the build gave them.
  */
 export function routePagesData(
   bundle: DeploymentBundle,
@@ -211,7 +212,7 @@ export function routePagesData(
   if (
     !reproducesDynamicRouting(bundle) ||
     bundle.routing.shouldNormalizeNextData ||
-    !spellsAsWritten(basePath)
+    !namesPagesDataPrefix(basePath, bundle.buildId)
   ) {
     return [];
   }

@@ -3,7 +3,7 @@ import { MAX_IMMUTABLE_ASSET_BYTES } from '../assets/admission.ts';
 import type { DeploymentFingerprint } from '../deployment/fingerprint.ts';
 import type { ImagesConfig } from '../images/config.ts';
 import { compareCodeUnits } from '../util/bytes.ts';
-import { isBasePath, isBuildId, pagesDataPrefixOf } from './pages-data-prefix.ts';
+import { namesPagesDataPrefix, pagesDataPrefixOf } from './pages-data-prefix.ts';
 import {
   type AppRuntime,
   type AssetPolicy,
@@ -130,13 +130,14 @@ function unreachableFunctions(input: BuildProjectManifestInput): string[] {
 
 /**
  * What is wrong with where the manifest says a client asks for a page's props, if anything. Props
- * no prefix names are asked for at no URL, and a base path or a build id a prefix cannot carry names
- * no request: either way every data request would go to the Function, and nothing would say why. So
- * a manifest like that is refused where it is built, as one naming an unreachable Function is.
+ * no prefix names are asked for at no URL, and a base path or a build id a prefix cannot carry, or a
+ * request cannot spell as written, names no request: either way every data request would go to the
+ * Function, and nothing would say why. So a manifest like that is refused where it is built, as one
+ * naming an unreachable Function is.
  */
 function unaddressedProps(input: BuildProjectManifestInput): string | undefined {
   const under = input.pagesDataUnder;
-  if (under !== undefined && !(isBasePath(under.basePath) && isBuildId(under.buildId))) {
+  if (under !== undefined && !namesPagesDataPrefix(under.basePath, under.buildId)) {
     return `pagesDataUnder names no prefix: base path ${under.basePath}, build ${under.buildId}`;
   }
   if (under === undefined && input.routes.some((route) => route.pagesData !== undefined)) {

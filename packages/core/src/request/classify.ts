@@ -555,7 +555,10 @@ function pagesDataRequest(input: ClassifyInput): RequestClass | undefined {
   }
   const basePath = manifest.pagesDataBasePath ?? '';
   const page = pageOfPagesData(prefix, basePath, url.pathname, manifest.trailingSlash === true);
-  const entry = page === undefined ? undefined : findRouteEntry(manifest, page);
+  // By the name exactly, which is the build's own (`pageOfPagesData`): decoded again, a name that
+  // keeps a parameter's escaped `/` would find another page.
+  const entry =
+    page !== undefined && Object.hasOwn(manifest.routes, page) ? manifest.routes[page] : undefined;
   if (entry?.pagesData === undefined) {
     return undefined;
   }
