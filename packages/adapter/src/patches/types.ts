@@ -39,10 +39,17 @@
 export type Copy = 'build-output' | 'esm-module' | 'module' | 'server-runtime' | 'vendored';
 
 export interface PatchContext {
+  /** Absolute project directory: what the Function carries is under `/bundle` by its path here. */
+  readonly projectDir: string;
   /** Absolute `.next` directory. */
   readonly distDir: string;
   /** Absolute paths of every server chunk the Turbopack runtime may load. */
   readonly chunks: readonly string[];
+  /**
+   * Those of them whose code is another's, each to the file that holds it (`same-chunks.ts`): the
+   * chunk table loads that file in their place. A chunk not named here is loaded from its own.
+   */
+  readonly copies?: ReadonlyMap<string, string> | undefined;
   /** Absolute path of `.next/server/instrumentation.js`, when the app has a hook. */
   readonly instrumentation: string | undefined;
   /** The WebAssembly Turbopack's Node.js loader asks for, by the path it asks for it under. */

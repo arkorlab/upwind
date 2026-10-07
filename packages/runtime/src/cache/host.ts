@@ -58,9 +58,10 @@ export interface CacheHost {
   /**
    * The delivery record of an entry's current generation — the bytes the edge would serve — or
    * nothing when the entry has no generation. The runtime reads this when it answers a document
-   * itself, so that what it serves is what the edge would have served.
+   * itself, so that what it serves is what the edge would have served. A read the runtime has given
+   * up on is called off through `signal`.
    */
-  readRecord(entryId: string): Promise<Uint8Array | undefined>;
+  readRecord(entryId: string, signal?: AbortSignal): Promise<Uint8Array | undefined>;
 
   /** The bytes of an artifact by id: a value too large to have travelled inline. */
   readArtifact(artifactId: string): Promise<Uint8Array | undefined>;
@@ -253,6 +254,14 @@ export interface DataWriteRequest {
   readonly key: string;
   readonly entry: DataEntryMetadata;
   readonly valueBase64: string;
+  /**
+   * Where the write stands among the writes this isolate sent: an id the isolate drew for itself,
+   * and a count it raises with each write. Writes of a key can cross on their way to the host — one
+   * held up behind its upload, or sent once its writer would wait no longer for the one before it
+   * — and the host keeps a writer's later write over its earlier one, whichever lands last
+   * (`DataWritten.superseded`).
+   */
+  readonly order?: { readonly writer: string; readonly seq: number } | undefined;
 }
 
 export interface DataWritten {
@@ -265,6 +274,12 @@ export interface DataWritten {
    * than as freshly written.
    */
   readonly invalidation?: InvalidationState | undefined;
+  /**
+   * Set when the entry already held a value its writer sent after this one (`order`), which the
+   * host kept: nothing was written, and the generation named is that value's. The writer then does
+   * not remember what it wrote as the entry's.
+   */
+  readonly superseded?: true | undefined;
 }
 
 /**
@@ -298,6 +313,12 @@ export interface InvalidateRequest {
 
 export interface InvalidateOutcome {
   readonly invalidations: readonly TagInvalidation[];
+  /**
+   * The revision of the scope the host recorded the invalidation at, where it keeps one: every record
+   * it wrote before is at a lower revision, and one written after at a higher. Absent from a host
+   * that keeps no revisions.
+   */
+  readonly revision?: number | undefined;
 }
 
 /** How a host is reached; the runtime holds one per isolate. */

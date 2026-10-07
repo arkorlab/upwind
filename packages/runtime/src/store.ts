@@ -5,6 +5,7 @@ import {
   documentPrerenders,
   type EntrypointKind,
   isPagesDataPathname,
+  type ManifestHead,
   type Prerender,
   type Route,
   type StaticFile,
@@ -75,6 +76,17 @@ export interface Store {
   /** The dynamic routes as the router is handed them (`routerDynamicRoutes`). */
   readonly dynamicRoutes: readonly Route[];
   readBlob(sha256: string): Uint8Array<ArrayBuffer>;
+  /**
+   * The same read for a blob the bundle may only *name*: `undefined` where the bytes are not here.
+   *
+   * A host that serves an output itself can have the build record it and leave its bytes out of
+   * the Function (`AdapterOptions.unshippedOutputs`). The record is what the host places from, so
+   * it stays — and then a reference is no longer a promise that the file exists. `readBlob` throws
+   * for one that does not, which is right everywhere the bundle is the only source; this is for
+   * the paths that have somewhere else to go. A blob found absent is remembered so: the bundle does
+   * not change while the isolate lives, and a read that fails costs a thrown error.
+   */
+  tryReadBlob(sha256: string): Uint8Array<ArrayBuffer> | undefined;
 }
 
 /** A `[param]`, `[...rest]` or `[[...rest]]` segment: it starts with a bracket, and no other does. */
@@ -157,6 +169,24 @@ function buildShells(
 
 function countDynamic(pathname: string): number {
   return pathname.split('/').filter((segment) => isDynamicSegment(segment)).length;
+}
+
+/**
+ * The same read for a file the bundle may not carry; `undefined` rather than a throw.
+ *
+ * Only an absent file is answered that way — anything else about the read is the caller's to see,
+ * since a bundle this runtime cannot read is not a condition to carry on through.
+ */
+function readBundleFileIfThere(name: string): Uint8Array<ArrayBuffer> | undefined {
+  try {
+    return readBundleFile(name);
+  } catch (error) {
+    const code = (error as { code?: unknown }).code;
+    if (code === 'ENOENT') {
+      return undefined;
+    }
+    throw error;
+  }
 }
 
 function readBundleFile(name: string): Uint8Array<ArrayBuffer> {
@@ -335,16 +365,39 @@ function unlocalizedApiRoutes(manifest: {
   });
 }
 
-/** The store for this isolate; parsed on first use and kept for its lifetime. */
-const shared: { store: Store | undefined } = { store: undefined };
+/** The manifest this isolate read, and the store built over it: each made once, on first use. */
+const shared: { manifest: ManifestHead | undefined; store: Store | undefined } = {
+  manifest: undefined,
+  store: undefined,
+};
+
+/**
+ * The manifest this Function carries: whole in the app Function, and in the middleware Function
+ * its head alone — the fields the adapter writes it from (`MANIFEST_HEAD_KEYS`), which are all that
+ * is typed here.
+ */
+function readManifest(): ManifestHead {
+  shared.manifest ??= JSON.parse(
+    new TextDecoder().decode(readBundleFile(RUNTIME_MANIFEST)),
+  ) as ManifestHead;
+  return shared.manifest;
+}
+
+/**
+ * The deployment's configuration, read without building the store: what a request for the
+ * middleware alone reads of the manifest, and all the middleware Function's manifest holds besides
+ * which deployment and build it is (`ManifestHead`).
+ */
+export function deploymentConfig(): ManifestHead['config'] {
+  return readManifest().config;
+}
 
 export function getStore(): Store {
   if (shared.store !== undefined) {
     return shared.store;
   }
-  const manifest = JSON.parse(
-    new TextDecoder().decode(readBundleFile(RUNTIME_MANIFEST)),
-  ) as RuntimeManifest;
+  // The whole manifest: the app Function's, since nothing in the middleware Function builds one.
+  const manifest = readManifest() as RuntimeManifest;
   const prerendersById = new Map(manifest.prerenders.map((prerender) => [prerender.id, prerender]));
   const prerendersByPathname = new Map(
     manifest.prerenders.map((prerender) => [prerender.pathname, prerender]),
@@ -353,6 +406,8 @@ export function getStore(): Store {
   // recently read goes first, and one larger than the whole budget is copied afresh every time.
   const blobs = new ByteLru<string, Uint8Array<ArrayBuffer>>(BLOB_MEMO_BYTES);
   const staticFiles = new Map(manifest.staticFiles.map((file) => [file.pathname, file]));
+  // At most one entry for each blob the manifest names.
+  const absent = new Set<string>();
   shared.store = {
     manifest,
     prerendersById,
@@ -368,6 +423,19 @@ export function getStore(): Store {
       let bytes = blobs.get(sha256);
       if (bytes === undefined) {
         bytes = readBundleFile(`blobs/${sha256}`);
+        blobs.set(sha256, bytes, bytes.byteLength);
+      }
+      return bytes;
+    },
+    tryReadBlob(sha256) {
+      const held = blobs.get(sha256);
+      if (held !== undefined || absent.has(sha256)) {
+        return held;
+      }
+      const bytes = readBundleFileIfThere(`blobs/${sha256}`);
+      if (bytes === undefined) {
+        absent.add(sha256);
+      } else {
         blobs.set(sha256, bytes, bytes.byteLength);
       }
       return bytes;

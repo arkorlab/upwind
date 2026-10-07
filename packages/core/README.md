@@ -10,6 +10,12 @@ It has one dependency, `zod`, because most of this package is schemas. A schema 
 `deploymentBundleSchema` is what a bundle is, and a bundle that does not parse is not one.
 `BUNDLE_VERSION` says which shape a reader was written for.
 
+The cache's schemas are kept in `cache/schema.ts`, apart from the code that names, times and reads
+entries, which imports only their types: a Function's runtime runs that code on every request, and
+importing it no longer brings zod into the runtime. The one check the runtime makes, of a delivery
+record's header, is written out by hand in `cache/pack-header.ts`, and answers as
+`generationPackHeaderSchema` does.
+
 The published package is TypeScript sources — `exports` names `.ts` files, and there is no build
 step. A reader bundles it (the adapter bundles it into itself; the runtime is bundled by the
 adapter), which is also why `sideEffects: false` is true of it: nothing here initializes anything.
@@ -36,7 +42,8 @@ adapter), which is also why `sideEffects: false` is true of it: nothing here ini
 `./paas` is the only part that describes two parties talking. The protocol is headers, all prefixed
 `x-arkor-`, and both sides import the names rather than spelling them: what the edge asks of a
 Function (run only the middleware, resume this shell, regenerate this entry) and what the Function
-says back (which generation answered, what the cache did). `PLATFORM_REQUEST_HEADERS` is the whole
+says back (which generation answered, what the cache did, which tags the request invalidated at
+once, and at which revision of the scope). `PLATFORM_REQUEST_HEADERS` is the whole
 list of the ones that tell the runtime what to do, which is what lets it strip every one of them
 before the application sees a request.
 
@@ -44,6 +51,18 @@ Beside it are the two things a Function is handed rather than told: its own `env
 application code can reach it without it passing through `process.env`, and a project's storage
 bindings, which a host binds under the names their owner gave them and lists in one text binding
 that the runtime reads back.
+
+One answer goes the other way. In a deployment whose routes the build split across app Functions
+(`functions.split`), a Function handed a request for a route it does not hold answers
+`MISDIRECTED_STATUS` (421) with `FUNCTION_HEADER`, naming the Function that does, and the request's
+body, unread; the host sends the request on to that Function with that body. Where the Function
+routed the request before it found the route elsewhere, the answer also carries `ROUTED_HEADER`, the
+routing it already did, and the host sends that header on too. A resume or a regeneration names its
+route up front and is answered before any routing, so it comes back without one and goes on as it
+was asked. Which
+Function a request should go to in the first place is the manifest's to say (`./manifest`,
+`functionFor`), as far as a table can; and where a split bundle puts each route, `./bundle`
+(`placedRoutes`, `functionOfRoute`, `appFunctions`).
 
 What is deliberately absent is any host's internals. There is nothing here about how a deployment is
 uploaded, where it runs, what it is reached through, or what stores its cache — that is the host's,

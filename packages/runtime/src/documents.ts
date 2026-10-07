@@ -1,5 +1,5 @@
-import type { Prerender } from '@stayingupwind/core/bundle';
-import { NO_STORE_CACHE_CONTROL } from '@stayingupwind/core/request';
+import type { BlobRef, Prerender, StaticFile } from '@stayingupwind/core/bundle';
+import { NO_STORE_CACHE_CONTROL, SEGMENT_TREE_PATH } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
 import { isDraftRequest } from './draft.ts';
@@ -14,6 +14,7 @@ import {
   HTTP_NOT_FOUND,
   HTTP_OK,
   invokeEntry,
+  notFoundResponse,
   POSTPONED_HEADER,
   PRERENDER_HEADER,
   prerenderHeaders,
@@ -32,6 +33,8 @@ import { entrypointKindOf, findShell, isClassShell, type Store } from './store.t
  */
 
 const NOT_FOUND_ENTRY_ID = '/_not-found';
+/** The page every status of the Pages Router falls back to, a not-found's among them. */
+const ERROR_ENTRY_ID = '/_error';
 /** Next.js writes the static not-found document as the `/404` static file, under the `basePath`. */
 const NOT_FOUND_PAGE = '/404';
 const RSC_SUFFIX = '.rsc';
@@ -44,16 +47,34 @@ export function postponedOf(store: Store, prerender: Prerender): string | undefi
     : new TextDecoder().decode(store.readBlob(prerender.postponed.sha256));
 }
 
-export function staticFileResponse(
+/**
+ * A file the manifest names, under `status`: with the bytes the Function carries, or — for one it
+ * does not carry, a file under `_next/static` a rewrite of the build's may land on, which the
+ * adapter lists for such a build only — with the host's, which keeps every file of the build.
+ * `undefined` where neither has it. A `HEAD` is answered with the headers alone, and reads nothing
+ * where the host could give the file: the host's bytes are a read of the whole of it.
+ */
+export async function staticFileResponse(
+  input: RoutedInput,
   store: Store,
-  pathname: string,
+  file: StaticFile,
   status: number,
-): Response | undefined {
-  const file = store.staticFiles.get(pathname);
-  if (file === undefined) {
-    return undefined;
+): Promise<Response | undefined> {
+  const { sha256 } = file.blob;
+  if (input.request.method === 'HEAD') {
+    const answerable = input.blobs !== undefined || store.tryReadBlob(sha256) !== undefined;
+    return answerable ? fileResponse(file, null, status) : undefined;
   }
-  return new Response(store.readBlob(file.blob.sha256), {
+  const bytes = store.tryReadBlob(sha256) ?? (await fromHost(input, file.blob));
+  return bytes === undefined ? undefined : fileResponse(file, bytes, status);
+}
+
+function fileResponse(
+  file: StaticFile,
+  bytes: Uint8Array<ArrayBuffer> | null,
+  status: number,
+): Response {
+  return new Response(bytes, {
     status,
     headers: {
       'content-type': file.blob.contentType,
@@ -119,10 +140,14 @@ export async function documentFromBuild(
     bypassesPrerender(store, input.request, shell, resolved.url) ||
     (shell !== undefined && crawlerWantsWholePage(store, shell, resolved, input.request))
   ) {
-    return invokeEntry(input, entry, resolved.url, failureAnswer(store, entry, resolved.route));
+    return invokeEntry(input, entry, resolved.url, {
+      onFailure: failureAnswer(store, entry, resolved.route),
+    });
   }
   if (shell?.body === undefined) {
-    return invokeEntry(input, entry, resolved.url, failureAnswer(store, entry, resolved.route));
+    return invokeEntry(input, entry, resolved.url, {
+      onFailure: failureAnswer(store, entry, resolved.route),
+    });
   }
   const status = shell.initialStatus ?? fallbackStatus;
   if (shell.postponed === undefined) {
@@ -150,6 +175,113 @@ export async function documentFromBuild(
 }
 
 /**
+ * One prefetch segment of a prerendered page: the bytes the build shipped, the same bytes from the
+ * host that kept them, or a 404.
+ *
+ * `undefined` only when the request asks for no segment — no header, or an empty one — or when the
+ * build wrote no segment of the page at all: the caller then answers it as any request for the
+ * page's React Server Components, which is what Next.js does for a page it has no segments of. A
+ * page it has segments of, Next.js answers from them alone (`app-page-runtime.ts`, "Cache miss"):
+ * the segment asked for, or a 404 where there is none. A segment the build recorded and whose bytes
+ * neither the Function nor the host has is the same miss to the client, and gets the same answer.
+ * The page's payload in its place is not: a client router read it as the route's tree, found
+ * nothing it asked for and asked again straight away, for as long as the page was open — measured,
+ * some 250 requests a second from one tab. A 404 it leaves alone for ten seconds, and a navigation
+ * fetches what it needs.
+ *
+ * A record is this page's segment only as the adapter anchored it (`segmentPathOf`): the segment
+ * path it answers, in the document's own group. The name alone is not enough — an application may
+ * have a page of its own at a pathname that reads like another page's segment, and that page
+ * neither gives the other segments nor is one.
+ *
+ * The host read is `AdapterOptions.unshippedOutputs`' other half. A build may record a segment and
+ * leave its bytes out of the Function, which is 37% of one measured on a real application; the
+ * record is what a host places from, so it stays, and a reference is then no longer a promise that
+ * the file is here. **Rendering it instead was tried and cannot work**: `renderCaptured` answers
+ * `undefined` whenever the render responded rather than being captured, and a segment prefetch is
+ * always answered directly — measured, every time, with nothing captured to read. Resuming cannot
+ * either: the postponed state is the document's, and Next.js refuses a segment it has no
+ * prerendered output for with a 404.
+ */
+async function builtSegment(
+  input: RoutedInput,
+  store: Store,
+  document: Prerender | undefined,
+): Promise<Response | undefined> {
+  const { rsc } = store.manifest.routing;
+  const segment = input.request.headers.get(rsc.prefetchSegmentHeader);
+  // An empty header names no part, as the classification reads it (`segmentPrefetchOf`): the
+  // request is the plain RSC request it is, and is answered as one.
+  if (segment === null || segment === '' || document === undefined) {
+    return undefined;
+  }
+  const segmentOf = (segmentPath: string): Prerender | undefined => {
+    const name = `${rscBase(document.pathname)}${rsc.prefetchSegmentDirSuffix}${segmentPath}`;
+    const prerender = store.prerendersByPathname.get(`${name}${rsc.prefetchSegmentSuffix}`);
+    return prerender?.segmentPath === segmentPath &&
+      prerender.route === document.route &&
+      prerender.groupId === document.groupId
+      ? prerender
+      : undefined;
+  };
+  // Next.js writes the route's tree for every page it writes segments of.
+  if (segmentOf(SEGMENT_TREE_PATH) === undefined) {
+    return undefined;
+  }
+  const prerender = segmentOf(segment);
+  const bytes =
+    prerender?.body === undefined
+      ? undefined
+      : (store.tryReadBlob(prerender.body.sha256) ?? (await fromHost(input, prerender.body)));
+  if (prerender === undefined || bytes === undefined) {
+    return segmentMissed(rsc.varyHeader);
+  }
+  const headers = prerenderHeaders(prerender, RSC_CONTENT_TYPE);
+  headers.set(PRERENDER_HEADER, '1');
+  headers.set(POSTPONED_HEADER, '2');
+  headers.set(CACHE_CONTROL, NO_STORE_CACHE_CONTROL);
+  headers.set('vary', rsc.varyHeader);
+  // The bytes as the store holds them: a view onto the bundle's own buffer, which is what every
+  // other blob is answered with here. Copying would be a copy per prefetch of a file the store is
+  // holding on purpose; only the host's bytes are copied, and only where they come from.
+  return new Response(bytes, { status: HTTP_OK, headers });
+}
+
+/**
+ * Next.js's answer for a segment it has none of, on a page it has segments of: an empty 404 that
+ * still says the route has them (`x-nextjs-postponed: 2`, set before the lookup), and that no
+ * cache keeps — the next prefetch may find the bytes where this one did not.
+ */
+function segmentMissed(vary: string): Response {
+  return new Response(null, {
+    status: HTTP_NOT_FOUND,
+    headers: { [POSTPONED_HEADER]: '2', [CACHE_CONTROL]: NO_STORE_CACHE_CONTROL, vary },
+  });
+}
+
+/**
+ * One blob of this bundle from the host that keeps it, for a build whose Function was not given it
+ * (`AdapterOptions.unshippedOutputs`).
+ *
+ * `undefined` where the host keeps none, where it has no such blob, or where the read failed —
+ * all three mean the same thing to the caller, which carries on as it does for a segment the build
+ * never wrote. A failure is logged where the reader is built (`bundle-blobs.ts`), so a host that
+ * offers this and is failing does not look like one that never offered it.
+ *
+ * On a buffer of its own, because a host's `Uint8Array` is backed by `ArrayBufferLike` and a
+ * response body may not be: one copy of a few hundred bytes, on a path that has just been to the
+ * host, which keeps the shipped segment — every other prefetch — a plain view onto the bundle the
+ * store is already holding.
+ */
+async function fromHost(
+  input: RoutedInput,
+  ref: BlobRef,
+): Promise<Uint8Array<ArrayBuffer> | undefined> {
+  const bytes = await input.blobs?.(ref.sha256);
+  return bytes === undefined ? undefined : new Uint8Array(bytes);
+}
+
+/**
  * A route's React Server Components: a prefetched segment as built, else its payload resumed —
  * and, for a route on the edge runtime, which resumes nothing, rendered whole.
  */
@@ -163,20 +295,9 @@ export async function rscFromBuild(
   if (bypassesPrerender(store, input.request, shell, resolved.url)) {
     return invokeEntry(input, entry, resolved.url);
   }
-  const segment = input.request.headers.get(store.manifest.routing.rsc.prefetchSegmentHeader);
-  if (segment !== null) {
-    const suffix = store.manifest.routing.rsc.prefetchSegmentSuffix;
-    const dir = store.manifest.routing.rsc.prefetchSegmentDirSuffix;
-    const base = rscBase(shell?.pathname ?? resolved.pathname);
-    const staticSegment = store.prerendersByPathname.get(`${base}${dir}${segment}${suffix}`);
-    if (staticSegment?.body !== undefined) {
-      const headers = prerenderHeaders(staticSegment, RSC_CONTENT_TYPE);
-      headers.set(PRERENDER_HEADER, '1');
-      headers.set(POSTPONED_HEADER, '2');
-      headers.set(CACHE_CONTROL, NO_STORE_CACHE_CONTROL);
-      headers.set('vary', store.manifest.routing.rsc.varyHeader);
-      return new Response(store.readBlob(staticSegment.body.sha256), { status: HTTP_OK, headers });
-    }
+  const built = await builtSegment(input, store, shell);
+  if (built !== undefined) {
+    return built;
   }
   const twin =
     shell === undefined
@@ -240,13 +361,59 @@ async function notFoundEntry(
 }
 
 /**
+ * The Pages Router's error page, for a document that landed nowhere in an application with no page
+ * of its own for that: Next.js's own server sets 404 and renders `/_error` when there is neither a
+ * `/_not-found` nor a `/404` (`renderErrorToResponseImpl`, `server/base-server.ts`). A build has no
+ * `/404` when it could not write one at build time — an `_app` with `getInitialProps` is the common
+ * case — and its error page then reads the 404 off the response (`pages/_error.tsx`), which is why
+ * it is set before the render rather than put on its answer afterwards.
+ *
+ * Not for React Server Components: only the App Router's client asks for them, and its application
+ * has a `/_not-found` of its own.
+ */
+async function errorPageEntry(
+  input: RoutedInput,
+  store: Store,
+): Promise<{ readonly entry: Entry; readonly route: string } | undefined> {
+  const route = `${store.manifest.config.basePath}${ERROR_ENTRY_ID}`;
+  if (entrypointKindOf(store, route) !== 'pages') {
+    return undefined;
+  }
+  const entry = await entryFor(input, route);
+  return entry?.kind === 'node' ? { entry, route } : undefined;
+}
+
+/**
+ * The not-found where no page of the application's own renders one: the Pages Router's error page
+ * under a 404 (`errorPageEntry`), and failing that, a plain 404.
+ */
+async function lastNotFound(
+  input: RoutedInput,
+  store: Store,
+  at: URL,
+  rsc: boolean,
+): Promise<Response> {
+  const fallback = rsc ? undefined : await errorPageEntry(input, store);
+  if (fallback !== undefined) {
+    return invokeEntry(input, fallback.entry, `${at.pathname}${at.search}`, {
+      onFailure: failureAnswer(store, fallback.entry, fallback.route),
+      status: HTTP_NOT_FOUND,
+    });
+  }
+  // Nothing below will read the body, and leaving it queued keeps the whole upload in the isolate
+  // for an answer that has none.
+  releaseStream(input.request.body, 'not found: handler body unused');
+  return notFoundResponse();
+}
+
+/**
  * The not-found, as the request asks for it. A document: the file `next build` wrote when the
  * page was complete at build time, else the page's own shell resumed — a not-found page that
  * reads the request renders no differently from any other. React Server Components, for a
  * navigation on the client that landed nowhere: the page's payload resumed from the build's
- * state, as any route's is, under the status the not-found stands for. Failing every one, a
- * plain 404. Rendered for `at`, the URL routing ended on, as a route is rendered for the URL it
- * resolved to.
+ * state, as any route's is, under the status the not-found stands for. Failing those, the Pages
+ * Router's error page under a 404 (`errorPageEntry`), and failing that too, a plain 404. Rendered
+ * for `at`, the URL routing ended on, as a route is rendered for the URL it resolved to.
  */
 export async function notFound(input: RoutedInput, store: Store, at: URL): Promise<Response> {
   const { basePath } = store.manifest.config;
@@ -262,9 +429,12 @@ export async function notFound(input: RoutedInput, store: Store, at: URL): Promi
     // The file for a not-found page that needs nothing of the request, and the prerender for one
     // the Pages Router built with `getStaticProps`: both are the document this build wrote.
     const pathname = `${basePath}${NOT_FOUND_PAGE}`;
+    const file = store.staticFiles.get(pathname);
     const stored = store.prerendersByPathname.get(pathname);
     const page =
-      staticFileResponse(store, pathname, HTTP_NOT_FOUND) ??
+      (file === undefined
+        ? undefined
+        : await staticFileResponse(input, store, file, HTTP_NOT_FOUND)) ??
       (stored?.body === undefined
         ? undefined
         : staticResponse(store, stored, HTML_CONTENT_TYPE, stored.initialStatus ?? HTTP_NOT_FOUND));
@@ -274,10 +444,7 @@ export async function notFound(input: RoutedInput, store: Store, at: URL): Promi
     }
   }
   if (rendered === undefined) {
-    // Nothing below will read the body, and leaving it queued keeps the whole upload in the
-    // isolate for an answer that has none.
-    releaseStream(input.request.body, 'not found: handler body unused');
-    return new Response('Not Found', { status: HTTP_NOT_FOUND });
+    return lastNotFound(input, store, at, rsc);
   }
   const { entry, route } = rendered;
   const resolved: Resolved = { route, pathname: route, url: `${at.pathname}${at.search}` };

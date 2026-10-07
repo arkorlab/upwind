@@ -88,8 +88,9 @@ export const NAVIGATION_REQUEST_HEADERS = {
 
 /**
  * Headers a browser adds to a speculative document fetch (prefetch, prerender), current and
- * legacy spellings. Such a request is proxied: an application may answer a speculative one
- * differently, and nothing is lost — a prefetch is by definition not on the user's critical path.
+ * legacy spellings. The request is still a navigation, and a shell is served to it as to any
+ * other: a browser adopts one still in flight as the navigation the visitor then makes. What they
+ * tell apart is a guess, for whatever must not act on one — the response may be thrown away unread.
  */
 export const PREFETCH_HINT_HEADERS: readonly string[] = ['sec-purpose', 'purpose', 'x-moz'];
 
@@ -137,6 +138,21 @@ export const INTERNAL_REQUEST_HEADER_PREFIXES: readonly string[] = [
   PLATFORM_HEADER_PREFIX,
 ];
 
+/**
+ * What a client's router puts on a request of its own, and a browser's navigation never does: a
+ * request that carries any one of them, whatever its value, is the router's — a payload, a
+ * prefetch, an action — and is never answered with a document the edge serves
+ * (`classifyRequest`). So a rule of `next.config` that holds only where one is present never holds
+ * for such a document either (`mayHoldForDocument`).
+ */
+export const ROUTER_REQUEST_HEADERS: readonly string[] = [
+  RSC_HEADER,
+  NEXT_ROUTER_STATE_TREE_HEADER,
+  NEXT_ROUTER_PREFETCH_HEADER,
+  NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+  NEXT_ACTION_HEADER,
+];
+
 /** Client-side router protocol headers: passed through untouched, never used for edge decisions. */
 export const ROUTER_PROTOCOL_HEADERS: readonly string[] = [
   RSC_HEADER,
@@ -159,6 +175,7 @@ export const CONTENT_DISPOSITION_HEADER = 'content-disposition';
 
 /** Response headers the build recorded that may be replayed with an edge-served shell. */
 export const SHELL_RESPONSE_HEADER_ALLOWLIST: readonly string[] = [
+  'reporting-endpoints',
   'content-type',
   'content-language',
   'vary',
@@ -178,6 +195,9 @@ export const SHELL_RESPONSE_HEADER_ALLOWLIST: readonly string[] = [
   'accept-ch',
   'critical-ch',
   'origin-agent-cluster',
+  // Says a document may be prerendered from another origin of the site: without it, a browser
+  // cancels a speculation rule's cross-origin prerender, which is served the shell like any other.
+  'supports-loading-mode',
 ];
 
 /**
@@ -317,12 +337,25 @@ const HTML_LIMITED_BOT_TOKENS: readonly string[] = [
   'yeti',
   'googleweblight',
 ];
-const GOOGLE_CRAWLER_RE = /[\w-]-google|google-[\w-]/iu;
-const DOM_BOT_UA_RE = /googlebot(?!-)/iu;
+// Tested against `asciiLowerCase` of the agent. Without the `i` flag, `\w` is ASCII alone, as it
+// is in Next.js's patterns; with `i` and `u` together it would take `ſ` and the Kelvin sign too.
+const GOOGLE_CRAWLER_RE = /[\w-]-google|google-[\w-]/u;
+const DOM_BOT_UA_RE = /googlebot(?!-)/u;
+const ASCII_UPPER_CASE_RE = /[A-Z]/gu;
+
+/**
+ * The agent with its ASCII letters in lower case and nothing else changed: the case Next.js's
+ * lists ignore, which it compiles with `i` and without `u`. Such a pattern folds no character
+ * outside ASCII onto one inside it, so `İ`, `ſ` and the Kelvin sign match none of its letters,
+ * where `toLowerCase` would make `yeti` of `YETİ`.
+ */
+function asciiLowerCase(value: string): string {
+  return value.replaceAll(ASCII_UPPER_CASE_RE, (letter) => letter.toLowerCase());
+}
 
 /** True for user agents Next.js serves with a blocking (non-streaming) render. */
 export function isHtmlLimitedBotUserAgent(userAgent: string): boolean {
-  const lower = userAgent.toLowerCase();
+  const lower = asciiLowerCase(userAgent);
   return (
     GOOGLE_CRAWLER_RE.test(lower) || HTML_LIMITED_BOT_TOKENS.some((token) => lower.includes(token))
   );
@@ -330,7 +363,7 @@ export function isHtmlLimitedBotUserAgent(userAgent: string): boolean {
 
 /** True for the DOM-executing Googlebot as well as HTML-limited bots. */
 export function isBotUserAgent(userAgent: string): boolean {
-  return DOM_BOT_UA_RE.test(userAgent) || isHtmlLimitedBotUserAgent(userAgent);
+  return DOM_BOT_UA_RE.test(asciiLowerCase(userAgent)) || isHtmlLimitedBotUserAgent(userAgent);
 }
 
 /**

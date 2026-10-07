@@ -23,10 +23,10 @@ import {
  * says it does.
  *
  * `packages/adapter/scripts/check-patches.ts` answers most of the same question far more cheaply,
- * by applying each rewrite to the files of a published package. Three patches are out of its reach
+ * by applying each rewrite to the files of a published package. Five patches are out of its reach
  * because they rewrite what `next build` *writes* rather than what Next.js ships —
- * `turbopack-runtime`, `wasm-loader`, `vercel-og` — and no amount of reading a tarball produces a
- * Turbopack runtime. Those need a build, which is this.
+ * `turbopack-runtime`, `turbopack-root`, `wasm-loader`, `runtime-wasm-loader`, `vercel-og` — and no
+ * amount of reading a tarball produces a Turbopack runtime. Those need a build, which is this.
  *
  * It is also the only thing that checks the other half of the claim: that each patch still finds
  * its file *in a bundle*. A rewrite can apply perfectly to a module no build ever loads, and the

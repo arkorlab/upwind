@@ -45,6 +45,20 @@ export interface InvokeInput {
   readonly expectNoResponse?: boolean | undefined;
   /** The route's own answer to a failure, when it has one: the Pages Router's error page. */
   readonly onFailure?: FailureAnswer | undefined;
+  /**
+   * The status the response starts at, for a render that reads it: Next.js sets a not-found's 404
+   * before it renders the Pages Router's error page, whose `getInitialProps` reads the status off
+   * the response, and sends whatever status the response then has.
+   */
+  readonly status?: number | undefined;
+}
+
+/** The methods that ask for something and change nothing (RFC 9110, "Safe Methods"). */
+const SAFE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS', 'TRACE']);
+
+/** Whether a request with this method may change something: whether it is held to its end. */
+export function changesSomething(method: string): boolean {
+  return !SAFE_METHODS.has(method);
 }
 
 /** A port on the Function's own loopback: nothing listens there but this server. */
@@ -115,6 +129,9 @@ async function invoke(
   const keepalive = setTimeout(() => {
     // Nothing. Its being pending is the whole of it.
   }, RENDER_KEEPALIVE_MS);
+  if (input.status !== undefined) {
+    res.statusCode = input.status;
+  }
   try {
     await runWithTaskScheduler(() => {
       return run(() =>
@@ -227,10 +244,30 @@ function onRequest(req: IncomingMessage, res: ServerResponse): void {
   req.url = dispatch.url;
   restoreHeaders(req, dispatch.input.request.headers);
   settableSocket(req);
-  // Every failure is caught in `invoke`; a rejection past it would leave the response hanging.
-  void invoke(dispatch, req, res).catch((error: unknown) => {
+  const handled = handle(dispatch, req, res);
+  // The handler held to its own end for a request that may change something: its response leaves
+  // as soon as its headers commit, and a handler that goes on after them — a `POST` API route that
+  // writes and then updates a database — would otherwise be cancelled with a client that went away
+  // (`function.ts`).
+  if (changesSomething(dispatch.input.request.method)) {
+    dispatch.input.waitUntil(handled);
+  }
+}
+
+/**
+ * `invoke`, never rejecting: every failure is caught in it, and one that got past it would leave
+ * the response hanging, so it ends the response instead.
+ */
+async function handle(
+  dispatch: Dispatch,
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  try {
+    await invoke(dispatch, req, res);
+  } catch (error) {
     res.destroy(error instanceof Error ? error : new Error(String(error)));
-  });
+  }
 }
 
 /** The server, started by the first request that needs it. */

@@ -40,9 +40,22 @@ export {
   functionModuleTypeSchema,
   functionSchema,
   type FunctionSpec,
+  MAX_APP_FUNCTIONS,
+  SPLIT_BUNDLE_VERSION,
+  splitFunctionNameSchema,
   workflowSchema,
   type WorkflowSpec,
 } from './schema.ts';
+export { PRIMARY_FUNCTION } from './function-name.ts';
+export { type ManifestHead, manifestHead } from './head.ts';
+export {
+  appFunctions,
+  functionOfEntrypoint,
+  functionOfPrerender,
+  functionOfRoute,
+  isSplitBundle,
+  placedRoutes,
+} from './functions.ts';
 export {
   isPagesDataPathname,
   isPagesDataRequestPath,
@@ -51,6 +64,7 @@ export {
 } from './pages-data.ts';
 export { queryDependent } from './query.ts';
 export { type PrefetchSegment, prefetchSegments } from './segments.ts';
+export { routePathnameOf } from './spelling.ts';
 export {
   cacheablePrerenders,
   completePrerenders,
@@ -67,7 +81,9 @@ export {
   type ServableOptions,
   type ServedRewrite,
   shellHeaders,
+} from './serving.ts';
+export {
   staticFileAssetPrefixOf,
   staticFileLocalesOf,
   travelsWithFunction,
-} from './serving.ts';
+} from './static-files.ts';

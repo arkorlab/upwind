@@ -1,4 +1,5 @@
 import type { RouteHas } from '../bundle/schema.ts';
+import { ROUTER_REQUEST_HEADERS } from './constants.ts';
 
 /**
  * The `has` / `missing` conditions Next.js attaches to a route or a middleware matcher, evaluated
@@ -69,6 +70,45 @@ function conditionValue(condition: RouteHas, url: URL, headers: Headers): string
   }
 }
 
+/**
+ * A condition's pattern, compiled both ways it is tried: against the whole value, and anywhere in
+ * it. `undefined` for a form that does not compile — the whole-value one read as the literal
+ * comparison it always was, the other as no match.
+ */
+interface ConditionPatterns {
+  readonly whole: RegExp | undefined;
+  readonly part: RegExp | undefined;
+}
+
+/**
+ * Compiled once per condition rather than on every request that reads it, as a rule's own pattern
+ * is (`compiledRules`): a partially prerendered page's `bypassFor` carries the application's whole
+ * list of crawlers as one of these, and it is read for every document of the page.
+ */
+const conditionPatterns = new WeakMap<RouteHas, ConditionPatterns>();
+
+function compiledOrUndefined(source: string): RegExp | undefined {
+  try {
+    // Compiled by Next.js for its own router, which runs them without the unicode flag.
+    // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
+    return new RegExp(source);
+  } catch {
+    return undefined;
+  }
+}
+
+function patternsOf(condition: RouteHas, pattern: string): ConditionPatterns {
+  let patterns = conditionPatterns.get(condition);
+  if (patterns === undefined) {
+    patterns = {
+      whole: compiledOrUndefined(`^(?:${pattern})$`),
+      part: compiledOrUndefined(pattern),
+    };
+    conditionPatterns.set(condition, patterns);
+  }
+  return patterns;
+}
+
 function conditionMatches(condition: RouteHas, url: URL, headers: Headers): boolean {
   const value = conditionValue(condition, url, headers);
   if (value === undefined) {
@@ -77,14 +117,14 @@ function conditionMatches(condition: RouteHas, url: URL, headers: Headers): bool
   if (condition.value === undefined) {
     return true;
   }
+  const { whole, part } = patternsOf(condition, condition.value);
+  if (whole === undefined) {
+    return value === condition.value;
+  }
   try {
-    // Compiled by Next.js for its own router, which runs them without the unicode flag.
     return (
-      // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-      new RegExp(`^(?:${condition.value})$`).test(value) ||
-      (value.length <= MAX_SUBSTRING_MATCH_LENGTH &&
-        // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-        new RegExp(condition.value).test(value)) ||
+      whole.test(value) ||
+      (value.length <= MAX_SUBSTRING_MATCH_LENGTH && part?.test(value) === true) ||
       value === condition.value
     );
   } catch {
@@ -117,4 +157,31 @@ export function conditionsHold(rule: Conditioned, url: URL, headers: Headers): b
     (condition) => !conditionMatches(condition, url, headers),
   );
   return has && missing;
+}
+
+/** A condition only a request carrying one of the client router's own headers meets. */
+function requiresRouterHeader(condition: RouteHas): boolean {
+  return (
+    condition.type === 'header' &&
+    condition.key !== undefined &&
+    // A header's name is compared as `Headers` compares it: whatever case the rule spells it in.
+    ROUTER_REQUEST_HEADERS.includes(condition.key.toLowerCase())
+  );
+}
+
+/**
+ * Whether these conditions can hold for a request the edge answers with a document at all.
+ *
+ * Not where one of them requires a header only a client's router sends (`ROUTER_REQUEST_HEADERS`):
+ * a request carrying one is never answered with a document (`classifyRequest`), so a rule it
+ * guards never applies to one, and a page it covers is not a page the rule can change. Next.js
+ * writes one such rule into every build that has a deployment id — the id on each RSC response,
+ * over every path, for a request whose `rsc` is `1` — and read as a condition the build cannot
+ * settle, it took every page of an application whose rules are settled at build time off the edge.
+ *
+ * Only `has` is read so. A `missing` of the same headers holds for every document, which is a
+ * rule that does apply: it is left as the condition it is, for whoever judges conditions to judge.
+ */
+export function mayHoldForDocument(rule: Conditioned): boolean {
+  return (rule.has ?? []).every((condition) => !requiresRouterHeader(condition));
 }

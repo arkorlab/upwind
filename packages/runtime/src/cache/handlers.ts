@@ -2,10 +2,20 @@ import { NEXT_ONE_YEAR_SECONDS } from '@stayingupwind/core/cache';
 
 import { readWithin } from './body.ts';
 import { nowMs } from './clock.ts';
-import { isRegeneration, requestContext } from './context.ts';
+import { isRegeneration, type RequestContext, requestContext } from './context.ts';
 import { readData, writeData } from './data.ts';
+import {
+  heldOut,
+  type HeldValue,
+  type HeldWrites,
+  keepWrite,
+  tableOf,
+  writesIn,
+} from './held-writes.ts';
+import type { DataEntryMetadata } from './host.ts';
 import type { CacheRuntime, DataMemo } from './runtime.ts';
 import { recordValidity } from './tags.ts';
+import { callsBehind, callsWaitedOn } from './turns.ts';
 
 /**
  * The cache handlers Next.js runs its data caches through, installed on the global symbol Next.js
@@ -27,6 +37,7 @@ const MIB = KIB * KIB;
 const MAX_VALUE_MIB = 25;
 /** A `use cache` value is read whole before it is stored; past this it is not stored at all. */
 const MAX_VALUE_BYTES = MAX_VALUE_MIB * MIB;
+const MS_PER_SECOND = 1000;
 /** Next.js's own signal to its `use cache` wrapper that an entry must be revalidated now. */
 const REVALIDATE_NOW = -1;
 
@@ -56,11 +67,21 @@ async function invalidate(
   const now = nowMs();
   // `updateTag`, and `revalidateTag` without a window, take effect at once.
   const expire = durations?.expire ?? 0;
+  // In force here before the host has answered: a read in this isolate while the call is out must
+  // not be answered with what is being invalidated. What the host answers replaces it below.
+  runtime.tags.applyLocal(tags, {
+    staleAt: now,
+    hardExpireAt: expire > 0 ? now + expire * MS_PER_SECOND : now,
+  });
   const outcome = await runtime.host.invalidate({
     tags,
     ...(expire > 0 && { expire }),
     api: durations === undefined ? 'updateTag' : 'revalidateTag',
   });
+  if (expire === 0) {
+    // And on the response, to the edge: the next request may be one it answers from what it holds.
+    requestContext()?.invalidated.add(tags, outcome.revision);
+  }
   // In force here at once: the request that invalidated must not read what it invalidated, nor
   // may the next one in this isolate, before the delta says so.
   for (const invalidation of outcome.invalidations) {
@@ -78,6 +99,90 @@ async function invalidate(
               now + Math.max(0, invalidation.hardExpireAt - invalidation.staleAt),
             ),
     });
+  }
+}
+
+/** Invalidate `tags` at once, as `updateTag` does: in force for the next read anywhere, and here. */
+export function invalidateNow(runtime: CacheRuntime, tags: readonly string[]): Promise<void> {
+  return invalidate(runtime, tags, undefined);
+}
+
+/**
+ * The invalidations each request has out with the host, by what they invalidate.
+ *
+ * Next.js hands every `updateTag` and `revalidateTag` to each cache handler it has, in one turn —
+ * the `default` and `remote` `use cache` handlers and the fetch cache (`revalidateTags`, in
+ * `server/revalidation-utils.ts`) — and all three are this module's, over one host. Each made its
+ * own call for the same invalidation: three calls to the host where one does. The first now goes,
+ * and the others asked for while it is out are handed what it comes to — whether Next.js asks them
+ * in the same turn, as it does, or a turn later.
+ *
+ * Only within a request, and only while the call is out. A request's response tells the edge what
+ * that request invalidated (`RequestContext.invalidated`), which only its own call puts there; and
+ * the same tags invalidated again once the call has been answered are invalidated at a later moment.
+ */
+const invalidationsOut = new WeakMap<RequestContext, Map<string, Promise<void>>>();
+
+/**
+ * Invalidate `tags`, as Next.js asks a handler to, once however many of the handlers it asks while
+ * the call is out (`invalidationsOut`), and never as a failure of the request that asked.
+ *
+ * The request has already done what the invalidation is for — a Server Action has written what it
+ * changed — and an invalidation the host could not record failed the action with it: an error over
+ * a change that was made, which the person who made it is invited to make again. It is logged
+ * instead. What it would have made stale is stale in this isolate all the same (`invalidate`), and
+ * elsewhere as it was before the call: until the host records another invalidation of its tags, or
+ * the entries expire.
+ */
+function invalidateOnce(
+  runtime: CacheRuntime,
+  tags: readonly string[],
+  durations: { expire?: number } | undefined,
+): Promise<void> {
+  const context = requestContext();
+  if (context === undefined) {
+    return invalidateLogged(runtime, tags, durations);
+  }
+  // Whether it is `updateTag`'s, and the window, beside the tags in one order whatever order they
+  // were named in.
+  const asked = JSON.stringify([
+    durations === undefined,
+    durations?.expire ?? 0,
+    [...new Set(tags)].toSorted((a, b) => a.localeCompare(b)),
+  ]);
+  const out = invalidationsOut.get(context) ?? new Map<string, Promise<void>>();
+  invalidationsOut.set(context, out);
+  const pending = out.get(asked);
+  if (pending !== undefined) {
+    return pending;
+  }
+  const call = whileOut(out, asked, invalidateLogged(runtime, tags, durations));
+  out.set(asked, call);
+  return call;
+}
+
+/** `call`, kept under `asked` until it has been answered. */
+async function whileOut(
+  out: Map<string, Promise<void>>,
+  asked: string,
+  call: Promise<void>,
+): Promise<void> {
+  try {
+    await call;
+  } finally {
+    out.delete(asked);
+  }
+}
+
+async function invalidateLogged(
+  runtime: CacheRuntime,
+  tags: readonly string[],
+  durations: { expire?: number } | undefined,
+): Promise<void> {
+  try {
+    await invalidate(runtime, tags, durations);
+  } catch (error) {
+    runtime.log('tag invalidation failed', { tags: tags.join(' '), detail: detail(error) });
   }
 }
 
@@ -121,6 +226,33 @@ function isFetchValue(value: unknown): value is CachedFetchValue {
   );
 }
 
+/** The store the fetch cache's writes are kept track of under (`held-writes.ts`). */
+const FETCH_STORE = 'fetch';
+
+/** What a read the host answered found, as a held value. */
+function heldIn(memo: DataMemo): HeldValue | undefined {
+  return memo.kind === 'found'
+    ? { entry: memo.response.entry, bytes: memo.bytes, invalidation: memo.response.invalidation }
+    : undefined;
+}
+
+/** The fetch cache's table of writes still out in this runtime (`keepWrite`). */
+function fetchWrites(runtime: CacheRuntime): HeldWrites {
+  // Behind the render, in the request's turns for the calls behind its work
+  // (`CALLS_BEHIND_AT_ONCE`): a render's writes, one for each `fetch` it made, would otherwise
+  // take every call a Function may have out.
+  return tableOf(runtime, FETCH_STORE, 'fetch cache', callsBehind);
+}
+
+/**
+ * What a read of a fetch key finds in this isolate: the write of it still out, or what the host
+ * keeps. A regeneration asks the host whatever is out (`PlatformFetchCache`).
+ */
+async function fetchHeld(runtime: CacheRuntime, cacheKey: string): Promise<HeldValue | undefined> {
+  const out = isRegeneration() ? undefined : heldOut(writesIn(runtime, FETCH_STORE), cacheKey);
+  return out ?? heldIn(await readData(runtime, { key: cacheKey, kind: DATA_FETCH }));
+}
+
 /**
  * Next.js's incremental cache handler for `fetch`: what `IncrementalCache` instantiates when the
  * global symbol names a `FetchCache`. A value is the JSON Next.js hands over, stored whole; a
@@ -134,6 +266,17 @@ function isFetchValue(value: unknown): value is CachedFetchValue {
  * Next.js's own platform tells the render which tags were revalidated
  * (`x-next-revalidated-tags`), and `IncrementalCache` misses those tags' entries for it; a miss
  * here is that, for the tags that made this entry stale.
+ *
+ * A key with a write of this isolate's still out is answered with the value that write carries,
+ * and the host is not asked (`keepWrite`). Next.js held such a read behind its lock on the key
+ * until the write had landed, and the read then found that value; the lock lets go as `set`
+ * answers now, which is before the write lands, and the host would answer with what the write
+ * replaces, or with nothing. The value is judged against the tags like any other, so an
+ * invalidation this isolate has made or learned of since the fetch began still makes it stale.
+ *
+ * Not for a regeneration, which asks the host. What the host says of the entry — an invalidation it
+ * holds against the write, fenced by the moment the fetch began — reaches this isolate only with
+ * the write's answer, and a regeneration renders what the host will keep.
  */
 export class PlatformFetchCache {
   // Next.js constructs it with its own context (fs, dev, revalidatedTags, …); none of it applies
@@ -153,37 +296,38 @@ export class PlatformFetchCache {
     if (context !== undefined && !context.fetchStarts.has(cacheKey)) {
       context.fetchStarts.set(cacheKey, now);
     }
-    let memo: DataMemo;
+    let held: HeldValue | undefined;
     try {
-      memo = await readData(runtime, { key: cacheKey, kind: DATA_FETCH });
-      if (memo.kind === 'found') {
-        await runtime.tags.syncLocal(
-          runtime.host,
-          [...memo.response.entry.tags, ...(ctx.tags ?? []), ...(ctx.softTags ?? [])],
-          now,
-        );
+      // The tags the read is asked under are known before the entry is: they are brought up to
+      // date while the value is read, and the entry's own once it has been.
+      [held] = await Promise.all([
+        fetchHeld(runtime, cacheKey),
+        runtime.tags.syncLocal(runtime.host, [...(ctx.tags ?? []), ...(ctx.softTags ?? [])], now),
+      ]);
+      if (held !== undefined) {
+        await runtime.tags.syncLocal(runtime.host, held.entry.tags, now);
       }
     } catch (error) {
       runtime.log('fetch cache read failed', { detail: detail(error) });
       return null;
     }
-    if (memo.kind === 'missing') {
+    if (held === undefined) {
       return null;
     }
     let value: unknown;
     try {
-      value = JSON.parse(new TextDecoder().decode(memo.bytes));
+      value = JSON.parse(new TextDecoder().decode(held.bytes));
     } catch {
       return null;
     }
     if (!isFetchValue(value)) {
       return null;
     }
-    const { entry } = memo.response;
+    const { entry } = held;
     const validity = recordValidity(runtime.tags, {
       tags: [...entry.tags, ...(ctx.tags ?? []), ...(ctx.softTags ?? [])],
       timestamp: entry.timestamp,
-      invalidation: memo.response.invalidation,
+      invalidation: held.invalidation,
       now,
     });
     if (validity === 'expired' || (validity === 'stale' && isRegeneration())) {
@@ -192,35 +336,66 @@ export class PlatformFetchCache {
     return { value, lastModified: validity === 'stale' ? 0 : entry.timestamp };
   }
 
-  async set(cacheKey: string, data: CachedFetchValue | null, ctx: FetchSetContext): Promise<void> {
+  /**
+   * Start keeping what a `fetch` answered, and answer at once: the write goes on behind the render
+   * that fetched it, in the request's `waitUntil`.
+   *
+   * Where Next.js prerenders a Cache Components page — every regeneration of one, and the render a
+   * visitor waits on when its entry has expired or has none (the `prerender`, `prerender-client`,
+   * `prerender-runtime` and `validation-client` work units) — it hands the render the response a
+   * `fetch` got only once this has answered (`createCachedPrerenderResponse`, in
+   * `server/lib/patch-fetch.ts`). A write awaited here would put a round trip to wherever the host
+   * keeps its entries in front of the render, once for every value the page fetched. Any other
+   * render writes behind its response already, and what Next.js registers for that write
+   * (`fetch-cache-writes.ts`) settles as this answers — so the write is handed to `waitUntil` here,
+   * and nothing ends the request's work under it.
+   *
+   * Nothing after the render needs the write to have landed. A prerender has the value in its
+   * resume data cache before Next.js calls this (`IncrementalCache.set`): a later read of the key
+   * in the same render is answered from there, and so is the resume of what the render postponed,
+   * whose state carries that cache. A generation is committed against the tag revision its render
+   * synced, not against anything here. And the write is ordered without the render waiting on it:
+   * with no other write of the key out, `writeData` takes the key's state, fences the reads under
+   * way and forgets what was remembered before this answers; with one out, it waits for that one to
+   * be answered first (`keepWrite`); and the entry carries the moment the fetch began, by which the
+   * host fences the write.
+   *
+   * A read of the key in this isolate while the write is out — Next.js lets one past its lock on
+   * the key as this answers, where it held it until the write had landed — is answered with the
+   * value the write carries (`get`), without a trip to the host. A read in any other isolate is
+   * answered with what was there before, as it always was.
+   */
+  set(cacheKey: string, data: CachedFetchValue | null, ctx: FetchSetContext): Promise<void> {
     const current = state.current;
-    if (current === undefined || data === null || ctx.fetchCache !== true) {
-      return;
-    }
-    const { runtime } = current;
     const context = requestContext();
-    // A result fetched before an invalidation must keep that age when its body finishes.
-    // The host fences a write against its current tag marks by this timestamp.
-    const startedAt = context?.fetchStarts.get(cacheKey) ?? context?.startedAt;
-    if (startedAt === undefined) {
-      return;
+    if (
+      current === undefined ||
+      context === undefined ||
+      data === null ||
+      ctx.fetchCache !== true
+    ) {
+      return Promise.resolve();
     }
     try {
-      await writeData(runtime, {
-        key: cacheKey,
-        entry: {
-          kind: DATA_FETCH,
-          tags: mergeTags(data.tags, ctx.tags),
-          stale: 0,
-          timestamp: startedAt,
-          expire: NEXT_ONE_YEAR_SECONDS,
-          revalidate: data.revalidate,
-        },
-        bytes: new TextEncoder().encode(JSON.stringify(data)),
-      });
+      const entry: DataEntryMetadata = {
+        kind: DATA_FETCH,
+        tags: mergeTags(data.tags, ctx.tags),
+        stale: 0,
+        // A result fetched before an invalidation must keep that age when its body finishes.
+        // The host fences a write against its current tag marks by this timestamp.
+        timestamp: context.fetchStarts.get(cacheKey) ?? context.startedAt,
+        expire: NEXT_ONE_YEAR_SECONDS,
+        revalidate: data.revalidate,
+      };
+      const bytes = new TextEncoder().encode(JSON.stringify(data));
+      context.waitUntil(
+        keepWrite(current.runtime, fetchWrites(current.runtime), { key: cacheKey, entry, bytes }),
+      );
+      return Promise.resolve();
     } catch (error) {
-      // The render has its data; what failed is keeping it for the next one.
-      runtime.log('fetch cache write failed', { detail: detail(error) });
+      // A promise either way, as when this was async: a host whose `waitUntil` throws once its
+      // invocation has ended fails the call, not the caller's frame.
+      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
     }
   }
 
@@ -229,7 +404,7 @@ export class PlatformFetchCache {
     if (current === undefined) {
       return;
     }
-    await invalidate(current.runtime, typeof tags === 'string' ? [tags] : tags, durations);
+    await invalidateOnce(current.runtime, typeof tags === 'string' ? [tags] : tags, durations);
   }
 
   resetRequestCache(): void {
@@ -264,23 +439,28 @@ async function getUseCache(
   softTags: string[],
 ): Promise<UseCacheEntry | undefined> {
   const now = nowMs();
-  const memo = await readData(runtime, { key: cacheKey, kind: USE_CACHE, handler: kind });
-  if (memo.kind === 'missing') {
+  // The soft tags — the route's own — are known before the entry is: they are brought up to date
+  // while the value is read, and the entry's own tags once it has been.
+  const [held] = await Promise.all([
+    useCacheHeld(runtime, kind, cacheKey),
+    runtime.tags.syncLocal(runtime.host, softTags, now),
+  ]);
+  if (held === undefined) {
     return undefined;
   }
-  const { entry } = memo.response;
-  await runtime.tags.syncLocal(runtime.host, [...entry.tags, ...softTags], now);
+  const { entry } = held;
+  await runtime.tags.syncLocal(runtime.host, entry.tags, now);
   const validity = recordValidity(runtime.tags, {
     tags: [...entry.tags, ...softTags],
     timestamp: entry.timestamp,
-    invalidation: memo.response.invalidation,
+    invalidation: held.invalidation,
     now,
   });
   if (validity === 'expired') {
     return undefined;
   }
   return {
-    value: new Blob([memo.bytes as BlobPart]).stream(),
+    value: new Blob([held.bytes as BlobPart]).stream(),
     tags: [...entry.tags],
     stale: entry.stale,
     timestamp: entry.timestamp,
@@ -289,6 +469,52 @@ async function getUseCache(
   };
 }
 
+/** The store a `use cache` handler's writes are kept track of under, apart from the other's. */
+function useCacheStore(kind: string): string {
+  return `use cache:${kind}`;
+}
+
+/**
+ * A `use cache` handler's table of writes still out in this runtime (`keepWrite`). Ahead of the
+ * calls behind the render (`callsWaitedOn`): what the render fetched can wait behind it, and no
+ * other isolate has the value until it has landed.
+ */
+function useCacheWrites(runtime: CacheRuntime, kind: string): HeldWrites {
+  return tableOf(runtime, useCacheStore(kind), 'use cache', callsWaitedOn);
+}
+
+/**
+ * What a read of a `use cache` key finds in this isolate: the write of it still out — handed over
+ * by a render that has answered, and carrying its value — or what the host keeps. A regeneration
+ * asks the host whatever is out, as the fetch cache's does (`PlatformFetchCache`).
+ */
+async function useCacheHeld(
+  runtime: CacheRuntime,
+  kind: string,
+  cacheKey: string,
+): Promise<HeldValue | undefined> {
+  const out = isRegeneration()
+    ? undefined
+    : heldOut(writesIn(runtime, useCacheStore(kind)), cacheKey);
+  return out ?? heldIn(await readData(runtime, { key: cacheKey, kind: USE_CACHE, handler: kind }));
+}
+
+/**
+ * Keep what a `use cache` function returned, and answer once the value is held here rather than
+ * once the host has it.
+ *
+ * Next.js holds a request that joined another's invocation of the function until this answers
+ * (`createCachedEntry`, in `use-cache-wrapper.ts`), and then reads the key again: a write awaited
+ * here put a round trip to wherever the host keeps its entries in front of every request that
+ * joined. So the value is read whole, kept in this isolate's table of writes still out — which is
+ * what a read of the key here is answered with until the host has it (`useCacheHeld`) — and its
+ * write handed to the request's `waitUntil`, ordered behind any write of the key still out
+ * (`keepWrite`). A read in any other isolate is answered with what was there before, as it was
+ * while the write was awaited.
+ *
+ * A regeneration still waits for its write: its render commits what it made, and the request it
+ * runs in waits on nobody. So does a write made outside any request, with no `waitUntil` to keep it.
+ */
 async function setUseCache(
   runtime: CacheRuntime,
   kind: string,
@@ -309,19 +535,23 @@ async function setUseCache(
     runtime.log('use cache value not stored: too large', { key: cacheKey });
     return;
   }
-  await writeData(runtime, {
-    key: cacheKey,
-    entry: {
-      kind: USE_CACHE,
-      handler: kind,
-      tags: [...entry.tags],
-      stale: entry.stale,
-      timestamp: entry.timestamp,
-      expire: entry.expire,
-      revalidate: entry.revalidate,
-    },
-    bytes,
-  });
+  const metadata: DataEntryMetadata = {
+    kind: USE_CACHE,
+    handler: kind,
+    tags: [...entry.tags],
+    stale: entry.stale,
+    timestamp: entry.timestamp,
+    expire: entry.expire,
+    revalidate: entry.revalidate,
+  };
+  const context = requestContext();
+  if (context === undefined || isRegeneration()) {
+    await writeData(runtime, { key: cacheKey, entry: metadata, bytes }, callsWaitedOn());
+    return;
+  }
+  context.waitUntil(
+    keepWrite(runtime, useCacheWrites(runtime, kind), { key: cacheKey, entry: metadata, bytes }),
+  );
 }
 
 /** The `use cache` handler of one kind (`default`, `remote`), reading and writing the same scope. */
@@ -365,7 +595,7 @@ export function useCacheHandler(kind: string): UseCacheHandler {
       if (current === undefined) {
         return;
       }
-      await invalidate(current.runtime, tags, durations);
+      await invalidateOnce(current.runtime, tags, durations);
     },
   };
 }

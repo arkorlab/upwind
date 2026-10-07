@@ -95,15 +95,83 @@ the project's own (`src/project-config.ts`). Four names are looked for directly 
 **the first that exists is the whole of the configuration**; they are not merged, because merging
 means deciding which file wins a key neither meant to share.
 
-| Read          | Bundle field | Held to                                                                                                  |
-| ------------- | ------------ | -------------------------------------------------------------------------------------------------------- |
-| `crons[]`     | `crons`      | Vercel's dialect, at build time: a path, and a five-field UTC expression (`@stayingupwind/core/cron`)    |
-| anything else | —            | ignored, so a `vercel.json` full of Vercel's own deployment configuration is not read twice, differently |
+| Read              | Bundle field             | Held to                                                                                                                                                                           |
+| ----------------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `crons[]`         | `crons`                  | Vercel's dialect, at build time: a path, and a five-field UTC expression (`@stayingupwind/core/cron`)                                                                             |
+| `functions.split` | (how the bundle is made) | `false`, `true`, or `{ maxMiB?, maxCodeMiB? }`, which can only tighten the host's budgets (below). Never read from `vercel.json`, where `functions` is Vercel's per-file settings |
+| anything else     | —                        | ignored, so a `vercel.json` full of Vercel's own deployment configuration is not read twice, differently                                                                          |
 
 An `upwind.config.ts` is evaluated by Node itself — type stripping, no build step, erasable syntax
 only — and may export a function, so what a project declares can be computed. A file that will not
 parse, a key whose shape is wrong, or a schedule that cannot be run fails the build with the file
 named: the alternative is a deployment whose jobs quietly never fire.
+
+## A large application, split across Functions
+
+A Function has a size limit, and every byte of its code is compiled when it starts. An application
+whose routes between them outgrow one Function can be built as several instead, each holding some of
+the routes — **only where the host asks for it** (`createAdapter({ functions: { split } })`), since
+a host then has to send each request to the Function its route is in.
+
+**When.** The application is built as one Function first, exactly as it would be otherwise, and
+weighed. Within the budgets — `maxMiB`, what a Function may weigh, and `maxCodeMiB`, how much of
+that may be code — that Function is the build, and the bundle is the version-1 bundle it always
+was. Past either, the routes are split — where they can be: an application whose routes are one
+unit (see below), or whose plan comes to one Function, stays one Function over the budgets, and the
+build says so. A host can split every application that is past the budgets
+(`projects: 'all'`, the default) or only those whose own configuration asks
+(`projects: 'opted-in'`); a project can turn the split off with `functions.split: false`, or tighten
+the budgets, never loosen them.
+
+**How the routes are placed** (`plan.ts`). The unit is a module — entrypoints that share a built
+file go together — except the Pages Router, which goes whole, since `res.revalidate()` renders any
+of its pages in the Function that calls it. (An App Router page it asks for may be in another
+Function, which the one asking can neither render nor reach; that page is invalidated instead, as
+`revalidatePath` invalidates one, and its own Function renders it for the next request.) Every app
+Function carries the same base: the middleware,
+the instrumentation hook, the not-found page and the Pages Router's error pages, every manifest, and
+the same `runtime.json`, so that each routes a request as Next.js would and knows where every route
+is. The units are then merged two at a time, always the pair whose union adds the least code to the
+larger of them — routes that share a layout and its libraries first, routes that share nothing last
+— while the result stays within both budgets. What remains is the plan: few Functions within the
+budgets, each holding routes that share their code. Few, not the fewest: the merge is greedy, and a
+pair taken early can leave two units that would each have fitted beside another without a partner
+— finding the fewest is bin packing, which no build should wait on. Each piece is weighed with what
+the one Function measured: a chunk at the bytes it put into that Function's code (the bundler's
+per-module figures, scaled to the module they went into), a package linked from `.next/node_modules`
+with the routes whose chunks import it, a prerendered body, a file a route reads, a WebAssembly module
+at its size. Code and WebAssembly count against both budgets; the rest against
+the size alone. What the middleware and the instrumentation hook reach — their code, their
+WebAssembly, the files they read — is in every Function, and is weighed there, whichever routes
+reach it too.
+
+Three rules keep a plan from being worse than not splitting. A budget the base and the smallest unit
+already pass is one no Function could meet, and is dropped rather than leave every route in a
+Function of its own. A unit past a budget the others meet stands alone, as small as it can be —
+but takes in a unit whose code it mostly has, one that adds no more code than the two share, since
+leaving them apart would carry that code twice. And a plan is never more than `MAX_APP_FUNCTIONS`
+Functions: past that, the cheapest merges go on whatever the budgets say.
+
+**What is built.** Each Function of the plan with its own routes' chunks, WebAssembly, files and
+prerendered bodies, and the base. The first — the one holding the most documents — is `app`, as
+always; the others are `app-2`, `app-3`…, carried in `functions.split`, each route placed in its
+Function on its entrypoint (`function`), and the bundle is version 2 (`SPLIT_BUNDLE_VERSION`), which a
+reader of version 1 refuses rather than taking `app` for the whole application. A Function's code
+modules are named after it — `app-2.cjs`, `edge-2.cjs` — and so are its source maps
+(`app-2/app-2.cjs`), so a stack frame says which Function it came from. `dependencies.json` records
+each Function and the `plan`: its routes and what each Function was expected to weigh.
+
+**What a host does with it.** It sends each request to the Function its route is in. The manifest
+says which, as far as a table can: `functionFor` reads the request the way Next.js routes — a
+rewrite ahead of the filesystem, the exact pathnames, the dynamic routes — and answers `undefined`
+where it cannot, for the first Function to take. A Function handed a request for a route it does not
+hold answers `421` (`MISDIRECTED_STATUS`) with the name of the Function that does
+(`x-arkor-function`), the request's own body, unread, and — where it routed the request before it
+found that out — the routing it came to (`x-arkor-routed`). The host sends the request on, once,
+with that body and that header; a resume or a regeneration, answered before any routing, goes on as
+it was asked. The Function that receives it answers from where the routing left off, and the
+response is the one a single Function would have given. A second `421` is the host's own mistake
+and is not followed.
 
 ## A static export
 
@@ -147,7 +215,8 @@ the two checks described under "Which Next.js" below, and recorded per build in
 
 | Where                                                                                                                                                                      | What                                                                                                                                                                                                                                                                                                                                                                                                             | Why, and what guards it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.next/server/chunks/[turbopack]_runtime.js`, `.next/server/chunks/ssr/[turbopack]_runtime.js`                                                                             | the two `require(path.resolve(RUNTIME_ROOT, chunkPath))` sites become a static table (`turbopack-runtime` patch)                                                                                                                                                                                                                                                                                                 | workerd resolves only the names in the bundle; a table is what esbuild can follow. Exactly two sites per file, or the build fails. Only Turbopack builds are accepted                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `.next/server/chunks/[turbopack]_runtime.js`, `.next/server/chunks/ssr/[turbopack]_runtime.js`                                                                             | the two `require(path.resolve(RUNTIME_ROOT, chunkPath))` sites become a static table (`turbopack-runtime` patch); a chunk whose code another chunk has is loaded from that one's file (`same-chunks.ts`)                                                                                                                                                                                                         | workerd resolves only the names in the bundle; a table is what esbuild can follow. Exactly two sites per file, or the build fails. Only Turbopack builds are accepted. Turbopack writes the same chunk under several names, and the bundle carried each; two chunks are the same when their code is, once the map comment, the `debugId` and `chunkId` comments and the first-line statement recording that id are set aside                                                                                                                                                                                                                                                              |
+| `.next/server/chunks/[turbopack]_runtime.js`, `.next/server/chunks/ssr/[turbopack]_runtime.js`                                                                             | `RUNTIME_ROOT` and `ABSOLUTE_ROOT`, both `path.resolve(__filename, …)`, are resolved from the runtime's own path under `/bundle` instead (`turbopack-root` patch)                                                                                                                                                                                                                                                | bundled into the Function's module, `__filename` is at the top of the module tree, so both roots were `/`: a file a server module refers to by URL (`new URL('./data.json', import.meta.url)`, which Turbopack copies to `server/assets` and the Function now carries) was read from `/server/assets/…`, where nothing is. One of each per file, and none left over, or the build fails                                                                                                                                                                                                                                                                                                   |
 | `next/dist/server/lib/router-utils/instrumentation-globals.external.js`                                                                                                    | the computed `require` of the hook becomes the hook's file, or an empty module when the app has none (`instrumentation` patch)                                                                                                                                                                                                                                                                                   | one site, or the build fails                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `next/dist/server/load-manifest.external.js`                                                                                                                               | `readFileSync(path)` + `vm.runInNewContext` become a JSON read (`load-manifest` patch); the JSON is what `evaluateManifestScript` produced at build time with the same `vm` evaluation Next.js would run, in a context holding `process.env.NEXT_DEPLOYMENT_ID` = the bundle's deployment id                                                                                                                     | four sites, no `vm` left, or the build fails. `test/manifests.test.ts` compares every manifest of every built app with Next.js's own `evalManifest`. A missing manifest still surfaces as Next.js's own invariant ("The manifests singleton was not initialized"), since Next.js swallows the read's failure                                                                                                                                                                                                                                                                                                                                                                              |
 | the Turbopack WebAssembly loader for the Node.js runtime, wherever the version keeps it: the server chunk it was moved into (16.3), or the Turbopack runtime itself (16.2) | its two entry points — `compileModule`/`instantiate` in the module, `loadWebAssemblyModule`/`loadWebAssembly` in the runtime — become reads of the module the Function carries, keyed by the `.wasm` path relative to `distDir` (`wasm-loader` and `runtime-wasm-loader`, both in `patches/wasm-loader.ts`)                                                                                                      | Turbopack's loader reads the file off disk with `createReadStream` and compiles it with `WebAssembly.compileStreaming`: a Function has no file, and would pay the compile in every isolate. Only the registration is rewritten — the read itself is a named declaration or an inlined expression depending on how many ways the build imports a `.wasm`, and what is left of it is unreferenced. Neither file has a fixed name, so each is found by what only it carries — the module by its two marks together, the runtime by assigning a _function_ to `contextPrototype.w` where 16.3 assigns the root — and the build asserts one of them fired when an entrypoint named WebAssembly |
@@ -162,12 +231,14 @@ the two checks described under "Which Next.js" below, and recorded per build in
 | the `AsyncLocalStorage` banner                                                                                                                                             | `globalThis.AsyncLocalStorage ??= require('node:async_hooks').AsyncLocalStorage` is the first line of `app.cjs`, and of `edge.cjs`                                                                                                                                                                                                                                                                               | Next.js's storages read the global once, at module evaluation, and settle for a fake without it; a bundle without the banner fails every render (`test/node/broken-bundles.test.ts` in the runtime)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `.next/server/edge/chunks/**`, the chunks of an entrypoint on the edge runtime                                                                                             | evaluated, in the order `assets` lists them, by the thunk in `edge.cjs` that the route's first request calls; the handler is then read from `globalThis._ENTRIES[entryKey]`                                                                                                                                                                                                                                      | the documented way to invoke one (Adapters, "Invoking Entrypoints"). Their chunk loader reads no file at run time (`loadChunkCached` throws), so evaluating the chunks is the whole of loading an entry; their Turbopack runtime's `import()`, `require.resolve` and kept loader are recorded and allowed                                                                                                                                                                                                                                                                                                                                                                                 |
 | Node built-ins                                                                                                                                                             | `node:*` and the bare names are left to workerd; a built-in outside the list in `dependencies.ts` fails the build                                                                                                                                                                                                                                                                                                | under `nodejs_compat` every built-in import resolves (the unimplemented ones as stubs that throw when used), so the list is what is known to be reached only where it works                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `*.json` under `.next/` and `.next/server/`, `BUILD_ID`, each route's `react-loadable-manifest.json` and `*_client-reference-manifest.js` (as `.json`)                     | shipped as text modules under their `.next/...` names; the runtime mounts them at `/bundle/...`                                                                                                                                                                                                                                                                                                                  | excluded rather than listed (`*.nft.json` are the only files known to be of no use): a manifest Next.js reads without a fallback that a list left out fails every route                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `*.json` under `.next/` and `.next/server/`, `BUILD_ID`, each route's `react-loadable-manifest.json` and `*_client-reference-manifest.js` (as `.json`)                     | shipped as text modules of the app Function under their `.next/...` names; the runtime mounts them at `/bundle/...`. The middleware Function carries none                                                                                                                                                                                                                                                        | excluded rather than listed (`*.nft.json` are the only files known to be of no use): a manifest Next.js reads without a fallback that a list left out fails every route. Only a route module reads one: the middleware module and its hook open none                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 
 The app module (`app.cjs`) is bundled by Rolldown, as one CommonJS module with the patches
 applied as each file is loaded — 5% smaller than esbuild made it from the same graph, and built
 sooner (see EXPERIMENTS.md, V-03); the runtime module (`index.mjs`) by esbuild, for its `workerd`
-conditions; the edge bundle (`edge.cjs`), where a build produced one, by Rolldown as well.
+conditions; the edge bundle (`edge.cjs`), where a build produced one, by Rolldown as well. All three
+are minified in whitespace and syntax and not in names, so a stack trace still names its function.
+
 `.arkor/dependencies.json` records, per Function — and under `edge`, for its edge bundle — the
 files bundled from the build output and from each package (with the bytes each puts in the
 bundle), the built-ins left external, the stubs, the patches applied with their edit counts,
@@ -179,18 +250,36 @@ a minified module being one comma expression per statement — a module object's
 (`module.require`, which the object a module gets in the bundle does not have) — found in each
 module as Rolldown rendered it into the bundle, once it had followed what it could, so a binding
 a module itself calls `require`, which Rolldown renames, is not taken for the loader, and a call
-in code the bundle left out is not reported — the `.wasm` the bundler resolved itself, each with
-the global the Function publishes it under — and the Function's modules, with what they weigh
-together before and after gzip. The audit (`auditFunction`), which each of a Function's bundles goes
-through, fails the build on a `require("vm")` or `runInNewContext` that survived, a built-in
-outside the list, a module the bundler could not resolve, or a use of the loader outside
-Next.js's own; `auditFunctionSize` fails it on a Function over Cloudflare's 64 MiB, so that the
-build says so rather than the upload. That limit is on the uncompressed bundle and is the only one
+in code the bundle left out is not reported — of those, under `guardedRequires`, the ones whose
+failure the code handles itself, a call that loads in the block of a `try` whose `catch` and
+`finally` are plain code — no `throw`, `await`, `yield` or `try` of their own, no pattern taking
+the error apart, nothing made and run where it stands, no `Promise.reject(…)` or `eval`, and calls
+only of what they name, which are taken not to throw — with nothing between them that runs later: a function's body, unless the function is neither
+`async` nor a generator and is called where it is made, or an instance field's initializer or a
+constructor, unless the class is constructed where it is made (an `import()` too, where it, or a
+promise chained from it, is awaited there, or where a `catch` of its own chain hands its rejection
+to a function made there whose body is plain, and what the chain calls past that is plain as well,
+unless such a `catch` further on takes what it throws) — the `.wasm` the bundler resolved itself, each with the global the Function publishes it under — and the Function's
+modules, with what they weigh together before and after gzip. The audit (`auditFunction`), which
+each of a Function's bundles goes through, fails the build on a `require("vm")` or
+`runInNewContext` that survived, a built-in outside the list, a module the bundler could not
+resolve, or a use of the loader outside Next.js's own that the code does not guard; a guarded one
+fails in the Function into its own `catch`, as it does under Node.js with the module not installed
+— which is how `@protobufjs/inquire` loads `protobufjs`'s optional modules, and how TypeScript
+loads a compiler plugin. `auditFunctionSize` fails the build on a Function over Cloudflare's
+64 MiB, so that the build says so rather than the upload. That limit is on the uncompressed bundle and is the only one
 there is: Cloudflare dropped the compressed limits — 3 MB free, 10 MB paid — on 2026-09-04, and the
 gzipped figure the record carries is now worth reading rather than being refused for. A Function
 well inside the limit can still be worth making smaller; Cloudflare says of the same change that
 "larger Worker bundles can impact startup time", which is a cost the audit does not measure and a
 first response pays.
+
+The middleware Function answers one request, which runs the middleware and hands back its response,
+and carries what that path reads: its runtime manifest keeps the configuration and the `next.config`
+rules without the entrypoints, prerenders, files and dynamic routes, it has no build manifest, and
+its runtime is built without the host's cache module (`cacheHostModule`), since the cache handlers
+are installed in the app Function alone. The instrumentation hook travels in both, as Next.js runs it
+before either.
 
 ## The edge runtime
 
@@ -307,11 +396,11 @@ leaving it a number somebody wrote once:
 | Check                                             | What it answers                                                                                                                                                                                                                                                                                                                                    |
 | ------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `pnpm check:patches` (`scripts/check-patches.ts`) | the ten rewrites that reach Next.js's own package still find what they insist on. A patch is a pure function of a file's source, so this needs no build: the files come out of the published package. With no flags, the installed Next.js — seconds, no network, and what every pull request runs. With `--range`, every release the range admits |
-| `pnpm check:matrix` (`tools/next-matrix`)         | the other four, and all ten again, against a real `next build` of `fixtures/next-minimal` and `fixtures/next-edge`. `turbopack-runtime`, `wasm-loader`, `runtime-wasm-loader` and `vercel-og` rewrite what the build _writes_ rather than what Next.js ships, and no reading of a package produces a Turbopack runtime                             |
+| `pnpm check:matrix` (`tools/next-matrix`)         | the other five, and all ten again, against a real `next build` of `fixtures/next-minimal` and `fixtures/next-edge`. `turbopack-runtime`, `turbopack-root`, `wasm-loader`, `runtime-wasm-loader` and `vercel-og` rewrite what the build _writes_ rather than what Next.js ships, and no reading of a package produces a Turbopack runtime           |
 
-**The first check cannot speak for all fourteen, and it does not claim to.** It names the four it
+**The first check cannot speak for all fifteen, and it does not claim to.** It names the five it
 cannot reach and requires every other patch to fire, so one whose target stopped matching is a
-failure rather than a patch quietly reclassified. The four are the matrix's, and they are where
+failure rather than a patch quietly reclassified. The five are the matrix's, and they are where
 most of what moves has moved: of the five differences reaching down to 16.2 turned up, four were
 invisible to a package read — the WebAssembly loader's move, the leftover `turbopack-runtime` was
 reading, a chunk where a minifier had renamed `scheduleOnNextTick`, and a chunk name carrying a

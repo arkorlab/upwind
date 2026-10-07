@@ -1,8 +1,16 @@
 import type { Prerender } from '@stayingupwind/core/bundle';
+import type { RouteEntryDescriptor } from '@stayingupwind/core/cache';
+import {
+  INVALIDATED_REVISION_HEADER,
+  INVALIDATED_TAGS_HEADER,
+  invalidatedTagsValue,
+} from '@stayingupwind/core/paas';
 import { anyConditionHolds, NULL_BODY_STATUSES } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
 import type { NodeHandler } from './app-module.ts';
+import type { BundleBlobReader } from './bundle-blobs.ts';
+import type { InvalidatedTags } from './cache/context.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
 import { isDraftRequest } from './draft.ts';
 import { invokeEdgeHandler } from './edge-invoke.ts';
@@ -31,8 +39,20 @@ export interface HandleInput extends EntryTables {
   readonly waitUntil: (promise: Promise<unknown>) => void;
   /** The deployment's runtime cache; absent when it was given none. */
   readonly cache?: CacheRuntime | undefined;
+  /**
+   * One blob of this deployment's own bundle from the host that kept it; absent where the host
+   * keeps none. Beside the cache rather than on it, because a bundle blob is not a cache entry
+   * and a deployment with no cache still has a bundle (`bundle-blobs.ts`).
+   */
+  readonly blobs?: BundleBlobReader | undefined;
   /** The clock a test configuration handed the request; the wall clock otherwise. */
   readonly clock?: number | undefined;
+  /**
+   * Where the tags the request invalidates at once are kept (`RequestContext.invalidated`): a host
+   * that answers a failure of the request itself hands its own, to say them on that answer too —
+   * the invalidation stands whatever became of the request after it.
+   */
+  readonly invalidated?: InvalidatedTags | undefined;
 }
 
 /**
@@ -45,6 +65,14 @@ export interface RoutedInput extends HandleInput {
   readonly initURL: string;
   /** The context every render of the request runs in: its clock and its platform hooks. */
   readonly run: Run;
+  /**
+   * The entry the request has had its regeneration of already: one in the foreground whose render
+   * answered nothing, which leaves the request to the usual path. Nothing on that path begins
+   * another of it (`serveFromGeneration`). The entry, not the request: the usual path can land on
+   * another one — the class shell a member the edge asked to upgrade is answered from, the route
+   * a rewrite leads to — whose own regeneration no one has begun.
+   */
+  readonly regenerated?: RouteEntryDescriptor | undefined;
 }
 
 export { initUrlOf, resumeUrl, stripPlatformHeaders } from './incoming.ts';
@@ -73,15 +101,23 @@ export function bypassesPrerender(
   );
 }
 
+/** How a Node.js render is answered beside what it sends (`InvokeInput`). */
+export interface Invocation {
+  /** The route's own answer to a render that fails before it sends anything. */
+  readonly onFailure?: FailureAnswer | undefined;
+  /** The status the response starts at, for a render that reads it. */
+  readonly status?: number | undefined;
+}
+
 /**
- * Render a route whole, through whichever runtime it was built for; a Node.js render that fails
- * before it sends anything is answered by `onFailure` when the route has an answer of its own.
+ * Render a route whole, through whichever runtime it was built for; a Node.js render is answered
+ * as `how` says when it fails, and starts at the status `how` gives.
  */
 export function invokeEntry(
   input: RoutedInput,
   entry: Entry,
   url: string | undefined,
-  onFailure?: FailureAnswer,
+  how: Invocation = {},
 ): Promise<Response> {
   const invocation = {
     request: input.request,
@@ -91,7 +127,7 @@ export function invokeEntry(
   };
   return entry.kind === 'edge'
     ? input.run(() => invokeEdgeHandler({ ...invocation, handler: entry.handler }))
-    : invokeNodeHandler({ ...invocation, handler: entry.handler, run: input.run, onFailure });
+    : invokeNodeHandler({ ...invocation, ...how, handler: entry.handler, run: input.run });
 }
 
 /** A prerender's body as the build wrote it, under the headers it recorded and the type given. */
@@ -299,4 +335,36 @@ export function withoutBody(request: Request, response: Response): Response {
   // Released, not awaited: a stalled cancellation must not hold back completed headers.
   releaseStream(response.body, 'HEAD: body not sent');
   return new Response(null, response);
+}
+
+/**
+ * `response`, telling the edge the tags the request invalidated at once
+ * (`INVALIDATED_TAGS_HEADER`): those invalidated before its headers were written, which for a
+ * Server Action that answers with the page it changed is every one — Next.js applies what the
+ * action invalidated before it renders. Never what the application said under that name, which is
+ * the platform's to say.
+ */
+export function withInvalidatedTags(response: Response, invalidated: InvalidatedTags): Response {
+  const { tags, revision } = invalidated;
+  const said =
+    response.headers.has(INVALIDATED_TAGS_HEADER) ||
+    response.headers.has(INVALIDATED_REVISION_HEADER);
+  // A network error (`Response.error()`, status 0) has no headers to carry anything on.
+  if (response.status === 0 || (!said && tags.size === 0)) {
+    return response;
+  }
+  const headers = new Headers(response.headers);
+  headers.delete(INVALIDATED_TAGS_HEADER);
+  headers.delete(INVALIDATED_REVISION_HEADER);
+  if (tags.size > 0) {
+    headers.set(INVALIDATED_TAGS_HEADER, invalidatedTagsValue(tags));
+    if (revision !== undefined) {
+      headers.set(INVALIDATED_REVISION_HEADER, String(revision));
+    }
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 }

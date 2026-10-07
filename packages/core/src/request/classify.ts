@@ -11,6 +11,7 @@ import {
   type StaticFileEntry,
 } from '../manifest/index.ts';
 import { acceptsHtml } from './accept.ts';
+import { blockingMetadataReason } from './blocking-metadata.ts';
 import {
   BYPASS_COOKIE_NAMES,
   BYPASS_QUERY_KEYS,
@@ -21,12 +22,11 @@ import {
   isBotUserAgent,
   NAVIGATION_REQUEST_HEADERS,
   NEXT_ACTION_HEADER,
-  PREFETCH_HINT_HEADERS,
   NEXT_RESUME_HEADER,
   NEXT_RESUME_STATE_LENGTH_HEADER,
-  NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
-  NEXT_ROUTER_STATE_TREE_HEADER,
+  PREFETCH_HINT_HEADERS,
+  ROUTER_REQUEST_HEADERS,
   RSC_CACHE_BUSTING_QUERY,
   RSC_HEADER,
   SKEW_PROTECTION_COOKIE,
@@ -35,7 +35,6 @@ import { parseCookieHeader } from './cookies.ts';
 
 export type PassthroughReason =
   | 'method'
-  | 'head'
   | 'service-worker'
   | 'range'
   | 'well-known'
@@ -43,6 +42,7 @@ export type PassthroughReason =
   | 'router-header'
   | 'internal-header'
   | 'bot'
+  | 'html-limited-bots'
   | 'bypass-cookie'
   | 'vdpl-mismatch'
   | 'cookie'
@@ -50,7 +50,6 @@ export type PassthroughReason =
   | 'dpl-mismatch'
   | 'sec-fetch-dest'
   | 'sec-fetch-mode'
-  | 'prefetch'
   | 'accept'
   | 'no-manifest'
   | 'repeated-slash'
@@ -112,8 +111,19 @@ function passthrough(reason: PassthroughReason): RequestClass {
   return { kind: 'passthrough', reason };
 }
 
-function hasInternalDocumentHeader(headers: Headers): boolean {
+/**
+ * A prefetch of part of a page has `x-deployment-id` let through, for `classifyByDeploymentHeader`
+ * to judge: on a prefetch it is the client's router saying which deployment it is running, not a
+ * platform's header. Next.js's router sends it with every request it makes once the build has a
+ * deployment id (`createFetch`, `fetch-server-response.ts`), so read as internal it turned every
+ * prefetch a browser makes away from the edge, and the parts of pages the build wrote were only
+ * ever answered by the Function.
+ */
+function hasInternalDocumentHeader(headers: Headers, segmentPath: string | undefined): boolean {
   for (const [name] of headers) {
+    if (segmentPath !== undefined && name === DEPLOYMENT_ID_REQUEST_HEADER) {
+      continue;
+    }
     if (DOCUMENT_REQUEST_INTERNAL_HEADERS.has(name)) {
       return true;
     }
@@ -128,10 +138,10 @@ function classifyByMethod(method: string, headers: Headers): RequestClass | unde
   if (method === 'POST' && headers.has(NEXT_ACTION_HEADER)) {
     return { kind: 'action' };
   }
-  if (method === 'HEAD') {
-    return passthrough('head');
-  }
-  if (method !== 'GET') {
+  // `HEAD` asks what `GET` asks, and is answered with the headers `GET` would carry and no body
+  // (RFC 9110 §9.3.2). Next.js routes it as it routes `GET`, the middleware included, so it is
+  // classified as `GET` is, and whatever answers it leaves the body off.
+  if (method !== 'GET' && method !== 'HEAD') {
     return passthrough('method');
   }
   return undefined;
@@ -178,13 +188,9 @@ function classifyByRouterHeaders(headers: Headers): RequestClass | undefined {
     // Components names no route of its own and is the application's to answer.
     return segmentPrefetchOf(headers) === undefined ? { kind: 'rsc' } : undefined;
   }
-  if (
-    headers.has(RSC_HEADER) ||
-    headers.has(NEXT_ROUTER_PREFETCH_HEADER) ||
-    headers.has(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER) ||
-    headers.has(NEXT_ROUTER_STATE_TREE_HEADER) ||
-    headers.has(NEXT_ACTION_HEADER)
-  ) {
+  // The one list, read here and by `mayHoldForDocument`: a header this lets through to a document
+  // is one a rule may ask for of a document.
+  if (ROUTER_REQUEST_HEADERS.some((name) => headers.has(name))) {
     return passthrough('router-header');
   }
   return undefined;
@@ -262,18 +268,103 @@ function classifyByQuery(
   return undefined;
 }
 
+/**
+ * The deployment a prefetch's router says it is running, judged as a `dpl` is: the one being
+ * served, or the Function's to answer. A repeated header is one value to `Headers`, joined, and
+ * names no deployment. Asked only of a prefetch of part of a page; of anything else the header is
+ * internal, and was turned away before this.
+ */
+function classifyByDeploymentHeader(
+  headers: Headers,
+  segmentPath: string | undefined,
+  deployment: DeploymentFingerprint | undefined,
+): RequestClass | undefined {
+  const named = segmentPath === undefined ? null : headers.get(DEPLOYMENT_ID_REQUEST_HEADER);
+  return named === null || named === deployment?.dplId ? undefined : passthrough(DPL_MISMATCH);
+}
+
+/**
+ * What a request's cookies, its query and — on a prefetch of part of a page — its `x-deployment-id`
+ * ask for that the deployment being served may not hold: draft mode, another kind of response,
+ * another deployment.
+ */
+function classifyByPins(
+  url: URL,
+  headers: Headers,
+  segmentPath: string | undefined,
+  deployment: DeploymentFingerprint | undefined,
+): RequestClass | undefined {
+  return (
+    classifyByCookies(headers, deployment) ??
+    classifyByQuery(url, headers, deployment) ??
+    classifyByDeploymentHeader(headers, segmentPath, deployment)
+  );
+}
+
 /** What a browser puts on a top-level navigation, and what nothing else sends. */
 const NAVIGATION_FETCH_MODE = NAVIGATION_REQUEST_HEADERS['sec-fetch-mode'];
+const FETCH_DEST_HEADER = 'sec-fetch-dest';
+const FETCH_MODE_HEADER = 'sec-fetch-mode';
 
+/**
+ * A crawler's own fetch of a page: an agent that names a crawler, with no Fetch Metadata at all.
+ * A crawler is no browser and sends none — Googlebot's crawl fetch, whose document its renderer
+ * then runs, among them — so the metadata a browser's navigation carries cannot tell it apart.
+ */
+function crawlerFetch(headers: Headers): boolean {
+  const userAgent = headers.get('user-agent');
+  return (
+    userAgent !== null &&
+    !headers.has(FETCH_DEST_HEADER) &&
+    !headers.has(FETCH_MODE_HEADER) &&
+    isBotUserAgent(userAgent)
+  );
+}
+
+/** What a resource fetched with no CORS says of itself: what a page's prefetch says, in Firefox. */
+const RESOURCE_FETCH_DESTINATION = 'empty';
+const NO_CORS_FETCH_MODE = 'no-cors';
+const PREFETCH_PURPOSE = 'prefetch';
+
+/**
+ * A page prefetched with the metadata of a resource rather than a navigation's: it says it is a
+ * prefetch (`PREFETCH_HINT_HEADERS`), with `sec-fetch-dest: empty` and `sec-fetch-mode: no-cors`.
+ * Firefox sends a speculation rule's prefetch so (Mozilla bug 2074629: the specification has it
+ * say `document` and `navigate`), as browsers send a `<link rel=prefetch>`. A browser adopts either
+ * as the navigation the visitor then makes, so it is taken for that navigation; whether it is for
+ * a document at all is still for the accept header to say.
+ */
+function prefetchAsResource(headers: Headers): boolean {
+  return (
+    headers.get(FETCH_DEST_HEADER) === RESOURCE_FETCH_DESTINATION &&
+    headers.get(FETCH_MODE_HEADER) === NO_CORS_FETCH_MODE &&
+    PREFETCH_HINT_HEADERS.some(
+      (name) => headers.get(name)?.toLowerCase().includes(PREFETCH_PURPOSE) === true,
+    )
+  );
+}
+
+/**
+ * A top-level navigation by what a browser says of it, or a crawler's fetch of the page
+ * (`crawlerFetch`), taken for one by its agent. Whether a crawler is then served the shell is for
+ * its blocking metadata to say (`blockingMetadataReason`): Googlebot is streamed to, as Next.js
+ * streams to it, and a crawler on the HTML-limited list is passed on.
+ *
+ * A navigation the browser made on a guess — a prefetch or a prerender, which says so in
+ * `sec-purpose` (`PREFETCH_HINT_HEADERS`) — is one all the same, and is served as one. A browser
+ * adopts such a load still in flight as the navigation when the visitor follows the link, so its
+ * first byte is that navigation's; and Next.js answers it as it answers any other. So is a page's
+ * prefetch that says what a resource fetch does (`prefetchAsResource`).
+ */
 function classifyByNavigationHints(headers: Headers): RequestClass | undefined {
-  if (headers.get('sec-fetch-dest') !== DOCUMENT_FETCH_DESTINATION) {
-    return passthrough('sec-fetch-dest');
+  if (crawlerFetch(headers) || prefetchAsResource(headers)) {
+    return acceptsHtml(headers.get('accept')) ? undefined : passthrough('accept');
   }
-  if (headers.get('sec-fetch-mode') !== NAVIGATION_FETCH_MODE) {
-    return passthrough('sec-fetch-mode');
+  if (headers.get(FETCH_DEST_HEADER) !== DOCUMENT_FETCH_DESTINATION) {
+    return passthrough(FETCH_DEST_HEADER);
   }
-  if (PREFETCH_HINT_HEADERS.some((name) => headers.has(name))) {
-    return passthrough('prefetch');
+  if (headers.get(FETCH_MODE_HEADER) !== NAVIGATION_FETCH_MODE) {
+    return passthrough(FETCH_MODE_HEADER);
   }
   if (!acceptsHtml(headers.get('accept'))) {
     return passthrough('accept');
@@ -351,22 +442,17 @@ export function classifyRequest(input: ClassifyInput): RequestClass {
   if (early !== undefined) {
     return early;
   }
-  if (hasInternalDocumentHeader(headers)) {
+  const segmentPath = segmentPrefetchOf(headers);
+  if (hasInternalDocumentHeader(headers, segmentPath)) {
     return passthrough('internal-header');
   }
-  const userAgent = headers.get('user-agent');
-  if (userAgent !== null && isBotUserAgent(userAgent)) {
-    return passthrough('bot');
-  }
-  const late =
-    classifyByCookies(headers, input.deployment) ?? classifyByQuery(url, headers, input.deployment);
+  const late = classifyByPins(url, headers, segmentPath, input.deployment);
   if (late !== undefined) {
     return late;
   }
   // What a browser puts on a top-level navigation is asked only of one. A prefetch is fetched by
   // the router rather than navigated to, so it carries none of those hints and every one of them
   // would turn it away.
-  const segmentPath = segmentPrefetchOf(headers);
   const hints = segmentPath === undefined ? classifyByNavigationHints(headers) : undefined;
   if (hints !== undefined) {
     return hints;
@@ -390,7 +476,43 @@ export function classifyRequest(input: ClassifyInput): RequestClass {
   if (segmentPath !== undefined) {
     return { kind: 'segment-prefetch', segmentPath, entry };
   }
+  // Only a visitor Next.js renders a partially prerendered page whole for, by the application's
+  // list or its own, is passed on here (`wantsBlockingMetadata`): any other crawler, Googlebot
+  // included, is served the shell as a browser is. Asked last, of a navigation the edge would
+  // otherwise answer, so the application's pattern runs for nothing else. Not of a page the build
+  // finished: Next.js renders no page whole for this but a partially prerendered one, and resolves
+  // a prerendered page's metadata at build time, so the finished document is what such a visitor
+  // is sent either way. Of a pathname that names no proved route, though: the middleware may
+  // rewrite it onto one. Under a list the edge will not run, every visitor that names an agent is
+  // passed on, and says so: for the list, not for being a crawler (`blockingMetadataReason`).
+  const userAgent = headers.get('user-agent');
+  if (renderedWholeForCrawlers(input.manifest, entry, userAgent)) {
+    return passthrough('bot');
+  }
+  const blocking = blockingMetadataReason(entry, userAgent, input.manifest);
+  if (blocking !== undefined) {
+    return passthrough(blocking);
+  }
   return entry === undefined ? passthrough('route-not-proved') : { kind: 'document', entry };
+}
+
+/**
+ * Whether the build's Next.js renders this page whole for a crawler of this agent whatever its
+ * list says: before 16.3, it does for every crawler on a partially prerendered page
+ * (`crawlersStreamed`), and each of them is passed on, as every crawler was before. Not a page the
+ * build finished, which is served whole to any agent.
+ */
+function renderedWholeForCrawlers(
+  manifest: ProjectManifest,
+  entry: RouteEntry | undefined,
+  userAgent: string | null,
+): boolean {
+  return (
+    userAgent !== null &&
+    manifest.crawlersStreamed !== true &&
+    entry?.cache?.delivery !== 'complete' &&
+    isBotUserAgent(userAgent)
+  );
 }
 
 /**

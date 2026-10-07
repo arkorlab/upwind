@@ -11,7 +11,8 @@ import { deployFixture, preflight } from './deploy.ts';
  *   node src/main.ts release [directory]    give the project back (the cleanup hook)
  *
  * The contract reserves standard output for the URL, so everything else this says goes to standard
- * error — including every failure, which the logs hook then shows beside the build's own output.
+ * error — including every failure. The deploy hook passes it on to the suite's log as it happens, which
+ * is the one place a failure is sure to be read: the logs hook is not called when setup itself failed.
  */
 
 const USAGE = 'usage: node src/main.ts <preflight|deploy|release> [directory]';

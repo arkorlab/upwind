@@ -6,6 +6,7 @@ import { instrumentationPatch } from './instrumentation.ts';
 import { loadManifestPatch } from './load-manifest.ts';
 import { resumeCacheLimitPatch } from './resume-cache-limit.ts';
 import { taskTimersPatch } from './task-timers.ts';
+import { turbopackRootPatch } from './turbopack-root.ts';
 import { turbopackRuntimePatch } from './turbopack-runtime.ts';
 import type { Patch } from './types.ts';
 import { vercelOgFontPatch, vercelOgImageResponsePatch, vercelOgPatch } from './vercel-og.ts';
@@ -26,6 +27,7 @@ export type { Copy, Patch, PatchContext } from './types.ts';
 /** Every rewrite of Next.js's output the Function build applies. */
 export const PATCHES: readonly Patch[] = [
   turbopackRuntimePatch,
+  turbopackRootPatch,
   wasmLoaderPatch,
   runtimeWasmLoaderPatch,
   vercelOgPatch,

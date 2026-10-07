@@ -2,6 +2,7 @@ import { canonicalJson, sha256HexOfText } from '../artifact/hash.ts';
 import { MAX_IMMUTABLE_ASSET_BYTES } from '../assets/admission.ts';
 import type { DeploymentFingerprint } from '../deployment/fingerprint.ts';
 import type { ImagesConfig } from '../images/config.ts';
+import { compareCodeUnits } from '../util/bytes.ts';
 import {
   type AppRuntime,
   type AssetPolicy,
@@ -46,18 +47,89 @@ export interface BuildProjectManifestInput {
   readonly staticFiles?: Record<string, StaticFileEntry> | undefined;
   readonly middleware?: { readonly matchers: readonly MiddlewareMatcher[] } | undefined;
   readonly dynamicRoutes?: readonly DynamicRoute[] | undefined;
+  readonly trailingSlash?: boolean | undefined;
   readonly reservedRoutes?: readonly ReservedRoute[] | undefined;
   readonly exactPathnames?: readonly string[] | undefined;
+  /** Exact pathnames an app Function other than the first answers, with its name. */
+  readonly exactFunctions?: Readonly<Record<string, string>> | undefined;
   readonly headerRules?: readonly HeaderRule[] | undefined;
   readonly foldedHeaderRules?: readonly HeaderRule[] | undefined;
   readonly images?: ImagesConfig | undefined;
+  /** The application's `htmlLimitedBots`, as the build recorded it. */
+  readonly htmlLimitedBots?: string | undefined;
+  /** Whether the build's Next.js streams a partially prerendered page to crawlers it lists not. */
+  readonly crawlersStreamed?: boolean | undefined;
   readonly staticFileLocales?: StaticFileLocales | undefined;
   readonly staticFileAssetPrefix?: StaticFileAssetPrefix | undefined;
+  readonly staticFileTrailingSlash?: boolean | undefined;
   readonly cache?: ManifestCache | undefined;
+}
+
+/** Who the application sends blocking metadata to, and whether its Next.js streams to the rest. */
+function crawlerFields(
+  input: BuildProjectManifestInput,
+): Pick<ProjectManifest, 'htmlLimitedBots' | 'crawlersStreamed'> {
+  return {
+    ...(input.htmlLimitedBots !== undefined && { htmlLimitedBots: input.htmlLimitedBots }),
+    ...(input.crawlersStreamed === true && { crawlersStreamed: true as const }),
+  };
+}
+
+/** Where a shipped file is found besides its own name: behind a locale, a prefix, a slash. */
+function staticFileFields(
+  input: BuildProjectManifestInput,
+): Pick<
+  ProjectManifest,
+  'staticFileLocales' | 'staticFileAssetPrefix' | 'staticFileTrailingSlash'
+> {
+  return {
+    ...(input.staticFileLocales !== undefined && { staticFileLocales: input.staticFileLocales }),
+    ...(input.staticFileAssetPrefix !== undefined && {
+      staticFileAssetPrefix: input.staticFileAssetPrefix,
+    }),
+    ...(input.staticFileTrailingSlash === true && { staticFileTrailingSlash: true as const }),
+  };
+}
+
+/**
+ * The app Functions the routes are placed in that `app` gives no name to reach by. An edge could
+ * send such a route nowhere, so a manifest naming one is refused where it is built rather than where
+ * it is read: the edge reads a manifest on a request's way in, and a check there would cost every
+ * deployment, split or not, for what only the host that built it could get wrong.
+ */
+function unreachableFunctions(input: BuildProjectManifestInput): string[] {
+  const reachable = input.app.functions ?? {};
+  const unreachable = new Set<string>();
+  const check = (name: string | undefined): void => {
+    if (name !== undefined && !Object.hasOwn(reachable, name)) {
+      unreachable.add(name);
+    }
+  };
+  for (const route of input.routes) {
+    check(route.function);
+  }
+  if (input.dynamicRoutes !== undefined) {
+    for (const route of input.dynamicRoutes) {
+      check(route.function);
+    }
+  }
+  if (input.exactFunctions !== undefined) {
+    const named = Object.values(input.exactFunctions);
+    for (const name of named) {
+      check(name);
+    }
+  }
+  return [...unreachable].toSorted(compareCodeUnits);
 }
 
 /** Assemble a manifest from a build's routes; validates the result against the schema. */
 export function buildProjectManifest(input: BuildProjectManifestInput): ProjectManifest {
+  const unreachable = unreachableFunctions(input);
+  if (unreachable.length > 0) {
+    throw new Error(
+      `routes are placed in ${unreachable.join(', ')}, which the manifest's app gives no name to reach by (app.functions)`,
+    );
+  }
   const routes: Record<string, RouteEntry> = {};
   for (const entry of input.routes) {
     routes[entry.pathname] = entry;
@@ -76,17 +148,17 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
     ...(input.staticFiles !== undefined && { staticFiles: input.staticFiles }),
     ...(input.middleware !== undefined && { middleware: input.middleware }),
     ...(input.dynamicRoutes !== undefined && { dynamicRoutes: input.dynamicRoutes }),
+    ...(input.trailingSlash === true && { trailingSlash: true }),
     ...(input.reservedRoutes !== undefined && { reservedRoutes: input.reservedRoutes }),
     ...(input.exactPathnames !== undefined && {
       exactPathnames: Object.fromEntries(input.exactPathnames.map((pathname) => [pathname, true])),
     }),
+    ...(input.exactFunctions !== undefined && { exactFunctions: input.exactFunctions }),
     ...(input.headerRules !== undefined && { headerRules: input.headerRules }),
     ...(input.foldedHeaderRules !== undefined && { foldedHeaderRules: input.foldedHeaderRules }),
     ...(input.images !== undefined && { images: input.images }),
-    ...(input.staticFileLocales !== undefined && { staticFileLocales: input.staticFileLocales }),
-    ...(input.staticFileAssetPrefix !== undefined && {
-      staticFileAssetPrefix: input.staticFileAssetPrefix,
-    }),
+    ...crawlerFields(input),
+    ...staticFileFields(input),
     ...(input.cache !== undefined && { cache: input.cache }),
   });
 }
@@ -211,27 +283,30 @@ export function withoutAssetPrefix(
 
 /**
  * The pathname the manifest ships a file under, for a pathname a request names: as spelled or
- * decoded (`keyOf`), and in an application with `i18n` behind a default locale as well
- * (`withoutDefaultLocale`). Next.js's middleware puts the locale in front of every path it
- * rewrites to (`forceLocale`), a file's among them, so the rewrite a middleware makes of
- * `/_next/static/…` to itself names `/en/_next/static/…`, which Next.js serves as the file. In an
- * application with an `assetPrefix`, a file under `_next` is found under the prefix as well
- * (`withoutAssetPrefix`): its pages load their scripts from there. Behind a default locale too,
- * in one with both: the same rewrite of `/assets/_next/static/…` names `/en/assets/_next/static/…`,
- * and Next.js takes the default locale off before it matches the prefix's rewrite.
+ * decoded (`keyOf`), by the slash the router finds it by too (`slashedFileKey`), and in an
+ * application with `i18n` behind a default locale as well (`withoutDefaultLocale`) — by the slash
+ * there too, which Next.js takes off before the locale (`getItem`). Next.js's middleware puts the
+ * locale in front of every path it rewrites to (`forceLocale`), a file's among them, so the rewrite
+ * a middleware makes of `/_next/static/…` to itself names `/en/_next/static/…`, which Next.js serves
+ * as the file. In an application with an `assetPrefix`, a file under `_next` is found under the
+ * prefix as well (`withoutAssetPrefix`): its pages load their scripts from there. Behind a default
+ * locale too, in one with both: the same rewrite of `/assets/_next/static/…` names
+ * `/en/assets/_next/static/…`, and Next.js takes the default locale off before it matches the
+ * prefix's rewrite.
  */
 export function staticFileKey(manifest: ProjectManifest, pathname: string): string | undefined {
   const { staticFiles, staticFileLocales, staticFileAssetPrefix } = manifest;
   if (staticFiles === undefined) {
     return undefined;
   }
-  const named = keyOf(staticFiles, pathname);
+  const named = namedFileKey(manifest, staticFiles, pathname);
   if (named !== undefined) {
     return named;
   }
   const unlocalized =
     staticFileLocales === undefined ? undefined : withoutDefaultLocale(staticFileLocales, pathname);
-  const localized = unlocalized === undefined ? undefined : keyOf(staticFiles, unlocalized);
+  const localized =
+    unlocalized === undefined ? undefined : namedFileKey(manifest, staticFiles, unlocalized);
   if (localized !== undefined) {
     return localized;
   }
@@ -246,6 +321,46 @@ export function staticFileKey(manifest: ProjectManifest, pathname: string): stri
   return unprefixed === undefined ? undefined : keyOf(staticFiles, unprefixed);
 }
 
+/**
+ * Whether a pathname's last segment names no file: nothing in it Next.js reads as an extension. A
+ * dynamic segment's own brackets and dots (`[...slug]`) say nothing of the member it stands for.
+ */
+export function namesNoFile(pathname: string): boolean {
+  const last = pathname.slice(pathname.lastIndexOf('/') + 1);
+  return last !== '' && !last.replaceAll(/\[[^[\]]*\]/gu, '').includes('.');
+}
+
+/** The file a pathname names as spelled or decoded (`keyOf`), or by the slash (`slashedFileKey`). */
+function namedFileKey(
+  manifest: ProjectManifest,
+  staticFiles: Record<string, StaticFileEntry>,
+  pathname: string,
+): string | undefined {
+  return keyOf(staticFiles, pathname) ?? slashedFileKey(manifest, staticFiles, pathname);
+}
+
+/**
+ * A file whose last segment names no file, in an application with `trailingSlash`, by the spelling
+ * the router finds it by (`staticFileTrailingSlash`): Next.js redirects `/manual` to `/manual/`
+ * and answers the file there, so `/manual/` is the file `/manual` (`routerSpellings`) — and where
+ * `skipTrailingSlashRedirect` leaves the redirect out, the router still finds the file so. A name
+ * with an extension has no such spelling: the redirect takes the slash off it.
+ */
+function slashedFileKey(
+  manifest: ProjectManifest,
+  staticFiles: Record<string, StaticFileEntry>,
+  pathname: string,
+): string | undefined {
+  if (manifest.staticFileTrailingSlash !== true || pathname.length < 2 || !pathname.endsWith('/')) {
+    return undefined;
+  }
+  // Judged on the file's own name, which the runtime makes the alias of: a request may escape the
+  // dot that makes a name a file's (`/manual%2Etxt/`), and the file it decodes to takes no slash.
+  // Nor does one whose name has a bracket in it, which the runtime reads as a template's.
+  const key = keyOf(staticFiles, pathname.slice(0, -1));
+  return key !== undefined && namesNoFile(key) && !key.includes('[') ? key : undefined;
+}
+
 /** The file shipped under a pathname a request names (`staticFileKey`). */
 export function findStaticFile(
   manifest: ProjectManifest,
@@ -257,7 +372,9 @@ export function findStaticFile(
 
 /**
  * Exact-match route lookup (case-sensitive, no trailing-slash normalization), of the pathname as
- * the request spelled it and then decoded (`byPathname`).
+ * the request spelled it and then decoded (`byPathname`). A route is named by the spelling a
+ * request asks for it by — behind the slash, for an application that keeps its pages there — so
+ * the other spelling finds nothing, and is Next.js's to redirect.
  */
 export function findRouteEntry(
   manifest: ProjectManifest,

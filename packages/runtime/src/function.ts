@@ -9,19 +9,27 @@ import './cache/install.ts';
 import 'arkor:wasm';
 import { publishFunctionEnv } from '@stayingupwind/core/paas';
 import app from 'arkor:app';
+// A namespace import: a host module that exports no blob reader — one written before there was one
+// to export, or one that keeps no build outputs — leaves a Function that runs rather than one that
+// fails to link. The adapter's own stub exports it as `undefined` for the same reason.
+import * as cacheHost from 'arkor:cache-host';
 import edge from 'arkor:edge';
 
 import type { AppModule, EdgeModule } from './app-module.ts';
+import { type BundleBlobReader, bundleBlobReader, type BundleBlobsExport } from './bundle-blobs.ts';
 import { nowMs } from './cache/clock.ts';
+import { InvalidatedTags } from './cache/context.ts';
 import { configureCacheHandlers } from './cache/handlers.ts';
 import { type CacheRuntime, createCacheRuntime } from './cache/runtime.ts';
 import { handleRequest } from './handle.ts';
+import { changesSomething } from './node-bridge.ts';
 import {
   installRequestContext,
   plainHeaders,
   publicUrl,
   withRequestContext,
 } from './request-context.ts';
+import { withInvalidatedTags } from './serve.ts';
 
 /**
  * Entry of a deployment's Function. The adapter bundles this file, with `arkor:app` resolved to the
@@ -35,23 +43,41 @@ interface ExecutionContext {
   waitUntil(promise: Promise<unknown>): void;
 }
 
-/** One runtime per isolate: the bindings never change underneath a deployment. */
-const shared: { runtime: CacheRuntime | undefined; configured: boolean } = {
+/** One runtime and one blob reader per isolate: the bindings never change underneath a deployment. */
+const shared: {
+  runtime: CacheRuntime | undefined;
+  blobs: BundleBlobReader | undefined;
+  configured: boolean;
+} = {
   runtime: undefined,
+  blobs: undefined,
   configured: false,
 };
 
-function cacheRuntimeFor(env: unknown): CacheRuntime | undefined {
+function hostFor(env: unknown): {
+  readonly runtime: CacheRuntime | undefined;
+  readonly blobs: BundleBlobReader | undefined;
+} {
   if (!shared.configured) {
+    const bindings =
+      typeof env === 'object' && env !== null ? (env as Record<string, unknown>) : undefined;
     shared.runtime = createCacheRuntime({
-      env: typeof env === 'object' && env !== null ? (env as Record<string, unknown>) : undefined,
+      env: bindings,
       // What the isolate remembers ages by the clock the request acts at.
       now: nowMs,
     });
+    // Asked for independently of the cache: a deployment given no cache still has a bundle, and a
+    // build that left blobs out of its Function needs them read whether or not anything is cached.
+    // Asserted at the boundary, as `createCacheHost` is: the ambient declaration resolves for
+    // `tsc` and not for the type-aware lint's own program.
+    // Calling it is the wrapper's job, which is where a host that throws on being asked is kept
+    // from failing every request this isolate goes on to serve.
+    const create = cacheHost.createBundleBlobReader as BundleBlobsExport;
+    shared.blobs = bundleBlobReader(create, { env: bindings });
     shared.configured = true;
     configureCacheHandlers(shared.runtime);
   }
-  return shared.runtime;
+  return shared;
 }
 
 /**
@@ -137,41 +163,73 @@ function failureBody(error: unknown): string {
   return trimmed === '' ? 'Internal Server Error' : `Internal Server Error: ${trimmed}`;
 }
 
+/**
+ * The request answered, and never a rejection: a failure before Next.js answered is logged here and
+ * answered with a 500. Here rather than around the caller's `await`, because for a request that is
+ * held (below) this is the work that survives a client that went away, and a failure in it is still
+ * one to see in the log.
+ */
+async function answered(
+  request: Request,
+  env: unknown,
+  waitUntil: (promise: Promise<unknown>) => void,
+): Promise<Response> {
+  // Kept here as well as in the request's context: a failure answered below says them too.
+  const invalidated = new InvalidatedTags();
+  try {
+    // Before anything of the application runs: a service binding is an object, so it reaches
+    // neither `process.env` nor any other place Next.js server code can look. An application reads
+    // its service bindings back out of here, for the clients it makes of them.
+    publishFunctionEnv(env);
+    const { blobs, runtime } = hostFor(env);
+    return await withRequestContext(
+      { headers: plainHeaders(request.headers), url: publicUrl(request), waitUntil },
+      () => {
+        return handleRequest({
+          app: app as AppModule,
+          edge: edge as EdgeModule,
+          request,
+          cache: runtime,
+          blobs,
+          // The clock a test configuration hands the request; the host decides whether one may.
+          clock: runtime?.clockOf(request),
+          waitUntil,
+          invalidated,
+        });
+      },
+    );
+  } catch (error) {
+    // The Function's own log: nothing else sees a request that failed before Next.js answered.
+    // eslint-disable-next-line no-console
+    console.error('next-runtime: request failed', error);
+    const failure = new Response(failureBody(error), {
+      status: HTTP_INTERNAL_ERROR,
+      headers: { 'content-type': 'text/plain; charset=utf-8' },
+    });
+    // What the request invalidated before it failed is invalidated all the same.
+    return withInvalidatedTags(failure, invalidated);
+  }
+}
+
 const entry = {
-  async fetch(request: Request, env: unknown, ctx: ExecutionContext): Promise<Response> {
+  fetch(request: Request, env: unknown, ctx: ExecutionContext): Promise<Response> {
     installRequestContext();
     const waitUntil = (promise: Promise<unknown>): void => {
       ctx.waitUntil(promise);
     };
-    try {
-      // Before anything of the application runs: a service binding is an object, so it reaches
-      // neither `process.env` nor any other place Next.js server code can look. The dashboard's
-      // control-plane and database clients read theirs back out of here.
-      publishFunctionEnv(env);
-      const runtime = cacheRuntimeFor(env);
-      return await withRequestContext(
-        { headers: plainHeaders(request.headers), url: publicUrl(request), waitUntil },
-        () => {
-          return handleRequest({
-            app: app as AppModule,
-            edge: edge as EdgeModule,
-            request,
-            cache: runtime,
-            // The clock a test configuration hands the request; the host decides whether one may.
-            clock: runtime?.clockOf(request),
-            waitUntil,
-          });
-        },
-      );
-    } catch (error) {
-      // The Function's own log: nothing else sees a request that failed before Next.js answered.
-      // eslint-disable-next-line no-console
-      console.error('next-runtime: request failed', error);
-      return new Response(failureBody(error), {
-        status: HTTP_INTERNAL_ERROR,
-        headers: { 'content-type': 'text/plain; charset=utf-8' },
-      });
+    const answer = answered(request, env, waitUntil);
+    // A request that may change something is seen through, whether or not anyone is still waiting
+    // for it. workerd cancels a request's work when its client goes away — at the next thing the
+    // work waits on — and keeps only what `waitUntil` holds: measured, a write a handler made 300 ms
+    // in never happened when its client went away at 50 ms, and did with the work held. So a Server
+    // Action whose page reloaded or closed under it stopped between one write and the next, where
+    // Next.js on Node.js runs it to its end whatever became of the client. This holds the request to
+    // its answer; a Node.js handler that goes on after its headers is held to its own end where it
+    // runs (`invokeNodeHandler`).
+    if (changesSomething(request.method)) {
+      ctx.waitUntil(answer);
     }
+    return answer;
   },
 };
 

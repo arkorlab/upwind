@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import {
   BUNDLE_VERSION,
+  bundleBlobs,
   type DeploymentBundle,
   deploymentBundleSchema,
   travelsWithFunction,
@@ -16,6 +17,13 @@ import {
 import { UPWIND_LOCAL_RESOURCES_ENV } from '@stayingupwind/core/paas';
 import type { AdapterOutput, NextAdapter } from 'next';
 
+import {
+  type AppFunctions,
+  appFunctionsOf,
+  buildMiddlewareFunction,
+  type FunctionsContext,
+  reportSplit,
+} from './app-functions.ts';
 import { BlobStore } from './blobs.ts';
 import { bundleConfig, customCacheHandlerPaths } from './bundle-config.ts';
 import {
@@ -39,14 +47,16 @@ import {
 import { reserveUpwindPrefix } from './dev-prefix.ts';
 import type { EdgeEntry } from './edge.ts';
 import { exists } from './fs.ts';
-import { buildFunction, type EntryModule } from './function.ts';
+import { type BuiltFunction, type EntryModule, middlewareManifest } from './function.ts';
 import { composedInstrumentation, writeClientInstrumentation } from './instrumentation.ts';
+import { keepMapsThrough, readKeptMaps } from './kept-maps.ts';
 import { collectManifests } from './manifests.ts';
-import type { PatchContext } from './patches/index.ts';
+import type { PlanBudget } from './plan.ts';
 import { readProjectConfig } from './project-config.ts';
-import { collectStaticFiles } from './static-files.ts';
-import { inlineAssetFiles, type TracedFile, tracedFiles } from './traced-files.ts';
-import { collectWasm, type WasmChunk } from './wasm.ts';
+import { carriesMaps, type SourceMapsOption } from './source-maps.ts';
+import { checkSplitOptions, type SplitOptions, splitBudget } from './split.ts';
+import { collectStaticFiles, rewriteTargetFiles } from './static-files.ts';
+import { type TracedFile, tracedFiles } from './traced-files.ts';
 import {
   buildWorkflowFunction,
   warnOfNoWorld,
@@ -54,7 +64,7 @@ import {
   workflowBuildOf,
   workflowPartsOf,
 } from './workflow-function.ts';
-import { aliasBuiltinWorlds, offerEmbeddedWasm } from './workflow.ts';
+import { aliasBuiltinWorlds } from './workflow.ts';
 
 /**
  * The upwind deployment adapter.
@@ -137,9 +147,10 @@ async function instrumentationOf(
 
 /**
  * What the Node.js entries read through `node:fs`, for each Function to carry what its own entries
- * read: the app Function carries the middleware as well, and both carry what the instrumentation
- * hook reads, since it runs before any entrypoint in each of them (`instrumentationOf`). A static
- * export runs none of the application's code, and reads nothing.
+ * read: the app Function carries the middleware as well, and every one carries what the
+ * instrumentation hook reads, since it runs before any entrypoint in each of them
+ * (`instrumentationOf`). The Workflow SDK's flow route is its own Function's alone. A static export
+ * runs none of the application's code, and reads nothing.
  */
 function filesRead(
   ctx: BuildContext,
@@ -217,67 +228,36 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     hosts: options.instrumentationModules ?? [],
     worldModule: options.workflowWorldModule,
   });
-  const { flow, outputs } = workflow;
   const instrumentation = await instrumentationOf(ctx.distDir, outDir, exported, workflow.hosts);
   const id = deploymentId();
   // Next.js's build manifests are what its route modules read at request time. A static export
-  // has no route module in the Function, so nothing would ever read one: shipping them would be
-  // bytes in a Function that never opens them.
+  // has no route module in the Function, and the middleware Function has none either, so nothing
+  // there would ever read one: shipping them would be bytes in a Function that never opens them.
   const manifests = exported ? [] : await collectManifests(ctx.projectDir, ctx.distDir, id);
-  const {
-    entrypoints,
-    sourcePages,
-    modules,
-    chunks,
-    wasm: nodeWasm,
-    edgeEntries,
-  } = collectEntrypoints(outputs);
-  const { prerenders, shipped } = await collectPrerenders(
-    ctx.outputs,
+  const collected = collectEntrypoints(workflow.outputs);
+  const { entrypoints, sourcePages, edgeEntries } = collected;
+  const { prerenders, shipped } = await collectPrerenders({
+    outputs: ctx.outputs,
     blobs,
-    ctx.config.basePath,
-    ctx.routing.rsc,
-  );
+    basePath: ctx.config.basePath,
+    rsc: ctx.routing.rsc,
+    unshipped: options.unshippedOutputs ?? 'none',
+    // The host serves no segment of an edge-runtime page and the Function cannot render one, so
+    // those stay shipped whatever the option says (`PrerenderCollection.edgeRuntimeRoutes`).
+    edgeRuntimeRoutes: new Set(
+      entrypoints.flatMap((entry) => (entry.runtime === 'edge' ? [entry.pathname] : [])),
+    ),
+  });
+  // What came through the build's `runAfterProductionCompile`, for every part of this build that
+  // looks for a chunk's map (`kept-maps.ts`).
+  const keptMaps = carriesMaps(options.sourceMaps) ? await readKeptMaps(ctx.distDir) : undefined;
   const { files: staticFiles, sourceMaps: clientMaps } = await collectStaticFiles(
     ctx,
     blobs,
-    options.sourceMaps === true,
+    carriesMaps(options.sourceMaps),
+    keptMaps,
   );
   const middleware = middlewareOutput(ctx.outputs);
-  const {
-    node: nodeMiddleware,
-    edge: middlewareEdgeEntries,
-    chunks: middlewareChunks,
-    wasm: middlewareWasm,
-  } = middlewarePlacement(middleware);
-  const files = filesRead(ctx, {
-    workflow,
-    middleware,
-    hookAssets: instrumentation.assets,
-    exported,
-  });
-  // Each Function's chunk table names only what its entries can reach: the table is what Rolldown
-  // bundles, so the middleware Function stays small and the app Function carries no middleware.
-  const chunkTable = (own: readonly string[]): string[] => {
-    const table = new Set(own);
-    for (const chunk of instrumentation.chunks) {
-      table.add(chunk);
-    }
-    return [...table];
-  };
-  const patchFor = (
-    table: readonly string[],
-    wasm: readonly WasmChunk[],
-    embeddedWasm: ReadonlySet<string>,
-  ): PatchContext => {
-    return {
-      distDir: ctx.distDir,
-      chunks: [...table],
-      instrumentation: instrumentation.file,
-      wasm,
-      embeddedWasm,
-    };
-  };
 
   // The edge serves every file from storage; the Function carries only what it answers itself —
   // the error documents, and small files outside `_next/static` (robots.txt, `public/`) a
@@ -286,104 +266,75 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
   const shippedStatic = staticFiles.filter((file) =>
     travelsWithFunction(file, ctx.config.basePath, exported),
   );
-  const shippedBlobs = new Map(shipped.map((blob) => [blob.sha256, blob]));
-  for (const file of shippedStatic) {
-    if (shippedBlobs.has(file.blob.sha256)) {
-      continue;
-    }
-
-    const bytes = await readFile(path.join(outDir, 'blobs', file.blob.sha256));
-    shippedBlobs.set(file.blob.sha256, { sha256: file.blob.sha256, bytes: new Uint8Array(bytes) });
-  }
 
   const bypassToken = bypassTokenOf(ctx.outputs);
+  const routing = bundleRouting(ctx.routing, middleware);
   const runtimeManifest = {
-    v: BUNDLE_VERSION,
+    v: BUNDLE_VERSION as number,
     deploymentId: id,
     nextVersion: ctx.nextVersion,
     buildId: ctx.buildId,
     config: bundleConfig(ctx.config, await imagesConfig(ctx)),
-    routing: bundleRouting(ctx.routing, middleware),
+    routing,
     ...(bypassToken !== undefined && { bypassToken }),
     entrypoints,
     ...(middleware !== undefined && { middleware: { matchers: middlewareMatchers(middleware) } }),
     prerenders,
-    staticFiles: shippedStatic,
-  };
-  const runtimeManifestJson = JSON.stringify(runtimeManifest);
-
-  const appWasm = await collectWasm(
-    ctx.distDir,
-    [...nodeWasm, ...middlewareWasm, ...instrumentation.wasm],
-    [...edgeEntries, ...middlewareEdgeEntries],
-  );
-  const appTable = chunkTable([...chunks, ...middlewareChunks]);
-  const app = await buildFunction({
-    kind: 'app',
-    projectDir: ctx.projectDir,
-    outDir,
-    patch: patchFor(appTable, appWasm.chunks, await offerEmbeddedWasm(appTable, appWasm.collector)),
-    entries: [...modules, ...nodeMiddleware],
-    edgeEntries: [...edgeEntries, ...middlewareEdgeEntries],
-    wasm: appWasm.collector,
-    manifests,
-    runtimeManifest: runtimeManifestJson,
-    cacheHostModule: options.cacheHostModule,
-    ...(options.sourceMaps === true && { sourceMaps: true }),
-    blobs: [...shippedBlobs.values()],
-    files: [
-      ...files.app,
-      ...inlineAssetFiles([...edgeEntries, ...middlewareEdgeEntries], ctx.projectDir),
+    // What it carries, and what a rewrite may land on that it reads from the host instead.
+    staticFiles: [
+      ...shippedStatic,
+      ...rewriteTargetFiles(
+        staticFiles.filter((file) => !shippedStatic.includes(file)),
+        routing,
+        ctx.config.basePath,
+      ),
     ],
-    blobStore: blobs,
-    workflowSdk: flow !== undefined,
+  };
+  const files = filesRead(ctx, {
+    workflow,
+    middleware,
+    hookAssets: instrumentation.assets,
+    exported,
   });
-  let middlewareFunction;
-  if (middleware !== undefined) {
-    const wasm = await collectWasm(
-      ctx.distDir,
-      [...middlewareWasm, ...instrumentation.wasm],
-      middlewareEdgeEntries,
-    );
-    const table = chunkTable(middlewareChunks);
-    middlewareFunction = await buildFunction({
-      kind: 'middleware',
-      projectDir: ctx.projectDir,
-      outDir,
-      patch: patchFor(table, wasm.chunks, await offerEmbeddedWasm(table, wasm.collector)),
-      entries: nodeMiddleware,
-      edgeEntries: middlewareEdgeEntries,
-      wasm: wasm.collector,
-      manifests,
-      runtimeManifest: runtimeManifestJson,
-      cacheHostModule: options.cacheHostModule,
-      ...(options.sourceMaps === true && { sourceMaps: true }),
-      blobs: [],
-      files: [...files.middleware, ...inlineAssetFiles(middlewareEdgeEntries, ctx.projectDir)],
-      blobStore: blobs,
-      workflowSdk: flow !== undefined,
-    });
-  }
+  const context: FunctionsContext = {
+    ctx,
+    outDir,
+    blobs,
+    cacheHostModule: options.cacheHostModule,
+    sourceMaps: options.sourceMaps,
+    keptMaps,
+    manifests,
+    hook: instrumentation,
+    middleware: { output: middleware, ...middlewarePlacement(middleware) },
+    ...collected,
+    shipped,
+    staticBlobs: await staticBlobsOf(shippedStatic, outDir),
+    files,
+    workflowSdk: workflow.flow !== undefined,
+  };
+  const functions = await appFunctionsOf(
+    context,
+    runtimeManifest,
+    exported ? undefined : buildSplitBudget(options, projectConfig),
+  );
+  // What the middleware's path reads and nothing more: the manifest's head alone
+  // (`middlewareManifest`), and — in `buildMiddlewareFunction` — no build manifest, which only a
+  // route module reads, and no cache, which nothing on that path reads or writes.
+  const middlewareFunction = await buildMiddlewareFunction(
+    context,
+    JSON.stringify(middlewareManifest(functions.runtimeManifest)),
+  );
+  // The flow route's own Function, its manifest cut from the one every app Function carries.
   const workflowParts = workflowPartsOf(
     workflow,
-    await buildWorkflowFunction(workflow, {
-      ctx,
-      outDir,
-      blobs,
-      runtimeManifest,
-      manifests,
+    await buildWorkflowFunction(workflow, context, {
+      runtimeManifest: functions.runtimeManifest,
       files: files.workflow,
-      instrumentationWasm: instrumentation.wasm,
-      chunkTable,
-      patchFor,
-      cacheHostModule: options.cacheHostModule,
-      sourceMaps: options.sourceMaps === true,
     }),
   );
-
   const sourceMaps = [
     ...clientMaps,
-    ...app.sourceMaps,
+    ...functions.built.flatMap((each) => each.built.sourceMaps),
     ...(middlewareFunction?.sourceMaps ?? []),
     ...workflowParts.sourceMaps,
   ];
@@ -391,7 +342,7 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
   // Two things the bundle carries and `runtimeManifest` does not, for the same reason: nothing in
   // the Function reads either, and every byte of its manifest is parsed before its first response.
   const bundle: DeploymentBundle = deploymentBundleSchema.parse({
-    ...runtimeManifest,
+    ...functions.runtimeManifest,
     // Where each entrypoint's code is in the source tree. Only a reader of the build ever asks
     // (`sourcePageSchema`).
     sourcePages,
@@ -408,24 +359,95 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     // a bundle without them is a bundle without the field rather than one with an empty list.
     ...(sourceMaps.length > 0 && { sourceMaps }),
     functions: {
-      app: app.spec,
-      ...(middlewareFunction !== undefined && { middleware: middlewareFunction.spec }),
+      ...bundleFunctions(functions.built, middlewareFunction),
       ...workflowParts.functions,
     },
   });
   await writeFile(path.join(outDir, BUNDLE_FILE), JSON.stringify(bundle, null, 2));
-  const dependencies = {
-    app: app.dependencies,
-    ...(middlewareFunction !== undefined && { middleware: middlewareFunction.dependencies }),
-    ...workflowParts.dependencies,
-  };
-  await writeFile(path.join(outDir, DEPENDENCIES_FILE), JSON.stringify(dependencies, null, 2));
+  await writeFile(
+    path.join(outDir, DEPENDENCIES_FILE),
+    JSON.stringify(
+      { ...dependencyRecord(functions, middlewareFunction), ...workflowParts.dependencies },
+      null,
+      2,
+    ),
+  );
   await rm(path.join(outDir, 'work'), { recursive: true, force: true });
+  if (functions.built.length > 1) {
+    // The modules of the Function the build weighed before it split are blobs nothing names.
+    await blobs.prune(new Set(bundleBlobs(bundle).keys()));
+  }
   console.log(
     `@stayingupwind/adapter: wrote ${OUT_DIR_NAME}/${BUNDLE_FILE} (${bundle.prerenders.length} prerenders, ${bundle.staticFiles.length} static files, ${blobs.count} blobs)`,
   );
   reportWhatTravels(bundle, edgeEntries, ctx.nextVersion, exported);
+  reportSplit(functions.built);
   warnOfNoWorld(workflow, options.workflowWorldModule);
+}
+
+/**
+ * The blobs of the files a Function answers itself (`travelsWithFunction`), once each, in the order
+ * the files come in. Every app Function carries all of them — including one that is a prerendered
+ * body byte for byte, which a Function holding none of that body's routes would otherwise lack; each
+ * Function carries a digest once (`distinct`).
+ */
+async function staticBlobsOf(
+  files: readonly { readonly blob: { readonly sha256: string } }[],
+  outDir: string,
+): Promise<{ sha256: string; bytes: Uint8Array }[]> {
+  const blobs = new Map<string, { sha256: string; bytes: Uint8Array }>();
+  for (const { blob } of files) {
+    if (blobs.has(blob.sha256)) {
+      continue;
+    }
+    const bytes = await readFile(path.join(outDir, 'blobs', blob.sha256));
+    blobs.set(blob.sha256, { sha256: blob.sha256, bytes: new Uint8Array(bytes) });
+  }
+  return [...blobs.values()];
+}
+
+/** The budgets this build splits on, and a word to a project that asked a host that does not split. */
+function buildSplitBudget(
+  options: AdapterOptions,
+  project: Awaited<ReturnType<typeof readProjectConfig>>,
+): PlanBudget | undefined {
+  const asked = project.split !== undefined && project.split !== false;
+  if (asked && options.functions?.split === undefined) {
+    console.warn(
+      `@stayingupwind/adapter: ${project.file ?? 'the project'} asks for functions.split, which this host does not offer: every route stays in one Function`,
+    );
+  }
+  return splitBudget(options.functions?.split, project.split);
+}
+
+/** The bundle's Functions: the first app Function, the middleware's, and the rest of a split. */
+function bundleFunctions(
+  built: AppFunctions<unknown>['built'],
+  middleware: BuiltFunction | undefined,
+): DeploymentBundle['functions'] {
+  const [first, ...rest] = built;
+  if (first === undefined) {
+    throw new Error('@stayingupwind/adapter: the build made no app Function');
+  }
+  return {
+    app: first.built.spec,
+    ...(middleware !== undefined && { middleware: middleware.spec }),
+    ...(rest.length > 0 && {
+      split: Object.fromEntries(rest.map((each) => [each.name, each.built.spec])),
+    }),
+  };
+}
+
+/** What went into each Function, by its name, and the plan where the routes were split. */
+function dependencyRecord(
+  functions: AppFunctions<unknown>,
+  middleware: BuiltFunction | undefined,
+): Record<string, unknown> {
+  return {
+    ...Object.fromEntries(functions.built.map((each) => [each.name, each.built.dependencies])),
+    ...(middleware !== undefined && { middleware: middleware.dependencies }),
+    ...(functions.plan !== undefined && { plan: functions.plan }),
+  };
 }
 
 /**
@@ -508,13 +530,49 @@ function middlewarePlacement(middleware: AdapterOutput['MIDDLEWARE'] | undefined
 export interface AdapterOptions {
   /**
    * The module the runtime's cache reads and writes through, as an absolute path — what
-   * `arkor:cache-host` resolves to, bundled into the Function's runtime.
+   * `arkor:cache-host` resolves to, bundled into the app Function's runtime. The middleware
+   * Function is built without it: nothing on its path reads or writes the cache.
    *
    * Left out, the runtime is given no cache and answers every read a miss: a bundle that is
    * correct, serves what the build produced, and revalidates nothing. A host that stores
    * generations names its own module here.
    */
   readonly cacheHostModule?: string | undefined;
+  /**
+   * Prefetch segments whose bytes the Function does **not** carry, for a host that serves them
+   * itself.
+   *
+   * Next.js 16.3's Partial Prefetching writes one output per prefetchable segment of every
+   * prerendered page, and they are most of what a Function weighs: measured on a 1,486-module
+   * build, 826 of them at **19.74 MiB — 37% of the whole Function**, against 4.4 MiB of the
+   * documents it serves. A host that answers `next-router-segment-prefetch` from its own storage
+   * (`prefetchSegments`) reads none of them, and the Function carries them for nothing.
+   *
+   * `'none'`, the default, ships every output as this adapter always has. **It is the default
+   * because leaving it out is not free**: a host that does not serve segments has only the
+   * Function to answer them, and then the bytes are the answer.
+   *
+   * `'prefetch-segments'` records every segment in the bundle exactly as before — `segmentPath`,
+   * `parentOutputId`, the lot, which is what a host places them from — and ships no body for one.
+   *
+   * **A host that chooses this must export `createBundleBlobReader`** from its `cacheHostModule`
+   * (`@stayingupwind/runtime/bundle-blobs`), which is how the Function gets the bytes of a segment
+   * it was not given. Not part of the cache: a deployment the host gave no cache still has a
+   * bundle, and a build that left blobs out of its Function needs them read all the same.
+   *
+   * That read is off every path that works — the host answers these prefetches itself, and the
+   * Function sees only the ones it could not: a middleware that failed, a host with nothing to
+   * serve the prefetch from, a request that reached the Worker without the host having served it at
+   * all. (Not a draft request, which `bypassesPrerender` sends to the route itself, and which
+   * should render rather than be handed a build's segment.) But on that path the host's reader is
+   * the only source there is. Neither of the two ways of producing the segment locally exists:
+   * `renderCaptured` answers `undefined` whenever the render responded instead of being captured,
+   * which a segment prefetch always does, and a resume carries the *document's* postponed state,
+   * which Next.js refuses for a segment it has no prerendered output for. Both were measured, both
+   * 404. A host that exports no reader gets that 404 — a prefetch the client navigates through
+   * instead, not a broken page, but not the bytes either.
+   */
+  readonly unshippedOutputs?: 'none' | 'prefetch-segments' | undefined;
   /**
    * Names the host reads a project's configuration under besides this adapter's own, for a host
    * that once called that file something else. Looked for after `upwind.*` and before
@@ -566,8 +624,35 @@ export interface AdapterOptions {
    * static files**. Next.js serves the browser maps it emits, and a deployment that published
    * them would publish the application's source with them; here they travel as blobs the host
    * stores and nothing serves.
+   *
+   * The maps are kept through the project's own `runAfterProductionCompile`, where a plugin that
+   * uploads them elsewhere deletes them (`kept-maps.ts`), and carried flat: an index map, which
+   * Turbopack writes when debug IDs are on, is made one list of mappings (`flattened`).
+   *
+   * `'project'` is the same, with each Function's map kept to the files the project wrote
+   * (`projectOnly`): a frame inside a package, or inside the build's own output, reads as built,
+   * and the map is a fraction of the size. A browser map describes one chunk and is kept whole.
    */
-  readonly sourceMaps?: boolean | undefined;
+  readonly sourceMaps?: SourceMapsOption;
+  /**
+   * How the application's routes are spread across app Functions.
+   *
+   * Left out, every route is in one Function, as it always was, and a Function past Cloudflare's
+   * limit fails the build. `split` lets a large application run as several instead: the build makes
+   * the one Function and weighs it, and when it is past `maxMiB` — or its code is past
+   * `maxCodeMiB`, which is what a Function's start is spent compiling — it plans the routes into as
+   * few Functions as fit those budgets, putting routes that share their code together, and builds
+   * each with its own routes (`split.ts`, `plan.ts`). A bundle split this way is version 2, places
+   * each entrypoint in its Function, and carries the Functions after the first in
+   * `functions.split`.
+   *
+   * **Only for a host that can route between them**: it has to send each request to the Function
+   * its route is in — the manifest's tables say which (`functionFor`) — and follow a Function that
+   * answers `421` with another's name (`MISDIRECTED_STATUS`), sending the request on with the
+   * `x-arkor-routed` it was answered with and the body it got back. A project can turn the split
+   * off, or tighten the budgets, in its own configuration file (`functions.split`).
+   */
+  readonly functions?: { readonly split?: SplitOptions | undefined } | undefined;
 }
 
 /**
@@ -667,6 +752,7 @@ function renderInOneProcessForStorage(config: BuildConfig): void {
  * a bundle should read the bundle.
  */
 export function createAdapter(options: AdapterOptions = {}): NextAdapter {
+  checkSplitOptions(options.functions?.split);
   return {
     name: 'upwind',
     async modifyConfig(config, { phase, projectDir }) {
@@ -699,12 +785,20 @@ export function createAdapter(options: AdapterOptions = {}): NextAdapter {
         renderInOneProcessForStorage(config);
         // The Workflow SDK's own Worlds stay out of the Functions: neither can run there.
         await aliasBuiltinWorlds(config, projectDir, OUT_DIR_NAME);
-        if (options.sourceMaps === true) {
+        if (carriesMaps(options.sourceMaps)) {
           // Both halves, because a stack has both in it: a page's frames are in the browser
           // chunks, and a render's are in the server ones. What keeps the browser maps from being
           // served is `onBuildComplete`, which takes them out of the static files.
           config.productionBrowserSourceMaps = true;
           config.experimental.serverSourceMaps = true;
+          // And what keeps them at all, where the project's own hook would take them away first.
+          // `compiler` is `{}` among Next.js's defaults, but asked of rather than assumed: this
+          // adapter takes a Next.js as old as 16.2, and an absent one has no hook to wrap anyway.
+          const compiler = config.compiler as BuildConfig['compiler'] | undefined;
+          const kept = keepMapsThrough(compiler?.runAfterProductionCompile);
+          if (compiler !== undefined && kept !== undefined) {
+            compiler.runAfterProductionCompile = kept;
+          }
         }
         if (options.clientInstrumentationSource !== undefined) {
           await injectClientInstrumentation(

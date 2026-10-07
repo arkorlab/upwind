@@ -1,12 +1,13 @@
 import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 
 import { DEPLOYMENT_ID_PREFIX } from '@stayingupwind/core/bundle';
 import { createId } from '@stayingupwind/core/util';
+
+import { fakeHost, type FakeHost } from './fake-host.ts';
 
 /**
  * The three hooks, run for real against a host that is not one.
@@ -26,15 +27,10 @@ const REPO = path.join(import.meta.dirname, '..', '..', '..');
 const BUNDLE_BUILD_ID = 'from-the-bundle';
 const OUTPUT_DIRECTORY_BUILD_ID = 'from-the-output-directory';
 const TOKEN = 'ark_a_token_nothing_may_read';
-const OK = 200;
-const CREATED = 201;
-const ACCEPTED = 202;
-const CONFLICT = 409;
-const NOT_FOUND = 404;
 const HOOK_TIMEOUT_MS = 60_000;
 /** About a megabyte of each stream, which is what `execFile` would have held. */
 const MAX_CAPTURED = 1_000_000;
-const SERVER_LOG = '.adapter-server.log';
+const DEPLOY_HOOK = 'e2e-deploy.sh';
 const MS_PER_SECOND = 1000;
 
 /**
@@ -79,27 +75,13 @@ function saidBy(error: unknown): string {
 }
 
 /**
- * What the deploy tool itself said, which is not on the hook's standard error.
- *
- * The hook keeps it in a file for the logs hook to show the suite (`2>>`), so a failure in the
- * deployment — the API calls, what readiness was waiting for, why it gave up — is in there and nowhere
- * else. Without this, a broken deployment reads here as a hook that failed after a successful build.
- */
-function keptBy(appDir: string): string {
-  try {
-    return orNothing(readFileSync(path.join(appDir, SERVER_LOG), 'utf8'));
-  } catch {
-    return '(no log; it failed before the deployment)';
-  }
-}
-
-/**
  * One hook, run to the end or ended — and with it everything it started.
  *
  * Bounded because the deploy hook's own patience is fifteen minutes of a host that never becomes ready.
  * That is the right answer against a real host and the wrong shape of failure here: a readiness check
- * that asks this fake host something it will never say would hold the whole run open for it. Six seconds
- * is the whole of this file against a warm store, so a minute is failure rather than slowness.
+ * that asks this fake host something it will never say would hold the whole run open for it. Eight seconds
+ * is the whole of this file against a warm store, the longest hook in it a few, so a minute is failure
+ * rather than slowness.
  *
  * `detached`, so that the hook and everything below it are one process group and the bound can end all
  * of it. The shell is only the shell: the deployment is a `node` grandchild of it, and a signal to the
@@ -219,6 +201,14 @@ writeFileSync(
     entrypoints: [],
     prerenders: [],
     staticFiles: [
+      // First, so that it is the file the host serves and the one the probe prefers: a path carrying the
+      // build id is as strong as a file gets, and still not proof of whose deployment answered — the
+      // check's page assertions are what hold the probe to asking the page all the same.
+      {
+        pathname: '/_next/static/' + process.env.CHECK_BUNDLE_BUILD_ID + '/chunk.js',
+        blob: { sha256, byteLength: bytes.byteLength, contentType: 'text/javascript' },
+        immutable: false,
+      },
       {
         pathname: '/_next/static/immutable/' + sha256 + '.js',
         blob: { sha256, byteLength: bytes.byteLength, contentType: 'text/javascript' },
@@ -273,179 +263,6 @@ function writeApplication(appDir: string): void {
   );
 }
 
-interface FakeHost {
-  readonly port: number;
-  /** What the bundle said its build id was, as the registration carried it. */
-  readonly registered: () => string | undefined;
-  /** The deployment's environment as it was replaced, names and values. */
-  readonly environment: () => Record<string, string>;
-  /** The digests that were uploaded, in the order they arrived. */
-  readonly uploaded: () => string[];
-  /** Whatever this host refused, because it was asked out of order. */
-  readonly refusals: () => string[];
-  close: () => void;
-}
-
-/**
- * A host that answers the six calls this tool makes, and nothing else — in order.
- *
- * The order is half of what is being checked, so it is a host that refuses out of it: no upload before
- * a registration, no finalize before every blob it asked for, no polling before a finalize. A refusal
- * here fails the check with the call that made it, rather than passing because a fake host was willing
- * to answer anything.
- */
-async function fakeHost(deploymentId: string): Promise<FakeHost> {
-  let registered: string | undefined;
-  let environment: Record<string, string> = {};
-  let wanted: string[] = [];
-  /** The application's one static file, learned at registration: where it is and what it hashes to. */
-  let asset: { pathname: string; sha256: string } | undefined;
-  const uploaded: string[] = [];
-  const refusals: string[] = [];
-  let finalized = false;
-  let port = 0;
-
-  /** Refuse, and remember: the check reads these back rather than trusting a status alone. */
-  function outOfOrder(said: string): { status: number; body: unknown } {
-    refusals.push(said);
-    return {
-      status: CONFLICT,
-      body: { ok: false, error: { code: 'deployment_conflict', message: said } },
-    };
-  }
-
-  async function body(request: IncomingMessage): Promise<unknown> {
-    const chunks: Buffer[] = [];
-    for await (const chunk of request) {
-      chunks.push(chunk as Buffer);
-    }
-    return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
-  }
-
-  /** The deployment's own half of the protocol: registered, uploaded into, finalized, then polled. */
-  function aboutTheDeployment(pathname: string, method: string): { status: number; body: unknown } {
-    const blob = /\/blobs\/(?<sha256>[0-9a-f]{64})$/u.exec(pathname)?.groups?.['sha256'];
-    if (blob !== undefined && method === 'PUT') {
-      if (registered === undefined) {
-        return outOfOrder('a blob arrived before the deployment was registered');
-      }
-      uploaded.push(blob);
-      return { status: OK, body: { sha256: blob } };
-    }
-    if (pathname.endsWith('/finalize')) {
-      const missing = wanted.filter((sha256) => !uploaded.includes(sha256));
-      if (registered === undefined || missing.length > 0) {
-        return outOfOrder(`a finalize arrived with ${String(missing.length)} blobs still missing`);
-      }
-      finalized = true;
-      return { status: ACCEPTED, body: { run: { id: 'run_checked' } } };
-    }
-    if (pathname.endsWith(deploymentId)) {
-      if (!finalized) {
-        return outOfOrder('the deployment was polled before it was finalized');
-      }
-      return {
-        status: OK,
-        body: {
-          deployment: { id: deploymentId, projectId: 'p', status: 'active' },
-          run: { currentStep: 'activate' },
-        },
-      };
-    }
-    return {
-      status: NOT_FOUND,
-      body: { ok: false, error: { code: 'not_found', message: 'nothing here' } },
-    };
-  }
-
-  async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    if (request.method === 'HEAD') {
-      // Only the file the bundle named, and only once the deployment is finalized: a host that answered
-      // every path with the right digest would let a probe of the wrong URL pass for readiness, which is
-      // the thing this is here to catch.
-      const asked = (request.url ?? '/').split('?', 1)[0] ?? '/';
-      if (!finalized || asked !== asset?.pathname) {
-        response.writeHead(NOT_FOUND);
-        response.end();
-        return;
-      }
-      response.writeHead(OK, { etag: `"${asset.sha256}"` });
-      response.end();
-      return;
-    }
-    const pathname = (request.url ?? '/').split('?', 1)[0] ?? '/';
-    const answer = (status: number, said: unknown): void => {
-      response.writeHead(status, { 'content-type': 'application/json' });
-      response.end(JSON.stringify(said));
-    };
-    if (pathname === '/v1/projects/p') {
-      answer(OK, {
-        project: { id: 'p', previewUrl: `http://127.0.0.1:${String(port)}/` },
-        active: { projectId: 'p', mode: 'live', app: { deploymentId } },
-      });
-      return;
-    }
-    if (pathname === '/v1/projects/p/env') {
-      if (request.method === 'PUT') {
-        const sent = (await body(request)) as { env: { name: string; value: string }[] };
-        environment = Object.fromEntries(sent.env.map((entry) => [entry.name, entry.value]));
-      }
-      answer(OK, { env: [] });
-      return;
-    }
-    if (pathname === '/v1/projects/p/deployments' && request.method === 'POST') {
-      const bundle = (await body(request)) as {
-        buildId: string;
-        staticFiles: { pathname: string; blob: { sha256: string } }[];
-        functions: { app: { modules: { blob: { sha256: string } }[] } };
-      };
-      registered = bundle.buildId;
-      const [file] = bundle.staticFiles;
-      asset =
-        file === undefined ? undefined : { pathname: file.pathname, sha256: file.blob.sha256 };
-      // Every blob it names is asked for, so that the upload loop is what answers, not `missing: []`.
-      wanted = bundle.functions.app.modules.map((module) => module.blob.sha256);
-      answer(CREATED, { deployment: { id: deploymentId }, missing: wanted });
-      return;
-    }
-    const onward = aboutTheDeployment(pathname, request.method ?? 'GET');
-    answer(onward.status, onward.body);
-  }
-
-  async function answering(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    try {
-      await handle(request, response);
-    } catch (error) {
-      // Nothing else is listening for this, and a fake host that died quietly would look like a tool
-      // that hung: whatever went wrong here ends the check with it.
-      console.error(error);
-      process.exitCode = 1;
-      response.destroy();
-    }
-  }
-
-  const server: Server = createServer((request, response) => {
-    // A request listener returns nothing, and this promise cannot reject: `answering` is where a
-    // failure becomes an ended check.
-    // eslint-disable-next-line @typescript-eslint/no-floating-promises -- answered above, not awaited.
-    void answering(request, response);
-  });
-  await new Promise<void>((resolve) => {
-    server.listen(0, '127.0.0.1', resolve);
-  });
-  port = (server.address() as { port: number }).port;
-  return {
-    port,
-    registered: () => registered,
-    environment: () => environment,
-    uploaded: () => [...uploaded],
-    refusals: () => [...refusals],
-    close: () => {
-      server.close();
-    },
-  };
-}
-
 /** What a marker line carries after its prefix, or nothing when it is absent or carries nothing. */
 function markerAfter(line: string | undefined, prefix: string): string | undefined {
   return line !== undefined && line.startsWith(prefix) && line.length > prefix.length
@@ -460,6 +277,88 @@ function holds(said: string, held: boolean): void {
   }
 }
 
+/**
+ * A host that gives each deployment a URL of its own: at once, a moment late, and with a path the suite
+ * cannot be handed. Each is a host of its own, closed here whatever happened.
+ */
+async function ownUrlScenarios(
+  deploymentId: string,
+  appDir: string,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  const hosts: FakeHost[] = [];
+  try {
+    // A host that gives the deployment a URL of its own: the suite is sent there, the probe asks there,
+    // and nothing is settled, since no other deployment answers at that URL.
+    const own = await fakeHost(deploymentId, 'moves', 'at once');
+    hosts.push(own);
+    const onItsOwn = await bounded(DEPLOY_HOOK, appDir, {
+      ...env,
+      ARKOR_API_URL: `http://127.0.0.1:${String(own.port)}`,
+    });
+    holds(
+      "a deployment's own URL is the one the suite is given",
+      own.ownPort !== undefined &&
+        onItsOwn.stdout.trim() === `http://127.0.0.1:${String(own.ownPort)}`,
+    );
+    holds('and the one the probe asked', own.probedOn() === own.ownPort);
+    holds(
+      'with nothing settled, since no other deployment answers there',
+      !onItsOwn.stderr.includes('letting the host settle'),
+    );
+
+    // A host that writes the URL a moment after it says the deployment is live: waited for, not missed.
+    const late = await fakeHost(deploymentId, 'moves', 'late');
+    hosts.push(late);
+    const lateOwn = await bounded(DEPLOY_HOOK, appDir, {
+      ...env,
+      ARKOR_API_URL: `http://127.0.0.1:${String(late.port)}`,
+    });
+    holds(
+      'a URL the host gives only a moment after the deployment is live is still the one used',
+      late.ownPort !== undefined &&
+        lateOwn.stdout.trim() === `http://127.0.0.1:${String(late.ownPort)}`,
+    );
+
+    // A deployment whose own URL answers while the project still answers with the one before: its
+    // own URL is the question, and it is not held up by the project's.
+    const ahead = await fakeHost(deploymentId, 'moves', 'ahead of the project');
+    hosts.push(ahead);
+    const onItsOwnFirst = await bounded(DEPLOY_HOOK, appDir, {
+      ...env,
+      ARKOR_API_URL: `http://127.0.0.1:${String(ahead.port)}`,
+    });
+    holds(
+      'a deployment served at its own URL is not held up by what the project answers with',
+      ahead.ownPort !== undefined &&
+        onItsOwnFirst.stdout.trim() === `http://127.0.0.1:${String(ahead.ownPort)}`,
+    );
+    holds('and the probe asked its own URL, not the project', ahead.probedOn() === ahead.ownPort);
+
+    // A URL that needs a path to reach the deployment cannot be handed to the suite, which joins its own
+    // paths to an origin: refused, by what is wrong with it.
+    const pathed = await fakeHost(deploymentId, 'moves', 'with a path');
+    hosts.push(pathed);
+    let refusedPath: unknown;
+    try {
+      await bounded(DEPLOY_HOOK, appDir, {
+        ...env,
+        ARKOR_API_URL: `http://127.0.0.1:${String(pathed.port)}`,
+      });
+    } catch (error) {
+      refusedPath = error;
+    }
+    holds(
+      "a deployment's own URL with a path is refused, not cut down to its host",
+      refusedPath instanceof HookFailureError && refusedPath.said.includes('more than an origin'),
+    );
+  } finally {
+    for (const host of hosts) {
+      host.close();
+    }
+  }
+}
+
 async function main(): Promise<void> {
   const workDir = mkdtempSync(path.join(os.tmpdir(), 'upwind-deploy-tests-check-'));
   const appDir = path.join(workDir, 'application');
@@ -469,33 +368,36 @@ async function main(): Promise<void> {
   writeFileSync(tokenFile, TOKEN, { mode: 0o600 });
   const deploymentId = createId(DEPLOYMENT_ID_PREFIX);
   const host = await fakeHost(deploymentId);
+  let quiet: FakeHost | undefined;
   const env = {
     ...process.env,
     ARKOR_API_URL: `http://127.0.0.1:${String(host.port)}`,
     ARKOR_API_TOKEN_FILE: tokenFile,
     ADAPTER_TEST_PROJECT_ID: 'p',
+    // Short, but long enough that the wait cannot fit inside the probe: the fake host answers in
+    // milliseconds, so most of these two seconds are still owed when the probe gets through.
+    ADAPTER_TEST_SETTLE_SECONDS: '2',
     ADAPTER_DIR: REPO,
     NEXT_DEPLOYMENT_ID: deploymentId,
     CHECK_BUNDLE_BUILD_ID: BUNDLE_BUILD_ID,
     CHECK_OUTPUT_DIRECTORY_BUILD_ID: OUTPUT_DIRECTORY_BUILD_ID,
   };
-  const hook = async (name: string): Promise<{ stdout: string }> => {
+  const hook = async (name: string): Promise<{ stdout: string; stderr: string }> => {
     try {
       return await bounded(name, appDir, env);
     } catch (error) {
-      // Rethrown with the hook's own account of itself in the message. A child process that failed
-      // arrives as an error whose `stderr` Node prints truncated, and the deploy tool does not write
-      // there at all — its account goes to a file, for the logs hook to show the suite. Between them is
-      // everything worth knowing: the API calls it made, what it was waiting for, why it gave up.
+      // Rethrown with the hook's own account of itself in the message, which a child process that
+      // failed otherwise arrives without: Node prints its `stderr` truncated. Everything worth knowing
+      // is there — the build, the API calls the deployment made, what it waited for, why it gave up.
       throw new Error(
-        `${name} ${error instanceof Error ? error.message : String(error)}. It said:\n` +
-          `${saidBy(error)}\nand its own log says:\n${keptBy(appDir)}`,
+        `${name} ${error instanceof Error ? error.message : String(error)}. It said:\n${saidBy(error)}`,
         { cause: error },
       );
     }
   };
   try {
-    const deployed = await hook('e2e-deploy.sh');
+    const deployed = await hook(DEPLOY_HOOK);
+    const deployedAt = performance.now();
     const logs = await hook('e2e-logs.sh');
     await hook('e2e-cleanup.sh');
     const build = readFileSync(path.join(appDir, '.adapter-build.log'), 'utf8');
@@ -503,6 +405,25 @@ async function main(): Promise<void> {
     holds(
       'the deploy hook prints the URL, and only the URL',
       deployed.stdout.trim() === `http://127.0.0.1:${String(host.port)}`,
+    );
+    holds(
+      'and its account of the deployment goes to standard error, which is what reaches the suite',
+      deployed.stderr.includes('answers with this deployment'),
+    );
+    holds(
+      'a page that still names the deployment before is waited for, since the file could not say',
+      deployed.stderr.includes('still names another deployment') &&
+        deployed.stderr.includes('names this deployment'),
+    );
+    const named = host.namedAt();
+    holds(
+      'and the settle is waited out in full from there, before the suite starts',
+      // Measured from the page first naming this deployment to the hook finishing, which nothing but the
+      // wait fills: the hook's own build comes before it, so a build slower than the settle cannot pass
+      // for it, and a log line without the wait behind it would not either.
+      deployed.stderr.includes('letting the host settle') &&
+        named !== undefined &&
+        deployedAt - named >= Number(env.ADAPTER_TEST_SETTLE_SECONDS) * MS_PER_SECOND,
     );
     holds(
       "the registration carries the bundle's own build id",
@@ -546,8 +467,70 @@ async function main(): Promise<void> {
       markers[2] === `NEXT_SUPPORTS_IMMUTABLE_ASSETS: ${immutable}`,
     );
     holds('which, for this application, is yes', immutable === '1');
+
+    /*
+     * Last, because it builds the application again over the files read above.
+     *
+     * A deployment that fails has to fail the hook and say why where the suite's log will show it —
+     * which, for a harness that quotes only standard output and does not call the logs hook when setup
+     * failed, is standard error. A project the host does not have is the cheapest failure to arrange: it
+     * is the first thing the tool asks for, and the refusal comes back before anything is uploaded.
+     */
+    let refused: unknown;
+    try {
+      await bounded(DEPLOY_HOOK, appDir, { ...env, ADAPTER_TEST_PROJECT_ID: 'q' });
+    } catch (error) {
+      refused = error;
+    }
+    holds('a deployment that fails fails the hook', refused instanceof HookFailureError);
+    holds(
+      'and says why on standard error',
+      refused instanceof HookFailureError && refused.said.includes('HTTP 404 (not_found)'),
+    );
+
+    // A settle that is not a number of seconds is refused before anything is asked of the host, and
+    // without being repeated: it arrives as the other host settings do, and none of them is echoed.
+    let unsettled: unknown;
+    try {
+      await bounded(DEPLOY_HOOK, appDir, { ...env, ADAPTER_TEST_SETTLE_SECONDS: 'soon' });
+    } catch (error) {
+      unsettled = error;
+    }
+    holds(
+      'a settle that is not a number of seconds is refused, by name',
+      unsettled instanceof HookFailureError &&
+        unsettled.said.includes('ADAPTER_TEST_SETTLE_SECONDS must be a whole number of seconds'),
+    );
+    holds(
+      'and is not repeated back',
+      unsettled instanceof HookFailureError && !unsettled.said.includes('soon'),
+    );
+
+    // A host whose page names nobody: the probe's shared file is all the evidence there is, and the
+    // deployment goes ahead on it, settling from there and saying so — not waiting out a deadline for a
+    // mark that route will never carry.
+    quiet = await fakeHost(deploymentId, 'names nobody');
+    const unproven = await bounded(DEPLOY_HOOK, appDir, {
+      ...env,
+      ARKOR_API_URL: `http://127.0.0.1:${String(quiet.port)}`,
+    });
+    const unprovenAt = performance.now();
+    const probed = quiet.probedAt();
+    holds(
+      'a page that names nobody leaves the probe as the evidence, and says so',
+      unproven.stdout.trim() === `http://127.0.0.1:${String(quiet.port)}` &&
+        unproven.stderr.includes('no page names a deployment either'),
+    );
+    holds(
+      'and the settle is still waited out in full, from after the probe',
+      probed !== undefined &&
+        unprovenAt - probed >= Number(env.ADAPTER_TEST_SETTLE_SECONDS) * MS_PER_SECOND,
+    );
+
+    await ownUrlScenarios(deploymentId, appDir, env);
   } finally {
     host.close();
+    quiet?.close();
     rmSync(workDir, { recursive: true, force: true });
   }
 }

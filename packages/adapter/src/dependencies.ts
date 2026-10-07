@@ -60,6 +60,14 @@ export interface BundleDependencies {
    */
   readonly dynamicRequires: readonly string[];
   /**
+   * Of those, the loads whose failure the code handles itself: a call that loads, in the block of a
+   * `try` whose `catch` has no `throw` of its own, with nothing between them that runs later
+   * (`dynamic-loads.ts`). Recorded, not refused — in the Function such a load fails into that
+   * `catch`, as it does under Node.js when the module is not installed. One entry per load, as in
+   * `dynamicRequires`; absent where there are none.
+   */
+  readonly guardedRequires?: readonly string[];
+  /**
    * The `.wasm` this bundle imported as WebAssembly, each with the global the Function publishes it
    * under. Only what the bundler resolved itself; what Turbopack's own loader asks for is in
    * `patches` instead, as the `wasm-loader` patch's table.
@@ -176,7 +184,7 @@ const RAW_LIMIT_MIB = 64;
  * A Function held to a limit its platform has dropped is one this adapter refuses to build for no
  * reason anybody can act on, which is what the compressed check had become.
  */
-const MAX_FUNCTION_BYTES = RAW_LIMIT_MIB * MIB;
+export const MAX_FUNCTION_BYTES = RAW_LIMIT_MIB * MIB;
 const MIB_DIGITS = 1;
 /** Enough to show where the room went without printing the whole record. */
 const HEAVIEST_MODULES = 5;
@@ -215,6 +223,9 @@ export function bundleDependencies(
     const entry = packages[pkg] ?? { files: 0, bytes: 0 };
     packages[pkg] = { files: entry.files + 1, bytes: entry.bytes + bytes };
   }
+  const guarded = trace.dynamicLoads
+    .filter((load) => load.guarded)
+    .map((load) => describeLoad(projectDir, load));
   return {
     buildOutput: buildOutput.toSorted((a, b) => a.file.localeCompare(b.file)),
     packages: Object.fromEntries(
@@ -235,6 +246,7 @@ export function bundleDependencies(
       };
     }),
     dynamicRequires: trace.dynamicLoads.map((load) => describeLoad(projectDir, load)),
+    ...(guarded.length > 0 && { guardedRequires: guarded }),
     wasmModules: [...new Set(trace.wasmModules)]
       .map((entry) => {
         const [file, global] = entry.split(' -> ', 2);
@@ -271,6 +283,8 @@ const ALLOWED_BUILTINS: ReadonlySet<string> = new Set([
   // Imported by Sentry's Node SDK and never called from a Function: a stub in workerd.
   'child_process',
   'console',
+  // workerd implements it with the real values — `O_RDONLY`, `SIGTERM` and the rest — rather than a
+  // stub. Required by `graceful-fs`, so by `fs-extra` and everything built on it.
   'constants',
   'crypto',
   // Imported by OpenTelemetry's Node.js SDK, for an exporter a Function does not send through: a
@@ -295,6 +309,9 @@ const ALLOWED_BUILTINS: ReadonlySet<string> = new Set([
   // workerd provides it natively; the match is exact, so the subpath needs a line of its own.
   'path/posix',
   'perf_hooks',
+  // workerd implements it in full, encoding and decoding both. Deprecated in Node.js and still
+  // imported by `tough-cookie`, so by `request` and the HTTP clients that kept its cookie jar.
+  'punycode',
   'querystring',
   // Imported by Sentry's context-lines integration, never called from a Function: a stub in workerd.
   'readline',
@@ -416,8 +433,9 @@ export function auditTracedFiles(
  * build throws here, before that file is written, so in exactly the case where the breakdown is
  * wanted there would be none to read.
  */
-export function auditFunctionSize(kind: string, upload: FunctionUpload): void {
-  const over = overLimit(upload.size);
+export function auditFunctionSize(kind: string, upload: FunctionUpload, deferred = false): void {
+  // A Function the caller is still weighing (`deferSizeAudit`) is held to the limit once it is final.
+  const over = deferred ? undefined : overLimit(upload.size);
   if (over === undefined) {
     return;
   }
@@ -443,8 +461,19 @@ function problemsIn(source: string, bundle: BundleDependencies): string[] {
       problems.push(`${external} is imported but not known to be provided by the Workers runtime`);
     }
   }
+  // Counted rather than looked up: two loads on one line of a minified module read the same, and
+  // one of them being guarded says nothing of the other.
+  const guarded = new Map<string, number>();
+  if (bundle.guardedRequires !== undefined) {
+    for (const load of bundle.guardedRequires) {
+      guarded.set(load, (guarded.get(load) ?? 0) + 1);
+    }
+  }
   for (const dynamic of bundle.dynamicRequires) {
-    if (!isAllowedDynamicLoad(dynamic)) {
+    const left = guarded.get(dynamic) ?? 0;
+    if (left > 0) {
+      guarded.set(dynamic, left - 1);
+    } else if (!isAllowedDynamicLoad(dynamic)) {
       problems.push(`a load the bundler could not follow: ${dynamic}`);
     }
   }

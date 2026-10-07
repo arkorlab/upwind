@@ -244,6 +244,25 @@ export function edgeEntryOf(
 }
 
 /**
+ * What one entrypoint needs in a Function, as its own outputs trace it: its module or its edge
+ * entry, the server chunks and WebAssembly its code reaches, and every file Next.js traced for it.
+ *
+ * Kept per entrypoint so that a build splitting the routes across Functions can give each Function
+ * what its own routes need and nothing else (`split.ts`). A Function holding every route is given
+ * the union, as it always was.
+ */
+export interface RouteCode {
+  readonly id: string;
+  readonly kind: Entrypoint['kind'];
+  readonly module: EntryModule | undefined;
+  readonly edge: EdgeEntry | undefined;
+  readonly chunks: readonly string[];
+  readonly wasm: readonly string[];
+  /** Every output's `assets` under this id, merged: the files it reads are among them. */
+  readonly assets: Readonly<Record<string, string>>;
+}
+
+/**
  * One entry per built module; the `.rsc` twin of an app page is the same file under another name.
  *
  * A route on the deprecated edge runtime is built differently — chunks that register a Web
@@ -257,6 +276,7 @@ export function collectEntrypoints(outputs: BuildContext['outputs']): {
   chunks: string[];
   wasm: string[];
   edgeEntries: EdgeEntry[];
+  routes: RouteCode[];
 } {
   const entrypoints: Entrypoint[] = [];
   const sourcePages = new Map<string, SourcePage>();
@@ -264,6 +284,15 @@ export function collectEntrypoints(outputs: BuildContext['outputs']): {
   const chunks = new Set<string>();
   const wasm = new Set<string>();
   const edgeEntries = new Map<string, EdgeEntry>();
+  const routes = new Map<
+    string,
+    {
+      kind: Entrypoint['kind'];
+      chunks: Set<string>;
+      wasm: Set<string>;
+      assets: Record<string, string>;
+    }
+  >();
   const all: RouteOutput[] = [
     ...outputs.appPages,
     ...outputs.appRoutes,
@@ -288,6 +317,14 @@ export function collectEntrypoints(outputs: BuildContext['outputs']): {
     if (!sourcePages.has(id) && output.sourcePage !== '') {
       sourcePages.set(id, { id, sourcePage: output.sourcePage });
     }
+    const own = routes.get(id) ?? {
+      kind: entrypointKind(output),
+      chunks: new Set<string>(),
+      wasm: new Set<string>(),
+      assets: {},
+    };
+    routes.set(id, own);
+    Object.assign(own.assets, output.assets);
     if (edge) {
       edgeEntries.set(id, edgeEntryOf(output, id));
       continue;
@@ -295,9 +332,11 @@ export function collectEntrypoints(outputs: BuildContext['outputs']): {
     modules.set(id, { id, filePath: output.filePath });
     for (const chunk of tracedChunks(output.assets)) {
       chunks.add(chunk);
+      own.chunks.add(chunk);
     }
     for (const file of tracedWasm(output.assets)) {
       wasm.add(file);
+      own.wasm.add(file);
     }
   }
   return {
@@ -307,6 +346,17 @@ export function collectEntrypoints(outputs: BuildContext['outputs']): {
     chunks: [...chunks],
     wasm: [...wasm],
     edgeEntries: [...edgeEntries.values()],
+    routes: [...routes].map(([id, own]) => {
+      return {
+        id,
+        kind: own.kind,
+        module: modules.get(id),
+        edge: edgeEntries.get(id),
+        chunks: [...own.chunks],
+        wasm: [...own.wasm],
+        assets: own.assets,
+      };
+    }),
   };
 }
 
@@ -424,13 +474,46 @@ export function bypassTokenOf(outputs: BuildContext['outputs']): string | undefi
   return undefined;
 }
 
+export interface PrerenderCollection {
+  readonly outputs: BuildContext['outputs'];
+  readonly blobs: BlobStore;
+  readonly basePath: string;
+  readonly rsc: BuildContext['routing']['rsc'];
+  /** Outputs recorded without their bytes; `'none'` by default (`AdapterOptions`). */
+  readonly unshipped?: 'none' | 'prefetch-segments' | undefined;
+  /**
+   * The routes whose entrypoint is on Next.js's edge runtime, by the pathname a prerender names
+   * them with — `entrypoints` filtered on `runtime === 'edge'`.
+   *
+   * Their segments stay shipped whatever `unshipped` says. A host does not serve them —
+   * `prefetchSegments` passes over a document that is not resumable, and `generationIn` excludes
+   * an edge-runtime route — and the Function cannot render one either, since the capture a segment
+   * comes out of is an `app-page`'s. Unshipping them would leave a prefetch with neither, which is
+   * the one case this option must not create.
+   */
+  readonly edgeRuntimeRoutes?: ReadonlySet<string> | undefined;
+}
+
+/** A blob the Function carries, and the routes whose prerenders name it. */
+export interface ShippedBlob {
+  readonly sha256: string;
+  readonly bytes: Uint8Array;
+  /** Entry ids: the Functions holding any of these routes are the ones that read it. */
+  readonly routes: readonly string[];
+}
+
 export async function collectPrerenders(
-  outputs: BuildContext['outputs'],
-  blobs: BlobStore,
-  basePath: string,
-  rsc: BuildContext['routing']['rsc'],
-): Promise<{ prerenders: Prerender[]; shipped: { sha256: string; bytes: Uint8Array }[] }> {
-  const shipped = new Map<string, Uint8Array>();
+  input: PrerenderCollection,
+): Promise<{ prerenders: Prerender[]; shipped: ShippedBlob[] }> {
+  const { outputs, blobs, basePath, rsc } = input;
+  const unshipped = input.unshipped ?? 'none';
+  const onTheEdge = input.edgeRuntimeRoutes ?? new Set<string>();
+  const shipped = new Map<string, { bytes: Uint8Array; routes: Set<string> }>();
+  const ship = (sha256: string, bytes: Uint8Array, route: string): void => {
+    const known = shipped.get(sha256) ?? { bytes, routes: new Set<string>() };
+    known.routes.add(route);
+    shipped.set(sha256, known);
+  };
   const entryIds = entryIdsByOutputId(outputs);
   const collected = outputs.prerenders.map((output) => {
     const route = routeOf(output, entryIds, basePath);
@@ -444,11 +527,19 @@ export async function collectPrerenders(
     if (segmentPath !== undefined) {
       prerender.segmentPath = segmentPath;
     }
+    // Written to the bundle and referenced either way; `unshipped` decides only whether the bytes
+    // also go to the Function. A host reads them out of the bundle to place them, and
+    // `prefetchSegments` passes over a segment with no `body` — so dropping the reference would
+    // leave the host unable to serve one, which is the opposite of the point.
+    const embeds =
+      unshipped === 'none' || prerender.segmentPath === undefined || onTheEdge.has(prerender.route);
     const filePath = output.fallback?.filePath;
     if (filePath !== undefined && (await exists(filePath))) {
       const bytes = new Uint8Array(await readFile(filePath));
       const ref = await blobs.put(bytes, contentTypeFor(filePath));
-      shipped.set(ref.sha256, bytes);
+      if (embeds) {
+        ship(ref.sha256, bytes, prerender.route);
+      }
       prerender.body = ref;
     }
     const postponed = output.fallback?.postponedState;
@@ -457,13 +548,16 @@ export async function collectPrerenders(
     }
     const bytes = new TextEncoder().encode(postponed);
     const ref = await blobs.put(bytes, 'text/plain; charset=utf-8');
-    shipped.set(ref.sha256, bytes);
+    if (embeds) {
+      ship(ref.sha256, bytes, prerender.route);
+    }
     prerender.postponed = ref;
   }
-  return {
-    prerenders: collected.map((each) => each.prerender),
-    shipped: [...shipped].map(([sha256, bytes]) => ({ sha256, bytes })),
-  };
+  const carried: ShippedBlob[] = [];
+  for (const [sha256, { bytes, routes }] of shipped) {
+    carried.push({ sha256, bytes, routes: [...routes] });
+  }
+  return { prerenders: collected.map((each) => each.prerender), shipped: carried };
 }
 
 /**

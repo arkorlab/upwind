@@ -1,5 +1,13 @@
+import { mayHoldForDocument } from '../request/conditions.ts';
 import type { DeploymentBundle, Prerender } from './schema.ts';
-import { edgeServablePrerenders, primaryPrerenders, type ServableOptions } from './serving.ts';
+import {
+  beforeFilesPhases,
+  edgeServablePrerenders,
+  headerPhases,
+  primaryPrerenders,
+  reproducesDynamicRouting,
+  type ServableOptions,
+} from './serving.ts';
 
 /**
  * Which of a build's router prefetches a host can answer from its own storage.
@@ -13,6 +21,34 @@ import { edgeServablePrerenders, primaryPrerenders, type ServableOptions } from 
  * What is served, and under which headers, is `serving.ts`; this is the one question that file does
  * not answer, kept beside it.
  */
+
+/**
+ * The patterns of the rules only the client's router meets — a header rule or a claim whose `has`
+ * names one of its headers — in a build whose routing the edge does not reproduce; none where it
+ * does, since there the edge judges every rule on every request.
+ *
+ * Such a rule never applies to a page's document (`mayHoldForDocument`), so the document can be the
+ * edge's. The router's own requests for the page's parts are exactly what it does apply to — Next.js
+ * sets its deployment id on every RSC response this way — and the manifest of such a build carries
+ * no conditional rule for the edge to apply, so the parts of a page one covers stay with the Function
+ * (`prefetchSegments`).
+ */
+function routerRulePatterns(bundle: DeploymentBundle): RegExp[] {
+  if (reproducesDynamicRouting(bundle)) {
+    return [];
+  }
+  return [
+    ...headerPhases(bundle).filter((rule) => rule.headers !== undefined),
+    ...beforeFilesPhases(bundle),
+  ].flatMap((rule) =>
+    mayHoldForDocument(rule)
+      ? []
+      : // Compiled by Next.js for its own router, which runs them without the unicode flag and
+        // without regard to case, as `mayRoutePath` does: a rule for `/Account` covers `/account`.
+        // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
+        [new RegExp(rule.sourceRegex, 'i')],
+  );
+}
 
 /** A prefetch segment a host can answer with, and the document it is a prefetched part of. */
 export interface PrefetchSegment {
@@ -35,6 +71,11 @@ export interface PrefetchSegment {
  * document it started from did not describe. `options` is passed through so the caller asks the one
  * question here that it asked of its documents, rather than a second question of its own.
  *
+ * Nor the segments of a document a rule only the client's router meets covers, in a build whose
+ * routing the host does not reproduce (`routerRulePatterns`): the rule is set aside for the
+ * document, which no router request asks for, and applies to every prefetch of its parts, which the
+ * host has no rule to apply with.
+ *
  * A bundle from before a segment's path was recorded yields none, which is the right answer for a
  * host that cannot tell which output is which: its Function answers every prefetch, as it did.
  */
@@ -44,13 +85,16 @@ export function prefetchSegments(
 ): PrefetchSegment[] {
   const served = new Set(edgeServablePrerenders(bundle, options).map((prerender) => prerender.id));
   const documents = primaryPrerenders(bundle.prerenders);
+  const routerRules = routerRulePatterns(bundle);
+  const servesParts = (document: Prerender): boolean =>
+    served.has(document.id) && routerRules.every((rule) => !rule.test(document.pathname));
   return bundle.prerenders.flatMap((prerender) => {
     const { segmentPath } = prerender;
     const document = documents.get(prerender.id);
     if (segmentPath === undefined || prerender.body === undefined) {
       return [];
     }
-    return document === undefined || !served.has(document.id)
+    return document === undefined || !servesParts(document)
       ? []
       : [{ segmentPath, document, prerender }];
   });

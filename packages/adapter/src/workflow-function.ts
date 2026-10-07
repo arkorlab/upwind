@@ -1,20 +1,14 @@
 import type { FunctionSpec, SourceMapRef, WorkflowSpec } from '@stayingupwind/core/bundle';
 import type { AdapterOutput } from 'next';
 
-import type { BlobStore } from './blobs.ts';
+import { type FunctionsContext, patchFor } from './app-functions.ts';
 import { type BuildContext, collectEntrypoints } from './collect.ts';
 import type { FunctionDependencies } from './dependencies.ts';
 import { buildFunction, type BuiltFunction } from './function.ts';
-import type { TextModule } from './manifests.ts';
-import type { PatchContext } from './patches/index.ts';
+import { carriesMaps } from './source-maps.ts';
 import type { TracedFile } from './traced-files.ts';
-import { collectWasm, type WasmChunk } from './wasm.ts';
-import {
-  flowRouteOf,
-  offerEmbeddedWasm,
-  workflowSdkVersion,
-  writeWorldRegistration,
-} from './workflow.ts';
+import { collectWasm } from './wasm.ts';
+import { flowRouteOf, workflowSdkVersion, writeWorldRegistration } from './workflow.ts';
 
 /**
  * A build that uses the Workflow SDK, as the adapter splits it: the SDK's flow route taken out of
@@ -99,25 +93,12 @@ export function warnOfNoWorld(build: WorkflowBuild, worldModule: string | undefi
 }
 
 export interface WorkflowFunctionInput {
-  readonly ctx: BuildContext;
-  readonly outDir: string;
-  readonly blobs: BlobStore;
   /** The deployment's runtime manifest, which this Function's is cut from. */
   readonly runtimeManifest: Readonly<Record<string, unknown>> & {
     readonly routing: Readonly<Record<string, unknown>>;
   };
-  readonly manifests: readonly TextModule[];
+  /** What the flow route and the instrumentation hook read through `node:fs` (`filesRead`). */
   readonly files: readonly TracedFile[];
-  /** The WebAssembly the instrumentation hook reaches, which every Function carries. */
-  readonly instrumentationWasm: readonly string[];
-  readonly chunkTable: (own: readonly string[]) => string[];
-  readonly patchFor: (
-    table: readonly string[],
-    wasm: readonly WasmChunk[],
-    embeddedWasm: ReadonlySet<string>,
-  ) => PatchContext;
-  readonly cacheHostModule: string | undefined;
-  readonly sourceMaps: boolean;
 }
 
 /**
@@ -143,17 +124,19 @@ const DELIVERY_ROUTING = {
  * messages are delivered to it, its steps run in it, and no visitor's request reaches it.
  *
  * Its manifest is the deployment's with that one route in it and nothing to serve besides: no
- * prerender, no file, no middleware and no routing rules (`DELIVERY_ROUTING`).
+ * prerender, no file, no middleware and no routing rules (`DELIVERY_ROUTING`). Nor a route placed
+ * in another Function, where the build split its routes: the one route it has is its own.
  */
 export async function buildWorkflowFunction(
   build: WorkflowBuild,
+  context: FunctionsContext,
   input: WorkflowFunctionInput,
 ): Promise<BuiltFunction | undefined> {
   const { flow } = build;
   if (flow === undefined) {
     return undefined;
   }
-  const { ctx } = input;
+  const { ctx } = context;
   if (flow.runtime === 'edge') {
     throw new Error(
       "@stayingupwind/adapter: the Workflow SDK's flow route was built for the edge runtime, which cannot run its steps",
@@ -177,23 +160,25 @@ export async function buildWorkflowFunction(
     prerenders: [],
     staticFiles: [],
   };
-  const wasm = await collectWasm(ctx.distDir, [...entry.wasm, ...input.instrumentationWasm], []);
-  const table = input.chunkTable(entry.chunks);
+  const wasm = await collectWasm(ctx.distDir, [...entry.wasm, ...context.hook.wasm], []);
   return buildFunction({
     kind: 'workflow',
     projectDir: ctx.projectDir,
-    outDir: input.outDir,
-    patch: input.patchFor(table, wasm.chunks, await offerEmbeddedWasm(table, wasm.collector)),
+    outDir: context.outDir,
+    patch: await patchFor(context, entry.chunks, wasm),
     entries: entry.modules,
     edgeEntries: [],
     wasm: wasm.collector,
-    manifests: input.manifests,
+    manifests: context.manifests,
     runtimeManifest: JSON.stringify(manifest),
-    cacheHostModule: input.cacheHostModule,
-    ...(input.sourceMaps && { sourceMaps: true }),
+    cacheHostModule: context.cacheHostModule,
+    ...(carriesMaps(context.sourceMaps) && {
+      sourceMaps: context.sourceMaps,
+      keptMaps: context.keptMaps,
+    }),
     blobs: [],
     files: input.files,
-    blobStore: input.blobs,
+    blobStore: context.blobs,
     workflowSdk: true,
   });
 }

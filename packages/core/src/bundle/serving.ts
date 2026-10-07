@@ -1,16 +1,14 @@
 import { interpolateHeader } from '../manifest/dynamic.ts';
-import type { BuildProjectManifestInput } from '../manifest/manifest.ts';
-import type {
-  DynamicRoute,
-  HeaderRule,
-  ReservedRoute,
-  StaticFileAssetPrefix,
-  StaticFileLocales,
-} from '../manifest/schema.ts';
+import type { DynamicRoute, HeaderRule, ReservedRoute } from '../manifest/schema.ts';
+import { mayHoldForDocument } from '../request/conditions.ts';
 import { BEHAVIORAL_RESPONSE_HEADERS, CONTENT_DISPOSITION_HEADER } from '../request/constants.ts';
 import { filterShellResponseHeaders, rendersInline } from '../request/headers.ts';
+import { isInternalPage, nextNamespaceRoutes } from './base-path.ts';
+import { type DynamicRouting, withFunctions } from './functions.ts';
 import { queryDependent } from './query.ts';
 import type { DeploymentBundle, Entrypoint, Prerender, Route, StaticFile } from './schema.ts';
+import { isTemplate, keepsTrailingSlash, requestedPathname, routerSpellings } from './spelling.ts';
+import { assetPrefixRewrite, travelsWithFunction } from './static-files.ts';
 
 /**
  * What of a deployment's build the edge serves, and under which headers: the prerenders with a
@@ -24,25 +22,11 @@ import type { DeploymentBundle, Entrypoint, Prerender, Route, StaticFile } from 
 
 const HTTP_OK = 200;
 /**
- * The documents `next build` writes for an error, which the Function answers a miss with — under
- * these exact names, which are the ones the runtime looks them up by. A `trailingSlash` export
- * writes its not-found a second time, as `404/index.html`, for a visitor who types that path; that
- * one is a file like any other page of the site, so the edge serves it from storage and the Function
- * never opens it.
- */
-const ERROR_DOCUMENTS: readonly string[] = ['/404', '/500'];
-const KIB = 1024;
-const MAX_FUNCTION_FILE_KIB = 256;
-/** The largest file, other than an error document, that is shipped with the Function as well. */
-const MAX_FUNCTION_FILE_BYTES = MAX_FUNCTION_FILE_KIB * KIB;
-/**
  * A path with nothing in it for a router to interpret: no parameter, no group, no wildcard. Only
  * such a source and destination say, at build time, exactly which request a rule answers and with
  * what — which is what `edgeServedRewrites` needs before it may answer one itself.
  */
 const LITERAL_PATHNAME = /^\/[^\s:(*?#[]*$/u;
-/** Documents Next.js renders for an error, never for a request at their own pathname. */
-const INTERNAL_PAGES: ReadonlySet<string> = new Set(['/_error', '/_global-error', '/_not-found']);
 /** The entrypoint kinds whose code renders a document, rather than answering with a response. */
 const DOCUMENT_KINDS: ReadonlySet<string> = new Set(['app-page', 'pages']);
 
@@ -115,19 +99,21 @@ export function documentPrerenders(
   };
 }
 
-function isTemplate(pathname: string): boolean {
-  return pathname.includes('[');
-}
-
 /**
  * Whether the edge can pick a dynamic route's class the way Next.js picks the route. With `i18n`
- * Next.js rewrites the pathname before matching, and with a `basePath` both the patterns and the
- * pathnames carry a prefix the edge does not strip: an app with either keeps its exact routes and
- * leaves dynamic ones to its Function.
+ * Next.js rewrites the pathname before matching — a request that names no locale is matched under
+ * the default one — and the edge matches the pathname as it was asked for: an app with `i18n`
+ * keeps its exact routes and leaves dynamic ones to its Function.
+ *
+ * A `basePath` is not such a case. `next build` writes it into everything the edge matches: a
+ * dynamic route's pattern and the page its destination names, the pathname of every page and
+ * every file, the rules of `next.config`, and the redirects it adds of its own. A request is
+ * matched as it arrives, prefix and all, and lands on the class shell whose name carries the same
+ * prefix.
  */
-function reproducesDynamicRouting(bundle: DeploymentBundle): boolean {
-  const { config } = bundle;
-  return (config.i18n === null || config.i18n === undefined) && config.basePath === '';
+export function reproducesDynamicRouting(bundle: DeploymentBundle): boolean {
+  const { i18n } = bundle.config;
+  return i18n === null || i18n === undefined;
 }
 
 /** The templates the edge could reach: the ones a dynamic route resolves to. */
@@ -151,6 +137,11 @@ function isConditional(rule: Route): boolean {
  * Whether a shell can be served without the Function's say on its headers: a header rule with a
  * condition is judged at the edge only where the edge reproduces the router's matching; elsewhere
  * a page such a rule covers keeps its headers, and its document, with the Function.
+ *
+ * Not a rule whose condition no document meets (`mayHoldForDocument`): it never sets a header on
+ * one, so there is nothing to judge. Next.js writes such a rule over every path of every build with
+ * a deployment id, and counted here it left no page of a build the edge does not route on the edge
+ * at all.
  */
 function headersReproducible(bundle: DeploymentBundle, prerender: Prerender): boolean {
   if (reproducesDynamicRouting(bundle)) {
@@ -160,9 +151,11 @@ function headersReproducible(bundle: DeploymentBundle, prerender: Prerender): bo
     (rule) =>
       rule.headers !== undefined &&
       isConditional(rule) &&
-      // Compiled by Next.js for its own router, which runs them without the unicode flag.
+      mayHoldForDocument(rule) &&
+      // Compiled by Next.js for its own router, which runs them without the unicode flag, and
+      // without regard to case (`claimedBeforeFiles`).
       // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-      new RegExp(rule.sourceRegex).test(prerender.pathname),
+      new RegExp(rule.sourceRegex, 'i').test(requestedPathname(bundle, prerender.pathname)),
   );
 }
 
@@ -170,7 +163,7 @@ function headersReproducible(bundle: DeploymentBundle, prerender: Prerender): bo
  * The phases Next.js evaluates before it looks at the filesystem: the redirects and the rewrites
  * of `next.config` that claim a path outright, whatever the build wrote under it.
  */
-function beforeFilesPhases(bundle: DeploymentBundle): Route[] {
+export function beforeFilesPhases(bundle: DeploymentBundle): Route[] {
   const { routing } = bundle;
   return [
     // A `beforeMiddleware` rule that neither answers nor rewrites is a header rule and claims
@@ -190,14 +183,22 @@ function beforeFilesPhases(bundle: DeploymentBundle): Route[] {
  * with conditions claims some requests and not others, which is a question about a request and
  * not about a build — the edge answers it per request, as Next.js does, and the publication
  * puts the same question to the manifest before it asks the edge for a sample (`validateOne`).
+ *
+ * That holds where the edge has the rules to ask. A build whose routing it does not reproduce
+ * publishes none (`dynamicRouting`), and a page a conditional rule may claim is then settled here
+ * as a header rule's is (`headersReproducible`): the Function keeps it, since the edge would serve
+ * the request the rule claims. A rule no document meets (`mayHoldForDocument`) claims no document
+ * either way.
  */
 function claimedBeforeFiles(bundle: DeploymentBundle, prerender: Prerender): boolean {
   return beforeFilesPhases(bundle).some(
     (rule) =>
-      !isConditional(rule) &&
-      // Compiled by Next.js for its own router, which runs them without the unicode flag.
+      (reproducesDynamicRouting(bundle) ? !isConditional(rule) : mayHoldForDocument(rule)) &&
+      // Compiled by Next.js for its own router, which runs them without the unicode flag, and
+      // without regard to case, as `mayRoutePath` matches them: a rule for `/Account` claims the
+      // page at `/account`, and `.well-known`'s exemption from a slash redirect is any case's.
       // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-      new RegExp(rule.sourceRegex).test(prerender.pathname),
+      new RegExp(rule.sourceRegex, 'i').test(requestedPathname(bundle, prerender.pathname)),
   );
 }
 
@@ -233,9 +234,11 @@ function generationIn(bundle: DeploymentBundle): (prerender: Prerender) => boole
   const isDocument = documentPrerenders(bundle.prerenders, bundle.entrypoints);
   return (prerender) => {
     return (
-      // A beforeFiles alias hides the page at this pathname. Publishing its shell too would ask
-      // deployment validation to prove a document where live routing correctly serves the file.
+      // A beforeFiles alias hides the page at this pathname, or at the spelling it is asked for by.
+      // Publishing its shell too would ask deployment validation to prove a document where live
+      // routing correctly serves the file.
       !rewritten.has(prerender.pathname) &&
+      !rewritten.has(requestedPathname(bundle, prerender.pathname)) &&
       !edgeRuntime.has(prerender.route) &&
       !(isTemplate(prerender.pathname) && pages.has(prerender.route)) &&
       // A page's own shell: exact, or the class shell of a dynamic route. Where a build classifies
@@ -248,13 +251,37 @@ function generationIn(bundle: DeploymentBundle): (prerender: Prerender) => boole
   };
 }
 
+/**
+ * Whether Next.js picks the locale a page is answered in when the request comes, which the edge
+ * does not: with `i18n`, the root redirects a visitor to the locale their `NEXT_LOCALE` cookie or
+ * `Accept-Language` names, unless `localeDetection` is `false`; with `domains`, every page is in the
+ * locale of the host it is asked on, which a route keyed by its pathname alone cannot tell apart.
+ * Such a page stays with the deployment's Function, which picks it.
+ */
+function localePickedPerRequest(bundle: DeploymentBundle): (prerender: Prerender) => boolean {
+  const { basePath, i18n } = bundle.config;
+  if (i18n === null || i18n === undefined) {
+    return () => false;
+  }
+  if ((i18n.domains ?? []).length > 0) {
+    return () => true;
+  }
+  if (i18n.localeDetection === false) {
+    return () => false;
+  }
+  const root = basePath === '' ? '/' : basePath;
+  return (prerender) => prerender.pathname === root;
+}
+
 function servableIn(bundle: DeploymentBundle): (prerender: Prerender) => boolean {
   const generation = generationIn(bundle);
   const templates = reachableTemplates(bundle);
+  const localePicked = localePickedPerRequest(bundle);
   return (prerender) => {
     return (
       generation(prerender) &&
       (!isTemplate(prerender.pathname) || templates.has(prerender.pathname)) &&
+      !localePicked(prerender) &&
       !claimedBeforeFiles(bundle, prerender) &&
       headersReproducible(bundle, prerender)
     );
@@ -289,7 +316,9 @@ export function resumablePrerenders(bundle: DeploymentBundle): Prerender[] {
  * `conditional` is what to do with a rule that depends on the request. A shell is served with the
  * headers a request cannot change, so folding one in would be an answer given before the question
  * (`shellHeaders`); deciding whether a page can be served at all is the other case, and there a
- * rule that may apply is a rule that has to be reckoned with (`actsThroughHeaders`).
+ * rule that may apply is a rule that has to be reckoned with (`actsThroughHeaders`). A rule whose
+ * condition no document meets (`mayHoldForDocument`) cannot apply, and is reckoned with by
+ * neither.
  */
 function applicableHeaders(
   bundle: DeploymentBundle,
@@ -302,12 +331,16 @@ function applicableHeaders(
     headers.set(name.toLowerCase(), headerValue(value));
   }
   for (const rule of headerPhases(bundle)) {
-    if (rule.headers === undefined || (conditional === 'leave' && isConditional(rule))) {
+    const applies = mayHoldForDocument(rule) && (conditional === 'fold' || !isConditional(rule));
+    if (!applies || rule.headers === undefined) {
       continue;
     }
-    // Compiled by Next.js for its own router, which runs them without the unicode flag.
+    // Compiled by Next.js for its own router, which runs them without the unicode flag, and
+    // without regard to case: a rule for `/Shop/:slug` sets its headers on `/shop/x` too.
     // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-    const match = new RegExp(rule.sourceRegex).exec(prerender.pathname);
+    const match = new RegExp(rule.sourceRegex, 'i').exec(
+      requestedPathname(bundle, prerender.pathname),
+    );
     if (match === null) {
       continue;
     }
@@ -335,7 +368,8 @@ function applicableHeaders(
  * (`headerRulesFor`), but what it judges them for is a header it may replay, and these are not:
  * the request that meets the condition would be answered without the header and nothing would
  * notice. One rule takes the page off the edge for every request, which is the safe way round
- * for a header whose whole purpose is to change what the response does.
+ * for a header whose whole purpose is to change what the response does. Save a rule no document
+ * meets: no request the edge answers with this page can be answered with the header.
  */
 function actsThroughHeaders(bundle: DeploymentBundle, prerender: Prerender): boolean {
   const headers = applicableHeaders(bundle, prerender, 'fold');
@@ -348,9 +382,10 @@ function actsThroughHeaders(bundle: DeploymentBundle, prerender: Prerender): boo
 
 /**
  * The pages complete at build time that the edge can serve whole: nothing resumes them, so the
- * document is the shell. Next.js's own error documents are left out — they are rendered for a
- * status, never for a request at their pathname — and so is a page that reads query parameters,
- * which the build rendered without any and a runtime cache would have to key by.
+ * document is the shell. Next.js's own error documents are left out, under a base path as at the
+ * root — they are rendered for a status, never for a request at their pathname — and so is a page
+ * that reads query parameters, which the build rendered without any and a runtime cache would have
+ * to key by.
  */
 function completeBy(
   bundle: DeploymentBundle,
@@ -360,7 +395,7 @@ function completeBy(
     return (
       completeByItself(prerender) &&
       prerender.postponed === undefined &&
-      !INTERNAL_PAGES.has(prerender.pathname) &&
+      !isInternalPage(bundle, prerender.pathname) &&
       !actsThroughHeaders(bundle, prerender) &&
       (prerender.allowQuery === undefined || prerender.allowQuery.length === 0) &&
       eligible(prerender)
@@ -412,8 +447,8 @@ export function routeHandlerPrerenders(bundle: DeploymentBundle): Prerender[] {
  * whose key is its pathname alone, and every route handler the build rendered.
  *
  * Not only what the edge serves. What keeps a page off the edge — a rule of `next.config` that
- * claims its path before the filesystem, as `trailingSlash` claims every path without the slash;
- * a header rule the edge cannot judge; a template it cannot reach — is about routing at the edge,
+ * claims its path before the filesystem, while a rewrite or a middleware still leads to the page; a
+ * header rule the edge cannot judge; a template it cannot reach — is about routing at the edge,
  * and the Function answers the page from its generation all the same. Left unseeded, it had none to
  * answer from: it served the build's document for as long as the deployment lived, and neither
  * `revalidate` nor `revalidatePath` ever reached it.
@@ -488,64 +523,11 @@ export function cacheablePrerenders(bundle: DeploymentBundle): Prerender[] {
 }
 
 /**
- * The default locales a shipped file is found behind as well, in an application with `i18n`: its
- * own, and each domain's, under its base path — what Next.js's filesystem check takes out of a
- * static file's path. `undefined` for an application without `i18n`.
- */
-export function staticFileLocalesOf(bundle: DeploymentBundle): StaticFileLocales | undefined {
-  const { basePath, i18n } = bundle.config;
-  if (i18n === null || i18n === undefined) {
-    return undefined;
-  }
-  const domains = (i18n.domains ?? []).map((domain) => domain.defaultLocale);
-  return { basePath, locales: [...new Set([i18n.defaultLocale, ...domains])] };
-}
-
-/**
- * The rewrite `next build` writes, first of its `beforeFiles`, for an `assetPrefix`:
- * `<assetPrefix>/_next/:path+` to `<basePath>/_next/:path+` (`loadRewrites`, in
- * `lib/load-custom-routes.ts`). `undefined` for a build without one.
- */
-function assetPrefixRewrite(bundle: DeploymentBundle): Route | undefined {
-  const { assetPrefix, basePath } = bundle.config;
-  const [rule] = bundle.routing.beforeFiles;
-  if (
-    assetPrefix === undefined ||
-    rule?.source !== `${assetPrefix}/_next/:path+` ||
-    rule.destination !== `${basePath}/_next/$1` ||
-    rule.status !== undefined ||
-    isConditional(rule)
-  ) {
-    return undefined;
-  }
-  return rule;
-}
-
-/**
- * Where a shipped file under the base path's `_next` is found as well, in an application with an
- * `assetPrefix` `next build` rewrites from: under the prefix (`assetPrefixRewrite`). `undefined`
- * for any other.
- *
- * A later `beforeFiles` rule that may claim the path a file lands on leaves that file, not every
- * file, to the router: the edge asks it of each request, as it asks its other rules (`isReserved`).
- * Decided here for the whole build, one rule that might claim one chunk had every script under
- * the prefix handed to the Function, which carries none of them.
- */
-export function staticFileAssetPrefixOf(
-  bundle: DeploymentBundle,
-): StaticFileAssetPrefix | undefined {
-  const { basePath, assetPrefix } = bundle.config;
-  return assetPrefix === undefined || assetPrefixRewrite(bundle) === undefined
-    ? undefined
-    : { basePath, assetPrefix };
-}
-
-/**
  * Every header rule, in the order Next.js applies them, for the edge to judge on each request —
  * and, for a build whose routing the edge does not reproduce, the rules `next build` writes itself
  * alone (`priority`): the `Service-Worker-Allowed` a service worker registers under, whose pattern
- * names the whole path, base path included, and no locale. Without it the function of an application
- * with a base path was refused registration, and never controlled a page (`service-worker`).
+ * names the whole path, base path included, and no locale. Without it the service worker of such
+ * an application was refused registration, and never controlled a page (`service-worker`).
  */
 export function headerRulesOf(bundle: DeploymentBundle): HeaderRule[] {
   const phases = reproducesDynamicRouting(bundle)
@@ -582,29 +564,6 @@ function conditionsOf(route: Route): Pick<DynamicRoute, 'has' | 'missing'> {
     ...(route.has !== undefined && { has: route.has }),
     ...(route.missing !== undefined && { missing: route.missing }),
   };
-}
-
-/**
- * Whether a file of the build is shipped inside the application's Function as well as held by the
- * edge. The error documents always are — the Function answers its own misses with them — and so is
- * anything small outside `_next/static`, which a rewrite may name. Everything else stays with the
- * edge alone: a Function has a size limit, and a public asset need not count against it.
- */
-export function travelsWithFunction(file: StaticFile, basePath: string, exported = false): boolean {
-  if (ERROR_DOCUMENTS.some((document) => file.pathname === `${basePath}${document}`)) {
-    return true;
-  }
-  // A static export ships nothing else: the edge serves every file from storage in every mode the
-  // pointer can be in, and the one reason the Function carries a small file — a middleware rewrite
-  // that lands on it — cannot arise, since a static export has no middleware. A site's every
-  // document is a file here, and a Function carrying them all would outgrow its size limit.
-  if (exported) {
-    return false;
-  }
-  return (
-    !file.pathname.startsWith(`${basePath}/_next/`) &&
-    file.blob.byteLength <= MAX_FUNCTION_FILE_BYTES
-  );
 }
 
 /** A rewrite of `next.config` the edge answers itself, and the file of the build it answers with. */
@@ -671,13 +630,12 @@ export function edgeServedRewrites(bundle: DeploymentBundle): ServedRewrite[] {
   }
   const { basePath } = bundle.config;
   const files = new Map(bundle.staticFiles.map((file) => [file.pathname, file]));
-  const claimed = new Set<string>(files.keys());
-  for (const entry of bundle.entrypoints) {
-    claimed.add(entry.pathname);
-  }
-  for (const prerender of bundle.prerenders) {
-    claimed.add(prerender.pathname);
-  }
+  // A page or a file is found under every spelling the router finds it by (`routerSpellings`):
+  // `/about/` is the page `/about`, and `/manual/` the file `/manual`, ahead of `afterFiles`.
+  const named = [...bundle.entrypoints, ...bundle.prerenders].map((output) => output.pathname);
+  const claimed = new Set(
+    [...files.keys(), ...named].flatMap((pathname) => routerSpellings(bundle, pathname)),
+  );
   const served: ServedRewrite[] = [];
   // Every earlier rule counts, including one serving a small file, a conditional rule and a
   // redirect before middleware. Failing to promote one does not mean routing skipped it.
@@ -713,14 +671,28 @@ export function edgeServedRewrites(bundle: DeploymentBundle): ServedRewrite[] {
   return served;
 }
 
-/** What the edge needs to pick a dynamic route's class the way Next.js picks the route. */
+/**
+ * What the edge needs to pick a dynamic route's class the way Next.js picks the route; for a
+ * bundle whose routes are split across app Functions, which Function each route it picks is in;
+ * and, where the application keeps its pages behind a trailing slash, that it does, since a member
+ * of a class is asked for with the slash too. Where it has `trailingSlash` at all, that a shipped
+ * file is found by the slash as well: the router finds one so with the redirect or without it
+ * (`routerSpellings`), and `skipTrailingSlashRedirect` leaves only the pages at the build's spelling.
+ */
 export function dynamicRouting(
   bundle: DeploymentBundle,
   routeKeys: ReadonlySet<string>,
-): Pick<BuildProjectManifestInput, 'dynamicRoutes' | 'exactPathnames' | 'reservedRoutes'> {
+): DynamicRouting & {
+  readonly trailingSlash?: boolean;
+  readonly staticFileTrailingSlash?: boolean;
+} {
   const { routing } = bundle;
+  const spelled = {
+    ...(keepsTrailingSlash(bundle) && { trailingSlash: true }),
+    ...(bundle.config.trailingSlash && { staticFileTrailingSlash: true }),
+  };
   if (!reproducesDynamicRouting(bundle)) {
-    return {};
+    return { ...spelled };
   }
   // Next.js's own order, every route kept: a class with no shell that matches first is a request
   // the edge must not serve, and only the whole list says which class is first.
@@ -766,21 +738,37 @@ export function dynamicRouting(
     ),
     ...reserved(prefixed === undefined ? [] : [prefixed], false),
     ...reserved(routing.afterFiles, false),
+    ...nextNamespaceRoutes(bundle),
   ];
-  // Pathnames Next.js resolves exactly, ahead of its dynamic routes, that have no shell.
-  const exact = new Set<string>();
+  // Pathnames Next.js resolves exactly, ahead of its dynamic routes, that have no shell — under
+  // each spelling the router finds one by (`routerSpellings`): `/stream/` is the page `/stream`
+  // where the application keeps its pages behind the slash, and no member of a class that also
+  // matches it.
   const pathnames = [
     ...bundle.entrypoints.map((entry) => entry.pathname),
     ...bundle.prerenders.map((prerender) => prerender.pathname),
     // A middleware rewrite must reach the alias's file, not a dynamic route's class shell.
     ...aliases.map((served) => served.pathname),
-  ];
-  for (const pathname of pathnames) {
-    if (!isTemplate(pathname) && !routeKeys.has(pathname)) {
-      exact.add(pathname);
-    }
-  }
-  return { dynamicRoutes, reservedRoutes, exactPathnames: [...exact] };
+  ]
+    .filter((pathname) => !isTemplate(pathname))
+    .flatMap((pathname) => routerSpellings(bundle, pathname));
+  // A shipped file is the edge's under its own name, which it looks up before any of this; under
+  // another spelling the router finds it by (`/manual/` for `/manual`), it is exact, and no member
+  // of a class.
+  const fileSpellings = bundle.staticFiles.flatMap((file) =>
+    routerSpellings(bundle, file.pathname).filter((spelling) => spelling !== file.pathname),
+  );
+  const exact = new Set(
+    [...pathnames, ...fileSpellings].filter((pathname) => !routeKeys.has(pathname)),
+  );
+  return {
+    ...withFunctions(bundle, routeKeys, {
+      dynamicRoutes,
+      reservedRoutes,
+      exactPathnames: [...exact],
+    }),
+    ...spelled,
+  };
 }
 
 function headerValue(value: string | readonly string[]): string {
@@ -788,7 +776,7 @@ function headerValue(value: string | readonly string[]): string {
 }
 
 /** The routing phases whose header rules apply to a document, in the order Next.js applies them. */
-function headerPhases(bundle: DeploymentBundle): Route[] {
+export function headerPhases(bundle: DeploymentBundle): Route[] {
   return [
     ...bundle.routing.beforeMiddleware,
     ...bundle.routing.afterFiles,

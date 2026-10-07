@@ -55,7 +55,8 @@ export NEXT_PRIVATE_TEST_MODE=e2e
 # the same machine, and a process can read what another process of its own user can. What it removes is
 # the ordinary way a secret escapes — something dumping the environment it was handed.
 fixture() {
-  env -u ARKOR_API_URL -u ARKOR_API_TOKEN -u ARKOR_API_TOKEN_FILE -u ADAPTER_TEST_PROJECT_ID "$@"
+  env -u ARKOR_API_URL -u ARKOR_API_TOKEN -u ARKOR_API_TOKEN_FILE -u ADAPTER_TEST_PROJECT_ID \
+    -u ADAPTER_TEST_SETTLE_SECONDS "$@"
 }
 
 # Deploy mode makes the isolated copy with `skipInstall: true` (`test/lib/next-modes/next-deploy.ts`),
@@ -135,7 +136,22 @@ immutable_assets="$(
   cat .adapter-build-output.log
 } >.adapter-build.log
 
-# The deployment. Its own account of what it did is kept for the logs hook; the URL it prints is this
-# script's only standard output.
-url="$(node "${tool_dir}/src/main.ts" deploy 2>>.adapter-server.log)"
+# The deployment. The URL it prints is this script's only standard output; its account of what it did
+# goes to standard error as it happens, and into a file for the logs hook as well — the arrangement the
+# build's output has above, for the same reason.
+#
+# Standard error is the channel that reaches the suite's log when a fixture fails. The harness quotes
+# this script's standard output in its error, which is the URL's alone and so empty on a failure, and the
+# logs hook is not called when setup itself failed. Kept only in the file, the account never arrived: a
+# full run of the manifest reported every failed deployment as `Custom deploy script failed:  undefined
+# (1)`, with the reason sitting in a file nothing printed.
+#
+# A pipeline rather than `2> >(tee …)`: the shell waits for every part of a pipeline, and not for a
+# process substitution, so the last lines — the reason, when it failed — could be lost between the tool
+# exiting and `tee` writing them out. The descriptors are swapped so that standard error is what goes
+# through `tee` and standard output, on 3, is what the command substitution reads; `pipefail` keeps the
+# tool's exit status as the pipeline's, so a failed deployment still fails this script.
+url="$(
+  { node "${tool_dir}/src/main.ts" deploy 2>&1 1>&3 | tee -a .adapter-server.log >&2; } 3>&1
+)"
 printf '%s\n' "$url"

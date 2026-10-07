@@ -6,12 +6,7 @@ import {
   bundleBlobs,
   type DeploymentBundle,
   deploymentBundleSchema,
-  foldedHeaderRulesOf,
-  headerRulesOf,
-  type Route,
 } from '@stayingupwind/core/bundle';
-import type { MiddlewareMatcher } from '@stayingupwind/core/manifest';
-import { middlewareApplies } from '@stayingupwind/core/paas';
 
 import {
   ApiError,
@@ -22,6 +17,14 @@ import {
 } from './client.ts';
 import type { Config } from './config.ts';
 import { fixtureEnvironment } from './fixture-env.ts';
+import {
+  askThePage,
+  type PageAnswer,
+  PROBE_ENCODING,
+  type Probe,
+  probeOf,
+  sameFile,
+} from './probe.ts';
 
 /**
  * A test application deployed the way anybody deploys: its bundle uploaded to a host over that host's
@@ -51,13 +54,13 @@ const SERVER_ERROR = 500;
  * How long the asset's path may be redirected before that is taken as the answer it is.
  *
  * A redirect can never carry the file's digest, so this is not a wait that ends by waiting — except in
- * one window, which is why it is a wait at all: the pointer flips before every part of the host has
+ * one window, which is why it is a wait at all: a host names the new deployment before every part of it has
  * caught up, and what answers in between is the deployment before this one, which in this project is
  * the previous fixture and may be a Next.js test application that redirects everything.
  */
 const REDIRECT_GRACE_MS = 30_000;
-/** Asked for by the probe, and judged by it: see `probeHeaders`. */
-const PROBE_ENCODING = 'identity';
+/** How many times a page that could not be asked is asked again, before it has named anything. */
+const PAGE_ATTEMPTS = 3;
 const MS_PER_SECOND = 1000;
 
 export interface DeployInput {
@@ -216,7 +219,7 @@ function settled(input: DeployInput, deploymentId: string, detail: DeploymentDet
  * deadline turns a slower build into a failure reported while the host goes on to succeed. One that is
  * genuinely stuck reaches no further step, so it still gives up — and says where it was.
  */
-async function waitForHost(input: DeployInput, deploymentId: string): Promise<void> {
+async function waitForHost(input: DeployInput, deploymentId: string): Promise<DeploymentDetail> {
   let deadline = Date.now() + NO_PROGRESS_TIMEOUT_MS;
   let seen: string | undefined;
   for (;;) {
@@ -237,7 +240,7 @@ async function waitForHost(input: DeployInput, deploymentId: string): Promise<vo
     }
     if (TERMINAL_STATUSES.has(detail.status)) {
       settled(input, deploymentId, detail);
-      return;
+      return detail;
     }
     if (Date.now() >= deadline) {
       const stalledOn = seen === undefined ? '' : ` on ${seen}`;
@@ -245,150 +248,6 @@ async function waitForHost(input: DeployInput, deploymentId: string): Promise<vo
     }
     await sleepFor(POLL_INTERVAL_MS);
   }
-}
-
-/**
- * One request to prove the host is answering with *this* deployment.
- *
- * A static file of the bundle, by preference one whose path carries the build id, and its digest as the
- * expected `ETag`: a `HEAD` for it neither renders a page nor moves the body. A fixture with no static
- * file at all — a route handler and nothing else — has only the host's own account of which deployment
- * is current to go by, which is why that case is said out loud rather than passed off as the same
- * evidence.
- */
-/** What one readiness check needs: where to ask, what would prove it, and whose deployment it is. */
-interface Probe {
-  readonly url: URL;
-  readonly etag: string | undefined;
-  /**
-   * Whether that digest is this build's alone.
-   *
-   * A content-addressed asset is shared across deployments on purpose — that is what the path means —
-   * and an unchanged `public/` file is byte for byte what the fixture before it served. Either can be
-   * answered by the deployment before this one while the pointer's move is still reaching the edge, so
-   * neither proves which deployment answered. Both are still worth asking for: where the other
-   * deployment does not have the file, the digest is proof, and where it does, the answer is no weaker
-   * than the pointer this is read beside. What it is not is called proof.
-   */
-  readonly onlyThisBuild: boolean;
-  readonly deploymentId: string;
-}
-
-/** A rule is ahead of the file only if it answers or rewrites; one that does neither sets headers. */
-function answersOrRewrites(route: Route): boolean {
-  return route.status !== undefined || route.destination !== undefined;
-}
-
-function setsEtag(rule: { headers?: Record<string, string> | undefined }): boolean {
-  return Object.keys(rule.headers ?? {}).some((name) => name.toLowerCase() === 'etag');
-}
-
-/**
- * Everything that could stop a file's own digest from coming back, as one list.
- *
- * Three kinds of thing, and all three are matcher-shaped — a pattern and its conditions — which is what
- * lets the host's own reading of that shape answer for all of them. **Middleware** answers whatever it
- * matches, and a catch-all matcher includes `/_next/static`. A **redirect or rewrite ahead of the
- * filesystem** answers instead of the file; one after it does not, because by then the file has won. And
- * a **header rule that sets `ETag`** leaves the file where it is and replaces the one thing being
- * compared — from `headerRulesOf` and `foldedHeaderRulesOf`, which is where the host looks for them, both
- * read because which one it consults depends on whether it reproduces the build's own routing.
- */
-function couldAnswer(bundle: DeploymentBundle): MiddlewareMatcher[] {
-  const { routing } = bundle;
-  return [
-    ...routing.middlewareMatchers,
-    ...[...routing.beforeMiddleware, ...routing.beforeFiles].filter((route) =>
-      answersOrRewrites(route),
-    ),
-    ...[...headerRulesOf(bundle), ...(foldedHeaderRulesOf(bundle) ?? [])].filter((rule) =>
-      setsEtag(rule),
-    ),
-  ];
-}
-
-/**
- * The headers the probe's request carries, to judge a rule's conditions by the request that will be made.
- *
- * Judging them against no headers at all would be judging a different request: a condition on
- * `user-agent` or `accept` holds for the probe and would read as failing, and the asset it disqualifies
- * would be chosen and then intercepted. Measured on Node 24 — `fetch` adds `host`, `connection`,
- * `accept`, `accept-language`, `sec-fetch-mode`, `user-agent` and `accept-encoding`, and nothing else.
- *
- * Two of them are set on the request rather than left to the runtime, because a default is not a thing
- * this file can state: `user-agent`, which would otherwise be `node`, and `accept-encoding`, whose
- * default turned out to depend on the scheme — `br, gzip, deflate` over HTTPS and `gzip, deflate` over
- * plain HTTP, both measured. `identity` earns its place twice over: it is the one value that is the same
- * under either scheme, and a response nobody compressed is a response whose `ETag` no proxy had a reason
- * to touch.
- */
-function probeHeaders(url: URL): Headers {
-  return new Headers({
-    accept: '*/*',
-    'accept-encoding': PROBE_ENCODING,
-    'accept-language': '*',
-    connection: 'close',
-    host: url.host,
-    'sec-fetch-mode': 'cors',
-    'user-agent': USER_AGENT,
-  });
-}
-
-/**
- * Whether a `HEAD` of this URL would come back with the file's own digest, as far as the bundle says.
- *
- * `middlewareApplies` is the host's own answer to "would this apply to this request": the pattern as
- * Next.js compiled it, the conditions as Next.js reads them, and a path that matches only once decoded.
- * Asking it rather than reading the patterns here is what keeps a *conditional* catch-all rule from
- * disqualifying every asset a build has — and what that would cost is not caution but evidence, since
- * the probe would fall back to the pointer, which is the weakest thing it can rest on.
- *
- * Used for the rules as well as the matchers, because the shape is the same one. The rules get the
- * decoded retry too, which the host would not give them; it can only make this answer more cautious, and
- * the alternative is a second reading of the same patterns kept in step with the host's by hand.
- */
-function showsTheDigest(could: readonly MiddlewareMatcher[], url: URL, headers: Headers): boolean {
-  try {
-    return !middlewareApplies(could, url, headers);
-  } catch {
-    // A pattern this engine will not take. The schema refuses what is unsafe to run, and every ordinary
-    // one compiles, so this is the last resort — read as applying, which loses a candidate rather than
-    // the deployment.
-    return false;
-  }
-}
-
-function probeOf(publicUrl: URL, bundle: DeploymentBundle): Probe {
-  // Assigned rather than resolved, so that a fixture's `//path` stays on this host.
-  const asked = (pathname: string): URL => {
-    const url = new URL(publicUrl.origin);
-    url.pathname = pathname;
-    return url;
-  };
-  const could = couldAnswer(bundle);
-  const headers = probeHeaders(publicUrl);
-  const quiet = bundle.staticFiles.filter((entry) =>
-    showsTheDigest(could, asked(entry.pathname), headers),
-  );
-  // A path carrying the build id first, because that is the one digest another deployment cannot have.
-  const named = quiet.find((entry) => entry.pathname.includes(`/${bundle.buildId}/`));
-  const file = named ?? quiet.find((entry) => entry.immutable) ?? quiet[0];
-  return {
-    url: asked(file?.pathname ?? (bundle.config.basePath || '/')),
-    etag: file === undefined ? undefined : `"${file.blob.sha256}"`,
-    onlyThisBuild: named !== undefined,
-    deploymentId: bundle.deploymentId,
-  };
-}
-
-/**
- * Whether the host answered with the file the probe asked for.
- *
- * `W/` off the front of what came back: a proxy that recompresses a response may mark its `ETag` weak,
- * and a weak one still names this file. The probe asks for no encoding partly so that it rarely has to.
- */
-function sameFile(sent: string | null, expected: string): boolean {
-  return sent !== null && sent.replace(/^W\//u, '') === expected;
 }
 
 /**
@@ -461,7 +320,7 @@ async function answered(
   //
   // A redirect gets no grace on this path, deliberately: the probe is the application's own root, and
   // fixtures redirect that on purpose — a trailing slash, a locale, middleware. Failing those after
-  // thirty seconds, to catch a previous deployment still answering a moment after the pointer moved,
+  // thirty seconds, to catch a previous deployment still answering a moment after the host named this one,
   // would cost more than it saves where no digest can tell the two apart.
   if (response.status >= SERVER_ERROR) {
     input.log(
@@ -478,23 +337,26 @@ async function answered(
  * A project that is not answering at all is worth telling apart from one that has not caught up: the
  * first is somebody's decision and waiting out the deadline tells nobody anything.
  */
-async function served(
+async function isServed(
   input: DeployInput,
   detail: ProjectDetail,
   probe: Probe,
-  remainingMs: number,
+  own: { readonly remainingMs: number; readonly url: boolean },
 ): Promise<Unproved | undefined> {
-  if (detail.active?.deploymentId !== probe.deploymentId) {
+  const ours = detail.active?.deploymentId === probe.deploymentId;
+  // At the deployment's own URL the probe is the whole of the question: what the project answers with
+  // is a different hostname's, and may come round to this deployment later than its own URL does.
+  if (!ours && !own.url) {
     return { said: 'the project does not answer with this deployment yet', redirected: false };
   }
-  if (detail.active.mode === 'disabled') {
+  if (ours && detail.active.mode === 'disabled') {
     // Not an observation to wait out: nothing this tool does will turn it back on, so the deadline
     // would only be fifteen minutes of asking a question already answered.
     throw new Error(
       `${input.config.projectId} answers with this deployment but is disabled, so nothing is served`,
     );
   }
-  return answered(input, probe, remainingMs);
+  return answered(input, probe, own.remainingMs);
 }
 
 /** What was proved, and what was not, once the host is answering with this deployment. */
@@ -553,12 +415,218 @@ function redirectedSince(probe: Probe, since: number | undefined): number {
   return started;
 }
 
+/**
+ * The settle the host was said to need (`Config.settleMs`), all of it, from the first request this
+ * deployment is known to have answered.
+ *
+ * Known: the page's own `data-dpl-id` (`pageProvesIt`), since no file can be one deployment's alone;
+ * where no page names a deployment, the probe is the best there is. Not from when the host first named the deployment as current, though that comes
+ * earlier and would cost less — a host may name a deployment before the switch has reached any request,
+ * so the naming is no evidence of where the switch has got to, and neither is a probe that any
+ * deployment could have answered. A request this deployment answered is: the switch had begun by then.
+ * Why it is needed at all: suites of a full run whose received pages carried `data-dpl-id` named an
+ * earlier fixture's deployment on some requests, while other requests of the same suite reached their
+ * own.
+ */
+/**
+ * Whether the application's own page names this deployment, waited for while it names another.
+ *
+ * Asked whenever a settle is set, because the probe's file cannot say whose deployment answered — a
+ * file is at best this build's, and two deployments of one build share all of them — so that the settle
+ * starts from a request this deployment is known to have answered. A page that names an earlier one is the very thing the settle is for: the host has
+ * named this deployment and not yet brought it to every request.
+ *
+ * What ends the wait without proof is a page that answered and names nobody: that route carries no mark,
+ * and the probe is the best there is. A page that could not be asked is not that — before the page has
+ * named anything it is given a few tries, and after it has named the deployment before, silence does not
+ * outweigh that: the wait goes on to the deadline, checked before each request rather than after, since
+ * past it a request would be given no time at all and fail as silence.
+ */
+async function pageProvesIt(input: DeployInput, probe: Probe, deadline: number): Promise<boolean> {
+  let stale: string | undefined;
+  let unreachable = 0;
+  for (;;) {
+    if (stale !== undefined && Date.now() >= deadline) {
+      throw new Error(`${probe.page.href} went on naming another deployment (${stale})`);
+    }
+    const answer = await askThePage(probe, timeLeft(deadline));
+    unreachable += answer.kind === 'unreachable' ? 1 : 0;
+    const next = verdictOn(answer, probe.deploymentId, stale, unreachable);
+    if (next === 'proved') {
+      input.log(`${probe.page.href} names this deployment`);
+      return true;
+    }
+    if (next === 'unproven') {
+      return false;
+    }
+    if (stale === undefined && answer.kind === 'named') {
+      input.log(
+        `${probe.page.href} still names another deployment (${answer.deploymentId}); waiting`,
+      );
+    }
+    stale = answer.kind === 'named' ? answer.deploymentId : stale;
+    await sleepFor(POLL_INTERVAL_MS);
+  }
+}
+
+/** What one answer from the page means for the wait: proof, the end of what it can say, or ask again. */
+function verdictOn(
+  answer: PageAnswer,
+  ours: string,
+  stale: string | undefined,
+  unreachable: number,
+): 'proved' | 'unproven' | 'again' {
+  if (answer.kind === 'unnamed') {
+    return 'unproven';
+  }
+  if (answer.kind === 'named') {
+    return answer.deploymentId === ours ? 'proved' : 'again';
+  }
+  return stale === undefined && unreachable >= PAGE_ATTEMPTS ? 'unproven' : 'again';
+}
+
+/** What a request made now may take: the usual bound, or whatever is left before the deadline. */
+function timeLeft(deadline: number): number {
+  return Math.max(1, Math.min(REQUEST_TIMEOUT_MS, deadline - Date.now()));
+}
+
+async function letItSettle(input: DeployInput): Promise<void> {
+  const { settleMs } = input.config;
+  if (settleMs > 0) {
+    input.log(
+      `letting the host settle: ${String(settleMs / MS_PER_SECOND)}s before the suite starts, so ` +
+        'that every request reaches this deployment',
+    );
+    await sleepFor(settleMs);
+  }
+}
+
+/** Where the suite sends its requests, and whether that is the deployment's own URL. */
+interface Served {
+  readonly url: URL;
+  readonly own: boolean;
+}
+
+/**
+ * How long a deployment that is live may go without a URL of its own before the host is taken to give
+ * none: a host that writes it a moment after it says the deployment is live is waited for, a few reads
+ * at most, and one that gives none costs a fixture no more than this.
+ */
+const OWN_URL_GRACE_MS = 15_000;
+
+/** The deployment's own URL, as a later answer gives it: nothing while a read cannot say. */
+async function ownUrlOf(input: DeployInput, deploymentId: string): Promise<string | undefined> {
+  return (await visible(input, deploymentId))?.url;
+}
+
+/** What `lateBy` settles to: the time was up before the work it raced. */
+const LATE: unique symbol = Symbol('late');
+
+/** `LATE`, once `ms` have passed — or as soon as `signal` says the race is over. */
+async function lateBy(ms: number, signal: AbortSignal): Promise<typeof LATE> {
+  try {
+    await sleepFor(Math.max(0, ms), undefined, { signal });
+  } catch {
+    // Aborted: whatever this raced answered first.
+  }
+  return LATE;
+}
+
+/**
+ * `work`, or `undefined` once `ms` have passed without it — a read the client is still retrying,
+ * say. What it settles to after that is let go of: the race has seen to it, failure included.
+ */
+async function inTime<T>(work: Promise<T>, ms: number): Promise<T | undefined> {
+  const timer = new AbortController();
+  try {
+    const first = await Promise.race([work, lateBy(ms, timer.signal)]);
+    return first === LATE ? undefined : first;
+  } finally {
+    timer.abort();
+  }
+}
+
+/**
+ * Where the suite sends its requests: the deployment's own URL, where the host gives one — it serves
+ * this deployment and no other, so no request of the suite can reach the deployment before it — and
+ * otherwise the project's, where one can (`letItSettle`).
+ */
+async function servedAt(
+  input: DeployInput,
+  settledAs: DeploymentDetail,
+  projectUrl: URL,
+): Promise<Served> {
+  // The answer that said the deployment was live may predate its URL being written: read again, a
+  // moment apart, before taking the host to give none.
+  let own = settledAs.url;
+  const until = Date.now() + OWN_URL_GRACE_MS;
+  while (own === undefined && Date.now() < until) {
+    const left = Math.max(0, until - Date.now());
+    await sleepFor(Math.min(POLL_INTERVAL_MS, left));
+    // Each read bounded by what is left of the grace, which a read the client retries could outlast.
+    own = await inTime(ownUrlOf(input, settledAs.id), until - Date.now());
+  }
+  if (own === undefined) {
+    input.log(
+      "the host gives this deployment no URL of its own, so the suite goes to the project's, where " +
+        'the deployment before it may still answer',
+    );
+    return { url: projectUrl, own: false };
+  }
+  let url: URL;
+  try {
+    url = new URL(own);
+  } catch (error) {
+    throw new Error(`the deployment's own URL is not a URL: ${withoutUserinfo(own)}`, {
+      cause: error,
+    });
+  }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username !== '' || url.password !== '') {
+    throw new Error(`the deployment is not served over public HTTP(S): ${url.origin}`);
+  }
+  // The suite is handed an origin, and joins its own paths to it: a URL that needs a path or a query to
+  // reach the deployment is one it cannot be pointed at, and is refused rather than cut down to a host
+  // that may serve something else.
+  if (url.pathname !== '/' || url.search !== '' || url.hash !== '') {
+    // The path as it is; a query or a fragment only as being there, since either may carry a secret.
+    const pathname = url.pathname === '/' ? '' : url.pathname;
+    const more = `${pathname}${url.search === '' ? '' : '?…'}${url.hash === '' ? '' : '#…'}`;
+    throw new Error(`the deployment's own URL is more than an origin: ${url.origin}${more}`);
+  }
+  input.log(`the deployment has a URL of its own, ${url.origin}, and the suite goes there`);
+  return { url, own: true };
+}
+
+/** What follows the probe proving the deployment: the settle, where the suite goes to the project. */
+async function onceServed(
+  input: DeployInput,
+  probe: Probe,
+  served: Served,
+  deadline: number,
+): Promise<void> {
+  sayItIsServed(input, probe);
+  if (served.own) {
+    // Nothing to settle: no other deployment answers at a deployment's own URL.
+    return;
+  }
+  // Whenever there is a settle to anchor, and only then. The probe's file says at best whose build
+  // answered — two deployments of one build share every file — so whose deployment it was is the
+  // page's to say, whatever kind of file the probe found. And the page is the application's own route:
+  // asking for it is a request its tests did not make, one that renders and may revalidate or count,
+  // which is worth it for the settle and for nothing else.
+  if (input.config.settleMs > 0 && !(await pageProvesIt(input, probe, deadline))) {
+    input.log('no page names a deployment either, so the settle starts now, on the probe alone');
+  }
+  await letItSettle(input);
+}
+
 async function waitUntilServed(
   input: DeployInput,
   bundle: DeploymentBundle,
   publicUrl: URL,
+  served: Served,
 ): Promise<void> {
-  const probe = probeOf(publicUrl, bundle);
+  const probe = probeOf(served.url, bundle);
   const deadline = Date.now() + NO_PROGRESS_TIMEOUT_MS;
   let said: string | undefined;
   let redirecting: number | undefined;
@@ -569,9 +637,12 @@ async function waitUntilServed(
     if (previewUrlOf(detail, input.config).origin !== publicUrl.origin) {
       throw new Error('the project changed the hostname it is served on during the deployment');
     }
-    const observation = await served(input, detail, probe, deadline - Date.now());
+    const observation = await isServed(input, detail, probe, {
+      remainingMs: deadline - Date.now(),
+      url: served.own,
+    });
     if (observation === undefined) {
-      sayItIsServed(input, probe);
+      await onceServed(input, probe, served, deadline);
       return;
     }
     if (observation.said !== said) {
@@ -620,10 +691,11 @@ export async function deployFixture(input: DeployInput): Promise<Deployment> {
     throw explained(error);
   }
   input.log(`the host is deploying it (${runId})`);
-  await waitForHost(input, bundle.deploymentId);
-  await waitUntilServed(input, bundle, publicUrl);
+  const settledAs = await waitForHost(input, bundle.deploymentId);
+  const served = await servedAt(input, settledAs, publicUrl);
+  await waitUntilServed(input, bundle, publicUrl, served);
   input.log('runtime logs are not available through the API; the deployment is left in place');
-  return { url: publicUrl.origin, deploymentId: bundle.deploymentId, runId };
+  return { url: served.url.origin, deploymentId: bundle.deploymentId, runId };
 }
 
 /**

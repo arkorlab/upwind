@@ -2,8 +2,14 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import type { FunctionModule, FunctionSpec, SourceMapRef } from '@stayingupwind/core/bundle';
-import { build, type Plugin } from 'esbuild';
+import {
+  type FunctionModule,
+  type FunctionSpec,
+  type ManifestHead,
+  manifestHead,
+  type SourceMapRef,
+} from '@stayingupwind/core/bundle';
+import { build } from 'esbuild';
 import {
   type InputOptions,
   type OutputChunk,
@@ -24,8 +30,10 @@ import {
   functionDependencies,
 } from './dependencies.ts';
 import { dynamicLoadsInChunk } from './dynamic-loads.ts';
-import { bundleEdge, EDGE_MODULE, type EdgeEntry } from './edge.ts';
+import { bundleEdge, type EdgeEntry } from './edge.ts';
 import { functionSize } from './function-size.ts';
+import { APP_MODULE, generatedModulesPlugin } from './generated-modules.ts';
+import type { KeptMaps } from './kept-maps.ts';
 import {
   bundleLinkedExternals,
   type LinkedExternals,
@@ -45,7 +53,14 @@ import {
   wasmModulePlugin,
   FUNCTION_BANNER,
 } from './patches/index.ts';
-import { functionSourceMaps, sourceMapsPlugin, sourcemapOutput } from './source-maps.ts';
+import {
+  carriesMaps,
+  codeModules,
+  functionSourceMaps,
+  type SourceMapsOption,
+  sourceMapsPlugin,
+  sourcemapOutput,
+} from './source-maps.ts';
 import type { TracedFile } from './traced-files.ts';
 import { WASM_ENTRY_MODULE, type WasmCollector, wasmEntrySource, wasmModuleName } from './wasm.ts';
 
@@ -56,7 +71,6 @@ import { WASM_ENTRY_MODULE, type WasmCollector, wasmEntrySource, wasmModuleName 
 const FUNCTION_COMPATIBILITY_DATE = '2026-09-15';
 const FUNCTION_COMPATIBILITY_FLAGS: readonly string[] = ['nodejs_compat'];
 
-const APP_MODULE = 'app.cjs';
 const RUNTIME_MODULE = 'index.mjs';
 const RUNTIME_MANIFEST_MODULE = 'runtime.json';
 const BLOB_MODULE_PREFIX = 'blobs/';
@@ -76,6 +90,13 @@ export type FunctionKind = 'app' | 'middleware' | 'workflow';
 
 export interface BuildFunctionInput {
   readonly kind: FunctionKind;
+  /**
+   * The Function's own name, where it is not its kind: `app-2`, `app-3`… for the app Functions
+   * after the first of a build that split its routes across several (`split.ts`). It names the
+   * Function's code modules, its source maps and everything the build writes for it, so that no two
+   * Functions of one deployment name one thing alike.
+   */
+  readonly name?: string | undefined;
   readonly projectDir: string;
   readonly outDir: string;
   readonly patch: PatchContext;
@@ -94,10 +115,41 @@ export interface BuildFunctionInput {
   /** The files the entries read through `node:fs`, at their paths in the project (`traced-files.ts`). */
   readonly files: readonly TracedFile[];
   readonly blobStore: BlobStore;
-  /** Carry a map from this Function's bundle back to the sources it was built from. */
-  readonly sourceMaps?: boolean | undefined;
+  /**
+   * Carry a map from this Function's bundle back to the sources it was built from; `'project'`, to
+   * the project's own files only (`projectOnly`).
+   */
+  readonly sourceMaps?: SourceMapsOption;
+  /** The maps that came through the build's `runAfterProductionCompile` (`kept-maps.ts`). */
+  readonly keptMaps?: KeptMaps | undefined;
+  /**
+   * Leave the Function's size to the caller to judge: a build that may yet split its routes builds
+   * one Function first to weigh, and a Function too large is then a reason to split it rather than
+   * a failure. Whatever is finally uploaded is held to the limit all the same.
+   */
+  readonly deferSizeAudit?: boolean | undefined;
   /** Whether the build carries the Workflow SDK, in any of its Functions (`workflow.ts`). */
   readonly workflowSdk?: boolean | undefined;
+}
+
+function nameOf(input: BuildFunctionInput): string {
+  return input.name ?? input.kind;
+}
+
+/**
+ * The runtime manifest as the middleware Function is given it: which deployment and build it is,
+ * and its configuration — none of the routes, prerenders and files the app Function answers by.
+ *
+ * The middleware Function answers the middleware alone, run ahead of a shell the edge serves, and
+ * reads the base path of the manifest to do it (`deploymentConfig`, in the runtime). The rest would
+ * be parsed all the same on its first request — the manifest of an application with a few thousand
+ * prerenders runs to megabytes — on the Function whose cold start that shell waits on. The runtime
+ * reads it by the same list of fields (`MANIFEST_HEAD_KEYS`).
+ */
+export function middlewareManifest<T extends Readonly<Record<keyof ManifestHead, unknown>>>(
+  manifest: T,
+): Pick<T, keyof ManifestHead> {
+  return manifestHead(manifest);
 }
 
 /** Module name a blob is shipped under; the runtime reads it back at `/bundle/blobs/<sha256>`. */
@@ -120,79 +172,6 @@ function appEntrySource(entries: readonly EntryModule[]): string {
   ].join('\n');
 }
 
-const EMPTY_EDGE_MODULE = 'module.exports = { entries: {} };';
-const EMPTY_WASM_MODULE = '// This deployment carries no WebAssembly.';
-/**
- * A build told of no cache host: the runtime asks, is answered nothing, and runs as it did
- * before any cache existed. An export rather than an empty module, because the runtime imports
- * the name and a bundler must find it.
- */
-const NO_CACHE_HOST_MODULE = 'export function createCacheHost() { return undefined; }';
-
-/**
- * The generated modules the runtime source names: `arkor:app` is the `app.cjs` next to it in
- * the Function, `arkor:edge` the `edge.cjs` — which a deployment with no edge entrypoint does
- * not have, and whose import is then the empty table above rather than a module the Function would
- * carry and never use — and `arkor:wasm` the `wasm.mjs` that publishes the compiled
- * WebAssembly, which a deployment with none does not have either.
- *
- * `arkor:cache-host` is the one module of the four that comes from outside the build:
- * `cacheHostModule` names what the runtime's cache reads and writes through, and it is bundled
- * into the runtime rather than shipped beside it, since it is source like the rest of the
- * runtime. A build told of none resolves to the stub above.
- */
-function generatedModulesPlugin(has: {
-  edge: boolean;
-  wasm: boolean;
-  cacheHostModule: string | undefined;
-}): Plugin {
-  return {
-    name: 'arkor-generated-modules',
-    setup(bundler) {
-      // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-      bundler.onResolve({ filter: /^arkor:app$/ }, () => {
-        return {
-          path: `./${APP_MODULE}`,
-          external: true,
-        };
-      });
-      // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-      bundler.onResolve({ filter: /^arkor:edge$/ }, () => {
-        return has.edge
-          ? { path: `./${EDGE_MODULE}`, external: true }
-          : { path: 'arkor:edge', namespace: 'arkor-edge' };
-      });
-      bundler.onLoad(
-        // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-        { filter: /^arkor:edge$/, namespace: 'arkor-edge' },
-        () => ({ contents: EMPTY_EDGE_MODULE, loader: 'js' }),
-      );
-      // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-      bundler.onResolve({ filter: /^arkor:wasm$/ }, () => {
-        return has.wasm
-          ? { path: `./${WASM_ENTRY_MODULE}`, external: true }
-          : { path: 'arkor:wasm', namespace: 'arkor-wasm' };
-      });
-      bundler.onLoad(
-        // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-        { filter: /^arkor:wasm$/, namespace: 'arkor-wasm' },
-        () => ({ contents: EMPTY_WASM_MODULE, loader: 'js' }),
-      );
-      // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-      bundler.onResolve({ filter: /^arkor:cache-host$/ }, () => {
-        return has.cacheHostModule === undefined
-          ? { path: 'arkor:cache-host', namespace: 'arkor-cache-host' }
-          : { path: has.cacheHostModule };
-      });
-      bundler.onLoad(
-        // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-        { filter: /^arkor:cache-host$/, namespace: 'arkor-cache-host' },
-        () => ({ contents: NO_CACHE_HOST_MODULE, loader: 'js' }),
-      );
-    },
-  };
-}
-
 function runtimeEntry(): string {
   return fileURLToPath(import.meta.resolve('@stayingupwind/runtime/function'));
 }
@@ -203,6 +182,8 @@ export interface AppBundleContext {
   readonly wasm: WasmCollector;
   /** Compose the maps the build already wrote through into this bundle's own. */
   readonly sourceMaps?: boolean | undefined;
+  /** Where to find a chunk's map that a hook took away (`kept-maps.ts`). */
+  readonly keptMaps?: KeptMaps | undefined;
   /**
    * Whether this is the workflow Function: the one Function the Workflow SDK's engine is in, and the
    * one whose `node:vm` import is stubbed (`workflow.ts`). Anywhere else the audit refuses it.
@@ -243,7 +224,7 @@ export function appBundlePlugins(
     // After the patches, so a file a patch rewrote is never given a map that no longer describes
     // it; see `sourceMapsPlugin`. Left out entirely for a build carrying no maps: it would read
     // the tail of every file the bundle loads for a comment nothing would use.
-    ...(context.sourceMaps === true ? [sourceMapsPlugin()] : []),
+    ...(context.sourceMaps === true ? [sourceMapsPlugin(context.keptMaps)] : []),
     stubPlugin((specifier) => {
       sinks.stubs.push(specifier);
     }, context.workflowFunction === true),
@@ -300,8 +281,8 @@ async function bundleApp(
   input: BuildFunctionInput,
   workDir: string,
 ): Promise<{ outFile: string; trace: BundleTrace; linked: ReadonlySet<string> }> {
-  const entryFile = path.join(workDir, `${input.kind}-entry.cjs`);
-  const outFile = path.join(workDir, `${input.kind}-${APP_MODULE}`);
+  const entryFile = path.join(workDir, `${nameOf(input)}-entry.cjs`);
+  const outFile = path.join(workDir, `${nameOf(input)}-${APP_MODULE}`);
   await writeFile(entryFile, appEntrySource(input.entries));
   const sinks: AppBundleSinks = {
     patches: [],
@@ -317,7 +298,7 @@ async function bundleApp(
       {
         patch: input.patch,
         wasm: input.wasm,
-        ...(input.sourceMaps === true && { sourceMaps: true }),
+        ...(carriesMaps(input.sourceMaps) && { sourceMaps: true, keptMaps: input.keptMaps }),
         ...(input.kind === 'workflow' && { workflowFunction: true }),
       },
       sinks,
@@ -335,11 +316,11 @@ async function bundleApp(
     banner: FUNCTION_BANNER,
     minify: { compress: true, mangle: false, codegen: { removeWhitespace: true } },
     comments: { legal: false },
-    ...sourcemapOutput(input.sourceMaps === true),
+    ...sourcemapOutput(carriesMaps(input.sourceMaps)),
   });
   const chunk = output.find((item): item is OutputChunk => item.type === 'chunk');
   if (chunk === undefined) {
-    throw new Error(`@stayingupwind/adapter: the ${input.kind} Function bundled to no chunk`);
+    throw new Error(`@stayingupwind/adapter: the ${nameOf(input)} Function bundled to no chunk`);
   }
   return {
     outFile,
@@ -356,7 +337,8 @@ async function bundleApp(
 }
 
 async function bundleRuntime(input: BuildFunctionInput, workDir: string): Promise<string> {
-  const outFile = path.join(workDir, `${input.kind}-${RUNTIME_MODULE}`);
+  const outFile = path.join(workDir, `${nameOf(input)}-${RUNTIME_MODULE}`);
+  const modules = codeModules(nameOf(input));
   await build({
     entryPoints: [runtimeEntry()],
     bundle: true,
@@ -368,6 +350,7 @@ async function bundleRuntime(input: BuildFunctionInput, workDir: string): Promis
     conditions: ['workerd', 'worker'],
     plugins: [
       generatedModulesPlugin({
+        modules,
         edge: input.edgeEntries.length > 0,
         wasm: input.wasm.hasCandidates,
         cacheHostModule: input.cacheHostModule,
@@ -376,13 +359,20 @@ async function bundleRuntime(input: BuildFunctionInput, workDir: string): Promis
     define: {
       'process.env.NODE_ENV': '"production"',
       __ARKOR_FUNCTION_KIND__: jsLiteral(input.kind),
+      // Which Function this is, among a deployment's app Functions: what a request for a route of
+      // another one is told apart by (`placement.ts`).
+      __ARKOR_FUNCTION_NAME__: jsLiteral(nameOf(input)),
       // A build without the Workflow SDK leaves the runtime's part for it out entirely.
       __ARKOR_WORKFLOW_SDK__: jsLiteral(input.workflowSdk === true),
       // CommonJS conveniences that `@next/routing`'s build references at module scope.
       __dirname: '"/bundle"',
       __filename: `"/bundle/${RUNTIME_MODULE}"`,
     },
-    minify: false,
+    // Whitespace and syntax, as `app.cjs` is minified, and not names: a stack trace out of the
+    // runtime still says which function it came from.
+    minifyWhitespace: true,
+    minifySyntax: true,
+    minifyIdentifiers: false,
     legalComments: 'none',
     logLevel: 'silent',
     sourcemap: false,
@@ -395,6 +385,16 @@ export interface BuiltFunction {
   readonly dependencies: FunctionDependencies;
   /** The maps of this Function's own modules; empty unless the host asked for them. */
   readonly sourceMaps: SourceMapRef[];
+  /**
+   * What each file put into the Function's code, by the path the bundler read it at: `app.cjs`'s
+   * and `edge.cjs`'s modules. What a plan weighs a route's code with (`split.ts`).
+   */
+  readonly inputs: readonly {
+    readonly file: string;
+    readonly bytes: number;
+    /** Bundled into `edge.cjs` rather than `app.cjs`: a file both bundle is in each, weighed twice. */
+    readonly edge?: true | undefined;
+  }[];
 }
 
 /**
@@ -480,17 +480,19 @@ async function linkedSource(linked: LinkedExternals): Promise<string> {
 export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFunction> {
   const workDir = path.join(input.outDir, 'work');
   await mkdir(workDir, { recursive: true });
+  const name = nameOf(input);
+  const names = codeModules(name);
   const [app, runtimeFile, edge] = await Promise.all([
     bundleApp(input, workDir),
     bundleRuntime(input, workDir),
     input.edgeEntries.length === 0
       ? undefined
       : bundleEdge({
-          kind: input.kind,
+          kind: name,
           projectDir: input.projectDir,
           workDir,
           entries: input.edgeEntries,
-          ...(input.sourceMaps === true && { sourceMaps: true }),
+          ...(carriesMaps(input.sourceMaps) && { sourceMaps: true, keptMaps: input.keptMaps }),
         }),
   ]);
   const appFile = app.outFile;
@@ -498,7 +500,7 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
   const linked = await bundleLinkedExternals({
     distDir: input.patch.distDir,
     workDir,
-    kind: input.kind,
+    kind: name,
     ids: app.linked,
   });
   const modules: FunctionModule[] = [
@@ -508,7 +510,7 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
       blob: await input.blobStore.putFile(runtimeFile, contentTypeFor(runtimeFile)),
     },
     {
-      name: APP_MODULE,
+      name: names.app,
       type: 'commonjs',
       blob: await input.blobStore.putFile(appFile, contentTypeFor(appFile)),
     },
@@ -516,7 +518,7 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
       ? []
       : [
           {
-            name: EDGE_MODULE,
+            name: names.edge,
             type: 'commonjs' as const,
             blob: await input.blobStore.putFile(edge.outFile, contentTypeFor(edge.outFile)),
           },
@@ -572,7 +574,7 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
   }
   // A file the application reads is found at its path in the project, which no module of the
   // Function's own may hold as well (`auditTracedFiles`).
-  auditTracedFiles(input.kind, modules, input.files);
+  auditTracedFiles(name, modules, input.files);
   for (const file of input.files) {
     modules.push({
       name: file.name,
@@ -591,10 +593,10 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
       linked: bundleDependencies(input.projectDir, distDir, linked.trace),
     }),
   };
-  auditWasmLoader(input.kind, input.patch, app.trace.patches);
-  auditFunctionSize(input.kind, { modules, size });
+  auditWasmLoader(name, input.patch, app.trace.patches);
+  auditFunctionSize(name, { modules, size }, input.deferSizeAudit === true);
   auditFunction(
-    input.kind,
+    name,
     {
       app: await readFile(appFile, 'utf8'),
       ...(edge !== undefined && { edge: await readFile(edge.outFile, 'utf8') }),
@@ -610,12 +612,36 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
       compatibilityFlags: [...FUNCTION_COMPATIBILITY_FLAGS],
     },
     dependencies,
-    sourceMaps:
-      input.sourceMaps === true
-        ? await functionSourceMaps(input.blobStore, input.kind, {
-            app: appFile,
-            edge: edge?.outFile,
-          })
-        : [],
+    sourceMaps: await builtSourceMaps(input, { name, app: appFile, edge }),
+    inputs: [
+      ...app.trace.inputs,
+      ...(edge === undefined
+        ? []
+        : edge.trace.inputs.map((each) => ({ ...each, edge: true as const }))),
+    ],
   };
+}
+
+/** The maps of a Function's own code, as the host asked for them: none, whole, or the project's. */
+async function builtSourceMaps(
+  input: BuildFunctionInput,
+  built: {
+    readonly name: string;
+    readonly app: string;
+    readonly edge: { readonly outFile: string } | undefined;
+  },
+): Promise<SourceMapRef[]> {
+  if (!carriesMaps(input.sourceMaps)) {
+    return [];
+  }
+  const project =
+    input.sourceMaps === 'project'
+      ? { projectDir: input.projectDir, distDir: input.patch.distDir, outDir: input.outDir }
+      : undefined;
+  return functionSourceMaps(
+    input.blobStore,
+    built.name,
+    { app: built.app, edge: built.edge?.outFile },
+    project,
+  );
 }
