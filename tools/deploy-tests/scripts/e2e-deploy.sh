@@ -9,6 +9,17 @@ set -euo pipefail
 
 # Where everything is, from this script's own place rather than from one another.
 tool_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# The suite's own variables (`createNext({ env })`): what the harness handed this hook beyond its own
+# environment, read before anything below sets a variable of its own (`src/suite-env.ts`). The harness
+# is this script's parent; a caller that starts the hook through something else names it.
+ADAPTER_TEST_SUITE_ENV="$(node "${tool_dir}/src/read-suite-env.ts" "${ADAPTER_TEST_HARNESS_PID:-$PPID}")"
+export ADAPTER_TEST_SUITE_ENV
+
+# When the suite's hook began, for the deployment to end its waits where the hook's timeout would cut it
+# off (`src/hook.ts`): the build below spends the same time.
+export ADAPTER_TEST_HOOK_STARTED_MS="${ADAPTER_TEST_HOOK_STARTED_MS:-$(node -p 'Date.now()')}"
+
 repo_root="$(cd "${tool_dir}/../.." && pwd)"
 # The contract's own variable, and it names the adapter's repository: keep it working, since the
 # workflow in Next.js's documentation sets it and people copy that workflow.
@@ -17,8 +28,12 @@ core_dir="${adapter_dir}/packages/core"
 
 # `dist` is the adapter as a release gives it to a project, which is what should be tested; `src` is
 # what a working copy has before `pnpm build`, and failing over to it beats failing on a forgotten
-# build step.
-if [ -f "${adapter_dir}/packages/adapter/dist/index.js" ]; then
+# build step. An adapter named already is the one tested: this one's default export is configured with
+# nothing, so its Functions answer every cache read a miss, and a host that plugs its own cache in
+# (`createAdapter({ cacheHostModule })`) tests what it deploys by naming the adapter that does.
+if [ -n "${NEXT_ADAPTER_PATH:-}" ]; then
+  echo "the adapter named by NEXT_ADAPTER_PATH: ${NEXT_ADAPTER_PATH}" >&2
+elif [ -f "${adapter_dir}/packages/adapter/dist/index.js" ]; then
   export NEXT_ADAPTER_PATH="${adapter_dir}/packages/adapter/dist/index.js"
 else
   echo 'no built adapter; running it from source (pnpm --filter @stayingupwind/adapter build)' >&2
@@ -54,9 +69,13 @@ export NEXT_PRIVATE_TEST_MODE=e2e
 # This is a reduction, not a boundary: the deploy hook and the fixture's build run as the same user on
 # the same machine, and a process can read what another process of its own user can. What it removes is
 # the ordinary way a secret escapes — something dumping the environment it was handed.
+#
+# Corepack is told not to refuse: the workflow enables it, and in strict mode it refuses to run pnpm in
+# an application whose `packageManager` names another — a fixture may pin npm, and the harness still
+# appends `pnpm post-build` to its build. pnpm, started by Corepack, then leaves the pin alone too.
 fixture() {
   env -u ARKOR_API_URL -u ARKOR_API_TOKEN -u ARKOR_API_TOKEN_FILE -u ADAPTER_TEST_PROJECT_ID \
-    -u ADAPTER_TEST_SETTLE_SECONDS "$@"
+    -u ADAPTER_TEST_SETTLE_SECONDS COREPACK_ENABLE_STRICT=0 "$@"
 }
 
 # Deploy mode makes the isolated copy with `skipInstall: true` (`test/lib/next-modes/next-deploy.ts`),
@@ -81,6 +100,21 @@ build_command="$(
     2>/dev/null || echo 'next build'
 )"
 echo "build command: ${build_command}" >&2
+
+# The suites of a `next.config.ts` that Node.js loads itself are built the way Next.js's own CI builds
+# them, and only they are: with that loader turned on and type transformation allowed
+# (`.github/workflows/build_and_test.yml` sets `__NEXT_NODE_NATIVE_TS_LOADER_ENABLED=true` and
+# `NODE_OPTIONS=--experimental-transform-types` for those directories alone). Their configs await at
+# the top level on purpose — "this is to ensure that the test is running in Native TS mode" — which
+# the loader every other build uses refuses, and the suites skip themselves only on a Node.js without
+# TypeScript of its own. Which suite this is, `run-tests.js` names in `JEST_SUITE_NAME`.
+case "${JEST_SUITE_NAME:-}" in
+  *test/e2e/app-dir/next-config-ts-native-ts/* | *test/e2e/app-dir/next-config-ts-native-mts/*)
+    export __NEXT_NODE_NATIVE_TS_LOADER_ENABLED=true
+    export NODE_OPTIONS="${NODE_OPTIONS:+${NODE_OPTIONS} }--experimental-transform-types"
+    echo 'a suite of a next.config Node.js loads itself: built with that loader, as Next.js builds it' >&2
+    ;;
+esac
 
 # What the build says is what `next.cliOutput` is read from, so it has to be kept and not only shown:
 # `tee` writes it for the logs hook, and standard output stays reserved for the URL.

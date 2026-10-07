@@ -46,7 +46,7 @@ export const ja = {
       {
         term: '`app` Function',
         description:
-          'アプリ自身のコードを `nodejs_compat` 付きの workerd 向けにバンドルしたもの。ページ、Route Handler、キャッシュ。',
+          'アプリ自身のコードを、ページ、Route Handler、キャッシュとともにバンドルしたもの。',
       },
       {
         term: '`middleware` Function',
@@ -54,7 +54,7 @@ export const ja = {
           'プロジェクトの `proxy.ts` を別に組み立てたもの。rewrite だけで済むリクエストがアプリを起こすことはありません。',
       },
     ],
-    note: 'アダプターは Cloudflare と一切通信しません。バンドルを作るだけなら、どのアカウントも必要ありません。',
+    note: 'アダプターは外部サービスと一切通信しません。バンドルを作るだけなら、どのアカウントも必要ありません。',
   },
   dev: {
     title: '開発中も、玄関がある',
@@ -128,7 +128,7 @@ export const ja = {
       adapter:
         '`next build` の中で動き、バンドルを書き出し、書き出したものを配信する Function を組み立てます。',
       runtime:
-        'デプロイされた Function の中身。ルーティング表、middleware、プリレンダー、キャッシュを workerd 向けに書いたもの。',
+        'デプロイされたFunctionの中身。アプリを配信するためのルーティング表、middleware、プリレンダー、キャッシュ。',
       core: '他のパッケージが話す語彙。バンドルの形、キャッシュの用語、エッジと Function のあいだのプロトコル。',
       sdk: 'アプリ自身の D1、KV、R2。ローカルでもデプロイ先でも同じ書き方で読め、設定はいりません。',
       create: '`pnpm create upwind` と、それが書き出すアプリ。',

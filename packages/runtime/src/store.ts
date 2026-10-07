@@ -6,8 +6,10 @@ import {
   type EntrypointKind,
   isPagesDataPathname,
   type ManifestHead,
+  placeholderSegments,
   type Prerender,
   type Route,
+  standsForClass,
   type StaticFile,
 } from '@stayingupwind/core/bundle';
 import { ByteLru } from '@stayingupwind/core/util';
@@ -75,6 +77,12 @@ export interface Store {
   readonly slashSpellings: ReadonlyMap<string, string>;
   /** The dynamic routes as the router is handed them (`routerDynamicRoutes`). */
   readonly dynamicRoutes: readonly Route[];
+  /**
+   * What the build rendered of the Pages Router (`getStaticProps`), which Next.js answers only reads
+   * of (`readsOnly`, in `methods.ts`): each such page's route and its pathname, since a request for a
+   * member the build prerendered resolves to the member's pathname rather than to its route.
+   */
+  readonly renderedPages: ReadonlySet<string>;
   readBlob(sha256: string): Uint8Array<ArrayBuffer>;
   /**
    * The same read for a blob the bundle may only *name*: `undefined` where the bytes are not here.
@@ -87,11 +95,6 @@ export interface Store {
    * not change while the isolate lives, and a read that fails costs a thrown error.
    */
   tryReadBlob(sha256: string): Uint8Array<ArrayBuffer> | undefined;
-}
-
-/** A `[param]`, `[...rest]` or `[[...rest]]` segment: it starts with a bracket, and no other does. */
-function isDynamicSegment(segment: string): boolean {
-  return segment.startsWith('[');
 }
 
 function escapeRegex(text: string): string {
@@ -114,16 +117,20 @@ function segmentPattern(segment: string): string {
 
 /**
  * `/en/[orgSlug]` → `^/en/[^/]+$`; `/docs/[...slug]` → `^/docs/.+$`; `/docs/[[...slug]]` →
- * `^/docs(?:/.*)?$`, so that `/docs` itself, the empty catch-all, is a member.
+ * `^/docs(?:/.*)?$`, so that `/docs` itself, the empty catch-all, is a member. Only the route's own
+ * placeholders are patterns (`placeholderSegments`): a value that holds a bracket is matched as it is.
  */
-function patternFor(pathname: string): RegExp {
+function patternFor(pathname: string, route: string): RegExp {
+  const placeholders = placeholderSegments(pathname, route);
   const source =
     pathname === '/'
       ? '/'
       : pathname
           .split('/')
+          .map((segment, index) =>
+            placeholders[index] === true ? segmentPattern(segment) : `/${escapeRegex(segment)}`,
+          )
           .slice(1)
-          .map((segment) => segmentPattern(segment))
           .join('');
   // Built from the route's own segments, every literal escaped above.
   // eslint-disable-next-line security/detect-non-literal-regexp
@@ -147,8 +154,8 @@ function buildShells(
       entry = { pages: new Map(), patterns: [] };
       byRoute.set(prerender.route, entry);
     }
-    if (prerender.pathname.split('/').some((segment) => isDynamicSegment(segment))) {
-      entry.patterns.push({ pattern: patternFor(prerender.pathname), prerender });
+    if (standsForClass(prerender)) {
+      entry.patterns.push({ pattern: patternFor(prerender.pathname, prerender.route), prerender });
     } else {
       entry.pages.set(prerender.pathname, prerender);
     }
@@ -158,7 +165,7 @@ function buildShells(
     // More literal segments first: `/en/[orgSlug]` before `/[locale]/[orgSlug]`.
     entry.patterns.sort((a, b) => {
       return (
-        countDynamic(a.prerender.pathname) - countDynamic(b.prerender.pathname) ||
+        countPlaceholders(a.prerender) - countPlaceholders(b.prerender) ||
         b.prerender.pathname.length - a.prerender.pathname.length
       );
     });
@@ -167,8 +174,8 @@ function buildShells(
   return shells;
 }
 
-function countDynamic(pathname: string): number {
-  return pathname.split('/').filter((segment) => isDynamicSegment(segment)).length;
+function countPlaceholders(prerender: Prerender): number {
+  return placeholderSegments(prerender.pathname, prerender.route).filter(Boolean).length;
 }
 
 /**
@@ -392,6 +399,27 @@ export function deploymentConfig(): ManifestHead['config'] {
   return readManifest().config;
 }
 
+/**
+ * The routes and pathnames of the Pages Router pages the build rendered. Of an application with
+ * `i18n` a page and its entrypoint may be spelled one with its locale and the other without, so each
+ * is compared without one.
+ */
+function renderedPages(manifest: RuntimeManifest): ReadonlySet<string> {
+  const unlocalized = (route: string): string =>
+    unlocalizedRouteOf(manifest.config, route) ?? route;
+  const pages = new Set(
+    manifest.entrypoints
+      .filter((entry) => entry.kind === 'pages')
+      .map((entry) => unlocalized(entry.pathname)),
+  );
+  const isPage = (route: string): boolean => pages.has(unlocalized(route));
+  return new Set(
+    manifest.prerenders.flatMap((prerender) =>
+      isPage(prerender.route) ? [prerender.route, prerender.pathname] : [],
+    ),
+  );
+}
+
 export function getStore(): Store {
   if (shared.store !== undefined) {
     return shared.store;
@@ -419,6 +447,7 @@ export function getStore(): Store {
     staticFiles,
     ...routerPathnames(manifest),
     dynamicRoutes: routerDynamicRoutes(manifest),
+    renderedPages: renderedPages(manifest),
     readBlob(sha256) {
       let bytes = blobs.get(sha256);
       if (bytes === undefined) {
@@ -451,7 +480,15 @@ export function getStore(): Store {
  * (`/blog/[slug]`), with the locale in its pathname. `undefined` where the route names no locale.
  */
 function unlocalizedRoute(store: Store, route: string): string | undefined {
-  const { i18n, basePath } = store.manifest.config;
+  return unlocalizedRouteOf(store.manifest.config, route);
+}
+
+/** `route` without the locale it leads with, where the application has `i18n` and it leads with one. */
+export function unlocalizedRouteOf(
+  config: RuntimeManifest['config'],
+  route: string,
+): string | undefined {
+  const { i18n, basePath } = config;
   if (i18n === null || i18n === undefined || !route.startsWith(`${basePath}/`)) {
     return undefined;
   }
@@ -473,8 +510,8 @@ function unlocalizedRoute(store: Store, route: string): string | undefined {
  * the fallback shell again. Only an App Router page renders one at request time: a Pages Router
  * `fallback: true` document is the build's alone.
  */
-export function isClassShell(pathname: string): boolean {
-  return pathname.includes('[');
+export function isClassShell(pathname: string, route: string): boolean {
+  return placeholderSegments(pathname, route).includes(true);
 }
 
 /**

@@ -16,7 +16,9 @@ import {
   USER_AGENT,
 } from './client.ts';
 import type { Config } from './config.ts';
-import { fixtureEnvironment } from './fixture-env.ts';
+import { finalizeWhenFree } from './finalize.ts';
+import { deploymentEnvironment } from './fixture-env.ts';
+import { hookOver, withinHook } from './hook.ts';
 import {
   askThePage,
   type PageAnswer,
@@ -70,6 +72,8 @@ export interface DeployInput {
   readonly config: Config;
   /** Everything this says goes to standard error: standard output carries the URL and nothing else. */
   readonly log: (message: string) => void;
+  /** When the suite's hook stops waiting (`hookDeadline`): no wait here goes past it. */
+  readonly deadline?: number | undefined;
 }
 
 export interface Deployment {
@@ -129,11 +133,9 @@ export async function readBundle(appDir: string): Promise<DeploymentBundle> {
  * values cannot be read back out of the project by anything holding a `read` token.
  */
 async function replaceEnvironment(input: DeployInput): Promise<void> {
-  const env = await fixtureEnvironment(input.appDir);
+  const { env, said } = await deploymentEnvironment(input.appDir, process.env);
+  input.log(`replacing the project's environment with ${said}`);
   const names = Object.keys(env);
-  input.log(
-    `replacing the project's environment with ${String(names.length)} of the fixture's own`,
-  );
   await input.client.putEnv(names.map((name) => ({ name, value: env[name] ?? '', secret: true })));
 }
 
@@ -220,7 +222,7 @@ function settled(input: DeployInput, deploymentId: string, detail: DeploymentDet
  * genuinely stuck reaches no further step, so it still gives up — and says where it was.
  */
 async function waitForHost(input: DeployInput, deploymentId: string): Promise<DeploymentDetail> {
-  let deadline = Date.now() + NO_PROGRESS_TIMEOUT_MS;
+  let deadline = withinHook(Date.now() + NO_PROGRESS_TIMEOUT_MS, input.deadline);
   let seen: string | undefined;
   for (;;) {
     const detail = await visible(input, deploymentId);
@@ -228,14 +230,14 @@ async function waitForHost(input: DeployInput, deploymentId: string): Promise<De
       // The same deadline as every other kind of no progress: a deployment that is never visible is
       // a deployment that stopped moving, and a wait with no end is worse than a failure with one.
       if (Date.now() >= deadline) {
-        throw new Error('the deployment was registered and never became visible');
+        throw ranOut(input, 'the deployment was registered and never became visible');
       }
       await sleepFor(POLL_INTERVAL_MS);
       continue;
     }
     if (detail.currentStep !== seen) {
       seen = detail.currentStep;
-      deadline = Date.now() + NO_PROGRESS_TIMEOUT_MS;
+      deadline = withinHook(Date.now() + NO_PROGRESS_TIMEOUT_MS, input.deadline);
       input.log(`  ${seen ?? 'between steps'}`);
     }
     if (TERMINAL_STATUSES.has(detail.status)) {
@@ -244,10 +246,18 @@ async function waitForHost(input: DeployInput, deploymentId: string): Promise<De
     }
     if (Date.now() >= deadline) {
       const stalledOn = seen === undefined ? '' : ` on ${seen}`;
-      throw new Error(`the deployment stopped making progress${stalledOn}`);
+      throw ranOut(input, `the deployment stopped making progress${stalledOn}`);
     }
     await sleepFor(POLL_INTERVAL_MS);
   }
+}
+
+/**
+ * What a wait that ran out says: where it stood when the suite's hook came to its end, or — its own
+ * deadline first — why it gave up.
+ */
+function ranOut(input: DeployInput, why: string): Error {
+  return new Error(hookOver(input.deadline) ? `the suite's hook timeout came first; ${why}` : why);
 }
 
 /**
@@ -627,7 +637,7 @@ async function waitUntilServed(
   served: Served,
 ): Promise<void> {
   const probe = probeOf(served.url, bundle);
-  const deadline = Date.now() + NO_PROGRESS_TIMEOUT_MS;
+  const deadline = withinHook(Date.now() + NO_PROGRESS_TIMEOUT_MS, input.deadline);
   let said: string | undefined;
   let redirecting: number | undefined;
   for (;;) {
@@ -651,7 +661,7 @@ async function waitUntilServed(
     }
     redirecting = observation.redirected ? redirectedSince(probe, redirecting) : undefined;
     if (Date.now() >= deadline) {
-      throw new Error(`the deployment was never served: ${observation.said}`);
+      throw ranOut(input, `the deployment was never served: ${observation.said}`);
     }
     await sleepFor(POLL_INTERVAL_MS);
   }
@@ -686,7 +696,7 @@ export async function deployFixture(input: DeployInput): Promise<Deployment> {
     if (missing.length > 0) {
       await uploadMissing(input, bundle, missing);
     }
-    runId = await input.client.finalize(bundle.deploymentId);
+    runId = await finalizeWhenFree(input.client, input.log, bundle.deploymentId, input.deadline);
   } catch (error) {
     throw explained(error);
   }

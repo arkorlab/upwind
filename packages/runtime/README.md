@@ -1,9 +1,8 @@
 # @stayingupwind/runtime
 
 The code a deployment's Function is: it answers a request out of what `next build` produced, through
-the routing tables, the middleware and the prerenders the bundle carries. It is written for workerd
-with `nodejs_compat`, and it holds the parts of serving a Next.js application that are the same
-whoever hosts it.
+the routing tables, the middleware and the prerenders the bundle carries. It holds the parts of serving a Next.js
+application that are the same whoever hosts it. The deployment runtime requires `nodejs_compat`, and the adapter builds every Function — the application's and its middleware's — to run with `global_fetch_strictly_public` as well, so that a `fetch()` to a hostname of the zone it is served from goes out the front door and reaches whatever answers there, the application itself included.
 
 You do not install this to use it. `@stayingupwind/adapter` resolves it to a path and bundles it into
 each Function it builds, which is why it is published as TypeScript sources with no build step of its
@@ -11,7 +10,7 @@ own, and why it must stay a package on disk rather than be inlined into the adap
 
 | Subpath        | What it is                                                                                                                                      |
 | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `./function`   | The entry: one default export with `fetch`, which is what workerd looks for                                                                     |
+| `./function`   | The entry: one default export with `fetch` for the deployment runtime                                                                           |
 | `./cache-host` | `CacheHost` — the interface a host implements so that the Function has a cache, and the `CacheHostError` one raises. Nothing here implements it |
 
 ## What the adapter has to supply
@@ -58,3 +57,18 @@ A resume is the one exchange worth naming here. The edge serves the build's shel
 Function for the rest of the document, which comes back as the postponed part alone — so the visitor
 is not sent the shell twice. A route that cannot resume one (an entrypoint on the edge runtime never
 can) is not among the shells an edge is told it may serve.
+
+## What libraries find on the global
+
+Two things an application's libraries look for on the global, answered from the request being
+served, since a Function isolate serves many at once:
+
+- `Symbol.for('@vercel/request-context')`: the request's headers, its URL and `waitUntil`, which
+  `track()` from `@vercel/analytics/server` reads (`request-context.ts`).
+- `Symbol.for('__SENTRY_SAFE_RANDOM_ID_WRAPPER__')`: what Sentry's Next.js SDK runs its reads of
+  random values and of the clock through, so that a read made while Next.js prerenders runs outside
+  the prerender's store — Next.js aborts a prerender that makes one in it. The SDK's own runner
+  keeps one snapshot of the async context for the whole isolate, which workerd refuses outside the
+  request that took it, and what it falls back to runs the read in whichever render is under way.
+  Here each read runs in the context the current request entered the Function in, outside anything
+  Next.js has entered since (`random-safe-context.ts`).

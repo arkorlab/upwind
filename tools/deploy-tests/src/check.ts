@@ -1,13 +1,18 @@
 import { spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
 import { DEPLOYMENT_ID_PREFIX } from '@stayingupwind/core/bundle';
 import { createId } from '@stayingupwind/core/util';
 
+import {
+  BUNDLE_BUILD_ID,
+  OUTPUT_DIRECTORY_BUILD_ID,
+  writeApplication,
+} from './check-application.ts';
 import { fakeHost, type FakeHost } from './fake-host.ts';
+import { AFTER_SERVED_MS } from './hook.ts';
 
 /**
  * The three hooks, run for real against a host that is not one.
@@ -24,10 +29,13 @@ import { fakeHost, type FakeHost } from './fake-host.ts';
 
 const SCRIPTS = path.join(import.meta.dirname, '..', 'scripts');
 const REPO = path.join(import.meta.dirname, '..', '..', '..');
-const BUNDLE_BUILD_ID = 'from-the-bundle';
-const OUTPUT_DIRECTORY_BUILD_ID = 'from-the-output-directory';
 const TOKEN = 'ark_a_token_nothing_may_read';
 const HOOK_TIMEOUT_MS = 60_000;
+/**
+ * How much of a suite's hook the scenario that runs one out leaves the deployment, beyond what is kept
+ * for after it is served: the fake build and the upload, and a few seconds of waiting.
+ */
+const HOOK_RUN_OUT_MS = 8000;
 /** About a megabyte of each stream, which is what `execFile` would have held. */
 const MAX_CAPTURED = 1_000_000;
 const DEPLOY_HOOK = 'e2e-deploy.sh';
@@ -93,11 +101,18 @@ function bounded(
   name: string,
   appDir: string,
   env: NodeJS.ProcessEnv,
+  via?: string,
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     // The script itself, by its own path, rather than a shell found on `PATH`: they are executable and
-    // carry a shebang, and this is how the suite's harness starts them.
-    const child = spawn(path.join(SCRIPTS, name), [], { cwd: appDir, env, detached: true });
+    // carry a shebang, and this is how the suite's harness starts them. Or through `via`, a Node.js
+    // script handed that path, which starts it as a harness of its own would.
+    const script = path.join(SCRIPTS, name);
+    const options = { cwd: appDir, env, detached: true };
+    const child =
+      via === undefined
+        ? spawn(script, [], options)
+        : spawn(process.execPath, [via, script], options);
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (chunk: Buffer) => (stdout = keptTo(stdout, chunk)));
@@ -138,129 +153,6 @@ function bounded(
       reject(new HookFailureError(`exited ${String(code)}`, { said: stderr }));
     });
   });
-}
-
-/**
- * An application that builds without Next.js, and lies about its build id on purpose.
- *
- * `.next/BUILD_ID` says one thing and the bundle says another, so that reading the wrong one is a
- * failure here rather than a fixture whose build id the suite silently gets wrong. Which is which
- * arrives in the environment rather than in this text, so that the text stays a file and not a
- * template.
- */
-const BUILD_SCRIPT = String.raw`
-import { createHash } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
-
-const saw = (name) => name + ': ' + (process.env[name] === undefined ? 'no' : 'YES');
-console.log('the build saw ' + saw('ARKOR_API_TOKEN') + ' ' + saw('ARKOR_API_TOKEN_FILE'));
-
-mkdirSync('.next', { recursive: true });
-writeFileSync('.next/BUILD_ID', process.env.CHECK_OUTPUT_DIRECTORY_BUILD_ID);
-
-const bytes = Buffer.from('a function\n');
-const sha256 = createHash('sha256').update(bytes).digest('hex');
-mkdirSync('.arkor/blobs', { recursive: true });
-writeFileSync('.arkor/blobs/' + sha256, bytes);
-writeFileSync(
-  '.arkor/bundle.json',
-  JSON.stringify({
-    v: 1,
-    deploymentId: process.env.NEXT_DEPLOYMENT_ID,
-    nextVersion: '16.3.6',
-    buildId: process.env.CHECK_BUNDLE_BUILD_ID,
-    projectDir: '.',
-    generatedAt: new Date().toISOString(),
-    config: {
-      basePath: '',
-      trailingSlash: false,
-      skipTrailingSlashRedirect: false,
-      poweredByHeader: false,
-    },
-    routing: {
-      beforeMiddleware: [],
-      middlewareMatchers: [],
-      beforeFiles: [],
-      afterFiles: [],
-      dynamicRoutes: [],
-      onMatch: [],
-      fallback: [],
-      shouldNormalizeNextData: false,
-      rsc: {
-        header: 'RSC',
-        varyHeader: 'RSC',
-        prefetchHeader: 'Next-Router-Prefetch',
-        didPostponeHeader: 'x-nextjs-postponed',
-        contentTypeHeader: 'text/x-component',
-        suffix: '.rsc',
-        prefetchSegmentHeader: 'Next-Router-Segment-Prefetch',
-        prefetchSegmentSuffix: '.segment.rsc',
-        prefetchSegmentDirSuffix: '.segments',
-      },
-    },
-    entrypoints: [],
-    prerenders: [],
-    staticFiles: [
-      // First, so that it is the file the host serves and the one the probe prefers: a path carrying the
-      // build id is as strong as a file gets, and still not proof of whose deployment answered — the
-      // check's page assertions are what hold the probe to asking the page all the same.
-      {
-        pathname: '/_next/static/' + process.env.CHECK_BUNDLE_BUILD_ID + '/chunk.js',
-        blob: { sha256, byteLength: bytes.byteLength, contentType: 'text/javascript' },
-        immutable: false,
-      },
-      {
-        pathname: '/_next/static/immutable/' + sha256 + '.js',
-        blob: { sha256, byteLength: bytes.byteLength, contentType: 'text/javascript' },
-        immutable: true,
-      },
-    ],
-    functions: {
-      app: {
-        mainModule: 'index.mjs',
-        modules: [
-          {
-            name: 'index.mjs',
-            type: 'esm',
-            blob: { sha256, byteLength: bytes.byteLength, contentType: 'text/javascript' },
-          },
-        ],
-        compatibilityDate: '2026-09-15',
-        compatibilityFlags: [],
-      },
-    },
-  }),
-);
-`;
-
-/**
- * Its `build` is shaped like the one the suite's harness writes (`… && pnpm post-build`), and its
- * `post-build` is its own — which is the case that must not be dropped.
- */
-const MANIFEST = {
-  name: 'deploy-tests-check-application',
-  private: true,
-  scripts: {
-    build: 'node build.mjs && pnpm post-build',
-    'post-build':
-      "node -e \"console.log('the fixture post-build ran; it saw ARKOR_API_TOKEN: ' + (process.env.ARKOR_API_TOKEN === undefined ? 'no' : 'YES'))\"",
-  },
-};
-
-function writeApplication(appDir: string): void {
-  mkdirSync(path.join(appDir, 'node_modules'), { recursive: true });
-  writeFileSync(path.join(appDir, 'build.mjs'), BUILD_SCRIPT);
-  // Its own value, for `@next/env` to read and the deployment's environment to be replaced with.
-  writeFileSync(path.join(appDir, '.env'), 'OWN=yes\n');
-  writeFileSync(path.join(appDir, 'package.json'), `${JSON.stringify(MANIFEST, null, 2)}\n`);
-  // A fixture arrives with its own `next`, which is where `@next/env` is resolved from. This one is
-  // given the adapter's, linked: that package depends on Next.js and this one deliberately does not,
-  // and what is under test here is the reader rather than npm.
-  const fromAdapter = createRequire(path.join(REPO, 'packages', 'adapter', 'package.json'));
-  symlinkSync(
-    path.dirname(fromAdapter.resolve('next/package.json')),
-    path.join(appDir, 'node_modules', 'next'),
-  );
 }
 
 /** What a marker line carries after its prefix, or nothing when it is absent or carries nothing. */
@@ -335,6 +227,46 @@ async function ownUrlScenarios(
     );
     holds('and the probe asked its own URL, not the project', ahead.probedOn() === ahead.ownPort);
 
+    // A project still running the deployment before this one: the finalize is refused until that run
+    // ends, and is made again until it is taken, rather than failing this fixture for the one before.
+    const busy = await fakeHost(deploymentId, 'moves', 'none', 2);
+    hosts.push(busy);
+    const afterTheOther = await bounded(DEPLOY_HOOK, appDir, {
+      ...env,
+      ARKOR_API_URL: `http://127.0.0.1:${String(busy.port)}`,
+    });
+    holds(
+      "a project's run still under way is waited for, and this deployment then deploys",
+      afterTheOther.stdout.trim() === `http://127.0.0.1:${String(busy.port)}` &&
+        afterTheOther.stderr.includes('another run of the project is still under way'),
+    );
+
+    // One that does not end before the suite's hook would: the wait ends where the hook's time does,
+    // and says what it was waiting for, rather than being cut off by the harness in the middle of it.
+    const stuck = await fakeHost(deploymentId, 'moves', 'none', Number.MAX_SAFE_INTEGER);
+    hosts.push(stuck);
+    let outlasted: unknown;
+    const waitedFrom = performance.now();
+    try {
+      await bounded(DEPLOY_HOOK, appDir, {
+        ...env,
+        ARKOR_API_URL: `http://127.0.0.1:${String(stuck.port)}`,
+        NEXT_E2E_TEST_TIMEOUT: String(AFTER_SERVED_MS + HOOK_RUN_OUT_MS),
+      });
+    } catch (error) {
+      outlasted = error;
+    }
+    // Half the hook's time at least, rather than all of it: the hook's clock is the wall clock, which
+    // steps, and this one is not. A wait cut short to nothing still fails it.
+    const waitedFor = performance.now() - waitedFrom;
+    holds(
+      "a run that outlasts the suite's hook is waited for as long as the hook lasts, and said so",
+      outlasted instanceof HookFailureError &&
+        outlasted.said.includes("the suite's hook timeout came first") &&
+        waitedFor >= HOOK_RUN_OUT_MS / 2 &&
+        waitedFor < HOOK_TIMEOUT_MS / 2,
+    );
+
     // A URL that needs a path to reach the deployment cannot be handed to the suite, which joins its own
     // paths to an origin: refused, by what is wrong with it.
     const pathed = await fakeHost(deploymentId, 'moves', 'with a path');
@@ -359,6 +291,115 @@ async function ownUrlScenarios(
   }
 }
 
+/**
+ * A suite of a `next.config.ts` that Node.js loads itself is built with that loader, as Next.js's own CI
+ * builds it; any other suite is built without, as every application is.
+ */
+async function nativeConfigScenario(
+  deploymentId: string,
+  appDir: string,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  const host = await fakeHost(deploymentId);
+  try {
+    await bounded(DEPLOY_HOOK, appDir, {
+      ...env,
+      ARKOR_API_URL: `http://127.0.0.1:${String(host.port)}`,
+      JEST_SUITE_NAME:
+        'deploy:e2e:test/e2e/app-dir/next-config-ts-native-ts/export-default/next-config-ts-export-default-esm.test.ts',
+    });
+    const build = readFileSync(path.join(appDir, '.adapter-build.log'), 'utf8');
+    holds(
+      "a suite of a next.config Node.js loads itself is built with Node.js's loader",
+      build.includes('__NEXT_NODE_NATIVE_TS_LOADER_ENABLED: YES'),
+    );
+    holds('and with types transformed', build.includes('the build saw types transformed: YES'));
+  } finally {
+    host.close();
+  }
+}
+
+/** The shell's `NODE_OPTIONS` without the one a native-TS suite's build is given (`e2e-deploy.sh`). */
+function ordinaryNodeOptions(options: string | undefined): string | undefined {
+  const kept = (options ?? '')
+    .split(/\s+/u)
+    .filter((option) => option !== '' && option !== '--experimental-transform-types');
+  return kept.length === 0 ? undefined : kept.join(' ');
+}
+
+/** A harness as Next.js's is one: it starts the hook it is handed, with a suite's variable on top. */
+const HARNESS = `
+import { spawnSync } from 'node:child_process';
+
+const [hook] = process.argv.slice(2);
+const env = { ...process.env, SUITE_ONLY: 'via-the-parent' };
+const result = spawnSync(hook, [], { env, stdio: 'inherit' });
+process.exit(result.status ?? 1);
+`;
+
+/**
+ * A suite's own variables (`createNext({ env })`), which its harness hands the hook on top of its own
+ * environment: the deployment is given them, over the application's `.env` files, and nothing else of
+ * what the hook was handed.
+ */
+async function suiteEnvScenario(
+  deploymentId: string,
+  appDir: string,
+  env: NodeJS.ProcessEnv,
+): Promise<void> {
+  if (!existsSync('/proc/self/environ')) {
+    console.log(
+      'skipped: a suite’s own variables are read off /proc, which this machine has none of',
+    );
+    return;
+  }
+  const host = await fakeHost(deploymentId);
+  try {
+    await bounded(DEPLOY_HOOK, appDir, {
+      ...env,
+      ARKOR_API_URL: `http://127.0.0.1:${String(host.port)}`,
+      SUITE_ONLY: 'from-the-suite',
+      OWN: 'the-suites-over-the-files',
+      // What Next.js's harness sets in its own process as it runs: its, not the suite's.
+      TEST_FILE_PATH: '/next.js/test/e2e/some.test.ts',
+      NEXT_TEST_JOB: '1',
+      // What no `.env` file gives a deployment either: a Function that started with it skips its own.
+      __NEXT_PROCESSED_ENV: 'true',
+    });
+    holds(
+      "a suite's own variables reach the deployment, over the application's .env files, and the harness's do not",
+      JSON.stringify(host.environment()) ===
+        JSON.stringify({ OWN: 'the-suites-over-the-files', SUITE_ONLY: 'from-the-suite' }),
+    );
+  } finally {
+    host.close();
+  }
+  // And as Next.js's harness starts the hook — from its own process, which names no pid — read off
+  // the hook's parent.
+  const parent = await fakeHost(deploymentId);
+  const harness = path.join(path.dirname(appDir), 'harness.mjs');
+  writeFileSync(harness, HARNESS);
+  try {
+    await bounded(
+      DEPLOY_HOOK,
+      appDir,
+      {
+        ...env,
+        ARKOR_API_URL: `http://127.0.0.1:${String(parent.port)}`,
+        ADAPTER_TEST_HARNESS_PID: undefined,
+      },
+      harness,
+    );
+    holds(
+      "and read off the hook's parent where no harness is named",
+      JSON.stringify(parent.environment()) ===
+        JSON.stringify({ OWN: 'yes', SUITE_ONLY: 'via-the-parent' }),
+    );
+  } finally {
+    parent.close();
+  }
+}
+
 async function main(): Promise<void> {
   const workDir = mkdtempSync(path.join(os.tmpdir(), 'upwind-deploy-tests-check-'));
   const appDir = path.join(workDir, 'application');
@@ -368,9 +409,17 @@ async function main(): Promise<void> {
   writeFileSync(tokenFile, TOKEN, { mode: 0o600 });
   const deploymentId = createId(DEPLOYMENT_ID_PREFIX);
   const host = await fakeHost(deploymentId);
-  let quiet: FakeHost | undefined;
-  const env = {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
+    // An ordinary suite's, whatever the shell running the check says: a suite name decides how its
+    // fixture is built (`e2e-deploy.sh`), and the check of that names its own. So do the two settings
+    // that build turns on, which the check has to see the hook add, and a hook's own time, which the
+    // scenario that runs it out sets.
+    JEST_SUITE_NAME: 'deploy:e2e:test/e2e/app-dir/app-simple-routes/app-simple-routes.test.ts',
+    __NEXT_NODE_NATIVE_TS_LOADER_ENABLED: undefined,
+    NODE_OPTIONS: ordinaryNodeOptions(process.env['NODE_OPTIONS']),
+    NEXT_E2E_TEST_TIMEOUT: undefined,
+    ADAPTER_TEST_HOOK_STARTED_MS: undefined,
     ARKOR_API_URL: `http://127.0.0.1:${String(host.port)}`,
     ARKOR_API_TOKEN_FILE: tokenFile,
     ADAPTER_TEST_PROJECT_ID: 'p',
@@ -382,6 +431,22 @@ async function main(): Promise<void> {
     CHECK_BUNDLE_BUILD_ID: BUNDLE_BUILD_ID,
     CHECK_OUTPUT_DIRECTORY_BUILD_ID: OUTPUT_DIRECTORY_BUILD_ID,
   };
+  // The harness the hooks are started from, as Next.js's starts them: a process of their own
+  // environment, which a suite's variables are read against (`suite-env.ts`). Everything the check
+  // hands a hook is then the harness's, and nothing the suite's, but where a scenario adds some.
+  const harness = spawn(process.execPath, ['-e', 'setInterval(() => undefined, 1 << 30)'], {
+    env,
+    stdio: 'ignore',
+  });
+  harness.on('error', (error) => {
+    console.error(`the stand-in harness failed: ${error.message}`);
+    process.exitCode = 1;
+  });
+  if (harness.pid === undefined) {
+    throw new Error('the stand-in harness did not start');
+  }
+  env['ADAPTER_TEST_HARNESS_PID'] = String(harness.pid);
+  let quiet: FakeHost | undefined;
   const hook = async (name: string): Promise<{ stdout: string; stderr: string }> => {
     try {
       return await bounded(name, appDir, env);
@@ -423,7 +488,7 @@ async function main(): Promise<void> {
       // for it, and a log line without the wait behind it would not either.
       deployed.stderr.includes('letting the host settle') &&
         named !== undefined &&
-        deployedAt - named >= Number(env.ADAPTER_TEST_SETTLE_SECONDS) * MS_PER_SECOND,
+        deployedAt - named >= Number(env['ADAPTER_TEST_SETTLE_SECONDS']) * MS_PER_SECOND,
     );
     holds(
       "the registration carries the bundle's own build id",
@@ -440,6 +505,11 @@ async function main(): Promise<void> {
     holds('the blobs the host asked for were uploaded', host.uploaded().length === 1);
     holds('and nothing was asked of it out of order', host.refusals().length === 0);
     holds('the build saw no token', build.includes('ARKOR_API_TOKEN: no'));
+    holds(
+      "and, for any other suite, not Node.js's own loader of next.config",
+      build.includes('__NEXT_NODE_NATIVE_TS_LOADER_ENABLED: no') &&
+        build.includes('the build saw types transformed: no'),
+    );
     holds('nor the file holding it', build.includes('ARKOR_API_TOKEN_FILE: no'));
     holds("the application's own post-build ran", build.includes('the fixture post-build ran'));
     holds('and it saw no token either', build.includes('it saw ARKOR_API_TOKEN: no'));
@@ -524,11 +594,14 @@ async function main(): Promise<void> {
     holds(
       'and the settle is still waited out in full, from after the probe',
       probed !== undefined &&
-        unprovenAt - probed >= Number(env.ADAPTER_TEST_SETTLE_SECONDS) * MS_PER_SECOND,
+        unprovenAt - probed >= Number(env['ADAPTER_TEST_SETTLE_SECONDS']) * MS_PER_SECOND,
     );
 
     await ownUrlScenarios(deploymentId, appDir, env);
+    await nativeConfigScenario(deploymentId, appDir, env);
+    await suiteEnvScenario(deploymentId, appDir, env);
   } finally {
+    harness.kill();
     host.close();
     quiet?.close();
     rmSync(workDir, { recursive: true, force: true });

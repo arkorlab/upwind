@@ -2,6 +2,7 @@ import type { BlobRef, Prerender, StaticFile } from '@stayingupwind/core/bundle'
 import { NO_STORE_CACHE_CONTROL, SEGMENT_TREE_PATH } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
+import { renderDocumentForVisitor } from './answers.ts';
 import { isDraftRequest } from './draft.ts';
 import { type Entry, entryFor } from './entries.ts';
 import { failureAnswer } from './error-pages.ts';
@@ -105,7 +106,7 @@ export function crawlerWantsWholePage(
 ): boolean {
   return (
     shell.pathname !== resolved.pathname &&
-    isClassShell(shell.pathname) &&
+    isClassShell(shell.pathname, shell.route) &&
     entrypointKindOf(store, shell.route) === 'pages' &&
     isCrawler(request)
   );
@@ -145,6 +146,15 @@ export async function documentFromBuild(
     });
   }
   if (shell?.body === undefined) {
+    // An unbuilt App Router member can still prerender a shell. Capture its postponed state and
+    // resume it for this request; the exported handler alone sends only that initial shell.
+    if (
+      store.manifest.config.cacheComponents === true &&
+      entry.kind === 'node' &&
+      entrypointKindOf(store, resolved.route) === 'app-page'
+    ) {
+      return renderDocumentForVisitor(input, entry.handler, resolved.url);
+    }
     return invokeEntry(input, entry, resolved.url, {
       onFailure: failureAnswer(store, entry, resolved.route),
     });

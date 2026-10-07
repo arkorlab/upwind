@@ -63,6 +63,8 @@ Then, from a checkout of Next.js that has been built (`pnpm install && pnpm buil
 
 ```console
 $ NEXT_TEST_MODE=deploy \
+  NEXT_ENABLE_ADAPTER=1 \
+  NEXT_E2E_TEST_TIMEOUT=1200000 \
   NEXT_EXTERNAL_TESTS_FILTERS=test/deploy-tests-manifest.json \
   ADAPTER_DIR=/path/to/upwind \
   NEXT_TEST_DEPLOY_SCRIPT_PATH=$ADAPTER_DIR/tools/deploy-tests/scripts/e2e-deploy.sh \
@@ -71,6 +73,10 @@ $ NEXT_TEST_MODE=deploy \
   node run-tests.js --type e2e -c 1 --retries 0 \
     test/e2e/app-dir/app-simple-routes/app-simple-routes.test.ts
 ```
+
+`NEXT_ENABLE_ADAPTER=1` is what Next.js's own job for adapters sets. A few suites expect a deployment
+an adapter made to answer otherwise than one Vercel's own builder made, and read it to know which they
+are testing: with it set, they expect the adapter's answers; without it, the builder's.
 
 `.github/workflows/deploy-tests.yaml` is the same thing on a runner, dispatched by hand. Its `tests`
 input takes upstream paths, or `all` for everything the manifest allows; `shards` cuts `all` into that
@@ -110,6 +116,17 @@ run rather than a broken one: the extra shards queue behind the ids that exist. 
 day-long serial run into an afternoon, and they are made on the dashboard, since the public API deploys
 into a project and does not create one.
 
+**A project's run still under way is waited for.** A host deploys one run of a project at a time and
+refuses the next finalize while one is going (`run_in_progress`). That run is the previous fixture's —
+one that outlasted the suite's hook timeout, which the host goes on deploying, or one whose last steps
+the host finishes after it has said the deployment is live — and it ends on its own, so the hook waits
+for it (ten minutes at most) rather than failing the fixture after it. The workflow gives a suite's
+hooks twenty minutes (`NEXT_E2E_TEST_TIMEOUT`): the wait, and a fixture of a few hundred prerendered
+pages, which takes a host minutes to bring in. No wait of the deploy hook goes past that time: the hook
+stamps when it began, and a wait the harness would cut off in the middle — a request to the host under
+way included — is ended first, saying what it was waiting for (`src/hook.ts`). Nor is a finalize asked
+for once that time has passed: the run it began would be one nobody waits for.
+
 **That refusal is one machine's.** The claims are files in the machine's own temporary directory, so a
 run on a laptop and a dispatched workflow run cannot see each other, and the API has nothing to hold a
 lock in. Between runners the rule is the workflow's `concurrency` group; between a runner and a terminal
@@ -118,14 +135,36 @@ it is whoever dispatched them. If two must overlap, give the second its own proj
 ## What the numbers do and do not mean
 
 A run is an inventory of observed compatibility, not an assertion that every feature is supported.
-Beyond that, four limits are worth knowing before reading a failure as this adapter's:
+Beyond that, these limits are worth knowing before reading a failure as this adapter's:
 
-- **A fixture's environment is its own `.env` files, and only those.** A host's private harness can do
-  better — it starts the deploy hook itself, so it can tell a variable the suite's harness passed
-  through the process environment from one the machine already had. Here the suite starts the hook
-  directly and there is no such baseline, so a suite whose application reads a variable that arrives
-  only that way will fail. Guessing would be worse: it would hand a deployed Function whatever the
-  terminal happened to hold.
+- **A fixture's environment is its own `.env` files, and the suite's own variables over them** —
+  those of them that differ from the harness's. A
+  suite's `env` (`createNext({ env })`) is what Next.js's deploy mode gives a Vercel deployment as its
+  environment; its harness hands it to the hook on top of its own environment. The hook reads the
+  harness's environment as that process was started (`/proc/<pid>/environ`) and gives the deployment
+  what it was handed beyond it (`src/suite-env.ts`) — nothing of the machine's, which the harness held
+  too. Two limits of reading a difference: a suite's variable with the very value the harness started
+  with is not told apart, and is not given; and a variable the harness's process sets as it runs is
+  taken for the suite's unless it is named. Named and never given: the shell's own (`PWD`, `OLDPWD`,
+  `SHLVL`, `_`), Next.js's harness's (`TEST_FILE_PATH`, `NEXT_TEST_*`), Jest's (`JEST_*`),
+  `NEXT_DEPLOYMENT_ID` (the host gives a deployment its own), this tool's (`ARKOR_*`,
+  `ADAPTER_TEST_*`), and what a `.env` file is never given either (`NODE_ENV`,
+  `__NEXT_PROCESSED_ENV`). A harness whose environment cannot be read is said on the hook's standard
+  error; a machine without `/proc` is one such case.
+  A machine without `/proc` gives a deployment its `.env` files alone, and a suite whose application
+  reads a variable that arrives only through its harness fails there.
+- **The adapter under test has no cache unless one is plugged in.** This repository's adapter, as its
+  default export, is configured with nothing, so its Functions answer every cache read a miss: no
+  data cache, no `use cache`, no page kept between requests and no regeneration seen. Every suite that
+  asserts on caching or revalidation fails for that alone. A host that plugs its cache in
+  (`createAdapter({ cacheHostModule })`) tests what it deploys by naming that adapter in
+  `NEXT_ADAPTER_PATH`, which the deploy hook then uses instead of its own.
+- **A `next.config.ts` that Node.js loads itself is built the way Next.js's own CI builds it.** The
+  suites under `next-config-ts-native-ts` and `-mts` await at the top level of their configs on
+  purpose, and Next.js's CI builds them alone with Node.js's loader turned on
+  (`__NEXT_NODE_NATIVE_TS_LOADER_ENABLED=true`, `NODE_OPTIONS=--experimental-transform-types`). The
+  deploy hook does the same for those suites, by the test file `run-tests.js` names in
+  `JEST_SUITE_NAME`, and for no other; run outside `run-tests.js`, they fail as they would anywhere.
 - **No runtime logs.** The API serves a built deployment's build log, and an uploaded deployment has
   none, so what the logs hook shows is the build and the deployment. A suite that asserts on server
   output may fail for want of it.

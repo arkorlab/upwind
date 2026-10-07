@@ -1,5 +1,6 @@
 import { installFetchCacheModes } from './fetch-cache-mode.ts';
 import { installFetchCacheWrites } from './fetch-cache-writes.ts';
+import { installRandomSafeContext } from './random-safe-context.ts';
 import { installResources } from './resources.ts';
 import { installTaskScheduler } from './tasks.ts';
 import { installWorkflowSdk } from './workflow.ts';
@@ -9,15 +10,17 @@ import { installWorkflowSdk } from './workflow.ts';
  * prerenders' task boundaries run on (`tasks.ts`), the `fetch` its own will wrap, which takes off
  * a cache mode workerd would throw on (`fetch-cache-mode.ts`), the hook its data cache hands a
  * write to (`fetch-cache-writes.ts`), the symbol the application's storage bindings are read
- * from, which its modules may look at as they are evaluated (`resources.ts`), and, in a deployment
- * that carries the Workflow SDK, the engine its workflows run on (`workflow.ts`). Imported first
- * by `function.ts`, for its effect alone.
+ * from, which its modules may look at as they are evaluated (`resources.ts`), the runner Sentry's
+ * SDK reads its random values in, which a copy of it resolves at its first read
+ * (`random-safe-context.ts`), and, in a deployment that carries the Workflow SDK, the engine its
+ * workflows run on (`workflow.ts`). Imported first by `function.ts`, for its effect alone.
  */
 
 installTaskScheduler();
 installFetchCacheModes();
 installFetchCacheWrites();
 installResources();
+installRandomSafeContext();
 // A build without the Workflow SDK is bundled with this `false`, and carries none of it.
 if (__ARKOR_WORKFLOW_SDK__) {
   installWorkflowSdk();

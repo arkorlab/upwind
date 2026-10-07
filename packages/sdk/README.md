@@ -63,7 +63,7 @@ Reading it has three answers, and this package keeps them apart:
 
 ## Types
 
-Cloudflare's own: `D1Database`, `KVNamespace` and `R2Bucket` from
+The SDK includes the required storage types: `D1Database`, `KVNamespace` and `R2Bucket` from
 [`@cloudflare/workers-types`](https://www.npmjs.com/package/@cloudflare/workers-types), imported
 rather than assumed as globals — no `tsconfig` of yours needs to know about any of this.
 

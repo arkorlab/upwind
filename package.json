@@ -2,7 +2,7 @@
   "name": "upwind",
   "version": "0.3.0",
   "private": true,
-  "description": "A Next.js deployment adapter and runtime for Cloudflare Workers.",
+  "description": "A Next.js deployment adapter and runtime with support for PPR and Cache Components.",
   "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",

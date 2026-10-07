@@ -11,12 +11,11 @@
 
 **Next.js のデプロイ用アダプターと、それが作ったものを配信するランタイム。**
 
-いつもの `next build` が、ホストが Cloudflare Workers で動かすためのデプロイ用バンドルを 1 つ書き出します。ルーティング表、中身のハッシュを名前にしたすべてのプリレンダーと静的ファイル、そしてコードを動かす Function です。アプリは普通の Next.js のままです。
+いつもの`next build`が、ホストにデプロイするためのバンドルを1つ書き出します。ルーティング表、中身のハッシュを名前にしたすべてのプリレンダーと静的ファイル、そしてコードを動かす Function です。アプリは普通の Next.js のままです。
 
 [![npm の upwind](https://img.shields.io/npm/v/upwind?logo=npm&label=upwind&color=cb3837)](https://www.npmjs.com/package/upwind)
 [![Next.js](https://img.shields.io/npm/dependency-version/@stayingupwind/adapter/peer/next?logo=nextdotjs&label=Next.js&color=000000)](#-対応する-nextjs)
 [![Node.js](https://img.shields.io/node/v/upwind?logo=nodedotjs&logoColor=white&label=Node.js&color=5fa04e)](https://nodejs.org/ja)
-[![Cloudflare Workers](https://img.shields.io/badge/Cloudflare_Workers-workerd-f38020?logo=cloudflareworkers&logoColor=white)](https://developers.cloudflare.com/workers/)
 [![ライセンス: MIT OR Apache-2.0](https://img.shields.io/badge/%E3%83%A9%E3%82%A4%E3%82%BB%E3%83%B3%E3%82%B9-MIT_OR_Apache--2.0-blue)](#-ライセンス)
 <br>
 [![CI](https://img.shields.io/github/actions/workflow/status/arkorlab/upwind/ci.yaml?branch=main&label=CI&logo=githubactions&logoColor=white)](https://github.com/arkorlab/upwind/actions/workflows/ci.yaml)
@@ -46,7 +45,7 @@ upwind は、Next.js アプリの周りで 2 つの仕事をします。`next bu
 
 **🔨 `upwind build`**
 
-Next.js の [Adapter API](https://nextjs.org/docs/app/api-reference/adapters) を通じて upwind のアダプターを差し込んだ、いつもの `next build` です。1 つのディレクトリーに、`bundle.json`、中身のハッシュを名前にしたプリレンダーと静的ファイルの blob、そして Cloudflare Workers のランタイムである workerd 向けの Function（`app` と、`proxy.ts` か `middleware.ts` があれば `middleware`）を書き出します。
+Next.js の [Adapter API](https://nextjs.org/docs/app/api-reference/adapters) を通じて upwind のアダプターを差し込んだ、いつもの `next build` です。1 つのディレクトリーに、`bundle.json`、中身のハッシュを名前にしたプリレンダーと静的ファイルの blob、そしてアプリを配信するFunction（`app` と、`proxy.ts` か `middleware.ts` があれば `middleware`）を書き出します。
 
 </td>
 <td width="33%" valign="top">
@@ -83,7 +82,7 @@ flowchart TB
     direction LR
     edge{{"エッジ"}} -- "静的ファイル ·<br/>プリレンダー済みのシェル" --> st[("ストレージ")]
     edge -- "proxy.ts" --> mw["middleware Function"]
-    edge -- "レンダリング · PPR の再開" --> fn["workerd 上の app Function"]
+    edge -- "レンダリング · PPR の再開" --> fn["app Function"]
   end
 
   build --> bundle
@@ -95,7 +94,7 @@ flowchart TB
 
 ## 🎯 だれのためのものか
 
-- **Cloudflare Workers 向けに、アプリを移植せずにビルドしたい Next.js のチーム。** App Router でも Pages Router でも、Partial Prerendering、`"use cache"`、Server Actions、`next/image`、`next/og`、WebAssembly を使っていても、いつもの `next build` でそのままビルドでき、ホストが配信します。
+- **アプリを移植せずにデプロイ用バンドルを作りたいNext.jsのチーム。** App Router でも Pages Router でも、Partial Prerendering、`"use cache"`、Server Actions、`next/image`、`next/og`、WebAssembly を使っていても、いつもの `next build` でそのままビルドでき、ホストが配信します。
 - **ビルドそのものを成果物にしたいチーム。** CI が作るのは、中身を読めて、差分を取れて、保管できる 1 つのディレクトリーで、ホストがデプロイするのもそのディレクトリーです。
 - **Next.js を配信したいホストやプラットフォームの開発者。** バンドルはバージョン付きのスキーマ、エッジと Function のあいだのプロトコルは `x-arkor-*` ヘッダーの集まり、Function は [`@stayingupwind/runtime`](packages/runtime) から組み立てられます。`.next/` を読み解く必要はありません。
 
@@ -103,7 +102,7 @@ flowchart TB
 <summary><b>まだ向いていないケース</b></summary>
 
 - **webpack でビルドしている、または独自の `cacheHandler` に頼っている。** どちらも対応していません。[配信できるもの](#-配信できるもの)を見てください。
-- **自分の Cloudflare アカウントへ 1 コマンドでデプロイしたい。** upwind の役目は、バンドルを書き出すところまでです。上の注記を見てください。
+- **1コマンドでアプリをビルドしてデプロイしたい。** upwind の役目は、バンドルを書き出すところまでです。上の注記を見てください。
 - **1.0 相当の保証が必要。** [状態についての注記](#status)を見てください。
 
 </details>
@@ -221,7 +220,7 @@ my-app
 </td>
 <td width="50%" valign="top">
 
-**🔒 ビルドにアカウントも認証情報も不要。** アダプターはバンドルを書き出すあいだ、Cloudflare を含めてどのサービスとも通信しません。
+**🔒 ビルドにアカウントも認証情報も不要。** アダプターはバンドルを書き出すあいだ、どのサービスとも通信しません。
 
 </td>
 </tr>
@@ -245,14 +244,14 @@ my-app
 </td>
 <td valign="top">
 
-**🧮 WebAssembly のコンパイルは 1 度だけ。** `.wasm` はアップロード時に Cloudflare がコンパイルするモジュールとして送られるので、isolate ごとに最初のリクエストでコンパイルし直すことはありません。
+**🧮 WebAssembly のコンパイルは 1 度だけ。** `.wasm`はアップロード時にコンパイルされるモジュールとして送られるので、アプリの新しいインスタンスでも最初のリクエストでコンパイルし直す必要はありません。
 
 </td>
 </tr>
 <tr>
 <td valign="top">
 
-**🛑 失敗はビルドの中で。** Function はすべて監査されます。Cloudflare のサイズ上限を超えていないか、Workers のランタイムが提供すると確認できていない import はないか、`vm` の呼び出しがバンドルに残っていないか、バンドラーがたどれない読み込みはないか。アップロードで発覚する前に、ビルドが失敗して理由を知らせます。
+**🛑 失敗はビルドの中で。** Function はすべて監査されます。サイズ上限を超えていないか、デプロイ先のランタイムが提供すると確認できていないimportはないか、`vm` の呼び出しがバンドルに残っていないか、バンドラーがたどれない読み込みはないか。アップロードで発覚する前に、ビルドが失敗して理由を知らせます。
 
 </td>
 <td valign="top">
@@ -293,20 +292,20 @@ D1 データベース、KV 名前空間、R2 バケットを、デプロイと�
 
 **upwind は Next.js を置き換えません。あなたの Next.js を動かします。** フレームワークのコピーは持たず、`upwind dev` も `upwind build` もプロジェクトが依存する Next.js を使い、それがなければ起動を拒みます。変わるのはアプリを取り囲むもの、つまり開発中の玄関と、本番でビルドが何になるかです。
 
-|                                               | Next.js 単体                                       | upwind と組み合わせた Next.js                                                                                                                                                                                                        |
-| --------------------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **あなたのコード**                            | App Router、Pages Router、`next.config`            | **同じです。** [対応していないもの](#-配信できるもの)を除けば移植は不要で、upwind から import しなければならないものもありません                                                                                                     |
-| **開発**                                      | `next dev`                                         | `upwind dev`: 同じ開発サーバーを同じプロセスで。その前に `/__upwind` に答える玄関があります                                                                                                                                          |
-| **ビルド**                                    | `next build` → `.next/`                            | `upwind build`: 同じ `next build`。そのアダプターが `.arkor/` も書き出します                                                                                                                                                         |
-| **本番**                                      | `next start`: 常駐する 1 つの Node.js サーバー     | 自前のサーバーはなし。workerd 上の `app` Function（1 つに収まらない大きなアプリは、ホストが分割する場合、ルートが共有するコードに沿って複数に分かれます。proxy があれば `middleware` Function も）が、ホストのエッジの後ろで動きます |
-| **静的ファイルとプリレンダー**                | そのサーバーが配信                                 | 中身のハッシュを名前にした blob を、エッジがストレージから配信                                                                                                                                                                       |
-| **Partial Prerendering**                      | サーバーがシェルを送り、続けて残りをストリーミング | エッジがストレージからシェルを送り、Function は動的な部分だけを送る                                                                                                                                                                  |
-| **middleware / `proxy.ts`**                   | サーバーの中で動く                                 | 独立した Function にもなり、エッジがアプリを起こす前に動かせる                                                                                                                                                                       |
-| **`/_next/image`**                            | サーバーが最適化                                   | エッジが最適化                                                                                                                                                                                                                       |
-| **キャッシュ**（ISR、`"use cache"`、`fetch`） | メモリーとディスク、または自作の `cacheHandler`    | ホストが保持。キャッシュのモジュールはビルド時に指定し、既定のアダプターで作ったバンドルは何もキャッシュしません                                                                                                                     |
-| **cron ジョブ**                               | —                                                  | `upwind.config.ts` か `vercel.json` の `crons`。ビルド時に検査されます                                                                                                                                                               |
-| **ローカルのストレージ**                      | —                                                  | `.upwind/` 以下の D1、KV、R2 を `@stayingupwind/sdk` で読む                                                                                                                                                                          |
-| **バンドラー**                                | Turbopack か webpack                               | Turbopack                                                                                                                                                                                                                            |
+|                                               | Next.js 単体                                       | upwind と組み合わせた Next.js                                                                                                                                                                                           |
+| --------------------------------------------- | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **あなたのコード**                            | App Router、Pages Router、`next.config`            | **同じです。** [対応していないもの](#-配信できるもの)を除けば移植は不要で、upwind から import しなければならないものもありません                                                                                        |
+| **開発**                                      | `next dev`                                         | `upwind dev`: 同じ開発サーバーを同じプロセスで。その前に `/__upwind` に答える玄関があります                                                                                                                             |
+| **ビルド**                                    | `next build` → `.next/`                            | `upwind build`: 同じ `next build`。そのアダプターが `.arkor/` も書き出します                                                                                                                                            |
+| **本番**                                      | `next start`: 常駐する 1 つの Node.js サーバー     | 自前のサーバーはなし。`app` Function（1 つに収まらない大きなアプリは、ホストが分割する場合、ルートが共有するコードに沿って複数に分かれます。proxy があれば `middleware` Function も）が、ホストのエッジの後ろで動きます |
+| **静的ファイルとプリレンダー**                | そのサーバーが配信                                 | 中身のハッシュを名前にした blob を、エッジがストレージから配信                                                                                                                                                          |
+| **Partial Prerendering**                      | サーバーがシェルを送り、続けて残りをストリーミング | エッジがストレージからシェルを送り、Function は動的な部分だけを送る                                                                                                                                                     |
+| **middleware / `proxy.ts`**                   | サーバーの中で動く                                 | 独立した Function にもなり、エッジがアプリを起こす前に動かせる                                                                                                                                                          |
+| **`/_next/image`**                            | サーバーが最適化                                   | エッジが最適化                                                                                                                                                                                                          |
+| **キャッシュ**（ISR、`"use cache"`、`fetch`） | メモリーとディスク、または自作の `cacheHandler`    | ホストが保持。キャッシュのモジュールはビルド時に指定し、既定のアダプターで作ったバンドルは何もキャッシュしません                                                                                                        |
+| **cron ジョブ**                               | —                                                  | `upwind.config.ts` か `vercel.json` の `crons`。ビルド時に検査されます                                                                                                                                                  |
+| **ローカルのストレージ**                      | —                                                  | `.upwind/` 以下の D1、KV、R2 を `@stayingupwind/sdk` で読む                                                                                                                                                             |
+| **バンドラー**                                | Turbopack か webpack                               | Turbopack                                                                                                                                                                                                               |
 
 **やめるときは差分 1 つ。** `package.json` のスクリプトを `next dev` と `next build` に戻し、2 つの devDependencies と `adapterPath` の行を消してください。置き換えが要るのは、`@stayingupwind/sdk` でストレージを読んでいるコードと、`upwind.config.*` に書いた cron だけです。
 
@@ -366,7 +365,7 @@ upwind が待ち受け、Next.js はその後ろの同じプロセスで、Next.
 
 ## 💾 ストレージ
 
-アプリは設定を 1 行も書かずに、D1 データベース、KV 名前空間、R2 バケットを使えます。ローカルでは `upwind dev` と `upwind build` が、デプロイされた Function と同じ workerd の上でそれらを動かし、データを `.upwind/` に保存して、アプリに提供します。本番では、ホストが割り当てたストレージを Function がアプリに提供します。SDK は、提供されたものをどちらでも同じやり方で読みます。
+アプリは設定を 1 行も書かずに、D1 データベース、KV 名前空間、R2 バケットを使えます。ローカルでは `upwind dev` と `upwind build` が、それらを動かし、データを `.upwind/` に保存して、アプリに提供します。本番では、ホストが割り当てたストレージを Function がアプリに提供します。SDK は、提供されたものをどちらでも同じやり方で読みます。
 
 ```tsx
 import db from '@stayingupwind/sdk/db';
@@ -395,7 +394,7 @@ export default async function Page() {
 | `published()`                                | 提供されているすべてと、その名前                                    |
 
 - **1 種類に 1 つなら、名前はいりません。** 提供されている D1 データベースが 1 つだけなら、`db` はそのデータベースを指します。複数あるときは例外を投げて一覧を示すので、`d1('ORDERS')` のように使いたいものを選んでください。
-- **型は Cloudflare 自身のもの**（`@cloudflare/workers-types` の `D1Database`、`KVNamespace`、`R2Bucket`）なので、プロジェクトの `tsconfig` で何かを設定する必要はありません。
+- **SDKはストレージの型を同梱します。** `@cloudflare/workers-types`の`D1Database`、`KVNamespace`、`R2Bucket`を使うために、プロジェクトの`tsconfig`で何かを設定する必要はありません。
 - **プリレンダー中にも読めます。** SDK をインストールしたプロジェクトでは、`upwind build` がページのプリレンダー中にも同じストレージを提供するので、`generateStaticParams` がスラッグを D1 から読み出せます。そのときプリレンダーは、複数ではなく 1 つのビルドワーカーで行われます。ストレージのディレクトリーを開けるのは、一度に 1 つのランタイムだけだからです。ただしプロジェクトが `experimental.cpus` を自分で指定している場合はその値が使われ、ストレージを読むページは 1 つを除くすべてのワーカーで失敗します。素の `next build` は何も提供せず、SDK は推測で動かずに、その旨をエラーで伝えます。
 - **空から始め直すなら `.upwind/` を消してください。** ローカルだけのデータで、デプロイ先から読まれることはありません。
 
@@ -449,7 +448,7 @@ Adapter API だけでは足りない箇所では、アダプターが Next.js �
 <details>
 <summary><b><code>start</code> スクリプトがないのはなぜですか？</b></summary>
 
-デプロイ先で `start` スクリプトが実行されることはないからです。アプリを配信するのはバンドル（エッジの後ろの、workerd 上の Function）であって、プロジェクト自身の Node.js サーバーではありません。
+デプロイ先で `start` スクリプトが実行されることはないからです。アプリを配信するのはバンドル（エッジの後ろで動くFunction）であって、プロジェクト自身の Node.js サーバーではありません。
 
 </details>
 

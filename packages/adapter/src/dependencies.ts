@@ -196,7 +196,7 @@ function mib(bytes: number): string {
 /** Whether a Function is over the limit, said as the message will say it; `undefined` when under. */
 function overLimit(size: FunctionSize): string | undefined {
   if (size.bytes > MAX_FUNCTION_BYTES) {
-    return `${mib(size.bytes)}, over Cloudflare's ${mib(MAX_FUNCTION_BYTES)} limit`;
+    return `${mib(size.bytes)}, over the ${mib(MAX_FUNCTION_BYTES)} limit`;
   }
   return undefined;
 }
@@ -444,7 +444,7 @@ export function auditFunctionSize(kind: string, upload: FunctionUpload, deferred
     .slice(0, HEAVIEST_MODULES)
     .map((module) => `${module.name} (${mib(module.blob.byteLength)})`);
   throw new AuditError(
-    `@stayingupwind/adapter: the ${kind} Function is ${over}; its largest modules are ${heaviest.join(', ')}`,
+    `@stayingupwind/adapter: the ${kind} server bundle is ${over}; its largest modules are ${heaviest.join(', ')}`,
   );
 }
 
@@ -458,7 +458,9 @@ function problemsIn(source: string, bundle: BundleDependencies): string[] {
   }
   for (const external of bundle.externals) {
     if (!isAllowedExternal(external)) {
-      problems.push(`${external} is imported but not known to be provided by the Workers runtime`);
+      problems.push(
+        `${external} is imported but not known to be provided by the deployment runtime`,
+      );
     }
   }
   // Counted rather than looked up: two loads on one line of a minified module read the same, and
