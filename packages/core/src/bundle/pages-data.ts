@@ -68,17 +68,28 @@ function underBasePath(basePath: string, pathname: string): string {
   return pathname.startsWith(`${basePath}/`) ? pathname.slice(basePath.length) : pathname;
 }
 
-/**
- * Where a host is asked for a Pages Router page's props, for a manifest (`pagesDataPrefix`):
- * `<basePath>/_next/data/<buildId>`, with no slash after.
- */
-export function pagesDataPrefixOf(buildId: string, basePath: string): string {
+/** `<basePath>/_next/data/<buildId>`, as the build names what it writes there. */
+function dataPrefixOf(buildId: string, basePath: string): string {
   return `${basePath}${DATA_PREFIX}${buildId}`;
 }
 
+/** Only for its parser: a path is spelled the same under any origin. */
+const ANY_ORIGIN = 'https://pages-data.invalid';
+
 /**
- * The data pathname the build writes a page's props under: under the base path,
- * `/_next/data/<buildId>`, the page as it spells it in a file's name (`spelledPage`), `.json`.
+ * Where a host is asked for a Pages Router page's props, for a manifest (`pagesDataPrefix`):
+ * `<basePath>/_next/data/<buildId>`, with no slash after, spelled as a request's URL spells it.
+ * That is the build's name for it percent-encoded wherever the base path or the build id holds what
+ * a URL's path cannot — a space, anything not ASCII — and what a request's pathname is compared
+ * with (`pageOfPagesData`).
+ */
+export function pagesDataPrefixOf(buildId: string, basePath: string): string {
+  return new URL(dataPrefixOf(buildId, basePath), ANY_ORIGIN).pathname;
+}
+
+/**
+ * The data pathname the build writes a page's props under, as the build names it: under the base
+ * path, `/_next/data/<buildId>`, the page as it spells it in a file's name (`spelledPage`), `.json`.
  */
 export function pagesDataPathnameUnder(
   buildId: string,
@@ -86,7 +97,7 @@ export function pagesDataPathnameUnder(
   pathname: string,
 ): string {
   const page = spelledPage(underBasePath(basePath, pathname));
-  return `${pagesDataPrefixOf(buildId, basePath)}${page}${DATA_SUFFIX}`;
+  return `${dataPrefixOf(buildId, basePath)}${page}${DATA_SUFFIX}`;
 }
 
 /**
@@ -94,10 +105,12 @@ export function pagesDataPathnameUnder(
  * props `pagesDataPathnameUnder` names so, named as a manifest names its routes — under the base
  * path, and behind the slash where the application keeps its pages there (`trailingSlash`), which is
  * the spelling a request for the page's document asks by. The client asks for a page's props
- * without that slash (`getDataHref`).
+ * without that slash (`getDataHref`), and with nothing but the page between the prefix and `.json`.
+ * The page keeps the request's spelling, percent-encoded or not, for a route lookup that decodes
+ * (`findRouteEntry`).
  *
- * `undefined` for a pathname no page's props are named by — another build's, another spelling —
- * which is the application's to answer.
+ * `undefined` for a pathname no page's props are named by — another build's, another spelling, a
+ * slash before `.json` — which is the application's to answer.
  */
 export function pageOfPagesData(
   prefix: string,
@@ -108,6 +121,11 @@ export function pageOfPagesData(
     return undefined;
   }
   const spelled = pathname.slice(prefix.length, -DATA_SUFFIX.length);
+  // Next.js finds a page's props by the page's own name, which ends in no slash: one before
+  // `.json` names no props it wrote, though it would be named the page behind the slash below.
+  if (spelled.endsWith('/')) {
+    return undefined;
+  }
   let page = spelled;
   if (spelled === INDEX) {
     page = '/';
