@@ -344,6 +344,9 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
   // the Function reads either, and every byte of its manifest is parsed before its first response.
   const bundle: DeploymentBundle = deploymentBundleSchema.parse({
     ...functions.runtimeManifest,
+    // How the Functions this adapter builds fill a header's `$` references: with the router the
+    // runtime is built on, `@next/routing` 16.4 or later. The edge fills them that way for it.
+    routerReferences: 'one-pass',
     // Where each entrypoint's code is in the source tree. Only a reader of the build ever asks
     // (`sourcePageSchema`).
     sourcePages,
@@ -784,7 +787,7 @@ export function createAdapter(options: AdapterOptions = {}): NextAdapter {
     name: 'upwind',
     async modifyConfig(config, context) {
       const { phase } = context;
-      const projectDir = projectDirOf(config, context);
+      const projectDir = projectDirOf(context);
       if (phase === 'phase-development-server') {
         // `/__upwind` belongs to `upwind dev`, which is in front of this server. See `dev-prefix.ts`
         // for why a front door that already holds the path still wants the reservation, and why

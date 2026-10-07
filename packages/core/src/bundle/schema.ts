@@ -395,10 +395,26 @@ export const bundleConfigSchema = z.looseObject({
 });
 export type BundleConfig = z.infer<typeof bundleConfigSchema>;
 
+/**
+ * How a deployment's Functions fill the `$` references in a header's key and value. `one-pass` is
+ * `@next/routing` from 16.4: one pass over the value, each reference read as the longest name it
+ * spells — `$10` is the tenth capture or nothing, never the first and a `0` — and what that names
+ * put in as it is. The router before it replaced each name over the whole value in turn, as a
+ * replacement string, which is how a deployment whose bundle does not say has its headers filled.
+ */
+export const routerReferencesSchema = z.literal('one-pass');
+export type RouterReferences = z.infer<typeof routerReferencesSchema>;
+
 const bundleSchema = z.object({
   v: z.union([z.literal(BUNDLE_VERSION), z.literal(SPLIT_BUNDLE_VERSION)]),
   deploymentId: deploymentIdSchema,
   nextVersion: z.string().min(1),
+  /**
+   * How this deployment's Functions fill a header's `$` references (`routerReferencesSchema`), so
+   * that what the edge answers for them carries the values the Function would have given it.
+   * Absent from a bundle an earlier adapter wrote, whose Functions route with the router before.
+   */
+  routerReferences: routerReferencesSchema.optional(),
   buildId: z.string().min(1),
   /** The Next.js project directory relative to the repository root (`apps/site`, say). */
   projectDir: z.string(),
