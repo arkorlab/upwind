@@ -1,6 +1,10 @@
 /** Which Function this runtime was bundled into; the adapter sets it with an esbuild `define`. */
 // eslint-disable-next-line @typescript-eslint/naming-convention -- an esbuild define, named as such
-declare const __ARKOR_FUNCTION_KIND__: 'app' | 'middleware';
+declare const __ARKOR_FUNCTION_KIND__: 'app' | 'middleware' | 'workflow';
+
+/** Whether the deployment carries the Workflow SDK, in any of its Functions; the same `define`. */
+// eslint-disable-next-line @typescript-eslint/naming-convention -- an esbuild define, named as such
+declare const __ARKOR_WORKFLOW_SDK__: boolean;
 
 /**
  * This Function's name: `app`, or `app-2`, `app-3`… for the app Functions after the first of a

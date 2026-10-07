@@ -94,6 +94,19 @@ export class WasmCollector {
     return sha256;
   }
 
+  /**
+   * Remember WebAssembly a chunk carries in its own source rather than as a file of its own — the
+   * Workflow SDK's QuickJS engine, which ships as base64 strings (`workflow.ts`). The digest names
+   * it as it would a file's, so the same module offered both ways is one module.
+   */
+  async offerBytes(bytes: Uint8Array): Promise<string> {
+    const sha256 = await sha256Hex(bytes);
+    if (!this.#bySha.has(sha256)) {
+      this.#bySha.set(sha256, { bytes, globals: [] });
+    }
+    return sha256;
+  }
+
   /** Name a module the Function publishes: this is what makes it ship. */
   publish(sha256: string, global: string): void {
     const entry = this.#bySha.get(sha256);

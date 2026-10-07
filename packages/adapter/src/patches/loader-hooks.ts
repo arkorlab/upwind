@@ -59,6 +59,41 @@ module.exports.createAddHookMessageChannel = createAddHookMessageChannel;
 const UNSUPPORTED_SOURCE =
   'module.exports = class Critters { constructor() { throw new Error("experimental.optimizeCss is not supported on this platform"); } };';
 
+/**
+ * `node:vm`, for the workflow Function (`workflow.ts`) and nothing else.
+ *
+ * The SDK imports it for the engine it replays a workflow on by default, and runs every workflow on
+ * its QuickJS engine here instead (`WORKFLOW_VM=quickjs`, which the runtime sets): what it imported
+ * is never called. workerd's own module would answer a call with `ERR_METHOD_NOT_IMPLEMENTED`; this
+ * one says why. Anything else that imports `node:vm` still fails the build, which is the audit's
+ * point (`FORBIDDEN_IN_APP`): the stub is given only to what the workflow Function's server chunks
+ * import, never to the application's or the middleware's Function. It has no `runInNewContext`,
+ * the one name the audit refuses wherever it appears, since the SDK calls none and the audit would
+ * refuse the stub itself.
+ */
+export const NODE_VM_MODULE = /^(?:node:)?vm$/u;
+export const NODE_VM_SOURCE = `function unavailable(name) {
+  return function () {
+    throw new Error("node:vm." + name + " cannot run on workerd, which evaluates no code at run time; the Workflow SDK's workflows run on its QuickJS engine (WORKFLOW_VM=quickjs)");
+  };
+}
+class Script {
+  constructor() {
+    unavailable("Script")();
+  }
+}
+module.exports = {
+  Script,
+  compileFunction: unavailable("compileFunction"),
+  createContext: unavailable("createContext"),
+  isContext: function () { return false; },
+  measureMemory: unavailable("measureMemory"),
+  runInContext: unavailable("runInContext"),
+  runInThisContext: unavailable("runInThisContext"),
+  constants: {},
+};
+`;
+
 export function isStubbedModule(specifier: string): boolean {
   return (
     LOADER_HOOKS.test(specifier) ||
@@ -72,6 +107,11 @@ export function isStubbedModule(specifier: string): boolean {
 export function stubSourceFor(specifier: string): string {
   if (RAW_BODY_MODULE.test(specifier)) {
     return RAW_BODY_SOURCE;
+  }
+  // Resolved here for the workflow Function alone (`stubPlugin`), which is why `isStubbedModule`
+  // says no to it.
+  if (NODE_VM_MODULE.test(specifier)) {
+    return NODE_VM_SOURCE;
   }
   if (PROCESS_MODULE.test(specifier)) {
     return PROCESS_SOURCE;

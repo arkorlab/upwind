@@ -1,9 +1,10 @@
 # @stayingupwind/adapter
 
 `next build` calls this adapter with a description of the application, and it writes a deployment
-bundle under `<projectDir>/.arkor/` — `bundle.json`, the blobs it names, and the two Functions
-(`app`, `middleware`) that run the application's code under `@stayingupwind/runtime`. A build needs no
-credentials or service calls, and uploading the bundle is the host's job.
+bundle under `<projectDir>/.arkor/` — `bundle.json`, the blobs it names, and the Functions (`app`,
+`middleware`, and `workflow` for a build that uses the Workflow SDK) that run the application's code
+under `@stayingupwind/runtime`. A build needs no credentials or service calls, and uploading the
+bundle is the host's job.
 
 Name the adapter in `next.config`:
 
@@ -349,6 +350,39 @@ What this is checked against is Next.js's own `test/e2e/edge-can-use-wasm-files`
 route with `runtime = 'edge'`, called twice. `fixtures/next-minimal` does the same on the Node.js
 runtime, in both of the forms Turbopack compiles — `?module`, which compiles, and the plain
 import, which instantiates.
+
+## The Workflow SDK
+
+A build that uses Vercel's Workflow SDK (`workflow`, its `"use workflow"` and `"use step"`
+directives, `withWorkflow(nextConfig)`) gets a third Function. The flow route `withWorkflow`
+generates — `/.well-known/workflow/v1/flow` under the `basePath`, where 5.x runs both workflows and
+steps — is taken out of the application's routes and built into `functions.workflow` alone, and the
+bundle records it as `workflow: { route, sdk }`. Nothing a visitor sends reaches it: the
+application's Function has no such route, and what calls it is the host, delivering the SDK's
+queue. A delivery goes through none of the application's routing rules — its redirects, rewrites
+and header rules are left out of this Function — as Vercel's queue reaches the function itself.
+The webhook route the SDK generates stays an application route.
+
+- **The engine is QuickJS.** workerd's `node:vm` is a stub that throws, and 4.x of the SDK runs
+  workflows on nothing else, so a build with `workflow` older than 5 fails, saying so. The runtime
+  sets `WORKFLOW_VM=quickjs` (a project's own value wins), and the `workflow-quickjs-wasm` patch
+  ships the WebAssembly the engine embeds as a base64 string as a compiled module of its own,
+  as every other `.wasm` is: Cloudflare forbids compiling WebAssembly at run time. In the workflow
+  Function, the `node:vm` its chunks import — and never call, on that engine — resolves to a module
+  that throws if it ever is; the application's and the middleware's Functions still refuse it at
+  build time.
+- **The SDK's own Worlds stay out.** `@workflow/world-local` keeps its state on a file system and
+  `@workflow/world-vercel` reaches Vercel; neither can run in a Function, so `modifyConfig` aliases
+  both to modules that refuse (`turbopack.resolveAlias`), which keeps about a megabyte out of every
+  Function. An alias the project set itself is left as it is.
+- **The World is the host's.** `createAdapter({ workflowWorldModule })` names a module exporting
+  `createWorld()`, which the adapter registers from the instrumentation hook, before any route
+  runs, where the SDK looks for its World. A build without one warns: every run would fail where it
+  starts, unless the project's own hook calls `setWorld()`.
+- **`VERCEL_URL`** is what the SDK builds a webhook's URL from on this engine (and `localhost`
+  without it), so a host gives the workflow Function the deployment's hostname under that name.
+
+`fixtures/next-workflow` is the build `tools/next-matrix` holds to this.
 
 ## Which Next.js
 
