@@ -1,8 +1,9 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import { requestContext } from './cache/context.ts';
-import { type Entry, nodeHandlerOf } from './entries.ts';
-import { initUrlOf } from './incoming.ts';
+import { invokeEdgeHandler } from './edge-invoke.ts';
+import { type Entry, entryFor, nodeHandlerOf } from './entries.ts';
+import { initUrlOf, stripPlatformHeaders } from './incoming.ts';
 import type { FailureAnswer } from './node-bridge.ts';
 import { entrypointKindOf, getStore, type Store } from './store.ts';
 
@@ -61,14 +62,12 @@ function documentOf(
  * `page` rendered by its own entrypoint into `response`, for the request that was being answered,
  * as Next.js's own server renders it; whether the deployment has that entrypoint to render with.
  * The render is not handed `render404`, so a not-found page that asks for one ends in plain text
- * rather than in itself. `meta` is laid over the request's: Next.js replaces a request's metadata
- * with what the invocation hands it, rather than adding to it.
+ * rather than in itself.
  */
 async function renderedPage(
   page: string,
   request: IncomingMessage,
   response: ServerResponse,
-  meta: Readonly<Record<string, unknown>> = {},
 ): Promise<boolean> {
   const context = requestContext();
   if (context === undefined) {
@@ -85,10 +84,36 @@ async function renderedPage(
       minimalMode: true,
       relativeProjectDir: '.',
       initURL: initUrlOf(context.request),
-      ...meta,
     },
   });
   return true;
+}
+
+/** What an answer from the edge runtime keeps out of the response it is copied into. */
+const NOT_COPIED: ReadonlySet<string> = new Set([
+  'connection',
+  'content-length',
+  'keep-alive',
+  'set-cookie',
+  'transfer-encoding',
+]);
+
+/**
+ * An answer of the edge runtime, copied into the Node.js response a render was already using: its
+ * headers, set over what the response had as a Node.js render's would be, and its body whole —
+ * a not-found page is small. The status stays the response's, which is the 404 being answered.
+ */
+async function copyInto(answer: Response, response: ServerResponse): Promise<void> {
+  for (const [name, value] of answer.headers) {
+    if (!NOT_COPIED.has(name)) {
+      response.setHeader(name, value);
+    }
+  }
+  const cookies = answer.headers.getSetCookie();
+  if (cookies.length > 0) {
+    response.setHeader('set-cookie', cookies);
+  }
+  response.end(new Uint8Array(await answer.arrayBuffer()));
 }
 
 /**
@@ -96,10 +121,11 @@ async function renderedPage(
  * a 404 with it before it looks for the Pages Router's `/404` (`renderErrorToResponseImpl`,
  * `server/base-server.ts`), so where the two routers share an application, a Pages Router miss is
  * answered with the App Router's page — which is what Next.js 16.3's pages handler asks of the
- * platform's `render404`. The document the build wrote, where the page was complete at build
- * time; else the page rendered whole, as the pages handler readies it to be under
- * `cacheComponents` (an empty postponed state): an invocation of its own has no shell to resume.
- * Whether it answered.
+ * platform's `render404`. Rendered whole for the request, through whichever runtime it was built
+ * for, as Next.js renders it there: under `cacheComponents` with an empty postponed state, which is
+ * what the pages handler readies it with, since an invocation of its own has no shell to resume.
+ * The build's own document of it is not read: where the page was complete, Next.js publishes it as
+ * `/404`, which in an application of both routers is the Pages Router's name. Whether it answered.
  */
 async function renderedAppNotFound(
   store: Store,
@@ -107,21 +133,36 @@ async function renderedAppNotFound(
   response: ServerResponse,
 ): Promise<boolean> {
   const route = `${store.manifest.config.basePath}${APP_NOT_FOUND}`;
-  if (entrypointKindOf(store, route) !== 'app-page') {
+  const context = requestContext();
+  if (context === undefined || entrypointKindOf(store, route) !== 'app-page') {
     return false;
   }
-  const built = store.prerendersByPathname.get(route);
-  if (built?.body !== undefined && built.postponed === undefined) {
-    response.setHeader(CONTENT_TYPE, built.body.contentType);
-    response.end(store.readBlob(built.body.sha256));
+  const entry = await entryFor(context.tables, route);
+  if (entry === undefined) {
+    return false;
+  }
+  const requestMeta = {
+    minimalMode: true,
+    relativeProjectDir: '.',
+    initURL: initUrlOf(context.request),
+    ...(store.manifest.config.cacheComponents === true && { postponed: '' }),
+  };
+  if (entry.kind === 'node') {
+    await entry.handler(request, response, { waitUntil: context.waitUntil, requestMeta });
     return true;
   }
-  return renderedPage(
-    APP_NOT_FOUND,
-    request,
-    response,
-    store.manifest.config.cacheComponents === true ? { postponed: '' } : {},
-  );
+  const asked = new Request(initUrlOf(context.request), {
+    method: context.request.method === 'HEAD' ? 'HEAD' : 'GET',
+    headers: stripPlatformHeaders(context.request.headers),
+  });
+  const answer = await invokeEdgeHandler({
+    handler: entry.handler,
+    request: asked,
+    requestMeta,
+    waitUntil: context.waitUntil,
+  });
+  await copyInto(answer, response);
+  return true;
 }
 
 /**
