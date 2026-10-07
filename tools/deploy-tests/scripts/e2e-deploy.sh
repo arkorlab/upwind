@@ -72,11 +72,11 @@ export NEXT_PRIVATE_TEST_MODE=e2e
 #
 # Corepack is told not to refuse: the workflow enables it, and in strict mode it refuses to run pnpm in
 # an application whose `packageManager` names another — a fixture may pin npm, and the harness still
-# appends `pnpm post-build` to its build. Nor to fetch: for such an application it would otherwise run
-# the newest pnpm there is rather than its last known good one, the version every other fixture runs,
-# and pnpm 12 refuses the pin itself (`ERR_PNPM_OTHER_PM_EXPECTED`; no spelling of
-# `package-manager-strict` turns that off), where pnpm 10 leaves it alone.
-# `handle-non-hoisted-swc-helpers`, which pins npm, failed on it.
+# appends `pnpm post-build` to its build. Nor to fetch: such an application pins no pnpm, and Corepack
+# would otherwise run the newest there is rather than its last known good one — which the workflow
+# makes the version Next.js's harness pins every other fixture to. pnpm 11 and 12 refuse the pin
+# themselves (`ERR_PNPM_OTHER_PM_EXPECTED`; no spelling of `package-manager-strict` turns that off),
+# where pnpm 10 leaves it alone. `handle-non-hoisted-swc-helpers`, which pins npm, failed on it.
 fixture() {
   env -u ARKOR_API_URL -u ARKOR_API_TOKEN -u ARKOR_API_TOKEN_FILE -u ADAPTER_TEST_PROJECT_ID \
     -u ADAPTER_TEST_SETTLE_SECONDS COREPACK_ENABLE_STRICT=0 COREPACK_DEFAULT_TO_LATEST=0 "$@"
