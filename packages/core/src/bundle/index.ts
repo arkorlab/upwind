@@ -41,6 +41,8 @@ export {
   functionSchema,
   type FunctionSpec,
   MAX_APP_FUNCTIONS,
+  ONE_PASS_BUNDLE_VERSION,
+  ONE_PASS_SPLIT_BUNDLE_VERSION,
   SPLIT_BUNDLE_VERSION,
   splitFunctionNameSchema,
   workflowSchema,

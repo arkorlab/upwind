@@ -3,10 +3,10 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
-  BUNDLE_VERSION,
   bundleBlobs,
   type DeploymentBundle,
   deploymentBundleSchema,
+  ONE_PASS_BUNDLE_VERSION,
   travelsWithFunction,
 } from '@stayingupwind/core/bundle';
 import {
@@ -271,7 +271,8 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
   const bypassToken = bypassTokenOf(ctx.outputs);
   const routing = bundleRouting(ctx.routing, middleware);
   const runtimeManifest = {
-    v: BUNDLE_VERSION as number,
+    // One-pass, as the bundle says below: a host that knows nothing of that refuses the version.
+    v: ONE_PASS_BUNDLE_VERSION as number,
     deploymentId: id,
     nextVersion: ctx.nextVersion,
     buildId: ctx.buildId,
