@@ -39,6 +39,13 @@ export const routeCacheSchema = z.object({
   kind: z.enum(['app-page', 'pages']),
   /** `resume`: the deployment's Function completes the document; `complete`: the document is whole. */
   delivery: z.enum(['resume', 'complete']),
+  /**
+   * The route the build filed a class shell under, which the runtime keys the class's entry by and a
+   * member's own entry beside it (`concreteUpgrade`): `/[locale]/[orgSlug]` for `/en/[orgSlug]`.
+   * Absent for a route that is no class, and in a manifest from before it was named, where the
+   * class's pathname stands in for it.
+   */
+  route: z.string().startsWith('/').optional(),
 });
 export type RouteCache = z.infer<typeof routeCacheSchema>;
 
