@@ -6,13 +6,21 @@ import { DEPLOYMENT_ID_QUERY } from '../request/constants.ts';
  * Vercel serves with `?dpl=` when Skew Protection is enabled.
  */
 const HASHED_TREE_RE = /^\/_next\/static\/(?:immutable|chunks|css|media|runtime)\/.+$/u;
+/**
+ * The manifests Next.js writes under the build id. Every build with a `deploymentId` gets the same
+ * build id (`getBuildId`), so the path names no build on its own: only with the `dpl` the build's
+ * documents ask for these by, which then keys the copy.
+ */
 const BUILD_MANIFEST_RE =
   /^\/_next\/static\/[\w-]{8,}\/_(?:buildManifest|ssgManifest|clientMiddlewareManifest)\.js$/u;
 const NON_IMMUTABLE_MARKERS: readonly string[] = ['/development/', '/webpack/', '.hot-update.'];
 
 /** True when the path (and query) can only refer to a content-addressed static asset. */
 export function isImmutableAssetPath(pathname: string, searchParams: URLSearchParams): boolean {
-  if (!HASHED_TREE_RE.test(pathname) && !BUILD_MANIFEST_RE.test(pathname)) {
+  const named =
+    HASHED_TREE_RE.test(pathname) ||
+    (BUILD_MANIFEST_RE.test(pathname) && (searchParams.get(DEPLOYMENT_ID_QUERY) ?? '') !== '');
+  if (!named) {
     return false;
   }
   if (NON_IMMUTABLE_MARKERS.some((marker) => pathname.includes(marker))) {

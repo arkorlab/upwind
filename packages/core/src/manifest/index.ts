@@ -22,6 +22,7 @@ export {
   findRouteEntry,
   findStaticFile,
   MAX_MANIFEST_BYTES,
+  staticFileBuildWithoutDpl,
   staticFileKey,
   staticFileStatus,
   parseProjectManifest,

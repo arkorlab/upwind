@@ -2,13 +2,14 @@ import { isImmutableAssetPath } from '../assets/admission.ts';
 import type { DeploymentFingerprint } from '../deployment/fingerprint.ts';
 import {
   findRouteEntry,
-  findStaticFile,
   isExactPathname,
   isReserved,
   matchDynamicRoute,
   type RouteEntry,
   type ProjectManifest,
   type StaticFileEntry,
+  staticFileBuildWithoutDpl,
+  staticFileKey,
 } from '../manifest/index.ts';
 import { acceptsHtml } from './accept.ts';
 import { blockingMetadataReason } from './blocking-metadata.ts';
@@ -382,6 +383,10 @@ const STATIC_FILE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD']);
  * naming a deployment this manifest holds no build of the file for, which is asking for a file
  * this manifest may not hold. On its own as well, for the edge to ask before it has decided
  * anything else about the request.
+ *
+ * A request with no `dpl` is the current deployment's, and a name only the deployment before
+ * gave a file under the build id is no file of the current one (`staticFileBuildWithoutDpl`):
+ * such a request goes on to be classified as any other.
  */
 export function classifyStaticFile(
   input: Pick<ClassifyInput, 'deployment' | 'manifest' | 'method' | 'url'>,
@@ -389,16 +394,23 @@ export function classifyStaticFile(
   if (!STATIC_FILE_METHODS.has(input.method) || input.manifest === undefined) {
     return undefined;
   }
-  const file = findStaticFile(input.manifest, input.url.pathname);
-  if (file === undefined) {
+  const key = staticFileKey(input.manifest, input.url.pathname);
+  const file = key === undefined ? undefined : input.manifest.staticFiles?.[key];
+  if (key === undefined || file === undefined) {
     return undefined;
   }
   const dpls = input.url.searchParams.getAll(DEPLOYMENT_ID_QUERY);
   if (dpls.length > 1) {
     return passthrough(DPL_MISMATCH);
   }
-  const build =
-    dpls[0] === undefined ? file : staticFileBuild(file, dpls[0], input.deployment?.dplId);
+  const activeDplId = input.deployment?.dplId;
+  if (dpls[0] === undefined) {
+    const build = staticFileBuildWithoutDpl(key, file, activeDplId);
+    return build === undefined
+      ? undefined
+      : { kind: 'static-file', pathname: input.url.pathname, file: build };
+  }
+  const build = staticFileBuild(file, dpls[0], activeDplId);
   if (build === undefined) {
     return passthrough(DPL_MISMATCH);
   }
