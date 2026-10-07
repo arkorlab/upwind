@@ -502,7 +502,7 @@ export function blockingMetadataReason(
 }
 
 /** The pattern Next.js writes into a partially prerendered route's `bypassFor` for this manifest. */
-function blockingMetadataPattern(manifest: ProjectManifest): string {
+function blockingMetadataPattern(manifest: Pick<ProjectManifest, 'htmlLimitedBots'>): string {
   const pattern = manifest.htmlLimitedBots;
   return pattern === undefined || pattern === '' ? NEXT_HTML_LIMITED_BOTS : pattern;
 }
@@ -559,12 +559,9 @@ export function bypassForHolds(
   if (conditions === undefined) {
     return false;
   }
-  const pattern = blockingMetadataPattern(manifest);
-  const recorded = manifest.htmlLimitedBots !== undefined;
   const finished = entry.cache?.delivery === 'complete';
   return conditions.some((condition) => {
-    const value = userAgentCondition(condition);
-    if (value === undefined || (recorded && !writtenFrom(value, pattern))) {
+    if (!writtenFromList(condition, manifest.htmlLimitedBots)) {
       return anyConditionHolds([condition], url, headers);
     }
     if (finished) {
@@ -575,6 +572,26 @@ export function bypassForHolds(
     // (`listWrittenInto`), once for every route of it.
     return wantsBlockingMetadata(headers.get(USER_AGENT_HEADER), manifest);
   });
+}
+
+/**
+ * Whether a condition of a route's `bypassFor` is the user-agent condition `next build` writes from
+ * the application's list (`htmlLimitedBots`, or Next.js's own where it names none), which
+ * `bypassForHolds` judges as the list rather than running it. With no list recorded, that is the
+ * only user-agent condition `next build` writes, and every one is read as it.
+ */
+export function writtenFromList(
+  condition: NonNullable<RouteEntry['bypassFor']>[number],
+  htmlLimitedBots: string | undefined,
+): boolean {
+  const value = userAgentCondition(condition);
+  if (value === undefined) {
+    return false;
+  }
+  return (
+    htmlLimitedBots === undefined ||
+    writtenFrom(value, blockingMetadataPattern({ htmlLimitedBots }))
+  );
 }
 
 /**

@@ -5,6 +5,7 @@ import { BEHAVIORAL_RESPONSE_HEADERS, CONTENT_DISPOSITION_HEADER } from '../requ
 import { filterShellResponseHeaders, rendersInline } from '../request/headers.ts';
 import { isInternalPage, nextNamespaceRoutes } from './base-path.ts';
 import { type DynamicRouting, withFunctions } from './functions.ts';
+import { memberRoutesOf } from './member-routes.ts';
 import { queryDependent } from './query.ts';
 import type { DeploymentBundle, Entrypoint, Prerender, Route, StaticFile } from './schema.ts';
 import { isTemplate, keepsTrailingSlash, requestedPathname, routerSpellings } from './spelling.ts';
@@ -698,13 +699,22 @@ export function dynamicRouting(
     return { ...spelled };
   }
   // Next.js's own order, every route kept: a class with no shell that matches first is a request
-  // the edge must not serve, and only the whole list says which class is first.
+  // the edge must not serve from the build, and only the whole list says which class is first.
+  const membersOf = memberRoutesOf(bundle, {
+    edgeRuntime: edgeRuntimeRoutes(bundle),
+    isDocument: documentPrerenders(bundle.prerenders, bundle.entrypoints),
+    servable: (prerender) =>
+      !claimedBeforeFiles(bundle, prerender) && headersReproducible(bundle, prerender),
+  });
   const dynamicRoutes: DynamicRoute[] = routing.dynamicRoutes.map((route) => {
     const template = route.destination?.split('?', 1)[0];
+    const shell = template !== undefined && routeKeys.has(template);
+    const members = template === undefined || shell ? undefined : membersOf(template);
     return {
       sourceRegex: route.sourceRegex,
       ...conditionsOf(route),
-      ...(template !== undefined && routeKeys.has(template) && { route: template }),
+      ...(shell && { route: template }),
+      ...(members !== undefined && { members }),
     };
   });
   // Redirects and rewrites Next.js evaluates ahead of its dynamic routes — and, for the ones
