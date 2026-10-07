@@ -6,11 +6,15 @@ import { pathToFileURL } from 'node:url';
 /**
  * What a scaffolded project tells a coding agent, which is what Next.js tells one.
  *
- * Both files below are Next.js's own, verbatim. The block is `buildAgentRulesBlock()` in
- * `next/dist/server/lib/generate-agent-files.js`, and writing the pair is what `create-next-app`
- * does (`helpers/generate-agent-files.ts`) for every project it makes. Next.js is MIT-licensed,
- * Copyright (c) 2025 Vercel, Inc.; the attribution is in this package's `NOTICE` and the licence
- * text in `LICENSE-MIT`, both of which ship with it.
+ * The file below is Next.js's own, verbatim. The block is `buildAgentRulesBlock()` in
+ * `next/dist/server/lib/generate-agent-files.js`, and writing it as `AGENTS.md` is what
+ * `create-next-app` does (`helpers/generate-agent-files.ts`) for every project it makes. Next.js is
+ * MIT-licensed, Copyright (c) 2025 Vercel, Inc.; the attribution is in this package's `NOTICE` and
+ * the licence text in `LICENSE-MIT`, both of which ship with it.
+ *
+ * Until 16.4 there were two files: `AGENTS.md`, and a `CLAUDE.md` beside it that imported it
+ * (`@AGENTS.md`). 16.4 writes `AGENTS.md` alone, from `create-next-app` and from `next dev` both,
+ * and so does this.
  *
  * **Not a word of this may change.** `hasCurrentAgentRules()` compares the block a project holds
  * against the one Next.js would write — byte for byte, once line endings are normalised — and
@@ -41,7 +45,7 @@ import { pathToFileURL } from 'node:url';
 const AGENTS_MD = [
   '<!-- BEGIN:nextjs-agent-rules -->',
   '',
-  '# This is NOT the Next.js you know',
+  '## This is NOT the Next.js you know',
   '',
   "This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.",
   '',
@@ -51,27 +55,17 @@ const AGENTS_MD = [
   '',
 ].join('\n');
 
-/**
- * `CLAUDE.md`, whole: an import of the file beside it.
- *
- * Claude Code reads `CLAUDE.md` and other agents read `AGENTS.md`, and one set of rules in two
- * files is one that is edited in one of them. `@AGENTS.md` is the import, so there is one file to
- * edit and the other points at it.
- */
-const CLAUDE_MD = '@AGENTS.md\n';
-
 export async function writeAgentRules(target: string): Promise<void> {
   await writeFile(path.join(target, 'AGENTS.md'), AGENTS_MD);
-  await writeFile(path.join(target, 'CLAUDE.md'), CLAUDE_MD);
 }
 
 /**
  * Hand the block over to the Next.js the install actually brought, and let it have the last word.
  *
- * The text above is the one this release was built against, and the manifest asks for `^16.3.8` —
+ * The text above is the one this release was built against, and the manifest asks for `^16.4.0` —
  * so a project made once a later 16 is out installs a Next.js this scaffolder has never seen. If
  * that release words the block differently, everything written above is last version's wording, and
- * the project's first `next dev` rewrites two files that were committed a minute earlier. Which is
+ * the project's first `next dev` rewrites a file that was committed a minute earlier. Which is
  * the drift this whole change exists to prevent, arriving by the one door the repository's own check
  * cannot watch: it holds this text to the Next.js in *this* checkout, and can say nothing about the
  * one a user will install months from now.

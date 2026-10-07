@@ -154,7 +154,6 @@ Dependencies are installed with the package manager you ran `create upwind` with
 my-app
 ├── .gitignore
 ├── AGENTS.md          # Next.js's own agent rules, word for word
-├── CLAUDE.md
 ├── app/
 │   ├── globals.css    # @import "tailwindcss";
 │   ├── layout.tsx
@@ -282,7 +281,7 @@ A D1 database, a KV namespace and an R2 bucket, run locally on the runtime a dep
 <td valign="top">
 
 **🤖 Ready for coding agents**<br>
-New projects get Next.js's own `AGENTS.md` and `CLAUDE.md`, and `upwind dev` keeps them current the way `next dev` does. [More in the FAQ](#-faq).
+New projects get Next.js's own `AGENTS.md`, and `upwind dev` keeps it current the way `next dev` does. [More in the FAQ](#-faq).
 
 </td>
 </tr>
@@ -467,9 +466,9 @@ Like `next dev`, it listens on every network interface unless told otherwise, so
 </details>
 
 <details>
-<summary><b>Why does a new project have <code>AGENTS.md</code> and <code>CLAUDE.md</code>?</b></summary>
+<summary><b>Why does a new project have <code>AGENTS.md</code>?</b></summary>
 
-They are Next.js's own, word for word: the block that tells a coding agent this Next.js is newer than the one it was trained on, and to read the docs in `node_modules/next/dist/docs/` before writing code. `create-upwind` writes them the way `create-next-app` does, and when a coding agent runs `upwind dev`, your Next.js brings them up to date. `--no-agents-md` leaves them out of the scaffold, though the first `upwind dev` an agent runs writes them anyway, as `next dev` would. The switch that lasts is `agentRules: false` in `next.config`, which `upwind dev` and `next dev` both obey.
+It is Next.js's own, word for word: the block that tells a coding agent this Next.js is newer than the one it was trained on, and to read the docs in `node_modules/next/dist/docs/` before writing code. `create-upwind` writes it the way `create-next-app` does — `AGENTS.md` alone, as Next.js 16.4 does, where earlier releases wrote a `CLAUDE.md` beside it — and when a coding agent runs `upwind dev`, your Next.js brings it up to date. `--no-agents-md` leaves it out of the scaffold, though the first `upwind dev` an agent runs writes it anyway, as `next dev` would. The switch that lasts is `agentRules: false` in `next.config`, which `upwind dev` and `next dev` both obey.
 
 </details>
 

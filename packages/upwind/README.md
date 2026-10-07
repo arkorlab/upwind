@@ -45,11 +45,12 @@ everything the old one loaded, so `upwind dev` is two processes — a supervisor
 serves. Exit code 77 means "start me again"; that is Next.js's own `RESTART_EXIT_CODE`, and both a
 change to `next.config` and the error overlay's restart button leave with it.
 
-The third thing that parent does is write `AGENTS.md` and `CLAUDE.md`. Run by an AI coding agent
-against a project whose agent-rules block is missing or out of date, `next dev` writes the current
-one — the block that says this major is not the Next.js the agent was trained on. `upwind dev` asks
-the project's own Next.js to do exactly that, so the files say what that Next.js says, and
-`agentRules: false` in `next.config` turns it off here as it does there.
+The third thing that parent does is write `AGENTS.md` (and, before Next.js 16.4, a `CLAUDE.md`
+beside it). Run by an AI coding agent against a project whose agent-rules block is missing or out of
+date, `next dev` writes the current one — the block that says this major is not the Next.js the
+agent was trained on. `upwind dev` asks the project's own Next.js to do exactly that, so the files
+say what that Next.js says, and `agentRules: false` in `next.config` turns it off here as it does
+there.
 
 The banner says one more thing when it has to: a project whose Next.js is older than the newest
 release carrying security fixes is told so, right under the version line. `upwind` and

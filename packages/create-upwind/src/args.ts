@@ -11,7 +11,7 @@ import { PACKAGE_MANAGERS, type PackageManager } from './package-manager.ts';
  *
  * `--no-agents-md` is the one exception, and it is `create-next-app`'s: what an agent is told
  * about this Next.js is not a fact about the application, and a project that keeps its agent rules
- * somewhere else has nothing to gain from two more files.
+ * somewhere else has nothing to gain from one more file.
  */
 
 export interface CreateRequest {
@@ -21,7 +21,7 @@ export interface CreateRequest {
   readonly directory: string | undefined;
   readonly install: boolean;
   readonly git: boolean;
-  /** Write `AGENTS.md` and `CLAUDE.md`, as `create-next-app` does unless told not to. */
+  /** Write `AGENTS.md`, as `create-next-app` does unless told not to. */
   readonly agentsMd: boolean;
   /** The manager to install with, or nothing to use the one this was started from. */
   readonly packageManager: PackageManager | undefined;

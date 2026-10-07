@@ -13,9 +13,8 @@ under the MIT license:
 
   Copyright (c) 2025 Vercel, Inc.
 
-  * The agent-rules block and the CLAUDE.md beside it that create-upwind writes
-    into a scaffolded project, verbatim from Next.js's own
-    server/lib/generate-agent-files.js
+  * The agent-rules block that create-upwind writes into a scaffolded project's
+    AGENTS.md, verbatim from Next.js's own server/lib/generate-agent-files.js
     (packages/create-upwind/src/agents.ts).
 
 The MIT license text is in LICENSE-MIT.

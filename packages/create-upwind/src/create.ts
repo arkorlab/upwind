@@ -134,12 +134,12 @@ export async function create(request: CreateRequest): Promise<void> {
         // out by a diff, months later, in a project nobody had touched.
         console.log('');
         console.log(
-          "AGENTS.md and CLAUDE.md hold create-upwind's own copy of Next.js's agent rules: this",
+          "AGENTS.md holds create-upwind's own copy of Next.js's agent rules: this project's",
         );
         console.log(
-          "project's Next.js could not be reached to write its own. The first `upwind dev` a coding",
+          'Next.js could not be reached to write its own. The first `upwind dev` a coding agent runs',
         );
-        console.log('agent runs brings them up to date.');
+        console.log('brings it up to date.');
       }
     }
   }

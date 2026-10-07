@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -10,25 +10,25 @@ import { writeAgentRules } from '../src/agents.ts';
 /**
  * Holds `src/agents.ts` to Next.js's own words.
  *
- * What this package writes into `AGENTS.md` and `CLAUDE.md` is Next.js's text, and it is only worth
- * anything while it is *still* Next.js's text: `hasCurrentAgentRules()` compares a project's block
- * against the one the installed Next.js would write, byte for byte, and `next dev` rewrites a block
- * that does not match. A scaffolder shipping last release's wording would hand every new project an
- * uncommitted change, on the first `next dev` anybody ran in it.
+ * What this package writes into `AGENTS.md` is Next.js's text, and it is only worth anything while
+ * it is *still* Next.js's text: `hasCurrentAgentRules()` compares a project's block against the one
+ * the installed Next.js would write, byte for byte, and `next dev` rewrites a block that does not
+ * match. A scaffolder shipping last release's wording would hand every new project an uncommitted
+ * change, on the first `next dev` anybody ran in it.
  *
  * So the comparison is made against Next.js rather than asserted here: both sides write into an
- * empty directory of their own — which is the branch of `writeAgentFiles` that scaffolds both files,
- * the one `create-next-app` takes — and the bytes are compared. No network and no build; the Next.js
- * it checks against is the one in `node_modules`, the catalog pin, which is what `pnpm check:patches`
- * reads too.
+ * empty directory of their own — which is the branch of `writeAgentFiles` that scaffolds a project,
+ * the one `create-next-app` takes — and what each wrote is compared: which files, and then their
+ * bytes. Which files, because that is what moves as well as the words: until 16.4 Next.js wrote a
+ * `CLAUDE.md` beside `AGENTS.md`, and from 16.4 it writes `AGENTS.md` alone. No network and no build;
+ * the Next.js it checks against is the one in `node_modules`, the catalog pin, which is what
+ * `pnpm check:patches` reads too.
  *
- * A failure here is not a bug in this repository. It is Next.js having changed the block, and the
- * fix is to copy the new one into `src/agents.ts` — from `buildAgentRulesBlock()` in the file named
- * below, which is where the text printed by the failure came from.
+ * A failure here is not a bug in this repository. It is Next.js having changed the block or the files
+ * it goes in, and the fix is to make `src/agents.ts` write what Next.js now writes — the text is
+ * `buildAgentRulesBlock()` in the file named below, which is where the text printed by the failure
+ * came from.
  */
-
-/** The two files, in the order a reader of the failure would want them. */
-const FILES = ['AGENTS.md', 'CLAUDE.md'] as const;
 
 /**
  * Next.js's writer as this calls it: its own signature, and a promise it does not return today.
@@ -97,12 +97,25 @@ async function main(): Promise<void> {
     theirs = await mkdtemp(path.join(tmpdir(), 'next-agents-'));
     await writeAgentRules(ours);
     await writeNext(theirs);
+    const mineFiles = await readdir(ours);
+    const yourFiles = await readdir(theirs);
+    const mineNames = new Set(mineFiles);
+    const yourNames = new Set(yourFiles);
+    const files = [...mineFiles, ...yourFiles.filter((name) => !mineNames.has(name))].toSorted(
+      (a, b) => a.localeCompare(b),
+    );
     const differences: string[] = [];
-    for (const file of FILES) {
-      const mine = await readFile(path.join(ours, file));
-      const yours = await readFile(path.join(theirs, file));
-      if (!mine.equals(yours)) {
-        differences.push(`${file}:\n${firstDifference(mine, yours)}`);
+    for (const file of files) {
+      if (!yourNames.has(file)) {
+        differences.push(`${file}: written by create-upwind, and not by Next.js`);
+      } else if (mineNames.has(file)) {
+        const mine = await readFile(path.join(ours, file));
+        const yours = await readFile(path.join(theirs, file));
+        if (!mine.equals(yours)) {
+          differences.push(`${file}:\n${firstDifference(mine, yours)}`);
+        }
+      } else {
+        differences.push(`${file}: written by Next.js, and not by create-upwind`);
       }
     }
     if (differences.length > 0) {
@@ -112,12 +125,14 @@ async function main(): Promise<void> {
           '',
           ...differences,
           '',
-          'Copy the current text out of `buildAgentRulesBlock()` in',
-          '`next/dist/server/lib/generate-agent-files.js` into `packages/create-upwind/src/agents.ts`.',
+          'Make `packages/create-upwind/src/agents.ts` write the files Next.js writes, with the text of',
+          '`buildAgentRulesBlock()` in `next/dist/server/lib/generate-agent-files.js`.',
         ].join('\n'),
       );
     }
-    console.log(`agent rules: ${FILES.join(' and ')} are Next.js's own, byte for byte`);
+    console.log(
+      `agent rules: create-upwind writes what Next.js writes (${files.join(', ')}), byte for byte`,
+    );
   } finally {
     // Whichever of them got made, whatever happened after: a failing check that leaves directories
     // in `/tmp` per run is a check somebody turns off.
