@@ -27,10 +27,26 @@ import { imagesConfigSchema } from '../images/config.ts';
  * a rule of `next.config` is matched without regard to case, as Next.js's router matches it. A
  * reader of 3 matched rules by case: given such a build, it would serve a class's shell where a
  * rule spelled in another case claims the path (`/Shop/:slug` for `/docs/shop/x`).
+ *
+ * 5: a header's `$` references are filled the way the deployment's Functions fill them, which is in
+ * one pass where the manifest says `routerReferences: 'one-pass'`. A reader of 4 drops the field
+ * and fills every header in turn: given such a deployment, it would answer a `$10` against one
+ * capture with the capture and a `0`, where the deployment's Function answers `$10`.
  */
-export const MANIFEST_SCHEMA_VERSION = 4;
-/** The version before, which every manifest published until this one was: still read (above). */
-const PREVIOUS_MANIFEST_SCHEMA_VERSION = 3;
+export const MANIFEST_SCHEMA_VERSION = 5;
+/** The version before, which every manifest published until this one was. */
+const PREVIOUS_MANIFEST_SCHEMA_VERSION = 4;
+/** The version before that, which every manifest published until 4 was, and some still are. */
+const EARLIEST_READ_MANIFEST_SCHEMA_VERSION = 3;
+/**
+ * Every version a manifest is read at: this one, and each one before it that a writer published
+ * and a reader has accepted since, whose manifests are still served (above).
+ */
+export const READ_MANIFEST_SCHEMA_VERSIONS = [
+  EARLIEST_READ_MANIFEST_SCHEMA_VERSION,
+  PREVIOUS_MANIFEST_SCHEMA_VERSION,
+  MANIFEST_SCHEMA_VERSION,
+] as const;
 const HTTP_OK = 200;
 
 /**
@@ -374,10 +390,7 @@ const manifestFields = {
  */
 export const projectManifestSchema = z.object({
   ...manifestFields,
-  schemaVersion: z.union([
-    z.literal(PREVIOUS_MANIFEST_SCHEMA_VERSION),
-    z.literal(MANIFEST_SCHEMA_VERSION),
-  ]),
+  schemaVersion: z.literal(READ_MANIFEST_SCHEMA_VERSIONS),
   /** The Functions this deployment runs as: the application's, and its middleware's. */
   app: appRuntimeSchema,
   /** Files served straight from storage, by pathname. */

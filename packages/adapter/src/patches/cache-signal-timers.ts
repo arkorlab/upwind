@@ -63,10 +63,17 @@ import { occurrencesOf, type Patch, Rewrite } from './types.ts';
  * code: the refusal is thrown inside it, so neither the listener it refused nor any after it
  * runs, and the signal they were to wake never fires. So the helper keeps its own wait — an
  * immediate, then the timeout — and asks the tracker only whether immediates are still pending
- * when the timeout fires, waiting again while they are. Not for ever: an immediate of a request
- * that has ended never runs, and the tracker would report it pending for good, so after
- * `__arkorMaxWaits` rounds the listeners are told regardless, which is where a release before
- * 16.4 told them after one.
+ * when the timeout fires, waiting again while they are.
+ *
+ * For as long as the tracker is working through them, as 16.4 waits: a render may keep immediates
+ * pending for as long as it runs, and telling the listeners before it is done would let it finish
+ * before work it has yet to start. What is not waited on for ever is an immediate of a request
+ * that has ended, which never runs, and which the tracker would report pending for good. The two
+ * are told apart by the tracker's own sentinel — the immediate it checks for idleness behind, a
+ * new one each time a check finds more queued, and the same one for as long as nothing ahead of
+ * it runs. Rounds are counted only while it stands still, and after `__arkorMaxWaits` of those the
+ * listeners are told regardless, which is where a release before 16.4 told them after one round.
+ * A tracker with no sentinel to read has every round counted.
  */
 
 const NAME = 'cache-signal-timers';
@@ -124,8 +131,9 @@ const SCHEDULE_SHAPES: readonly ScheduleShape[] = [
  * The same waits Next.js schedules, with the cancellation moved off the timer.
  *
  * The immediate-then-timeout every version arms, and with a tracker (16.4) the same again for as
- * long as the tracker still reports immediates pending when the timeout fires, up to
- * `__arkorMaxWaits` rounds. The tracker is only ever asked, never subscribed to: see above.
+ * long as the tracker still reports immediates pending when the timeout fires — up to
+ * `__arkorMaxWaits` rounds in which its sentinel has not moved. The tracker is only ever asked,
+ * never subscribed to: see above.
  *
  * The generation is kept against the callback rather than against the signal because the callback
  * is the one thing every shape hands over: it is the bound arrow the signal made for itself in its
@@ -141,17 +149,23 @@ const HELPER = [
   '  const nothing = () => {};',
   '  let clearPending = nothing;',
   '  let waits = 0;',
+  '  let standing;',
   '  const fire = () => {',
   '    clearPending = nothing;',
   '    if (__arkorGenerations.get(cb) !== generation) {',
   '      return;',
   '    }',
-  '    if (tracker != null && waits < __arkorMaxWaits && tracker.hasPendingImmediates()) {',
-  '      waits += 1;',
-  '      wait();',
-  '    } else {',
-  '      cb();',
+  '    if (tracker != null && tracker.hasPendingImmediates()) {',
+  '      // A round counts while the sentinel stands still: one the tracker has moved on is working.',
+  '      const sentinel = tracker.sentinel;',
+  '      waits = sentinel === undefined || sentinel === standing ? waits + 1 : 0;',
+  '      standing = sentinel;',
+  '      if (waits < __arkorMaxWaits) {',
+  '        wait();',
+  '        return;',
+  '      }',
   '    }',
+  '    cb();',
   '  };',
   '  function arm() {',
   '    if (__arkorGenerations.get(cb) === generation) {',
