@@ -11,9 +11,9 @@ import {
   OUTPUT_DIRECTORY_BUILD_ID,
   writeApplication,
 } from './check-application.ts';
+import { NEXT_JS_STACK, sameEnvironment, stackSizeScenario } from './check-stack-size.ts';
 import { fakeHost, type FakeHost } from './fake-host.ts';
 import { AFTER_SERVED_MS } from './hook.ts';
-import { suiteVariablesOf } from './suite-env.ts';
 
 /**
  * The three hooks, run for real against a host that is not one.
@@ -328,16 +328,6 @@ function ordinaryNodeOptions(options: string | undefined): string | undefined {
   return kept.length === 0 ? undefined : kept.join(' ');
 }
 
-/** Whether two environments hold the same names with the same values, in whatever order. */
-function sameEnvironment(
-  environment: Record<string, string>,
-  expected: Record<string, string>,
-): boolean {
-  const sorted = (of: Record<string, string>): string =>
-    JSON.stringify(Object.entries(of).toSorted(([a], [b]) => a.localeCompare(b)));
-  return sorted(environment) === sorted(expected);
-}
-
 /** A harness as Next.js's is one: it starts the hook it is handed, with a suite's variable on top. */
 const HARNESS = `
 import { spawnSync } from 'node:child_process';
@@ -364,15 +354,7 @@ async function suiteEnvScenario(
     );
     return;
   }
-  // Next.js's own stack size is left out below; a suite that sets another has it given.
-  const stackSize = suiteVariablesOf(
-    env['ADAPTER_TEST_HARNESS_PID'],
-    { ...env, RUST_MIN_STACK: '16777216' },
-    () => {
-      // Nothing to say: the stand-in harness is there to be read.
-    },
-  );
-  holds("a stack size a suite sets itself is the suite's", stackSize['RUST_MIN_STACK'] === '16777216');
+  stackSizeScenario(env, holds);
   const host = await fakeHost(deploymentId);
   try {
     await bounded(DEPLOY_HOOK, appDir, {
@@ -384,7 +366,7 @@ async function suiteEnvScenario(
       // the stack size in any process that has loaded its native bindings, the harness among them.
       TEST_FILE_PATH: '/next.js/test/e2e/some.test.ts',
       NEXT_TEST_JOB: '1',
-      RUST_MIN_STACK: '8388608',
+      RUST_MIN_STACK: NEXT_JS_STACK,
       // The suite's, and too short to go up as a secret: Next.js's deploy mode gives it to every
       // fixture kept as a directory.
       NEXT_PRIVATE_LOCAL_DEV: '1',
@@ -449,6 +431,9 @@ async function main(): Promise<void> {
     // scenario that runs it out sets.
     JEST_SUITE_NAME: 'deploy:e2e:test/e2e/app-dir/app-simple-routes/app-simple-routes.test.ts',
     __NEXT_NODE_NATIVE_TS_LOADER_ENABLED: undefined,
+    // Started without one, whatever this machine exports: the scenario of a suite's variables reads
+    // the stack size Next.js sets against a harness that had none, as Next.js's harness has none.
+    RUST_MIN_STACK: undefined,
     NODE_OPTIONS: ordinaryNodeOptions(process.env['NODE_OPTIONS']),
     NEXT_E2E_TEST_TIMEOUT: undefined,
     ADAPTER_TEST_HOOK_STARTED_MS: undefined,

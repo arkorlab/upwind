@@ -155,8 +155,10 @@ Beyond that, these limits are worth knowing before reading a failure as this ada
   hook's standard error; a machine without `/proc` is one such case.
   Every variable goes up as a secret, except a value too short for the API to take as one, which goes
   up as it is and is named in the log: Next.js's deploy mode gives every fixture kept as a directory
-  `NEXT_PRIVATE_LOCAL_DEV=1`. Every value here is Next.js's own test suite's, and refusing a short one
-  would fail the suite on how its value is stored rather than on what the adapter did.
+  `NEXT_PRIVATE_LOCAL_DEV=1`. What a suite hands over is Next.js's own test data, and refusing a short
+  value would fail the suite on how it is stored rather than on what the adapter did. A variable
+  something else gives the harness's process as it runs is taken for the suite's too, and goes up as
+  it is where it is short: one more reason to load nothing sensitive into that process.
   A machine without `/proc` gives a deployment its `.env` files alone, and a suite whose application
   reads a variable that arrives only through its harness fails there.
 - **The adapter under test has no cache unless one is plugged in.** This repository's adapter, as its

@@ -103,7 +103,9 @@ function entryOf([name, value]: [string, string]): EnvEntry {
 /** The names that go up as they are, for the log: none, or a clause that names them. */
 function plainOf(entries: readonly EnvEntry[]): string {
   const plain = entries.filter((entry) => !entry.secret).map((entry) => entry.name);
-  return plain.length === 0 ? '' : `; too short to be secrets, put as they are: ${plain.join(', ')}`;
+  return plain.length === 0
+    ? ''
+    : `; too short to be secrets, put as they are: ${plain.join(', ')}`;
 }
 
 /**
@@ -115,9 +117,11 @@ function plainOf(entries: readonly EnvEntry[]): string {
  * a fixture's own values cannot be read back out of the project by anything holding a `read` token. A
  * value too short to be one (`SHORTEST_SECRET`) goes up as it is, and the log names it. Refusing it
  * instead would fail the suite on how its value is stored rather than on what the adapter did, and
- * every value here is one of Next.js's own test suite, its `.env` files and its `createNext({ env })`:
+ * what a suite hands over is Next.js's own test data, its `.env` files and its `createNext({ env })`:
  * a flag like the `NEXT_PRIVATE_LOCAL_DEV=1` its deploy mode gives every fixture kept as a directory,
  * not a credential. The API holds that much itself, in refusing to keep a value that short as one.
+ * What else the harness's process is given as it runs is taken for the suite's too (`suite-env.ts`),
+ * and goes up as it is where it is short: nothing sensitive belongs in that process.
  */
 export async function deploymentEnvironment(
   directory: string,

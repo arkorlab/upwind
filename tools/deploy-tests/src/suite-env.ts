@@ -43,9 +43,11 @@ const NOT_THE_SUITES: ReadonlySet<string> = new Set([
   'TEST_FILE_PATH',
 ]);
 /**
- * Not the suite's either, at the value Next.js gives it: the stack size it sets in any process that
- * loads its native bindings and has none (`RUST_MIN_STACK`, `build/swc`), which the harness does for
- * its own transforms. A suite that sets another value through `createNext({ env })` has it given.
+ * Not the suite's either, at the value Next.js gives it in a harness that started without one: the
+ * stack size it sets in any process that loads its native bindings and has none (`RUST_MIN_STACK`,
+ * `build/swc`), which the harness does for its own transforms. A suite that sets another value through
+ * `createNext({ env })` has it given, and so does one that sets this value over a harness that started
+ * with another, which Next.js then never replaced.
  */
 const NEXT_JS_SETS: ReadonlyMap<string, string> = new Map([['RUST_MIN_STACK', '8388608']]);
 /** Jest's own, set in a worker as it runs; Next.js's test settings; and this tool's own. */
@@ -73,7 +75,7 @@ function suiteVariables(
         value === undefined ||
         harness.get(name) === value ||
         NOT_THE_SUITES.has(name) ||
-        NEXT_JS_SETS.get(name) === value ||
+        (NEXT_JS_SETS.get(name) === value && !harness.has(name)) ||
         NOT_THE_SUITES_PREFIXES.some((prefix) => name.startsWith(prefix))
       ) {
         return [];
