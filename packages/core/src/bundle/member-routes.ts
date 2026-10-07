@@ -2,7 +2,7 @@ import type { MemberRoute } from '../manifest/schema.ts';
 import { writtenFromList } from '../request/blocking-metadata.ts';
 import { queryDependent } from './query.ts';
 import type { DeploymentBundle, Prerender } from './schema.ts';
-import { isTemplate } from './spelling.ts';
+import { standsForClass } from './spelling.ts';
 
 /**
  * What serves a member of a class the build made no shell of from the record its first render
@@ -47,9 +47,11 @@ export function memberRoutesOf(
   pages: ServedPages,
 ): (template: string) => MemberRoute | undefined {
   const kinds = new Map(bundle.entrypoints.map((entry) => [entry.pathname, entry.kind]));
+  // The class itself, not a member whose value is spelled as its own placeholder, which shares the
+  // template's pathname (`standsForClass`).
   const templates = new Map(
     bundle.prerenders
-      .filter((prerender) => isTemplate(prerender.pathname) && pages.isDocument(prerender))
+      .filter((prerender) => standsForClass(prerender) && pages.isDocument(prerender))
       .map((prerender) => [prerender.pathname, prerender]),
   );
   return (template) => {
