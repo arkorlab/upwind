@@ -210,6 +210,25 @@ function restoreHeaders(req: IncomingMessage, headers: Headers): void {
 }
 
 /**
+ * The request's `Host`, where it came without one: the host of the URL the Function was asked under.
+ *
+ * A request that arrives from the network carries the header, and Next.js's own server always has
+ * it. One a host builds and hands the Function over a binding carries a URL and no `Host` — workerd
+ * derives neither from the other — and Next.js reads the header, not the URL: an application that
+ * builds an address from `req.headers.host` reached `http://undefined/…`, which Cloudflare answers
+ * with an error page of its own (`proxy-request-with-middleware`,
+ * `relay-graphql-swc-single-project`).
+ */
+function restoreHost(req: IncomingMessage, url: string): void {
+  if (req.headers.host !== undefined) {
+    return;
+  }
+  const { host } = new URL(url);
+  req.rawHeaders.push('Host', host);
+  req.headers.host = host;
+}
+
+/**
  * A `socket` the request can be given, as Node.js's can: a property of the request itself.
  *
  * Destroying a server's request takes the socket off it (`stream.socket = null`, in workerd's own
@@ -264,6 +283,7 @@ function onRequest(req: IncomingMessage, res: ServerResponse): void {
   }
   req.url = dispatch.url;
   restoreHeaders(req, dispatch.input.request.headers);
+  restoreHost(req, dispatch.input.request.url);
   settableSocket(req);
   singleRedirectLocation(res);
   const handled = handle(dispatch, req, res);
