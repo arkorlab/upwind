@@ -1,15 +1,7 @@
 import { sourceRegexSchema } from '../util/regex-source.ts';
-import {
-  afterCharacterClass,
-  afterGroup,
-  type Atom,
-  atomAt,
-  groupContents,
-  isLookaround,
-  literalAt,
-  type Quantifier,
-  quantifierAt,
-} from './pattern-syntax.ts';
+import { longestAffordable, patternCost } from './pattern-cost.ts';
+import { delimitedRepetition } from './pattern-repetition.ts';
+import { afterCharacterClass, afterGroup, isLookaround, quantifierAt } from './pattern-syntax.ts';
 
 /**
  * Whether a routing pattern is one the edge may run against a value a visitor chose.
@@ -31,7 +23,9 @@ import {
  * writes them: a repetition split by a delimiter nothing else in it can consume — what `:path*`
  * compiles into, the delimiter first, and what the redirects of `trailingSlash` compile into, the
  * delimiter last — and a lookaround inside a repetition, as a glob's `**` compiles into. It does
- * not claim every pattern it admits is linear.
+ * not claim every pattern it admits is linear: what it admits, the edge tests only against values
+ * short enough for the pattern's cost (`patternCost`), and refused here is a pattern whose cost it
+ * cannot bound against any value.
  */
 
 /** Longer than any condition Next.js emits, and past what this check can usefully reason about. */
@@ -81,7 +75,6 @@ function repeatedGroupReason(fragment: string): string | undefined {
 const QUANTIFIED = 'a quantifier inside a quantified group can backtrack catastrophically';
 const ALTERNATED = 'alternation inside a repeated group can backtrack catastrophically';
 const OPTIONAL = 'an optional expression inside a repeated group can backtrack catastrophically';
-const ASCII_LETTER = /^[A-Za-z]$/u;
 
 /**
  * Where the scan goes on from, past a unit that says nothing about repetition — an escape, a set,
@@ -132,137 +125,6 @@ function shapeReason(fragment: string): string | undefined {
   return optional ? OPTIONAL : undefined;
 }
 
-interface DelimitedStep {
-  readonly next: number;
-  readonly quantified: boolean;
-}
-
-/**
- * What an expression run with `i` takes a delimiter to be, or `undefined` where that is not told
- * simply. Patterns are run so — a middleware matcher at the edge, a routing rule while a deployment
- * is planned — and there `A+` consumes the `a` that was to divide `(?:aA+)+`. A character no case
- * applies to is only itself, an ASCII letter is itself and its other case, and any other cased
- * character is left out of the shape rather than reasoned about.
- */
-function caseVariants(character: string): readonly string[] | undefined {
-  const lower = character.toLowerCase();
-  const upper = character.toUpperCase();
-  if (lower === character && upper === character) {
-    return [character];
-  }
-  return ASCII_LETTER.test(character) ? [lower, upper] : undefined;
-}
-
-/** One unit of a delimited repetition's contents, or `undefined` for one that breaks the shape. */
-function delimitedStep(
-  fragment: string,
-  index: number,
-  delimiter: readonly string[],
-): DelimitedStep | undefined {
-  const character = fragment[index];
-  if (character === '(') {
-    const inner = isLookaround(fragment, index) ? undefined : groupContents(fragment, index);
-    return inner === undefined ? undefined : { next: inner, quantified: false };
-  }
-  if (character === ')') {
-    // A group inside that is itself quantified is a second level of repetition.
-    return quantifierAt(fragment, index + 1) === undefined
-      ? { next: index + 1, quantified: false }
-      : undefined;
-  }
-  const atom = atomAt(fragment, index);
-  if (atom === undefined) {
-    return undefined;
-  }
-  const quantifier = quantifierAt(fragment, atom.end);
-  if (quantifier === undefined) {
-    return { next: atom.end, quantified: false };
-  }
-  return delimiter.some((variant) => atom.matches(variant))
-    ? undefined
-    : { next: quantifier.end, quantified: true };
-}
-
-/**
- * Whether a repeated group is split by a delimiter that nothing quantified in it can consume, which
- * makes it linear however the group is quantified.
- *
- * `(?:\/(?:[^\/]+?))*` — what Next.js compiles `:path*` into — must begin every repetition with a
- * `/`, and its one quantified part cannot consume one. Where each repetition begins is therefore
- * fixed by where the input's slashes are: there is one way to divide the input into repetitions,
- * and each part's length is tried once. What multiplies backtracking is a choice between two ways
- * of dividing it, so the group may hold at most one quantified part, no alternatives, and no part
- * that could itself consume the delimiter.
- *
- * `(?:[^/]+\/)*` — what Next.js compiles the redirects of `trailingSlash: true` into — is the same
- * with the delimiter last: every repetition ends at a `/` its quantified part cannot consume, so
- * the slashes fix where each one ends as they fix where one begins above. Read only as plain units,
- * with no group inside, which is all Next.js writes there.
- */
-function delimitedRepetition(fragment: string): boolean {
-  const contents = groupContents(fragment, 0);
-  return (
-    contents !== undefined &&
-    (leadingDelimited(fragment, contents) || trailingDelimited(fragment, contents))
-  );
-}
-
-function leadingDelimited(fragment: string, contents: number): boolean {
-  const delimiter = literalAt(fragment, contents);
-  const variants = delimiter === undefined ? undefined : caseVariants(delimiter.char);
-  if (
-    delimiter === undefined ||
-    variants === undefined ||
-    quantifierAt(fragment, delimiter.end) !== undefined
-  ) {
-    return false;
-  }
-  let quantified = 0;
-  let index = delimiter.end;
-  while (index < fragment.length) {
-    const step = delimitedStep(fragment, index, variants);
-    if (step === undefined) {
-      return false;
-    }
-    quantified += step.quantified ? 1 : 0;
-    if (quantified > 1) {
-      return false;
-    }
-    index = step.next;
-  }
-  return true;
-}
-
-function trailingDelimited(fragment: string, contents: number): boolean {
-  const units: { start: number; atom: Atom; quantifier: Quantifier | undefined }[] = [];
-  let index = contents;
-  while (index < fragment.length) {
-    const atom = atomAt(fragment, index);
-    if (atom === undefined) {
-      return false;
-    }
-    const quantifier = quantifierAt(fragment, atom.end);
-    units.push({ start: index, atom, quantifier });
-    index = quantifier?.end ?? atom.end;
-  }
-  const last = units.at(-1);
-  const delimiter = last === undefined ? undefined : literalAt(fragment, last.start);
-  const variants = delimiter === undefined ? undefined : caseVariants(delimiter.char);
-  // The delimiter is the group's last unit, and it is not quantified itself.
-  if (variants === undefined || last?.quantifier !== undefined) {
-    return false;
-  }
-  // Before it, as Next.js writes it: one part that repeats and cannot consume the delimiter, and
-  // nothing else quantified. What is optional there is refused, as it is anywhere in a repetition.
-  const quantified = units.slice(0, -1).filter((unit) => unit.quantifier !== undefined);
-  const [part] = quantified;
-  return (
-    quantified.length === 1 &&
-    part?.quantifier?.repeats === true &&
-    variants.every((variant) => !part.atom.matches(variant))
-  );
-}
-
 function compiles(pattern: string): boolean {
   try {
     // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
@@ -281,6 +143,29 @@ function scanReason(expression: string): string | undefined {
   return scan.reason;
 }
 
+/**
+ * Why the edge could test a pattern against no value at all: a shape whose cost `patternCost` does
+ * not read — a backreference, a modifier, a lookaround repeated — or one that costs more than a test
+ * is allowed whatever the value (`longestAffordable`) — under any of the flags it runs with. Admitted,
+ * every request it is asked of would go to the application's Function, a shipped file among them,
+ * which the Function does not carry.
+ */
+function unboundedReason(expression: string, flags: readonly string[] = ['']): string | undefined {
+  const unbounded = flags.some(
+    (flag) => longestAffordable(patternCost(expression, flag, false)) < 0,
+  );
+  return unbounded
+    ? 'its cost against a value cannot be bounded within what a test is allowed'
+    : undefined;
+}
+
+/**
+ * The flags a source is run with: as it is for a dynamic route or an image, and without regard to
+ * case for a middleware's matcher, a rule ahead of the routes and a header rule (`compiledRules`),
+ * under which alternatives one spelling tells apart may not be.
+ */
+const SOURCE_FLAGS = ['', 'i'];
+
 /** `undefined` when the pattern may be run; otherwise why it may not. */
 export function unsafeRoutePatternReason(pattern: string): string | undefined {
   if (pattern.length > MAX_PATTERN_LENGTH) {
@@ -293,7 +178,12 @@ export function unsafeRoutePatternReason(pattern: string): string | undefined {
     // Not a pattern at all: the edge falls back to comparing it as a literal, which is safe.
     return undefined;
   }
-  return scanReason(expression);
+  // And as it is, which the edge tries anywhere in the value where the whole of it does not match.
+  return (
+    scanReason(expression) ??
+    unboundedReason(expression) ??
+    (compiles(pattern) ? unboundedReason(pattern) : undefined)
+  );
 }
 
 /**
@@ -304,7 +194,9 @@ export function unsafeSourcePatternReason(source: string): string | undefined {
   if (source.length > MAX_SOURCE_LENGTH) {
     return `longer than ${MAX_SOURCE_LENGTH} characters`;
   }
-  return compiles(source) ? scanReason(source) : undefined;
+  return compiles(source)
+    ? (scanReason(source) ?? unboundedReason(source, SOURCE_FLAGS))
+    : undefined;
 }
 
 /**

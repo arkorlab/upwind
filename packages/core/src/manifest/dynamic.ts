@@ -5,6 +5,7 @@ import {
   patternOf,
 } from '../request/compiled-patterns.ts';
 import { conditionsHold } from '../request/conditions.ts';
+import { execWithin, testWithin } from '../request/pattern-cost.ts';
 import { requiresLiteral } from '../request/required-literal.ts';
 import { findRouteEntry, keyOf, namesNoFile, withoutAssetPrefix } from './manifest.ts';
 import type {
@@ -84,11 +85,11 @@ function patternMatch(compiled: CompiledRule<Patterned>, pathname: string): RegE
   // case-sensitive pattern, so a case variant is served by the Function rather than handed a shell
   // built for another spelling — and without, as the router matches them, for a rule of
   // `next.config`.
-  return patternOf(compiled).exec(pathname);
+  return execWithin(patternOf(compiled), pathname);
 }
 
 function patternMatches(compiled: CompiledRule<Patterned>, pathname: string): boolean {
-  return patternOf(compiled).test(pathname);
+  return testWithin(patternOf(compiled), pathname);
 }
 
 /**

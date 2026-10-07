@@ -1,3 +1,4 @@
+import { testWithin } from '../request/pattern-cost.ts';
 import type { ImageLocalPattern, ImageRemotePattern, ImagesConfig } from './config.ts';
 import { isLocalAddress } from './local-address.ts';
 import { negotiateImageFormat } from './negotiate.ts';
@@ -80,20 +81,20 @@ function matchesRemotePattern(pattern: ImageRemotePattern, url: URL): boolean {
     return false;
   }
   const regexps = remoteRegExpsOf(pattern);
-  if (!regexps.hostname.test(url.hostname)) {
+  if (!testWithin(regexps.hostname, url.hostname)) {
     return false;
   }
   if (pattern.search !== undefined && pattern.search !== url.search) {
     return false;
   }
-  return regexps.pathname.test(url.pathname);
+  return testWithin(regexps.pathname, url.pathname);
 }
 
 function matchesLocalPattern(pattern: ImageLocalPattern, url: URL): boolean {
   if (pattern.search !== undefined && pattern.search !== url.search) {
     return false;
   }
-  return localRegExpOf(pattern).test(url.pathname);
+  return testWithin(localRegExpOf(pattern), url.pathname);
 }
 
 /** A pathname parsed the way Next.js parses one: against a placeholder origin it never uses. */
