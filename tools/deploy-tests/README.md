@@ -137,12 +137,22 @@ it is whoever dispatched them. If two must overlap, give the second its own proj
 A run is an inventory of observed compatibility, not an assertion that every feature is supported.
 Beyond that, these limits are worth knowing before reading a failure as this adapter's:
 
-- **A fixture's environment is its own `.env` files, and only those.** A host's private harness can do
-  better — it starts the deploy hook itself, so it can tell a variable the suite's harness passed
-  through the process environment from one the machine already had. Here the suite starts the hook
-  directly and there is no such baseline, so a suite whose application reads a variable that arrives
-  only that way will fail. Guessing would be worse: it would hand a deployed Function whatever the
-  terminal happened to hold.
+- **A fixture's environment is its own `.env` files, and the suite's own variables over them** —
+  those of them that differ from the harness's. A
+  suite's `env` (`createNext({ env })`) is what Next.js's deploy mode gives a Vercel deployment as its
+  environment; its harness hands it to the hook on top of its own environment. The hook reads the
+  harness's environment as that process was started (`/proc/<pid>/environ`) and gives the deployment
+  what it was handed beyond it (`src/suite-env.ts`) — nothing of the machine's, which the harness held
+  too. Two limits of reading a difference: a suite's variable with the very value the harness started
+  with is not told apart, and is not given; and a variable the harness's process sets as it runs is
+  taken for the suite's unless it is named. Named and never given: the shell's own (`PWD`, `OLDPWD`,
+  `SHLVL`, `_`), Next.js's harness's (`TEST_FILE_PATH`, `NEXT_TEST_*`), Jest's (`JEST_*`),
+  `NEXT_DEPLOYMENT_ID` (the host gives a deployment its own), this tool's (`ARKOR_*`,
+  `ADAPTER_TEST_*`), and what a `.env` file is never given either (`NODE_ENV`,
+  `__NEXT_PROCESSED_ENV`). A harness whose environment cannot be read is said on the hook's standard
+  error; a machine without `/proc` is one such case.
+  A machine without `/proc` gives a deployment its `.env` files alone, and a suite whose application
+  reads a variable that arrives only through its harness fails there.
 - **The adapter under test has no cache unless one is plugged in.** This repository's adapter, as its
   default export, is configured with nothing, so its Functions answer every cache read a miss: no
   data cache, no `use cache`, no page kept between requests and no regeneration seen. Every suite that

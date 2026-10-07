@@ -30,8 +30,8 @@ const config: KnipConfig = {
     // Reached by path rather than by import: it is the module `upwind build` tells the processes
     // below it to `--import`, so nothing in this repository imports it and `bin` does not lead there.
     'packages/upwind': { entry: ['src/resources/entry.ts'] },
-    // The reader is started as a child process by path, so nothing here imports it.
-    'tools/deploy-tests': { entry: ['src/read-env.ts'] },
+    // The readers are started as child processes by path, so nothing here imports them.
+    'tools/deploy-tests': { entry: ['src/read-env.ts', 'src/read-suite-env.ts'] },
     'tools/next-matrix': {},
   },
   // Applications the matrix builds with a Next.js of their own, not code of this repository's — and

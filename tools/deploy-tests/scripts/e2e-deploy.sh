@@ -7,12 +7,19 @@
 # output.
 set -euo pipefail
 
+# Where everything is, from this script's own place rather than from one another.
+tool_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# The suite's own variables (`createNext({ env })`): what the harness handed this hook beyond its own
+# environment, read before anything below sets a variable of its own (`src/suite-env.ts`). The harness
+# is this script's parent; a caller that starts the hook through something else names it.
+ADAPTER_TEST_SUITE_ENV="$(node "${tool_dir}/src/read-suite-env.ts" "${ADAPTER_TEST_HARNESS_PID:-$PPID}")"
+export ADAPTER_TEST_SUITE_ENV
+
 # When the suite's hook began, for the deployment to end its waits where the hook's timeout would cut it
 # off (`src/hook.ts`): the build below spends the same time.
 export ADAPTER_TEST_HOOK_STARTED_MS="${ADAPTER_TEST_HOOK_STARTED_MS:-$(node -p 'Date.now()')}"
 
-# Where everything is, from this script's own place rather than from one another.
-tool_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 repo_root="$(cd "${tool_dir}/../.." && pwd)"
 # The contract's own variable, and it names the adapter's repository: keep it working, since the
 # workflow in Next.js's documentation sets it and people copy that workflow.
