@@ -236,6 +236,16 @@ export const staticFileEntrySchema = staticFileBytesSchema.extend({
   /** The deployment that built the file, when it is not the manifest's own. */
   deploymentId: z.string().min(1).optional(),
   /**
+   * A kept build (`deploymentId`) that answers only a request whose `dpl` names its deployment,
+   * set by whoever keeps it. Its name is one the manifest's own deployment answers itself: a file
+   * under a build id both builds have — Next.js gives every build with a `deploymentId` the same
+   * build id (`getBuildId`) — at a path this deployment ships nothing at, such as under a
+   * `basePath` the deployment before had. A request naming no deployment is the manifest's own
+   * deployment's, and its routing answers it (`staticFileBuildWithoutDpl`). A reader that does
+   * not know the field answers every request with the kept build, as before the field existed.
+   */
+  dplOnly: z.literal(true).optional(),
+  /**
    * The same name as the deployment before built it, when the name is not a content hash — a
    * build manifest under a build id that stays the same from build to build. Its documents ask
    * for the name by their deployment, and get the bytes that deployment gave it.

@@ -7,30 +7,19 @@ import { DEPLOYMENT_ID_QUERY } from '../request/constants.ts';
  */
 const HASHED_TREE_RE = /^\/_next\/static\/(?:immutable|chunks|css|media|runtime)\/.+$/u;
 /**
- * The manifests Next.js writes under the build id (`static/<buildId>/`) — the client's build, SSG
- * and middleware manifests — under whatever path the application's `_next` is served from, which
- * is captured. Every build with a `deploymentId` gets the same build id (`getBuildId`), so these
- * names say which build they are only beside the `dpl` its documents ask for them by.
+ * The manifests Next.js writes under the build id. Every build with a `deploymentId` gets the same
+ * build id (`getBuildId`), so the path names no build on its own: only with the `dpl` the build's
+ * documents ask for these by, which then keys the copy.
  */
-const BUILD_ID_MANIFEST_RE =
-  /^(?<prefix>.*)\/_next\/static\/[\w-]{8,}\/_(?:buildManifest|ssgManifest|clientMiddlewareManifest)\.js$/u;
+const BUILD_MANIFEST_RE =
+  /^\/_next\/static\/[\w-]{8,}\/_(?:buildManifest|ssgManifest|clientMiddlewareManifest)\.js$/u;
 const NON_IMMUTABLE_MARKERS: readonly string[] = ['/development/', '/webpack/', '.hot-update.'];
-
-/**
- * Where the `_next` of a manifest under the build id is served from — `''` at the root, or a
- * `basePath` or `assetPrefix` — or `undefined` for a pathname that names no such manifest.
- */
-export function buildIdManifestPrefix(pathname: string): string | undefined {
-  return BUILD_ID_MANIFEST_RE.exec(pathname)?.groups?.['prefix'];
-}
 
 /** True when the path (and query) can only refer to a content-addressed static asset. */
 export function isImmutableAssetPath(pathname: string, searchParams: URLSearchParams): boolean {
-  // A manifest under the build id counts with the `dpl` that then keys the copy, and not without.
   const named =
     HASHED_TREE_RE.test(pathname) ||
-    (buildIdManifestPrefix(pathname) === '' &&
-      (searchParams.get(DEPLOYMENT_ID_QUERY) ?? '') !== '');
+    (BUILD_MANIFEST_RE.test(pathname) && (searchParams.get(DEPLOYMENT_ID_QUERY) ?? '') !== '');
   if (!named) {
     return false;
   }

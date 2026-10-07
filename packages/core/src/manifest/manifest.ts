@@ -1,5 +1,5 @@
 import { canonicalJson, sha256HexOfText } from '../artifact/hash.ts';
-import { buildIdManifestPrefix, MAX_IMMUTABLE_ASSET_BYTES } from '../assets/admission.ts';
+import { MAX_IMMUTABLE_ASSET_BYTES } from '../assets/admission.ts';
 import type { DeploymentFingerprint } from '../deployment/fingerprint.ts';
 import type { ImagesConfig } from '../images/config.ts';
 import { compareCodeUnits } from '../util/bytes.ts';
@@ -371,23 +371,17 @@ export function findStaticFile(
 }
 
 /**
- * The build of the file under `key` that a request naming no deployment (no `dpl`) is answered
- * with: the manifest's own, or one kept from the deployment before under a name no other build
- * gives a file. `undefined` for a kept build of a manifest under the build id. Next.js gives every
- * build with a `deploymentId` the same build id (`getBuildId`), so a name the deployment before
- * had there is one the current deployment answers itself — with its own file, or with whatever
- * its routing makes of the path — and the documents of the deployment before ask for theirs by
- * `dpl`, which Next.js puts on every one of these.
+ * The build of a shipped file that a request naming no deployment (no `dpl`) is answered with:
+ * the manifest's own, or one kept from the deployment before. `undefined` for a kept build that
+ * answers only its own deployment's `dpl` (`dplOnly`): its name is the manifest's own deployment's
+ * to answer, with whatever its routing makes of the path.
  */
 export function staticFileBuildWithoutDpl(
-  key: string,
   file: StaticFileEntry,
   activeDplId: string | undefined,
 ): StaticFileEntry | undefined {
   const kept = file.deploymentId !== undefined && file.deploymentId !== activeDplId;
-  // Under any prefix: a file kept from the deployment before may sit under the `basePath` or
-  // `assetPrefix` that deployment had.
-  return kept && buildIdManifestPrefix(key) !== undefined ? undefined : file;
+  return kept && file.dplOnly === true ? undefined : file;
 }
 
 /**
