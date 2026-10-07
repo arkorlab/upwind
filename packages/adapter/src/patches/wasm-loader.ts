@@ -28,65 +28,42 @@ import { type Patch, Rewrite } from './types.ts';
  * What is left of the loader is unreferenced — nothing exports it — and the bundler drops it.
  *
  * Unlike the other patches this one cannot name its file: Turbopack puts the loader in whichever
- * chunk first needed it, so it is found by `marker` instead. The marker asks for both of the
- * module's marks at once — the registration, and the `Content-Type` the file read gives its
- * response — because an application chunk may well carry one of them (a route that answers with
- * a `.wasm`, a module that exports something called `compileModule`) and neither is rare enough
- * on its own to fail a customer's build over.
+ * chunk first needed it, so it is found by `marker` instead. No one string of the loader's will do
+ * for that. An application chunk may well carry any of them — a route that answers with a `.wasm`,
+ * a module that exports something called `compileModule` — and none is rare enough on its own to
+ * fail a customer's build over, or to rewrite a customer's module for. So what is asked about is
+ * the module, as `loaderAt` says.
  */
 
 const NAME = 'wasm-loader';
 /** Every server chunk: the loader is a shared module, so it lands in one of them, never in an entry. */
 const TARGET = /\/server\/chunks\/.*\.js$/u;
 
-/** `e.s(["compileModule",0,r,"instantiate",0,a])`: how the loader module registers its exports. */
-const EXPORTS = /\.s\(\[(?:"(?:compileModule|instantiate)",0,[\w$]+,?)+\]\)/gu;
-const EXPORT_NAME = /"(?<name>compileModule|instantiate)"/gu;
 /** The `Content-Type` the loader gives the response it builds around the file it read. */
-const READS_A_FILE = /"content-type":\s*"application\/wasm"/u;
+const READS_A_FILE = /"content-type":\s*"application\/wasm"/gu;
+/** What only a module reading a `.wasm` off disk as a stream has, on top of the `Content-Type`. */
+const FILE_READ_MARKS = ['createReadStream', '.toWeb('];
+/** What a module of a chunk ends with: its registration. One between two places parts modules. */
+const REGISTRATION = '.s([';
+/** How far from its file read the loader module's registration and functions may be. */
+const LOADER_SPAN = 2048;
 
-const REPLACEMENTS: Readonly<Record<string, string>> = {
+/**
+ * `.s(["compileModule",0,r,"instantiate",0,a])`: how the loader module registers its exports, or
+ * the one of them a build imports where it imports only one. From 16.4 every production build
+ * mangles the names — `.s(["A",0,s,"P",0,t])` — and the module that imports the loader asks for
+ * `A` rather than `compileModule`, so the names are kept and what changes is the function each one
+ * registers.
+ */
+const LOADER_EXPORTS = /^\.s\(\[(?:"[\w$]+",0,[\w$]+,?){1,2}\]\)/u;
+const LOADER_ENTRY = /"(?<name>[\w$]+)",0,(?<local>[\w$]+)/gu;
+
+type LoaderRole = 'compileModule' | 'instantiate';
+
+const REPLACEMENTS: Readonly<Record<LoaderRole, string>> = {
   compileModule: '__arkorWasmCompile',
   instantiate: '__arkorWasmInstantiate',
 };
-
-/** The export names the loader module registers, in the order it registers them. */
-function registeredExports(source: string): string[] {
-  const registration = source.match(EXPORTS);
-  if (registration === null) {
-    return [];
-  }
-  return [...registration.join('').matchAll(EXPORT_NAME)].flatMap((match) =>
-    match.groups?.['name'] === undefined ? [] : [match.groups['name']],
-  );
-}
-
-/** `"compileModule",0,__arkorWasmCompile,"instantiate",0,__arkorWasmInstantiate`, as registered. */
-function exportRegistration(exports: readonly string[]): string {
-  const entries = exports.map((name) => `"${name}",0,${REPLACEMENTS[name]}`);
-  return `.s([${entries.join(',')}])`;
-}
-
-/**
- * `e.s(["A",0,s,"P",0,t])`: the same registration once Turbopack has mangled the export names,
- * which every production build does from 16.4. The names say nothing any more, and the module
- * that imports the loader asks for `A` rather than `compileModule`, so the names are kept and what
- * changes is the function each one registers.
- *
- * Which of the loader's two functions a local is gets read off the function itself: `instantiate`
- * takes the imports as well as the path and calls `WebAssembly.instantiateStreaming`, and
- * `compileModule` takes the path alone and calls `WebAssembly.compileStreaming`. The registration
- * looked at is the first after the file read, within the few hundred bytes the module spans, and a
- * local that is not declared there as such a function means this is not the loader.
- */
-const MANGLED_EXPORTS = /\.s\(\[(?:"[\w$]+",0,[\w$]+,?){1,2}\]\)/u;
-const MANGLED_ENTRY = /"(?<name>[\w$]+)",0,(?<local>[\w$]+)/gu;
-/** How far from its file read the loader module's registration and functions may be. */
-const LOADER_SPAN = 2048;
-/** What only a module reading a `.wasm` off disk as a stream has, on top of the `Content-Type`. */
-const FILE_READ_MARKS = ['createReadStream', '.toWeb('];
-
-type LoaderRole = 'compileModule' | 'instantiate';
 
 /** What each of the loader's functions takes: the path, and for `instantiate` the imports too. */
 const ROLE_BY_ARITY: Readonly<Partial<Record<number, LoaderRole>>> = {
@@ -99,19 +76,23 @@ const STREAMING_CALL: Readonly<Record<LoaderRole, string>> = {
   instantiate: 'WebAssembly.instantiateStreaming(',
 };
 
-interface MangledRegistration {
+interface LoaderRegistration {
   readonly at: number;
   readonly text: string;
   readonly exports: readonly { readonly name: string; readonly role: LoaderRole }[];
 }
 
-/** What a module of a chunk ends with: its registration. One between two places parts modules. */
-const REGISTRATION = '.s([';
+/** An export name the loader's own source gave, which says which function it is. */
+function isRole(name: string): name is LoaderRole {
+  return Object.hasOwn(REPLACEMENTS, name);
+}
 
 /**
  * The loader role of the function `local` declares before `before`, if it declares one in the same
  * module: a local of one letter is everybody's, and the nearest `function s(` back from a
- * registration is another module's wherever a registration stands between the two.
+ * registration is another module's wherever a registration stands between the two. `instantiate`
+ * takes the imports as well as the path and calls `WebAssembly.instantiateStreaming`;
+ * `compileModule` takes the path alone and calls `WebAssembly.compileStreaming`.
  */
 function roleOf(source: string, local: string, before: number): LoaderRole | undefined {
   const declaration = `function ${local}(`;
@@ -134,45 +115,77 @@ function roleOf(source: string, local: string, before: number): LoaderRole | und
     : undefined;
 }
 
-function mangledRegistration(source: string): MangledRegistration | undefined {
-  const read = source.search(READS_A_FILE);
-  if (read === -1) {
+/**
+ * The loader's registration, where the file read at `read` is the loader's.
+ *
+ * Read off the module the read is in and nothing else in the chunk. The registration is the first
+ * after the read, which is the one that ends its module; the rest of a file read is in that module
+ * too; and each export the registration names is one of the loader's functions — by its name where
+ * the build kept the name, and by what the function is where the build mangled it (`roleOf`).
+ * Another module's export of the same name, or of a function of the same letter, belongs to a
+ * module this never looks at, so it is never what gets rewritten.
+ */
+function loaderAt(source: string, read: number): LoaderRegistration | undefined {
+  const at = source.indexOf(REGISTRATION, read);
+  if (at === -1 || at - read > LOADER_SPAN) {
     return undefined;
   }
-  const window = source.slice(Math.max(0, read - LOADER_SPAN), read + LOADER_SPAN);
-  if (FILE_READ_MARKS.some((mark) => !window.includes(mark))) {
+  const own = source.slice(Math.max(0, source.lastIndexOf(REGISTRATION, read)), at);
+  if (FILE_READ_MARKS.some((mark) => !own.includes(mark))) {
     return undefined;
   }
-  const found = MANGLED_EXPORTS.exec(source.slice(read, read + LOADER_SPAN));
+  const found = LOADER_EXPORTS.exec(source.slice(at, at + LOADER_SPAN));
   if (found === null) {
     return undefined;
   }
-  const at = read + found.index;
-  const entries = [...found[0].matchAll(MANGLED_ENTRY)];
   const exports: { name: string; role: LoaderRole }[] = [];
+  const entries = [...found[0].matchAll(LOADER_ENTRY)];
   for (const entry of entries) {
     const name = entry.groups?.['name'];
     const local = entry.groups?.['local'];
-    const role = local === undefined ? undefined : roleOf(source, local, at);
-    if (name === undefined || role === undefined) {
+    if (name === undefined || local === undefined) {
+      return undefined;
+    }
+    const role = isRole(name) ? name : roleOf(source, local, at);
+    if (role === undefined) {
       return undefined;
     }
     exports.push({ name, role });
   }
-  // Two exports are the two functions, one of each.
+  // One export where a build imports one, which is a registration Turbopack writes as well as the
+  // one with both; never the same function twice.
   if (new Set(exports.map((one) => one.role)).size !== exports.length) {
     return undefined;
   }
   return { at, text: found[0], exports };
 }
 
+/** Each copy of the loader a chunk carries, in the order they stand in it. */
+function loaderRegistrations(source: string): LoaderRegistration[] {
+  const found = new Map<number, LoaderRegistration>();
+  for (const read of source.matchAll(READS_A_FILE)) {
+    const registration = loaderAt(source, read.index);
+    if (registration !== undefined) {
+      found.set(registration.at, registration);
+    }
+  }
+  return [...found.values()];
+}
+
 /**
  * `.s(["A",0,__arkorWasmCompile,"P",0,__arkorWasmInstantiate])`: the names kept, the functions
  * ours.
  */
-function mangledExportRegistration(registration: MangledRegistration): string {
+function loaderExports(registration: LoaderRegistration): string {
   const entries = registration.exports.map((one) => `"${one.name}",0,${REPLACEMENTS[one.role]}`);
   return `.s([${entries.join(',')}])`;
+}
+
+/** `compileModule (A), instantiate (P)`: what each export is, and its name where it was mangled. */
+function exportsNote(registration: LoaderRegistration): string {
+  return registration.exports
+    .map((one) => (one.name === one.role ? one.role : `${one.role} (${one.name})`))
+    .join(', ');
 }
 
 function wasmTable(chunks: readonly { chunkPath: string; global: string }[]): string {
@@ -209,44 +222,35 @@ function wasmTable(chunks: readonly { chunkPath: string; global: string }[]): st
 export const wasmLoaderPatch: Patch = {
   name: NAME,
   target: TARGET,
-  marker: (source) => {
-    if (!READS_A_FILE.test(source)) {
-      return false;
-    }
-    return registeredExports(source).length > 0 || mangledRegistration(source) !== undefined;
-  },
+  marker: (source) => loaderRegistrations(source).length > 0,
   // The chunk Turbopack put the loader in, which only a build has.
   reaches: ['build-output'],
   apply(source, file, ctx) {
-    const exports = registeredExports(source);
-    // An empty table is not a failure: a Function may bundle the loader from a shared chunk while
-    // none of its own entrypoints reaches WebAssembly, and then nothing ever asks it for one.
-    if (exports.length > 0) {
-      const result = new Rewrite(NAME, file, source)
-        .replace(EXPORTS, exportRegistration(exports), 1, "the loader's exports")
-        .append(wasmTable(ctx.wasm));
-      return {
-        contents: result.contents,
-        edits: result.edits,
-        notes: [`wasm table: ${ctx.wasm.length} entries; exports: ${exports.join(', ')}`],
-      };
-    }
-    const registration = mangledRegistration(source);
-    if (registration === undefined) {
+    const registrations = loaderRegistrations(source);
+    if (registrations.length === 0) {
       throw new Rewrite(NAME, file, source).fail(
         "expected the loader's exports 1 time(s), found 0",
       );
     }
-    // Spliced at the one place it was found rather than replaced by its text: a mangled
-    // registration is a few characters, and another module of the chunk may well spell the same.
-    const end = registration.at + registration.text.length;
-    const spliced = `${source.slice(0, registration.at)}${mangledExportRegistration(registration)}${source.slice(end)}`;
-    const result = new Rewrite(NAME, file, spliced, 1).append(wasmTable(ctx.wasm));
-    const roles = registration.exports.map((one) => `${one.role} (${one.name})`);
+    // Spliced where each was found rather than replaced by its text: a registration is a few
+    // characters, and another module of the chunk may well spell the same. From the last, so each
+    // splice leaves the ones before it where they were found.
+    let contents = source;
+    for (const registration of registrations.toReversed()) {
+      const end = registration.at + registration.text.length;
+      contents = `${contents.slice(0, registration.at)}${loaderExports(registration)}${contents.slice(end)}`;
+    }
+    // An empty table is not a failure: a Function may bundle the loader from a shared chunk while
+    // none of its own entrypoints reaches WebAssembly, and then nothing ever asks it for one.
+    const result = new Rewrite(NAME, file, contents, registrations.length).append(
+      wasmTable(ctx.wasm),
+    );
     return {
       contents: result.contents,
       edits: result.edits,
-      notes: [`wasm table: ${ctx.wasm.length} entries; exports: ${roles.join(', ')}`],
+      notes: [
+        `wasm table: ${ctx.wasm.length} entries; exports: ${registrations.map((registration) => exportsNote(registration)).join('; ')}`,
+      ],
     };
   },
 };
@@ -275,8 +279,8 @@ export const wasmLoaderPatch: Patch = {
  * are left unreferenced for the bundler to drop.
  *
  * The two shapes cannot both be present, and each is found by what only it has: this one by the
- * runtime assigning a *function* to `contextPrototype.w`, the other by a module registering
- * `compileModule` and `instantiate` as its exports.
+ * runtime assigning a *function* to `contextPrototype.w`, the other by a module that reads a
+ * `.wasm` off disk and registers the functions that compile and instantiate it.
  */
 const RUNTIME_NAME = 'runtime-wasm-loader';
 const RUNTIME_TARGET = /\[turbopack\]_runtime\.js$/u;

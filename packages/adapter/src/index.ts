@@ -41,7 +41,6 @@ import {
   nftAssets,
   nftChunks,
   nftWasm,
-  orDefault,
   tracedChunks,
   tracedWasm,
 } from './collect.ts';
@@ -54,6 +53,7 @@ import { keepMapsThrough, readKeptMaps } from './kept-maps.ts';
 import { collectManifests } from './manifests.ts';
 import type { PlanBudget } from './plan.ts';
 import { readProjectConfig } from './project-config.ts';
+import { projectDirOf } from './project-dir.ts';
 import { carriesMaps, type SourceMapsOption } from './source-maps.ts';
 import { checkSplitOptions, type SplitOptions, splitBudget } from './split.ts';
 import { collectStaticFiles, rewriteTargetFiles } from './static-files.ts';
@@ -689,18 +689,6 @@ async function injectClientInstrumentation(
 
 /** The config `modifyConfig` is handed, as Next.js declares it. */
 type BuildConfig = Parameters<NonNullable<NextAdapter['modifyConfig']>>[0];
-/** What else `modifyConfig` is handed, as Next.js declares it. */
-type ModifyContext = Parameters<NonNullable<NextAdapter['modifyConfig']>>[1];
-
-/**
- * The project's directory, which `modifyConfig` is told from 16.3. 16.2 hands the hook its phase and
- * its version and no directory, so there it is the one `next build` resolves when it is given none:
- * the working directory. A 16.2 build of a project other than the one it runs from is what this
- * answers wrongly; every release from 16.3 says.
- */
-function projectDirOf(context: ModifyContext): string {
-  return orDefault<string>(context.projectDir, process.cwd());
-}
 
 /**
  * That the line below has been said already, where the next process to say it can see.
@@ -796,7 +784,7 @@ export function createAdapter(options: AdapterOptions = {}): NextAdapter {
     name: 'upwind',
     async modifyConfig(config, context) {
       const { phase } = context;
-      const projectDir = projectDirOf(context);
+      const projectDir = projectDirOf(config, context);
       if (phase === 'phase-development-server') {
         // `/__upwind` belongs to `upwind dev`, which is in front of this server. See `dev-prefix.ts`
         // for why a front door that already holds the path still wants the reservation, and why
