@@ -327,6 +327,16 @@ function ordinaryNodeOptions(options: string | undefined): string | undefined {
   return kept.length === 0 ? undefined : kept.join(' ');
 }
 
+/** Whether two environments hold the same names with the same values, in whatever order. */
+function sameEnvironment(
+  environment: Record<string, string>,
+  expected: Record<string, string>,
+): boolean {
+  const sorted = (of: Record<string, string>): string =>
+    JSON.stringify(Object.entries(of).toSorted(([a], [b]) => a.localeCompare(b)));
+  return sorted(environment) === sorted(expected);
+}
+
 /** A harness as Next.js's is one: it starts the hook it is handed, with a suite's variable on top. */
 const HARNESS = `
 import { spawnSync } from 'node:child_process';
@@ -360,16 +370,29 @@ async function suiteEnvScenario(
       ARKOR_API_URL: `http://127.0.0.1:${String(host.port)}`,
       SUITE_ONLY: 'from-the-suite',
       OWN: 'the-suites-over-the-files',
-      // What Next.js's harness sets in its own process as it runs: its, not the suite's.
+      // What Next.js's harness sets in its own process as it runs: its, not the suite's. Next.js sets
+      // the stack size in any process that has loaded its native bindings, the harness among them.
       TEST_FILE_PATH: '/next.js/test/e2e/some.test.ts',
       NEXT_TEST_JOB: '1',
+      RUST_MIN_STACK: '8388608',
+      // The suite's, and too short to go up as a secret: Next.js's deploy mode gives it to every
+      // fixture kept as a directory.
+      NEXT_PRIVATE_LOCAL_DEV: '1',
       // What no `.env` file gives a deployment either: a Function that started with it skips its own.
       __NEXT_PROCESSED_ENV: 'true',
     });
     holds(
       "a suite's own variables reach the deployment, over the application's .env files, and the harness's do not",
-      JSON.stringify(host.environment()) ===
-        JSON.stringify({ OWN: 'the-suites-over-the-files', SUITE_ONLY: 'from-the-suite' }),
+      sameEnvironment(host.environment(), {
+        NEXT_PRIVATE_LOCAL_DEV: '1',
+        OWN: 'the-suites-over-the-files',
+        SUITE_ONLY: 'from-the-suite',
+      }),
+    );
+    holds(
+      'and each goes up as a secret, but one too short to be one',
+      JSON.stringify(host.secrets().toSorted((a, b) => a.localeCompare(b))) ===
+        JSON.stringify(['OWN', 'SUITE_ONLY']),
     );
   } finally {
     host.close();
@@ -392,8 +415,7 @@ async function suiteEnvScenario(
     );
     holds(
       "and read off the hook's parent where no harness is named",
-      JSON.stringify(parent.environment()) ===
-        JSON.stringify({ OWN: 'yes', SUITE_ONLY: 'via-the-parent' }),
+      sameEnvironment(parent.environment(), { OWN: 'yes', SUITE_ONLY: 'via-the-parent' }),
     );
   } finally {
     parent.close();
