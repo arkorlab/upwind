@@ -62,6 +62,7 @@ export {
   pagesDataPathnameUnder,
   pagesDataPrefixOf,
   pagesPathnameOfData,
+  spellsAsWritten,
 } from './pages-data.ts';
 export { queryDependent } from './query.ts';
 export {

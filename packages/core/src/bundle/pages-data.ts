@@ -118,6 +118,20 @@ export function pagesDataPrefixOf(buildId: string, basePath: string): string {
 }
 
 /**
+ * Whether a request can ask for a path under the base path by the base path as the build wrote it:
+ * a URL gives it no other name than its own, percent-encoded. A dot segment (`/a/../b`), a
+ * backslash, an escape already in it — a URL resolves or rewrites each, so a request never names
+ * what the build wrote under such a base path, and a prefix spelled from it names nothing the
+ * build wrote (`pagesDataPrefixOf`).
+ */
+export function spellsAsWritten(basePath: string): boolean {
+  if (basePath === '') {
+    return true;
+  }
+  return decodedPath(new URL(basePath, ANY_ORIGIN).pathname) === basePath;
+}
+
+/**
  * The data pathname the build writes a page's props under, as the build names it: under the base
  * path, `/_next/data/<buildId>`, the page as it spells it in a file's name (`spelledPage`), `.json`.
  */

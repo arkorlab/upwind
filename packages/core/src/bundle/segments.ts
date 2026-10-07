@@ -1,5 +1,5 @@
 import { mayHoldForDocument } from '../request/conditions.ts';
-import { pagesDataPathnameUnder } from './pages-data.ts';
+import { pagesDataPathnameUnder, spellsAsWritten } from './pages-data.ts';
 import type { DeploymentBundle, Prerender } from './schema.ts';
 import {
   beforeFilesPhases,
@@ -199,13 +199,20 @@ export interface RoutePagesData {
  * against: the host judges every rule of the build against that URL instead, as Next.js's routing
  * does — which needs every rule in the manifest (`reproducesDynamicRouting`), and a build with no
  * middleware. A build with one matches its rules against the page a data URL names, and runs its
- * middleware for it (`shouldNormalizeNextData`); its props stay with the Function.
+ * middleware for it (`shouldNormalizeNextData`); its props stay with the Function. So do the props
+ * of a build under a base path no request spells as written (`spellsAsWritten`), which no request
+ * asks for under the names the build gave them.
  */
 export function routePagesData(
   bundle: DeploymentBundle,
   options: ServableOptions = {},
 ): RoutePagesData[] {
-  if (!reproducesDynamicRouting(bundle) || bundle.routing.shouldNormalizeNextData) {
+  const { basePath } = bundle.config;
+  if (
+    !reproducesDynamicRouting(bundle) ||
+    bundle.routing.shouldNormalizeNextData ||
+    !spellsAsWritten(basePath)
+  ) {
     return [];
   }
   const servesParts = partsServed(bundle, options);
@@ -213,7 +220,6 @@ export function routePagesData(
     bundle.entrypoints.filter((entry) => entry.kind === 'pages').map((entry) => entry.pathname),
   );
   const byPathname = new Map(bundle.prerenders.map((prerender) => [prerender.pathname, prerender]));
-  const { basePath } = bundle.config;
   return bundle.prerenders.flatMap((document) => {
     if (!pages.has(document.route) || document.postponed !== undefined) {
       return [];
