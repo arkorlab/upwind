@@ -122,7 +122,7 @@ pnpm dev
   - Local:     http://localhost:3000
   - Internal:  http://localhost:3000/__upwind
 
-  ✓ Next.js 16.3.8 ready in 1127ms
+  ✓ Next.js 16.4.0 ready in 1127ms
 ```
 
 Open <http://localhost:3000> and edit `app/page.tsx` — it is the Next.js dev server you already know. To build the deployment bundle:
