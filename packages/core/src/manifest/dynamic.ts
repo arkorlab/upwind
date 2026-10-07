@@ -148,23 +148,59 @@ export function interpolateHeader(value: string, match: RegExpExecArray): string
     );
   }
   if (!value.includes('$')) return out;
-  // Next replaces positional captures in order, then named groups. String searches keep
-  // that order (including `$10` matching `$1` first and `$01` staying literal) without compiling
-  // a regular expression for each capture on the request path.
-  for (let index = 1; index < match.length; index += 1) {
-    // Next also interprets replacement tokens in captured values; a callback would differ.
-    // eslint-disable-next-line unicorn/no-unsafe-string-replacement
-    out = out.replaceAll(`$${index}`, match[index] ?? '');
-  }
-  if (groups === undefined) return out;
+  return replaceReferences(out, match);
+}
+
+const POSITIONAL = /^\d+$/u;
+const DIGIT = /\d/u;
+
+/**
+ * The name a `$` reference at `at` spells: the longest of `names` it begins with, where a
+ * positional one may not be followed by a digit — `$1` is not the start of `$10`.
+ */
+function referenceAt(template: string, at: number, names: readonly string[]): string | undefined {
+  return names.find((name) => {
+    if (!template.startsWith(name, at + 1)) {
+      return false;
+    }
+    return !POSITIONAL.test(name) || !DIGIT.test(template.charAt(at + 1 + name.length));
+  });
+}
+
+/**
+ * Every `$` reference in `template` filled in, as `@next/routing` fills a destination and a header
+ * from 16.4 (`replaceDestination`): in one pass, each reference read as the longest name it spells —
+ * a positional capture or a named group — and what that names put in as it is, `$` and all. A
+ * reference to nothing is left as it was written, so `$01`, and a `$10` past the last capture, stay
+ * literal. Before 16.4 the router replaced each name over the whole value in turn, which let `$1`
+ * take the start of `$10` and a name the start of a longer one; the runtime resolves with the
+ * router this repository pins, and the edge fills a header the way the runtime does.
+ *
+ * No regular expression is compiled for it, because this runs on the request path: the names are a
+ * handful, and asking each of them at each `$` is cheaper than building a pattern out of them.
+ */
+function replaceReferences(template: string, match: RegExpExecArray): string {
   // Optional named groups can be undefined even though RegExpExecArray types them as strings.
-  const namedCaptures: [string, string | undefined][] = Object.entries(groups);
-  for (const [name, captured] of namedCaptures) {
-    // Preserve Next's replacement-string semantics, including `$&` and `$$` in a capture.
-    // eslint-disable-next-line unicorn/no-unsafe-string-replacement
-    out = out.replaceAll(`$${name}`, captured ?? '');
+  const groups: Record<string, string | undefined> | undefined = match.groups;
+  const names = [
+    ...Array.from({ length: match.length - 1 }, (_, at) => String(at + 1)),
+    ...(groups === undefined ? [] : Object.keys(groups)),
+  ].toSorted((a, b) => b.length - a.length);
+  let out = '';
+  let from = 0;
+  let at = template.indexOf('$');
+  while (at !== -1) {
+    const name = referenceAt(template, at, names);
+    if (name === undefined) {
+      at = template.indexOf('$', at + 1);
+    } else {
+      const captured = POSITIONAL.test(name) ? match[Number(name)] : groups?.[name];
+      out += `${template.slice(from, at)}${captured ?? ''}`;
+      from = at + 1 + name.length;
+      at = template.indexOf('$', from);
+    }
   }
-  return out;
+  return `${out}${template.slice(from)}`;
 }
 
 /**
