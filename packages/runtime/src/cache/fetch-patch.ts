@@ -33,13 +33,14 @@ import { AsyncLocalStorage } from 'node:async_hooks';
  * counted, and the next invocation of the same graph patched again (`non-ascii-cache-tags`).
  *
  * From 16.4 the two graphs share their storage: Next.js anchors each of its six storages to a
- * symbol on `globalThis` (`@next/work-async-storage@<version>`, `getOrCreateGlobalAsyncLocalStorage`),
- * which one realm holds one of whatever its copies of Next.js. Both fetchers then find the store,
- * and the two that composed are the double patch above, deadlocked on the lock the outer one took.
- * So where the storage is shared there is one fetcher, and it is the Node.js graph's where it can
- * be, since that is the copy the adapter's rewrites reach (`fetch-cache-wait-until`): a graph that
- * finds it in place does not patch, and the Node.js graph, finding the edge graph's in place,
- * patches over what that one found beneath it rather than over it.
+ * symbol on `globalThis` (`@next/work-async-storage@<version>`,
+ * `getOrCreateGlobalAsyncLocalStorage`), which one realm holds one of whatever its copies of
+ * Next.js. Both fetchers then find the store, and the two that composed are the double patch above,
+ * deadlocked on the lock the outer one took. So where the storage is shared there is one fetcher,
+ * and it is the Node.js graph's where it can be, since that is the copy the adapter's rewrites
+ * reach (`fetch-cache-wait-until`): a graph that finds it in place does not patch, and the Node.js
+ * graph, finding the edge graph's in place, patches over what that one found beneath it rather than
+ * over it.
  */
 
 const NEXT_PATCH_SYMBOL = Symbol.for('next-patch');
@@ -50,8 +51,11 @@ export type EntryGraph = 'app' | 'edge';
 
 /** Whether the graph's renders have a patched `fetch` to go through, its own or the other's. */
 const patched: Record<EntryGraph, boolean> = { app: false, edge: false };
-/** The global `fetch` each graph found when it was let patch. */
-const beneath: Partial<Record<EntryGraph, typeof fetch>> = {};
+/**
+ * The global `fetch` the edge graph found when it was let patch: what the Node.js graph patches
+ * over when it finds the edge graph's fetcher in place.
+ */
+const beneath: { edge?: typeof fetch } = {};
 /** The graph whose handler an invocation is running, while it has not yet patched. */
 const invocations = new AsyncLocalStorage<EntryGraph>();
 const flag = { installed: false, shared: false };
@@ -79,7 +83,9 @@ function admits(graph: EntryGraph): boolean {
       Reflect.set(globalThis, 'fetch', underEdge);
     }
   }
-  beneath[graph] = globalThis.fetch;
+  if (graph === 'edge') {
+    beneath.edge = globalThis.fetch;
+  }
   return true;
 }
 
