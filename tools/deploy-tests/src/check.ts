@@ -431,6 +431,9 @@ async function main(): Promise<void> {
     // scenario that runs it out sets.
     JEST_SUITE_NAME: 'deploy:e2e:test/e2e/app-dir/app-simple-routes/app-simple-routes.test.ts',
     __NEXT_NODE_NATIVE_TS_LOADER_ENABLED: undefined,
+    // The hook sets it for a fixture, so the shell's is kept out: the check of it would otherwise
+    // pass on a shell that exported it.
+    COREPACK_DEFAULT_TO_LATEST: undefined,
     // Started without one, whatever this machine exports: the scenario of a suite's variables reads
     // the stack size Next.js sets against a harness that had none, as Next.js's harness has none.
     RUST_MIN_STACK: undefined,
@@ -528,6 +531,10 @@ async function main(): Promise<void> {
         build.includes('the build saw types transformed: no'),
     );
     holds('nor the file holding it', build.includes('ARKOR_API_TOKEN_FILE: no'));
+    holds(
+      'and Corepack is told not to fetch the newest pnpm for it',
+      build.includes('the build saw Corepack fetch the newest: no'),
+    );
     holds("the application's own post-build ran", build.includes('the fixture post-build ran'));
     holds('and it saw no token either', build.includes('it saw ARKOR_API_TOKEN: no'));
     const bundle = JSON.parse(readFileSync(path.join(appDir, '.arkor', 'bundle.json'), 'utf8')) as {
