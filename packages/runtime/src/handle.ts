@@ -496,7 +496,11 @@ async function serveResolved(
   // the client asked for otherwise: a data URL the build left no output for is normalized to its
   // page before the dynamic matchers run, and the page is all the router hands back. The request
   // still says `_next/data`, and that is what the answer has to be.
-  if (isPagesDataPathname(resolved.route) || isPagesDataPathname(asked.pathname)) {
+  const { basePath } = store.manifest.config;
+  if (
+    isPagesDataPathname(basePath, resolved.route) ||
+    isPagesDataPathname(basePath, asked.pathname)
+  ) {
     return servePagesData(input, store, resolved);
   }
   if (entrypointKindOf(store, resolved.route) === 'app-route') {

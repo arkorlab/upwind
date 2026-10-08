@@ -1,6 +1,6 @@
 import {
-  pagesDataPathname,
-  pagesPathnameOfData,
+  pageOfDataPathname,
+  pagesDataPathnameUnder,
   type Prerender,
   queryDependent,
 } from '@stayingupwind/core/bundle';
@@ -90,14 +90,14 @@ interface DataTarget {
  * document.
  */
 function dataTargetOf(store: Store, resolved: Resolved): DataTarget {
-  const { buildId } = store.manifest;
-  const page = pagesPathnameOfData(buildId, resolved.pathname);
+  const { buildId, config } = store.manifest;
+  const page = pageOfDataPathname(buildId, config.basePath, resolved.pathname);
   if (page !== undefined) {
     return { page, data: resolved.pathname, url: resolved.url };
   }
   const at = resolved.url.indexOf('?');
   const search = at === -1 ? '' : resolved.url.slice(at);
-  const data = pagesDataPathname(buildId, resolved.pathname);
+  const data = pagesDataPathnameUnder(buildId, config.basePath, resolved.pathname);
   return { page: resolved.pathname, data, url: `${data}${search}` };
 }
 
