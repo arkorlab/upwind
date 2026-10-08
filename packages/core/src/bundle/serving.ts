@@ -780,7 +780,7 @@ export function dynamicRouting(
       bundle,
       routeKeys,
       { dynamicRoutes, reservedRoutes, exactPathnames: [...exact] },
-      pages.map((page) => page.template),
+      pages.map((page) => page.template ?? page.dataOf),
     ),
     ...spelled,
   };

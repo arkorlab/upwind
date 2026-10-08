@@ -121,9 +121,10 @@ export type DynamicRouting = Pick<
 
 /**
  * The routing tables of a split bundle with each route's Function on them: on a dynamic route, the
- * Function its template's entrypoint is in — `templates` and the tables' own dynamic routes are in
- * one order (`pageRoutes`) — and beside the exact pathnames, the ones another Function answers. A
- * bundle that was not split comes back as it went in, byte for byte.
+ * Function its template's entrypoint is in — `templates`, the page each of the tables' own dynamic
+ * routes lands on or answers the data of, are in their order (`pageRoutes`) — and beside the exact
+ * pathnames, the ones another Function answers. A bundle that was not split comes back as it went
+ * in, byte for byte.
  */
 export function withFunctions(
   bundle: DeploymentBundle,

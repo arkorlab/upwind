@@ -12,8 +12,8 @@ import type { Route } from './schema.ts';
  *   an empty one as well (`DOCUMENT_OR_DATA`), and whose destination ends in that group's
  *   reference: `/blog/[slug]$2`;
  * - the fallback shells of one source page that sit side by side in the table become one entry,
- *   whose pattern lists the prefixes the shells resolved — `^/(en|ja)/…` — and whose destination
- *   begins with the one that matched: `/$1/[slug]`.
+ *   whose pattern lists the prefixes the shells resolved — `^[/]?/(en|ja)/…`, behind the base path
+ *   where there is one — and whose destination begins with the one that matched: `/$1/[slug]`.
  *
  * Each such entry resolves a request to the output the entries it replaced did, and the Functions
  * route with the table as the build wrote it. What the edge needs of the table is the page each
@@ -40,6 +40,8 @@ export interface PageRoute {
    * nothing in the build.
    */
   readonly template: string | undefined;
+  /** Where it lands on a page's data, that page: what answers the data is what answers the page. */
+  readonly dataOf?: string;
 }
 
 /** How a collapsed entry ends its pattern: the page, or its RSC payload, or one of its segments. */
@@ -84,17 +86,11 @@ function documentAndData(route: Route, sourceRegex: string, path: string): PageR
     return [{ route, sourceRegex, template: path }];
   }
   const body = sourceRegex.slice(0, -ending.length);
-  const data = { route, sourceRegex: `${body}${DATA_ONLY}`, template: undefined };
+  const page = path.slice(0, -reference.length);
+  const data = { route, sourceRegex: `${body}${DATA_ONLY}`, template: undefined, dataOf: page };
   return ending === DATA_ONLY
     ? [data]
-    : [
-        data,
-        {
-          route,
-          sourceRegex: `${body}${DOCUMENT_ONLY}`,
-          template: path.slice(0, -reference.length),
-        },
-      ];
+    : [data, { route, sourceRegex: `${body}${DOCUMENT_ONLY}`, template: page }];
 }
 
 /**
@@ -137,9 +133,10 @@ function listed(list: string): string[] {
 
 /**
  * The shells one entry serves for a run, each with the pattern the build gives it with the option
- * off and the path its destination names: `^/(en|ja)/(?<nxtPslug>[^/]+?)…` with `/$1/[slug]$3` is
- * `^/en/(?<nxtPslug>[^/]+?)…` with `/en/[slug]$2`, and the same for `ja`. The prefix is no group of
- * a shell's own pattern, so every later reference of the destination counts one group fewer.
+ * off and the path its destination names: `^[/]?/(en|ja)/(?<nxtPslug>[^/]+?)…` with
+ * `/$1/[slug]$3` is `^[/]?/en/(?<nxtPslug>[^/]+?)…` with `/en/[slug]$2`, and the same for `ja` —
+ * the base path, where there is one, ahead of the `[/]?` in each. The prefix is no group of a
+ * shell's own pattern, so every later reference of the destination counts one group fewer.
  * `undefined` for an entry that is no such run.
  *
  * A run is matched under no locale: its pattern begins with the prefix, right after the `basePath`.
