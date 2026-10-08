@@ -1,3 +1,5 @@
+import { standsForClass } from '@stayingupwind/core/bundle';
+
 import type { Store } from './store.ts';
 
 /**
@@ -68,11 +70,18 @@ export function namesWithSpellings(store: Store): string[] {
   const named = offered.size;
   // A dynamic route's own name — its entrypoint's, `[` and all — is no path anything is asked for
   // or rewritten to. A page whose value holds a bracket (`/blog/[post3]`, which `getStaticPaths`
-  // and `generateStaticParams` may name) is a name like any other.
+  // and `generateStaticParams` may name) is a name like any other, and so is one whose value is
+  // spelled as its own placeholder, which shares the template's name (`/blog/[post]` of
+  // `/blog/[post]`): the build says it is a page and not the class (`standsForClass`).
+  const pages = new Set(
+    store.manifest.prerenders
+      .filter((prerender) => !standsForClass(prerender))
+      .map((prerender) => prerender.pathname),
+  );
   const templates = new Set(
     store.manifest.entrypoints
       .map((entry) => entry.pathname)
-      .filter((pathname) => isTemplate(pathname)),
+      .filter((pathname) => isTemplate(pathname) && !pages.has(pathname)),
   );
   for (const name of store.pathnames) {
     if (templates.has(withoutTrailingSlash(name))) {
