@@ -19,6 +19,7 @@ import {
 
 import { type BlobStore, contentTypeFor } from './blobs.ts';
 import { jsLiteral } from './codegen.ts';
+import { constExportSettersPlugin } from './const-export-setters.ts';
 import {
   auditTracedFiles,
   auditFunction,
@@ -240,6 +241,7 @@ export function appBundlePlugins(
     // it; see `sourceMapsPlugin`. Left out entirely for a build carrying no maps: it would read
     // the tail of every file the bundle loads for a comment nothing would use.
     ...(context.sourceMaps === true ? [sourceMapsPlugin(context.keptMaps)] : []),
+    constExportSettersPlugin(),
     stubPlugin((specifier) => {
       sinks.stubs.push(specifier);
     }, context.workflowFunction === true),

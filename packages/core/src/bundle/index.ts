@@ -61,10 +61,9 @@ export {
 export {
   isPagesDataPathname,
   isPagesDataRequestPath,
+  pageOfDataPathname,
   pageOfPagesData,
-  pagesDataPathname,
   pagesDataPathnameUnder,
-  pagesPathnameOfData,
 } from './pages-data.ts';
 export { queryDependent } from './query.ts';
 export {

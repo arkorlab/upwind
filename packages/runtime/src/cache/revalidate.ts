@@ -1,10 +1,10 @@
-import { pagesDataPathname } from '@stayingupwind/core/bundle';
+import { pagesDataPathnameUnder } from '@stayingupwind/core/bundle';
 import { IMPLICIT_TAG_PREFIX, type RouteEntryDescriptor } from '@stayingupwind/core/cache';
 
 import { nodeHandlerOf } from '../entries.ts';
 import { descriptorFor } from '../generations.ts';
 import { elsewhere } from '../placement.ts';
-import { findShell, getStore, type Store } from '../store.ts';
+import { completedShell, findShell, getStore, type Store } from '../store.ts';
 import { requestContext } from './context.ts';
 import { invalidateNow } from './handlers.ts';
 import { regenerate } from './regenerate.ts';
@@ -36,11 +36,17 @@ function pathTags(pathname: string): string[] {
   return tags;
 }
 
-/** The route whose shell answers a pathname, and its router; `undefined` when none does. */
+/**
+ * The route whose shell answers a pathname, and the entry it is kept under; `undefined` when none
+ * does. A member of a route that blocks is kept under the shell it completes to, where the build
+ * keys the route's entries by some of its parameters (`completedShell`): that entry is the one its
+ * requests read, and the one Next.js 16.4 revalidates for it.
+ */
 function routeOf(store: Store, pathname: string): RouteEntryDescriptor | undefined {
   for (const route of store.shellsByRoute.keys()) {
-    if (findShell(store, route, pathname) !== undefined) {
-      return descriptorFor(store, route, pathname);
+    const shell = findShell(store, route, pathname);
+    if (shell !== undefined) {
+      return descriptorFor(store, route, completedShell(shell, pathname));
     }
   }
   return undefined;
@@ -83,7 +89,7 @@ export async function platformRevalidate(input: RevalidateInput): Promise<void> 
       allowHeader: findShell(store, descriptor.route, pathname)?.allowHeader,
       dataPathname:
         descriptor.kind === 'pages'
-          ? pagesDataPathname(store.manifest.buildId, pathname)
+          ? pagesDataPathnameUnder(store.manifest.buildId, store.manifest.config.basePath, pathname)
           : undefined,
     },
     previewToken: store.manifest.bypassToken,

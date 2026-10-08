@@ -19,10 +19,14 @@ export const ROUTE_BODY = 'route-body';
 /** What a representation of one prefetched segment begins with; the rest is the segment's key. */
 export const SEGMENT_PREFIX = 'segment:';
 
-/** The cached output an RSC request names: the route's payload or one prefetched segment. */
+/**
+ * The cached output an RSC request names: the route's payload or one prefetched segment. An empty
+ * segment header names no segment, as the classification reads it (`segmentPrefetchOf`) and as the
+ * build's own answer does (`builtSegment`): the request is the plain RSC request it is.
+ */
 export function rscRepresentation(request: Request, store: Store): 'rsc' | `segment:${string}` {
   const segment = request.headers.get(store.manifest.routing.rsc.prefetchSegmentHeader);
-  return segment === null ? 'rsc' : `${SEGMENT_PREFIX}${segment}`;
+  return segment === null || segment === '' ? 'rsc' : `${SEGMENT_PREFIX}${segment}`;
 }
 
 /**

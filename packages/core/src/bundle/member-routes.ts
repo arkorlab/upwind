@@ -1,3 +1,4 @@
+import { keyedParameters } from '../manifest/completion.ts';
 import type { MemberRoute } from '../manifest/schema.ts';
 import { writtenFromList } from '../request/blocking-metadata.ts';
 import { queryDependent } from './query.ts';
@@ -9,9 +10,9 @@ import { standsForClass } from './spelling.ts';
  * leaves, by the template a dynamic route resolves to (`MemberRoute`), where its members leave one:
  * a page that renders its unknown members blocking — the build wrote the class with no body, as
  * App Router and a Pages Router `fallback: 'blocking'` do — on the Node.js runtime, whose members are
- * keyed by their pathname alone (`queryDependent`), and whose class the edge could serve as a shell
- * (`servableIn`): no rule claims it ahead of the filesystem, and no header rule the edge cannot judge
- * covers it.
+ * keyed by a pathname alone (`queryDependent`) — their own, or the shell they complete to
+ * (`keyedBy`) — and whose class the edge could serve as a shell (`servableIn`): no rule claims it
+ * ahead of the filesystem, and no header rule the edge cannot judge covers it.
  *
  * Not a Pages Router `fallback: true` class. Its body is the loading page the build wrote, which a
  * runtime cache keys the class by and holds no generation of (`generationIn`): the deployment's
@@ -71,10 +72,14 @@ export function memberRoutesOf(
     const bypassFor = prerender.bypassFor?.filter(
       (condition) => !writtenFromList(condition, bundle.config.htmlLimitedBots),
     );
+    // Kept under the shell its members complete to where the build keys them by some of the
+    // route's parameters (`completedShell`, in the runtime), which the record is read by.
+    const keyedBy = keyedParameters(prerender.route, prerender.pathname, prerender.allowQuery);
     return {
       route: prerender.route,
       kind,
       ...(bypassFor !== undefined && bypassFor.length > 0 && { bypassFor }),
+      ...(keyedBy !== undefined && { keyedBy }),
     };
   };
 }

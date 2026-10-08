@@ -46,6 +46,7 @@ import {
 } from './collect.ts';
 import { reserveUpwindPrefix } from './dev-prefix.ts';
 import type { EdgeEntry } from './edge.ts';
+import { ensureStaticRoutes } from './ensure-static.ts';
 import { exists } from './fs.ts';
 import { type BuiltFunction, type EntryModule, middlewareManifest } from './function.ts';
 import { composedInstrumentation, writeClientInstrumentation } from './instrumentation.ts';
@@ -248,6 +249,7 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     edgeRuntimeRoutes: new Set(
       entrypoints.flatMap((entry) => (entry.runtime === 'edge' ? [entry.pathname] : [])),
     ),
+    ensureStatic: await ensureStaticRoutes(ctx.distDir, ctx.config.basePath),
   });
   // What came through the build's `runAfterProductionCompile`, for every part of this build that
   // looks for a chunk's map (`kept-maps.ts`).

@@ -492,6 +492,8 @@ export interface PrerenderCollection {
    * the one case this option must not create.
    */
   readonly edgeRuntimeRoutes?: ReadonlySet<string> | undefined;
+  /** The entries of the routes whose `ensureStatic` is `navigation` (`ensureStaticRoutes`). */
+  readonly ensureStatic?: ReadonlySet<string> | undefined;
 }
 
 /** A blob the Function carries, and the routes whose prerenders name it. */
@@ -517,7 +519,11 @@ export async function collectPrerenders(
   const entryIds = entryIdsByOutputId(outputs);
   const collected = outputs.prerenders.map((output) => {
     const route = routeOf(output, entryIds, basePath);
-    return { output, prerender: prerenderFields(output, route) };
+    const prerender = prerenderFields(output, route);
+    if (input.ensureStatic?.has(prerender.pathname) === true) {
+      prerender.ensureStatic = 'navigation';
+    }
+    return { output, prerender };
   });
   // Which document each output travels with, asked of the bundle by the rule the bundle is read
   // with, so a segment is placed against the same document the host will serve it under.

@@ -12,22 +12,6 @@ const DATA_PREFIX = PAGES_DATA_SEGMENT;
 const DATA_SUFFIX = '.json';
 const INDEX = '/index';
 
-/** The data pathname of a page: the root is `/index.json`, as Next.js names it. */
-export function pagesDataPathname(buildId: string, pathname: string): string {
-  const page = pathname === '/' ? INDEX : pathname;
-  return `${DATA_PREFIX}${buildId}${page}${DATA_SUFFIX}`;
-}
-
-/** The page a data pathname belongs to; `undefined` when it is not one of this build's. */
-export function pagesPathnameOfData(buildId: string, dataPathname: string): string | undefined {
-  const prefix = `${DATA_PREFIX}${buildId}/`;
-  if (!dataPathname.startsWith(prefix) || !dataPathname.endsWith(DATA_SUFFIX)) {
-    return undefined;
-  }
-  const page = `/${dataPathname.slice(prefix.length, -DATA_SUFFIX.length)}`;
-  return page === INDEX ? '/' : page;
-}
-
 /**
  * Whether a request is a data request, decided the way Next.js's router decides it before a
  * middleware runs (`server/lib/router-utils/resolve-routes.ts`): the path beneath the base path is
@@ -42,9 +26,13 @@ export function isPagesDataRequestPath(basePath: string, pathname: string): bool
   return underBase.startsWith(DATA_PREFIX) && underBase.endsWith(DATA_SUFFIX);
 }
 
-/** Whether a pathname is a Pages Router data route of any build. */
-export function isPagesDataPathname(pathname: string): boolean {
-  return pathname.startsWith(DATA_PREFIX);
+/**
+ * Whether a pathname of the application is a Pages Router data route of any build: under the base
+ * path, where Next.js writes every one of them (`<basePath>/_next/data/…`), as the bundle names
+ * them and as a request asks for them.
+ */
+export function isPagesDataPathname(basePath: string, pathname: string): boolean {
+  return pathname.startsWith(`${basePath}${DATA_PREFIX}`);
 }
 
 /** A segment that is a parameter whole, `/[slug]`: what makes Next.js read a page as dynamic. */
@@ -105,6 +93,27 @@ export function pagesDataPathnameUnder(
 ): string {
   const page = spelledPage(underBasePath(basePath, pathname));
   return `${dataPrefixOf(buildId, basePath)}${page}${DATA_SUFFIX}`;
+}
+
+/**
+ * The page a data pathname of this build names, under the base path as the build names its pages —
+ * the root of the base path is the base path itself: the page whose props `pagesDataPathnameUnder`
+ * names so. `undefined` for a pathname that is not one of this build's data routes.
+ */
+export function pageOfDataPathname(
+  buildId: string,
+  basePath: string,
+  dataPathname: string,
+): string | undefined {
+  const prefix = `${dataPrefixOf(buildId, basePath)}/`;
+  if (!dataPathname.startsWith(prefix) || !dataPathname.endsWith(DATA_SUFFIX)) {
+    return undefined;
+  }
+  const page = pageOfSpelling(`/${dataPathname.slice(prefix.length, -DATA_SUFFIX.length)}`);
+  if (page === undefined) {
+    return undefined;
+  }
+  return page === '/' ? basePath || '/' : `${basePath}${page}`;
 }
 
 /**
