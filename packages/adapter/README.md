@@ -248,6 +248,15 @@ sooner (see EXPERIMENTS.md, V-03); the runtime module (`index.mjs`) by esbuild, 
 conditions; the edge bundle (`edge.cjs`), where a build produced one, by Rolldown as well. All three
 are minified in whitespace and syntax and not in names, so a stack trace still names its function.
 
+One thing the build wrote is rewritten on its way into the app module, as the patches rewrite
+Next.js's files. With `experimental.turbopackModuleFragments` (Next.js 16.4) Turbopack registers
+every export of a module with a setter, a `const` export's among them — `e.s(["k",()=>b,e=>b=e])`,
+which nothing calls. Node.js runs such a chunk, since the assignment is only an error if it is
+made, but Rolldown refuses to bundle it (`ILLEGAL_REASSIGNMENT`). Such a setter's body becomes the
+`TypeError` running it would throw, and nothing else changes (`const-export-setters.ts`): which
+names are `const` is read scope by scope, and one that cannot be read is left for Rolldown to say
+what it says of it.
+
 `.arkor/dependencies.json` records, per Function — and under `edge`, for its edge bundle — the
 files bundled from the build output and from each package (with the bytes each puts in the
 bundle), the built-ins left external, the stubs, the patches applied with their edit counts,
