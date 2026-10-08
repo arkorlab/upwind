@@ -33,7 +33,9 @@ export async function unrouted(
   // page's props, and a document under a 404 would be parsed as those — Next.js answers its own
   // `notFound` on a data request with exactly this, and so does the platform for a page that is
   // not there at all.
-  if (isPagesDataPathname(new URL(forwarded.request.url).pathname)) {
+  if (
+    isPagesDataPathname(new URL(forwarded.request.url).pathname, store.manifest.config.basePath)
+  ) {
     releaseStream(forwarded.request.body, 'pages data not found: handler body unused');
     return withRoutingHeaders(notFoundData(), routed.resolvedHeaders);
   }

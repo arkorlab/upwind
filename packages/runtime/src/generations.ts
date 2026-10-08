@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
-import { pagesDataPathname, queryDependent } from '@stayingupwind/core/bundle';
+import { pagesDataPathnameUnder, queryDependent } from '@stayingupwind/core/bundle';
 import {
   type DecodedGenerationPack,
   type InvalidationState,
@@ -152,7 +152,11 @@ function runJob(job: Job, reason: AttemptReason): Promise<RegenerationOutcome> {
       observation: observationOf(input.request),
       dataPathname:
         descriptor.kind === 'pages'
-          ? pagesDataPathname(store.manifest.buildId, descriptor.pathname)
+          ? pagesDataPathnameUnder(
+              store.manifest.buildId,
+              store.manifest.config.basePath,
+              descriptor.pathname,
+            )
           : undefined,
     },
     previewToken: store.manifest.bypassToken,

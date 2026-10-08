@@ -1,4 +1,4 @@
-import { pagesDataPathname } from '@stayingupwind/core/bundle';
+import { pagesDataPathnameUnder } from '@stayingupwind/core/bundle';
 import { IMPLICIT_TAG_PREFIX, type RouteEntryDescriptor } from '@stayingupwind/core/cache';
 
 import { nodeHandlerOf } from '../entries.ts';
@@ -89,7 +89,7 @@ export async function platformRevalidate(input: RevalidateInput): Promise<void> 
       allowHeader: findShell(store, descriptor.route, pathname)?.allowHeader,
       dataPathname:
         descriptor.kind === 'pages'
-          ? pagesDataPathname(store.manifest.buildId, pathname)
+          ? pagesDataPathnameUnder(store.manifest.buildId, store.manifest.config.basePath, pathname)
           : undefined,
     },
     previewToken: store.manifest.bypassToken,

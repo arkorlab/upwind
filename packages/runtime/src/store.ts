@@ -235,9 +235,9 @@ function readBundleFile(name: string): Uint8Array<ArrayBuffer> {
  * the resume that completes it come from; naming those here would cost every request a longer
  * scan of this list for nothing.
  */
-function resolvedByName(prerender: Prerender): boolean {
+function resolvedByName(prerender: Prerender, basePath: string): boolean {
   return (
-    isPagesDataPathname(prerender.pathname) ||
+    isPagesDataPathname(prerender.pathname, basePath) ||
     prerender.parentFallbackMode === false ||
     narrowerClass(prerender)
   );
@@ -302,7 +302,9 @@ export function routerPathnames(
 ): Pick<Store, 'pathnames' | 'slashSpellings'> {
   const named = [
     ...manifest.entrypoints.map((entry) => entry.pathname),
-    ...manifest.prerenders.filter((prerender) => resolvedByName(prerender)).map((p) => p.pathname),
+    ...manifest.prerenders
+      .filter((prerender) => resolvedByName(prerender, manifest.config.basePath))
+      .map((p) => p.pathname),
     ...manifest.staticFiles.map((file) => file.pathname),
   ];
   const slashSpellings = slashSpellingsOf(manifest.config, named);
