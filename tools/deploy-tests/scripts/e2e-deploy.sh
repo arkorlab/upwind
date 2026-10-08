@@ -129,8 +129,13 @@ fixture env PATH="$PWD/node_modules/.bin:$PATH" sh -c "$build_command" 2>&1 |
 # is under that name instead — while the bundle is `.arkor/` whatever the fixture called its output.
 # An empty marker here is worse than a missing one, since the harness reads the first match and would
 # take the empty string as the build id.
+#
+# The bundle is beside the project the build built: here, or, in a workspace whose build script builds
+# one of its packages (`pnpm run --dir apps/web build`), in that package. The tool finds it, and the
+# deployment below reads the same one.
+bundle_file="$(node "${tool_dir}/src/main.ts" bundle)"
 bundle_says() {
-  node -p "JSON.parse(require('fs').readFileSync('.arkor/bundle.json','utf8'))$1"
+  node -p "JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'))$1" "$bundle_file"
 }
 build_id="$(bundle_says '.buildId')"
 
