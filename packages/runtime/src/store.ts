@@ -12,6 +12,7 @@ import {
   standsForClass,
   type StaticFile,
 } from '@stayingupwind/core/bundle';
+import { completedPathname, keyedParameters } from '@stayingupwind/core/manifest';
 import { ByteLru } from '@stayingupwind/core/util';
 
 /**
@@ -577,6 +578,25 @@ export function findShell(store: Store, route: string, pathname: string): Preren
     return page;
   }
   return shells.patterns.find(({ pattern }) => pattern.test(pathname))?.prerender;
+}
+
+/**
+ * The entry a member of a route that blocks is kept under, from the route's own entry (`shell`,
+ * its template, which carries no shell): `/de/fr/posts/[id]` for `/de/fr/posts/1` of
+ * `/[lang]/[region]/posts/[id]`, where the build keys the route's entries on `lang` and `region`
+ * alone (`keyedParameters`), as Next.js 16.4 does when `id` is one `generateStaticParams` can never
+ * provide. It is rendered from that pathname, as any class shell is (`isClassShell`), and every
+ * member that shares the rest is answered from it, resumed for its own `id`.
+ *
+ * The member itself wherever the build keys the entries on every parameter — every release before
+ * 16.4 — and for anything else: a shell the build made, which its members are served from as it is.
+ */
+export function completedShell(shell: Prerender, pathname: string): string {
+  if (shell.body !== undefined || shell.pathname !== shell.route) {
+    return pathname;
+  }
+  const keyedBy = keyedParameters(shell.route, shell.allowQuery);
+  return keyedBy === undefined ? pathname : completedPathname(shell.route, keyedBy, pathname);
 }
 
 /** The kind of code a route runs: an App Router page or handler, a Pages Router page or API. */
