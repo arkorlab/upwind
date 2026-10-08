@@ -9,7 +9,7 @@ import {
 } from '@stayingupwind/core/paas';
 
 import { nowMs } from './cache/clock.ts';
-import { recordResourceReceipt, requestContext } from './cache/context.ts';
+import { beginResourceChange, recordResourceReceipt, requestContext } from './cache/context.ts';
 
 /** Bound mutation latency even if the service accepts a report but never returns its answer. */
 export const RESOURCE_CHANGE_DELIVERY_TIMEOUT_MS = 750;
@@ -47,6 +47,7 @@ export async function reportResourceChange(
   env: FunctionEnv | undefined,
   bindingName: string,
 ): Promise<void> {
+  const change = beginResourceChange(DEFAULT_D1_CACHE_TAG);
   const service = env?.[RESOURCE_CHANGES_SERVICE_BINDING] as ResourceChangesReceiver | undefined;
   if (service === undefined) {
     // Other hosts and local development can still use Next's ordinary invalidation path.
@@ -68,7 +69,7 @@ export async function reportResourceChange(
         const answer = await withinDeadline(service.reportResourceChange(report));
         if (!acknowledgement(answer))
           throw new Error('Invalid Upwind resource-change acknowledgement');
-        recordResourceReceipt(DEFAULT_D1_CACHE_TAG, answer.revision);
+        recordResourceReceipt(change, answer.revision);
         return true;
       } catch (error) {
         lastError = error;

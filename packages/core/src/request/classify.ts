@@ -7,6 +7,7 @@ import {
   isExactPathname,
   isReserved,
   matchDynamicRoute,
+  memberRouteFor,
   type RouteEntry,
   type ProjectManifest,
   type StaticFileEntry,
@@ -78,10 +79,11 @@ export type RequestClass =
     }
   /**
    * A router's request for the whole payload of a page: the build payload, or a cache-backed
-   * App Router generation which can supply one. `entry` is the route its URL names; other
-   * requests for React Server Components remain `rsc`.
+   * App Router generation which can supply one. `entry` is the route its URL names, or absent
+   * for a dynamic class with no shell whose concrete member record the host must check.
+   * Other requests for React Server Components remain `rsc`.
    */
-  | { readonly kind: 'rsc-payload'; readonly entry: RouteEntry }
+  | { readonly kind: 'rsc-payload'; readonly entry: RouteEntry | undefined }
   /**
    * A Pages Router client's request for a page's props, at a page whose props the build wrote
    * (`RouteEntry.pagesData`): `entry` is that page's route. Any other `/_next/data` request is the
@@ -606,10 +608,14 @@ function payloadRequest(input: ClassifyInput): RequestClass | undefined {
   const entry =
     findRouteEntry(manifest, url.pathname) ??
     (manifest.cache === undefined ? undefined : entryFor(manifest, url, headers));
+  const member =
+    entry === undefined && manifest.cache !== undefined
+      ? memberRouteFor(manifest, url, headers)
+      : undefined;
   if (
-    entry === undefined ||
-    (entry.payload === undefined &&
-      (manifest.cache === undefined || entry.cache?.kind !== 'app-page'))
+    entry?.payload === undefined &&
+    (manifest.cache === undefined ||
+      (entry?.cache?.kind !== 'app-page' && member?.members.kind !== 'app-page'))
   ) {
     return undefined;
   }

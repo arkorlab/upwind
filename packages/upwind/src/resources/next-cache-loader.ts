@@ -19,7 +19,14 @@ export function installNextResourceCacheLoader(): void {
       const source =
         typeof result.source === 'string' ? result.source : new TextDecoder().decode(result.source);
       if (!isResourceCacheBridgeSource(source)) return result;
-      return { ...result, source: resourceCacheBridge(source).contents };
+      try {
+        return { ...result, source: resourceCacheBridge(source).contents };
+      } catch (error) {
+        throw new Error(
+          `upwind: failed to bridge Next cache module ${url}: ${error instanceof Error ? error.message : String(error)}`,
+          { cause: error },
+        );
+      }
     },
   });
 }

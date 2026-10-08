@@ -1,8 +1,10 @@
 import {
+  DEFAULT_D1_CACHE_TAG,
   type FunctionEnv,
   installNextCacheRegistry,
   RESOURCES_SYMBOL_KEY,
   resourcesOf,
+  revalidateNextResource,
 } from '@stayingupwind/core/paas';
 
 /**
@@ -26,7 +28,14 @@ export function publishResources(env: FunctionEnv): void {
   if (Object.hasOwn(globalThis, key)) {
     return;
   }
-  const published = resourcesOf(env);
+  const published = resourcesOf(env, {
+    // Local writes share Next's ordinary action/route-handler invalidation path. Build
+    // prerenders have no mutation context, so the registry leaves those untouched.
+    changed: () => {
+      revalidateNextResource(DEFAULT_D1_CACHE_TAG);
+      return Promise.resolve();
+    },
+  });
   Object.defineProperty(globalThis, key, {
     configurable: false,
     enumerable: false,

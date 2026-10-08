@@ -46,16 +46,22 @@ function method(target: Database | Statement, key: PropertyKey): unknown {
 /** Match native bind's eager snapshots of binary inputs when a warm read must be re-prepared. */
 function boundValues(values: readonly unknown[]): unknown[] {
   return values.map((value) => {
-    if (value instanceof ArrayBuffer) return [...new Uint8Array(value)];
+    // eslint-disable-next-line unicorn/prefer-spread -- ArrayBuffer.slice preserves a binary bind value and ArrayBuffer is not iterable.
+    if (value instanceof ArrayBuffer) return value.slice(0);
     if (ArrayBuffer.isView(value)) {
-      // eslint-disable-next-line unicorn/prefer-spread -- Native D1 also snapshots non-iterable DataView inputs with Array.from.
-      return Array.from(value as unknown as ArrayLike<unknown>);
+      const snapshot = new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice()
+        .buffer;
+      // Keep the original element conversion: native D1 treats Uint16Array([1,2]) as [1,2],
+      // accepts wider/signed/float values for views, and treats DataView as an empty array.
+      if (value instanceof Uint8Array) return new Uint8Array(snapshot);
+      const View = value.constructor as new (buffer: ArrayBuffer) => ArrayBufferView;
+      return new View(snapshot);
     }
     return value;
   });
 }
 
-function changed(result: unknown, sql: string): boolean {
+function changed(result: unknown, sql: string | undefined): boolean {
   if (typeof result === 'object' && result !== null) {
     const meta = (result as { meta?: unknown }).meta;
     if (typeof meta === 'object' && meta !== null) {
@@ -64,7 +70,8 @@ function changed(result: unknown, sql: string): boolean {
       if (typeof fields.rows_written === 'number') return fields.rows_written > 0;
     }
   }
-  return sqlEffect(sql) !== 'read';
+  // A native statement can be batched with observed statements without exposing its SQL here.
+  return sql === undefined || sqlEffect(sql) !== 'read';
 }
 
 /** Preserve native raw row/column ordering, and use metadata wherever the public API offers it. */
@@ -169,15 +176,18 @@ export function observeD1(
               return entry.statement;
             });
             const results = await selected.batch(native);
-            if (results.some((result, index) => changed(result, entries[index]?.sql ?? '')))
+            if (results.some((result, index) => changed(result, entries[index]?.sql)))
               await notify();
             return results;
           };
         if (key === 'exec' && typeof target.exec === 'function')
           return async (sql: string): Promise<unknown> => {
             tagNextCacheRead(DEFAULT_D1_CACHE_TAG);
-            // Native exec accepts newline-separated statements as well as semicolons.
-            const mayWrite = sql.split('\n').some((line) => sqlEffect(line) !== 'read');
+            // Native exec splits physical lines and always uses the primary; sessions have no exec.
+            const mayWrite = sql
+              .trim()
+              .split('\n')
+              .some((line) => sqlEffect(line) !== 'read');
             let result: unknown;
             try {
               result = await target.exec(sql);

@@ -3,9 +3,8 @@ import {
   DEFAULT_D1_CACHE_TAG,
   type FunctionEnv,
   isPrimaryResourceRead,
-  parseResourcesManifest,
+  publishedD1BindingCount,
   publishedFunctionEnv,
-  RESOURCES_MANIFEST_BINDING,
 } from '@stayingupwind/core/paas';
 
 import { readWithin } from './body.ts';
@@ -66,11 +65,7 @@ function knownResourceTags(): readonly string[] {
   if (env === undefined) return [];
   const held = resourceTagHints.get(env);
   if (held !== undefined) return held;
-  const tags =
-    parseResourcesManifest(env[RESOURCES_MANIFEST_BINDING]).filter((entry) => entry.type === 'd1')
-      .length === 1
-      ? [DEFAULT_D1_CACHE_TAG]
-      : [];
+  const tags = publishedD1BindingCount(env) === 1 ? [DEFAULT_D1_CACHE_TAG] : [];
   resourceTagHints.set(env, tags);
   return tags;
 }

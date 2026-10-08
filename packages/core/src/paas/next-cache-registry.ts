@@ -18,14 +18,17 @@ export interface NextStorage<T> {
 }
 
 export interface NextRevalidationProvider {
-  readonly workStore: () => NextWorkStore | undefined;
-  readonly unitStore: () => NextCacheStore | undefined;
+  readonly workStorage: NextStorage<NextWorkStore>;
+  readonly unitStorage: NextStorage<NextCacheStore>;
   readonly revalidateTag?: (tag: string, profile: 'max') => void;
 }
 
 interface Registry {
   readonly units: Set<NextStorage<NextCacheStore>>;
-  readonly revalidation: Set<NextRevalidationProvider>;
+  readonly revalidation: Map<
+    NextStorage<NextWorkStore>,
+    Map<NextStorage<NextCacheStore>, NextRevalidationProvider>
+  >;
 }
 
 const STATE_KEY = Symbol.for('upwind.next-cache-registry@1');
@@ -43,7 +46,7 @@ function registry(): Registry {
   if (held !== undefined) return held;
   const created: Registry = {
     units: new Set(),
-    revalidation: new Set(),
+    revalidation: new Map(),
   };
   // eslint-disable-next-line unicorn/no-unsafe-property-key -- the same fixed registry symbol
   holder()[STATE_KEY] = created;
@@ -62,7 +65,18 @@ export function installNextCacheRegistry(): void {
   hooks[Symbol.for(NEXT_REVALIDATION_SYMBOL_KEY)] ??= (
     provider: NextRevalidationProvider,
   ): void => {
-    registry().revalidation.add(provider);
+    const registered = registry().revalidation;
+    let units = registered.get(provider.workStorage);
+    if (units === undefined) {
+      units = new Map();
+      registered.set(provider.workStorage, units);
+    }
+    const existing = units.get(provider.unitStorage);
+    // Earlier Next wrappers declare the fill function inside another function. Their hook
+    // executes per fill, so provider object identity is not stable; the exact stores are.
+    if (existing === undefined || provider.revalidateTag !== undefined) {
+      units.set(provider.unitStorage, provider);
+    }
   };
 }
 
@@ -82,8 +96,8 @@ export function tagNextCacheRead(tag: string): void {
 
 export function currentNextWorkStores(): NextWorkStore[] {
   const stores = new Set<NextWorkStore>();
-  for (const provider of registry().revalidation) {
-    const store = provider.workStore();
+  for (const storage of registry().revalidation.keys()) {
+    const store = storage.getStore();
     if (store !== undefined) stores.add(store);
   }
   return [...stores];
@@ -92,15 +106,15 @@ export function currentNextWorkStores(): NextWorkStore[] {
 /** Enqueue through Next itself only where that public API is permitted. */
 export function revalidateNextResource(tag: string): boolean {
   const handled = new Set<NextWorkStore>();
-  const providers = [...registry().revalidation];
+  const providers = [...registry().revalidation.values()].flatMap((units) => [...units.values()]);
   // A site's module graph need not import next/cache. Prefer the real exported function when
   // present, then use the exact wrapper stores for the single reserved, header-safe ASCII tag.
   const ordered = providers.toSorted(
     (a, b) => Number(b.revalidateTag !== undefined) - Number(a.revalidateTag !== undefined),
   );
   for (const provider of ordered) {
-    const work = provider.workStore();
-    const unit = provider.unitStore();
+    const work = provider.workStorage.getStore();
+    const unit = provider.unitStorage.getStore();
     if (
       work !== undefined &&
       Boolean(work.incrementalCache) &&

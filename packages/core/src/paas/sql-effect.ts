@@ -130,7 +130,10 @@ function effectOf(tokens: readonly Token[]): SqlEffect {
   let verb = top[0];
   if (verb === 'EXPLAIN') return 'read';
   if (verb === 'WITH') {
-    verb = top.find((value, index) => index > 0 && (value === 'SELECT' || WRITES.has(value)));
+    verb = top.find(
+      (value, index) =>
+        index > 0 && (value === 'SELECT' || value === 'VALUES' || WRITES.has(value)),
+    );
   }
   if (verb === 'SELECT' || verb === 'VALUES') return 'read';
   if (verb !== undefined && WRITES.has(verb)) return 'write';

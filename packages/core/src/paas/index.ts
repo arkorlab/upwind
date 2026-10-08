@@ -51,6 +51,7 @@ export {
   formatResourcesManifest,
   type FunctionEnv,
   parseResourcesManifest,
+  publishedD1BindingCount,
   type PublishedResource,
   type PublishedResources,
   RESOURCE_TYPES,

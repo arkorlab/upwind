@@ -79,7 +79,7 @@ function cacheRegistration(source: string, dynamic: RegExpExecArray): Insertion 
   }
   return {
     index,
-    text: `;globalThis[Symbol.for("${CACHE_STORAGE}")]?.(${unitStorage});globalThis[Symbol.for("${REVALIDATION}")]?.({workStore:()=>${storage}.getStore(),unitStore:()=>${unitStorage}.getStore()});`,
+    text: `;globalThis[Symbol.for("${CACHE_STORAGE}")]?.(${unitStorage});globalThis[Symbol.for("${REVALIDATION}")]?.({workStorage:${storage},unitStorage:${unitStorage}});`,
   };
 }
 
@@ -100,7 +100,7 @@ function revalidationRegistration(source: string, index: number): Insertion {
     source.slice(declaration.index - EXPORT_PREFIX.length, declaration.index) === EXPORT_PREFIX;
   return {
     index: exported ? declaration.index - EXPORT_PREFIX.length : declaration.index,
-    text: `;globalThis[Symbol.for("${REVALIDATION}")]?.({workStore:()=>${work}.getStore(),unitStore:()=>${unit}.getStore(),revalidateTag:${name}});`,
+    text: `;globalThis[Symbol.for("${REVALIDATION}")]?.({workStorage:${work},unitStorage:${unit},revalidateTag:${name}});`,
   };
 }
 

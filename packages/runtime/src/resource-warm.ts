@@ -1,4 +1,4 @@
-import { pagesDataPathname, queryDependent } from '@stayingupwind/core/bundle';
+import { pagesDataPathnameUnder, queryDependent } from '@stayingupwind/core/bundle';
 import type { RouteEntryDescriptor } from '@stayingupwind/core/cache';
 import {
   type ResourceWarmProps,
@@ -98,7 +98,11 @@ export async function warmResourceRoute(input: ResourceWarmInput): Promise<Resou
           reason: 'invalidated',
           allowHeader: shell?.allowHeader,
           ...(entry.kind === 'pages' && {
-            dataPathname: pagesDataPathname(store.manifest.buildId, entry.pathname),
+            dataPathname: pagesDataPathnameUnder(
+              store.manifest.buildId,
+              store.manifest.config.basePath,
+              entry.pathname,
+            ),
           }),
         },
         previewToken: store.manifest.bypassToken,
