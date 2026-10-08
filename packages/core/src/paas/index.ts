@@ -62,3 +62,26 @@ export {
   type ResourceType,
 } from './resources.ts';
 export { bindingFetch, publishedFunctionEnv, publishFunctionEnv } from './function-env.ts';
+export { d1CacheTag, DEFAULT_D1_CACHE_TAG, type D1Observation, observeD1 } from './d1-observation.ts';
+export { installResourcePrimaryReadStorage, readsPrimary as isPrimaryResourceRead, type ResourcePrimaryReadStorage, withPrimaryResourceReads } from './resource-read-context.ts';
+export {
+  installNextCacheRegistry,
+  type NextCacheStore,
+  type NextRevalidationProvider,
+  type NextStorage,
+  type NextWorkStore,
+  revalidateNextResource,
+  tagNextCacheRead,
+} from './next-cache-registry.ts';
+export { type SqlEffect, sqlEffect } from './sql-effect.ts';
+export {
+  RESOURCE_CHANGES_ENTRYPOINT,
+  RESOURCE_CHANGES_SERVICE_BINDING,
+  type ResourceChangeAcknowledgement,
+  type ResourceChanged,
+  type ResourceChangeReport,
+  type ResourceChangesProps,
+  type ResourceChangesReceiver,
+  type ResourceWarmProps,
+  type ResourceWarmResult,
+} from './resource-changes.ts';

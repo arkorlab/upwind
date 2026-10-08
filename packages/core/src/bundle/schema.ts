@@ -437,6 +437,8 @@ const bundleSchema = z.object({
   ]),
   deploymentId: deploymentIdSchema,
   nextVersion: z.string().min(1),
+  /** The Function supports observed D1 changes and trusted background regeneration. */
+  resourceChanges: z.literal(1).optional(),
   /**
    * How this deployment's Functions fill a header's `$` references (`routerReferencesSchema`), so
    * that what the edge answers for them carries the values the Function would have given it. Said

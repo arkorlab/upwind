@@ -1,3 +1,5 @@
+import { type D1Observation, observeD1 } from './d1-observation.ts';
+
 /**
  * A project's storage bindings on the way from its host to the application.
  *
@@ -103,9 +105,10 @@ export function parseResourcesManifest(raw: unknown): ResourceManifestEntry[] {
  * same list — a second implementation would be a second set of rules about what an application
  * finds. Nothing in this function is of either runtime: it reads an object and returns one.
  */
-export function resourcesOf(env: FunctionEnv): PublishedResources {
+export function resourcesOf(env: FunctionEnv, observation?: D1Observation): PublishedResources {
   const resources = Object.create(null) as Record<string, PublishedResource>;
   const listed = parseResourcesManifest(env[RESOURCES_MANIFEST_BINDING]);
+  const singleD1 = listed.filter((entry) => entry.type === 'd1').length === 1;
   for (const entry of listed) {
     // The name has to be one the environment holds itself. `__proto__` is the one that is always
     // there otherwise — an object, on every ordinary environment — and a list that named it would
@@ -114,7 +117,11 @@ export function resourcesOf(env: FunctionEnv): PublishedResources {
     // A name the Function holds no object by is left out: the application finds nothing there,
     // rather than text where it expects storage.
     if (typeof binding === 'object' && binding !== null) {
-      resources[entry.name] = Object.freeze({ type: entry.type, binding });
+      resources[entry.name] = Object.freeze({
+        type: entry.type,
+        binding:
+          entry.type === 'd1' && singleD1 ? observeD1(binding, entry.name, observation) : binding,
+      });
     }
   }
   return Object.freeze({ version: RESOURCES_API_VERSION, resources: Object.freeze(resources) });

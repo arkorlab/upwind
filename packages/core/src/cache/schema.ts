@@ -195,6 +195,8 @@ export type GenerationSourceKind = z.infer<typeof generationSourceKindSchema>;
 /** An artifact as a record names it: the reference, and which of the generation's outputs it is. */
 export const packArtifactRefSchema = publicArtifactRefSchema.extend({
   representationKey: z.string().min(1),
+  /** Internal delivery locator; public artifact/inspector responses still omit it. */
+  storageRef: z.string().min(1).optional(),
 });
 export type PackArtifactRef = z.infer<typeof packArtifactRefSchema>;
 

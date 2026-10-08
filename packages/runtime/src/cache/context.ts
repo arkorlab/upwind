@@ -87,6 +87,21 @@ export function requestContextFor(input: {
 
 const contexts = new AsyncLocalStorage<RequestContext>();
 
+/** Durable resource receipts scoped to the mutation request, separate from hard edge invalidation. */
+const resourceReceipts = new WeakMap<RequestContext, Map<string, number>>();
+
+export function recordResourceReceipt(tag: string, revision: number): void {
+  const context = requestContext();
+  if (context === undefined) return;
+  const receipts = resourceReceipts.get(context) ?? new Map<string, number>();
+  receipts.set(tag, Math.max(receipts.get(tag) ?? 0, revision));
+  resourceReceipts.set(context, receipts);
+}
+
+export function hasResourceReceipt(context: RequestContext, tag: string): boolean {
+  return resourceReceipts.get(context)?.has(tag) === true;
+}
+
 export function withRequestContext<T>(context: RequestContext, work: () => Promise<T>): Promise<T> {
   return contexts.run(context, work);
 }

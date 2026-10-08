@@ -1,5 +1,6 @@
 import { PROJECT_DIR_ENV } from './entry-path.ts';
 import { startLocalResources } from './local.ts';
+import { installNextResourceCacheLoader } from './next-cache-loader.ts';
 
 /**
  * The process that renders a build's pages, with its project's storage published before it runs
@@ -32,6 +33,7 @@ import { startLocalResources } from './local.ts';
 const PRERENDER_WORKER_ENV = '__NEXT_PRERENDER_CLIENT_ASSET_SUFFIX';
 
 if (process.env[PRERENDER_WORKER_ENV] !== undefined) {
+  installNextResourceCacheLoader();
   await startLocalResources(process.env[PROJECT_DIR_ENV] ?? process.cwd(), {
     // This process is ended by the pool that started it — `SIGTERM`, half a second after it asks —
     // and the runtime's own handlers are what kill the runtime when that happens.

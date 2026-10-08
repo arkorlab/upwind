@@ -1,4 +1,9 @@
-import { type FunctionEnv, RESOURCES_SYMBOL_KEY, resourcesOf } from '@stayingupwind/core/paas';
+import {
+  type FunctionEnv,
+  installNextCacheRegistry,
+  RESOURCES_SYMBOL_KEY,
+  resourcesOf,
+} from '@stayingupwind/core/paas';
 
 /**
  * Where an application reads its storage from, defined by a process that is not a Function.
@@ -14,6 +19,7 @@ import { type FunctionEnv, RESOURCES_SYMBOL_KEY, resourcesOf } from '@stayingupw
  * removable, and built by `resourcesOf` from the manifest rather than assembled by hand here.
  */
 export function publishResources(env: FunctionEnv): void {
+  installNextCacheRegistry();
   const key = Symbol.for(RESOURCES_SYMBOL_KEY);
   // Something in this process published first. What an application read a moment ago must not
   // become something else, so this is not an error and not an overwrite: it is nothing at all.

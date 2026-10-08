@@ -1,0 +1,32 @@
+import { isResourceCacheBridgeSource, resourceCacheBridge } from '@stayingupwind/core/next';
+
+import { occurrencesOf, type Patch, Rewrite } from './types.ts';
+
+export const resourceCacheBridgePatch: Patch = {
+  name: 'resource-cache-bridge',
+  // eslint-disable-next-line require-unicode-regexp -- bundler filter
+  target:
+    /(?:\/next\/dist\/(?:esm\/)?server\/(?:use-cache\/use-cache-wrapper|web\/spec-extension\/revalidate)|\/server\/(?:chunks|app|pages)\/.+)\.js$/,
+  marker: isResourceCacheBridgeSource,
+  reaches: ['module', 'esm-module', 'build-output'],
+  apply(source, file) {
+    const check = new Rewrite('resource-cache-bridge', file, source);
+    try {
+      const result = resourceCacheBridge(source);
+      const expected =
+        occurrencesOf(
+          source,
+          /(?:[\w$]+\.)?workUnitAsyncStorage\.run\(\s*[\w$]+\s*,\s*\(\)\s*=>\s*(?:[\w$]+\.)?dynamicAccessAsyncStorage\.run\(/gu,
+        ) +
+        occurrencesOf(source, /[\w$]+\.runInCleanSnapshot\([\w$]+,\s*[\w$]+,/gu) +
+        occurrencesOf(source, 'revalidate-tag-single-arg');
+      if (result.edits !== expected)
+        throw check.fail(
+          `expected ${expected} Next context registration(s), found ${result.edits}`,
+        );
+      return { ...result, notes: [] };
+    } catch (error) {
+      throw check.fail(error instanceof Error ? error.message : String(error));
+    }
+  },
+};
