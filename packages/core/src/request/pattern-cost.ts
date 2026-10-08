@@ -671,13 +671,15 @@ const ASCII_END = 0x80;
  * A literal every match of a pattern passes through, and what a test of a value that does not hold
  * it costs.
  *
- * Where the pattern is one sequence, a run of its own characters at the top of it — `/rewritten` in
- * the matcher Next.js writes for `/rewritten/:path*` — is one each match takes, in that order, with
- * nothing to skip it by. A value that does not hold the run is one at which every attempt that gets
- * as far as the run fails there, at its first character that differs, and none goes on past it: the
- * test does what the pattern cut after the run does, and costs what that costs (`patternCost`), which
- * is all that comes before the run, tried every way it can be, and the run failing each time. What
- * comes after it, however costly, is never reached.
+ * Where the pattern is one sequence, the first run of its own characters in that sequence itself —
+ * not in a group, so neither optional nor repeated: `/rewritten` in the matcher Next.js writes for
+ * `/rewritten/:path*` — is one each match takes, in that order, wherever in the sequence it begins.
+ * A value that does not hold the run is one at which every attempt that gets as far as the run fails
+ * there, at its first character that differs, and none goes on past it: the test does what the
+ * pattern cut after the run does, and costs what that costs (`patternCost`), which is all that comes
+ * before the run — optional, repeated, looked around or not — tried every way it can be from every
+ * place it is tried from, and the run failing each time. What comes after it, however costly, is
+ * never reached.
  *
  * Next.js 16.4 ends each middleware matcher with the payloads a page has
  * (`(\.json|\.rsc|\.segments\/.+\.segment\.rsc)?`), which a catch-all before it — whose segments can

@@ -91,14 +91,20 @@ function headOf(pattern: RegExp): RegExp | null {
  */
 function segmentHeads(path: string, folded: string, end: number): string[] | undefined {
   const stop = end - SEGMENT.length;
+  // A segment's name runs to `stop` and holds no line terminator, so it begins past the last one
+  // before `stop`: found once, rather than read again for each place `.segments/` begins.
+  let after = stop;
+  while (after > 0 && !LINE_TERMINATOR.test(folded[after - 1] ?? '')) {
+    after -= 1;
+  }
   const found: string[] = [];
   for (
     let at = folded.indexOf(SEGMENTS);
     at !== -1 && at < stop;
     at = folded.indexOf(SEGMENTS, at + 1)
   ) {
-    const name = folded.slice(at + SEGMENTS.length, stop);
-    if (name === '' || LINE_TERMINATOR.test(name)) {
+    const name = at + SEGMENTS.length;
+    if (name >= stop || name < after) {
       continue;
     }
     if (found.length === MAX_SEGMENT_STARTS) {
@@ -135,6 +141,31 @@ function headsOf(path: string, ignoresCase: boolean): string[] | undefined {
 }
 
 /**
+ * Whether the head matches any of the ways the path splits. One it is not allowed against is not a
+ * no: another way may still hold, which is a yes whatever the others are, and only where none holds
+ * is the first refusal what is answered.
+ */
+function someHeadHolds(head: RegExp, split: readonly string[]): boolean {
+  let refused: PatternBudgetExceededError | undefined;
+  for (const candidate of split) {
+    try {
+      if (testWithin(head, candidate)) {
+        return true;
+      }
+    } catch (error) {
+      if (!(error instanceof PatternBudgetExceededError)) {
+        throw error;
+      }
+      refused ??= error;
+    }
+  }
+  if (refused !== undefined) {
+    throw refused;
+  }
+  return false;
+}
+
+/**
  * `pattern.test(path)` for a middleware's matcher, within what a test is allowed (`testWithin`): the
  * matcher whole where that is, and otherwise, for one of Next.js 16.4's, the head of each way the path
  * splits. `PatternBudgetExceededError` where neither is allowed.
@@ -148,6 +179,6 @@ export function matcherHolds(pattern: RegExp, path: string): boolean {
     if (head === null || split === undefined) {
       throw error;
     }
-    return split.some((candidate) => testWithin(head, candidate));
+    return someHeadHolds(head, split);
   }
 }

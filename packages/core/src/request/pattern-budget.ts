@@ -78,7 +78,7 @@ function allowedFor(pattern: RegExp, value: string): number {
 /** A pattern's literal gate (`literalGate`), and the longest values it allows a test against. */
 interface Gate {
   readonly literal: string;
-  lineFree?: number;
+  readonly lineFree: number;
   any?: number;
 }
 
@@ -93,8 +93,11 @@ const gates = new WeakMap<RegExp, Gate | null>();
 function affordableShortOfLiteral(pattern: RegExp, value: string): boolean {
   let gate = gates.get(pattern);
   if (gate === undefined) {
+    // Read once for the literal and for a value with no line terminator, whose cost is the one asked
+    // for nearly always; the other is read the first time a value needs it.
     const read = literalGate(pattern.source, pattern.flags, true);
-    gate = read === undefined ? null : { literal: read.literal };
+    gate =
+      read === undefined ? null : { literal: read.literal, lineFree: longestAffordable(read.cost) };
     gates.set(pattern, gate);
   }
   if (gate === null) {
@@ -106,7 +109,6 @@ function affordableShortOfLiteral(pattern: RegExp, value: string): boolean {
   }
   const lineFree = !LINE_TERMINATOR.test(value);
   if (lineFree) {
-    gate.lineFree ??= longestAffordable(literalGate(pattern.source, pattern.flags, true)?.cost);
     return value.length <= gate.lineFree;
   }
   gate.any ??= longestAffordable(literalGate(pattern.source, pattern.flags, false)?.cost);
