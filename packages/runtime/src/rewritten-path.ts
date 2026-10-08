@@ -37,14 +37,36 @@ function redirects(route: RoutingRoute): boolean {
 /** Characters past ASCII, which a header's value cannot carry as they are. */
 const PAST_ASCII = /[\u{80}-\u{10FFFF}]+/gu;
 
+/** A named group of a condition's pattern, which `@next/routing` fills a destination in from. */
+const NAMED_GROUP = /\(\?<(?<name>[A-Za-z_$][\w$]*)>/gu;
+const NOT_A_LETTER = /[^A-Za-z]/gu;
+
+/**
+ * The names a rule's query conditions fill its destination in by (`checkHasConditions` in
+ * `@next/routing`): each one's key with all but its letters taken out, and the named groups of its
+ * pattern.
+ */
+function queryNames(route: RoutingRoute): string[] {
+  return (route.has ?? []).flatMap((condition) => {
+    if (condition.type !== 'query') {
+      return [];
+    }
+    const groups = [...(condition.value ?? '').matchAll(NAMED_GROUP)].map(
+      (match) => match.groups?.['name'] ?? '',
+    );
+    return [condition.key.replaceAll(NOT_A_LETTER, ''), ...groups].filter((name) => name !== '');
+  });
+}
+
 /**
  * Where a rule rewrites to, as a header's value can carry it — its own characters past ASCII escaped,
  * as a URL's path escapes them — or `undefined` for a rule whose destination takes in a query's
- * value (`has` of the query), which can hold any character and is filled in as it is.
+ * value, which can hold any character and is filled in as it is. A name is read as taken in wherever
+ * the destination holds it after a `$`, as the start of a longer one too: `@next/routing` fills the
+ * longest name it has in first, and a name it does not have leaves the shorter one to be filled.
  */
 function markOf(route: RoutingRoute & { readonly destination: string }): string | undefined {
-  const readsQuery = route.has?.some((condition) => condition.type === 'query') === true;
-  if (readsQuery && route.destination.includes('$')) {
+  if (queryNames(route).some((name) => route.destination.includes(`$${name}`))) {
     return undefined;
   }
   try {
