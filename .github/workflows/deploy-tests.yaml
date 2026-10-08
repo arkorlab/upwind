@@ -30,7 +30,7 @@ on:
     inputs:
       nextjsRef:
         description: "Next.js ref to test against — inside the adapter's supported range"
-        default: 'v16.3.8'
+        default: 'v16.4.0'
         type: string
       tests:
         description: 'Upstream test paths, space separated — or `all` for the whole manifest'

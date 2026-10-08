@@ -3,14 +3,14 @@ import { pathToFileURL } from 'node:url';
 import { resolveFromProject } from './next-app.ts';
 
 /**
- * Keep `AGENTS.md` and `CLAUDE.md` current, the way `next dev` does.
+ * Keep the agent files current, the way `next dev` does: `AGENTS.md`, and before Next.js 16.4 a
+ * `CLAUDE.md` beside it.
  *
- * Next.js writes those two files when it finds an AI coding agent running a dev server against a
- * project whose agent-rules block is missing or stale — the block says that this major is not the
- * Next.js the agent was trained on, which is the kind of wrong that compiles. It does that in
- * `startServer`, which a custom server does not go through: without this, a project run by
- * `upwind dev` is one where nobody ever writes them. The same absence, for the same reason, as
- * `config-watch.ts`.
+ * Next.js writes them when it finds an AI coding agent running a dev server against a project whose
+ * agent-rules block is missing or stale — the block says that this major is not the Next.js the
+ * agent was trained on, which is the kind of wrong that compiles. It does that in `startServer`,
+ * which a custom server does not go through: without this, a project run by `upwind dev` is one
+ * where nobody ever writes them. The same absence, for the same reason, as `config-watch.ts`.
  *
  * None of the work is done here. Every piece is Next.js's own, resolved from the *project's* copy at
  * runtime, so a project gets what its own Next.js would have written — including the decision about

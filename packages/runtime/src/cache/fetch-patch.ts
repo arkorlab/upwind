@@ -31,16 +31,63 @@ import { AsyncLocalStorage } from 'node:async_hooks';
  * the length of an invocation and judged afterwards by whether the global had changed with
  * nothing else running; a first page streamed on while the next request began, neither turn
  * counted, and the next invocation of the same graph patched again (`non-ascii-cache-tags`).
+ *
+ * From 16.4 the two graphs share their storage: Next.js anchors each of its six storages to a
+ * symbol on `globalThis` (`@next/work-async-storage@<version>`,
+ * `getOrCreateGlobalAsyncLocalStorage`), which one realm holds one of whatever its copies of
+ * Next.js. Both fetchers then find the store, and the two that composed are the double patch above,
+ * deadlocked on the lock the outer one took. So where the storage is shared there is one fetcher,
+ * and it is the Node.js graph's where it can be, since that is the copy the adapter's rewrites
+ * reach (`fetch-cache-wait-until`): a graph that finds it in place does not patch, and the Node.js
+ * graph, finding the edge graph's in place, patches over what that one found beneath it rather than
+ * over it.
  */
 
 const NEXT_PATCH_SYMBOL = Symbol.for('next-patch');
+/** The key Next.js anchors a realm's work storage to from 16.4, before the version it ends in. */
+const SHARED_WORK_STORAGE = '@next/work-async-storage@';
 
 export type EntryGraph = 'app' | 'edge';
 
+/** Whether the graph's renders have a patched `fetch` to go through, its own or the other's. */
 const patched: Record<EntryGraph, boolean> = { app: false, edge: false };
+/**
+ * The global `fetch` the edge graph found when it was let patch: what the Node.js graph patches
+ * over when it finds the edge graph's fetcher in place.
+ */
+const beneath: { edge?: typeof fetch } = {};
 /** The graph whose handler an invocation is running, while it has not yet patched. */
 const invocations = new AsyncLocalStorage<EntryGraph>();
-const flag = { installed: false };
+const flag = { installed: false, shared: false };
+
+/** Whether the graphs share one work storage, which a Next.js from 16.4 makes them do. */
+function storageShared(): boolean {
+  flag.shared ||= Object.getOwnPropertySymbols(globalThis).some(
+    (symbol) => symbol.description?.startsWith(SHARED_WORK_STORAGE) === true,
+  );
+  return flag.shared;
+}
+
+/** Whether `graph` patches now, with the global it is to patch over put in place if so. */
+function admits(graph: EntryGraph): boolean {
+  if (patched[graph]) {
+    return false;
+  }
+  if (storageShared()) {
+    if (graph === 'edge' && patched.app) {
+      patched.edge = true;
+      return false;
+    }
+    const underEdge = beneath.edge;
+    if (underEdge !== undefined && graph === 'app' && patched.edge) {
+      Reflect.set(globalThis, 'fetch', underEdge);
+    }
+  }
+  if (graph === 'edge') {
+    beneath.edge = globalThis.fetch;
+  }
+  return true;
+}
 
 /**
  * Put the flag in place, once: before the first handler is handed out, and so before anything
@@ -56,7 +103,7 @@ function installFlag(): void {
     /** Patched, for the graph asking; for anything asking outside an invocation, patched as well. */
     get(): boolean {
       const graph = invocations.getStore();
-      return graph === undefined || patched[graph];
+      return graph === undefined || !admits(graph);
     },
     /** What Next.js sets once it has patched: the graph asking has. */
     set(value: unknown): void {

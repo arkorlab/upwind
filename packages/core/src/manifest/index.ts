@@ -61,6 +61,7 @@ export {
   routeSegmentSchema,
   type ProjectManifest,
   projectManifestSchema,
+  READ_MANIFEST_SCHEMA_VERSIONS,
   type ReservedRoute,
   type StaticFileAssetPrefix,
   type StaticFileEntry,

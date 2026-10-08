@@ -13,10 +13,10 @@ function isTemplate(pathname: string): boolean {
  * Which app Function a route's code is in.
  *
  * A bundle the build did not split has one, `app`, and every route is in it. A split bundle
- * (`SPLIT_BUNDLE_VERSION`) places each route in one of several, and says so on the entrypoint; a
- * route it says nothing of is the first's. Read the same way by everything that has to agree on
- * it — the host sending a request, the Function deciding whether a request is its own — so it is
- * read here, once.
+ * (`SPLIT_BUNDLE_VERSION`, `ONE_PASS_SPLIT_BUNDLE_VERSION`) places each route in one of several,
+ * and says so on the entrypoint; a route it says nothing of is the first's. Read the same way by
+ * everything that has to agree on it — the host sending a request, the Function deciding whether a
+ * request is its own — so it is read here, once.
  */
 
 /** The number after `app-` that orders `app-10` after `app-9`. */

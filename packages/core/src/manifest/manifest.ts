@@ -1,5 +1,6 @@
 import { canonicalJson, sha256HexOfText } from '../artifact/hash.ts';
 import { MAX_IMMUTABLE_ASSET_BYTES } from '../assets/admission.ts';
+import type { RouterReferences } from '../bundle/schema.ts';
 import type { DeploymentFingerprint } from '../deployment/fingerprint.ts';
 import type { ImagesConfig } from '../images/config.ts';
 import { compareCodeUnits } from '../util/bytes.ts';
@@ -53,6 +54,8 @@ export interface BuildProjectManifestInput {
   /** Exact pathnames an app Function other than the first answers, with its name. */
   readonly exactFunctions?: Readonly<Record<string, string>> | undefined;
   readonly headerRules?: readonly HeaderRule[] | undefined;
+  /** How the deployment's Functions fill a header's `$` references, as its bundle says. */
+  readonly routerReferences?: RouterReferences | undefined;
   readonly foldedHeaderRules?: readonly HeaderRule[] | undefined;
   readonly images?: ImagesConfig | undefined;
   /** The application's `htmlLimitedBots`, as the build recorded it. */
@@ -155,6 +158,7 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
     }),
     ...(input.exactFunctions !== undefined && { exactFunctions: input.exactFunctions }),
     ...(input.headerRules !== undefined && { headerRules: input.headerRules }),
+    ...(input.routerReferences !== undefined && { routerReferences: input.routerReferences }),
     ...(input.foldedHeaderRules !== undefined && { foldedHeaderRules: input.foldedHeaderRules }),
     ...(input.images !== undefined && { images: input.images }),
     ...crawlerFields(input),

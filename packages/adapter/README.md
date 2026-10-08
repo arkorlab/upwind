@@ -73,6 +73,13 @@ offered under the application's root as well.
 Next.js turns it off again for a static export, in `finalizeConfig`, after the hook has run.
 `next/image` is left as the application configured it: the edge optimizes `/_next/image`.
 
+It also turns `experimental.collapseAdapterRoutes` off, on a release that has it (16.4 on, where it
+is on by default). Collapsed, the table serves a dynamic page and its `.rsc` and per-segment forms
+from one entry whose destination ends in the suffix that matched, and a run of fallback shells from
+one entry whose destination begins with the prefix that matched — and a destination that is no
+longer the template it serves is a route the bundle finds no shell for (`reachableTemplates`,
+`dynamicRouting`). Off, the table is the one every release before 16.4 wrote: one entry a route.
+
 ## The development server
 
 `modifyConfig` is called for every phase, and in `phase-development-server` it does one thing: it
@@ -412,12 +419,13 @@ its file **in a bundle**. A rewrite can apply perfectly to a module no build eve
 `--canary` checks the current canary as a forecast. A prerelease is not in the range — a
 semantic-version range admits no prerelease it does not name — so what it reports is not this
 adapter being wrong about a version somebody can install, but what the next release is about to
-do to these rewrites. It is run as a step of its own that is allowed to fail, and it is failing
-now: `16.4.0-canary`'s `CacheSignal` schedules through an `immediateTracker` that the
-`cache-signal-timers` patch has never seen. A canary is numbered as the next minor whatever it is
-going to become, and which it becomes is decided when it ships: as a major it is outside this
-range already and costs nothing, as a minor it is inside it and that patch has to learn the new
-shape first.
+do to these rewrites. It is run as a step of its own that is allowed to fail. A canary is numbered
+as the next minor whatever it is going to become, and which it becomes is decided when it ships: as
+a major it is outside this range already and costs nothing, as a minor it is inside it and a patch
+it breaks has to learn the new shape first. That is what 16.4 was. Its canaries had `CacheSignal`
+schedule through an `immediateTracker` that `cache-signal-timers` had never seen, it shipped as a
+minor with that shape, and the patch now rewrites both: the helper before 16.4, and the one that
+waits on the tracker from 16.4.
 
 The floor is where the Adapter API became stable, which is 16.2. Below it the hook is
 `experimental.adapterPath` and hands `ctx.routes`, a different shape altogether, with no

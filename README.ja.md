@@ -122,7 +122,7 @@ pnpm dev
   - Local:     http://localhost:3000
   - Internal:  http://localhost:3000/__upwind
 
-  ✓ Next.js 16.3.8 ready in 1127ms
+  ✓ Next.js 16.4.0 ready in 1127ms
 ```
 
 <http://localhost:3000> を開いて、`app/page.tsx` を編集してみてください。いつもの Next.js の開発サーバーです。デプロイ用バンドルをビルドするには:
@@ -154,7 +154,6 @@ bun create upwind my-app
 my-app
 ├── .gitignore
 ├── AGENTS.md          # Next.js 自身のエージェント向けルールを一字一句そのまま
-├── CLAUDE.md
 ├── app/
 │   ├── globals.css    # @import "tailwindcss";
 │   ├── layout.tsx
@@ -282,7 +281,7 @@ D1 データベース、KV 名前空間、R2 バケットを、デプロイと�
 <td valign="top">
 
 **🤖 コーディングエージェントに対応**<br>
-新しいプロジェクトには Next.js 自身の `AGENTS.md` と `CLAUDE.md` が入り、`next dev` と同じように最新の状態に保たれます。[詳しくは FAQ へ](#-よくある質問)。
+新しいプロジェクトには Next.js 自身の `AGENTS.md` が入り、`next dev` と同じように最新の状態に保たれます。[詳しくは FAQ へ](#-よくある質問)。
 
 </td>
 </tr>
@@ -467,9 +466,9 @@ Adapter API だけでは足りない箇所では、アダプターが Next.js �
 </details>
 
 <details>
-<summary><b>新しいプロジェクトに <code>AGENTS.md</code> と <code>CLAUDE.md</code> があるのはなぜですか？</b></summary>
+<summary><b>新しいプロジェクトに <code>AGENTS.md</code> があるのはなぜですか？</b></summary>
 
-Next.js 自身のものを、一字一句そのまま使っています。コーディングエージェントに、この Next.js は学習したものより新しいこと、コードを書く前に `node_modules/next/dist/docs/` のドキュメントを読むことを伝えるブロックです。`create-upwind` は `create-next-app` と同じようにこれらを書き、コーディングエージェントが `upwind dev` を動かすと、Next.js がこれらを最新にします。`--no-agents-md` を付けるとスキャフォールドには含めませんが、エージェントが最初に `upwind dev` を動かしたときに、`next dev` と同じく書き出されます。ずっと止めておくスイッチは `next.config` の `agentRules: false` で、`upwind dev` も `next dev` もこれに従います。
+Next.js 自身のものを、一字一句そのまま使っています。コーディングエージェントに、この Next.js は学習したものより新しいこと、コードを書く前に `node_modules/next/dist/docs/` のドキュメントを読むことを伝えるブロックです。`create-upwind` は `create-next-app` と同じようにこれを書き（Next.js 16.4 と同じく `AGENTS.md` だけです。それより前のリリースは隣に `CLAUDE.md` も書いていました）、コーディングエージェントが `upwind dev` を動かすと、Next.js がこれを最新にします。`--no-agents-md` を付けるとスキャフォールドには含めませんが、エージェントが最初に `upwind dev` を動かしたときに、`next dev` と同じく書き出されます。ずっと止めておくスイッチは `next.config` の `agentRules: false` で、`upwind dev` も `next dev` もこれに従います。
 
 </details>
 
