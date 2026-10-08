@@ -337,15 +337,20 @@ const staticFilesSchema = z.record(z.string().startsWith('/'), staticFileEntrySc
  * `route` and `kind` are what the record's entry is keyed by with the member's pathname
  * (`deriveEntry`): the route the build filed the class under, which is not always the template a
  * request matches (`/[locale]/blog/[slug]` for `/en/blog/[slug]`). `bypassFor` is the class's, as a
- * route's is (`routeEntrySchema`).
+ * route's is (`routeEntrySchema`). `keyedBy` names the parameters the record is keyed by where they
+ * are some of the route's and not all (Next.js 16.4, `keyedParameters`): every member that shares
+ * them is answered from one record, keyed by the shell they complete to (`memberEntryPathname`).
  *
  * A reader that does not know the field drops it and sends every member to the Function, as every
- * reader did before the field existed — so no schema version turns on it.
+ * reader did before the field existed — so no schema version turns on it. One that knows the field
+ * but not `keyedBy` reads a member's own record where there is none, and sends the member on to the
+ * Function as it would a member never rendered.
  */
 export const memberRouteSchema = z.object({
   route: z.string().startsWith('/'),
   kind: z.enum(['app-page', 'pages']),
   bypassFor: z.array(routeHasSchema).optional(),
+  keyedBy: z.array(z.string().min(1)).min(1).optional(),
 });
 export type MemberRoute = z.infer<typeof memberRouteSchema>;
 

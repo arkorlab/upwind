@@ -4,6 +4,7 @@ import path from 'node:path';
 import { type InputOptions, type OutputChunk, rolldown } from 'rolldown';
 
 import { jsLiteral } from './codegen.ts';
+import { constExportSettersPlugin } from './const-export-setters.ts';
 import { bundled, type BundleTrace } from './dependencies.ts';
 import { dynamicLoadsInChunk } from './dynamic-loads.ts';
 import type { KeptMaps } from './kept-maps.ts';
@@ -174,6 +175,8 @@ export function edgeBundleOptions(
       // No patch reaches this bundle, so there is nothing for the map to be wrong about; see
       // `sourceMapsPlugin` for why order matters where one does.
       ...(sourceMaps === undefined ? [] : [sourceMapsPlugin(sourceMaps.kept)]),
+      // Turbopack writes an edge entry's chunks as it writes the app's (`const-export-setters.ts`).
+      constExportSettersPlugin(),
     ],
     transform: {
       define: {

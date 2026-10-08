@@ -12,6 +12,7 @@ import {
   standsForClass,
   type StaticFile,
 } from '@stayingupwind/core/bundle';
+import { completedPathname, keyedParameters } from '@stayingupwind/core/manifest';
 import { ByteLru } from '@stayingupwind/core/util';
 
 /**
@@ -211,14 +212,20 @@ function readBundleFile(name: string): Uint8Array<ArrayBuffer> {
 /**
  * Prerenders the router resolves by name, as Next.js's own filesystem check does.
  *
- * Two kinds, and no others. A `_next/data` output is the only thing a Pages Router data request
+ * Three kinds, and no others. A `_next/data` output is the only thing a Pages Router data request
  * can land on: the matchers `next build` emits for data URLs point at the data pathname itself,
  * so a build that does not offer it there resolves nothing — the template among them, which
- * carries no body, is how an unbuilt member of the route is reached. And a member of a route
- * built with `fallback: false` — `dynamicParams = false` in the App Router — is all that route
- * will ever serve: the matcher `next build` emits for such a route carries the draft-mode
- * cookies as conditions, so nothing but a draft reaches the route at all, and a member that did
- * not resolve by its own name would resolve nowhere.
+ * carries no body, is how an unbuilt member of the route is reached. A member of a route built
+ * with `fallback: false` — `dynamicParams = false` in the App Router — is all that route will
+ * ever serve: the matcher `next build` emits for such a route carries the draft-mode cookies as
+ * conditions, so nothing but a draft reaches the route at all, and a member that did not resolve
+ * by its own name would resolve nowhere. And a class narrower than its route (`narrowerClass`):
+ * the shell of a route whose leading parameters the build resolved, `/shop/t1/[item]` of
+ * `/shop/[team]/[item]`, which the build gives a matcher of its own ahead of the route's — with no
+ * conditions where the route's has them, a parameter closed before one left open (16.4's
+ * `unstable_paramMatching`, or `generateStaticParams` beside `dynamicParams = false`). That
+ * matcher's destination is the shell's own name, and an unbuilt member of it is reached by no
+ * other: past it, only the route's closed matcher is left.
  *
  * Naming a pathname here makes it the route the request resolved to, which is not the route the
  * build filed its shell under; `renderedBy` puts that back, so a member of a closed route is
@@ -229,7 +236,24 @@ function readBundleFile(name: string): Uint8Array<ArrayBuffer> {
  * scan of this list for nothing.
  */
 function resolvedByName(prerender: Prerender): boolean {
-  return isPagesDataPathname(prerender.pathname) || prerender.parentFallbackMode === false;
+  return (
+    isPagesDataPathname(prerender.pathname) ||
+    prerender.parentFallbackMode === false ||
+    narrowerClass(prerender)
+  );
+}
+
+/**
+ * A prerender that stands for a class of its route's URLs (`standsForClass`) and is not the
+ * route's own template: one or more of its parameters resolved, as many segments as the route —
+ * a locale's pathname, which leads with one more, is the route's own under that locale.
+ */
+function narrowerClass(prerender: Prerender): boolean {
+  return (
+    prerender.pathname !== prerender.route &&
+    prerender.pathname.split('/').length === prerender.route.split('/').length &&
+    standsForClass(prerender)
+  );
 }
 
 /**
@@ -554,6 +578,27 @@ export function findShell(store: Store, route: string, pathname: string): Preren
     return page;
   }
   return shells.patterns.find(({ pattern }) => pattern.test(pathname))?.prerender;
+}
+
+/**
+ * The entry a member of a route that blocks is kept under, from the class it is a member of
+ * (`shell`, the route's own entry or a class narrower than it, which carries no shell):
+ * `/de/fr/posts/[id]` for `/de/fr/posts/1` of `/[lang]/[region]/posts/[id]`, where the build keys
+ * the route's entries on `lang` and `region` alone (`keyedParameters`), as Next.js 16.4 does when
+ * `id` is one `generateStaticParams` can never provide. It is rendered from that pathname, as any
+ * class shell is (`isClassShell`), and every member that shares the rest is answered from it,
+ * resumed for its own `id`.
+ *
+ * The member itself wherever the build keys the entries on every parameter the class leaves open —
+ * every release before 16.4 — and for anything else: a shell the build made, which its members are
+ * served from as it is.
+ */
+export function completedShell(shell: Prerender, pathname: string): string {
+  if (shell.body !== undefined) {
+    return pathname;
+  }
+  const keyedBy = keyedParameters(shell.route, shell.pathname, shell.allowQuery);
+  return keyedBy === undefined ? pathname : completedPathname(shell.route, keyedBy, pathname);
 }
 
 /** The kind of code a route runs: an App Router page or handler, a Pages Router page or API. */

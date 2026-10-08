@@ -19,7 +19,6 @@ import {
   documentFromBuild,
   notFound,
   postponedOf,
-  rscFromBuild,
   staticFileResponse,
 } from './documents.ts';
 import { entryFor, hasEntry } from './entries.ts';
@@ -54,7 +53,7 @@ import {
   middlewareInvoker,
   type MiddlewareTrace,
 } from './middleware-invoke.ts';
-import { type Resolved, servePagesData, serveRouteHandler } from './outputs.ts';
+import { type Resolved, servePagesData, serveRouteHandler, serveRsc } from './outputs.ts';
 import {
   misdirected,
   misdirectedAhead,
@@ -62,7 +61,6 @@ import {
   ownerOfResolved,
   withoutPlacementHeaders,
 } from './placement.ts';
-import { rscRepresentation } from './representations.ts';
 import { DEFAULT_PROXY_BODY_LIMIT, splitBody } from './request-body.ts';
 import {
   askedOf,
@@ -93,7 +91,7 @@ import {
   withInvalidatedTags,
   withoutBody,
 } from './serve.ts';
-import { entrypointKindOf, findShell, getStore, type Store } from './store.ts';
+import { completedShell, entrypointKindOf, findShell, getStore, type Store } from './store.ts';
 import { unrouted } from './unrouted.ts';
 import { renderedBy, serveWithBody } from './with-body.ts';
 
@@ -185,9 +183,11 @@ async function serveDocument(input: RoutedInput, store: Store, asked: Resolved):
       store,
       {
         // The route the build filed the shell under, which its entry is keyed by: a locale's
-        // route of an application with `i18n` finds the page's (`findShell`).
+        // route of an application with `i18n` finds the page's (`findShell`). A member of a route
+        // that blocks is kept under the shell it completes to, where the build keys the route's
+        // entries on some of its parameters (`completedShell`), and under its own pathname else.
         route: shell.route,
-        pathname: built ? shell.pathname : resolved.pathname,
+        pathname: built ? shell.pathname : completedShell(shell, resolved.pathname),
         url: resolved.url,
         representation: 'html',
         onMiss: built ? 'build' : 'render',
@@ -200,45 +200,6 @@ async function serveDocument(input: RoutedInput, store: Store, asked: Resolved):
   }
   // Nothing kept the render; `documentFromBuild` answers a crawler with one all the same.
   return documentFromBuild(input, store, resolved, { entry, status: HTTP_OK });
-}
-
-/**
- * Serve a React Server Components request: resume from the current generation's state for a
- * navigation, serve its static payload for a prefetch, or fall back to the build's state.
- *
- * A regeneration commits the payload and every prefetched segment it produced beside the
- * document. Answering these from the build while documents come from a newer generation is how a
- * client navigation lands on a page assembled out of two of them.
- */
-async function serveRsc(input: RoutedInput, store: Store, asked: Resolved): Promise<Response> {
-  const rendered = await renderedBy(input, store, asked);
-  if (rendered === undefined) {
-    return notFound(input, store, new URL(input.request.url));
-  }
-  const { entry, resolved } = rendered;
-  const shell = findShell(store, resolved.route, resolved.pathname);
-  if (entry.kind === 'node') {
-    const built = shell?.body !== undefined;
-    const current = await serveFromGeneration(
-      input,
-      store,
-      {
-        // As a document is looked up (`serveDocument`): under the route the build filed the shell
-        // under, which its entry is keyed by.
-        route: shell?.route ?? resolved.route,
-        pathname: built ? shell.pathname : resolved.pathname,
-        url: resolved.url,
-        representation: rscRepresentation(input.request, store),
-        prefetch: input.request.headers.get(store.manifest.routing.rsc.prefetchHeader) === '1',
-        onMiss: 'build',
-      },
-      entry.handler,
-    );
-    if (current !== undefined) {
-      return current;
-    }
-  }
-  return rscFromBuild(input, store, entry, resolved);
 }
 
 /**

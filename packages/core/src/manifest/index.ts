@@ -1,3 +1,4 @@
+export { completedPathname, keyedParameters, memberEntryPathname } from './completion.ts';
 export {
   type ConfiguredHeaders,
   documentHeaderRulesFor,

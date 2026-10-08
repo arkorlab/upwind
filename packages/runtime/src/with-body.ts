@@ -11,7 +11,7 @@ import { descriptorFor } from './generations.ts';
 import { invokeNodeHandler } from './node-bridge.ts';
 import type { Resolved } from './outputs.ts';
 import { baseRequestMeta, invokeEntry, type RoutedInput } from './serve.ts';
-import { entrypointKindOf, findShell, type Store } from './store.ts';
+import { completedShell, entrypointKindOf, findShell, type Store } from './store.ts';
 
 /**
  * A request that carries a body to a route — a server action, a form's post, an upload — which
@@ -36,7 +36,12 @@ export async function renderedBy(
   if (own !== undefined) {
     return { entry: own, resolved };
   }
-  const route = store.prerendersByPathname.get(resolved.pathname)?.route;
+  // The member's own prerender, where the build made one; else the class the router resolved the
+  // member to by its name (`resolvedByName`), whose route is the member's.
+  const route = (
+    store.prerendersByPathname.get(resolved.pathname) ??
+    store.prerendersByPathname.get(resolved.route)
+  )?.route;
   if (route === undefined) {
     return undefined;
   }
@@ -53,7 +58,10 @@ interface AnsweredFrom {
  * The generation a page was answered from, for an action posted to it: the member's own where the
  * edge had one made for it (`concreteUpgrade`, `generations.ts`), else the class shell's the
  * member was answered from, for a member of a route whose shell has a body. The two are read at
- * once, so a member costs the action no more than one read's wait. None without a cache.
+ * once, so a member costs the action no more than one read's wait. A member of a route that
+ * blocks was answered from the entry it is kept under: the shell it completes to, where the build
+ * keys the route's entries by some of its parameters (`completedShell`), else its own. None
+ * without a cache.
  */
 async function answeredFrom(
   input: RoutedInput,
@@ -71,7 +79,10 @@ async function answeredFrom(
     const lookup = await currentGeneration(runtime, descriptor, now, input.waitUntil);
     return lookup.kind === 'generation' ? { postponed: lookup.current.pack.postponed } : undefined;
   };
-  if (shell.body === undefined || shell.pathname === pathname) {
+  if (shell.body === undefined) {
+    return generationOf(completedShell(shell, pathname));
+  }
+  if (shell.pathname === pathname) {
     return generationOf(pathname);
   }
   const [own, ofClass] = await Promise.all([generationOf(pathname), generationOf(shell.pathname)]);

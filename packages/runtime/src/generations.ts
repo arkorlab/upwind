@@ -38,7 +38,7 @@ import { nodeHandlerOf } from './entries.ts';
 import { observationOf } from './incoming.ts';
 import { PAGES_DATA, ROUTE_BODY, SEGMENT_PREFIX } from './representations.ts';
 import { bypassesPrerender, resume, type RoutedInput } from './serve.ts';
-import { entrypointKindOf, findShell, isClassShell, type Store } from './store.ts';
+import { completedShell, entrypointKindOf, findShell, isClassShell, type Store } from './store.ts';
 
 /**
  * The runtime cache's part in answering a request: a regeneration the edge asked for beside a
@@ -67,11 +67,15 @@ function regenerable(descriptor: RouteEntryDescriptor): boolean {
 /**
  * The entry a request for `pathname` under `route` is answered from: the pathname's own — a
  * member the build prerendered, keyed as the seed keyed it, or one it never saw, whose entry the
- * lease creates — or the class shell's, when the build made one and none for the member.
+ * lease creates — or the class shell's, when the build made one and none for the member, or the
+ * shell a member of a route that blocks completes to (`completedShell`).
  */
 function entryPathnameOf(store: Store, route: string, pathname: string): string {
   const shell = findShell(store, route, pathname);
-  return shell?.body === undefined ? pathname : shell.pathname;
+  if (shell === undefined) {
+    return pathname;
+  }
+  return shell.body === undefined ? completedShell(shell, pathname) : shell.pathname;
 }
 
 /** The kind of entry a route makes, from the entrypoint the build recorded for it. */
@@ -332,9 +336,12 @@ export interface GenerationSource extends Want {
   readonly dataPathname?: string | undefined;
   /**
    * Without a record: the build's own output answers (`build`), or the entry is rendered now and
-   * kept (`render`) — a member of a route the build left to the first request for it.
+   * kept (`render`) — a member of a route the build left to the first request for it — or the
+   * build's output answers and the entry is rendered behind it, for the requests after (`behind`):
+   * a prefetch of such a member, which a deployment of Next.js answers from the class's own output
+   * while it renders the member's, and which is not kept waiting on a render it may never use.
    */
-  readonly onMiss: 'build' | 'render';
+  readonly onMiss: 'build' | 'render' | 'behind';
 }
 
 async function readArtifact(
@@ -445,7 +452,7 @@ const renderRequest = (job: Job, url: string): Promise<Response> =>
  * A prefetch of a page or of one of its segments: asked for ahead of a navigation that may not
  * come.
  */
-function speculative(want: Want): boolean {
+export function speculative(want: Want): boolean {
   return want.prefetch === true || want.representation.startsWith(SEGMENT_PREFIX);
 }
 
@@ -579,6 +586,27 @@ async function settledWithin(promise: Promise<unknown>, ms: number): Promise<voi
 }
 
 /**
+ * An entry the cache holds no record of, as the request's `onMiss` says: rendered now and kept,
+ * and the visitor answered from that render; rendered behind the build's answer; or left to the
+ * build. `undefined` leaves the build's answer to the caller — and so does an entry a regeneration
+ * of this request has already had (`once`).
+ */
+async function answerMiss(
+  job: Job,
+  onMiss: GenerationSource['onMiss'],
+  want: Want,
+  once: boolean,
+): Promise<Response | undefined> {
+  if (onMiss === 'render' && once) {
+    return answerFromJob(job, await runJob(job, 'miss'), want);
+  }
+  if (onMiss === 'behind' && once) {
+    scheduleJob(job, 'miss');
+  }
+  return undefined;
+}
+
+/**
  * What the Function answers itself, from the entry's current generation: fresh or stale it is
  * served (stale, regenerated behind); expired, it is regenerated first, or rendered for a prefetch
  * and regenerated behind; missing, rendered now where the build made none. `undefined` leaves the
@@ -608,8 +636,8 @@ export async function serveFromGeneration(
   // (`routeRequest`), and found the entry dynamic here, which is all another would find: what is
   // left is a render of the request as it came — the build's path, for an entry with no record.
   const once = !sameEntry(input.regenerated, descriptor);
-  if (lookup.kind === 'none' && source.onMiss === 'render') {
-    return once ? answerFromJob(job, await runJob(job, 'miss'), want) : undefined;
+  if (lookup.kind === 'none') {
+    return answerMiss(job, source.onMiss, want, once);
   }
   if (lookup.kind !== 'generation') {
     return undefined;

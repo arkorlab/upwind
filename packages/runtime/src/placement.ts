@@ -69,8 +69,9 @@ export function elsewhere(store: Store, route: string): string | undefined {
  * Where a routed request is answered: the app Function its route is in, when that is not this
  * one. Read as the request will be answered — a file the Function carries, which every app
  * Function carries alike; the route itself, when routing landed on an entrypoint; otherwise the
- * route of the prerender the pathname names, which is the page that renders it (`renderedBy`). A
- * request that lands on none of these is not-found here as much as anywhere, and stays.
+ * route of the prerender the pathname names, or of the class the router resolved it to by the
+ * class's own name, which is the page that renders it (`renderedBy`). A request that lands on none
+ * of these is not-found here as much as anywhere, and stays.
  */
 export function ownerOfResolved(store: Store, resolved: Resolved): string | undefined {
   const { placed, entryIds } = placementOf(store);
@@ -79,7 +80,10 @@ export function ownerOfResolved(store: Store, resolved: Resolved): string | unde
   }
   const route = entryIds.has(resolved.route)
     ? resolved.route
-    : store.prerendersByPathname.get(resolved.pathname)?.route;
+    : (
+        store.prerendersByPathname.get(resolved.pathname) ??
+        store.prerendersByPathname.get(resolved.route)
+      )?.route;
   return route === undefined ? undefined : elsewhere(store, route);
 }
 
