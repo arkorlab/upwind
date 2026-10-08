@@ -74,7 +74,7 @@ export function memberRoutesOf(
     );
     // Kept under the shell its members complete to where the build keys them by some of the
     // route's parameters (`completedShell`, in the runtime), which the record is read by.
-    const keyedBy = keyedParameters(prerender.route, prerender.allowQuery);
+    const keyedBy = keyedParameters(prerender.route, prerender.pathname, prerender.allowQuery);
     return {
       route: prerender.route,
       kind,

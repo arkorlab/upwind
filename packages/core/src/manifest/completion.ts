@@ -19,24 +19,43 @@ import type { MemberRoute } from './schema.ts';
 const SINGLE_PARAMETER = /^\[([^.[\]]+)\]$/u;
 
 /**
- * The parameters a class's entries are keyed by, by name and in the route's order, where the build
- * names some of the route's parameters and not all; `undefined` where it names all of them — each
- * member is its own entry — or none, and where this cannot read what it names: a key that is not a
- * parameter of the route, or a route with a catch-all.
+ * The parameters a class's entries are keyed by, by name and in the route's order: every parameter
+ * of the route but the ones the class leaves placeholders (`template`, the route's own or that of a
+ * class narrower than it, `/en/[region]/posts/[id]`) and the build does not name as the query
+ * the entries vary on (`allowQuery`). `undefined` where that leaves none out — each member is its
+ * own entry, as every release before 16.4 keeps it — and where this cannot read what the build
+ * names: no query at all, a key that is not a parameter of the route, a class that does not line
+ * up with its route segment for segment, a route with a catch-all.
  */
 export function keyedParameters(
   route: string,
+  template: string,
   allowQuery: readonly string[] | undefined,
 ): string[] | undefined {
   const allowed = new Set(allowQuery);
-  const segments = route.split('/').filter((segment) => segment.startsWith('['));
-  const names = segments.map((segment) => SINGLE_PARAMETER.exec(segment)?.[1]);
-  if (allowed.size === 0 || names.includes(undefined)) {
+  const routeSegments = route.split('/');
+  const templateSegments = template.split('/');
+  if (allowed.size === 0 || templateSegments.length !== routeSegments.length) {
     return undefined;
   }
-  const keyed = names.filter((name) => name !== undefined && allowed.has(`nxtP${name}`));
-  return keyed.length === allowed.size && keyed.length < names.length
-    ? (keyed as string[])
+  const names: string[] = [];
+  const left = new Set<string>();
+  for (const [index, segment] of routeSegments.entries()) {
+    if (!segment.startsWith('[')) {
+      continue;
+    }
+    const name = SINGLE_PARAMETER.exec(segment)?.[1];
+    if (name === undefined) {
+      return undefined;
+    }
+    names.push(name);
+    if (templateSegments[index] === segment && !allowed.has(`nxtP${name}`)) {
+      left.add(name);
+    }
+  }
+  const named = names.filter((name) => allowed.has(`nxtP${name}`)).length;
+  return named === allowed.size && left.size > 0
+    ? names.filter((name) => !left.has(name))
     : undefined;
 }
 

@@ -291,6 +291,11 @@ export async function serveRsc(
     if (current !== undefined) {
       return current;
     }
+    // Rendered for the request where nothing kept the blocking render — no cache, or none it may
+    // keep: the class's state is what answered such a member with nothing at all.
+    if (source.onMiss === 'render') {
+      return invokeEntry(input, entry, resolved.url);
+    }
   }
   return rscFromBuild(input, store, entry, resolved);
 }
