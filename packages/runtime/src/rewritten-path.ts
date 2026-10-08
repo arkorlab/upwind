@@ -86,10 +86,10 @@ function followed(
  * `x-nextjs-rewritten-path` on the response to a client router's request (`RSC: 1`), the destination
  * of the last rewrite to change the path it was handed (`resolve-routes.ts`; the routes manifest's
  * `rewriteHeaders` asks a platform to). The client reads its route's parameters off that path. A
- * middleware's rewrite says its own (`server/web/adapter.ts`), over what any rule before the
- * middleware said; a rule after it says its own over the middleware's — the case Next.js 16.4
- * fixed: an intercepting route reached through a middleware's rewrite was told of the middleware's
- * path, not its own (`interception-dynamic-segment-middleware`).
+ * middleware's rewrite that moves the path says its own (`server/web/adapter.ts`), over what any
+ * rule before the middleware said; a rule after it says its own over the middleware's — the case
+ * Next.js 16.4 fixed: an intercepting route reached through a middleware's rewrite was told of the
+ * middleware's path, not its own (`interception-dynamic-segment-middleware`).
  *
  * Read off the marks the rewrites carry (`markedRewrites`), which are taken out whatever the request,
  * each rewrite compared with the path routing had handed it: the one it began with, or where the
@@ -130,8 +130,11 @@ export function settleRewrittenPath(
   if (before === undefined) {
     return;
   }
-  // What a middleware's rewrite says stands over what came before it.
-  const heldOver = middlewareRewrite === undefined ? before.said : undefined;
+  // A middleware's rewrite that moves the path says its own, which stands over what came before it;
+  // one of the query alone says nothing of the path, and leaves what came before it standing.
+  const moved =
+    middlewareRewrite !== undefined && middlewareRewrite.pathname !== before.at.pathname;
+  const heldOver = moved ? undefined : before.said;
   const after = followed(
     inOrder.filter((rewrite) => rewrite.table !== BEFORE_MIDDLEWARE),
     middlewareRewrite ?? before.at,
