@@ -10,6 +10,9 @@ import type { Store } from './store.ts';
 
 /** Any origin: a name is read as a URL's path, which is all a spelling is taken from. */
 const SPELLING_BASE = 'https://names.invalid';
+/** What `encodeURIComponent` leaves as it is and RFC 3986 escapes in a value. */
+const SUB_DELIMITERS = /[!'()*]/gu;
+const HEX = 16;
 
 /**
  * The name the build gave the prerender a pathname asks for. Next.js names a prerendered member by
@@ -98,14 +101,25 @@ export function namesWithSpellings(store: Store): string[] {
   return names;
 }
 
-/** What a URL makes of `name`, and `name` with each segment escaped: those that are other spellings of it. */
+/**
+ * What a URL makes of `name`, `name` with each segment escaped, and the same escaped as RFC 3986
+ * escapes data — `!`, `'`, `(`, `)` and `*` as well, which `encodeURIComponent` leaves be
+ * (`/docs/rock%27n` for `/docs/rock'n`): those that are other spellings of it.
+ */
 function spellingsOf(name: string): string[] {
   const asUrl = new URL(name, SPELLING_BASE).pathname;
-  const escaped = name
-    .split('/')
-    .map((segment) => encodeURIComponent(segment))
+  const segments = name.split('/').map((segment) => encodeURIComponent(segment));
+  const escaped = segments.join('/');
+  const strictly = segments
+    .map((segment) => segment.replaceAll(SUB_DELIMITERS, (character) => percentOf(character)))
     .join('/');
-  return [asUrl, escaped].filter((spelling) => spelling !== name && spells(spelling, name));
+  return [...new Set([asUrl, escaped, strictly])].filter(
+    (spelling) => spelling !== name && spells(spelling, name),
+  );
+}
+
+function percentOf(character: string): string {
+  return `%${(character.codePointAt(0) ?? 0).toString(HEX).toUpperCase()}`;
 }
 
 /** Whether `spelling`, decoded once, is `name`: a spelling is never decoded twice (`escapedNameOf`). */
