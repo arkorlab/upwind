@@ -119,9 +119,12 @@ function segmentHeads(path: string, folded: string, end: number): string[] | und
 function headsOf(path: string, ignoresCase: boolean): string[] | undefined {
   // Folded as `i` folds them without `u`: ASCII letters, and only those, which keeps every length.
   const folded = ignoresCase ? path.replaceAll(UPPER_CASE, (letter) => letter.toLowerCase()) : path;
-  const ends = SEPARATORS.includes(folded.at(-1) ?? '')
-    ? [folded.length, folded.length - 1]
-    : [folded.length];
+  // An empty path ends in no separator: `includes('')` would say it does.
+  const last = folded.at(-1);
+  const ends =
+    last !== undefined && SEPARATORS.includes(last)
+      ? [folded.length, folded.length - 1]
+      : [folded.length];
   const found: string[] = [];
   for (const end of ends) {
     const before = folded.slice(0, end);
