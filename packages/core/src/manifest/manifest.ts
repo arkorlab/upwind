@@ -3,6 +3,7 @@ import { MAX_IMMUTABLE_ASSET_BYTES } from '../assets/admission.ts';
 import type { DeploymentFingerprint } from '../deployment/fingerprint.ts';
 import type { ImagesConfig } from '../images/config.ts';
 import { compareCodeUnits } from '../util/bytes.ts';
+import { namesPagesDataPrefix, pagesDataPrefixOf } from './pages-data-prefix.ts';
 import {
   type AppRuntime,
   type AssetPolicy,
@@ -63,6 +64,11 @@ export interface BuildProjectManifestInput {
   readonly staticFileLocales?: StaticFileLocales | undefined;
   readonly staticFileAssetPrefix?: StaticFileAssetPrefix | undefined;
   readonly staticFileTrailingSlash?: boolean | undefined;
+  /**
+   * The base path and the build id a Pages Router page's props are asked for under, where a route
+   * holds them: the manifest names where (`pagesDataPrefix`, `pagesDataBasePath`) from these.
+   */
+  readonly pagesDataUnder?: { readonly basePath: string; readonly buildId: string } | undefined;
   readonly cache?: ManifestCache | undefined;
 }
 
@@ -123,6 +129,43 @@ function unreachableFunctions(input: BuildProjectManifestInput): string[] {
   return [...unreachable].toSorted(compareCodeUnits);
 }
 
+/**
+ * What is wrong with where the manifest says a client asks for a page's props, if anything. Props
+ * no prefix names are asked for at no URL, and a base path or a build id a prefix cannot carry, or a
+ * request cannot spell as written, names no request: either way every data request would go to the
+ * Function, and nothing would say why. So a manifest like that is refused where it is built, as one
+ * naming an unreachable Function is.
+ */
+function unaddressedProps(input: BuildProjectManifestInput): string | undefined {
+  const under = input.pagesDataUnder;
+  if (under !== undefined && !namesPagesDataPrefix(under.basePath, under.buildId)) {
+    return `pagesDataUnder names no prefix: base path ${under.basePath}, build ${under.buildId}`;
+  }
+  if (under === undefined && input.routes.some((route) => route.pagesData !== undefined)) {
+    return "routes hold a page's props (pagesData), and no pagesDataUnder says where a client asks for them";
+  }
+  return undefined;
+}
+
+/**
+ * Where a client asks for props, where a route holds some (`RouteEntry.pagesData`): the prefix as a
+ * request spells it, and the base path it is under, as the build wrote it, for naming the page a
+ * request asks for; neither where no route's props sit under them, so that the fields say what
+ * they say.
+ */
+function pagesDataFields(
+  input: BuildProjectManifestInput,
+): Pick<ProjectManifest, 'pagesDataBasePath' | 'pagesDataPrefix'> {
+  const under = input.pagesDataUnder;
+  if (under === undefined || input.routes.every((route) => route.pagesData === undefined)) {
+    return {};
+  }
+  return {
+    pagesDataPrefix: pagesDataPrefixOf(under.buildId, under.basePath),
+    ...(under.basePath !== '' && { pagesDataBasePath: under.basePath }),
+  };
+}
+
 /** Assemble a manifest from a build's routes; validates the result against the schema. */
 export function buildProjectManifest(input: BuildProjectManifestInput): ProjectManifest {
   const unreachable = unreachableFunctions(input);
@@ -130,6 +173,10 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
     throw new Error(
       `routes are placed in ${unreachable.join(', ')}, which the manifest's app gives no name to reach by (app.functions)`,
     );
+  }
+  const unaddressed = unaddressedProps(input);
+  if (unaddressed !== undefined) {
+    throw new Error(unaddressed);
   }
   const routes: Record<string, RouteEntry> = {};
   for (const entry of input.routes) {
@@ -160,6 +207,7 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
     ...(input.images !== undefined && { images: input.images }),
     ...crawlerFields(input),
     ...staticFileFields(input),
+    ...pagesDataFields(input),
     ...(input.cache !== undefined && { cache: input.cache }),
   });
 }

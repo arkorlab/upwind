@@ -9,6 +9,7 @@ export { SHA256_HEX_LENGTH } from './hash.ts';
 export const artifactKindSchema = z.enum([
   'ppr-shell',
   'static-rsc',
+  'static-data',
   'immutable-asset',
   'document-static',
 ]);

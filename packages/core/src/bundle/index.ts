@@ -57,13 +57,17 @@ export {
 export {
   isPagesDataPathname,
   isPagesDataRequestPath,
+  pageOfPagesData,
   pagesDataPathname,
+  pagesDataPathnameUnder,
   pagesPathnameOfData,
 } from './pages-data.ts';
 export { queryDependent } from './query.ts';
 export {
   type PrefetchSegment,
   prefetchSegments,
+  type RoutePagesData,
+  routePagesData,
   type RoutePayload,
   routePayloads,
 } from './segments.ts';

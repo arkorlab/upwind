@@ -6,6 +6,7 @@ import {
   INTERNAL_REQUEST_HEADER_PREFIXES,
   INTERNAL_REQUEST_HEADERS,
   MIDDLEWARE_PREFETCH_HEADER,
+  NEXT_DATA_HEADER,
   PASSTHROUGH_RESPONSE_HEADER_DENYLIST,
   PLATFORM_HEADER_PREFIX,
   RESPONSE_HEADER_DENY_PREFIXES,
@@ -97,6 +98,18 @@ export function sanitizeContinuationHeaders(headers: Headers, ctx: ForwardingCon
  */
 export function sanitizePassthroughHeaders(headers: Headers, ctx: ForwardingContext): Headers {
   return baseSanitized(headers, ctx);
+}
+
+/**
+ * A Pages Router data request's headers as the deployment's routing reads them: `x-nextjs-data: 1`,
+ * whatever the client sent. Next.js takes that header from no client — it drops the client's and
+ * sets its own on a request at a data path — and judges the rules of `next.config` with its own, so a
+ * rule conditioned on it holds for every data request, and one conditioned on its absence for none.
+ */
+export function dataRequestHeaders(headers: Headers): Headers {
+  const routed = new Headers(headers);
+  routed.set(NEXT_DATA_HEADER, '1');
+  return routed;
 }
 
 /** Keep only headers that are safe to replay with an edge-served shell. */

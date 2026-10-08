@@ -134,6 +134,14 @@ export const routeEntrySchema = z.object({
    * Function, as every reader did, so no schema version turns on it.
    */
   payload: routeSegmentSchema.optional(),
+  /**
+   * A Pages Router page's props, as the build wrote them beside a document it finished
+   * (`routePagesData`): what a client navigation's `<basePath>/_next/data/<buildId>/<page>.json` is
+   * answered with, at the manifest's `pagesDataPrefix`. Absent on every other route and on a
+   * manifest from before the field, whose reader leaves every such request to the Function, as
+   * before.
+   */
+  pagesData: routeSegmentSchema.optional(),
   headers: z.record(z.string(), z.string()),
   /**
    * The route's policy permits any inline script, which the nonce the edge mints stops it doing.
@@ -468,6 +476,21 @@ export const projectManifestSchema = z.object({
    * published, whose reader leaves that spelling to the Function.
    */
   staticFileTrailingSlash: z.literal(true).optional(),
+  /**
+   * Where a Pages Router page's props are asked for: `<basePath>/_next/data/<buildId>`, the build's
+   * own, as a request's URL spells it (`pagesDataPrefixOf`) — what a request's pathname is compared
+   * with. Present where a route holds props (`RouteEntry.pagesData`), absent otherwise; a manifest
+   * that names props and nowhere to ask for them is refused where it is built
+   * (`buildProjectManifest`).
+   */
+  pagesDataPrefix: z.string().startsWith('/').optional(),
+  /**
+   * The base path those props are asked for under, as the build wrote it, which the page a request
+   * asks the props of is named under (`pageOfPagesData`). The prefix is not taken apart for it: a
+   * base path may hold `/_next/data/` itself. Present beside a prefix under a base path, absent for
+   * none.
+   */
+  pagesDataBasePath: z.string().startsWith('/').optional(),
   /** The runtime cache the routes' entries live in. */
   cache: manifestCacheSchema.optional(),
 });
