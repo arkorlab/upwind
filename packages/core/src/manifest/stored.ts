@@ -1,6 +1,6 @@
 import { canonicalJson } from '../artifact/hash.ts';
 import { compareCodeUnits } from '../util/bytes.ts';
-import { MANIFEST_SCHEMA_VERSION, type ProjectManifest } from './schema.ts';
+import { type ProjectManifest, TABLES_SCHEMA_VERSION } from './schema.ts';
 
 /**
  * A manifest as it is stored: what a route repeats of every other, said once.
@@ -51,12 +51,12 @@ class TableWriter {
  * sorts it, then the dynamic routes as listed — so a manifest stores the same bytes however its
  * routes were inserted, and again once it is read back: its id is a fact about what it says.
  *
- * Only a manifest of the version that names places (`MANIFEST_SCHEMA_VERSION`) is stored so. One of
- * an earlier version — read back from storage, say — is stored route by route, as it was written,
- * so that it keeps its bytes and its id, and a reader of its own version reads it.
+ * Only a manifest of a version that names places (`TABLES_SCHEMA_VERSION` and after) is stored so.
+ * One of an earlier version — read back from storage, say — is stored route by route, as it was
+ * written, so that it keeps its bytes and its id, and a reader of its own version reads it.
  */
 export function toStoredManifest(manifest: ProjectManifest): Readonly<Record<string, unknown>> {
-  if (manifest.schemaVersion !== MANIFEST_SCHEMA_VERSION) {
+  if (manifest.schemaVersion < TABLES_SCHEMA_VERSION) {
     return manifest;
   }
   const headers = new TableWriter();
@@ -153,13 +153,22 @@ function readDynamicRoute(route: unknown, tables: Tables): unknown {
 }
 
 /**
+ * Whether a manifest of this version names places in its `tables`: no writer of an earlier one
+ * did, so a `tables` beside one of those is nothing a writer meant, and its routes are read as
+ * they are.
+ */
+function namesPlaces(version: unknown): boolean {
+  return typeof version === 'number' && version >= TABLES_SCHEMA_VERSION;
+}
+
+/**
  * A stored manifest as it is read: what its routes name by place in `tables` put back, so a
  * manifest reads the same however it was stored. Every route sharing a value is handed the one
- * object. A manifest without `tables` is handed back as it is, and so is anything that is not a
- * manifest at all, for the schema to refuse.
+ * object. A manifest without `tables`, or of a version before them (`namesPlaces`), is handed back
+ * as it is, and so is anything that is not a manifest at all, for the schema to refuse.
  */
 export function fromStoredManifest(parsed: unknown): unknown {
-  if (!isRecord(parsed) || !isRecord(parsed['tables'])) {
+  if (!isRecord(parsed) || !isRecord(parsed['tables']) || !namesPlaces(parsed['schemaVersion'])) {
     return parsed;
   }
   const { tables: stored, ...manifest } = parsed;

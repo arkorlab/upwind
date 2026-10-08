@@ -32,6 +32,8 @@ import { imagesConfigSchema } from '../images/config.ts';
  * `tables` (`stored.ts`). A reader of 4 or 5 would take those places for the values themselves.
  */
 export const MANIFEST_SCHEMA_VERSION = 6;
+/** The first version a manifest may store what its routes repeat in `tables` at (above). */
+export const TABLES_SCHEMA_VERSION = 6;
 const BASE_PATH_ROUTED_VERSION = 4;
 const CASE_MATCHED_VERSION = 3;
 /**
