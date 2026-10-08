@@ -31,14 +31,15 @@ export async function readBundle(projectDir: string): Promise<DeploymentBundle> 
 /**
  * The project the build wrote its bundle beside: the application, or the one package of it whose
  * build its build script ran (`pnpm run --dir apps/web build`, which is what
- * `import-meta-glob-monorepo` does). One, or refused: a workspace whose build left a bundle in two
- * packages leaves two, and which of them is this deployment would be a guess.
+ * `import-meta-glob-monorepo` does). One, or refused: a build that left a bundle in two places —
+ * the application and a package, or two packages — leaves two, and which of them is this
+ * deployment would be a guess.
  */
 export async function bundleProject(appDir: string): Promise<string> {
-  if (await isFile(bundleFile(appDir))) {
-    return appDir;
-  }
-  const found = await bundlesBelow(appDir, WORKSPACE_DEPTH);
+  const found = [
+    ...((await isFile(bundleFile(appDir))) ? [appDir] : []),
+    ...(await bundlesBelow(appDir, WORKSPACE_DEPTH)),
+  ];
   const [only, ...others] = found;
   if (only !== undefined && others.length === 0) {
     return only;
@@ -48,9 +49,9 @@ export async function bundleProject(appDir: string): Promise<string> {
       `the build wrote no bundle: no ${path.join(BUNDLE_DIRECTORY, BUNDLE_FILE)} in ${appDir} or in a package of it`,
     );
   }
-  const named = found.map((dir) => path.relative(appDir, dir)).join(', ');
+  const named = found.map((dir) => path.relative(appDir, dir) || '.').join(', ');
   throw new Error(
-    `the build left a bundle in more than one package (${named}), and which is this deployment would be a guess`,
+    `the build left a bundle in more than one place (${named}), and which is this deployment would be a guess`,
   );
 }
 

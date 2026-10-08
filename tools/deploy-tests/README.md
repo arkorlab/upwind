@@ -81,9 +81,9 @@ version Next.js pins every other fixture to, from the Next.js checkout, as the w
 
 A fixture that is a workspace and builds one of its packages (`pnpm run --dir apps/web build`, as
 `import-meta-glob-monorepo` does) has its bundle beside that package, which is where the adapter writes
-it, rather than at its own root. The deploy hook deploys from the one package of it that holds a bundle
-(`node src/main.ts bundle` prints which), with that package's own `.env` files, and refuses a build that
-left a bundle in two.
+it, rather than at its own root. The deploy hook deploys from the one place that holds a bundle — the
+application or one of its packages (`node src/main.ts bundle` prints which) — with that project's own
+`.env` files, and refuses a build that left a bundle in two.
 
 `NEXT_ENABLE_ADAPTER=1` is what Next.js's own job for adapters sets. A few suites expect a deployment
 an adapter made to answer otherwise than one Vercel's own builder made, and read it to know which they

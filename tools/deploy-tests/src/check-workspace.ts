@@ -1,4 +1,4 @@
-import { cpSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { BUNDLE_BUILD_ID, writeApplication } from './check-application.ts';
@@ -8,8 +8,8 @@ import { fakeHost } from './fake-host.ts';
  * A workspace whose build script builds one of its packages, as `pnpm run --dir apps/web build` does
  * (`import-meta-glob-monorepo`): the adapter writes the bundle beside that package, and the deployment
  * is made from it — its build id in the markers, its blobs uploaded, the package's own `.env` as the
- * deployment's environment. A workspace whose build left a bundle in two packages is refused, naming
- * both, rather than deployed from a guess.
+ * deployment's environment. A workspace whose build left a bundle in two places — two packages, or
+ * the workspace itself and a package — is refused, naming both, rather than deployed from a guess.
  */
 
 const PACKAGES = 'apps';
@@ -76,5 +76,19 @@ export async function workspaceScenario(check: WorkspaceCheck): Promise<void> {
   holds(
     'a workspace whose build left a bundle in two packages is refused, naming both',
     said.includes(path.join(PACKAGES, ALSO_BUILT)) && said.includes(path.join(PACKAGES, BUILT)),
+  );
+  // And one left beside the workspace itself as well as in a package: the root is a candidate too.
+  rmSync(path.join(root, PACKAGES, ALSO_BUILT), { recursive: true, force: true });
+  cpSync(path.join(web, '.arkor'), path.join(root, '.arkor'), { recursive: true });
+  let alsoRoot: unknown;
+  try {
+    await deploy(root, check.env);
+  } catch (error) {
+    alsoRoot = error;
+  }
+  const saidOfRoot = check.said(alsoRoot) ?? '';
+  holds(
+    'and so is one whose build left a bundle beside the workspace and in a package',
+    saidOfRoot.includes('(., ') && saidOfRoot.includes(path.join(PACKAGES, BUILT)),
   );
 }
