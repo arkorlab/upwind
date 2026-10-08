@@ -114,7 +114,9 @@ export const graphManifestsPatch: Patch = {
   // Turbopack copied the module into — which only a build has.
   reaches: ['module', 'esm-module', 'server-runtime', 'build-output'],
   apply(source, file) {
-    const copies = BUILD_OUTPUT.test(file) ? Math.max(1, keyCalls(source)) : 1;
+    // A chunk is only read where its text names the key (`marker`); none of its calls naming it is a
+    // string that reads like it, which the count refuses, as it refuses one beside a real copy.
+    const copies = BUILD_OUTPUT.test(file) ? keyCalls(source) : 1;
     const result = new Rewrite(NAME, file, source)
       .replace(SHARED_KEY, NODE_KEY, copies, 'the key of the manifests singleton')
       .forbid(LEFTOVERS, 'the key the edge graph keeps');
