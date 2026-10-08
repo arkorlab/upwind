@@ -1,4 +1,5 @@
 import { cacheSignalTimersPatch } from './cache-signal-timers.ts';
+import { fastImmediatesPatch } from './fast-immediates.ts';
 import { fetchCacheWaitUntilPatch } from './fetch-cache-wait-until.ts';
 import { graphManifestsPatch } from './graph-manifests.ts';
 import { hangingInputAbortPatch } from './hanging-input-abort.ts';
@@ -42,6 +43,7 @@ export const PATCHES: readonly Patch[] = [
   loadManifestPatch,
   resumeCacheLimitPatch,
   taskTimersPatch,
+  fastImmediatesPatch,
   graphManifestsPatch,
   workflowQuickjsWasmPatch,
 ];

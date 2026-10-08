@@ -8,7 +8,9 @@
  * a microtask: the drain finds nothing, the next timer fires before React has done anything,
  * and the render is aborted empty. The adapter hands the timers of such a group to this
  * scheduler (`task-timers` patch), which runs each once every immediate scheduled before it —
- * those they scheduled included — has run: what a task boundary means under Node.js.
+ * those they scheduled included — has run: what a task boundary means under Node.js. With it in
+ * place a task captures none of them either (`fast-immediates` patch): what Next.js captures it
+ * runs a `nextTick` into the task, which here is two microtasks rather than the end of them.
  *
  * Installed before any of Next.js is evaluated, since Next.js takes `setImmediate` as it finds
  * it then: the one counted here.
