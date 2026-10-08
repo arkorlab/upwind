@@ -141,8 +141,8 @@ function listed(list: string): string[] {
  *
  * The base path is in two of the three places a run is read from, as it is in every entry the build
  * writes: its pattern and its destination begin with it (`start`, `prefixed`), and its `source`
- * does not — that is the page as the build names it, `/$1/<tail>` for a run and `route.page` for
- * any other entry.
+ * does not — that is the page as the build names it, `/$1/<tail>` for a run and the page itself
+ * (`/blog/[slug]`) for any other entry.
  *
  * A run is matched under no locale: its pattern begins with the prefix, right after the `basePath`.
  * An application with `i18n` puts the locale there, and its dynamic routes are not the edge's to
