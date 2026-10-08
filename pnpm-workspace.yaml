@@ -76,6 +76,15 @@ allowBuilds:
 
 strictPeerDependencies: true
 
+# Security fixes within the versions already used by Miniflare, Next.js and build tooling:
+# undici's HTTP client advisories (7.29.1), sharp's librsvg CVE-2026-96889 (0.35.5), and
+# source-map-js's indexed-map denial of service CVE-2026-93749 (1.2.2). Keep the parent releases
+# pinned; these dependencies do not run on a deployed Function's request path.
+overrides:
+  'undici@>=7.0.0 <7.29.1': 7.29.1
+  'sharp@>=0.35.0 <0.35.5': 0.35.5
+  'source-map-js@>=1.0.0 <1.2.2': 1.2.2
+
 # pnpm runs an implicit install before every `pnpm run` by default, and that install takes no lock
 # (pnpm/pnpm#14551), so a second checkout running a script at the same time races it over
 # `node_modules/.pnpm`. Nothing may install behind your back.

@@ -44,6 +44,15 @@ minimumReleaseAgeExclude:
 # nobody reads is how a deployment finds out later.
 strictPeerDependencies: true
 
+# This project's own dependency graph needs the same security fixes as the root workspace:
+# root overrides do not apply here, and the released upwind brings Miniflare as a build tool.
+# Fix undici's HTTP client advisories, sharp's librsvg CVE-2026-96889, and source-map-js's
+# indexed-map denial of service CVE-2026-93749 without moving Next.js or the adapter.
+overrides:
+  'undici@>=7.0.0 <7.29.1': 7.29.1
+  'sharp@>=0.35.0 <0.35.5': 0.35.5
+  'source-map-js@>=1.0.0 <1.2.2': 1.2.2
+
 # pnpm runs an implicit install before every `pnpm run` by default, and that install takes no lock
 # (pnpm/pnpm#14551). Here that would also make it the *unfrozen* one: a host runs
 # `pnpm install --frozen-lockfile` and then `pnpm build`, and an install slipped in between could
