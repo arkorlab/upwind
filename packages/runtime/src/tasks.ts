@@ -8,13 +8,16 @@
  * a microtask: the drain finds nothing, the next timer fires before React has done anything,
  * and the render is aborted empty. The adapter hands the timers of such a group to this
  * scheduler (`task-timers` patch), which runs each once every immediate scheduled before it —
- * those they scheduled included — has run: what a task boundary means under Node.js.
+ * those they scheduled included — has run: what a task boundary means under Node.js. With it in
+ * place a task captures none of them either (`fast-immediates` patch): what Next.js captures it
+ * runs a `nextTick` into the task, which here is two microtasks rather than the end of them.
  *
  * Installed before any of Next.js is evaluated, since Next.js takes `setImmediate` as it finds
  * it then: the one counted here.
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { promisify } from 'node:util';
 
 export const TASK_TIMER = Symbol.for('arkor.task-timer');
 
@@ -33,6 +36,12 @@ interface Task extends TaskTimer {
 }
 
 type ImmediateHandle = ReturnType<typeof setImmediate>;
+type Schedule = (callback: Callback, ...args: unknown[]) => ImmediateHandle;
+
+/** What the promise form of an immediate is given beside its value; `ref` means nothing here. */
+interface ImmediateOptions {
+  readonly signal?: AbortSignal | undefined;
+}
 type TimeoutHandle = Parameters<typeof clearTimeout>[0];
 
 export interface TaskScheduler {
@@ -171,12 +180,19 @@ class Scheduler implements TaskScheduler {
 
   constructor() {
     const { clearImmediate, clearTimeout } = native;
-    Reflect.set(globalThis, 'setImmediate', (callback: Callback, ...args: unknown[]) => {
+    const schedule: Schedule = (callback, ...args) => {
       const scope = this.#scope();
       const handle = scope.setImmediate(callback, ...args);
       this.#immediates.set(handle, scope);
       return handle;
-    });
+    };
+    // The promise form, which `util.promisify` takes off `setImmediate`, and which Next.js takes off
+    // this one as it loads, for `node:timers/promises` while a task captures nothing: an immediate
+    // of this scheduler's like any other, counted as one.
+    Reflect.set(schedule, promisify.custom, (value?: unknown, options?: ImmediateOptions) =>
+      promisedImmediate(schedule, value, options),
+    );
+    Reflect.set(globalThis, 'setImmediate', schedule);
     Reflect.set(globalThis, 'clearImmediate', (handle: ImmediateHandle) => {
       const scope = this.#immediates.get(handle);
       if (scope !== undefined) {
@@ -205,6 +221,40 @@ class Scheduler implements TaskScheduler {
   run<T>(work: () => Promise<T>): Promise<T> {
     return this.#storage.run(new TaskScope(), work);
   }
+}
+
+/** Node.js's refusal of a promised timer whose signal was aborted: what it was aborted with, as the cause. */
+class AbortError extends Error {
+  override readonly name = 'AbortError';
+  readonly code = 'ABORT_ERR';
+
+  constructor(signal: AbortSignal) {
+    super('The operation was aborted', { cause: signal.reason });
+  }
+}
+
+/** An immediate as a promise of `value`, as `node:timers/promises` gives it: refused once `signal` aborts. */
+function promisedImmediate(
+  schedule: Schedule,
+  value: unknown,
+  options: ImmediateOptions | undefined,
+): Promise<unknown> {
+  const signal = options?.signal;
+  if (signal?.aborted === true) {
+    return Promise.reject(new AbortError(signal));
+  }
+  return new Promise((resolve, reject) => {
+    const settle = (): void => {
+      signal?.removeEventListener('abort', abort);
+      resolve(value);
+    };
+    const handle = schedule(settle);
+    function abort(this: AbortSignal): void {
+      clearImmediate(handle);
+      reject(new AbortError(this));
+    }
+    signal?.addEventListener('abort', abort, { once: true });
+  });
 }
 
 const shared: { scheduler: Scheduler | undefined } = { scheduler: undefined };

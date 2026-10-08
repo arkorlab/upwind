@@ -30,6 +30,7 @@ const WASM_LOADER = ['wasm-loader', 'runtime-wasm-loader'] as const;
 /** The rewrites that reach Next.js's own package, and so every build of any fixture. */
 const PACKAGE_PATCHES = [
   'cache-signal-timers',
+  'fast-immediates',
   FETCH_CACHE_WAIT_UNTIL,
   GRAPH_MANIFESTS,
   'hanging-input-abort',
