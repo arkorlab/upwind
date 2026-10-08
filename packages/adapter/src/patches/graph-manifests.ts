@@ -1,4 +1,4 @@
-import { type Patch, Rewrite } from './types.ts';
+import { occurrencesOf, type Patch, Rewrite } from './types.ts';
 
 /**
  * One Function holds two copies of Next.js: the module graph built for the Node.js runtime, which
@@ -18,6 +18,11 @@ import { type Patch, Rewrite } from './types.ts';
  * the same way — the compiled runtimes, and the chunks Turbopack copied the module into — so the
  * graph still shares one object among its own routes, and the edge graph keeps Next.js's. Nothing
  * of this platform reads either key.
+ *
+ * Next.js's own files hold the module once each, and that is held to: a second would be a change
+ * this has not read. A chunk can hold more than one copy — a route handler's has held the module
+ * and the ESM one beside it, which Turbopack merged into the route's own module — and each is the
+ * Node.js graph's, so every one is rewritten.
  */
 
 const NAME = 'graph-manifests';
@@ -26,6 +31,8 @@ const NAME = 'graph-manifests';
 const TARGET =
   // eslint-disable-next-line require-unicode-regexp -- a bundler filter: a Go regular expression
   /(?:\/next\/dist\/(?:compiled\/next-server\/[\w-]+\.runtime\.prod|(?:esm\/)?server\/app-render\/manifests-singleton)|\/server\/(?:chunks|app|pages)\/.+)\.js$/;
+/** What `next build` wrote, of what `TARGET` reaches. */
+const BUILD_OUTPUT = /\/server\/(?:chunks|app|pages)\/.+\.js$/u;
 const SHARED_KEY = /Symbol\.for\((["'])next\.server\.manifests\1\)/gu;
 const NODE_KEY = 'Symbol.for("arkor.next.server.manifests.node")';
 const LEFTOVERS = [/Symbol\.for\((["'])next\.server\.manifests\1\)/u];
@@ -39,8 +46,9 @@ export const graphManifestsPatch: Patch = {
   // Turbopack copied the module into — which only a build has.
   reaches: ['module', 'esm-module', 'server-runtime', 'build-output'],
   apply(source, file) {
+    const copies = BUILD_OUTPUT.test(file) ? Math.max(1, occurrencesOf(source, SHARED_KEY)) : 1;
     const result = new Rewrite(NAME, file, source)
-      .replace(SHARED_KEY, NODE_KEY, 1, 'the key of the manifests singleton')
+      .replace(SHARED_KEY, NODE_KEY, copies, 'the key of the manifests singleton')
       .forbid(LEFTOVERS, 'the key the edge graph keeps');
     return { contents: result.contents, edits: result.edits, notes: [] };
   },
