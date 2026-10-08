@@ -70,15 +70,17 @@ output whose name is not its URL — `normalizePagePath` spells it `/index` — 
 offered under the application's root as well.
 
 `modifyConfig` sets `supportsImmutableAssets` (content-addressed `/_next/static/immutable/*`).
-Next.js turns it off again for a static export, in `finalizeConfig`, after the hook has run.
+Before 16.4 Next.js turns it off again for a static export, in `finalizeConfig`, after the hook has
+run, and such an export's hashed names are read off the rule its own server answers them by.
 `next/image` is left as the application configured it: the edge optimizes `/_next/image`.
 
-It also turns `experimental.collapseAdapterRoutes` off, on a release that has it (16.4 on, where it
-is on by default). Collapsed, the table serves a dynamic page and its `.rsc` and per-segment forms
-from one entry whose destination ends in the suffix that matched, and a run of fallback shells from
-one entry whose destination begins with the prefix that matched — and a destination that is no
-longer the template it serves is a route the bundle finds no shell for (`reachableTemplates`,
-`dynamicRouting`). Off, the table is the one every release before 16.4 wrote: one entry a route.
+The route table goes into the bundle as the build wrote it, collapsed or not. 16.4 collapses it by
+default (`experimental.collapseAdapterRoutes`): a dynamic page and its `.rsc` and per-segment forms
+become one entry whose destination ends in the suffix that matched (`/blog/[slug]$2`), and a run of
+fallback shells one entry whose destination begins with the prefix that matched (`/$1/[slug]`).
+The Functions route with it as it is. Where a page has to be named — the edge's shell for a dynamic
+route, the Function a split route is in — `@stayingupwind/core` reads each such entry back into the
+ones it replaced (`pageRoutes`), which name their pages as every release before 16.4 did.
 
 ## The development server
 

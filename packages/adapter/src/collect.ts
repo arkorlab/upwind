@@ -647,18 +647,21 @@ const CACHE_CONTROL = 'cache-control';
 /**
  * Whether the build says a file's name may be cached forever and shared across deployments.
  *
- * A static export turns `supportsImmutableAssets` off (Next.js forces it in `finalizeConfig`), so
- * no file arrives with an `immutableHash` — but the build still emits the rule its own server
- * answers `_next/static` under, naming the directories whose file names carry a content hash or
- * the build id. That rule is read here rather than guessed at: without it every hashed chunk of a
- * static export would go out `must-revalidate` and be revalidated on every visit.
+ * Before 16.4 a static export turns `supportsImmutableAssets` off (Next.js forces it in
+ * `finalizeConfig`), so no file arrives with an `immutableHash` — but the build still emits the rule
+ * its own server answers `_next/static` under, naming the directories whose file names carry a
+ * content hash or the build id. That rule is read here rather than guessed at: without it every
+ * hashed chunk of such an export would go out `must-revalidate` and be revalidated on every visit.
+ * From 16.4 an export keeps the option, and its content-addressed files carry the hash as any
+ * build's do.
  *
  * What the rule has to say is a whole policy — long-lived, public, nothing withholding it — and
  * not the word `immutable`, which on its own qualifies a freshness `no-store` may take away.
  *
  * It is the build's answer for every directory but one. The rule names `_next/static/<buildId>/`
  * as well, which two builds fill differently once they share a build id — and every build with a
- * `deploymentId` does (`getBuildId`), as does an app whose `generateBuildId` returns a constant.
+ * `deploymentId` and no `generateBuildId` of its own does (`getBuildId`; before 16.4, every build
+ * with one), as does an app whose `generateBuildId` returns a constant.
  * `collectStaticFiles` takes that directory out (`underBuildId`). Next.js's own server sends it
  * `immutable` all the same, and the rule still says so of the response.
  *

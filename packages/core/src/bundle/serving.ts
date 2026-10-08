@@ -6,6 +6,7 @@ import { filterShellResponseHeaders, rendersInline } from '../request/headers.ts
 import { isInternalPage, nextNamespaceRoutes } from './base-path.ts';
 import { type DynamicRouting, withFunctions } from './functions.ts';
 import { memberRoutesOf } from './member-routes.ts';
+import { pageRoutes } from './page-routes.ts';
 import { queryDependent } from './query.ts';
 import type { DeploymentBundle, Entrypoint, Prerender, Route, StaticFile } from './schema.ts';
 import { isTemplate, keepsTrailingSlash, requestedPathname, routerSpellings } from './spelling.ts';
@@ -117,16 +118,15 @@ export function reproducesDynamicRouting(bundle: DeploymentBundle): boolean {
   return i18n === null || i18n === undefined;
 }
 
-/** The templates the edge could reach: the ones a dynamic route resolves to. */
+/** The templates the edge could reach: the ones a dynamic route resolves to (`pageRoutes`). */
 function reachableTemplates(bundle: DeploymentBundle): ReadonlySet<string> {
   if (!reproducesDynamicRouting(bundle)) {
     return new Set();
   }
   return new Set(
-    bundle.routing.dynamicRoutes.flatMap((route) => {
-      const template = route.destination?.split('?', 1)[0];
-      return template === undefined ? [] : [template];
-    }),
+    pageRoutes(bundle.routing.dynamicRoutes, bundle.config.basePath).flatMap(({ template }) =>
+      template === undefined ? [] : [template],
+    ),
   );
 }
 
@@ -706,12 +706,13 @@ export function dynamicRouting(
     servable: (prerender) =>
       !claimedBeforeFiles(bundle, prerender) && headersReproducible(bundle, prerender),
   });
-  const dynamicRoutes: DynamicRoute[] = routing.dynamicRoutes.map((route) => {
-    const template = route.destination?.split('?', 1)[0];
+  // One for each page and one for each page's data, however the build collapsed them.
+  const pages = pageRoutes(routing.dynamicRoutes, bundle.config.basePath);
+  const dynamicRoutes: DynamicRoute[] = pages.map(({ route, sourceRegex, template }) => {
     const shell = template !== undefined && routeKeys.has(template);
     const members = template === undefined || shell ? undefined : membersOf(template);
     return {
-      sourceRegex: route.sourceRegex,
+      sourceRegex,
       ...conditionsOf(route),
       ...(shell && { route: template }),
       ...(members !== undefined && { members }),
@@ -775,11 +776,12 @@ export function dynamicRouting(
     [...pathnames, ...fileSpellings].filter((pathname) => !routeKeys.has(pathname)),
   );
   return {
-    ...withFunctions(bundle, routeKeys, {
-      dynamicRoutes,
-      reservedRoutes,
-      exactPathnames: [...exact],
-    }),
+    ...withFunctions(
+      bundle,
+      routeKeys,
+      { dynamicRoutes, reservedRoutes, exactPathnames: [...exact] },
+      pages.map((page) => page.template ?? page.dataOf),
+    ),
     ...spelled,
   };
 }

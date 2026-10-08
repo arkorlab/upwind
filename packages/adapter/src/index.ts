@@ -744,32 +744,6 @@ function renderInOneProcessForStorage(config: BuildConfig): void {
 }
 
 /**
- * One entry per dynamic route in the table the build hands this adapter, as every release before
- * 16.4 wrote it.
- *
- * 16.4 collapses that table by default (`experimental.collapseAdapterRoutes`). A dynamic page and
- * its `.rsc` and per-segment forms become one entry whose destination ends in the suffix that
- * matched (`/blog/[slug]$2`), and a run of fallback shells becomes one entry whose destination
- * begins with the prefix that matched (`/$1/[slug]`). Each still resolves a request to the output
- * the entries it replaced did — but a destination is then no longer the template it serves, and
- * that is what a bundle reads a dynamic route's template off (`reachableTemplates`,
- * `dynamicRouting` and `withFunctions` in `@stayingupwind/core`). A collapsed entry leaves its
- * route with no shell, and every request for that page goes to the Function where the prerendered
- * shell could have answered it.
- *
- * So the option is turned off, which is how Next.js keeps the table it wrote before. A release
- * without the option writes that table anyway and is left alone. A project that turned the option
- * on itself cannot be told apart from the default, and is turned off with the rest: the table it
- * asked for is one this bundle would serve worse. What it costs is the table's length, which is the
- * length every release before 16.4 had.
- */
-function keepRoutesApart(config: BuildConfig): void {
-  if ('collapseAdapterRoutes' in config.experimental) {
-    config.experimental.collapseAdapterRoutes = false;
-  }
-}
-
-/**
  * The adapter, as a host configures it.
  *
  * `NEXT_ADAPTER_PATH` and `adapterPath` both name a module whose default export is a
@@ -810,13 +784,12 @@ export function createAdapter(options: AdapterOptions = {}): NextAdapter {
           refuseCustomCacheHandlers(config);
         }
         // Content-addressed `/_next/static/immutable/*`: shared across deployments, cached
-        // forever. Asked for unconditionally, and refused for a static export by Next.js itself,
-        // which turns the option off in `finalizeConfig` after this hook has run; such a build's
+        // forever. Asked for unconditionally. Before 16.4 Next.js refuses it for a static export,
+        // turning the option off in `finalizeConfig` after this hook has run; such a build's
         // assets are recognized from the build's own `onMatch` rule instead (see
         // `immutableByBuild`).
         config.supportsImmutableAssets = true;
         renderInOneProcessForStorage(config);
-        keepRoutesApart(config);
         // The Workflow SDK's own Worlds stay out of the Functions: neither can run there.
         await aliasBuiltinWorlds(config, projectDir, OUT_DIR_NAME);
         if (carriesMaps(options.sourceMaps)) {

@@ -121,14 +121,16 @@ export type DynamicRouting = Pick<
 
 /**
  * The routing tables of a split bundle with each route's Function on them: on a dynamic route, the
- * Function its template's entrypoint is in — `routing.dynamicRoutes` and the tables' own are in one
- * order — and beside the exact pathnames, the ones another Function answers. A bundle that was not
- * split comes back as it went in, byte for byte.
+ * Function its template's entrypoint is in — `templates`, the page each of the tables' own dynamic
+ * routes lands on or answers the data of, are in their order (`pageRoutes`) — and beside the exact
+ * pathnames, the ones another Function answers. A bundle that was not split comes back as it went
+ * in, byte for byte.
  */
 export function withFunctions(
   bundle: DeploymentBundle,
   routeKeys: ReadonlySet<string>,
   tables: DynamicRouting,
+  templates: readonly (string | undefined)[],
 ): DynamicRouting {
   const placed = placedRoutes(bundle.entrypoints);
   if (placed.size === 0) {
@@ -141,7 +143,7 @@ export function withFunctions(
     ),
   );
   const dynamicRoutes = tables.dynamicRoutes?.map((route, at): DynamicRoute => {
-    const template = bundle.routing.dynamicRoutes[at]?.destination?.split('?', 1)[0];
+    const template = templates[at];
     const owner = template === undefined ? undefined : byTemplate.get(template);
     return owner === undefined ? route : { ...route, function: owner };
   });

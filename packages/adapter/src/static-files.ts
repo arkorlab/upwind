@@ -80,10 +80,10 @@ async function publicFiles(
 /**
  * Whether a file of a static export is one Next.js wrote under the build id,
  * `_next/static/<buildId>/`: a name the build id gives it, not its bytes. Every build with a
- * `deploymentId` has the same build id (`getBuildId`) and writes its own manifests there, so the
- * name is not the same bytes for every deployment, whatever the rule says of the response
- * (`immutableByBuild`). A build that is not an export says the same by giving these files no
- * `immutableHash`.
+ * `deploymentId` and no `generateBuildId` of its own has the same build id (`getBuildId`; before
+ * 16.4, every build with one) and writes its own manifests there, so the name is not the same bytes
+ * for every deployment, whatever the rule says of the response (`immutableByBuild`). Next.js says
+ * the same by giving these files no `immutableHash`.
  */
 function underBuildId(pathname: string, basePath: string, buildId: string): boolean {
   return pathname.startsWith(`${basePath}/_next/static/${buildId}/`);
@@ -140,10 +140,13 @@ export async function collectStaticFiles(
     // moves from `/index` to `/` and from `/about/index` to `/about/`, and the edge matches the
     // header rules on the request's own pathname, not on the one the build handed over.
     const pathname = exported ? exportedPathname(output, naming) : output.pathname;
-    const immutable = exported
-      ? immutableByBuild(ctx.routing.onMatch, pathname) &&
-        !underBuildId(pathname, basePath, ctx.buildId)
-      : output.immutableHash !== undefined;
+    // A content hash is the build's word for any build. A static export before 16.4 has none to
+    // give (`immutableByBuild`), and its hashed names are read off the rule its server answers by.
+    const immutable =
+      output.immutableHash !== undefined ||
+      (exported &&
+        immutableByBuild(ctx.routing.onMatch, pathname) &&
+        !underBuildId(pathname, basePath, ctx.buildId));
     files.push({ pathname, blob, immutable });
     // A Pages Router page written as `/index` answers the application's root under both names. An
     // export needs no alias: every document of one is already named where a static host serves it,
