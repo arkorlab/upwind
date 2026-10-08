@@ -237,7 +237,7 @@ function readBundleFile(name: string): Uint8Array<ArrayBuffer> {
  */
 function resolvedByName(prerender: Prerender, basePath: string): boolean {
   return (
-    isPagesDataPathname(prerender.pathname, basePath) ||
+    isPagesDataPathname(basePath, prerender.pathname) ||
     prerender.parentFallbackMode === false ||
     narrowerClass(prerender)
   );

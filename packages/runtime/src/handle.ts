@@ -498,8 +498,8 @@ async function serveResolved(
   // still says `_next/data`, and that is what the answer has to be.
   const { basePath } = store.manifest.config;
   if (
-    isPagesDataPathname(resolved.route, basePath) ||
-    isPagesDataPathname(asked.pathname, basePath)
+    isPagesDataPathname(basePath, resolved.route) ||
+    isPagesDataPathname(basePath, asked.pathname)
   ) {
     return servePagesData(input, store, resolved);
   }

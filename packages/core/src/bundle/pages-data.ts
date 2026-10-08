@@ -31,7 +31,7 @@ export function isPagesDataRequestPath(basePath: string, pathname: string): bool
  * path, where Next.js writes every one of them (`<basePath>/_next/data/…`), as the bundle names
  * them and as a request asks for them.
  */
-export function isPagesDataPathname(pathname: string, basePath: string): boolean {
+export function isPagesDataPathname(basePath: string, pathname: string): boolean {
   return pathname.startsWith(`${basePath}${DATA_PREFIX}`);
 }
 
