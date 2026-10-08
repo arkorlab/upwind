@@ -68,5 +68,6 @@ jobs:
           cache-dependency-path: ${{ matrix.directory }}/pnpm-lock.yaml
       # The website has its own lockfile and installs the released CLI and adapter as dev
       # dependencies. Audit both dependency graphs, including their build tools.
-      - run: pnpm install --frozen-lockfile
+      # Auditing the locked dependency graph does not need install scripts or build outputs.
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm audit --audit-level high
