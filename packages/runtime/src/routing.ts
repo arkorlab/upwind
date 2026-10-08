@@ -47,6 +47,15 @@ const SUBRESOURCE_DESTINATIONS: ReadonlySet<string> = new Set([
   'xslt',
 ]);
 
+/** Where routing leaves the destination of the last rewrite it applied; the platform's, never sent. */
+const REWRITE_MARK = 'x-arkor-rewritten-to';
+/** The path a payload was rendered for, when a rewrite changed it (`rewriteHeaders.pathHeader`). */
+const REWRITTEN_PATH_HEADER = 'x-nextjs-rewritten-path';
+const REDIRECTION = 300;
+const CLIENT_ERROR = 400;
+/** What makes `@next/routing` read a rule with a redirect's status as a redirect, not a rewrite. */
+const REDIRECT_HEADERS: ReadonlySet<string> = new Set(['location', 'refresh']);
+
 export type RoutingTables = ResolveRoutesParams['routes'];
 export type MiddlewareInvoker = ResolveRoutesParams['invokeMiddleware'];
 
@@ -60,6 +69,29 @@ function routingRoutes(routes: readonly Route[]): RoutingRoute[] {
     if (route.missing !== undefined) out.missing = route.missing.map((has) => routingHas(has));
     if (route.status !== undefined) out.status = route.status;
     return out;
+  });
+}
+
+/** A rule `@next/routing` follows as a redirect: a redirect's status, and where to send the client. */
+function redirects(route: RoutingRoute): boolean {
+  return (
+    route.status !== undefined &&
+    route.status >= REDIRECTION &&
+    route.status < CLIENT_ERROR &&
+    Object.keys(route.headers ?? {}).some((name) => REDIRECT_HEADERS.has(name.toLowerCase()))
+  );
+}
+
+/**
+ * The rules, each that rewrites carrying the platform's mark of where it rewrote to
+ * (`settleRewrittenPath`): `@next/routing` fills a rule's headers in from its match as it fills its
+ * destination in, and the last rule to match is the last to set them.
+ */
+function markedRewrites(routes: readonly RoutingRoute[]): RoutingRoute[] {
+  return routes.map((route) => {
+    return route.destination === undefined || redirects(route)
+      ? route
+      : { ...route, headers: { ...route.headers, [REWRITE_MARK]: route.destination } };
   });
 }
 
@@ -157,19 +189,55 @@ export function routingTables(store: Store, skipMiddleware: boolean, url: URL): 
     (config.i18n !== null && config.i18n !== undefined) ||
     isPagesDataRequestPath(config.basePath, url.pathname);
   return {
-    beforeMiddleware: routingRoutes(
-      internalLeftOut
-        ? routing.beforeMiddleware.filter((route) => !isInternal(route))
-        : routing.beforeMiddleware,
+    beforeMiddleware: markedRewrites(
+      routingRoutes(
+        internalLeftOut
+          ? routing.beforeMiddleware.filter((route) => !isInternal(route))
+          : routing.beforeMiddleware,
+      ),
     ),
     middlewareMatchers: skipMiddleware ? [] : routingRoutes(routing.middlewareMatchers),
-    beforeFiles: routingRoutes(routing.beforeFiles),
-    afterFiles: routingRoutes(routing.afterFiles),
+    beforeFiles: markedRewrites(routingRoutes(routing.beforeFiles)),
+    afterFiles: markedRewrites(routingRoutes(routing.afterFiles)),
     dynamicRoutes: routingRoutes(store.dynamicRoutes),
     onMatch: routingRoutes(routing.onMatch),
-    fallback: routingRoutes(routing.fallback),
+    fallback: markedRewrites(routingRoutes(routing.fallback)),
     shouldNormalizeNextData: routing.shouldNormalizeNextData,
   };
+}
+
+/**
+ * The path a payload was rendered for, where a rewrite of `next.config` changed it, said as Next.js
+ * says it: as `x-nextjs-rewritten-path`, on the response to a client router's request (`RSC: 1`),
+ * the destination of the last rewrite to change the path (`resolve-routes.ts`; the routes manifest's
+ * `rewriteHeaders` asks a platform to). The client reads its route's parameters off that path. A
+ * middleware's rewrite says its own (`server/web/adapter.ts`), and a rewrite after it says the path
+ * it ended on, over the middleware's — the case Next.js 16.4 fixed: an intercepting route reached
+ * through a middleware's rewrite was told of the middleware's path, not its own
+ * (`interception-dynamic-segment-middleware`).
+ *
+ * Read off the mark the rewrites carry (`markedRewrites`), which is taken out whatever the request:
+ * against the path routing began with, after any middleware's rewrite. One rewrite that changed the
+ * path and another that changed it back reads as no change, where Next.js says the second's; a
+ * rewrite of the query alone says nothing of the path, as in Next.js.
+ */
+export function settleRewrittenPath(
+  headers: Headers | undefined,
+  request: Headers,
+  routedFrom: URL,
+): void {
+  const to = headers?.get(REWRITE_MARK);
+  if (headers === undefined || to === null || to === undefined) {
+    return;
+  }
+  headers.delete(REWRITE_MARK);
+  if (request.get('rsc') !== '1') {
+    return;
+  }
+  const { pathname } = new URL(to, routedFrom);
+  if (pathname !== routedFrom.pathname) {
+    headers.set(REWRITTEN_PATH_HEADER, pathname);
+  }
 }
 
 /**

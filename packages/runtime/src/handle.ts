@@ -73,6 +73,7 @@ import {
   routingTables,
   resolvedOf,
   routedHeaders,
+  settleRewrittenPath,
   withoutRepeatedSlashes,
   withRewriteStatus,
   withRoutingHeaders,
@@ -313,6 +314,7 @@ async function routeAndServe(
     routes: routingTables(store, skipMiddleware, url),
     invokeMiddleware: middlewareInvoker(input, store, trace),
   });
+  settleRewrittenPath(routed.resolvedHeaders, requestHeaders, trace.rewrite ?? url);
   if (routed.middlewareResponded === true && trace.response !== undefined) {
     // The middleware's own answer may be streaming its side of the body back: that side stays.
     dropHandlerBody();
