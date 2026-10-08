@@ -1,7 +1,7 @@
 import type { MiddlewareMatcher } from '../manifest/schema.ts';
 import { compiledRules, patternOf } from '../request/compiled-patterns.ts';
 import { conditionsHold } from '../request/conditions.ts';
-import { testWithin } from '../request/pattern-cost.ts';
+import { testWithin } from '../request/pattern-budget.ts';
 
 /**
  * The middleware protocol as Next.js speaks it over HTTP, for the edge to read a middleware Function's

@@ -6,7 +6,7 @@ import {
   patternOf,
 } from '../request/compiled-patterns.ts';
 import { conditionsHold } from '../request/conditions.ts';
-import { execWithin, testWithin } from '../request/pattern-cost.ts';
+import { execWithin, testWithin } from '../request/pattern-budget.ts';
 import { requiresLiteral } from '../request/required-literal.ts';
 import { findRouteEntry, keyOf, namesNoFile, withoutAssetPrefix } from './manifest.ts';
 import type {

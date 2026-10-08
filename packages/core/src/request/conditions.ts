@@ -1,6 +1,6 @@
 import type { RouteHas } from '../bundle/schema.ts';
 import { ROUTER_REQUEST_HEADERS } from './constants.ts';
-import { assertAffordable } from './pattern-cost.ts';
+import { assertAffordable } from './pattern-budget.ts';
 
 /**
  * The `has` / `missing` conditions Next.js attaches to a route or a middleware matcher, evaluated
