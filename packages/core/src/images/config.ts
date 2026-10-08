@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { runnableSourceRegexSchema } from '../request/pattern-safety.ts';
+import { runnableImageRegexSchema } from '../request/pattern-safety.ts';
 
 /**
  * What `next/image` asks the platform to enforce behind `/_next/image`, as `next build` writes it
@@ -72,11 +72,11 @@ export type ImagesConfig = z.infer<typeof imagesConfigSchema>;
 export const checkedImagesConfigSchema = imagesConfigSchema.extend({
   remotePatterns: z.array(
     imageRemotePatternSchema.extend({
-      hostname: runnableSourceRegexSchema,
-      pathname: runnableSourceRegexSchema,
+      hostname: runnableImageRegexSchema,
+      pathname: runnableImageRegexSchema,
     }),
   ),
-  localPatterns: z.array(imageLocalPatternSchema.extend({ pathname: runnableSourceRegexSchema })),
+  localPatterns: z.array(imageLocalPatternSchema.extend({ pathname: runnableImageRegexSchema })),
 });
 
 /** `images-manifest.json` as `next build` writes it; only what is read here is named. */

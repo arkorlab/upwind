@@ -160,11 +160,13 @@ function unboundedReason(expression: string, flags: readonly string[] = ['']): s
 }
 
 /**
- * The flags a source is run with: as it is for a dynamic route or an image, and without regard to
- * case for a middleware's matcher, a rule ahead of the routes and a header rule (`compiledRules`),
- * under which alternatives one spelling tells apart may not be.
+ * The flags a route's source is run with: as it is for a dynamic route, and without regard to case
+ * for a middleware's matcher, a rule ahead of the routes and a header rule (`compiledRules`), under
+ * which alternatives one spelling tells apart may not be.
  */
 const SOURCE_FLAGS = ['', 'i'];
+/** The flags an image's pattern is run with: as it is, and only so (`images/params.ts`). */
+const IMAGE_FLAGS = [''];
 
 /** `undefined` when the pattern may be run; otherwise why it may not. */
 export function unsafeRoutePatternReason(pattern: string): string | undefined {
@@ -188,24 +190,38 @@ export function unsafeRoutePatternReason(pattern: string): string | undefined {
 
 /**
  * The same judgement for an expression the edge compiles as it is: a route's source, a middleware
- * matcher, an image pattern. One that does not compile is left to the check that says so.
+ * matcher, an image pattern — under the flags it is run with (`SOURCE_FLAGS`, `IMAGE_FLAGS`). One
+ * that does not compile is left to the check that says so.
  */
-export function unsafeSourcePatternReason(source: string): string | undefined {
+export function unsafeSourcePatternReason(
+  source: string,
+  flags: readonly string[] = SOURCE_FLAGS,
+): string | undefined {
   if (source.length > MAX_SOURCE_LENGTH) {
     return `longer than ${MAX_SOURCE_LENGTH} characters`;
   }
-  return compiles(source)
-    ? (scanReason(source) ?? unboundedReason(source, SOURCE_FLAGS))
-    : undefined;
+  return compiles(source) ? (scanReason(source) ?? unboundedReason(source, flags)) : undefined;
+}
+
+/** A schema for an expression the edge runs under `flags`, refusing one it may not run. */
+function runnableUnder(flags: readonly string[]): typeof sourceRegexSchema {
+  return sourceRegexSchema.superRefine((source, ctx) => {
+    const reason = unsafeSourcePatternReason(source, flags);
+    if (reason !== undefined) {
+      ctx.addIssue({ code: 'custom', message: `unusable pattern: ${reason}` });
+    }
+  });
 }
 
 /**
  * An expression as an upload carries it: one that compiles, and one the edge may run against a
  * pathname or a hostname a visitor chose.
  */
-export const runnableSourceRegexSchema = sourceRegexSchema.superRefine((source, ctx) => {
-  const reason = unsafeSourcePatternReason(source);
-  if (reason !== undefined) {
-    ctx.addIssue({ code: 'custom', message: `unusable pattern: ${reason}` });
-  }
-});
+export const runnableSourceRegexSchema = runnableUnder(SOURCE_FLAGS);
+
+/**
+ * The same, for an image's pattern, which the optimizer runs as it is and never without regard to
+ * case: judged under that reading alone, so a pattern only case tells apart — `(?:a|A)` written out
+ * again and again, linear as it is run — is not refused for a reading it is never given.
+ */
+export const runnableImageRegexSchema = runnableUnder(IMAGE_FLAGS);
