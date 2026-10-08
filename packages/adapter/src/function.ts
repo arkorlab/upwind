@@ -52,6 +52,7 @@ import {
   patchesPlugin,
   sharedRuntimePlugin,
   stubPlugin,
+  styledJsxPlugin,
   vendoredOtelPlugin,
   wasmModulePlugin,
   FUNCTION_BANNER,
@@ -252,6 +253,7 @@ export function appBundlePlugins(
     }),
     vendoredOtelPlugin(),
     sharedRuntimePlugin(),
+    styledJsxPlugin(),
     externalsPlugin((specifier) => sinks.externals.add(specifier)),
     linkedImportsPlugin((id) => sinks.linked.add(id)),
   ];

@@ -282,3 +282,41 @@ export function sharedRuntimePlugin(): Plugin {
     },
   };
 }
+
+/** The requests Next.js's require hook answers with the `styled-jsx` Next.js depends on. */
+const STYLED_JSX = /^styled-jsx(?:\/style(?:\.js)?)?$/u;
+
+/**
+ * `styled-jsx` as Next.js's server resolves it: the copy Next.js depends on, whatever the
+ * application installed or did not (`defaultOverrides` in `server/require-hook.ts`, which an
+ * adapter's Node.js entries load through `next/setup-node-env`) — so that the style registry a page
+ * writes its styles into is the one Next.js's renderer reads them out of.
+ *
+ * The server chunks leave `styled-jsx/style.js` to Node, and an application whose package manager
+ * does not hoist Next.js's dependencies — pnpm's — has none of its own to resolve it to: the build was
+ * refused (`styled-jsx/style.js is imported but not known to be provided by the deployment runtime`,
+ * `styled-jsx-dynamic`). The three names the hook answers are resolved from Next.js's own package,
+ * as the hook resolves them; any other request of `styled-jsx`'s is left as it is.
+ */
+export function styledJsxPlugin(): Plugin {
+  return {
+    name: 'arkor-styled-jsx',
+    resolveId: {
+      filter: { id: STYLED_JSX },
+      async handler(source, importer, options) {
+        // eslint-disable-next-line unicorn/no-this-outside-of-class -- the plugin API hands the context as `this`
+        const next = await this.resolve('next/package.json', importer, {
+          ...options,
+          skipSelf: true,
+        });
+        if (next === null) {
+          return null;
+        }
+        // The hook sends `styled-jsx/style.js` where `styled-jsx/style` resolves.
+        const target = source === 'styled-jsx' ? source : 'styled-jsx/style';
+        // eslint-disable-next-line unicorn/no-this-outside-of-class -- the plugin API hands the context as `this`
+        return this.resolve(target, next.id, { ...options, skipSelf: true });
+      },
+    },
+  };
+}
