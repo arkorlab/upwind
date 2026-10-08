@@ -13,6 +13,8 @@ const SPELLING_BASE = 'https://names.invalid';
 /** What `encodeURIComponent` leaves as it is and RFC 3986 escapes in a value. */
 const SUB_DELIMITERS = /[!'()*]/gu;
 const HEX = 16;
+/** An escape as the encoders write one: its hex in uppercase. */
+const UPPERCASE_ESCAPE = /%[0-9A-F]{2}/gu;
 
 /**
  * The name the build gave the prerender a pathname asks for. Next.js names a prerendered member by
@@ -121,7 +123,9 @@ export function namesWithSpellings(store: Store): string[] {
 /**
  * What a URL makes of `name`, `name` with each segment escaped, and the same escaped as RFC 3986
  * escapes data — `!`, `'`, `(`, `)` and `*` as well, which `encodeURIComponent` leaves be
- * (`/docs/rock%27n` for `/docs/rock'n`): those that are other spellings of it.
+ * (`/docs/rock%27n` for `/docs/rock'n`) — each in uppercase hex and in lowercase: those that are
+ * other spellings of it. An escape of a character no encoder escapes (`%65` for `e`), or hex of
+ * mixed case, is no spelling offered.
  */
 function spellingsOf(name: string): string[] {
   let asUrl: string;
@@ -137,9 +141,15 @@ function spellingsOf(name: string): string[] {
   const strictly = segments
     .map((segment) => segment.replaceAll(SUB_DELIMITERS, (character) => percentOf(character)))
     .join('/');
-  return [...new Set([asUrl, escaped, strictly])].filter(
-    (spelling) => spelling !== name && spells(spelling, name),
-  );
+  const encoded = [asUrl, escaped, strictly];
+  // Each in uppercase hex, as the encoders write it, and in lowercase, which a destination may be
+  // written in as readily (`/docs/%e8%a8%98%e4%ba%8b` for `/docs/記事`): the router compares the
+  // path it ended on with each name as it is.
+  const spellings = new Set(encoded);
+  for (const spelling of encoded) {
+    spellings.add(spelling.replaceAll(UPPERCASE_ESCAPE, (escape) => escape.toLowerCase()));
+  }
+  return [...spellings].filter((spelling) => spelling !== name && spells(spelling, name));
 }
 
 function percentOf(character: string): string {
