@@ -187,16 +187,17 @@ async function answered(
     const { blobs, runtime } = hostFor(env);
     return await withRequestContext(
       { headers: plainHeaders(request.headers), url: publicUrl(request), waitUntil },
-      () => {
+      async () => {
         const warm = resourceWarmOf(props);
         if (warm !== undefined) {
-          return warmResourceRoute({
+          const result = await warmResourceRoute({
             props: warm,
             tables: { app: app as AppModule, edge: edge as EdgeModule },
             request,
             runtime,
             waitUntil,
-          }).then((result) => Response.json(result));
+          });
+          return Response.json(result);
         }
         return handleRequest({
           app: app as AppModule,

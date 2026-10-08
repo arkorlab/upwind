@@ -1,6 +1,7 @@
 import { NEXT_ONE_YEAR_SECONDS } from '@stayingupwind/core/cache';
 import {
   DEFAULT_D1_CACHE_TAG,
+  type FunctionEnv,
   isPrimaryResourceRead,
   parseResourcesManifest,
   publishedFunctionEnv,
@@ -58,7 +59,7 @@ interface HandlerRuntime {
 }
 
 const state: { current: HandlerRuntime | undefined } = { current: undefined };
-const resourceTagHints = new WeakMap<object, readonly string[]>();
+const resourceTagHints = new WeakMap<FunctionEnv, readonly string[]>();
 
 function knownResourceTags(): readonly string[] {
   const env = publishedFunctionEnv();
@@ -167,19 +168,20 @@ function invalidateOnce(
   durations: { expire?: number } | undefined,
 ): Promise<void> {
   const context = requestContext();
-  if (context !== undefined && durations?.expire === NEXT_ONE_YEAR_SECONDS) {
-    tags = tags.filter((tag) => tag !== DEFAULT_D1_CACHE_TAG || !hasResourceReceipt(context, tag));
-    if (tags.length === 0) return Promise.resolve();
-  }
+  const effectiveTags =
+    context !== undefined && durations?.expire === NEXT_ONE_YEAR_SECONDS
+      ? tags.filter((tag) => tag !== DEFAULT_D1_CACHE_TAG || !hasResourceReceipt(context, tag))
+      : tags;
+  if (effectiveTags.length === 0) return Promise.resolve();
   if (context === undefined) {
-    return invalidateLogged(runtime, tags, durations);
+    return invalidateLogged(runtime, effectiveTags, durations);
   }
   // Whether it is `updateTag`'s, and the window, beside the tags in one order whatever order they
   // were named in.
   const asked = JSON.stringify([
     durations === undefined,
     durations?.expire ?? 0,
-    [...new Set(tags)].toSorted((a, b) => a.localeCompare(b)),
+    [...new Set(effectiveTags)].toSorted((a, b) => a.localeCompare(b)),
   ]);
   const out = invalidationsOut.get(context) ?? new Map<string, Promise<void>>();
   invalidationsOut.set(context, out);
@@ -187,7 +189,7 @@ function invalidateOnce(
   if (pending !== undefined) {
     return pending;
   }
-  const call = whileOut(out, asked, invalidateLogged(runtime, tags, durations));
+  const call = whileOut(out, asked, invalidateLogged(runtime, effectiveTags, durations));
   out.set(asked, call);
   return call;
 }

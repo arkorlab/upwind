@@ -120,7 +120,7 @@ export function resourcesOf(env: FunctionEnv, observation?: D1Observation): Publ
       resources[entry.name] = Object.freeze({
         type: entry.type,
         binding:
-          entry.type === 'd1' && singleD1 ? observeD1(binding, entry.name, observation) : binding,
+          singleD1 && entry.type === 'd1' ? observeD1(binding, entry.name, observation) : binding,
       });
     }
   }

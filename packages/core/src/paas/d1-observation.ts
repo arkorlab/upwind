@@ -31,7 +31,14 @@ interface Database {
   withSession?: (constraint?: string) => Database;
 }
 
-function method<T extends object>(target: T, key: PropertyKey): unknown {
+type ExecutionKind = 'all' | 'raw' | 'run';
+const EXECUTION_KINDS = new Set<PropertyKey>(['all', 'raw', 'run']);
+
+function isExecutionKind(key: PropertyKey): key is ExecutionKind {
+  return EXECUTION_KINDS.has(key);
+}
+
+function method(target: Database | Statement, key: PropertyKey): unknown {
   const value = Reflect.get(target, key, target) as unknown;
   return typeof value === 'function' && key !== 'constructor' ? value.bind(target) : value;
 }
@@ -39,8 +46,11 @@ function method<T extends object>(target: T, key: PropertyKey): unknown {
 /** Match native bind's eager snapshots of binary inputs when a warm read must be re-prepared. */
 function boundValues(values: readonly unknown[]): unknown[] {
   return values.map((value) => {
-    if (value instanceof ArrayBuffer) return Array.from(new Uint8Array(value));
-    if (ArrayBuffer.isView(value)) return Array.from(value as unknown as ArrayLike<unknown>);
+    if (value instanceof ArrayBuffer) return [...new Uint8Array(value)];
+    if (ArrayBuffer.isView(value)) {
+      // eslint-disable-next-line unicorn/prefer-spread -- Native D1 also snapshots non-iterable DataView inputs with Array.from.
+      return Array.from(value as unknown as ArrayLike<unknown>);
+    }
     return value;
   });
 }
@@ -59,13 +69,13 @@ function changed(result: unknown, sql: string): boolean {
 
 /** Preserve native raw row/column ordering, and use metadata wherever the public API offers it. */
 export function observeD1(
-  binding: object,
+  binding: unknown,
   bindingName: string,
   observation: D1Observation = {},
-): object {
+): Database {
   const root = binding as Database;
   const originalStatements = new WeakMap<
-    object,
+    Statement,
     { statement: Statement; sql: string; values: unknown[] }
   >();
   const notify = async (): Promise<void> => {
@@ -110,10 +120,9 @@ export function observeD1(
         if (key === 'bind')
           return (...args: unknown[]) =>
             statementOf(database, sql, boundValues(args), target.bind(...args));
-        if (key === 'all' || key === 'run' || key === 'raw')
-          return (...args: unknown[]) => execute(key, args);
+        if (isExecutionKind(key)) return (...args: unknown[]) => execute(key, args);
         if (key === 'first')
-          return async (column?: unknown): Promise<unknown> => {
+          return async (column?: string): Promise<unknown> => {
             // first() hides metadata. all() uses the same native query and exposes it, before
             // first's shaping can throw (a successful UPDATE RETURNING still changed the DB).
             const result = await execute('all', []);
@@ -121,9 +130,9 @@ export function observeD1(
             const row = rows?.[0];
             if (row === undefined) return null;
             if (column === undefined) return row;
-            const value = row[String(column)];
+            const value = row[column];
             if (value === undefined) {
-              throw new Error(`D1_COLUMN_NOTFOUND: Column not found (${String(column)})`, {
+              throw new Error(`D1_COLUMN_NOTFOUND: Column not found (${column})`, {
                 cause: new Error('Column not found'),
               });
             }
@@ -140,10 +149,12 @@ export function observeD1(
     return new Proxy(database, {
       get(target, key) {
         if (key === 'prepare') return (sql: string) => statementOf(target, sql);
-        if (key === 'withSession' && target.withSession !== undefined) {
-          return (constraint?: string) => databaseOf(target.withSession?.(constraint) as Database);
-        }
-        if (key === 'batch')
+        if (key === 'withSession') {
+          const withSession = target.withSession;
+          if (withSession !== undefined) {
+            return (constraint?: string) => databaseOf(withSession.call(target, constraint));
+          }
+        } else if (key === 'batch')
           return async (statements: Statement[]): Promise<unknown[]> => {
             tagNextCacheRead(DEFAULT_D1_CACHE_TAG);
             const entries = statements.map((statement) => originalStatements.get(statement));

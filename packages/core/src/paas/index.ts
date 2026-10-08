@@ -62,8 +62,18 @@ export {
   type ResourceType,
 } from './resources.ts';
 export { bindingFetch, publishedFunctionEnv, publishFunctionEnv } from './function-env.ts';
-export { d1CacheTag, DEFAULT_D1_CACHE_TAG, type D1Observation, observeD1 } from './d1-observation.ts';
-export { installResourcePrimaryReadStorage, readsPrimary as isPrimaryResourceRead, type ResourcePrimaryReadStorage, withPrimaryResourceReads } from './resource-read-context.ts';
+export {
+  d1CacheTag,
+  DEFAULT_D1_CACHE_TAG,
+  type D1Observation,
+  observeD1,
+} from './d1-observation.ts';
+export {
+  installResourcePrimaryReadStorage,
+  readsPrimary as isPrimaryResourceRead,
+  type ResourcePrimaryReadStorage,
+  withPrimaryResourceReads,
+} from './resource-read-context.ts';
 export {
   installNextCacheRegistry,
   type NextCacheStore,

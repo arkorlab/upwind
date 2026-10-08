@@ -10,8 +10,7 @@ import { nowMs } from './cache/clock.ts';
 import { requestContextFor } from './cache/context.ts';
 import { regenerate } from './cache/regenerate.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
-import type { EntryTables } from './entries.ts';
-import { nodeHandlerOf } from './entries.ts';
+import { type EntryTables, nodeHandlerOf } from './entries.ts';
 import { descriptorFor } from './generations.ts';
 import { bypassesPrerender } from './serve.ts';
 import { findShell, getStore, isClassShell } from './store.ts';
@@ -30,7 +29,7 @@ export function resourceWarmOf(props: unknown): ResourceWarmProps['resourceWarm'
     typeof warm['scopeId'] !== 'string' ||
     warm['scopeId'].length === 0 ||
     !fields(entry) ||
-    !['app-page', 'pages', 'app-route'].includes(entry['kind'] as string) ||
+    !['app-page', 'app-route', 'pages'].includes(entry['kind'] as string) ||
     typeof entry['route'] !== 'string' ||
     !entry['route'].startsWith('/') ||
     typeof entry['pathname'] !== 'string' ||
@@ -59,7 +58,7 @@ export interface ResourceWarmInput {
 /** A static regeneration whose ACK follows publication, so the durable owner can check fencing. */
 export async function warmResourceRoute(input: ResourceWarmInput): Promise<ResourceWarmResult> {
   const { runtime, props, request, tables, waitUntil } = input;
-  if (runtime === undefined || runtime.scopeId !== props.scopeId) {
+  if (runtime?.scopeId !== props.scopeId) {
     return { v: 1, kind: 'unsupported' };
   }
   const store = getStore();
@@ -88,8 +87,8 @@ export async function warmResourceRoute(input: ResourceWarmInput): Promise<Resou
     waitUntil,
     clock: runtime.clockOf(request),
   });
-  return context.run(() =>
-    withPrimaryResourceReads(async (): Promise<ResourceWarmResult> => {
+  return context.run(() => {
+    return withPrimaryResourceReads(async (): Promise<ResourceWarmResult> => {
       const outcome = await regenerate({
         runtime,
         request,
@@ -107,14 +106,18 @@ export async function warmResourceRoute(input: ResourceWarmInput): Promise<Resou
         run: context.run,
       });
       switch (outcome.kind) {
-        case 'busy':
+        case 'busy': {
           return { v: 1, kind: 'busy' };
-        case 'skipped':
+        }
+        case 'skipped': {
           return { v: 1, kind: 'skipped' };
-        case 'refused':
+        }
+        case 'refused': {
           return { v: 1, kind: 'failed', error: outcome.reason };
-        case 'failed':
+        }
+        case 'failed': {
           return { v: 1, kind: 'failed', error: outcome.error };
+        }
         case 'accepted': {
           const published = await outcome.published;
           return published.kind === 'published'
@@ -126,6 +129,6 @@ export async function warmResourceRoute(input: ResourceWarmInput): Promise<Resou
               };
         }
       }
-    }),
-  );
+    });
+  });
 }

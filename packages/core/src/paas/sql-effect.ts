@@ -6,76 +6,123 @@ interface Token {
   readonly depth: number;
 }
 
+function commentEnd(sql: string, start: number): number | undefined {
+  if (sql.startsWith('--', start)) {
+    const end = sql.indexOf('\n', start + 2);
+    return end === -1 ? sql.length : end + 1;
+  }
+  if (sql.startsWith('/*', start)) {
+    const end = sql.indexOf('*/', start + 2);
+    return end === -1 ? sql.length : end + 2;
+  }
+  return undefined;
+}
+
+function quotedEnd(sql: string, start: number, opening: string): number {
+  const close = opening === '[' ? ']' : opening;
+  let index = start + 1;
+  while (index < sql.length) {
+    if (sql[index] !== close) {
+      index += 1;
+      continue;
+    }
+    index += 1;
+    if (close === ']' || sql[index] !== close) return index;
+    index += 1;
+  }
+  return index;
+}
+
+function wordEnd(sql: string, start: number): number {
+  let index = start + 1;
+  while (index < sql.length && /[\w$]/u.test(sql[index] ?? '')) index += 1;
+  return index;
+}
+
+function appendToken(
+  sql: string,
+  start: number,
+  depth: number,
+  statement: Token[] | undefined,
+): number {
+  const character = sql.charAt(start);
+  if (/[a-z_]/iu.test(character)) {
+    const end = wordEnd(sql, start);
+    statement?.push({ value: sql.slice(start, end).toUpperCase(), depth });
+    return end;
+  }
+  if (character === '=') statement?.push({ value: '=', depth });
+  return start + 1;
+}
+
 /** Comments and quoted values cannot turn a read into a write, or conceal a CTE's final verb. */
 function tokensOf(sql: string): Token[][] {
   const statements: Token[][] = [[]];
   let depth = 0;
-  for (let i = 0; i < sql.length;) {
-    const c = sql[i];
-    const next = sql[i + 1];
-    if (c === '-' && next === '-') {
-      const end = sql.indexOf('\n', i + 2);
-      i = end === -1 ? sql.length : end + 1;
-    } else if (c === '/' && next === '*') {
-      const end = sql.indexOf('*/', i + 2);
-      i = end === -1 ? sql.length : end + 2;
-    } else if (c === "'" || c === '"' || c === '`' || c === '[') {
-      const close = c === '[' ? ']' : c;
-      i++;
-      while (i < sql.length) {
-        if (sql[i] === close) {
-          i++;
-          if (sql[i] !== close || close === ']') break;
-        }
-        i++;
+  for (let index = 0; index < sql.length;) {
+    const comment = commentEnd(sql, index);
+    if (comment !== undefined) {
+      index = comment;
+      continue;
+    }
+    const character = sql.charAt(index);
+    switch (character) {
+      case "'":
+      case '"':
+      case '`':
+      case '[': {
+        index = quotedEnd(sql, index, character);
+        break;
       }
-    } else if (c === '(') {
-      depth++;
-      i++;
-    } else if (c === ')') {
-      depth = Math.max(0, depth - 1);
-      i++;
-    } else if (c === ';' && depth === 0) {
-      statements.push([]);
-      i++;
-    } else if (c !== undefined && /[a-z_]/iu.test(c)) {
-      const start = i++;
-      while (i < sql.length && /[\w$]/u.test(sql[i] ?? '')) i++;
-      statements.at(-1)?.push({ value: sql.slice(start, i).toUpperCase(), depth });
-    } else {
-      if (c === '=') statements.at(-1)?.push({ value: '=', depth });
-      i++;
+      case '(': {
+        depth += 1;
+        index += 1;
+        break;
+      }
+      case ')': {
+        depth = Math.max(0, depth - 1);
+        index += 1;
+        break;
+      }
+      case ';': {
+        if (depth === 0) statements.push([]);
+        index += 1;
+        break;
+      }
+      default: {
+        index = appendToken(sql, index, depth, statements.at(-1));
+      }
     }
   }
   return statements.filter((statement) => statement.length > 0);
 }
 
 const WRITES = new Set([
-  'INSERT',
-  'UPDATE',
-  'DELETE',
-  'REPLACE',
-  'CREATE',
   'ALTER',
-  'DROP',
-  'VACUUM',
-  'REINDEX',
   'ANALYZE',
   'ATTACH',
+  'CREATE',
+  'DELETE',
   'DETACH',
+  'DROP',
+  'INSERT',
+  'REINDEX',
+  'REPLACE',
+  'UPDATE',
+  'VACUUM',
 ]);
 const READ_PRAGMAS = new Set([
-  'TABLE_INFO',
-  'TABLE_XINFO',
-  'INDEX_LIST',
-  'INDEX_INFO',
-  'INDEX_XINFO',
-  'FOREIGN_KEY_LIST',
-  'DATABASE_LIST',
   'COMPILE_OPTIONS',
+  'DATABASE_LIST',
   'FOREIGN_KEY_CHECK',
+  'FOREIGN_KEY_LIST',
+  'INDEX_INFO',
+  'INDEX_LIST',
+  'INDEX_XINFO',
   'INTEGRITY_CHECK',
   'QUICK_CHECK',
+  'TABLE_INFO',
+  'TABLE_XINFO',
 ]);
 
 function effectOf(tokens: readonly Token[]): SqlEffect {

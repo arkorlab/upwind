@@ -29,18 +29,30 @@ interface Registry {
 }
 
 const STATE_KEY = Symbol.for('upwind.next-cache-registry@1');
-const globalRegistry = globalThis as typeof globalThis & { [STATE_KEY]?: Registry };
+interface RegistryHolder {
+  [STATE_KEY]?: Registry;
+}
+
+function holder(): RegistryHolder {
+  return globalThis as unknown as RegistryHolder;
+}
 
 function registry(): Registry {
-  return (globalRegistry[STATE_KEY] ??= {
+  // eslint-disable-next-line unicorn/no-unsafe-property-key -- a fixed registry symbol shared by separate bundles
+  const held = holder()[STATE_KEY];
+  if (held !== undefined) return held;
+  const created: Registry = {
     units: new Set(),
     revalidation: new Set(),
-  });
+  };
+  // eslint-disable-next-line unicorn/no-unsafe-property-key -- the same fixed registry symbol
+  holder()[STATE_KEY] = created;
+  return created;
 }
 
 /** Installed before the application's module graph, in Node and in the hosted Function. */
 export function installNextCacheRegistry(): void {
-  const hooks = globalThis as typeof globalThis & Record<symbol, unknown>;
+  const hooks = globalThis as Record<symbol, unknown>;
   hooks[Symbol.for(NEXT_CACHE_STORAGE_SYMBOL_KEY)] ??= <T extends NextStorage<NextCacheStore>>(
     storage: T,
   ): T => {
@@ -59,7 +71,8 @@ export function tagNextCacheRead(tag: string): void {
   for (const storage of registry().units) {
     const store = storage.getStore();
     if (store?.type === 'cache') {
-      const tags = (store.tags ??= []);
+      store.tags ??= [];
+      const tags = store.tags;
       if (!tags.includes(tag)) {
         tags.push(tag);
       }
@@ -82,23 +95,25 @@ export function revalidateNextResource(tag: string): boolean {
   const providers = [...registry().revalidation];
   // A site's module graph need not import next/cache. Prefer the real exported function when
   // present, then use the exact wrapper stores for the single reserved, header-safe ASCII tag.
-  for (const provider of providers.toSorted(
+  const ordered = providers.toSorted(
     (a, b) => Number(b.revalidateTag !== undefined) - Number(a.revalidateTag !== undefined),
-  )) {
+  );
+  for (const provider of ordered) {
     const work = provider.workStore();
     const unit = provider.unitStore();
     if (
-      Boolean(work?.incrementalCache) &&
+      work !== undefined &&
+      Boolean(work.incrementalCache) &&
       unit?.type === 'request' &&
       unit.phase === 'action' &&
-      work !== undefined &&
       !handled.has(work)
     ) {
       if (provider.revalidateTag !== undefined) {
         provider.revalidateTag(tag, 'max');
       } else if (tag === 'upwind:resource:d1:default') {
         const revalidatedAt = performance.timeOrigin + performance.now();
-        const pending = (work.pendingRevalidatedTags ??= []);
+        work.pendingRevalidatedTags ??= [];
+        const pending = work.pendingRevalidatedTags;
         const existing = pending.find((item) => item.tag === tag && item.profile === 'max');
         if (existing === undefined) {
           pending.push({ tag, profile: 'max', revalidatedAt });

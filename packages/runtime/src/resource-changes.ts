@@ -13,6 +13,7 @@ import { recordResourceReceipt, requestContext } from './cache/context.ts';
 
 /** Bound mutation latency even if the service accepts a report but never returns its answer. */
 export const RESOURCE_CHANGE_DELIVERY_TIMEOUT_MS = 750;
+const MS_PER_SECOND = 1000;
 
 async function withinDeadline<T>(work: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -20,10 +21,9 @@ async function withinDeadline<T>(work: Promise<T>): Promise<T> {
     return await Promise.race([
       work,
       new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(
-          () => reject(new Error('Resource change delivery timed out')),
-          RESOURCE_CHANGE_DELIVERY_TIMEOUT_MS,
-        );
+        timer = setTimeout(() => {
+          reject(new Error('Resource change delivery timed out'));
+        }, RESOURCE_CHANGE_DELIVERY_TIMEOUT_MS);
       }),
     ]);
   } finally {
@@ -58,7 +58,7 @@ export async function reportResourceChange(
   const now = nowMs();
   context?.runtime?.tags.applyLocal([DEFAULT_D1_CACHE_TAG], {
     staleAt: now,
-    hardExpireAt: now + NEXT_ONE_YEAR_SECONDS * 1000,
+    hardExpireAt: now + NEXT_ONE_YEAR_SECONDS * MS_PER_SECOND,
   });
   let lastError: unknown;
   const deliver = async (): Promise<boolean> => {
@@ -82,9 +82,7 @@ export async function reportResourceChange(
       bindingName,
       detail: lastError instanceof Error ? lastError.message : String(lastError),
     };
-    if (context?.runtime !== undefined) {
-      context.runtime.log('resource change delivery failed', fields);
-    } else {
+    if (context?.runtime === undefined) {
       // eslint-disable-next-line no-console -- record the unacknowledged event without any binding credentials
       console.warn(
         JSON.stringify({
@@ -93,9 +91,15 @@ export async function reportResourceChange(
           ...fields,
         }),
       );
+    } else {
+      context.runtime.log('resource change delivery failed', fields);
     }
   };
   const accepted = await deliver();
+  const deliverBehind = async (): Promise<void> => {
+    const delivered = await deliver();
+    if (!delivered) recordFailure();
+  };
   // Real Next pending tags retain redirect/same-request semantics. 'max' does not flush the
   // browser router cache; native handler fanout is coalesced against the receipt above.
   revalidateNextResource(DEFAULT_D1_CACHE_TAG);
@@ -104,11 +108,7 @@ export async function reportResourceChange(
       recordFailure();
     } else {
       try {
-        context.waitUntil(
-          deliver().then((delivered) => {
-            if (!delivered) recordFailure();
-          }),
-        );
+        context.waitUntil(deliverBehind());
       } catch {
         recordFailure();
       }

@@ -609,7 +609,7 @@ function payloadRequest(input: ClassifyInput): RequestClass | undefined {
   if (
     entry === undefined ||
     (entry.payload === undefined &&
-      !(manifest.cache !== undefined && entry.cache?.kind === 'app-page'))
+      (manifest.cache === undefined || entry.cache?.kind !== 'app-page'))
   ) {
     return undefined;
   }
