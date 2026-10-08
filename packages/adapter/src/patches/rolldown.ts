@@ -295,17 +295,21 @@ const STYLED_JSX = /^styled-jsx(?:\/style(?:\.js)?)?$/u;
  * The server chunks leave `styled-jsx/style.js` to Node, and an application whose package manager
  * does not hoist Next.js's dependencies — pnpm's — has none of its own to resolve it to: the build was
  * refused (`styled-jsx/style.js is imported but not known to be provided by the deployment runtime`,
- * `styled-jsx-dynamic`). The three names the hook answers are resolved from Next.js's own package,
- * as the hook resolves them; any other request of `styled-jsx`'s is left as it is.
+ * `styled-jsx-dynamic`). The three names the hook answers are resolved from the Next.js the project
+ * builds with, as the hook resolves them from its own package — not from the module that asked,
+ * which under pnpm may be a package that sees no Next.js, or another copy, and a `styled-jsx` of its
+ * own. Any other request of `styled-jsx`'s is left as it is.
  */
-export function styledJsxPlugin(): Plugin {
+export function styledJsxPlugin(projectDir: string): Plugin {
+  // A file of the project's, for Next.js to be resolved from where the project resolves it.
+  const fromProject = path.join(projectDir, 'package.json');
   return {
     name: 'arkor-styled-jsx',
     resolveId: {
       filter: { id: STYLED_JSX },
-      async handler(source, importer, options) {
+      async handler(source, _importer, options) {
         // eslint-disable-next-line unicorn/no-this-outside-of-class -- the plugin API hands the context as `this`
-        const next = await this.resolve('next/package.json', importer, {
+        const next = await this.resolve('next/package.json', fromProject, {
           ...options,
           skipSelf: true,
         });

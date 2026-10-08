@@ -253,7 +253,7 @@ export function appBundlePlugins(
     }),
     vendoredOtelPlugin(),
     sharedRuntimePlugin(),
-    styledJsxPlugin(),
+    styledJsxPlugin(context.patch.projectDir),
     externalsPlugin((specifier) => sinks.externals.add(specifier)),
     linkedImportsPlugin((id) => sinks.linked.add(id)),
   ];
