@@ -245,6 +245,10 @@ const VENDORED_CONTEXTS = 'next/dist/server/route-modules/pages/vendored/context
  * for one; they were resolved as Turbopack built them. What asks is a module of `node_modules` the
  * bundle reached as Node would have, which is what the hook is for. Without this, such an image was
  * sized as though the application had no `images` config (`next-image-new/image-from-node-modules`).
+ *
+ * A name the runtime has no copy of fails the build, as the hook's `require` would fail the render:
+ * resolved the usual way instead, it would be the second copy of the context this is here to keep
+ * out, and nothing would say so.
  */
 export function sharedRuntimePlugin(): Plugin {
   return {
@@ -253,12 +257,15 @@ export function sharedRuntimePlugin(): Plugin {
       filter: { id: /\.shared-runtime$/u },
       async handler(source, importer, options) {
         // As the hook asks for it: by name, from the module that asked.
+        const runtimeCopy = `${VENDORED_CONTEXTS}${path.posix.basename(source, SHARED_RUNTIME)}`;
         // eslint-disable-next-line unicorn/no-this-outside-of-class -- the plugin API hands the context as `this`
-        return this.resolve(
-          `${VENDORED_CONTEXTS}${path.posix.basename(source, SHARED_RUNTIME)}`,
-          importer,
-          { ...options, skipSelf: true },
-        );
+        const resolved = await this.resolve(runtimeCopy, importer, { ...options, skipSelf: true });
+        if (resolved === null) {
+          throw new Error(
+            `@stayingupwind/adapter: ${importer ?? 'a module'} requires ${source}, which Next.js's require hook sends to ${runtimeCopy}, and there is no such module; this Next.js version is not supported`,
+          );
+        }
+        return resolved;
       },
     },
   };
