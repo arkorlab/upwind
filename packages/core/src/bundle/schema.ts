@@ -294,7 +294,7 @@ export const prerenderSchema = z.object({
    * The route's `ensureStatic`, on the entry of a route that has it at `navigation` (Next.js 16.4,
    * `_isEnsureStaticPage` in `prerender-manifest.json`): every navigation to it is static, so
    * Next.js answers a request for React Server Components of a member it did not build with a
-   * blocking render, kept as a document's is, and never with a dynamic one.
+   * blocking render, which is kept as the member's document is kept, and never with a dynamic one.
    */
   ensureStatic: z.literal('navigation').optional(),
 });

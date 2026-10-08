@@ -140,7 +140,10 @@ function lexicalScope(statements: readonly unknown[]): Scope {
   return scope;
 }
 
-/** The `var`s a function or the chunk hoists: made anywhere in it, outside the functions it holds. */
+/**
+ * The `var`s a function, a class's static block or the chunk hoists: made anywhere in it, outside
+ * the functions and static blocks it holds, each of which keeps its own.
+ */
 function hoistVariables(scope: Scope, value: unknown): void {
   if (Array.isArray(value)) {
     for (const element of value) {
@@ -148,7 +151,7 @@ function hoistVariables(scope: Scope, value: unknown): void {
     }
     return;
   }
-  if (!isNode(value) || FUNCTIONS.has(value.type)) {
+  if (!isNode(value) || FUNCTIONS.has(value.type) || value.type === 'StaticBlock') {
     return;
   }
   if (value.type === 'VariableDeclaration' && value['kind'] === 'var') {
@@ -196,9 +199,13 @@ function scopeOpenedBy(node: Node): Scope | undefined {
     case 'FunctionExpression': {
       return functionScope(node);
     }
-    case 'BlockStatement':
-    case 'StaticBlock': {
+    case 'BlockStatement': {
       return lexicalScope(listOf(node, 'body'));
+    }
+    case 'StaticBlock': {
+      const scope = lexicalScope(listOf(node, 'body'));
+      hoistVariables(scope, listOf(node, 'body'));
+      return scope;
     }
     case 'SwitchStatement': {
       return lexicalScope(
