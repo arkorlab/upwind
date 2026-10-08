@@ -1,6 +1,6 @@
 import { standsForClass } from '@stayingupwind/core/bundle';
 
-import { entrypointKindOf, type Store } from './store.ts';
+import type { Store } from './store.ts';
 
 /**
  * The names the build gave what it built, and the escaped spellings of a path that stand for them:
@@ -51,6 +51,13 @@ export function escapedNameOf(store: Store, pathname: string): string | undefine
   return decoded !== pathname && store.pathnames.includes(decoded) ? decoded : undefined;
 }
 
+/** What the build named, by kind: the names a file of `public/` is told apart from (`isEscapedFile`). */
+interface Named {
+  readonly entrypoints: ReadonlySet<string>;
+  readonly prerenders: ReadonlyMap<string, unknown>;
+  readonly files: ReadonlyMap<string, unknown>;
+}
+
 /** The router's names for each store, with their escaped spellings (`namesWithSpellings`). */
 const spelledNames = new WeakMap<Store, string[]>();
 
@@ -70,33 +77,36 @@ export function namesWithSpellings(store: Store): string[] {
   }
   const offered = new Set(store.pathnames);
   // Counted before anything is added: the store's own array may name a page twice.
-  const named = offered.size;
+  const counted = offered.size;
   // A dynamic route's own name — its entrypoint's, `[` and all — is no path anything is asked for
   // or rewritten to. A page whose value holds a bracket (`/blog/[post3]`, which `getStaticPaths`
   // and `generateStaticParams` may name) is a name like any other, and so is one whose value is
   // spelled as its own placeholder, which shares the template's name (`/blog/[post]` of
   // `/blog/[post]`): the build says it is a page and not the class (`standsForClass`).
-  const pages = new Set(
-    store.manifest.prerenders
-      .filter((prerender) => !standsForClass(prerender))
-      .map((prerender) => prerender.pathname),
-  );
+  // A class a prerender stands for — a narrower class the build named by name
+  // (`/shop/t1/[item]` of `/shop/[team]/[item]`) — is no page either.
+  const pages = new Set<string>();
+  const classes = new Set<string>();
+  // Read off the store's own index of them, which every store has.
+  for (const prerender of store.prerendersByPathname.values()) {
+    (standsForClass(prerender) ? classes : pages).add(prerender.pathname);
+  }
+  const entrypoints = new Set(store.manifest.entrypoints.map((entry) => entry.pathname));
   const templates = new Set(
-    store.manifest.entrypoints
-      .map((entry) => entry.pathname)
-      .filter((pathname) => isTemplate(pathname) && !pages.has(pathname)),
+    [...entrypoints, ...classes].filter((pathname) => isTemplate(pathname) && !pages.has(pathname)),
   );
+  const named = { entrypoints, prerenders: store.prerendersByPathname, files: store.staticFiles };
   for (const name of store.pathnames) {
     // A file of `public/` is named as a URL spells it already (`/foo%20bar.txt`), and an escape of
     // that spelling (`/foo%2520bar.txt`) is the file's name escaped twice, which names no file.
-    if (templates.has(withoutTrailingSlash(name)) || isEscapedFile(store, name)) {
+    if (templates.has(withoutTrailingSlash(name)) || isEscapedFile(named, name)) {
       continue;
     }
     for (const spelling of spellingsOf(name)) {
       offered.add(spelling);
     }
   }
-  const names = offered.size === named ? store.pathnames : [...offered];
+  const names = offered.size === counted ? store.pathnames : [...offered];
   spelledNames.set(store, names);
   return names;
 }
@@ -107,8 +117,15 @@ export function namesWithSpellings(store: Store): string[] {
  * (`/docs/rock%27n` for `/docs/rock'n`): those that are other spellings of it.
  */
 function spellingsOf(name: string): string[] {
-  const asUrl = new URL(name, SPELLING_BASE).pathname;
-  const segments = name.split('/').map((segment) => encodeURIComponent(segment));
+  let asUrl: string;
+  let segments: string[];
+  try {
+    asUrl = new URL(name, SPELLING_BASE).pathname;
+    segments = name.split('/').map((segment) => encodeURIComponent(segment));
+  } catch {
+    // A name no URL can spell — a lone surrogate in it — is offered as it is and nothing more.
+    return [];
+  }
   const escaped = segments.join('/');
   const strictly = segments
     .map((segment) => segment.replaceAll(SUB_DELIMITERS, (character) => percentOf(character)))
@@ -139,13 +156,13 @@ function spells(spelling: string, name: string): boolean {
  * literal escape among them (`/docs/%41`, which no file of `public/` is named), and keeps its
  * spellings, in an export with no entrypoint to say so too.
  */
-function isEscapedFile(store: Store, name: string): boolean {
+function isEscapedFile(named: Named, name: string): boolean {
   const file = withoutTrailingSlash(name);
   if (
     !name.includes('%') ||
-    !store.staticFiles.has(file) ||
-    entrypointKindOf(store, file) !== undefined ||
-    store.prerendersByPathname.has(file)
+    !named.files.has(file) ||
+    named.entrypoints.has(file) ||
+    named.prerenders.has(file)
   ) {
     return false;
   }
