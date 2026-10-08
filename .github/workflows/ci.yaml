@@ -70,4 +70,4 @@ jobs:
       # dependencies. Audit both dependency graphs, including their build tools.
       # Auditing the locked dependency graph does not need install scripts or build outputs.
       - run: pnpm install --frozen-lockfile --ignore-scripts
-      - run: pnpm audit --audit-level high
+      - run: pnpm audit --audit-level low
