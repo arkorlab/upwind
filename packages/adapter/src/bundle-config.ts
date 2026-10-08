@@ -11,10 +11,11 @@ import { type BuildContext, orDefault } from './collect.ts';
 
 /**
  * Whether prefetches carry only the static part of a route. `'unstable_eager'` is an internal
- * migration aid Next.js documents as behaving like `true`; the bundle records the behaviour, not
- * the spelling.
+ * migration aid Next.js documented as behaving like `true`; the bundle records the behaviour, not
+ * the spelling. 16.4 took it out and types the option a boolean, which is why the value is taken
+ * as anything: a build of an earlier release still hands it over.
  */
-function prefetchesPartially(value: BuildContext['config']['partialPrefetching']): boolean {
+function prefetchesPartially(value: unknown): boolean {
   return value === true || value === 'unstable_eager';
 }
 

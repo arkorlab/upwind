@@ -656,9 +656,11 @@ const CACHE_CONTROL = 'cache-control';
  * What the rule has to say is a whole policy — long-lived, public, nothing withholding it — and
  * not the word `immutable`, which on its own qualifies a freshness `no-store` may take away.
  *
- * It is the build's answer and not a better one: an app whose `generateBuildId` returns a constant
- * has a `_next/static/<buildId>/` that two builds can fill differently, and Next.js's own server
- * sends that path `immutable` all the same.
+ * It is the build's answer for every directory but one. The rule names `_next/static/<buildId>/`
+ * as well, which two builds fill differently once they share a build id — and every build with a
+ * `deploymentId` does (`getBuildId`), as does an app whose `generateBuildId` returns a constant.
+ * `collectStaticFiles` takes that directory out (`underBuildId`). Next.js's own server sends it
+ * `immutable` all the same, and the rule still says so of the response.
  *
  * The rules are a list the router applies in order, with the later of two naming one header
  * winning, and only an answer that holds for every request can become a flag on a file. So the

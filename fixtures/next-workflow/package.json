@@ -1,0 +1,16 @@
+{
+  "name": "@upwind-fixture/next-workflow",
+  "version": "0.0.0",
+  "private": true,
+  "description": "An application that uses the Workflow SDK: its flow route becomes a Function of its own.",
+  "type": "module",
+  "scripts": {
+    "build": "next build"
+  },
+  "dependencies": {
+    "next": "16.4.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "workflow": "5.0.0"
+  }
+}

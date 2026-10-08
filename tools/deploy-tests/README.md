@@ -74,6 +74,11 @@ $ NEXT_TEST_MODE=deploy \
     test/e2e/app-dir/app-simple-routes/app-simple-routes.test.ts
 ```
 
+A fixture that pins another package manager than pnpm (`handle-non-hoisted-swc-helpers` pins npm) is
+run with Corepack's last known good pnpm, and pnpm 11 and 12 refuse such a project. Make that the
+version Next.js pins every other fixture to, from the Next.js checkout, as the workflow does:
+`corepack install -g "$(node -p "require('./package.json').packageManager")"`.
+
 `NEXT_ENABLE_ADAPTER=1` is what Next.js's own job for adapters sets. A few suites expect a deployment
 an adapter made to answer otherwise than one Vercel's own builder made, and read it to know which they
 are testing: with it set, they expect the adapter's answers; without it, the builder's.
@@ -146,11 +151,19 @@ Beyond that, these limits are worth knowing before reading a failure as this ada
   too. Two limits of reading a difference: a suite's variable with the very value the harness started
   with is not told apart, and is not given; and a variable the harness's process sets as it runs is
   taken for the suite's unless it is named. Named and never given: the shell's own (`PWD`, `OLDPWD`,
-  `SHLVL`, `_`), Next.js's harness's (`TEST_FILE_PATH`, `NEXT_TEST_*`), Jest's (`JEST_*`),
-  `NEXT_DEPLOYMENT_ID` (the host gives a deployment its own), this tool's (`ARKOR_*`,
-  `ADAPTER_TEST_*`), and what a `.env` file is never given either (`NODE_ENV`,
-  `__NEXT_PROCESSED_ENV`). A harness whose environment cannot be read is said on the hook's standard
-  error; a machine without `/proc` is one such case.
+  `SHLVL`, `_`), Next.js's harness's (`TEST_FILE_PATH`, `NEXT_TEST_*`), Jest's (`JEST_*`), the stack
+  size Next.js sets in any process that loads its native bindings, the harness included
+  (`RUST_MIN_STACK`, at Next.js's own value: a suite's other value is given), `NEXT_DEPLOYMENT_ID` (the
+  host gives a deployment its own), this tool's (`ARKOR_*`, `ADAPTER_TEST_*`), and what a `.env` file
+  is never given either (`NODE_ENV`, `__NEXT_PROCESSED_ENV`). The hook's log names the suite's
+  variables it found, never their values. A harness whose environment cannot be read is said on the
+  hook's standard error; a machine without `/proc` is one such case.
+  Every variable goes up as a secret, except a value too short for the API to take as one, which goes
+  up as it is and is named in the log: Next.js's deploy mode gives every fixture kept as a directory
+  `NEXT_PRIVATE_LOCAL_DEV=1`. What a suite hands over is Next.js's own test data, and refusing a short
+  value would fail the suite on how it is stored rather than on what the adapter did. A variable
+  something else gives the harness's process as it runs is taken for the suite's too, and goes up as
+  it is where it is short: one more reason to load nothing sensitive into that process.
   A machine without `/proc` gives a deployment its `.env` files alone, and a suite whose application
   reads a variable that arrives only through its harness fails there.
 - **The adapter under test has no cache unless one is plugged in.** This repository's adapter, as its

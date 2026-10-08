@@ -10,6 +10,7 @@ import {
   type RouteEntry,
   type ProjectManifest,
   type StaticFileEntry,
+  staticFileBuildWithoutDpl,
 } from '../manifest/index.ts';
 import { acceptsHtml } from './accept.ts';
 import { blockingMetadataReason } from './blocking-metadata.ts';
@@ -407,6 +408,10 @@ const STATIC_FILE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD']);
  * naming a deployment this manifest holds no build of the file for, which is asking for a file
  * this manifest may not hold. On its own as well, for the edge to ask before it has decided
  * anything else about the request.
+ *
+ * A request with no `dpl` is the current deployment's, and a kept build that answers only its own
+ * deployment's `dpl` is no file of the current one (`staticFileBuildWithoutDpl`): such a request
+ * goes on to be classified as any other.
  */
 export function classifyStaticFile(
   input: Pick<ClassifyInput, 'deployment' | 'manifest' | 'method' | 'url'>,
@@ -422,8 +427,14 @@ export function classifyStaticFile(
   if (dpls.length > 1) {
     return passthrough(DPL_MISMATCH);
   }
-  const build =
-    dpls[0] === undefined ? file : staticFileBuild(file, dpls[0], input.deployment?.dplId);
+  const activeDplId = input.deployment?.dplId;
+  if (dpls[0] === undefined) {
+    const build = staticFileBuildWithoutDpl(file, activeDplId);
+    return build === undefined
+      ? undefined
+      : { kind: 'static-file', pathname: input.url.pathname, file: build };
+  }
+  const build = staticFileBuild(file, dpls[0], activeDplId);
   if (build === undefined) {
     return passthrough(DPL_MISMATCH);
   }
@@ -434,19 +445,23 @@ export function classifyStaticFile(
  * The file as the deployment a request names built it. A content-addressed file is the same
  * bytes whichever deployment asks for the name. Any other belongs to one deployment — the
  * manifest's own, or the one a kept file names — and the deployment before may have built the
- * same name with bytes of its own. `undefined` when the manifest holds no build of the file for
- * that deployment.
+ * same name with bytes of its own. So does a kept build that answers only its own deployment's
+ * `dpl` (`dplOnly`), whatever a build that took the name for content said of it. `undefined` when
+ * the manifest holds no build of the file for that deployment.
  */
 function staticFileBuild(
   file: StaticFileEntry,
   dplId: string,
   activeDplId: string | undefined,
 ): StaticFileEntry | undefined {
-  if (file.immutable || dplId === (file.deploymentId ?? activeDplId)) {
+  const shared = file.immutable && file.dplOnly !== true;
+  if (shared || dplId === (file.deploymentId ?? activeDplId)) {
     return file;
   }
   if (file.previous?.deploymentId === dplId) {
-    return { ...file.previous, immutable: file.immutable };
+    // A name kept with the build before beside it is not a content hash (`previous`), so neither
+    // are its bytes, whatever the entry says of its own build.
+    return { ...file.previous, immutable: false };
   }
   return undefined;
 }

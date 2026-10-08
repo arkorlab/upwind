@@ -122,7 +122,7 @@ pnpm dev
   - Local:     http://localhost:3000
   - Internal:  http://localhost:3000/__upwind
 
-  ✓ Next.js 16.3.8 ready in 1127ms
+  ✓ Next.js 16.4.0 ready in 1127ms
 ```
 
 Open <http://localhost:3000> and edit `app/page.tsx` — it is the Next.js dev server you already know. To build the deployment bundle:
@@ -154,7 +154,6 @@ Dependencies are installed with the package manager you ran `create upwind` with
 my-app
 ├── .gitignore
 ├── AGENTS.md          # Next.js's own agent rules, word for word
-├── CLAUDE.md
 ├── app/
 │   ├── globals.css    # @import "tailwindcss";
 │   ├── layout.tsx
@@ -282,7 +281,7 @@ A D1 database, a KV namespace and an R2 bucket, run locally on the runtime a dep
 <td valign="top">
 
 **🤖 Ready for coding agents**<br>
-New projects get Next.js's own `AGENTS.md` and `CLAUDE.md`, and `upwind dev` keeps them current the way `next dev` does. [More in the FAQ](#-faq).
+New projects get Next.js's own `AGENTS.md`, and `upwind dev` keeps it current the way `next dev` does. [More in the FAQ](#-faq).
 
 </td>
 </tr>
@@ -343,8 +342,11 @@ Apart from `--port` and `--hostname`, `next dev`'s flags — `--experimental-htt
 | ✅  | `basePath`, `trailingSlash`, `i18n`                               |                                                                   |
 | ✅  | Static export (`output: 'export'`)                                | the same bundle, with the server parts empty                      |
 | ✅  | Cron jobs                                                         | [declared beside `next.config`](#-scheduled-work)                 |
+| ✅  | The Workflow SDK (`"use workflow"`, `workflow` 5.x)               | its flow route a Function of its own; the World a host's (below)  |
 
 **The cache is a host's, and it is chosen at build time.** The runtime hands every cache read and write to a module the host names in an adapter of its own, `createAdapter({ cacheHostModule })`. The default adapter — the one the steps above use — names none, so its bundle serves what the build produced and revalidates nothing.
+
+**So is a workflow's World.** A build that uses the Workflow SDK runs its workflows and steps in a Function of their own, on the SDK's QuickJS engine, and keeps its runs in a World the host names, `createAdapter({ workflowWorldModule })`: the host delivers the SDK's queue to that Function, and nothing a visitor sends reaches it. The adapter's readme says [what the host provides](packages/adapter/README.md#the-workflow-sdk).
 
 <details>
 <summary><b>Not supported</b></summary>
@@ -464,9 +466,9 @@ Like `next dev`, it listens on every network interface unless told otherwise, so
 </details>
 
 <details>
-<summary><b>Why does a new project have <code>AGENTS.md</code> and <code>CLAUDE.md</code>?</b></summary>
+<summary><b>Why does a new project have <code>AGENTS.md</code>?</b></summary>
 
-They are Next.js's own, word for word: the block that tells a coding agent this Next.js is newer than the one it was trained on, and to read the docs in `node_modules/next/dist/docs/` before writing code. `create-upwind` writes them the way `create-next-app` does, and when a coding agent runs `upwind dev`, your Next.js brings them up to date. `--no-agents-md` leaves them out of the scaffold, though the first `upwind dev` an agent runs writes them anyway, as `next dev` would. The switch that lasts is `agentRules: false` in `next.config`, which `upwind dev` and `next dev` both obey.
+It is Next.js's own, word for word: the block that tells a coding agent this Next.js is newer than the one it was trained on, and to read the docs in `node_modules/next/dist/docs/` before writing code. `create-upwind` writes it the way `create-next-app` does — `AGENTS.md` alone, as Next.js 16.4 does, where earlier releases wrote a `CLAUDE.md` beside it — and when a coding agent runs `upwind dev`, your Next.js brings it up to date. `--no-agents-md` leaves it out of the scaffold, though the first `upwind dev` an agent runs writes it anyway, as `next dev` would. The switch that lasts is `agentRules: false` in `next.config`, which `upwind dev` and `next dev` both obey.
 
 </details>
 

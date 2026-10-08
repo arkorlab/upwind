@@ -3,10 +3,10 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
-  BUNDLE_VERSION,
   bundleBlobs,
   type DeploymentBundle,
   deploymentBundleSchema,
+  ONE_PASS_BUNDLE_VERSION,
   travelsWithFunction,
 } from '@stayingupwind/core/bundle';
 import {
@@ -53,10 +53,19 @@ import { keepMapsThrough, readKeptMaps } from './kept-maps.ts';
 import { collectManifests } from './manifests.ts';
 import type { PlanBudget } from './plan.ts';
 import { readProjectConfig } from './project-config.ts';
+import { projectDirOf } from './project-dir.ts';
 import { carriesMaps, type SourceMapsOption } from './source-maps.ts';
 import { checkSplitOptions, type SplitOptions, splitBudget } from './split.ts';
 import { collectStaticFiles, rewriteTargetFiles } from './static-files.ts';
 import { type TracedFile, tracedFiles } from './traced-files.ts';
+import {
+  buildWorkflowFunction,
+  warnOfNoWorld,
+  type WorkflowBuild,
+  workflowBuildOf,
+  workflowPartsOf,
+} from './workflow-function.ts';
+import { aliasBuiltinWorlds } from './workflow.ts';
 
 /**
  * The upwind deployment adapter.
@@ -139,21 +148,30 @@ async function instrumentationOf(
 
 /**
  * What the Node.js entries read through `node:fs`, for each Function to carry what its own entries
- * read: the app Function carries the middleware as well, and both carry what the instrumentation
- * hook reads, since it runs before any entrypoint in each of them (`instrumentationOf`). A static
- * export runs none of the application's code, and reads nothing.
+ * read: the app Function carries the middleware as well, and every one carries what the
+ * instrumentation hook reads, since it runs before any entrypoint in each of them
+ * (`instrumentationOf`). The Workflow SDK's flow route is its own Function's alone. A static export
+ * runs none of the application's code, and reads nothing.
  */
 function filesRead(
   ctx: BuildContext,
-  middleware: AdapterOutput['MIDDLEWARE'] | undefined,
-  hookAssets: Readonly<Record<string, string>>,
-  exported: boolean,
-): { readonly app: readonly TracedFile[]; readonly middleware: readonly TracedFile[] } {
-  const own = middleware === undefined ? [] : [middleware];
-  const hook = [{ assets: hookAssets }];
-  const { appPages, appRoutes, pages, pagesApi } = ctx.outputs;
+  build: {
+    readonly workflow: WorkflowBuild;
+    readonly middleware: AdapterOutput['MIDDLEWARE'] | undefined;
+    readonly hookAssets: Readonly<Record<string, string>>;
+    readonly exported: boolean;
+  },
+): {
+  readonly app: readonly TracedFile[];
+  readonly middleware: readonly TracedFile[];
+  readonly workflow: readonly TracedFile[];
+} {
+  const own = build.middleware === undefined ? [] : [build.middleware];
+  const hook = [{ assets: build.hookAssets }];
+  const { flow, outputs } = build.workflow;
+  const { appPages, appRoutes, pages, pagesApi } = outputs;
   return {
-    app: exported
+    app: build.exported
       ? []
       : tracedFiles(
           [...appPages, ...appRoutes, ...pages, ...pagesApi, ...own, ...hook],
@@ -161,6 +179,7 @@ function filesRead(
           ctx.distDir,
         ),
     middleware: tracedFiles([...own, ...hook], ctx.projectDir, ctx.distDir),
+    workflow: flow === undefined ? [] : tracedFiles([flow, ...hook], ctx.projectDir, ctx.distDir),
   };
 }
 
@@ -202,18 +221,21 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
   await blobs.init();
 
   await refuseOtherBundlers(ctx.distDir, exported);
-  const instrumentation = await instrumentationOf(
-    ctx.distDir,
-    outDir,
+  // The Workflow SDK's flow route, when the project uses the SDK: built into a Function of its own,
+  // and nowhere else (`workflow-function.ts`).
+  const workflow = await workflowBuildOf(ctx, {
     exported,
-    options.instrumentationModules ?? [],
-  );
+    outDir,
+    hosts: options.instrumentationModules ?? [],
+    worldModule: options.workflowWorldModule,
+  });
+  const instrumentation = await instrumentationOf(ctx.distDir, outDir, exported, workflow.hosts);
   const id = deploymentId();
   // Next.js's build manifests are what its route modules read at request time. A static export
   // has no route module in the Function, and the middleware Function has none either, so nothing
   // there would ever read one: shipping them would be bytes in a Function that never opens them.
   const manifests = exported ? [] : await collectManifests(ctx.projectDir, ctx.distDir, id);
-  const collected = collectEntrypoints(ctx.outputs);
+  const collected = collectEntrypoints(workflow.outputs);
   const { entrypoints, sourcePages, edgeEntries } = collected;
   const { prerenders, shipped } = await collectPrerenders({
     outputs: ctx.outputs,
@@ -249,7 +271,8 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
   const bypassToken = bypassTokenOf(ctx.outputs);
   const routing = bundleRouting(ctx.routing, middleware);
   const runtimeManifest = {
-    v: BUNDLE_VERSION as number,
+    // One-pass, as the bundle says below: a host that knows nothing of that refuses the version.
+    v: ONE_PASS_BUNDLE_VERSION as number,
     deploymentId: id,
     nextVersion: ctx.nextVersion,
     buildId: ctx.buildId,
@@ -269,6 +292,12 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
       ),
     ],
   };
+  const files = filesRead(ctx, {
+    workflow,
+    middleware,
+    hookAssets: instrumentation.assets,
+    exported,
+  });
   const context: FunctionsContext = {
     ctx,
     outDir,
@@ -282,7 +311,8 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     ...collected,
     shipped,
     staticBlobs: await staticBlobsOf(shippedStatic, outDir),
-    files: filesRead(ctx, middleware, instrumentation.assets, exported),
+    files,
+    workflowSdk: workflow.flow !== undefined,
   };
   const functions = await appFunctionsOf(
     context,
@@ -296,22 +326,36 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     context,
     JSON.stringify(middlewareManifest(functions.runtimeManifest)),
   );
+  // The flow route's own Function, its manifest cut from the one every app Function carries.
+  const workflowParts = workflowPartsOf(
+    workflow,
+    await buildWorkflowFunction(workflow, context, {
+      runtimeManifest: functions.runtimeManifest,
+      files: files.workflow,
+    }),
+  );
   const sourceMaps = [
     ...clientMaps,
     ...functions.built.flatMap((each) => each.built.sourceMaps),
     ...(middlewareFunction?.sourceMaps ?? []),
+    ...workflowParts.sourceMaps,
   ];
 
   // Two things the bundle carries and `runtimeManifest` does not, for the same reason: nothing in
   // the Function reads either, and every byte of its manifest is parsed before its first response.
   const bundle: DeploymentBundle = deploymentBundleSchema.parse({
     ...functions.runtimeManifest,
+    // How the Functions this adapter builds fill a header's `$` references: with the router the
+    // runtime is built on, `@next/routing` 16.4 or later. The edge fills them that way for it.
+    routerReferences: 'one-pass',
     // Where each entrypoint's code is in the source tree. Only a reader of the build ever asks
     // (`sourcePageSchema`).
     sourcePages,
     // The cron jobs the project declared: the host schedules them, and the Function they reach
     // answers the request they make like any other.
     ...(projectConfig.crons.length > 0 && { crons: projectConfig.crons }),
+    // Where the workflow Function takes the SDK's queue, and which SDK it was built with.
+    ...workflowParts.bundle,
     projectDir: path.relative(ctx.repoRoot, ctx.projectDir).split(path.sep).join('/'),
     generatedAt: new Date().toISOString(),
     staticFiles,
@@ -319,12 +363,19 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     // served, and each Function's own bundle. Left out entirely when the host asked for none, so
     // a bundle without them is a bundle without the field rather than one with an empty list.
     ...(sourceMaps.length > 0 && { sourceMaps }),
-    functions: bundleFunctions(functions.built, middlewareFunction),
+    functions: {
+      ...bundleFunctions(functions.built, middlewareFunction),
+      ...workflowParts.functions,
+    },
   });
   await writeFile(path.join(outDir, BUNDLE_FILE), JSON.stringify(bundle, null, 2));
   await writeFile(
     path.join(outDir, DEPENDENCIES_FILE),
-    JSON.stringify(dependencyRecord(functions, middlewareFunction), null, 2),
+    JSON.stringify(
+      { ...dependencyRecord(functions, middlewareFunction), ...workflowParts.dependencies },
+      null,
+      2,
+    ),
   );
   await rm(path.join(outDir, 'work'), { recursive: true, force: true });
   if (functions.built.length > 1) {
@@ -336,6 +387,7 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
   );
   reportWhatTravels(bundle, edgeEntries, ctx.nextVersion, exported);
   reportSplit(functions.built);
+  warnOfNoWorld(workflow, options.workflowWorldModule);
 }
 
 /**
@@ -558,6 +610,17 @@ export interface AdapterOptions {
    */
   readonly clientInstrumentationSource?: string | undefined;
   /**
+   * The module a deployment's Workflow SDK keeps its runs in, as an absolute path: one that exports
+   * `createWorld()`, answering a World (`@workflow/world`) or a promise of one.
+   *
+   * Only a build that uses the SDK carries it. Registered from the instrumentation hook, before any
+   * route of the deployment runs (`writeWorldRegistration` in `workflow.ts`); the World is the
+   * host's own, since what stores a run and delivers its messages is the platform's to provide —
+   * the SDK's own Worlds keep their state on a file system or reach Vercel, and a Function has
+   * neither.
+   */
+  readonly workflowWorldModule?: string | undefined;
+  /**
    * Carry the deployment's source maps, so a host can show a stack against the code it was
    * written as.
    *
@@ -681,6 +744,32 @@ function renderInOneProcessForStorage(config: BuildConfig): void {
 }
 
 /**
+ * One entry per dynamic route in the table the build hands this adapter, as every release before
+ * 16.4 wrote it.
+ *
+ * 16.4 collapses that table by default (`experimental.collapseAdapterRoutes`). A dynamic page and
+ * its `.rsc` and per-segment forms become one entry whose destination ends in the suffix that
+ * matched (`/blog/[slug]$2`), and a run of fallback shells becomes one entry whose destination
+ * begins with the prefix that matched (`/$1/[slug]`). Each still resolves a request to the output
+ * the entries it replaced did — but a destination is then no longer the template it serves, and
+ * that is what a bundle reads a dynamic route's template off (`reachableTemplates`,
+ * `dynamicRouting` and `withFunctions` in `@stayingupwind/core`). A collapsed entry leaves its
+ * route with no shell, and every request for that page goes to the Function where the prerendered
+ * shell could have answered it.
+ *
+ * So the option is turned off, which is how Next.js keeps the table it wrote before. A release
+ * without the option writes that table anyway and is left alone. A project that turned the option
+ * on itself cannot be told apart from the default, and is turned off with the rest: the table it
+ * asked for is one this bundle would serve worse. What it costs is the table's length, which is the
+ * length every release before 16.4 had.
+ */
+function keepRoutesApart(config: BuildConfig): void {
+  if ('collapseAdapterRoutes' in config.experimental) {
+    config.experimental.collapseAdapterRoutes = false;
+  }
+}
+
+/**
  * The adapter, as a host configures it.
  *
  * `NEXT_ADAPTER_PATH` and `adapterPath` both name a module whose default export is a
@@ -697,7 +786,9 @@ export function createAdapter(options: AdapterOptions = {}): NextAdapter {
   checkSplitOptions(options.functions?.split);
   return {
     name: 'upwind',
-    async modifyConfig(config, { phase, projectDir }) {
+    async modifyConfig(config, context) {
+      const { phase } = context;
+      const projectDir = projectDirOf(context);
       if (phase === 'phase-development-server') {
         // `/__upwind` belongs to `upwind dev`, which is in front of this server. See `dev-prefix.ts`
         // for why a front door that already holds the path still wants the reservation, and why
@@ -725,6 +816,9 @@ export function createAdapter(options: AdapterOptions = {}): NextAdapter {
         // `immutableByBuild`).
         config.supportsImmutableAssets = true;
         renderInOneProcessForStorage(config);
+        keepRoutesApart(config);
+        // The Workflow SDK's own Worlds stay out of the Functions: neither can run there.
+        await aliasBuiltinWorlds(config, projectDir, OUT_DIR_NAME);
         if (carriesMaps(options.sourceMaps)) {
           // Both halves, because a stack has both in it: a page's frames are in the browser
           // chunks, and a render's are in the server ones. What keeps the browser maps from being

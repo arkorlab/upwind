@@ -11,7 +11,6 @@ installs it.
 my-upwind-app
 ├── .gitignore
 ├── AGENTS.md
-├── CLAUDE.md
 ├── app/
 │   ├── globals.css
 │   ├── layout.tsx
@@ -52,10 +51,11 @@ bundle.
 **Tailwind 4 is set up** (`@import "tailwindcss";` and a PostCSS plugin, no config file). Nothing
 else is: no ESLint, no `src/`, no component library. `create-next-app --empty` is the shape.
 
-**`AGENTS.md` and `CLAUDE.md` are Next.js's, word for word.** They carry the block Next.js writes to
-tell a coding agent that this major is not the one it was trained on, and where in
-`node_modules/next/dist/docs/` to read before writing any code — the same two files
-`create-next-app` writes, from the same text.
+**`AGENTS.md` is Next.js's, word for word.** It carries the block Next.js writes to tell a coding
+agent that this major is not the one it was trained on, and where in `node_modules/next/dist/docs/`
+to read before writing any code — the same file `create-next-app` writes, from the same text. Until
+Next.js 16.4 that was two files, with a `CLAUDE.md` importing `AGENTS.md`; 16.4 writes `AGENTS.md`
+alone, and so does this.
 
 Keeping it identical is the point, so this scaffolder tries not to be the last word on it. The text
 it was built against is written first; then, where the install left a Next.js it can reach, that one
@@ -72,8 +72,8 @@ it says so before it finishes.
 kind of start the answer matters on, so a project stays current as its Next.js moves — and a plain
 `next dev` then agrees with what is already there instead of rewriting it.
 
-`--no-agents-md` writes neither — and the first `upwind dev` an agent runs writes both, because that
-is what the project's Next.js does about a missing block, and `next dev` would do it too. The switch
+`--no-agents-md` leaves it out — and the first `upwind dev` an agent runs writes it, because that is
+what the project's Next.js does about a missing block, and `next dev` would do it too. The switch
 that lasts is Next.js's own: `agentRules: false` in `next.config.ts`, which both commands obey.
 
 ## Options
@@ -83,7 +83,7 @@ pnpm create upwind [directory]
 
       --skip-install  Write the application, install nothing
       --no-git        Do not make a first commit
-      --no-agents-md  Do not write AGENTS.md and CLAUDE.md
+      --no-agents-md  Do not write AGENTS.md
       --use-npm       Install with npm
       --use-pnpm      Install with pnpm
       --use-yarn      Install with yarn

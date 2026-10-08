@@ -1,7 +1,11 @@
 import { z } from 'zod';
 
 import { artifactRefSchema, sha256HexSchema, shellEncodingsSchema } from '../artifact/artifact.ts';
-import { routeHasSchema, splitFunctionNameSchema } from '../bundle/schema.ts';
+import {
+  routeHasSchema,
+  routerReferencesSchema,
+  splitFunctionNameSchema,
+} from '../bundle/schema.ts';
 import { KEY_SCHEMA_VERSION } from '../cache/keys.ts';
 import { deploymentFingerprintSchema } from '../deployment/fingerprint.ts';
 import { imagesConfigSchema } from '../images/config.ts';
@@ -24,25 +28,30 @@ import { imagesConfigSchema } from '../images/config.ts';
  * reader of 3 matched rules by case: given such a build, it would serve a class's shell where a
  * rule spelled in another case claims the path (`/Shop/:slug` for `/docs/shop/x`).
  *
- * 5 is another line's: a header's `$` references filled in one pass, where the manifest says
- * `routerReferences: 'one-pass'`. Nothing here writes it, and a reader here refuses it, which is the
- * safe side, rather than fill those headers in turn.
+ * 5: a header's `$` references are filled the way the deployment's Functions fill them, which is in
+ * one pass where the manifest says `routerReferences: 'one-pass'`. A reader of 4 drops the field
+ * and fills every header in turn: given such a deployment, it would answer a `$10` against one
+ * capture with the capture and a `0`, where the deployment's Function answers `$10`.
  *
  * 6: a stored manifest may name a route's headers, conditions and preloads by their place in its
  * `tables` (`stored.ts`). A reader of 4 or 5 would take those places for the values themselves.
  */
 export const MANIFEST_SCHEMA_VERSION = 6;
-const BASE_PATH_ROUTED_VERSION = 4;
-const CASE_MATCHED_VERSION = 3;
+/** The version before, which `routerReferences` was first published at. */
+const ONE_PASS_REFERENCES_VERSION = 5;
+/** The version before that, which every manifest published until 5 was. */
+const PREVIOUS_MANIFEST_SCHEMA_VERSION = 4;
+/** The version before that, which every manifest published until 4 was, and some still are. */
+const EARLIEST_READ_MANIFEST_SCHEMA_VERSION = 3;
 /**
- * Every version still read (above): this one, and each one a manifest still serving may have been
- * published at here. 4 was first published on 2026-10-04, so a deployment made before that still
- * serves a manifest of 3.
+ * Every version a manifest is read at: this one, and each one before it that a writer published
+ * and a reader has accepted since, whose manifests are still served (above).
  */
 export const READ_MANIFEST_SCHEMA_VERSIONS = [
+  EARLIEST_READ_MANIFEST_SCHEMA_VERSION,
+  PREVIOUS_MANIFEST_SCHEMA_VERSION,
+  ONE_PASS_REFERENCES_VERSION,
   MANIFEST_SCHEMA_VERSION,
-  BASE_PATH_ROUTED_VERSION,
-  CASE_MATCHED_VERSION,
 ] as const;
 const HTTP_OK = 200;
 
@@ -256,27 +265,49 @@ const staticFileBytesSchema = z.object({
  * it did before they existed — with the Function's 404 — which is why they are not a schema version
  * (see `MANIFEST_SCHEMA_VERSION`).
  */
-export const staticFileEntrySchema = staticFileBytesSchema.extend({
-  /**
-   * Content-addressed by the build: cacheable forever, shared across deployments, and the same
-   * bytes whichever deployment asks for the name.
-   */
-  immutable: z.boolean(),
-  /**
-   * The status the file is answered with, when it is not 200: an error document's, which the
-   * host reads off the file's name under the build's `basePath` — a name the edge, which does not
-   * know the `basePath`, cannot tell from a `public/` file's.
-   */
-  status: z.number().int().positive().optional(),
-  /** The deployment that built the file, when it is not the manifest's own. */
-  deploymentId: z.string().min(1).optional(),
-  /**
-   * The same name as the deployment before built it, when the name is not a content hash — a
-   * build manifest under a build id that stays the same from build to build. Its documents ask
-   * for the name by their deployment, and get the bytes that deployment gave it.
-   */
-  previous: staticFileBytesSchema.extend({ deploymentId: z.string().min(1) }).optional(),
-});
+export const staticFileEntrySchema = staticFileBytesSchema
+  .extend({
+    /**
+     * Content-addressed by the build: cacheable forever, shared across deployments, and the same
+     * bytes whichever deployment asks for the name.
+     */
+    immutable: z.boolean(),
+    /**
+     * The status the file is answered with, when it is not 200: an error document's, which the
+     * host reads off the file's name under the build's `basePath` — a name the edge, which does not
+     * know the `basePath`, cannot tell from a `public/` file's.
+     */
+    status: z.number().int().positive().optional(),
+    /** The deployment that built the file, when it is not the manifest's own. */
+    deploymentId: z.string().min(1).optional(),
+    /**
+     * A kept build (`deploymentId`) that answers only a request whose `dpl` names its deployment,
+     * set by whoever keeps it. Its name is one the manifest's own deployment answers itself: a file
+     * under a build id both builds have — Next.js gives every build with a `deploymentId` the same
+     * build id (`getBuildId`) — at a path this deployment ships nothing at, such as under a
+     * `basePath` the deployment before had. A request naming no deployment is the manifest's own
+     * deployment's, and its routing answers it (`staticFileBuildWithoutDpl`). A reader that does
+     * not know the field answers every request with the kept build, as before the field existed.
+     */
+    dplOnly: z.literal(true).optional(),
+    /**
+     * The same name as the deployment before built it, when the name is not a content hash — a
+     * build manifest under a build id that stays the same from build to build. Its documents ask
+     * for the name by their deployment, and get the bytes that deployment gave it.
+     */
+    previous: staticFileBytesSchema.extend({ deploymentId: z.string().min(1) }).optional(),
+  })
+  .superRefine((entry, ctx) => {
+    // On the manifest's own build, `dplOnly` would name no deployment to answer, and a reader that
+    // finds no kept build answers every request with the file.
+    if (entry.dplOnly === true && entry.deploymentId === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        message: '`dplOnly` is said of a kept build, which names its `deploymentId`',
+        path: ['dplOnly'],
+      });
+    }
+  });
 export type StaticFileEntry = z.infer<typeof staticFileEntrySchema>;
 
 /**
@@ -405,7 +436,7 @@ const manifestFields = {
  */
 export const projectManifestSchema = z.object({
   ...manifestFields,
-  schemaVersion: z.union(READ_MANIFEST_SCHEMA_VERSIONS.map((version) => z.literal(version))),
+  schemaVersion: z.literal(READ_MANIFEST_SCHEMA_VERSIONS),
   /** The Functions this deployment runs as: the application's, and its middleware's. */
   app: appRuntimeSchema,
   /** Files served straight from storage, by pathname. */
@@ -430,6 +461,14 @@ export const projectManifestSchema = z.object({
   exactPathnames: exactPathnamesSchema.optional(),
   exactFunctions: exactFunctionsSchema.optional(),
   headerRules: z.array(headerRuleSchema).optional(),
+  /**
+   * How the deployment's Functions fill a header's `$` references (`routerReferencesSchema`): the
+   * edge fills a rule's headers the same way, so a response gets no value from the edge that the
+   * Function would not have given it. Absent on a manifest of a deployment whose Functions route
+   * with the router from before 16.4 — every manifest from before this was published among them —
+   * whose headers the edge fills the way that router did.
+   */
+  routerReferences: routerReferencesSchema.optional(),
   /**
    * The unconditional header rules of a build whose routing the edge does not reproduce (one with
    * `i18n`, and in a manifest from before the edge routed it, one with a `basePath`), which

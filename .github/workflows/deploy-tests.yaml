@@ -30,7 +30,7 @@ on:
     inputs:
       nextjsRef:
         description: "Next.js ref to test against — inside the adapter's supported range"
-        default: 'v16.3.8'
+        default: 'v16.4.0'
         type: string
       tests:
         description: 'Upstream test paths, space separated — or `all` for the whole manifest'
@@ -266,6 +266,13 @@ jobs:
       - name: Install Chromium
         working-directory: nextjs
         run: pnpm playwright install --with-deps chromium
+      # The pnpm Corepack falls back to, made the one Next.js's harness pins every fixture to (its own
+      # `packageManager`). A fixture that pins another manager pins no pnpm, and the deploy hook tells
+      # Corepack not to fetch the newest for it (`COREPACK_DEFAULT_TO_LATEST=0`): what it runs then is
+      # this. Corepack's own fallback is newer, and pnpm 11 and 12 refuse a project pinned to npm.
+      - name: Make Next.js's pnpm the one Corepack falls back to
+        working-directory: nextjs
+        run: corepack install -g "$(node -p "require('./package.json').packageManager")"
 
       # `dist`, because that is the adapter as a release hands it to a project.
       - name: Build the adapter

@@ -97,8 +97,14 @@ export interface EntryModule {
   readonly filePath: string;
 }
 
+/**
+ * The Functions a deployment may have: `app` always, `middleware` when the project has a proxy, and
+ * `workflow` when it uses the Workflow SDK (`workflow.ts`).
+ */
+export type FunctionKind = 'app' | 'middleware' | 'workflow';
+
 export interface BuildFunctionInput {
-  readonly kind: 'app' | 'middleware';
+  readonly kind: FunctionKind;
   /**
    * The Function's own name, where it is not its kind: `app-2`, `app-3`… for the app Functions
    * after the first of a build that split its routes across several (`split.ts`). It names the
@@ -137,6 +143,8 @@ export interface BuildFunctionInput {
    * a failure. Whatever is finally uploaded is held to the limit all the same.
    */
   readonly deferSizeAudit?: boolean | undefined;
+  /** Whether the build carries the Workflow SDK, in any of its Functions (`workflow.ts`). */
+  readonly workflowSdk?: boolean | undefined;
 }
 
 function nameOf(input: BuildFunctionInput): string {
@@ -191,6 +199,11 @@ export interface AppBundleContext {
   readonly sourceMaps?: boolean | undefined;
   /** Where to find a chunk's map that a hook took away (`kept-maps.ts`). */
   readonly keptMaps?: KeptMaps | undefined;
+  /**
+   * Whether this is the workflow Function: the one Function the Workflow SDK's engine is in, and the
+   * one whose `node:vm` import is stubbed (`workflow.ts`). Anywhere else the audit refuses it.
+   */
+  readonly workflowFunction?: boolean | undefined;
 }
 
 /** What `bundleApp` collects as Rolldown runs, for the dependency record. */
@@ -229,7 +242,7 @@ export function appBundlePlugins(
     ...(context.sourceMaps === true ? [sourceMapsPlugin(context.keptMaps)] : []),
     stubPlugin((specifier) => {
       sinks.stubs.push(specifier);
-    }),
+    }, context.workflowFunction === true),
     wasmModulePlugin(context.wasm, (file, global) => {
       sinks.wasm.push(`${file} -> ${global}`);
     }),
@@ -301,6 +314,7 @@ async function bundleApp(
         patch: input.patch,
         wasm: input.wasm,
         ...(carriesMaps(input.sourceMaps) && { sourceMaps: true, keptMaps: input.keptMaps }),
+        ...(input.kind === 'workflow' && { workflowFunction: true }),
       },
       sinks,
     ),
@@ -363,6 +377,8 @@ async function bundleRuntime(input: BuildFunctionInput, workDir: string): Promis
       // Which Function this is, among a deployment's app Functions: what a request for a route of
       // another one is told apart by (`placement.ts`).
       __ARKOR_FUNCTION_NAME__: jsLiteral(nameOf(input)),
+      // A build without the Workflow SDK leaves the runtime's part for it out entirely.
+      __ARKOR_WORKFLOW_SDK__: jsLiteral(input.workflowSdk === true),
       // CommonJS conveniences that `@next/routing`'s build references at module scope.
       __dirname: '"/bundle"',
       __filename: `"/bundle/${RUNTIME_MODULE}"`,

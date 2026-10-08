@@ -1,5 +1,6 @@
 import { canonicalJson, sha256HexOfText } from '../artifact/hash.ts';
 import { MAX_IMMUTABLE_ASSET_BYTES } from '../assets/admission.ts';
+import type { RouterReferences } from '../bundle/schema.ts';
 import type { DeploymentFingerprint } from '../deployment/fingerprint.ts';
 import type { ImagesConfig } from '../images/config.ts';
 import { compareCodeUnits } from '../util/bytes.ts';
@@ -55,6 +56,8 @@ export interface BuildProjectManifestInput {
   /** Exact pathnames an app Function other than the first answers, with its name. */
   readonly exactFunctions?: Readonly<Record<string, string>> | undefined;
   readonly headerRules?: readonly HeaderRule[] | undefined;
+  /** How the deployment's Functions fill a header's `$` references, as its bundle says. */
+  readonly routerReferences?: RouterReferences | undefined;
   readonly foldedHeaderRules?: readonly HeaderRule[] | undefined;
   readonly images?: ImagesConfig | undefined;
   /** The application's `htmlLimitedBots`, as the build recorded it. */
@@ -203,6 +206,7 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
     }),
     ...(input.exactFunctions !== undefined && { exactFunctions: input.exactFunctions }),
     ...(input.headerRules !== undefined && { headerRules: input.headerRules }),
+    ...(input.routerReferences !== undefined && { routerReferences: input.routerReferences }),
     ...(input.foldedHeaderRules !== undefined && { foldedHeaderRules: input.foldedHeaderRules }),
     ...(input.images !== undefined && { images: input.images }),
     ...crawlerFields(input),
@@ -420,6 +424,20 @@ export function findStaticFile(
 ): StaticFileEntry | undefined {
   const key = staticFileKey(manifest, pathname);
   return key === undefined ? undefined : manifest.staticFiles?.[key];
+}
+
+/**
+ * The build of a shipped file that a request naming no deployment (no `dpl`) is answered with:
+ * the manifest's own, or one kept from the deployment before. `undefined` for a kept build that
+ * answers only its own deployment's `dpl` (`dplOnly`): its name is the manifest's own deployment's
+ * to answer, with whatever its routing makes of the path.
+ */
+export function staticFileBuildWithoutDpl(
+  file: StaticFileEntry,
+  activeDplId: string | undefined,
+): StaticFileEntry | undefined {
+  const kept = file.deploymentId !== undefined && file.deploymentId !== activeDplId;
+  return kept && file.dplOnly === true ? undefined : file;
 }
 
 /**

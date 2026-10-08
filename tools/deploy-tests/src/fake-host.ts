@@ -11,6 +11,9 @@ const CREATED = 201;
 const ACCEPTED = 202;
 const CONFLICT = 409;
 const NOT_FOUND = 404;
+const BAD_REQUEST = 400;
+/** The shortest value the API takes as a secret; a shorter one refuses the whole environment. */
+const SHORTEST_SECRET = 4;
 const SERVICE_UNAVAILABLE = 503;
 /** What the root page says on each request of a `moves` host, the last repeated from then on. */
 const PAGE_SEQUENCE = [
@@ -37,6 +40,8 @@ export interface FakeHost {
   readonly registered: () => string | undefined;
   /** The deployment's environment as it was replaced, names and values. */
   readonly environment: () => Record<string, string>;
+  /** The names in that environment that went up as secrets. */
+  readonly secrets: () => string[];
   /** The digests that were uploaded, in the order they arrived. */
   readonly uploaded: () => string[];
   /** Whatever this host refused, because it was asked out of order. */
@@ -94,6 +99,7 @@ export async function fakeHost(
   let busy = busyFor;
   let registered: string | undefined;
   let environment: Record<string, string> = {};
+  let secrets: string[] = [];
   let wanted: string[] = [];
   /** The application's one static file, learned at registration: where it is and what it hashes to. */
   let asset: { pathname: string; sha256: string } | undefined;
@@ -248,6 +254,28 @@ export async function fakeHost(
     probedOn ??= request.socket.localPort;
   }
 
+  /**
+   * The environment, read back as nothing and replaced as the API replaces it: a secret too short to be
+   * one refuses the whole of it, and nothing of it is kept.
+   */
+  async function answerEnvironment(
+    request: IncomingMessage,
+    answer: (status: number, said: unknown) => void,
+  ): Promise<void> {
+    if (request.method === 'PUT') {
+      const sent = (await body(request)) as {
+        env: { name: string; value: string; secret: boolean }[];
+      };
+      if (sent.env.some((entry) => entry.secret && entry.value.length < SHORTEST_SECRET)) {
+        answer(BAD_REQUEST, { error: { code: 'invalid_request' } });
+        return;
+      }
+      environment = Object.fromEntries(sent.env.map((entry) => [entry.name, entry.value]));
+      secrets = sent.env.filter((entry) => entry.secret).map((entry) => entry.name);
+    }
+    answer(OK, { env: [] });
+  }
+
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     if (request.method === 'HEAD') {
       // Only the file the bundle named, and only once the deployment is finalized: a host that answered
@@ -284,11 +312,7 @@ export async function fakeHost(
       return;
     }
     if (pathname === '/v1/projects/p/env') {
-      if (request.method === 'PUT') {
-        const sent = (await body(request)) as { env: { name: string; value: string }[] };
-        environment = Object.fromEntries(sent.env.map((entry) => [entry.name, entry.value]));
-      }
-      answer(OK, { env: [] });
+      await answerEnvironment(request, answer);
       return;
     }
     if (pathname === '/v1/projects/p/deployments' && request.method === 'POST') {
@@ -346,6 +370,7 @@ export async function fakeHost(
     probedOn: () => probedOn,
     registered: () => registered,
     environment: () => environment,
+    secrets: () => [...secrets],
     uploaded: () => [...uploaded],
     refusals: () => [...refusals],
     namedAt: () => namedAt,

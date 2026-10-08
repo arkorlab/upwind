@@ -1,9 +1,10 @@
 # @stayingupwind/adapter
 
 `next build` calls this adapter with a description of the application, and it writes a deployment
-bundle under `<projectDir>/.arkor/` — `bundle.json`, the blobs it names, and the two Functions
-(`app`, `middleware`) that run the application's code under `@stayingupwind/runtime`. A build needs no
-credentials or service calls, and uploading the bundle is the host's job.
+bundle under `<projectDir>/.arkor/` — `bundle.json`, the blobs it names, and the Functions (`app`,
+`middleware`, and `workflow` for a build that uses the Workflow SDK) that run the application's code
+under `@stayingupwind/runtime`. A build needs no credentials or service calls, and uploading the
+bundle is the host's job.
 
 Name the adapter in `next.config`:
 
@@ -71,6 +72,13 @@ offered under the application's root as well.
 `modifyConfig` sets `supportsImmutableAssets` (content-addressed `/_next/static/immutable/*`).
 Next.js turns it off again for a static export, in `finalizeConfig`, after the hook has run.
 `next/image` is left as the application configured it: the edge optimizes `/_next/image`.
+
+It also turns `experimental.collapseAdapterRoutes` off, on a release that has it (16.4 on, where it
+is on by default). Collapsed, the table serves a dynamic page and its `.rsc` and per-segment forms
+from one entry whose destination ends in the suffix that matched, and a run of fallback shells from
+one entry whose destination begins with the prefix that matched — and a destination that is no
+longer the template it serves is a route the bundle finds no shell for (`reachableTemplates`,
+`dynamicRouting`). Off, the table is the one every release before 16.4 wrote: one entry a route.
 
 ## The development server
 
@@ -350,6 +358,39 @@ route with `runtime = 'edge'`, called twice. `fixtures/next-minimal` does the sa
 runtime, in both of the forms Turbopack compiles — `?module`, which compiles, and the plain
 import, which instantiates.
 
+## The Workflow SDK
+
+A build that uses Vercel's Workflow SDK (`workflow`, its `"use workflow"` and `"use step"`
+directives, `withWorkflow(nextConfig)`) gets a third Function. The flow route `withWorkflow`
+generates — `/.well-known/workflow/v1/flow` under the `basePath`, where 5.x runs both workflows and
+steps — is taken out of the application's routes and built into `functions.workflow` alone, and the
+bundle records it as `workflow: { route, sdk }`. Nothing a visitor sends reaches it: the
+application's Function has no such route, and what calls it is the host, delivering the SDK's
+queue. A delivery goes through none of the application's routing rules — its redirects, rewrites
+and header rules are left out of this Function — as Vercel's queue reaches the function itself.
+The webhook route the SDK generates stays an application route.
+
+- **The engine is QuickJS.** workerd's `node:vm` is a stub that throws, and 4.x of the SDK runs
+  workflows on nothing else, so a build with `workflow` older than 5 fails, saying so. The runtime
+  sets `WORKFLOW_VM=quickjs` (a project's own value wins), and the `workflow-quickjs-wasm` patch
+  ships the WebAssembly the engine embeds as a base64 string as a compiled module of its own,
+  as every other `.wasm` is: Cloudflare forbids compiling WebAssembly at run time. In the workflow
+  Function, the `node:vm` its chunks import — and never call, on that engine — resolves to a module
+  that throws if it ever is; the application's and the middleware's Functions still refuse it at
+  build time.
+- **The SDK's own Worlds stay out.** `@workflow/world-local` keeps its state on a file system and
+  `@workflow/world-vercel` reaches Vercel; neither can run in a Function, so `modifyConfig` aliases
+  both to modules that refuse (`turbopack.resolveAlias`), which keeps about a megabyte out of every
+  Function. An alias the project set itself is left as it is.
+- **The World is the host's.** `createAdapter({ workflowWorldModule })` names a module exporting
+  `createWorld()`, which the adapter registers from the instrumentation hook, before any route
+  runs, where the SDK looks for its World. A build without one warns: every run would fail where it
+  starts, unless the project's own hook calls `setWorld()`.
+- **`VERCEL_URL`** is what the SDK builds a webhook's URL from on this engine (and `localhost`
+  without it), so a host gives the workflow Function the deployment's hostname under that name.
+
+`fixtures/next-workflow` is the build `tools/next-matrix` holds to this.
+
 ## Which Next.js
 
 One declaration, `SUPPORTED_NEXT_RANGE` in `src/patches/versions.ts`, which is also the
@@ -378,12 +419,13 @@ its file **in a bundle**. A rewrite can apply perfectly to a module no build eve
 `--canary` checks the current canary as a forecast. A prerelease is not in the range — a
 semantic-version range admits no prerelease it does not name — so what it reports is not this
 adapter being wrong about a version somebody can install, but what the next release is about to
-do to these rewrites. It is run as a step of its own that is allowed to fail, and it is failing
-now: `16.4.0-canary`'s `CacheSignal` schedules through an `immediateTracker` that the
-`cache-signal-timers` patch has never seen. A canary is numbered as the next minor whatever it is
-going to become, and which it becomes is decided when it ships: as a major it is outside this
-range already and costs nothing, as a minor it is inside it and that patch has to learn the new
-shape first.
+do to these rewrites. It is run as a step of its own that is allowed to fail. A canary is numbered
+as the next minor whatever it is going to become, and which it becomes is decided when it ships: as
+a major it is outside this range already and costs nothing, as a minor it is inside it and a patch
+it breaks has to learn the new shape first. That is what 16.4 was. Its canaries had `CacheSignal`
+schedule through an `immediateTracker` that `cache-signal-timers` had never seen, it shipped as a
+minor with that shape, and the patch now rewrites both: the helper before 16.4, and the one that
+waits on the tracker from 16.4.
 
 The floor is where the Adapter API became stable, which is 16.2. Below it the hook is
 `experimental.adapterPath` and hands `ctx.routes`, a different shape altogether, with no

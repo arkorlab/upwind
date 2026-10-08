@@ -6,7 +6,8 @@ import { type Patch, Rewrite } from './types.ts';
  * that same evaluation at build time and ships the resulting context as JSON next to the script's
  * name (see `manifests.ts`); the loader reads the JSON and assigns it into its context object
  * instead. A manifest the build did not ship still fails the read, which the `handleMissing`
- * branch turns into `{}` as before.
+ * branch turns into what Next.js makes of a missing manifest: `{}` before 16.4, and `undefined`
+ * from it.
  */
 
 const NAME = 'load-manifest';

@@ -29,6 +29,29 @@ export const BUNDLE_VERSION = 1;
 export const SPLIT_BUNDLE_VERSION = 2;
 
 /**
+ * The versions of a bundle whose Functions fill a header's `$` references in one pass, and which
+ * says so (`routerReferences`): 3, and 4 for one split as 2 is. Versions of their own rather than
+ * the field alone, for the reason the split has one: a reader that knew nothing of the field would
+ * drop it and publish the deployment's headers to be filled the earlier way, which its Functions
+ * no longer fill them — wrong for every header with a reference the two read apart, and for good,
+ * since what it publishes is the deployment's manifest. A reader that knows only 1 and 2 refuses
+ * these outright. A bundle that does not say stays 1 or 2.
+ */
+export const ONE_PASS_BUNDLE_VERSION = 3;
+export const ONE_PASS_SPLIT_BUNDLE_VERSION = 4;
+
+/** The versions of a bundle whose routes the build split across app Functions. */
+const SPLIT_VERSIONS: ReadonlySet<number> = new Set([
+  ONE_PASS_SPLIT_BUNDLE_VERSION,
+  SPLIT_BUNDLE_VERSION,
+]);
+/** The versions of a bundle that says how its Functions fill a header's references. */
+const ONE_PASS_VERSIONS: ReadonlySet<number> = new Set([
+  ONE_PASS_BUNDLE_VERSION,
+  ONE_PASS_SPLIT_BUNDLE_VERSION,
+]);
+
+/**
  * How many app Functions one bundle may run as. Each is a Function a host uploads, keeps and wakes
  * apart from the others, so a split is meant to come to a handful; this is far past any the
  * adapter's planner makes, and is here so that no bundle can ask for thousands.
@@ -321,6 +344,19 @@ export const functionSchema = z.object({
 });
 export type FunctionSpec = z.infer<typeof functionSchema>;
 
+/**
+ * What a host needs to know of the Workflow SDK a deployment runs: where the workflow Function
+ * takes a queue's messages (`route`, the SDK's flow route under the project's `basePath`), and the
+ * `workflow` release the project installed (`sdk`), so that a host whose queue and storage speak
+ * one version of the SDK's protocol can refuse a deployment built against another before it
+ * takes traffic, rather than fail every run it starts.
+ */
+export const workflowSchema = z.object({
+  route: z.string().startsWith('/'),
+  sdk: z.string().min(1),
+});
+export type WorkflowSpec = z.infer<typeof workflowSchema>;
+
 const i18nDomainSchema = z.object({
   defaultLocale: z.string(),
   domain: z.string(),
@@ -382,10 +418,32 @@ export const bundleConfigSchema = z.looseObject({
 });
 export type BundleConfig = z.infer<typeof bundleConfigSchema>;
 
+/**
+ * How a deployment's Functions fill the `$` references in a header's key and value. `one-pass` is
+ * `@next/routing` from 16.4: one pass over the value, each reference read as the longest name it
+ * spells — `$10` is the tenth capture or nothing, never the first and a `0` — and what that names
+ * put in as it is. The router before it replaced each name over the whole value in turn, as a
+ * replacement string, which is how a deployment whose bundle does not say has its headers filled.
+ */
+export const routerReferencesSchema = z.literal('one-pass');
+export type RouterReferences = z.infer<typeof routerReferencesSchema>;
+
 const bundleSchema = z.object({
-  v: z.union([z.literal(BUNDLE_VERSION), z.literal(SPLIT_BUNDLE_VERSION)]),
+  v: z.literal([
+    BUNDLE_VERSION,
+    SPLIT_BUNDLE_VERSION,
+    ONE_PASS_BUNDLE_VERSION,
+    ONE_PASS_SPLIT_BUNDLE_VERSION,
+  ]),
   deploymentId: deploymentIdSchema,
   nextVersion: z.string().min(1),
+  /**
+   * How this deployment's Functions fill a header's `$` references (`routerReferencesSchema`), so
+   * that what the edge answers for them carries the values the Function would have given it. Said
+   * by a bundle of version 3 or 4 (`ONE_PASS_BUNDLE_VERSION`), and by no other: absent from a
+   * bundle an earlier adapter wrote, whose Functions route with the router before.
+   */
+  routerReferences: routerReferencesSchema.optional(),
   buildId: z.string().min(1),
   /** The Next.js project directory relative to the repository root (`apps/site`, say). */
   projectDir: z.string(),
@@ -412,6 +470,14 @@ const bundleSchema = z.object({
    */
   crons: cronsSchema.optional(),
   middleware: z.object({ matchers: z.array(routeSchema) }).optional(),
+  /**
+   * The Workflow SDK, when the project uses it (`withWorkflow` from `workflow/next`): the route its
+   * queue delivers to, and the SDK it was built with. That route is answered by the workflow
+   * Function and by nothing else — the app Function does not carry it — so a host delivers its
+   * queue's messages there, and a request from outside never reaches it. Absent for a build that
+   * does not use the SDK, which is every build made before this field existed.
+   */
+  workflow: workflowSchema.optional(),
   prerenders: z.array(prerenderSchema),
   staticFiles: z.array(staticFileSchema),
   /**
@@ -429,6 +495,8 @@ const bundleSchema = z.object({
      * one of them carries the same `runtime.json`, so each knows where every route is.
      */
     split: z.record(splitFunctionNameSchema, functionSchema).optional(),
+    /** Present exactly when `workflow` is: the Function that runs the project's workflows. */
+    workflow: functionSchema.optional(),
   }),
 });
 export type DeploymentBundle = z.infer<typeof bundleSchema>;
@@ -503,9 +571,9 @@ function splitIssues(bundle: DeploymentBundle): string[] {
   if (split !== undefined && names.length === 0) {
     issues.push('functions.split names no Function; a bundle that was not split leaves it out');
   }
-  if ((bundle.v === SPLIT_BUNDLE_VERSION) !== names.length > 0) {
+  if (SPLIT_VERSIONS.has(bundle.v) !== names.length > 0) {
     issues.push(
-      `a bundle with functions.split is version ${SPLIT_BUNDLE_VERSION}, and only such a bundle is`,
+      `a bundle with functions.split is version ${SPLIT_BUNDLE_VERSION} or ${ONE_PASS_SPLIT_BUNDLE_VERSION}, and only such a bundle is`,
     );
   }
   if (names.length + 1 > MAX_APP_FUNCTIONS) {
@@ -560,6 +628,25 @@ export const deploymentBundleSchema = bundleSchema
     for (const message of splitIssues(bundle)) {
       ctx.addIssue({ code: 'custom', message });
     }
+  })
+  .superRefine((bundle, ctx) => {
+    // The version is what a reader that knows nothing of the field refuses by (above).
+    if (ONE_PASS_VERSIONS.has(bundle.v) !== (bundle.routerReferences !== undefined)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `a bundle says how its Functions fill a header's references at version ${ONE_PASS_BUNDLE_VERSION} or ${ONE_PASS_SPLIT_BUNDLE_VERSION}, and only such a bundle does`,
+      });
+    }
+  })
+  .superRefine((bundle, ctx) => {
+    // One without the other is a bundle a host cannot act on: a route with no Function to deliver
+    // to, or a Function nothing says how to reach.
+    if ((bundle.workflow === undefined) !== (bundle.functions.workflow === undefined)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'a bundle carries `workflow` and `functions.workflow` together or neither',
+      });
+    }
   });
 
 /** The complete reference walk shared by validation and collection. */
@@ -585,6 +672,7 @@ function forEachBlob(bundle: DeploymentBundle, visit: (ref: BlobRef) => void): v
     bundle.functions.app,
     bundle.functions.middleware,
     ...Object.values(bundle.functions.split ?? {}),
+    bundle.functions.workflow,
   ];
   for (const spec of functions) {
     if (spec === undefined) {

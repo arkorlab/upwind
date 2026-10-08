@@ -27,10 +27,21 @@ export function invokeEdgeHandler(input: InvokeEdgeInput): Promise<Response> {
   // a stream by then, the router having teed it — from the request handed as the initializer, and
   // what it attached to the request along with them. A body that did not survive would reach the
   // handler empty, which the fixture's `POST` to a rewritten edge route would answer with.
-  const asked =
-    input.url === undefined
-      ? input.request
-      : new Request(new URL(input.url, target), input.request);
+  //
+  // And with a `Host`, where it came without one, from the URL it was asked under, as the Node.js
+  // bridge gives one (`restoreHost`, `node-bridge.ts`): Next.js reads the header. The request as it
+  // arrived has headers that cannot be changed, so it is copied for that too.
+  const hostless = !input.request.headers.has('host');
+  let asked = input.request;
+  if (hostless || input.url !== undefined) {
+    asked = new Request(
+      input.url === undefined ? input.request.url : new URL(input.url, target),
+      input.request,
+    );
+    if (hostless) {
+      asked.headers.set('host', target.host);
+    }
+  }
   return input.handler(asked, {
     waitUntil: input.waitUntil,
     signal: input.request.signal,

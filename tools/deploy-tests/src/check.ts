@@ -11,6 +11,7 @@ import {
   OUTPUT_DIRECTORY_BUILD_ID,
   writeApplication,
 } from './check-application.ts';
+import { NEXT_JS_STACK, sameEnvironment, stackSizeScenario } from './check-stack-size.ts';
 import { fakeHost, type FakeHost } from './fake-host.ts';
 import { AFTER_SERVED_MS } from './hook.ts';
 
@@ -353,6 +354,7 @@ async function suiteEnvScenario(
     );
     return;
   }
+  stackSizeScenario(env, holds);
   const host = await fakeHost(deploymentId);
   try {
     await bounded(DEPLOY_HOOK, appDir, {
@@ -360,16 +362,29 @@ async function suiteEnvScenario(
       ARKOR_API_URL: `http://127.0.0.1:${String(host.port)}`,
       SUITE_ONLY: 'from-the-suite',
       OWN: 'the-suites-over-the-files',
-      // What Next.js's harness sets in its own process as it runs: its, not the suite's.
+      // What Next.js's harness sets in its own process as it runs: its, not the suite's. Next.js sets
+      // the stack size in any process that has loaded its native bindings, the harness among them.
       TEST_FILE_PATH: '/next.js/test/e2e/some.test.ts',
       NEXT_TEST_JOB: '1',
+      RUST_MIN_STACK: NEXT_JS_STACK,
+      // The suite's, and too short to go up as a secret: Next.js's deploy mode gives it to every
+      // fixture kept as a directory.
+      NEXT_PRIVATE_LOCAL_DEV: '1',
       // What no `.env` file gives a deployment either: a Function that started with it skips its own.
       __NEXT_PROCESSED_ENV: 'true',
     });
     holds(
       "a suite's own variables reach the deployment, over the application's .env files, and the harness's do not",
-      JSON.stringify(host.environment()) ===
-        JSON.stringify({ OWN: 'the-suites-over-the-files', SUITE_ONLY: 'from-the-suite' }),
+      sameEnvironment(host.environment(), {
+        NEXT_PRIVATE_LOCAL_DEV: '1',
+        OWN: 'the-suites-over-the-files',
+        SUITE_ONLY: 'from-the-suite',
+      }),
+    );
+    holds(
+      'and each goes up as a secret, but one too short to be one',
+      JSON.stringify(host.secrets().toSorted((a, b) => a.localeCompare(b))) ===
+        JSON.stringify(['OWN', 'SUITE_ONLY']),
     );
   } finally {
     host.close();
@@ -392,8 +407,7 @@ async function suiteEnvScenario(
     );
     holds(
       "and read off the hook's parent where no harness is named",
-      JSON.stringify(parent.environment()) ===
-        JSON.stringify({ OWN: 'yes', SUITE_ONLY: 'via-the-parent' }),
+      sameEnvironment(parent.environment(), { OWN: 'yes', SUITE_ONLY: 'via-the-parent' }),
     );
   } finally {
     parent.close();
@@ -417,6 +431,12 @@ async function main(): Promise<void> {
     // scenario that runs it out sets.
     JEST_SUITE_NAME: 'deploy:e2e:test/e2e/app-dir/app-simple-routes/app-simple-routes.test.ts',
     __NEXT_NODE_NATIVE_TS_LOADER_ENABLED: undefined,
+    // The hook sets it for a fixture, so the shell's is kept out: the check of it would otherwise
+    // pass on a shell that exported it.
+    COREPACK_DEFAULT_TO_LATEST: undefined,
+    // Started without one, whatever this machine exports: the scenario of a suite's variables reads
+    // the stack size Next.js sets against a harness that had none, as Next.js's harness has none.
+    RUST_MIN_STACK: undefined,
     NODE_OPTIONS: ordinaryNodeOptions(process.env['NODE_OPTIONS']),
     NEXT_E2E_TEST_TIMEOUT: undefined,
     ADAPTER_TEST_HOOK_STARTED_MS: undefined,
@@ -511,6 +531,10 @@ async function main(): Promise<void> {
         build.includes('the build saw types transformed: no'),
     );
     holds('nor the file holding it', build.includes('ARKOR_API_TOKEN_FILE: no'));
+    holds(
+      'and Corepack is told not to fetch the newest pnpm for it',
+      build.includes('the build saw Corepack fetch the newest: no'),
+    );
     holds("the application's own post-build ran", build.includes('the fixture post-build ran'));
     holds('and it saw no token either', build.includes('it saw ARKOR_API_TOKEN: no'));
     const bundle = JSON.parse(readFileSync(path.join(appDir, '.arkor', 'bundle.json'), 'utf8')) as {
