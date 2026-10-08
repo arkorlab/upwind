@@ -2,6 +2,7 @@
 const CACHE_STORAGE = 'upwind.next-cache-storage@1';
 const REVALIDATION = 'upwind.next-revalidation@1';
 const EXPORT_PREFIX = 'export ';
+const REVALIDATION_MARK = 'revalidate-tag-single-arg';
 // A documentation URL alone is application content. Match Next's warning and its public provider.
 // Both quote spellings occur in emitted chunks; every repetition below has a fixed literal boundary.
 const REVALIDATION_WARNINGS =
@@ -41,8 +42,17 @@ function isCacheWrapper(source: string): boolean {
   return source.includes('cacheLifeProfiles.default') && source.includes('runInCleanSnapshot');
 }
 
+function isRevalidationModule(source: string): boolean {
+  // Keep candidate detection independent of the declaration/warning syntax we must validate.
+  return (
+    source.includes(REVALIDATION_MARK) &&
+    source.includes('workAsyncStorage') &&
+    source.includes('workUnitAsyncStorage')
+  );
+}
+
 export function isResourceCacheBridgeSource(source: string): boolean {
-  return isCacheWrapper(source) || resourceCacheBridgeRevalidations(source) !== 0;
+  return isCacheWrapper(source) || isRevalidationModule(source);
 }
 
 function preceding(
@@ -134,7 +144,7 @@ function revalidationDeclarations(source: string): RevalidationDeclaration[] {
 
 /** The adapter counts the same native providers that the build/dev transform recognizes. */
 export function resourceCacheBridgeRevalidations(source: string): number {
-  return revalidationDeclarations(source).length;
+  return isRevalidationModule(source) ? revalidationDeclarations(source).length : 0;
 }
 
 function revalidationRegistration(source: string, provider: RevalidationDeclaration): Insertion {
@@ -153,6 +163,7 @@ function revalidationRegistration(source: string, provider: RevalidationDeclarat
 }
 
 function revalidationRegistrations(source: string): Insertion[] {
+  if (!isRevalidationModule(source)) return [];
   return revalidationDeclarations(source).map((declaration) =>
     revalidationRegistration(source, declaration),
   );
@@ -170,6 +181,9 @@ function insertRegistrations(source: string, insertions: readonly Insertion[]): 
 
 /** Register exact module-scope stores before fills; cache GETs gain no callback, context or I/O. */
 export function resourceCacheBridge(source: string): ResourceCacheBridgeResult {
+  if (isRevalidationModule(source) && resourceCacheBridgeRevalidations(source) === 0) {
+    throw new Error('resource-cache-bridge: Next revalidateTag provider was not found');
+  }
   if (
     source.includes(`Symbol.for("${CACHE_STORAGE}")`) ||
     source.includes(`Symbol.for("${REVALIDATION}")`)

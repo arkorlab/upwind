@@ -490,7 +490,11 @@ async function getUseCache(
     invalidation: held.invalidation,
     now,
   });
-  if (validity === 'expired' || (validity === 'stale' && isPrimaryResourceRead())) {
+  // A regeneration must rebuild from fresh data even when Next's request store permits SWR.
+  if (
+    validity === 'expired' ||
+    (validity === 'stale' && (isRegeneration() || isPrimaryResourceRead()))
+  ) {
     return undefined;
   }
   return {
