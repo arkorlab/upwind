@@ -1,6 +1,6 @@
 import { standsForClass } from '@stayingupwind/core/bundle';
 
-import type { Store } from './store.ts';
+import { entrypointKindOf, type Store } from './store.ts';
 
 /**
  * The names the build gave what it built, and the escaped spellings of a path that stand for them:
@@ -131,9 +131,19 @@ function spells(spelling: string, name: string): boolean {
   }
 }
 
-/** A static file whose name is a URL's spelling of another: one of `public/`, escaped as it is served. */
+/**
+ * A file of `public/`, named as a URL spells it (escaped as it is served), whose name is a spelling of
+ * another: a static file no page or prerender is named after. A page the build wrote as a file is
+ * named by its own characters, a literal escape among them (`/docs/%41`), and keeps its spellings.
+ */
 function isEscapedFile(store: Store, name: string): boolean {
-  if (!name.includes('%') || !store.staticFiles.has(withoutTrailingSlash(name))) {
+  const file = withoutTrailingSlash(name);
+  if (
+    !name.includes('%') ||
+    !store.staticFiles.has(file) ||
+    entrypointKindOf(store, file) !== undefined ||
+    store.prerendersByPathname.has(file)
+  ) {
     return false;
   }
   try {
