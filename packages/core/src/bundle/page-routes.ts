@@ -139,6 +139,11 @@ function listed(list: string): string[] {
  * shell's own pattern, so every later reference of the destination counts one group fewer.
  * `undefined` for an entry that is no such run.
  *
+ * The base path is in two of the three places a run is read from, as it is in every entry the build
+ * writes: its pattern and its destination begin with it (`start`, `prefixed`), and its `source`
+ * does not — that is the page as the build names it, `/$1/<tail>` for a run and `route.page` for
+ * any other entry.
+ *
  * A run is matched under no locale: its pattern begins with the prefix, right after the `basePath`.
  * An application with `i18n` puts the locale there, and its dynamic routes are not the edge's to
  * pick (`reproducesDynamicRouting`).
