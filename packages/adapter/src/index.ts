@@ -44,6 +44,7 @@ import {
   tracedChunks,
   tracedWasm,
 } from './collect.ts';
+import { refuseOutputOutsideProject } from './dependencies.ts';
 import { reserveUpwindPrefix } from './dev-prefix.ts';
 import type { EdgeEntry } from './edge.ts';
 import { ensureStaticRoutes } from './ensure-static.ts';
@@ -213,6 +214,7 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
   // there is nothing for it to conflict with — so the option is unused there rather than unsupported.
   if (!exported) {
     refuseCustomCacheHandlers(ctx.config);
+    refuseOutputOutsideProject(ctx.projectDir, ctx.distDir);
   }
   // Read before anything is written: a cron this platform cannot run fails the build here, where
   // the message is about the file the author wrote, rather than at the upload or never.

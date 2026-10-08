@@ -17,6 +17,13 @@ import { releaseStream } from '@stayingupwind/core/util';
 
 import { stripPlatformHeaders } from './incoming.ts';
 import type { Resolved } from './outputs.ts';
+import {
+  AFTER_FILES,
+  BEFORE_FILES,
+  BEFORE_MIDDLEWARE,
+  FALLBACK,
+  markedRewrites,
+} from './rewritten-path.ts';
 import { HTTP_OK } from './serve.ts';
 import { entrypointKindOf, type Store } from './store.ts';
 
@@ -157,17 +164,20 @@ export function routingTables(store: Store, skipMiddleware: boolean, url: URL): 
     (config.i18n !== null && config.i18n !== undefined) ||
     isPagesDataRequestPath(config.basePath, url.pathname);
   return {
-    beforeMiddleware: routingRoutes(
-      internalLeftOut
-        ? routing.beforeMiddleware.filter((route) => !isInternal(route))
-        : routing.beforeMiddleware,
+    beforeMiddleware: markedRewrites(
+      routingRoutes(
+        internalLeftOut
+          ? routing.beforeMiddleware.filter((route) => !isInternal(route))
+          : routing.beforeMiddleware,
+      ),
+      BEFORE_MIDDLEWARE,
     ),
     middlewareMatchers: skipMiddleware ? [] : routingRoutes(routing.middlewareMatchers),
-    beforeFiles: routingRoutes(routing.beforeFiles),
-    afterFiles: routingRoutes(routing.afterFiles),
+    beforeFiles: markedRewrites(routingRoutes(routing.beforeFiles), BEFORE_FILES),
+    afterFiles: markedRewrites(routingRoutes(routing.afterFiles), AFTER_FILES),
     dynamicRoutes: routingRoutes(store.dynamicRoutes),
     onMatch: routingRoutes(routing.onMatch),
-    fallback: routingRoutes(routing.fallback),
+    fallback: markedRewrites(routingRoutes(routing.fallback), FALLBACK),
     shouldNormalizeNextData: routing.shouldNormalizeNextData,
   };
 }

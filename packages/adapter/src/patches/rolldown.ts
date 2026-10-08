@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { isBuiltin } from 'node:module';
+import path from 'node:path';
 
 import type { Plugin } from 'rolldown';
 
@@ -221,6 +222,104 @@ export function vendoredOtelPlugin(onFallback?: (specifier: string) => void): Pl
         }
         onFallback?.(OTEL_API);
         return vendored;
+      },
+    },
+  };
+}
+
+/** How Next.js names a module holding a React context its renderers share with the application. */
+const SHARED_RUNTIME = '.shared-runtime';
+/** Where Next.js's require hook sends each of them: the Pages Router runtime's own copy. */
+const VENDORED_CONTEXTS = 'next/dist/server/route-modules/pages/vendored/contexts/';
+/** A module of Next.js's own that holds one, where a request for it resolves as it is. */
+const NEXT_SHARED_RUNTIME =
+  /[/\\]next[/\\]dist[/\\](?:esm[/\\])?shared[/\\]lib[/\\][^/\\]+\.shared-runtime\.js$/u;
+
+/**
+ * A module holding one of the contexts Next.js's renderers share with the application —
+ * `*.shared-runtime`, the image config's among them — is the copy the Pages Router's runtime holds,
+ * whichever module asks for it, as on Next.js's own server.
+ *
+ * That server installs a require hook ahead of any handler (`server/require-hook.ts`, which an
+ * adapter's Node.js entries load through `next/setup-node-env`): each such `require` is sent to the
+ * runtime's copy (`server/route-modules/pages/vendored/contexts/<name>`), so that a package left to
+ * Node — one of `serverExternalPackages` — that renders `next/image` reads the context the renderer
+ * provides, and not a second copy of it that nothing provides. The chunks Turbopack writes never ask
+ * for one; they were resolved as Turbopack built them. What asks is a module of `node_modules` the
+ * bundle reached as Node would have, which is what the hook is for. Without this, such an image was
+ * sized as though the application had no `images` config (`next-image-new/image-from-node-modules`).
+ *
+ * A name the runtime has no copy of fails the build, as the hook's `require` would fail the render:
+ * resolved the usual way instead, it would be the second copy of the context this is here to keep
+ * out, and nothing would say so.
+ *
+ * Only a request that resolves to one of Next.js's own (`shared/lib/*.shared-runtime.js`) is sent:
+ * the hook reads the name alone, and would send a package's own `./x.shared-runtime` to the runtime
+ * as well, but a module of that name that is not Next.js's holds no context the runtime has.
+ */
+export function sharedRuntimePlugin(): Plugin {
+  return {
+    name: 'arkor-shared-runtime',
+    resolveId: {
+      filter: { id: /\.shared-runtime$/u },
+      async handler(source, importer, options) {
+        // eslint-disable-next-line unicorn/no-this-outside-of-class -- the plugin API hands the context as `this`
+        const own = await this.resolve(source, importer, { ...options, skipSelf: true });
+        if (own === null || !NEXT_SHARED_RUNTIME.test(own.id)) {
+          return own;
+        }
+        // As the hook asks for it: by name, from the module that asked.
+        const runtimeCopy = `${VENDORED_CONTEXTS}${path.posix.basename(source, SHARED_RUNTIME)}`;
+        // eslint-disable-next-line unicorn/no-this-outside-of-class -- the plugin API hands the context as `this`
+        const resolved = await this.resolve(runtimeCopy, importer, { ...options, skipSelf: true });
+        if (resolved === null) {
+          throw new Error(
+            `@stayingupwind/adapter: ${importer ?? 'a module'} requires ${source}, which Next.js's require hook sends to ${runtimeCopy}, and there is no such module; this Next.js version is not supported`,
+          );
+        }
+        return resolved;
+      },
+    },
+  };
+}
+
+/** The requests Next.js's require hook answers with the `styled-jsx` Next.js depends on. */
+const STYLED_JSX = /^styled-jsx(?:\/style(?:\.js)?)?$/u;
+
+/**
+ * `styled-jsx` as Next.js's server resolves it: the copy Next.js depends on, whatever the
+ * application installed or did not (`defaultOverrides` in `server/require-hook.ts`, which an
+ * adapter's Node.js entries load through `next/setup-node-env`) — so that the style registry a page
+ * writes its styles into is the one Next.js's renderer reads them out of.
+ *
+ * The server chunks leave `styled-jsx/style.js` to Node, and an application whose package manager
+ * does not hoist Next.js's dependencies — pnpm's — has none of its own to resolve it to: the build was
+ * refused (`styled-jsx/style.js is imported but not known to be provided by the deployment runtime`,
+ * `styled-jsx-dynamic`). The three names the hook answers are resolved from the Next.js the project
+ * builds with, as the hook resolves them from its own package — not from the module that asked,
+ * which under pnpm may be a package that sees no Next.js, or another copy, and a `styled-jsx` of its
+ * own. Any other request of `styled-jsx`'s is left as it is.
+ */
+export function styledJsxPlugin(projectDir: string): Plugin {
+  // A file of the project's, for Next.js to be resolved from where the project resolves it.
+  const fromProject = path.join(projectDir, 'package.json');
+  return {
+    name: 'arkor-styled-jsx',
+    resolveId: {
+      filter: { id: STYLED_JSX },
+      async handler(source, _importer, options) {
+        // eslint-disable-next-line unicorn/no-this-outside-of-class -- the plugin API hands the context as `this`
+        const next = await this.resolve('next/package.json', fromProject, {
+          ...options,
+          skipSelf: true,
+        });
+        if (next === null) {
+          return null;
+        }
+        // The hook sends `styled-jsx/style.js` where `styled-jsx/style` resolves.
+        const target = source === 'styled-jsx' ? source : 'styled-jsx/style';
+        // eslint-disable-next-line unicorn/no-this-outside-of-class -- the plugin API hands the context as `this`
+        return this.resolve(target, next.id, { ...options, skipSelf: true });
       },
     },
   };

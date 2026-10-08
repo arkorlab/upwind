@@ -29,6 +29,7 @@ import {
   type BundleTrace,
   type FunctionDependencies,
   functionDependencies,
+  outputNameOf,
 } from './dependencies.ts';
 import { dynamicLoadsInChunk } from './dynamic-loads.ts';
 import { bundleEdge, type EdgeEntry } from './edge.ts';
@@ -49,7 +50,9 @@ import {
   type PatchContext,
   PATCHES,
   patchesPlugin,
+  sharedRuntimePlugin,
   stubPlugin,
+  styledJsxPlugin,
   vendoredOtelPlugin,
   wasmModulePlugin,
   FUNCTION_BANNER,
@@ -249,6 +252,8 @@ export function appBundlePlugins(
       sinks.wasm.push(`${file} -> ${global}`);
     }),
     vendoredOtelPlugin(),
+    sharedRuntimePlugin(),
+    styledJsxPlugin(context.patch.projectDir),
     externalsPlugin((specifier) => sinks.externals.add(specifier)),
     linkedImportsPlugin((id) => sinks.linked.add(id)),
   ];
@@ -620,6 +625,7 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
       ...(linked !== undefined && { linked: await linkedSource(linked) }),
     },
     dependencies,
+    outputNameOf(input.projectDir, distDir),
   );
   return {
     spec: {

@@ -19,6 +19,8 @@ export {
   externalsPlugin,
   patchesPlugin,
   stubPlugin,
+  sharedRuntimePlugin,
+  styledJsxPlugin,
   vendoredOtelPlugin,
   wasmModulePlugin,
 } from './rolldown.ts';
