@@ -247,6 +247,9 @@ async function builtSegment(
     return segmentMissed(rsc.varyHeader);
   }
   const headers = prerenderHeaders(prerender, RSC_CONTENT_TYPE);
+  // These headers came from the document: its resource hints do not belong to a Flight response.
+  // Routing applies any explicit next.config or middleware Link header after this answer is made.
+  headers.delete('link');
   headers.set(PRERENDER_HEADER, '1');
   headers.set(POSTPONED_HEADER, '2');
   headers.set(CACHE_CONTROL, NO_STORE_CACHE_CONTROL);
@@ -345,6 +348,7 @@ export async function rscFromBuild(
  */
 function builtPayload(store: Store, twin: Prerender): Response {
   const response = staticResponse(store, twin, RSC_CONTENT_TYPE, twin.initialStatus ?? HTTP_OK);
+  response.headers.delete('link');
   response.headers.set(CACHE_CONTROL, NO_STORE_CACHE_CONTROL);
   response.headers.set('vary', store.manifest.routing.rsc.varyHeader);
   return withCacheState(response, 'HIT');
