@@ -29,6 +29,8 @@ const LOCALE_PATTERN = '[/]?(?<nextLocale>[^/]{1,})';
 const LOCALE_DESTINATION = '/$nextLocale';
 const API_PREFIX = '/api/';
 const NAMED_GROUP = /\(\?<([A-Za-z_$][\w$]*)>/gu;
+/** A destination's reference to a group by its place, as 16.4 writes the one to a page's suffix. */
+const POSITIONAL_REFERENCE = /\$(\d+)/gu;
 /** What a named group is renamed to, before its index (`withDistinctGroups`). */
 const RENAMED_GROUP = 'arkorG';
 const RENAMED_GROUP_DIGITS = 3;
@@ -367,9 +369,25 @@ function unlocalizedApiRoutes(manifest: {
     return {
       ...route,
       sourceRegex: `^${config.basePath}${route.sourceRegex.slice(localizedPattern.length)}`,
-      destination: `${config.basePath}${destination.slice(localizedDestination.length)}`,
+      destination: withoutLocaleGroup(
+        `${config.basePath}${destination.slice(localizedDestination.length)}`,
+      ),
     };
   });
+}
+
+/**
+ * A destination with every reference to a group by its place moved down one, for a pattern that
+ * has lost the locale's group, its first. 16.4 names the group that captures a page's `.rsc` or
+ * segment suffix by its place (`/api/[id]$3`), and collapses the route table by default, so that
+ * reference is on the entry that answers the API route itself. Left as it was, it named a group
+ * past the last, which the router leaves in the destination: the page it named was `/api/[id]$3`,
+ * which no build has, and the request matched no route at all.
+ */
+function withoutLocaleGroup(destination: string): string {
+  return destination.replaceAll(POSITIONAL_REFERENCE, (reference: string, place: string) =>
+    Number(place) > 1 ? `$${String(Number(place) - 1)}` : reference,
+  );
 }
 
 /** The manifest this isolate read, and the store built over it: each made once, on first use. */
