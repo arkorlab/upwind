@@ -423,6 +423,22 @@ export class AuditError extends Error {
 }
 
 /**
+ * Refuse a build whose output is outside its project — `distDir: '../.next'`, as a monorepo's tools
+ * write it beside their packages (`upward-distdir`, `nx-handling`). The Function carries the build's
+ * files under the names they have from the project (`displayPath`), and `workerd` loads no module whose
+ * name climbs out of its own (`../.next/BUILD_ID`): the Function would be deployed and never start.
+ * Said here, where the configuration is, rather than as a deployment that does not answer.
+ */
+export function refuseOutputOutsideProject(projectDir: string, distDir: string): void {
+  const relative = path.relative(projectDir, distDir);
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new AuditError(
+      `@stayingupwind/adapter: the build's output (\`distDir\`, ${outputNameOf(projectDir, distDir)}) is outside the project (${projectDir}); the Function names the files it carries from the project, and none can be named outside it`,
+    );
+  }
+}
+
+/**
  * A file the application reads, under a name the Function already carries a module of its own under
  * — `runtime.json`, the deployment's manifest, say. The file is found at its path in the project,
  * and the application would be handed that module where it asked for its file, so the build is
