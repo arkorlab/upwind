@@ -77,7 +77,9 @@ function delimitedStep(
  * fixed by where the input's slashes are: there is one way to divide the input into repetitions,
  * and each part's length is tried once. What multiplies backtracking is a choice between two ways
  * of dividing it, so the group may hold at most one quantified part, no alternatives, and no part
- * that could itself consume the delimiter.
+ * that could itself consume the delimiter. The one part may be optional as well as repeated —
+ * `(?:\/a?)*`, `(ab?)+` — for the same reason: where it starts is fixed, so it is tried one way or
+ * the other, once, before the next delimiter decides.
  *
  * `(?:[^/]+\/)*` — what Next.js compiles the redirects of `trailingSlash: true` into — is the same
  * with the delimiter last: every repetition ends at a `/` its quantified part cannot consume, so
@@ -138,7 +140,8 @@ function trailingDelimited(fragment: string, contents: number): boolean {
     return false;
   }
   // Before it, as Next.js writes it: one part that repeats and cannot consume the delimiter, and
-  // nothing else quantified. What is optional there is refused, as it is anywhere in a repetition.
+  // nothing else quantified. Read that narrowly, as the plain units above are: an optional part,
+  // which Next.js does not write here, is left to the rule every other repetition is held to.
   const quantified = units.slice(0, -1).filter((unit) => unit.quantifier !== undefined);
   const [part] = quantified;
   return (
