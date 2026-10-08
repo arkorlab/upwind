@@ -23,10 +23,23 @@ import { imagesConfigSchema } from '../images/config.ts';
  * a rule of `next.config` is matched without regard to case, as Next.js's router matches it. A
  * reader of 3 matched rules by case: given such a build, it would serve a class's shell where a
  * rule spelled in another case claims the path (`/Shop/:slug` for `/docs/shop/x`).
+ *
+ * 5: a stored manifest may name a route's headers, conditions and preloads by their place in its
+ * `tables` (`stored.ts`). A reader of 4 would take those places for the values themselves.
  */
-export const MANIFEST_SCHEMA_VERSION = 4;
-/** The version before, which every manifest published until this one was: still read (above). */
-const PREVIOUS_MANIFEST_SCHEMA_VERSION = 3;
+export const MANIFEST_SCHEMA_VERSION = 5;
+const BASE_PATH_ROUTED_VERSION = 4;
+const CASE_MATCHED_VERSION = 3;
+/**
+ * Every version still read (above): this one, and each one a manifest still serving may have been
+ * published at. 4 was first published on 2026-10-04, so a deployment made before that still
+ * serves a manifest of 3.
+ */
+export const READ_MANIFEST_SCHEMA_VERSIONS = [
+  MANIFEST_SCHEMA_VERSION,
+  BASE_PATH_ROUTED_VERSION,
+  CASE_MATCHED_VERSION,
+] as const;
 const HTTP_OK = 200;
 
 /**
@@ -380,10 +393,7 @@ const manifestFields = {
  */
 export const projectManifestSchema = z.object({
   ...manifestFields,
-  schemaVersion: z.union([
-    z.literal(PREVIOUS_MANIFEST_SCHEMA_VERSION),
-    z.literal(MANIFEST_SCHEMA_VERSION),
-  ]),
+  schemaVersion: z.union(READ_MANIFEST_SCHEMA_VERSIONS.map((version) => z.literal(version))),
   /** The Functions this deployment runs as: the application's, and its middleware's. */
   app: appRuntimeSchema,
   /** Files served straight from storage, by pathname. */

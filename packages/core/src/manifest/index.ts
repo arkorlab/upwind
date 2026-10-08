@@ -43,6 +43,7 @@ export {
   type DynamicRoute,
   dynamicRouteSchema,
   MANIFEST_SCHEMA_VERSION,
+  READ_MANIFEST_SCHEMA_VERSIONS,
   type ManifestCache,
   manifestCacheSchema,
   type MemberRoute,
@@ -66,3 +67,4 @@ export {
   staticFileEntrySchema,
   type StaticFileLocales,
 } from './schema.ts';
+export { fromStoredManifest } from './stored.ts';

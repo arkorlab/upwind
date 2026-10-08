@@ -20,6 +20,7 @@ import {
   type StaticFileEntry,
   type StaticFileLocales,
 } from './schema.ts';
+import { fromStoredManifest, toStoredManifest } from './stored.ts';
 
 const DEFAULT_FIRST_BYTE_TIMEOUT_MS = 15_000;
 const DEFAULT_TOTAL_TIMEOUT_MS = 300_000;
@@ -163,14 +164,17 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
   });
 }
 
-/** Content address of a manifest: SHA-256 of its canonical JSON. */
+/** Content address of a manifest: SHA-256 of its stored bytes (`serializeManifest`). */
 export async function computeManifestId(manifest: ProjectManifest): Promise<string> {
-  return sha256HexOfText(canonicalJson(manifest));
+  return sha256HexOfText(serializeManifest(manifest));
 }
 
-/** Serialize a manifest deterministically (the bytes that `computeManifestId` hashes). */
+/**
+ * Serialize a manifest deterministically, as it is stored (`toStoredManifest`): the bytes that
+ * `computeManifestId` hashes.
+ */
 export function serializeManifest(manifest: ProjectManifest): string {
-  return canonicalJson(manifest);
+  return canonicalJson(toStoredManifest(manifest));
 }
 
 const KIB = 1024;
@@ -184,9 +188,9 @@ const MANIFEST_MIB = 8;
  */
 export const MAX_MANIFEST_BYTES = MANIFEST_MIB * MIB;
 
-/** Parse and validate a manifest document (throws on schema violations). */
+/** Parse and validate a manifest document, as stored or not (throws on schema violations). */
 export function parseProjectManifest(json: string): ProjectManifest {
-  return projectManifestSchema.parse(JSON.parse(json));
+  return projectManifestSchema.parse(fromStoredManifest(JSON.parse(json)));
 }
 
 /** The documents `next build` writes for an error, by the name they are shipped under. */
