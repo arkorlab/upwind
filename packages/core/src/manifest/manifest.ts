@@ -371,6 +371,20 @@ export function findStaticFile(
 }
 
 /**
+ * The build of a shipped file that a request naming no deployment (no `dpl`) is answered with:
+ * the manifest's own, or one kept from the deployment before. `undefined` for a kept build that
+ * answers only its own deployment's `dpl` (`dplOnly`): its name is the manifest's own deployment's
+ * to answer, with whatever its routing makes of the path.
+ */
+export function staticFileBuildWithoutDpl(
+  file: StaticFileEntry,
+  activeDplId: string | undefined,
+): StaticFileEntry | undefined {
+  const kept = file.deploymentId !== undefined && file.deploymentId !== activeDplId;
+  return kept && file.dplOnly === true ? undefined : file;
+}
+
+/**
  * Exact-match route lookup (case-sensitive, no trailing-slash normalization), of the pathname as
  * the request spelled it and then decoded (`byPathname`). A route is named by the spelling a
  * request asks for it by — behind the slash, for an application that keeps its pages there — so

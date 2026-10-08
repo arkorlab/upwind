@@ -221,27 +221,49 @@ const staticFileBytesSchema = z.object({
  * it did before they existed — with the Function's 404 — which is why they are not a schema version
  * (see `MANIFEST_SCHEMA_VERSION`).
  */
-export const staticFileEntrySchema = staticFileBytesSchema.extend({
-  /**
-   * Content-addressed by the build: cacheable forever, shared across deployments, and the same
-   * bytes whichever deployment asks for the name.
-   */
-  immutable: z.boolean(),
-  /**
-   * The status the file is answered with, when it is not 200: an error document's, which the
-   * host reads off the file's name under the build's `basePath` — a name the edge, which does not
-   * know the `basePath`, cannot tell from a `public/` file's.
-   */
-  status: z.number().int().positive().optional(),
-  /** The deployment that built the file, when it is not the manifest's own. */
-  deploymentId: z.string().min(1).optional(),
-  /**
-   * The same name as the deployment before built it, when the name is not a content hash — a
-   * build manifest under a build id that stays the same from build to build. Its documents ask
-   * for the name by their deployment, and get the bytes that deployment gave it.
-   */
-  previous: staticFileBytesSchema.extend({ deploymentId: z.string().min(1) }).optional(),
-});
+export const staticFileEntrySchema = staticFileBytesSchema
+  .extend({
+    /**
+     * Content-addressed by the build: cacheable forever, shared across deployments, and the same
+     * bytes whichever deployment asks for the name.
+     */
+    immutable: z.boolean(),
+    /**
+     * The status the file is answered with, when it is not 200: an error document's, which the
+     * host reads off the file's name under the build's `basePath` — a name the edge, which does not
+     * know the `basePath`, cannot tell from a `public/` file's.
+     */
+    status: z.number().int().positive().optional(),
+    /** The deployment that built the file, when it is not the manifest's own. */
+    deploymentId: z.string().min(1).optional(),
+    /**
+     * A kept build (`deploymentId`) that answers only a request whose `dpl` names its deployment,
+     * set by whoever keeps it. Its name is one the manifest's own deployment answers itself: a file
+     * under a build id both builds have — Next.js gives every build with a `deploymentId` the same
+     * build id (`getBuildId`) — at a path this deployment ships nothing at, such as under a
+     * `basePath` the deployment before had. A request naming no deployment is the manifest's own
+     * deployment's, and its routing answers it (`staticFileBuildWithoutDpl`). A reader that does
+     * not know the field answers every request with the kept build, as before the field existed.
+     */
+    dplOnly: z.literal(true).optional(),
+    /**
+     * The same name as the deployment before built it, when the name is not a content hash — a
+     * build manifest under a build id that stays the same from build to build. Its documents ask
+     * for the name by their deployment, and get the bytes that deployment gave it.
+     */
+    previous: staticFileBytesSchema.extend({ deploymentId: z.string().min(1) }).optional(),
+  })
+  .superRefine((entry, ctx) => {
+    // On the manifest's own build, `dplOnly` would name no deployment to answer, and a reader that
+    // finds no kept build answers every request with the file.
+    if (entry.dplOnly === true && entry.deploymentId === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        message: '`dplOnly` is said of a kept build, which names its `deploymentId`',
+        path: ['dplOnly'],
+      });
+    }
+  });
 export type StaticFileEntry = z.infer<typeof staticFileEntrySchema>;
 
 /**
