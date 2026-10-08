@@ -96,10 +96,17 @@ export function namesWithSpellings(store: Store): string[] {
     [...entrypoints, ...classes].filter((pathname) => isTemplate(pathname) && !pages.has(pathname)),
   );
   const named = { entrypoints, prerenders: store.prerendersByPathname, files: store.staticFiles };
+  // The image endpoint is the path the configuration spells, a URL's spelling already; it is
+  // classified by that spelling alone (`images/classify.ts`), and an escape of it names nothing.
+  const images = store.manifest.config.images?.path;
   for (const name of store.pathnames) {
     // A file of `public/` is named as a URL spells it already (`/foo%20bar.txt`), and an escape of
     // that spelling (`/foo%2520bar.txt`) is the file's name escaped twice, which names no file.
-    if (templates.has(withoutTrailingSlash(name)) || isEscapedFile(named, name)) {
+    if (
+      name === images ||
+      templates.has(withoutTrailingSlash(name)) ||
+      isEscapedFile(named, name)
+    ) {
       continue;
     }
     for (const spelling of spellingsOf(name)) {
