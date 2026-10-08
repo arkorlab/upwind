@@ -1,4 +1,5 @@
 import { isImmutableAssetPath } from '../assets/admission.ts';
+import { pageOfPagesData } from '../bundle/pages-data.ts';
 import type { DeploymentFingerprint } from '../deployment/fingerprint.ts';
 import {
   findRouteEntry,
@@ -23,6 +24,7 @@ import {
   isBotUserAgent,
   NAVIGATION_REQUEST_HEADERS,
   NEXT_ACTION_HEADER,
+  NEXT_DATA_HEADER,
   NEXT_RESUME_HEADER,
   NEXT_RESUME_STATE_LENGTH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
@@ -33,6 +35,7 @@ import {
   SKEW_PROTECTION_COOKIE,
 } from './constants.ts';
 import { parseCookieHeader } from './cookies.ts';
+import { dataRequestHeaders } from './headers.ts';
 
 export type PassthroughReason =
   | 'method'
@@ -73,6 +76,18 @@ export type RequestClass =
       readonly segmentPath: string;
       readonly entry: RouteEntry | undefined;
     }
+  /**
+   * A router's request for the whole payload of a page, at a route whose payload the build wrote
+   * whole (`RouteEntry.payload`): `entry` is the route its URL names. Any other request for React
+   * Server Components is `rsc`, as every one was before.
+   */
+  | { readonly kind: 'rsc-payload'; readonly entry: RouteEntry }
+  /**
+   * A Pages Router client's request for a page's props, at a page whose props the build wrote
+   * (`RouteEntry.pagesData`): `entry` is that page's route. Any other `/_next/data` request is the
+   * Function's, as every one was before.
+   */
+  | { readonly kind: 'pages-data'; readonly entry: RouteEntry }
   | { readonly kind: 'action' }
   | { readonly kind: 'passthrough'; readonly reason: PassthroughReason };
 
@@ -106,6 +121,7 @@ const DOCUMENT_REQUEST_INTERNAL_HEADERS: ReadonlySet<string> = new Set([
 const DOCUMENT_REQUEST_INTERNAL_PREFIXES: readonly string[] = ['x-middleware-', 'x-prerender-'];
 
 const BYPASS_QUERY: PassthroughReason = 'bypass-query';
+const RSC_CLASS = 'rsc';
 const DPL_MISMATCH: PassthroughReason = 'dpl-mismatch';
 
 function passthrough(reason: PassthroughReason): RequestClass {
@@ -113,16 +129,25 @@ function passthrough(reason: PassthroughReason): RequestClass {
 }
 
 /**
- * A prefetch of part of a page has `x-deployment-id` let through, for `classifyByDeploymentHeader`
- * to judge: on a prefetch it is the client's router saying which deployment it is running, not a
- * platform's header. Next.js's router sends it with every request it makes once the build has a
- * deployment id (`createFetch`, `fetch-server-response.ts`), so read as internal it turned every
- * prefetch a browser makes away from the edge, and the parts of pages the build wrote were only
- * ever answered by the Function.
+ * A request of the client's router — a prefetch of part of a page, or a request for its whole
+ * payload — has `x-deployment-id` let through, for `classifyByDeploymentHeader` to judge: on such a
+ * request it is the router saying which deployment it is running, not a platform's header.
+ * Next.js's router sends it with every request it makes once the build has a deployment id
+ * (`createFetch`, `fetch-server-response.ts`), so read as internal it turned every prefetch a
+ * browser makes away from the edge, and the parts of pages the build wrote were only ever answered
+ * by the Function.
  */
-function hasInternalDocumentHeader(headers: Headers, segmentPath: string | undefined): boolean {
+function hasInternalDocumentHeader(
+  headers: Headers,
+  fromRouter: boolean,
+  pagesData = false,
+): boolean {
   for (const [name] of headers) {
-    if (segmentPath !== undefined && name === DEPLOYMENT_ID_REQUEST_HEADER) {
+    if (fromRouter && name === DEPLOYMENT_ID_REQUEST_HEADER) {
+      continue;
+    }
+    // The Pages Router's client marks every request for a page's props so (`x-nextjs-data`).
+    if (pagesData && name === NEXT_DATA_HEADER) {
       continue;
     }
     if (DOCUMENT_REQUEST_INTERNAL_HEADERS.has(name)) {
@@ -270,35 +295,35 @@ function classifyByQuery(
 }
 
 /**
- * The deployment a prefetch's router says it is running, judged as a `dpl` is: the one being
+ * The deployment the client's router says it is running, judged as a `dpl` is: the one being
  * served, or the Function's to answer. A repeated header is one value to `Headers`, joined, and
- * names no deployment. Asked only of a prefetch of part of a page; of anything else the header is
- * internal, and was turned away before this.
+ * names no deployment. Asked only of a router's request (`hasInternalDocumentHeader`); of anything
+ * else the header is internal, and was turned away before this.
  */
 function classifyByDeploymentHeader(
   headers: Headers,
-  segmentPath: string | undefined,
+  fromRouter: boolean,
   deployment: DeploymentFingerprint | undefined,
 ): RequestClass | undefined {
-  const named = segmentPath === undefined ? null : headers.get(DEPLOYMENT_ID_REQUEST_HEADER);
+  const named = fromRouter ? headers.get(DEPLOYMENT_ID_REQUEST_HEADER) : null;
   return named === null || named === deployment?.dplId ? undefined : passthrough(DPL_MISMATCH);
 }
 
 /**
- * What a request's cookies, its query and — on a prefetch of part of a page — its `x-deployment-id`
- * ask for that the deployment being served may not hold: draft mode, another kind of response,
- * another deployment.
+ * What a request's cookies, its query and — on a router's request — its `x-deployment-id` ask for
+ * that the deployment being served may not hold: draft mode, another kind of response, another
+ * deployment.
  */
 function classifyByPins(
   url: URL,
   headers: Headers,
-  segmentPath: string | undefined,
+  fromRouter: boolean,
   deployment: DeploymentFingerprint | undefined,
 ): RequestClass | undefined {
   return (
     classifyByCookies(headers, deployment) ??
     classifyByQuery(url, headers, deployment) ??
-    classifyByDeploymentHeader(headers, segmentPath, deployment)
+    classifyByDeploymentHeader(headers, fromRouter, deployment)
   );
 }
 
@@ -447,21 +472,15 @@ function staticFileBuild(
  */
 export function classifyRequest(input: ClassifyInput): RequestClass {
   const { headers, url } = input;
-  const early =
-    classifyStaticFile(input) ??
-    classifyByMethod(input.method, headers) ??
-    (headers.has('service-worker') ? passthrough('service-worker') : undefined) ??
-    (headers.has('range') ? passthrough('range') : undefined) ??
-    classifyByPath(url) ??
-    classifyByRouterHeaders(headers);
+  const early = classifyEarly(input);
   if (early !== undefined) {
     return early;
   }
   const segmentPath = segmentPrefetchOf(headers);
-  if (hasInternalDocumentHeader(headers, segmentPath)) {
+  if (hasInternalDocumentHeader(headers, segmentPath !== undefined)) {
     return passthrough('internal-header');
   }
-  const late = classifyByPins(url, headers, segmentPath, input.deployment);
+  const late = classifyByPins(url, headers, segmentPath !== undefined, input.deployment);
   if (late !== undefined) {
     return late;
   }
@@ -509,6 +528,104 @@ export function classifyRequest(input: ClassifyInput): RequestClass {
     return passthrough(blocking);
   }
   return entry === undefined ? passthrough('route-not-proved') : { kind: 'document', entry };
+}
+
+/**
+ * What the request is by what it says of itself, before any route is asked for: a file the manifest
+ * holds, its method, its path, the router's headers. A request for React Server Components is then
+ * asked whether it is one for a page's whole payload, which the route it names may hold.
+ */
+function classifyEarly(input: ClassifyInput): RequestClass | undefined {
+  const { headers, url } = input;
+  const early =
+    classifyStaticFile(input) ??
+    classifyByMethod(input.method, headers) ??
+    (headers.has('service-worker') ? passthrough('service-worker') : undefined) ??
+    (headers.has('range') ? passthrough('range') : undefined) ??
+    pagesDataRequest(input) ??
+    classifyByPath(url) ??
+    classifyByRouterHeaders(headers);
+  return early?.kind === RSC_CLASS ? (payloadRequest(input) ?? early) : early;
+}
+
+/**
+ * A Pages Router client's request for a page's props, where the page has the ones the build wrote
+ * (`RouteEntry.pagesData`), asked at the manifest's `pagesDataPrefix`: past the gates a router's
+ * request passes, with the `x-nextjs-data` its client sends let through.
+ *
+ * Judged on the data URL itself, which is what Next.js's routing matches its rules against in a
+ * build that holds such props — one with no middleware, which leaves a data URL as it is
+ * (`routePagesData`) — and with the `x-nextjs-data` that routing puts on it, whatever the client
+ * sent (`dataRequestHeaders`): a rule ahead of the filesystem that holds for it claims the request
+ * first.
+ *
+ * `undefined` for any other request, which is classified as it always was: a data request for a
+ * page with no props here is the Function's (`next-internal`).
+ */
+function pagesDataRequest(input: ClassifyInput): RequestClass | undefined {
+  const { headers, url, manifest } = input;
+  const prefix = manifest?.pagesDataPrefix;
+  if (manifest === undefined || prefix === undefined) {
+    return undefined;
+  }
+  const basePath = manifest.pagesDataBasePath ?? '';
+  const page = pageOfPagesData(prefix, basePath, url.pathname, manifest.trailingSlash === true);
+  // By the name exactly, which is the build's own (`pageOfPagesData`): decoded again, a name that
+  // keeps a parameter's escaped `/` would find another page.
+  const entry =
+    page !== undefined && Object.hasOwn(manifest.routes, page) ? manifest.routes[page] : undefined;
+  if (entry?.pagesData === undefined) {
+    return undefined;
+  }
+  if (
+    hasInternalDocumentHeader(headers, true, true) ||
+    classifyByPins(url, headers, true, input.deployment) !== undefined ||
+    isReserved(manifest, url, dataRequestHeaders(headers), true)
+  ) {
+    return undefined;
+  }
+  return { kind: 'pages-data', entry };
+}
+
+/**
+ * A router's request for a page's whole payload, where the route its URL names has one the build
+ * wrote (`RouteEntry.payload`) and nothing the request carries asks for anything else: past every
+ * gate a prefetch of part of the page passes, its `x-deployment-id` judged as that prefetch's is.
+ * A `HEAD` is classified as its `GET` is, as every request is (`classifyByMethod`), and left to the
+ * Function where it would be answered.
+ *
+ * Only an exact route holds a payload (`routePayloads`), so only the exact routes are looked in, and
+ * a rule ahead of the filesystem — an intercepting route's, by `next-url` — claims the page first, as
+ * it claims a document's (`entryFor`). A request for React Server Components is answered with no
+ * dynamic route tested against it, as it was before. Nor is one that carries a
+ * `next-router-segment-prefetch` at all: an empty one names no part (`segmentPrefetchOf`), and
+ * Next.js answers it as a prefetch of a part it has none of, not with the page.
+ *
+ * `undefined` for any other, which stays `rsc` and goes to the Function as it always did: a route
+ * with no payload to serve is not run past the middleware at the edge for nothing, and a request
+ * the gates turn away is reported as it was.
+ */
+function payloadRequest(input: ClassifyInput): RequestClass | undefined {
+  const { headers, url, manifest } = input;
+  if (
+    manifest === undefined ||
+    url.pathname.includes('//') ||
+    headers.has(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)
+  ) {
+    return undefined;
+  }
+  const entry = findRouteEntry(manifest, url.pathname);
+  if (entry?.payload === undefined) {
+    return undefined;
+  }
+  if (
+    hasInternalDocumentHeader(headers, true) ||
+    classifyByPins(url, headers, true, input.deployment) !== undefined ||
+    isReserved(manifest, url, headers, true)
+  ) {
+    return undefined;
+  }
+  return { kind: 'rsc-payload', entry };
 }
 
 /**

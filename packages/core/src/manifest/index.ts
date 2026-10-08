@@ -68,3 +68,4 @@ export {
   staticFileEntrySchema,
   type StaticFileLocales,
 } from './schema.ts';
+export { fromStoredManifest } from './stored.ts';

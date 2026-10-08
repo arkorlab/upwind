@@ -32,9 +32,16 @@ import { imagesConfigSchema } from '../images/config.ts';
  * one pass where the manifest says `routerReferences: 'one-pass'`. A reader of 4 drops the field
  * and fills every header in turn: given such a deployment, it would answer a `$10` against one
  * capture with the capture and a `0`, where the deployment's Function answers `$10`.
+ *
+ * 6: a stored manifest may name a route's headers, conditions and preloads by their place in its
+ * `tables` (`stored.ts`). A reader of 4 or 5 would take those places for the values themselves.
  */
-export const MANIFEST_SCHEMA_VERSION = 5;
-/** The version before, which every manifest published until this one was. */
+export const MANIFEST_SCHEMA_VERSION = 6;
+/** The first version a manifest may store what its routes repeat in `tables` at (above). */
+export const TABLES_SCHEMA_VERSION = 6;
+/** The version before, which `routerReferences` was first published at. */
+const ONE_PASS_REFERENCES_VERSION = 5;
+/** The version before that, which every manifest published until 5 was. */
 const PREVIOUS_MANIFEST_SCHEMA_VERSION = 4;
 /** The version before that, which every manifest published until 4 was, and some still are. */
 const EARLIEST_READ_MANIFEST_SCHEMA_VERSION = 3;
@@ -45,6 +52,7 @@ const EARLIEST_READ_MANIFEST_SCHEMA_VERSION = 3;
 export const READ_MANIFEST_SCHEMA_VERSIONS = [
   EARLIEST_READ_MANIFEST_SCHEMA_VERSION,
   PREVIOUS_MANIFEST_SCHEMA_VERSION,
+  ONE_PASS_REFERENCES_VERSION,
   MANIFEST_SCHEMA_VERSION,
 ] as const;
 const HTTP_OK = 200;
@@ -131,6 +139,24 @@ export const routeEntrySchema = z.object({
    * is what every reader did before the field existed — so no schema version turns on it.
    */
   segments: z.record(z.string().startsWith('/'), routeSegmentSchema).optional(),
+  /**
+   * The page's whole React Server Components payload, as the build wrote it beside a document it
+   * finished (`routePayloads`): what a router's request for the page — `rsc: 1`, naming no part of
+   * it — is answered with. Held, like `segments`, by a host that answers such a request itself.
+   *
+   * Absent for a page a resume completes, whose payload is rendered for the request, and on a
+   * manifest from before the field: a reader that does not know it hands every such request to the
+   * Function, as every reader did, so no schema version turns on it.
+   */
+  payload: routeSegmentSchema.optional(),
+  /**
+   * A Pages Router page's props, as the build wrote them beside a document it finished
+   * (`routePagesData`): what a client navigation's `<basePath>/_next/data/<buildId>/<page>.json` is
+   * answered with, at the manifest's `pagesDataPrefix`. Absent on every other route and on a
+   * manifest from before the field, whose reader leaves every such request to the Function, as
+   * before.
+   */
+  pagesData: routeSegmentSchema.optional(),
   headers: z.record(z.string(), z.string()),
   /**
    * The route's policy permits any inline script, which the nonce the edge mints stops it doing.
@@ -495,6 +521,21 @@ export const projectManifestSchema = z.object({
    * published, whose reader leaves that spelling to the Function.
    */
   staticFileTrailingSlash: z.literal(true).optional(),
+  /**
+   * Where a Pages Router page's props are asked for: `<basePath>/_next/data/<buildId>`, the build's
+   * own, as a request's URL spells it (`pagesDataPrefixOf`) — what a request's pathname is compared
+   * with. Present where a route holds props (`RouteEntry.pagesData`), absent otherwise; a manifest
+   * that names props and nowhere to ask for them is refused where it is built
+   * (`buildProjectManifest`).
+   */
+  pagesDataPrefix: z.string().startsWith('/').optional(),
+  /**
+   * The base path those props are asked for under, as the build wrote it, which the page a request
+   * asks the props of is named under (`pageOfPagesData`). The prefix is not taken apart for it: a
+   * base path may hold `/_next/data/` itself. Present beside a prefix under a base path, absent for
+   * none.
+   */
+  pagesDataBasePath: z.string().startsWith('/').optional(),
   /** The runtime cache the routes' entries live in. */
   cache: manifestCacheSchema.optional(),
 });
