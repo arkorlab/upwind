@@ -231,6 +231,9 @@ export function vendoredOtelPlugin(onFallback?: (specifier: string) => void): Pl
 const SHARED_RUNTIME = '.shared-runtime';
 /** Where Next.js's require hook sends each of them: the Pages Router runtime's own copy. */
 const VENDORED_CONTEXTS = 'next/dist/server/route-modules/pages/vendored/contexts/';
+/** A module of Next.js's own that holds one, where a request for it resolves as it is. */
+const NEXT_SHARED_RUNTIME =
+  /[/\\]next[/\\]dist[/\\](?:esm[/\\])?shared[/\\]lib[/\\][^/\\]+\.shared-runtime\.js$/u;
 
 /**
  * A module holding one of the contexts Next.js's renderers share with the application —
@@ -249,6 +252,10 @@ const VENDORED_CONTEXTS = 'next/dist/server/route-modules/pages/vendored/context
  * A name the runtime has no copy of fails the build, as the hook's `require` would fail the render:
  * resolved the usual way instead, it would be the second copy of the context this is here to keep
  * out, and nothing would say so.
+ *
+ * Only a request that resolves to one of Next.js's own (`shared/lib/*.shared-runtime.js`) is sent:
+ * the hook reads the name alone, and would send a package's own `./x.shared-runtime` to the runtime
+ * as well, but a module of that name that is not Next.js's holds no context the runtime has.
  */
 export function sharedRuntimePlugin(): Plugin {
   return {
@@ -256,6 +263,11 @@ export function sharedRuntimePlugin(): Plugin {
     resolveId: {
       filter: { id: /\.shared-runtime$/u },
       async handler(source, importer, options) {
+        // eslint-disable-next-line unicorn/no-this-outside-of-class -- the plugin API hands the context as `this`
+        const own = await this.resolve(source, importer, { ...options, skipSelf: true });
+        if (own === null || !NEXT_SHARED_RUNTIME.test(own.id)) {
+          return own;
+        }
         // As the hook asks for it: by name, from the module that asked.
         const runtimeCopy = `${VENDORED_CONTEXTS}${path.posix.basename(source, SHARED_RUNTIME)}`;
         // eslint-disable-next-line unicorn/no-this-outside-of-class -- the plugin API hands the context as `this`

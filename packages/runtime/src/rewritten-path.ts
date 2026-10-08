@@ -34,19 +34,41 @@ function redirects(route: RoutingRoute): boolean {
   );
 }
 
+/** Characters past ASCII, which a header's value cannot carry as they are. */
+const PAST_ASCII = /[\u{80}-\u{10FFFF}]+/gu;
+
+/**
+ * Where a rule rewrites to, as a header's value can carry it — its own characters past ASCII escaped,
+ * as a URL's path escapes them — or `undefined` for a rule whose destination takes in a query's
+ * value (`has` of the query), which can hold any character and is filled in as it is.
+ */
+function markOf(route: RoutingRoute & { readonly destination: string }): string | undefined {
+  const readsQuery = route.has?.some((condition) => condition.type === 'query') === true;
+  if (readsQuery && route.destination.includes('$')) {
+    return undefined;
+  }
+  try {
+    return route.destination.replaceAll(PAST_ASCII, (run) => encodeURIComponent(run));
+  } catch {
+    // A lone surrogate, which no URL spells.
+    return undefined;
+  }
+}
+
 /**
  * The rules of one table, each that rewrites carrying the platform's mark of where it rewrote to
  * (`settleRewrittenPath`), named for the table and the rule: `@next/routing` fills a rule's headers in
- * from its match as it fills its destination in, and applies the rules of a table in order.
+ * from its match as it fills its destination in, and applies the rules of a table in order. A rule
+ * whose destination no header can carry (`markOf`) is not marked, and says nothing of the path.
  */
 export function markedRewrites(routes: readonly RoutingRoute[], table: number): RoutingRoute[] {
   return routes.map((route, rule) => {
-    return route.destination === undefined || redirects(route)
+    const { destination } = route;
+    const mark =
+      destination === undefined || redirects(route) ? undefined : markOf({ ...route, destination });
+    return mark === undefined
       ? route
-      : {
-          ...route,
-          headers: { ...route.headers, [`${REWRITE_MARK}${table}-${rule}`]: route.destination },
-        };
+      : { ...route, headers: { ...route.headers, [`${REWRITE_MARK}${table}-${rule}`]: mark } };
   });
 }
 
@@ -118,7 +140,11 @@ export function settleRewrittenPath(
   for (const { table, rule } of applied) {
     headers.delete(`${REWRITE_MARK}${String(table)}-${String(rule)}`);
   }
-  if (request.get('rsc') !== '1') {
+  // A middleware's rewrite to another origin is answered from there: nothing is said of it.
+  if (
+    request.get('rsc') !== '1' ||
+    (middlewareRewrite !== undefined && middlewareRewrite.origin !== routedFrom.origin)
+  ) {
     return;
   }
   const inOrder = applied.toSorted((a, b) => a.table - b.table || a.rule - b.rule);
