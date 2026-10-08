@@ -1,4 +1,4 @@
-import { testWithin } from '../request/pattern-cost.ts';
+import { testWithin } from '../request/pattern-budget.ts';
 import type { ImageLocalPattern, ImageRemotePattern, ImagesConfig } from './config.ts';
 import { isLocalAddress } from './local-address.ts';
 import { negotiateImageFormat } from './negotiate.ts';

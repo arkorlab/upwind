@@ -1,7 +1,7 @@
 import type { MiddlewareMatcher } from '../manifest/schema.ts';
 import { compiledRules, patternOf } from '../request/compiled-patterns.ts';
 import { conditionsHold } from '../request/conditions.ts';
-import { testWithin } from '../request/pattern-cost.ts';
+import { matcherHolds } from './payload-matcher.ts';
 
 /**
  * The middleware protocol as Next.js speaks it over HTTP, for the edge to read a middleware Function's
@@ -210,7 +210,7 @@ function matchesAny(
   // Case-insensitive, as Next.js matches them, and without the unicode flag, as it compiled them;
   // compiled once for the list rather than on every request (`compiledRules`).
   return compiledRules(matchers, 'i').some((compiled) => {
-    if (!testWithin(patternOf(compiled), pathname)) {
+    if (!matcherHolds(patternOf(compiled), pathname)) {
       return false;
     }
     return conditionsHold(compiled.rule, url, headers);

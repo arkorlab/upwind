@@ -27,7 +27,8 @@ import {
  * the test is not run at all (`PatternBudgetExceededError`), and the edge hands the request to the
  * application's own Function, which routes it as Next.js does at no one else's expense. Bounded
  * only where a caller asks for it (`budgetPatterns`): the edge does, and an application's own
- * Function, which runs the same code for itself, does not.
+ * Function, which runs the same code for itself, does not. This reads the cost; `pattern-budget.ts`
+ * holds a test to it.
  *
  * The degree counts the repetitions the engine may revisit with another length: each repetition
  * multiplies what follows it by the value's length, as a backtracking engine tries each of its
@@ -110,51 +111,6 @@ const MAX_ANALYZED_LENGTH = 4096;
  * read, so that reading a pattern recurses no further than this does.
  */
 const MAX_NESTING = 32;
-/** The characters `.` does not take, without the `s` flag. */
-const LINE_TERMINATOR = /[\n\r\u{2028}\u{2029}]/u;
-
-/**
- * A test the edge did not run: its pattern's cost against the value is past what a test is allowed
- * (`BUDGET`), or not one this can bound. Not a non-match: the caller hands the request to the
- * application's Function, which routes it itself.
- */
-export class PatternBudgetExceededError extends Error {
-  readonly source: string;
-  readonly valueLength: number;
-
-  constructor(
-    tested: { readonly source: string; readonly valueLength: number },
-    options?: ErrorOptions,
-  ) {
-    super(
-      `a pattern of ${String(tested.source.length)} characters against a value of ${String(tested.valueLength)}`,
-      options,
-    );
-    this.name = 'PatternBudgetExceededError';
-    this.source = tested.source;
-    this.valueLength = tested.valueLength;
-  }
-}
-
-const budget = { on: false };
-
-/**
- * Bound every test of a routing pattern from here on (`testWithin`, `execWithin`): what the edge
- * asks for before it routes a request.
- *
- * Off until a host asks, because only a host that runs the patterns of applications it does not own
- * — against values their visitors chose, on a Function they all share — has a reason to. A server of
- * one application, its own Function among them, tests that application's patterns as Next.js does,
- * with nothing to hand a request it would not test to.
- *
- * Asked once per isolate, and for good: the bound is the isolate's, not a caller's. So an isolate
- * that asks is one that routes for an edge and nothing else. Where a test is past the bound, every
- * function here throws (`PatternBudgetExceededError`) for its caller to hand the request on — and
- * the runtime asks the same functions for an answer, with no Function behind it to hand anything to.
- */
-export function budgetPatterns(): void {
-  budget.on = true;
-}
 
 /**
  * Where what follows a node ends, and succeeds: the pattern's end, where the match does, or a
@@ -610,6 +566,12 @@ export function patternCost(
   flags: string,
   lineFree: boolean,
 ): PatternCost | undefined {
+  const alternatives = readAlternatives(source, flags);
+  return alternatives === undefined ? undefined : costOf(alternatives, { flags, lineFree });
+}
+
+/** The pattern as `patternCost` reads it; `undefined` for one it does not read. */
+function readAlternatives(source: string, flags: string): Alternatives | undefined {
   // And `u` beside `i`, under which a letter matches others past ASCII — `k` the Kelvin sign — that
   // `caseVariants` does not name.
   const folds = flags.includes('u') && flags.includes('i');
@@ -621,10 +583,10 @@ export function patternCost(
   ) {
     return undefined;
   }
-  const alternatives = parseAlternatives(source, 0, source.length);
-  if (alternatives === undefined) {
-    return undefined;
-  }
+  return parseAlternatives(source, 0, source.length);
+}
+
+function costOf(alternatives: Alternatives, reading: Reading): PatternCost | undefined {
   const anchored = alternatives.every((alternative) => {
     const first = alternative[0];
     return first?.kind === 'anchor' && first.at === 'start';
@@ -635,7 +597,7 @@ export function patternCost(
     entry,
     // Reached once whatever the place it is tried from: the match ends where it succeeds.
     contextEnd({ kind: 'pattern', entry: 0 }),
-    { flags, lineFree },
+    reading,
   );
   if (cost === undefined) {
     return undefined;
@@ -695,47 +657,71 @@ export function longestAffordable(cost: PatternCost | undefined): number {
   return low;
 }
 
-/** The longest values each pattern is allowed against, worked out the first time it is tested. */
-interface Allowed {
-  lineFree?: number;
-  any?: number;
+/** A pattern's own characters, one each, which match once and as they are written. */
+type Literal = Extract<PatternNode, { kind: 'atom' }> & { readonly literal: string };
+
+function isLiteral(node: PatternNode | undefined): node is Literal {
+  return node?.kind === 'atom' && node.literal !== undefined && node.quantifier === undefined;
 }
 
-const allowed = new WeakMap<RegExp, Allowed>();
-
-function allowedFor(pattern: RegExp, value: string): number {
-  let lengths = allowed.get(pattern);
-  if (lengths === undefined) {
-    lengths = {};
-    allowed.set(pattern, lengths);
-  }
-  const lineFree = !LINE_TERMINATOR.test(value);
-  if (lineFree) {
-    lengths.lineFree ??= longestAffordable(patternCost(pattern.source, pattern.flags, true));
-    return lengths.lineFree;
-  }
-  lengths.any ??= longestAffordable(patternCost(pattern.source, pattern.flags, false));
-  return lengths.any;
-}
+/** Past ASCII, where `i` without `u` folds characters to one another that lower case does not. */
+const ASCII_END = 0x80;
 
 /**
- * Throw `PatternBudgetExceededError` where tests are bounded (`budgetPatterns`) and the pattern's cost
- * against `value` is past what a test is allowed; nothing otherwise.
+ * A literal every match of a pattern passes through, and what a test of a value that does not hold
+ * it costs.
+ *
+ * Where the pattern is one sequence, the first run of its own characters in that sequence itself —
+ * not in a group, so neither optional nor repeated: `/rewritten` in the matcher Next.js writes for
+ * `/rewritten/:path*` — is one each match takes, in that order, wherever in the sequence it begins.
+ * A value that does not hold the run is one at which every attempt that gets as far as the run fails
+ * there, at its first character that differs, and none goes on past it: the test does what the
+ * pattern cut after the run does, and costs what that costs (`patternCost`), which is all that comes
+ * before the run — optional, repeated, looked around or not — tried every way it can be from every
+ * place it is tried from, and the run failing each time. What comes after it, however costly, is
+ * never reached.
+ *
+ * Next.js 16.4 ends each middleware matcher with the payloads a page has
+ * (`(\.json|\.rsc|\.segments\/.+\.segment\.rsc)?`), which a catch-all before it — whose segments can
+ * hold a `.` — can each end before or run into. Read as a whole, such a matcher is cubic, and a test
+ * of it is allowed against no more than a few dozen characters: every request but the shortest went
+ * to the application's Function, a static file's among them, which the Function has none of to
+ * serve. Its run begins the pattern; a path that does not hold it is tested against what comes
+ * before, which is linear.
+ *
+ * `undefined` for a pattern this does not read, of more than one alternative, or with no such run.
+ * Under `i` without `u`, a letter matches its ASCII case and no other character, and the value's own
+ * case folded down holds at least every match there is: a run outside ASCII is not read, as `i`
+ * folds some of those (`σ`, `ς`) to one another and lower case does not.
  */
-export function assertAffordable(pattern: RegExp, value: string): void {
-  if (budget.on && value.length > allowedFor(pattern, value)) {
-    throw new PatternBudgetExceededError({ source: pattern.source, valueLength: value.length });
+export function literalGate(
+  source: string,
+  flags: string,
+  lineFree: boolean,
+): { readonly literal: string; readonly cost: PatternCost | undefined } | undefined {
+  const alternatives = readAlternatives(source, flags);
+  const [sequence, ...others] = alternatives ?? [];
+  if (sequence === undefined || others.length > 0) {
+    return undefined;
   }
-}
-
-/** `pattern.test(value)`, where its cost is within what a test is allowed (`assertAffordable`). */
-export function testWithin(pattern: RegExp, value: string): boolean {
-  assertAffordable(pattern, value);
-  return pattern.test(value);
-}
-
-/** `pattern.exec(value)`, where its cost is within what a test is allowed (`assertAffordable`). */
-export function execWithin(pattern: RegExp, value: string): RegExpExecArray | null {
-  assertAffordable(pattern, value);
-  return pattern.exec(value);
+  const start = sequence.findIndex((node) => isLiteral(node));
+  if (start === -1) {
+    return undefined;
+  }
+  let end = start;
+  let literal = '';
+  let ascii = true;
+  for (let node = sequence[end]; isLiteral(node); node = sequence[end]) {
+    literal += node.literal;
+    ascii &&= (node.literal.codePointAt(0) ?? ASCII_END) < ASCII_END;
+    end += 1;
+  }
+  const ignoresCase = flags.includes('i');
+  if (ignoresCase && !ascii) {
+    return undefined;
+  }
+  return {
+    literal: ignoresCase ? literal.toLowerCase() : literal,
+    cost: costOf([sequence.slice(0, end)], { flags, lineFree }),
+  };
 }
