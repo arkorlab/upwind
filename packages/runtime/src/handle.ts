@@ -218,7 +218,12 @@ async function serveRsc(input: RoutedInput, store: Store, asked: Resolved): Prom
   const { entry, resolved } = rendered;
   const shell = findShell(store, resolved.route, resolved.pathname);
   if (entry.kind === 'node') {
-    const built = shell?.body !== undefined;
+    // A member the build did not render of a route whose every navigation is static
+    // (`ensureStatic`): Next.js answers it with a blocking render rather than a dynamic one
+    // (`isDynamicRSCRequest`, in the page's handler), and resuming the class's state here answered
+    // nothing at all — rendered once and kept instead, as the member's document is.
+    const blocking = shell?.ensureStatic === 'navigation' && shell.pathname !== resolved.pathname;
+    const built = shell?.body !== undefined && !blocking;
     const current = await serveFromGeneration(
       input,
       store,
@@ -230,7 +235,7 @@ async function serveRsc(input: RoutedInput, store: Store, asked: Resolved): Prom
         url: resolved.url,
         representation: rscRepresentation(input.request, store),
         prefetch: input.request.headers.get(store.manifest.routing.rsc.prefetchHeader) === '1',
-        onMiss: 'build',
+        onMiss: blocking ? 'render' : 'build',
       },
       entry.handler,
     );

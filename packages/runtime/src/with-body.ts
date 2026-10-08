@@ -36,7 +36,12 @@ export async function renderedBy(
   if (own !== undefined) {
     return { entry: own, resolved };
   }
-  const route = store.prerendersByPathname.get(resolved.pathname)?.route;
+  // The member's own prerender, where the build made one; else the class the router resolved the
+  // member to by its name (`resolvedByName`), whose route is the member's.
+  const route = (
+    store.prerendersByPathname.get(resolved.pathname) ??
+    store.prerendersByPathname.get(resolved.route)
+  )?.route;
   if (route === undefined) {
     return undefined;
   }
