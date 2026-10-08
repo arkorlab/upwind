@@ -28,6 +28,7 @@ interface Database {
   prepare(sql: string): Statement;
   batch(statements: Statement[]): Promise<unknown[]>;
   exec(sql: string): Promise<unknown>;
+  dump?: (...args: unknown[]) => Promise<ArrayBuffer>;
   withSession?: (constraint?: string) => Database;
 }
 
@@ -180,6 +181,15 @@ export function observeD1(
               await notify();
             return results;
           };
+        if (key === 'dump') {
+          const dump = target.dump;
+          if (typeof dump === 'function')
+            return (...args: unknown[]): Promise<ArrayBuffer> => {
+              tagNextCacheRead(DEFAULT_D1_CACHE_TAG);
+              // Legacy dump is a read on the native always-primary API; sessions have no dump.
+              return dump.apply(target, args);
+            };
+        }
         if (key === 'exec' && typeof target.exec === 'function')
           return async (sql: string): Promise<unknown> => {
             tagNextCacheRead(DEFAULT_D1_CACHE_TAG);

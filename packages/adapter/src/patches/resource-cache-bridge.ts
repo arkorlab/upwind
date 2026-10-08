@@ -1,4 +1,8 @@
-import { isResourceCacheBridgeSource, resourceCacheBridge } from '@stayingupwind/core/next';
+import {
+  isResourceCacheBridgeSource,
+  resourceCacheBridge,
+  resourceCacheBridgeRevalidations,
+} from '@stayingupwind/core/next';
 
 import { occurrencesOf, type Patch, Rewrite } from './types.ts';
 
@@ -23,7 +27,7 @@ export const resourceCacheBridgePatch: Patch = {
         /(?<![\w$.])(?:[\w$]+\.)?workUnitAsyncStorage\.run\(\s*[\w$]+\s*,\s*\(\)\s*=>\s*(?:[\w$]+\.)?dynamicAccessAsyncStorage\.run\(/gu,
       ) +
       occurrencesOf(source, /(?<![\w$.])[\w$]+\.runInCleanSnapshot\([\w$]+,\s*[\w$]+,/gu) +
-      occurrencesOf(source, 'revalidate-tag-single-arg');
+      resourceCacheBridgeRevalidations(source);
     if (result.edits !== expected)
       throw check.fail(`expected ${expected} Next context registration(s), found ${result.edits}`);
     return { ...result, notes: [] };

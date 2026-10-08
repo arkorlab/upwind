@@ -1,8 +1,16 @@
 /** Shared by the Function bundler and Node's synchronous build/dev loader. No Next dependency. */
-const REVALIDATION_MARK = 'revalidate-tag-single-arg';
 const CACHE_STORAGE = 'upwind.next-cache-storage@1';
 const REVALIDATION = 'upwind.next-revalidation@1';
 const EXPORT_PREFIX = 'export ';
+// A documentation URL alone is application content. Match Next's warning and its public provider.
+// Both quote spellings occur in emitted chunks; every repetition below has a fixed literal boundary.
+const REVALIDATION_WARNINGS =
+  /without the second argument is now deprecated, add second argument of \\?"max\\?" or use \\?"updateTag\\?"\. See more info here: https:\/\/nextjs\.org\/docs\/messages\/revalidate-tag-single-arg/gu;
+const REVALIDATION_FUNCTION_EXPORTS =
+  /(?<![\w$])revalidateTag["']?\s*:\s*function\s*\(\)\s*\{\s*return\s+(?<name>[\w$]+)/gu;
+const REVALIDATION_ARROW_EXPORTS =
+  /(?<![\w$])revalidateTag["']?\s*:\s*\(\)\s*=>\s*(?<name>[\w$]+)/gu;
+const REVALIDATION_ARRAY_EXPORTS = /["']revalidateTag["']\s*,\s*\(\)\s*=>\s*(?<name>[\w$]+)/gu;
 // The identifier boundary prevents retrying a failed match at every character of a long name.
 const SNAPSHOTS =
   /(?<![\w$.])(?<snapshot>[\w$]+)\.runInCleanSnapshot\((?<restore>[\w$]+),\s*(?<work>[\w$]+),/gu;
@@ -23,12 +31,18 @@ interface Insertion {
   readonly text: string;
 }
 
+interface RevalidationDeclaration {
+  readonly index: number;
+  readonly name: string;
+  readonly afterWarning: number;
+}
+
 function isCacheWrapper(source: string): boolean {
   return source.includes('cacheLifeProfiles.default') && source.includes('runInCleanSnapshot');
 }
 
 export function isResourceCacheBridgeSource(source: string): boolean {
-  return isCacheWrapper(source) || source.includes(REVALIDATION_MARK);
+  return isCacheWrapper(source) || resourceCacheBridgeRevalidations(source) !== 0;
 }
 
 function preceding(
@@ -87,26 +101,60 @@ function cacheRegistrations(source: string): Insertion[] {
   return Array.from(source.matchAll(DYNAMIC_RUNS), (dynamic) => cacheRegistration(source, dynamic));
 }
 
-function revalidationRegistration(source: string, index: number): Insertion {
-  const declaration = preceding(source, /function (?<name>[\w$]+)\(/gu, index);
-  const name = declaration?.groups?.['name'];
-  const rest = source.slice(index);
+function revalidationDeclarations(source: string): RevalidationDeclaration[] {
+  const declarations = new Map<number, RevalidationDeclaration>();
+  for (const warning of source.matchAll(REVALIDATION_WARNINGS)) {
+    // Follow the public export to its declaration: Turbopack can rename it, and helpers may follow it.
+    const exports = [
+      preceding(source, REVALIDATION_FUNCTION_EXPORTS, warning.index),
+      preceding(source, REVALIDATION_ARROW_EXPORTS, warning.index),
+      preceding(source, REVALIDATION_ARRAY_EXPORTS, warning.index),
+    ];
+    let name = 'revalidateTag';
+    const directExport = source.lastIndexOf(`export function ${name}(`, warning.index);
+    let index = directExport === -1 ? -1 : directExport + EXPORT_PREFIX.length;
+    for (const exported of exports) {
+      const exportedName = exported?.groups?.['name'];
+      if (exported === undefined || exportedName === undefined) continue;
+      // The module declaration follows its export map; nested helpers can reuse its minified name.
+      const exportedIndex = source.indexOf(
+        `function ${exportedName}(`,
+        exported.index + exported[0].length,
+      );
+      if (exportedIndex > index && exportedIndex < warning.index) {
+        name = exportedName;
+        index = exportedIndex;
+      }
+    }
+    if (index !== -1 && !declarations.has(index))
+      declarations.set(index, { index, name, afterWarning: warning.index + warning[0].length });
+  }
+  return [...declarations.values()];
+}
+
+/** The adapter counts the same native providers that the build/dev transform recognizes. */
+export function resourceCacheBridgeRevalidations(source: string): number {
+  return revalidationDeclarations(source).length;
+}
+
+function revalidationRegistration(source: string, provider: RevalidationDeclaration): Insertion {
+  const { index, name, afterWarning } = provider;
+  const rest = source.slice(afterWarning);
   const work = WORK_GETTERS.exec(rest)?.groups?.['storage'];
   const unit = UNIT_GETTERS.exec(rest)?.groups?.['storage'];
-  if (declaration === undefined || name === undefined || work === undefined || unit === undefined) {
+  if (work === undefined || unit === undefined) {
     throw new Error('resource-cache-bridge: Next revalidateTag provider was not found');
   }
-  const exported =
-    source.slice(declaration.index - EXPORT_PREFIX.length, declaration.index) === EXPORT_PREFIX;
+  const exported = source.slice(index - EXPORT_PREFIX.length, index) === EXPORT_PREFIX;
   return {
-    index: exported ? declaration.index - EXPORT_PREFIX.length : declaration.index,
+    index: exported ? index - EXPORT_PREFIX.length : index,
     text: `;globalThis[Symbol.for("${REVALIDATION}")]?.({workStorage:${work},unitStorage:${unit},revalidateTag:${name}});`,
   };
 }
 
 function revalidationRegistrations(source: string): Insertion[] {
-  return Array.from(source.matchAll(/revalidate-tag-single-arg/gu), (marker) =>
-    revalidationRegistration(source, marker.index),
+  return revalidationDeclarations(source).map((declaration) =>
+    revalidationRegistration(source, declaration),
   );
 }
 

@@ -63,19 +63,35 @@ export function installNextCacheRegistry(): void {
     return storage;
   };
   hooks[Symbol.for(NEXT_REVALIDATION_SYMBOL_KEY)] ??= (
-    provider: NextRevalidationProvider,
+    provider: Partial<NextRevalidationProvider> | null | undefined,
   ): void => {
+    // Older bridge output uses getter callbacks rather than the exact storage objects.
+    // It can share this hook, but cannot participate in storage-identity deduplication.
+    // Ignore incompatible registrations before they can poison a current provider's lookup.
+    const workStorage = provider?.workStorage;
+    const unitStorage = provider?.unitStorage;
+    if (
+      typeof workStorage?.getStore !== 'function' ||
+      typeof unitStorage?.getStore !== 'function'
+    ) {
+      return;
+    }
+    const revalidateTag = provider?.revalidateTag;
     const registered = registry().revalidation;
-    let units = registered.get(provider.workStorage);
+    let units = registered.get(workStorage);
     if (units === undefined) {
       units = new Map();
-      registered.set(provider.workStorage, units);
+      registered.set(workStorage, units);
     }
-    const existing = units.get(provider.unitStorage);
+    const existing = units.get(unitStorage);
     // Earlier Next wrappers declare the fill function inside another function. Their hook
     // executes per fill, so provider object identity is not stable; the exact stores are.
-    if (existing === undefined || provider.revalidateTag !== undefined) {
-      units.set(provider.unitStorage, provider);
+    if (existing === undefined || revalidateTag !== undefined) {
+      units.set(unitStorage, {
+        workStorage,
+        unitStorage,
+        ...(revalidateTag !== undefined && { revalidateTag }),
+      });
     }
   };
 }
