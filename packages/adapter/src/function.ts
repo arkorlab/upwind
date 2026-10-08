@@ -29,6 +29,7 @@ import {
   type BundleTrace,
   type FunctionDependencies,
   functionDependencies,
+  outputNameOf,
 } from './dependencies.ts';
 import { dynamicLoadsInChunk } from './dynamic-loads.ts';
 import { bundleEdge, type EdgeEntry } from './edge.ts';
@@ -622,6 +623,7 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
       ...(linked !== undefined && { linked: await linkedSource(linked) }),
     },
     dependencies,
+    outputNameOf(input.projectDir, distDir),
   );
   return {
     spec: {
