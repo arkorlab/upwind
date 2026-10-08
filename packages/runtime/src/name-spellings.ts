@@ -132,9 +132,12 @@ function spells(spelling: string, name: string): boolean {
 }
 
 /**
- * A file of `public/`, named as a URL spells it (escaped as it is served), whose name is a spelling of
- * another: a static file no page or prerender is named after. A page the build wrote as a file is
- * named by its own characters, a literal escape among them (`/docs/%41`), and keeps its spellings.
+ * A file of `public/`, named as a URL spells it, whose name is a spelling of another: a static file
+ * no page or prerender is named after, and whose name is exactly what the adapter names such a file
+ * — each segment of the file's own name escaped (`encodeURIComponent`), which turns no unreserved
+ * character into an escape. A page the build wrote as a file is named by its own characters, a
+ * literal escape among them (`/docs/%41`, which no file of `public/` is named), and keeps its
+ * spellings, in an export with no entrypoint to say so too.
  */
 function isEscapedFile(store: Store, name: string): boolean {
   const file = withoutTrailingSlash(name);
@@ -147,10 +150,18 @@ function isEscapedFile(store: Store, name: string): boolean {
     return false;
   }
   try {
-    return decodeURIComponent(name) !== name;
+    const decoded = decodeURIComponent(file);
+    return decoded !== file && escapedSegments(decoded) === file;
   } catch {
     return false;
   }
+}
+
+function escapedSegments(pathname: string): string {
+  return pathname
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
 }
 
 /** A route's own name in brackets (`/[id]`): a dynamic route's entrypoint is named so. */
