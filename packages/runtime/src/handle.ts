@@ -62,6 +62,7 @@ import {
   withoutPlacementHeaders,
 } from './placement.ts';
 import { DEFAULT_PROXY_BODY_LIMIT, splitBody } from './request-body.ts';
+import { settleRewrittenPath } from './rewritten-path.ts';
 import {
   askedOf,
   internalRedirect,
@@ -73,7 +74,6 @@ import {
   routingTables,
   resolvedOf,
   routedHeaders,
-  settleRewrittenPath,
   withoutRepeatedSlashes,
   withRewriteStatus,
   withRoutingHeaders,
@@ -314,7 +314,7 @@ async function routeAndServe(
     routes: routingTables(store, skipMiddleware, url),
     invokeMiddleware: middlewareInvoker(input, store, trace),
   });
-  settleRewrittenPath(routed.resolvedHeaders, requestHeaders, trace.rewrite ?? url);
+  settleRewrittenPath(routed.resolvedHeaders, requestHeaders, url, trace.rewrite);
   if (routed.middlewareResponded === true && trace.response !== undefined) {
     // The middleware's own answer may be streaming its side of the body back: that side stays.
     dropHandlerBody();
