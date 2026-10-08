@@ -141,6 +141,16 @@ const budget = { on: false };
 /**
  * Bound every test of a routing pattern from here on (`testWithin`, `execWithin`): what the edge
  * asks for before it routes a request.
+ *
+ * Off until a host asks, because only a host that runs the patterns of applications it does not own
+ * — against values their visitors chose, on a Function they all share — has a reason to. A server of
+ * one application, its own Function among them, tests that application's patterns as Next.js does,
+ * with nothing to hand a request it would not test to.
+ *
+ * Asked once per isolate, and for good: the bound is the isolate's, not a caller's. So an isolate
+ * that asks is one that routes for an edge and nothing else. Where a test is past the bound, every
+ * function here throws (`PatternBudgetExceededError`) for its caller to hand the request on — and
+ * the runtime asks the same functions for an answer, with no Function behind it to hand anything to.
  */
 export function budgetPatterns(): void {
   budget.on = true;
@@ -633,6 +643,16 @@ export function patternCost(
   // An attempt from each place it is tried from.
   const terms = [...cost.terms];
   addInto(terms, term(entry, CHOICE_STEPS), 1);
+  if (!anchored) {
+    // The places are the value's `n` characters and its end, from which an attempt is made all the
+    // same: an empty value is tried once, at the only place it has. That attempt costs what one
+    // costs, which is the terms one degree down — and without it, a pattern whose one attempt is
+    // the expensive part read as free against an empty value: `(?:a?|b?)` twenty-four times and a
+    // `!`, seconds in V8 against nothing at all.
+    for (let degree = 0; degree < terms.length - 1; degree += 1) {
+      terms[degree] = (terms[degree] ?? 0) + (terms[degree + 1] ?? 0);
+    }
+  }
   return {
     degree: Math.max(
       terms.findLastIndex((steps) => steps > 0),
