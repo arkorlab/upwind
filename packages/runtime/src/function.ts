@@ -29,6 +29,7 @@ import {
   publicUrl,
   withRequestContext,
 } from './request-context.ts';
+import { resourceWarmOf, warmResourceRoute } from './resource-warm.ts';
 import { withInvalidatedTags } from './serve.ts';
 
 /**
@@ -41,6 +42,7 @@ const HTTP_INTERNAL_ERROR = 500;
 
 interface ExecutionContext {
   waitUntil(promise: Promise<unknown>): void;
+  readonly props?: unknown;
 }
 
 /** One runtime and one blob reader per isolate: the bindings never change underneath a deployment. */
@@ -173,6 +175,7 @@ async function answered(
   request: Request,
   env: unknown,
   waitUntil: (promise: Promise<unknown>) => void,
+  props?: unknown,
 ): Promise<Response> {
   // Kept here as well as in the request's context: a failure answered below says them too.
   const invalidated = new InvalidatedTags();
@@ -184,7 +187,18 @@ async function answered(
     const { blobs, runtime } = hostFor(env);
     return await withRequestContext(
       { headers: plainHeaders(request.headers), url: publicUrl(request), waitUntil },
-      () => {
+      async () => {
+        const warm = resourceWarmOf(props);
+        if (warm !== undefined) {
+          const result = await warmResourceRoute({
+            props: warm,
+            tables: { app: app as AppModule, edge: edge as EdgeModule },
+            request,
+            runtime,
+            waitUntil,
+          });
+          return Response.json(result);
+        }
         return handleRequest({
           app: app as AppModule,
           edge: edge as EdgeModule,
@@ -217,7 +231,7 @@ const entry = {
     const waitUntil = (promise: Promise<unknown>): void => {
       ctx.waitUntil(promise);
     };
-    const answer = answered(request, env, waitUntil);
+    const answer = answered(request, env, waitUntil, ctx.props);
     // A request that may change something is seen through, whether or not anyone is still waiting
     // for it. workerd cancels a request's work when its client goes away — at the next thing the
     // work waits on — and keeps only what `waitUntil` holds: measured, a write a handler made 300 ms
@@ -226,7 +240,7 @@ const entry = {
     // Next.js on Node.js runs it to its end whatever became of the client. This holds the request to
     // its answer; a Node.js handler that goes on after its headers is held to its own end where it
     // runs (`invokeNodeHandler`).
-    if (changesSomething(request.method)) {
+    if (changesSomething(request.method) || resourceWarmOf(ctx.props) !== undefined) {
       ctx.waitUntil(answer);
     }
     return answer;

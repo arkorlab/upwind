@@ -277,6 +277,7 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
   const runtimeManifest = {
     // One-pass, as the bundle says below: a host that knows nothing of that refuses the version.
     v: ONE_PASS_BUNDLE_VERSION as number,
+    resourceChanges: 1 as const,
     deploymentId: id,
     nextVersion: ctx.nextVersion,
     buildId: ctx.buildId,

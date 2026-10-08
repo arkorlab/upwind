@@ -1,4 +1,11 @@
-import { type FunctionEnv, RESOURCES_SYMBOL_KEY, resourcesOf } from '@stayingupwind/core/paas';
+import {
+  DEFAULT_D1_CACHE_TAG,
+  type FunctionEnv,
+  installNextCacheRegistry,
+  RESOURCES_SYMBOL_KEY,
+  resourcesOf,
+  revalidateNextResource,
+} from '@stayingupwind/core/paas';
 
 /**
  * Where an application reads its storage from, defined by a process that is not a Function.
@@ -14,13 +21,21 @@ import { type FunctionEnv, RESOURCES_SYMBOL_KEY, resourcesOf } from '@stayingupw
  * removable, and built by `resourcesOf` from the manifest rather than assembled by hand here.
  */
 export function publishResources(env: FunctionEnv): void {
+  installNextCacheRegistry();
   const key = Symbol.for(RESOURCES_SYMBOL_KEY);
   // Something in this process published first. What an application read a moment ago must not
   // become something else, so this is not an error and not an overwrite: it is nothing at all.
   if (Object.hasOwn(globalThis, key)) {
     return;
   }
-  const published = resourcesOf(env);
+  const published = resourcesOf(env, {
+    // Local writes share Next's ordinary action/route-handler invalidation path. Build
+    // prerenders have no mutation context, so the registry leaves those untouched.
+    changed: () => {
+      revalidateNextResource(DEFAULT_D1_CACHE_TAG);
+      return Promise.resolve();
+    },
+  });
   Object.defineProperty(globalThis, key, {
     configurable: false,
     enumerable: false,

@@ -7,6 +7,7 @@ import {
   isExactPathname,
   isReserved,
   matchDynamicRoute,
+  memberRouteFor,
   type RouteEntry,
   type ProjectManifest,
   type StaticFileEntry,
@@ -77,11 +78,12 @@ export type RequestClass =
       readonly entry: RouteEntry | undefined;
     }
   /**
-   * A router's request for the whole payload of a page, at a route whose payload the build wrote
-   * whole (`RouteEntry.payload`): `entry` is the route its URL names. Any other request for React
-   * Server Components is `rsc`, as every one was before.
+   * A router's request for the whole payload of a page: the build payload, or a cache-backed
+   * App Router generation which can supply one. `entry` is the route its URL names, or absent
+   * for a dynamic class with no shell whose concrete member record the host must check.
+   * Other requests for React Server Components remain `rsc`.
    */
-  | { readonly kind: 'rsc-payload'; readonly entry: RouteEntry }
+  | { readonly kind: 'rsc-payload'; readonly entry: RouteEntry | undefined }
   /**
    * A Pages Router client's request for a page's props, at a page whose props the build wrote
    * (`RouteEntry.pagesData`): `entry` is that page's route. Any other `/_next/data` request is the
@@ -588,22 +590,10 @@ function pagesDataRequest(input: ClassifyInput): RequestClass | undefined {
 }
 
 /**
- * A router's request for a page's whole payload, where the route its URL names has one the build
- * wrote (`RouteEntry.payload`) and nothing the request carries asks for anything else: past every
- * gate a prefetch of part of the page passes, its `x-deployment-id` judged as that prefetch's is.
- * A `HEAD` is classified as its `GET` is, as every request is (`classifyByMethod`), and left to the
- * Function where it would be answered.
- *
- * Only an exact route holds a payload (`routePayloads`), so only the exact routes are looked in, and
- * a rule ahead of the filesystem — an intercepting route's, by `next-url` — claims the page first, as
- * it claims a document's (`entryFor`). A request for React Server Components is answered with no
- * dynamic route tested against it, as it was before. Nor is one that carries a
- * `next-router-segment-prefetch` at all: an empty one names no part (`segmentPrefetchOf`), and
- * Next.js answers it as a prefetch of a part it has none of, not with the page.
- *
- * `undefined` for any other, which stays `rsc` and goes to the Function as it always did: a route
- * with no payload to serve is not run past the middleware at the edge for nothing, and a request
- * the gates turn away is reported as it was.
+ * Whole Flight for an exact build payload, or for an App Router route with a generation record.
+ * Partial builds may leave no whole payload until the first runtime capture. Cached dynamic
+ * routes can likewise hold concrete member generations, which the host checks before serving.
+ * All prefetch gates still apply; an empty segment header asks for a missing part, not the page.
  */
 function payloadRequest(input: ClassifyInput): RequestClass | undefined {
   const { headers, url, manifest } = input;
@@ -614,8 +604,19 @@ function payloadRequest(input: ClassifyInput): RequestClass | undefined {
   ) {
     return undefined;
   }
-  const entry = findRouteEntry(manifest, url.pathname);
-  if (entry?.payload === undefined) {
+  // New generation packs can contain RSC even when a partial build had no whole payload.
+  const entry =
+    findRouteEntry(manifest, url.pathname) ??
+    (manifest.cache === undefined ? undefined : entryFor(manifest, url, headers));
+  const member =
+    entry === undefined && manifest.cache !== undefined
+      ? memberRouteFor(manifest, url, headers)
+      : undefined;
+  if (
+    entry?.payload === undefined &&
+    (manifest.cache === undefined ||
+      (entry?.cache?.kind !== 'app-page' && member?.members.kind !== 'app-page'))
+  ) {
     return undefined;
   }
   if (

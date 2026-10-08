@@ -87,6 +87,46 @@ export function requestContextFor(input: {
 
 const contexts = new AsyncLocalStorage<RequestContext>();
 
+export interface ResourceChangeReceipt {
+  readonly context: RequestContext | undefined;
+  readonly tag: string;
+}
+
+interface ResourceReceiptCoverage {
+  readonly pending: Set<ResourceChangeReceipt>;
+  revision: number | undefined;
+}
+
+/** Durable receipts cover every observed mutation in this request, even when replies reorder. */
+const resourceReceipts = new WeakMap<RequestContext, Map<string, ResourceReceiptCoverage>>();
+
+export function beginResourceChange(tag: string): ResourceChangeReceipt {
+  const context = requestContext();
+  const change = { context, tag };
+  if (context === undefined) return change;
+  const receipts = resourceReceipts.get(context) ?? new Map<string, ResourceReceiptCoverage>();
+  const coverage = receipts.get(tag) ?? {
+    pending: new Set<ResourceChangeReceipt>(),
+    revision: undefined,
+  };
+  coverage.pending.add(change);
+  receipts.set(tag, coverage);
+  resourceReceipts.set(context, receipts);
+  return change;
+}
+
+export function recordResourceReceipt(change: ResourceChangeReceipt, revision: number): void {
+  if (change.context === undefined) return;
+  const coverage = resourceReceipts.get(change.context)?.get(change.tag);
+  if (coverage?.pending.delete(change) !== true) return;
+  coverage.revision = Math.max(coverage.revision ?? 0, revision);
+}
+
+export function hasResourceReceipt(context: RequestContext, tag: string): boolean {
+  const coverage = resourceReceipts.get(context)?.get(tag);
+  return coverage?.revision !== undefined && coverage.pending.size === 0;
+}
+
 export function withRequestContext<T>(context: RequestContext, work: () => Promise<T>): Promise<T> {
   return contexts.run(context, work);
 }

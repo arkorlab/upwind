@@ -128,7 +128,16 @@ function artifactOf(value: unknown): PackArtifactRef | undefined {
   if (!isFields(value)) {
     return undefined;
   }
-  const { artifactId, sha256, byteLength, contentType, encoding, role, representationKey } = value;
+  const {
+    artifactId,
+    sha256,
+    byteLength,
+    contentType,
+    encoding,
+    role,
+    representationKey,
+    storageRef,
+  } = value;
   if (
     !isFilled(artifactId) ||
     !isSha256Hex(sha256) ||
@@ -136,11 +145,21 @@ function artifactOf(value: unknown): PackArtifactRef | undefined {
     !isFilled(contentType) ||
     !isOneOf(ARTIFACT_ENCODINGS, encoding) ||
     !isOneOf(ARTIFACT_ROLES, role) ||
-    !isFilled(representationKey)
+    !isFilled(representationKey) ||
+    (storageRef !== undefined && !isFilled(storageRef))
   ) {
     return undefined;
   }
-  return { artifactId, sha256, byteLength, contentType, encoding, role, representationKey };
+  return {
+    artifactId,
+    sha256,
+    byteLength,
+    contentType,
+    encoding,
+    role,
+    representationKey,
+    ...(storageRef !== undefined && { storageRef }),
+  };
 }
 
 /** Each item as `itemOf` checks it, or `undefined` when one fails or there are too many. */

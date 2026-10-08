@@ -1,3 +1,5 @@
+import { type D1Observation, observeD1 } from './d1-observation.ts';
+
 /**
  * A project's storage bindings on the way from its host to the application.
  *
@@ -91,6 +93,28 @@ export function parseResourcesManifest(raw: unknown): ResourceManifestEntry[] {
     : [];
 }
 
+/** Resolve and deduplicate by the same name and binding checks used to publish resources. */
+function resourceBindingsOf(env: FunctionEnv): Map<string, PublishedResource> {
+  const resources = new Map<string, PublishedResource>();
+  const listed = parseResourcesManifest(env[RESOURCES_MANIFEST_BINDING]);
+  for (const entry of listed) {
+    // Inherited names and listed variables never publish storage bindings.
+    const binding = Object.hasOwn(env, entry.name) ? env[entry.name] : undefined;
+    if (typeof binding === 'object' && binding !== null)
+      resources.set(entry.name, { type: entry.type, binding });
+  }
+  return resources;
+}
+
+function d1BindingsIn(resources: ReadonlyMap<string, PublishedResource>): number {
+  return [...resources.values()].filter((resource) => resource.type === 'd1').length;
+}
+
+/** The runtime's tag hints and observers must agree on the actually published default database. */
+export function publishedD1BindingCount(env: FunctionEnv): number {
+  return d1BindingsIn(resourceBindingsOf(env));
+}
+
 /**
  * The storage bindings `env` holds, as the list beside them names them; frozen throughout.
  *
@@ -103,19 +127,15 @@ export function parseResourcesManifest(raw: unknown): ResourceManifestEntry[] {
  * same list — a second implementation would be a second set of rules about what an application
  * finds. Nothing in this function is of either runtime: it reads an object and returns one.
  */
-export function resourcesOf(env: FunctionEnv): PublishedResources {
+export function resourcesOf(env: FunctionEnv, observation?: D1Observation): PublishedResources {
   const resources = Object.create(null) as Record<string, PublishedResource>;
-  const listed = parseResourcesManifest(env[RESOURCES_MANIFEST_BINDING]);
-  for (const entry of listed) {
-    // The name has to be one the environment holds itself. `__proto__` is the one that is always
-    // there otherwise — an object, on every ordinary environment — and a list that named it would
-    // publish `Object.prototype` as a database.
-    const binding = Object.hasOwn(env, entry.name) ? env[entry.name] : undefined;
-    // A name the Function holds no object by is left out: the application finds nothing there,
-    // rather than text where it expects storage.
-    if (typeof binding === 'object' && binding !== null) {
-      resources[entry.name] = Object.freeze({ type: entry.type, binding });
-    }
+  const listed = resourceBindingsOf(env);
+  const singleD1 = d1BindingsIn(listed) === 1;
+  for (const [name, { type, binding }] of listed) {
+    resources[name] = Object.freeze({
+      type,
+      binding: singleD1 && type === 'd1' ? observeD1(binding, name, observation) : binding,
+    });
   }
   return Object.freeze({ version: RESOURCES_API_VERSION, resources: Object.freeze(resources) });
 }

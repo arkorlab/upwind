@@ -4,6 +4,7 @@ import { graphManifestsPatch } from './graph-manifests.ts';
 import { hangingInputAbortPatch } from './hanging-input-abort.ts';
 import { instrumentationPatch } from './instrumentation.ts';
 import { loadManifestPatch } from './load-manifest.ts';
+import { resourceCacheBridgePatch } from './resource-cache-bridge.ts';
 import { resumeCacheLimitPatch } from './resume-cache-limit.ts';
 import { taskTimersPatch } from './task-timers.ts';
 import { turbopackRootPatch } from './turbopack-root.ts';
@@ -41,6 +42,7 @@ export const PATCHES: readonly Patch[] = [
   instrumentationPatch,
   loadManifestPatch,
   resumeCacheLimitPatch,
+  resourceCacheBridgePatch,
   taskTimersPatch,
   graphManifestsPatch,
   workflowQuickjsWasmPatch,

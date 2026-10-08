@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import type createNextServer from 'next';
 
 import { packageVersion } from '../manifest.ts';
+import { installNextResourceCacheLoader } from '../resources/next-cache-loader.ts';
 
 /**
  * Next.js's development server, run the way Next.js documents a custom server: `next({ dev: true })`,
@@ -67,6 +68,7 @@ export async function startNextApp(options: {
       `no \`next\` is installed in ${options.projectDir} — \`upwind dev\` runs the project's own Next.js, so install it there first`,
     );
   }
+  installNextResourceCacheLoader();
   const module = (await import(pathToFileURL(entry).href)) as { default: NextFactory };
   const app = module.default({
     dev: true,

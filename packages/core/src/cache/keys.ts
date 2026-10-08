@@ -47,17 +47,18 @@ export const IMPLICIT_TAG_PREFIX = '_N_T_';
 export const MAX_TAG_LENGTH = 256;
 /**
  * How many tags one call may name: Next.js's `NEXT_CACHE_TAG_MAX_ITEMS`, which `validateTags`
- * applies per `fetch`, per `revalidateTag`, per `use cache` entry.
+ * applies to one `fetch` tag list or one `cacheTag()` call, not a complete `use cache` entry.
  *
  * The bound of a request, where `MAX_TAGS_PER_ENTRY` is the bound of a record. A data-cache
- * entry's tags are one call's, an invalidation names one call's, and a read of named tags asks
- * about one read's. A host may have encoded this bound into what it records — one that carries a
+ * fetch entry's tags are one call's, an invalidation names one call's, and a read of named tags asks
+ * about one read's. A `use cache` entry can aggregate tags from multiple calls and nested entries.
+ * A host may have encoded the request bound into what it records — one that carries a
  * membership bit per tag has nowhere to put the hundred and twenty-ninth — so it is a number the
  * protocol rests on rather than a limit that may be raised here.
  */
 export const MAX_TAGS_PER_CALL = 128;
 /**
- * How many tags one route's generation may carry.
+ * How many tags one cache record may carry, including a route generation or aggregated `use cache` entry.
  *
  * Not `MAX_TAGS_PER_CALL`, which is what Next.js allows one call: a generation carries what a whole
  * render accumulated — every call's tags, plus the route's implicit ones — so a page with twenty

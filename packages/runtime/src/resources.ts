@@ -1,11 +1,17 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+
 import {
   type FunctionEnv,
   type PublishedResources,
+  installNextCacheRegistry,
+  installResourcePrimaryReadStorage,
   publishedFunctionEnv,
   RESOURCES_SYMBOL_KEY,
   resourcesOf,
 } from '@stayingupwind/core/paas';
 import { env as importedEnv } from 'cloudflare:workers';
+
+import { reportResourceChange } from './resource-changes.ts';
 
 /**
  * A deployment's storage bindings, published at `globalThis[Symbol.for('upwind.resources')]` for
@@ -49,11 +55,17 @@ export function resourcesLookup(sources: ResourceSources): () => PublishedResour
     if (handed !== undefined) {
       // The same environment as the one imported, as it is in a Function that has both: the
       // application keeps the very object it may already hold.
-      settled = early !== undefined && handed === sources.imported ? early : resourcesOf(handed);
+      settled =
+        early !== undefined && handed === sources.imported
+          ? early
+          : resourcesOf(handed, {
+              changed: (name) => reportResourceChange(handed, name),
+            });
       return settled;
     }
     if (sources.imported !== undefined) {
-      early ??= resourcesOf(sources.imported);
+      const imported = sources.imported;
+      early ??= resourcesOf(imported, { changed: (name) => reportResourceChange(imported, name) });
     }
     return early;
   };
@@ -65,6 +77,8 @@ function importable(env: unknown): FunctionEnv | undefined {
 
 /** Define the symbol, once: the application can read it, and neither replace nor remove it. */
 export function installResources(): void {
+  installNextCacheRegistry();
+  installResourcePrimaryReadStorage(new AsyncLocalStorage<true>());
   const key = Symbol.for(RESOURCES_SYMBOL_KEY);
   if (Object.hasOwn(globalThis, key)) {
     return;

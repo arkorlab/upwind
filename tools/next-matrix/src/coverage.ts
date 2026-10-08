@@ -15,6 +15,7 @@
 /** The patch names more than one of the lists below spells, kept in one place. */
 const FETCH_CACHE_WAIT_UNTIL = 'fetch-cache-wait-until';
 const GRAPH_MANIFESTS = 'graph-manifests';
+const RESOURCE_CACHE_BRIDGE = 'resource-cache-bridge';
 const TURBOPACK_RUNTIME = 'turbopack-runtime';
 /** The same runtime chunk's roots, rewritten wherever the runtime is (`patches/turbopack-root.ts`). */
 const TURBOPACK_ROOT = 'turbopack-root';
@@ -73,6 +74,7 @@ export const FIXTURE_COVERAGE = {
   'next-minimal': {
     expected: [
       ...PACKAGE_PATCHES,
+      RESOURCE_CACHE_BRIDGE,
       TURBOPACK_RUNTIME,
       TURBOPACK_ROOT,
       WASM_LOADER,
@@ -81,6 +83,7 @@ export const FIXTURE_COVERAGE = {
       'vercel-og-image-response',
     ],
     chunks: [
+      RESOURCE_CACHE_BRIDGE,
       FETCH_CACHE_WAIT_UNTIL,
       GRAPH_MANIFESTS,
       'hanging-input-abort',

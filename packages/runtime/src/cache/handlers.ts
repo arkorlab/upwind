@@ -1,8 +1,20 @@
 import { NEXT_ONE_YEAR_SECONDS } from '@stayingupwind/core/cache';
+import {
+  DEFAULT_D1_CACHE_TAG,
+  type FunctionEnv,
+  isPrimaryResourceRead,
+  publishedD1BindingCount,
+  publishedFunctionEnv,
+} from '@stayingupwind/core/paas';
 
 import { readWithin } from './body.ts';
 import { nowMs } from './clock.ts';
-import { isRegeneration, type RequestContext, requestContext } from './context.ts';
+import {
+  hasResourceReceipt,
+  isRegeneration,
+  type RequestContext,
+  requestContext,
+} from './context.ts';
 import { readData, writeData } from './data.ts';
 import {
   heldOut,
@@ -46,6 +58,17 @@ interface HandlerRuntime {
 }
 
 const state: { current: HandlerRuntime | undefined } = { current: undefined };
+const resourceTagHints = new WeakMap<FunctionEnv, readonly string[]>();
+
+function knownResourceTags(): readonly string[] {
+  const env = publishedFunctionEnv();
+  if (env === undefined) return [];
+  const held = resourceTagHints.get(env);
+  if (held !== undefined) return held;
+  const tags = publishedD1BindingCount(env) === 1 ? [DEFAULT_D1_CACHE_TAG] : [];
+  resourceTagHints.set(env, tags);
+  return tags;
+}
 
 /** Point the handlers at the runtime the request was given; none turns them into misses. */
 export function configureCacheHandlers(runtime: CacheRuntime | undefined): void {
@@ -140,15 +163,20 @@ function invalidateOnce(
   durations: { expire?: number } | undefined,
 ): Promise<void> {
   const context = requestContext();
+  const effectiveTags =
+    context !== undefined && durations?.expire === NEXT_ONE_YEAR_SECONDS
+      ? tags.filter((tag) => tag !== DEFAULT_D1_CACHE_TAG || !hasResourceReceipt(context, tag))
+      : tags;
+  if (effectiveTags.length === 0) return Promise.resolve();
   if (context === undefined) {
-    return invalidateLogged(runtime, tags, durations);
+    return invalidateLogged(runtime, effectiveTags, durations);
   }
   // Whether it is `updateTag`'s, and the window, beside the tags in one order whatever order they
   // were named in.
   const asked = JSON.stringify([
     durations === undefined,
     durations?.expire ?? 0,
-    [...new Set(tags)].toSorted((a, b) => a.localeCompare(b)),
+    [...new Set(effectiveTags)].toSorted((a, b) => a.localeCompare(b)),
   ]);
   const out = invalidationsOut.get(context) ?? new Map<string, Promise<void>>();
   invalidationsOut.set(context, out);
@@ -156,7 +184,7 @@ function invalidateOnce(
   if (pending !== undefined) {
     return pending;
   }
-  const call = whileOut(out, asked, invalidateLogged(runtime, tags, durations));
+  const call = whileOut(out, asked, invalidateLogged(runtime, effectiveTags, durations));
   out.set(asked, call);
   return call;
 }
@@ -249,7 +277,10 @@ function fetchWrites(runtime: CacheRuntime): HeldWrites {
  * keeps. A regeneration asks the host whatever is out (`PlatformFetchCache`).
  */
 async function fetchHeld(runtime: CacheRuntime, cacheKey: string): Promise<HeldValue | undefined> {
-  const out = isRegeneration() ? undefined : heldOut(writesIn(runtime, FETCH_STORE), cacheKey);
+  const out =
+    isRegeneration() || isPrimaryResourceRead()
+      ? undefined
+      : heldOut(writesIn(runtime, FETCH_STORE), cacheKey);
   return out ?? heldIn(await readData(runtime, { key: cacheKey, kind: DATA_FETCH }));
 }
 
@@ -330,7 +361,10 @@ export class PlatformFetchCache {
       invalidation: held.invalidation,
       now,
     });
-    if (validity === 'expired' || (validity === 'stale' && isRegeneration())) {
+    if (
+      validity === 'expired' ||
+      (validity === 'stale' && (isRegeneration() || isPrimaryResourceRead()))
+    ) {
       return null;
     }
     return { value, lastModified: validity === 'stale' ? 0 : entry.timestamp };
@@ -443,7 +477,7 @@ async function getUseCache(
   // while the value is read, and the entry's own tags once it has been.
   const [held] = await Promise.all([
     useCacheHeld(runtime, kind, cacheKey),
-    runtime.tags.syncLocal(runtime.host, softTags, now),
+    runtime.tags.syncLocal(runtime.host, [...softTags, ...knownResourceTags()], now),
   ]);
   if (held === undefined) {
     return undefined;
@@ -456,7 +490,11 @@ async function getUseCache(
     invalidation: held.invalidation,
     now,
   });
-  if (validity === 'expired') {
+  // A regeneration must rebuild from fresh data even when Next's request store permits SWR.
+  if (
+    validity === 'expired' ||
+    (validity === 'stale' && (isRegeneration() || isPrimaryResourceRead()))
+  ) {
     return undefined;
   }
   return {
@@ -493,9 +531,10 @@ async function useCacheHeld(
   kind: string,
   cacheKey: string,
 ): Promise<HeldValue | undefined> {
-  const out = isRegeneration()
-    ? undefined
-    : heldOut(writesIn(runtime, useCacheStore(kind)), cacheKey);
+  const out =
+    isRegeneration() || isPrimaryResourceRead()
+      ? undefined
+      : heldOut(writesIn(runtime, useCacheStore(kind)), cacheKey);
   return out ?? heldIn(await readData(runtime, { key: cacheKey, kind: USE_CACHE, handler: kind }));
 }
 
@@ -545,7 +584,7 @@ async function setUseCache(
     revalidate: entry.revalidate,
   };
   const context = requestContext();
-  if (context === undefined || isRegeneration()) {
+  if (context === undefined || isRegeneration() || isPrimaryResourceRead()) {
     await writeData(runtime, { key: cacheKey, entry: metadata, bytes }, callsWaitedOn());
     return;
   }
