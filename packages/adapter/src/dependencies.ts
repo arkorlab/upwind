@@ -382,8 +382,29 @@ const ALLOWED_DYNAMIC_LOADS: readonly RegExp[] = [
   /^next\/dist\/server\/require-hook\.js:\d+: (?:const|let) resolve = /u,
 ];
 
-function isAllowedDynamicLoad(load: string): boolean {
-  return ALLOWED_DYNAMIC_LOADS.some((pattern) => pattern.test(load));
+/** Where the patterns above find the build's output: `.next`, unless `distDir` says otherwise. */
+const NAMED_OUTPUT = '.next';
+
+/**
+ * Where a project's build output is, as the record names a file of it (`displayPath`): `.next`, and
+ * otherwise wherever its `distDir` put it — `build` for `distDir: 'build'`, `../.next` for a package
+ * that writes it beside itself, as a monorepo's tools do (`upward-distdir`).
+ */
+export function outputNameOf(projectDir: string, distDir: string): string {
+  return displayPath(projectDir, distDir);
+}
+
+/**
+ * Whether a load is one of those above, read with the build's output named `.next/` as they name it.
+ * Read as it is, every build whose output is anywhere else failed the audit on the Turbopack
+ * runtime's own loads.
+ */
+function isAllowedDynamicLoad(load: string, output: string): boolean {
+  const named =
+    output !== NAMED_OUTPUT && load.startsWith(`${output}/`)
+      ? `${NAMED_OUTPUT}${load.slice(output.length)}`
+      : load;
+  return ALLOWED_DYNAMIC_LOADS.some((pattern) => pattern.test(named));
 }
 
 /** What must not survive in a bundled app: each is a Function that fails to start or to serve. */
@@ -398,6 +419,22 @@ export class AuditError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = 'AuditError';
+  }
+}
+
+/**
+ * Refuse a build whose output is outside its project — `distDir: '../.next'`, as a monorepo's tools
+ * write it beside their packages (`upward-distdir`, `nx-handling`). The Function carries the build's
+ * files under the names they have from the project (`displayPath`), and `workerd` loads no module whose
+ * name climbs out of its own (`../.next/BUILD_ID`): the Function would be deployed and never start.
+ * Said here, where the configuration is, rather than as a deployment that does not answer.
+ */
+export function refuseOutputOutsideProject(projectDir: string, distDir: string): void {
+  const relative = path.relative(projectDir, distDir);
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new AuditError(
+      `@stayingupwind/adapter: the build's output (\`distDir\`, ${outputNameOf(projectDir, distDir)}) is outside the project (${projectDir}); the Function names the files it carries from the project, and none can be named outside it`,
+    );
   }
 }
 
@@ -449,7 +486,7 @@ export function auditFunctionSize(kind: string, upload: FunctionUpload, deferred
 }
 
 /** What would fail the Function in one of its bundles: the source as rendered, and its record. */
-function problemsIn(source: string, bundle: BundleDependencies): string[] {
+function problemsIn(source: string, bundle: BundleDependencies, output: string): string[] {
   const problems: string[] = [];
   for (const [pattern, what] of FORBIDDEN_IN_APP) {
     if (pattern.test(source)) {
@@ -475,7 +512,7 @@ function problemsIn(source: string, bundle: BundleDependencies): string[] {
     const left = guarded.get(dynamic) ?? 0;
     if (left > 0) {
       guarded.set(dynamic, left - 1);
-    } else if (!isAllowedDynamicLoad(dynamic)) {
+    } else if (!isAllowedDynamicLoad(dynamic, output)) {
       problems.push(`a load the bundler could not follow: ${dynamic}`);
     }
   }
@@ -487,13 +524,14 @@ export function auditFunction(
   kind: string,
   sources: { readonly app: string; readonly edge?: string; readonly linked?: string },
   dependencies: FunctionDependencies,
+  output = NAMED_OUTPUT,
 ): void {
-  const problems = problemsIn(sources.app, dependencies);
+  const problems = problemsIn(sources.app, dependencies, output);
   if (sources.edge !== undefined && dependencies.edge !== undefined) {
-    problems.push(...problemsIn(sources.edge, dependencies.edge));
+    problems.push(...problemsIn(sources.edge, dependencies.edge, output));
   }
   if (sources.linked !== undefined && dependencies.linked !== undefined) {
-    problems.push(...problemsIn(sources.linked, dependencies.linked));
+    problems.push(...problemsIn(sources.linked, dependencies.linked, output));
   }
   if (problems.length > 0) {
     const list = problems.map((problem) => `  - ${problem}`).join('\n');
