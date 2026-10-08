@@ -84,7 +84,9 @@ export function namesWithSpellings(store: Store): string[] {
       .filter((pathname) => isTemplate(pathname) && !pages.has(pathname)),
   );
   for (const name of store.pathnames) {
-    if (templates.has(withoutTrailingSlash(name))) {
+    // A file of `public/` is named as a URL spells it already (`/foo%20bar.txt`), and an escape of
+    // that spelling (`/foo%2520bar.txt`) is the file's name escaped twice, which names no file.
+    if (templates.has(withoutTrailingSlash(name)) || isEscapedFile(store, name)) {
       continue;
     }
     for (const spelling of spellingsOf(name)) {
@@ -110,6 +112,18 @@ function spellingsOf(name: string): string[] {
 function spells(spelling: string, name: string): boolean {
   try {
     return decodeURIComponent(spelling) === name;
+  } catch {
+    return false;
+  }
+}
+
+/** A static file whose name is a URL's spelling of another: one of `public/`, escaped as it is served. */
+function isEscapedFile(store: Store, name: string): boolean {
+  if (!name.includes('%') || !store.staticFiles.has(withoutTrailingSlash(name))) {
+    return false;
+  }
+  try {
+    return decodeURIComponent(name) !== name;
   } catch {
     return false;
   }
