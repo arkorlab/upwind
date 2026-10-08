@@ -130,10 +130,12 @@ function conditionMatches(condition: RouteHas, url: URL, headers: Headers): bool
     return true;
   }
   if (part !== undefined && value.length <= MAX_SUBSTRING_MATCH_LENGTH) {
-    // Where tests are bounded (`budgetPatterns`), a value longer than this pattern affords is not
-    // tested here, and the request goes to the Function — not read as the non-match it may not be,
-    // which would let a visitor choose the answer by the length of a header. The cap above is all
-    // that holds where tests are not bounded, as in an application's own Function.
+    // Where tests are bounded (`budgetPatterns`), a test this value is too long to afford is not
+    // made: it throws, and the request goes to the Function — not read as the non-match it may not
+    // be, an answer the Function's unbounded test need not share, chosen by the length of a header.
+    // A value past the cap is not tried at all, bounded or not, and is no match wherever this runs
+    // (what that gives up is above); where tests are not bounded, as in an application's own
+    // Function, that cap is all that holds.
     assertAffordable(part, value);
     return patternHolds(part, value);
   }

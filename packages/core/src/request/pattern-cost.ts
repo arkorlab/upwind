@@ -648,10 +648,9 @@ export function patternCost(
     // same: an empty value is tried once, at the only place it has. That attempt costs what one
     // costs, which is the terms one degree down — and without it, a pattern whose one attempt is
     // the expensive part read as free against an empty value: `(?:a?|b?)` twenty-four times and a
-    // `!`, seconds in V8 against nothing at all.
-    for (let degree = 0; degree < terms.length - 1; degree += 1) {
-      terms[degree] = (terms[degree] ?? 0) + (terms[degree + 1] ?? 0);
-    }
+    // `!`, seconds in V8 against nothing at all. The terms are copied down before any is added to,
+    // so each degree takes the one above it as it was.
+    addInto(terms, terms.slice(1), 1);
   }
   return {
     degree: Math.max(
