@@ -49,6 +49,7 @@ import {
   type PatchContext,
   PATCHES,
   patchesPlugin,
+  sharedRuntimePlugin,
   stubPlugin,
   vendoredOtelPlugin,
   wasmModulePlugin,
@@ -249,6 +250,7 @@ export function appBundlePlugins(
       sinks.wasm.push(`${file} -> ${global}`);
     }),
     vendoredOtelPlugin(),
+    sharedRuntimePlugin(),
     externalsPlugin((specifier) => sinks.externals.add(specifier)),
     linkedImportsPlugin((id) => sinks.linked.add(id)),
   ];

@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { isBuiltin } from 'node:module';
+import path from 'node:path';
 
 import type { Plugin } from 'rolldown';
 
@@ -221,6 +222,43 @@ export function vendoredOtelPlugin(onFallback?: (specifier: string) => void): Pl
         }
         onFallback?.(OTEL_API);
         return vendored;
+      },
+    },
+  };
+}
+
+/** How Next.js names a module holding a React context its renderers share with the application. */
+const SHARED_RUNTIME = '.shared-runtime';
+/** Where Next.js's require hook sends each of them: the Pages Router runtime's own copy. */
+const VENDORED_CONTEXTS = 'next/dist/server/route-modules/pages/vendored/contexts/';
+
+/**
+ * A module holding one of the contexts Next.js's renderers share with the application —
+ * `*.shared-runtime`, the image config's among them — is the copy the Pages Router's runtime holds,
+ * whichever module asks for it, as on Next.js's own server.
+ *
+ * That server installs a require hook ahead of any handler (`server/require-hook.ts`, which an
+ * adapter's Node.js entries load through `next/setup-node-env`): each such `require` is sent to the
+ * runtime's copy (`server/route-modules/pages/vendored/contexts/<name>`), so that a package left to
+ * Node — one of `serverExternalPackages` — that renders `next/image` reads the context the renderer
+ * provides, and not a second copy of it that nothing provides. The chunks Turbopack writes never ask
+ * for one; they were resolved as Turbopack built them. What asks is a module of `node_modules` the
+ * bundle reached as Node would have, which is what the hook is for. Without this, such an image was
+ * sized as though the application had no `images` config (`next-image-new/image-from-node-modules`).
+ */
+export function sharedRuntimePlugin(): Plugin {
+  return {
+    name: 'arkor-shared-runtime',
+    resolveId: {
+      filter: { id: /\.shared-runtime$/u },
+      async handler(source, importer, options) {
+        // As the hook asks for it: by name, from the module that asked.
+        // eslint-disable-next-line unicorn/no-this-outside-of-class -- the plugin API hands the context as `this`
+        return this.resolve(
+          `${VENDORED_CONTEXTS}${path.posix.basename(source, SHARED_RUNTIME)}`,
+          importer,
+          { ...options, skipSelf: true },
+        );
       },
     },
   };
