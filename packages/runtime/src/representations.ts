@@ -50,6 +50,9 @@ function outputHeaders(
   headers.set('content-type', contentTypeOf(representation, recorded));
   headers.set('cache-control', 'private, no-store');
   if (representation === 'rsc' || representation.startsWith(SEGMENT_PREFIX)) {
+    // A generation records the document's resource hints alongside its other outputs. Flight
+    // responses must not replay them; explicit routing headers are applied after this answer.
+    headers.delete('link');
     headers.set(PRERENDER_HEADER, '1');
     // The client keeps a partial Flight stream open for the unresolved records. Segments use
     // Next.js's distinct marker even when this segment itself contains no dynamic component.
