@@ -2,7 +2,7 @@ import { standsForClass } from '@stayingupwind/core/bundle';
 import { builtNameOf } from '@stayingupwind/core/manifest';
 
 import { redirects } from './rewritten-path.ts';
-import type { Store } from './store.ts';
+import { type Store, unlocalizedRouteOf } from './store.ts';
 
 /**
  * The names the build gave what it built, and the escaped spellings of a path that stand for them:
@@ -21,18 +21,31 @@ const UPPERCASE_ESCAPE = /%[0-9A-F]{2}/gu;
 /** Each store's pages of their own (`ownPages`). */
 const ownPagesOf = new WeakMap<Store, ReadonlySet<string>>();
 
-/** The pathnames of a store's entrypoints that are no template: its pages of their own. */
+/**
+ * The pathnames of a store's entrypoints that are no template — its pages of their own — each
+ * without a locale in front of it (`unlocalized`).
+ */
 function ownPages(store: Store): ReadonlySet<string> {
   let pages = ownPagesOf.get(store);
   if (pages === undefined) {
     pages = new Set(
       store.manifest.entrypoints
         .map((entry) => entry.pathname)
-        .filter((pathname) => !isTemplate(pathname)),
+        .filter((pathname) => !isTemplate(pathname))
+        .map((pathname) => unlocalized(store, pathname)),
     );
     ownPagesOf.set(store, pages);
   }
   return pages;
+}
+
+/**
+ * A name without the locale it leads with, as Next.js's filesystem check takes the locale off a path
+ * before it asks for a page: an application with `i18n` names a Pages Router page's entrypoint
+ * without one (`/docs/a/b`) and its prerenders with one (`/en/docs/a/b`).
+ */
+function unlocalized(store: Store, name: string): string {
+  return unlocalizedRouteOf(store.manifest.config, name) ?? name;
 }
 
 /** Whether a name is a file of the build that is no prerender, by either spelling of the slash. */
@@ -41,9 +54,12 @@ function isFile(store: Store, name: string): boolean {
   return store.staticFiles.has(unslashed) && !store.prerendersByPathname.has(unslashed);
 }
 
-/** Whether a name is a page of its own: an entrypoint that is no template, by either spelling. */
+/**
+ * Whether a name is a page of its own: an entrypoint that is no template, by either spelling of the
+ * slash, and with or without a locale in front of it.
+ */
 function isOwnPage(store: Store, name: string): boolean {
-  return ownPages(store).has(withoutTrailingSlash(name));
+  return ownPages(store).has(unlocalized(store, withoutTrailingSlash(name)));
 }
 
 /**
