@@ -55,8 +55,14 @@ export function watchBuildSources(beforeRead: (file: string) => void): Plugin {
       const watchConfigs = watchSourceConfigs(beforeRead);
       // eslint-disable-next-line require-unicode-regexp -- esbuild filters are Go regular expressions.
       builder.onResolve({ filter: /.*/, namespace: 'file' }, (args): undefined => {
-        watchConfigs(args.resolveDir);
         const specifier = args.path.replace(/\?module$/u, '');
+        const aliases = watchConfigs(args.resolveDir, specifier);
+        const extensions = builder.initialOptions.resolveExtensions ?? RESOLVE_EXTENSIONS;
+        for (const alias of aliases) {
+          watchCandidates(alias, extensions, beforeRead);
+          const mainFields = builder.initialOptions.mainFields ?? MAIN_FIELDS;
+          watchPackageEntries(alias, mainFields, extensions, beforeRead);
+        }
         if (
           specifier !== '.' &&
           specifier !== '..' &&
@@ -66,7 +72,6 @@ export function watchBuildSources(beforeRead: (file: string) => void): Plugin {
         )
           return;
         const target = path.resolve(args.resolveDir, specifier);
-        const extensions = builder.initialOptions.resolveExtensions ?? RESOLVE_EXTENSIONS;
         watchCandidates(target, extensions, beforeRead);
         if (path.extname(target) === '') {
           const mainFields = builder.initialOptions.mainFields ?? MAIN_FIELDS;

@@ -20,7 +20,8 @@ import type { Miniflare, MiniflareOptions } from 'miniflare';
 
 import { resolveFromProject } from '../dev/next-app.ts';
 import { guardListeners } from './listeners.ts';
-import { localBindings, type LocalStorageEntry } from './local-bindings.ts';
+import { localEntries, type LocalStorageEntry } from './local-bindings.ts';
+import { failedOwnerNames } from './local-failure.ts';
 import { publishResources } from './publish.ts';
 import { sourceChanges, watchDependencies, watchFile, watchManifests } from './watch-sources.ts';
 
@@ -568,7 +569,17 @@ async function localEnv(
  * in a build's render worker, a build that never ends. Its own exit hook is the backstop, and it is a
  * `SIGKILL`, so whatever this gives up on is still gone when the process leaves.
  */
-async function stopRuntime(runtime: Miniflare, startupError?: unknown): Promise<boolean> {
+const runtimeStops = new WeakMap<Miniflare, Promise<boolean>>();
+
+function stopRuntime(runtime: Miniflare, startupError?: unknown): Promise<boolean> {
+  const pending = runtimeStops.get(runtime);
+  if (pending !== undefined) return pending;
+  const stopping = stopRuntimeOnce(runtime, startupError);
+  runtimeStops.set(runtime, stopping);
+  return stopping;
+}
+
+async function stopRuntimeOnce(runtime: Miniflare, startupError?: unknown): Promise<boolean> {
   try {
     await Promise.race([runtime.dispose(), afterDeadline(STOP_MS, 'the runtime did not stop')]);
     return true;
@@ -707,32 +718,34 @@ export async function startLocalResources(
       options.mode ?? 'development',
     );
     sourcesChanged = sourceChanges(versions);
-    const entries = [
-      ...localBindings(objects.map((object) => object.declaration.name)),
-      ...objects.map((object): ResourceManifestEntry => {
-        return {
-          name: object.declaration.name,
-          type: DURABLE_OBJECT_TYPE,
-        };
-      }),
-    ];
+    const entries = localEntries(objects.map((object) => object.declaration.name));
     // The claim comes first, because the thing it prevents cannot be undone: two runtimes over one
     // directory read each other's data happily and then lose a write with no error anybody can see.
     release = await claimStorage(path.join(projectDir, PERSIST_DIR));
     attempt = startAndPublish(projectDir, entries, objects);
-    const ready = attempt.done.catch(async (error: unknown) => {
-      if (objects.length === 0 || !starting) throw error;
+    let remaining = objects;
+    async function recover(error: unknown): Promise<Miniflare> {
+      if (remaining.length === 0 || !starting) throw error;
       const failed = await attempt?.runtime;
       // Keep the storage claim throughout recovery, and never overlap two native runtimes.
       if (failed !== undefined && !(await stopRuntime(failed, error))) throw error;
       if (!starting) throw error;
+      const broken = failedOwnerNames(
+        error,
+        remaining.map((object) => object.declaration.name),
+      );
+      remaining = remaining.filter((object) => !broken.has(object.declaration.name));
+      // An unclassified failure cannot safely attribute a bad module to a particular owner.
+      if (broken.size === 0) remaining = [];
       const reason = error instanceof Error ? error.message : String(error);
       console.warn(
-        `upwind: could not start local Durable Objects; retrying default storage:\n${reason}`,
+        `upwind: could not start local Durable Objects; retrying unaffected resources:\n${reason}`,
       );
-      attempt = startAndPublish(projectDir, localBindings(), []);
-      return attempt.done;
-    });
+      const surviving = localEntries(remaining.map((object) => object.declaration.name));
+      attempt = startAndPublish(projectDir, surviving, remaining);
+      return attempt.done.catch(recover);
+    }
+    const ready = attempt.done.catch(recover);
     const runtime = await Promise.race([
       ready,
       afterDeadline(

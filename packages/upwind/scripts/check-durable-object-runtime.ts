@@ -7,8 +7,8 @@ import { UPWIND_DURABLE_OBJECTS_ENV } from '@stayingupwind/core/paas';
 
 import { BlobStore } from '../../adapter/src/blobs.ts';
 import { durableObjectParts } from '../../adapter/src/durable-objects.ts';
-import bucket from '../../sdk/src/blob.ts';
-import database from '../../sdk/src/db.ts';
+import defaultBucket from '../../sdk/src/blob.ts';
+import defaultDatabase from '../../sdk/src/db.ts';
 import store from '../../sdk/src/kv.ts';
 import { blob, d1, durableObject, kv } from '../../sdk/src/named.ts';
 import { startLocalResources } from '../src/resources/local.ts';
@@ -68,6 +68,32 @@ export async function checkMissingPackageEntry(
   }
 }
 
+export async function checkMissingAlias(
+  project: string,
+  declaration: DurableObjectDeclaration,
+  counterFixture: string,
+): Promise<void> {
+  const source = 'missing-alias-counter.ts';
+  const generated = path.join(project, 'alias-generated', 'missing.ts');
+  await mkdir(path.dirname(generated), { recursive: true });
+  await writeFile(
+    path.join(project, 'tsconfig.json'),
+    '{"compilerOptions":{"paths":{"@/*":["alias-generated/*"]}}}',
+  );
+  await writeFile(path.join(project, source), 'export { Counter } from "@/missing";');
+  process.env[UPWIND_DURABLE_OBJECTS_ENV] = JSON.stringify([{ ...declaration, module: source }]);
+  const resources = await startLocalResources(project, { answersSignals: true });
+  try {
+    assert.equal(durableObject('COUNTERS'), undefined);
+    assert.ok(resources.watchedFiles?.includes(generated) === true);
+    assert.equal(resources.sourcesChanged?.(), false);
+    await writeFile(generated, await readFile(counterFixture));
+    assert.equal(resources.sourcesChanged(), true);
+  } finally {
+    await resources.dispose();
+  }
+}
+
 export async function checkRuntimeFailure(
   project: string,
   declaration: DurableObjectDeclaration,
@@ -79,10 +105,26 @@ export async function checkRuntimeFailure(
     file,
     'import { DurableObject } from "cloudflare:workers"; throw new Error("fixture-startup-failure"); export class Counter extends DurableObject {}',
   );
-  process.env[UPWIND_DURABLE_OBJECTS_ENV] = JSON.stringify([{ ...declaration, module: source }]);
+  const healthy = 'healthy-counter.ts';
+  await writeFile(
+    path.join(project, healthy),
+    'import { DurableObject } from "cloudflare:workers"; export class Counter extends DurableObject { fetch() { return new Response("healthy"); } }',
+  );
+  process.env[UPWIND_DURABLE_OBJECTS_ENV] = JSON.stringify([
+    { ...declaration, module: source },
+    { ...declaration, name: 'SECOND_BROKEN', module: source },
+    { ...declaration, name: 'HEALTHY', module: healthy },
+  ]);
   const resources = await startLocalResources(project, { answersSignals: true });
   try {
     assert.equal(durableObject('COUNTERS'), undefined);
+    assert.equal(durableObject('SECOND_BROKEN'), undefined);
+    const unaffected = durableObject('HEALTHY');
+    assert.ok(unaffected);
+    assert.equal(
+      await (await unaffected.getByName('recovery').fetch('https://recovery.invalid/')).text(),
+      'healthy',
+    );
     const database = d1('UPWIND_D1');
     const namespace = kv('UPWIND_KV');
     const bucket = blob('UPWIND_R2');
@@ -119,10 +161,10 @@ export async function checkDefaultNameCollisions(
   const resources = await startLocalResources(project, { answersSignals: true });
   try {
     // Default storage keeps both SDK discovery and the data written before the name collision.
-    assert.equal(await database.prepare('SELECT 1 AS value').first<number>('value'), 1);
+    assert.equal(await defaultDatabase.prepare('SELECT 1 AS value').first<number>('value'), 1);
     assert.equal(await store.get('constructed'), 'yes');
-    await bucket.put('name-collision', 'available');
-    assert.equal(await (await bucket.get('name-collision'))?.text(), 'available');
+    await defaultBucket.put('name-collision', 'available');
+    assert.equal(await (await defaultBucket.get('name-collision'))?.text(), 'available');
     for (const name of names) {
       const namespace = durableObject(name);
       assert.ok(namespace);

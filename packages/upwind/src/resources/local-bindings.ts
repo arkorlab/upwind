@@ -13,7 +13,7 @@ const DEFAULTS: readonly ResourceManifestEntry[] = [
 const TRIAL_SECOND_D1: ResourceManifestEntry = { name: 'UPWIND_D1_2', type: 'd1' };
 
 /** Keep native customer names and SDK defaults, with the original storage identifiers. */
-export function localBindings(customerNames: readonly string[] = []): LocalStorageEntry[] {
+function localBindings(customerNames: readonly string[]): LocalStorageEntry[] {
   const occupied = new Set(customerNames);
   const defaults =
     process.env['UPWIND_TRIAL_TWO_D1'] === '1' ? [...DEFAULTS, TRIAL_SECOND_D1] : DEFAULTS;
@@ -24,4 +24,16 @@ export function localBindings(customerNames: readonly string[] = []): LocalStora
     occupied.add(name);
     return { name, type: entry.type, storageName: entry.name };
   });
+}
+
+export function localEntries(customerNames: readonly string[]): LocalStorageEntry[] {
+  return [
+    ...localBindings(customerNames),
+    ...customerNames.map((name): LocalStorageEntry => {
+      return {
+        name,
+        type: 'durable_object_namespace',
+      };
+    }),
+  ];
 }

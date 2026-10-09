@@ -23,6 +23,7 @@ import { checkBuildResolution, checkPrefixOnlyImports } from './check-durable-ob
 import {
   checkConfigEdit,
   checkDefaultNameCollisions,
+  checkMissingAlias,
   checkMissingDependency,
   checkMissingPackageEntry,
   checkRuntimeFailure,
@@ -362,6 +363,7 @@ async function checkProject(): Promise<void> {
         timeout: 30_000,
       });
       const runtimeChecks = [
+        'alias',
         'missing',
         'entry',
         'startup',
@@ -405,6 +407,7 @@ async function checkProject(): Promise<void> {
 }
 
 const sideCheck = new Map([
+  ['alias', () => checkMissingAlias(project, declaration, COUNTER_FIXTURE)],
   ['broken', checkBrokenSource],
   ['collision', () => checkDefaultNameCollisions(project, declaration)],
   ['commonjs', checkCommonJSBinding],
