@@ -18,6 +18,7 @@ const WASM_FILE = 'add.wasm';
 const RECOVERY_KEY = 'startup-recovery';
 
 const TS_CONFIG = 'tsconfig.json';
+const PACKAGE_JSON = 'package.json';
 
 export async function checkMissingDependency(
   project: string,
@@ -58,7 +59,7 @@ export async function checkMissingPackageEntry(
   const source = 'package-entry-counter.ts';
   await mkdir(path.dirname(entry), { recursive: true });
   await writeFile(
-    path.join(directory, 'package.json'),
+    path.join(directory, PACKAGE_JSON),
     '{"main":"src/entry.ts","module":"src/module.ts"}',
   );
   await writeFile(path.join(project, source), 'export { Counter } from "./generated-package.v1";');
@@ -70,6 +71,45 @@ export async function checkMissingPackageEntry(
     assert.ok(resources.watchedFiles.includes(alternate));
     assert.equal(resources.sourcesChanged?.(), false);
     await writeFile(entry, await readFile(counterFixture));
+    assert.equal(resources.sourcesChanged(), true);
+  } finally {
+    await resources.dispose();
+  }
+}
+
+export async function checkMissingPackageImport(
+  project: string,
+  declaration: DurableObjectDeclaration,
+  counterFixture: string,
+  wildcard = false,
+): Promise<void> {
+  const source = 'missing-package-import-counter.ts';
+  const generated = wildcard ? 'mapped-counter' : 'mapped-exact';
+  const file = path.join(project, `${generated}.ts`);
+  const specifier = wildcard ? '#generated/counter' : '#generated';
+  await writeFile(
+    path.join(project, PACKAGE_JSON),
+    JSON.stringify({
+      type: 'module',
+      imports: {
+        [wildcard ? '#generated/*' : specifier]: {
+          workerd: wildcard ? './mapped-*.ts' : `./${generated}.ts`,
+          default: './unselected-target.ts',
+        },
+      },
+    }),
+  );
+  await writeFile(
+    path.join(project, source),
+    `export { Counter } from ${JSON.stringify(specifier)};`,
+  );
+  process.env[UPWIND_DURABLE_OBJECTS_ENV] = JSON.stringify([{ ...declaration, module: source }]);
+  const resources = await startLocalResources(project, { answersSignals: true });
+  try {
+    assert.equal(durableObject('COUNTERS'), undefined);
+    assert.ok(resources.watchedFiles?.includes(file) === true);
+    assert.equal(resources.sourcesChanged?.(), false);
+    await writeFile(file, await readFile(counterFixture));
     assert.equal(resources.sourcesChanged(), true);
   } finally {
     await resources.dispose();
@@ -246,7 +286,7 @@ export async function checkWasmBinding(
   const packageDirectory = path.join(project, 'node_modules', 'wasm-fixture');
   await mkdir(packageDirectory, { recursive: true });
   await writeFile(
-    path.join(packageDirectory, 'package.json'),
+    path.join(packageDirectory, PACKAGE_JSON),
     '{"exports":{"./module":"./add.wasm"}}',
   );
   await writeFile(path.join(packageDirectory, WASM_FILE), await readFile(wasmFixture));

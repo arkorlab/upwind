@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { Plugin } from 'esbuild';
 
 import { watchSourceConfigs } from './source-config-watch.ts';
+import { watchPackageImports } from './source-package-watch.ts';
 
 const RESOLVE_EXTENSIONS = ['.tsx', '.ts', '.jsx', '.js', '.css', '.json'];
 const MAIN_FIELDS = ['browser', 'module', 'main'];
@@ -66,7 +67,10 @@ export function watchBuildSources(beforeRead: (file: string) => void): Plugin {
       // eslint-disable-next-line require-unicode-regexp -- esbuild filters are Go regular expressions.
       builder.onResolve({ filter: /.*/, namespace: 'file' }, (args): undefined => {
         const specifier = args.path.replace(/\?module$/u, '');
-        const aliases = watchConfigs(args.resolveDir, specifier);
+        const aliases = [
+          ...watchConfigs(args.resolveDir, specifier),
+          ...watchPackageImports(args.resolveDir, specifier, beforeRead),
+        ];
         const extensions = builder.initialOptions.resolveExtensions ?? RESOLVE_EXTENSIONS;
         for (const alias of aliases) {
           watchCandidates(alias, extensions, beforeRead);

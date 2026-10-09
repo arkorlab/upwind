@@ -5,7 +5,7 @@ function objectOf(value: unknown): Readonly<Record<string, unknown>> | undefined
   return value as Readonly<Record<string, unknown>>;
 }
 
-function aliasMatch(alias: string, specifier: string): string | undefined {
+export function aliasMatch(alias: string, specifier: string): string | undefined {
   const star = alias.indexOf('*');
   if (star === -1) return alias === specifier ? '' : undefined;
   const prefix = alias.slice(0, star);

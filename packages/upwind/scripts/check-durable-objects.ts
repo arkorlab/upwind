@@ -26,6 +26,7 @@ import {
   checkMissingAlias,
   checkMissingDependency,
   checkMissingPackageEntry,
+  checkMissingPackageImport,
   checkRuntimeFailure,
   checkWasmBinding,
 } from './check-durable-object-runtime.ts';
@@ -369,6 +370,8 @@ async function checkProject(): Promise<void> {
         'missing',
         'missing-dotted',
         'missing-js',
+        'package-import',
+        'package-import-pattern',
         'entry',
         'startup',
         'collision',
@@ -439,6 +442,11 @@ const sideCheck = new Map([
         generated: 'missing-rewritten.ts',
       });
     },
+  ],
+  ['package-import', () => checkMissingPackageImport(project, declaration, COUNTER_FIXTURE)],
+  [
+    'package-import-pattern',
+    () => checkMissingPackageImport(project, declaration, COUNTER_FIXTURE, true),
   ],
   ['production', () => checkCommonJSBinding('production')],
   ['prototype', checkPrototypeBinding],
