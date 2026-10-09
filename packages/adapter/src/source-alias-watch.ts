@@ -19,6 +19,17 @@ function aliasMatch(alias: string, specifier: string): string | undefined {
   return specifier.slice(prefix.length, specifier.length - suffix.length);
 }
 
+function aliasTargets(paths: Readonly<Record<string, unknown>>, specifier: string): string[] {
+  const matched: string[] = [];
+  for (const [alias, targets] of Object.entries(paths)) {
+    const match = aliasMatch(alias, specifier);
+    if (match === undefined || !Array.isArray(targets)) continue;
+    for (const target of targets as unknown[])
+      if (typeof target === 'string') matched.push(target.replaceAll('*', () => match));
+  }
+  return matched;
+}
+
 /** Conservative candidates include inherited base URLs, so missing aliased files remain watched. */
 export function sourceAliasCandidates(
   configs: ReadonlyMap<string, Readonly<Record<string, unknown>>>,
@@ -37,15 +48,9 @@ export function sourceAliasCandidates(
     const paths = objectOf(options?.['paths']);
     if (paths === undefined) continue;
     const directories = new Set([path.dirname(file), ...bases]);
-    for (const [alias, targets] of Object.entries(paths)) {
-      const match = aliasMatch(alias, specifier);
-      if (match === undefined || !Array.isArray(targets)) continue;
-      for (const target of targets as unknown[]) {
-        if (typeof target !== 'string') continue;
-        for (const directory of directories)
-          candidates.add(path.resolve(directory, target.replace('*', match)));
-      }
-    }
+    const targets = aliasTargets(paths, specifier);
+    for (const directory of directories)
+      for (const target of targets) candidates.add(path.resolve(directory, target));
   }
   return [...candidates];
 }

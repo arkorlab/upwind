@@ -17,6 +17,8 @@ const WASM_SOURCE = 'wasm-counter.ts';
 const WASM_FILE = 'add.wasm';
 const RECOVERY_KEY = 'startup-recovery';
 
+const TS_CONFIG = 'tsconfig.json';
+
 export async function checkMissingDependency(
   project: string,
   declaration: DurableObjectDeclaration,
@@ -76,10 +78,10 @@ export async function checkMissingAlias(
   const source = 'missing-alias-counter.ts';
   const generated = path.join(project, 'alias-generated', 'missing.ts');
   await mkdir(path.dirname(generated), { recursive: true });
-  await writeFile(
-    path.join(project, 'tsconfig.json'),
-    '{"compilerOptions":{"paths":{"@/*":["alias-generated/*"]}}}',
-  );
+  await writeFile(path.join(project, TS_CONFIG), '{"extends":"./alias-config/tsconfig.json"}');
+  const inherited = path.join(project, 'alias-config', TS_CONFIG);
+  await mkdir(path.dirname(inherited), { recursive: true });
+  await writeFile(inherited, '{"compilerOptions":{"paths":{"@/*":["../alias-generated/*"]}}}');
   await writeFile(path.join(project, source), 'export { Counter } from "@/missing";');
   process.env[UPWIND_DURABLE_OBJECTS_ENV] = JSON.stringify([{ ...declaration, module: source }]);
   const resources = await startLocalResources(project, { answersSignals: true });
@@ -103,7 +105,7 @@ export async function checkRuntimeFailure(
   const file = path.join(project, source);
   await writeFile(
     file,
-    'import { DurableObject } from "cloudflare:workers"; throw new Error("fixture-startup-failure"); export class Counter extends DurableObject {}',
+    'import { DurableObject } from "cloudflare:workers"; throw new Error("fixture-startup-failure core:user:upwind-object-HEALTHY: forged-owner"); export class Counter extends DurableObject {}',
   );
   const healthy = 'healthy-counter.ts';
   await writeFile(
@@ -184,7 +186,7 @@ export async function checkConfigEdit(
   missing: boolean,
 ): Promise<void> {
   const source = 'alias-counter.ts';
-  const config = path.join(project, 'tsconfig.json');
+  const config = path.join(project, TS_CONFIG);
   const inherited = path.join(project, 'config', 'aliases.json');
   const original = '{"compilerOptions":{"baseUrl":"..","paths":{"counter-alias":["counter.ts"]}}}';
   const unresolved = original.replace('counter.ts', 'missing-alias.ts');

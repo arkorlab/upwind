@@ -707,6 +707,7 @@ export async function startLocalResources(
   let release: (() => void) | undefined;
   let attempt: Attempt | undefined;
   let starting = true;
+  const isStarting = (): boolean => starting;
   const watchedFiles = new Set<string>();
   const versions = new Map<string, string>();
   let sourcesChanged = noSourceChanges;
@@ -725,11 +726,11 @@ export async function startLocalResources(
     attempt = startAndPublish(projectDir, entries, objects);
     let remaining = objects;
     async function recover(error: unknown): Promise<Miniflare> {
-      if (remaining.length === 0 || !starting) throw error;
+      if (!isStarting() || remaining.length === 0) throw error;
       const failed = await attempt?.runtime;
       // Keep the storage claim throughout recovery, and never overlap two native runtimes.
       if (failed !== undefined && !(await stopRuntime(failed, error))) throw error;
-      if (!starting) throw error;
+      if (!isStarting()) throw error;
       const broken = failedOwnerNames(
         error,
         remaining.map((object) => object.declaration.name),
@@ -743,11 +744,17 @@ export async function startLocalResources(
       );
       const surviving = localEntries(remaining.map((object) => object.declaration.name));
       attempt = startAndPublish(projectDir, surviving, remaining);
-      return attempt.done.catch(recover);
+      return ready(attempt);
     }
-    const ready = attempt.done.catch(recover);
+    async function ready(current: Attempt): Promise<Miniflare> {
+      try {
+        return await current.done;
+      } catch (error) {
+        return recover(error);
+      }
+    }
     const runtime = await Promise.race([
-      ready,
+      ready(attempt),
       afterDeadline(
         START_MS,
         `this project's local storage did not come up within ${String(START_SECONDS)}s, so nothing is published in this run`,

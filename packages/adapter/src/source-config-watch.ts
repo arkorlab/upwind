@@ -6,6 +6,8 @@ import { parse as parseJsonc } from 'jsonc-parser';
 
 import { sourceAliasCandidates } from './source-alias-watch.ts';
 
+const TS_CONFIG = 'tsconfig.json';
+
 function configOf(file: string): Readonly<Record<string, unknown>> | undefined {
   let value: unknown;
   try {
@@ -52,7 +54,7 @@ export function watchSourceConfigs(
           const target = path.join(directory, base);
           watchFile(target);
           watchFile(`${target}.json`);
-          watchFile(path.join(target, 'tsconfig.json'));
+          watchFile(path.join(target, TS_CONFIG));
         }
       try {
         watchFile(require.resolve(base));
@@ -64,7 +66,7 @@ export function watchSourceConfigs(
   return (initial: string, specifier?: string): readonly string[] => {
     let directory = path.resolve(initial);
     for (;;) {
-      watchFile(path.join(directory, 'tsconfig.json'));
+      watchFile(path.join(directory, TS_CONFIG));
       watchFile(path.join(directory, 'jsconfig.json'));
       const parent = path.dirname(directory);
       if (parent === directory) break;
