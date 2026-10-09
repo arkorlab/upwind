@@ -24,8 +24,14 @@ const CLIENT_ERROR = 400;
 /** What makes `@next/routing` read a rule with a redirect's status as a redirect, not a rewrite. */
 const REDIRECT_HEADERS: ReadonlySet<string> = new Set(['location', 'refresh']);
 
+/** What of a rule tells a redirect from a rewrite. */
+interface Redirecting {
+  readonly status?: number | undefined;
+  readonly headers?: Readonly<Record<string, string>> | undefined;
+}
+
 /** A rule `@next/routing` follows as a redirect: a redirect's status, and where to send the client. */
-function redirects(route: RoutingRoute): boolean {
+export function redirects(route: Redirecting): boolean {
   return (
     route.status !== undefined &&
     route.status >= REDIRECTION &&
