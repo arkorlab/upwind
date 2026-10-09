@@ -277,7 +277,7 @@ async function checkProject(): Promise<void> {
       );
       await writeFile(
         path.join(project, COMMONJS_MODULE),
-        'import { DurableObject } from "cloudflare:workers"; import { fixtureValue } from "upwind-cjs-test"; export class Counter extends DurableObject { fetch() { return new Response(`${fixtureValue()}:${process.env.NODE_ENV}`); } }',
+        'import { DurableObject } from "cloudflare:workers"; import { fixtureValue } from "upwind-cjs-test"; export class Counter extends DurableObject { fetch() { return new Response(fixtureValue() + ":" + process.env.NODE_ENV); } }',
       );
       const adapterModules = path.join(project, 'node_modules', '@stayingupwind', 'adapter');
       await mkdir(path.dirname(adapterModules), { recursive: true });

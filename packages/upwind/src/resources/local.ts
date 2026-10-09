@@ -1,4 +1,4 @@
-import { existsSync, statSync, unlinkSync } from 'node:fs';
+import { unlinkSync } from 'node:fs';
 import { mkdir, readdir, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -21,6 +21,7 @@ import type { Miniflare, MiniflareOptions } from 'miniflare';
 import { resolveFromProject } from '../dev/next-app.ts';
 import { guardListeners } from './listeners.ts';
 import { publishResources } from './publish.ts';
+import { sourceChanges, watchDependencies, watchFile, watchManifests } from './watch-sources.ts';
 
 /**
  * A project's storage, locally: the same runtime a deployment's Functions run on, bound to
@@ -168,16 +169,6 @@ const DEFAULTS: readonly ResourceManifestEntry[] = [
 const TRIAL_TWO_D1_ENV = 'UPWIND_TRIAL_TWO_D1';
 const TRIAL_SECOND_D1: ResourceManifestEntry = { name: 'UPWIND_D1_2', type: 'd1' };
 
-const PACKAGE_MANIFEST = 'package.json';
-const DEPENDENCY_FILES = [
-  PACKAGE_MANIFEST,
-  'pnpm-lock.yaml',
-  'package-lock.json',
-  'yarn.lock',
-  'bun.lock',
-  'bun.lockb',
-] as const;
-
 /** What the local runtime calls each kind of storage the contract names. */
 const DURABLE_OBJECT_TYPE = 'durable_object_namespace';
 const DURABLE_OBJECT_KIND = 'durable-object';
@@ -215,58 +206,6 @@ const NOTHING_STARTED: LocalResources = {
 
 function bindings(): readonly ResourceManifestEntry[] {
   return process.env[TRIAL_TWO_D1_ENV] === '1' ? [...DEFAULTS, TRIAL_SECOND_D1] : DEFAULTS;
-}
-
-function sourceVersion(file: string): string {
-  try {
-    const stat = statSync(file, { bigint: true });
-    return `${String(stat.mtimeNs)}:${String(stat.ctimeNs)}:${String(stat.size)}:${String(stat.ino)}`;
-  } catch {
-    return 'missing';
-  }
-}
-
-function sourceChanges(versions: ReadonlyMap<string, string>): () => boolean {
-  return () => [...versions].some(([file, version]) => sourceVersion(file) !== version);
-}
-
-function watchFile(file: string, watchedFiles: Set<string>, versions: Map<string, string>): void {
-  watchedFiles.add(file);
-  if (!versions.has(file)) versions.set(file, sourceVersion(file));
-}
-
-function watchDependencies(
-  projectDir: string,
-  watchedFiles: Set<string>,
-  versions: Map<string, string>,
-): void {
-  let directory = path.resolve(projectDir);
-  do {
-    if (
-      directory === path.resolve(projectDir) ||
-      existsSync(path.join(directory, PACKAGE_MANIFEST))
-    )
-      for (const name of DEPENDENCY_FILES)
-        watchFile(path.join(directory, name), watchedFiles, versions);
-    const parent = path.dirname(directory);
-    if (parent === directory) return;
-    directory = parent;
-  } while (directory !== path.dirname(directory));
-}
-
-function watchManifests(
-  file: string,
-  watchedFiles: Set<string>,
-  versions: Map<string, string>,
-): void {
-  let directory = path.dirname(file);
-  for (;;) {
-    const manifest = path.join(directory, PACKAGE_MANIFEST);
-    if (existsSync(manifest)) watchFile(manifest, watchedFiles, versions);
-    const parent = path.dirname(directory);
-    if (parent === directory) return;
-    directory = parent;
-  }
 }
 
 function noSourceChanges(): boolean {
