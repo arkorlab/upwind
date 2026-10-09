@@ -1,4 +1,7 @@
 import { type D1Observation, observeD1 } from './d1-observation.ts';
+import { RESOURCES_MANIFEST_BINDING } from './resources-constants.ts';
+
+export { RESOURCES_MANIFEST_BINDING };
 
 /**
  * A project's storage bindings on the way from its host to the application.
@@ -18,14 +21,6 @@ export const RESOURCE_TYPES = [
   'durable_object_namespace',
 ] as const;
 export type ResourceType = (typeof RESOURCE_TYPES)[number];
-
-/**
- * The binding a deployment's Functions carry the list on, as JSON: what the runtime builds the
- * published shape from, so that what the application finds is exactly what its deployment
- * attached — never an environment variable, never a binding of the host's. Absent on a
- * deployment bound to no storage.
- */
-export const RESOURCES_MANIFEST_BINDING = 'ARKOR_RESOURCES';
 
 /**
  * The key the runtime publishes the bindings under, in the global symbol registry.

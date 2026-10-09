@@ -334,8 +334,13 @@ const ALLOWED_BUILTINS: ReadonlySet<string> = new Set([
 
 function isAllowedExternal(specifier: string): boolean {
   return (
-    ['cloudflare:email', 'cloudflare:sockets', 'cloudflare:workers'].includes(specifier) ||
-    ALLOWED_BUILTINS.has(specifier.replace(/^node:/u, ''))
+    [
+      'cloudflare:email',
+      'cloudflare:node',
+      'cloudflare:sockets',
+      'cloudflare:workers',
+      'cloudflare:workflows',
+    ].includes(specifier) || ALLOWED_BUILTINS.has(specifier.replace(/^node:/u, ''))
   );
 }
 

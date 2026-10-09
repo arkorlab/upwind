@@ -131,17 +131,24 @@ export async function bundleDurableObjects(
         source: output.text,
         inputs,
         trace: {
-          inputs: Object.entries(emitted.inputs).map(([file, input]) => {
-            const absoluteFile = path.resolve(projectDir, file);
-            return { file: absoluteFile, bytes: input.bytesInOutput };
-          }),
+          inputs: Object.entries(emitted.inputs)
+            .filter(
+              ([file]) => file !== '<stdin>' && file !== `${declaration.name}-durable-object.mjs`,
+            )
+            .map(([file, input]) => {
+              const absoluteFile = path.resolve(projectDir, file);
+              return { file: absoluteFile, bytes: input.bytesInOutput };
+            }),
           externals: emitted.imports
             .filter((entry) => entry.external === true)
             .map((entry) => entry.path),
           patches: [],
           stubs: [],
           wasmModules: [],
-          dynamicLoads: dynamicLoadsOf(module, output.text),
+          dynamicLoads: dynamicLoadsOf(
+            path.join(projectDir, 'durable-object', declaration.name, 'durable-object.mjs'),
+            output.text,
+          ),
         },
         ...(map !== undefined && { map: { path: map.path, source: map.text } }),
       };

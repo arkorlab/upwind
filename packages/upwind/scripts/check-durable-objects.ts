@@ -45,6 +45,10 @@ async function checkBuildMetadata(): Promise<void> {
   const dependencies = parts.dependencies['durable-object/COUNTERS'];
   assert.ok(dependencies);
   assert.ok(dependencies.other.some((entry) => entry.file === MODULE && entry.bytes > 0));
+  assert.deepEqual(
+    dependencies.other.map((entry) => entry.file),
+    [MODULE],
+  );
   assert.ok(dependencies.externals.includes('cloudflare:workers'));
   assert.equal(dependencies.modules[0]?.name, 'durable-object.mjs');
   const map = parts.sourceMaps[0];
@@ -64,6 +68,28 @@ async function checkBuildMetadata(): Promise<void> {
   await assert.rejects(
     durableObjectParts({ ...input, declarations: [{ ...declaration, module: 'unsupported.ts' }] }),
     /node:vm/u,
+  );
+  await writeFile(
+    path.join(project, 'dynamic.ts'),
+    'export class Counter { load(specifier) { return import(specifier); } }',
+  );
+  await assert.rejects(
+    durableObjectParts({ ...input, declarations: [{ ...declaration, module: 'dynamic.ts' }] }),
+    /durable-object\/COUNTERS\/durable-object\.mjs:1/u,
+  );
+  await writeFile(
+    path.join(project, 'native-imports.ts'),
+    'import { httpServerHandler } from "cloudflare:node"; import { NonRetryableError } from "cloudflare:workflows"; export { Counter } from "./counter.ts"; if (typeof httpServerHandler !== "function") throw new NonRetryableError("missing-native-api");',
+  );
+  const native = await durableObjectParts({
+    ...input,
+    declarations: [{ ...declaration, module: 'native-imports.ts' }],
+  });
+  assert.ok(
+    native.dependencies['durable-object/COUNTERS']?.externals.includes('cloudflare:node') === true,
+  );
+  assert.ok(
+    native.dependencies['durable-object/COUNTERS'].externals.includes('cloudflare:workflows'),
   );
   const previous = process.env['UPWIND_DURABLE_OBJECTS'];
   try {
