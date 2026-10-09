@@ -57,6 +57,28 @@ function prefetchSkipped(page: string): Response {
   });
 }
 
+/**
+ * The page a data route answers for, as Next.js names it to the client's router in
+ * `x-nextjs-matched-path` (`route-modules/route-module.ts`, `server/base-server.ts`): the page the
+ * build defines — `/[...path]` for a member of a dynamic route, not the member — under the locale its
+ * route is under, and without the base path. The client reads a member's name back through the base
+ * path twice (`getNextPathnameInfo`, then `removeBasePath`, which takes the base path's length off
+ * unasked): under `/docs`, the member `/docs/first` came back as `/t`, and the catch-all's query as
+ * `["t"]`. A page it is given as a pattern, it resolves from the URL it asked for instead.
+ */
+function matchedPathOf(store: Store, route: string): string {
+  const { buildId, config } = store.manifest;
+  const { basePath } = config;
+  const page = pageOfDataPathname(buildId, basePath, route) ?? route;
+  if (basePath === '') {
+    return page;
+  }
+  if (page === basePath) {
+    return '/';
+  }
+  return page.startsWith(`${basePath}/`) ? page.slice(basePath.length) : page;
+}
+
 export interface Resolved {
   readonly route: string;
   readonly pathname: string;
@@ -124,7 +146,7 @@ export async function servePagesData(
       return notFoundData();
     }
     return input.request.headers.has(MIDDLEWARE_PREFETCH_HEADER)
-      ? prefetchSkipped(target.page)
+      ? prefetchSkipped(matchedPathOf(store, resolved.route))
       : invokeEntry(input, own, target.url);
   }
   // A prerendered page's props, an SSG fallback's included, come from its current generation or the
