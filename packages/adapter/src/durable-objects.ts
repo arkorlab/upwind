@@ -108,7 +108,7 @@ export async function bundleDurableObjects(
         platform: 'neutral',
         mainFields: ['module', 'main'],
         target: 'es2022',
-        conditions: ['workerd', 'worker'],
+        conditions: ['workerd', 'worker', 'browser'],
         external: ['cloudflare:*', 'node:*', ...builtinModules],
         plugins: [nodeBuiltinRequires()],
         metafile: true,

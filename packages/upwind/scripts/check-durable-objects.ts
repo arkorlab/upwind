@@ -259,6 +259,18 @@ async function checkProject(): Promise<void> {
         conditional[0]?.inputs.includes(path.join(conditionalPackage, 'worker.js')) === true,
       );
       assert.ok(!conditional[0].source.includes('node-branch-must-not-run'));
+      await writeFile(
+        path.join(conditionalPackage, PACKAGE_MANIFEST),
+        JSON.stringify({
+          type: 'module',
+          exports: { node: './node.js', browser: './worker.js', default: './node.js' },
+        }),
+      );
+      const browser = await bundleDurableObjects(project, [
+        { ...declaration, module: conditionalModule },
+      ]);
+      assert.ok(browser[0]?.inputs.includes(path.join(conditionalPackage, 'worker.js')) === true);
+      assert.ok(!browser[0].source.includes('node-branch-must-not-run'));
     }
 
     const built = await bundleDurableObjects(project, [declaration]);
