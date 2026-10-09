@@ -64,6 +64,7 @@ export {
   pageOfDataPathname,
   pageOfPagesData,
   pagesDataPathnameUnder,
+  underBasePath,
 } from './pages-data.ts';
 export { queryDependent } from './query.ts';
 export {

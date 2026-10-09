@@ -68,7 +68,7 @@ function pageOfSpelling(spelled: string): string | undefined {
 }
 
 /** The page under a base path a pathname of the build names: the root of the base path is `/`. */
-function underBasePath(basePath: string, pathname: string): string {
+export function underBasePath(basePath: string, pathname: string): string {
   if (basePath === '') {
     return pathname;
   }
