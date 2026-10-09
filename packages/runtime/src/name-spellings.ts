@@ -16,6 +16,8 @@ const SUB_DELIMITERS = /[!'()*]/gu;
 const HEX = 16;
 /** An escape as the encoders write one: its hex in uppercase. */
 const UPPERCASE_ESCAPE = /%[0-9A-F]{2}/gu;
+/** An escaped slash, which keeps a value's `/` inside its segment. */
+const ESCAPED_SLASH = /%2f/iu;
 
 /**
  * The name the build gave the prerender a pathname asks for. Next.js names a prerendered member by
@@ -169,7 +171,9 @@ function spellingsOf(name: string): string[] {
  * put in it (`$1`, `$slug`) — where it holds an escape: as the router sets it on the URL it rewrites
  * (`applyDestination`), and so as it compares it with each name — a fragment included, which the
  * router sets in the path escaped (`%23`). A path a request's values are put in is spelled by the
- * request, and is offered the encoders' spellings alone (`spellingsOf`).
+ * request, and is offered the encoders' spellings alone (`spellingsOf`). A path with an escaped slash
+ * in it is not offered: Next.js matches a dynamic route with the slash inside its segment
+ * (`/docs/a%2Fb` is the one value `a/b`), and decoded, it would name another page (`/docs/a/b`).
  */
 function writtenDestinations(store: Store): string[] {
   const { routing } = store.manifest;
@@ -188,7 +192,7 @@ function writtenDestinations(store: Store): string[] {
       // The path alone, as the router takes it: a request's values put in the query alone
       // (`?from=$slug`) leave the path as it is written.
       const [path = ''] = destination.split('?', 1);
-      if (path.includes('%') && !path.includes('$')) {
+      if (path.includes('%') && !path.includes('$') && !ESCAPED_SLASH.test(path)) {
         const url = new URL(SPELLING_BASE);
         url.pathname = path;
         written.push(url.pathname);
