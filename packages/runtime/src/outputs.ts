@@ -3,6 +3,7 @@ import {
   pagesDataPathnameUnder,
   type Prerender,
   queryDependent,
+  underBasePath,
 } from '@stayingupwind/core/bundle';
 import { MIDDLEWARE_PREFETCH_HEADER } from '@stayingupwind/core/request';
 
@@ -68,15 +69,10 @@ function prefetchSkipped(page: string): Response {
  */
 function matchedPathOf(store: Store, route: string): string {
   const { buildId, config } = store.manifest;
-  const { basePath } = config;
-  const page = pageOfDataPathname(buildId, basePath, route) ?? route;
-  if (basePath === '') {
-    return page;
-  }
-  if (page === basePath) {
-    return '/';
-  }
-  return page.startsWith(`${basePath}/`) ? page.slice(basePath.length) : page;
+  return underBasePath(
+    config.basePath,
+    pageOfDataPathname(buildId, config.basePath, route) ?? route,
+  );
 }
 
 export interface Resolved {
