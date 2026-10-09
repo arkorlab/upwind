@@ -391,6 +391,7 @@ async function checkProject(): Promise<void> {
         'config-missing',
         'production',
         'probe',
+        'probe-early',
         'unclassified',
         'wasm',
       ];
@@ -481,11 +482,12 @@ const sideCheck = new Map([
     () => checkMissingPackageExport(project, declaration, COUNTER_FIXTURE, 'missing-package'),
   ],
   ['probe', () => checkProbeFailure(project, declaration)],
+  ['probe-early', () => checkProbeFailure(project, declaration, 'early')],
   ['production', () => checkCommonJSBinding('production')],
   ['prototype', checkPrototypeBinding],
   ['race', checkStartupEdit],
   ['startup', () => checkRuntimeFailure(project, declaration, COUNTER_FIXTURE)],
-  ['unclassified', () => checkProbeFailure(project, declaration, true)],
+  ['unclassified', () => checkProbeFailure(project, declaration, 'native')],
   [
     'wasm',
     () => {
