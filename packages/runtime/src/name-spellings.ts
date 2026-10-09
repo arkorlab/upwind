@@ -68,8 +68,8 @@ const spelledNames = new WeakMap<Store, string[]>();
  * The store's names, each followed by the spellings of it that a path is written in escaped: what
  * a URL makes of a name with a character a path cannot carry as it is, and the name with each
  * segment escaped, which is how a rewrite's destination names one (`/en/closed/hello%20world`,
- * `/en/closed/100%25`) — and each destination written out in full that spells one, as it is written
- * (`writtenDestinations`). A request that spells a name escaped brings its own spelling
+ * `/en/closed/100%25`) — and each rewrite's path written out in full that spells one, as it is
+ * written (`writtenDestinations`). A request that spells a name escaped brings its own spelling
  * (`pathnamesFor`); a rewrite rewrites to one, and the router took it for no name: the member a
  * rewrite named answered 404 where the same path asked for directly was served
  * (`param-matching-routing`). The store's own array where no name has another spelling.
@@ -119,8 +119,8 @@ export function namesWithSpellings(store: Store): string[] {
       offered.add(spelling);
     }
   }
-  // A destination written out in full is a spelling as it is written, whatever case its escapes are
-  // in and whatever they escape (`/docs/%e8%A8%98%E4%BA%8B`, `/docs/caf%65`), and no encoder's
+  // A rewrite's path written out in full is a spelling as it is written, whatever case its escapes
+  // are in and whatever they escape (`/docs/%e8%A8%98%E4%BA%8B`, `/docs/caf%65`), and no encoder's
   // spelling need be it: one that decodes, once, to a name spelled above is offered as it stands.
   for (const path of writtenDestinations(store)) {
     if (spelled.has(decodedOnce(path) ?? '')) {
@@ -165,11 +165,11 @@ function spellingsOf(name: string): string[] {
 }
 
 /**
- * The path of each rewrite whose destination is written out in full — on this origin, nothing of the
- * request put in it (`$1`, `$slug`) — where the path holds an escape: as the router sets it on the
- * URL it rewrites (`applyDestination`), and so as it compares it with each name. A destination a
- * request's values are put in is spelled by the request, and is offered the encoders' spellings
- * alone (`spellingsOf`).
+ * The path of each rewrite whose path is written out in full — on this origin, nothing of the request
+ * put in it (`$1`, `$slug`) — where it holds an escape: as the router sets it on the URL it rewrites
+ * (`applyDestination`), and so as it compares it with each name — a fragment included, which the
+ * router sets in the path escaped (`%23`). A path a request's values are put in is spelled by the
+ * request, and is offered the encoders' spellings alone (`spellingsOf`).
  */
 function writtenDestinations(store: Store): string[] {
   const { routing } = store.manifest;
@@ -182,16 +182,13 @@ function writtenDestinations(store: Store): string[] {
   ]) {
     for (const route of table) {
       const { destination } = route;
-      if (
-        destination === undefined ||
-        !destination.startsWith('/') ||
-        destination.includes('$') ||
-        redirects(route)
-      ) {
+      if (destination === undefined || !destination.startsWith('/') || redirects(route)) {
         continue;
       }
+      // The path alone, as the router takes it: a request's values put in the query alone
+      // (`?from=$slug`) leave the path as it is written.
       const [path = ''] = destination.split('?', 1);
-      if (path.includes('%')) {
+      if (path.includes('%') && !path.includes('$')) {
         const url = new URL(SPELLING_BASE);
         url.pathname = path;
         written.push(url.pathname);
