@@ -254,6 +254,21 @@ function watchDependencies(
   } while (directory !== path.dirname(directory));
 }
 
+function watchManifests(
+  file: string,
+  watchedFiles: Set<string>,
+  versions: Map<string, string>,
+): void {
+  let directory = path.dirname(file);
+  for (;;) {
+    const manifest = path.join(directory, PACKAGE_MANIFEST);
+    if (existsSync(manifest)) watchFile(manifest, watchedFiles, versions);
+    const parent = path.dirname(directory);
+    if (parent === directory) return;
+    directory = parent;
+  }
+}
+
 function noSourceChanges(): boolean {
   return false;
 }
@@ -318,10 +333,14 @@ async function durableObjectsOf(
     mode: 'development',
     onSourceFile: (file) => {
       watchFile(file, watchedFiles, versions);
+      watchManifests(file, watchedFiles, versions);
     },
   });
   for (const object of objects)
-    for (const file of object.inputs) watchFile(file, watchedFiles, versions);
+    for (const file of object.inputs) {
+      watchFile(file, watchedFiles, versions);
+      watchManifests(file, watchedFiles, versions);
+    }
   return objects;
 }
 

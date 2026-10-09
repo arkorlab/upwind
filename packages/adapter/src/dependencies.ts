@@ -1,3 +1,4 @@
+import { isBuiltin } from 'node:module';
 import path from 'node:path';
 
 import type { FunctionModule } from '@stayingupwind/core/bundle';
@@ -340,7 +341,8 @@ function isAllowedExternal(specifier: string): boolean {
       'cloudflare:sockets',
       'cloudflare:workers',
       'cloudflare:workflows',
-    ].includes(specifier) || ALLOWED_BUILTINS.has(specifier.replace(/^node:/u, ''))
+    ].includes(specifier) ||
+    (isBuiltin(specifier) && ALLOWED_BUILTINS.has(specifier.replace(/^node:/u, '')))
   );
 }
 
