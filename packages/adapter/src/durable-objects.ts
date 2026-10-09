@@ -86,11 +86,14 @@ export async function bundleDurableObjects(
   options: {
     readonly outDir?: string;
     readonly sourceMaps?: SourceMapsOption;
+    /** Adapter output defaults to production; local resources select development. */
+    readonly mode?: 'development' | 'production';
     /** Called before reading each source dependency, for local restart detection. */
     readonly onSourceFile?: (file: string) => void;
   } = {},
 ): Promise<BundledDurableObject[]> {
   const checked = durableObjectDeclarationsSchema.parse(declarations);
+  const nodeEnv = jsLiteral(options.mode ?? 'production');
   return Promise.all(
     checked.map(async (declaration) => {
       const module = await sourcePath(projectDir, declaration);
@@ -109,12 +112,15 @@ export async function bundleDurableObjects(
           `${declaration.name}.mjs`,
         ),
         format: 'esm',
-        // A Node platform implicitly activates its `node` export condition even when a package
-        // offers `workerd`; a node-first exports map would choose the wrong implementation.
-        platform: 'neutral',
-        mainFields: ['module', 'main'],
+        // Match Wrangler's browser package mappings without implicitly activating `node`.
+        platform: 'browser',
         target: 'es2022',
         conditions: ['workerd', 'worker', 'browser'],
+        define: {
+          'process.env.NODE_ENV': nodeEnv,
+          'global.process.env.NODE_ENV': nodeEnv,
+          'globalThis.process.env.NODE_ENV': nodeEnv,
+        },
         external: ['cloudflare:*', 'node:*', ...builtinModules],
         plugins: [
           nodeBuiltinRequires(),

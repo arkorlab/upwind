@@ -304,7 +304,10 @@ async function durableObjectsOf(
     bundleDurableObjects?: (
       directory: string,
       objects: readonly DurableObjectDeclaration[],
-      options: { readonly onSourceFile: (file: string) => void },
+      options: {
+        readonly mode: 'development';
+        readonly onSourceFile: (file: string) => void;
+      },
     ) => Promise<LocalDurableObject[]>;
   };
   if (module.bundleDurableObjects === undefined)
@@ -312,6 +315,7 @@ async function durableObjectsOf(
       'the installed adapter does not support Durable Objects; install matching upwind packages',
     );
   const objects = await module.bundleDurableObjects(projectDir, declarations, {
+    mode: 'development',
     onSourceFile: (file) => {
       watchFile(file, watchedFiles, versions);
     },

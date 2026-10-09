@@ -32,6 +32,9 @@ const BROKEN_DEPENDENCY = 'broken-dependency.ts';
 const COMMONJS_MODULE = 'commonjs-counter.ts';
 const RACE_DEPENDENCY = 'race-dependency.ts';
 const PACKAGE_MANIFEST = 'package.json';
+const CONDITIONAL_WORKER = 'worker.js';
+const CONDITIONAL_NODE = 'node.js';
+const UNEXPECTED_NODE_MARKER = 'node-branch-must-not-run';
 const FIXTURE_URL = 'https://fixture.invalid/';
 const FIRST_RUN_COUNT = 3;
 const FIRST_RESTORED_FETCH_COUNT = FIRST_RUN_COUNT + 1;
@@ -197,7 +200,7 @@ async function checkCommonJSBinding(): Promise<void> {
     const counters = durableObject('COUNTERS');
     assert.ok(counters);
     const response = await counters.getByName('commonjs').fetch(FIXTURE_URL);
-    assert.equal(await response.text(), 'fixture');
+    assert.equal(await response.text(), 'fixture:development');
   } finally {
     await resources.dispose();
   }
@@ -265,7 +268,7 @@ async function checkProject(): Promise<void> {
       );
       await writeFile(
         path.join(project, COMMONJS_MODULE),
-        'import { DurableObject } from "cloudflare:workers"; import { fixtureValue } from "upwind-cjs-test"; export class Counter extends DurableObject { fetch() { return new Response(fixtureValue()); } }',
+        'import { DurableObject } from "cloudflare:workers"; import { fixtureValue } from "upwind-cjs-test"; export class Counter extends DurableObject { fetch() { return new Response(`${fixtureValue()}:${process.env.NODE_ENV}`); } }',
       );
       const adapterModules = path.join(project, 'node_modules', '@stayingupwind', 'adapter');
       await mkdir(path.dirname(adapterModules), { recursive: true });
@@ -277,15 +280,19 @@ async function checkProject(): Promise<void> {
         path.join(conditionalPackage, PACKAGE_MANIFEST),
         JSON.stringify({
           type: 'module',
-          exports: { node: './node.js', workerd: './worker.js', default: './node.js' },
+          exports: {
+            node: `./${CONDITIONAL_NODE}`,
+            workerd: `./${CONDITIONAL_WORKER}`,
+            default: `./${CONDITIONAL_NODE}`,
+          },
         }),
       );
       await writeFile(
-        path.join(conditionalPackage, 'worker.js'),
+        path.join(conditionalPackage, CONDITIONAL_WORKER),
         'export const condition = "workerd";',
       );
       await writeFile(
-        path.join(conditionalPackage, 'node.js'),
+        path.join(conditionalPackage, CONDITIONAL_NODE),
         'throw new Error("node-branch-must-not-run"); export const condition = "node";',
       );
       const conditionalModule = 'conditional-counter.ts';
@@ -297,21 +304,79 @@ async function checkProject(): Promise<void> {
         { ...declaration, module: conditionalModule },
       ]);
       assert.ok(
-        conditional[0]?.inputs.includes(path.join(conditionalPackage, 'worker.js')) === true,
+        conditional[0]?.inputs.includes(path.join(conditionalPackage, CONDITIONAL_WORKER)) === true,
       );
-      assert.ok(!conditional[0].source.includes('node-branch-must-not-run'));
+      assert.ok(!conditional[0].source.includes(UNEXPECTED_NODE_MARKER));
       await writeFile(
         path.join(conditionalPackage, PACKAGE_MANIFEST),
         JSON.stringify({
           type: 'module',
-          exports: { node: './node.js', browser: './worker.js', default: './node.js' },
+          exports: {
+            node: `./${CONDITIONAL_NODE}`,
+            browser: `./${CONDITIONAL_WORKER}`,
+            default: `./${CONDITIONAL_NODE}`,
+          },
         }),
       );
       const browser = await bundleDurableObjects(project, [
         { ...declaration, module: conditionalModule },
       ]);
-      assert.ok(browser[0]?.inputs.includes(path.join(conditionalPackage, 'worker.js')) === true);
-      assert.ok(!browser[0].source.includes('node-branch-must-not-run'));
+      assert.ok(
+        browser[0]?.inputs.includes(path.join(conditionalPackage, CONDITIONAL_WORKER)) === true,
+      );
+      assert.ok(!browser[0].source.includes(UNEXPECTED_NODE_MARKER));
+      await writeFile(
+        path.join(conditionalPackage, PACKAGE_MANIFEST),
+        JSON.stringify({
+          type: 'module',
+          main: `./${CONDITIONAL_NODE}`,
+          browser: `./${CONDITIONAL_WORKER}`,
+        }),
+      );
+      const legacy = await bundleDurableObjects(project, [
+        { ...declaration, module: conditionalModule },
+      ]);
+      assert.ok(
+        legacy[0]?.inputs.includes(path.join(conditionalPackage, CONDITIONAL_WORKER)) === true,
+      );
+      assert.ok(!legacy[0].source.includes(UNEXPECTED_NODE_MARKER));
+      await writeFile(
+        path.join(conditionalPackage, PACKAGE_MANIFEST),
+        JSON.stringify({
+          type: 'module',
+          main: `./${CONDITIONAL_WORKER}`,
+          browser: { [`./${CONDITIONAL_NODE}`]: './browser.js' },
+        }),
+      );
+      await writeFile(
+        path.join(conditionalPackage, CONDITIONAL_WORKER),
+        'export { condition } from "./node.js";',
+      );
+      await writeFile(
+        path.join(conditionalPackage, 'browser.js'),
+        'export const condition = "workerd";',
+      );
+      const remapped = await bundleDurableObjects(project, [
+        { ...declaration, module: conditionalModule },
+      ]);
+      assert.ok(remapped[0]?.inputs.includes(path.join(conditionalPackage, 'browser.js')) === true);
+      assert.ok(!remapped[0].source.includes(UNEXPECTED_NODE_MARKER));
+      const modeModule = 'mode-counter.ts';
+      await writeFile(
+        path.join(project, modeModule),
+        'export class Counter { mode() { return [process.env.NODE_ENV, global.process.env.NODE_ENV, globalThis.process.env.NODE_ENV].join(":"); } }',
+      );
+      const modes = [{}, { mode: 'development' as const }];
+      for (const options of modes) {
+        const [object] = await bundleDurableObjects(
+          project,
+          [{ ...declaration, module: modeModule }],
+          options,
+        );
+        assert.ok(object);
+        assert.ok(object.source.includes(options.mode ?? 'production'));
+        assert.ok(!object.source.includes('process.env.NODE_ENV'));
+      }
     }
 
     const built = await bundleDurableObjects(project, [declaration]);
