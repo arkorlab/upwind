@@ -237,3 +237,6 @@ startup does not instantiate objects. The first application invocation runs the 
 Editing a bundled class dependency restarts the dev server through the existing supervisor,
 keeping persisted data. Updating the registration input requires restarting the command with the
 new exported array. Deleting `.upwind/` also deletes the local objects' data.
+
+If class bundling or native Worker startup fails, the CLI reports the error and keeps default D1,
+KV and R2 storage available. The class sources stay watched so editing them restarts development.

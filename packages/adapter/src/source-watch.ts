@@ -1,8 +1,49 @@
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import type { Plugin } from 'esbuild';
 
 const RESOLVE_EXTENSIONS = ['.tsx', '.ts', '.jsx', '.js', '.css', '.json'];
+const MAIN_FIELDS = ['browser', 'module', 'main'];
+const PACKAGE_MANIFEST = 'package.json';
+
+function watchCandidates(
+  target: string,
+  extensions: readonly string[],
+  beforeRead: (file: string) => void,
+): void {
+  beforeRead(target);
+  if (path.extname(target) !== '') return;
+  for (const extension of extensions) {
+    beforeRead(`${target}${extension}`);
+    beforeRead(path.join(target, `index${extension}`));
+  }
+}
+
+/** A directory may already exist while the nested entry declared by its manifest does not. */
+function watchPackageEntries(
+  target: string,
+  mainFields: readonly string[],
+  extensions: readonly string[],
+  beforeRead: (file: string) => void,
+): void {
+  const manifest = path.join(target, PACKAGE_MANIFEST);
+  beforeRead(manifest);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(manifest, 'utf8')) as unknown;
+  } catch {
+    // Missing or malformed manifests are left for esbuild to diagnose.
+    return;
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return;
+  const fields = parsed as Record<string, unknown>;
+  for (const field of mainFields) {
+    const entry = fields[field];
+    if (typeof entry === 'string')
+      watchCandidates(path.resolve(target, entry), extensions, beforeRead);
+  }
+}
 
 /** Capture dependency versions before esbuild reads them, including files discovered by imports. */
 export function watchBuildSources(beforeRead: (file: string) => void): Plugin {
@@ -13,22 +54,19 @@ export function watchBuildSources(beforeRead: (file: string) => void): Plugin {
       builder.onResolve({ filter: /.*/, namespace: 'file' }, (args): undefined => {
         const specifier = args.path.replace(/\?module$/u, '');
         if (
-          !path.isAbsolute(specifier) &&
           specifier !== '.' &&
           specifier !== '..' &&
           !specifier.startsWith('./') &&
-          !specifier.startsWith('../')
+          !specifier.startsWith('../') &&
+          !path.isAbsolute(specifier)
         )
           return;
         const target = path.resolve(args.resolveDir, specifier);
         const extensions = builder.initialOptions.resolveExtensions ?? RESOLVE_EXTENSIONS;
-        beforeRead(target);
+        watchCandidates(target, extensions, beforeRead);
         if (path.extname(target) === '') {
-          for (const extension of extensions) {
-            beforeRead(`${target}${extension}`);
-            beforeRead(path.join(target, `index${extension}`));
-          }
-          beforeRead(path.join(target, 'package.json'));
+          const mainFields = builder.initialOptions.mainFields ?? MAIN_FIELDS;
+          watchPackageEntries(target, mainFields, extensions, beforeRead);
         }
       });
       // eslint-disable-next-line require-unicode-regexp -- esbuild filters are Go regular expressions.

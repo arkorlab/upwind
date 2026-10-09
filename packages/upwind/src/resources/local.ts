@@ -369,8 +369,9 @@ function runtimeOptions(
             contents: string | Uint8Array<ArrayBuffer>;
           }
         > = { [ENTRY_MODULE]: { type: 'esm', contents: object.source } };
-        for (const module of object.wasmModules ?? [])
-          modules[module.name] = { type: 'wasm', contents: new Uint8Array(module.bytes) };
+        if (object.wasmModules !== undefined)
+          for (const module of object.wasmModules)
+            modules[module.name] = { type: 'wasm', contents: new Uint8Array(module.bytes) };
         return {
           config: {
             name: ownerName(object.declaration.name),
@@ -598,11 +599,21 @@ async function localEnv(
  * in a build's render worker, a build that never ends. Its own exit hook is the backstop, and it is a
  * `SIGKILL`, so whatever this gives up on is still gone when the process leaves.
  */
-async function stopRuntime(runtime: Miniflare): Promise<boolean> {
+async function stopRuntime(runtime: Miniflare, startupError?: unknown): Promise<boolean> {
   try {
     await Promise.race([runtime.dispose(), afterDeadline(STOP_MS, 'the runtime did not stop')]);
     return true;
-  } catch {
+  } catch (error) {
+    // Miniflare finishes cleanup before rethrowing the same initial readiness failure. Other
+    // cleanup errors and the deadline still leave shutdown unconfirmed.
+    if (
+      startupError !== undefined &&
+      error === startupError &&
+      error instanceof Error &&
+      'code' in error &&
+      error.code === 'ERR_RUNTIME_FAILURE'
+    )
+      return true;
     // Nothing more can be done about it here, and nothing is waiting to be told: a run that is
     // shutting down has nowhere to put this, and one that failed to start has already said so. What
     // the answer is for is the claim, which must not go back while a runtime may still be up.
@@ -719,6 +730,7 @@ export async function startLocalResources(
   const guard = guardListeners({ answersSignals: options.answersSignals });
   let release: (() => void) | undefined;
   let attempt: Attempt | undefined;
+  let starting = true;
   const watchedFiles = new Set<string>();
   const versions = new Map<string, string>();
   let sourcesChanged = noSourceChanges;
@@ -743,8 +755,21 @@ export async function startLocalResources(
     // directory read each other's data happily and then lose a write with no error anybody can see.
     release = await claimStorage(path.join(projectDir, PERSIST_DIR));
     attempt = startAndPublish(projectDir, entries, objects);
+    const ready = attempt.done.catch(async (error: unknown) => {
+      if (objects.length === 0 || !starting) throw error;
+      const failed = await attempt?.runtime;
+      // Keep the storage claim throughout recovery, and never overlap two native runtimes.
+      if (failed !== undefined && !(await stopRuntime(failed, error))) throw error;
+      if (!starting) throw error;
+      const reason = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `upwind: could not start local Durable Objects; retrying default storage:\n${reason}`,
+      );
+      attempt = startAndPublish(projectDir, bindings(), []);
+      return attempt.done;
+    });
     const runtime = await Promise.race([
-      attempt.done,
+      ready,
       afterDeadline(
         START_MS,
         `this project's local storage did not come up within ${String(START_SECONDS)}s, so nothing is published in this run`,
@@ -752,6 +777,7 @@ export async function startLocalResources(
     ]);
     return stopper(runtime, release, [...watchedFiles], sourcesChanged);
   } catch (error) {
+    starting = false;
     console.warn(cannotStart(error));
     // Whatever went wrong, a runtime process must not outlive the attempt that started it — including
     // an attempt still in the middle of starting one — and the claim goes back with it. Nothing waits
@@ -761,6 +787,7 @@ export async function startLocalResources(
     void letGo(attempt?.runtime, release);
     return { ...NOTHING_STARTED, watchedFiles: [...watchedFiles], sourcesChanged };
   } finally {
+    starting = false;
     guard.restore();
   }
 }

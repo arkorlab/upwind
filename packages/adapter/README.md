@@ -509,6 +509,10 @@ bundled separately from every Next.js Function, with Cloudflare and native Node 
 workerd. The Function is checked against the existing upload size bound and uses the same compatibility
 date and flags as the other Functions.
 
+Imported `.wasm` files travel beside the class code as native compiled modules. Their
+`dependencies.json` entries use `compiledWasmModules: [{ file, module }]`; `wasmModules` remains
+reserved for the existing application bundles' global mappings.
+
 Bundles carrying these Functions use version 5, or 6 when the Next.js app Functions are split; an
 older host rejects the version instead of dropping the object's code. Declarations and Function keys
 must correspond exactly. `bundleBlobs` includes the class modules, so the existing content-addressed

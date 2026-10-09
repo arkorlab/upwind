@@ -19,6 +19,12 @@ export interface DependencyInput {
   readonly bytes: number;
 }
 
+/** A source file carried as a native compiled module, without a published global. */
+interface CompiledWasmModule {
+  readonly file: string;
+  readonly module: string;
+}
+
 /** A module as the record takes it: by id, with the bytes it puts in the bundle. */
 export function bundled(
   file: string,
@@ -74,6 +80,8 @@ export interface BundleDependencies {
    * `patches` instead, as the `wasm-loader` patch's table.
    */
   readonly wasmModules: readonly string[];
+  /** Native compiled modules imported directly by name rather than through a global. */
+  readonly compiledWasmModules?: readonly CompiledWasmModule[];
 }
 
 export interface FunctionDependencies extends BundleDependencies {
@@ -117,6 +125,7 @@ export interface BundleTrace {
   readonly stubs: readonly string[];
   /** `.wasm` the bundler resolved to the Function's own module, as `<file> -> <global>`. */
   readonly wasmModules: readonly string[];
+  readonly compiledWasmModules?: readonly CompiledWasmModule[];
   /** `require` and `import()` calls the bundler could not follow, where each module makes them. */
   readonly dynamicLoads: readonly DynamicLoad[];
 }
@@ -254,6 +263,11 @@ export function bundleDependencies(
         return `${displayPath(projectDir, file ?? entry)} -> ${global ?? ''}`;
       })
       .toSorted((a, b) => a.localeCompare(b)),
+    ...(trace.compiledWasmModules !== undefined && {
+      compiledWasmModules: trace.compiledWasmModules
+        .map(({ file, module }) => ({ file: displayPath(projectDir, file), module }))
+        .toSorted((a, b) => a.file.localeCompare(b.file) || a.module.localeCompare(b.module)),
+    }),
   };
 }
 

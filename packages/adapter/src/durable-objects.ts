@@ -158,9 +158,10 @@ export async function bundleDurableObjects(
         .filter((input) => realInput(input, declaration))
         .map((input) => path.resolve(projectDir, input));
       inputs.push(...wasm.inputs.keys());
-      const wasmModules = wasm.collector.modules.map((entry) => {
-        return { name: wasmModuleName(entry.sha256), bytes: entry.bytes };
-      });
+      const wasmModules = wasm.collector.modules.map((entry) => ({
+        name: wasmModuleName(entry.sha256),
+        bytes: entry.bytes,
+      }));
       const internalImports = new Set(wasmModules.map((entry) => `./${entry.name}`));
       const map = result.outputFiles.find((file) => file.path.endsWith('.map'));
       return {
@@ -183,7 +184,11 @@ export async function bundleDurableObjects(
             .map((entry) => entry.path),
           patches: [],
           stubs: [],
-          wasmModules: [...wasm.inputs].map(([file, input]) => `${file} -> ${input.module}`),
+          wasmModules: [],
+          compiledWasmModules: [...wasm.inputs].map(([file, input]) => ({
+            file,
+            module: input.module,
+          })),
           dynamicLoads: dynamicLoadsOf(
             path.join(projectDir, 'durable-object', declaration.name, OBJECT_MODULE),
             output.text,

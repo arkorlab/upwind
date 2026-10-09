@@ -7,7 +7,7 @@ import { UPWIND_DURABLE_OBJECTS_ENV } from '@stayingupwind/core/paas';
 
 import { BlobStore } from '../../adapter/src/blobs.ts';
 import { durableObjectParts } from '../../adapter/src/durable-objects.ts';
-import { durableObject } from '../../sdk/src/named.ts';
+import { blob, d1, durableObject, kv } from '../../sdk/src/named.ts';
 import { startLocalResources } from '../src/resources/local.ts';
 
 const WASM_SOURCE = 'wasm-counter.ts';
@@ -29,6 +29,70 @@ export async function checkMissingDependency(
     assert.equal(resources.sourcesChanged?.(), false);
     await mkdir(path.dirname(missing), { recursive: true });
     await writeFile(missing, await readFile(counterFixture));
+    assert.equal(resources.sourcesChanged(), true);
+  } finally {
+    await resources.dispose();
+  }
+}
+
+export async function checkMissingPackageEntry(
+  project: string,
+  declaration: DurableObjectDeclaration,
+  counterFixture: string,
+): Promise<void> {
+  const directory = path.join(project, 'generated-package');
+  const entry = path.join(directory, 'src', 'entry.js');
+  const alternate = path.join(directory, 'src', 'module.js');
+  const source = 'package-entry-counter.ts';
+  await mkdir(path.dirname(entry), { recursive: true });
+  await writeFile(
+    path.join(directory, 'package.json'),
+    '{"main":"src/entry.js","module":"src/module.js"}',
+  );
+  await writeFile(path.join(project, source), 'export { Counter } from "./generated-package";');
+  process.env[UPWIND_DURABLE_OBJECTS_ENV] = JSON.stringify([{ ...declaration, module: source }]);
+  const resources = await startLocalResources(project, { answersSignals: true });
+  try {
+    assert.equal(durableObject('COUNTERS'), undefined);
+    assert.ok(resources.watchedFiles?.includes(entry) === true);
+    assert.ok(resources.watchedFiles.includes(alternate));
+    assert.equal(resources.sourcesChanged?.(), false);
+    await writeFile(entry, await readFile(counterFixture));
+    assert.equal(resources.sourcesChanged(), true);
+  } finally {
+    await resources.dispose();
+  }
+}
+
+export async function checkRuntimeFailure(
+  project: string,
+  declaration: DurableObjectDeclaration,
+  counterFixture: string,
+): Promise<void> {
+  const source = 'runtime-failure-counter.ts';
+  const file = path.join(project, source);
+  await writeFile(
+    file,
+    'import { DurableObject } from "cloudflare:workers"; throw new Error("fixture-startup-failure"); export class Counter extends DurableObject {}',
+  );
+  process.env[UPWIND_DURABLE_OBJECTS_ENV] = JSON.stringify([{ ...declaration, module: source }]);
+  const resources = await startLocalResources(project, { answersSignals: true });
+  try {
+    assert.equal(durableObject('COUNTERS'), undefined);
+    const database = d1('UPWIND_D1');
+    const namespace = kv('UPWIND_KV');
+    const bucket = blob('UPWIND_R2');
+    assert.ok(database);
+    assert.ok(namespace);
+    assert.ok(bucket);
+    assert.equal(await database.prepare('SELECT 1 AS value').first<number>('value'), 1);
+    await namespace.put('startup-recovery', 'available');
+    assert.equal(await namespace.get('startup-recovery'), 'available');
+    await bucket.put('startup-recovery', 'available');
+    assert.equal(await (await bucket.get('startup-recovery'))?.text(), 'available');
+    assert.ok(resources.watchedFiles?.includes(file) === true);
+    assert.equal(resources.sourcesChanged?.(), false);
+    await writeFile(file, await readFile(counterFixture));
     assert.equal(resources.sourcesChanged(), true);
   } finally {
     await resources.dispose();
@@ -63,8 +127,15 @@ export async function checkWasmBinding(
   );
   const dependencies = parts.dependencies['durable-object/COUNTERS'];
   assert.ok(dependencies?.other.some((entry) => entry.file === WASM_FILE) === true);
-  assert.equal(dependencies.wasmModules.length, 1);
-  assert.ok(!dependencies.externals.some((specifier) => specifier.startsWith('./wasm/')));
+  assert.deepEqual(dependencies.wasmModules, []);
+  const wasmModule = parts.functions.durableObjects?.['COUNTERS']?.modules.find(
+    (module) => module.type === 'wasm',
+  );
+  assert.ok(wasmModule);
+  assert.deepEqual(dependencies.compiledWasmModules, [
+    { file: WASM_FILE, module: wasmModule.name },
+  ]);
+  assert.ok(dependencies.externals.every((specifier) => !specifier.startsWith('./wasm/')));
   process.env[UPWIND_DURABLE_OBJECTS_ENV] = JSON.stringify(declarations);
   const resources = await startLocalResources(project, { answersSignals: true });
   try {

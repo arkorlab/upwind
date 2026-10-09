@@ -20,7 +20,12 @@ import namespace from '../../sdk/src/durable-object.ts';
 import { durableObject, kv } from '../../sdk/src/named.ts';
 import { startLocalResources } from '../src/resources/local.ts';
 import { checkBuildResolution, checkPrefixOnlyImports } from './check-durable-object-builds.ts';
-import { checkMissingDependency, checkWasmBinding } from './check-durable-object-runtime.ts';
+import {
+  checkMissingDependency,
+  checkMissingPackageEntry,
+  checkRuntimeFailure,
+  checkWasmBinding,
+} from './check-durable-object-runtime.ts';
 
 /** Small native-runtime fixture; no Next.js build, credentials, or remote object invocation. */
 const restoring = process.argv[2] !== undefined;
@@ -354,7 +359,7 @@ async function checkProject(): Promise<void> {
       await promisify(execFile)(process.execPath, [import.meta.filename, project, 'dependency'], {
         timeout: 30_000,
       });
-      for (const check of ['missing', 'production', 'wasm']) {
+      for (const check of ['missing', 'entry', 'startup', 'production', 'wasm']) {
         await promisify(execFile)(process.execPath, [import.meta.filename, project, check], {
           timeout: 30_000,
         });
@@ -392,17 +397,20 @@ const sideCheck = new Map([
   ['commonjs', checkCommonJSBinding],
   ['dependency', checkDependencyEdit],
   ['missing', () => checkMissingDependency(project, declaration, COUNTER_FIXTURE)],
+  ['entry', () => checkMissingPackageEntry(project, declaration, COUNTER_FIXTURE)],
+  ['startup', () => checkRuntimeFailure(project, declaration, COUNTER_FIXTURE)],
   ['production', () => checkCommonJSBinding('production')],
   ['prototype', checkPrototypeBinding],
   ['race', checkStartupEdit],
   [
     'wasm',
-    () =>
-      checkWasmBinding(
+    () => {
+      return checkWasmBinding(
         project,
         declaration,
         path.join(root, 'fixtures/next-minimal/wasm/add.wasm'),
-      ),
+      );
+    },
   ],
 ]).get(process.argv[3] ?? '');
 await (sideCheck ?? checkProject)();
