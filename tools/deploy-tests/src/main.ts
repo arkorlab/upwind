@@ -1,3 +1,4 @@
+import { bundleFile, bundleProject } from './bundle-project.ts';
 import { claimProject, releaseProject } from './claim.ts';
 import { createClient } from './client.ts';
 import { readConfig, readProjectConfig } from './config.ts';
@@ -8,6 +9,7 @@ import { hookDeadline, hookOver, hookSignal } from './hook.ts';
  * The commands the three hooks of Next.js's deploy-mode contract are made of.
  *
  *   node src/main.ts preflight              would a run get as far as its first deployment?
+ *   node src/main.ts bundle [directory]     print the bundle the build here wrote
  *   node src/main.ts deploy [directory]     deploy the application here; print its URL
  *   node src/main.ts release [directory]    give the project back (the cleanup hook)
  *
@@ -16,10 +18,10 @@ import { hookDeadline, hookOver, hookSignal } from './hook.ts';
  * is the one place a failure is sure to be read: the logs hook is not called when setup itself failed.
  */
 
-const USAGE = 'usage: node src/main.ts <preflight|deploy|release> [directory]';
+const USAGE = 'usage: node src/main.ts <preflight|bundle|deploy|release> [directory]';
 /** How far down a `cause` chain a failure is followed. */
 const MAX_CAUSES = 5;
-const COMMANDS = ['preflight', 'deploy', 'release'] as const;
+const COMMANDS = ['preflight', 'bundle', 'deploy', 'release'] as const;
 type Command = (typeof COMMANDS)[number];
 
 function say(message: string): void {
@@ -67,6 +69,12 @@ async function main(argv: readonly string[]): Promise<void> {
   const [first, directory] = argv;
   const command = commandOf(first);
   const appDir = directory ?? process.cwd();
+  if (command === 'bundle') {
+    // Where the deploy hook reads the build's markers from: the package the build wrote it in, in a
+    // workspace (`bundleProject`). Nothing of the host's is asked, so no configuration is read.
+    process.stdout.write(`${bundleFile(await bundleProject(appDir))}\n`);
+    return;
+  }
   if (command === 'release') {
     // No token asked for: giving the project back is a file on this machine, and a cleanup hook that
     // demanded a credential would fail on a run whose credential is already gone.

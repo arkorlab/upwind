@@ -12,6 +12,7 @@ import {
   writeApplication,
 } from './check-application.ts';
 import { NEXT_JS_STACK, sameEnvironment, stackSizeScenario } from './check-stack-size.ts';
+import { workspaceScenario } from './check-workspace.ts';
 import { fakeHost, type FakeHost } from './fake-host.ts';
 import { AFTER_SERVED_MS } from './hook.ts';
 
@@ -624,6 +625,14 @@ async function main(): Promise<void> {
     await ownUrlScenarios(deploymentId, appDir, env);
     await nativeConfigScenario(deploymentId, appDir, env);
     await suiteEnvScenario(deploymentId, appDir, env);
+    await workspaceScenario({
+      deploymentId,
+      workDir,
+      env,
+      deploy: (dir, hookEnv) => bounded(DEPLOY_HOOK, dir, hookEnv),
+      said: (error) => (error instanceof HookFailureError ? error.said : undefined),
+      holds,
+    });
   } finally {
     harness.kill();
     host.close();

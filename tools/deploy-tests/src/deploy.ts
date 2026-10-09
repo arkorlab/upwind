@@ -1,13 +1,9 @@
 import { readFile } from 'node:fs/promises';
-import path from 'node:path';
 import { setTimeout as sleepFor } from 'node:timers/promises';
 
-import {
-  bundleBlobs,
-  type DeploymentBundle,
-  deploymentBundleSchema,
-} from '@stayingupwind/core/bundle';
+import { bundleBlobs, type DeploymentBundle } from '@stayingupwind/core/bundle';
 
+import { blobFile, bundleProject, readBundle } from './bundle-project.ts';
 import {
   ApiError,
   type Client,
@@ -39,8 +35,6 @@ import {
  * asked of the host is a project to put fixtures in.
  */
 
-const BUNDLE_DIRECTORY = '.arkor';
-const BLOBS_DIRECTORY = 'blobs';
 const UPLOAD_CONCURRENCY = 8;
 const POLL_INTERVAL_MS = 3000;
 /** How long a deployment may go without reaching a further step before it is taken to be stuck. */
@@ -120,24 +114,19 @@ function previewUrlOf(detail: ProjectDetail, config: Config): URL {
   return url;
 }
 
-export async function readBundle(appDir: string): Promise<DeploymentBundle> {
-  const file = path.join(appDir, BUNDLE_DIRECTORY, 'bundle.json');
-  const json = await readFile(file, 'utf8');
-  return deploymentBundleSchema.parse(JSON.parse(json));
-}
-
 /**
  * Replace, rather than merge: a value the fixture before this one set must not answer for this one.
  * Which of its variables go up as secrets is `deploymentEnvironment`'s to say.
  */
-async function replaceEnvironment(input: DeployInput): Promise<void> {
-  const { entries, said } = await deploymentEnvironment(input.appDir, process.env);
+async function replaceEnvironment(input: DeployInput, projectDir: string): Promise<void> {
+  const { entries, said } = await deploymentEnvironment(projectDir, process.env);
   input.log(`replacing the project's environment with ${said}`);
   await input.client.putEnv(entries);
 }
 
 async function uploadMissing(
   input: DeployInput,
+  projectDir: string,
   bundle: DeploymentBundle,
   missing: readonly string[],
 ): Promise<void> {
@@ -151,9 +140,7 @@ async function uploadMissing(
       if (!named.has(sha256)) {
         throw new Error(`the host asked for ${sha256}, which the bundle does not name`);
       }
-      const bytes = await readFile(
-        path.join(input.appDir, BUNDLE_DIRECTORY, BLOBS_DIRECTORY, sha256),
-      );
+      const bytes = await readFile(blobFile(projectDir, sha256));
       await input.client.putBlob(bundle.deploymentId, sha256, new Uint8Array(bytes));
       uploaded += 1;
       if (uploaded % PROGRESS_EVERY === 0 || uploaded === missing.length) {
@@ -681,8 +668,10 @@ export async function deployFixture(input: DeployInput): Promise<Deployment> {
   // Before the environment is replaced, not after: a build that wrote no bundle — a `next.config`
   // naming an `adapterPath` of its own, a Next.js without the hook — should not first cost the
   // project the environment of whatever was tested before it.
-  const bundle = await readBundle(input.appDir);
-  await replaceEnvironment(input);
+  const projectDir = await bundleProject(input.appDir);
+  const bundle = await readBundle(projectDir);
+  // The project's own `.env` files, which are the ones its build read: in a workspace, the package's.
+  await replaceEnvironment(input, projectDir);
   input.log(`uploading ${bundle.deploymentId} to ${input.config.projectId}`);
   let runId: string;
   try {
@@ -691,7 +680,7 @@ export async function deployFixture(input: DeployInput): Promise<Deployment> {
       `registered; ${String(missing.length)} of ${String(bundleBlobs(bundle).size)} blobs to upload`,
     );
     if (missing.length > 0) {
-      await uploadMissing(input, bundle, missing);
+      await uploadMissing(input, projectDir, bundle, missing);
     }
     runId = await finalizeWhenFree(input.client, input.log, bundle.deploymentId, input.deadline);
   } catch (error) {
