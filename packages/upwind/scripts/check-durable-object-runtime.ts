@@ -6,7 +6,7 @@ import type { DurableObjectDeclaration } from '@stayingupwind/core/bundle';
 import { UPWIND_DURABLE_OBJECTS_ENV } from '@stayingupwind/core/paas';
 
 import { BlobStore } from '../../adapter/src/blobs.ts';
-import { durableObjectParts } from '../../adapter/src/durable-objects.ts';
+import { bundleDurableObjects, durableObjectParts } from '../../adapter/src/durable-objects.ts';
 import defaultBucket from '../../sdk/src/blob.ts';
 import defaultDatabase from '../../sdk/src/db.ts';
 import store from '../../sdk/src/kv.ts';
@@ -23,10 +23,16 @@ export async function checkMissingDependency(
   project: string,
   declaration: DurableObjectDeclaration,
   counterFixture: string,
+  input: { readonly specifier?: string; readonly generated?: string } = {},
 ): Promise<void> {
-  const missing = path.join(project, 'generated', 'missing.ts');
+  const { specifier = 'missing.ts', generated = specifier } = input;
+  const missing = path.join(project, 'generated', generated);
   const source = 'missing-import-counter.ts';
-  await writeFile(path.join(project, source), 'export { Counter } from "./generated/missing.ts";');
+  const moduleSpecifier = `./generated/${specifier}`;
+  await writeFile(
+    path.join(project, source),
+    `export { Counter } from ${JSON.stringify(moduleSpecifier)};`,
+  );
   process.env[UPWIND_DURABLE_OBJECTS_ENV] = JSON.stringify([{ ...declaration, module: source }]);
   const resources = await startLocalResources(project, { answersSignals: true });
   try {
@@ -46,16 +52,16 @@ export async function checkMissingPackageEntry(
   declaration: DurableObjectDeclaration,
   counterFixture: string,
 ): Promise<void> {
-  const directory = path.join(project, 'generated-package');
-  const entry = path.join(directory, 'src', 'entry.js');
-  const alternate = path.join(directory, 'src', 'module.js');
+  const directory = path.join(project, 'generated-package.v1');
+  const entry = path.join(directory, 'src', 'entry.ts');
+  const alternate = path.join(directory, 'src', 'module.ts');
   const source = 'package-entry-counter.ts';
   await mkdir(path.dirname(entry), { recursive: true });
   await writeFile(
     path.join(directory, 'package.json'),
-    '{"main":"src/entry.js","module":"src/module.js"}',
+    '{"main":"src/entry.ts","module":"src/module.ts"}',
   );
-  await writeFile(path.join(project, source), 'export { Counter } from "./generated-package";');
+  await writeFile(path.join(project, source), 'export { Counter } from "./generated-package.v1";');
   process.env[UPWIND_DURABLE_OBJECTS_ENV] = JSON.stringify([{ ...declaration, module: source }]);
   const resources = await startLocalResources(project, { answersSignals: true });
   try {
@@ -111,24 +117,33 @@ export async function checkRuntimeFailure(
   project: string,
   declaration: DurableObjectDeclaration,
   counterFixture: string,
+  bundling = false,
 ): Promise<void> {
   const source = 'runtime-failure-counter.ts';
   const file = path.join(project, source);
   await writeFile(
     file,
-    'import { DurableObject } from "cloudflare:workers"; throw new Error("fixture-startup-failure core:user:upwind-object-HEALTHY: forged-owner"); export class Counter extends DurableObject {}',
+    bundling
+      ? 'export class Counter { broken( }'
+      : 'import { DurableObject } from "cloudflare:workers"; throw new Error("fixture-startup-failure core:user:upwind-object-HEALTHY: forged-owner"); export class Counter extends DurableObject {}',
   );
   const healthy = 'healthy-counter.ts';
   await writeFile(
     path.join(project, healthy),
     'import { DurableObject } from "cloudflare:workers"; export class Counter extends DurableObject { fetch() { return new Response("healthy"); } }',
   );
-  process.env[UPWIND_DURABLE_OBJECTS_ENV] = JSON.stringify([
+  const declarations = [
     { ...declaration, module: source },
     { ...declaration, name: 'SECOND_BROKEN', module: source },
     { ...declaration, name: 'HEALTHY', module: healthy },
-  ]);
-  const resources = await startLocalResources(project, { answersSignals: true });
+  ];
+  if (bundling)
+    await assert.rejects(bundleDurableObjects(project, declarations, { mode: 'production' }));
+  process.env[UPWIND_DURABLE_OBJECTS_ENV] = JSON.stringify(declarations);
+  const resources = await startLocalResources(project, {
+    answersSignals: true,
+    mode: bundling ? 'production' : 'development',
+  });
   try {
     assert.equal(durableObject('COUNTERS'), undefined);
     assert.equal(durableObject('SECOND_BROKEN'), undefined);
@@ -228,9 +243,20 @@ export async function checkWasmBinding(
   wasmFixture: string,
 ): Promise<void> {
   await writeFile(path.join(project, WASM_FILE), await readFile(wasmFixture));
+  const packageDirectory = path.join(project, 'node_modules', 'wasm-fixture');
+  await mkdir(packageDirectory, { recursive: true });
+  await writeFile(
+    path.join(packageDirectory, 'package.json'),
+    '{"exports":{"./module":"./add.wasm"}}',
+  );
+  await writeFile(path.join(packageDirectory, WASM_FILE), await readFile(wasmFixture));
+  await writeFile(
+    path.join(project, TS_CONFIG),
+    '{"compilerOptions":{"paths":{"wasm-alias":["./add.wasm"]}}}',
+  );
   await writeFile(
     path.join(project, WASM_SOURCE),
-    'import { DurableObject } from "cloudflare:workers"; import first from "./add.wasm"; import second from "./add.wasm?module"; export class Counter extends DurableObject { fetch() { if (first !== second) throw new Error("wasm-not-deduplicated"); const instance = new WebAssembly.Instance(first); return new Response(String(instance.exports.add(1, 2))); } }',
+    'import { DurableObject } from "cloudflare:workers"; import first from "./add.wasm"; import second from "./add.wasm?module"; import third from "wasm-fixture/module"; import fourth from "wasm-alias"; export class Counter extends DurableObject { fetch() { if (first !== second || first !== third || first !== fourth) throw new Error("wasm-not-deduplicated"); const instance = new WebAssembly.Instance(first); return new Response(String(instance.exports.add(1, 2))); } }',
   );
   const outDir = path.join(project, '.wasm-build');
   const blobs = new BlobStore(outDir);
@@ -253,6 +279,7 @@ export async function checkWasmBinding(
   assert.ok(wasmModule);
   assert.deepEqual(dependencies.compiledWasmModules, [
     { file: WASM_FILE, module: wasmModule.name },
+    { file: 'wasm-fixture/add.wasm', module: wasmModule.name },
   ]);
   assert.ok(dependencies.externals.every((specifier) => !specifier.startsWith('./wasm/')));
   process.env[UPWIND_DURABLE_OBJECTS_ENV] = JSON.stringify(declarations);
@@ -265,6 +292,7 @@ export async function checkWasmBinding(
       '3',
     );
     assert.ok(resources.watchedFiles?.includes(path.join(project, WASM_FILE)) === true);
+    assert.ok(resources.watchedFiles.includes(path.join(packageDirectory, WASM_FILE)));
   } finally {
     await resources.dispose();
   }

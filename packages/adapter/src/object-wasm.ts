@@ -17,7 +17,7 @@ export function objectWasm(beforeRead?: (file: string) => void): {
     name: OBJECT_WASM_NAMESPACE,
     setup(builder) {
       // eslint-disable-next-line require-unicode-regexp -- esbuild filters are Go regular expressions.
-      builder.onResolve({ filter: /\.wasm(?:\?module)?$/, namespace: 'file' }, async (args) => {
+      builder.onResolve({ filter: /.*/, namespace: 'file' }, async (args) => {
         if (args.pluginData === OBJECT_WASM_NAMESPACE) return;
         const resolved = await builder.resolve(args.path.replace(/\?module$/u, ''), {
           kind: args.kind,
@@ -25,8 +25,13 @@ export function objectWasm(beforeRead?: (file: string) => void): {
           resolveDir: args.resolveDir,
           pluginData: OBJECT_WASM_NAMESPACE,
         });
-        if (resolved.errors.length > 0)
-          return { errors: resolved.errors, warnings: resolved.warnings };
+        if (
+          resolved.errors.length > 0 ||
+          resolved.external ||
+          resolved.namespace !== 'file' ||
+          !resolved.path.endsWith('.wasm')
+        )
+          return;
         beforeRead?.(resolved.path);
         const sha = await collector.offer(resolved.path);
         const module = wasmModuleName(sha);
@@ -35,7 +40,11 @@ export function objectWasm(beforeRead?: (file: string) => void): {
         if (offered === undefined)
           throw new Error(`no compiled WebAssembly module for ${resolved.path}`);
         inputs.set(resolved.path, { bytes: offered.bytes.byteLength, module });
-        return { path: `./${module}`, namespace: OBJECT_WASM_NAMESPACE };
+        return {
+          path: `./${module}`,
+          namespace: OBJECT_WASM_NAMESPACE,
+          warnings: resolved.warnings,
+        };
       });
       // eslint-disable-next-line require-unicode-regexp -- esbuild filters are Go regular expressions.
       builder.onResolve({ filter: /.*/, namespace: OBJECT_WASM_NAMESPACE }, (args) => {

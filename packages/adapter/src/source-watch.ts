@@ -8,6 +8,12 @@ import { watchSourceConfigs } from './source-config-watch.ts';
 const RESOLVE_EXTENSIONS = ['.tsx', '.ts', '.jsx', '.js', '.css', '.json'];
 const MAIN_FIELDS = ['browser', 'module', 'main'];
 const PACKAGE_MANIFEST = 'package.json';
+const REWRITTEN_EXTENSIONS: Readonly<Record<string, readonly string[]>> = {
+  '.cjs': ['.cts'],
+  '.js': ['.ts', '.tsx'],
+  '.jsx': ['.ts', '.tsx'],
+  '.mjs': ['.mts'],
+};
 
 function watchCandidates(
   target: string,
@@ -15,11 +21,15 @@ function watchCandidates(
   beforeRead: (file: string) => void,
 ): void {
   beforeRead(target);
-  if (path.extname(target) !== '') return;
   for (const extension of extensions) {
     beforeRead(`${target}${extension}`);
     beforeRead(path.join(target, `index${extension}`));
   }
+  const originalExtension = path.extname(target);
+  const rewritten = REWRITTEN_EXTENSIONS[originalExtension];
+  if (rewritten !== undefined)
+    for (const extension of rewritten)
+      beforeRead(`${target.slice(0, -originalExtension.length)}${extension}`);
 }
 
 /** A directory may already exist while the nested entry declared by its manifest does not. */
@@ -73,10 +83,8 @@ export function watchBuildSources(beforeRead: (file: string) => void): Plugin {
           return;
         const target = path.resolve(args.resolveDir, specifier);
         watchCandidates(target, extensions, beforeRead);
-        if (path.extname(target) === '') {
-          const mainFields = builder.initialOptions.mainFields ?? MAIN_FIELDS;
-          watchPackageEntries(target, mainFields, extensions, beforeRead);
-        }
+        const mainFields = builder.initialOptions.mainFields ?? MAIN_FIELDS;
+        watchPackageEntries(target, mainFields, extensions, beforeRead);
       });
       // eslint-disable-next-line require-unicode-regexp -- esbuild filters are Go regular expressions.
       builder.onLoad({ filter: /.*/, namespace: 'file' }, (args): undefined => {

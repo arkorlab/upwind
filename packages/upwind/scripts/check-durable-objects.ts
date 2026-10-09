@@ -365,7 +365,10 @@ async function checkProject(): Promise<void> {
       const runtimeChecks = [
         'alias',
         'alias-literal',
+        'bundle-failure',
         'missing',
+        'missing-dotted',
+        'missing-js',
         'entry',
         'startup',
         'collision',
@@ -411,6 +414,7 @@ const sideCheck = new Map([
   ['alias', () => checkMissingAlias(project, declaration, COUNTER_FIXTURE)],
   ['alias-literal', () => checkMissingAlias(project, declaration, COUNTER_FIXTURE, true)],
   ['broken', checkBrokenSource],
+  ['bundle-failure', () => checkRuntimeFailure(project, declaration, COUNTER_FIXTURE, true)],
   ['collision', () => checkDefaultNameCollisions(project, declaration)],
   ['commonjs', checkCommonJSBinding],
   ['config', () => checkConfigEdit(project, declaration, false)],
@@ -418,6 +422,24 @@ const sideCheck = new Map([
   ['dependency', checkDependencyEdit],
   ['entry', () => checkMissingPackageEntry(project, declaration, COUNTER_FIXTURE)],
   ['missing', () => checkMissingDependency(project, declaration, COUNTER_FIXTURE)],
+  [
+    'missing-dotted',
+    () => {
+      return checkMissingDependency(project, declaration, COUNTER_FIXTURE, {
+        specifier: 'missing.client',
+        generated: 'missing.client.ts',
+      });
+    },
+  ],
+  [
+    'missing-js',
+    () => {
+      return checkMissingDependency(project, declaration, COUNTER_FIXTURE, {
+        specifier: 'missing-rewritten.js',
+        generated: 'missing-rewritten.ts',
+      });
+    },
+  ],
   ['production', () => checkCommonJSBinding('production')],
   ['prototype', checkPrototypeBinding],
   ['race', checkStartupEdit],
