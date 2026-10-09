@@ -105,7 +105,7 @@ export class Counter extends DurableObject {
 ```ts
 // app/api/counter/route.ts
 import { durableObject } from '@stayingupwind/sdk';
-import type { Counter } from '../../../src/objects/counter.ts';
+import type { Counter } from '../../../src/objects/counter';
 
 export async function POST() {
   const counters = durableObject<Counter>('COUNTERS');

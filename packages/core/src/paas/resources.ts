@@ -47,7 +47,7 @@ export interface ResourceManifestEntry {
 /** One binding as the application finds it: its kind, and Cloudflare's own object for it. */
 export interface PublishedResource {
   readonly type: ResourceType;
-  /** A `KVNamespace`, an `R2Bucket` or a `D1Database`, as the Function was handed it. */
+  /** A `KVNamespace`, `R2Bucket`, `D1Database` or `DurableObjectNamespace`, as handed to the Function. */
   readonly binding: unknown;
 }
 

@@ -22,6 +22,7 @@ import { setEnv } from './env.ts';
 import { listen } from './listen.ts';
 import { type NextHandler, type RunningNext, startNextApp } from './next-app.ts';
 import { reachable } from './probe.ts';
+import { restart } from './restart.ts';
 import { createSession } from './session.ts';
 
 /**
@@ -259,6 +260,7 @@ export async function serveDev(options: DevOptions): Promise<void> {
     answersSignals: true,
   });
   const stopWatchingObjects = watchSourceFiles(local.watchedFiles ?? []);
+  if (local.sourcesChanged?.() === true) restart('Durable Object sources changed during startup');
   let app: RunningNext;
   try {
     app = await startNextApp({

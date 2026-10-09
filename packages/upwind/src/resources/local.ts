@@ -1,4 +1,4 @@
-import { unlinkSync } from 'node:fs';
+import { statSync, unlinkSync } from 'node:fs';
 import { mkdir, readdir, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -182,6 +182,8 @@ const RUNTIME_TYPES = {
 export interface LocalResources {
   /** Class dependencies whose edits require a fresh worker module. */
   readonly watchedFiles?: readonly string[];
+  /** Detect edits between class bundling and the dev server attaching its watches. */
+  readonly sourcesChanged?: () => boolean;
   /** Stop the local runtime. Call it as often as you like; the first call is the one that acts. */
   readonly dispose: () => Promise<void>;
 }
@@ -205,17 +207,61 @@ function bindings(): readonly ResourceManifestEntry[] {
   return process.env[TRIAL_TWO_D1_ENV] === '1' ? [...DEFAULTS, TRIAL_SECOND_D1] : DEFAULTS;
 }
 
+function sourceVersion(file: string): string {
+  try {
+    const stat = statSync(file, { bigint: true });
+    return `${String(stat.mtimeNs)}:${String(stat.ctimeNs)}:${String(stat.size)}:${String(stat.ino)}`;
+  } catch {
+    return 'missing';
+  }
+}
+
+function sourceChanges(files: ReadonlySet<string>): () => boolean {
+  const versions = new Map([...files].map((file) => [file, sourceVersion(file)]));
+  return () => [...versions].some(([file, version]) => sourceVersion(file) !== version);
+}
+
+function noSourceChanges(): boolean {
+  return false;
+}
+
 interface LocalDurableObject {
   readonly declaration: DurableObjectDeclaration;
   readonly source: string;
   readonly inputs: readonly string[];
 }
 
-async function durableObjectsOf(projectDir: string): Promise<readonly LocalDurableObject[]> {
+function fileInBuildError(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null || !('location' in error)) return undefined;
+  const { location } = error;
+  if (typeof location !== 'object' || location === null || !('file' in location)) return undefined;
+  return typeof location.file === 'string' ? location.file : undefined;
+}
+
+function watchBuildErrors(projectDir: string, error: unknown, watchedFiles: Set<string>): void {
+  if (
+    typeof error !== 'object' ||
+    error === null ||
+    !('errors' in error) ||
+    !Array.isArray(error.errors)
+  )
+    return;
+  for (const failure of error.errors as unknown[]) {
+    const file = fileInBuildError(failure);
+    if (file !== undefined && file !== '<stdin>') watchedFiles.add(path.resolve(projectDir, file));
+  }
+}
+
+async function durableObjectsOf(
+  projectDir: string,
+  watchedFiles: Set<string>,
+): Promise<readonly LocalDurableObject[]> {
   const raw = process.env[UPWIND_DURABLE_OBJECTS_ENV];
   if (raw === undefined || raw === '') return [];
   const declarations = durableObjectDeclarationsSchema.parse(JSON.parse(raw) as unknown);
   if (declarations.length === 0) return [];
+  for (const declaration of declarations)
+    watchedFiles.add(path.resolve(projectDir, declaration.module));
   const adapter = resolveFromProject(projectDir, '@stayingupwind/adapter');
   if (adapter === undefined)
     throw new Error('install @stayingupwind/adapter to run local Durable Objects');
@@ -229,7 +275,30 @@ async function durableObjectsOf(projectDir: string): Promise<readonly LocalDurab
     throw new Error(
       'the installed adapter does not support Durable Objects; install matching upwind packages',
     );
-  return module.bundleDurableObjects(projectDir, declarations);
+  const objects = await module.bundleDurableObjects(projectDir, declarations);
+  for (const object of objects) for (const file of object.inputs) watchedFiles.add(file);
+  return objects;
+}
+
+/** A broken class stays watched and never takes away the project's other local storage. */
+async function localObjects(
+  projectDir: string,
+  watchedFiles: Set<string>,
+): Promise<readonly LocalDurableObject[]> {
+  try {
+    const objects = await durableObjectsOf(projectDir, watchedFiles);
+    const defaults = new Set(bindings().map((entry) => entry.name));
+    if (objects.some((object) => defaults.has(object.declaration.name)))
+      throw new Error('a Durable Object name conflicts with local default storage');
+    return objects;
+  } catch (error) {
+    watchBuildErrors(projectDir, error, watchedFiles);
+    const reason = error instanceof Error ? error.message : String(error);
+    console.warn(
+      `upwind: could not prepare local Durable Objects; default storage remains available:\n${reason}`,
+    );
+    return [];
+  }
 }
 
 function ownerName(name: string): string {
@@ -492,9 +561,8 @@ async function localEnv(
   runtime: Miniflare,
   entries: readonly ResourceManifestEntry[],
 ): Promise<FunctionEnv> {
-  const env: Record<string, unknown> = {
-    [RESOURCES_MANIFEST_BINDING]: formatResourcesManifest(entries),
-  };
+  const env = Object.create(null) as Record<string, unknown>;
+  env[RESOURCES_MANIFEST_BINDING] = formatResourcesManifest(entries);
   for (const entry of entries) {
     // An object, as a Function's binding is — which is what `resourcesOf` publishes and what it
     // passes over. The runtime hands these across a socket, and they are objects on this side too.
@@ -527,10 +595,12 @@ function stopper(
   runtime: Miniflare,
   release: () => void,
   watchedFiles: readonly string[],
+  sourcesChanged: () => boolean,
 ): LocalResources {
   let stopping: Promise<void> | undefined;
   return {
     watchedFiles,
+    sourcesChanged,
     dispose: async () => {
       // Once, and awaited by everyone: a dev run ends through whichever of its paths reaches the
       // end first, and stopping a runtime that is already stopping is not the caller's problem.
@@ -630,8 +700,11 @@ export async function startLocalResources(
   const guard = guardListeners({ answersSignals: options.answersSignals });
   let release: (() => void) | undefined;
   let attempt: Attempt | undefined;
+  const watchedFiles = new Set<string>();
+  let sourcesChanged = noSourceChanges;
   try {
-    const objects = await durableObjectsOf(projectDir);
+    const objects = await localObjects(projectDir, watchedFiles);
+    sourcesChanged = sourceChanges(watchedFiles);
     const entries = [
       ...bindings(),
       ...objects.map((object): ResourceManifestEntry => {
@@ -641,8 +714,6 @@ export async function startLocalResources(
         };
       }),
     ];
-    if (new Set(entries.map((entry) => entry.name)).size !== entries.length)
-      throw new Error('a Durable Object name conflicts with local default storage');
     // The claim comes first, because the thing it prevents cannot be undone: two runtimes over one
     // directory read each other's data happily and then lose a write with no error anybody can see.
     release = await claimStorage(path.join(projectDir, PERSIST_DIR));
@@ -654,11 +725,7 @@ export async function startLocalResources(
         `this project's local storage did not come up within ${String(START_SECONDS)}s, so nothing is published in this run`,
       ),
     ]);
-    return stopper(
-      runtime,
-      release,
-      objects.flatMap((object) => object.inputs),
-    );
+    return stopper(runtime, release, [...watchedFiles], sourcesChanged);
   } catch (error) {
     console.warn(cannotStart(error));
     // Whatever went wrong, a runtime process must not outlive the attempt that started it — including
@@ -667,7 +734,7 @@ export async function startLocalResources(
     // published to anybody.
     // eslint-disable-next-line @typescript-eslint/no-floating-promises -- said above, not waited for.
     void letGo(attempt?.runtime, release);
-    return NOTHING_STARTED;
+    return { ...NOTHING_STARTED, watchedFiles: [...watchedFiles], sourcesChanged };
   } finally {
     guard.restore();
   }

@@ -3,7 +3,7 @@
  *
  * Two ways in, and they answer different questions. This module is the one that takes names —
  * `d1('ORDERS')`, `kv('SESSIONS')`, `blob('UPLOADS')` — and is what a project with several of a kind
- * uses. The subpaths are the ones that take none: `@stayingupwind/sdk/db`, `/kv` and `/blob` each
+ * uses. The subpaths are the ones that take none: `@stayingupwind/sdk/db`, `/kv`, `/blob` and `/durable-object` each
  * default-export the one of its kind, which is all a project with one of each ever needs.
  *
  * Nothing here is configured, and nothing here can be. What is reachable is what the deployment

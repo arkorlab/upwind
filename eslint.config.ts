@@ -462,7 +462,7 @@ export default defineConfig([
     },
   },
 
-  // Three entry points whose whole subject is one value, which is the one they export by default:
+  // Four entry points whose whole subject is one value, which is the one they export by default:
   // `import db from '@stayingupwind/sdk/db'` is the line this package exists to make possible, and
   // `import { db }` would be the same word twice.
   {

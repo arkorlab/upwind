@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { RESOURCES_MANIFEST_BINDING } from '../paas/resources.ts';
+
 const MAX_NAME_LENGTH = 64;
 const MAX_MODULE_LENGTH = 1024;
 const MAX_EXPORT_LENGTH = 128;
@@ -10,7 +12,11 @@ export const durableObjectDeclarationSchema = z.strictObject({
   name: z
     .string()
     .max(MAX_NAME_LENGTH)
-    .regex(/^[A-Za-z_]\w*$/u, 'a binding name'),
+    .regex(/^[A-Za-z_]\w*$/u, 'a binding name')
+    .refine(
+      (value) => value !== RESOURCES_MANIFEST_BINDING && value !== '__proto__',
+      'the resource manifest and prototype setter names are reserved',
+    ),
   module: z
     .string()
     .min(1)
@@ -27,7 +33,8 @@ export const durableObjectDeclarationSchema = z.strictObject({
   className: z
     .string()
     .max(MAX_EXPORT_LENGTH)
-    .regex(/^[A-Za-z_$][\w$]*$/u, 'a named class export'),
+    .regex(/^[A-Za-z_$][\w$]*$/u, 'a named class export')
+    .refine((value) => value !== 'default', 'a named export rather than the default export'),
 });
 export type DurableObjectDeclaration = z.infer<typeof durableObjectDeclarationSchema>;
 

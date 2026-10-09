@@ -20,7 +20,7 @@ import { RESOURCES_API_VERSION, RESOURCES_SYMBOL_KEY } from '@stayingupwind/core
 export interface PublishedResource {
   /** The kind, as the deployment listed it: `d1`, `kv_namespace`, `r2_bucket`, `durable_object_namespace`. */
   readonly type: string;
-  /** Cloudflare's own object — a `D1Database`, a `KVNamespace`, an `R2Bucket`. */
+  /** Cloudflare's own `D1Database`, `KVNamespace`, `R2Bucket` or `DurableObjectNamespace`. */
   readonly binding: unknown;
 }
 

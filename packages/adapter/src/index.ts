@@ -346,12 +346,15 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     blobs,
     declarations: options.durableObjects,
     split: functions.built.length > 1,
+    sourceMaps: options.sourceMaps,
+    distDir: ctx.distDir,
   });
   const sourceMaps = [
     ...clientMaps,
     ...functions.built.flatMap((each) => each.built.sourceMaps),
     ...(middlewareFunction?.sourceMaps ?? []),
     ...workflowParts.sourceMaps,
+    ...objects.sourceMaps,
   ];
 
   // Two things the bundle carries and `runtimeManifest` does not, for the same reason: nothing in
@@ -384,14 +387,12 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     },
   });
   await writeFile(path.join(outDir, BUNDLE_FILE), JSON.stringify(bundle, null, 2));
-  await writeFile(
-    path.join(outDir, DEPENDENCIES_FILE),
-    JSON.stringify(
-      { ...dependencyRecord(functions, middlewareFunction), ...workflowParts.dependencies },
-      null,
-      2,
-    ),
-  );
+  const dependencies = {
+    ...dependencyRecord(functions, middlewareFunction),
+    ...workflowParts.dependencies,
+    ...objects.dependencies,
+  };
+  await writeFile(path.join(outDir, DEPENDENCIES_FILE), JSON.stringify(dependencies, null, 2));
   await rm(path.join(outDir, 'work'), { recursive: true, force: true });
   if (functions.built.length > 1) {
     // The modules of the Function the build weighed before it split are blobs nothing names.
