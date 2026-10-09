@@ -258,6 +258,7 @@ export async function serveDev(options: DevOptions): Promise<void> {
   const local: LocalResources = await startLocalResources(options.projectDir, {
     // This run answers its own interrupts, above, and disposes of the runtime on its way out.
     answersSignals: true,
+    mode: 'development',
   });
   const stopWatchingObjects = watchSourceFiles(local.watchedFiles ?? []);
   if (local.sourcesChanged?.() === true) restart('Durable Object sources changed during startup');

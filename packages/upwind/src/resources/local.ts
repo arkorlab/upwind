@@ -190,6 +190,8 @@ export interface LocalResources {
 }
 
 export interface LocalOptions {
+  /** Class code uses production semantics during prerender; direct local callers default to dev. */
+  readonly mode?: 'development' | 'production';
   /**
    * Whether this process answers interrupts itself, and so wants the runtime's signal handlers taken
    * back (`listeners.ts`). The dev server does; a process something else ends does not.
@@ -216,6 +218,7 @@ interface LocalDurableObject {
   readonly declaration: DurableObjectDeclaration;
   readonly source: string;
   readonly inputs: readonly string[];
+  readonly wasmModules?: readonly { readonly name: string; readonly bytes: Uint8Array }[];
 }
 
 function fileInBuildError(error: unknown): string | undefined {
@@ -243,6 +246,7 @@ async function durableObjectsOf(
   projectDir: string,
   watchedFiles: Set<string>,
   versions: Map<string, string>,
+  mode: 'development' | 'production',
 ): Promise<readonly LocalDurableObject[]> {
   const raw = process.env[UPWIND_DURABLE_OBJECTS_ENV];
   if (raw === undefined || raw === '') return [];
@@ -259,7 +263,7 @@ async function durableObjectsOf(
       directory: string,
       objects: readonly DurableObjectDeclaration[],
       options: {
-        readonly mode: 'development';
+        readonly mode: 'development' | 'production';
         readonly onSourceFile: (file: string) => void;
       },
     ) => Promise<LocalDurableObject[]>;
@@ -269,7 +273,7 @@ async function durableObjectsOf(
       'the installed adapter does not support Durable Objects; install matching upwind packages',
     );
   const objects = await module.bundleDurableObjects(projectDir, declarations, {
-    mode: 'development',
+    mode,
     onSourceFile: (file) => {
       watchFile(file, watchedFiles, versions);
       watchManifests(file, watchedFiles, versions);
@@ -288,9 +292,10 @@ async function localObjects(
   projectDir: string,
   watchedFiles: Set<string>,
   versions: Map<string, string>,
+  mode: 'development' | 'production',
 ): Promise<readonly LocalDurableObject[]> {
   try {
-    const objects = await durableObjectsOf(projectDir, watchedFiles, versions);
+    const objects = await durableObjectsOf(projectDir, watchedFiles, versions, mode);
     const defaults = new Set(bindings().map((entry) => entry.name));
     if (objects.some((object) => defaults.has(object.declaration.name)))
       throw new Error('a Durable Object name conflicts with local default storage');
@@ -357,6 +362,15 @@ function runtimeOptions(
         },
       },
       ...objects.map((object) => {
+        const modules: Record<
+          string,
+          {
+            type: 'esm' | 'wasm';
+            contents: string | Uint8Array<ArrayBuffer>;
+          }
+        > = { [ENTRY_MODULE]: { type: 'esm', contents: object.source } };
+        for (const module of object.wasmModules ?? [])
+          modules[module.name] = { type: 'wasm', contents: new Uint8Array(module.bytes) };
         return {
           config: {
             name: ownerName(object.declaration.name),
@@ -364,7 +378,7 @@ function runtimeOptions(
             compatibilityFlags: ['nodejs_compat'],
             manifest: {
               mainModule: ENTRY_MODULE,
-              modules: { [ENTRY_MODULE]: { type: 'esm' as const, contents: object.source } },
+              modules,
             },
             exports: {
               [DURABLE_OBJECT_EXPORT]: {
@@ -709,7 +723,12 @@ export async function startLocalResources(
   const versions = new Map<string, string>();
   let sourcesChanged = noSourceChanges;
   try {
-    const objects = await localObjects(projectDir, watchedFiles, versions);
+    const objects = await localObjects(
+      projectDir,
+      watchedFiles,
+      versions,
+      options.mode ?? 'development',
+    );
     sourcesChanged = sourceChanges(versions);
     const entries = [
       ...bindings(),

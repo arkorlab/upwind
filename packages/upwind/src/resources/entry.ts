@@ -38,5 +38,6 @@ if (process.env[PRERENDER_WORKER_ENV] !== undefined) {
     // This process is ended by the pool that started it — `SIGTERM`, half a second after it asks —
     // and the runtime's own handlers are what kill the runtime when that happens.
     answersSignals: false,
+    mode: 'production',
   });
 }

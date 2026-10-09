@@ -20,6 +20,7 @@ import namespace from '../../sdk/src/durable-object.ts';
 import { durableObject, kv } from '../../sdk/src/named.ts';
 import { startLocalResources } from '../src/resources/local.ts';
 import { checkBuildResolution, checkPrefixOnlyImports } from './check-durable-object-builds.ts';
+import { checkMissingDependency, checkWasmBinding } from './check-durable-object-runtime.ts';
 
 /** Small native-runtime fixture; no Next.js build, credentials, or remote object invocation. */
 const restoring = process.argv[2] !== undefined;
@@ -189,16 +190,18 @@ async function checkPrototypeBinding(): Promise<void> {
   }
 }
 
-async function checkCommonJSBinding(): Promise<void> {
+async function checkCommonJSBinding(
+  mode: 'development' | 'production' = 'development',
+): Promise<void> {
   process.env[UPWIND_DURABLE_OBJECTS_ENV] = JSON.stringify([
     { ...declaration, module: COMMONJS_MODULE },
   ]);
-  const resources = await startLocalResources(project, { answersSignals: true });
+  const resources = await startLocalResources(project, { answersSignals: true, mode });
   try {
     const counters = durableObject('COUNTERS');
     assert.ok(counters);
     const response = await counters.getByName('commonjs').fetch(FIXTURE_URL);
-    assert.equal(await response.text(), 'fixture:development');
+    assert.equal(await response.text(), `fixture:${mode}`);
   } finally {
     await resources.dispose();
   }
@@ -351,6 +354,11 @@ async function checkProject(): Promise<void> {
       await promisify(execFile)(process.execPath, [import.meta.filename, project, 'dependency'], {
         timeout: 30_000,
       });
+      for (const check of ['missing', 'production', 'wasm']) {
+        await promisify(execFile)(process.execPath, [import.meta.filename, project, check], {
+          timeout: 30_000,
+        });
+      }
     }
     if (!restoring) {
       const originalSource = await readFile(path.join(project, MODULE), 'utf8');
@@ -383,7 +391,18 @@ const sideCheck = new Map([
   ['broken', checkBrokenSource],
   ['commonjs', checkCommonJSBinding],
   ['dependency', checkDependencyEdit],
+  ['missing', () => checkMissingDependency(project, declaration, COUNTER_FIXTURE)],
+  ['production', () => checkCommonJSBinding('production')],
   ['prototype', checkPrototypeBinding],
   ['race', checkStartupEdit],
+  [
+    'wasm',
+    () =>
+      checkWasmBinding(
+        project,
+        declaration,
+        path.join(root, 'fixtures/next-minimal/wasm/add.wasm'),
+      ),
+  ],
 ]).get(process.argv[3] ?? '');
 await (sideCheck ?? checkProject)();

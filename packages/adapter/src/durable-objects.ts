@@ -8,6 +8,7 @@ import {
   DURABLE_OBJECT_SPLIT_BUNDLE_VERSION,
   durableObjectDeclarationsSchema,
   DURABLE_OBJECT_EXPORT,
+  type FunctionModule,
   type FunctionSpec,
   type SourceMapRef,
 } from '@stayingupwind/core/bundle';
@@ -27,9 +28,11 @@ import { dynamicLoadsOf } from './dynamic-loads.ts';
 import { functionSize } from './function-size.ts';
 import { FUNCTION_COMPATIBILITY_DATE, FUNCTION_COMPATIBILITY_FLAGS } from './function.ts';
 import { NODE_BUILTIN_NAMESPACE, nodeBuiltinRequires } from './node-requires.ts';
+import { OBJECT_WASM_NAMESPACE, objectWasm } from './object-wasm.ts';
 import { projectOnly } from './project-maps.ts';
 import { carriesMaps, type SourceMapsOption } from './source-maps.ts';
 import { watchBuildSources } from './source-watch.ts';
+import { wasmModuleName } from './wasm.ts';
 
 const OBJECT_MODULE = 'durable-object.mjs';
 
@@ -37,7 +40,8 @@ function realInput(file: string, declaration: DurableObjectDeclaration): boolean
   return (
     file !== '<stdin>' &&
     file !== `${declaration.name}-durable-object.mjs` &&
-    !file.startsWith(`${NODE_BUILTIN_NAMESPACE}:`)
+    !file.startsWith(`${NODE_BUILTIN_NAMESPACE}:`) &&
+    !file.startsWith(`${OBJECT_WASM_NAMESPACE}:`)
   );
 }
 
@@ -46,6 +50,7 @@ export interface BundledDurableObject {
   readonly source: string;
   /** Absolute dependency paths, for the local server's restart watch. */
   readonly inputs: readonly string[];
+  readonly wasmModules: readonly { readonly name: string; readonly bytes: Uint8Array }[];
   readonly trace: BundleTrace;
   readonly map?: { readonly path: string; readonly source: string };
 }
@@ -97,6 +102,7 @@ export async function bundleDurableObjects(
   return Promise.all(
     checked.map(async (declaration) => {
       const module = await sourcePath(projectDir, declaration);
+      const wasm = objectWasm(options.onSourceFile);
       const result = await build({
         absWorkingDir: projectDir,
         stdin: {
@@ -123,8 +129,9 @@ export async function bundleDurableObjects(
         },
         external: ['cloudflare:*', 'node:*', ...builtinModules],
         plugins: [
-          nodeBuiltinRequires(),
           ...(options.onSourceFile === undefined ? [] : [watchBuildSources(options.onSourceFile)]),
+          nodeBuiltinRequires(),
+          wasm.plugin,
         ],
         metafile: true,
         minifyWhitespace: true,
@@ -150,24 +157,33 @@ export async function bundleDurableObjects(
       const inputs = Object.keys(result.metafile.inputs)
         .filter((input) => realInput(input, declaration))
         .map((input) => path.resolve(projectDir, input));
+      inputs.push(...wasm.inputs.keys());
+      const wasmModules = wasm.collector.modules.map((entry) => {
+        return { name: wasmModuleName(entry.sha256), bytes: entry.bytes };
+      });
+      const internalImports = new Set(wasmModules.map((entry) => `./${entry.name}`));
       const map = result.outputFiles.find((file) => file.path.endsWith('.map'));
       return {
         declaration,
         source: output.text,
         inputs,
+        wasmModules,
         trace: {
-          inputs: Object.entries(emitted.inputs)
-            .filter(([file]) => realInput(file, declaration))
-            .map(([file, input]) => {
-              const absoluteFile = path.resolve(projectDir, file);
-              return { file: absoluteFile, bytes: input.bytesInOutput };
-            }),
+          inputs: [
+            ...Object.entries(emitted.inputs)
+              .filter(([file]) => realInput(file, declaration))
+              .map(([file, input]) => {
+                const absoluteFile = path.resolve(projectDir, file);
+                return { file: absoluteFile, bytes: input.bytesInOutput };
+              }),
+            ...[...wasm.inputs].map(([file, input]) => ({ file, bytes: input.bytes })),
+          ],
           externals: emitted.imports
-            .filter((entry) => entry.external === true)
+            .filter((entry) => entry.external === true && !internalImports.has(entry.path))
             .map((entry) => entry.path),
           patches: [],
           stubs: [],
-          wasmModules: [],
+          wasmModules: [...wasm.inputs].map(([file, input]) => `${file} -> ${input.module}`),
           dynamicLoads: dynamicLoadsOf(
             path.join(projectDir, 'durable-object', declaration.name, OBJECT_MODULE),
             output.text,
@@ -199,13 +215,19 @@ export async function buildDurableObjectFunctions(input: {
     FunctionSpec
   >;
   for (const object of built) {
-    const modules = [
+    const modules: FunctionModule[] = [
       {
         name: OBJECT_MODULE,
         type: 'esm' as const,
         blob: await input.blobs.putText(object.source, 'text/javascript'),
       },
     ];
+    for (const module of object.wasmModules)
+      modules.push({
+        name: module.name,
+        type: 'wasm',
+        blob: await input.blobs.put(module.bytes, 'application/wasm'),
+      });
     const upload = {
       modules,
       size: await functionSize(input.outDir, modules),
