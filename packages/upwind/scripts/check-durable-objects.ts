@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
 import {
@@ -25,9 +26,11 @@ const restoringData = restoring && process.argv[3] !== 'first';
 const project =
   process.argv[2] ?? (await mkdtemp(path.join(os.tmpdir(), 'upwind-durable-objects-')));
 const root = path.resolve(import.meta.dirname, '../../..');
+const COUNTER_FIXTURE = path.join(root, 'fixtures/durable-objects/counter.ts');
 const MODULE = 'counter.ts';
 const BROKEN_DEPENDENCY = 'broken-dependency.ts';
 const COMMONJS_MODULE = 'commonjs-counter.ts';
+const RACE_DEPENDENCY = 'race-dependency.ts';
 const PACKAGE_MANIFEST = 'package.json';
 const FIXTURE_URL = 'https://fixture.invalid/';
 const FIRST_RUN_COUNT = 3;
@@ -200,16 +203,54 @@ async function checkCommonJSBinding(): Promise<void> {
   }
 }
 
+async function checkStartupEdit(): Promise<void> {
+  const raceProject = path.join(project, 'race');
+  const adapter = path.join(raceProject, 'node_modules', '@stayingupwind', 'adapter');
+  await mkdir(adapter, { recursive: true });
+  await writeFile(path.join(raceProject, PACKAGE_MANIFEST), '{"type":"module"}');
+  await writeFile(path.join(adapter, PACKAGE_MANIFEST), '{"type":"module","exports":"./index.js"}');
+  await writeFile(path.join(raceProject, RACE_DEPENDENCY), 'export const revision = "before";');
+  await writeFile(
+    path.join(raceProject, MODULE),
+    `import { revision } from "./race-dependency.ts"; if (revision !== "before") throw new Error("unexpected-revision");\n${await readFile(COUNTER_FIXTURE, 'utf8')}`,
+  );
+  const bundler = pathToFileURL(path.join(root, 'packages/adapter/src/durable-objects.ts')).href;
+  await writeFile(
+    path.join(adapter, 'index.js'),
+    String.raw`import { appendFile } from "node:fs/promises"; import path from "node:path"; import { bundleDurableObjects as bundle } from ${JSON.stringify(bundler)}; export async function bundleDurableObjects(directory, declarations, options) { const built = await bundle(directory, declarations, options); await appendFile(path.join(directory, "race-dependency.ts"), "\n// saved during startup\n"); return built; }`,
+  );
+  const resources = await startLocalResources(raceProject, { answersSignals: true });
+  try {
+    assert.ok(durableObject('COUNTERS'));
+    assert.ok(resources.watchedFiles?.includes(path.join(raceProject, RACE_DEPENDENCY)) === true);
+    assert.equal(resources.sourcesChanged?.(), true);
+  } finally {
+    await resources.dispose();
+  }
+}
+
+async function checkDependencyEdit(): Promise<void> {
+  const resources = await startLocalResources(project, { answersSignals: true });
+  const lockfile = path.join(project, 'pnpm-lock.yaml');
+  try {
+    assert.ok(resources.watchedFiles?.includes(path.join(project, PACKAGE_MANIFEST)) === true);
+    assert.ok(resources.watchedFiles.includes(lockfile));
+    assert.equal(resources.sourcesChanged?.(), false);
+    await writeFile(lockfile, 'lockfileVersion: 9.0\n');
+    assert.equal(resources.sourcesChanged(), true);
+  } finally {
+    await rm(lockfile, { force: true });
+    await resources.dispose();
+  }
+}
+
 process.env['CLOUDFLARE_CF_FETCH_ENABLED'] = 'false';
 process.env[UPWIND_DURABLE_OBJECTS_ENV] = JSON.stringify([declaration]);
 
 async function checkProject(): Promise<void> {
   try {
     if (!restoring) {
-      await writeFile(
-        path.join(project, MODULE),
-        await readFile(path.join(root, 'fixtures/durable-objects/counter.ts')),
-      );
+      await writeFile(path.join(project, MODULE), await readFile(COUNTER_FIXTURE));
       await writeFile(path.join(project, PACKAGE_MANIFEST), '{"type":"module"}');
       const commonjsPackage = path.join(project, 'node_modules', 'upwind-cjs-test');
       await mkdir(commonjsPackage, { recursive: true });
@@ -304,11 +345,7 @@ async function checkProject(): Promise<void> {
         );
       },
     );
-    if (!restoring)
-      await symlink(
-        path.join(root, 'fixtures/durable-objects/counter.ts'),
-        path.join(project, 'outside.ts'),
-      );
+    if (!restoring) await symlink(COUNTER_FIXTURE, path.join(project, 'outside.ts'));
     await assert.rejects(
       bundleDurableObjects(project, [{ ...declaration, module: 'outside.ts' }]),
       /inside the project/u,
@@ -329,6 +366,12 @@ async function checkProject(): Promise<void> {
         timeout: 30_000,
       });
       await promisify(execFile)(process.execPath, [import.meta.filename, project, 'commonjs'], {
+        timeout: 30_000,
+      });
+      await promisify(execFile)(process.execPath, [import.meta.filename, project, 'race'], {
+        timeout: 30_000,
+      });
+      await promisify(execFile)(process.execPath, [import.meta.filename, project, 'dependency'], {
         timeout: 30_000,
       });
     }
@@ -362,6 +405,8 @@ async function checkProject(): Promise<void> {
 const sideCheck = new Map([
   ['broken', checkBrokenSource],
   ['commonjs', checkCommonJSBinding],
+  ['dependency', checkDependencyEdit],
   ['prototype', checkPrototypeBinding],
+  ['race', checkStartupEdit],
 ]).get(process.argv[3] ?? '');
 await (sideCheck ?? checkProject)();

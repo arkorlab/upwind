@@ -29,6 +29,7 @@ import { FUNCTION_COMPATIBILITY_DATE, FUNCTION_COMPATIBILITY_FLAGS } from './fun
 import { NODE_BUILTIN_NAMESPACE, nodeBuiltinRequires } from './node-requires.ts';
 import { projectOnly } from './project-maps.ts';
 import { carriesMaps, type SourceMapsOption } from './source-maps.ts';
+import { watchBuildSources } from './source-watch.ts';
 
 const OBJECT_MODULE = 'durable-object.mjs';
 
@@ -82,7 +83,12 @@ async function sourcePath(
 export async function bundleDurableObjects(
   projectDir: string,
   declarations: readonly DurableObjectDeclaration[],
-  options: { readonly outDir?: string; readonly sourceMaps?: SourceMapsOption } = {},
+  options: {
+    readonly outDir?: string;
+    readonly sourceMaps?: SourceMapsOption;
+    /** Called before reading each source dependency, for local restart detection. */
+    readonly onSourceFile?: (file: string) => void;
+  } = {},
 ): Promise<BundledDurableObject[]> {
   const checked = durableObjectDeclarationsSchema.parse(declarations);
   return Promise.all(
@@ -110,7 +116,10 @@ export async function bundleDurableObjects(
         target: 'es2022',
         conditions: ['workerd', 'worker', 'browser'],
         external: ['cloudflare:*', 'node:*', ...builtinModules],
-        plugins: [nodeBuiltinRequires()],
+        plugins: [
+          nodeBuiltinRequires(),
+          ...(options.onSourceFile === undefined ? [] : [watchBuildSources(options.onSourceFile)]),
+        ],
         metafile: true,
         minifyWhitespace: true,
         minifySyntax: true,

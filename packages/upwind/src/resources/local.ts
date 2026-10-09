@@ -1,4 +1,4 @@
-import { statSync, unlinkSync } from 'node:fs';
+import { existsSync, statSync, unlinkSync } from 'node:fs';
 import { mkdir, readdir, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -168,6 +168,16 @@ const DEFAULTS: readonly ResourceManifestEntry[] = [
 const TRIAL_TWO_D1_ENV = 'UPWIND_TRIAL_TWO_D1';
 const TRIAL_SECOND_D1: ResourceManifestEntry = { name: 'UPWIND_D1_2', type: 'd1' };
 
+const PACKAGE_MANIFEST = 'package.json';
+const DEPENDENCY_FILES = [
+  PACKAGE_MANIFEST,
+  'pnpm-lock.yaml',
+  'package-lock.json',
+  'yarn.lock',
+  'bun.lock',
+  'bun.lockb',
+] as const;
+
 /** What the local runtime calls each kind of storage the contract names. */
 const DURABLE_OBJECT_TYPE = 'durable_object_namespace';
 const DURABLE_OBJECT_KIND = 'durable-object';
@@ -216,9 +226,32 @@ function sourceVersion(file: string): string {
   }
 }
 
-function sourceChanges(files: ReadonlySet<string>): () => boolean {
-  const versions = new Map([...files].map((file) => [file, sourceVersion(file)]));
+function sourceChanges(versions: ReadonlyMap<string, string>): () => boolean {
   return () => [...versions].some(([file, version]) => sourceVersion(file) !== version);
+}
+
+function watchFile(file: string, watchedFiles: Set<string>, versions: Map<string, string>): void {
+  watchedFiles.add(file);
+  if (!versions.has(file)) versions.set(file, sourceVersion(file));
+}
+
+function watchDependencies(
+  projectDir: string,
+  watchedFiles: Set<string>,
+  versions: Map<string, string>,
+): void {
+  let directory = path.resolve(projectDir);
+  do {
+    if (
+      directory === path.resolve(projectDir) ||
+      existsSync(path.join(directory, PACKAGE_MANIFEST))
+    )
+      for (const name of DEPENDENCY_FILES)
+        watchFile(path.join(directory, name), watchedFiles, versions);
+    const parent = path.dirname(directory);
+    if (parent === directory) return;
+    directory = parent;
+  } while (directory !== path.dirname(directory));
 }
 
 function noSourceChanges(): boolean {
@@ -255,13 +288,15 @@ function watchBuildErrors(projectDir: string, error: unknown, watchedFiles: Set<
 async function durableObjectsOf(
   projectDir: string,
   watchedFiles: Set<string>,
+  versions: Map<string, string>,
 ): Promise<readonly LocalDurableObject[]> {
   const raw = process.env[UPWIND_DURABLE_OBJECTS_ENV];
   if (raw === undefined || raw === '') return [];
   const declarations = durableObjectDeclarationsSchema.parse(JSON.parse(raw) as unknown);
   if (declarations.length === 0) return [];
+  watchDependencies(projectDir, watchedFiles, versions);
   for (const declaration of declarations)
-    watchedFiles.add(path.resolve(projectDir, declaration.module));
+    watchFile(path.resolve(projectDir, declaration.module), watchedFiles, versions);
   const adapter = resolveFromProject(projectDir, '@stayingupwind/adapter');
   if (adapter === undefined)
     throw new Error('install @stayingupwind/adapter to run local Durable Objects');
@@ -269,14 +304,20 @@ async function durableObjectsOf(
     bundleDurableObjects?: (
       directory: string,
       objects: readonly DurableObjectDeclaration[],
+      options: { readonly onSourceFile: (file: string) => void },
     ) => Promise<LocalDurableObject[]>;
   };
   if (module.bundleDurableObjects === undefined)
     throw new Error(
       'the installed adapter does not support Durable Objects; install matching upwind packages',
     );
-  const objects = await module.bundleDurableObjects(projectDir, declarations);
-  for (const object of objects) for (const file of object.inputs) watchedFiles.add(file);
+  const objects = await module.bundleDurableObjects(projectDir, declarations, {
+    onSourceFile: (file) => {
+      watchFile(file, watchedFiles, versions);
+    },
+  });
+  for (const object of objects)
+    for (const file of object.inputs) watchFile(file, watchedFiles, versions);
   return objects;
 }
 
@@ -284,15 +325,17 @@ async function durableObjectsOf(
 async function localObjects(
   projectDir: string,
   watchedFiles: Set<string>,
+  versions: Map<string, string>,
 ): Promise<readonly LocalDurableObject[]> {
   try {
-    const objects = await durableObjectsOf(projectDir, watchedFiles);
+    const objects = await durableObjectsOf(projectDir, watchedFiles, versions);
     const defaults = new Set(bindings().map((entry) => entry.name));
     if (objects.some((object) => defaults.has(object.declaration.name)))
       throw new Error('a Durable Object name conflicts with local default storage');
     return objects;
   } catch (error) {
     watchBuildErrors(projectDir, error, watchedFiles);
+    for (const file of watchedFiles) watchFile(file, watchedFiles, versions);
     const reason = error instanceof Error ? error.message : String(error);
     console.warn(
       `upwind: could not prepare local Durable Objects; default storage remains available:\n${reason}`,
@@ -701,10 +744,11 @@ export async function startLocalResources(
   let release: (() => void) | undefined;
   let attempt: Attempt | undefined;
   const watchedFiles = new Set<string>();
+  const versions = new Map<string, string>();
   let sourcesChanged = noSourceChanges;
   try {
-    const objects = await localObjects(projectDir, watchedFiles);
-    sourcesChanged = sourceChanges(watchedFiles);
+    const objects = await localObjects(projectDir, watchedFiles, versions);
+    sourcesChanged = sourceChanges(versions);
     const entries = [
       ...bindings(),
       ...objects.map((object): ResourceManifestEntry => {
