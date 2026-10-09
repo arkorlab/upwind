@@ -26,8 +26,19 @@ import {
 import { dynamicLoadsOf } from './dynamic-loads.ts';
 import { functionSize } from './function-size.ts';
 import { FUNCTION_COMPATIBILITY_DATE, FUNCTION_COMPATIBILITY_FLAGS } from './function.ts';
+import { NODE_BUILTIN_NAMESPACE, nodeBuiltinRequires } from './node-requires.ts';
 import { projectOnly } from './project-maps.ts';
 import { carriesMaps, type SourceMapsOption } from './source-maps.ts';
+
+const OBJECT_MODULE = 'durable-object.mjs';
+
+function realInput(file: string, declaration: DurableObjectDeclaration): boolean {
+  return (
+    file !== '<stdin>' &&
+    file !== `${declaration.name}-durable-object.mjs` &&
+    !file.startsWith(`${NODE_BUILTIN_NAMESPACE}:`)
+  );
+}
 
 export interface BundledDurableObject {
   readonly declaration: DurableObjectDeclaration;
@@ -99,6 +110,7 @@ export async function bundleDurableObjects(
         target: 'es2022',
         conditions: ['workerd', 'worker'],
         external: ['cloudflare:*', 'node:*', ...builtinModules],
+        plugins: [nodeBuiltinRequires()],
         metafile: true,
         minifyWhitespace: true,
         minifySyntax: true,
@@ -121,9 +133,7 @@ export async function bundleDurableObjects(
           `@stayingupwind/adapter: ${declaration.name}: no Durable Object output trace was emitted`,
         );
       const inputs = Object.keys(result.metafile.inputs)
-        .filter(
-          (input) => input !== '<stdin>' && input !== `${declaration.name}-durable-object.mjs`,
-        )
+        .filter((input) => realInput(input, declaration))
         .map((input) => path.resolve(projectDir, input));
       const map = result.outputFiles.find((file) => file.path.endsWith('.map'));
       return {
@@ -132,9 +142,7 @@ export async function bundleDurableObjects(
         inputs,
         trace: {
           inputs: Object.entries(emitted.inputs)
-            .filter(
-              ([file]) => file !== '<stdin>' && file !== `${declaration.name}-durable-object.mjs`,
-            )
+            .filter(([file]) => realInput(file, declaration))
             .map(([file, input]) => {
               const absoluteFile = path.resolve(projectDir, file);
               return { file: absoluteFile, bytes: input.bytesInOutput };
@@ -146,7 +154,7 @@ export async function bundleDurableObjects(
           stubs: [],
           wasmModules: [],
           dynamicLoads: dynamicLoadsOf(
-            path.join(projectDir, 'durable-object', declaration.name, 'durable-object.mjs'),
+            path.join(projectDir, 'durable-object', declaration.name, OBJECT_MODULE),
             output.text,
           ),
         },
@@ -178,7 +186,7 @@ export async function buildDurableObjectFunctions(input: {
   for (const object of built) {
     const modules = [
       {
-        name: 'durable-object.mjs',
+        name: OBJECT_MODULE,
         type: 'esm' as const,
         blob: await input.blobs.putText(object.source, 'text/javascript'),
       },
@@ -208,12 +216,12 @@ export async function buildDurableObjectFunctions(input: {
           : object.map.source;
       sourceMaps.push({
         kind: 'function',
-        name: `${kind}/durable-object.mjs`,
+        name: `${kind}/${OBJECT_MODULE}`,
         blob: await input.blobs.putText(source, 'application/json'),
       });
     }
     functions[object.declaration.name] = {
-      mainModule: 'durable-object.mjs',
+      mainModule: OBJECT_MODULE,
       modules,
       compatibilityDate: FUNCTION_COMPATIBILITY_DATE,
       compatibilityFlags: [...FUNCTION_COMPATIBILITY_FLAGS],

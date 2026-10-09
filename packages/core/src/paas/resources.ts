@@ -1,7 +1,7 @@
 import { type D1Observation, observeD1 } from './d1-observation.ts';
 import { RESOURCES_MANIFEST_BINDING } from './resources-constants.ts';
 
-export { RESOURCES_MANIFEST_BINDING };
+export { RESOURCES_MANIFEST_BINDING } from './resources-constants.ts';
 
 /**
  * A project's storage bindings on the way from its host to the application.

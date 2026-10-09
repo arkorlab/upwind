@@ -11,7 +11,7 @@ import {
   durableObjectDeclarationsSchema,
   DURABLE_OBJECT_EXPORT,
 } from '@stayingupwind/core/bundle';
-import { RESOURCES_SYMBOL_KEY } from '@stayingupwind/core/paas';
+import { RESOURCES_SYMBOL_KEY, UPWIND_DURABLE_OBJECTS_ENV } from '@stayingupwind/core/paas';
 
 import { BlobStore } from '../../adapter/src/blobs.ts';
 import { bundleDurableObjects, durableObjectParts } from '../../adapter/src/durable-objects.ts';
@@ -27,6 +27,9 @@ const project =
 const root = path.resolve(import.meta.dirname, '../../..');
 const MODULE = 'counter.ts';
 const BROKEN_DEPENDENCY = 'broken-dependency.ts';
+const COMMONJS_MODULE = 'commonjs-counter.ts';
+const PACKAGE_MANIFEST = 'package.json';
+const FIXTURE_URL = 'https://fixture.invalid/';
 const FIRST_RUN_COUNT = 3;
 const FIRST_RESTORED_FETCH_COUNT = FIRST_RUN_COUNT + 1;
 const SECOND_RESTORED_FETCH_COUNT = FIRST_RUN_COUNT + 2;
@@ -61,6 +64,15 @@ async function checkBuildMetadata(): Promise<void> {
   const split = await durableObjectParts({ ...input, split: true });
   assert.equal(split.bundle.v, DURABLE_OBJECT_SPLIT_BUNDLE_VERSION);
   assert.deepEqual(split.sourceMaps, []);
+  const commonjs = await durableObjectParts({
+    ...input,
+    declarations: [{ ...declaration, module: COMMONJS_MODULE }],
+  });
+  const commonjsDependencies = commonjs.dependencies['durable-object/COUNTERS'];
+  assert.ok(commonjsDependencies);
+  assert.ok(commonjsDependencies.externals.includes('node:path'));
+  assert.ok(commonjsDependencies.packages['upwind-cjs-test']);
+  assert.deepEqual(commonjsDependencies.dynamicRequires, []);
   await writeFile(
     path.join(project, 'unsupported.ts'),
     'import { runInNewContext } from "node:vm"; export class Counter { run() { return runInNewContext("1"); } }',
@@ -91,16 +103,16 @@ async function checkBuildMetadata(): Promise<void> {
   assert.ok(
     native.dependencies['durable-object/COUNTERS'].externals.includes('cloudflare:workflows'),
   );
-  const previous = process.env['UPWIND_DURABLE_OBJECTS'];
+  const previous = process.env[UPWIND_DURABLE_OBJECTS_ENV];
   try {
-    process.env['UPWIND_DURABLE_OBJECTS'] = '{';
+    process.env[UPWIND_DURABLE_OBJECTS_ENV] = '{';
     await assert.rejects(
       durableObjectParts({ ...input, declarations: undefined }),
       /UPWIND_DURABLE_OBJECTS/u,
     );
   } finally {
-    if (previous === undefined) delete process.env['UPWIND_DURABLE_OBJECTS'];
-    else process.env['UPWIND_DURABLE_OBJECTS'] = previous;
+    if (previous === undefined) Reflect.deleteProperty(process.env, UPWIND_DURABLE_OBJECTS_ENV);
+    else process.env[UPWIND_DURABLE_OBJECTS_ENV] = previous;
   }
 }
 
@@ -147,14 +159,13 @@ async function checkNativeResources(): Promise<void> {
     const counters = durableObject('COUNTERS');
     assert.ok(counters);
     // A namespace is published without constructing any instance.
-    const response = await counters.getByName('first').fetch('https://fixture.invalid/');
+    const response = await counters.getByName('first').fetch(FIXTURE_URL);
     assert.deepEqual(await response.json(), {
       value: restoringData ? FIRST_RESTORED_FETCH_COUNT : 1,
     });
-    assert.deepEqual(
-      await (await namespace.getByName('first').fetch('https://fixture.invalid/')).json(),
-      { value: restoringData ? SECOND_RESTORED_FETCH_COUNT : 2 },
-    );
+    assert.deepEqual(await (await namespace.getByName('first').fetch(FIXTURE_URL)).json(), {
+      value: restoringData ? SECOND_RESTORED_FETCH_COUNT : 2,
+    });
     const rpc = counters.getByName('first') as unknown as { increment: () => Promise<number> };
     assert.equal(await rpc.increment(), restoringData ? RESTORED_RPC_COUNT : FIRST_RUN_COUNT);
   } finally {
@@ -164,7 +175,7 @@ async function checkNativeResources(): Promise<void> {
 }
 
 async function checkPrototypeBinding(): Promise<void> {
-  process.env['UPWIND_DURABLE_OBJECTS'] = JSON.stringify([{ ...declaration, name: '__proto__' }]);
+  process.env[UPWIND_DURABLE_OBJECTS_ENV] = JSON.stringify([{ ...declaration, name: '__proto__' }]);
   const resources = await startLocalResources(project, { answersSignals: true });
   try {
     assert.equal(durableObject('__proto__'), undefined);
@@ -174,21 +185,47 @@ async function checkPrototypeBinding(): Promise<void> {
   }
 }
 
-process.env['CLOUDFLARE_CF_FETCH_ENABLED'] = 'false';
-process.env['UPWIND_DURABLE_OBJECTS'] = JSON.stringify([declaration]);
+async function checkCommonJSBinding(): Promise<void> {
+  process.env[UPWIND_DURABLE_OBJECTS_ENV] = JSON.stringify([
+    { ...declaration, module: COMMONJS_MODULE },
+  ]);
+  const resources = await startLocalResources(project, { answersSignals: true });
+  try {
+    const counters = durableObject('COUNTERS');
+    assert.ok(counters);
+    const response = await counters.getByName('commonjs').fetch(FIXTURE_URL);
+    assert.equal(await response.text(), 'fixture');
+  } finally {
+    await resources.dispose();
+  }
+}
 
-if (process.argv[3] === 'broken') {
-  await checkBrokenSource();
-} else if (process.argv[3] === 'prototype') {
-  await checkPrototypeBinding();
-} else
+process.env['CLOUDFLARE_CF_FETCH_ENABLED'] = 'false';
+process.env[UPWIND_DURABLE_OBJECTS_ENV] = JSON.stringify([declaration]);
+
+async function checkProject(): Promise<void> {
   try {
     if (!restoring) {
       await writeFile(
         path.join(project, MODULE),
         await readFile(path.join(root, 'fixtures/durable-objects/counter.ts')),
       );
-      await writeFile(path.join(project, 'package.json'), '{"type":"module"}');
+      await writeFile(path.join(project, PACKAGE_MANIFEST), '{"type":"module"}');
+      const commonjsPackage = path.join(project, 'node_modules', 'upwind-cjs-test');
+      await mkdir(commonjsPackage, { recursive: true });
+      await writeFile(path.join(commonjsPackage, PACKAGE_MANIFEST), '{"main":"index.cjs"}');
+      await writeFile(
+        path.join(commonjsPackage, 'index.cjs'),
+        'exports.fixtureValue = () => require("./value.cjs")();',
+      );
+      await writeFile(
+        path.join(commonjsPackage, 'value.cjs'),
+        'module.exports = () => require("node:path").basename("/fixture");',
+      );
+      await writeFile(
+        path.join(project, COMMONJS_MODULE),
+        'import { DurableObject } from "cloudflare:workers"; import { fixtureValue } from "upwind-cjs-test"; export class Counter extends DurableObject { fetch() { return new Response(fixtureValue()); } }',
+      );
       const adapterModules = path.join(project, 'node_modules', '@stayingupwind', 'adapter');
       await mkdir(path.dirname(adapterModules), { recursive: true });
       await symlink(path.join(root, 'packages/adapter'), adapterModules, 'dir');
@@ -196,7 +233,7 @@ if (process.argv[3] === 'broken') {
       const conditionalPackage = path.join(project, 'node_modules', 'upwind-condition-test');
       await mkdir(conditionalPackage, { recursive: true });
       await writeFile(
-        path.join(conditionalPackage, 'package.json'),
+        path.join(conditionalPackage, PACKAGE_MANIFEST),
         JSON.stringify({
           type: 'module',
           exports: { node: './node.js', workerd: './worker.js', default: './node.js' },
@@ -268,7 +305,7 @@ if (process.argv[3] === 'broken') {
     await assert.rejects(bundleDurableObjects(project, [{ ...declaration, className: 'Missing' }]));
 
     process.env['CLOUDFLARE_CF_FETCH_ENABLED'] = 'false';
-    process.env['UPWIND_DURABLE_OBJECTS'] = JSON.stringify([declaration]);
+    process.env[UPWIND_DURABLE_OBJECTS_ENV] = JSON.stringify([declaration]);
     if (restoring) {
       await checkNativeResources();
     } else {
@@ -277,6 +314,9 @@ if (process.argv[3] === 'broken') {
         timeout: 30_000,
       });
       await promisify(execFile)(process.execPath, [import.meta.filename, project, 'prototype'], {
+        timeout: 30_000,
+      });
+      await promisify(execFile)(process.execPath, [import.meta.filename, project, 'commonjs'], {
         timeout: 30_000,
       });
     }
@@ -305,3 +345,11 @@ if (process.argv[3] === 'broken') {
   } finally {
     if (!restoring) await rm(project, { recursive: true, force: true });
   }
+}
+
+const sideCheck = new Map([
+  ['broken', checkBrokenSource],
+  ['commonjs', checkCommonJSBinding],
+  ['prototype', checkPrototypeBinding],
+]).get(process.argv[3] ?? '');
+await (sideCheck ?? checkProject)();
