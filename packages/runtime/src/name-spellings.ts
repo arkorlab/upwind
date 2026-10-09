@@ -53,8 +53,9 @@ function foundAsFile(store: Store, name: string): boolean {
 /**
  * Of a pathname with an escaped delimiter in it, where its readings differ, the name Next.js finds
  * first among `names` (`has`): a page of its own or a file (`foundAsFile`), as spelled and then
- * decoded whole, ahead of any dynamic route; `undefined` where neither is one, and a member is
- * found by its route.
+ * decoded whole, each also without a trailing slash, which the check takes off before it looks —
+ * a file named with an extension has no name behind the slash (`/docs%2Frobots.txt/` is
+ * `/docs/robots.txt`); `undefined` where none is one, and a member is found by its route.
  */
 function foundFirst(
   store: Store,
@@ -62,9 +63,9 @@ function foundFirst(
   decoded: string | undefined,
   has: (name: string) => boolean,
 ): string | undefined {
-  return [pathname, decoded].find(
-    (name) => name !== undefined && has(name) && foundAsFile(store, name),
-  );
+  return [pathname, decoded]
+    .flatMap((name) => (name === undefined ? [] : [name, withoutTrailingSlash(name)]))
+    .find((name) => has(name) && foundAsFile(store, name));
 }
 
 /**
