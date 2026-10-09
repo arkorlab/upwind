@@ -114,7 +114,7 @@ export async function bundleDurableObjects(
         format: 'esm',
         // Match Wrangler's browser package mappings without implicitly activating `node`.
         platform: 'browser',
-        target: 'es2022',
+        target: 'es2024',
         conditions: ['workerd', 'worker', 'browser'],
         define: {
           'process.env.NODE_ENV': nodeEnv,
