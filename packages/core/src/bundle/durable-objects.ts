@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { RESOURCE_CHANGES_SERVICE_BINDING } from '../paas/resource-changes.ts';
 import { RESOURCES_MANIFEST_BINDING } from '../paas/resources-constants.ts';
 
 const MAX_NAME_LENGTH = 64;
@@ -13,10 +14,13 @@ export const durableObjectDeclarationSchema = z.strictObject({
     .string()
     .max(MAX_NAME_LENGTH)
     .regex(/^[A-Za-z_]\w*$/u, 'a binding name')
-    .refine(
-      (value) => value !== RESOURCES_MANIFEST_BINDING && value !== '__proto__',
-      'the resource manifest and prototype setter names are reserved',
-    ),
+    .refine((value) => {
+      return (
+        value !== RESOURCES_MANIFEST_BINDING &&
+        value !== RESOURCE_CHANGES_SERVICE_BINDING &&
+        value !== '__proto__'
+      );
+    }, 'the resource manifest, change service and prototype setter names are reserved'),
   module: z
     .string()
     .min(1)

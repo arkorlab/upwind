@@ -6,7 +6,10 @@ import {
   type DurableObjectDeclaration,
   durableObjectDeclarationsSchema,
 } from '@stayingupwind/core/bundle';
-import { UPWIND_DURABLE_OBJECTS_ENV } from '@stayingupwind/core/paas';
+import {
+  RESOURCE_CHANGES_SERVICE_BINDING,
+  UPWIND_DURABLE_OBJECTS_ENV,
+} from '@stayingupwind/core/paas';
 
 import { BlobStore } from '../../adapter/src/blobs.ts';
 import { bundleDurableObjects, durableObjectParts } from '../../adapter/src/durable-objects.ts';
@@ -21,6 +24,10 @@ export async function checkDefinitionRevision(
   project: string,
   declaration: DurableObjectDeclaration,
 ): Promise<void> {
+  await assert.rejects(
+    bundleDurableObjects(project, [{ ...declaration, name: RESOURCE_CHANGES_SERVICE_BINDING }]),
+    /reserved/u,
+  );
   const outDir = path.join(project, '.arkor');
   const blobs = new BlobStore(outDir);
   await blobs.init();
