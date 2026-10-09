@@ -207,7 +207,9 @@ export function namesWithSpellings(store: Store): string[] {
       continue;
     }
     spelled.add(name);
-    for (const spelling of spellingsOf(name)) {
+    // A file or a page of its own is found decoded whole, a member by its built name (`spells`).
+    const decodedWhole = isFile(store, name) || isOwnPage(store, name);
+    for (const spelling of spellingsOf(name, decodedWhole)) {
       offered.add(spelling);
     }
   }
@@ -234,7 +236,7 @@ export function namesWithSpellings(store: Store): string[] {
  * other spellings of it. An escape of a character no encoder escapes (`%65` for `e`), or hex of
  * mixed case, is none of these; a destination written so is offered as it is written.
  */
-function spellingsOf(name: string): string[] {
+function spellingsOf(name: string, decodedWhole: boolean): string[] {
   let asUrl: string;
   let segments: string[];
   try {
@@ -256,7 +258,9 @@ function spellingsOf(name: string): string[] {
   for (const spelling of encoded) {
     spellings.add(spelling.replaceAll(UPPERCASE_ESCAPE, (escape) => escape.toLowerCase()));
   }
-  return [...spellings].filter((spelling) => spelling !== name && spells(spelling, name));
+  return [...spellings].filter(
+    (spelling) => spelling !== name && spells(spelling, name, decodedWhole),
+  );
 }
 
 /**
@@ -307,11 +311,13 @@ function percentOf(character: string): string {
 }
 
 /**
- * Whether `spelling` is read as `name`: its built name (`builtNameOf`), as `escapedNameOf` takes a
- * spelling back — decoded once, and never into another segment.
+ * Whether `spelling` is read as `name`, as `escapedNameOf` takes a spelling back, decoded once: a
+ * file or a page of its own decoded whole (`decodedWhole`), as Next.js's filesystem check finds one
+ * — `/docs/a%252Fb` for the page named `/docs/a%2Fb` — and a member by its built name
+ * (`builtNameOf`), never into another segment or another value.
  */
-function spells(spelling: string, name: string): boolean {
-  return builtNameOf(spelling) === name;
+function spells(spelling: string, name: string, decodedWhole: boolean): boolean {
+  return (decodedWhole ? decodedOnce(spelling) : builtNameOf(spelling)) === name;
 }
 
 /**
