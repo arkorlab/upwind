@@ -235,9 +235,9 @@ async function checkDependencyEdit(): Promise<void> {
     { ...declaration, module: COMMONJS_MODULE },
   ]);
   const resources = await startLocalResources(project, { answersSignals: true });
-  const lockfiles = ['pnpm-lock.yaml', 'npm-shrinkwrap.json'].map((file) => {
-    return path.join(project, file);
-  });
+  const lockfiles = ['pnpm-lock.yaml', 'npm-shrinkwrap.json'].map((file) =>
+    path.join(project, file),
+  );
   const manifest = path.join(project, 'node_modules', 'upwind-cjs-test', PACKAGE_MANIFEST);
   const originalManifest = await readFile(manifest, 'utf8');
   try {
