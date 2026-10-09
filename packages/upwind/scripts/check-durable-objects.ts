@@ -173,7 +173,7 @@ if (process.argv[3] === 'broken') {
         path.join(conditionalPackage, 'package.json'),
         JSON.stringify({
           type: 'module',
-          exports: { workerd: './worker.js', node: './node.js', default: './node.js' },
+          exports: { node: './node.js', workerd: './worker.js', default: './node.js' },
         }),
       );
       await writeFile(

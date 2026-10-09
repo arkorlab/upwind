@@ -1,4 +1,5 @@
 import { realpath, stat } from 'node:fs/promises';
+import { builtinModules } from 'node:module';
 import path from 'node:path';
 
 import {
@@ -91,10 +92,13 @@ export async function bundleDurableObjects(
           `${declaration.name}.mjs`,
         ),
         format: 'esm',
-        platform: 'node',
+        // A Node platform implicitly activates its `node` export condition even when a package
+        // offers `workerd`; a node-first exports map would choose the wrong implementation.
+        platform: 'neutral',
+        mainFields: ['module', 'main'],
         target: 'es2022',
         conditions: ['workerd', 'worker'],
-        external: ['cloudflare:*', 'node:*'],
+        external: ['cloudflare:*', 'node:*', ...builtinModules],
         metafile: true,
         minifyWhitespace: true,
         minifySyntax: true,
