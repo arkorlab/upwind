@@ -235,22 +235,26 @@ async function checkDependencyEdit(): Promise<void> {
     { ...declaration, module: COMMONJS_MODULE },
   ]);
   const resources = await startLocalResources(project, { answersSignals: true });
-  const lockfile = path.join(project, 'pnpm-lock.yaml');
+  const lockfiles = ['pnpm-lock.yaml', 'npm-shrinkwrap.json'].map((file) => {
+    return path.join(project, file);
+  });
   const manifest = path.join(project, 'node_modules', 'upwind-cjs-test', PACKAGE_MANIFEST);
   const originalManifest = await readFile(manifest, 'utf8');
   try {
     assert.ok(resources.watchedFiles?.includes(path.join(project, PACKAGE_MANIFEST)) === true);
-    assert.ok(resources.watchedFiles.includes(lockfile));
     assert.equal(resources.sourcesChanged?.(), false);
-    await writeFile(lockfile, 'lockfileVersion: 9.0\n');
-    assert.equal(resources.sourcesChanged(), true);
-    await rm(lockfile);
-    assert.equal(resources.sourcesChanged(), false);
+    for (const lockfile of lockfiles) {
+      assert.ok(resources.watchedFiles.includes(lockfile));
+      await writeFile(lockfile, 'dependency-update\n');
+      assert.equal(resources.sourcesChanged(), true);
+      await rm(lockfile);
+      assert.equal(resources.sourcesChanged(), false);
+    }
     assert.ok(resources.watchedFiles.includes(manifest));
     await writeFile(manifest, `${originalManifest}\n`);
     assert.equal(resources.sourcesChanged(), true);
   } finally {
-    await rm(lockfile, { force: true });
+    await Promise.all(lockfiles.map(async (file) => rm(file, { force: true })));
     await writeFile(manifest, originalManifest);
     await resources.dispose();
   }

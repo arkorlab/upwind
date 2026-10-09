@@ -6,6 +6,7 @@ const DEPENDENCY_FILES = [
   PACKAGE_MANIFEST,
   'pnpm-lock.yaml',
   'package-lock.json',
+  'npm-shrinkwrap.json',
   'yarn.lock',
   'bun.lock',
   'bun.lockb',
