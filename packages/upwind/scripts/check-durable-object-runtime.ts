@@ -76,6 +76,8 @@ export async function checkMissingAlias(
   counterFixture: string,
   literal = false,
 ): Promise<void> {
+  // Windows disallows literal asterisks in filenames.
+  if (literal && process.platform === 'win32') return;
   const source = 'missing-alias-counter.ts';
   const generated = path.join(project, 'alias-generated', literal ? '*.ts' : 'missing$&.ts');
   await mkdir(path.dirname(generated), { recursive: true });
