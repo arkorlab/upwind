@@ -35,6 +35,34 @@ try {
     const adapterModules = path.join(project, 'node_modules', '@stayingupwind', 'adapter');
     await mkdir(path.dirname(adapterModules), { recursive: true });
     await symlink(path.join(root, 'packages/adapter'), adapterModules, 'dir');
+
+    const conditionalPackage = path.join(project, 'node_modules', 'upwind-condition-test');
+    await mkdir(conditionalPackage, { recursive: true });
+    await writeFile(
+      path.join(conditionalPackage, 'package.json'),
+      JSON.stringify({
+        type: 'module',
+        exports: { workerd: './worker.js', node: './node.js', default: './node.js' },
+      }),
+    );
+    await writeFile(
+      path.join(conditionalPackage, 'worker.js'),
+      'export const condition = "workerd";',
+    );
+    await writeFile(
+      path.join(conditionalPackage, 'node.js'),
+      'throw new Error("node-branch-must-not-run"); export const condition = "node";',
+    );
+    const conditionalModule = 'conditional-counter.ts';
+    await writeFile(
+      path.join(project, conditionalModule),
+      'import { condition } from "upwind-condition-test"; export { Counter } from "./counter.ts"; if (condition !== "workerd") throw new Error("unexpected-condition");',
+    );
+    const conditional = await bundleDurableObjects(project, [
+      { ...declaration, module: conditionalModule },
+    ]);
+    assert.ok(conditional[0]?.inputs.includes(path.join(conditionalPackage, 'worker.js')) === true);
+    assert.ok(!conditional[0].source.includes('node-branch-must-not-run'));
   }
 
   const built = await bundleDurableObjects(project, [declaration]);

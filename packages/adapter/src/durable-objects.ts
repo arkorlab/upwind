@@ -67,6 +67,7 @@ export async function bundleDurableObjects(
         format: 'esm',
         platform: 'node',
         target: 'es2022',
+        conditions: ['workerd', 'worker'],
         external: ['cloudflare:*', 'node:*'],
         metafile: true,
         minifyWhitespace: true,
