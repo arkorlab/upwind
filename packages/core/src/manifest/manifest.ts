@@ -56,6 +56,8 @@ export interface BuildProjectManifestInput {
   readonly exactPathnames?: readonly string[] | undefined;
   /** Exact pathnames an app Function other than the first answers, with its name. */
   readonly exactFunctions?: Readonly<Record<string, string>> | undefined;
+  /** The pages of their own a dynamic route's pattern also matches (`filesystemPagesSchema`). */
+  readonly filesystemPages?: readonly string[] | undefined;
   readonly headerRules?: readonly HeaderRule[] | undefined;
   /** How the deployment's Functions fill a header's `$` references, as its bundle says. */
   readonly routerReferences?: RouterReferences | undefined;
@@ -83,6 +85,21 @@ function crawlerFields(
   return {
     ...(input.htmlLimitedBots !== undefined && { htmlLimitedBots: input.htmlLimitedBots }),
     ...(input.crawlersStreamed === true && { crawlersStreamed: true as const }),
+  };
+}
+
+/** Pathnames as a manifest lists them: each by its name. */
+function listed(pathnames: readonly string[]): Record<string, true> {
+  return Object.fromEntries(pathnames.map((pathname) => [pathname, true]));
+}
+
+/** The pathnames the edge looks a page up among, each listed by its name. */
+function pathnameFields(
+  input: BuildProjectManifestInput,
+): Pick<ProjectManifest, 'exactPathnames' | 'filesystemPages'> {
+  return {
+    ...(input.exactPathnames !== undefined && { exactPathnames: listed(input.exactPathnames) }),
+    ...(input.filesystemPages !== undefined && { filesystemPages: listed(input.filesystemPages) }),
   };
 }
 
@@ -202,9 +219,7 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
     ...(input.dynamicRoutes !== undefined && { dynamicRoutes: input.dynamicRoutes }),
     ...(input.trailingSlash === true && { trailingSlash: true }),
     ...(input.reservedRoutes !== undefined && { reservedRoutes: input.reservedRoutes }),
-    ...(input.exactPathnames !== undefined && {
-      exactPathnames: Object.fromEntries(input.exactPathnames.map((pathname) => [pathname, true])),
-    }),
+    ...pathnameFields(input),
     ...(input.exactFunctions !== undefined && { exactFunctions: input.exactFunctions }),
     ...(input.headerRules !== undefined && { headerRules: input.headerRules }),
     ...(input.routerReferences !== undefined && { routerReferences: input.routerReferences }),
@@ -441,6 +456,6 @@ export function findRouteEntry(
   manifest: ProjectManifest,
   pathname: string,
 ): RouteEntry | undefined {
-  const key = pageKeyOf(manifest.routes, pathname, manifest.dynamicRoutes);
+  const key = pageKeyOf(manifest.routes, pathname, manifest);
   return key === undefined ? undefined : manifest.routes[key];
 }

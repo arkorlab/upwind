@@ -45,9 +45,7 @@ export function functionFor(
   // Found as a route is (`pageKeyOf`): decoded whole, an escaped slash named another page's
   // Function (`/docs/a%2Fb` for that of the member `/docs/a/b`).
   const exact =
-    exactFunctions === undefined
-      ? undefined
-      : pageKeyOf(exactFunctions, pathname, manifest.dynamicRoutes);
+    exactFunctions === undefined ? undefined : pageKeyOf(exactFunctions, pathname, manifest);
   if (exact !== undefined && exactFunctions !== undefined) {
     return exactFunctions[exact];
   }

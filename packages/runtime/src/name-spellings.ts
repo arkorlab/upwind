@@ -35,27 +35,25 @@ function ownPages(store: Store): ReadonlySet<string> {
   return pages;
 }
 
-/**
- * Whether Next.js's filesystem check finds a name, which it asks as a path is spelled and then
- * decoded whole, ahead of any dynamic route (`getItem`, `server/lib/router-utils/filesystem.ts`): a
- * page of its own — an entrypoint that is no template — or a file that is no prerender, each under
- * either spelling of the slash, which the check takes off first. A member of a dynamic route is
- * found by the route, as spelled or by its built name (`builtNameOf`).
- */
-function foundAsFile(store: Store, name: string): boolean {
+/** Whether a name is a file of the build that is no prerender, by either spelling of the slash. */
+function isFile(store: Store, name: string): boolean {
   const unslashed = store.slashSpellings.get(name) ?? name;
-  return (
-    ownPages(store).has(withoutTrailingSlash(name)) ||
-    (store.staticFiles.has(unslashed) && !store.prerendersByPathname.has(unslashed))
-  );
+  return store.staticFiles.has(unslashed) && !store.prerendersByPathname.has(unslashed);
+}
+
+/** Whether a name is a page of its own: an entrypoint that is no template, by either spelling. */
+function isOwnPage(store: Store, name: string): boolean {
+  return ownPages(store).has(withoutTrailingSlash(name));
 }
 
 /**
- * Of a pathname with an escaped delimiter in it, where its readings differ, the name Next.js finds
- * first among `names` (`has`): a page of its own or a file (`foundAsFile`), as spelled and then
- * decoded whole, each also without a trailing slash, which the check takes off before it looks —
- * a file named with an extension has no name behind the slash (`/docs%2Frobots.txt/` is
- * `/docs/robots.txt`); `undefined` where none is one, and a member is found by its route.
+ * Of a pathname with an escaped delimiter in it, where its readings differ, the name Next.js's
+ * filesystem check finds first among `names` (`has`), ahead of any dynamic route (`getItem`,
+ * `server/lib/router-utils/filesystem.ts`): a file of the build, and then a page of its own, each
+ * as spelled and then decoded whole, and each also without a trailing slash, which the check takes
+ * off before it looks — a file named with an extension has no name behind the slash
+ * (`/docs%2Frobots.txt/` is `/docs/robots.txt`). `undefined` where none is one, and a member is
+ * found by its route.
  */
 function foundFirst(
   store: Store,
@@ -63,9 +61,14 @@ function foundFirst(
   decoded: string | undefined,
   has: (name: string) => boolean,
 ): string | undefined {
-  return [pathname, decoded]
-    .flatMap((name) => (name === undefined ? [] : [name, withoutTrailingSlash(name)]))
-    .find((name) => has(name) && foundAsFile(store, name));
+  const named = [
+    ...new Set(
+      [pathname, decoded].flatMap((name) =>
+        name === undefined ? [] : [name, withoutTrailingSlash(name)],
+      ),
+    ),
+  ].filter((name) => has(name));
+  return named.find((name) => isFile(store, name)) ?? named.find((name) => isOwnPage(store, name));
 }
 
 /**

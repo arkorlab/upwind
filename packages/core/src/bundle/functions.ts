@@ -116,7 +116,7 @@ function exactFunctionsOf(
 /** What `dynamicRouting` gives a manifest: the tables, and where a split bundle's routes are. */
 export type DynamicRouting = Pick<
   BuildProjectManifestInput,
-  'dynamicRoutes' | 'exactFunctions' | 'exactPathnames' | 'reservedRoutes'
+  'dynamicRoutes' | 'exactFunctions' | 'exactPathnames' | 'filesystemPages' | 'reservedRoutes'
 >;
 
 /**

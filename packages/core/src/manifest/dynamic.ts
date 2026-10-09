@@ -398,7 +398,7 @@ export function isExactPathname(manifest: ProjectManifest, pathname: string): bo
   if (manifest.exactPathnames === undefined) {
     return false;
   }
-  return pageKeyOf(manifest.exactPathnames, pathname, manifest.dynamicRoutes) !== undefined;
+  return pageKeyOf(manifest.exactPathnames, pathname, manifest) !== undefined;
 }
 
 /** What `next.config` sets on one request, and whether the request itself chose any of it. */
