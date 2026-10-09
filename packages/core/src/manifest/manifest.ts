@@ -4,6 +4,7 @@ import type { RouterReferences } from '../bundle/schema.ts';
 import type { DeploymentFingerprint } from '../deployment/fingerprint.ts';
 import type { ImagesConfig } from '../images/config.ts';
 import { compareCodeUnits } from '../util/bytes.ts';
+import { builtNameOf } from './built-names.ts';
 import { namesPagesDataPrefix, pagesDataPrefixOf } from './pages-data-prefix.ts';
 import {
   type AppRuntime,
@@ -269,11 +270,10 @@ export function staticFileStatus(pathname: string, basePath = ''): number {
 }
 
 /**
- * The key a record holds a pathname under: as the request spelled it, and then decoded. Next.js
- * names what it builds by the characters a path reads as (`/sticks & stones`, `/記事`), escaping
- * only a delimiter, and a request carries them escaped; its filesystem check looks a path up both
- * ways (`getItem`, `server/lib/router-utils/filesystem.ts`). A pathname with nothing to decode
- * costs the one lookup it always did.
+ * The key a record of files holds a pathname under: as the request spelled it, and then decoded
+ * whole, as Next.js's filesystem check looks a file up both ways (`getItem`,
+ * `server/lib/router-utils/filesystem.ts`). A pathname with nothing to decode costs the one lookup
+ * it always did. A page Next.js built is looked up by its built name (`builtKeyOf`).
  */
 export function keyOf(
   record: Readonly<Record<string, unknown>>,
@@ -294,9 +294,32 @@ export function keyOf(
   return Object.hasOwn(record, decoded) ? decoded : undefined;
 }
 
-/** What a record holds under a pathname (`keyOf`). */
+/**
+ * The key a record of what Next.js built holds a pathname under: as the request spelled it, and
+ * then by the name Next.js builds what it asks for under (`builtNameOf`). Next.js names what it
+ * builds by the characters a path reads as (`/sticks & stones`, `/記事`), escaping only a
+ * delimiter, and a request carries them escaped; a dynamic route reads a member's value segment by
+ * segment, so an escaped slash is part of the value it is in (`/docs/a%2Fb` is the member `a/b`).
+ * Decoded whole, it was a separator, and `/docs/a%2Fb` was answered as `/docs/a/b`, another page.
+ * A pathname with nothing to decode costs the one lookup it always did.
+ */
+export function builtKeyOf(
+  record: Readonly<Record<string, unknown>>,
+  pathname: string,
+): string | undefined {
+  if (Object.hasOwn(record, pathname)) {
+    return pathname;
+  }
+  if (!pathname.includes('%')) {
+    return undefined;
+  }
+  const built = builtNameOf(pathname);
+  return built !== undefined && Object.hasOwn(record, built) ? built : undefined;
+}
+
+/** What a record of what Next.js built holds under a pathname (`builtKeyOf`). */
 function byPathname<T>(record: Readonly<Record<string, T>>, pathname: string): T | undefined {
-  const key = keyOf(record, pathname);
+  const key = builtKeyOf(record, pathname);
   return key === undefined ? undefined : record[key];
 }
 
@@ -442,9 +465,9 @@ export function staticFileBuildWithoutDpl(
 
 /**
  * Exact-match route lookup (case-sensitive, no trailing-slash normalization), of the pathname as
- * the request spelled it and then decoded (`byPathname`). A route is named by the spelling a
- * request asks for it by — behind the slash, for an application that keeps its pages there — so
- * the other spelling finds nothing, and is Next.js's to redirect.
+ * the request spelled it and then by its built name (`byPathname`). A route is named by the
+ * spelling a request asks for it by — behind the slash, for an application that keeps its pages
+ * there — so the other spelling finds nothing, and is Next.js's to redirect.
  */
 export function findRouteEntry(
   manifest: ProjectManifest,

@@ -1,3 +1,4 @@
+export { builtNameOf, builtSegment } from './built-names.ts';
 export { completedPathname, keyedParameters, memberEntryPathname } from './completion.ts';
 export {
   type ConfiguredHeaders,
@@ -17,6 +18,7 @@ export {
 export {
   type BuildProjectManifestInput,
   buildProjectManifest,
+  builtKeyOf,
   computeManifestId,
   DEFAULT_ASSET_POLICY,
   DEFAULT_CONTINUATION_CONFIG,

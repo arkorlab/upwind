@@ -1,6 +1,6 @@
 import { PRIMARY_FUNCTION } from '../bundle/function-name.ts';
 import { dynamicRouteFor, isExactPathname, isReserved } from './dynamic.ts';
-import { findRouteEntry, keyOf } from './manifest.ts';
+import { builtKeyOf, findRouteEntry, keyOf } from './manifest.ts';
 import type { AppRuntime, ProjectManifest } from './schema.ts';
 
 /**
@@ -41,7 +41,11 @@ export function functionFor(
     return shell.function ?? PRIMARY_FUNCTION;
   }
   const exactFunctions = manifest.exactFunctions;
-  const exact = exactFunctions === undefined ? undefined : keyOf(exactFunctions, pathname);
+  // By its built name first, as a route is looked up, and then decoded whole, as before.
+  const exact =
+    exactFunctions === undefined
+      ? undefined
+      : (builtKeyOf(exactFunctions, pathname) ?? keyOf(exactFunctions, pathname));
   if (exact !== undefined && exactFunctions !== undefined) {
     return exactFunctions[exact];
   }

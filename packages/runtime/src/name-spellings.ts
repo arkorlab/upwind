@@ -1,4 +1,5 @@
 import { standsForClass } from '@stayingupwind/core/bundle';
+import { builtNameOf } from '@stayingupwind/core/manifest';
 
 import { redirects } from './rewritten-path.ts';
 import type { Store } from './store.ts';
@@ -16,44 +17,47 @@ const SUB_DELIMITERS = /[!'()*]/gu;
 const HEX = 16;
 /** An escape as the encoders write one: its hex in uppercase. */
 const UPPERCASE_ESCAPE = /%[0-9A-F]{2}/gu;
-/** An escaped slash, which keeps a value's `/` inside its segment. */
-const ESCAPED_SLASH = /%2f/iu;
 
 /**
  * The name the build gave the prerender a pathname asks for. Next.js names a prerendered member by
- * its parameters' own characters, escaping only a delimiter (`/sticks & stones`, `/記事`;
- * `build/static-paths/app.ts`), and a request carries them escaped (`/sticks%20%26%20stones`).
- * Its filesystem check looks a path up as it came and then decoded (`getItem`), and so does this:
- * a pathname that names a prerender as it came, or has nothing to decode, is its own name.
+ * its parameters' own characters, escaping only a delimiter (`/sticks & stones`, `/記事`,
+ * `/a%2Fb` for the value `a/b`; `build/static-paths/app.ts`), and a request carries them escaped
+ * (`/sticks%20%26%20stones`). A pathname that names a prerender as it came, or has nothing to
+ * decode, is its own name; otherwise the name is the one Next.js builds what it asks for under
+ * (`builtNameOf`), each segment decoded with an escaped slash kept inside it, as a dynamic route
+ * reads a member's value. Decoded whole, `/docs/a%2Fb` was looked up as `/docs/a/b`, another page.
  */
 export function prerenderedName(store: Store, pathname: string): string {
   if (!pathname.includes('%') || store.prerendersByPathname.has(pathname)) {
     return pathname;
   }
-  try {
-    const decoded = decodeURIComponent(pathname);
-    return store.prerendersByPathname.has(decoded) ? decoded : pathname;
-  } catch {
-    return pathname;
-  }
+  const built = builtNameOf(pathname);
+  return built !== undefined && store.prerendersByPathname.has(built) ? built : pathname;
 }
 
 /**
  * The name the build gave a pathname a request spells escaped, where the router is handed names
  * alone (`routerPathnames`) and matches them as they are: `/sticks%20%26%20stones` is the build's
- * `/sticks & stones`. `undefined` where the spelling is a name itself, or decodes to none.
+ * `/sticks & stones`. The name is the one Next.js builds what the path asks for under
+ * (`builtNameOf`), an escaped slash inside its segment (`/docs/a%2fb` is `/docs/a%2Fb`, the member
+ * `a/b`); a file it finds decoded whole, as its filesystem check does (`getItem`), where the file
+ * is no prerender. `undefined` where the spelling is a name itself, or names none.
  */
 export function escapedNameOf(store: Store, pathname: string): string | undefined {
   if (!pathname.includes('%') || store.pathnames.includes(pathname)) {
     return undefined;
   }
-  let decoded: string;
-  try {
-    decoded = decodeURIComponent(pathname);
-  } catch {
-    return undefined;
+  const built = builtNameOf(pathname);
+  if (built !== undefined && built !== pathname && store.pathnames.includes(built)) {
+    return built;
   }
-  return decoded !== pathname && store.pathnames.includes(decoded) ? decoded : undefined;
+  const decoded = decodedOnce(pathname);
+  return decoded !== undefined &&
+    decoded !== built &&
+    store.staticFiles.has(decoded) &&
+    !store.prerendersByPathname.has(decoded)
+    ? decoded
+    : undefined;
 }
 
 /** What the build named, by kind: the names a file of `public/` is told apart from (`isEscapedFile`). */
@@ -123,9 +127,10 @@ export function namesWithSpellings(store: Store): string[] {
   }
   // A rewrite's path written out in full is a spelling as it is written, whatever case its escapes
   // are in and whatever they escape (`/docs/%e8%A8%98%E4%BA%8B`, `/docs/caf%65`), and no encoder's
-  // spelling need be it: one that decodes, once, to a name spelled above is offered as it stands.
+  // spelling need be it: one whose built name (`builtNameOf`) is a name spelled above is offered as
+  // it stands — `/docs/a%2fb` for the member `/docs/a%2Fb`, and never for `/docs/a/b`.
   for (const path of writtenDestinations(store)) {
-    if (spelled.has(decodedOnce(path) ?? '')) {
+    if (spelled.has(builtNameOf(path) ?? '')) {
       offered.add(path);
     }
   }
@@ -171,9 +176,7 @@ function spellingsOf(name: string): string[] {
  * put in it (`$1`, `$slug`) — where it holds an escape: as the router sets it on the URL it rewrites
  * (`applyDestination`), and so as it compares it with each name — a fragment included, which the
  * router sets in the path escaped (`%23`). A path a request's values are put in is spelled by the
- * request, and is offered the encoders' spellings alone (`spellingsOf`). A path with an escaped slash
- * in it is not offered: Next.js matches a dynamic route with the slash inside its segment
- * (`/docs/a%2Fb` is the one value `a/b`), and decoded, it would name another page (`/docs/a/b`).
+ * request, and is offered the encoders' spellings alone (`spellingsOf`).
  */
 function writtenDestinations(store: Store): string[] {
   const { routing } = store.manifest;
@@ -192,7 +195,7 @@ function writtenDestinations(store: Store): string[] {
       // The path alone, as the router takes it: a request's values put in the query alone
       // (`?from=$slug`) leave the path as it is written.
       const [path = ''] = destination.split('?', 1);
-      if (path.includes('%') && !path.includes('$') && !ESCAPED_SLASH.test(path)) {
+      if (path.includes('%') && !path.includes('$')) {
         const url = new URL(SPELLING_BASE);
         url.pathname = path;
         written.push(url.pathname);
@@ -215,13 +218,12 @@ function percentOf(character: string): string {
   return `%${(character.codePointAt(0) ?? 0).toString(HEX).toUpperCase()}`;
 }
 
-/** Whether `spelling`, decoded once, is `name`: a spelling is never decoded twice (`escapedNameOf`). */
+/**
+ * Whether `spelling` is read as `name`: its built name (`builtNameOf`), as `escapedNameOf` takes a
+ * spelling back — decoded once, and never into another segment.
+ */
 function spells(spelling: string, name: string): boolean {
-  try {
-    return decodeURIComponent(spelling) === name;
-  } catch {
-    return false;
-  }
+  return builtNameOf(spelling) === name;
 }
 
 /**
