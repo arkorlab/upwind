@@ -4,6 +4,7 @@ import type { RouterReferences } from '../bundle/schema.ts';
 import type { DeploymentFingerprint } from '../deployment/fingerprint.ts';
 import type { ImagesConfig } from '../images/config.ts';
 import { compareCodeUnits } from '../util/bytes.ts';
+import { pageKeyOf } from './page-keys.ts';
 import { namesPagesDataPrefix, pagesDataPrefixOf } from './pages-data-prefix.ts';
 import {
   type AppRuntime,
@@ -55,6 +56,8 @@ export interface BuildProjectManifestInput {
   readonly exactPathnames?: readonly string[] | undefined;
   /** Exact pathnames an app Function other than the first answers, with its name. */
   readonly exactFunctions?: Readonly<Record<string, string>> | undefined;
+  /** The pages of their own a dynamic route's pattern also matches (`filesystemPagesSchema`). */
+  readonly filesystemPages?: readonly string[] | undefined;
   readonly headerRules?: readonly HeaderRule[] | undefined;
   /** How the deployment's Functions fill a header's `$` references, as its bundle says. */
   readonly routerReferences?: RouterReferences | undefined;
@@ -82,6 +85,21 @@ function crawlerFields(
   return {
     ...(input.htmlLimitedBots !== undefined && { htmlLimitedBots: input.htmlLimitedBots }),
     ...(input.crawlersStreamed === true && { crawlersStreamed: true as const }),
+  };
+}
+
+/** Pathnames as a manifest lists them: each by its name. */
+function listed(pathnames: readonly string[]): Record<string, true> {
+  return Object.fromEntries(pathnames.map((pathname) => [pathname, true]));
+}
+
+/** The pathnames the edge looks a page up among, each listed by its name. */
+function pathnameFields(
+  input: BuildProjectManifestInput,
+): Pick<ProjectManifest, 'exactPathnames' | 'filesystemPages'> {
+  return {
+    ...(input.exactPathnames !== undefined && { exactPathnames: listed(input.exactPathnames) }),
+    ...(input.filesystemPages !== undefined && { filesystemPages: listed(input.filesystemPages) }),
   };
 }
 
@@ -201,9 +219,7 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
     ...(input.dynamicRoutes !== undefined && { dynamicRoutes: input.dynamicRoutes }),
     ...(input.trailingSlash === true && { trailingSlash: true }),
     ...(input.reservedRoutes !== undefined && { reservedRoutes: input.reservedRoutes }),
-    ...(input.exactPathnames !== undefined && {
-      exactPathnames: Object.fromEntries(input.exactPathnames.map((pathname) => [pathname, true])),
-    }),
+    ...pathnameFields(input),
     ...(input.exactFunctions !== undefined && { exactFunctions: input.exactFunctions }),
     ...(input.headerRules !== undefined && { headerRules: input.headerRules }),
     ...(input.routerReferences !== undefined && { routerReferences: input.routerReferences }),
@@ -269,16 +285,12 @@ export function staticFileStatus(pathname: string, basePath = ''): number {
 }
 
 /**
- * The key a record holds a pathname under: as the request spelled it, and then decoded. Next.js
- * names what it builds by the characters a path reads as (`/sticks & stones`, `/記事`), escaping
- * only a delimiter, and a request carries them escaped; its filesystem check looks a path up both
- * ways (`getItem`, `server/lib/router-utils/filesystem.ts`). A pathname with nothing to decode
- * costs the one lookup it always did.
+ * The key a record of files holds a pathname under: as the request spelled it, and then decoded
+ * whole, as Next.js's filesystem check looks a file up both ways (`getItem`,
+ * `server/lib/router-utils/filesystem.ts`). A pathname with nothing to decode costs the one lookup
+ * it always did. A page Next.js built is looked up as Next.js finds it (`pageKeyOf`).
  */
-export function keyOf(
-  record: Readonly<Record<string, unknown>>,
-  pathname: string,
-): string | undefined {
+function keyOf(record: Readonly<Record<string, unknown>>, pathname: string): string | undefined {
   if (Object.hasOwn(record, pathname)) {
     return pathname;
   }
@@ -292,12 +304,6 @@ export function keyOf(
     return undefined;
   }
   return Object.hasOwn(record, decoded) ? decoded : undefined;
-}
-
-/** What a record holds under a pathname (`keyOf`). */
-function byPathname<T>(record: Readonly<Record<string, T>>, pathname: string): T | undefined {
-  const key = keyOf(record, pathname);
-  return key === undefined ? undefined : record[key];
 }
 
 /**
@@ -442,13 +448,14 @@ export function staticFileBuildWithoutDpl(
 
 /**
  * Exact-match route lookup (case-sensitive, no trailing-slash normalization), of the pathname as
- * the request spelled it and then decoded (`byPathname`). A route is named by the spelling a
- * request asks for it by — behind the slash, for an application that keeps its pages there — so
- * the other spelling finds nothing, and is Next.js's to redirect.
+ * the request spelled it and then as Next.js finds the page it asks for (`pageKeyOf`). A route is
+ * named by the spelling a request asks for it by — behind the slash, for an application that
+ * keeps its pages there — so the other spelling finds nothing, and is Next.js's to redirect.
  */
 export function findRouteEntry(
   manifest: ProjectManifest,
   pathname: string,
 ): RouteEntry | undefined {
-  return byPathname(manifest.routes, pathname);
+  const key = pageKeyOf(manifest.routes, pathname, manifest);
+  return key === undefined ? undefined : manifest.routes[key];
 }

@@ -4,6 +4,7 @@ import { mayHoldForDocument } from '../request/conditions.ts';
 import { BEHAVIORAL_RESPONSE_HEADERS, CONTENT_DISPOSITION_HEADER } from '../request/constants.ts';
 import { filterShellResponseHeaders, rendersInline } from '../request/headers.ts';
 import { isInternalPage, nextNamespaceRoutes } from './base-path.ts';
+import { filesystemPagesOf } from './filesystem-pages.ts';
 import { type DynamicRouting, withFunctions } from './functions.ts';
 import { memberRoutesOf } from './member-routes.ts';
 import { pageRoutes } from './page-routes.ts';
@@ -775,11 +776,12 @@ export function dynamicRouting(
   const exact = new Set(
     [...pathnames, ...fileSpellings].filter((pathname) => !routeKeys.has(pathname)),
   );
+  const filesystemPages = filesystemPagesOf(bundle, dynamicRoutes);
   return {
     ...withFunctions(
       bundle,
       routeKeys,
-      { dynamicRoutes, reservedRoutes, exactPathnames: [...exact] },
+      { dynamicRoutes, reservedRoutes, exactPathnames: [...exact], filesystemPages },
       pages.map((page) => page.template ?? page.dataOf),
     ),
     ...spelled,

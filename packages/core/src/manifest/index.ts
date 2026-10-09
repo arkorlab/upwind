@@ -1,3 +1,4 @@
+export { builtNameOf } from './built-names.ts';
 export { completedPathname, keyedParameters, memberEntryPathname } from './completion.ts';
 export {
   type ConfiguredHeaders,

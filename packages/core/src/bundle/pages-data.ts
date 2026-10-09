@@ -1,3 +1,4 @@
+import { builtSegment } from '../manifest/built-names.ts';
 import { withTrailingSlash } from '../manifest/dynamic.ts';
 import { decodedPath, PAGES_DATA_SEGMENT, requestSpelling } from '../manifest/pages-data-prefix.ts';
 
@@ -154,18 +155,6 @@ export function pageOfPagesData(
   // The root of a base path gains the slash by name, whatever its last segment reads like
   // (`requestedPathname`).
   return trailingSlash ? `${basePath}/` : basePath;
-}
-
-/** What `escapePathDelimiters` escapes in a page's name: a delimiter, or one already escaped. */
-const PATH_DELIMITER = /[/#?\\]|%(?:2f|23|3f|5c)/giu;
-
-/**
- * A segment of a page's name as Next.js names a page it builds: decoded, with what would delimit a
- * path escaped back (`escapePathDelimiters(…, true)`), so that a parameter's `/` stays inside its
- * segment.
- */
-function builtSegment(decoded: string): string {
-  return decoded.replaceAll(PATH_DELIMITER, (found) => encodeURIComponent(found));
 }
 
 /** A segment as a URL's own parser spells it, where it stays one segment; `undefined` where not. */

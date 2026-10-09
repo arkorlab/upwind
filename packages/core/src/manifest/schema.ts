@@ -391,6 +391,19 @@ const exactPathnamesSchema = z.record(z.string().startsWith('/'), z.literal(true
  */
 const exactFunctionsSchema = z.record(z.string().startsWith('/'), splitFunctionNameSchema);
 /**
+ * The pages of their own — routes that are no template — that a dynamic route's pattern also
+ * matches, under each spelling the router finds one by. Next.js's filesystem check finds such a
+ * page decoded whole, ahead of that route (`getItem`), where a member of the route is found by the
+ * route itself; the pattern alone cannot tell the two apart. Read only for a pathname that escapes
+ * a delimiter, where the readings differ (`pageKeyOf`): a page no dynamic route's pattern matches
+ * is one of its own without being listed.
+ *
+ * Present, empty or not, on every manifest of a build whose routing the edge reproduces. A manifest
+ * from before it was published has none, and its reader finds a page as spelled and then decoded
+ * whole, as that build's Functions do — so no schema version turns on it.
+ */
+const filesystemPagesSchema = z.record(z.string().startsWith('/'), z.literal(true));
+/**
  * A `next.config` header rule, as Next.js compiled it: judged on each request, in the order the
  * rules were declared, for a shell and for a shipped file alike. An unconditional rule is folded
  * into each route's headers at deployment as well, which is what an app the edge does not
@@ -467,6 +480,7 @@ export const projectManifestSchema = z.object({
   reservedRoutes: z.array(reservedRouteSchema).optional(),
   exactPathnames: exactPathnamesSchema.optional(),
   exactFunctions: exactFunctionsSchema.optional(),
+  filesystemPages: filesystemPagesSchema.optional(),
   headerRules: z.array(headerRuleSchema).optional(),
   /**
    * How the deployment's Functions fill a header's `$` references (`routerReferencesSchema`): the

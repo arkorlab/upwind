@@ -8,7 +8,8 @@ import {
 import { conditionsHold } from '../request/conditions.ts';
 import { execWithin, testWithin } from '../request/pattern-budget.ts';
 import { requiresLiteral } from '../request/required-literal.ts';
-import { findRouteEntry, keyOf, namesNoFile, withoutAssetPrefix } from './manifest.ts';
+import { findRouteEntry, namesNoFile, withoutAssetPrefix } from './manifest.ts';
+import { pageKeyOf } from './page-keys.ts';
 import type {
   DynamicRoute,
   MemberRoute,
@@ -388,16 +389,16 @@ export function isReserved(
 }
 
 /**
- * Whether a pathname Next.js resolves exactly, with no shell, is what was asked for: as spelled or
- * decoded, as a route is looked up (`keyOf`). Read as spelled alone, an escaped request for such a
- * page passed this guard to a dynamic class that matched the escapes, and the class's shell was
- * served where Next.js serves the page.
+ * Whether a pathname Next.js resolves exactly, with no shell, is what was asked for, found as a
+ * route is (`pageKeyOf`). Read as spelled alone, an escaped request for such a page passed this
+ * guard to a dynamic class that matched the escapes, and the class's shell was served where
+ * Next.js serves the page.
  */
 export function isExactPathname(manifest: ProjectManifest, pathname: string): boolean {
   if (manifest.exactPathnames === undefined) {
     return false;
   }
-  return keyOf(manifest.exactPathnames, pathname) !== undefined;
+  return pageKeyOf(manifest.exactPathnames, pathname, manifest) !== undefined;
 }
 
 /** What `next.config` sets on one request, and whether the request itself chose any of it. */
