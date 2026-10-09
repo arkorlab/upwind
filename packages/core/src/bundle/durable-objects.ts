@@ -35,6 +35,8 @@ export const durableObjectDeclarationSchema = z.strictObject({
     .max(MAX_EXPORT_LENGTH)
     .regex(/^[A-Za-z_$][\w$]*$/u, 'a named class export')
     .refine((value) => value !== 'default', 'a named export rather than the default export'),
+  /** Opaque host metadata, copied unchanged into the bundle; it does not select namespace identity. */
+  definitionRevision: z.number().int().positive().optional(),
 });
 export type DurableObjectDeclaration = z.infer<typeof durableObjectDeclarationSchema>;
 

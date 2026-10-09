@@ -19,7 +19,11 @@ import { bundleDurableObjects, durableObjectParts } from '../../adapter/src/dura
 import namespace from '../../sdk/src/durable-object.ts';
 import { durableObject, kv } from '../../sdk/src/named.ts';
 import { startLocalResources } from '../src/resources/local.ts';
-import { checkBuildResolution, checkPrefixOnlyImports } from './check-durable-object-builds.ts';
+import {
+  checkBuildResolution,
+  checkDefinitionRevision,
+  checkPrefixOnlyImports,
+} from './check-durable-object-builds.ts';
 import {
   checkConfigEdit,
   checkDefaultNameCollisions,
@@ -78,6 +82,7 @@ async function checkBuildMetadata(): Promise<void> {
   const split = await durableObjectParts({ ...input, split: true });
   assert.equal(split.bundle.v, DURABLE_OBJECT_SPLIT_BUNDLE_VERSION);
   assert.deepEqual(split.sourceMaps, []);
+  await checkDefinitionRevision(project, declaration);
   const commonjs = await durableObjectParts({
     ...input,
     declarations: [{ ...declaration, module: COMMONJS_MODULE }],
@@ -424,6 +429,7 @@ const sideCheck = new Map([
   ['config-missing', () => checkConfigEdit(project, declaration, true)],
   ['dependency', checkDependencyEdit],
   ['entry', () => checkMissingPackageEntry(project, declaration, COUNTER_FIXTURE)],
+  ['metadata', () => checkDefinitionRevision(project, declaration)],
   ['missing', () => checkMissingDependency(project, declaration, COUNTER_FIXTURE)],
   [
     'missing-dotted',

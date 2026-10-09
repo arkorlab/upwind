@@ -2,14 +2,50 @@ import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { DurableObjectDeclaration } from '@stayingupwind/core/bundle';
+import {
+  type DurableObjectDeclaration,
+  durableObjectDeclarationsSchema,
+} from '@stayingupwind/core/bundle';
+import { UPWIND_DURABLE_OBJECTS_ENV } from '@stayingupwind/core/paas';
 
-import { bundleDurableObjects } from '../../adapter/src/durable-objects.ts';
+import { BlobStore } from '../../adapter/src/blobs.ts';
+import { bundleDurableObjects, durableObjectParts } from '../../adapter/src/durable-objects.ts';
 
 const PACKAGE_MANIFEST = 'package.json';
 const CONDITIONAL_WORKER = 'worker.js';
 const CONDITIONAL_NODE = 'node.js';
 const UNEXPECTED_NODE_MARKER = 'node-branch-must-not-run';
+const NON_INTEGER_REVISION = 1.5;
+
+export async function checkDefinitionRevision(
+  project: string,
+  declaration: DurableObjectDeclaration,
+): Promise<void> {
+  const outDir = path.join(project, '.arkor');
+  const blobs = new BlobStore(outDir);
+  await blobs.init();
+  const revised = { ...declaration, definitionRevision: 17 };
+  const input = { projectDir: project, outDir, blobs };
+  for (const split of [false, true]) {
+    const baseline = await durableObjectParts({ ...input, split, declarations: [declaration] });
+    const parts = await durableObjectParts({ ...input, split, declarations: [revised] });
+    assert.deepEqual(parts.bundle.durableObjects, [revised]);
+    assert.deepEqual(parts.functions, baseline.functions);
+  }
+  for (const definitionRevision of [-1, 0, NON_INTEGER_REVISION, Number.MAX_SAFE_INTEGER + 1, '17'])
+    assert.ok(
+      !durableObjectDeclarationsSchema.safeParse([{ ...declaration, definitionRevision }]).success,
+    );
+  const previous = process.env[UPWIND_DURABLE_OBJECTS_ENV];
+  try {
+    process.env[UPWIND_DURABLE_OBJECTS_ENV] = JSON.stringify([revised]);
+    const fromHost = await durableObjectParts({ ...input, split: false, declarations: undefined });
+    assert.deepEqual(fromHost.bundle.durableObjects, [revised]);
+  } finally {
+    if (previous === undefined) Reflect.deleteProperty(process.env, UPWIND_DURABLE_OBJECTS_ENV);
+    else process.env[UPWIND_DURABLE_OBJECTS_ENV] = previous;
+  }
+}
 
 export async function checkBuildResolution(
   project: string,

@@ -407,6 +407,8 @@ export default async function Page() {
 `UPWIND_DURABLE_OBJECTS` の JSON として渡してください。SQLite のデータは `.upwind/` に保存され、
 ソース変更による開発サーバーの再起動後も残ります。起動時にはオブジェクトを生成しません。
 クラスとリクエストハンドラーの例は [SDK のガイド](packages/sdk/README.md#durable-objects) にあります。
+ホストが `definitionRevision` を付けた場合は、その正の安全な整数も登録情報に含めてください。
+アダプターは公開前の照合用に値をそのまま返し、クラスのコードや名前空間の識別情報には使いません。
 
 ## ⏰ 定期実行
 

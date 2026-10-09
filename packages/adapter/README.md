@@ -501,6 +501,9 @@ Pass `durableObjects: [{ name, module, className }]` to `createAdapter`. The hos
 read directly; no project configuration key duplicates it. `module` is relative to `projectDir`,
 resolves to a file inside that directory even through symlinks, and must export `className`.
 Malformed declarations, duplicate names, missing modules and missing exports fail the build.
+An optional positive safe integer `definitionRevision` carries the host's sealed definition revision
+unchanged into the bundle. It is opaque metadata: changing it does not change class code or namespace
+identity. The host can compare it before publishing to reject a bundle built from a different revision.
 
 Each registration becomes a dedicated `functions.durableObjects[name]` FunctionSpec; the registration
 array is carried as top-level `durableObjects`. Its source class is re-exported as `UpwindDurableObject`,

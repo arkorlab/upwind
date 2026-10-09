@@ -406,6 +406,8 @@ Functions. For local `upwind dev` and `upwind build`, provide the host's exporte
 `{ name, module, className }` registrations as `UPWIND_DURABLE_OBJECTS` JSON. SQLite data persists in
 `.upwind/`; source edits restart the dev server without deleting it. No object is constructed at startup.
 See the [SDK guide](packages/sdk/README.md#durable-objects) for class and request-handler examples.
+If the host supplies `definitionRevision`, keep that positive safe integer in each registration.
+The adapter returns it unchanged for publication checks without changing the class or namespace.
 
 ## ⏰ Scheduled work
 

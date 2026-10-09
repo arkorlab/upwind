@@ -228,6 +228,8 @@ Use the registrations exported by your host as `UPWIND_DURABLE_OBJECTS`, a JSON 
 `{ name, module, className }`. Modules are relative to the Next.js project directory. Both
 `upwind dev` and `upwind build` use it; the corresponding adapter and SDK packages must support
 Durable Objects.
+Registrations may include the host's positive safe integer `definitionRevision`; local builds carry
+it unchanged into deployment metadata so the host can validate the definition used for the build.
 
 Each class runs in its own local Worker and gets a SQLite namespace persisted in `.upwind/`.
 The namespace is published under its registered name, so `durableObject('COUNTERS')` and the
