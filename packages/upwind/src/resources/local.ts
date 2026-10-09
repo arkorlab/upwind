@@ -20,6 +20,7 @@ import type { Miniflare, MiniflareOptions } from 'miniflare';
 
 import { resolveFromProject } from '../dev/next-app.ts';
 import { guardListeners } from './listeners.ts';
+import { localBindings, type LocalStorageEntry } from './local-bindings.ts';
 import { publishResources } from './publish.ts';
 import { sourceChanges, watchDependencies, watchFile, watchManifests } from './watch-sources.ts';
 
@@ -145,30 +146,6 @@ const STOP_MS = 1500;
 const ENTRY_MODULE = 'upwind-local.mjs';
 const ENTRY_SOURCE = 'export default {};';
 
-/**
- * The storage a project gets without asking for any.
- *
- * The names are what a developer reads in an error message and sees in `.upwind/`, so they say
- * where they came from. Nothing matches on them: `@stayingupwind/sdk` finds a database by there
- * being one of it rather than by its name, so a project that later declares storage of its own,
- * under its own names, is read exactly the same way.
- */
-const DEFAULTS: readonly ResourceManifestEntry[] = [
-  { name: 'UPWIND_D1', type: 'd1' },
-  { name: 'UPWIND_KV', type: 'kv_namespace' },
-  { name: 'UPWIND_R2', type: 'r2_bucket' },
-];
-
-/**
- * A second database, for trying the rule that decides a bare `db`.
- *
- * The one thing in here that exists for the trial rather than for a project: with two databases
- * published there is nothing for `db` to choose between, and what it says then is the behaviour
- * that cannot be seen with the defaults alone. It goes when the question it answers is settled.
- */
-const TRIAL_TWO_D1_ENV = 'UPWIND_TRIAL_TWO_D1';
-const TRIAL_SECOND_D1: ResourceManifestEntry = { name: 'UPWIND_D1_2', type: 'd1' };
-
 /** What the local runtime calls each kind of storage the contract names. */
 const DURABLE_OBJECT_TYPE = 'durable_object_namespace';
 const DURABLE_OBJECT_KIND = 'durable-object';
@@ -205,10 +182,6 @@ const NOTHING_STARTED: LocalResources = {
     // Nothing was started, so there is nothing to stop.
   },
 };
-
-function bindings(): readonly ResourceManifestEntry[] {
-  return process.env[TRIAL_TWO_D1_ENV] === '1' ? [...DEFAULTS, TRIAL_SECOND_D1] : DEFAULTS;
-}
 
 function noSourceChanges(): boolean {
   return false;
@@ -295,11 +268,7 @@ async function localObjects(
   mode: 'development' | 'production',
 ): Promise<readonly LocalDurableObject[]> {
   try {
-    const objects = await durableObjectsOf(projectDir, watchedFiles, versions, mode);
-    const defaults = new Set(bindings().map((entry) => entry.name));
-    if (objects.some((object) => defaults.has(object.declaration.name)))
-      throw new Error('a Durable Object name conflicts with local default storage');
-    return objects;
+    return await durableObjectsOf(projectDir, watchedFiles, versions, mode);
   } catch (error) {
     watchBuildErrors(projectDir, error, watchedFiles);
     for (const file of watchedFiles) watchFile(file, watchedFiles, versions);
@@ -322,7 +291,7 @@ type LocalBinding =
 
 function runtimeOptions(
   projectDir: string,
-  entries: readonly ResourceManifestEntry[],
+  entries: readonly LocalStorageEntry[],
   objects: readonly LocalDurableObject[],
 ): MiniflareOptions {
   const env = Object.fromEntries<LocalBinding>(
@@ -336,7 +305,7 @@ function runtimeOptions(
             exportName: DURABLE_OBJECT_EXPORT,
           },
         ];
-      const id = `${entry.name}-${WORKER_NAME}`;
+      const id = `${entry.storageName ?? entry.name}-${WORKER_NAME}`;
       return [
         entry.name,
         entry.type === 'r2_bucket'
@@ -606,18 +575,14 @@ async function stopRuntime(runtime: Miniflare, startupError?: unknown): Promise<
   } catch (error) {
     // Miniflare finishes cleanup before rethrowing the same initial readiness failure. Other
     // cleanup errors and the deadline still leave shutdown unconfirmed.
-    if (
+    // The answer is for the claim: every other failure keeps a possibly live runtime's claim.
+    return (
       startupError !== undefined &&
       error === startupError &&
       error instanceof Error &&
       'code' in error &&
       error.code === 'ERR_RUNTIME_FAILURE'
-    )
-      return true;
-    // Nothing more can be done about it here, and nothing is waiting to be told: a run that is
-    // shutting down has nowhere to put this, and one that failed to start has already said so. What
-    // the answer is for is the claim, which must not go back while a runtime may still be up.
-    return false;
+    );
   }
 }
 
@@ -673,7 +638,7 @@ interface Attempt {
 
 function startAndPublish(
   projectDir: string,
-  entries: readonly ResourceManifestEntry[],
+  entries: readonly LocalStorageEntry[],
   objects: readonly LocalDurableObject[],
 ): Attempt {
   const arrived: PromiseWithResolvers<Miniflare | undefined> = Promise.withResolvers();
@@ -743,7 +708,7 @@ export async function startLocalResources(
     );
     sourcesChanged = sourceChanges(versions);
     const entries = [
-      ...bindings(),
+      ...localBindings(objects.map((object) => object.declaration.name)),
       ...objects.map((object): ResourceManifestEntry => {
         return {
           name: object.declaration.name,
@@ -765,7 +730,7 @@ export async function startLocalResources(
       console.warn(
         `upwind: could not start local Durable Objects; retrying default storage:\n${reason}`,
       );
-      attempt = startAndPublish(projectDir, bindings(), []);
+      attempt = startAndPublish(projectDir, localBindings(), []);
       return attempt.done;
     });
     const runtime = await Promise.race([

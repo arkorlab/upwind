@@ -3,6 +3,8 @@ import path from 'node:path';
 
 import type { Plugin } from 'esbuild';
 
+import { watchSourceConfigs } from './source-config-watch.ts';
+
 const RESOLVE_EXTENSIONS = ['.tsx', '.ts', '.jsx', '.js', '.css', '.json'];
 const MAIN_FIELDS = ['browser', 'module', 'main'];
 const PACKAGE_MANIFEST = 'package.json';
@@ -50,8 +52,10 @@ export function watchBuildSources(beforeRead: (file: string) => void): Plugin {
   return {
     name: 'upwind-source-watch',
     setup(builder) {
+      const watchConfigs = watchSourceConfigs(beforeRead);
       // eslint-disable-next-line require-unicode-regexp -- esbuild filters are Go regular expressions.
       builder.onResolve({ filter: /.*/, namespace: 'file' }, (args): undefined => {
+        watchConfigs(args.resolveDir);
         const specifier = args.path.replace(/\?module$/u, '');
         if (
           specifier !== '.' &&
@@ -71,6 +75,7 @@ export function watchBuildSources(beforeRead: (file: string) => void): Plugin {
       });
       // eslint-disable-next-line require-unicode-regexp -- esbuild filters are Go regular expressions.
       builder.onLoad({ filter: /.*/, namespace: 'file' }, (args): undefined => {
+        watchConfigs(path.dirname(args.path));
         beforeRead(args.path);
       });
     },

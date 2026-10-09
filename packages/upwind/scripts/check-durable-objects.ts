@@ -21,6 +21,8 @@ import { durableObject, kv } from '../../sdk/src/named.ts';
 import { startLocalResources } from '../src/resources/local.ts';
 import { checkBuildResolution, checkPrefixOnlyImports } from './check-durable-object-builds.ts';
 import {
+  checkConfigEdit,
+  checkDefaultNameCollisions,
   checkMissingDependency,
   checkMissingPackageEntry,
   checkRuntimeFailure,
@@ -359,7 +361,17 @@ async function checkProject(): Promise<void> {
       await promisify(execFile)(process.execPath, [import.meta.filename, project, 'dependency'], {
         timeout: 30_000,
       });
-      for (const check of ['missing', 'entry', 'startup', 'production', 'wasm']) {
+      const runtimeChecks = [
+        'missing',
+        'entry',
+        'startup',
+        'collision',
+        'config',
+        'config-missing',
+        'production',
+        'wasm',
+      ];
+      for (const check of runtimeChecks) {
         await promisify(execFile)(process.execPath, [import.meta.filename, project, check], {
           timeout: 30_000,
         });
@@ -394,14 +406,17 @@ async function checkProject(): Promise<void> {
 
 const sideCheck = new Map([
   ['broken', checkBrokenSource],
+  ['collision', () => checkDefaultNameCollisions(project, declaration)],
   ['commonjs', checkCommonJSBinding],
+  ['config', () => checkConfigEdit(project, declaration, false)],
+  ['config-missing', () => checkConfigEdit(project, declaration, true)],
   ['dependency', checkDependencyEdit],
-  ['missing', () => checkMissingDependency(project, declaration, COUNTER_FIXTURE)],
   ['entry', () => checkMissingPackageEntry(project, declaration, COUNTER_FIXTURE)],
-  ['startup', () => checkRuntimeFailure(project, declaration, COUNTER_FIXTURE)],
+  ['missing', () => checkMissingDependency(project, declaration, COUNTER_FIXTURE)],
   ['production', () => checkCommonJSBinding('production')],
   ['prototype', checkPrototypeBinding],
   ['race', checkStartupEdit],
+  ['startup', () => checkRuntimeFailure(project, declaration, COUNTER_FIXTURE)],
   [
     'wasm',
     () => {

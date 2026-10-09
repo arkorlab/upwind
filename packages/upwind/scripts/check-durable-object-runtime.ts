@@ -7,11 +7,15 @@ import { UPWIND_DURABLE_OBJECTS_ENV } from '@stayingupwind/core/paas';
 
 import { BlobStore } from '../../adapter/src/blobs.ts';
 import { durableObjectParts } from '../../adapter/src/durable-objects.ts';
+import bucket from '../../sdk/src/blob.ts';
+import database from '../../sdk/src/db.ts';
+import store from '../../sdk/src/kv.ts';
 import { blob, d1, durableObject, kv } from '../../sdk/src/named.ts';
 import { startLocalResources } from '../src/resources/local.ts';
 
 const WASM_SOURCE = 'wasm-counter.ts';
 const WASM_FILE = 'add.wasm';
+const RECOVERY_KEY = 'startup-recovery';
 
 export async function checkMissingDependency(
   project: string,
@@ -86,13 +90,77 @@ export async function checkRuntimeFailure(
     assert.ok(namespace);
     assert.ok(bucket);
     assert.equal(await database.prepare('SELECT 1 AS value').first<number>('value'), 1);
-    await namespace.put('startup-recovery', 'available');
-    assert.equal(await namespace.get('startup-recovery'), 'available');
-    await bucket.put('startup-recovery', 'available');
-    assert.equal(await (await bucket.get('startup-recovery'))?.text(), 'available');
+    await namespace.put(RECOVERY_KEY, 'available');
+    assert.equal(await namespace.get(RECOVERY_KEY), 'available');
+    await bucket.put(RECOVERY_KEY, 'available');
+    assert.equal(await (await bucket.get(RECOVERY_KEY))?.text(), 'available');
     assert.ok(resources.watchedFiles?.includes(file) === true);
     assert.equal(resources.sourcesChanged?.(), false);
     await writeFile(file, await readFile(counterFixture));
+    assert.equal(resources.sourcesChanged(), true);
+  } finally {
+    await resources.dispose();
+  }
+}
+
+export async function checkDefaultNameCollisions(
+  project: string,
+  declaration: DurableObjectDeclaration,
+): Promise<void> {
+  const source = 'default-name-counter.ts';
+  const names = ['UPWIND_D1', 'UPWIND_KV', 'UPWIND_R2', 'COUNTERS', '__upwind_default_UPWIND_KV'];
+  await writeFile(
+    path.join(project, source),
+    'import { DurableObject } from "cloudflare:workers"; export class Counter extends DurableObject { fetch() { return new Response("customer-object"); } }',
+  );
+  process.env[UPWIND_DURABLE_OBJECTS_ENV] = JSON.stringify(
+    names.map((name) => ({ ...declaration, name, module: source })),
+  );
+  const resources = await startLocalResources(project, { answersSignals: true });
+  try {
+    // Default storage keeps both SDK discovery and the data written before the name collision.
+    assert.equal(await database.prepare('SELECT 1 AS value').first<number>('value'), 1);
+    assert.equal(await store.get('constructed'), 'yes');
+    await bucket.put('name-collision', 'available');
+    assert.equal(await (await bucket.get('name-collision'))?.text(), 'available');
+    for (const name of names) {
+      const namespace = durableObject(name);
+      assert.ok(namespace);
+      assert.equal(
+        await (await namespace.getByName('collision').fetch('https://collision.invalid/')).text(),
+        'customer-object',
+      );
+    }
+  } finally {
+    await resources.dispose();
+  }
+}
+
+export async function checkConfigEdit(
+  project: string,
+  declaration: DurableObjectDeclaration,
+  missing: boolean,
+): Promise<void> {
+  const source = 'alias-counter.ts';
+  const config = path.join(project, 'tsconfig.json');
+  const inherited = path.join(project, 'config', 'aliases.json');
+  const original = '{"compilerOptions":{"baseUrl":"..","paths":{"counter-alias":["counter.ts"]}}}';
+  const unresolved = original.replace('counter.ts', 'missing-alias.ts');
+  await mkdir(path.dirname(inherited), { recursive: true });
+  await writeFile(
+    inherited,
+    `// inherited alias configuration\n${missing ? unresolved : original}`,
+  );
+  await writeFile(config, '{"extends":"./config/aliases.json"}');
+  await writeFile(path.join(project, source), 'export { Counter } from "counter-alias";');
+  process.env[UPWIND_DURABLE_OBJECTS_ENV] = JSON.stringify([{ ...declaration, module: source }]);
+  const resources = await startLocalResources(project, { answersSignals: true });
+  try {
+    assert.equal(durableObject('COUNTERS') !== undefined, !missing);
+    assert.ok(resources.watchedFiles?.includes(config) === true);
+    assert.ok(resources.watchedFiles.includes(inherited));
+    assert.equal(resources.sourcesChanged?.(), false);
+    await writeFile(inherited, missing ? original : unresolved);
     assert.equal(resources.sourcesChanged(), true);
   } finally {
     await resources.dispose();
@@ -120,17 +188,13 @@ export async function checkWasmBinding(
     declarations,
     split: false,
   });
-  assert.equal(
-    parts.functions.durableObjects?.['COUNTERS']?.modules.filter((module) => module.type === 'wasm')
-      .length,
-    1,
-  );
+  const objectFunction = parts.functions.durableObjects?.['COUNTERS'];
+  assert.ok(objectFunction);
+  assert.equal(objectFunction.modules.filter((module) => module.type === 'wasm').length, 1);
   const dependencies = parts.dependencies['durable-object/COUNTERS'];
   assert.ok(dependencies?.other.some((entry) => entry.file === WASM_FILE) === true);
   assert.deepEqual(dependencies.wasmModules, []);
-  const wasmModule = parts.functions.durableObjects?.['COUNTERS']?.modules.find(
-    (module) => module.type === 'wasm',
-  );
+  const wasmModule = objectFunction.modules.find((module) => module.type === 'wasm');
   assert.ok(wasmModule);
   assert.deepEqual(dependencies.compiledWasmModules, [
     { file: WASM_FILE, module: wasmModule.name },

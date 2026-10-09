@@ -122,7 +122,7 @@ export async function checkPrefixOnlyImports(
   project: string,
   declaration: DurableObjectDeclaration,
 ): Promise<void> {
-  const names = ['sqlite', 'test', 'sea'];
+  const names = ['sqlite', 'test', 'sea', 'string_decoder', 'buffer'];
   for (const name of names) {
     const directory = path.join(project, 'node_modules', name);
     await mkdir(directory, { recursive: true });
@@ -132,13 +132,16 @@ export async function checkPrefixOnlyImports(
   const source = 'prefix-only-counter.ts';
   await writeFile(
     path.join(project, source),
-    'export class Counter { packages() { return [require("sqlite"), require("test"), require("sea")]; } }',
+    'import { StringDecoder } from "string_decoder"; import { Buffer } from "buffer"; export class Counter { packages() { return [require("sqlite"), require("test"), require("sea"), require("string_decoder/"), require("buffer/"), typeof StringDecoder, Buffer.byteLength("native")]; } }',
   );
   const [object] = await bundleDurableObjects(project, [{ ...declaration, module: source }]);
   assert.ok(object);
   for (const name of names) {
     assert.ok(object.inputs.includes(path.join(project, 'node_modules', name, 'index.cjs')));
     assert.ok(object.source.includes(`package-${name}`));
-    assert.ok(!object.trace.externals.includes(`node:${name}`));
+    if (name !== 'string_decoder' && name !== 'buffer')
+      assert.ok(!object.trace.externals.includes(`node:${name}`));
   }
+  assert.ok(object.trace.externals.includes('node:string_decoder'));
+  assert.ok(object.trace.externals.includes('node:buffer'));
 }

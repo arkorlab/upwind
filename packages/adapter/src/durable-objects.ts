@@ -1,5 +1,4 @@
 import { realpath, stat } from 'node:fs/promises';
-import { builtinModules } from 'node:module';
 import path from 'node:path';
 
 import {
@@ -127,7 +126,7 @@ export async function bundleDurableObjects(
           'global.process.env.NODE_ENV': nodeEnv,
           'globalThis.process.env.NODE_ENV': nodeEnv,
         },
-        external: ['cloudflare:*', 'node:*', ...builtinModules],
+        external: ['cloudflare:*'],
         plugins: [
           ...(options.onSourceFile === undefined ? [] : [watchBuildSources(options.onSourceFile)]),
           nodeBuiltinRequires(),
@@ -158,10 +157,12 @@ export async function bundleDurableObjects(
         .filter((input) => realInput(input, declaration))
         .map((input) => path.resolve(projectDir, input));
       inputs.push(...wasm.inputs.keys());
-      const wasmModules = wasm.collector.modules.map((entry) => ({
-        name: wasmModuleName(entry.sha256),
-        bytes: entry.bytes,
-      }));
+      const wasmModules = wasm.collector.modules.map((entry) => {
+        return {
+          name: wasmModuleName(entry.sha256),
+          bytes: entry.bytes,
+        };
+      });
       const internalImports = new Set(wasmModules.map((entry) => `./${entry.name}`));
       const map = result.outputFiles.find((file) => file.path.endsWith('.map'));
       return {
@@ -185,10 +186,12 @@ export async function bundleDurableObjects(
           patches: [],
           stubs: [],
           wasmModules: [],
-          compiledWasmModules: [...wasm.inputs].map(([file, input]) => ({
-            file,
-            module: input.module,
-          })),
+          compiledWasmModules: [...wasm.inputs].map(([file, input]) => {
+            return {
+              file,
+              module: input.module,
+            };
+          }),
           dynamicLoads: dynamicLoadsOf(
             path.join(projectDir, 'durable-object', declaration.name, OBJECT_MODULE),
             output.text,

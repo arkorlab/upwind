@@ -240,3 +240,6 @@ new exported array. Deleting `.upwind/` also deletes the local objects' data.
 
 If class bundling or native Worker startup fails, the CLI reports the error and keeps default D1,
 KV and R2 storage available. The class sources stay watched so editing them restarts development.
+The watch also covers TypeScript configuration and inherited configs used for aliases. If a
+registration uses a default storage name, the default gets a unique local alias while its persisted
+data and the SDK's default accessor stay available; the object's registered name is preserved.

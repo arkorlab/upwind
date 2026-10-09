@@ -38,15 +38,19 @@ export function objectWasm(beforeRead?: (file: string) => void): {
         return { path: `./${module}`, namespace: OBJECT_WASM_NAMESPACE };
       });
       // eslint-disable-next-line require-unicode-regexp -- esbuild filters are Go regular expressions.
-      builder.onResolve({ filter: /.*/, namespace: OBJECT_WASM_NAMESPACE }, (args) => ({
-        path: args.path,
-        external: true,
-      }));
+      builder.onResolve({ filter: /.*/, namespace: OBJECT_WASM_NAMESPACE }, (args) => {
+        return {
+          path: args.path,
+          external: true,
+        };
+      });
       // eslint-disable-next-line require-unicode-regexp -- esbuild filters are Go regular expressions.
-      builder.onLoad({ filter: /.*/, namespace: OBJECT_WASM_NAMESPACE }, (args) => ({
-        contents: `export { default } from ${jsLiteral(args.path)};`,
-        loader: 'js',
-      }));
+      builder.onLoad({ filter: /.*/, namespace: OBJECT_WASM_NAMESPACE }, (args) => {
+        return {
+          contents: `export { default } from ${jsLiteral(args.path)};`,
+          loader: 'js',
+        };
+      });
     },
   };
   return { collector, inputs, plugin };
