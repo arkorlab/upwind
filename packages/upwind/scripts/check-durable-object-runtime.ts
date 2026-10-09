@@ -74,15 +74,24 @@ export async function checkMissingAlias(
   project: string,
   declaration: DurableObjectDeclaration,
   counterFixture: string,
+  literal = false,
 ): Promise<void> {
   const source = 'missing-alias-counter.ts';
-  const generated = path.join(project, 'alias-generated', 'missing.ts');
+  const generated = path.join(project, 'alias-generated', literal ? '*.ts' : 'missing$&.ts');
   await mkdir(path.dirname(generated), { recursive: true });
   await writeFile(path.join(project, TS_CONFIG), '{"extends":"./alias-config/tsconfig.json"}');
   const inherited = path.join(project, 'alias-config', TS_CONFIG);
   await mkdir(path.dirname(inherited), { recursive: true });
-  await writeFile(inherited, '{"compilerOptions":{"paths":{"@/*":["../alias-generated/*"]}}}');
-  await writeFile(path.join(project, source), 'export { Counter } from "@/missing";');
+  await writeFile(
+    inherited,
+    JSON.stringify({
+      compilerOptions: { paths: { [literal ? '@exact' : '@/*']: ['../alias-generated/*'] } },
+    }),
+  );
+  await writeFile(
+    path.join(project, source),
+    literal ? 'export { Counter } from "@exact";' : 'export { Counter } from "@/missing$&";',
+  );
   process.env[UPWIND_DURABLE_OBJECTS_ENV] = JSON.stringify([{ ...declaration, module: source }]);
   const resources = await startLocalResources(project, { answersSignals: true });
   try {

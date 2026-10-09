@@ -364,6 +364,7 @@ async function checkProject(): Promise<void> {
       });
       const runtimeChecks = [
         'alias',
+        'alias-literal',
         'missing',
         'entry',
         'startup',
@@ -408,6 +409,7 @@ async function checkProject(): Promise<void> {
 
 const sideCheck = new Map([
   ['alias', () => checkMissingAlias(project, declaration, COUNTER_FIXTURE)],
+  ['alias-literal', () => checkMissingAlias(project, declaration, COUNTER_FIXTURE, true)],
   ['broken', checkBrokenSource],
   ['collision', () => checkDefaultNameCollisions(project, declaration)],
   ['commonjs', checkCommonJSBinding],

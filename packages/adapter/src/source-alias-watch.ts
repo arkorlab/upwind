@@ -19,13 +19,18 @@ function aliasMatch(alias: string, specifier: string): string | undefined {
   return specifier.slice(prefix.length, specifier.length - suffix.length);
 }
 
+function aliasTarget(target: string, match: string, wildcard: boolean): string {
+  const star = wildcard ? target.indexOf('*') : -1;
+  return star === -1 ? target : `${target.slice(0, star)}${match}${target.slice(star + 1)}`;
+}
+
 function aliasTargets(paths: Readonly<Record<string, unknown>>, specifier: string): string[] {
   const matched: string[] = [];
   for (const [alias, targets] of Object.entries(paths)) {
     const match = aliasMatch(alias, specifier);
     if (match === undefined || !Array.isArray(targets)) continue;
     for (const target of targets as unknown[])
-      if (typeof target === 'string') matched.push(target.replaceAll('*', () => match));
+      if (typeof target === 'string') matched.push(aliasTarget(target, match, alias.includes('*')));
   }
   return matched;
 }
