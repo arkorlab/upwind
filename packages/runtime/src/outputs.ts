@@ -3,6 +3,7 @@ import {
   pagesDataPathnameUnder,
   type Prerender,
   queryDependent,
+  underBasePath,
 } from '@stayingupwind/core/bundle';
 import { MIDDLEWARE_PREFETCH_HEADER } from '@stayingupwind/core/request';
 
@@ -55,6 +56,23 @@ function prefetchSkipped(page: string): Response {
       'cache-control': NEVER_STORED,
     },
   });
+}
+
+/**
+ * The page a data route answers for, as Next.js names it to the client's router in
+ * `x-nextjs-matched-path` (`route-modules/route-module.ts`, `server/base-server.ts`): the page the
+ * build defines — `/[...path]` for a member of a dynamic route, not the member — under the locale its
+ * route is under, and without the base path. The client reads a member's name back through the base
+ * path twice (`getNextPathnameInfo`, then `removeBasePath`, which takes the base path's length off
+ * unasked): under `/docs`, the member `/docs/first` came back as `/t`, and the catch-all's query as
+ * `["t"]`. A page it is given as a pattern, it resolves from the URL it asked for instead.
+ */
+function matchedPathOf(store: Store, route: string): string {
+  const { buildId, config } = store.manifest;
+  return underBasePath(
+    config.basePath,
+    pageOfDataPathname(buildId, config.basePath, route) ?? route,
+  );
 }
 
 export interface Resolved {
@@ -124,7 +142,7 @@ export async function servePagesData(
       return notFoundData();
     }
     return input.request.headers.has(MIDDLEWARE_PREFETCH_HEADER)
-      ? prefetchSkipped(target.page)
+      ? prefetchSkipped(matchedPathOf(store, resolved.route))
       : invokeEntry(input, own, target.url);
   }
   // A prerendered page's props, an SSG fallback's included, come from its current generation or the
