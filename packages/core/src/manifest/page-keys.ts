@@ -40,36 +40,47 @@ function mayBeMember(
 }
 
 /**
- * The key `record` holds a pathname under, as Next.js finds the page it asks for: as the request
- * spelled it; then decoded whole, where that is a page of its own — no dynamic route's pattern
- * matches it, so it is no member of one — which Next.js's filesystem check finds ahead of any
- * dynamic route (`getItem`, `server/lib/router-utils/filesystem.ts`); and then by its built name
- * (`builtNameOf`), as a dynamic route reads a member's value, an escaped slash inside its segment.
- * `/docs/a%2fb` is the member `/docs/a%2Fb` (the value `a/b`), and `/docs/c%2Fd` no member of a
- * route at `/docs/c/d`; decoded whole, an escaped slash was a separator, and the request was
- * answered as another page. The readings differ only where a delimiter is escaped, and a pathname
- * with nothing to decode costs the one lookup it always did.
+ * The key `record` holds a pathname under, as Next.js finds the page it asks for. Where no
+ * delimiter is escaped, the path is read as spelled and then decoded, as it always was. Where one
+ * is, the readings differ, and the order is Next.js's: its filesystem check finds a page of its
+ * own — one no dynamic route's pattern matches, and so no member of one — as spelled and then
+ * decoded whole, ahead of any dynamic route (`getItem`, `server/lib/router-utils/filesystem.ts`);
+ * a dynamic route then finds a member as spelled, or by its built name (`builtNameOf`), reading an
+ * escaped slash as part of the value it is in. `/docs/a%2fb` is the member `/docs/a%2Fb` (the value
+ * `a/b`), `/docs/c%2Fd` no member of a route at `/docs/c/d`, and `/docs/a%2Fb` the page `/docs/a/b`
+ * where that is a page of its own. Decoded whole for a member, an escaped slash was a separator,
+ * and the request was answered as another page. Only a pathname with an escaped delimiter asks
+ * the dynamic routes' patterns anything.
  */
 export function pageKeyOf(
   record: Readonly<Record<string, unknown>>,
   pathname: string,
   dynamicRoutes: readonly DynamicRoute[] | undefined,
 ): string | undefined {
-  if (Object.hasOwn(record, pathname)) {
-    return pathname;
-  }
   if (!pathname.includes('%')) {
-    return undefined;
+    return Object.hasOwn(record, pathname) ? pathname : undefined;
   }
   const built = builtNameOf(pathname);
   const decoded = decodedWhole(pathname);
-  if (
-    decoded !== undefined &&
-    decoded !== built &&
-    Object.hasOwn(record, decoded) &&
-    !mayBeMember(dynamicRoutes, decoded)
-  ) {
-    return decoded;
+  if (decoded !== built) {
+    const own = [pathname, decoded].find(
+      (key) => key !== undefined && Object.hasOwn(record, key) && !mayBeMember(dynamicRoutes, key),
+    );
+    if (own !== undefined) {
+      return own;
+    }
+  }
+  return memberKey(record, pathname, built);
+}
+
+/** The key of a member, or of a page where the readings agree: as spelled, or by its built name. */
+function memberKey(
+  record: Readonly<Record<string, unknown>>,
+  pathname: string,
+  built: string | undefined,
+): string | undefined {
+  if (Object.hasOwn(record, pathname)) {
+    return pathname;
   }
   return built !== undefined && Object.hasOwn(record, built) ? built : undefined;
 }

@@ -36,15 +36,34 @@ function ownPages(store: Store): ReadonlySet<string> {
 }
 
 /**
- * Whether Next.js's filesystem check finds a name a path decodes to whole, which it asks ahead of
- * any dynamic route (`getItem`, `server/lib/router-utils/filesystem.ts`): a page of its own — an
- * entrypoint that is no template, under either spelling of the slash — or a file that is no
- * prerender. A member of a dynamic route is found by its built name alone (`builtNameOf`).
+ * Whether Next.js's filesystem check finds a name, which it asks as a path is spelled and then
+ * decoded whole, ahead of any dynamic route (`getItem`, `server/lib/router-utils/filesystem.ts`): a
+ * page of its own — an entrypoint that is no template — or a file that is no prerender, each under
+ * either spelling of the slash, which the check takes off first. A member of a dynamic route is
+ * found by the route, as spelled or by its built name (`builtNameOf`).
  */
-function foundDecoded(store: Store, name: string): boolean {
+function foundAsFile(store: Store, name: string): boolean {
+  const unslashed = store.slashSpellings.get(name) ?? name;
   return (
     ownPages(store).has(withoutTrailingSlash(name)) ||
-    (store.staticFiles.has(name) && !store.prerendersByPathname.has(name))
+    (store.staticFiles.has(unslashed) && !store.prerendersByPathname.has(unslashed))
+  );
+}
+
+/**
+ * Of a pathname with an escaped delimiter in it, where its readings differ, the name Next.js finds
+ * first among `names` (`has`): a page of its own or a file (`foundAsFile`), as spelled and then
+ * decoded whole, ahead of any dynamic route; `undefined` where neither is one, and a member is
+ * found by its route.
+ */
+function foundFirst(
+  store: Store,
+  pathname: string,
+  decoded: string | undefined,
+  has: (name: string) => boolean,
+): string | undefined {
+  return [pathname, decoded].find(
+    (name) => name !== undefined && has(name) && foundAsFile(store, name),
   );
 }
 
@@ -53,55 +72,58 @@ function foundDecoded(store: Store, name: string): boolean {
  * its parameters' own characters, escaping only a delimiter (`/sticks & stones`, `/記事`,
  * `/a%2Fb` for the value `a/b`; `build/static-paths/app.ts`), and a request carries them escaped
  * (`/sticks%20%26%20stones`). A pathname that names a prerender as it came, or has nothing to
- * decode, is its own name; otherwise it names the prerender Next.js finds by it — a page of its
- * own decoded whole, ahead of a member by its built name (`builtNameOf`), each segment decoded with
- * an escaped slash kept inside it. Decoded whole, `/docs/a%2Fb` was looked up as the member
- * `/docs/a/b` of another route.
+ * decode, is its own name, and one decoded is the next. Where an escaped delimiter makes the
+ * readings differ, the order is Next.js's: a page of its own as spelled and then decoded whole
+ * (`foundFirst`), ahead of a member as spelled or by its built name (`builtNameOf`), each segment
+ * decoded with an escaped slash kept inside it. Decoded whole for a member, `/docs/a%2Fb` was
+ * looked up as the member `/docs/a/b` of another route.
  */
 export function prerenderedName(store: Store, pathname: string): string {
-  if (!pathname.includes('%') || store.prerendersByPathname.has(pathname)) {
+  if (!pathname.includes('%')) {
     return pathname;
   }
+  const prerenders = store.prerendersByPathname;
   const built = builtNameOf(pathname);
   const decoded = decodedOnce(pathname);
-  if (
-    decoded !== undefined &&
-    decoded !== built &&
-    store.prerendersByPathname.has(decoded) &&
-    ownPages(store).has(withoutTrailingSlash(decoded))
-  ) {
-    return decoded;
+  const first =
+    decoded === built
+      ? undefined
+      : foundFirst(store, pathname, decoded, (name) => prerenders.has(name));
+  if (first !== undefined) {
+    return first;
   }
-  return built !== undefined && store.prerendersByPathname.has(built) ? built : pathname;
+  if (prerenders.has(pathname)) {
+    return pathname;
+  }
+  return built !== undefined && prerenders.has(built) ? built : pathname;
 }
 
 /**
  * The name the build gave a pathname a request spells escaped, where the router is handed names
  * alone (`routerPathnames`) and matches them as they are: `/sticks%20%26%20stones` is the build's
- * `/sticks & stones`. The name is the one Next.js finds by the path: a page of its own or a file,
- * decoded whole, as its filesystem check finds one ahead of any dynamic route (`foundDecoded`), and
- * otherwise the name it builds what the path asks for under (`builtNameOf`), an escaped slash
- * inside its segment — `/docs/a%2fb` is `/docs/a%2Fb`, the member `a/b`, and `/docs/c%2Fd` no
- * member of a route at `/docs/c/d`. The two differ only where a delimiter is escaped. `undefined`
- * where the spelling is a name itself, or names none.
+ * `/sticks & stones`. Where no delimiter is escaped, the name is the path decoded, unless the path
+ * is a name itself. Where one is, the readings differ, and the name is the one Next.js finds
+ * first: a page of its own or a file, as spelled and then decoded whole (`foundFirst`), ahead of a
+ * member as spelled or by its built name (`builtNameOf`), an escaped slash inside its segment —
+ * `/docs/a%2fb` is `/docs/a%2Fb`, the member `a/b`; `/docs/c%2Fd` no member of a route at
+ * `/docs/c/d`; and `/docs/a%2Fb` the page `/docs/a/b` where that is a page of its own, though the
+ * member `/docs/a%2Fb` is named so too. `undefined` where the spelling names itself, or nothing.
  */
 export function escapedNameOf(store: Store, pathname: string): string | undefined {
-  if (!pathname.includes('%') || store.pathnames.includes(pathname)) {
+  if (!pathname.includes('%')) {
     return undefined;
   }
+  const has = (name: string): boolean => store.pathnames.includes(name);
   const built = builtNameOf(pathname);
   const decoded = decodedOnce(pathname);
-  if (
-    decoded !== undefined &&
-    decoded !== built &&
-    store.pathnames.includes(decoded) &&
-    foundDecoded(store, decoded)
-  ) {
-    return decoded;
+  const first = decoded === built ? undefined : foundFirst(store, pathname, decoded, has);
+  if (first !== undefined) {
+    return first === pathname ? undefined : first;
   }
-  return built !== undefined && built !== pathname && store.pathnames.includes(built)
-    ? built
-    : undefined;
+  if (has(pathname)) {
+    return undefined;
+  }
+  return built !== undefined && built !== pathname && has(built) ? built : undefined;
 }
 
 /** What the build named, by kind: the names a file of `public/` is told apart from (`isEscapedFile`). */
