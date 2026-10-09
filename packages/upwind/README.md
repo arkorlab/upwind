@@ -221,3 +221,19 @@ needs one runs `next build` itself, with the `next.config` above.
 ## Licence
 
 MIT or Apache-2.0, at your option.
+
+## Local Durable Objects
+
+Use the registrations exported by your host as `UPWIND_DURABLE_OBJECTS`, a JSON array of
+`{ name, module, className }`. Modules are relative to the Next.js project directory. Both
+`upwind dev` and `upwind build` use it; the corresponding adapter and SDK packages must support
+Durable Objects.
+
+Each class runs in its own local Worker and gets a SQLite namespace persisted in `.upwind/`.
+The namespace is published under its registered name, so `durableObject('COUNTERS')` and the
+`@stayingupwind/sdk/durable-object` default import work as they do in the deployment. Namespace
+startup does not instantiate objects. The first application invocation runs the class.
+
+Editing a bundled class dependency restarts the dev server through the existing supervisor,
+keeping persisted data. Updating the registration input requires restarting the command with the
+new exported array. Deleting `.upwind/` also deletes the local objects' data.

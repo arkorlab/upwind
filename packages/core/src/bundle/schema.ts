@@ -5,6 +5,11 @@ import { cronsSchema } from '../cron/schema.ts';
 import { checkedImagesConfigSchema } from '../images/config.ts';
 import { runnableSourceRegexSchema, unsafeRoutePatternReason } from '../request/pattern-safety.ts';
 import { isId } from '../util/id.ts';
+import {
+  durableObjectDeclarationsSchema,
+  DURABLE_OBJECT_BUNDLE_VERSION,
+  DURABLE_OBJECT_SPLIT_BUNDLE_VERSION,
+} from './durable-objects.ts';
 
 /**
  * The deployment bundle: what the Next.js adapter writes at the end of `next build`, and the only
@@ -42,11 +47,14 @@ export const ONE_PASS_SPLIT_BUNDLE_VERSION = 4;
 
 /** The versions of a bundle whose routes the build split across app Functions. */
 const SPLIT_VERSIONS: ReadonlySet<number> = new Set([
+  DURABLE_OBJECT_SPLIT_BUNDLE_VERSION,
   ONE_PASS_SPLIT_BUNDLE_VERSION,
   SPLIT_BUNDLE_VERSION,
 ]);
 /** The versions of a bundle that says how its Functions fill a header's references. */
 const ONE_PASS_VERSIONS: ReadonlySet<number> = new Set([
+  DURABLE_OBJECT_BUNDLE_VERSION,
+  DURABLE_OBJECT_SPLIT_BUNDLE_VERSION,
   ONE_PASS_BUNDLE_VERSION,
   ONE_PASS_SPLIT_BUNDLE_VERSION,
 ]);
@@ -435,12 +443,16 @@ export type BundleConfig = z.infer<typeof bundleConfigSchema>;
 export const routerReferencesSchema = z.literal('one-pass');
 export type RouterReferences = z.infer<typeof routerReferencesSchema>;
 
+const durableObjectFunctionsSchema = z.record(z.string(), functionSchema);
+
 const bundleSchema = z.object({
   v: z.literal([
     BUNDLE_VERSION,
     SPLIT_BUNDLE_VERSION,
     ONE_PASS_BUNDLE_VERSION,
     ONE_PASS_SPLIT_BUNDLE_VERSION,
+    DURABLE_OBJECT_BUNDLE_VERSION,
+    DURABLE_OBJECT_SPLIT_BUNDLE_VERSION,
   ]),
   deploymentId: deploymentIdSchema,
   nextVersion: z.string().min(1),
@@ -449,7 +461,7 @@ const bundleSchema = z.object({
   /**
    * How this deployment's Functions fill a header's `$` references (`routerReferencesSchema`), so
    * that what the edge answers for them carries the values the Function would have given it. Said
-   * by a bundle of version 3 or 4 (`ONE_PASS_BUNDLE_VERSION`), and by no other: absent from a
+   * by a bundle of version 3, 4, 5 or 6, and by no other: absent from a
    * bundle an earlier adapter wrote, whose Functions route with the router before.
    */
   routerReferences: routerReferencesSchema.optional(),
@@ -478,6 +490,8 @@ const bundleSchema = z.object({
    * this field existed.
    */
   crons: cronsSchema.optional(),
+  /** Host registrations; their code is carried separately from the Next.js Functions. */
+  durableObjects: durableObjectDeclarationsSchema.optional(),
   middleware: z.object({ matchers: z.array(routeSchema) }).optional(),
   /**
    * The Workflow SDK, when the project uses it (`withWorkflow` from `workflow/next`): the route its
@@ -506,6 +520,7 @@ const bundleSchema = z.object({
     split: z.record(splitFunctionNameSchema, functionSchema).optional(),
     /** Present exactly when `workflow` is: the Function that runs the project's workflows. */
     workflow: functionSchema.optional(),
+    durableObjects: durableObjectFunctionsSchema.optional(),
   }),
 });
 export type DeploymentBundle = z.infer<typeof bundleSchema>;
@@ -581,9 +596,7 @@ function splitIssues(bundle: DeploymentBundle): string[] {
     issues.push('functions.split names no Function; a bundle that was not split leaves it out');
   }
   if (SPLIT_VERSIONS.has(bundle.v) !== names.length > 0) {
-    issues.push(
-      `a bundle with functions.split is version ${SPLIT_BUNDLE_VERSION} or ${ONE_PASS_SPLIT_BUNDLE_VERSION}, and only such a bundle is`,
-    );
+    issues.push(`a split bundle must use version 2, 4 or 6, and only such a bundle does`);
   }
   if (names.length + 1 > MAX_APP_FUNCTIONS) {
     issues.push(
@@ -643,7 +656,7 @@ export const deploymentBundleSchema = bundleSchema
     if (ONE_PASS_VERSIONS.has(bundle.v) !== (bundle.routerReferences !== undefined)) {
       ctx.addIssue({
         code: 'custom',
-        message: `a bundle says how its Functions fill a header's references at version ${ONE_PASS_BUNDLE_VERSION} or ${ONE_PASS_SPLIT_BUNDLE_VERSION}, and only such a bundle does`,
+        message: `a bundle says how its Functions fill a header's references at version 3, 4, 5 or 6, and only such a bundle does`,
       });
     }
   })
@@ -654,6 +667,28 @@ export const deploymentBundleSchema = bundleSchema
       ctx.addIssue({
         code: 'custom',
         message: 'a bundle carries `workflow` and `functions.workflow` together or neither',
+      });
+    }
+  })
+  .superRefine((bundle, ctx) => {
+    const declarations = bundle.durableObjects ?? [];
+    const functions = Object.keys(bundle.functions.durableObjects ?? {});
+    const carriesObjects = declarations.length > 0;
+    const objectVersion =
+      bundle.v === DURABLE_OBJECT_BUNDLE_VERSION ||
+      bundle.v === DURABLE_OBJECT_SPLIT_BUNDLE_VERSION;
+    if (
+      objectVersion !== carriesObjects ||
+      declarations.length !== functions.length ||
+      declarations.some(
+        (entry) => !Object.hasOwn(bundle.functions.durableObjects ?? {}, entry.name),
+      ) ||
+      (!carriesObjects &&
+        (bundle.durableObjects !== undefined || bundle.functions.durableObjects !== undefined))
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Durable Object declarations and Functions must match, at bundle version 5 or 6',
       });
     }
   });
@@ -682,6 +717,7 @@ function forEachBlob(bundle: DeploymentBundle, visit: (ref: BlobRef) => void): v
     bundle.functions.middleware,
     ...Object.values(bundle.functions.split ?? {}),
     bundle.functions.workflow,
+    ...Object.values(bundle.functions.durableObjects ?? {}),
   ];
   for (const spec of functions) {
     if (spec === undefined) {

@@ -11,6 +11,7 @@ import type { RouteCode, ShippedBlob } from './collect.ts';
 import { MAX_FUNCTION_BYTES } from './dependencies.ts';
 import type { EdgeEntry } from './edge.ts';
 import type { BuiltFunction } from './function.ts';
+import type { AdapterOptions } from './index.ts';
 import { linkedImportsIn } from './linked-externals.ts';
 import {
   type PlanBudget,
@@ -19,7 +20,7 @@ import {
   planFunctions,
   type PlanUnit,
 } from './plan.ts';
-import type { ProjectSplit } from './project-config.ts';
+import type { ProjectConfig, ProjectSplit } from './project-config.ts';
 import { codeModules } from './source-maps.ts';
 import { tracedFiles } from './traced-files.ts';
 
@@ -541,4 +542,18 @@ export function planRecord(
       };
     }),
   };
+}
+
+/** The budgets this build splits on, and a word to a project that asked a host that does not split. */
+export function buildSplitBudget(
+  options: AdapterOptions,
+  project: ProjectConfig,
+): PlanBudget | undefined {
+  const asked = project.split !== undefined && project.split !== false;
+  if (asked && options.functions?.split === undefined) {
+    console.warn(
+      `@stayingupwind/adapter: ${project.file ?? 'the project'} asks for functions.split, which this host does not offer: every route stays in one Function`,
+    );
+  }
+  return splitBudget(options.functions?.split, project.split);
 }

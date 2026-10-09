@@ -1,6 +1,12 @@
-import type { D1Database, KVNamespace, R2Bucket } from '@cloudflare/workers-types';
+import type {
+  D1Database,
+  DurableObjectNamespace,
+  KVNamespace,
+  R2Bucket,
+  Rpc,
+} from '@cloudflare/workers-types';
 
-import { BLOB, D1, type Kind, KV } from './kinds.ts';
+import { BLOB, D1, type Kind, KV, DURABLE_OBJECT } from './kinds.ts';
 import { read, unreadable } from './published.ts';
 
 /**
@@ -45,4 +51,11 @@ export function kv(name: string): KVNamespace | undefined {
 /** The R2 bucket bound under this name, or nothing — including when it is not an R2 bucket. */
 export function blob(name: string): R2Bucket | undefined {
   return byName(name, BLOB) as R2Bucket | undefined;
+}
+
+/** The native Durable Object namespace bound under this name, or nothing. */
+export function durableObject<T extends Rpc.DurableObjectBranded | undefined = undefined>(
+  name: string,
+): DurableObjectNamespace<T> | undefined {
+  return byName(name, DURABLE_OBJECT) as DurableObjectNamespace<T> | undefined;
 }

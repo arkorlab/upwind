@@ -466,7 +466,7 @@ export default defineConfig([
   // `import db from '@stayingupwind/sdk/db'` is the line this package exists to make possible, and
   // `import { db }` would be the same word twice.
   {
-    files: ['packages/sdk/src/{db,kv,blob}.ts'],
+    files: ['packages/sdk/src/{db,kv,blob,durable-object}.ts'],
     rules: { 'import-x/no-default-export': 'off' },
   },
 

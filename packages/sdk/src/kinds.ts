@@ -41,3 +41,11 @@ export const BLOB: Kind = {
   lookup: 'blob',
   module: '@stayingupwind/sdk/blob',
 };
+
+export const DURABLE_OBJECT: Kind = {
+  type: 'durable_object_namespace',
+  called: 'Durable Object namespace',
+  accessor: 'durableObject',
+  lookup: 'durableObject',
+  module: '@stayingupwind/sdk/durable-object',
+};

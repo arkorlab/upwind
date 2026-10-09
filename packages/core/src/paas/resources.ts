@@ -11,7 +11,12 @@ import { type D1Observation, observeD1 } from './d1-observation.ts';
  */
 
 /** The kinds of storage a binding can be, in the words Cloudflare's upload metadata uses. */
-export const RESOURCE_TYPES = ['kv_namespace', 'r2_bucket', 'd1'] as const;
+export const RESOURCE_TYPES = [
+  'kv_namespace',
+  'r2_bucket',
+  'd1',
+  'durable_object_namespace',
+] as const;
 export type ResourceType = (typeof RESOURCE_TYPES)[number];
 
 /**

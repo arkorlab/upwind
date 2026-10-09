@@ -397,6 +397,16 @@ export default async function Page() {
 - **Prerendering can read it.** In a project with the SDK installed, `upwind build` publishes the same storage while pages prerender, so `generateStaticParams` can read its slugs out of D1. One directory of storage can be open in only one runtime at a time, so pages are then prerendered by one build worker rather than several — unless the project sets `experimental.cpus` itself, in which case a page that reads storage fails in every worker but one. A plain `next build` publishes none, and the SDK throws an error saying so rather than guessing.
 - **Delete `.upwind/` to start from empty.** It is local data, and no deployment reads it.
 
+### Durable Objects
+
+A host can also register customer-authored Durable Object classes. The adapter builds each class into
+its own small Worker and the SDK publishes the host's native namespace through
+`durableObject(name)` or `@stayingupwind/sdk/durable-object`. Class code stays outside the Next.js
+Functions. For local `upwind dev` and `upwind build`, provide the host's exported
+`{ name, module, className }` registrations as `UPWIND_DURABLE_OBJECTS` JSON. SQLite data persists in
+`.upwind/`; source edits restart the dev server without deleting it. No object is constructed at startup.
+See the [SDK guide](packages/sdk/README.md#durable-objects) for class and request-handler examples.
+
 ## ⏰ Scheduled work
 
 ```ts

@@ -1,16 +1,24 @@
 import { unlinkSync } from 'node:fs';
 import { mkdir, readdir, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
+import {
+  type DurableObjectDeclaration,
+  durableObjectDeclarationsSchema,
+  DURABLE_OBJECT_EXPORT,
+} from '@stayingupwind/core/bundle';
 import {
   formatResourcesManifest,
   type FunctionEnv,
   RESOURCES_MANIFEST_BINDING,
   type ResourceManifestEntry,
   type ResourceType,
+  UPWIND_DURABLE_OBJECTS_ENV,
 } from '@stayingupwind/core/paas';
 import type { Miniflare, MiniflareOptions } from 'miniflare';
 
+import { resolveFromProject } from '../dev/next-app.ts';
 import { guardListeners } from './listeners.ts';
 import { publishResources } from './publish.ts';
 
@@ -161,13 +169,19 @@ const TRIAL_TWO_D1_ENV = 'UPWIND_TRIAL_TWO_D1';
 const TRIAL_SECOND_D1: ResourceManifestEntry = { name: 'UPWIND_D1_2', type: 'd1' };
 
 /** What the local runtime calls each kind of storage the contract names. */
+const DURABLE_OBJECT_TYPE = 'durable_object_namespace';
+const DURABLE_OBJECT_KIND = 'durable-object';
+
 const RUNTIME_TYPES = {
   d1: 'd1',
   kv_namespace: 'kv',
   r2_bucket: 'r2',
+  [DURABLE_OBJECT_TYPE]: DURABLE_OBJECT_KIND,
 } as const satisfies Record<ResourceType, string>;
 
 export interface LocalResources {
+  /** Class dependencies whose edits require a fresh worker module. */
+  readonly watchedFiles?: readonly string[];
   /** Stop the local runtime. Call it as often as you like; the first call is the one that acts. */
   readonly dispose: () => Promise<void>;
 }
@@ -191,10 +205,67 @@ function bindings(): readonly ResourceManifestEntry[] {
   return process.env[TRIAL_TWO_D1_ENV] === '1' ? [...DEFAULTS, TRIAL_SECOND_D1] : DEFAULTS;
 }
 
+interface LocalDurableObject {
+  readonly declaration: DurableObjectDeclaration;
+  readonly source: string;
+  readonly inputs: readonly string[];
+}
+
+async function durableObjectsOf(projectDir: string): Promise<readonly LocalDurableObject[]> {
+  const raw = process.env[UPWIND_DURABLE_OBJECTS_ENV];
+  if (raw === undefined || raw === '') return [];
+  const declarations = durableObjectDeclarationsSchema.parse(JSON.parse(raw) as unknown);
+  if (declarations.length === 0) return [];
+  const adapter = resolveFromProject(projectDir, '@stayingupwind/adapter');
+  if (adapter === undefined)
+    throw new Error('install @stayingupwind/adapter to run local Durable Objects');
+  const module = (await import(pathToFileURL(adapter).href)) as {
+    bundleDurableObjects?: (
+      directory: string,
+      objects: readonly DurableObjectDeclaration[],
+    ) => Promise<LocalDurableObject[]>;
+  };
+  if (module.bundleDurableObjects === undefined)
+    throw new Error(
+      'the installed adapter does not support Durable Objects; install matching upwind packages',
+    );
+  return module.bundleDurableObjects(projectDir, declarations);
+}
+
+function ownerName(name: string): string {
+  return `upwind-object-${name}`;
+}
+
+type LocalBinding =
+  | { type: 'd1' | 'kv'; id: string }
+  | { type: 'r2'; name: string }
+  | { type: typeof DURABLE_OBJECT_KIND; worker: string; exportName: string };
+
 function runtimeOptions(
   projectDir: string,
   entries: readonly ResourceManifestEntry[],
+  objects: readonly LocalDurableObject[],
 ): MiniflareOptions {
+  const env = Object.fromEntries<LocalBinding>(
+    entries.map((entry): [string, LocalBinding] => {
+      if (entry.type === DURABLE_OBJECT_TYPE)
+        return [
+          entry.name,
+          {
+            type: DURABLE_OBJECT_KIND,
+            worker: ownerName(entry.name),
+            exportName: DURABLE_OBJECT_EXPORT,
+          },
+        ];
+      const id = `${entry.name}-${WORKER_NAME}`;
+      return [
+        entry.name,
+        entry.type === 'r2_bucket'
+          ? { type: 'r2' as const, name: id }
+          : { type: RUNTIME_TYPES[entry.type], id },
+      ];
+    }),
+  );
   return {
     resourcePersistencePath: path.join(projectDir, PERSIST_DIR),
     workers: [
@@ -206,13 +277,31 @@ function runtimeOptions(
             mainModule: ENTRY_MODULE,
             modules: { [ENTRY_MODULE]: { type: 'esm', contents: ENTRY_SOURCE } },
           },
-          // No identifier per binding: the runtime derives a stable one from the binding name and
-          // the worker's, which is what the directories under `.upwind/` are named after.
-          env: Object.fromEntries(
-            entries.map((entry) => [entry.name, { type: RUNTIME_TYPES[entry.type] }]),
-          ),
+          // Keep the original default identifiers when the same storage is bound to an owner
+          // Worker too; otherwise each owner's constructor would receive a separate database.
+          env,
         },
       },
+      ...objects.map((object) => {
+        return {
+          config: {
+            name: ownerName(object.declaration.name),
+            compatibilityDate: COMPATIBILITY_DATE,
+            compatibilityFlags: ['nodejs_compat'],
+            manifest: {
+              mainModule: ENTRY_MODULE,
+              modules: { [ENTRY_MODULE]: { type: 'esm' as const, contents: object.source } },
+            },
+            exports: {
+              [DURABLE_OBJECT_EXPORT]: {
+                type: DURABLE_OBJECT_KIND,
+                storage: 'sqlite',
+              } as const,
+            },
+            env,
+          },
+        };
+      }),
     ],
   };
 }
@@ -238,6 +327,9 @@ async function bindingOf(runtime: Miniflare, entry: ResourceManifestEntry): Prom
     case 'r2_bucket': {
       return runtime.getR2Bucket(entry.name);
     }
+    case DURABLE_OBJECT_TYPE: {
+      return runtime.getDurableObjectNamespace(entry.name, WORKER_NAME);
+    }
   }
 }
 
@@ -251,6 +343,10 @@ class LocalStorageError extends Error {
 /** The cheapest read there is of one binding: nothing is stored, and nothing is written. */
 async function probe(entry: ResourceManifestEntry, binding: unknown): Promise<void> {
   switch (entry.type) {
+    case DURABLE_OBJECT_TYPE: {
+      // Namespace readiness never constructs an object or executes the customer's class.
+      return;
+    }
     case 'd1': {
       const database = binding as { prepare: (sql: string) => { first: () => Promise<unknown> } };
       await database.prepare('select 1').first();
@@ -427,9 +523,14 @@ async function stopRuntime(runtime: Miniflare): Promise<boolean> {
   }
 }
 
-function stopper(runtime: Miniflare, release: () => void): LocalResources {
+function stopper(
+  runtime: Miniflare,
+  release: () => void,
+  watchedFiles: readonly string[],
+): LocalResources {
   let stopping: Promise<void> | undefined;
   return {
+    watchedFiles,
     dispose: async () => {
       // Once, and awaited by everyone: a dev run ends through whichever of its paths reaches the
       // end first, and stopping a runtime that is already stopping is not the caller's problem.
@@ -470,12 +571,16 @@ interface Attempt {
   readonly done: Promise<Miniflare>;
 }
 
-function startAndPublish(projectDir: string, entries: readonly ResourceManifestEntry[]): Attempt {
+function startAndPublish(
+  projectDir: string,
+  entries: readonly ResourceManifestEntry[],
+  objects: readonly LocalDurableObject[],
+): Attempt {
   const arrived: PromiseWithResolvers<Miniflare | undefined> = Promise.withResolvers();
   const done = (async (): Promise<Miniflare> => {
     let runtime: Miniflare | undefined;
     try {
-      runtime = await startRuntime(runtimeOptions(projectDir, entries));
+      runtime = await startRuntime(runtimeOptions(projectDir, entries, objects));
     } finally {
       // Either way, and before anything slower: a runtime, or the news that there will not be one.
       arrived.resolve(runtime);
@@ -520,17 +625,28 @@ export async function startLocalResources(
   projectDir: string,
   options: LocalOptions,
 ): Promise<LocalResources> {
-  const entries = bindings();
   // Before the runtime is started, and given back in the `finally`: what it does to a process it
   // does not own, and why that matters more than it sounds like, is `listeners.ts`.
   const guard = guardListeners({ answersSignals: options.answersSignals });
   let release: (() => void) | undefined;
   let attempt: Attempt | undefined;
   try {
+    const objects = await durableObjectsOf(projectDir);
+    const entries = [
+      ...bindings(),
+      ...objects.map((object): ResourceManifestEntry => {
+        return {
+          name: object.declaration.name,
+          type: DURABLE_OBJECT_TYPE,
+        };
+      }),
+    ];
+    if (new Set(entries.map((entry) => entry.name)).size !== entries.length)
+      throw new Error('a Durable Object name conflicts with local default storage');
     // The claim comes first, because the thing it prevents cannot be undone: two runtimes over one
     // directory read each other's data happily and then lose a write with no error anybody can see.
     release = await claimStorage(path.join(projectDir, PERSIST_DIR));
-    attempt = startAndPublish(projectDir, entries);
+    attempt = startAndPublish(projectDir, entries, objects);
     const runtime = await Promise.race([
       attempt.done,
       afterDeadline(
@@ -538,7 +654,11 @@ export async function startLocalResources(
         `this project's local storage did not come up within ${String(START_SECONDS)}s, so nothing is published in this run`,
       ),
     ]);
-    return stopper(runtime, release);
+    return stopper(
+      runtime,
+      release,
+      objects.flatMap((object) => object.inputs),
+    );
   } catch (error) {
     console.warn(cannotStart(error));
     // Whatever went wrong, a runtime process must not outlive the attempt that started it — including

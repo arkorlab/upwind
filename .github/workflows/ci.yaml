@@ -42,6 +42,8 @@ jobs:
       # The deploy-mode hooks, against a host that is not one: no credential, no network. What a run
       # against a real host would also prove, minus the part that needs one.
       - run: pnpm check:deploy-tests
+      # Native namespaces, SQLite storage and source isolation without a Next.js build.
+      - run: pnpm check:durable-objects
       # The agent rules `create-upwind` writes are still the ones Next.js writes. Text copied out of
       # another project goes stale without saying so, and this one is compared byte for byte.
       - run: pnpm check:agent-rules

@@ -5,6 +5,7 @@ import path from 'node:path';
 import {
   bundleBlobs,
   type DeploymentBundle,
+  type DurableObjectDeclaration,
   deploymentBundleSchema,
   ONE_PASS_BUNDLE_VERSION,
   travelsWithFunction,
@@ -46,6 +47,7 @@ import {
 } from './collect.ts';
 import { refuseOutputOutsideProject } from './dependencies.ts';
 import { reserveUpwindPrefix } from './dev-prefix.ts';
+import { durableObjectParts } from './durable-objects.ts';
 import type { EdgeEntry } from './edge.ts';
 import { ensureStaticRoutes } from './ensure-static.ts';
 import { exists } from './fs.ts';
@@ -53,11 +55,10 @@ import { type BuiltFunction, type EntryModule, middlewareManifest } from './func
 import { composedInstrumentation, writeClientInstrumentation } from './instrumentation.ts';
 import { keepMapsThrough, readKeptMaps } from './kept-maps.ts';
 import { collectManifests } from './manifests.ts';
-import type { PlanBudget } from './plan.ts';
 import { readProjectConfig } from './project-config.ts';
 import { projectDirOf } from './project-dir.ts';
 import { carriesMaps, type SourceMapsOption } from './source-maps.ts';
-import { checkSplitOptions, type SplitOptions, splitBudget } from './split.ts';
+import { buildSplitBudget, checkSplitOptions, type SplitOptions } from './split.ts';
 import { collectStaticFiles, rewriteTargetFiles } from './static-files.ts';
 import { type TracedFile, tracedFiles } from './traced-files.ts';
 import {
@@ -339,6 +340,13 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
       files: files.workflow,
     }),
   );
+  const objects = await durableObjectParts({
+    projectDir: ctx.projectDir,
+    outDir,
+    blobs,
+    declarations: options.durableObjects,
+    split: functions.built.length > 1,
+  });
   const sourceMaps = [
     ...clientMaps,
     ...functions.built.flatMap((each) => each.built.sourceMaps),
@@ -353,6 +361,7 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     // How the Functions this adapter builds fill a header's `$` references: with the router the
     // runtime is built on, `@next/routing` 16.4 or later. The edge fills them that way for it.
     routerReferences: 'one-pass',
+    ...objects.bundle,
     // Where each entrypoint's code is in the source tree. Only a reader of the build ever asks
     // (`sourcePageSchema`).
     sourcePages,
@@ -371,6 +380,7 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     functions: {
       ...bundleFunctions(functions.built, middlewareFunction),
       ...workflowParts.functions,
+      ...objects.functions,
     },
   });
   await writeFile(path.join(outDir, BUNDLE_FILE), JSON.stringify(bundle, null, 2));
@@ -414,20 +424,6 @@ async function staticBlobsOf(
     blobs.set(blob.sha256, { sha256: blob.sha256, bytes: new Uint8Array(bytes) });
   }
   return [...blobs.values()];
-}
-
-/** The budgets this build splits on, and a word to a project that asked a host that does not split. */
-function buildSplitBudget(
-  options: AdapterOptions,
-  project: Awaited<ReturnType<typeof readProjectConfig>>,
-): PlanBudget | undefined {
-  const asked = project.split !== undefined && project.split !== false;
-  if (asked && options.functions?.split === undefined) {
-    console.warn(
-      `@stayingupwind/adapter: ${project.file ?? 'the project'} asks for functions.split, which this host does not offer: every route stays in one Function`,
-    );
-  }
-  return splitBudget(options.functions?.split, project.split);
 }
 
 /** The bundle's Functions: the first app Function, the middleware's, and the rest of a split. */
@@ -538,6 +534,8 @@ function middlewarePlacement(middleware: AdapterOutput['MIDDLEWARE'] | undefined
 
 /** What a host configures the adapter with; a build given none produces a bundle with no cache. */
 export interface AdapterOptions {
+  /** Host registrations whose class code is built separately from every Next.js Function. */
+  readonly durableObjects?: readonly DurableObjectDeclaration[] | undefined;
   /**
    * The module the runtime's cache reads and writes through, as an absolute path — what
    * `arkor:cache-host` resolves to, bundled into the app Function's runtime. The middleware
@@ -830,3 +828,5 @@ export function createAdapter(options: AdapterOptions = {}): NextAdapter {
 // one is configured with nothing, and its bundle has no runtime cache.
 // eslint-disable-next-line import-x/no-default-export
 export default createAdapter();
+
+export { bundleDurableObjects, type BundledDurableObject } from './durable-objects.ts';

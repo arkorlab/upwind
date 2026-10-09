@@ -346,6 +346,11 @@ export async function watchConfigFiles(projectDir: string): Promise<StopWatching
   // out of inotify watches refuses with `ENOSPC` — or lost later: a dev server that stops restarting
   // on a config change is still a dev server, and taking one down over this would be the worse
   // failure.
+  return watchSourceFiles(files);
+}
+
+/** Class code is read at startup, just like a configuration file. */
+export function watchSourceFiles(files: readonly string[]): StopWatching {
   const settling: Settling = { timer: undefined };
   const watchers: FSWatcher[] = [];
   for (const [directory, listening] of watchPoints(files)) {

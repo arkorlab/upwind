@@ -2,6 +2,7 @@ export { isUpwindAuthPath, UPWIND_AUTH_BASE_PATH, UPWIND_AUTH_SECRET_ENV } from 
 export {
   isUpwindInternalPath,
   UPWIND_DEV_ADDRESS_ENV,
+  UPWIND_DURABLE_OBJECTS_ENV,
   UPWIND_INTERNAL_PREFIX,
   UPWIND_LOCAL_RESOURCES_ENV,
 } from './dev.ts';
