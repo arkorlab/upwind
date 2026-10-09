@@ -16,6 +16,7 @@ import { NEXT_DATA_HEADER, NULL_BODY_STATUSES } from '@stayingupwind/core/reques
 import { releaseStream } from '@stayingupwind/core/util';
 
 import { stripPlatformHeaders } from './incoming.ts';
+import { escapedNameOf, namesWithSpellings, prerenderedName } from './name-spellings.ts';
 import type { Resolved } from './outputs.ts';
 import {
   AFTER_FILES,
@@ -460,54 +461,19 @@ function withoutTrailingSlash(pathname: string): string {
 }
 
 /**
- * The name the build gave the prerender a pathname asks for. Next.js names a prerendered member by
- * its parameters' own characters, escaping only a delimiter (`/sticks & stones`, `/記事`;
- * `build/static-paths/app.ts`), and a request carries them escaped (`/sticks%20%26%20stones`).
- * Its filesystem check looks a path up as it came and then decoded (`getItem`), and so does this:
- * a pathname that names a prerender as it came, or has nothing to decode, is its own name.
- */
-function prerenderedName(store: Store, pathname: string): string {
-  if (!pathname.includes('%') || store.prerendersByPathname.has(pathname)) {
-    return pathname;
-  }
-  try {
-    const decoded = decodeURIComponent(pathname);
-    return store.prerendersByPathname.has(decoded) ? decoded : pathname;
-  } catch {
-    return pathname;
-  }
-}
-
-/**
- * The name the build gave a pathname a request spells escaped, where the router is handed names
- * alone (`routerPathnames`) and matches them as they are: `/sticks%20%26%20stones` is the build's
- * `/sticks & stones`. `undefined` where the spelling is a name itself, or decodes to none.
- */
-function escapedNameOf(store: Store, pathname: string): string | undefined {
-  if (!pathname.includes('%') || store.pathnames.includes(pathname)) {
-    return undefined;
-  }
-  let decoded: string;
-  try {
-    decoded = decodeURIComponent(pathname);
-  } catch {
-    return undefined;
-  }
-  return decoded !== pathname && store.pathnames.includes(decoded) ? decoded : undefined;
-}
-
-/**
- * The pathnames the router resolves by name for a request: the store's, and the request's own
- * spelling of one of them escaped (`escapedNameOf`), which resolves to that name
- * (`resolvedOf`). Next.js's filesystem check looks a path up as it came and then decoded
- * (`getItem`); `@next/routing` matches the names it is handed as they are, so a member of a route
- * built with `dynamicParams = false`, which resolves by its own name alone, asked for escaped —
+ * The pathnames the router resolves by name for a request: the store's, each with its escaped
+ * spellings (`namesWithSpellings`), and the request's own spelling of one of them escaped
+ * (`escapedNameOf`); a spelling resolves to the name it spells (`resolvedOf`). Next.js's
+ * filesystem check looks a path up as it came and then decoded (`getItem`); `@next/routing`
+ * matches the names it is handed as they are, so a member of a route built with
+ * `dynamicParams = false`, which resolves by its own name alone, asked for escaped —
  * `/sticks%20%26%20stones`, `/%E8%A8%98%E4%BA%8B` — answered 404 (`prerender-encoding`).
  */
 export function pathnamesFor(store: Store, url: URL): string[] {
-  return escapedNameOf(store, url.pathname) === undefined
-    ? store.pathnames
-    : [...store.pathnames, url.pathname];
+  const names = namesWithSpellings(store);
+  return escapedNameOf(store, url.pathname) === undefined || names.includes(url.pathname)
+    ? names
+    : [...names, url.pathname];
 }
 
 /** A route's own name in brackets (`/[id]`), which only a dynamic route resolves to. */
@@ -540,7 +506,9 @@ export function landedRoute(
   readonly route: string;
   readonly target: NonNullable<ResolveRoutesResult['invocationTarget']>;
 } {
-  const page = withoutTrailingSlash(target.pathname);
+  // By the name the build gave it: a rewrite's destination may spell it escaped (`/hello%20world`).
+  const spelled = withoutTrailingSlash(target.pathname);
+  const page = escapedNameOf(store, spelled) ?? spelled;
   if (
     !isTemplate(route) ||
     isTemplate(page) ||
@@ -688,7 +656,10 @@ export function resolvedOf(
   target: NonNullable<ResolveRoutesResult['invocationTarget']>,
   asked: Asked,
 ): Resolved {
-  const page = store.slashSpellings.get(route) ?? escapedNameOf(store, route) ?? route;
+  // Unescaped before the slash is taken off: an escaped spelling of a page kept behind a trailing
+  // slash (`/about%20us/`) is that slash spelling (`/about us/`) first.
+  const unescaped = escapedNameOf(store, route) ?? route;
+  const page = store.slashSpellings.get(unescaped) ?? unescaped;
   return {
     route: page,
     pathname: prerenderedName(store, withoutTrailingSlash(target.pathname)),
