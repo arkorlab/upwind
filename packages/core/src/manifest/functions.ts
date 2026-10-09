@@ -1,6 +1,7 @@
 import { PRIMARY_FUNCTION } from '../bundle/function-name.ts';
 import { dynamicRouteFor, isExactPathname, isReserved } from './dynamic.ts';
-import { builtKeyOf, findRouteEntry, keyOf } from './manifest.ts';
+import { findRouteEntry } from './manifest.ts';
+import { pageKeyOf } from './page-keys.ts';
 import type { AppRuntime, ProjectManifest } from './schema.ts';
 
 /**
@@ -41,11 +42,12 @@ export function functionFor(
     return shell.function ?? PRIMARY_FUNCTION;
   }
   const exactFunctions = manifest.exactFunctions;
-  // By its built name first, as a route is looked up, and then decoded whole, as before.
+  // Found as a route is (`pageKeyOf`): decoded whole, an escaped slash named another page's
+  // Function (`/docs/a%2Fb` for that of the member `/docs/a/b`).
   const exact =
     exactFunctions === undefined
       ? undefined
-      : (builtKeyOf(exactFunctions, pathname) ?? keyOf(exactFunctions, pathname));
+      : pageKeyOf(exactFunctions, pathname, manifest.dynamicRoutes);
   if (exact !== undefined && exactFunctions !== undefined) {
     return exactFunctions[exact];
   }

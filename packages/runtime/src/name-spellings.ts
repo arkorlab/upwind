@@ -18,45 +18,89 @@ const HEX = 16;
 /** An escape as the encoders write one: its hex in uppercase. */
 const UPPERCASE_ESCAPE = /%[0-9A-F]{2}/gu;
 
+/** Each store's pages of their own (`ownPages`). */
+const ownPagesOf = new WeakMap<Store, ReadonlySet<string>>();
+
+/** The pathnames of a store's entrypoints that are no template: its pages of their own. */
+function ownPages(store: Store): ReadonlySet<string> {
+  let pages = ownPagesOf.get(store);
+  if (pages === undefined) {
+    pages = new Set(
+      store.manifest.entrypoints
+        .map((entry) => entry.pathname)
+        .filter((pathname) => !isTemplate(pathname)),
+    );
+    ownPagesOf.set(store, pages);
+  }
+  return pages;
+}
+
+/**
+ * Whether Next.js's filesystem check finds a name a path decodes to whole, which it asks ahead of
+ * any dynamic route (`getItem`, `server/lib/router-utils/filesystem.ts`): a page of its own — an
+ * entrypoint that is no template, under either spelling of the slash — or a file that is no
+ * prerender. A member of a dynamic route is found by its built name alone (`builtNameOf`).
+ */
+function foundDecoded(store: Store, name: string): boolean {
+  return (
+    ownPages(store).has(withoutTrailingSlash(name)) ||
+    (store.staticFiles.has(name) && !store.prerendersByPathname.has(name))
+  );
+}
+
 /**
  * The name the build gave the prerender a pathname asks for. Next.js names a prerendered member by
  * its parameters' own characters, escaping only a delimiter (`/sticks & stones`, `/記事`,
  * `/a%2Fb` for the value `a/b`; `build/static-paths/app.ts`), and a request carries them escaped
  * (`/sticks%20%26%20stones`). A pathname that names a prerender as it came, or has nothing to
- * decode, is its own name; otherwise the name is the one Next.js builds what it asks for under
- * (`builtNameOf`), each segment decoded with an escaped slash kept inside it, as a dynamic route
- * reads a member's value. Decoded whole, `/docs/a%2Fb` was looked up as `/docs/a/b`, another page.
+ * decode, is its own name; otherwise it names the prerender Next.js finds by it — a page of its
+ * own decoded whole, ahead of a member by its built name (`builtNameOf`), each segment decoded with
+ * an escaped slash kept inside it. Decoded whole, `/docs/a%2Fb` was looked up as the member
+ * `/docs/a/b` of another route.
  */
 export function prerenderedName(store: Store, pathname: string): string {
   if (!pathname.includes('%') || store.prerendersByPathname.has(pathname)) {
     return pathname;
   }
   const built = builtNameOf(pathname);
+  const decoded = decodedOnce(pathname);
+  if (
+    decoded !== undefined &&
+    decoded !== built &&
+    store.prerendersByPathname.has(decoded) &&
+    ownPages(store).has(withoutTrailingSlash(decoded))
+  ) {
+    return decoded;
+  }
   return built !== undefined && store.prerendersByPathname.has(built) ? built : pathname;
 }
 
 /**
  * The name the build gave a pathname a request spells escaped, where the router is handed names
  * alone (`routerPathnames`) and matches them as they are: `/sticks%20%26%20stones` is the build's
- * `/sticks & stones`. The name is the one Next.js builds what the path asks for under
- * (`builtNameOf`), an escaped slash inside its segment (`/docs/a%2fb` is `/docs/a%2Fb`, the member
- * `a/b`); a file it finds decoded whole, as its filesystem check does (`getItem`), where the file
- * is no prerender. `undefined` where the spelling is a name itself, or names none.
+ * `/sticks & stones`. The name is the one Next.js finds by the path: a page of its own or a file,
+ * decoded whole, as its filesystem check finds one ahead of any dynamic route (`foundDecoded`), and
+ * otherwise the name it builds what the path asks for under (`builtNameOf`), an escaped slash
+ * inside its segment — `/docs/a%2fb` is `/docs/a%2Fb`, the member `a/b`, and `/docs/c%2Fd` no
+ * member of a route at `/docs/c/d`. The two differ only where a delimiter is escaped. `undefined`
+ * where the spelling is a name itself, or names none.
  */
 export function escapedNameOf(store: Store, pathname: string): string | undefined {
   if (!pathname.includes('%') || store.pathnames.includes(pathname)) {
     return undefined;
   }
   const built = builtNameOf(pathname);
-  if (built !== undefined && built !== pathname && store.pathnames.includes(built)) {
-    return built;
-  }
   const decoded = decodedOnce(pathname);
-  return decoded !== undefined &&
+  if (
+    decoded !== undefined &&
     decoded !== built &&
-    store.staticFiles.has(decoded) &&
-    !store.prerendersByPathname.has(decoded)
-    ? decoded
+    store.pathnames.includes(decoded) &&
+    foundDecoded(store, decoded)
+  ) {
+    return decoded;
+  }
+  return built !== undefined && built !== pathname && store.pathnames.includes(built)
+    ? built
     : undefined;
 }
 
@@ -127,10 +171,12 @@ export function namesWithSpellings(store: Store): string[] {
   }
   // A rewrite's path written out in full is a spelling as it is written, whatever case its escapes
   // are in and whatever they escape (`/docs/%e8%A8%98%E4%BA%8B`, `/docs/caf%65`), and no encoder's
-  // spelling need be it: one whose built name (`builtNameOf`) is a name spelled above is offered as
-  // it stands — `/docs/a%2fb` for the member `/docs/a%2Fb`, and never for `/docs/a/b`.
+  // spelling need be it: one that names a name spelled above, as Next.js finds it
+  // (`escapedNameOf`), is offered as it stands — `/docs/a%2fb` for the member `/docs/a%2Fb`,
+  // never for the member `/docs/a/b` of another route.
   for (const path of writtenDestinations(store)) {
-    if (spelled.has(builtNameOf(path) ?? '')) {
+    const name = escapedNameOf(store, path);
+    if (name !== undefined && spelled.has(name)) {
       offered.add(path);
     }
   }
