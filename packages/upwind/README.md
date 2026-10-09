@@ -244,6 +244,8 @@ If class bundling or native Worker startup fails, the CLI reports the error and 
 KV and R2 storage available. The class sources stay watched so editing them restarts development.
 Native startup errors naming a particular owner remove that owner while healthy namespaces remain
 available; failures that cannot identify an owner fall back to the default storage.
-The watch also covers TypeScript configuration and inherited configs used for aliases. If a
+Storage probe failures retain their original diagnostics and do not trigger owner recovery.
+The watch also covers TypeScript aliases and package `imports`/`exports`, including targets or
+dependency packages that have not been generated yet. If a
 registration uses a default storage name, the default gets a unique local alias while its persisted
 data and the SDK's default accessor stay available; the object's registered name is preserved.

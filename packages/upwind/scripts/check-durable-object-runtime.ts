@@ -116,6 +116,67 @@ export async function checkMissingPackageImport(
   }
 }
 
+export async function checkMissingPackageExport(
+  project: string,
+  declaration: DurableObjectDeclaration,
+  counterFixture: string,
+  variant: 'exact' | 'pattern' | 'self' | 'redirect' | 'missing-package' = 'exact',
+): Promise<void> {
+  const wildcard = variant === 'pattern';
+  const missingPackage = variant === 'missing-package';
+  const names = {
+    exact: '@upwind/generated-export',
+    pattern: 'upwind-generated-export',
+    self: '@upwind/generated-self',
+    redirect: '@upwind/generated-redirect',
+    'missing-package': '@upwind/generated-missing-package',
+  };
+  const name = names[variant];
+  const directory = variant === 'self' ? project : path.join(project, 'node_modules', name);
+  const file = path.join(directory, 'src', wildcard ? 'counter.ts' : 'exact.ts');
+  const manifest = path.join(directory, PACKAGE_JSON);
+  const source = 'missing-package-export-counter.ts';
+  let specifier = wildcard ? `${name}/counter` : name;
+  const targets = {
+    workerd: wildcard ? './src/*.ts' : './src/exact.ts',
+    default: './unselected.ts',
+  };
+  const description = JSON.stringify({
+    name,
+    type: 'module',
+    exports: wildcard ? { './*': targets } : targets,
+  });
+  if (!missingPackage) {
+    await mkdir(directory, { recursive: true });
+    await writeFile(manifest, description);
+  }
+  if (variant === 'redirect') {
+    specifier = '#generated-export';
+    await writeFile(
+      path.join(project, PACKAGE_JSON),
+      JSON.stringify({ type: 'module', imports: { [specifier]: name } }),
+    );
+  }
+  await writeFile(
+    path.join(project, source),
+    `export { Counter } from ${JSON.stringify(specifier)};`,
+  );
+  process.env[UPWIND_DURABLE_OBJECTS_ENV] = JSON.stringify([{ ...declaration, module: source }]);
+  const resources = await startLocalResources(project, { answersSignals: true });
+  try {
+    assert.equal(durableObject('COUNTERS'), undefined);
+    if (!missingPackage) assert.ok(resources.watchedFiles?.includes(file) === true);
+    assert.ok(resources.watchedFiles?.includes(manifest) === true);
+    assert.equal(resources.sourcesChanged?.(), false);
+    await mkdir(path.dirname(file), { recursive: true });
+    if (missingPackage) await writeFile(manifest, description);
+    await writeFile(file, await readFile(counterFixture));
+    assert.equal(resources.sourcesChanged(), true);
+  } finally {
+    await resources.dispose();
+  }
+}
+
 export async function checkMissingAlias(
   project: string,
   declaration: DurableObjectDeclaration,

@@ -1,3 +1,8 @@
+/** Native readiness errors differ from failures returned by individual storage probes. */
+export function runtimeStartupFailure(error: unknown): error is Error & { readonly code: string } {
+  return error instanceof Error && 'code' in error && error.code === 'ERR_RUNTIME_FAILURE';
+}
+
 function logMessage(line: string): string {
   try {
     const value: unknown = JSON.parse(line);

@@ -14,7 +14,7 @@ import type { Miniflare, MiniflareOptions } from 'miniflare';
 
 import { guardListeners } from './listeners.ts';
 import { localEntries, type LocalStorageEntry } from './local-bindings.ts';
-import { failedOwnerNames } from './local-failure.ts';
+import { failedOwnerNames, runtimeStartupFailure } from './local-failure.ts';
 import { type LocalDurableObject, localObjects } from './local-objects.ts';
 import { publishResources } from './publish.ts';
 import { sourceChanges } from './watch-sources.ts';
@@ -488,13 +488,7 @@ async function stopRuntimeOnce(runtime: Miniflare, startupError?: unknown): Prom
     // Miniflare finishes cleanup before rethrowing the same initial readiness failure. Other
     // cleanup errors and the deadline still leave shutdown unconfirmed.
     // The answer is for the claim: every other failure keeps a possibly live runtime's claim.
-    return (
-      startupError !== undefined &&
-      error === startupError &&
-      error instanceof Error &&
-      'code' in error &&
-      error.code === 'ERR_RUNTIME_FAILURE'
-    );
+    return startupError !== undefined && error === startupError && runtimeStartupFailure(error);
   }
 }
 
@@ -627,7 +621,7 @@ export async function startLocalResources(
     attempt = startAndPublish(projectDir, entries, objects);
     let remaining = objects;
     async function recover(error: unknown): Promise<Miniflare> {
-      if (!isStarting() || remaining.length === 0) throw error;
+      if (!isStarting() || remaining.length === 0 || !runtimeStartupFailure(error)) throw error;
       const failed = await attempt?.runtime;
       // Keep the storage claim throughout recovery, and never overlap two native runtimes.
       if (failed !== undefined && !(await stopRuntime(failed, error))) throw error;
@@ -639,10 +633,12 @@ export async function startLocalResources(
       remaining = remaining.filter((object) => !broken.has(object.declaration.name));
       // An unclassified failure cannot safely attribute a bad module to a particular owner.
       if (broken.size === 0) remaining = [];
-      const reason = error instanceof Error ? error.message : String(error);
-      console.warn(
-        `upwind: could not start local Durable Objects; retrying unaffected resources:\n${reason}`,
-      );
+      const reason = error.message;
+      const diagnostic =
+        broken.size === 0
+          ? 'native runtime startup failed without identifying an owner; retrying default storage without Durable Object namespaces'
+          : 'could not start local Durable Objects; retrying unaffected resources';
+      console.warn(`upwind: ${diagnostic}:\n${reason}`);
       const surviving = localEntries(remaining.map((object) => object.declaration.name));
       attempt = startAndPublish(projectDir, surviving, remaining);
       return ready(attempt);

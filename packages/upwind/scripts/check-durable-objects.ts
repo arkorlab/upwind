@@ -24,12 +24,14 @@ import {
   checkDefinitionRevision,
   checkPrefixOnlyImports,
 } from './check-durable-object-builds.ts';
+import { checkProbeFailure } from './check-durable-object-recovery.ts';
 import {
   checkConfigEdit,
   checkDefaultNameCollisions,
   checkMissingAlias,
   checkMissingDependency,
   checkMissingPackageEntry,
+  checkMissingPackageExport,
   checkMissingPackageImport,
   checkRuntimeFailure,
   checkWasmBinding,
@@ -375,14 +377,21 @@ async function checkProject(): Promise<void> {
         'missing',
         'missing-dotted',
         'missing-js',
+        'package-export',
+        'package-export-pattern',
+        'package-export-redirect',
+        'package-export-self',
         'package-import',
         'package-import-pattern',
+        'package-missing',
         'entry',
         'startup',
         'collision',
         'config',
         'config-missing',
         'production',
+        'probe',
+        'unclassified',
         'wasm',
       ];
       for (const check of runtimeChecks) {
@@ -449,15 +458,34 @@ const sideCheck = new Map([
       });
     },
   ],
+  ['package-export', () => checkMissingPackageExport(project, declaration, COUNTER_FIXTURE)],
+  [
+    'package-export-pattern',
+    () => checkMissingPackageExport(project, declaration, COUNTER_FIXTURE, 'pattern'),
+  ],
+  [
+    'package-export-redirect',
+    () => checkMissingPackageExport(project, declaration, COUNTER_FIXTURE, 'redirect'),
+  ],
+  [
+    'package-export-self',
+    () => checkMissingPackageExport(project, declaration, COUNTER_FIXTURE, 'self'),
+  ],
   ['package-import', () => checkMissingPackageImport(project, declaration, COUNTER_FIXTURE)],
   [
     'package-import-pattern',
     () => checkMissingPackageImport(project, declaration, COUNTER_FIXTURE, true),
   ],
+  [
+    'package-missing',
+    () => checkMissingPackageExport(project, declaration, COUNTER_FIXTURE, 'missing-package'),
+  ],
+  ['probe', () => checkProbeFailure(project, declaration)],
   ['production', () => checkCommonJSBinding('production')],
   ['prototype', checkPrototypeBinding],
   ['race', checkStartupEdit],
   ['startup', () => checkRuntimeFailure(project, declaration, COUNTER_FIXTURE)],
+  ['unclassified', () => checkProbeFailure(project, declaration, true)],
   [
     'wasm',
     () => {
