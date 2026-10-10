@@ -210,7 +210,7 @@ export async function handleDetached(input: RoutedInput, store: Store): Promise<
  * end was never begun behind one that was cancelled: an entry only ever prefetched stayed stale,
  * or expired, and each expired prefetch paid for a render of its own every time.
  */
-function afterBody(response: Response, then: () => void): Response {
+export function afterBody(response: Response, then: () => void): Response {
   const { body } = response;
   if (body === null) {
     then();

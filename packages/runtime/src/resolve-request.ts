@@ -1,6 +1,7 @@
 import { resolveRoutes, type ResolveRoutesResult } from '@next/routing';
 import { releaseStream } from '@stayingupwind/core/util';
 
+import { afterBody } from './generations.ts';
 import { middlewareInvoker, type MiddlewareTrace } from './middleware-invoke.ts';
 import { settleRewrittenPath } from './rewritten-path.ts';
 import {
@@ -105,5 +106,14 @@ export async function withRoutingOf(
     releaseStream(answer.body, 'foreground answer: routing answered the request itself');
     return itself;
   }
-  return withRoutingHeaders(answer, routed.resolvedHeaders);
+  const routedAnswer = withRoutingHeaders(answer, routed.resolvedHeaders);
+  // What the request uploads is let go of once the answer is done with — and only then, as the
+  // render may read it while it streams. A request with none, as every document a regeneration is
+  // asked for is, has nothing to let go of, and its answer goes out as it came.
+  const { body } = input.request;
+  return body === null
+    ? routedAnswer
+    : afterBody(routedAnswer, () => {
+        releaseStream(body, 'foreground answer: handler body unused');
+      });
 }
