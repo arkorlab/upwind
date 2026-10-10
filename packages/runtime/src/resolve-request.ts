@@ -1,7 +1,8 @@
 import { resolveRoutes, type ResolveRoutesResult } from '@next/routing';
+import { CACHE_OUTCOME_HEADER } from '@stayingupwind/core/paas';
 import { releaseStream } from '@stayingupwind/core/util';
 
-import { afterBody } from './generations.ts';
+import { afterBody, outcomeOn } from './generations.ts';
 import { middlewareInvoker, type MiddlewareTrace } from './middleware-invoke.ts';
 import { settleRewrittenPath } from './rewritten-path.ts';
 import {
@@ -65,14 +66,18 @@ export function routingOf(
 
 /**
  * What routing answers a request with itself, where it does: a redirect, or — where it found no route
- * for it — a rule's status (`routingAnswer`).
+ * for it, as the usual path reads that (`routeAndServe`: no pathname, or nothing to invoke) — a
+ * rule's status (`routingAnswer`). Where it found no route and says nothing itself, the render
+ * stands: the route the edge named was regenerated, and the edge serves the requests after this one
+ * from that generation, which the usual path's not-found would answer otherwise.
  */
 function answeredByRouting(routed: ResolveRoutesResult): Response | undefined {
   const { redirect } = routed;
   if (redirect !== undefined) {
     return redirectResponse(redirect.url.href, redirect.status, routed.resolvedHeaders);
   }
-  return routed.resolvedPathname === undefined ? routingAnswer(routed) : undefined;
+  const unrouted = routed.resolvedPathname === undefined || routed.invocationTarget === undefined;
+  return unrouted ? routingAnswer(routed) : undefined;
 }
 
 /**
@@ -101,10 +106,12 @@ export async function withRoutingOf(
   settleRewrittenPath(routed.resolvedHeaders, headers, url, undefined);
   const itself = answeredByRouting(routed);
   if (itself !== undefined) {
-    // Neither is read: what the request uploads, as on every routing exit, nor the render.
+    // Neither is read: what the request uploads, as on every routing exit, nor the render. What the
+    // regeneration came to is still said (`CACHE_OUTCOME_HEADER`): it ran, whatever answers.
     releaseStream(input.request.body, 'routing exit: handler body unused');
     releaseStream(answer.body, 'foreground answer: routing answered the request itself');
-    return itself;
+    const outcome = answer.headers.get(CACHE_OUTCOME_HEADER);
+    return outcome === null ? itself : outcomeOn(itself, outcome);
   }
   const routedAnswer = withRoutingHeaders(answer, routed.resolvedHeaders);
   // What the request uploads is let go of once the answer is done with — and only then, as the
