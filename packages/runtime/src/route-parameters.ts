@@ -1,6 +1,6 @@
 import type { ResolveRoutesResult } from '@next/routing';
 
-import type { Store } from './store.ts';
+import { type Store, unlocalizedRouteOf } from './store.ts';
 
 /** A parameter of a route, by the segment that declares it: `[id]`, `[...rest]` or `[[...rest]]`. */
 interface RouteParameter {
@@ -125,7 +125,7 @@ function heldParameters(route: string, template: string, routed: string): Record
  * slash, holds that value in the same place.
  */
 export function routeQuery(
-  store: Pick<Store, 'prerendersByPathname'>,
+  store: Pick<Store, 'manifest' | 'prerendersByPathname'>,
   route: string,
   target: NonNullable<ResolveRoutesResult['invocationTarget']>,
   routed: string,
@@ -134,8 +134,15 @@ export function routeQuery(
   if (template === undefined) {
     return target.query;
   }
-  const named = Object.entries(heldParameters(route, template, routed)).filter(
-    ([key]) => !Object.hasOwn(target.query, key),
-  );
+  // A locale's prerender in an application with `i18n` leads with a segment its template does not
+  // have (`/fr/blog/post` of `/blog/[slug]`), and so does the path routing ended on: both are read
+  // without it, or the locale is read as the template's first value.
+  const { config } = store.manifest;
+  const unlocalized = unlocalizedRouteOf(config, route);
+  const held =
+    unlocalized === undefined
+      ? heldParameters(route, template, routed)
+      : heldParameters(unlocalized, template, unlocalizedRouteOf(config, routed) ?? routed);
+  const named = Object.entries(held).filter(([key]) => !Object.hasOwn(target.query, key));
   return named.length === 0 ? target.query : { ...target.query, ...Object.fromEntries(named) };
 }
