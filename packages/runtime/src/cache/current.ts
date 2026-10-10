@@ -420,10 +420,13 @@ export async function currentGeneration(
       later !== undefined &&
       (validity === undefined || SEVERITY[later] <= SEVERITY[validity])
     ) {
-      // What a commit of this isolate's left meanwhile may be later still.
+      // What a commit of this isolate's left meanwhile may be later still, and answers where a
+      // visitor may be answered with it: `rememberRecord` keeps the later of the two, servable or not.
       const held = rememberRecord(runtime, entryId, newer);
-      const standing = held === newer ? later : judged(runtime, held, now);
-      return { kind: 'generation', current: { entryId, pack: held, validity: standing } };
+      const answer =
+        held === newer || !servable(held.header.status, held.header.headers) ? newer : held;
+      const standing = answer === newer ? later : judged(runtime, answer, now);
+      return { kind: 'generation', current: { entryId, pack: answer, validity: standing } };
     }
   }
   if (pack === null || validity === undefined) {
