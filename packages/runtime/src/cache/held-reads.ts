@@ -53,9 +53,10 @@ export async function laterIfAny(
     // The later value could not be judged: the one read is answered as it would have been.
     return read;
   }
-  if (SEVERITY[again] > SEVERITY[validity]) {
+  // Taken only where it stands no worse, and where nothing overtook it while it was read: a write
+  // of the key this isolate began meanwhile, or a read that found one later still.
+  if (SEVERITY[again] > SEVERITY[validity] || !later.keep()) {
     return read;
   }
-  later.keep();
   return { held: value, validity: again };
 }

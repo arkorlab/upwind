@@ -115,8 +115,12 @@ const NEWER_DATA_DEADLINE_MS = 200;
 /** A value later than the one a read judged, read whole, and how to keep it once it is taken. */
 export interface LaterData {
   readonly memo: Extract<DataMemo, { kind: 'found' }>;
-  /** Remember it as a read's answer is, under the key's floor; nothing where it fell below it. */
-  readonly keep: () => void;
+  /**
+   * Remember it as a read's answer is, under the key's floor: `false`, and nothing remembered,
+   * where a write of the key began while it was read, or a read found one later still — the value
+   * is then not to be answered with either.
+   */
+  readonly keep: () => boolean;
 }
 
 /**
@@ -147,6 +151,12 @@ export async function readNewerData(
     if (answer === undefined || answer.dependencyRevision <= than) {
       return undefined;
     }
+    // The key's order is learned before the bytes are read, whether or not they turn out usable or
+    // the value is taken, as a read's is (`readData`): a read answered from before it is not
+    // remembered as the key's value.
+    if (current()) {
+      state.revision = Math.max(state.revision, answer.dependencyRevision);
+    }
     const memo = await withBytes(runtime, answer);
     return memo.kind === 'found' ? memo : undefined;
   };
@@ -167,11 +177,12 @@ export async function readNewerData(
     memo: found,
     keep: () => {
       if (!current() || found.response.dependencyRevision < state.revision) {
-        return;
+        return false;
       }
       state.revision = found.response.dependencyRevision;
       state.finds += 1;
       runtime.dataMemo.set(key, found);
+      return true;
     },
   };
 }
