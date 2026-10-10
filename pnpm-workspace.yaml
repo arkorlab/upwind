@@ -57,7 +57,7 @@ catalog:
   # `@stayingupwind/adapter`) is newer than that — a local run must not be the older runtime.
   miniflare: 5.20260925.0-alpha
   next: 16.4.0
-  oxfmt: 0.71.0
+  oxfmt: 0.72.0
   rolldown: 1.2.12
   typescript: 5.9.3
   typescript-eslint: 8.71.0
