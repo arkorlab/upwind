@@ -100,6 +100,8 @@ export async function withRoutingOf(
   settleRewrittenPath(routed.resolvedHeaders, headers, url, undefined);
   const itself = answeredByRouting(routed);
   if (itself !== undefined) {
+    // Neither is read: what the request uploads, as on every routing exit, nor the render.
+    releaseStream(input.request.body, 'routing exit: handler body unused');
     releaseStream(answer.body, 'foreground answer: routing answered the request itself');
     return itself;
   }
