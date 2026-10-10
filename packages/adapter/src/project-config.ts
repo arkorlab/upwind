@@ -3,8 +3,8 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { type CronJob, cronsSchema } from '@stayingupwind/core/cron';
+import * as z from '@stayingupwind/core/schema';
 import { parse as parseJsonc, type ParseError, printParseErrorCode } from 'jsonc-parser';
-import { z } from 'zod';
 
 import { exists } from './fs.ts';
 
@@ -111,8 +111,8 @@ function configError(file: string, detail: string): Error {
   return new Error(`@stayingupwind/adapter: ${file}: ${detail}`);
 }
 
-/** Zod's issues, as one line per issue naming where in the file it was. */
-function describeIssues(error: z.ZodError): string {
+/** The issues, as one line per issue naming where in the file it was. */
+function describeIssues(error: z.SchemaError): string {
   return error.issues
     .map((issue) => {
       const at = issue.path.length === 0 ? '' : `${issue.path.join('.')}: `;

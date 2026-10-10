@@ -1,6 +1,5 @@
-import { z } from 'zod';
-
 import { sha256HexSchema } from '../artifact/artifact.ts';
+import * as z from '../schema/index.ts';
 import { ARTIFACT_ENCODINGS, ARTIFACT_ROLES } from './artifacts.ts';
 import {
   CACHE_ENTRY_KINDS,
@@ -14,15 +13,15 @@ import { GENERATION_SOURCE_KINDS, PACK_SCHEMA_VERSION } from './pack-header.ts';
 import { CACHE_POLICY_SOURCES } from './timing.ts';
 
 /**
- * The cache's shapes, as zod checks them: what a host validates on its way in and what the types
- * everywhere else are read off.
+ * The cache's shapes, as core's schemas check them: what a host validates on its way in and what the
+ * types everywhere else are read off.
  *
  * Kept apart from the code that names, times and reads entries (`keys.ts`, `timing.ts`,
  * `freshness.ts`, `pack.ts`), which imports only the types from here. A Function's runtime runs that
- * code on every request and needs none of this: bundled beside it, zod and these schemas were most
- * of the runtime's bytes and were built before its first response. The one check the runtime does
- * make, of a delivery record's header, is written out by hand (`pack-header.ts`), and held to the
- * schema below by the tests.
+ * code on every request and needs none of this: bundled beside it, these schemas would be built
+ * before its first response, and for nothing. The one check the runtime does make, of a delivery
+ * record's header, is written out by hand (`pack-header.ts`), and held to the schema below by the
+ * tests.
  */
 
 /** Route outputs by router and kind, and the two data caches Next.js keeps. */

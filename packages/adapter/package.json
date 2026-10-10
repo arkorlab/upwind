@@ -36,8 +36,7 @@
     "@stayingupwind/runtime": "workspace:*",
     "esbuild": "catalog:",
     "jsonc-parser": "catalog:",
-    "rolldown": "catalog:",
-    "zod": "catalog:"
+    "rolldown": "catalog:"
   },
   "devDependencies": {
     "@oxc-project/types": "catalog:",
