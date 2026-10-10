@@ -19,8 +19,10 @@ export class SchemaError extends Error {
     // Written out when first read, as zod's is: an issue whose data cannot be JSON (a cycle a
     // refinement put in it) still leaves an error that can be caught and its issues read.
     let message: string | undefined;
+    // Enumerable, as zod's is: an error written out as JSON says what was wrong.
     Object.defineProperty(this, 'message', {
       configurable: true,
+      enumerable: true,
       get: (): string => {
         message ??= JSON.stringify(issues, bigintAsDigits, 2);
         return message;

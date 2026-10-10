@@ -72,7 +72,12 @@ const DATETIME =
   // eslint-disable-next-line regexp/no-useless-non-capturing-group, require-unicode-regexp, sonarjs/regex-complexity -- zod's own pattern, flags and all: an issue reports it as written.
   /^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z))$/;
 const TAB_OR_NEWLINE = /[\t\n\r]/gu;
-const HIGH_SURROGATE = /[\uD800-\uDBFF]/u;
+/**
+ * The first half of a surrogate pair, as a UTF-16 unit. Without the `u` flag, which would read a
+ * pair as the one code point it is and never match it: what this finds is a string that has one.
+ */
+// eslint-disable-next-line require-unicode-regexp -- matched against UTF-16 units, as zod's is.
+const HIGH_SURROGATE = /[\uD800-\uDBFF]/;
 const SURROGATE_MASK = 0xfc_00;
 const HIGH_SURROGATE_START = 0xd8_00;
 const LOW_SURROGATE_START = 0xdc_00;
