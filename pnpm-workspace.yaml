@@ -58,7 +58,7 @@ catalog:
   miniflare: 5.20260925.0-alpha
   next: 16.4.0
   oxfmt: 0.71.0
-  rolldown: 1.2.12
+  rolldown: 1.2.13
   typescript: 5.9.3
   typescript-eslint: 8.71.0
 
