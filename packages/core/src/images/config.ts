@@ -1,6 +1,5 @@
-import { z } from 'zod';
-
 import { runnableImageRegexSchema } from '../request/pattern-safety.ts';
+import * as z from '../schema/index.ts';
 
 /**
  * What `next/image` asks the platform to enforce behind `/_next/image`, as `next build` writes it

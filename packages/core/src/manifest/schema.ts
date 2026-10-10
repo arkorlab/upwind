@@ -1,5 +1,3 @@
-import { z } from 'zod';
-
 import { artifactRefSchema, sha256HexSchema, shellEncodingsSchema } from '../artifact/artifact.ts';
 import {
   routeHasSchema,
@@ -9,6 +7,7 @@ import {
 import { KEY_SCHEMA_VERSION } from '../cache/keys.ts';
 import { deploymentFingerprintSchema } from '../deployment/fingerprint.ts';
 import { imagesConfigSchema } from '../images/config.ts';
+import * as z from '../schema/index.ts';
 
 /**
  * Bumped when a manifest starts to mean something an older reader would get wrong. An edge that

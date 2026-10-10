@@ -6,13 +6,16 @@ wire protocol between an edge and an application's Function — written once, so
 writes a bundle, the runtime that serves one, and the edge in front of it cannot disagree about what
 a field means.
 
-It has one dependency, `zod`, because most of this package is schemas. A schema is the contract:
-`deploymentBundleSchema` is what a bundle is, and a bundle that does not parse is not one.
-`BUNDLE_VERSION` says which shape a reader was written for.
+It has no dependencies. Most of this package is schemas, and they are written with `./schema`: a
+validator with zod 4's API, as much of it as these schemas use, which accepts, returns and reports
+what zod would for the same schema, and builds one as a few fields on a prototype that already has
+every method, so that a reader that evaluates them all before its first request pays little for
+it. A schema is the contract: `deploymentBundleSchema` is what a bundle is, and a bundle that does
+not parse is not one. `BUNDLE_VERSION` says which shape a reader was written for.
 
 The cache's schemas are kept in `cache/schema.ts`, apart from the code that names, times and reads
 entries, which imports only their types: a Function's runtime runs that code on every request, and
-importing it no longer brings zod into the runtime. The one check the runtime makes, of a delivery
+importing it brings no schema into the runtime. The one check the runtime makes, of a delivery
 record's header, is written out by hand in `cache/pack-header.ts`, and answers as
 `generationPackHeaderSchema` does.
 
@@ -36,6 +39,7 @@ adapter), which is also why `sideEffects: false` is true of it: nothing here ini
 | `./cron`       | Cron expressions in the dialect Vercel's cron jobs accept — five UTC fields, no `@daily`, no `MON` — and the schema a project declares them with                                                                                                                                                          |
 | `./next`       | What is known about Next.js's own releases rather than about a deployment: the newest one carrying security fixes that this release of upwind knows of, and the comparison a build and a development run warn with                                                                                        |
 | `./util`       | Bytes, streams, deadlines, ids, small LRUs, CRC32, HTML scanning                                                                                                                                                                                                                                          |
+| `./schema`     | The validator the schemas above are written with: zod 4's API, as much of it as they use, and zod's answers                                                                                                                                                                                               |
 
 ## The seam with a host
 

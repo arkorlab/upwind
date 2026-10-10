@@ -1,6 +1,5 @@
-import { z } from 'zod';
-
 import { deploymentFingerprintSchema } from '../deployment/fingerprint.ts';
+import * as z from '../schema/index.ts';
 import { SHA256_HEX_LENGTH } from './hash.ts';
 
 export { SHA256_HEX_LENGTH } from './hash.ts';

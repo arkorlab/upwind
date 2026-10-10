@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from '../schema/index.ts';
 
 function compiles(source: string): boolean {
   try {

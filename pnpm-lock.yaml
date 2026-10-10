@@ -254,9 +254,6 @@ catalogs:
     typescript-eslint:
       specifier: 8.71.0
       version: 8.71.0
-    zod:
-      specifier: 4.6.5
-      version: 4.6.5
 
 overrides:
   undici@>=7.0.0 <7.29.1: 7.29.1
@@ -348,9 +345,6 @@ importers:
       rolldown:
         specifier: 'catalog:'
         version: 1.2.12
-      zod:
-        specifier: 'catalog:'
-        version: 4.6.5
     devDependencies:
       '@oxc-project/types':
         specifier: 'catalog:'
@@ -391,10 +385,6 @@ importers:
         version: 5.9.3
 
   packages/core:
-    dependencies:
-      zod:
-        specifier: 'catalog:'
-        version: 4.6.5
     devDependencies:
       typescript:
         specifier: 'catalog:'
