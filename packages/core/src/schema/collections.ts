@@ -83,37 +83,24 @@ export class RecordSchema<
     this.value = value;
   }
 
-  /** One entry parsed into the record being built; whether `validate` stops after it. */
-  private entry(
+  /** The key as the record's key schema makes it; `undefined`, its issue recorded, where that refuses it. */
+  private keyOf(
     key: string | symbol,
-    input: Record<PropertyKey, unknown>,
     payload: Payload,
     ctx: ParseContext,
-  ): boolean {
-    const keyResult = this.key.run({ value: key, issues: [] }, ctx);
-    if (keyResult.issues.length > 0) {
-      payload.issues.push({
-        code: 'invalid_key',
-        origin: 'record',
-        issues: keyResult.issues.map((issue) => finalizeIssue(issue)),
-        input: key,
-        path: [key],
-      });
-      // `validate` stops here, as it does in a list or an object. zod's records go on, which only
-      // costs more: the answer is already no.
-      return ctx.abortEarly;
+  ): PropertyKey | undefined {
+    const result = this.key.run({ value: key, issues: [] }, ctx);
+    if (result.issues.length === 0) {
+      return result.value as PropertyKey;
     }
-    const outKey = keyResult.value as PropertyKey;
-    if (outKey === '__proto__') {
-      return false;
-    }
-    const value = this.value as unknown as Schema;
-    const result = value.run({ value: input[key], issues: [] }, ctx);
-    if (result.issues.length > 0) {
-      payload.issues.push(...prefixIssues(key, result.issues));
-    }
-    (payload.value as Record<PropertyKey, unknown>)[outKey] = result.value;
-    return ctx.abortEarly && result.issues.length > 0 && aborted(result.issues);
+    payload.issues.push({
+      code: 'invalid_key',
+      origin: 'record',
+      issues: result.issues.map((issue) => finalizeIssue(issue)),
+      input: key,
+      path: [key],
+    });
+    return undefined;
   }
 
   parseType(payload: Payload, ctx: ParseContext): Payload {
@@ -122,12 +109,28 @@ export class RecordSchema<
       payload.issues.push({ expected: 'record', code: 'invalid_type', input });
       return payload;
     }
-    payload.value = {};
+    const value = this.value as unknown as Schema;
+    // Written through this name and never read back from the payload: a new object, whatever the
+    // keys written into it.
+    const output: Record<PropertyKey, unknown> = {};
+    payload.value = output;
     for (const key of Reflect.ownKeys(input)) {
       if (key === '__proto__' || !Object.prototype.propertyIsEnumerable.call(input, key)) {
         continue;
       }
-      if (this.entry(key, input, payload, ctx)) {
+      const outKey = this.keyOf(key, payload, ctx);
+      // `validate` stops at a refused key, as it stops a list or an object at a member that fails
+      // outright. zod's records go on, which only costs more: the answer is already no.
+      if (outKey === undefined && ctx.abortEarly) {
+        break;
+      }
+      if (outKey === undefined || outKey === '__proto__') {
+        continue;
+      }
+      const result = value.run({ value: input[key], issues: [] }, ctx);
+      payload.issues.push(...prefixIssues(key, result.issues));
+      output[outKey] = result.value;
+      if (ctx.abortEarly && aborted(result.issues)) {
         break;
       }
     }

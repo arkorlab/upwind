@@ -1,6 +1,7 @@
 import type { ParseContext, Payload } from './checks.ts';
 import { aborted, prefixIssues } from './issues.ts';
 import { isObject } from './plain.ts';
+import type { RawIssue } from './raw-issue.ts';
 import { Schema } from './schema.ts';
 import type {
   Extend,
@@ -24,13 +25,16 @@ interface Field extends Slot {
   readonly schema: Schema;
 }
 
-/** A field's result written into the object being built, as zod writes it. */
+/**
+ * Whether a field's result goes into the object being built, as zod decides it; its issues, and
+ * the one a required key that is missing raises, go into `issues`.
+ */
 function settle(
   result: Payload,
-  final: Payload,
+  issues: RawIssue[],
   input: Record<PropertyKey, unknown>,
   slot: Slot,
-): void {
+): boolean {
   const { key } = slot;
   // eslint-disable-next-line unicorn/no-computed-property-existence-check -- presence is `in`, inherited keys included, as zod decides it.
   const present = key in input;
@@ -38,38 +42,42 @@ function settle(
   // A field that may be absent and is absent is not judged: whatever its schema said of the missing
   // value, a refinement's issue included, is dropped, as zod drops it.
   if (!present && optionalOut && slot.optin === 'optional') {
-    return;
+    return false;
   }
   if (result.issues.length > 0) {
     if (!present && optionalOut && slot.optin !== undefined) {
-      return;
+      return false;
     }
-    final.issues.push(...prefixIssues(key, result.issues));
+    issues.push(...prefixIssues(key, result.issues));
   }
   if (!present && slot.optin === undefined) {
     if (result.issues.length === 0) {
-      final.issues.push({
+      issues.push({
         code: 'invalid_type',
         expected: 'nonoptional',
         input: undefined,
         path: [key],
       });
     }
-    return;
+    return false;
   }
-  const output = final.value as Record<string, unknown>;
-  if (result.value !== undefined) {
-    output[key] = result.value;
-  } else if (present || (!optionalOut && slot.optin === 'defaulted')) {
-    output[key] = undefined;
-  }
+  return result.value !== undefined || present || (!optionalOut && slot.optin === 'defaulted');
 }
 
-function fieldsOf(fields: Shape): readonly Field[] {
-  return Object.entries(fields).map(([key, typed]) => {
+/** The shape as parsing reads it: zod's normalized definition, made once, at the first parse. */
+interface Layout {
+  /** The fields in the order they are parsed. */
+  readonly fields: readonly Field[];
+  /** The keys the shape names, which a strict or loose object does not count as unknown. */
+  readonly keys: ReadonlySet<string>;
+}
+
+function layoutOf(shape: Shape): Layout {
+  const fields = Object.entries(shape).map(([key, typed]): Field => {
     const schema = typed as Schema;
     return { key, schema, optin: schema.optin, optout: schema.optout };
   });
+  return { fields, keys: new Set(fields.map((field) => field.key)) };
 }
 
 /**
@@ -87,15 +95,18 @@ export class ObjectSchema<
    * change to the object it was given changes nothing here, as with zod.
    */
   private copied: S | undefined;
-  /** The fields in the order they are parsed, made at the first parse rather than at construction. */
-  private slots: readonly Field[] | undefined;
+  /**
+   * Made at the first parse rather than at construction, and kept: a field added to `shape` after
+   * that is neither parsed nor known, as zod's is neither.
+   */
+  private layout: Layout | undefined;
   private readonly given: S;
   readonly unknownKeys: M;
 
   constructor(fields: S, unknownKeys: M) {
     super();
     this.copied = undefined;
-    this.slots = undefined;
+    this.layout = undefined;
     this.given = fields;
     this.unknownKeys = unknownKeys;
   }
@@ -103,15 +114,17 @@ export class ObjectSchema<
   /** Keys the shape does not name, own or inherited, as a strict or loose object takes them. */
   private unknown(
     input: Record<PropertyKey, unknown>,
+    output: Record<string, unknown>,
     payload: Payload,
     ctx: ParseContext,
   ): Payload {
+    const { keys } = this.parsing();
     const unrecognized: string[] = [];
     let seen = 0;
     for (const key in input) {
       // A key the shape names is not unknown. Skipped before the early stop below is asked,
       // which cannot change what is found: the stop only waits for the next unknown key.
-      if (Object.hasOwn(this.shape, key)) {
+      if (keys.has(key)) {
         continue;
       }
       if (ctx.abortEarly && payload.issues.length !== seen) {
@@ -123,17 +136,20 @@ export class ObjectSchema<
       if (this.unknownKeys === 'strict') {
         unrecognized.push(key);
       } else if (key !== '__proto__') {
-        settle({ value: input[key], issues: [] }, payload, input, {
-          key,
-          optin: undefined,
-          optout: undefined,
-        });
+        // Taken as it is: a loose object's other keys are zod's `unknown()`, present by being here.
+        output[key] = input[key];
       }
     }
     if (unrecognized.length > 0) {
       payload.issues.push({ code: 'unrecognized_keys', keys: unrecognized, input, continue: true });
     }
     return payload;
+  }
+
+  /** The shape as parsing reads it, made at the first parse. */
+  private parsing(): Layout {
+    this.layout ??= layoutOf(this.shape);
+    return this.layout;
   }
 
   get shape(): S {
@@ -147,10 +163,12 @@ export class ObjectSchema<
       payload.issues.push({ expected: 'object', code: 'invalid_type', input });
       return payload;
     }
-    payload.value = {};
-    this.slots ??= fieldsOf(this.shape);
+    // Written through this name and never read back from the payload: a new object, whatever the
+    // keys written into it.
+    const output: Record<string, unknown> = {};
+    payload.value = output;
     let seen = payload.issues.length;
-    for (const field of this.slots) {
+    for (const field of this.parsing().fields) {
       if (ctx.abortEarly && payload.issues.length !== seen) {
         if (aborted(payload.issues, seen)) {
           break;
@@ -159,16 +177,15 @@ export class ObjectSchema<
       }
       // A field named `__proto__` is never parsed or written, as zod never parses one: no object
       // built here could carry it as a key of its own.
-      if (field.key !== '__proto__') {
-        settle(
-          field.schema.run({ value: input[field.key], issues: [] }, ctx),
-          payload,
-          input,
-          field,
-        );
+      if (field.key === '__proto__') {
+        continue;
+      }
+      const result = field.schema.run({ value: input[field.key], issues: [] }, ctx);
+      if (settle(result, payload.issues, input, field)) {
+        output[field.key] = result.value;
       }
     }
-    return this.unknownKeys === 'strip' ? payload : this.unknown(input, payload, ctx);
+    return this.unknownKeys === 'strip' ? payload : this.unknown(input, output, payload, ctx);
   }
 
   /** The same object with these fields added, or laid over the ones of the same name. */
