@@ -1,4 +1,4 @@
-import { NEXT_ONE_YEAR_SECONDS } from '@stayingupwind/core/cache';
+import { NEXT_ONE_YEAR_SECONDS, type Validity } from '@stayingupwind/core/cache';
 import {
   DEFAULT_D1_CACHE_TAG,
   type FunctionEnv,
@@ -16,6 +16,7 @@ import {
   requestContext,
 } from './context.ts';
 import { readData, writeData } from './data.ts';
+import { heldIn, laterIfAny } from './held-reads.ts';
 import {
   heldOut,
   type HeldValue,
@@ -25,7 +26,7 @@ import {
   writesIn,
 } from './held-writes.ts';
 import type { DataEntryMetadata } from './host.ts';
-import type { CacheRuntime, DataMemo } from './runtime.ts';
+import type { CacheRuntime } from './runtime.ts';
 import { recordValidity } from './tags.ts';
 import { callsBehind, callsWaitedOn } from './turns.ts';
 
@@ -257,13 +258,6 @@ function isFetchValue(value: unknown): value is CachedFetchValue {
 /** The store the fetch cache's writes are kept track of under (`held-writes.ts`). */
 const FETCH_STORE = 'fetch';
 
-/** What a read the host answered found, as a held value. */
-function heldIn(memo: DataMemo): HeldValue | undefined {
-  return memo.kind === 'found'
-    ? { entry: memo.response.entry, bytes: memo.bytes, invalidation: memo.response.invalidation }
-    : undefined;
-}
-
 /** The fetch cache's table of writes still out in this runtime (`keepWrite`). */
 function fetchWrites(runtime: CacheRuntime): HeldWrites {
   // Behind the render, in the request's turns for the calls behind its work
@@ -330,14 +324,11 @@ export class PlatformFetchCache {
     let held: HeldValue | undefined;
     try {
       // The tags the read is asked under are known before the entry is: they are brought up to
-      // date while the value is read, and the entry's own once it has been.
+      // date while the value is read, and the entry's own once it has been (`judge`).
       [held] = await Promise.all([
         fetchHeld(runtime, cacheKey),
         runtime.tags.syncLocal(runtime.host, [...(ctx.tags ?? []), ...(ctx.softTags ?? [])], now),
       ]);
-      if (held !== undefined) {
-        await runtime.tags.syncLocal(runtime.host, held.entry.tags, now);
-      }
     } catch (error) {
       runtime.log('fetch cache read failed', { detail: detail(error) });
       return null;
@@ -345,26 +336,42 @@ export class PlatformFetchCache {
     if (held === undefined) {
       return null;
     }
-    let value: unknown;
+    const judge = async (value: HeldValue): Promise<Validity> => {
+      await runtime.tags.syncLocal(runtime.host, value.entry.tags, now);
+      return recordValidity(runtime.tags, {
+        tags: [...value.entry.tags, ...(ctx.tags ?? []), ...(ctx.softTags ?? [])],
+        timestamp: value.entry.timestamp,
+        invalidation: value.invalidation,
+        now,
+      });
+    };
+    let judged: { readonly held: HeldValue; readonly validity: Validity };
     try {
-      value = JSON.parse(new TextDecoder().decode(held.bytes));
-    } catch {
+      judged = await laterIfAny(
+        runtime,
+        { key: cacheKey, kind: DATA_FETCH },
+        { held, validity: await judge(held) },
+        judge,
+      );
+    } catch (error) {
+      runtime.log('fetch cache read failed', { detail: detail(error) });
       return null;
     }
-    if (!isFetchValue(value)) {
-      return null;
-    }
-    const { entry } = held;
-    const validity = recordValidity(runtime.tags, {
-      tags: [...entry.tags, ...(ctx.tags ?? []), ...(ctx.softTags ?? [])],
-      timestamp: entry.timestamp,
-      invalidation: held.invalidation,
-      now,
-    });
+    const { entry } = judged.held;
+    const { validity } = judged;
     if (
       validity === 'expired' ||
       (validity === 'stale' && (isRegeneration() || isPrimaryResourceRead()))
     ) {
+      return null;
+    }
+    let value: unknown;
+    try {
+      value = JSON.parse(new TextDecoder().decode(judged.held.bytes));
+    } catch {
+      return null;
+    }
+    if (!isFetchValue(value)) {
       return null;
     }
     return { value, lastModified: validity === 'stale' ? 0 : entry.timestamp };
@@ -490,14 +497,23 @@ async function getUseCache(
   if (held === undefined) {
     return undefined;
   }
-  const { entry } = held;
-  await runtime.tags.syncLocal(runtime.host, entry.tags, now);
-  const validity = recordValidity(runtime.tags, {
-    tags: [...entry.tags, ...softTags],
-    timestamp: entry.timestamp,
-    invalidation: held.invalidation,
-    now,
-  });
+  const judge = async (value: HeldValue): Promise<Validity> => {
+    await runtime.tags.syncLocal(runtime.host, value.entry.tags, now);
+    return recordValidity(runtime.tags, {
+      tags: [...value.entry.tags, ...softTags],
+      timestamp: value.entry.timestamp,
+      invalidation: value.invalidation,
+      now,
+    });
+  };
+  const judged = await laterIfAny(
+    runtime,
+    { key: cacheKey, kind: USE_CACHE, handler: kind },
+    { held, validity: await judge(held) },
+    judge,
+  );
+  const { entry } = judged.held;
+  const { validity } = judged;
   // A regeneration must rebuild from fresh data even when Next's request store permits SWR.
   if (
     validity === 'expired' ||
@@ -506,7 +522,7 @@ async function getUseCache(
     return undefined;
   }
   return {
-    value: new Blob([held.bytes as BlobPart]).stream(),
+    value: new Blob([judged.held.bytes as BlobPart]).stream(),
     tags: [...entry.tags],
     stale: entry.stale,
     timestamp: entry.timestamp,

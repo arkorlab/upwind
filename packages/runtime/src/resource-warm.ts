@@ -113,7 +113,10 @@ export async function warmResourceRoute(input: ResourceWarmInput): Promise<Resou
         case 'busy': {
           return { v: 1, kind: 'busy' };
         }
-        case 'skipped': {
+        // Never `superseded` here, which says no generation it replaces (`replaces`): a later one
+        // standing is nothing to warm all the same.
+        case 'skipped':
+        case 'superseded': {
           return { v: 1, kind: 'skipped' };
         }
         case 'refused': {

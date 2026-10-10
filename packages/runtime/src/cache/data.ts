@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { fromBase64, toBase64 } from '@stayingupwind/core/util';
+import { fromBase64, toBase64, withDeadline } from '@stayingupwind/core/util';
 
 import type { DataEntryMetadata, DataRead, DataReadRequest, DataWritten } from './host.ts';
 import type { CacheRuntime, DataHold, DataMemo, DataState } from './runtime.ts';
@@ -102,6 +102,62 @@ export async function readData(runtime: CacheRuntime, request: DataReadRequest):
   } else if (state.finds !== finds) {
     return currentOrMissing(runtime, key);
   }
+  runtime.dataMemo.set(key, memo);
+  return memo;
+}
+
+/**
+ * How long a read waits for a value later than the one it judged, past that read. It judged the
+ * value stale or expired: what waits on the answer otherwise is computing the value again.
+ */
+const NEWER_DATA_DEADLINE_MS = 200;
+
+/**
+ * A value of the key later than the one at `than`, where the host keeps one nearer than its read
+ * (`getNewerData`) — `undefined` for none, none in time, or a host without any — and remembered as a
+ * read's answer is, under the key's floor: a host whose reads are cached answers with the value a
+ * later write replaced for as long as its cache keeps it, and a read that judged that value stale or
+ * expired would compute again what another isolate has already written.
+ */
+export async function readNewerData(
+  runtime: CacheRuntime,
+  request: DataReadRequest,
+  than: number,
+): Promise<DataMemo | undefined> {
+  const { host } = runtime;
+  if (host.getNewerData === undefined) {
+    return undefined;
+  }
+  const key = keyOf(request);
+  const stateKey = stateKeyOf(key);
+  const state = stateFor(runtime, key, stateKey);
+  const epoch = state.epoch;
+  const current = (): boolean => liveState(runtime, stateKey) === state && state.epoch === epoch;
+  let answer: DataRead | undefined;
+  try {
+    answer = await withDeadline(
+      host.getNewerData(request, than),
+      NEWER_DATA_DEADLINE_MS,
+      'a later data value',
+    );
+  } catch (error) {
+    runtime.log('later data value not read', {
+      detail: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
+  if (answer === undefined || answer.dependencyRevision <= than) {
+    return undefined;
+  }
+  if (!current() || answer.dependencyRevision < state.revision) {
+    return undefined;
+  }
+  state.revision = answer.dependencyRevision;
+  const memo = await withBytes(runtime, answer);
+  if (memo.kind !== 'found' || !current() || memo.response.dependencyRevision < state.revision) {
+    return undefined;
+  }
+  state.finds += 1;
   runtime.dataMemo.set(key, memo);
   return memo;
 }
