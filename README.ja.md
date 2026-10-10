@@ -397,6 +397,19 @@ export default async function Page() {
 - **プリレンダー中にも読めます。** SDK をインストールしたプロジェクトでは、`upwind build` がページのプリレンダー中にも同じストレージを提供するので、`generateStaticParams` がスラッグを D1 から読み出せます。そのときプリレンダーは、複数ではなく 1 つのビルドワーカーで行われます。ストレージのディレクトリーを開けるのは、一度に 1 つのランタイムだけだからです。ただしプロジェクトが `experimental.cpus` を自分で指定している場合はその値が使われ、ストレージを読むページは 1 つを除くすべてのワーカーで失敗します。素の `next build` は何も提供せず、SDK は推測で動かずに、その旨をエラーで伝えます。
 - **空から始め直すなら `.upwind/` を消してください。** ローカルだけのデータで、デプロイ先から読まれることはありません。
 
+### Durable Objects
+
+ホストに登録した顧客自身の Durable Object クラスも利用できます。アダプターはクラスごとに
+独立した小さな Worker を作り、SDK の `durableObject(name)` または
+`@stayingupwind/sdk/durable-object` からネイティブな名前空間を取得できます。
+クラスのコードは Next.js の Function に追加されません。ローカルの `upwind dev` と
+`upwind build` には、ホストから取得した `{ name, module, className }` の登録一覧を
+`UPWIND_DURABLE_OBJECTS` の JSON として渡してください。SQLite のデータは `.upwind/` に保存され、
+ソース変更による開発サーバーの再起動後も残ります。起動時にはオブジェクトを生成しません。
+クラスとリクエストハンドラーの例は [SDK のガイド](packages/sdk/README.md#durable-objects) にあります。
+ホストが `definitionRevision` を付けた場合は、その正の安全な整数も登録情報に含めてください。
+アダプターは公開前の照合用に値をそのまま返し、クラスのコードや名前空間の識別情報には使いません。
+
 ## ⏰ 定期実行
 
 ```ts

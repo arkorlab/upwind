@@ -1,7 +1,7 @@
 {
   "name": "@stayingupwind/sdk",
   "version": "0.3.0",
-  "description": "What an application reads its own storage through: the KV namespaces, R2 buckets and D1 databases its deployment published, by name or — where there is exactly one of a kind — by no name at all.",
+  "description": "What an application reads its own storage through: the KV namespaces, R2 buckets, D1 databases and Durable Object namespaces its deployment published, by name or — where there is exactly one of a kind — by no name at all.",
   "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",
@@ -29,6 +29,10 @@
     "./kv": {
       "types": "./dist/kv.d.ts",
       "default": "./dist/kv.js"
+    },
+    "./durable-object": {
+      "types": "./dist/durable-object.d.ts",
+      "default": "./dist/durable-object.js"
     },
     "./blob": {
       "types": "./dist/blob.d.ts",

@@ -2,6 +2,7 @@ import { unlinkSync } from 'node:fs';
 import { mkdir, readdir, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import { DURABLE_OBJECT_EXPORT } from '@stayingupwind/core/bundle';
 import {
   formatResourcesManifest,
   type FunctionEnv,
@@ -12,7 +13,11 @@ import {
 import type { Miniflare, MiniflareOptions } from 'miniflare';
 
 import { guardListeners } from './listeners.ts';
+import { localEntries, type LocalStorageEntry } from './local-bindings.ts';
+import { failedOwnerNames, runtimeStartupFailure } from './local-failure.ts';
+import { type LocalDurableObject, localObjects } from './local-objects.ts';
 import { publishResources } from './publish.ts';
+import { sourceChanges } from './watch-sources.ts';
 
 /**
  * A project's storage, locally: the same runtime a deployment's Functions run on, bound to
@@ -136,43 +141,29 @@ const STOP_MS = 1500;
 const ENTRY_MODULE = 'upwind-local.mjs';
 const ENTRY_SOURCE = 'export default {};';
 
-/**
- * The storage a project gets without asking for any.
- *
- * The names are what a developer reads in an error message and sees in `.upwind/`, so they say
- * where they came from. Nothing matches on them: `@stayingupwind/sdk` finds a database by there
- * being one of it rather than by its name, so a project that later declares storage of its own,
- * under its own names, is read exactly the same way.
- */
-const DEFAULTS: readonly ResourceManifestEntry[] = [
-  { name: 'UPWIND_D1', type: 'd1' },
-  { name: 'UPWIND_KV', type: 'kv_namespace' },
-  { name: 'UPWIND_R2', type: 'r2_bucket' },
-];
-
-/**
- * A second database, for trying the rule that decides a bare `db`.
- *
- * The one thing in here that exists for the trial rather than for a project: with two databases
- * published there is nothing for `db` to choose between, and what it says then is the behaviour
- * that cannot be seen with the defaults alone. It goes when the question it answers is settled.
- */
-const TRIAL_TWO_D1_ENV = 'UPWIND_TRIAL_TWO_D1';
-const TRIAL_SECOND_D1: ResourceManifestEntry = { name: 'UPWIND_D1_2', type: 'd1' };
-
 /** What the local runtime calls each kind of storage the contract names. */
+const DURABLE_OBJECT_TYPE = 'durable_object_namespace';
+const DURABLE_OBJECT_KIND = 'durable-object';
+
 const RUNTIME_TYPES = {
   d1: 'd1',
   kv_namespace: 'kv',
   r2_bucket: 'r2',
+  [DURABLE_OBJECT_TYPE]: DURABLE_OBJECT_KIND,
 } as const satisfies Record<ResourceType, string>;
 
 export interface LocalResources {
+  /** Class dependencies whose edits require a fresh worker module. */
+  readonly watchedFiles?: readonly string[];
+  /** Detect edits between class bundling and the dev server attaching its watches. */
+  readonly sourcesChanged?: () => boolean;
   /** Stop the local runtime. Call it as often as you like; the first call is the one that acts. */
   readonly dispose: () => Promise<void>;
 }
 
 export interface LocalOptions {
+  /** Class code uses production semantics during prerender; direct local callers default to dev. */
+  readonly mode?: 'development' | 'production';
   /**
    * Whether this process answers interrupts itself, and so wants the runtime's signal handlers taken
    * back (`listeners.ts`). The dev server does; a process something else ends does not.
@@ -187,14 +178,44 @@ const NOTHING_STARTED: LocalResources = {
   },
 };
 
-function bindings(): readonly ResourceManifestEntry[] {
-  return process.env[TRIAL_TWO_D1_ENV] === '1' ? [...DEFAULTS, TRIAL_SECOND_D1] : DEFAULTS;
+function noSourceChanges(): boolean {
+  return false;
 }
+
+function ownerName(name: string): string {
+  return `upwind-object-${name}`;
+}
+
+type LocalBinding =
+  | { type: 'd1' | 'kv'; id: string }
+  | { type: 'r2'; name: string }
+  | { type: typeof DURABLE_OBJECT_KIND; worker: string; exportName: string };
 
 function runtimeOptions(
   projectDir: string,
-  entries: readonly ResourceManifestEntry[],
+  entries: readonly LocalStorageEntry[],
+  objects: readonly LocalDurableObject[],
 ): MiniflareOptions {
+  const env = Object.fromEntries<LocalBinding>(
+    entries.map((entry): [string, LocalBinding] => {
+      if (entry.type === DURABLE_OBJECT_TYPE)
+        return [
+          entry.name,
+          {
+            type: DURABLE_OBJECT_KIND,
+            worker: ownerName(entry.name),
+            exportName: DURABLE_OBJECT_EXPORT,
+          },
+        ];
+      const id = `${entry.storageName ?? entry.name}-${WORKER_NAME}`;
+      return [
+        entry.name,
+        entry.type === 'r2_bucket'
+          ? { type: 'r2' as const, name: id }
+          : { type: RUNTIME_TYPES[entry.type], id },
+      ];
+    }),
+  );
   return {
     resourcePersistencePath: path.join(projectDir, PERSIST_DIR),
     workers: [
@@ -206,13 +227,41 @@ function runtimeOptions(
             mainModule: ENTRY_MODULE,
             modules: { [ENTRY_MODULE]: { type: 'esm', contents: ENTRY_SOURCE } },
           },
-          // No identifier per binding: the runtime derives a stable one from the binding name and
-          // the worker's, which is what the directories under `.upwind/` are named after.
-          env: Object.fromEntries(
-            entries.map((entry) => [entry.name, { type: RUNTIME_TYPES[entry.type] }]),
-          ),
+          // Keep the original default identifiers when the same storage is bound to an owner
+          // Worker too; otherwise each owner's constructor would receive a separate database.
+          env,
         },
       },
+      ...objects.map((object) => {
+        const modules: Record<
+          string,
+          {
+            type: 'esm' | 'wasm';
+            contents: string | Uint8Array<ArrayBuffer>;
+          }
+        > = { [ENTRY_MODULE]: { type: 'esm', contents: object.source } };
+        if (object.wasmModules !== undefined)
+          for (const module of object.wasmModules)
+            modules[module.name] = { type: 'wasm', contents: new Uint8Array(module.bytes) };
+        return {
+          config: {
+            name: ownerName(object.declaration.name),
+            compatibilityDate: COMPATIBILITY_DATE,
+            compatibilityFlags: ['nodejs_compat'],
+            manifest: {
+              mainModule: ENTRY_MODULE,
+              modules,
+            },
+            exports: {
+              [DURABLE_OBJECT_EXPORT]: {
+                type: DURABLE_OBJECT_KIND,
+                storage: 'sqlite',
+              } as const,
+            },
+            env,
+          },
+        };
+      }),
     ],
   };
 }
@@ -238,6 +287,9 @@ async function bindingOf(runtime: Miniflare, entry: ResourceManifestEntry): Prom
     case 'r2_bucket': {
       return runtime.getR2Bucket(entry.name);
     }
+    case DURABLE_OBJECT_TYPE: {
+      return runtime.getDurableObjectNamespace(entry.name, WORKER_NAME);
+    }
   }
 }
 
@@ -251,6 +303,10 @@ class LocalStorageError extends Error {
 /** The cheapest read there is of one binding: nothing is stored, and nothing is written. */
 async function probe(entry: ResourceManifestEntry, binding: unknown): Promise<void> {
   switch (entry.type) {
+    case DURABLE_OBJECT_TYPE: {
+      // Namespace readiness never constructs an object or executes the customer's class.
+      return;
+    }
     case 'd1': {
       const database = binding as { prepare: (sql: string) => { first: () => Promise<unknown> } };
       await database.prepare('select 1').first();
@@ -396,9 +452,8 @@ async function localEnv(
   runtime: Miniflare,
   entries: readonly ResourceManifestEntry[],
 ): Promise<FunctionEnv> {
-  const env: Record<string, unknown> = {
-    [RESOURCES_MANIFEST_BINDING]: formatResourcesManifest(entries),
-  };
+  const env = Object.create(null) as Record<string, unknown>;
+  env[RESOURCES_MANIFEST_BINDING] = formatResourcesManifest(entries);
   for (const entry of entries) {
     // An object, as a Function's binding is — which is what `resourcesOf` publishes and what it
     // passes over. The runtime hands these across a socket, and they are objects on this side too.
@@ -415,21 +470,38 @@ async function localEnv(
  * in a build's render worker, a build that never ends. Its own exit hook is the backstop, and it is a
  * `SIGKILL`, so whatever this gives up on is still gone when the process leaves.
  */
-async function stopRuntime(runtime: Miniflare): Promise<boolean> {
+const runtimeStops = new WeakMap<Miniflare, Promise<boolean>>();
+
+function stopRuntime(runtime: Miniflare, startupError?: unknown): Promise<boolean> {
+  const pending = runtimeStops.get(runtime);
+  if (pending !== undefined) return pending;
+  const stopping = stopRuntimeOnce(runtime, startupError);
+  runtimeStops.set(runtime, stopping);
+  return stopping;
+}
+
+async function stopRuntimeOnce(runtime: Miniflare, startupError?: unknown): Promise<boolean> {
   try {
     await Promise.race([runtime.dispose(), afterDeadline(STOP_MS, 'the runtime did not stop')]);
     return true;
-  } catch {
-    // Nothing more can be done about it here, and nothing is waiting to be told: a run that is
-    // shutting down has nowhere to put this, and one that failed to start has already said so. What
-    // the answer is for is the claim, which must not go back while a runtime may still be up.
-    return false;
+  } catch (error) {
+    // Miniflare finishes cleanup before rethrowing the same initial readiness failure. Other
+    // cleanup errors and the deadline still leave shutdown unconfirmed.
+    // The answer is for the claim: every other failure keeps a possibly live runtime's claim.
+    return startupError !== undefined && error === startupError && runtimeStartupFailure(error);
   }
 }
 
-function stopper(runtime: Miniflare, release: () => void): LocalResources {
+function stopper(
+  runtime: Miniflare,
+  release: () => void,
+  watchedFiles: readonly string[],
+  sourcesChanged: () => boolean,
+): LocalResources {
   let stopping: Promise<void> | undefined;
   return {
+    watchedFiles,
+    sourcesChanged,
     dispose: async () => {
       // Once, and awaited by everyone: a dev run ends through whichever of its paths reaches the
       // end first, and stopping a runtime that is already stopping is not the caller's problem.
@@ -470,12 +542,16 @@ interface Attempt {
   readonly done: Promise<Miniflare>;
 }
 
-function startAndPublish(projectDir: string, entries: readonly ResourceManifestEntry[]): Attempt {
+function startAndPublish(
+  projectDir: string,
+  entries: readonly LocalStorageEntry[],
+  objects: readonly LocalDurableObject[],
+): Attempt {
   const arrived: PromiseWithResolvers<Miniflare | undefined> = Promise.withResolvers();
   const done = (async (): Promise<Miniflare> => {
     let runtime: Miniflare | undefined;
     try {
-      runtime = await startRuntime(runtimeOptions(projectDir, entries));
+      runtime = await startRuntime(runtimeOptions(projectDir, entries, objects));
     } finally {
       // Either way, and before anything slower: a runtime, or the news that there will not be one.
       arrived.resolve(runtime);
@@ -520,26 +596,70 @@ export async function startLocalResources(
   projectDir: string,
   options: LocalOptions,
 ): Promise<LocalResources> {
-  const entries = bindings();
   // Before the runtime is started, and given back in the `finally`: what it does to a process it
   // does not own, and why that matters more than it sounds like, is `listeners.ts`.
   const guard = guardListeners({ answersSignals: options.answersSignals });
   let release: (() => void) | undefined;
   let attempt: Attempt | undefined;
+  let starting = true;
+  const isStarting = (): boolean => starting;
+  const watchedFiles = new Set<string>();
+  const versions = new Map<string, string>();
+  let sourcesChanged = noSourceChanges;
   try {
+    const objects = await localObjects(
+      projectDir,
+      watchedFiles,
+      versions,
+      options.mode ?? 'development',
+    );
+    sourcesChanged = sourceChanges(versions);
+    const entries = localEntries(objects.map((object) => object.declaration.name));
     // The claim comes first, because the thing it prevents cannot be undone: two runtimes over one
     // directory read each other's data happily and then lose a write with no error anybody can see.
     release = await claimStorage(path.join(projectDir, PERSIST_DIR));
-    attempt = startAndPublish(projectDir, entries);
+    attempt = startAndPublish(projectDir, entries, objects);
+    let remaining = objects;
+    async function recover(error: unknown): Promise<Miniflare> {
+      if (!isStarting() || remaining.length === 0 || !runtimeStartupFailure(error)) throw error;
+      const failed = await attempt?.runtime;
+      // Keep the storage claim throughout recovery, and never overlap two native runtimes.
+      if (failed !== undefined && !(await stopRuntime(failed, error))) throw error;
+      if (!isStarting()) throw error;
+      const broken = failedOwnerNames(
+        error,
+        remaining.map((object) => object.declaration.name),
+      );
+      remaining = remaining.filter((object) => !broken.has(object.declaration.name));
+      // An unclassified failure cannot safely attribute a bad module to a particular owner.
+      if (broken.size === 0) remaining = [];
+      const reason = error.message;
+      const diagnostic =
+        broken.size === 0
+          ? 'native runtime startup failed without identifying an owner; retrying default storage without Durable Object namespaces'
+          : 'could not start local Durable Objects; retrying unaffected resources';
+      console.warn(`upwind: ${diagnostic}:\n${reason}`);
+      const surviving = localEntries(remaining.map((object) => object.declaration.name));
+      attempt = startAndPublish(projectDir, surviving, remaining);
+      return ready(attempt);
+    }
+    async function ready(current: Attempt): Promise<Miniflare> {
+      try {
+        return await current.done;
+      } catch (error) {
+        return recover(error);
+      }
+    }
     const runtime = await Promise.race([
-      attempt.done,
+      ready(attempt),
       afterDeadline(
         START_MS,
         `this project's local storage did not come up within ${String(START_SECONDS)}s, so nothing is published in this run`,
       ),
     ]);
-    return stopper(runtime, release);
+    return stopper(runtime, release, [...watchedFiles], sourcesChanged);
   } catch (error) {
+    starting = false;
     console.warn(cannotStart(error));
     // Whatever went wrong, a runtime process must not outlive the attempt that started it — including
     // an attempt still in the middle of starting one — and the claim goes back with it. Nothing waits
@@ -547,8 +667,9 @@ export async function startLocalResources(
     // published to anybody.
     // eslint-disable-next-line @typescript-eslint/no-floating-promises -- said above, not waited for.
     void letGo(attempt?.runtime, release);
-    return NOTHING_STARTED;
+    return { ...NOTHING_STARTED, watchedFiles: [...watchedFiles], sourcesChanged };
   } finally {
+    starting = false;
     guard.restore();
   }
 }

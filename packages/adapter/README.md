@@ -494,3 +494,40 @@ time, which the deploy step sets and the runtime tests do not).
 
 `EXPERIMENTS.md` records what was tried against this package and the runtime, with the
 measurements, and what was kept.
+
+## Host-registered Durable Objects
+
+Pass `durableObjects: [{ name, module, className }]` to `createAdapter`. The host's registration is
+read directly; no project configuration key duplicates it. `module` is relative to `projectDir`,
+resolves to a file inside that directory even through symlinks, and must export `className`.
+Malformed declarations, duplicate names, missing modules and missing exports fail the build.
+An optional positive safe integer `definitionRevision` carries the host's sealed definition revision
+unchanged into the bundle. It is opaque metadata: changing it does not change class code or namespace
+identity. The host can compare it before publishing to reject a bundle built from a different revision.
+
+Each registration becomes a dedicated `functions.durableObjects[name]` FunctionSpec; the registration
+array is carried as top-level `durableObjects`. Its source class is re-exported as `UpwindDurableObject`,
+keeping the native namespace's class identity independent of source refactoring. Source code is
+bundled separately from every Next.js Function, with Cloudflare and native Node imports left to
+workerd. The Function is checked against the existing upload size bound and uses the same compatibility
+date and flags as the other Functions.
+
+Imported `.wasm` files travel beside the class code as native compiled modules. Their
+`dependencies.json` entries use `compiledWasmModules: [{ file, module }]`; `wasmModules` remains
+reserved for the existing application bundles' global mappings.
+
+Bundles carrying these Functions use version 5, or 6 when the Next.js app Functions are split; an
+older host rejects the version instead of dropping the object's code. Declarations and Function keys
+must correspond exactly. `bundleBlobs` includes the class modules, so the existing content-addressed
+upload protocol carries them too. Bundles declaring no objects keep their previous version.
+
+The host deploys a stable owner Worker per registration and provisions its SQLite namespace with
+`exports: { UpwindDurableObject: { type: 'durable-object', storage: 'sqlite' } }`. It attaches native
+namespace bindings when uploading the Next.js Functions. Owner publication, environment isolation,
+retention and destruction belong to the host. No namespace lookup or proxy runs in the Next.js
+request path, and no instance is created during bundling or namespace publication.
+
+`bundleDurableObjects(projectDir, declarations)` is also exported for local tools. It returns each
+registration, bundled source and its dependency paths. The CLI uses this to start the same class
+modules in its local runtime. The adapter's default export also reads downloaded declarations from
+`UPWIND_DURABLE_OBJECTS`, which is the local build input rather than a storage registration command.

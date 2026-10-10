@@ -10,6 +10,7 @@
   },
   "scripts": {
     "build": "pnpm -r build",
+    "check:durable-objects": "node packages/upwind/scripts/check-durable-objects.ts",
     "check:agent-rules": "node packages/create-upwind/scripts/check-agent-rules.ts",
     "check:patches": "node packages/adapter/scripts/check-patches.ts",
     "check:patches:range": "node packages/adapter/scripts/check-patches.ts --range",

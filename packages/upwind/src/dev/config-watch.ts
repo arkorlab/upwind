@@ -65,7 +65,7 @@ async function nextConfigFiles(projectDir: string): Promise<readonly string[] | 
 /** The one thing there is to say about a watch this run does not have. */
 function lostWatch(where: string, error: unknown): string {
   const reason = error instanceof Error ? error.message : String(error);
-  return `upwind: cannot watch ${where} for config changes, so a change to next.config will not restart this server (${reason})`;
+  return `upwind: cannot watch ${where}, so changes to the watched config or class sources will not restart this server (${reason})`;
 }
 
 /** Stop watching: what a run calls when it is shutting down and a change is no longer its business. */
@@ -346,6 +346,11 @@ export async function watchConfigFiles(projectDir: string): Promise<StopWatching
   // out of inotify watches refuses with `ENOSPC` — or lost later: a dev server that stops restarting
   // on a config change is still a dev server, and taking one down over this would be the worse
   // failure.
+  return watchSourceFiles(files);
+}
+
+/** Class code is read at startup, just like a configuration file. */
+export function watchSourceFiles(files: readonly string[]): StopWatching {
   const settling: Settling = { timer: undefined };
   const watchers: FSWatcher[] = [];
   for (const [directory, listening] of watchPoints(files)) {

@@ -98,3 +98,12 @@ export {
   staticFileLocalesOf,
   travelsWithFunction,
 } from './static-files.ts';
+
+export {
+  type DurableObjectDeclaration,
+  durableObjectDeclarationSchema,
+  durableObjectDeclarationsSchema,
+  DURABLE_OBJECT_EXPORT,
+  DURABLE_OBJECT_BUNDLE_VERSION,
+  DURABLE_OBJECT_SPLIT_BUNDLE_VERSION,
+} from './durable-objects.ts';

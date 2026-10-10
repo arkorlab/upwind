@@ -221,3 +221,31 @@ needs one runs `next build` itself, with the `next.config` above.
 ## Licence
 
 MIT or Apache-2.0, at your option.
+
+## Local Durable Objects
+
+Use the registrations exported by your host as `UPWIND_DURABLE_OBJECTS`, a JSON array of
+`{ name, module, className }`. Modules are relative to the Next.js project directory. Both
+`upwind dev` and `upwind build` use it; the corresponding adapter and SDK packages must support
+Durable Objects.
+Registrations may include the host's positive safe integer `definitionRevision`; local builds carry
+it unchanged into deployment metadata so the host can validate the definition used for the build.
+
+Each class runs in its own local Worker and gets a SQLite namespace persisted in `.upwind/`.
+The namespace is published under its registered name, so `durableObject('COUNTERS')` and the
+`@stayingupwind/sdk/durable-object` default import work as they do in the deployment. Namespace
+startup does not instantiate objects. The first application invocation runs the class.
+
+Editing a bundled class dependency restarts the dev server through the existing supervisor,
+keeping persisted data. Updating the registration input requires restarting the command with the
+new exported array. Deleting `.upwind/` also deletes the local objects' data.
+
+If class bundling or native Worker startup fails, the CLI reports the error and keeps default D1,
+KV and R2 storage available. The class sources stay watched so editing them restarts development.
+Native startup errors naming a particular owner remove that owner while healthy namespaces remain
+available; failures that cannot identify an owner fall back to the default storage.
+Storage probe failures retain their original diagnostics and do not trigger owner recovery.
+The watch also covers TypeScript aliases and package `imports`/`exports`, including targets or
+dependency packages that have not been generated yet. If a
+registration uses a default storage name, the default gets a unique local alias while its persisted
+data and the SDK's default accessor stay available; the object's registered name is preserved.

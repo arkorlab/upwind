@@ -752,7 +752,7 @@ function describe(file: string, code: string, use: Use): DynamicLoad {
 }
 
 /** The uses in one module as rendered; JavaScript by then, whatever the module was written in. */
-function dynamicLoadsOf(file: string, code: string): DynamicLoad[] {
+export function dynamicLoadsOf(file: string, code: string): DynamicLoad[] {
   return usesIn(parseAst(code, { lang: 'js' }, file)).map((use) => describe(file, code, use));
 }
 

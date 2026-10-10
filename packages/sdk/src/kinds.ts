@@ -1,7 +1,7 @@
 /**
- * The three kinds of storage, and the words each one is described with.
+ * The four kinds of storage, and the words each one is described with.
  *
- * Here because one implementation decides all three: how a bare accessor resolves, and what it says
+ * Here because one implementation decides all four: how a bare accessor resolves, and what it says
  * when it cannot. A message that names the wrong thing is worse than no message, so the naming is
  * data rather than something each entry point writes out for itself.
  */
@@ -40,4 +40,12 @@ export const BLOB: Kind = {
   accessor: 'blob',
   lookup: 'blob',
   module: '@stayingupwind/sdk/blob',
+};
+
+export const DURABLE_OBJECT: Kind = {
+  type: 'durable_object_namespace',
+  called: 'Durable Object namespace',
+  accessor: 'durableObject',
+  lookup: 'durableObject',
+  module: '@stayingupwind/sdk/durable-object',
 };

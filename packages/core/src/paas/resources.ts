@@ -1,4 +1,7 @@
 import { type D1Observation, observeD1 } from './d1-observation.ts';
+import { RESOURCES_MANIFEST_BINDING } from './resources-constants.ts';
+
+export { RESOURCES_MANIFEST_BINDING } from './resources-constants.ts';
 
 /**
  * A project's storage bindings on the way from its host to the application.
@@ -11,16 +14,13 @@ import { type D1Observation, observeD1 } from './d1-observation.ts';
  */
 
 /** The kinds of storage a binding can be, in the words Cloudflare's upload metadata uses. */
-export const RESOURCE_TYPES = ['kv_namespace', 'r2_bucket', 'd1'] as const;
+export const RESOURCE_TYPES = [
+  'kv_namespace',
+  'r2_bucket',
+  'd1',
+  'durable_object_namespace',
+] as const;
 export type ResourceType = (typeof RESOURCE_TYPES)[number];
-
-/**
- * The binding a deployment's Functions carry the list on, as JSON: what the runtime builds the
- * published shape from, so that what the application finds is exactly what its deployment
- * attached — never an environment variable, never a binding of the host's. Absent on a
- * deployment bound to no storage.
- */
-export const RESOURCES_MANIFEST_BINDING = 'ARKOR_RESOURCES';
 
 /**
  * The key the runtime publishes the bindings under, in the global symbol registry.
@@ -42,7 +42,7 @@ export interface ResourceManifestEntry {
 /** One binding as the application finds it: its kind, and Cloudflare's own object for it. */
 export interface PublishedResource {
   readonly type: ResourceType;
-  /** A `KVNamespace`, an `R2Bucket` or a `D1Database`, as the Function was handed it. */
+  /** A `KVNamespace`, `R2Bucket`, `D1Database` or `DurableObjectNamespace`, as handed to the Function. */
   readonly binding: unknown;
 }
 

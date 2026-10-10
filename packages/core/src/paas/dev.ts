@@ -44,3 +44,6 @@ export const UPWIND_LOCAL_RESOURCES_ENV = 'UPWIND_LOCAL_RESOURCES';
 export function isUpwindInternalPath(pathname: string): boolean {
   return pathname === UPWIND_INTERNAL_PREFIX || pathname.startsWith(`${UPWIND_INTERNAL_PREFIX}/`);
 }
+
+/** Downloaded host registrations used by local development and builds. */
+export const UPWIND_DURABLE_OBJECTS_ENV = 'UPWIND_DURABLE_OBJECTS';

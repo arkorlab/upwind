@@ -72,7 +72,7 @@ import { WASM_ENTRY_MODULE, type WasmCollector, wasmEntrySource, wasmModuleName 
  * The runtime the user Function is uploaded against. Pinned rather than following the platform's own
  * Functions: a deployment's semantics must not shift underneath it when the platform moves its date.
  */
-const FUNCTION_COMPATIBILITY_DATE = '2026-09-15';
+export const FUNCTION_COMPATIBILITY_DATE = '2026-09-15';
 /**
  * `global_fetch_strictly_public`: a `fetch()` to the application's own hostname goes out the front
  * door, as it does from `next start` or any other host, and reaches the application. Without it a
@@ -85,7 +85,7 @@ const FUNCTION_COMPATIBILITY_DATE = '2026-09-15';
  * front door, through whatever Workers and security the zone has, and none goes to its origin. It is
  * given to every Function the adapter builds, the middleware's as well as the application's.
  */
-const FUNCTION_COMPATIBILITY_FLAGS: readonly string[] = [
+export const FUNCTION_COMPATIBILITY_FLAGS: readonly string[] = [
   'nodejs_compat',
   'global_fetch_strictly_public',
 ];

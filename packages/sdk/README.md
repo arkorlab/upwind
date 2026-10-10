@@ -26,7 +26,7 @@ it the same way in both places.
 | `d1(name)`, `kv(name)`, `blob(name)`         | storage by the name it was bound under                    |
 | `published()`                                | everything published, and the names it is published under |
 
-The three default exports are lazy: nothing is resolved until the first time one is used, because a
+The default exports are lazy: nothing is resolved until the first time one is used, because a
 module is evaluated before there is any storage to be. Everything else is a plain function.
 
 ## The rule for a bare `db`
@@ -81,3 +81,60 @@ export const orm = drizzle(db, { schema });
 ## Licence
 
 MIT or Apache-2.0, at your option.
+
+## Durable Objects
+
+A host can register a binding name, a project-relative module path and its named class export.
+The adapter builds that class into a small Worker of its own; Next.js Functions receive a native
+`DurableObjectNamespace`. Defining the class never instantiates an object. The host controls namespace
+identity, code updates and removal, so consult its documentation for deployment and rollback behavior.
+
+```ts
+// src/objects/counter.ts
+import { DurableObject } from 'cloudflare:workers';
+
+export class Counter extends DurableObject {
+  async increment(): Promise<number> {
+    const value = ((await this.ctx.storage.get<number>('count')) ?? 0) + 1;
+    await this.ctx.storage.put('count', value);
+    return value;
+  }
+}
+```
+
+```ts
+// app/api/counter/route.ts
+import { durableObject } from '@stayingupwind/sdk';
+import type { Counter } from '../../../src/objects/counter';
+
+export async function POST() {
+  const counters = durableObject<Counter>('COUNTERS');
+  if (counters === undefined) return new Response('Binding unavailable', { status: 503 });
+  return Response.json({ count: await counters.getByName('visits').increment() });
+}
+```
+
+`durableObject(name)` returns `undefined` for a missing name or a binding of another kind. The default
+export from `@stayingupwind/sdk/durable-object` follows the same one-of-a-kind rule as `db`. Namespaces
+and stubs retain Cloudflare's native methods, including RPC and `fetch`; the SDK adds no network call.
+Class modules use their constructor's native `env` for other bindings. Use type-only imports of these
+classes from Next.js code so their Worker-only modules stay outside the application's bundle.
+
+For a Server Component on a host that builds without storage, call `await connection()` from
+`next/server` before the first operation and put that component under `<Suspense>`. This keeps the
+operation at request time while its surrounding shell can be prerendered. Route Handlers serving
+`POST` and Server Actions already run at request time.
+
+For local runs, pass the host's exported registrations through `UPWIND_DURABLE_OBJECTS`:
+
+```bash
+UPWIND_DURABLE_OBJECTS='[{"name":"COUNTERS","module":"src/objects/counter.ts","className":"Counter"}]' pnpm upwind dev
+```
+
+The same input works for `upwind build`. Local objects use SQLite storage in `.upwind/`, keep their
+state when the server restarts, and execute source edits after the dev supervisor restarts. Startup
+obtains namespace handles without creating or calling objects. Plain `next dev` publishes no bindings.
+For hosted placement, choose a `locationHint` on `get()` or `getByName()` only when the app needs one;
+otherwise the first actual access places the object near its caller. See Cloudflare's
+[namespace API](https://developers.cloudflare.com/durable-objects/api/namespace/) and
+[data location](https://developers.cloudflare.com/durable-objects/reference/data-location/).

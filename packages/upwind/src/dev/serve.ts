@@ -17,11 +17,12 @@ import { installAdapterPath } from './adapter.ts';
 import { displayAddress, internalAddress } from './address.ts';
 import { ensureAgentRules } from './agent-rules.ts';
 import { printListening, printReady } from './banner.ts';
-import { type StopWatching, watchConfigFiles } from './config-watch.ts';
+import { type StopWatching, watchConfigFiles, watchSourceFiles } from './config-watch.ts';
 import { setEnv } from './env.ts';
 import { listen } from './listen.ts';
 import { type NextHandler, type RunningNext, startNextApp } from './next-app.ts';
 import { reachable } from './probe.ts';
+import { restart } from './restart.ts';
 import { createSession } from './session.ts';
 
 /**
@@ -257,7 +258,10 @@ export async function serveDev(options: DevOptions): Promise<void> {
   const local: LocalResources = await startLocalResources(options.projectDir, {
     // This run answers its own interrupts, above, and disposes of the runtime on its way out.
     answersSignals: true,
+    mode: 'development',
   });
+  const stopWatchingObjects = watchSourceFiles(local.watchedFiles ?? []);
+  if (local.sourcesChanged?.() === true) restart('Durable Object sources changed during startup');
   let app: RunningNext;
   try {
     app = await startNextApp({
@@ -278,6 +282,7 @@ export async function serveDev(options: DevOptions): Promise<void> {
     const reason = error instanceof Error ? error : new Error(String(error));
     nextReady.resolve(() => Promise.reject(reason));
     stopWatching();
+    stopWatchingObjects();
     server.close();
     // Waited for rather than merely closed. The 500s are written in continuations of that rejection, and
     // `cli.ts` ends the process the moment this throw reaches it — so without this the answers this
@@ -329,6 +334,7 @@ export async function serveDev(options: DevOptions): Promise<void> {
   // A config change is no longer this run's business: the developer asked it to stop, and a restart
   // would start again the server they stopped.
   stopWatching();
+  stopWatchingObjects();
   server.close();
   // A keep-alive connection would otherwise hold the close open for as long as a browser felt like.
   server.closeAllConnections();
