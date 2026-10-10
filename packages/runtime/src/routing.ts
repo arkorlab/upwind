@@ -25,6 +25,7 @@ import {
   FALLBACK,
   markedRewrites,
 } from './rewritten-path.ts';
+import { routeQuery } from './route-parameters.ts';
 import { HTTP_OK } from './serve.ts';
 import { entrypointKindOf, type Store } from './store.ts';
 
@@ -563,11 +564,15 @@ function handlerUrl(
     return routed;
   }
   if (asked.rewrite !== undefined) {
-    return `${inLocaleOf(store, url.pathname, target.pathname)}${queryString(target.query)}`;
+    const query = routeQuery(store, route, target, withoutTrailingSlash(target.pathname));
+    return `${inLocaleOf(store, url.pathname, target.pathname)}${queryString(query)}`;
   }
   return PAGES_ROUTER.has(kind)
     ? `${url.pathname}${url.search}`
-    : `${url.pathname}${withRouteParameters(url.search, target.query)}`;
+    : `${url.pathname}${withRouteParameters(
+        url.search,
+        routeQuery(store, route, target, withoutTrailingSlash(target.pathname)),
+      )}`;
 }
 
 /**
