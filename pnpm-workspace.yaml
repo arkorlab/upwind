@@ -30,7 +30,7 @@ catalog:
   # this pin is what the repository builds and typechecks against — the same arrangement as `next`.
   better-auth: 1.7.7
   esbuild: 0.28.2
-  eslint: 10.11.0
+  eslint: 10.12.0
   eslint-config-prettier: 10.1.8
   eslint-import-resolver-typescript: 4.4.5
   eslint-plugin-import-x: 4.17.1
