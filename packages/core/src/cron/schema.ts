@@ -1,5 +1,4 @@
-import { z } from 'zod';
-
+import * as z from '../schema/index.ts';
 import { cronExpressionError } from './expression.ts';
 
 /**

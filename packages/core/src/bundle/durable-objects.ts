@@ -1,7 +1,6 @@
-import { z } from 'zod';
-
 import { RESOURCE_CHANGES_SERVICE_BINDING } from '../paas/resource-changes.ts';
 import { RESOURCES_MANIFEST_BINDING } from '../paas/resources-constants.ts';
+import * as z from '../schema/index.ts';
 
 const MAX_NAME_LENGTH = 64;
 const MAX_MODULE_LENGTH = 1024;

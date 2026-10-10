@@ -1,6 +1,5 @@
-import { z } from 'zod';
-
 import { sha256HexOfText } from '../artifact/hash.ts';
+import * as z from '../schema/index.ts';
 import { compareCodeUnits, decodeUtf8 } from '../util/bytes.ts';
 import { scanFlightBuildId } from './flight-build-id.ts';
 

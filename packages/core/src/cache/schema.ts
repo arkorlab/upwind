@@ -1,6 +1,5 @@
-import { z } from 'zod';
-
 import { sha256HexSchema } from '../artifact/artifact.ts';
+import * as z from '../schema/index.ts';
 import { ARTIFACT_ENCODINGS, ARTIFACT_ROLES } from './artifacts.ts';
 import {
   CACHE_ENTRY_KINDS,

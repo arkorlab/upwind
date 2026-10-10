@@ -24,7 +24,7 @@ const OUT_DIR = path.join(ROOT, 'dist');
 const EXTERNAL = [
   // Resolved to a path and bundled into the Function, never imported here.
   '@stayingupwind/runtime',
-  // The bundlers and parsers the adapter drives, and the schema library it validates with.
+  // The bundlers and parsers the adapter drives.
   // `rolldown` by pattern, not by name: `rolldown/parseAst` is a subpath, and inlining it drags
   // in the loader that finds rolldown's native binding — which then looks for it beside *this*
   // file and fails.
@@ -32,7 +32,6 @@ const EXTERNAL = [
   /^rolldown(\/|$)/u,
   '@oxc-project/types',
   'jsonc-parser',
-  'zod',
   // The source map readers, which are dependencies of their own rather than code of this package's.
   '@jridgewell/sourcemap-codec',
   '@jridgewell/trace-mapping',
