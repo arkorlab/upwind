@@ -48,10 +48,11 @@ knowledge of the host** in front of it: what arrives is the wire protocol in `@s
 A host whose reads are cached can answer with a generation a later one replaced, or with none, for
 as long as its cache keeps that answer — after another isolate of the same Function published the
 later one. A host that keeps the later one nearer, a copy in the Function's own data center say,
-offers it through `readNewerRecord` and `getNewerData`, which the runtime asks only of an entry or a
-value it found missing or no longer fresh, never of one it is about to serve fresh; and it can hand
-back the record a commit wrote (`CommitOutcome.record`), which the isolate that published answers
-the entry's next request from. A regeneration whose lease finds a later generation standing than
+offers it through `readNewerRecord`, which the runtime asks only of an entry it found missing or no
+longer fresh, and `getNewerData`, which it asks only of a value it found no longer fresh — a value it
+found missing is `getData`'s to answer from what the host keeps nearer — never of one it is about to
+serve fresh; and it can hand back the record a commit wrote (`CommitOutcome.record`), which the
+isolate that published answers the entry's next request from. A regeneration whose lease finds a later generation standing than
 the one it judged (`AttemptOutcome.current`) gives the lease back rather than replace it with a
 render of the same thing, and an answer made from a regeneration ends once its publish has landed,
 as it does for the request's other cache writes.

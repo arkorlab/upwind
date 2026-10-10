@@ -276,6 +276,19 @@ export function forgetRecord(runtime: CacheRuntime, entryId: string): void {
 }
 
 /**
+ * `forgetRecord`, where what this isolate holds of the entry is a generation earlier than `seq`: a
+ * regeneration given back to generation `seq` lets go of the one it judged, and keeps a record of
+ * that generation or a later one that another request of the isolate learned meanwhile.
+ */
+export function forgetRecordBefore(runtime: CacheRuntime, entryId: string, seq: number): void {
+  const held = runtime.recordMemo.get(entryId);
+  if (held !== undefined && held !== null && held.header.seq >= seq) {
+    return;
+  }
+  forgetRecord(runtime, entryId);
+}
+
+/**
  * Hold `pack` as what this isolate knows of the entry, for a hold, in place of a read still in
  * flight, which lands nowhere now — unless what it holds already is a later generation still, which
  * a commit or a read that answered first left it: the later of the two is held, and returned.
