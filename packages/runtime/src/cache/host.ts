@@ -167,6 +167,13 @@ export interface CurrentSummary {
   readonly policy: CachePolicy;
   /** Set once an invalidation condemned it. */
   readonly condemned: InvalidationState | null;
+  /**
+   * The status it answers with, and the `location` it redirects to, `null` for none: what says
+   * whether a visitor may be answered with it (`servable`). Absent from a host that does not say,
+   * and then nothing is taken to supersede the generation a request judged.
+   */
+  readonly status?: number | undefined;
+  readonly location?: string | null | undefined;
 }
 
 /** The lease, or the word that another holder has it; either way the entry's id is known. */
