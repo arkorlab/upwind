@@ -10,6 +10,7 @@ import {
 import { withDeadline } from '@stayingupwind/core/util';
 
 import type { CacheRuntime, RecordRead } from './runtime.ts';
+import { servable } from './servable.ts';
 
 /**
  * The current generation of an entry, as the Function reads it when it answers a document itself:
@@ -362,6 +363,29 @@ function judged(runtime: CacheRuntime, pack: DecodedGenerationPack, now: number)
 }
 
 /**
+ * The later of `newer` — what the host keeps nearer than its read — and what this isolate came to
+ * hold of the entry while it was asked for, a record another request's commit or read left, where
+ * either is later than generation `than` and one a visitor may be answered with (`servable`): a
+ * redirect that says not where to is no generation to serve in place of one judged stale.
+ */
+function laterOf(
+  runtime: CacheRuntime,
+  entryId: string,
+  newer: DecodedGenerationPack | undefined,
+  than: number,
+): DecodedGenerationPack | undefined {
+  const held = runtime.recordMemo.get(entryId) ?? undefined;
+  const later = [newer, held].filter((candidate): candidate is DecodedGenerationPack => {
+    return (
+      candidate !== undefined &&
+      candidate.header.seq > than &&
+      servable(candidate.header.status, candidate.header.headers)
+    );
+  });
+  return later.toSorted((a, b) => b.header.seq - a.header.seq)[0];
+}
+
+/**
  * The entry's current generation and how it stands at `now`; unavailable when the host is, or when
  * it is slower than the deadline. `waitUntil` is the request's, and keeps a read it begins going.
  *
@@ -388,7 +412,8 @@ export async function currentGeneration(
   }
   const validity = pack === null ? undefined : judged(runtime, pack, now);
   if (validity === undefined || SEVERITY[validity] > SEVERITY.fresh) {
-    const newer = await newerPack(runtime, entryId, pack?.header.seq ?? 0);
+    const than = pack?.header.seq ?? 0;
+    const newer = laterOf(runtime, entryId, await newerPack(runtime, entryId, than), than);
     const later = newer === undefined ? undefined : judged(runtime, newer, now);
     if (
       newer !== undefined &&
