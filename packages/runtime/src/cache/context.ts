@@ -26,6 +26,69 @@ export interface RequestContext {
    * on its response to the edge, which may hold what carries them (`INVALIDATED_TAGS_HEADER`).
    */
   readonly invalidated: InvalidatedTags;
+  /** The cache writes the request handed over behind its response, which its body ends after. */
+  readonly writes: RequestWrites;
+}
+
+/**
+ * The cache writes a request handed over behind its response (`keepWrite`, in `handlers.ts`): the
+ * response's body does not end before they have landed, for no longer than a bound
+ * (`withWritesLanded`, in `serve.ts`). A request made once the response was read whole then finds
+ * what this one wrote at the host, in whatever isolate it lands — a write that lands within the
+ * bound, that is — where before it could find nothing until the write had gone out behind the
+ * response. The first byte waits for none of them: only the last does.
+ */
+export class RequestWrites {
+  readonly #out = new Set<Promise<unknown>>();
+
+  /** Let go of `write` once it has settled, whichever way. */
+  async #letGo(write: Promise<unknown>): Promise<void> {
+    try {
+      await write;
+    } finally {
+      this.#out.delete(write);
+    }
+  }
+
+  async #drained(): Promise<void> {
+    while (this.#out.size > 0) {
+      await Promise.allSettled(this.#out);
+    }
+  }
+
+  /** Whether a write handed over is still out. */
+  get pending(): boolean {
+    return this.#out.size > 0;
+  }
+
+  /** Hold `write` against the end of the response. Whatever it settles as, it is let go then. */
+  add(write: Promise<unknown>): void {
+    this.#out.add(write);
+    void this.#letGo(write).catch(() => {
+      // A write that failed is let go as one that landed: its failure is its caller's to report.
+    });
+  }
+
+  /**
+   * Once every write handed over has settled — those handed over while the others were waited for
+   * among them — or `ms` have gone by, whichever comes first.
+   */
+  async landed(ms: number): Promise<void> {
+    if (this.#out.size === 0) {
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        this.#drained(),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, ms);
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
 }
 
 /**
@@ -81,6 +144,7 @@ export function requestContextFor(input: {
     waitUntil: input.waitUntil,
     run: (work) => withClock(input.clock, () => withRequestContext(context, work)),
     invalidated: input.invalidated ?? new InvalidatedTags(),
+    writes: new RequestWrites(),
   };
   return context;
 }

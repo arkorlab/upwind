@@ -91,6 +91,7 @@ import {
   type RoutedInput,
   withInvalidatedTags,
   withoutBody,
+  withWritesLanded,
 } from './serve.ts';
 import { completedShell, entrypointKindOf, findShell, getStore, type Store } from './store.ts';
 import { unrouted } from './unrouted.ts';
@@ -577,6 +578,11 @@ export async function handleRequest(handled: HandleInput): Promise<Response> {
   const input: RoutedInput = { ...handled, initURL: initUrlOf(handled.request), run: context.run };
   return context.run(async () => {
     const response = withoutPlacementHeaders(await routeRequest(input));
-    return withoutBody(handled.request, withInvalidatedTags(response, context.invalidated));
+    const answered = withoutBody(
+      handled.request,
+      withInvalidatedTags(response, context.invalidated),
+    );
+    // Without a cache there is nothing to write, and nothing to wait for.
+    return handled.cache === undefined ? answered : withWritesLanded(answered, context.writes);
   });
 }
