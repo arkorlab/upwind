@@ -27,6 +27,7 @@ import {
   type CommitArtifact,
   type CommitOutput,
   type CommitRequest,
+  type CurrentSummary,
   type ServedObservation,
   type UploadedArtifact,
 } from './host.ts';
@@ -543,7 +544,7 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   if (lease.kind === 'busy') {
     return { kind: 'busy' };
   }
-  if (supersededBy(target, lease.current, nowMs())) {
+  if (supersededBy(target, lease.current, nowMs()) && answerable(lease.current)) {
     // Given back behind the answer, which waits for nothing of it: nobody holds the lease now.
     input.waitUntil(abandon(input, lease, 'skipped'));
     forgetRecord(runtime, lease.entryId);
@@ -589,6 +590,19 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   );
   input.waitUntil(published);
   return { kind: 'accepted', render: captured, published };
+}
+
+/**
+ * Whether a visitor may be answered with the generation a lease says stands (`servable`): one whose
+ * status the host did not say is not taken to be, so that a regeneration is never given up for a
+ * generation that answers no visitor — a redirect that says not where to, say.
+ */
+function answerable(current: CurrentSummary | null | undefined): boolean {
+  if (current?.status === undefined) {
+    return false;
+  }
+  const location = current.location ?? undefined;
+  return servable(current.status, location === undefined ? {} : { location });
 }
 
 /**

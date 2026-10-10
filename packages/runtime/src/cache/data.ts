@@ -112,18 +112,27 @@ export async function readData(runtime: CacheRuntime, request: DataReadRequest):
  */
 const NEWER_DATA_DEADLINE_MS = 200;
 
+/** A value later than the one a read judged, read whole, and how to keep it once it is taken. */
+export interface LaterData {
+  readonly memo: Extract<DataMemo, { kind: 'found' }>;
+  /** Remember it as a read's answer is, under the key's floor; nothing where it fell below it. */
+  readonly keep: () => void;
+}
+
 /**
  * A value of the key later than the one at `than`, where the host keeps one nearer than its read
- * (`getNewerData`) — `undefined` for none, none in time, or a host without any — and remembered as a
- * read's answer is, under the key's floor: a host whose reads are cached answers with the value a
- * later write replaced for as long as its cache keeps it, and a read that judged that value stale or
- * expired would compute again what another isolate has already written.
+ * (`getNewerData`), read whole — its bytes too, where they are stored apart — within
+ * `NEWER_DATA_DEADLINE_MS`: `undefined` for none, none in time, a read that failed, or a host
+ * without any. Never rejects, and remembers nothing until the caller takes it (`keep`): a host whose
+ * reads are cached answers with the value a later write replaced for as long as its cache keeps it,
+ * and a read that judged that value stale or expired would compute again what another isolate has
+ * already written — where the later one stands no worse.
  */
 export async function readNewerData(
   runtime: CacheRuntime,
   request: DataReadRequest,
   than: number,
-): Promise<DataMemo | undefined> {
+): Promise<LaterData | undefined> {
   const { host } = runtime;
   if (host.getNewerData === undefined) {
     return undefined;
@@ -133,33 +142,38 @@ export async function readNewerData(
   const state = stateFor(runtime, key, stateKey);
   const epoch = state.epoch;
   const current = (): boolean => liveState(runtime, stateKey) === state && state.epoch === epoch;
-  let answer: DataRead | undefined;
+  const read = async (): Promise<LaterData['memo'] | undefined> => {
+    const answer = await host.getNewerData?.(request, than);
+    if (answer === undefined || answer.dependencyRevision <= than) {
+      return undefined;
+    }
+    const memo = await withBytes(runtime, answer);
+    return memo.kind === 'found' ? memo : undefined;
+  };
+  let memo: LaterData['memo'] | undefined;
   try {
-    answer = await withDeadline(
-      host.getNewerData(request, than),
-      NEWER_DATA_DEADLINE_MS,
-      'a later data value',
-    );
+    memo = await withDeadline(read(), NEWER_DATA_DEADLINE_MS, 'a later data value');
   } catch (error) {
     runtime.log('later data value not read', {
       detail: error instanceof Error ? error.message : String(error),
     });
     return undefined;
   }
-  if (answer === undefined || answer.dependencyRevision <= than) {
+  if (memo === undefined) {
     return undefined;
   }
-  if (!current() || answer.dependencyRevision < state.revision) {
-    return undefined;
-  }
-  state.revision = answer.dependencyRevision;
-  const memo = await withBytes(runtime, answer);
-  if (memo.kind !== 'found' || !current() || memo.response.dependencyRevision < state.revision) {
-    return undefined;
-  }
-  state.finds += 1;
-  runtime.dataMemo.set(key, memo);
-  return memo;
+  const found = memo;
+  return {
+    memo: found,
+    keep: () => {
+      if (!current() || found.response.dependencyRevision < state.revision) {
+        return;
+      }
+      state.revision = found.response.dependencyRevision;
+      state.finds += 1;
+      runtime.dataMemo.set(key, found);
+    },
+  };
 }
 
 /**

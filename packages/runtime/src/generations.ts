@@ -189,7 +189,10 @@ function runJob(
 function scheduleJob(job: Job, reason: AttemptReason, base?: string | null): boolean {
   const { descriptor } = job.target;
   const served = job.input.request.headers.get(GENERATION_HEADER);
-  const key = `${descriptor.route}|${descriptor.pathname}|${base ?? served ?? ''}`;
+  // A request that found no generation is its own key, whatever the edge says it served: a
+  // regeneration of that one, asked for within the hold, does not stand for this.
+  const named = base === null ? '' : (base ?? served ?? '');
+  const key = `${descriptor.route}|${descriptor.pathname}|${named}`;
   if (job.runtime.regenerationMemo.get(key) !== undefined) {
     return false;
   }
@@ -342,7 +345,9 @@ export async function handleForeground(
   if (job === undefined) {
     return { response: undefined, outcome: 'skipped', regenerated: undefined };
   }
-  const served = input.request.headers.get(GENERATION_HEADER) ?? undefined;
+  // The generation the edge found expired; none, where it found no record at all and asked for a
+  // first one.
+  const served = input.request.headers.get(GENERATION_HEADER);
   const outcome = await runJob(job, 'expired', served);
   return {
     response: await answerFromJob(job, outcome, documentWant(input)),

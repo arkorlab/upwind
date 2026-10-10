@@ -128,13 +128,14 @@ async function newerPack(
   if (host.readNewerRecord === undefined) {
     return undefined;
   }
+  // The read, the decoding and the check together under the deadline: a record is hashed to be
+  // checked, and a long one past a quick read would keep the document waiting all the same.
+  const read = async (): Promise<DecodedGenerationPack | undefined> => {
+    const bytes = await host.readNewerRecord?.(entryId, than);
+    return bytes === undefined ? undefined : recordPackOf(bytes, entryId);
+  };
   try {
-    const bytes = await withDeadline(
-      host.readNewerRecord(entryId, than),
-      NEWER_RECORD_DEADLINE_MS,
-      'a later delivery record',
-    );
-    const pack = bytes === undefined ? undefined : await recordPackOf(bytes, entryId);
+    const pack = await withDeadline(read(), NEWER_RECORD_DEADLINE_MS, 'a later delivery record');
     return pack !== undefined && pack.header.seq > than ? pack : undefined;
   } catch (error) {
     // What the read found is answered as it would have been without the host's later record.
@@ -275,16 +276,21 @@ export function forgetRecord(runtime: CacheRuntime, entryId: string): void {
 }
 
 /**
- * Hold `pack` as what this isolate knows of the entry, for a hold, in place of what it held and of
- * a read still in flight, which lands nowhere now: a generation later than either.
+ * Hold `pack` as what this isolate knows of the entry, for a hold, in place of a read still in
+ * flight, which lands nowhere now — unless what it holds already is a later generation still, which
+ * a commit or a read that answered first left it: the later of the two is held, and returned.
  */
 export function rememberRecord(
   runtime: CacheRuntime,
   entryId: string,
   pack: DecodedGenerationPack,
-): void {
+): DecodedGenerationPack {
+  const held = runtime.recordMemo.get(entryId);
+  const later =
+    held !== undefined && held !== null && held.header.seq > pack.header.seq ? held : pack;
   forgetRecord(runtime, entryId);
-  runtime.recordMemo.set(entryId, pack);
+  runtime.recordMemo.set(entryId, later);
+  return later;
 }
 
 /**
@@ -376,8 +382,10 @@ export async function currentGeneration(
       later !== undefined &&
       (validity === undefined || SEVERITY[later] <= SEVERITY[validity])
     ) {
-      rememberRecord(runtime, entryId, newer);
-      return { kind: 'generation', current: { entryId, pack: newer, validity: later } };
+      // What a commit of this isolate's left meanwhile may be later still.
+      const held = rememberRecord(runtime, entryId, newer);
+      const standing = held === newer ? later : judged(runtime, held, now);
+      return { kind: 'generation', current: { entryId, pack: held, validity: standing } };
     }
   }
   if (pack === null || validity === undefined) {

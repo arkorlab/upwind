@@ -41,11 +41,21 @@ export async function laterIfAny(
   if (SEVERITY[validity] === SEVERITY.fresh || held.revision === undefined) {
     return read;
   }
-  const memo = await readNewerData(runtime, request, held.revision);
-  const later = memo === undefined ? undefined : heldIn(memo);
-  if (later === undefined) {
+  const later = await readNewerData(runtime, request, held.revision);
+  const value = later === undefined ? undefined : heldIn(later.memo);
+  if (later === undefined || value === undefined) {
     return read;
   }
-  const again = await judge(later);
-  return SEVERITY[again] <= SEVERITY[validity] ? { held: later, validity: again } : read;
+  let again: Validity;
+  try {
+    again = await judge(value);
+  } catch {
+    // The later value could not be judged: the one read is answered as it would have been.
+    return read;
+  }
+  if (SEVERITY[again] > SEVERITY[validity]) {
+    return read;
+  }
+  later.keep();
+  return { held: value, validity: again };
 }
