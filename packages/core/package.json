@@ -28,6 +28,7 @@
     "./next": "./src/next/index.ts",
     "./paas": "./src/paas/index.ts",
     "./request": "./src/request/index.ts",
+    "./schema": "./src/schema/index.ts",
     "./util": "./src/util/index.ts"
   },
   "scripts": {
