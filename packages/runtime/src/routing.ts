@@ -35,6 +35,7 @@ import { entrypointKindOf, type Store } from './store.ts';
  */
 
 const STATIC_ASSETS_PREFIX = '/_next/static/';
+const HTTP_BAD_REQUEST = 400;
 /** What asks with these `Sec-Fetch-Dest` values cannot show a page (Next.js's own list). */
 const SUBRESOURCE_DESTINATIONS: ReadonlySet<string> = new Set([
   'audio',
@@ -397,6 +398,17 @@ export function parametersDecode(matches: Readonly<Record<string, string>> | und
     return true;
   }
   return Object.values(matches).every((value) => decodes(value));
+}
+
+/** The 400 a request whose parameters do not decode is answered with (`parametersDecode`). */
+export function undecodedResponse(headers: Headers | undefined): Response {
+  return withRoutingHeaders(
+    new Response('Bad Request', {
+      status: HTTP_BAD_REQUEST,
+      headers: { 'content-type': 'text/plain; charset=utf-8' },
+    }),
+    headers,
+  );
 }
 
 function decodes(value: string): boolean {

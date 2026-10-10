@@ -6,14 +6,16 @@ import { afterBody, outcomeOn } from './generations.ts';
 import { middlewareInvoker, type MiddlewareTrace } from './middleware-invoke.ts';
 import { settleRewrittenPath } from './rewritten-path.ts';
 import {
+  parametersDecode,
   pathnamesFor,
   redirectResponse,
   routedHeaders,
   routingI18n,
   routingTables,
+  undecodedResponse,
   withRoutingHeaders,
 } from './routing.ts';
-import type { RoutedInput } from './serve.ts';
+import { externalRewrite, type RoutedInput } from './serve.ts';
 import type { Store } from './store.ts';
 import { routingAnswer } from './unrouted.ts';
 
@@ -65,16 +67,31 @@ export function routingOf(
 }
 
 /**
- * What routing answers a request with itself, where it does: a redirect, or — where it found no route
- * for it, as the usual path reads that (`routeAndServe`: no pathname, or nothing to invoke) — a
- * rule's status (`routingAnswer`). Where it found no route and says nothing itself, the render
- * stands: the route the edge named was regenerated, and the edge serves the requests after this one
- * from that generation, which the usual path's not-found would answer otherwise.
+ * What routing answers a request with itself, where it does, in the order the usual path reads it
+ * (`routeAndServe`): a redirect; a 400, for a parameter that does not decode; what another origin
+ * answers, where a rewrite sends the request there (`externalRewrite`) — asked as routing hands the
+ * request on, with what it uploads; or, where it found no route for it (no pathname, or nothing to
+ * invoke), a rule's status (`routingAnswer`). Where it found no route and says nothing itself, the
+ * render stands: the route the edge named was regenerated, and the edge serves the requests after
+ * this one from that generation, which the usual path's not-found would answer otherwise.
  */
-function answeredByRouting(routed: ResolveRoutesResult): Response | undefined {
-  const { redirect } = routed;
+async function answeredByRouting(
+  routed: ResolveRoutesResult,
+  asked: { readonly request: Request; readonly headers: Headers },
+): Promise<Response | undefined> {
+  const { redirect, resolvedHeaders } = routed;
   if (redirect !== undefined) {
-    return redirectResponse(redirect.url.href, redirect.status, routed.resolvedHeaders);
+    return redirectResponse(redirect.url.href, redirect.status, resolvedHeaders);
+  }
+  if (!parametersDecode(routed.routeMatches)) {
+    return undecodedResponse(resolvedHeaders);
+  }
+  if (routed.externalRewrite !== undefined) {
+    const forwarded = new Request(asked.request, { headers: asked.headers });
+    return withRoutingHeaders(
+      await externalRewrite(forwarded, routed.externalRewrite),
+      resolvedHeaders,
+    );
   }
   const unrouted = routed.resolvedPathname === undefined || routed.invocationTarget === undefined;
   return unrouted ? routingAnswer(routed) : undefined;
@@ -86,8 +103,9 @@ function answeredByRouting(routed: ResolveRoutesResult): Response | undefined {
  * `Content-Security-Policy`, say, without which the page would go out unprotected — and what a
  * rewrite says of the path a payload was rendered for. Routed as the usual path routes the request,
  * but without the middleware, which the regeneration did not run either; and where routing answers
- * it itself — a redirect, a rule's status, which a request it finds no route for comes back with —
- * answered so, as the usual path answers it (`routeAndServe`, `unrouted`), the render let go.
+ * it itself — a redirect, a 400, another origin's answer, a rule's status, which a request it finds
+ * no route for comes back with — answered so, as the usual path answers it (`routeAndServe`,
+ * `unrouted`), the render let go.
  */
 export async function withRoutingOf(
   input: RoutedInput,
@@ -104,10 +122,11 @@ export async function withRoutingOf(
     trace: untraced(),
   });
   settleRewrittenPath(routed.resolvedHeaders, headers, url, undefined);
-  const itself = answeredByRouting(routed);
+  const itself = await answeredByRouting(routed, { request: input.request, headers });
   if (itself !== undefined) {
-    // Neither is read: what the request uploads, as on every routing exit, nor the render. What the
-    // regeneration came to is still said (`CACHE_OUTCOME_HEADER`): it ran, whatever answers.
+    // The render is not read, nor what the request uploads, as on every routing exit — but for what
+    // another origin was sent, which took it. What the regeneration came to is still said
+    // (`CACHE_OUTCOME_HEADER`): it ran, whatever answers.
     releaseStream(input.request.body, 'routing exit: handler body unused');
     releaseStream(answer.body, 'foreground answer: routing answered the request itself');
     const outcome = answer.headers.get(CACHE_OUTCOME_HEADER);

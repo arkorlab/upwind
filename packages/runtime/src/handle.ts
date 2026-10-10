@@ -66,6 +66,7 @@ import {
   redirectResponse,
   resolvedOf,
   routedHeaders,
+  undecodedResponse,
   withoutRepeatedSlashes,
   withRewriteStatus,
   withRoutingHeaders,
@@ -319,13 +320,7 @@ async function routeAndServe(
   }
   if (!parametersDecode(routed.routeMatches)) {
     dropHandlerBody();
-    return withRoutingHeaders(
-      new Response('Bad Request', {
-        status: HTTP_BAD_REQUEST,
-        headers: { 'content-type': 'text/plain; charset=utf-8' },
-      }),
-      routed.resolvedHeaders,
-    );
+    return undecodedResponse(routed.resolvedHeaders);
   }
   const forwarded: RoutedInput = {
     ...input,
