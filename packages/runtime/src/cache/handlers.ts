@@ -345,16 +345,19 @@ export class PlatformFetchCache {
         now,
       });
     };
-    let judged: { readonly held: HeldValue; readonly validity: Validity };
+    let judged: { readonly held: HeldValue; readonly validity: Validity } | undefined;
     try {
       judged = await laterIfAny(
         runtime,
         { key: cacheKey, kind: DATA_FETCH },
         { held, validity: await judge(held) },
-        judge,
+        { judge, reread: () => fetchHeld(runtime, cacheKey) },
       );
     } catch (error) {
       runtime.log('fetch cache read failed', { detail: detail(error) });
+      return null;
+    }
+    if (judged === undefined) {
       return null;
     }
     const { entry } = judged.held;
@@ -510,8 +513,11 @@ async function getUseCache(
     runtime,
     { key: cacheKey, kind: USE_CACHE, handler: kind },
     { held, validity: await judge(held) },
-    judge,
+    { judge, reread: () => useCacheHeld(runtime, kind, cacheKey) },
   );
+  if (judged === undefined) {
+    return undefined;
+  }
   const { entry } = judged.held;
   const { validity } = judged;
   // A regeneration must rebuild from fresh data even when Next's request store permits SWR.
