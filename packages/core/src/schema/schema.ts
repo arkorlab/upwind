@@ -167,8 +167,9 @@ export abstract class Schema<
   }
 
   /**
-   * Whether `value` parses, found as cheaply as that can be: a record or a list stops at its first
-   * member that fails outright, and no issue is reported. The answer is always `safeParse`'s.
+   * Whether `value` parses, found as cheaply as that can be: an object, a record or a list stops at
+   * its first member that fails outright, and no issue is reported. The answer is always
+   * `safeParse`'s.
    */
   validate(value: unknown): value is In {
     return this.run({ value, issues: [] }, VALIDATE).issues.length === 0;

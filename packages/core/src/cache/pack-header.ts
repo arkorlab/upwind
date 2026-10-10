@@ -16,9 +16,9 @@ import { CACHE_POLICY_SOURCES } from './timing.ts';
  * back as that schema hands it back: the fields it names, in its order, and nothing else.
  *
  * Written out rather than asked of the schema, because this is the check the runtime makes on a
- * request, and nothing else it makes needs a schema library: with zod bundled for this one check,
- * zod was most of the runtime's bytes and was built before its first response. The two are held to
- * the same verdicts, and to the same fields, by the tests.
+ * request, and nothing else it makes needs a schema: with the schemas bundled for this one check,
+ * they were most of the runtime's bytes and were built before its first response. The two are held
+ * to the same verdicts, and to the same fields, by the tests.
  *
  * What is checked is JSON, as the reader parses it, so there is no `undefined` to tell from an absent
  * key; a record's `__proto__` is not one of its keys, as the schema's record type has it.

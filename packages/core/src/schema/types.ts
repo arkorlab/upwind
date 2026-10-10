@@ -78,9 +78,33 @@ type PartOutput<P> = P extends Typed
     ? `${P}`
     : never;
 
-export type TemplateOutput<Parts extends readonly unknown[]> = Parts extends readonly [
+/** Whether a union member may be absent going in, or coming out; each member answers on its own. */
+type IsOptionalIn<M> = M extends Typed
+  ? M['~types']['optin'] extends 'optional' | 'defaulted'
+    ? true
+    : false
+  : false;
+type IsOptionalOut<M> = M extends Typed
+  ? M['~types']['optout'] extends 'optional'
+    ? true
+    : false
+  : false;
+
+/** A union may be absent going in where any of its members may, as zod types one. */
+export type UnionOptIn<T extends readonly Typed[]> =
+  true extends IsOptionalIn<T[number]> ? 'optional' | 'defaulted' : undefined;
+/** A union may be absent coming out where any of its members may. */
+export type UnionOptOut<T extends readonly Typed[]> =
+  true extends IsOptionalOut<T[number]> ? 'optional' : undefined;
+
+/** The string a template literal stands for; any string, where its parts are not a fixed list. */
+export type TemplateOutput<Parts extends readonly unknown[]> = number extends Parts['length']
+  ? string
+  : FixedTemplate<Parts>;
+
+type FixedTemplate<Parts extends readonly unknown[]> = Parts extends readonly [
   infer Head,
   ...infer Rest,
 ]
-  ? `${PartOutput<Head>}${TemplateOutput<Rest>}`
+  ? `${PartOutput<Head>}${FixedTemplate<Rest>}`
   : '';

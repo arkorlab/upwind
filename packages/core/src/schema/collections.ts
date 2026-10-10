@@ -83,39 +83,53 @@ export class RecordSchema<
     this.value = value;
   }
 
+  /** One entry parsed into the record being built; whether `validate` stops after it. */
+  private entry(
+    key: string | symbol,
+    input: Record<PropertyKey, unknown>,
+    payload: Payload,
+    ctx: ParseContext,
+  ): boolean {
+    const keyResult = this.key.run({ value: key, issues: [] }, ctx);
+    if (keyResult.issues.length > 0) {
+      payload.issues.push({
+        code: 'invalid_key',
+        origin: 'record',
+        issues: keyResult.issues.map((issue) => finalizeIssue(issue)),
+        input: key,
+        path: [key],
+      });
+      // `validate` stops here, as it does in a list or an object. zod's records go on, which only
+      // costs more: the answer is already no.
+      return ctx.abortEarly;
+    }
+    const outKey = keyResult.value as PropertyKey;
+    if (outKey === '__proto__') {
+      return false;
+    }
+    const value = this.value as unknown as Schema;
+    const result = value.run({ value: input[key], issues: [] }, ctx);
+    if (result.issues.length > 0) {
+      payload.issues.push(...prefixIssues(key, result.issues));
+    }
+    (payload.value as Record<PropertyKey, unknown>)[outKey] = result.value;
+    return ctx.abortEarly && result.issues.length > 0 && aborted(result.issues);
+  }
+
   parseType(payload: Payload, ctx: ParseContext): Payload {
     const input = payload.value;
     if (!isPlainObject(input)) {
       payload.issues.push({ expected: 'record', code: 'invalid_type', input });
       return payload;
     }
-    const value = this.value as unknown as Schema;
-    const output: Record<PropertyKey, unknown> = {};
-    payload.value = output;
+    payload.value = {};
     for (const key of Reflect.ownKeys(input)) {
       if (key === '__proto__' || !Object.prototype.propertyIsEnumerable.call(input, key)) {
         continue;
       }
-      const keyResult = this.key.run({ value: key, issues: [] }, ctx);
-      if (keyResult.issues.length > 0) {
-        payload.issues.push({
-          code: 'invalid_key',
-          origin: 'record',
-          issues: keyResult.issues.map((issue) => finalizeIssue(issue)),
-          input: key,
-          path: [key],
-        });
-        continue;
+      if (this.entry(key, input, payload, ctx)) {
+        break;
       }
-      const outKey = keyResult.value as PropertyKey;
-      if (outKey === '__proto__') {
-        continue;
-      }
-      const result = value.run({ value: input[key], issues: [] }, ctx);
-      if (result.issues.length > 0) {
-        payload.issues.push(...prefixIssues(key, result.issues));
-      }
-      output[outKey] = result.value;
     }
     return payload;
   }

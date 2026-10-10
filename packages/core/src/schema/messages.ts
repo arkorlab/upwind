@@ -87,7 +87,8 @@ function sizeMessage(issue: RawIssue, big: boolean): string {
   const adjective = comparison(issue, big);
   const bound = String(big ? issue['maximum'] : issue['minimum']);
   const origin = typeof issue['origin'] === 'string' ? issue['origin'] : undefined;
-  const unit = origin === undefined ? undefined : SIZED_UNITS[origin];
+  const unit =
+    origin !== undefined && Object.hasOwn(SIZED_UNITS, origin) ? SIZED_UNITS[origin] : undefined;
   const lead = big ? 'Too big' : 'Too small';
   // zod names a missing origin `value` when the bound is a maximum, and leaves it as is otherwise.
   const named = big ? (origin ?? 'value') : String(origin);
@@ -104,7 +105,10 @@ function formatMessage(issue: RawIssue): string {
   if (format === 'regex') {
     return `Invalid string: must match pattern ${String(issue['pattern'])}`;
   }
-  const named = typeof format === 'string' ? FORMAT_NAMES[format] : undefined;
+  const named =
+    typeof format === 'string' && Object.hasOwn(FORMAT_NAMES, format)
+      ? FORMAT_NAMES[format]
+      : undefined;
   return `Invalid ${named ?? String(format)}`;
 }
 

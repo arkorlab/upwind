@@ -3,7 +3,17 @@ import { aborted, finalizeIssue } from './issues.ts';
 import { ObjectSchema } from './object.ts';
 import { isObject } from './plain.ts';
 import { Schema, WrapperSchema } from './schema.ts';
-import type { Input, OptIn, OptOut, Output, Primitive, Shape, Typed } from './types.ts';
+import type {
+  Input,
+  OptIn,
+  OptOut,
+  Output,
+  Primitive,
+  Shape,
+  Typed,
+  UnionOptIn,
+  UnionOptOut,
+} from './types.ts';
 import { EnumSchema, ValueSchema } from './values.ts';
 
 function optinOf(options: readonly Schema[]): OptIn {
@@ -25,8 +35,8 @@ function optoutOf(options: readonly Schema[]): OptOut {
 export class UnionSchema<T extends readonly Typed[] = readonly Typed[]> extends Schema<
   Output<T[number]>,
   Input<T[number]>,
-  undefined,
-  undefined
+  UnionOptIn<T>,
+  UnionOptOut<T>
 > {
   readonly options: T;
 
@@ -80,12 +90,15 @@ function valuesOf(schema: Schema): readonly Primitive[] | undefined {
   if (schema instanceof EnumSchema) {
     return schema.values as readonly string[];
   }
+  if (schema instanceof UnionSchema) {
+    // A union names values only where every member does, as zod's does: `literal('a')` beside
+    // `literal('b')` is a field that holds either.
+    const members = (schema.options as readonly Schema[]).map((member) => valuesOf(member));
+    return members.every((values) => values !== undefined) ? members.flat() : undefined;
+  }
   if (schema instanceof WrapperSchema) {
     const inner = valuesOf(schema.inner);
-    if (inner === undefined) {
-      return undefined;
-    }
-    if (schema.wrapping === 'default') {
+    if (inner === undefined || schema.wrapping === 'default') {
       return inner;
     }
     return [...inner, schema.wrapping === 'optional' ? undefined : null];
@@ -99,7 +112,7 @@ type OptionMap = Map<Primitive, Schema | null>;
 function discriminatorMap(discriminator: string, options: readonly Schema[]): OptionMap {
   const map: OptionMap = new Map();
   for (const [index, option] of options.entries()) {
-    const field = (option as ObjectSchema).fields[discriminator] as Schema | undefined;
+    const field = (option as ObjectSchema).shape[discriminator] as Schema | undefined;
     const values = field === undefined ? undefined : valuesOf(field);
     if (values === undefined || values.length === 0) {
       throw new Error(`Invalid discriminated union option at index "${String(index)}"`);
@@ -125,7 +138,7 @@ function discriminatorMap(discriminator: string, options: readonly Schema[]): Op
 export class DiscriminatedUnionSchema<
   D extends string = string,
   T extends readonly Typed[] = readonly Typed[],
-> extends Schema<Output<T[number]>, Input<T[number]>, undefined, undefined> {
+> extends Schema<Output<T[number]>, Input<T[number]>, UnionOptIn<T>, UnionOptOut<T>> {
   /** Built at the first parse, as zod builds it. */
   private map: OptionMap | undefined;
   readonly discriminator: D;
@@ -137,7 +150,7 @@ export class DiscriminatedUnionSchema<
     for (const [index, option] of members.entries()) {
       if (
         !(option instanceof ObjectSchema) ||
-        !Object.hasOwn(option.fields as Shape, discriminator)
+        !Object.hasOwn(option.shape as Shape, discriminator)
       ) {
         throw new Error(`Invalid discriminated union option at index "${String(index)}"`);
       }

@@ -307,6 +307,8 @@ function superRefine(
     issues: payload.issues,
     addIssue(issue: RefinementIssue | string): void {
       if (typeof issue === 'string') {
+        // No `continue`, as zod pushes it: the checks after it are skipped, except a length check,
+        // which runs unless a failure said outright to stop, and this one does not.
         payload.issues.push({ message: issue, code: 'custom', input: payload.value });
         return;
       }
@@ -318,7 +320,12 @@ function superRefine(
         issue.input = payload.value;
       }
       issue.continue ??= true;
-      payload.issues.push({ ...issue });
+      const copy = { ...issue };
+      // The path is the caller's array; one of our own is what parents prefix their keys onto.
+      if (Array.isArray(copy.path)) {
+        copy.path = [...copy.path];
+      }
+      payload.issues.push(copy);
     },
   };
   assertSynchronous(check.fn(payload.value, ctx));

@@ -14,7 +14,11 @@ export interface RawIssue {
   message?: unknown;
 }
 
-/** An issue as a failed parse reports it. */
+/**
+ * An issue as a failed parse reports it. Its code, path and message are typed; whatever else an
+ * issue carries — `expected`, `minimum`, `keys` — is its data, as the code it has says, and a reader
+ * that wants it narrows it.
+ */
 export interface Issue {
   readonly [key: string]: unknown;
   readonly code: string;

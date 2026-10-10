@@ -61,7 +61,8 @@ export function unknown(): ValueSchema {
 export function literal<const T extends readonly Primitive[]>(value: T): ValueSchema<T[number]>;
 export function literal<const T extends Primitive>(value: T): ValueSchema<T>;
 export function literal(value: Primitive | readonly Primitive[]): ValueSchema {
-  return new ValueSchema('literal', isList(value) ? value : [value]);
+  // A copy, so that what is accepted and what an issue lists cannot come apart if the list changes.
+  return new ValueSchema('literal', isList(value) ? [...value] : [value]);
 }
 
 function isList(value: Primitive | readonly Primitive[]): value is readonly Primitive[] {

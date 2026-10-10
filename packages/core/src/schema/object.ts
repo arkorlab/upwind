@@ -35,6 +35,8 @@ function settle(
   // eslint-disable-next-line unicorn/no-computed-property-existence-check -- presence is `in`, inherited keys included, as zod decides it.
   const present = key in input;
   const optionalOut = slot.optout === 'optional';
+  // A field that may be absent and is absent is not judged: whatever its schema said of the missing
+  // value, a refinement's issue included, is dropped, as zod drops it.
   if (!present && optionalOut && slot.optin === 'optional') {
     return;
   }
@@ -79,18 +81,22 @@ export class ObjectSchema<
   S extends Shape = Shape,
   M extends UnknownKeys = UnknownKeys,
 > extends Schema<ObjectOutput<S, M>, ObjectInput<S, M>, undefined, undefined> {
-  /** The shape as `shape` hands it out: a copy, made when first asked for. */
+  /**
+   * The shape as this schema reads it: a copy of the one it was given, made when first needed, and
+   * then the only one every parse, `shape` and every schema derived from this one read — so a later
+   * change to the object it was given changes nothing here, as with zod.
+   */
   private copied: S | undefined;
   /** The fields in the order they are parsed, made at the first parse rather than at construction. */
   private slots: readonly Field[] | undefined;
-  readonly fields: S;
+  private readonly given: S;
   readonly unknownKeys: M;
 
   constructor(fields: S, unknownKeys: M) {
     super();
     this.copied = undefined;
     this.slots = undefined;
-    this.fields = fields;
+    this.given = fields;
     this.unknownKeys = unknownKeys;
   }
 
@@ -105,7 +111,7 @@ export class ObjectSchema<
     for (const key in input) {
       // A key the shape names is not unknown. Skipped before the early stop below is asked,
       // which cannot change what is found: the stop only waits for the next unknown key.
-      if (Object.hasOwn(this.fields, key)) {
+      if (Object.hasOwn(this.shape, key)) {
         continue;
       }
       if (ctx.abortEarly && payload.issues.length !== seen) {
@@ -131,7 +137,7 @@ export class ObjectSchema<
   }
 
   get shape(): S {
-    this.copied ??= { ...this.fields };
+    this.copied ??= { ...this.given };
     return this.copied;
   }
 
@@ -142,7 +148,7 @@ export class ObjectSchema<
       return payload;
     }
     payload.value = {};
-    this.slots ??= fieldsOf(this.fields);
+    this.slots ??= fieldsOf(this.shape);
     let seen = payload.issues.length;
     for (const field of this.slots) {
       if (ctx.abortEarly && payload.issues.length !== seen) {
@@ -151,6 +157,8 @@ export class ObjectSchema<
         }
         seen = payload.issues.length;
       }
+      // A field named `__proto__` is never parsed or written, as zod never parses one: no object
+      // built here could carry it as a key of its own.
       if (field.key !== '__proto__') {
         settle(
           field.schema.run({ value: input[field.key], issues: [] }, ctx),
@@ -167,14 +175,12 @@ export class ObjectSchema<
   extend<const U extends Shape>(fields: U): ObjectSchema<Extend<S, U>, M> {
     if (this.checks.length > 0) {
       for (const key of Object.keys(fields)) {
-        if (Object.hasOwn(this.fields, key)) {
-          throw new Error(
-            'Cannot overwrite keys on object schemas containing refinements. Use `.safeExtend()` instead.',
-          );
+        if (Object.hasOwn(this.shape, key)) {
+          throw new Error('Cannot overwrite keys on object schemas containing refinements.');
         }
       }
     }
-    const merged: Extend<S, U> = { ...this.fields, ...fields };
+    const merged: Extend<S, U> = { ...this.shape, ...fields };
     const copy = new ObjectSchema(merged, this.unknownKeys);
     return this.checks.length === 0 ? copy : copy.withChecks(this.checks);
   }
@@ -186,9 +192,9 @@ export class ObjectSchema<
     if (this.checks.length > 0) {
       throw new Error('.omit() cannot be used on object schemas containing refinements');
     }
-    const fields: Record<string, unknown> = { ...this.fields };
+    const fields: Record<string, unknown> = { ...this.shape };
     for (const key of Object.keys(mask)) {
-      if (!Object.hasOwn(this.fields, key)) {
+      if (!Object.hasOwn(this.shape, key)) {
         throw new Error(`Unrecognized key: "${key}"`);
       }
       // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- the keys are the mask's, checked above.
@@ -199,7 +205,7 @@ export class ObjectSchema<
 
   /** The same object, refusing keys its shape does not name. */
   strict(): ObjectSchema<S, 'strict'> {
-    const copy = new ObjectSchema(this.fields, 'strict');
+    const copy = new ObjectSchema(this.shape, 'strict');
     return this.checks.length === 0 ? copy : copy.withChecks(this.checks);
   }
 }
