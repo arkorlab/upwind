@@ -15,7 +15,7 @@ packages:
 catalog:
   # Cloudflare's own types for the storage objects `@stayingupwind/sdk` hands an application. They
   # are in that package's public declarations, so they are a dependency of it and not a dev one.
-  '@cloudflare/workers-types': 5.20261002.1
+  '@cloudflare/workers-types': 5.20261009.1
   '@eslint/js': 10.0.1
   # What the adapter reads a build's source maps with: `sourcemap-codec` for a map's mappings as
   # numbers and back (`projectOnly`), `trace-mapping` for the index maps Turbopack writes when debug
