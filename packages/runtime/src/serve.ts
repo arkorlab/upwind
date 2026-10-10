@@ -10,7 +10,7 @@ import { releaseStream } from '@stayingupwind/core/util';
 
 import type { NodeHandler } from './app-module.ts';
 import type { BundleBlobReader } from './bundle-blobs.ts';
-import type { InvalidatedTags } from './cache/context.ts';
+import type { InvalidatedTags, RequestWrites } from './cache/context.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
 import { isDraftRequest } from './draft.ts';
 import { invokeEdgeHandler } from './edge-invoke.ts';
@@ -363,6 +363,42 @@ export function withInvalidatedTags(response: Response, invalidated: Invalidated
     }
   }
   return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+/**
+ * How long the end of a response waits for the cache writes its request handed over behind it
+ * (`RequestWrites`): past this its body ends all the same, and the writes go on in `waitUntil` as
+ * they did. Shorter than a write waits for the one of its key ahead of it (`WRITE_PATIENCE_MS`).
+ */
+export const WRITES_LAND_WITHIN_MS = 2000;
+
+/**
+ * `response`, its body ending only once the cache writes its request handed over have landed
+ * (`RequestWrites`), or `WRITES_LAND_WITHIN_MS` have gone by. The bytes pass as they come: the
+ * first byte is not held, the end is. A response without a body has nothing to hold.
+ *
+ * A body of a stated length ends at its last byte for whoever reads it, whatever its stream does
+ * after — a page Next.js rendered whole says its length — so where writes are out as the response
+ * is made, it goes without one, and its end is the stream's.
+ */
+export function withWritesLanded(response: Response, writes: RequestWrites): Response {
+  if (response.body === null) {
+    return response;
+  }
+  const body = response.body.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      flush: () => writes.landed(WRITES_LAND_WITHIN_MS),
+    }),
+  );
+  const headers = new Headers(response.headers);
+  if (writes.pending) {
+    headers.delete('content-length');
+  }
+  return new Response(body, {
     status: response.status,
     statusText: response.statusText,
     headers,

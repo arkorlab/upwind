@@ -422,9 +422,17 @@ export class PlatformFetchCache {
         revalidate: data.revalidate,
       };
       const bytes = new TextEncoder().encode(JSON.stringify(data));
-      context.waitUntil(
-        keepWrite(current.runtime, fetchWrites(current.runtime), { key: cacheKey, entry, bytes }),
-      );
+      const write = keepWrite(current.runtime, fetchWrites(current.runtime), {
+        key: cacheKey,
+        entry,
+        bytes,
+      });
+      context.waitUntil(write);
+      // And the end of the response waits for it (`RequestWrites`), the first byte not — save a
+      // regeneration's, made behind a response that served what was there before.
+      if (!isRegeneration()) {
+        context.writes.add(write);
+      }
       return Promise.resolve();
     } catch (error) {
       // A promise either way, as when this was async: a host whose `waitUntil` throws once its
@@ -549,7 +557,8 @@ async function useCacheHeld(
  * what a read of the key here is answered with until the host has it (`useCacheHeld`) — and its
  * write handed to the request's `waitUntil`, ordered behind any write of the key still out
  * (`keepWrite`). A read in any other isolate is answered with what was there before, as it was
- * while the write was awaited.
+ * while the write was awaited — until the write has landed, which the request's response does not
+ * end before (`RequestWrites`): a request made once that response was read whole finds the value.
  *
  * A regeneration still waits for its write: its render commits what it made, and the request it
  * runs in waits on nobody. So does a write made outside any request, with no `waitUntil` to keep it.
@@ -588,9 +597,14 @@ async function setUseCache(
     await writeData(runtime, { key: cacheKey, entry: metadata, bytes }, callsWaitedOn());
     return;
   }
-  context.waitUntil(
-    keepWrite(runtime, useCacheWrites(runtime, kind), { key: cacheKey, entry: metadata, bytes }),
-  );
+  const write = keepWrite(runtime, useCacheWrites(runtime, kind), {
+    key: cacheKey,
+    entry: metadata,
+    bytes,
+  });
+  context.waitUntil(write);
+  // And the end of the response waits for it (`RequestWrites`), the first byte not.
+  context.writes.add(write);
 }
 
 /** The `use cache` handler of one kind (`default`, `remote`), reading and writing the same scope. */
