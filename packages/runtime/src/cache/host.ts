@@ -77,13 +77,18 @@ export interface CacheHost {
   /** The bytes of an artifact by id: a value too large to have travelled inline. */
   readArtifact(artifactId: string): Promise<Uint8Array | undefined>;
 
-  /** One value of the data cache, or nothing when the host holds none under that key. */
+  /**
+   * One value of the data cache, or nothing when the host holds none under that key. A host that
+   * keeps values nearer than its read (`getNewerData`) answers a miss from them here: a value
+   * later than none needs weighing against nothing, and the runtime asks nothing more of a miss.
+   */
   getData(request: DataReadRequest): Promise<DataRead | undefined>;
 
   /**
    * A value of the key written later than the one at `than` (its `dependencyRevision`), where the
    * host keeps one nearer than `getData` reaches, or nothing: what `readNewerRecord` is to a
-   * record. Asked only of a value the runtime found stale or expired. Optional.
+   * record. Asked only of a value the runtime found stale or expired — a miss is `getData`'s to
+   * answer from the same. Optional.
    */
   getNewerData?(request: DataReadRequest, than: number): Promise<DataRead | undefined>;
 

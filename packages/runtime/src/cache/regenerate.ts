@@ -18,7 +18,7 @@ import { invokeNodeHandler, type Run } from '../node-bridge.ts';
 import { type CapturedRender, renderCaptured } from './capture.ts';
 import { nowMs } from './clock.ts';
 import { asRegeneration } from './context.ts';
-import { forgetRecord, publishedRecordOf, rememberRecord } from './current.ts';
+import { forgetRecord, forgetRecordBefore, publishedRecordOf, rememberRecord } from './current.ts';
 import {
   type ArtifactUpload,
   type AttemptOutcome,
@@ -547,7 +547,9 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   if (supersededBy(target, lease.current, nowMs()) && answerable(lease.current)) {
     // Given back behind the answer, which waits for nothing of it: nobody holds the lease now.
     input.waitUntil(abandon(input, lease, 'skipped'));
-    forgetRecord(runtime, lease.entryId);
+    // What stands is what the next request should find: a record of it, or of a later one, that
+    // another request of this isolate learned while this one waited for the lease stays held.
+    forgetRecordBefore(runtime, lease.entryId, lease.current?.seq ?? Infinity);
     return { kind: 'superseded' };
   }
   const began = performance.now();
