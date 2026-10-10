@@ -83,11 +83,14 @@ export class TemplateLiteralSchema<Out extends string = string> extends Schema<
   undefined,
   undefined
 > {
+  /** The parts as they were given, for a reader that rebuilds the schema elsewhere. */
+  readonly parts: readonly TemplatePart[];
   readonly pattern: RegExp;
 
-  constructor(pattern: RegExp) {
+  constructor(parts: readonly TemplatePart[]) {
     super();
-    this.pattern = pattern;
+    this.parts = [...parts];
+    this.pattern = patternOf(parts);
   }
 
   parseType(payload: Payload): Payload {
@@ -112,5 +115,5 @@ export class TemplateLiteralSchema<Out extends string = string> extends Schema<
 export function templateLiteral<const Parts extends readonly TemplatePart[]>(
   parts: Parts,
 ): TemplateLiteralSchema<string & TemplateOutput<Parts>> {
-  return new TemplateLiteralSchema(patternOf(parts));
+  return new TemplateLiteralSchema(parts);
 }
