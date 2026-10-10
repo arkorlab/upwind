@@ -289,10 +289,17 @@ export function forgetRecordBefore(runtime: CacheRuntime, entryId: string, seq: 
   forgetRecord(runtime, entryId);
 }
 
+/** Whether a visitor may be answered with `pack` as it says (`servable`). */
+function servableRecord(pack: DecodedGenerationPack): boolean {
+  return servable(pack.header.status, pack.header.headers);
+}
+
 /**
  * Hold `pack` as what this isolate knows of the entry, for a hold, in place of a read still in
  * flight, which lands nowhere now — unless what it holds already is a later generation still, which
- * a commit or a read that answered first left it: the later of the two is held, and returned.
+ * a commit or a read that answered first left it: the later of the two is held, and returned. A
+ * later one no visitor may be answered with gives way to `pack` where a visitor may be with it, so
+ * the requests after this one are answered from what this one was.
  */
 export function rememberRecord(
   runtime: CacheRuntime,
@@ -301,7 +308,12 @@ export function rememberRecord(
 ): DecodedGenerationPack {
   const held = runtime.recordMemo.get(entryId);
   const later =
-    held !== undefined && held !== null && held.header.seq > pack.header.seq ? held : pack;
+    held !== undefined &&
+    held !== null &&
+    held.header.seq > pack.header.seq &&
+    (servableRecord(held) || !servableRecord(pack))
+      ? held
+      : pack;
   forgetRecord(runtime, entryId);
   runtime.recordMemo.set(entryId, later);
   return later;
@@ -420,13 +432,10 @@ export async function currentGeneration(
       later !== undefined &&
       (validity === undefined || SEVERITY[later] <= SEVERITY[validity])
     ) {
-      // What a commit of this isolate's left meanwhile may be later still, and answers where a
-      // visitor may be answered with it: `rememberRecord` keeps the later of the two, servable or not.
+      // What a commit of this isolate's left meanwhile may be later still (`rememberRecord`).
       const held = rememberRecord(runtime, entryId, newer);
-      const answer =
-        held === newer || !servable(held.header.status, held.header.headers) ? newer : held;
-      const standing = answer === newer ? later : judged(runtime, answer, now);
-      return { kind: 'generation', current: { entryId, pack: answer, validity: standing } };
+      const standing = held === newer ? later : judged(runtime, held, now);
+      return { kind: 'generation', current: { entryId, pack: held, validity: standing } };
     }
   }
   if (pack === null || validity === undefined) {
