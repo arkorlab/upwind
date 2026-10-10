@@ -56,6 +56,14 @@ the one it judged (`AttemptOutcome.current`) gives the lease back rather than re
 render of the same thing, and an answer made from a regeneration ends once its publish has landed,
 as it does for the request's other cache writes.
 
+An invalidation made in one isolate reaches the others through their reads of the tags, which such a
+host may also cache. Where the scope's tags stand can come sooner: on the request, from an edge that
+hears of it sooner (`SCOPE_REVISION_HEADER`, `<revision>;<invalidatedAt>`), or, where the request
+says nothing, from a host that keeps it nearby (`scopeRevision`). A Function whose view of the tags
+is behind a recent invalidation — ten minutes, past which what it did is in what the Function reads
+anyway — brings the view up before the request is judged, joining a pull that is out, for a second
+at the most (`catchUpWithScope`).
+
 In a deployment whose routes the build split across app Functions, every Function routes every
 request — each carries the whole `runtime.json` — and answers only its own routes. A request that
 lands on another's, after the middleware and every rewrite, is answered `421` with that Function's

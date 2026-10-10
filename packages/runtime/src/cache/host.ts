@@ -7,6 +7,7 @@ import type {
   OutputCompute,
   OutputResponse,
 } from '@stayingupwind/core/cache';
+import type { ScopeRevision } from '@stayingupwind/core/paas';
 
 /**
  * The cache a deployment's Function takes part in, as this runtime speaks to it.
@@ -101,6 +102,16 @@ export interface CacheHost {
 
   /** Record an invalidation against these tags, and say what it made of each. */
   invalidate(request: InvalidateRequest): Promise<InvalidateOutcome>;
+
+  /**
+   * Where the scope's tags stand, as the host knows it nearby and at once: the revision of the
+   * latest invalidation, and when it was recorded — or nothing it can say without a wait. Asked at
+   * the start of a request that came without `SCOPE_REVISION_HEADER`, so a host that can say sooner
+   * than its reads of the tags reflect an invalidation lets a Function behind it catch up before
+   * the request is judged (`catchUpWithScope`). Optional: without it, an isolate hears of another's
+   * invalidation through its reads, as before. Never rejects.
+   */
+  scopeRevision?(): Promise<ScopeRevision | undefined>;
 }
 
 /**
