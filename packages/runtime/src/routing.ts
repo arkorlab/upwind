@@ -563,11 +563,76 @@ function handlerUrl(
     return routed;
   }
   if (asked.rewrite !== undefined) {
-    return `${inLocaleOf(store, url.pathname, target.pathname)}${queryString(target.query)}`;
+    const query = routeQuery(store, route, target);
+    return `${inLocaleOf(store, url.pathname, target.pathname)}${queryString(query)}`;
   }
   return PAGES_ROUTER.has(kind)
     ? `${url.pathname}${url.search}`
-    : `${url.pathname}${withRouteParameters(url.search, target.query)}`;
+    : `${url.pathname}${withRouteParameters(url.search, routeQuery(store, route, target))}`;
+}
+
+/** A single-segment parameter of a route: `[id]`, and neither catch-all. */
+const SINGLE_PARAMETER = /^\[([^.[\]]+)\]$/u;
+
+function decodedSegment(segment: string | undefined): string | undefined {
+  if (segment === undefined) {
+    return undefined;
+  }
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The query routing ended on, with each parameter named (`nxtP…`) that the route it landed on holds
+ * a value of in its path and the query does not name.
+ *
+ * Next.js 16.4 routes a member of a dynamic route whose leading parameters `generateStaticParams`
+ * lists — root parameters among them — to the class the build keeps for those values, by a pattern
+ * that captures them without naming them: `/en/docs` lands on `/en/docs/[[...slug]]`, a class of
+ * `/[locale]/docs/[[...slug]]`, through `/$1/docs/[[...slug]]$3?nxtPslug=$nxtPslug`. The query names
+ * `slug` and not `locale`, which only the path routing ended on holds. Handed the path the client
+ * asked for (`/docs`, which a middleware rewrote to `/en/docs`) with that query, the page found
+ * `locale` in neither, and threw "Could not resolve param value for segment: locale"
+ * (`interpolateParallelRouteParams`). Under 16.3 the same request's query named `locale` as well.
+ *
+ * A parameter is named only where the route holds a value of it rather than its placeholder — a
+ * value may itself be spelled in brackets, so a segment is a placeholder only when it is the
+ * route's own (`placeholderSegments`) — and the path routing ended on holds that value in the same
+ * place.
+ */
+function routeQuery(
+  store: Store,
+  route: string,
+  target: NonNullable<ResolveRoutesResult['invocationTarget']>,
+): Record<string, string | string[]> {
+  const template = store.prerendersByPathname.get(route)?.route;
+  if (template === undefined) {
+    return target.query;
+  }
+  const routeSegments = route.split('/');
+  const templateSegments = template.split('/');
+  if (routeSegments.length !== templateSegments.length) {
+    return target.query;
+  }
+  const pathSegments = target.pathname.split('/');
+  const named: Record<string, string> = {};
+  for (const [index, placeholder] of templateSegments.entries()) {
+    const name = SINGLE_PARAMETER.exec(placeholder)?.[1];
+    const value = routeSegments[index];
+    if (
+      name !== undefined &&
+      value !== undefined &&
+      value !== placeholder &&
+      !Object.hasOwn(target.query, `nxtP${name}`) &&
+      decodedSegment(pathSegments[index]) === value
+    ) {
+      named[`nxtP${name}`] = value;
+    }
+  }
+  return Object.keys(named).length === 0 ? target.query : { ...target.query, ...named };
 }
 
 /**
