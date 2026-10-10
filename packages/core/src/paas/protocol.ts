@@ -142,10 +142,14 @@ export interface ScopeRevision {
 /** In `SCOPE_REVISION_HEADER`, for a scope none of whose tags was ever invalidated. */
 const NEVER_INVALIDATED = '-';
 
-/** `scope` as `SCOPE_REVISION_HEADER` carries it. */
+/**
+ * `scope` as `SCOPE_REVISION_HEADER` carries it: whole numbers, as `parseScopeRevision` reads them,
+ * so a moment kept to a fraction of a millisecond still reads as one.
+ */
 export function scopeRevisionValue(scope: ScopeRevision): string {
-  const at = scope.invalidatedAt === null ? NEVER_INVALIDATED : String(scope.invalidatedAt);
-  return `${String(scope.revision)};${at}`;
+  const at =
+    scope.invalidatedAt === null ? NEVER_INVALIDATED : String(Math.trunc(scope.invalidatedAt));
+  return `${String(Math.trunc(scope.revision))};${at}`;
 }
 
 /** A whole number a header can carry, or `undefined` for anything else. */

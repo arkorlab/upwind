@@ -62,8 +62,9 @@ host may also cache. Where the scope's tags stand can come sooner: on the reques
 hears of it sooner (`SCOPE_REVISION_HEADER`, `<revision>;<invalidatedAt>`), or, where the request
 says nothing, from a host that keeps it nearby (`scopeRevision`). A Function whose view of the tags
 is behind a recent invalidation — ten minutes, past which what it did is in what the Function reads
-anyway — brings the view up before the request is judged, joining a pull that is out, for a second
-at the most (`catchUpWithScope`).
+anyway — pulls the tags' delta before the request is judged, or joins a pull that is out, and waits
+for it a second at the most (`catchUpWithScope`): past that, or where the pull fails, the request is
+judged with the view as it stands, and a pull still out goes on behind it for the requests after.
 
 In a deployment whose routes the build split across app Functions, every Function routes every
 request — each carries the whole `runtime.json` — and answers only its own routes. A request that
