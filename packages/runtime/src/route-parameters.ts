@@ -1,6 +1,8 @@
 import type { ResolveRoutesResult } from '@next/routing';
+import { standsForClass } from '@stayingupwind/core/bundle';
+import { builtNameOf } from '@stayingupwind/core/manifest';
 
-import { type Store, unlocalizedRouteOf } from './store.ts';
+import { entrypointKindOf, type Store, unlocalizedRouteOf } from './store.ts';
 
 /** A parameter of a route, by the segment that declares it: `[id]`, `[...rest]` or `[[...rest]]`. */
 interface RouteParameter {
@@ -38,32 +40,40 @@ function decodedSegment(segment: string): string | undefined {
   }
 }
 
+/** What a template declares at one of its segments, and how the route compared with it holds it. */
+interface Declared {
+  readonly parameter: RouteParameter;
+  readonly placeholder: string;
+  /** The route is a class, which a segment spelled as the placeholder leaves open (`standsForClass`). */
+  readonly ofClass: boolean;
+}
+
 /**
- * The value a route holds where its template declares `parameter`, as the query names one (decoded,
- * a catch-all's segments joined by `/`): `undefined` where the route holds the template's own
- * placeholder there — the class leaves the parameter open — or where the routed path does not hold
- * the same value in the same place. A built name keeps a value's `/` escaped (`a%2Fb`), and the
- * routed path every character it escapes, so the two are compared decoded.
+ * The value a route holds where its template declares a parameter, as the query names one (the
+ * routed path's segments decoded, a catch-all's joined by `/`): `undefined` where a class holds the
+ * template's own placeholder there — it leaves the parameter open — or where the routed path does
+ * not hold the same value in the same place. A member spelled like its placeholder (`/blog/[post]`)
+ * is a value all the same. The routed path is compared as the build names what it builds
+ * (`builtNameOf`): the build keeps a value's `/` escaped (`a%2Fb`) and its `%` as it is (`100%`),
+ * where a request escapes both (`a%2Fb`, `100%25`).
  */
 function heldValue(
-  parameter: RouteParameter,
-  placeholder: string,
+  declared: Declared,
   held: readonly string[],
   routed: readonly string[],
 ): string | undefined {
+  const { parameter, placeholder, ofClass } = declared;
   if (
-    (held.length === 1 && held[0] === placeholder) ||
-    (held.length === 0 && !parameter.optional)
+    (ofClass && held.length === 1 && held[0] === placeholder) ||
+    (held.length === 0 && !parameter.optional) ||
+    held.length !== routed.length
   ) {
     return undefined;
   }
-  if (held.length !== routed.length) {
-    return undefined;
-  }
   const values: string[] = [];
-  for (const [index, segment] of held.entries()) {
+  for (const [index, segment] of routed.entries()) {
     const value = decodedSegment(segment);
-    if (value === undefined || value !== decodedSegment(routed[index] ?? '')) {
+    if (value === undefined || builtNameOf(segment) !== held[index]) {
       return undefined;
     }
     values.push(value);
@@ -71,12 +81,26 @@ function heldValue(
   return values.join('/');
 }
 
+/** The segments a parameter declared at `index` holds: one, or for a catch-all — the last — the rest. */
+function segmentsAt(
+  parameter: RouteParameter,
+  segments: readonly string[],
+  index: number,
+): readonly string[] {
+  return parameter.rest ? segments.slice(index) : segments.slice(index, index + 1);
+}
+
 /**
  * The parameters `route`, a prerender of `template`, holds values of, by the names the query gives
  * them (`nxtP…`), where `routed` — the path routing ended on — holds the same values; none where the
  * two do not line up with the template segment for segment.
  */
-function heldParameters(route: string, template: string, routed: string): Record<string, string> {
+function heldParameters(
+  route: string,
+  template: string,
+  routed: string,
+  ofClass: boolean,
+): Record<string, string> {
   const routeSegments = route.split('/');
   const routedSegments = routed.split('/');
   const held: Record<string, string> = {};
@@ -88,15 +112,11 @@ function heldParameters(route: string, template: string, routed: string): Record
       }
       continue;
     }
-    // A catch-all is the template's last segment: it holds whatever of the path is left.
-    const value = parameter.rest
-      ? heldValue(parameter, placeholder, routeSegments.slice(index), routedSegments.slice(index))
-      : heldValue(
-          parameter,
-          placeholder,
-          routeSegments.slice(index, index + 1),
-          routedSegments.slice(index, index + 1),
-        );
+    const value = heldValue(
+      { parameter, placeholder, ofClass },
+      segmentsAt(parameter, routeSegments, index),
+      segmentsAt(parameter, routedSegments, index),
+    );
     if (value !== undefined) {
       held[`nxtP${parameter.name}`] = value;
     }
@@ -121,28 +141,39 @@ function heldParameters(route: string, template: string, routed: string): Record
  *
  * A parameter is named only where the route holds a value of it rather than its placeholder — a
  * value may itself be spelled in brackets, so a segment is a placeholder only when it is the
- * route's own (`placeholderSegments`) — and `routed`, the path routing ended on without a trailing
- * slash, holds that value in the same place.
+ * route's own (`placeholderSegments`) in a route that stands for a class (`standsForClass`) — and
+ * `routed`, the path routing ended on without a trailing slash, holds that value in the same place.
  */
 export function routeQuery(
-  store: Pick<Store, 'manifest' | 'prerendersByPathname'>,
+  store: Store,
   route: string,
   target: NonNullable<ResolveRoutesResult['invocationTarget']>,
   routed: string,
 ): Record<string, string | string[]> {
-  const template = store.prerendersByPathname.get(route)?.route;
-  if (template === undefined) {
+  const prerender = store.prerendersByPathname.get(route);
+  if (prerender === undefined) {
     return target.query;
   }
+  const template = prerender.route;
+  const ofClass = standsForClass(prerender);
   // A locale's prerender in an application with `i18n` leads with a segment its template does not
   // have (`/fr/blog/post` of `/blog/[slug]`), and so does the path routing ended on: both are read
-  // without it, or the locale is read as the template's first value.
+  // without it, or the locale is read as the template's first value. `i18n` puts no locale in front
+  // of an App Router route, whose first segment may be a `[locale]` of its own — an application
+  // part way from one router to the other has both.
   const { config } = store.manifest;
-  const unlocalized = unlocalizedRouteOf(config, route);
+  const kind = entrypointKindOf(store, template);
+  const unlocalized =
+    kind === 'app-page' || kind === 'app-route' ? undefined : unlocalizedRouteOf(config, route);
   const held =
     unlocalized === undefined
-      ? heldParameters(route, template, routed)
-      : heldParameters(unlocalized, template, unlocalizedRouteOf(config, routed) ?? routed);
+      ? heldParameters(route, template, routed, ofClass)
+      : heldParameters(
+          unlocalized,
+          template,
+          unlocalizedRouteOf(config, routed) ?? routed,
+          ofClass,
+        );
   const named = Object.entries(held).filter(([key]) => !Object.hasOwn(target.query, key));
   return named.length === 0 ? target.query : { ...target.query, ...Object.fromEntries(named) };
 }
