@@ -56,6 +56,12 @@ interface Declared {
  * is a value all the same. The routed path is compared as the build names what it builds
  * (`builtNameOf`): the build keeps a value's `/` escaped (`a%2Fb`) and its `%` as it is (`100%`),
  * where a request escapes both (`a%2Fb`, `100%25`).
+ *
+ * The routed path is spelled as the request spelled it — `@next/routing` hands it over undecoded —
+ * so each segment is decoded once, as the values routing writes into the query are: `%2520` holds
+ * `%20`. Next.js reads a catch-all's value as its segments joined by `/` and splits it there
+ * (`normalizeDynamicRouteParams`), so one whose segment holds a `/` of its own (`a%2Fb`) is not
+ * named: it would be read as two.
  */
 function heldValue(
   declared: Declared,
@@ -78,7 +84,9 @@ function heldValue(
     }
     values.push(value);
   }
-  return values.join('/');
+  return parameter.rest && values.some((value) => value.includes('/'))
+    ? undefined
+    : values.join('/');
 }
 
 /** The segments a parameter declared at `index` holds: one, or for a catch-all — the last — the rest. */
@@ -92,8 +100,13 @@ function segmentsAt(
 
 /**
  * The parameters `route`, a prerender of `template`, holds values of, by the names the query gives
- * them (`nxtP…`), where `routed` — the path routing ended on — holds the same values; none where the
- * two do not line up with the template segment for segment.
+ * them (`nxtP…`), where `routed` — the path routing ended on — holds the same values; none where
+ * `route` does not line up with the template segment for segment.
+ *
+ * Of `routed` only the values are compared. Routing matched it by the route's own pattern, so its
+ * other segments are the route's, though not always as the route spells them: a pattern matches
+ * them in any case unless the application asks otherwise, and `/en/DOCS` lands on
+ * `/en/docs/[[...slug]]`. What tells which of a route's pages or classes a path is, is its values.
  */
 function heldParameters(
   route: string,
