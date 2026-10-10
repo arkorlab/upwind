@@ -1,4 +1,5 @@
 import type { Validity } from '@stayingupwind/core/cache';
+import { withDeadline } from '@stayingupwind/core/util';
 
 import { readNewerData } from './data.ts';
 import type { HeldValue } from './held-writes.ts';
@@ -20,6 +21,17 @@ export function heldIn(memo: DataMemo): HeldValue | undefined {
         revision: memo.response.dependencyRevision,
       }
     : undefined;
+}
+
+/**
+ * How long the judgement of a later value — its tags brought up to date — is waited for, past the
+ * read of it (`readNewerData`): past it the value first read is answered, as it would have been.
+ */
+const LATER_JUDGED_WITHIN_MS = 200;
+
+/** `judge` of `value`, given up past `LATER_JUDGED_WITHIN_MS`. */
+function judgedInTime(weighing: Weighing, value: HeldValue): Promise<Validity> {
+  return withDeadline(weighing.judge(value), LATER_JUDGED_WITHIN_MS, 'a later data value judged');
 }
 
 /** How far each state keeps a value from being answered; `unknown` is answered as `fresh` is. */
@@ -45,7 +57,9 @@ export interface Weighing {
 async function heldNow(weighing: Weighing): Promise<Judged | undefined> {
   try {
     const now = await weighing.reread();
-    return now === undefined ? undefined : { held: now, validity: await weighing.judge(now) };
+    return now === undefined
+      ? undefined
+      : { held: now, validity: await judgedInTime(weighing, now) };
   } catch {
     return undefined;
   }
@@ -77,9 +91,10 @@ export async function laterIfAny(
   }
   let again: Validity;
   try {
-    again = await weighing.judge(value);
+    again = await judgedInTime(weighing, value);
   } catch {
-    // The later value could not be judged: the one read is answered as it would have been.
+    // The later value could not be judged, or not in time: the one read is answered as it would
+    // have been.
     return read;
   }
   if (SEVERITY[again] > SEVERITY[validity]) {
