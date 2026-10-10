@@ -34,9 +34,9 @@ export interface RequestContext {
  * The cache writes a request handed over behind its response (`keepWrite`, in `handlers.ts`): the
  * response's body does not end before they have landed, for no longer than a bound
  * (`withWritesLanded`, in `serve.ts`). A request made once the response was read whole then finds
- * what this one wrote at the host, in whatever isolate it lands, where before it could find
- * nothing until the write had gone out behind the response. The first byte waits for none of them:
- * only the last does.
+ * what this one wrote at the host, in whatever isolate it lands — a write that lands within the
+ * bound, that is — where before it could find nothing until the write had gone out behind the
+ * response. The first byte waits for none of them: only the last does.
  */
 export class RequestWrites {
   readonly #out = new Set<Promise<unknown>>();

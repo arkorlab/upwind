@@ -377,16 +377,23 @@ export function withInvalidatedTags(response: Response, invalidated: Invalidated
 export const WRITES_LAND_WITHIN_MS = 2000;
 
 /**
- * `response`, its body ending only once the cache writes its request handed over have landed
+ * `response`, ending only once the cache writes its request handed over have landed
  * (`RequestWrites`), or `WRITES_LAND_WITHIN_MS` have gone by. The bytes pass as they come: the
- * first byte is not held, the end is. A response without a body has nothing to hold.
+ * first byte is not held, the end is. A response without a body ends with its headers, so those
+ * wait instead — a redirect, or a `204`, that the request wrote behind — where any write is out.
  *
  * A body of a stated length ends at its last byte for whoever reads it, whatever its stream does
- * after — a page Next.js rendered whole says its length — so where writes are out as the response
- * is made, it goes without one, and its end is the stream's.
+ * after, and writes can be handed over until that byte — the Node bridge answers once the headers
+ * are committed — so the response goes without one, and its end is the stream's. It is made from
+ * the response itself, which keeps what a runtime holds of one beside its status and headers: on
+ * workerd, a body the application encoded itself (`encodeBody: 'manual'`).
  */
-export function withWritesLanded(response: Response, writes: RequestWrites): Response {
+export async function withWritesLanded(
+  response: Response,
+  writes: RequestWrites,
+): Promise<Response> {
   if (response.body === null) {
+    await writes.landed(WRITES_LAND_WITHIN_MS);
     return response;
   }
   const body = response.body.pipeThrough(
@@ -394,13 +401,7 @@ export function withWritesLanded(response: Response, writes: RequestWrites): Res
       flush: () => writes.landed(WRITES_LAND_WITHIN_MS),
     }),
   );
-  const headers = new Headers(response.headers);
-  if (writes.pending) {
-    headers.delete('content-length');
-  }
-  return new Response(body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
+  const held = new Response(body, response);
+  held.headers.delete('content-length');
+  return held;
 }

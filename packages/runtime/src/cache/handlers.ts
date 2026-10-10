@@ -558,7 +558,8 @@ async function useCacheHeld(
  * write handed to the request's `waitUntil`, ordered behind any write of the key still out
  * (`keepWrite`). A read in any other isolate is answered with what was there before, as it was
  * while the write was awaited — until the write has landed, which the request's response does not
- * end before (`RequestWrites`): a request made once that response was read whole finds the value.
+ * end before unless it takes longer than the response waits (`RequestWrites`,
+ * `WRITES_LAND_WITHIN_MS`): a request made once that response was read whole finds the value.
  *
  * A regeneration still waits for its write: its render commits what it made, and the request it
  * runs in waits on nobody. So does a write made outside any request, with no `waitUntil` to keep it.
@@ -569,42 +570,56 @@ async function setUseCache(
   cacheKey: string,
   pendingEntry: Promise<UseCacheEntry>,
 ): Promise<void> {
-  const entry = await pendingEntry;
-  // As Next.js's own handler does: the wrapper serves one branch while the other is stored, and
-  // an entry that expires at once is dynamic, never served from a store.
-  const [served, stored] = entry.value.tee();
-  entry.value = served;
-  if (entry.expire === 0) {
-    await stored.cancel();
-    return;
-  }
-  const bytes = await readWithin(stored, MAX_VALUE_BYTES);
-  if (bytes === undefined) {
-    runtime.log('use cache value not stored: too large', { key: cacheKey });
-    return;
-  }
-  const metadata: DataEntryMetadata = {
-    kind: USE_CACHE,
-    handler: kind,
-    tags: [...entry.tags],
-    stale: entry.stale,
-    timestamp: entry.timestamp,
-    expire: entry.expire,
-    revalidate: entry.revalidate,
-  };
   const context = requestContext();
-  if (context === undefined || isRegeneration() || isPrimaryResourceRead()) {
-    await writeData(runtime, { key: cacheKey, entry: metadata, bytes }, callsWaitedOn());
-    return;
+  // The end of the response waits for the write (`RequestWrites`), the first byte not — from the
+  // moment Next.js hands the entry over rather than once its write starts: the value is read whole
+  // first, and the response could otherwise end while it is.
+  const behind =
+    context === undefined || isRegeneration() || isPrimaryResourceRead()
+      ? undefined
+      : { context, landed: Promise.withResolvers<unknown>() };
+  behind?.context.writes.add(behind.landed.promise);
+  try {
+    const entry = await pendingEntry;
+    // As Next.js's own handler does: the wrapper serves one branch while the other is stored, and
+    // an entry that expires at once is dynamic, never served from a store.
+    const [served, stored] = entry.value.tee();
+    entry.value = served;
+    if (entry.expire === 0) {
+      await stored.cancel();
+      return;
+    }
+    const bytes = await readWithin(stored, MAX_VALUE_BYTES);
+    if (bytes === undefined) {
+      runtime.log('use cache value not stored: too large', { key: cacheKey });
+      return;
+    }
+    const metadata: DataEntryMetadata = {
+      kind: USE_CACHE,
+      handler: kind,
+      tags: [...entry.tags],
+      stale: entry.stale,
+      timestamp: entry.timestamp,
+      expire: entry.expire,
+      revalidate: entry.revalidate,
+    };
+    if (behind === undefined) {
+      await writeData(runtime, { key: cacheKey, entry: metadata, bytes }, callsWaitedOn());
+      return;
+    }
+    const write = keepWrite(runtime, useCacheWrites(runtime, kind), {
+      key: cacheKey,
+      entry: metadata,
+      bytes,
+    });
+    behind.context.waitUntil(write);
+    behind.landed.resolve(write);
+  } finally {
+    // Nothing written — an entry that expires at once, one too large, or one that failed on the
+    // way — is nothing to wait for. Once the write has been handed over, this changes nothing; what
+    // it settles with is read by nobody.
+    behind?.landed.resolve(false);
   }
-  const write = keepWrite(runtime, useCacheWrites(runtime, kind), {
-    key: cacheKey,
-    entry: metadata,
-    bytes,
-  });
-  context.waitUntil(write);
-  // And the end of the response waits for it (`RequestWrites`), the first byte not.
-  context.writes.add(write);
 }
 
 /** The `use cache` handler of one kind (`default`, `remote`), reading and writing the same scope. */
