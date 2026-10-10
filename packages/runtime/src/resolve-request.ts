@@ -8,6 +8,7 @@ import { settleRewrittenPath } from './rewritten-path.ts';
 import {
   parametersDecode,
   pathnamesFor,
+  redirectedBeforeRouting,
   redirectResponse,
   routedHeaders,
   routingI18n,
@@ -91,14 +92,34 @@ function routingExitOf(routed: ResolveRoutesResult): Response | URL | undefined 
 }
 
 /**
+ * A foreground request routing answers itself (`redirectedBeforeRouting`, `routingExitOf`), answered
+ * so: the render is not read, and is let go of first — a page's answer may hold a stream of its own
+ * open, its shell or a resume, which another origin slow to answer would keep open for nothing —
+ * nor is what the request uploads, as on every routing exit, but where another origin is sent it,
+ * as routing hands the request on. What the regeneration came to is still said
+ * (`CACHE_OUTCOME_HEADER`): it ran, whatever answers.
+ */
+async function exitAnswer(
+  input: RoutedInput,
+  render: Response,
+  exit: () => Response | Promise<Response>,
+): Promise<Response> {
+  releaseStream(render.body, 'foreground answer: routing answered the request itself');
+  const itself = await exit();
+  releaseStream(input.request.body, 'routing exit: handler body unused');
+  const outcome = render.headers.get(CACHE_OUTCOME_HEADER);
+  return outcome === null ? itself : outcomeOn(itself, outcome);
+}
+
+/**
  * The answer a regeneration in the foreground gave, with what routing adds to every answer the usual
  * path gives (`answerResolved` in `handle.ts`): the headers `next.config` sets on the request — a
  * `Content-Security-Policy`, say, without which the page would go out unprotected — and what a
- * rewrite says of the path a payload was rendered for. Routed as the usual path routes the request,
- * but without the middleware, which the regeneration did not run either; and where routing answers
- * it itself — a redirect, a 400, another origin's answer, a rule's status, which a request it finds
- * no route for comes back with — answered so, as the usual path answers it (`routeAndServe`,
- * `unrouted`), the render let go.
+ * rewrite says of the path a payload was rendered for. Routed as the usual path routes the request
+ * (`handleFull`), but without the middleware, which the regeneration did not run either; and where
+ * routing answers it itself — a redirect before routing or by a rule, a 400, another origin's
+ * answer, a rule's status, which a request it finds no route for comes back with — answered so, as
+ * the usual path answers it (`routeAndServe`, `unrouted`), the render let go (`exitAnswer`).
  */
 export async function withRoutingOf(
   input: RoutedInput,
@@ -107,6 +128,10 @@ export async function withRoutingOf(
 ): Promise<Response> {
   const url = new URL(input.request.url);
   const headers = routedHeaders(input.request, url, store.manifest.config.basePath);
+  const before = await redirectedBeforeRouting(store, url, headers);
+  if (before !== undefined) {
+    return exitAnswer(input, answer, () => before);
+  }
   const routed = await routingOf(input, store, {
     url,
     headers,
@@ -116,23 +141,14 @@ export async function withRoutingOf(
   });
   settleRewrittenPath(routed.resolvedHeaders, headers, url, undefined);
   const exit = routingExitOf(routed);
+  if (exit instanceof URL) {
+    return exitAnswer(input, answer, async () => {
+      const forwarded = new Request(input.request, { headers });
+      return withRoutingHeaders(await externalRewrite(forwarded, exit), routed.resolvedHeaders);
+    });
+  }
   if (exit !== undefined) {
-    // The render is not read, and is let go of first: a page's answer may hold a stream of its own
-    // open — its shell, a resume — which another origin slow to answer would keep open for nothing.
-    // Nor is what the request uploads, as on every routing exit, but where another origin is sent
-    // it, as routing hands the request on. What the regeneration came to is still said
-    // (`CACHE_OUTCOME_HEADER`): it ran, whatever answers.
-    releaseStream(answer.body, 'foreground answer: routing answered the request itself');
-    const itself =
-      exit instanceof URL
-        ? withRoutingHeaders(
-            await externalRewrite(new Request(input.request, { headers }), exit),
-            routed.resolvedHeaders,
-          )
-        : exit;
-    releaseStream(input.request.body, 'routing exit: handler body unused');
-    const outcome = answer.headers.get(CACHE_OUTCOME_HEADER);
-    return outcome === null ? itself : outcomeOn(itself, outcome);
+    return exitAnswer(input, answer, () => exit);
   }
   const routedAnswer = withRoutingHeaders(answer, routed.resolvedHeaders);
   // What the request uploads is let go of once the answer is done with — and only then, as the

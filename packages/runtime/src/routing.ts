@@ -35,6 +35,7 @@ import { entrypointKindOf, type Store } from './store.ts';
  */
 
 const STATIC_ASSETS_PREFIX = '/_next/static/';
+const HTTP_PERMANENT_REDIRECT = 308;
 const HTTP_BAD_REQUEST = 400;
 /** What asks with these `Sec-Fetch-Dest` values cannot show a page (Next.js's own list). */
 const SUBRESOURCE_DESTINATIONS: ReadonlySet<string> = new Set([
@@ -432,6 +433,24 @@ export function withoutRepeatedSlashes(url: URL): string | undefined {
     return undefined;
   }
   return `${url.pathname.replaceAll(/\/{2,}/gu, '/')}${url.search}`;
+}
+
+/**
+ * What the usual path answers a request with before it routes it (`handleFull`): a path that repeats
+ * a slash, redirected to the path without (`withoutRepeatedSlashes`); then a redirect Next.js's
+ * router makes ahead of the rules it was handed (`internalRedirect`) — an `i18n` application's
+ * trailing slash, which `routingTables` leaves out of what `@next/routing` is handed for this.
+ */
+export async function redirectedBeforeRouting(
+  store: Store,
+  url: URL,
+  headers: Headers,
+): Promise<Response | undefined> {
+  const collapsed = withoutRepeatedSlashes(url);
+  if (collapsed !== undefined) {
+    return redirectResponse(collapsed, HTTP_PERMANENT_REDIRECT, undefined);
+  }
+  return internalRedirect(store, url, headers);
 }
 
 /** `pathname` with `prefix` taken off its front, when it is there. */

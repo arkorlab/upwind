@@ -60,14 +60,13 @@ import { routingOf, untraced, withRoutingOf } from './resolve-request.ts';
 import { settleRewrittenPath } from './rewritten-path.ts';
 import {
   askedOf,
-  internalRedirect,
   landedRoute,
   parametersDecode,
+  redirectedBeforeRouting,
   redirectResponse,
   resolvedOf,
   routedHeaders,
   undecodedResponse,
-  withoutRepeatedSlashes,
   withRewriteStatus,
   withRoutingHeaders,
 } from './routing.ts';
@@ -109,7 +108,6 @@ import { renderedBy, serveWithBody } from './with-body.ts';
  * rendered whole, and the cache holds no generation of it.
  */
 
-const HTTP_PERMANENT_REDIRECT = 308;
 const HTTP_BAD_REQUEST = 400;
 const HTTP_INTERNAL_ERROR = 500;
 export type { HandleInput } from './serve.ts';
@@ -249,12 +247,11 @@ async function handleFull(input: RoutedInput, store: Store): Promise<Response> {
   if (handedOff !== null) {
     return serveHandedOff(input, store, url, handedOff);
   }
-  const collapsed = withoutRepeatedSlashes(url);
-  if (collapsed !== undefined) {
-    return redirectResponse(collapsed, HTTP_PERMANENT_REDIRECT, undefined);
-  }
   const headers = routedHeaders(input.request, url, store.manifest.config.basePath);
-  return (await internalRedirect(store, url, headers)) ?? routeAndServe(input, store, url, headers);
+  return (
+    (await redirectedBeforeRouting(store, url, headers)) ??
+    routeAndServe(input, store, url, headers)
+  );
 }
 
 /**
