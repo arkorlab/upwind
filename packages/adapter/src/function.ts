@@ -65,7 +65,7 @@ import {
   sourceMapsPlugin,
   sourcemapOutput,
 } from './source-maps.ts';
-import { THROWING_GLOBALS, throwingGlobalsPlugin } from './throwing-globals.ts';
+import { GLOBAL_OBJECT, globalObjectPlugin, THROWING_GLOBALS } from './throwing-globals.ts';
 import type { TracedFile } from './traced-files.ts';
 import { WASM_ENTRY_MODULE, type WasmCollector, wasmEntrySource, wasmModuleName } from './wasm.ts';
 
@@ -238,7 +238,7 @@ export function appBundlePlugins(
   sinks: AppBundleSinks,
 ): RolldownPlugin[] {
   return [
-    throwingGlobalsPlugin(),
+    globalObjectPlugin(),
     patchesPlugin(PATCHES, context.patch, (applied) => {
       sinks.patches.push(applied);
     }),
@@ -281,8 +281,9 @@ export function appBundleOptions(
     platform: 'node',
     plugins: appBundlePlugins(context, sinks),
     transform: {
-      inject: THROWING_GLOBALS,
+      inject: GLOBAL_OBJECT,
       define: {
+        ...THROWING_GLOBALS,
         'process.env.NEXT_RUNTIME': '"nodejs"',
         'process.env.NODE_ENV': '"production"',
       },

@@ -2,7 +2,7 @@ import { rolldown } from 'rolldown';
 
 import { jsLiteral } from './codegen.ts';
 import { generatedModulesPlugin } from './generated-modules.ts';
-import { THROWING_GLOBALS, throwingGlobalsPlugin } from './throwing-globals.ts';
+import { GLOBAL_OBJECT, globalObjectPlugin, THROWING_GLOBALS } from './throwing-globals.ts';
 
 /** What the runtime module of one Function is bundled from, and as. */
 export interface RuntimeBundleInput {
@@ -37,11 +37,13 @@ export async function bundleRuntimeModule(input: RuntimeBundleInput): Promise<vo
     platform: 'node',
     // esbuild's conditions for the platform, with `workerd` and `worker` added. Rolldown adds `import`
     // or `require` to them by how a module is imported, as esbuild does: a `require` of a package
-    // gets what the package exports to `require`, and not what it exports to `import`.
+    // gets what the package exports to `require`, and not what it exports to `import`. Neither is
+    // listed here for that reason: listed, `import` matched a `require` too. (Checked on a package
+    // that exports nothing but `import`, `require` and `default`: each kind got its own.)
     resolve: { conditionNames: ['workerd', 'worker', 'node', 'default'] },
     external: [/^node:/u, /^cloudflare:/u],
     plugins: [
-      throwingGlobalsPlugin(),
+      globalObjectPlugin(),
       generatedModulesPlugin({
         modules: input.modules,
         edge: input.edge,
@@ -51,8 +53,9 @@ export async function bundleRuntimeModule(input: RuntimeBundleInput): Promise<vo
     ],
     transform: {
       target: 'es2024',
-      inject: THROWING_GLOBALS,
+      inject: GLOBAL_OBJECT,
       define: {
+        ...THROWING_GLOBALS,
         'process.env.NODE_ENV': '"production"',
         __ARKOR_FUNCTION_KIND__: jsLiteral(input.kind),
         // Which Function this is, among a deployment's app Functions: what a request for a route of

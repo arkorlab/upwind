@@ -6,41 +6,43 @@ import type { Plugin } from 'rolldown';
  * drops a call to one whose result nothing reads, in a `try` block too, so a check that works by the
  * throw passes everything: `try { decodeURIComponent(path); return true } catch { return false }`
  * becomes `return true`. Every bundle the adapter makes, the application's code as the runtime's,
- * injects these instead: each reference to the global becomes a binding of the bundle's own,
- * read off the global object, which Rolldown does not take for pure and so keeps the call.
+ * defines each of them as a property of the global object instead, read when the call is made: a
+ * property read, which Rolldown keeps, and the call with it.
  *
- * Injected, not defined as `globalThis.<name>`: the binding is the bundle's, so a module that binds
- * `globalThis` (or the name itself) is left as it reads, where a definition would read the call off
- * that module's own `globalThis`.
+ * The global object is a binding of the bundle's own, injected from a module the adapter provides
+ * (`GLOBAL_OBJECT`), not `globalThis` as the module in hand reads it: a module that binds a
+ * `globalThis` of its own is left as it reads. Read at the call, a global a module replaces is the
+ * one called, and the function is the global's own (`decodeURIComponent === globalThis.decodeURIComponent`).
+ * Rolldown defines before it injects, so the name the definitions spell is the one injected; a module
+ * would have to bind that name itself to read anything else.
  *
  * The globals that only coerce their arguments (`parseInt`, `Math.*`, `String.fromCharCode`) stay
  * as they are: they throw on a Symbol or a BigInt alone, which the minifier assumes they are not
  * handed.
  */
-const THROWING_MODULE = '\0upwind:throwing-globals';
+const GLOBAL_BINDING = '__upwindGlobalObject';
 
-const THROWING_SOURCE = `const globalObject = globalThis;
-export const decodeURI = globalObject.decodeURI;
-export const decodeURIComponent = globalObject.decodeURIComponent;
-export const encodeURI = globalObject.encodeURI;
-export const encodeURIComponent = globalObject.encodeURIComponent;
-export const fromCodePoint = globalObject.String.fromCodePoint;
-`;
+const GLOBAL_MODULE = '\0upwind:global-object';
 
-/** For `transform.inject`: each global, and the binding of the module above it becomes. */
-export const THROWING_GLOBALS: Readonly<Record<string, [string, string]>> = {
-  decodeURI: [THROWING_MODULE, 'decodeURI'],
-  decodeURIComponent: [THROWING_MODULE, 'decodeURIComponent'],
-  encodeURI: [THROWING_MODULE, 'encodeURI'],
-  encodeURIComponent: [THROWING_MODULE, 'encodeURIComponent'],
-  'String.fromCodePoint': [THROWING_MODULE, 'fromCodePoint'],
+/** For `transform.define`: each throwing global, as a property of the global object. */
+export const THROWING_GLOBALS: Readonly<Record<string, string>> = {
+  decodeURI: `${GLOBAL_BINDING}.decodeURI`,
+  decodeURIComponent: `${GLOBAL_BINDING}.decodeURIComponent`,
+  encodeURI: `${GLOBAL_BINDING}.encodeURI`,
+  encodeURIComponent: `${GLOBAL_BINDING}.encodeURIComponent`,
+  'String.fromCodePoint': `${GLOBAL_BINDING}.String.fromCodePoint`,
 };
 
-/** The module the throwing globals are injected from; first among a bundle's plugins. */
-export function throwingGlobalsPlugin(): Plugin {
+/** For `transform.inject`: the global object those definitions read the globals off. */
+export const GLOBAL_OBJECT: Readonly<Record<string, [string, string]>> = {
+  [GLOBAL_BINDING]: [GLOBAL_MODULE, 'globalObject'],
+};
+
+/** The module the global object is injected from; first among a bundle's plugins. */
+export function globalObjectPlugin(): Plugin {
   return {
-    name: 'upwind-throwing-globals',
-    resolveId: (source) => (source === THROWING_MODULE ? source : null),
-    load: (id) => (id === THROWING_MODULE ? THROWING_SOURCE : null),
+    name: 'upwind-global-object',
+    resolveId: (source) => (source === GLOBAL_MODULE ? source : null),
+    load: (id) => (id === GLOBAL_MODULE ? 'export const globalObject = globalThis;' : null),
   };
 }
