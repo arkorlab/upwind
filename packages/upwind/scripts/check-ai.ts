@@ -18,7 +18,8 @@ import {
   localInferenceSource,
   prepareLocalAi,
 } from '../src/resources/local-ai.ts';
-import { disposeLocalResources, startLocalResources } from '../src/resources/local.ts';
+import { startLocalResources } from '../src/resources/local.ts';
+import { disposeLocalResources } from '../src/resources/shutdown.ts';
 
 const symbol = Symbol.for(RESOURCES_SYMBOL_KEY);
 const previous: unknown = Reflect.get(globalThis, symbol);
