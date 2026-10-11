@@ -13,7 +13,7 @@ import type { Plugin } from 'rolldown';
  * (`GLOBAL_OBJECT`), not `globalThis` as the module in hand reads it: a module that binds a
  * `globalThis` of its own is left as it reads. Read at the call, a global a module replaces is the
  * one called, and the function is the global's own (`decodeURIComponent === globalThis.decodeURIComponent`).
- * The URI functions are called unbound (`(0, g.decodeURI)(…)`), as their bare names are, so a
+ * The URI functions are called unbound (`(0, upwindGlobal.decodeURI)(…)`), as their bare names are, so a
  * replacement is not handed the global object as `this`; `String.fromCodePoint` was a method call
  * already. Rolldown defines before it injects, so the name the definitions spell is the one
  * injected; a module would have to bind that name itself to read anything else.
@@ -37,17 +37,19 @@ export const THROWING_GLOBALS: Readonly<Record<string, string>> = {
 
 /** For `transform.inject`: the global object those definitions read the globals off. */
 export const GLOBAL_OBJECT: Readonly<Record<string, [string, string]>> = {
-  [GLOBAL_BINDING]: [GLOBAL_MODULE, 'g'],
+  [GLOBAL_BINDING]: [GLOBAL_MODULE, 'upwindGlobal'],
 };
 
 /**
- * The module the global object is injected from; first among a bundle's plugins. Its binding is a
- * letter: every call site spells it, and the adapter's bundles keep their names.
+ * The module the global object is injected from; first among a bundle's plugins. Its binding is the
+ * name every call site spells, as the bundle keeps names: one no module's own code uses, which
+ * Rolldown would otherwise rename where they meet. (Named `g`, it renamed the `g` of Turbopack's edge
+ * runtime to `g$24`, a loader the audit no longer knew.)
  */
 export function globalObjectPlugin(): Plugin {
   return {
     name: 'upwind-global-object',
     resolveId: (source) => (source === GLOBAL_MODULE ? source : null),
-    load: (id) => (id === GLOBAL_MODULE ? 'export const g = globalThis;' : null),
+    load: (id) => (id === GLOBAL_MODULE ? 'export const upwindGlobal = globalThis;' : null),
   };
 }
