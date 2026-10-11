@@ -26,7 +26,12 @@ import {
   writesIn,
 } from './held-writes.ts';
 import type { DataEntryMetadata } from './host.ts';
-import { holdForRevalidation, revalidated } from './revalidations.ts';
+import {
+  fetchedAgainBehind,
+  holdForRevalidation,
+  revalidated,
+  revalidatedBehind,
+} from './revalidations.ts';
 import type { CacheRuntime } from './runtime.ts';
 import { recordValidity } from './tags.ts';
 import { callsBehind, callsWaitedOn } from './turns.ts';
@@ -240,6 +245,8 @@ interface FetchGetContext {
   readonly kind: string;
   readonly tags?: string[] | undefined;
   readonly softTags?: string[] | undefined;
+  /** The `fetch`'s own, or the `unstable_cache` call's: what `IncrementalCache` judges age by. */
+  readonly revalidate?: number | false | undefined;
 }
 
 interface FetchSetContext {
@@ -378,8 +385,7 @@ export class PlatformFetchCache {
     if (!isFetchValue(value)) {
       return null;
     }
-    if (validity === 'stale') {
-      // Fetched again behind the render, by work Next.js may leave to nothing (`revalidations.ts`).
+    if (fetchedAgainBehind(validity, now - entry.timestamp, ctx.revalidate, value.revalidate)) {
       holdForRevalidation(runtime, FETCH_STORE, cacheKey);
     }
     return { value, lastModified: validity === 'stale' ? 0 : entry.timestamp };
@@ -533,8 +539,7 @@ async function getUseCache(
   ) {
     return undefined;
   }
-  if (validity === 'stale') {
-    // Revalidated behind the render, by work Next.js may leave to nothing (`revalidations.ts`).
+  if (revalidatedBehind(validity, now - entry.timestamp, entry.revalidate)) {
     holdForRevalidation(runtime, useCacheStore(kind), cacheKey);
   }
   return {

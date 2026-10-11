@@ -1,4 +1,6 @@
-import { requestContext } from './context.ts';
+import type { Validity } from '@stayingupwind/core/cache';
+
+import { type RequestContext, requestContext } from './context.ts';
 import { settledWithin } from './pulls.ts';
 import type { CacheRuntime } from './runtime.ts';
 
@@ -7,9 +9,39 @@ import type { CacheRuntime } from './runtime.ts';
  * behind it (`holdForRevalidation`): the time a request may go on for once it has answered.
  */
 const REVALIDATION_LIFETIME_MS = 30_000;
+const MS_PER_SECOND = 1000;
 
-/** A revalidation of a key that Next.js begins behind a stale answer, and what settles it. */
+/**
+ * Whether Next.js revalidates a `use cache` value it was answered, `ageMs` old, behind the render:
+ * where a tag made it stale, and where its wrapper finds it past its `revalidate`, which it judges
+ * once the value has been answered.
+ */
+export function revalidatedBehind(validity: Validity, ageMs: number, revalidate: number): boolean {
+  return validity === 'stale' || ageMs > revalidate * MS_PER_SECOND;
+}
+
+/**
+ * Whether Next.js fetches a value it was answered, `ageMs` old, again behind the render: where a tag
+ * made it stale, and where `IncrementalCache` finds it older than its `revalidate` once it has been
+ * answered — the call's (`fetch`'s or `unstable_cache`'s) where it gives one, as `IncrementalCache`
+ * reads it, and the value's own otherwise.
+ */
+export function fetchedAgainBehind(
+  validity: Validity,
+  ageMs: number,
+  given: number | false | undefined,
+  own: number,
+): boolean {
+  const revalidate = typeof given === 'number' && given !== 0 ? given : own;
+  return validity === 'stale' || ageMs / MS_PER_SECOND > revalidate;
+}
+
+/**
+ * A revalidation of a key that Next.js begins behind a stale answer: the request it runs in — the
+ * one answered stale — and what settles it.
+ */
 interface Revalidation {
+  readonly owner: RequestContext;
   readonly done: Promise<unknown>;
   readonly settle: (landed: Promise<unknown>) => void;
 }
@@ -27,18 +59,22 @@ function idOf(store: string, key: string): string {
   return `${store}\u{0}${key}`;
 }
 
-/** Let `made` go once it has settled, or once its lifetime is over. */
+/**
+ * Let `made` go once it has settled, or once its lifetime is over — settled then, too: the requests
+ * that joined it are let go with it, since no write can be told to it once it has gone.
+ */
 async function lapse(table: Map<string, Revalidation>, id: string, made: Revalidation) {
   await settledWithin(made.done, REVALIDATION_LIFETIME_MS);
+  made.settle(Promise.resolve());
   if (table.get(id) === made) {
     table.delete(id);
   }
 }
 
 /**
- * Keep the request answered with a stale value of `key` going until a value of the key is set
- * again — the revalidation Next.js begins behind that answer — or `REVALIDATION_LIFETIME_MS` have
- * gone by.
+ * Keep the request answered with a stale value of `key` going until the revalidation Next.js
+ * begins behind that answer, in that request, has set a value of the key again (`revalidated`), or
+ * `REVALIDATION_LIFETIME_MS` have gone by.
  *
  * Next.js hands such a revalidation to the request's `waitUntil` only where it began before the
  * render's stream was made: `executeRevalidates`, which `app-render.tsx` calls once as it makes the
@@ -60,21 +96,41 @@ export function holdForRevalidation(runtime: CacheRuntime, store: string, key: s
   const table = tableIn(runtime);
   const id = idOf(store, key);
   const out = table.get(id);
-  if (out !== undefined) {
-    context.waitUntil(settledWithin(out.done, REVALIDATION_LIFETIME_MS));
-    return;
+  let made: Revalidation | undefined;
+  if (out === undefined) {
+    const { promise, resolve } = Promise.withResolvers<unknown>();
+    made = { owner: context, done: promise, settle: resolve };
+    table.set(id, made);
   }
-  const { promise, resolve } = Promise.withResolvers<unknown>();
-  const made: Revalidation = { done: promise, settle: resolve };
-  table.set(id, made);
-  context.waitUntil(lapse(table, id, made));
+  try {
+    context.waitUntil(
+      made === undefined
+        ? settledWithin(out?.done ?? Promise.resolve(), REVALIDATION_LIFETIME_MS)
+        : lapse(table, id, made),
+    );
+  } catch (error) {
+    // An invocation that has ended keeps nothing going — a host's `waitUntil` may throw then — and
+    // its read is answered all the same; a revalidation it made is let go, as no write reaches it.
+    if (made !== undefined) {
+      table.delete(id);
+      made.settle(Promise.resolve());
+    }
+    runtime.log('revalidation not held', {
+      detail: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 /**
- * A value of `key` was set, to land as `landed` settles: a request kept going for the key's
- * revalidation (`holdForRevalidation`) goes on until it has. Held until then, too: a stale answer
- * of the key meanwhile is kept going for the same write, rather than for one Next.js will not
- * begin while this revalidation is out.
+ * A value of `key` was set, to land as `landed` settles: where it was set in the request a
+ * revalidation of the key is kept going for (`holdForRevalidation`) — Next.js begins the
+ * revalidation in the request it answered stale — that request goes on until it has landed.
+ * Held until then, too: a stale answer of the key meanwhile is kept going for the same write,
+ * rather than for one Next.js will not begin while this revalidation is out.
+ *
+ * Another request's write of the key settles nothing: a regeneration's, or a render's that had
+ * the value computed for it, lands while the revalidation may still be under way, which would
+ * then go on held by nothing, as before.
  */
 export function revalidated(
   runtime: CacheRuntime,
@@ -82,5 +138,8 @@ export function revalidated(
   key: string,
   landed: Promise<unknown>,
 ): void {
-  revalidations.get(runtime)?.get(idOf(store, key))?.settle(landed);
+  const out = revalidations.get(runtime)?.get(idOf(store, key));
+  if (out !== undefined && out.owner === requestContext()) {
+    out.settle(landed);
+  }
 }
