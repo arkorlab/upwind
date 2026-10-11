@@ -317,6 +317,21 @@ export default defineConfig([
       // `prefer-minimal-ternary` and `prefer-logical-operator-over-ternary` stay on.
       'unicorn/prefer-combined-guards': 'off',
       'unicorn/prefer-ternary': 'off',
+      // unicorn 77 reports under six rules on code that 76 passed, and these two are off. Neither has
+      // a setting.
+      //
+      // `no-manually-wrapped-comments` wants a comment's sentence on one line, for an editor to
+      // wrap. Comments here are wrapped near the column the code is, as CONTRIBUTING.md asks, and
+      // its fix would join 527 of them into lines far past it. It does not read a line with a
+      // backtick or a bracket in it as prose, so the comments that keep their wrapping are the
+      // ones that name code — two styles where there is one now.
+      'unicorn/no-manually-wrapped-comments': 'off',
+      // `no-unnecessary-array-flat-map` also wants `cond ? [x] : []` written `cond ? x : []`, and
+      // every `flatMap` here that it reports is that one-or-none. The brackets are what say so:
+      // both branches are lists, and `x` stays one item if its type becomes a list later, where the
+      // unwrapped form would quietly flatten it. Its other case, `.flatMap((x) => [y])` for `.map`,
+      // goes with it — nothing here is that.
+      'unicorn/no-unnecessary-array-flat-map': 'off',
     },
   },
 
@@ -395,6 +410,8 @@ export default defineConfig([
       'import-x/no-default-export': 'off',
       'max-lines': 'off',
       'sonarjs/no-duplicate-string': 'off',
+      // A config file is loaded for its default export, which is the call that builds it.
+      'unicorn/no-top-level-side-effects': 'off',
     },
   },
   {

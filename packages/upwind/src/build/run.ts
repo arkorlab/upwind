@@ -220,6 +220,7 @@ export async function runBuild(options: BuildOptions): Promise<never> {
   try {
     // `events.once` rejects if the child emits `error` instead: a command that never started is a
     // failure of this one.
+    // eslint-disable-next-line unicorn/prefer-default-parameters -- a signal leaves the code `null`, which a default does not replace
     const [code] = (await once(child, 'exit')) as [number | null, NodeJS.Signals | null];
     // A build that ended on a signal chose no code of its own, and produced nothing: a failure.
     process.exit(code ?? 1);

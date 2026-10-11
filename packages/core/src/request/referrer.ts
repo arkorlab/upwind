@@ -64,8 +64,8 @@ const LEGACY_META_POLICIES: ReadonlyMap<string, string> = new Map([
  * A header may carry a list so that a document can name a policy an older browser knows beside
  * the one it prefers; the last one that browser recognises is the one it uses.
  */
-export function effectiveReferrerPolicy(declared: string | undefined): string {
-  const tokens = (declared ?? '').split(VALUE_SEPARATOR);
+export function effectiveReferrerPolicy(declared = ''): string {
+  const tokens = declared.split(VALUE_SEPARATOR);
   let policy = '';
   for (const token of tokens) {
     const candidate = trimmed(token);
@@ -88,8 +88,8 @@ export function effectiveReferrerPolicy(declared: string | undefined): string {
  * as one here. That reading only ever ends a walk sooner, which costs the hints below it and sends
  * none the document asked against.
  */
-export function metaReferrerPolicy(content: string | undefined): string {
-  const declared = trimmed(content ?? '');
+export function metaReferrerPolicy(content = ''): string {
+  const declared = trimmed(content);
   const policy = LEGACY_META_POLICIES.get(declared) ?? declared;
   return REFERRER_POLICIES.has(policy) ? policy : '';
 }

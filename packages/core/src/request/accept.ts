@@ -23,9 +23,9 @@ const RANGE_RANK: ReadonlyMap<string, number> = new Map([
 
 function qualityOf(parameters: readonly string[]): number {
   for (const parameter of parameters) {
-    const [name, value] = parameter.split('=', 2);
+    const [name, value = ''] = parameter.split('=', 2);
     if (name?.trim().toLowerCase() === 'q') {
-      const quality = Number.parseFloat(value ?? '');
+      const quality = Number.parseFloat(value);
       return Number.isNaN(quality) ? 1 : quality;
     }
   }

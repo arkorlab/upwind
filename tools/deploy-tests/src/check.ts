@@ -322,8 +322,8 @@ async function nativeConfigScenario(
 }
 
 /** The shell's `NODE_OPTIONS` without the one a native-TS suite's build is given (`e2e-deploy.sh`). */
-function ordinaryNodeOptions(options: string | undefined): string | undefined {
-  const kept = (options ?? '')
+function ordinaryNodeOptions(options = ''): string | undefined {
+  const kept = options
     .split(/\s+/u)
     .filter((option) => option !== '' && option !== '--experimental-transform-types');
   return kept.length === 0 ? undefined : kept.join(' ');

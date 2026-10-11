@@ -132,8 +132,9 @@ export async function readCode(secret: string, code: string): Promise<Identity |
     return undefined;
   }
   try {
-    const read = JSON.parse(new TextDecoder().decode(bytes)) as Partial<SignedCode>;
-    const { email, name, provider, at } = read;
+    const { email, name, provider, at } = JSON.parse(
+      new TextDecoder().decode(bytes),
+    ) as Partial<SignedCode>;
     if (typeof email !== 'string' || typeof name !== 'string' || typeof provider !== 'string') {
       return undefined;
     }
