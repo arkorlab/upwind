@@ -385,7 +385,8 @@ export class PlatformFetchCache {
     if (!isFetchValue(value)) {
       return null;
     }
-    if (fetchedAgainBehind(validity, now - entry.timestamp, ctx.revalidate, value.revalidate)) {
+    // Aged as `IncrementalCache` will age it, once this has answered: after the reads above.
+    if (fetchedAgainBehind(validity, nowMs() - entry.timestamp, ctx.revalidate, value.revalidate)) {
       holdForRevalidation(runtime, FETCH_STORE, cacheKey);
     }
     return { value, lastModified: validity === 'stale' ? 0 : entry.timestamp };
@@ -539,7 +540,8 @@ async function getUseCache(
   ) {
     return undefined;
   }
-  if (revalidatedBehind(validity, now - entry.timestamp, entry.revalidate)) {
+  // Aged as the wrapper will age it, once this has answered: after the reads above.
+  if (revalidatedBehind(validity, nowMs() - entry.timestamp, entry.revalidate)) {
     holdForRevalidation(runtime, useCacheStore(kind), cacheKey);
   }
   return {
