@@ -49,7 +49,8 @@ upwind/
     └── release-signers.asc          # the keys a release tag may be signed with
 ```
 
-All seven packages are published. The workspace root, `tools/`, `fixtures/` and `web-site/` are not —
+The seven packages under `packages/` are what a release publishes, and all of them move together.
+The workspace root, `tools/`, `fixtures/` and `web-site/` are not —
 and the fixtures are deliberately outside the pnpm workspace, since a workspace package would be
 pinned to the catalog's single Next.js, which is the one thing the matrix exists to look past.
 
@@ -129,10 +130,10 @@ only matters if you touched `packages/adapter/src/patches/`. The patch checks ar
 ## Releases
 
 Maintainers only. The version of all seven packages moves in lockstep, in a pull request like any
-other; a tag is not a place to make a change. A release that publishes a package for the first time
-also adds its row to `PACKAGES` in [`web-site/src/lib/site.ts`](web-site/src/lib/site.ts): the site's
-table links to npm, so it names what a reader can install rather than what the repository holds, and
-the bump is the moment those two agree. Once the bump is on `main`:
+other; a tag is not a place to make a change. A package published for the first time also gets a row
+in `PACKAGES` in [`web-site/src/lib/site.ts`](web-site/src/lib/site.ts) — but **after** the release,
+not in the bump: that table links to npm, the site deploys when a change lands on `main`, and the
+bump lands there before anything is published. Once the bump is on `main`:
 
 ```bash
 git switch main && git pull
@@ -185,7 +186,9 @@ such a release is:
    npm 11.15 or later, and it asks for an OTP. `--file` is the **caller's** filename, because npm
    validates the OIDC token's `workflow_ref` and not `job_workflow_ref`.
 
-6. `gh secret delete NPM_TOKEN`, revoke the token, and take the `bootstrap` input back out.
+6. `gh secret delete NPM_TOKEN` and revoke the token. Then two follow-ups: take the `bootstrap`
+   input back out, and — now that the name is on npm — give it its row in `PACKAGES` and move this
+   project's own pin to the release that is out.
 
 Step 5 is the one with no check behind it. By the next release the name exists, so `verify`'s probe
 is satisfied and a publish with no trusted publisher behind it fails partway instead — `npm trust

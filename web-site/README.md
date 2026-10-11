@@ -52,8 +52,9 @@ emitted.
 
 The package table is `PACKAGES` in `src/lib/site.ts`, and it follows **npm**, not `packages/`: this
 site is deployed when a change lands on `main`, and a package the repository has but a release has
-not published yet would be a row linking to a 404. A release that publishes one adds the row, and
-that is the whole edit — no sentence counts the packages.
+not published yet would be a row linking to a 404. The row goes in after that release has published
+it — not in the version bump that precedes it, which lands on `main` first — and that is the whole
+edit: no sentence counts the packages.
 
 ## Deployment
 
