@@ -8,6 +8,7 @@ import type createNextServer from 'next';
 import { packageVersion } from '../manifest.ts';
 import { installNextResourceCacheLoader } from '../resources/next-cache-loader.ts';
 import { installNextRestartLoader } from './next-restart-loader.ts';
+import { completeNextStartup } from './next-startup.ts';
 
 /**
  * Next.js's development server, run the way Next.js documents a custom server: `next({ dev: true })`,
@@ -87,11 +88,16 @@ export async function startNextApp(options: {
     // only take the choice away from a project that had made it.
     ...(options.hostname !== undefined && { hostname: options.hostname }),
   });
-  await app.prepare();
-  const manifest = resolveFromProject(options.projectDir, 'next/package.json');
-  return {
-    handle: app.getRequestHandler(),
-    version: manifest === undefined ? undefined : await packageVersion(manifest),
-    close: async () => app.close(),
-  };
+  return completeNextStartup(
+    () => app.close(),
+    async () => {
+      await app.prepare();
+      const manifest = resolveFromProject(options.projectDir, 'next/package.json');
+      return {
+        handle: app.getRequestHandler(),
+        version: manifest === undefined ? undefined : await packageVersion(manifest),
+        close: async () => app.close(),
+      };
+    },
+  );
 }

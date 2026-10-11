@@ -11,6 +11,7 @@ import capability from '../../sdk/src/ai.ts';
 import { ai, durableObject } from '../../sdk/src/named.ts';
 import { parseDevRequest } from '../src/args.ts';
 import { bridgeNextRestartSource } from '../src/dev/next-restart-loader.ts';
+import { completeNextStartup } from '../src/dev/next-startup.ts';
 import { RESTART_EXIT_CODE } from '../src/dev/restart.ts';
 import { closeDevResources } from '../src/dev/shutdown.ts';
 import {
@@ -238,6 +239,41 @@ async function checkConcurrentShutdown(): Promise<void> {
   }
 }
 
+async function checkFailedNextStartup(): Promise<void> {
+  const failure = new Error('fixture startup failure');
+  const drained = Promise.withResolvers<undefined>();
+  let closed = false;
+  const starting = completeNextStartup(
+    () => {
+      closed = true;
+      return drained.promise;
+    },
+    () => Promise.reject(failure),
+  );
+  await Promise.resolve();
+  assert.equal(closed, true, 'failed preparation starts partial application cleanup');
+  drained.resolve(undefined);
+  await assert.rejects(starting, (error: unknown) => error === failure);
+
+  const originalWarn = console.warn;
+  const warnings: string[] = [];
+  console.warn = (message: string): void => {
+    warnings.push(message);
+  };
+  try {
+    await assert.rejects(
+      completeNextStartup(
+        () => Promise.reject(new Error('fixture cleanup secret')),
+        () => Promise.reject(failure),
+      ),
+      (error: unknown) => error === failure,
+    );
+    assert.deepEqual(warnings, ['upwind: failed to close partially started Next.js']);
+  } finally {
+    console.warn = originalWarn;
+  }
+}
+
 async function checkInference(): Promise<void> {
   interface Provider {
     models: (params: { page: number; search: string }) => Promise<{ name: string }[]>;
@@ -405,6 +441,7 @@ try {
   await checkSetup();
   await checkInference();
   await checkConcurrentShutdown();
+  await checkFailedNextStartup();
   checkRestart();
   await checkNativeRuntime();
   console.log(

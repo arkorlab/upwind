@@ -261,7 +261,7 @@ export async function serveDev(options: DevOptions): Promise<void> {
     try {
       current = await shutdown.app;
     } catch {
-      // Startup reports its own failure; a rejected start produced no application to close.
+      // Startup reports its own failure; no RunningNext was returned to this caller.
       return;
     }
     if (current !== undefined) {
