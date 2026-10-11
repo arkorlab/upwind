@@ -24,7 +24,7 @@ const config: KnipConfig = {
     // `arkor:*` are the modules the adapter generates beside the runtime and resolves for it;
     // `cloudflare:*` are the Workers runtime's own. Neither is an npm package.
     'packages/runtime': { ignoreDependencies: ['cloudflare', 'arkor'] },
-    // Four entry points, and `exports` names the `dist` they are built into — so the sources behind
+    // Six entry points, and `exports` names the `dist` they are built into — so the sources behind
     // them are named here rather than looked for through files this has not built.
     'packages/sdk': {
       entry: ['src/{index,db,kv,blob,durable-object,ai}.ts', 'scripts/check-ai-types.ts'],

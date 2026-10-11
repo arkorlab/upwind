@@ -628,6 +628,8 @@ export async function startLocalResources(
       options.mode ?? 'development',
     );
     sourcesChanged = sourceChanges(versions);
+    // A rejected storage claim must not authenticate or create a remote AI session.
+    release = await claimStorage(path.join(projectDir, PERSIST_DIR));
     ai = await prepareLocalAi(
       objects.map((object) => object.declaration.name),
       options.mode !== 'production' && options.remoteAi === true,
@@ -636,13 +638,15 @@ export async function startLocalResources(
       objects.map((object) => object.declaration.name),
       ai.entries,
     );
-    // The claim comes first, because the thing it prevents cannot be undone: two runtimes over one
-    // directory read each other's data happily and then lose a write with no error anybody can see.
-    release = await claimStorage(path.join(projectDir, PERSIST_DIR));
     attempt = startAndPublish(projectDir, entries, objects, ai);
     let remaining = objects;
     async function recover(error: unknown): Promise<Miniflare> {
-      if (!isStarting() || remaining.length === 0 || !runtimeStartupFailure(error)) throw error;
+      if (
+        !isStarting() ||
+        (remaining.length === 0 && ai?.worker === undefined) ||
+        !runtimeStartupFailure(error)
+      )
+        throw error;
       const failed = await attempt?.runtime;
       // Keep the storage claim throughout recovery, and never overlap two native runtimes.
       if (failed !== undefined && !(await stopRuntime(failed, error))) throw error;
@@ -651,16 +655,29 @@ export async function startLocalResources(
         error,
         remaining.map((object) => object.declaration.name),
       );
-      remaining = remaining.filter((object) => !broken.has(object.declaration.name));
-      // An unclassified failure cannot safely attribute a bad module to a particular owner.
-      if (broken.size === 0) remaining = [];
-      const reason = error.message;
-      const diagnostic =
-        broken.size === 0
-          ? 'native runtime startup failed without identifying an owner; retrying default storage without Durable Object namespaces'
-          : 'could not start local Durable Objects; retrying unaffected resources';
-      console.warn(`upwind: ${diagnostic}:\n${reason}`);
       if (ai === undefined) throw error;
+      if (broken.size === 0 && ai.worker !== undefined) {
+        // An AI worker or proxy failure must not take healthy storage or customer DOs down.
+        await ai.dispose();
+        ai = {
+          entries: [],
+          dispose: async () => {
+            /* Nothing remains after disposing the session. */
+          },
+        };
+        console.warn(
+          'upwind: native runtime startup failed; retrying local storage without AI bindings',
+        );
+      } else {
+        remaining = remaining.filter((object) => !broken.has(object.declaration.name));
+        // An unclassified failure cannot safely identify a particular customer owner.
+        if (broken.size === 0) remaining = [];
+        const diagnostic =
+          broken.size === 0
+            ? 'native runtime startup failed without identifying an owner; retrying default storage without Durable Object namespaces'
+            : 'could not start local Durable Objects; retrying unaffected resources';
+        console.warn(`upwind: ${diagnostic}:\n${error.message}`);
+      }
       const surviving = localEntries(
         remaining.map((object) => object.declaration.name),
         ai.entries,
@@ -701,9 +718,25 @@ export async function startLocalResources(
     // an attempt still in the middle of starting one — and the claim goes back with it. Nothing waits
     // for that: this run has already said it has no storage, and what is being let go of was never
     // published to anybody.
-    // eslint-disable-next-line @typescript-eslint/no-floating-promises -- said above, not waited for.
-    void letGo(attempt?.runtime, release).finally(async () => ai?.dispose());
-    return { ...NOTHING_STARTED, watchedFiles: [...watchedFiles], sourcesChanged };
+    const cleanup = (async () => {
+      try {
+        try {
+          await letGo(attempt?.runtime, release);
+        } finally {
+          await ai?.dispose();
+        }
+      } catch {
+        console.warn('upwind: could not finish local resource cleanup');
+      }
+    })();
+    return {
+      ...NOTHING_STARTED,
+      watchedFiles: [...watchedFiles],
+      sourcesChanged,
+      dispose: async () => {
+        await cleanup;
+      },
+    };
   } finally {
     starting = false;
     guard.restore();

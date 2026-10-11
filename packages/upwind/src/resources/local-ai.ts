@@ -29,20 +29,26 @@ export type RemoteAiFactory = (auth: {
 
 async function connect(auth: Parameters<RemoteAiFactory>[0]): Promise<RemoteAiSession> {
   const { startRemoteProxySession } = await import('wrangler');
-  return startRemoteProxySession(
-    { [RAW_AI]: { type: 'ai', remote: true } },
-    { auth: async () => auth },
-  );
+  // Wrangler's published declaration references an unpublished internal type. Keep the documented
+  // session contract explicit until its declarations are independently consumable.
+  const start = startRemoteProxySession as (
+    bindings: Record<string, { type: 'ai'; remote: true }>,
+    options: { auth: () => Promise<Parameters<RemoteAiFactory>[0]> },
+  ) => Promise<RemoteAiSession>;
+  return start({ [RAW_AI]: { type: 'ai', remote: true } }, { auth: () => Promise.resolve(auth) });
 }
 
 /** Declaring AI never connects remotely, and malformed declarations cannot remove storage. */
 export function aiBindingNames(raw: string | undefined, occupied: readonly string[]): string[] {
   if (raw === undefined || raw === '') return [];
   const parsed: unknown = JSON.parse(raw);
-  if (!Array.isArray(parsed) || !parsed.every((name) => typeof name === 'string')) {
+  if (!Array.isArray(parsed) || parsed.some((name) => typeof name !== 'string')) {
     throw new TypeError(`${AI_BINDINGS_ENV} must be a JSON array of binding names`);
   }
-  const names = parsed as string[];
+  const names: string[] = [];
+  for (const name of parsed) {
+    if (typeof name === 'string') names.push(name);
+  }
   const used = new Set(occupied);
   for (const name of names) {
     if (!NAME.test(name) || /^arkor_/iu.test(name) || used.has(name)) {
@@ -54,38 +60,56 @@ export function aiBindingNames(raw: string | undefined, occupied: readonly strin
 }
 
 /** The native Ai object is held only in this worker, never in a customer DO environment. */
-function source(available: boolean): string {
-  return `import { WorkerEntrypoint } from 'cloudflare:workers';
-let models;
+export function localInferenceSource(available: boolean, requested = false): string {
+  const unavailable = requested
+    ? 'Workers AI could not connect locally; check CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN and permissions, then restart upwind dev --remote-ai'
+    : 'Workers AI is disabled locally; declare UPWIND_AI_BINDINGS and use upwind dev --remote-ai with CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN';
+  return String.raw`import { WorkerEntrypoint } from 'cloudflare:workers';
+const models = new Map();
+async function approved(ai, name) {
+  let page = 1;
+  while (page <= 100) {
+    const list = await ai.models({ search: name, page, per_page: 100 });
+    if (list.some(model => model.name === name)) return true;
+    if (list.length === 0) return false;
+    page += 1;
+  }
+  throw new Error('The public model search exceeded its pagination limit');
+}
 export default class Inference extends WorkerEntrypoint {
   async run(...args) {
     if (args.length !== 2) throw new TypeError('AI inference accepts only run(model, inputs)');
-    if (!${String(available)}) throw new Error('Workers AI is disabled locally; declare UPWIND_AI_BINDINGS and use upwind dev --remote-ai with CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN');
+    if (!${String(available)}) throw new Error(${JSON.stringify(unavailable)});
     const [model, inputs] = args;
-    if (typeof model !== 'string' || !/^@(cf|hf)\\//.test(model)) throw new TypeError('Only public Workers AI models are supported');
-    if (!inputs || typeof inputs !== 'object' || Array.isArray(inputs) || Object.hasOwn(inputs, 'lora')) throw new TypeError('AI inputs must be an object without private LoRA adapters');
-    models ??= this.env.${RAW_AI}.models().then(list => new Set(list.map(model => model.name))).catch(error => { models = undefined; throw error; });
-    if (!(await models).has(model)) throw new TypeError('Unknown public Workers AI model');
+    if (typeof model !== 'string' || !/^@(cf|hf)\//.test(model)) throw new TypeError('Only public Workers AI models are supported');
+    if (inputs === undefined || inputs === null || (typeof inputs === 'object' && Object.hasOwn(inputs, 'lora'))) throw new TypeError('AI inputs cannot include private LoRA adapters');
+    if (!models.has(model)) models.set(model, approved(this.env.${RAW_AI}, model).catch(error => { models.delete(model); throw error; }));
+    if (!(await models.get(model))) throw new TypeError('Unknown public Workers AI model');
     return this.env.${RAW_AI}.run(model, inputs);
   }
   fetch() { return new Response('Not found', { status: 404 }); }
 }`;
 }
 
-function worker(session: RemoteAiSession | undefined): WorkerOptions {
+function worker(session: RemoteAiSession | undefined, requested: boolean): WorkerOptions {
   return {
     config: {
       name: AI_WORKER,
       compatibilityDate: '2026-09-15',
       manifest: {
         mainModule: AI_MODULE,
-        modules: { [AI_MODULE]: { type: 'esm', contents: source(session !== undefined) } },
+        modules: {
+          [AI_MODULE]: {
+            type: 'esm',
+            contents: localInferenceSource(session !== undefined, requested),
+          },
+        },
       },
       env: session === undefined ? {} : { [RAW_AI]: { type: 'ai', dev: { remote: true } } },
     },
-    ...(session === undefined
-      ? {}
-      : { dev: { remoteProxyConnectionString: session.remoteProxyConnectionString } }),
+    ...(session !== undefined && {
+      dev: { remoteProxyConnectionString: session.remoteProxyConnectionString },
+    }),
   };
 }
 
@@ -96,6 +120,7 @@ export function localAiBinding(): { type: 'worker'; worker: string } {
 async function withinDeadline(starting: Promise<RemoteAiSession>): Promise<RemoteAiSession> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let expired = false;
+  const late = (): boolean => expired;
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
       expired = true;
@@ -104,16 +129,17 @@ async function withinDeadline(starting: Promise<RemoteAiSession>): Promise<Remot
     timer.unref();
   });
   // A late connection must be disposed too, rather than outliving a failed setup attempt.
-  const ready = starting.then(async (session) => {
+  const ready = (async () => {
+    const session = await starting;
     try {
-      if (expired) throw new Error('the remote AI connection arrived after its deadline');
+      if (late()) throw new Error('the remote AI connection arrived after its deadline');
       await Promise.race([session.ready, timeout]);
       return session;
     } catch (error) {
       await session.dispose();
       throw error;
     }
-  });
+  })();
   try {
     return await Promise.race([ready, timeout]);
   } finally {
@@ -157,7 +183,7 @@ export async function prepareLocalAi(
   let disposing: Promise<void> | undefined;
   return {
     entries,
-    ...(entries.length === 0 ? {} : { worker: worker(session) }),
+    ...(entries.length > 0 && { worker: worker(session, remote) }),
     dispose: async () => {
       disposing ??= session?.dispose() ?? Promise.resolve();
       await disposing;

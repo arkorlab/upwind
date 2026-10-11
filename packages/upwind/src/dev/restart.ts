@@ -10,8 +10,30 @@ import { writeSync } from 'node:fs';
  */
 export const RESTART_EXIT_CODE = 77;
 
-/** Say why, then leave with the code the supervisor is watching for. */
-export function restart(reason: string): never {
+const state: { cleanup?: () => Promise<void>; restarting: boolean } = { restarting: false };
+
+/** The dev server installs cleanup before watching files or opening remote connections. */
+export function beforeRestart(dispose: () => Promise<void>): void {
+  state.cleanup = dispose;
+}
+
+/** Say why, drain this run's resources, then leave with the supervisor's restart code. */
+export function restart(reason: string): void {
+  if (state.restarting) return;
+  state.restarting = true;
+  void (async () => {
+    try {
+      await state.cleanup?.();
+    } catch {
+      console.warn('upwind: could not finish resource cleanup before restarting');
+    }
+    leave(reason);
+  })().catch(() => {
+    leave(reason);
+  });
+}
+
+function leave(reason: string): never {
   // Written to the descriptor rather than logged: `process.exit` takes the process down with whatever
   // `console.log` had queued, and a dev server's output is often a pipe or a file. The reason a server
   // restarted is worth the one synchronous write, and losing that write is not worth the restart.

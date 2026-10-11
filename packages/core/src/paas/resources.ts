@@ -4,7 +4,7 @@ import { RESOURCES_MANIFEST_BINDING } from './resources-constants.ts';
 export { RESOURCES_MANIFEST_BINDING } from './resources-constants.ts';
 
 /**
- * A project's storage bindings on the way from its host to the application.
+ * A project's resource bindings on the way from its host to the application.
  *
  * A host binds each of them to the deployment's Functions under the name its owner gave it, and
  * beside them a text binding that lists them as JSON. The runtime reads that list back, picks out
@@ -13,7 +13,7 @@ export { RESOURCES_MANIFEST_BINDING } from './resources-constants.ts';
  * `PublishedResources` describes. `version` is what lets a reader follow a change to that shape.
  */
 
-/** The kinds of storage a binding can be, in the words Cloudflare's upload metadata uses. */
+/** Resource kinds: storage uses native bindings; AI uses an inference-only service capability. */
 export const RESOURCE_TYPES = [
   'kv_namespace',
   'r2_bucket',
@@ -40,10 +40,10 @@ export interface ResourceManifestEntry {
   readonly type: ResourceType;
 }
 
-/** One binding as the application finds it: its kind, and Cloudflare's own object for it. */
+/** One published binding: its kind and the capability granted to the Function. */
 export interface PublishedResource {
   readonly type: ResourceType;
-  /** A `KVNamespace`, `R2Bucket`, `D1Database` or `DurableObjectNamespace`, as handed to the Function. */
+  /** A native storage binding or an AI service exposing only `run(model, inputs)`. */
   readonly binding: unknown;
 }
 

@@ -246,6 +246,7 @@ upwind build [directory]
 
   -p, --port <port>      Port to listen on, `dev` only (default: $PORT, else 3000)
   -H, --hostname <host>  Hostname to bind, `dev` only (default: every interface)
+      --remote-ai        Enable declared Workers AI bindings, `dev` only
   -v, --version          Print upwind's version
   -h, --help             Print the usage
       --                 Everything after this is the directory, even `--help`

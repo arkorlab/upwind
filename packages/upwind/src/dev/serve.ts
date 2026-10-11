@@ -22,7 +22,7 @@ import { setEnv } from './env.ts';
 import { listen } from './listen.ts';
 import { type NextHandler, type RunningNext, startNextApp } from './next-app.ts';
 import { reachable } from './probe.ts';
-import { restart } from './restart.ts';
+import { beforeRestart, restart } from './restart.ts';
 import { createSession } from './session.ts';
 
 /**
@@ -245,7 +245,20 @@ export async function serveDev(options: DevOptions): Promise<void> {
   // Before Next.js is started, not after: `prepare()` reads `next.config` and can take seconds, and a
   // config written during those seconds would otherwise be one this run never hears about — it would
   // serve the old config until something changed again.
-  const stopWatching: StopWatching = await watchConfigFiles(options.projectDir);
+  const shutdown: {
+    local?: Promise<LocalResources>;
+    config?: StopWatching;
+    objects?: StopWatching;
+  } = {};
+  beforeRestart(async () => {
+    shutdown.config?.();
+    shutdown.objects?.();
+    server.close();
+    server.closeAllConnections();
+    await (await shutdown.local)?.dispose();
+  });
+  const stopWatching = await watchConfigFiles(options.projectDir);
+  shutdown.config = stopWatching;
   // Before Next.js as well, and for the plainest reason of the three: the route that serves
   // `/__upwind/auth` has to be on disk before the bundler reads `app`, and the secret it signs with
   // has to be in the environment before a module that reads it is evaluated. Assigned rather than
@@ -256,13 +269,16 @@ export async function serveDev(options: DevOptions): Promise<void> {
   // Also before Next.js, and for a harder reason: the application's own modules may look for their
   // storage as they are evaluated, and everything Next.js evaluates it evaluates after this line.
   // In this process, because Next.js runs in this one — a supervisor's bindings would reach nothing.
-  const local: LocalResources = await startLocalResources(options.projectDir, {
+  const startingLocal = startLocalResources(options.projectDir, {
     // This run answers its own interrupts, above, and disposes of the runtime on its way out.
     answersSignals: true,
     mode: 'development',
     remoteAi: options.remoteAi === true,
   });
+  shutdown.local = startingLocal;
+  const local = await startingLocal;
   const stopWatchingObjects = watchSourceFiles(local.watchedFiles ?? []);
+  shutdown.objects = stopWatchingObjects;
   if (local.sourcesChanged?.() === true) restart('Durable Object sources changed during startup');
   let app: RunningNext;
   try {
