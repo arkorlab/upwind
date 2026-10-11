@@ -117,7 +117,8 @@ export function publishedD1BindingCount(env: FunctionEnv): number {
 }
 
 /**
- * The resource bindings `env` holds, as the list beside them names them; frozen throughout.
+ * The resource bindings `env` holds, as the list beside them names them; the published shape is
+ * frozen. Capabilities themselves retain their native behavior.
  *
  * Only what `ARKOR_RESOURCES` lists is published: an environment variable, or a binding of the
  * platform's, is never on it, whatever the application names.

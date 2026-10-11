@@ -221,7 +221,7 @@ export async function serveDev(options: DevOptions): Promise<void> {
 
   // Installed here, with the port, rather than once Next.js is ready.
   // An interrupt during a long first compile is the same interruption as one a minute later.
-  // It has to end the same way, and before there is anything to close, ending is the whole of it.
+  // It drains any pending local/remote setup even before Next has produced an application to close.
   //
   // A repeat is ignored, which is why these are `process.on` and not `process.once`.
   // One interactive Ctrl-C arrives twice: from the terminal, and from the supervisor that forwards it.
@@ -250,15 +250,28 @@ export async function serveDev(options: DevOptions): Promise<void> {
   // serve the old config until something changed again.
   const shutdown: {
     local?: Promise<LocalResources>;
+    app?: Promise<RunningNext>;
+    closeApp?: Promise<void>;
     config?: StopWatching;
     objects?: StopWatching;
   } = {};
+  const closeApp = async (): Promise<void> => {
+    const current = await shutdown.app;
+    if (current !== undefined) {
+      shutdown.closeApp ??= current.close();
+      await shutdown.closeApp;
+    }
+  };
+  const startup = new AbortController();
   beforeRestart(async () => {
+    phase = 'stopping';
+    startup.abort();
     shutdown.config?.();
     shutdown.objects?.();
     server.close();
     server.closeAllConnections();
     await (await shutdown.local)?.dispose();
+    await closeApp();
   });
   const stopWatching = await watchConfigFiles(options.projectDir);
   shutdown.config = stopWatching;
@@ -277,6 +290,7 @@ export async function serveDev(options: DevOptions): Promise<void> {
     answersSignals: true,
     mode: 'development',
     remoteAi: options.remoteAi === true,
+    signal: startup.signal,
   });
   shutdown.local = startingLocal;
   const local = await startingLocal;
@@ -290,12 +304,14 @@ export async function serveDev(options: DevOptions): Promise<void> {
   }
   let app: RunningNext;
   try {
-    app = await startNextApp({
+    const startingApp = startNextApp({
       projectDir: options.projectDir,
       hostname: options.hostname,
       port: bound.port,
       httpServer: server,
     });
+    shutdown.app = startingApp;
+    app = await startingApp;
   } catch (error) {
     // No longer starting: a signal arriving during the drain below would otherwise be read as a stop of
     // a run that had not begun, and leave with the 0 that says nothing went wrong.
@@ -326,6 +342,10 @@ export async function serveDev(options: DevOptions): Promise<void> {
     // rather than while it is ending.
     await local.dispose();
     throw error;
+  }
+  if (isStopping()) {
+    await closeApp();
+    return;
   }
   // Next.js has read the config, and with it the adapter this run named and the address it gave;
   // what is in the environment from here on is the project's own.

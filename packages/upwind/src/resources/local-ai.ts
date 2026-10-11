@@ -78,11 +78,14 @@ export function localInferenceSource(available: boolean, requested = false): str
     : 'Workers AI is disabled locally; declare UPWIND_AI_BINDINGS and use upwind dev --remote-ai with CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN';
   return String.raw`import { WorkerEntrypoint } from 'cloudflare:workers';
 const models = new Map();
+// Cloudflare's May 8, 2026 deprecation notice explicitly preserves this public alias.
+const aliases = { '@cf/moonshotai/kimi-k2.5': '@cf/moonshotai/kimi-k2.6' };
 async function approved(ai, name) {
+  const canonical = Object.hasOwn(aliases, name) ? aliases[name] : name;
   let page = 1;
   while (page <= 100) {
-    const list = await ai.models({ search: name, page, per_page: 100 });
-    if (list.some(model => model.name === name)) return true;
+    const list = await ai.models({ search: canonical, page, per_page: 100 });
+    if (list.some(model => model.name === canonical)) return true;
     if (list.length === 0) return false;
     page += 1;
   }
@@ -137,10 +140,29 @@ export function localAiBinding(): { type: 'worker'; worker: string } {
   return { type: 'worker', worker: AI_WORKER };
 }
 
-async function withinDeadline(starting: Promise<RemoteAiSession>): Promise<RemoteAiSession> {
+async function withinDeadline(
+  starting: Promise<RemoteAiSession>,
+  signal?: AbortSignal,
+): Promise<RemoteAiSession> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let expired = false;
-  const late = (): boolean => expired;
+  let current: RemoteAiSession | undefined;
+  let disposal: Promise<void> | undefined;
+  const release = async (): Promise<void> => {
+    if (current !== undefined) {
+      disposal ??= current.dispose();
+      await disposal;
+    }
+  };
+  const late = (): boolean => expired || signal?.aborted === true;
+  let onAbort: (() => void) | undefined;
+  const cancelled = new Promise<never>((_resolve, reject) => {
+    onAbort = () => {
+      reject(new Error('local AI setup was cancelled'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted === true) onAbort();
+  });
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
       expired = true;
@@ -151,19 +173,25 @@ async function withinDeadline(starting: Promise<RemoteAiSession>): Promise<Remot
   // A late connection must be disposed too, rather than outliving a failed setup attempt.
   const ready = (async () => {
     const session = await starting;
+    current = session;
     try {
       if (late()) throw new Error('the remote AI connection arrived after its deadline');
-      await Promise.race([session.ready, timeout]);
+      await Promise.race([session.ready, timeout, cancelled]);
       return session;
     } catch (error) {
-      await session.dispose();
+      await release();
       throw error;
     }
   })();
   try {
-    return await Promise.race([ready, timeout]);
+    return await Promise.race([ready, timeout, cancelled]);
+  } catch (error) {
+    // A returned session must be disposed before cancellation resolves the startup promise.
+    await release();
+    throw error;
   } finally {
     clearTimeout(timer);
+    if (onAbort !== undefined) signal?.removeEventListener('abort', onAbort);
   }
 }
 
@@ -172,7 +200,9 @@ export async function prepareLocalAi(
   occupied: readonly string[],
   remote: boolean,
   factory: RemoteAiFactory = connectRemoteAi,
+  signal?: AbortSignal,
 ): Promise<LocalAi> {
+  signal?.throwIfAborted();
   let names: string[];
   try {
     names = aiBindingNames(process.env[AI_BINDINGS_ENV], occupied);
@@ -191,8 +221,9 @@ export async function prepareLocalAi(
       );
     } else {
       try {
-        session = await withinDeadline(factory({ accountId, apiToken }));
-      } catch {
+        session = await withinDeadline(factory({ accountId, apiToken }), signal);
+      } catch (error) {
+        if (signal?.aborted === true) throw error;
         // Provider diagnostics can contain tokens. Keep the diagnostic independent of its error.
         console.warn(
           'upwind: could not connect remote AI; check Cloudflare credentials and permissions; local storage remains available',

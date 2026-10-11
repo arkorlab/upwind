@@ -17,6 +17,11 @@ type NonStreamingInputs<Input> = Input extends unknown
     : Input
   : Input;
 type Inputs<Name extends keyof AiModels> = PublicInputs<AiModels[Name]['inputs']>;
+type NewModelInputs =
+  | string
+  | ((Record<string, unknown> | ArrayBuffer | ArrayBufferView | ReadableStream) & {
+      readonly lora?: never;
+    });
 
 /** Public Workers AI inference; account management and gateway options are not capabilities. */
 export interface AiInference {
@@ -30,7 +35,7 @@ export interface AiInference {
   ): Promise<AiModels[Name]['postProcessedOutputs']>;
   run<Name extends keyof AiModels>(
     model: Name,
-    inputs: StreamingInputs<Inputs<Name>> & { stream: boolean },
+    inputs: StreamingInputs<Inputs<Name>>,
   ): Promise<AiModels[Name]['postProcessedOutputs'] | ReadableStream>;
   /** A newly published model can be used before this package's model types are updated. */
   run<Model extends string>(
@@ -39,7 +44,7 @@ export interface AiInference {
   ): Promise<ReadableStream>;
   run<Model extends string>(
     model: Model extends keyof AiModels ? never : Model,
-    inputs: Record<string, unknown> & { readonly lora?: never },
+    inputs: NewModelInputs,
   ): Promise<unknown>;
 }
 

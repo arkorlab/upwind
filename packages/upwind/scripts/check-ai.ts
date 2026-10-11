@@ -10,6 +10,7 @@ import { RESOURCES_SYMBOL_KEY, resourcesOf } from '@stayingupwind/core/paas';
 import capability from '../../sdk/src/ai.ts';
 import { ai, durableObject } from '../../sdk/src/named.ts';
 import { parseDevRequest } from '../src/args.ts';
+import { bridgeNextRestartSource } from '../src/dev/next-restart-loader.ts';
 import { RESTART_EXIT_CODE } from '../src/dev/restart.ts';
 import {
   aiBindingNames,
@@ -111,13 +112,14 @@ async function checkSetup(): Promise<void> {
   const request = parseDevRequest(['--remote-ai']);
   assert.equal(request.answer, undefined);
   assert.equal(request.options.remoteAi, true);
+  const proxyUrl = 'https://fixture.invalid';
   const accountId = 'fixture-account';
   const apiToken = 'fixture-token';
   const connection = await connectRemoteAi({ accountId, apiToken }, async (bindings, options) => {
     assert.deepEqual(bindings, { UPWIND_INTERNAL_AI: { type: 'ai', remote: true } });
     assert.deepEqual(await options.auth(), { accountId, apiToken: { apiToken } });
     return {
-      remoteProxyConnectionString: new URL('https://fixture.invalid') as never,
+      remoteProxyConnectionString: new URL(proxyUrl) as never,
       ready: Promise.resolve(),
       dispose: () => Promise.resolve(),
     };
@@ -144,7 +146,7 @@ async function checkSetup(): Promise<void> {
   let disposed = 0;
   await prepareLocalAi([], true, () => {
     return Promise.resolve({
-      remoteProxyConnectionString: new URL('https://fixture.invalid') as never,
+      remoteProxyConnectionString: new URL(proxyUrl) as never,
       ready: Promise.reject(new Error('fixture readiness failure')),
       dispose: () => {
         disposed += 1;
@@ -153,6 +155,32 @@ async function checkSetup(): Promise<void> {
     });
   });
   assert.equal(disposed, 1);
+  const controller = new AbortController();
+  const connected = Promise.withResolvers<undefined>();
+  const cancelled = prepareLocalAi(
+    [],
+    true,
+    () => {
+      connected.resolve(undefined);
+      return Promise.resolve({
+        remoteProxyConnectionString: new URL(proxyUrl) as never,
+        ready: Promise.withResolvers<undefined>().promise,
+        dispose: () => {
+          disposed += 1;
+          return Promise.resolve();
+        },
+      });
+    },
+    controller.signal,
+  );
+  await connected.promise;
+  controller.abort();
+  await assert.rejects(async () => cancelled, /cancelled/u);
+  assert.equal(
+    disposed,
+    2,
+    'cancellation awaits a returned session disposer while readiness is pending',
+  );
 }
 
 async function checkInference(): Promise<void> {
@@ -200,6 +228,16 @@ async function checkInference(): Promise<void> {
   await assert.rejects(async () => worker.run(MODEL, {}, {}), /only run/u);
   await assert.rejects(async () => worker.run('external-provider/model', {}), /public Workers AI/u);
   assert.equal(calls, [stream, binary, AUDIO].length);
+  const alias = '@cf/moonshotai/kimi-k2.5';
+  worker.env.UPWIND_INTERNAL_AI.models = ({ search }) => {
+    assert.equal(search, '@cf/moonshotai/kimi-k2.6');
+    return Promise.resolve([{ name: search }]);
+  };
+  worker.env.UPWIND_INTERNAL_AI.run = (model, inputs) => {
+    assert.equal(model, alias, 'the provider receives its documented alias');
+    return Promise.resolve(inputs);
+  };
+  assert.equal(await worker.run(alias, AUDIO), AUDIO);
   for (const invalid of [null, undefined, false, INVALID_NUMERIC_INPUT, []]) {
     await assert.rejects(async () => worker.run(MODEL, invalid), /inputs must be/u);
   }
@@ -237,9 +275,18 @@ function checkRestart(): void {
   const child = fixture("restart('fixture configuration');", cleanup);
   assert.equal(child.status, RESTART_EXIT_CODE);
   assert.match(child.stdout, /^disposed\nupwind: fixture configuration; restarting/u);
-  const next = fixture('process.exit(77);', cleanup);
+  const nextSource = bridgeNextRestartSource(
+    'const RESTART_EXIT_CODE = 77; setTimeout(() => { process.exit(RESTART_EXIT_CODE); }, 0);',
+  );
+  const next = fixture(
+    `import { runInThisContext } from 'node:vm'; runInThisContext(${JSON.stringify(nextSource)});`,
+    cleanup,
+  );
   assert.equal(next.status, RESTART_EXIT_CODE);
   assert.match(next.stdout, /^disposed\nupwind: Next.js requested a restart/u);
+  const native = fixture('process.exit(77);', cleanup);
+  assert.equal(native.status, RESTART_EXIT_CODE);
+  assert.equal(native.stdout, '', 'unrelated process.exit calls preserve their native contract');
   const interrupted = fixture('stopDuringStartup();', cleanup);
   assert.equal(interrupted.status, 0);
   assert.equal(interrupted.stdout, 'disposed\n');

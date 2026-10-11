@@ -5,6 +5,7 @@ import { writeSync } from 'node:fs';
  * (`next-devtools/server/restart-dev-server-middleware.ts`). The supervisor recognizes the same code.
  */
 export const RESTART_EXIT_CODE = 77;
+export const NEXT_RESTART_SYMBOL = 'upwind.next-devtools-restart';
 const CLEANUP_DEADLINE_MS = 1500;
 const nativeExit: typeof process.exit = process.exit.bind(process);
 const state: { cleanup?: () => Promise<void>; exiting: boolean } = { exiting: false };
@@ -12,14 +13,9 @@ const state: { cleanup?: () => Promise<void>; exiting: boolean } = { exiting: fa
 /** The dev server installs cleanup before watching files or opening remote connections. */
 export function beforeRestart(dispose: () => Promise<void>): void {
   state.cleanup = dispose;
-  // Preserve Next's middleware (including cache invalidation), but drain our resources when its
-  // final timer asks to restart. Only that exit code is deferred; every other exit remains native.
-  // The middleware deliberately executes no code after this asynchronous exit request.
-  const requestExit = (code: Parameters<typeof process.exit>[0]): void => {
-    if (code === RESTART_EXIT_CODE) restart('Next.js requested a restart');
-    else nativeExit(code);
-  };
-  process.exit = requestExit as typeof process.exit;
+  Reflect.set(globalThis, Symbol.for(NEXT_RESTART_SYMBOL), () => {
+    restart('Next.js requested a restart');
+  });
 }
 
 function writeWarning(): void {

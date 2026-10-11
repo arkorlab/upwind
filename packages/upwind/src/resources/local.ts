@@ -167,6 +167,8 @@ export interface LocalOptions {
   readonly mode?: 'development' | 'production';
   /** Explicit dev-only permission to connect declared AI bindings remotely. */
   readonly remoteAi?: boolean;
+  /** Cancel setup during a dev restart or interruption, including a pending remote AI session. */
+  readonly signal?: AbortSignal;
   /**
    * Whether this process answers interrupts itself, and so wants the runtime's signal handlers taken
    * back (`listeners.ts`). The dev server does; a process something else ends does not.
@@ -627,6 +629,11 @@ export async function startLocalResources(
   let ai: LocalAi | undefined;
   let starting = true;
   const isStarting = (): boolean => starting;
+  const onAbort = (): void => {
+    starting = false;
+  };
+  options.signal?.addEventListener('abort', onAbort, { once: true });
+  let rejectStartup: (() => void) | undefined;
   const watchedFiles = new Set<string>();
   const versions = new Map<string, string>();
   let sourcesChanged = noSourceChanges;
@@ -638,12 +645,17 @@ export async function startLocalResources(
       options.mode ?? 'development',
     );
     sourcesChanged = sourceChanges(versions);
+    options.signal?.throwIfAborted();
     // A rejected storage claim must not authenticate or create a remote AI session.
     release = await claimStorage(path.join(projectDir, PERSIST_DIR));
+    options.signal?.throwIfAborted();
     ai = await prepareLocalAi(
       objects.map((object) => object.declaration.name),
       options.mode !== 'production' && options.remoteAi === true,
+      undefined,
+      options.signal,
     );
+    options.signal?.throwIfAborted();
     const entries = localEntries(
       objects.map((object) => object.declaration.name),
       ai.entries,
@@ -705,6 +717,13 @@ export async function startLocalResources(
     }
     const runtime = await Promise.race([
       ready(attempt),
+      new Promise<never>((_resolve, reject) => {
+        rejectStartup = () => {
+          reject(new Error('local resource setup was cancelled'));
+        };
+        options.signal?.addEventListener('abort', rejectStartup, { once: true });
+        if (options.signal?.aborted === true) rejectStartup();
+      }),
       afterDeadline(
         START_MS,
         `this project's local storage did not come up within ${String(START_SECONDS)}s, so nothing is published in this run`,
@@ -750,6 +769,8 @@ export async function startLocalResources(
     };
   } finally {
     starting = false;
+    options.signal?.removeEventListener('abort', onAbort);
+    if (rejectStartup !== undefined) options.signal?.removeEventListener('abort', rejectStartup);
     guard.restore();
   }
 }

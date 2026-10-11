@@ -7,6 +7,7 @@ import type createNextServer from 'next';
 
 import { packageVersion } from '../manifest.ts';
 import { installNextResourceCacheLoader } from '../resources/next-cache-loader.ts';
+import { installNextRestartLoader } from './next-restart-loader.ts';
 
 /**
  * Next.js's development server, run the way Next.js documents a custom server: `next({ dev: true })`,
@@ -69,6 +70,7 @@ export async function startNextApp(options: {
     );
   }
   installNextResourceCacheLoader();
+  installNextRestartLoader();
   const module = (await import(pathToFileURL(entry).href)) as { default: NextFactory };
   const app = module.default({
     dev: true,

@@ -98,7 +98,7 @@ import ai from '@stayingupwind/sdk/ai';
 export async function POST(request: Request) {
   const { prompt } = await request.json();
   if (typeof prompt !== 'string') return new Response('A prompt is required', { status: 400 });
-  const result = await ai.run('@cf/meta/llama-3.1-8b-instruct', { prompt });
+  const result = await ai.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', { prompt });
   return Response.json(result);
 }
 ```
