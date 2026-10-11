@@ -11,7 +11,7 @@ export async function closeDevResources(
   );
   for (const [index, result] of results.entries()) {
     if (result.status === 'rejected') {
-      // Remote session errors may contain credentials; report only the failed component.
+      // Provider or application cleanup errors may contain secrets; report only the component.
       const component = index === 0 ? 'local resources' : 'Next.js';
       console.warn(`upwind: failed to close ${component}`);
     }

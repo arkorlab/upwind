@@ -227,6 +227,12 @@ async function checkConcurrentShutdown(): Promise<void> {
     );
     assert.equal(appClosed, true, 'remote cleanup rejection does not skip Next.js close');
     assert.deepEqual(warnings, ['upwind: failed to close local resources']);
+    warnings.length = 0;
+    await closeDevResources(
+      () => Promise.resolve(),
+      () => Promise.reject(new Error('application fixture secret')),
+    );
+    assert.deepEqual(warnings, ['upwind: failed to close Next.js']);
   } finally {
     console.warn = originalWarn;
   }

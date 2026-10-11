@@ -257,7 +257,13 @@ export async function serveDev(options: DevOptions): Promise<void> {
     objects?: StopWatching;
   } = {};
   const closeApp = async (): Promise<void> => {
-    const current = await shutdown.app;
+    let current: RunningNext | undefined;
+    try {
+      current = await shutdown.app;
+    } catch {
+      // Startup reports its own failure; a rejected start produced no application to close.
+      return;
+    }
     if (current !== undefined) {
       shutdown.closeApp ??= current.close();
       await shutdown.closeApp;
