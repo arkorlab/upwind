@@ -1,6 +1,6 @@
 import { sha256HexSchema } from '../artifact/artifact.ts';
 import { cronsSchema } from '../cron/schema.ts';
-import { checkedImagesConfigSchema } from '../images/config.ts';
+import { checkedImagesConfigSchema } from '../images/build.ts';
 import { runnableSourceRegexSchema, unsafeRoutePatternReason } from '../request/pattern-safety.ts';
 import * as z from '../schema/index.ts';
 import { isId } from '../util/id.ts';

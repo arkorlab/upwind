@@ -1,12 +1,11 @@
 export { classifyImageRequest, type ImageRequestClass } from './classify.ts';
 export { allowedImageDestination } from './destination.ts';
+export { checkedImagesConfigSchema, imagesConfigFromNextManifest } from './build.ts';
 export {
-  checkedImagesConfigSchema,
   type ImageFormat,
   type ImageLocalPattern,
   type ImageRemotePattern,
   type ImagesConfig,
-  imagesConfigFromNextManifest,
   imagesConfigSchema,
 } from './config.ts';
 export {
