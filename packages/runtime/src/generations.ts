@@ -290,6 +290,20 @@ export async function withBackgroundRegeneration(
 }
 
 /**
+ * Hold the answer's end for the publish of an entry's first generation, as for the request's other
+ * writes (`RequestWrites`): a request made once it was read whole reads the generation published,
+ * rather than finding none and rendering a page of its own. An expired entry's regeneration holds
+ * no answer so: the generation before it is there to be judged, and a publish behind a broad
+ * invalidation waits for that invalidation's records to be rewritten first — a page held open for
+ * it is one the browser has not finished loading, prefetching about it, for as long as the hold.
+ */
+function holdFirstPublish(outcome: RegenerationOutcome): void {
+  if (outcome.kind === 'accepted') {
+    requestContext()?.writes.add(outcome.published);
+  }
+}
+
+/**
  * The visitor's answer from a regeneration just made: the render, as soon as it is made, its
  * publish still under way behind the answer — which the outcome says (`accepted`) rather than claim
  * a commit the bytes went out ahead of; their own render when the entry could not be published
@@ -304,12 +318,6 @@ async function answerFromJob(
   outcome: RegenerationOutcome,
   want: Want,
 ): Promise<Response | undefined> {
-  if (outcome.kind === 'accepted') {
-    // The answer's end waits for the publish, as for the request's other writes
-    // (`RequestWrites`): a request made once it was read whole reads the generation published,
-    // rather than finding the one it replaced, or none, and rendering a page of its own.
-    requestContext()?.writes.add(outcome.published);
-  }
   if (outcome.kind === 'accepted' && servable(outcome.render.status, outcome.render.headers)) {
     const answered = await answerFromRender(job.input, job.target.handler, outcome.render, want);
     return answered === undefined ? undefined : withOutcome(answered, 'accepted');
@@ -347,9 +355,12 @@ export async function handleForeground(
     return { response: undefined, outcome: 'skipped', regenerated: undefined };
   }
   // The generation the edge found expired; none, where it found no record at all and asked for a
-  // first one.
+  // first one, whose publish the answer waits for (`holdFirstPublish`).
   const served = input.request.headers.get(GENERATION_HEADER);
   const outcome = await runJob(job, 'expired', served);
+  if (served === null) {
+    holdFirstPublish(outcome);
+  }
   return {
     response: await answerFromJob(job, outcome, documentWant(input)),
     outcome: outcome.kind,
@@ -549,7 +560,9 @@ async function answerMiss(
   once: boolean,
 ): Promise<Response | undefined> {
   if (onMiss === 'render' && once) {
-    return answerFromJob(job, await runJob(job, 'miss', null), want);
+    const outcome = await runJob(job, 'miss', null);
+    holdFirstPublish(outcome);
+    return answerFromJob(job, outcome, want);
   }
   if (onMiss === 'behind' && once) {
     scheduleJob(job, 'miss', null);
