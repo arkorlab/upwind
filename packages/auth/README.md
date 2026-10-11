@@ -134,8 +134,8 @@ and a client left on that default asks a path nothing serves. If you would rathe
 Auth's client directly, take the constant instead:
 
 ```ts
-import { createAuthClient } from 'better-auth/react';
 import { UPWIND_AUTH_BASE_PATH } from '@stayingupwind/auth/client';
+import { createAuthClient } from 'better-auth/react';
 
 export const authClient = createAuthClient({ basePath: UPWIND_AUTH_BASE_PATH });
 ```
