@@ -242,15 +242,17 @@ async function checkConcurrentShutdown(): Promise<void> {
 async function checkFailedNextStartup(): Promise<void> {
   const failure = new Error('fixture startup failure');
   const drained = Promise.withResolvers<undefined>();
+  const closeStarted = Promise.withResolvers<undefined>();
   let closed = false;
   const starting = completeNextStartup(
     () => {
       closed = true;
+      closeStarted.resolve(undefined);
       return drained.promise;
     },
     () => Promise.reject(failure),
   );
-  await Promise.resolve();
+  await closeStarted.promise;
   assert.equal(closed, true, 'failed preparation starts partial application cleanup');
   drained.resolve(undefined);
   await assert.rejects(starting, (error: unknown) => error === failure);

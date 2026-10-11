@@ -9,6 +9,7 @@ export async function completeNextStartup<Result>(
     try {
       await close();
     } catch {
+      // Application cleanup can contain secrets; report the component and preserve startup's error.
       console.warn('upwind: failed to close partially started Next.js');
     }
     throw error;
