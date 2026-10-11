@@ -186,9 +186,9 @@ function replaceInTurn(template: string, match: RegExpExecArray): string {
   // Optional named groups can be undefined even though RegExpExecArray types them as strings.
   const groups: Record<string, string | undefined> | undefined = match.groups;
   if (groups === undefined) return out;
-  for (const [name, captured] of Object.entries(groups)) {
+  for (const [name, captured = ''] of Object.entries(groups)) {
     // eslint-disable-next-line unicorn/no-unsafe-string-replacement
-    out = out.replaceAll(`$${name}`, captured ?? '');
+    out = out.replaceAll(`$${name}`, captured);
   }
   return out;
 }

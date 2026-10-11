@@ -828,7 +828,7 @@ export function createAdapter(options: AdapterOptions = {}): NextAdapter {
 
 // `NEXT_ADAPTER_PATH` and `adapterPath` name a module whose default export is the adapter; this
 // one is configured with nothing, and its bundle has no runtime cache.
-// eslint-disable-next-line import-x/no-default-export
+// eslint-disable-next-line import-x/no-default-export, unicorn/no-top-level-side-effects
 export default createAdapter();
 
 export { bundleDurableObjects, type BundledDurableObject } from './durable-objects.ts';

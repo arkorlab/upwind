@@ -181,10 +181,9 @@ async function chunksIn(distDir: string): Promise<string[]> {
   return chunks;
 }
 
-/** `work` over every item, at most `limit` of them in flight at once. */
-async function eachAtMost<T>(
+/** `work` over every item, at most `CONCURRENCY` of them in flight at once. */
+async function eachConcurrently<T>(
   items: readonly T[],
-  limit: number,
   work: (item: T) => Promise<void>,
 ): Promise<void> {
   const queue = [...items];
@@ -193,7 +192,7 @@ async function eachAtMost<T>(
       await work(item);
     }
   };
-  await Promise.all(Array.from({ length: Math.min(limit, queue.length) }, lane));
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, lane));
 }
 
 /** `to` as a second name for `from`, or a copy where a link cannot be made; `undefined` if neither. */
@@ -260,7 +259,7 @@ async function recordMaps(distDir: string, keptDir: string): Promise<Recorded[]>
     taken.set(map, linking);
     return linking;
   };
-  await eachAtMost(await chunksIn(distDir), CONCURRENCY, async (chunk) => {
+  await eachConcurrently(await chunksIn(distDir), async (chunk) => {
     try {
       const entry = await recordChunk(distDir, chunk, linkOnce);
       if (entry !== undefined) {
@@ -341,7 +340,7 @@ async function settleMaps(
     sharers.set(entry.map, (sharers.get(entry.map) ?? 0) + 1);
   }
   const maps: Record<string, IndexEntry> = {};
-  await eachAtMost(recorded, CONCURRENCY, async (entry) => {
+  await eachConcurrently(recorded, async (entry) => {
     try {
       const map = await verdict(distDir, keptDir, entry, (sharers.get(entry.map) ?? 0) > 1);
       // The chunk as the verdict saw it, asked again after: what `readKeptMaps` checks it against.

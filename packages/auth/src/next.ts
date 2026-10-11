@@ -64,9 +64,9 @@ function isMountable(value: unknown): value is MountableAuth {
 }
 
 /** A refusal with a reason a developer can act on, and headers that keep it out of every cache. */
-function refuse(status: number, message: string): Response {
+function refuse(message: string): Response {
   return new Response(message, {
-    status,
+    status: STATUS_MISCONFIGURED,
     headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' },
   });
 }
@@ -95,7 +95,6 @@ async function answer(config: Record<string, unknown>, request: Request): Promis
   const mounted = authOf(config);
   if (mounted === undefined) {
     return refuse(
-      STATUS_MISCONFIGURED,
       `@stayingupwind/auth: the auth config beside this app exports no Better Auth instance. Export it as \`auth\`, or as the module's default:\n\n  export const auth = defineAuth();\n`,
     );
   }
@@ -109,7 +108,7 @@ async function answer(config: Record<string, unknown>, request: Request): Promis
   }
   const missing = missingProductionSecret(mounted.options);
   if (missing !== undefined) {
-    return refuse(STATUS_MISCONFIGURED, missing);
+    return refuse(missing);
   }
   await ensureSchema(mounted);
   return mounted.handler(request);

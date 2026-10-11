@@ -259,8 +259,8 @@ export function bundleDependencies(
     ...(guarded.length > 0 && { guardedRequires: guarded }),
     wasmModules: [...new Set(trace.wasmModules)]
       .map((entry) => {
-        const [file, global] = entry.split(' -> ', 2);
-        return `${displayPath(projectDir, file ?? entry)} -> ${global ?? ''}`;
+        const [file, global = ''] = entry.split(' -> ', 2);
+        return `${displayPath(projectDir, file ?? entry)} -> ${global}`;
       })
       .toSorted((a, b) => a.localeCompare(b)),
     ...(trace.compiledWasmModules !== undefined && {

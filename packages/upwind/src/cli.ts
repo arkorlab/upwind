@@ -46,11 +46,9 @@ writes the deployment bundle under .arkor/. On Vercel (VERCEL set, NEXT_ADAPTER_
 names no adapter and writes no bundle: the build there is Vercel's.
 `;
 
-function fail(message: string, withUsage: boolean): never {
+function fail(message: string): never {
   console.error(`upwind: ${message}`);
-  if (withUsage) {
-    console.error(`\n${USAGE}`);
-  }
+  console.error(`\n${USAGE}`);
   process.exit(1);
 }
 
@@ -67,7 +65,7 @@ function orFail<T>(parse: () => T): T {
   try {
     return parse();
   } catch (error) {
-    fail(error instanceof Error ? error.message : String(error), true);
+    fail(error instanceof Error ? error.message : String(error));
   }
 }
 
@@ -120,7 +118,7 @@ async function main(): Promise<void> {
     return;
   }
   if (command !== 'dev') {
-    fail(`unknown command \`${command}\`; the commands are \`dev\` and \`build\``, true);
+    fail(`unknown command \`${command}\`; the commands are \`dev\` and \`build\``);
   }
   await dev(rest, argv);
 }

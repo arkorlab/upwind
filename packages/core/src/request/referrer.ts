@@ -62,10 +62,14 @@ const LEGACY_META_POLICIES: ReadonlyMap<string, string> = new Map([
  * The policy a `Referrer-Policy` header puts in force: the last value of the list it recognises.
  *
  * A header may carry a list so that a document can name a policy an older browser knows beside
- * the one it prefers; the last one that browser recognises is the one it uses.
+ * the one it prefers; the last one that browser recognises is the one it uses. Without the header
+ * there is no policy, which is the empty string, as it is when the list names none it recognises.
  */
-export function effectiveReferrerPolicy(declared: string | undefined): string {
-  const tokens = (declared ?? '').split(VALUE_SEPARATOR);
+export function effectiveReferrerPolicy(declared: string | null): string {
+  if (declared === null) {
+    return '';
+  }
+  const tokens = declared.split(VALUE_SEPARATOR);
   let policy = '';
   for (const token of tokens) {
     const candidate = trimmed(token);
@@ -82,14 +86,17 @@ export function effectiveReferrerPolicy(declared: string | undefined): string {
  * One token, not a list: the standard lowercases the whole `content`, maps the legacy spellings,
  * and sets the policy only "if value is a referrer policy". So `content="unsafe-url, no-referrer"`
  * is no policy at all and the document keeps the one it had — where the header form would have
- * read the list and taken the last of them.
+ * read the list and taken the last of them. A `<meta>` with no `content` is no policy either.
  *
  * Trimmed first, which the standard does not do: a ` no-referrer` sets no policy there and is read
  * as one here. That reading only ever ends a walk sooner, which costs the hints below it and sends
  * none the document asked against.
  */
-export function metaReferrerPolicy(content: string | undefined): string {
-  const declared = trimmed(content ?? '');
+export function metaReferrerPolicy(content: string | null): string {
+  if (content === null) {
+    return '';
+  }
+  const declared = trimmed(content);
   const policy = LEGACY_META_POLICIES.get(declared) ?? declared;
   return REFERRER_POLICIES.has(policy) ? policy : '';
 }
