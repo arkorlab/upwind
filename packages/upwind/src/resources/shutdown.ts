@@ -12,10 +12,12 @@ export async function disposeLocalResources(
     await stopStorage();
   };
   const results = await Promise.allSettled([disposeAi(), disposeStorage()]);
+  const errors: unknown[] = [];
   for (const result of results) {
     if (result.status === 'rejected') {
       const reason: unknown = result.reason;
-      throw reason;
+      errors.push(reason);
     }
   }
+  if (errors.length > 0) throw new AggregateError(errors, 'Local resource cleanup failed');
 }

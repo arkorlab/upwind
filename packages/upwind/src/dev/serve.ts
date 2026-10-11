@@ -24,6 +24,7 @@ import { type NextHandler, type RunningNext, startNextApp } from './next-app.ts'
 import { reachable } from './probe.ts';
 import { beforeRestart, restart, stopDuringStartup } from './restart.ts';
 import { createSession } from './session.ts';
+import { closeDevResources } from './shutdown.ts';
 
 /**
  * One `upwind dev` run: upwind holds the port, and Next.js is behind it.
@@ -270,8 +271,9 @@ export async function serveDev(options: DevOptions): Promise<void> {
     shutdown.objects?.();
     server.close();
     server.closeAllConnections();
-    await (await shutdown.local)?.dispose();
-    await closeApp();
+    await closeDevResources(async () => {
+      await (await shutdown.local)?.dispose();
+    }, closeApp);
   });
   const stopWatching = await watchConfigFiles(options.projectDir);
   shutdown.config = stopWatching;
@@ -340,11 +342,11 @@ export async function serveDev(options: DevOptions): Promise<void> {
     // The runtime this run started goes with the run. Its own exit hook would kill it anyway; doing
     // it here means the directories under `.upwind/` are released before `cli.ts` ends the process,
     // rather than while it is ending.
-    await local.dispose();
+    await closeDevResources(() => local.dispose(), closeApp);
     throw error;
   }
   if (isStopping()) {
-    await closeApp();
+    await closeDevResources(() => local.dispose(), closeApp);
     return;
   }
   // Next.js has read the config, and with it the adapter this run named and the address it gave;
@@ -384,12 +386,11 @@ export async function serveDev(options: DevOptions): Promise<void> {
   server.close();
   // A keep-alive connection would otherwise hold the close open for as long as a browser felt like.
   server.closeAllConnections();
-  // Before Next.js rather than after, because this is the part of the shutdown that has a deadline
-  // outside it: the supervisor kills a child two seconds after it signals one, and a `SIGKILL` runs
+  // Both start together because this shutdown has a deadline outside it: the supervisor kills a
+  // child two seconds after it signals one, and a `SIGKILL` runs
   // no exit hook, so a runtime still up at that point is a runtime nothing reaps. Nothing is left to
   // read storage by now — the port is closed and the connections with it.
-  await local.dispose();
-  await app.close();
+  await closeDevResources(() => local.dispose(), closeApp);
   // Next.js's dev bundler keeps handles of its own, so this process would not end on its own. What
   // was asked for is over.
   process.exit(0);

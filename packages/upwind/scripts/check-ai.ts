@@ -12,6 +12,7 @@ import { ai, durableObject } from '../../sdk/src/named.ts';
 import { parseDevRequest } from '../src/args.ts';
 import { bridgeNextRestartSource } from '../src/dev/next-restart-loader.ts';
 import { RESTART_EXIT_CODE } from '../src/dev/restart.ts';
+import { closeDevResources } from '../src/dev/shutdown.ts';
 import {
   aiBindingNames,
   connectRemoteAi,
@@ -196,6 +197,39 @@ async function checkConcurrentShutdown(): Promise<void> {
   assert.equal(remoteStarted, true, 'remote cleanup starts even while local shutdown is pending');
   localStopped.resolve(undefined);
   await closing;
+
+  const remoteFailure = new Error('remote fixture failure');
+  const storageFailure = new Error('storage fixture failure');
+  await assert.rejects(
+    disposeLocalResources(() => Promise.reject(storageFailure), {
+      dispose: () => Promise.reject(remoteFailure),
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof AggregateError);
+      assert.deepEqual(error.errors, [remoteFailure, storageFailure]);
+      return true;
+    },
+  );
+
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  let appClosed = false;
+  console.warn = (message: string): void => {
+    warnings.push(message);
+  };
+  try {
+    await closeDevResources(
+      () => Promise.reject(remoteFailure),
+      () => {
+        appClosed = true;
+        return Promise.resolve();
+      },
+    );
+    assert.equal(appClosed, true, 'remote cleanup rejection does not skip Next.js close');
+    assert.deepEqual(warnings, ['upwind: failed to close local resources']);
+  } finally {
+    console.warn = originalWarn;
+  }
 }
 
 async function checkInference(): Promise<void> {
