@@ -9,7 +9,6 @@ import {
   manifestHead,
   type SourceMapRef,
 } from '@stayingupwind/core/bundle';
-import { build } from 'esbuild';
 import {
   type InputOptions,
   type OutputChunk,
@@ -34,7 +33,7 @@ import {
 import { dynamicLoadsInChunk } from './dynamic-loads.ts';
 import { bundleEdge, type EdgeEntry } from './edge.ts';
 import { functionSize } from './function-size.ts';
-import { APP_MODULE, generatedModulesPlugin } from './generated-modules.ts';
+import { APP_MODULE } from './generated-modules.ts';
 import type { KeptMaps } from './kept-maps.ts';
 import {
   bundleLinkedExternals,
@@ -57,6 +56,7 @@ import {
   wasmModulePlugin,
   FUNCTION_BANNER,
 } from './patches/index.ts';
+import { bundleRuntimeModule } from './runtime-bundle.ts';
 import {
   carriesMaps,
   codeModules,
@@ -65,6 +65,7 @@ import {
   sourceMapsPlugin,
   sourcemapOutput,
 } from './source-maps.ts';
+import { GLOBAL_OBJECT, globalObjectPlugin, THROWING_GLOBALS } from './throwing-globals.ts';
 import type { TracedFile } from './traced-files.ts';
 import { WASM_ENTRY_MODULE, type WasmCollector, wasmEntrySource, wasmModuleName } from './wasm.ts';
 
@@ -237,6 +238,7 @@ export function appBundlePlugins(
   sinks: AppBundleSinks,
 ): RolldownPlugin[] {
   return [
+    globalObjectPlugin(),
     patchesPlugin(PATCHES, context.patch, (applied) => {
       sinks.patches.push(applied);
     }),
@@ -279,7 +281,9 @@ export function appBundleOptions(
     platform: 'node',
     plugins: appBundlePlugins(context, sinks),
     transform: {
+      inject: GLOBAL_OBJECT,
       define: {
+        ...THROWING_GLOBALS,
         'process.env.NEXT_RUNTIME': '"nodejs"',
         'process.env.NODE_ENV': '"production"',
       },
@@ -295,9 +299,9 @@ export function appBundleOptions(
 /**
  * The app Function's code: Next.js's CommonJS output, bundled by Rolldown into one CommonJS module
  * with the patches applied as each file is loaded. Rolldown's output is 5% smaller than esbuild's
- * for the same graph and comes 40% sooner (see EXPERIMENTS.md, V-03); the runtime bundle stays
- * on esbuild for its `workerd` conditions. Whitespace and syntax are minified, names are not:
- * the audit reads them.
+ * for the same graph and comes 40% sooner (see EXPERIMENTS.md, V-03); the runtime bundle is
+ * Rolldown's as well (`bundleRuntime`). Whitespace and syntax are minified, names are not: the
+ * audit reads them.
  */
 async function bundleApp(
   input: BuildFunctionInput,
@@ -360,44 +364,17 @@ async function bundleApp(
 
 async function bundleRuntime(input: BuildFunctionInput, workDir: string): Promise<string> {
   const outFile = path.join(workDir, `${nameOf(input)}-${RUNTIME_MODULE}`);
-  const modules = codeModules(nameOf(input));
-  await build({
-    entryPoints: [runtimeEntry()],
-    bundle: true,
-    platform: 'node',
-    format: 'esm',
-    target: 'es2024',
-    outfile: outFile,
-    external: ['node:*', 'cloudflare:*'],
-    conditions: ['workerd', 'worker'],
-    plugins: [
-      generatedModulesPlugin({
-        modules,
-        edge: input.edgeEntries.length > 0,
-        wasm: input.wasm.hasCandidates,
-        cacheHostModule: input.cacheHostModule,
-      }),
-    ],
-    define: {
-      'process.env.NODE_ENV': '"production"',
-      __ARKOR_FUNCTION_KIND__: jsLiteral(input.kind),
-      // Which Function this is, among a deployment's app Functions: what a request for a route of
-      // another one is told apart by (`placement.ts`).
-      __ARKOR_FUNCTION_NAME__: jsLiteral(nameOf(input)),
-      // A build without the Workflow SDK leaves the runtime's part for it out entirely.
-      __ARKOR_WORKFLOW_SDK__: jsLiteral(input.workflowSdk === true),
-      // CommonJS conveniences that `@next/routing`'s build references at module scope.
-      __dirname: '"/bundle"',
-      __filename: `"/bundle/${RUNTIME_MODULE}"`,
-    },
-    // Whitespace and syntax, as `app.cjs` is minified, and not names: a stack trace out of the
-    // runtime still says which function it came from.
-    minifyWhitespace: true,
-    minifySyntax: true,
-    minifyIdentifiers: false,
-    legalComments: 'none',
-    logLevel: 'silent',
-    sourcemap: false,
+  await bundleRuntimeModule({
+    entry: runtimeEntry(),
+    outFile,
+    moduleName: RUNTIME_MODULE,
+    kind: input.kind,
+    name: nameOf(input),
+    workflowSdk: input.workflowSdk === true,
+    modules: codeModules(nameOf(input)),
+    edge: input.edgeEntries.length > 0,
+    wasm: input.wasm.hasCandidates,
+    cacheHostModule: input.cacheHostModule,
   });
   return outFile;
 }

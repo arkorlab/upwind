@@ -1,11 +1,11 @@
-import type { Plugin } from 'esbuild';
+import type { Plugin, ResolveIdResult } from 'rolldown';
 
 import { WASM_ENTRY_MODULE } from './wasm.ts';
 
 /** The app bundle's name in the Function, which the runtime resolves `arkor:app` to. */
 export const APP_MODULE = 'app.cjs';
 
-const EMPTY_EDGE_MODULE = 'module.exports = { entries: {} };';
+const EMPTY_EDGE_MODULE = 'export default { entries: {} };';
 const EMPTY_WASM_MODULE = '// This deployment carries no WebAssembly.';
 /**
  * A build told of no cache host: the runtime asks, is answered nothing, and runs as it did
@@ -14,10 +14,15 @@ const EMPTY_WASM_MODULE = '// This deployment carries no WebAssembly.';
  *
  * The one name, and not the blob reader a host may also export (`unshippedOutputs`): the runtime
  * reads that one off a namespace import, which is `undefined` for a module that does not export it
- * — and a build with no cache host reads no blob of its own bundle from anywhere either. esbuild
- * says so as a warning and bundles it (`logLevel: 'silent'` here keeps the warning to itself).
+ * — and a build with no cache host reads no blob of its own bundle from anywhere either. The bundler
+ * says so (`IMPORT_IS_UNDEFINED`) and bundles it; the runtime's bundle keeps that to itself.
  */
 const NO_CACHE_HOST_MODULE = 'export function createCacheHost() { return undefined; }';
+
+/** The generated modules' own ids: no file is read for them. */
+const EDGE_STUB = '\0arkor:edge';
+const WASM_STUB = '\0arkor:wasm';
+const CACHE_HOST_STUB = '\0arkor:cache-host';
 
 /**
  * The generated modules the runtime source names: `arkor:app` is the `app.cjs` next to it in
@@ -38,49 +43,20 @@ export function generatedModulesPlugin(has: {
   wasm: boolean;
   cacheHostModule: string | undefined;
 }): Plugin {
+  const resolved: Readonly<Record<string, ResolveIdResult>> = {
+    'arkor:app': { id: `./${has.modules.app}`, external: true },
+    'arkor:edge': has.edge ? { id: `./${has.modules.edge}`, external: true } : EDGE_STUB,
+    'arkor:wasm': has.wasm ? { id: `./${WASM_ENTRY_MODULE}`, external: true } : WASM_STUB,
+    'arkor:cache-host': has.cacheHostModule ?? CACHE_HOST_STUB,
+  };
+  const stubs: Readonly<Record<string, string>> = {
+    [EDGE_STUB]: EMPTY_EDGE_MODULE,
+    [WASM_STUB]: EMPTY_WASM_MODULE,
+    [CACHE_HOST_STUB]: NO_CACHE_HOST_MODULE,
+  };
   return {
     name: 'arkor-generated-modules',
-    setup(bundler) {
-      // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-      bundler.onResolve({ filter: /^arkor:app$/ }, () => {
-        return {
-          path: `./${has.modules.app}`,
-          external: true,
-        };
-      });
-      // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-      bundler.onResolve({ filter: /^arkor:edge$/ }, () => {
-        return has.edge
-          ? { path: `./${has.modules.edge}`, external: true }
-          : { path: 'arkor:edge', namespace: 'arkor-edge' };
-      });
-      bundler.onLoad(
-        // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-        { filter: /^arkor:edge$/, namespace: 'arkor-edge' },
-        () => ({ contents: EMPTY_EDGE_MODULE, loader: 'js' }),
-      );
-      // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-      bundler.onResolve({ filter: /^arkor:wasm$/ }, () => {
-        return has.wasm
-          ? { path: `./${WASM_ENTRY_MODULE}`, external: true }
-          : { path: 'arkor:wasm', namespace: 'arkor-wasm' };
-      });
-      bundler.onLoad(
-        // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-        { filter: /^arkor:wasm$/, namespace: 'arkor-wasm' },
-        () => ({ contents: EMPTY_WASM_MODULE, loader: 'js' }),
-      );
-      // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-      bundler.onResolve({ filter: /^arkor:cache-host$/ }, () => {
-        return has.cacheHostModule === undefined
-          ? { path: 'arkor:cache-host', namespace: 'arkor-cache-host' }
-          : { path: has.cacheHostModule };
-      });
-      bundler.onLoad(
-        // eslint-disable-next-line require-unicode-regexp -- an esbuild filter is a Go regular expression
-        { filter: /^arkor:cache-host$/, namespace: 'arkor-cache-host' },
-        () => ({ contents: NO_CACHE_HOST_MODULE, loader: 'js' }),
-      );
-    },
+    resolveId: (source) => (Object.hasOwn(resolved, source) ? resolved[source] : null),
+    load: (id) => (Object.hasOwn(stubs, id) ? stubs[id] : null),
   };
 }
