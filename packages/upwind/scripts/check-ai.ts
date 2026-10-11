@@ -200,12 +200,14 @@ async function checkSetup(): Promise<void> {
   assert.deepEqual(captured, { accountId, apiToken });
   assert.equal(process.env['CLOUDFLARE_ACCOUNT_ID'], undefined);
   assert.equal(process.env['CLOUDFLARE_API_TOKEN'], undefined);
+  let observedAuth: unknown;
+  let observedToken: unknown = 'not invoked';
   const privateSession = await prepareLocalAi(
     [],
     true,
     (auth) => {
-      assert.deepEqual(auth, captured);
-      assert.equal(process.env['CLOUDFLARE_API_TOKEN'], undefined);
+      observedAuth = auth;
+      observedToken = process.env['CLOUDFLARE_API_TOKEN'];
       return Promise.resolve({
         remoteProxyConnectionString: new URL(proxyUrl) as never,
         ready: Promise.resolve(),
@@ -214,6 +216,8 @@ async function checkSetup(): Promise<void> {
     },
     { auth: captured },
   );
+  assert.deepEqual(observedAuth, captured);
+  assert.equal(observedToken, undefined);
   await privateSession.dispose();
 }
 

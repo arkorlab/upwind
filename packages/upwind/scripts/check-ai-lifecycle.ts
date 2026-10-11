@@ -96,47 +96,54 @@ export async function checkFailedNextStartup(): Promise<void> {
 }
 
 export async function checkPendingAiFactory(): Promise<void> {
-  const factory = Promise.withResolvers<RemoteAiSession>();
-  const factoryStarted = Promise.withResolvers<undefined>();
-  const cleanupStarted = Promise.withResolvers<undefined>();
-  const cleanupDrained = Promise.withResolvers<undefined>();
-  const controller = new AbortController();
-  let disposed = 0;
-  let completed = false;
-  const preparing = prepareLocalAi(
-    [],
-    true,
-    () => {
-      factoryStarted.resolve(undefined);
-      return factory.promise;
-    },
-    {
-      signal: controller.signal,
-      auth: { accountId: 'fixture-account', apiToken: 'fixture-token' },
-    },
-  );
-  await factoryStarted.promise;
-  controller.abort();
-  const rejected = (async () => {
-    await assert.rejects(async () => preparing, /cancelled/u);
-    completed = true;
-  })();
-  await new Promise<void>((resolve) => {
-    setImmediate(resolve);
-  });
-  assert.equal(completed, false, 'cancellation retains the still-pending session factory');
-  factory.resolve({
-    remoteProxyConnectionString: new URL('https://fixture.invalid') as never,
-    ready: Promise.resolve(),
-    dispose: () => {
-      disposed += 1;
-      cleanupStarted.resolve(undefined);
-      return cleanupDrained.promise;
-    },
-  });
-  await cleanupStarted.promise;
-  assert.equal(completed, false, 'a late session must drain before startup is released');
-  cleanupDrained.resolve(undefined);
-  await rejected;
-  assert.equal(disposed, 1);
+  const previous = process.env['UPWIND_AI_BINDINGS'];
+  process.env['UPWIND_AI_BINDINGS'] = '["INFERENCE"]';
+  try {
+    const factory = Promise.withResolvers<RemoteAiSession>();
+    const factoryStarted = Promise.withResolvers<undefined>();
+    const cleanupStarted = Promise.withResolvers<undefined>();
+    const cleanupDrained = Promise.withResolvers<undefined>();
+    const controller = new AbortController();
+    let disposed = 0;
+    let completed = false;
+    const preparing = prepareLocalAi(
+      [],
+      true,
+      () => {
+        factoryStarted.resolve(undefined);
+        return factory.promise;
+      },
+      {
+        signal: controller.signal,
+        auth: { accountId: 'fixture-account', apiToken: 'fixture-token' },
+      },
+    );
+    await factoryStarted.promise;
+    controller.abort();
+    const rejected = (async () => {
+      await assert.rejects(async () => preparing, /cancelled/u);
+      completed = true;
+    })();
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    assert.equal(completed, false, 'cancellation retains the still-pending session factory');
+    factory.resolve({
+      remoteProxyConnectionString: new URL('https://fixture.invalid') as never,
+      ready: Promise.resolve(),
+      dispose: () => {
+        disposed += 1;
+        cleanupStarted.resolve(undefined);
+        return cleanupDrained.promise;
+      },
+    });
+    await cleanupStarted.promise;
+    assert.equal(completed, false, 'a late session must drain before startup is released');
+    cleanupDrained.resolve(undefined);
+    await rejected;
+    assert.equal(disposed, 1);
+  } finally {
+    if (previous === undefined) Reflect.deleteProperty(process.env, 'UPWIND_AI_BINDINGS');
+    else process.env['UPWIND_AI_BINDINGS'] = previous;
+  }
 }
