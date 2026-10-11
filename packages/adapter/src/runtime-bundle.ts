@@ -2,7 +2,7 @@ import { rolldown } from 'rolldown';
 
 import { jsLiteral } from './codegen.ts';
 import { generatedModulesPlugin } from './generated-modules.ts';
-import { THROWING_GLOBALS } from './throwing-globals.ts';
+import { THROWING_GLOBALS, throwingGlobalsPlugin } from './throwing-globals.ts';
 
 /** What the runtime module of one Function is bundled from, and as. */
 export interface RuntimeBundleInput {
@@ -41,6 +41,7 @@ export async function bundleRuntimeModule(input: RuntimeBundleInput): Promise<vo
     resolve: { conditionNames: ['workerd', 'worker', 'node', 'default'] },
     external: [/^node:/u, /^cloudflare:/u],
     plugins: [
+      throwingGlobalsPlugin(),
       generatedModulesPlugin({
         modules: input.modules,
         edge: input.edge,
@@ -50,8 +51,8 @@ export async function bundleRuntimeModule(input: RuntimeBundleInput): Promise<vo
     ],
     transform: {
       target: 'es2024',
+      inject: THROWING_GLOBALS,
       define: {
-        ...THROWING_GLOBALS,
         'process.env.NODE_ENV': '"production"',
         __ARKOR_FUNCTION_KIND__: jsLiteral(input.kind),
         // Which Function this is, among a deployment's app Functions: what a request for a route of
@@ -67,8 +68,9 @@ export async function bundleRuntimeModule(input: RuntimeBundleInput): Promise<vo
     onLog(_level, log) {
       // A module the bundler cannot find is one the Function would not have either; anything else
       // it says (the stub cache host's missing blob reader among it) stays with the build. Of a
-      // `require()` or an `import()` inside a `try` block Rolldown says nothing: the call is left
-      // to throw at run time, for the module's own fallback to catch, as esbuild left it.
+      // `require()` inside a `try` block, or an `import()` awaited inside one, Rolldown says
+      // nothing: the call is left to fail at run time, for the module's own fallback to catch, as
+      // esbuild left it.
       if (log.code === 'UNRESOLVED_IMPORT') {
         unresolved.push(log.message);
       }

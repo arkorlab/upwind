@@ -10,7 +10,7 @@ import { dynamicLoadsInChunk } from './dynamic-loads.ts';
 import type { KeptMaps } from './kept-maps.ts';
 import { externalsPlugin, FUNCTION_BANNER } from './patches/index.ts';
 import { sourceMapsPlugin, sourcemapOutput } from './source-maps.ts';
-import { THROWING_GLOBALS } from './throwing-globals.ts';
+import { THROWING_GLOBALS, throwingGlobalsPlugin } from './throwing-globals.ts';
 import { projectModuleName } from './traced-files.ts';
 
 /**
@@ -172,6 +172,7 @@ export function edgeBundleOptions(
     // Node built-ins, with or without the `node:` prefix, are the Function's own to resolve.
     platform: 'node',
     plugins: [
+      throwingGlobalsPlugin(),
       externalsPlugin(onExternal),
       // No patch reaches this bundle, so there is nothing for the map to be wrong about; see
       // `sourceMapsPlugin` for why order matters where one does.
@@ -180,8 +181,8 @@ export function edgeBundleOptions(
       constExportSettersPlugin(),
     ],
     transform: {
+      inject: THROWING_GLOBALS,
       define: {
-        ...THROWING_GLOBALS,
         'process.env.NEXT_RUNTIME': '"edge"',
         'process.env.NODE_ENV': '"production"',
       },
