@@ -31,7 +31,8 @@
   },
   "dependencies": {
     "@stayingupwind/core": "workspace:*",
-    "miniflare": "catalog:"
+    "miniflare": "catalog:",
+    "wrangler": "catalog:"
   },
   "devDependencies": {
     "@types/node": "catalog:",

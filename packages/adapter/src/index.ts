@@ -364,6 +364,7 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     // How the Functions this adapter builds fill a header's `$` references: with the router the
     // runtime is built on, `@next/routing` 16.4 or later. The edge fills them that way for it.
     routerReferences: 'one-pass',
+    aiInference: 1,
     ...objects.bundle,
     // Where each entrypoint's code is in the source tree. Only a reader of the build ever asks
     // (`sourcePageSchema`).

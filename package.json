@@ -23,7 +23,8 @@
     "knip": "knip",
     "lint": "eslint . --max-warnings 0",
     "lint:fix": "eslint . --max-warnings 0 --fix",
-    "typecheck": "pnpm -r typecheck && tsc --noEmit -p tsconfig.json"
+    "typecheck": "pnpm -r typecheck && tsc --noEmit -p tsconfig.json",
+    "check:ai": "node packages/upwind/scripts/check-ai.ts"
   },
   "devDependencies": {
     "@eslint/js": "catalog:",

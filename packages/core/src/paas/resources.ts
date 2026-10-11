@@ -4,7 +4,7 @@ import { RESOURCES_MANIFEST_BINDING } from './resources-constants.ts';
 export { RESOURCES_MANIFEST_BINDING } from './resources-constants.ts';
 
 /**
- * A project's storage bindings on the way from its host to the application.
+ * A project's resource bindings on the way from its host to the application.
  *
  * A host binds each of them to the deployment's Functions under the name its owner gave it, and
  * beside them a text binding that lists them as JSON. The runtime reads that list back, picks out
@@ -13,12 +13,13 @@ export { RESOURCES_MANIFEST_BINDING } from './resources-constants.ts';
  * `PublishedResources` describes. `version` is what lets a reader follow a change to that shape.
  */
 
-/** The kinds of storage a binding can be, in the words Cloudflare's upload metadata uses. */
+/** Resource kinds: storage uses native bindings; AI uses an inference-only service capability. */
 export const RESOURCE_TYPES = [
   'kv_namespace',
   'r2_bucket',
   'd1',
   'durable_object_namespace',
+  'ai',
 ] as const;
 export type ResourceType = (typeof RESOURCE_TYPES)[number];
 
@@ -39,10 +40,10 @@ export interface ResourceManifestEntry {
   readonly type: ResourceType;
 }
 
-/** One binding as the application finds it: its kind, and Cloudflare's own object for it. */
+/** One published binding: its kind and the capability granted to the Function. */
 export interface PublishedResource {
   readonly type: ResourceType;
-  /** A `KVNamespace`, `R2Bucket`, `D1Database` or `DurableObjectNamespace`, as handed to the Function. */
+  /** A native storage binding or an AI service exposing only `run(model, inputs)`. */
   readonly binding: unknown;
 }
 
@@ -98,7 +99,7 @@ function resourceBindingsOf(env: FunctionEnv): Map<string, PublishedResource> {
   const resources = new Map<string, PublishedResource>();
   const listed = parseResourcesManifest(env[RESOURCES_MANIFEST_BINDING]);
   for (const entry of listed) {
-    // Inherited names and listed variables never publish storage bindings.
+    // Inherited names and listed variables never publish resource bindings.
     const binding = Object.hasOwn(env, entry.name) ? env[entry.name] : undefined;
     if (typeof binding === 'object' && binding !== null)
       resources.set(entry.name, { type: entry.type, binding });
@@ -116,7 +117,8 @@ export function publishedD1BindingCount(env: FunctionEnv): number {
 }
 
 /**
- * The storage bindings `env` holds, as the list beside them names them; frozen throughout.
+ * The resource bindings `env` holds, as the list beside them names them; the published shape is
+ * frozen. Capabilities themselves retain their native behavior.
  *
  * Only what `ARKOR_RESOURCES` lists is published: an environment variable, or a binding of the
  * platform's, is never on it, whatever the application names.

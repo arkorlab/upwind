@@ -479,11 +479,11 @@ export default defineConfig([
     },
   },
 
-  // Four entry points whose whole subject is one value, which is the one they export by default:
+  // Five entry points whose whole subject is one value, which is the one they export by default:
   // `import db from '@stayingupwind/sdk/db'` is the line this package exists to make possible, and
   // `import { db }` would be the same word twice.
   {
-    files: ['packages/sdk/src/{db,kv,blob,durable-object}.ts'],
+    files: ['packages/sdk/src/{db,kv,blob,durable-object,ai}.ts'],
     rules: { 'import-x/no-default-export': 'off' },
   },
 

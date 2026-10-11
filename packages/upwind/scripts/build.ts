@@ -33,7 +33,7 @@ async function main(): Promise<void> {
       'resources-entry': path.join(ROOT, 'src/resources/entry.ts'),
     },
     platform: 'node',
-    external: [/^next(\/|$)/u, /^node:/u, /^miniflare$/u],
+    external: [/^next(\/|$)/u, /^node:/u, /^miniflare$/u, /^wrangler$/u],
   });
   // No `banner`: the hashbang is `src/cli.ts`'s own and Rolldown carries it to the top of the
   // bundle. Adding one as well makes two, which is a syntax error — and Rolldown answers that by

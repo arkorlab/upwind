@@ -1,24 +1,74 @@
 import { writeSync } from 'node:fs';
 
 /**
- * The exit code that means "start me again", and the one way to ask for it.
- *
- * Not ours to choose: it is `RESTART_EXIT_CODE` in `next/dist/server/lib/utils.ts`, and Next.js's own
- * dev tooling leaves with it from inside this process — the error overlay's restart button does
- * exactly that (`next-devtools/server/restart-dev-server-middleware.ts`). Under `next dev` the parent
- * process is what catches it and starts the server again; here `supervise.ts` is.
+ * Next.js's own devtools restart uses exit 77 after invalidating its caches and flushing telemetry
+ * (`next-devtools/server/restart-dev-server-middleware.ts`). The supervisor recognizes the same code.
  */
 export const RESTART_EXIT_CODE = 77;
+export const NEXT_RESTART_SYMBOL = 'upwind.next-devtools-restart';
+const CLEANUP_DEADLINE_MS = 1500;
+const nativeExit: typeof process.exit = process.exit.bind(process);
+const state: { cleanup?: () => Promise<void>; exiting: boolean } = { exiting: false };
 
-/** Say why, then leave with the code the supervisor is watching for. */
-export function restart(reason: string): never {
-  // Written to the descriptor rather than logged: `process.exit` takes the process down with whatever
-  // `console.log` had queued, and a dev server's output is often a pipe or a file. The reason a server
-  // restarted is worth the one synchronous write, and losing that write is not worth the restart.
+/** The dev server installs cleanup before watching files or opening remote connections. */
+export function beforeRestart(dispose: () => Promise<void>): void {
+  state.cleanup = dispose;
+  Reflect.set(globalThis, Symbol.for(NEXT_RESTART_SYMBOL), () => {
+    restart('Next.js requested a restart');
+  });
+}
+
+function writeWarning(): void {
   try {
-    writeSync(1, `upwind: ${reason}; restarting...\n`);
+    writeSync(2, 'upwind: could not finish resource cleanup before exiting\n');
   } catch {
-    // Nothing to say about not being able to say something.
+    // Losing a diagnostic must not prevent the exit.
   }
-  process.exit(RESTART_EXIT_CODE);
+}
+
+function finish(code: number, reason?: string): void {
+  if (state.exiting) return;
+  state.exiting = true;
+  void (async () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        state.cleanup?.(),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            reject(new Error('resource cleanup timed out'));
+          }, CLEANUP_DEADLINE_MS);
+        }),
+      ]);
+    } catch {
+      writeWarning();
+    } finally {
+      clearTimeout(timer);
+    }
+    leave(code, reason);
+  })().catch(() => {
+    leave(code, reason);
+  });
+}
+
+/** Say why, drain this run's resources, then leave with the supervisor's restart code. */
+export function restart(reason: string): void {
+  finish(RESTART_EXIT_CODE, reason);
+}
+
+/** An interrupt during startup still owns any pending local/remote resource setup. */
+export function stopDuringStartup(): void {
+  finish(0);
+}
+
+function leave(code: number, reason?: string): never {
+  if (reason !== undefined) {
+    // A synchronous descriptor write survives exiting a process whose console output is piped.
+    try {
+      writeSync(1, `upwind: ${reason}; restarting...\n`);
+    } catch {
+      // Losing a diagnostic must not prevent the restart.
+    }
+  }
+  nativeExit(code);
 }

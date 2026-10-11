@@ -82,6 +82,7 @@ export function parseDevRequest(args: readonly string[]): DevRequest {
       help: { type: 'boolean', short: 'h' },
       hostname: { type: 'string', short: 'H' },
       port: { type: 'string', short: 'p' },
+      'remote-ai': { type: 'boolean' },
       version: { type: 'boolean', short: 'v' },
     },
     allowPositionals: true,
@@ -104,6 +105,7 @@ export function parseDevRequest(args: readonly string[]): DevRequest {
       projectDir: path.resolve(positionals[0] ?? '.'),
       hostname: hostnameOf(values.hostname),
       port: portOf(values.port),
+      remoteAi: values['remote-ai'] === true,
     },
   };
 }

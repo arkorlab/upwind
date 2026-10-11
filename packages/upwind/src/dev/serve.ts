@@ -12,6 +12,7 @@ import {
 import { prepareAuth } from '../auth/prepare.ts';
 import { answerInternal } from '../internal/router.ts';
 import { ownVersion } from '../manifest.ts';
+import { takeRemoteAiCredentials } from '../resources/local-ai.ts';
 import { type LocalResources, startLocalResources } from '../resources/local.ts';
 import { installAdapterPath } from './adapter.ts';
 import { displayAddress, internalAddress } from './address.ts';
@@ -22,8 +23,9 @@ import { setEnv } from './env.ts';
 import { listen } from './listen.ts';
 import { type NextHandler, type RunningNext, startNextApp } from './next-app.ts';
 import { reachable } from './probe.ts';
-import { restart } from './restart.ts';
+import { beforeRestart, restart, stopDuringStartup } from './restart.ts';
 import { createSession } from './session.ts';
+import { closeDevResources } from './shutdown.ts';
 
 /**
  * One `upwind dev` run: upwind holds the port, and Next.js is behind it.
@@ -45,6 +47,7 @@ export interface DevOptions {
   readonly projectDir: string;
   readonly hostname: string | undefined;
   readonly port: number;
+  readonly remoteAi?: boolean;
 }
 
 const STATUS_INTERNAL_ERROR = 500;
@@ -137,6 +140,7 @@ function internalPathname(pathname: string): string | undefined {
 type Phase = 'starting' | 'running' | 'stopping';
 
 export async function serveDev(options: DevOptions): Promise<void> {
+  const remoteAiAuth = options.remoteAi === true ? takeRemoteAiCredentials() : undefined;
   const devSession = createSession({
     projectDir: options.projectDir,
     hostname: options.hostname,
@@ -220,7 +224,7 @@ export async function serveDev(options: DevOptions): Promise<void> {
 
   // Installed here, with the port, rather than once Next.js is ready.
   // An interrupt during a long first compile is the same interruption as one a minute later.
-  // It has to end the same way, and before there is anything to close, ending is the whole of it.
+  // It drains any pending local/remote setup even before Next has produced an application to close.
   //
   // A repeat is ignored, which is why these are `process.on` and not `process.once`.
   // One interactive Ctrl-C arrives twice: from the terminal, and from the supervisor that forwards it.
@@ -228,12 +232,15 @@ export async function serveDev(options: DevOptions): Promise<void> {
   // that had only just started. A shutdown that will not finish is bounded by the supervisor instead.
   const stop: PromiseWithResolvers<void> = Promise.withResolvers();
   let phase: Phase = 'starting';
+  const isStopping = (): boolean => phase === 'stopping';
   const onStop = (): void => {
     if (phase === 'stopping') {
       return;
     }
     if (phase === 'starting') {
-      process.exit(0);
+      phase = 'stopping';
+      stopDuringStartup();
+      return;
     }
     phase = 'stopping';
     stop.resolve();
@@ -244,7 +251,40 @@ export async function serveDev(options: DevOptions): Promise<void> {
   // Before Next.js is started, not after: `prepare()` reads `next.config` and can take seconds, and a
   // config written during those seconds would otherwise be one this run never hears about — it would
   // serve the old config until something changed again.
-  const stopWatching: StopWatching = await watchConfigFiles(options.projectDir);
+  const shutdown: {
+    local?: Promise<LocalResources>;
+    app?: Promise<RunningNext>;
+    closeApp?: Promise<void>;
+    config?: StopWatching;
+    objects?: StopWatching;
+  } = {};
+  const closeApp = async (): Promise<void> => {
+    let current: RunningNext | undefined;
+    try {
+      current = await shutdown.app;
+    } catch {
+      // Startup reports its own failure; no RunningNext was returned to this caller.
+      return;
+    }
+    if (current !== undefined) {
+      shutdown.closeApp ??= current.close();
+      await shutdown.closeApp;
+    }
+  };
+  const startup = new AbortController();
+  beforeRestart(async () => {
+    phase = 'stopping';
+    startup.abort();
+    shutdown.config?.();
+    shutdown.objects?.();
+    server.close();
+    server.closeAllConnections();
+    await closeDevResources(async () => {
+      await (await shutdown.local)?.dispose();
+    }, closeApp);
+  });
+  const stopWatching = await watchConfigFiles(options.projectDir);
+  shutdown.config = stopWatching;
   // Before Next.js as well, and for the plainest reason of the three: the route that serves
   // `/__upwind/auth` has to be on disk before the bundler reads `app`, and the secret it signs with
   // has to be in the environment before a module that reads it is evaluated. Assigned rather than
@@ -255,21 +295,34 @@ export async function serveDev(options: DevOptions): Promise<void> {
   // Also before Next.js, and for a harder reason: the application's own modules may look for their
   // storage as they are evaluated, and everything Next.js evaluates it evaluates after this line.
   // In this process, because Next.js runs in this one — a supervisor's bindings would reach nothing.
-  const local: LocalResources = await startLocalResources(options.projectDir, {
+  const startingLocal = startLocalResources(options.projectDir, {
     // This run answers its own interrupts, above, and disposes of the runtime on its way out.
     answersSignals: true,
     mode: 'development',
+    remoteAi: options.remoteAi === true,
+    ...(remoteAiAuth !== undefined && { remoteAiAuth }),
+    signal: startup.signal,
   });
+  shutdown.local = startingLocal;
+  const local = await startingLocal;
+  // A signal can arrive while setup is awaiting a local runtime or a remote session.
+  if (isStopping()) return;
   const stopWatchingObjects = watchSourceFiles(local.watchedFiles ?? []);
-  if (local.sourcesChanged?.() === true) restart('Durable Object sources changed during startup');
+  shutdown.objects = stopWatchingObjects;
+  if (local.sourcesChanged?.() === true) {
+    restart('Durable Object sources changed during startup');
+    return;
+  }
   let app: RunningNext;
   try {
-    app = await startNextApp({
+    const startingApp = startNextApp({
       projectDir: options.projectDir,
       hostname: options.hostname,
       port: bound.port,
       httpServer: server,
     });
+    shutdown.app = startingApp;
+    app = await startingApp;
   } catch (error) {
     // No longer starting: a signal arriving during the drain below would otherwise be read as a stop of
     // a run that had not begun, and leave with the 0 that says nothing went wrong.
@@ -298,8 +351,12 @@ export async function serveDev(options: DevOptions): Promise<void> {
     // The runtime this run started goes with the run. Its own exit hook would kill it anyway; doing
     // it here means the directories under `.upwind/` are released before `cli.ts` ends the process,
     // rather than while it is ending.
-    await local.dispose();
+    await closeDevResources(() => local.dispose(), closeApp);
     throw error;
+  }
+  if (isStopping()) {
+    await closeDevResources(() => local.dispose(), closeApp);
+    return;
   }
   // Next.js has read the config, and with it the adapter this run named and the address it gave;
   // what is in the environment from here on is the project's own.
@@ -338,12 +395,11 @@ export async function serveDev(options: DevOptions): Promise<void> {
   server.close();
   // A keep-alive connection would otherwise hold the close open for as long as a browser felt like.
   server.closeAllConnections();
-  // Before Next.js rather than after, because this is the part of the shutdown that has a deadline
-  // outside it: the supervisor kills a child two seconds after it signals one, and a `SIGKILL` runs
+  // Both start together because this shutdown has a deadline outside it: the supervisor kills a
+  // child two seconds after it signals one, and a `SIGKILL` runs
   // no exit hook, so a runtime still up at that point is a runtime nothing reaps. Nothing is left to
   // read storage by now — the port is closed and the connections with it.
-  await local.dispose();
-  await app.close();
+  await closeDevResources(() => local.dispose(), closeApp);
   // Next.js's dev bundler keeps handles of its own, so this process would not end on its own. What
   // was asked for is over.
   process.exit(0);

@@ -10,5 +10,6 @@
  * published, under the names it published them as; `published()` is how to see that list.
  */
 
-export { blob, d1, durableObject, kv } from './named.ts';
+export { ai, blob, d1, durableObject, kv } from './named.ts';
+export type { AiInference } from './ai-inference.ts';
 export { published, type Published, type PublishedResource } from './published.ts';

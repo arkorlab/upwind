@@ -33,6 +33,7 @@ Usage
 Options
   -p, --port <port>      Port to listen on, \`dev\` only (default: $PORT, else 3000)
   -H, --hostname <host>  Hostname to bind, \`dev\` only (default: every interface)
+      --remote-ai        Enable declared Workers AI bindings using your Cloudflare account, \`dev\` only
   -v, --version          Print upwind's version
   -h, --help             Print this
       --                 Everything after this is the directory, even \`--help\`
