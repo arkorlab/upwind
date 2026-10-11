@@ -220,9 +220,9 @@ export async function runBuild(options: BuildOptions): Promise<never> {
   try {
     // `events.once` rejects if the child emits `error` instead: a command that never started is a
     // failure of this one.
-    const [code] = (await once(child, 'exit')) as [number | null, NodeJS.Signals | null];
+    await once(child, 'exit');
     // A build that ended on a signal chose no code of its own, and produced nothing: a failure.
-    process.exit(code ?? 1);
+    process.exit(child.exitCode ?? 1);
   } finally {
     process.off('SIGINT', onInterrupt);
     process.off('SIGTERM', onTerminate);

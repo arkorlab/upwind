@@ -118,9 +118,9 @@ function linkPoints(start: string): string[] {
   let resolved = path.parse(path.normalize(start)).root;
   let follows = 0;
   while (remaining.length > 0) {
-    const [part, ...rest] = remaining;
+    const [part = '', ...rest] = remaining;
     remaining = rest;
-    resolved = path.join(resolved, part ?? '');
+    resolved = path.join(resolved, part);
     let target;
     try {
       target = readlinkSync(resolved);

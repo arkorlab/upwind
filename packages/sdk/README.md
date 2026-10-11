@@ -70,8 +70,8 @@ rather than assumed as globals — no `tsconfig` of yours needs to know about an
 Which means a query builder needs nothing from here either:
 
 ```ts
-import { drizzle } from 'drizzle-orm/d1';
 import db from '@stayingupwind/sdk/db';
+import { drizzle } from 'drizzle-orm/d1';
 
 import * as schema from './schema.ts';
 
@@ -105,6 +105,7 @@ export class Counter extends DurableObject {
 ```ts
 // app/api/counter/route.ts
 import { durableObject } from '@stayingupwind/sdk';
+
 import type { Counter } from '../../../src/objects/counter';
 
 export async function POST() {
