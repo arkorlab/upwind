@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { fromBase64, toBase64 } from '@stayingupwind/core/util';
+import { fromBase64, toBase64, withDeadline } from '@stayingupwind/core/util';
 
 import type { DataEntryMetadata, DataRead, DataReadRequest, DataWritten } from './host.ts';
 import type { CacheRuntime, DataHold, DataMemo, DataState } from './runtime.ts';
@@ -104,6 +104,87 @@ export async function readData(runtime: CacheRuntime, request: DataReadRequest):
   }
   runtime.dataMemo.set(key, memo);
   return memo;
+}
+
+/**
+ * How long a read waits for a value later than the one it judged, past that read. It judged the
+ * value stale or expired: what waits on the answer otherwise is computing the value again.
+ */
+const NEWER_DATA_DEADLINE_MS = 200;
+
+/** A value later than the one a read judged, read whole, and how to keep it once it is taken. */
+export interface LaterData {
+  readonly memo: Extract<DataMemo, { kind: 'found' }>;
+  /**
+   * Remember it as a read's answer is, under the key's floor: `false`, and nothing remembered,
+   * where a write of the key began while it was read, or a read found one later still — the value
+   * is then not to be answered with either.
+   */
+  readonly keep: () => boolean;
+}
+
+/**
+ * A value of the key later than the one at `than`, where the host keeps one nearer than its read
+ * (`getNewerData`), read whole — its bytes too, where they are stored apart — within
+ * `NEWER_DATA_DEADLINE_MS`: `undefined` for none, none in time, a read that failed, or a host
+ * without any. Never rejects, and remembers nothing until the caller takes it (`keep`): a host whose
+ * reads are cached answers with the value a later write replaced for as long as its cache keeps it,
+ * and a read that judged that value stale or expired would compute again what another isolate has
+ * already written — where the later one stands no worse.
+ */
+export async function readNewerData(
+  runtime: CacheRuntime,
+  request: DataReadRequest,
+  than: number,
+): Promise<LaterData | undefined> {
+  const { host } = runtime;
+  if (host.getNewerData === undefined) {
+    return undefined;
+  }
+  const key = keyOf(request);
+  const stateKey = stateKeyOf(key);
+  const state = stateFor(runtime, key, stateKey);
+  const epoch = state.epoch;
+  const current = (): boolean => liveState(runtime, stateKey) === state && state.epoch === epoch;
+  const read = async (): Promise<LaterData['memo'] | undefined> => {
+    const answer = await host.getNewerData?.(request, than);
+    if (answer === undefined || answer.dependencyRevision <= than) {
+      return undefined;
+    }
+    // The key's order is learned before the bytes are read, whether or not they turn out usable or
+    // the value is taken, as a read's is (`readData`): a read answered from before it is not
+    // remembered as the key's value.
+    if (current()) {
+      state.revision = Math.max(state.revision, answer.dependencyRevision);
+    }
+    const memo = await withBytes(runtime, answer);
+    return memo.kind === 'found' ? memo : undefined;
+  };
+  let memo: LaterData['memo'] | undefined;
+  try {
+    memo = await withDeadline(read(), NEWER_DATA_DEADLINE_MS, 'a later data value');
+  } catch (error) {
+    runtime.log('later data value not read', {
+      detail: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
+  if (memo === undefined) {
+    return undefined;
+  }
+  const found = memo;
+  return {
+    memo: found,
+    keep: () => {
+      if (!current() || found.response.dependencyRevision < state.revision) {
+        return false;
+      }
+      state.revision = found.response.dependencyRevision;
+      state.finds += 1;
+      runtime.dataMemo.set(key, found);
+      return true;
+    },
+  };
 }
 
 /**

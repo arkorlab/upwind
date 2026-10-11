@@ -63,11 +63,34 @@ export interface CacheHost {
    */
   readRecord(entryId: string, signal?: AbortSignal): Promise<Uint8Array | undefined>;
 
+  /**
+   * The delivery record of a generation of the entry later than the one at `than` (its `seq`; 0
+   * where the runtime holds none), where the host keeps one nearer than `readRecord` reaches — a
+   * copy, in the Function's own data center, of a generation one of its isolates published — or
+   * nothing. A host whose reads are cached can answer `readRecord` with the generation a later one
+   * replaced, or with none, for as long as its cache keeps that answer; the runtime asks this only
+   * of an entry it found so, missing or no longer fresh, and never of one it is about to serve
+   * fresh. Optional: a host that keeps no such copy is read through `readRecord` alone.
+   */
+  readNewerRecord?(entryId: string, than: number): Promise<Uint8Array | undefined>;
+
   /** The bytes of an artifact by id: a value too large to have travelled inline. */
   readArtifact(artifactId: string): Promise<Uint8Array | undefined>;
 
-  /** One value of the data cache, or nothing when the host holds none under that key. */
+  /**
+   * One value of the data cache, or nothing when the host holds none under that key. A host that
+   * keeps values nearer than its read (`getNewerData`) answers a miss from them here: a value
+   * later than none needs weighing against nothing, and the runtime asks nothing more of a miss.
+   */
   getData(request: DataReadRequest): Promise<DataRead | undefined>;
+
+  /**
+   * A value of the key written later than the one at `than` (its `dependencyRevision`), where the
+   * host keeps one nearer than `getData` reaches, or nothing: what `readNewerRecord` is to a
+   * record. Asked only of a value the runtime found stale or expired — a miss is `getData`'s to
+   * answer from the same. Optional.
+   */
+  getNewerData?(request: DataReadRequest, than: number): Promise<DataRead | undefined>;
 
   /** Store one value of the data cache. */
   setData(request: DataWriteRequest): Promise<DataWritten>;
@@ -127,6 +150,26 @@ export interface AttemptRequest {
   readonly observation?: ServedObservation | undefined;
 }
 
+/**
+ * The entry's current generation as the host sums it up when it answers for a lease: enough to tell
+ * whether it is the generation the runtime judged, and whether it may still be served.
+ */
+export interface CurrentSummary {
+  readonly generationId: string;
+  readonly seq: number;
+  readonly cacheTimestamp: number | null;
+  readonly policy: CachePolicy;
+  /** Set once an invalidation condemned it. */
+  readonly condemned: InvalidationState | null;
+  /**
+   * The status it answers with, and the `location` it redirects to, `null` for none: what says
+   * whether a visitor may be answered with it (`servable`). Absent from a host that does not say,
+   * and then nothing is taken to supersede the generation a request judged.
+   */
+  readonly status?: number | undefined;
+  readonly location?: string | null | undefined;
+}
+
 /** The lease, or the word that another holder has it; either way the entry's id is known. */
 export type AttemptOutcome =
   | {
@@ -137,8 +180,13 @@ export type AttemptOutcome =
       readonly fencingToken: number;
       /** When the lease lapses unless a heartbeat renews it, by the host's clock. */
       readonly leaseExpiresAt: number;
+      /**
+       * The entry's generation as it stands, `null` for none; absent from a host that does not
+       * say. A runtime that judged an earlier one gives the lease back (`regenerate`).
+       */
+      readonly current?: CurrentSummary | null | undefined;
     }
-  | { readonly kind: 'busy' };
+  | { readonly kind: 'busy'; readonly current?: CurrentSummary | null | undefined };
 
 export interface ArtifactUpload {
   readonly attemptId: string;
@@ -207,7 +255,16 @@ export interface CommitRequest {
  * the runtime keeps the entry it had either way.
  */
 export type CommitOutcome =
-  | { readonly kind: 'published'; readonly generationId: string }
+  | {
+      readonly kind: 'published';
+      readonly generationId: string;
+      /**
+       * The delivery record the host wrote for the generation, where it hands it back: what the
+       * isolate that published it answers the entry's next request from, rather than a read that
+       * may still find the generation it replaced (`readRecord`).
+       */
+      readonly record?: Uint8Array | undefined;
+    }
   | { readonly kind: 'refused'; readonly reason: string };
 
 export interface FailRequest {

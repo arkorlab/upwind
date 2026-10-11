@@ -10,6 +10,7 @@ import {
 import { withDeadline } from '@stayingupwind/core/util';
 
 import type { CacheRuntime, RecordRead } from './runtime.ts';
+import { servable } from './servable.ts';
 
 /**
  * The current generation of an entry, as the Function reads it when it answers a document itself:
@@ -70,6 +71,78 @@ async function readRecordPack(
   }
   const decoded = decodeGenerationPack(bytes);
   return decoded.kind === 'ok' && (await verifyGenerationPack(decoded.pack)) ? decoded.pack : null;
+}
+
+/**
+ * `bytes` as a record of the entry, decoded and checked; `undefined` for bytes that are not one, or
+ * that are another entry's. For records the host hands over outside `readRecord`: the one a commit
+ * wrote (`CommitOutcome.record`), a copy nearer than the host's read (`readNewerRecord`).
+ */
+async function recordPackOf(
+  bytes: Uint8Array,
+  entryId: string,
+): Promise<DecodedGenerationPack | undefined> {
+  const decoded = decodeGenerationPack(bytes);
+  if (decoded.kind !== 'ok' || decoded.pack.header.entryId !== entryId) {
+    return undefined;
+  }
+  return (await verifyGenerationPack(decoded.pack)) ? decoded.pack : undefined;
+}
+
+/**
+ * The record a commit handed back (`CommitOutcome.record`), as the generation it published:
+ * `undefined` where it handed none back, or bytes that are not that generation's record. Never
+ * throws: the generation is published whatever is made of what came back with it.
+ */
+export async function publishedRecordOf(
+  bytes: Uint8Array | undefined,
+  entryId: string,
+  generationId: string,
+): Promise<DecodedGenerationPack | undefined> {
+  if (bytes === undefined) {
+    return undefined;
+  }
+  try {
+    const pack = await recordPackOf(bytes, entryId);
+    return pack?.header.generationId === generationId ? pack : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * How long a document waits for a record later than the one its read found, past that read. The
+ * read found none, or one no longer fresh: what waits on the answer otherwise is a render.
+ */
+const NEWER_RECORD_DEADLINE_MS = 200;
+
+/**
+ * A record of the entry later than the one at `than`, where the host keeps one nearer than its read
+ * (`readNewerRecord`): `undefined` for none, none in time, or a host without any.
+ */
+async function newerPack(
+  runtime: CacheRuntime,
+  entryId: string,
+  than: number,
+): Promise<DecodedGenerationPack | undefined> {
+  const { host } = runtime;
+  if (host.readNewerRecord === undefined) {
+    return undefined;
+  }
+  // The read, the decoding and the check together under the deadline: a record is hashed to be
+  // checked, and a long one past a quick read would keep the document waiting all the same.
+  const read = async (): Promise<DecodedGenerationPack | undefined> => {
+    const bytes = await host.readNewerRecord?.(entryId, than);
+    return bytes === undefined ? undefined : recordPackOf(bytes, entryId);
+  };
+  try {
+    const pack = await withDeadline(read(), NEWER_RECORD_DEADLINE_MS, 'a later delivery record');
+    return pack !== undefined && pack.header.seq > than ? pack : undefined;
+  } catch (error) {
+    // What the read found is answered as it would have been without the host's later record.
+    runtime.log('later delivery record not read', { entryId, detail: detail(error) });
+    return undefined;
+  }
 }
 
 /**
@@ -204,6 +277,49 @@ export function forgetRecord(runtime: CacheRuntime, entryId: string): void {
 }
 
 /**
+ * `forgetRecord`, where what this isolate holds of the entry is a generation earlier than `seq`: a
+ * regeneration given back to generation `seq` lets go of the one it judged, and keeps a record of
+ * that generation or a later one that another request of the isolate learned meanwhile.
+ */
+export function forgetRecordBefore(runtime: CacheRuntime, entryId: string, seq: number): void {
+  const held = runtime.recordMemo.get(entryId);
+  if (held !== undefined && held !== null && held.header.seq >= seq) {
+    return;
+  }
+  forgetRecord(runtime, entryId);
+}
+
+/** Whether a visitor may be answered with `pack` as it says (`servable`). */
+function servableRecord(pack: DecodedGenerationPack): boolean {
+  return servable(pack.header.status, pack.header.headers);
+}
+
+/**
+ * Hold `pack` as what this isolate knows of the entry, for a hold, in place of a read still in
+ * flight, which lands nowhere now — unless what it holds already is a later generation still, which
+ * a commit or a read that answered first left it: the later of the two is held, and returned. A
+ * later one no visitor may be answered with gives way to `pack` where a visitor may be with it, so
+ * the requests after this one are answered from what this one was.
+ */
+export function rememberRecord(
+  runtime: CacheRuntime,
+  entryId: string,
+  pack: DecodedGenerationPack,
+): DecodedGenerationPack {
+  const held = runtime.recordMemo.get(entryId);
+  const later =
+    held !== undefined &&
+    held !== null &&
+    held.header.seq > pack.header.seq &&
+    (servableRecord(held) || !servableRecord(pack))
+      ? held
+      : pack;
+  forgetRecord(runtime, entryId);
+  runtime.recordMemo.set(entryId, later);
+  return later;
+}
+
+/**
  * The entry's id, derived once per isolate: it is the same for the scope's every request.
  *
  * Two requests that find it missing at once each derive it. A derivation under way is work of the
@@ -230,8 +346,67 @@ function worse(a: Validity, b: Validity): Validity {
 }
 
 /**
+ * How a record stands at `now`: what it says of itself, and what this isolate knows of its tags.
+ *
+ * What this isolate knows of the generation's tags counts as well: its own invalidation is in force
+ * here at once (`applyLocal`), and the record — read through the host, and kept for a hold — may say
+ * nothing of it yet. Judged on the record alone, a page revalidated by this Function went on being
+ * answered as it was until the hold ran out.
+ *
+ * Read, not synced: `syncLocal` here would be a round trip on the path a Function answers a document
+ * from. What this isolate did itself is kept for it whatever else it is told (`MAX_APPLIED_MARKS`);
+ * another isolate's invalidation reaches the record, which is what is being judged, within the lag
+ * its own read already has.
+ */
+function judged(runtime: CacheRuntime, pack: DecodedGenerationPack, now: number): Validity {
+  const { header } = pack;
+  const { validity: recorded } = evaluateFreshness({
+    policy: header.policy,
+    cacheTimestamp: header.cacheTimestamp,
+    invalidation: header.invalidation,
+    now,
+  });
+  const tagged = runtime.tags.validityOf(
+    header.tags.map((tag) => tag.value),
+    header.cacheTimestamp ?? header.producedAt ?? 0,
+    now,
+  );
+  return worse(recorded, tagged);
+}
+
+/**
+ * The later of `newer` — what the host keeps nearer than its read — and what this isolate came to
+ * hold of the entry while it was asked for, a record another request's commit or read left, where
+ * either is later than generation `than` and one a visitor may be answered with (`servable`): a
+ * redirect that says not where to is no generation to serve in place of one judged stale.
+ */
+function laterOf(
+  runtime: CacheRuntime,
+  entryId: string,
+  newer: DecodedGenerationPack | undefined,
+  than: number,
+): DecodedGenerationPack | undefined {
+  const held = runtime.recordMemo.get(entryId) ?? undefined;
+  const later = [newer, held].filter((candidate): candidate is DecodedGenerationPack => {
+    return (
+      candidate !== undefined &&
+      candidate.header.seq > than &&
+      servable(candidate.header.status, candidate.header.headers)
+    );
+  });
+  return later.toSorted((a, b) => b.header.seq - a.header.seq)[0];
+}
+
+/**
  * The entry's current generation and how it stands at `now`; unavailable when the host is, or when
  * it is slower than the deadline. `waitUntil` is the request's, and keeps a read it begins going.
+ *
+ * Where the read found no record, or one no longer fresh, a later one the host keeps nearer than
+ * its read is asked for (`readNewerRecord`) and taken when it stands no worse: a host whose reads
+ * are cached answers with the generation a later one replaced, or with none, for as long as its
+ * cache keeps that answer — after another isolate of this Function published the later one, which
+ * every request in between would otherwise render again, each its own. A fresh record is served as
+ * it was read, and nothing more is asked.
  */
 export async function currentGeneration(
   runtime: CacheRuntime,
@@ -247,29 +422,24 @@ export async function currentGeneration(
     runtime.log('delivery record not read', { entryId, detail: detail(error) });
     return { kind: 'unavailable', entryId };
   }
-  if (pack === null) {
+  const validity = pack === null ? undefined : judged(runtime, pack, now);
+  if (validity === undefined || SEVERITY[validity] > SEVERITY.fresh) {
+    const than = pack?.header.seq ?? 0;
+    const newer = laterOf(runtime, entryId, await newerPack(runtime, entryId, than), than);
+    const later = newer === undefined ? undefined : judged(runtime, newer, now);
+    if (
+      newer !== undefined &&
+      later !== undefined &&
+      (validity === undefined || SEVERITY[later] <= SEVERITY[validity])
+    ) {
+      // What a commit of this isolate's left meanwhile may be later still (`rememberRecord`).
+      const held = rememberRecord(runtime, entryId, newer);
+      const standing = held === newer ? later : judged(runtime, held, now);
+      return { kind: 'generation', current: { entryId, pack: held, validity: standing } };
+    }
+  }
+  if (pack === null || validity === undefined) {
     return { kind: 'none', entryId };
   }
-  const { header } = pack;
-  const { validity: recorded } = evaluateFreshness({
-    policy: header.policy,
-    cacheTimestamp: header.cacheTimestamp,
-    invalidation: header.invalidation,
-    now,
-  });
-  // What this isolate knows of the generation's tags counts as well: its own invalidation is in
-  // force here at once (`applyLocal`), and the record — read through the host, and kept for a
-  // hold — may say nothing of it yet. Judged on the record alone, a page revalidated by this
-  // Function went on being answered as it was until the hold ran out.
-  //
-  // Read, not synced: `syncLocal` here would be a round trip on the path a Function answers a
-  // document from. What this isolate did itself is kept for it whatever else it is told
-  // (`MAX_APPLIED_MARKS`); another isolate's invalidation reaches the record, which is what the
-  // rest of this function is judging, within the lag its own read already has.
-  const tagged = runtime.tags.validityOf(
-    header.tags.map((tag) => tag.value),
-    header.cacheTimestamp ?? header.producedAt ?? 0,
-    now,
-  );
-  return { kind: 'generation', current: { entryId, pack, validity: worse(recorded, tagged) } };
+  return { kind: 'generation', current: { entryId, pack, validity } };
 }

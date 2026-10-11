@@ -1,5 +1,6 @@
 import {
   appPathFor,
+  type DecodedGenerationPack,
   generationResponseHeaders,
   type GenerationTag,
   implicitTagsFor,
@@ -9,7 +10,6 @@ import {
   type RouteEntryDescriptor,
   tagKindOf,
 } from '@stayingupwind/core/cache';
-import { REDIRECT_STATUSES } from '@stayingupwind/core/request';
 
 import type { NodeHandler } from '../app-module.ts';
 import { render404 } from '../error-pages.ts';
@@ -17,7 +17,7 @@ import { invokeNodeHandler, type Run } from '../node-bridge.ts';
 import { type CapturedRender, renderCaptured } from './capture.ts';
 import { nowMs } from './clock.ts';
 import { asRegeneration } from './context.ts';
-import { forgetRecord } from './current.ts';
+import { forgetRecord, forgetRecordBefore, publishedRecordOf, rememberRecord } from './current.ts';
 import {
   type ArtifactUpload,
   type AttemptOutcome,
@@ -26,10 +26,21 @@ import {
   type CommitArtifact,
   type CommitOutput,
   type CommitRequest,
+  type CurrentSummary,
   type ServedObservation,
   type UploadedArtifact,
 } from './host.ts';
+import {
+  abandon,
+  elapsedSince,
+  giveUp,
+  heartbeat,
+  type Leased,
+  RegenerationError,
+  supersededBy,
+} from './lease.ts';
 import type { CacheRuntime } from './runtime.ts';
+import { servable } from './servable.ts';
 import { callsBehind } from './turns.ts';
 
 /**
@@ -86,6 +97,11 @@ interface RegenerationTarget {
   readonly observation?: ServedObservation | undefined;
   /** A Pages Router page's data route, which its data output is recorded under. */
   readonly dataPathname?: string | undefined;
+  /**
+   * The generation the request judged and would replace — `null` for an entry it found none of —
+   * where it judged one (`supersededBy`); absent where it did not say.
+   */
+  readonly replaces?: string | null | undefined;
 }
 
 export interface RegenerationInput {
@@ -115,6 +131,8 @@ export type RegenerationOutcome =
       readonly published: Promise<PublishOutcome>;
     }
   | { readonly kind: 'busy' }
+  /** The host holds a later generation than the one judged, which may be served (`supersededBy`). */
+  | { readonly kind: 'superseded' }
   | { readonly kind: 'skipped'; readonly render: CapturedRender | undefined }
   | { readonly kind: 'refused'; readonly reason: string }
   | {
@@ -185,26 +203,6 @@ function renderStatic(
       expectNoResponse: meta.expectNoResponse,
     });
   });
-}
-
-/**
- * A regeneration this runtime refuses itself, under the word the attempt is recorded with.
- *
- * The gateway records whatever word a failure carries (`attemptErrorSchema.code` enumerates none),
- * so a refusal decided here is told apart in the inspector from a render that threw.
- */
-class RegenerationError extends Error {
-  readonly code: string;
-
-  constructor(message: string, options: RegenerationErrorOptions) {
-    super(message, options);
-    this.name = 'RegenerationError';
-    this.code = options.code;
-  }
-}
-
-interface RegenerationErrorOptions extends ErrorOptions {
-  readonly code: string;
 }
 
 /**
@@ -421,63 +419,6 @@ function commitRequest(
   };
 }
 
-async function abandon(
-  input: RegenerationInput,
-  lease: { attemptId: string; fencingToken: number },
-  outcome: 'failed' | 'skipped',
-  error?: unknown,
-): Promise<void> {
-  try {
-    await input.runtime.host.fail(lease.attemptId, {
-      fencingToken: lease.fencingToken,
-      outcome,
-      // The failure's own word where it has one, so a refusal decided here reads as itself and
-      // not as a render that threw; the gateway enumerates none of them.
-      ...(error !== undefined && {
-        error: {
-          code: error instanceof RegenerationError ? error.code : 'render_failed',
-          message: detail(error),
-        },
-      }),
-    });
-  } catch (error_) {
-    input.runtime.log('attempt not ended', { attemptId: lease.attemptId, detail: detail(error_) });
-  }
-}
-
-/** End the attempt as failed, and say why in the Function's log; what it says is returned. */
-async function giveUp(
-  input: RegenerationInput,
-  lease: Leased,
-  error: unknown,
-  began: number,
-): Promise<string> {
-  await abandon(input, lease, 'failed', error);
-  input.runtime.log('regeneration failed', {
-    pathname: input.target.descriptor.pathname,
-    detail: detail(error),
-    elapsedMs: elapsedSince(began),
-  });
-  return detail(error);
-}
-
-/**
- * How long the attempt has held its lease, as the logs of one that came to nothing say: its publish
- * runs behind the answer, within what the runtime gives work handed to it after the response —
- * about 30 s on Workers — and an attempt that ran out of it says nothing of its own. One that took
- * nearly all of that to fail says where the time went. Read off `performance`, as the clock is
- * (`clock.ts`), and never off a clock a test handed the request, which does not move.
- */
-function elapsedSince(began: number): number {
-  return Math.round(performance.now() - began);
-}
-
-type Leased = Extract<AttemptOutcome, { kind: 'leased' }>;
-
-/** A third of what is left of the lease, and never so often that the beats are the work. */
-const HEARTBEAT_DIVISOR = 3;
-const MIN_HEARTBEAT_MS = 5000;
-
 /**
  * How long a regeneration that holds its lease waits for the tags to be synced before it gives the
  * lease back. The pull pages through the scope's delta, which a fresh isolate reads from the
@@ -511,41 +452,6 @@ async function within(
 }
 
 /**
- * Keep the lease while the render, the uploads and the commit run.
- *
- * The host hands a lease out for a fixed time and gives it to someone else when it runs out,
- * and a render of a page with much to fetch plus the uploads of everything it produced can take
- * longer than that. Without a beat, exactly the pages that need the longest to build are the ones
- * whose commit is always refused, and every request for one renders it again from nothing.
- *
- * A beat that fails is not the end of the attempt: the commit is what finds out whether the lease
- * was kept, and it says so in one place.
- */
-function heartbeat(input: RegenerationInput, lease: Leased): () => void {
-  const remaining = lease.leaseExpiresAt - nowMs();
-  const every = Math.max(Math.floor(remaining / HEARTBEAT_DIVISOR), MIN_HEARTBEAT_MS);
-  const beat = async (): Promise<void> => {
-    try {
-      await input.runtime.host.heartbeat(lease.attemptId, lease.fencingToken);
-    } catch (error) {
-      input.runtime.log('lease not renewed', {
-        attemptId: lease.attemptId,
-        detail: detail(error),
-      });
-    }
-  };
-  const timer = setInterval(() => {
-    // Handed to the runtime rather than left loose: a beat comes behind the response as often as
-    // not, since the uploads and the commit do, and it is a request of its own that the isolate
-    // may not be torn down in the middle of.
-    input.waitUntil(beat());
-  }, every);
-  return () => {
-    clearInterval(timer);
-  };
-}
-
-/**
  * Upload what the render made and commit it, behind whoever was answered from the render, and keep
  * the lease until the host has answered. Never throws: a publish that fails or is refused is
  * logged, since the response that could have said so went out ahead of it.
@@ -562,6 +468,7 @@ async function publish(
 ): Promise<PublishOutcome> {
   const { runtime, target } = input;
   const { render, observedTagRevision, began } = rendered;
+  let published: DecodedGenerationPack | undefined;
   try {
     // Ahead of the uploads: a render the contract will not take is one whose outputs are not
     // worth sending, and what says so is `tagsOf`.
@@ -572,6 +479,7 @@ async function publish(
       commitRequest(input, lease, render, { uploads, tags, observedTagRevision }),
     );
     if (committed.kind === 'published') {
+      published = await publishedRecordOf(committed.record, lease.entryId, committed.generationId);
       return { kind: 'published', generationId: committed.generationId };
     }
     runtime.log('regeneration not published', {
@@ -587,7 +495,14 @@ async function publish(
     // Whatever came of it. A read begun since the render let go of the entry may have kept the
     // generation it replaces; published, that is not what the host serves, and refused — another
     // attempt's won — or failed with its commit landed and the answer lost, it may not be either.
-    forgetRecord(runtime, lease.entryId);
+    // Published with its record handed back, that record is what this isolate holds of the entry
+    // from now: a read would ask a host that may answer with the generation it replaced for as long
+    // as its own cache keeps it.
+    if (published === undefined) {
+      forgetRecord(runtime, lease.entryId);
+    } else {
+      rememberRecord(runtime, lease.entryId, published);
+    }
   }
 }
 
@@ -628,6 +543,14 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   }
   if (lease.kind === 'busy') {
     return { kind: 'busy' };
+  }
+  if (supersededBy(target, lease.current, nowMs()) && answerable(lease.current)) {
+    // Given back behind the answer, which waits for nothing of it: nobody holds the lease now.
+    input.waitUntil(abandon(input, lease, 'skipped'));
+    // What stands is what the next request should find: a record of it, or of a later one, that
+    // another request of this isolate learned while this one waited for the lease stays held.
+    forgetRecordBefore(runtime, lease.entryId, lease.current?.seq ?? Infinity);
+    return { kind: 'superseded' };
   }
   const began = performance.now();
   const stopHeartbeat = heartbeat(input, lease);
@@ -672,15 +595,14 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
 }
 
 /**
- * Whether a visitor may be answered with what a render or a generation says, as it says it: never
- * a status a `Response` cannot carry — below 200 — nor a server error, which no generation is
- * published under, and never a redirect that does not say where it leads. That one would send the
- * visitor nowhere. A record can say either: one seeded by a deployment older than the Function
- * that reads it, or than the upload check that now holds a status to 200–599, does.
+ * Whether a visitor may be answered with the generation a lease says stands (`servable`): one whose
+ * status the host did not say is not taken to be, so that a regeneration is never given up for a
+ * generation that answers no visitor — a redirect that says not where to, say.
  */
-export function servable(status: number, headers: Readonly<Record<string, string>>): boolean {
-  if (status < HTTP_OK || status >= HTTP_SERVER_ERROR) {
+function answerable(current: CurrentSummary | null | undefined): boolean {
+  if (current?.status === undefined) {
     return false;
   }
-  return !REDIRECT_STATUSES.has(status) || headers['location'] !== undefined;
+  const location = current.location ?? undefined;
+  return servable(current.status, location === undefined ? {} : { location });
 }
