@@ -18,6 +18,9 @@ const symbol = Symbol.for(RESOURCES_SYMBOL_KEY);
 const previous: unknown = Reflect.get(globalThis, symbol);
 const MODEL = '@cf/new/model';
 const AUDIO = 'encoded-audio';
+const INVALID_NUMERIC_INPUT = 27;
+const MAX_CACHED_MODELS = 256;
+const EXCESS_MODEL_NAMES = 300;
 const oldNames = process.env['UPWIND_AI_BINDINGS'];
 const oldObjects = process.env['UPWIND_DURABLE_OBJECTS'];
 const oldAccount = process.env['CLOUDFLARE_ACCOUNT_ID'];
@@ -35,7 +38,12 @@ async function checkAccessors(): Promise<void> {
   assert.equal(ai('INFERENCE'), undefined);
   await assert.rejects(async () => capability.run(MODEL, {}), /no storage published/u);
   let calls = 0;
-  const stream = new ReadableStream();
+  let cancelled = false;
+  const stream = new ReadableStream({
+    cancel: () => {
+      cancelled = true;
+    },
+  });
   const raw = {
     run: (...args: unknown[]) => {
       assert.equal(args.length, 2);
@@ -77,7 +85,16 @@ async function checkAccessors(): Promise<void> {
       [MODEL, {}, {}],
     );
   }, /only run/u);
+  await assert.rejects(async () => {
+    return await Reflect.apply(
+      Reflect.get(named, 'run') as (...args: unknown[]) => Promise<unknown>,
+      named,
+      [MODEL, { lora: 'private' }],
+    );
+  }, /private LoRA/u);
   assert.equal(calls, 2);
+  await stream.cancel();
+  assert.equal(cancelled, true);
 }
 
 async function checkSetup(): Promise<void> {
@@ -131,12 +148,15 @@ async function checkInference(): Promise<void> {
   }
   // eslint-disable-next-line sonarjs/code-eval -- Only our generated worker source runs in this isolated context; no customer input or credentials enter it.
   const evaluated: unknown = runInNewContext(
-    `${localInferenceSource(true).replace("import { WorkerEntrypoint } from 'cloudflare:workers';", '').replace('export default class', 'class')}\nInference;`,
+    `${localInferenceSource(true).replace("import { WorkerEntrypoint } from 'cloudflare:workers';", '').replace('export default class', 'class')}\n({ Inference, modelCache: models });`,
     { WorkerEntrypoint: Entrypoint },
   );
-  const Inference = evaluated as new () => {
-    env: { UPWIND_INTERNAL_AI: Provider };
-    run: (...args: unknown[]) => Promise<unknown>;
+  const { Inference, modelCache } = evaluated as {
+    Inference: new () => {
+      env: { UPWIND_INTERNAL_AI: Provider };
+      run: (...args: unknown[]) => Promise<unknown>;
+    };
+    modelCache: Map<string, Promise<boolean>>;
   };
   const worker = new Inference();
   const stream = new ReadableStream();
@@ -163,25 +183,52 @@ async function checkInference(): Promise<void> {
   await assert.rejects(async () => worker.run(MODEL, {}, {}), /only run/u);
   await assert.rejects(async () => worker.run('external-provider/model', {}), /public Workers AI/u);
   assert.equal(calls, [stream, binary, AUDIO].length);
+  for (const invalid of [null, undefined, false, INVALID_NUMERIC_INPUT, []]) {
+    await assert.rejects(async () => worker.run(MODEL, invalid), /inputs must be/u);
+  }
+  worker.env.UPWIND_INTERNAL_AI.models = () => Promise.resolve([]);
+  for (let index = 0; index < EXCESS_MODEL_NAMES; index += 1) {
+    await assert.rejects(
+      async () => worker.run(`@cf/missing/${String(index)}`, {}),
+      /Unknown public/u,
+    );
+  }
+  assert.ok(
+    modelCache.size <= MAX_CACHED_MODELS,
+    'unsupported model names cannot grow the cache indefinitely',
+  );
 }
 
 function checkRestart(): void {
   const restart = new URL('../src/dev/restart.ts', import.meta.url).href;
-  const child = spawnSync(
-    process.execPath,
-    [
-      '--input-type=module',
-      '--eval',
-      String.raw`
-    import { beforeRestart, restart } from ${JSON.stringify(restart)};
-    beforeRestart(async () => { await new Promise(resolve => setTimeout(resolve, 15)); process.stdout.write('disposed\n'); });
-    restart('fixture configuration');
-  `,
-    ],
-    { encoding: 'utf8' },
-  );
+  const fixture = (request: string, cleanup: string) => {
+    return spawnSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '--eval',
+        `
+      import { beforeRestart, restart, stopDuringStartup } from ${JSON.stringify(restart)};
+      beforeRestart(${cleanup});
+      ${request}
+    `,
+      ],
+      { encoding: 'utf8', timeout: 5000 },
+    );
+  };
+  const cleanup = String.raw`async () => { await new Promise(resolve => setTimeout(resolve, 15)); process.stdout.write('disposed\n'); }`;
+  const child = fixture("restart('fixture configuration');", cleanup);
   assert.equal(child.status, RESTART_EXIT_CODE);
   assert.match(child.stdout, /^disposed\nupwind: fixture configuration; restarting/u);
+  const next = fixture('process.exit(77);', cleanup);
+  assert.equal(next.status, RESTART_EXIT_CODE);
+  assert.match(next.stdout, /^disposed\nupwind: Next.js requested a restart/u);
+  const interrupted = fixture('stopDuringStartup();', cleanup);
+  assert.equal(interrupted.status, 0);
+  assert.equal(interrupted.stdout, 'disposed\n');
+  const hung = fixture("restart('hanging fixture');", '() => new Promise(() => {})');
+  assert.equal(hung.status, RESTART_EXIT_CODE);
+  assert.match(hung.stderr, /could not finish resource cleanup/u);
 }
 
 async function checkNativeRuntime(): Promise<void> {

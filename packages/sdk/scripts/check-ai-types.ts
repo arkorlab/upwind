@@ -1,4 +1,4 @@
-import type { ReadableStream } from '@cloudflare/workers-types';
+import type { AiModels, ReadableStream } from '@cloudflare/workers-types';
 
 import type { AiInference } from '../src/ai-inference.ts';
 
@@ -15,6 +15,12 @@ export async function publicTypes(ai: AiInference, streaming: boolean): Promise<
   const dynamic = ai.run(MODEL, { prompt: 'Hello', stream: streaming });
   const dynamicOutput: Awaited<typeof output> | ReadableStream = await dynamic;
   const audio = ai.run('@cf/openai/whisper', 'encoded-audio');
+  const nullable = ai.run('@cf/moonshotai/kimi-k2.5', {
+    messages: [{ role: 'user', content: 'Hello' }],
+    stream: null,
+  });
+  const nullableOutput: Promise<AiModels['@cf/moonshotai/kimi-k2.5']['postProcessedOutputs']> =
+    nullable;
   // @ts-expect-error Embedding models do not accept streaming input.
   await ai.run('@cf/baai/bge-small-en-v1.5', { text: 'Hello', stream: true });
   // @ts-expect-error A boolean stream flag cannot promise a JSON-only result.
@@ -28,5 +34,13 @@ export async function publicTypes(ai: AiInference, streaming: boolean): Promise<
   // @ts-expect-error The capability exposes no account management API.
   // eslint-disable-next-line @typescript-eslint/no-unsafe-call -- Negative type assertion deliberately calls an absent method.
   await ai.gateway('other');
-  await Promise.all([output, stream, newer, audio, Promise.resolve(dynamicOutput), jsonOnly]);
+  await Promise.all([
+    output,
+    stream,
+    newer,
+    audio,
+    nullableOutput,
+    Promise.resolve(dynamicOutput),
+    jsonOnly,
+  ]);
 }

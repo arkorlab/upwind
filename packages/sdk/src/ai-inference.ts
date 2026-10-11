@@ -13,7 +13,7 @@ type StreamingInputs<Input> = Input extends unknown
   : never;
 type NonStreamingInputs<Input> = Input extends unknown
   ? 'stream' extends keyof Input
-    ? Omit<Input, 'stream'> & { readonly stream?: false }
+    ? Omit<Input, 'stream'> & { readonly stream?: Exclude<Input['stream'], true> }
     : Input
   : Input;
 type Inputs<Name extends keyof AiModels> = PublicInputs<AiModels[Name]['inputs']>;
@@ -61,6 +61,10 @@ export function inference(binding: unknown): AiInference {
     async run(...args: readonly unknown[]): Promise<unknown> {
       if (args.length !== 2) {
         throw new TypeError('AI inference accepts only run(model, inputs)');
+      }
+      const inputs = args[1];
+      if (typeof inputs === 'object' && inputs !== null && Object.hasOwn(inputs, 'lora')) {
+        throw new TypeError('AI inference cannot include private LoRA adapters');
       }
       return await Reflect.apply(runner.run, runner, args);
     },

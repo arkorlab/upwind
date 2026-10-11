@@ -99,7 +99,7 @@ function resourceBindingsOf(env: FunctionEnv): Map<string, PublishedResource> {
   const resources = new Map<string, PublishedResource>();
   const listed = parseResourcesManifest(env[RESOURCES_MANIFEST_BINDING]);
   for (const entry of listed) {
-    // Inherited names and listed variables never publish storage bindings.
+    // Inherited names and listed variables never publish resource bindings.
     const binding = Object.hasOwn(env, entry.name) ? env[entry.name] : undefined;
     if (typeof binding === 'object' && binding !== null)
       resources.set(entry.name, { type: entry.type, binding });
@@ -117,7 +117,7 @@ export function publishedD1BindingCount(env: FunctionEnv): number {
 }
 
 /**
- * The storage bindings `env` holds, as the list beside them names them; frozen throughout.
+ * The resource bindings `env` holds, as the list beside them names them; frozen throughout.
  *
  * Only what `ARKOR_RESOURCES` lists is published: an environment variable, or a binding of the
  * platform's, is never on it, whatever the application names.

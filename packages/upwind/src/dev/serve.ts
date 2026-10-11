@@ -22,7 +22,7 @@ import { setEnv } from './env.ts';
 import { listen } from './listen.ts';
 import { type NextHandler, type RunningNext, startNextApp } from './next-app.ts';
 import { reachable } from './probe.ts';
-import { beforeRestart, restart } from './restart.ts';
+import { beforeRestart, restart, stopDuringStartup } from './restart.ts';
 import { createSession } from './session.ts';
 
 /**
@@ -229,12 +229,15 @@ export async function serveDev(options: DevOptions): Promise<void> {
   // that had only just started. A shutdown that will not finish is bounded by the supervisor instead.
   const stop: PromiseWithResolvers<void> = Promise.withResolvers();
   let phase: Phase = 'starting';
+  const isStopping = (): boolean => phase === 'stopping';
   const onStop = (): void => {
     if (phase === 'stopping') {
       return;
     }
     if (phase === 'starting') {
-      process.exit(0);
+      phase = 'stopping';
+      stopDuringStartup();
+      return;
     }
     phase = 'stopping';
     stop.resolve();
@@ -277,9 +280,14 @@ export async function serveDev(options: DevOptions): Promise<void> {
   });
   shutdown.local = startingLocal;
   const local = await startingLocal;
+  // A signal can arrive while setup is awaiting a local runtime or a remote session.
+  if (isStopping()) return;
   const stopWatchingObjects = watchSourceFiles(local.watchedFiles ?? []);
   shutdown.objects = stopWatchingObjects;
-  if (local.sourcesChanged?.() === true) restart('Durable Object sources changed during startup');
+  if (local.sourcesChanged?.() === true) {
+    restart('Durable Object sources changed during startup');
+    return;
+  }
   let app: RunningNext;
   try {
     app = await startNextApp({

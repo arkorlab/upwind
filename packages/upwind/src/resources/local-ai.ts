@@ -82,8 +82,16 @@ export default class Inference extends WorkerEntrypoint {
     if (!${String(available)}) throw new Error(${JSON.stringify(unavailable)});
     const [model, inputs] = args;
     if (typeof model !== 'string' || !/^@(cf|hf)\//.test(model)) throw new TypeError('Only public Workers AI models are supported');
-    if (inputs === undefined || inputs === null || (typeof inputs === 'object' && Object.hasOwn(inputs, 'lora'))) throw new TypeError('AI inputs cannot include private LoRA adapters');
-    if (!models.has(model)) models.set(model, approved(this.env.${RAW_AI}, model).catch(error => { models.delete(model); throw error; }));
+    if (typeof inputs !== 'string' && (typeof inputs !== 'object' || inputs === null || Array.isArray(inputs))) throw new TypeError('AI inputs must be a string, object, binary or stream');
+    if (typeof inputs === 'object' && Object.hasOwn(inputs, 'lora')) throw new TypeError('AI inputs cannot include private LoRA adapters');
+    if (!models.has(model)) {
+      if (models.size >= 256) models.delete(models.keys().next().value);
+      const pending = approved(this.env.${RAW_AI}, model).catch(error => {
+        if (models.get(model) === pending) models.delete(model);
+        throw error;
+      });
+      models.set(model, pending);
+    }
     if (!(await models.get(model))) throw new TypeError('Unknown public Workers AI model');
     return this.env.${RAW_AI}.run(model, inputs);
   }

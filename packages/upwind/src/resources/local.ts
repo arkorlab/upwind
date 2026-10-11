@@ -597,6 +597,16 @@ async function letGo(
   }
 }
 
+async function discardAi(ai: LocalAi): Promise<void> {
+  try {
+    await ai.dispose();
+  } catch {
+    console.warn(
+      'upwind: could not finish remote AI cleanup; retrying local storage without AI bindings',
+    );
+  }
+}
+
 /**
  * Start a project's local storage and publish it, or say why there is none.
  *
@@ -658,7 +668,8 @@ export async function startLocalResources(
       if (ai === undefined) throw error;
       if (broken.size === 0 && ai.worker !== undefined) {
         // An AI worker or proxy failure must not take healthy storage or customer DOs down.
-        await ai.dispose();
+        await discardAi(ai);
+        if (!isStarting()) throw error;
         ai = {
           entries: [],
           dispose: async () => {
