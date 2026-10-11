@@ -1,6 +1,6 @@
 import type { Validity } from '@stayingupwind/core/cache';
 
-import { type RequestContext, requestContext } from './context.ts';
+import { isRegeneration, type RequestContext, requestContext } from './context.ts';
 import { settledWithin } from './pulls.ts';
 import type { CacheRuntime } from './runtime.ts';
 
@@ -44,6 +44,12 @@ interface Revalidation {
   readonly owner: RequestContext;
   readonly done: Promise<unknown>;
   readonly settle: (landed: Promise<unknown>) => void;
+  /**
+   * Settled once the revalidation is let go of, whatever its write has come to: the requests that
+   * joined it go then, where `done` may stay out — it follows the write it was settled with.
+   */
+  readonly over: Promise<void>;
+  readonly end: () => void;
 }
 
 /** Each runtime's revalidations still out, by the store and key they are of. */
@@ -60,12 +66,12 @@ function idOf(store: string, key: string): string {
 }
 
 /**
- * Let `made` go once it has settled, or once its lifetime is over — settled then, too: the requests
- * that joined it are let go with it, since no write can be told to it once it has gone.
+ * Let `made` go once it has settled, or once its lifetime is over, and the requests that joined it
+ * with it (`over`): no write can be told to it once it has gone.
  */
 async function lapse(table: Map<string, Revalidation>, id: string, made: Revalidation) {
   await settledWithin(made.done, REVALIDATION_LIFETIME_MS);
-  made.settle(Promise.resolve());
+  made.end();
   if (table.get(id) === made) {
     table.delete(id);
   }
@@ -87,37 +93,64 @@ async function lapse(table: Map<string, Revalidation>, id: string, made: Revalid
  *
  * A revalidation Next.js did not begin, or that failed, sets nothing: the hold lapses, and the next
  * stale answer of the key begins another.
+ *
+ * A regeneration takes none. It renders what it reads: a stale value misses here, Next.js computes
+ * one past its `revalidate` in front of a prerender (`willConsumerServerCache`), and a prerender
+ * hands what it revalidated to `waitUntil` once it is whole — where a hold, which its writes are
+ * not made behind it to settle, would only keep its invocation going for the lifetime.
  */
 export function holdForRevalidation(runtime: CacheRuntime, store: string, key: string): void {
   const context = requestContext();
-  if (context === undefined) {
+  if (context === undefined || isRegeneration()) {
     return;
   }
   const table = tableIn(runtime);
   const id = idOf(store, key);
   const out = table.get(id);
-  let made: Revalidation | undefined;
-  if (out === undefined) {
-    const { promise, resolve } = Promise.withResolvers<unknown>();
-    made = { owner: context, done: promise, settle: resolve };
-    table.set(id, made);
-  }
-  try {
-    context.waitUntil(
-      made === undefined
-        ? settledWithin(out?.done ?? Promise.resolve(), REVALIDATION_LIFETIME_MS)
-        : lapse(table, id, made),
+  if (out !== undefined) {
+    keep(
+      runtime,
+      context,
+      settledWithin(Promise.race([out.done, out.over]), REVALIDATION_LIFETIME_MS),
     );
+    return;
+  }
+  const made = revalidationOf(context);
+  table.set(id, made);
+  if (!keep(runtime, context, lapse(table, id, made))) {
+    // No write reaches a revalidation its request could not be kept going for.
+    table.delete(id);
+    made.end();
+  }
+}
+
+function revalidationOf(owner: RequestContext): Revalidation {
+  const { promise, resolve } = Promise.withResolvers<unknown>();
+  const over = Promise.withResolvers<undefined>();
+  return {
+    owner,
+    done: promise,
+    settle: resolve,
+    over: over.promise,
+    end: () => {
+      over.resolve(undefined);
+    },
+  };
+}
+
+/**
+ * Hand `work` to the request's `waitUntil`; false where that throws, as a host's may once its
+ * invocation has ended — which keeps nothing going, and answers the read all the same.
+ */
+function keep(runtime: CacheRuntime, context: RequestContext, work: Promise<unknown>): boolean {
+  try {
+    context.waitUntil(work);
+    return true;
   } catch (error) {
-    // An invocation that has ended keeps nothing going — a host's `waitUntil` may throw then — and
-    // its read is answered all the same; a revalidation it made is let go, as no write reaches it.
-    if (made !== undefined) {
-      table.delete(id);
-      made.settle(Promise.resolve());
-    }
     runtime.log('revalidation not held', {
       detail: error instanceof Error ? error.message : String(error),
     });
+    return false;
   }
 }
 
