@@ -14,6 +14,7 @@ import { releaseStream } from '@stayingupwind/core/util';
 
 import { nowMs } from './cache/clock.ts';
 import { requestContextFor } from './cache/context.ts';
+import { catchUpWithScope } from './cache/pulls.ts';
 import {
   crawlerWantsWholePage,
   documentFromBuild,
@@ -577,6 +578,9 @@ export async function handleRequest(handled: HandleInput): Promise<Response> {
   });
   const input: RoutedInput = { ...handled, initURL: initUrlOf(handled.request), run: context.run };
   return context.run(async () => {
+    if (handled.cache !== undefined) {
+      await catchUpWithScope(handled.cache, handled.request, handled.waitUntil);
+    }
     const response = withoutPlacementHeaders(await routeRequest(input));
     const answered = withoutBody(
       handled.request,

@@ -54,6 +54,14 @@ export const TEST_CLOCK_HEADER = 'x-arkor-test-clock';
  * answer it got onto the request it sends on; the runtime writes and reads it (`handoff.ts`).
  */
 export const ROUTED_HEADER = 'x-arkor-routed';
+/**
+ * The revision the scope's tags stood at when the edge last heard of them, and when the latest of
+ * its invalidations was recorded (unix ms; `-` for none): `<revision>;<invalidatedAt>`. Sent where
+ * the edge hears of a scope's invalidations sooner than the Function's own reads of them would, so a
+ * Function whose view of the tags is behind brings it up before it judges anything
+ * (`scopeRevisionValue`, `parseScopeRevision`).
+ */
+export const SCOPE_REVISION_HEADER = 'x-arkor-scope-revision';
 /** The headers that tell the runtime what to do; stripped before the application sees a request. */
 export const PLATFORM_REQUEST_HEADERS: readonly string[] = [
   MIDDLEWARE_ONLY_HEADER,
@@ -74,6 +82,7 @@ export const PLATFORM_REQUEST_HEADERS: readonly string[] = [
   SERVED_GENERATION_HEADER,
   TEST_CLOCK_HEADER,
   ROUTED_HEADER,
+  SCOPE_REVISION_HEADER,
 ];
 /**
  * What the runtime says about the regeneration a request asked for, on its response: for the
@@ -120,6 +129,54 @@ export const FUNCTION_HEADER = 'x-arkor-function';
  * read, where a Vercel-hosted one read `x-vercel-ip-country`.
  */
 export const IP_COUNTRY_HEADER = 'x-arkor-ip-country';
+
+/**
+ * Where a scope's tags stand: the revision of its latest change a reader may judge by, and when its
+ * latest invalidation was recorded (unix ms), `null` where none was.
+ */
+export interface ScopeRevision {
+  readonly revision: number;
+  readonly invalidatedAt: number | null;
+}
+
+/** In `SCOPE_REVISION_HEADER`, for a scope none of whose tags was ever invalidated. */
+const NEVER_INVALIDATED = '-';
+
+/**
+ * `scope` as `SCOPE_REVISION_HEADER` carries it: whole numbers, as `parseScopeRevision` reads them,
+ * so a moment kept to a fraction of a millisecond still reads as one.
+ */
+export function scopeRevisionValue(scope: ScopeRevision): string {
+  const at =
+    scope.invalidatedAt === null ? NEVER_INVALIDATED : String(Math.trunc(scope.invalidatedAt));
+  return `${String(Math.trunc(scope.revision))};${at}`;
+}
+
+/** A whole number a header can carry, or `undefined` for anything else. */
+function wholeNumber(value: string): number | undefined {
+  if (!/^\d+$/u.test(value)) {
+    return undefined;
+  }
+  const number = Number(value);
+  return Number.isSafeInteger(number) ? number : undefined;
+}
+
+/** What `SCOPE_REVISION_HEADER` says; `undefined` for none, or for a value that does not read. */
+export function parseScopeRevision(value: string | null): ScopeRevision | undefined {
+  if (value === null) {
+    return undefined;
+  }
+  const [revisionPart = '', atPart = '', ...rest] = value.split(';');
+  const revision = wholeNumber(revisionPart);
+  if (revision === undefined || rest.length > 0) {
+    return undefined;
+  }
+  if (atPart === NEVER_INVALIDATED) {
+    return { revision, invalidatedAt: null };
+  }
+  const invalidatedAt = wholeNumber(atPart);
+  return invalidatedAt === undefined ? undefined : { revision, invalidatedAt };
+}
 
 export function isRegenerateMode(value: string | null): value is RegenerateMode {
   return value !== null && (REGENERATE_MODES as readonly string[]).includes(value);

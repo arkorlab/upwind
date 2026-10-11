@@ -45,6 +45,27 @@ host runs as it did before any cache existed, answering every read a miss. And i
 knowledge of the host** in front of it: what arrives is the wire protocol in `@stayingupwind/core`'s
 `./paas`, and nothing more.
 
+A host whose reads are cached can answer with a generation a later one replaced, or with none, for
+as long as its cache keeps that answer — after another isolate of the same Function published the
+later one. A host that keeps the later one nearer, a copy in the Function's own data center say,
+offers it through `readNewerRecord`, which the runtime asks only of an entry it found missing or no
+longer fresh, and `getNewerData`, which it asks only of a value it found no longer fresh — a value it
+found missing is `getData`'s to answer from what the host keeps nearer — never of one it is about to
+serve fresh; and it can hand back the record a commit wrote (`CommitOutcome.record`), which the
+isolate that published answers the entry's next request from. A regeneration whose lease finds a later generation standing than
+the one it judged (`AttemptOutcome.current`) gives the lease back rather than replace it with a
+render of the same thing, and an answer made from a regeneration ends once its publish has landed,
+as it does for the request's other cache writes.
+
+An invalidation made in one isolate reaches the others through their reads of the tags, which such a
+host may also cache. Where the scope's tags stand can come sooner: on the request, from an edge that
+hears of it sooner (`SCOPE_REVISION_HEADER`, `<revision>;<invalidatedAt>`), or, where the request
+says nothing, from a host that keeps it nearby (`scopeRevision`). A Function whose view of the tags
+is behind a recent invalidation — ten minutes, past which what it did is in what the Function reads
+anyway — pulls the tags' delta before the request is judged, or joins a pull that is out, and waits
+for it a second at the most (`catchUpWithScope`): past that, or where the pull fails, the request is
+judged with the view as it stands, and a pull still out goes on behind it for the requests after.
+
 In a deployment whose routes the build split across app Functions, every Function routes every
 request — each carries the whole `runtime.json` — and answers only its own routes. A request that
 lands on another's, after the middleware and every rewrite, is answered `421` with that Function's

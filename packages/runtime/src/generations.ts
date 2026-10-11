@@ -30,10 +30,13 @@ import {
 } from './answers.ts';
 import type { NodeHandler } from './app-module.ts';
 import { nowMs } from './cache/clock.ts';
+import { requestContext } from './cache/context.ts';
 import { type CurrentGeneration, currentGeneration } from './cache/current.ts';
 import type { AttemptReason } from './cache/host.ts';
-import { regenerate, type RegenerationOutcome, servable } from './cache/regenerate.ts';
+import { catchUp, settledWithin } from './cache/pulls.ts';
+import { regenerate, type RegenerationOutcome } from './cache/regenerate.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
+import { servable } from './cache/servable.ts';
 import { nodeHandlerOf } from './entries.ts';
 import { observationOf } from './incoming.ts';
 import { PAGES_DATA, ROUTE_BODY, SEGMENT_PREFIX } from './representations.ts';
@@ -135,7 +138,15 @@ async function jobOf(input: RoutedInput, store: Store): Promise<Job | undefined>
     : { input, store, runtime, target };
 }
 
-function runJob(job: Job, reason: AttemptReason): Promise<RegenerationOutcome> {
+/**
+ * Regenerate the job's entry for `reason`, in place of the generation the request judged
+ * (`replaces`: `null` for none, absent where it is not known).
+ */
+function runJob(
+  job: Job,
+  reason: AttemptReason,
+  replaces?: string | null,
+): Promise<RegenerationOutcome> {
   const { input, store, target } = job;
   const { descriptor } = target;
   return regenerate({
@@ -145,6 +156,7 @@ function runJob(job: Job, reason: AttemptReason): Promise<RegenerationOutcome> {
     target: {
       descriptor,
       reason,
+      replaces,
       allowHeader: (
         store.prerendersByPathname.get(descriptor.pathname) ??
         findShell(store, descriptor.route, descriptor.pathname)
@@ -175,15 +187,20 @@ function runJob(job: Job, reason: AttemptReason): Promise<RegenerationOutcome> {
  * `revalidateTag` within the hold of the regeneration before it was answered with the page as it
  * was until the hold ran out (`non-ascii-cache-tags`).
  */
-function scheduleJob(job: Job, reason: AttemptReason, base?: string): boolean {
+function scheduleJob(job: Job, reason: AttemptReason, base?: string | null): boolean {
   const { descriptor } = job.target;
-  const replaced = base ?? job.input.request.headers.get(GENERATION_HEADER) ?? '';
-  const key = `${descriptor.route}|${descriptor.pathname}|${replaced}`;
+  const served = job.input.request.headers.get(GENERATION_HEADER);
+  // A request that found no generation is its own key, whatever the edge says it served: a
+  // regeneration of that one, asked for within the hold, does not stand for this.
+  const named = base === null ? '' : (base ?? served ?? '');
+  const key = `${descriptor.route}|${descriptor.pathname}|${named}`;
   if (job.runtime.regenerationMemo.get(key) !== undefined) {
     return false;
   }
   job.runtime.regenerationMemo.set(key, true);
-  job.input.waitUntil(runJob(job, reason));
+  // What it replaces is what the request judged, `null` for an entry it found none of; failing
+  // that, what the edge says it served.
+  job.input.waitUntil(runJob(job, reason, base === undefined ? (served ?? undefined) : base));
   return true;
 }
 
@@ -287,6 +304,12 @@ async function answerFromJob(
   outcome: RegenerationOutcome,
   want: Want,
 ): Promise<Response | undefined> {
+  if (outcome.kind === 'accepted') {
+    // The answer's end waits for the publish, as for the request's other writes
+    // (`RequestWrites`): a request made once it was read whole reads the generation published,
+    // rather than finding the one it replaced, or none, and rendering a page of its own.
+    requestContext()?.writes.add(outcome.published);
+  }
   if (outcome.kind === 'accepted' && servable(outcome.render.status, outcome.render.headers)) {
     const answered = await answerFromRender(job.input, job.target.handler, outcome.render, want);
     return answered === undefined ? undefined : withOutcome(answered, 'accepted');
@@ -294,6 +317,9 @@ async function answerFromJob(
   if (outcome.kind === 'skipped') {
     return undefined;
   }
+  // `busy`, and `superseded` — a later generation than the one judged is the host's, which this
+  // isolate's read is behind — are answered alike: with a render of the visitor's own, kept by no
+  // one.
   const own = await renderForVisitor(job.input, job.target, want);
   const said = outcome.kind === 'accepted' ? 'unservable' : outcome.kind;
   return own === undefined ? undefined : withOutcome(own, said);
@@ -320,7 +346,10 @@ export async function handleForeground(
   if (job === undefined) {
     return { response: undefined, outcome: 'skipped', regenerated: undefined };
   }
-  const outcome = await runJob(job, 'expired');
+  // The generation the edge found expired; none, where it found no record at all and asked for a
+  // first one.
+  const served = input.request.headers.get(GENERATION_HEADER);
+  const outcome = await runJob(job, 'expired', served);
   return {
     response: await answerFromJob(job, outcome, documentWant(input)),
     outcome: outcome.kind,
@@ -508,88 +537,6 @@ async function renderSpeculative(
 }
 
 /**
- * The pull of the tag delta each runtime's expired prefetches have out, when it went out on the
- * isolate's own clock, and whether it has settled: the segments of a page prefetched together are
- * behind the same invalidation, and the first of them to find it pulls it for all of them. Joined
- * while it is out and younger than the hold; older, it may be a pull whose request ended under it,
- * which never answers.
- */
-interface SpeculativePull {
-  readonly pull: Promise<void>;
-  readonly since: number;
-  settled: boolean;
-}
-
-const speculativePulls = new WeakMap<CacheRuntime, SpeculativePull>();
-
-/** How many pulls a prefetch makes or joins to bring the view up to its record's revision. */
-const SPECULATIVE_PULLS = 2;
-
-/** A pull of the delta for the prefetches after it to join while it is out. Never rejects. */
-function startPull(runtime: CacheRuntime): Promise<void> {
-  const underWay: { pull: Promise<void>; readonly since: number; settled: boolean } = {
-    pull: Promise.resolve(),
-    since: performance.now(),
-    settled: false,
-  };
-  underWay.pull = (async () => {
-    try {
-      await runtime.tags.sync(runtime.host, nowMs(), { force: true });
-    } catch {
-      // A pull that fails leaves the view as it stood, as a regeneration's does.
-    } finally {
-      underWay.settled = true;
-    }
-  })();
-  speculativePulls.set(runtime, underWay);
-  return underWay.pull;
-}
-
-/**
- * Bring this isolate's view of the tags up to the revision a prefetch's record was invalidated at
- * (`required`): joining a pull that is out, or making one, and again where it left the view short —
- * a pull that went out before the invalidation answers with the revision before it. None is made
- * or joined past `until`, on the isolate's own clock: the prefetch has rendered without the view
- * by then, and a pull made for it would be one no request waits for.
- */
-async function catchUp(runtime: CacheRuntime, required: number, until: number): Promise<void> {
-  for (
-    let tries = 0;
-    tries < SPECULATIVE_PULLS && runtime.tags.revision < required && performance.now() < until;
-    tries += 1
-  ) {
-    const underWay = speculativePulls.get(runtime);
-    const joinable =
-      underWay !== undefined &&
-      !underWay.settled &&
-      performance.now() - underWay.since < runtime.holdMs;
-    await (joinable ? underWay.pull : startPull(runtime));
-  }
-}
-
-/** Once `promise` has settled, whichever way, or `ms` have gone by. */
-async function settledWithin(promise: Promise<unknown>, ms: number): Promise<void> {
-  const settled = (async () => {
-    try {
-      await promise;
-    } catch {
-      // A pull that fails leaves the view as it stood, as a regeneration's does.
-    }
-  })();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([
-      settled,
-      new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, ms);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/**
  * An entry the cache holds no record of, as the request's `onMiss` says: rendered now and kept,
  * and the visitor answered from that render; rendered behind the build's answer; or left to the
  * build. `undefined` leaves the build's answer to the caller — and so does an entry a regeneration
@@ -602,10 +549,10 @@ async function answerMiss(
   once: boolean,
 ): Promise<Response | undefined> {
   if (onMiss === 'render' && once) {
-    return answerFromJob(job, await runJob(job, 'miss'), want);
+    return answerFromJob(job, await runJob(job, 'miss', null), want);
   }
   if (onMiss === 'behind' && once) {
-    scheduleJob(job, 'miss');
+    scheduleJob(job, 'miss', null);
   }
   return undefined;
 }
@@ -656,7 +603,8 @@ export async function serveFromGeneration(
     });
   }
   if (validity === 'expired') {
-    const regenerated = await answerFromJob(job, await runJob(job, 'expired'), want);
+    const outcome = await runJob(job, 'expired', pack.header.generationId);
+    const regenerated = await answerFromJob(job, outcome, want);
     return regenerated ?? renderRequest(job, source.url);
   }
   const answer = await answerFromGeneration(job, lookup.current, source, want);

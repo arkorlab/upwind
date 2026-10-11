@@ -28,6 +28,11 @@ export interface HeldValue {
   readonly entry: DataEntryMetadata;
   readonly bytes: Uint8Array;
   readonly invalidation?: InvalidationState | undefined;
+  /**
+   * The revision the host's answer was read at (`DataRead.dependencyRevision`); absent for a value
+   * a write of this isolate's still holds, which no read answered.
+   */
+  readonly revision?: number | undefined;
 }
 
 /**
