@@ -13,6 +13,7 @@ import {
 import type { Miniflare, MiniflareOptions } from 'miniflare';
 
 import { guardListeners } from './listeners.ts';
+import { type LocalAi, localAiBinding, prepareLocalAi } from './local-ai.ts';
 import { localEntries, type LocalStorageEntry } from './local-bindings.ts';
 import { failedOwnerNames, runtimeStartupFailure } from './local-failure.ts';
 import { type LocalDurableObject, localObjects } from './local-objects.ts';
@@ -150,7 +151,7 @@ const RUNTIME_TYPES = {
   kv_namespace: 'kv',
   r2_bucket: 'r2',
   [DURABLE_OBJECT_TYPE]: DURABLE_OBJECT_KIND,
-} as const satisfies Record<ResourceType, string>;
+} as const satisfies Record<Exclude<ResourceType, 'ai'>, string>;
 
 export interface LocalResources {
   /** Class dependencies whose edits require a fresh worker module. */
@@ -164,6 +165,8 @@ export interface LocalResources {
 export interface LocalOptions {
   /** Class code uses production semantics during prerender; direct local callers default to dev. */
   readonly mode?: 'development' | 'production';
+  /** Explicit dev-only permission to connect declared AI bindings remotely. */
+  readonly remoteAi?: boolean;
   /**
    * Whether this process answers interrupts itself, and so wants the runtime's signal handlers taken
    * back (`listeners.ts`). The dev server does; a process something else ends does not.
@@ -187,6 +190,7 @@ function ownerName(name: string): string {
 }
 
 type LocalBinding =
+  | ReturnType<typeof localAiBinding>
   | { type: 'd1' | 'kv'; id: string }
   | { type: 'r2'; name: string }
   | { type: typeof DURABLE_OBJECT_KIND; worker: string; exportName: string };
@@ -195,9 +199,11 @@ function runtimeOptions(
   projectDir: string,
   entries: readonly LocalStorageEntry[],
   objects: readonly LocalDurableObject[],
+  ai: LocalAi,
 ): MiniflareOptions {
   const env = Object.fromEntries<LocalBinding>(
     entries.map((entry): [string, LocalBinding] => {
+      if (entry.type === 'ai') return [entry.name, localAiBinding()];
       if (entry.type === DURABLE_OBJECT_TYPE)
         return [
           entry.name,
@@ -232,6 +238,7 @@ function runtimeOptions(
           env,
         },
       },
+      ...(ai.worker === undefined ? [] : [ai.worker]),
       ...objects.map((object) => {
         const modules: Record<
           string,
@@ -287,6 +294,10 @@ async function bindingOf(runtime: Miniflare, entry: ResourceManifestEntry): Prom
     case 'r2_bucket': {
       return runtime.getR2Bucket(entry.name);
     }
+    case 'ai': {
+      const env = await runtime.getBindings(WORKER_NAME);
+      return env[entry.name];
+    }
     case DURABLE_OBJECT_TYPE: {
       return runtime.getDurableObjectNamespace(entry.name, WORKER_NAME);
     }
@@ -303,6 +314,7 @@ class LocalStorageError extends Error {
 /** The cheapest read there is of one binding: nothing is stored, and nothing is written. */
 async function probe(entry: ResourceManifestEntry, binding: unknown): Promise<void> {
   switch (entry.type) {
+    case 'ai':
     case DURABLE_OBJECT_TYPE: {
       // Namespace readiness never constructs an object or executes the customer's class.
       return;
@@ -546,12 +558,13 @@ function startAndPublish(
   projectDir: string,
   entries: readonly LocalStorageEntry[],
   objects: readonly LocalDurableObject[],
+  ai: LocalAi,
 ): Attempt {
   const arrived: PromiseWithResolvers<Miniflare | undefined> = Promise.withResolvers();
   const done = (async (): Promise<Miniflare> => {
     let runtime: Miniflare | undefined;
     try {
-      runtime = await startRuntime(runtimeOptions(projectDir, entries, objects));
+      runtime = await startRuntime(runtimeOptions(projectDir, entries, objects, ai));
     } finally {
       // Either way, and before anything slower: a runtime, or the news that there will not be one.
       arrived.resolve(runtime);
@@ -601,6 +614,7 @@ export async function startLocalResources(
   const guard = guardListeners({ answersSignals: options.answersSignals });
   let release: (() => void) | undefined;
   let attempt: Attempt | undefined;
+  let ai: LocalAi | undefined;
   let starting = true;
   const isStarting = (): boolean => starting;
   const watchedFiles = new Set<string>();
@@ -614,11 +628,18 @@ export async function startLocalResources(
       options.mode ?? 'development',
     );
     sourcesChanged = sourceChanges(versions);
-    const entries = localEntries(objects.map((object) => object.declaration.name));
+    ai = await prepareLocalAi(
+      objects.map((object) => object.declaration.name),
+      options.mode !== 'production' && options.remoteAi === true,
+    );
+    const entries = localEntries(
+      objects.map((object) => object.declaration.name),
+      ai.entries,
+    );
     // The claim comes first, because the thing it prevents cannot be undone: two runtimes over one
     // directory read each other's data happily and then lose a write with no error anybody can see.
     release = await claimStorage(path.join(projectDir, PERSIST_DIR));
-    attempt = startAndPublish(projectDir, entries, objects);
+    attempt = startAndPublish(projectDir, entries, objects, ai);
     let remaining = objects;
     async function recover(error: unknown): Promise<Miniflare> {
       if (!isStarting() || remaining.length === 0 || !runtimeStartupFailure(error)) throw error;
@@ -639,8 +660,12 @@ export async function startLocalResources(
           ? 'native runtime startup failed without identifying an owner; retrying default storage without Durable Object namespaces'
           : 'could not start local Durable Objects; retrying unaffected resources';
       console.warn(`upwind: ${diagnostic}:\n${reason}`);
-      const surviving = localEntries(remaining.map((object) => object.declaration.name));
-      attempt = startAndPublish(projectDir, surviving, remaining);
+      if (ai === undefined) throw error;
+      const surviving = localEntries(
+        remaining.map((object) => object.declaration.name),
+        ai.entries,
+      );
+      attempt = startAndPublish(projectDir, surviving, remaining, ai);
       return ready(attempt);
     }
     async function ready(current: Attempt): Promise<Miniflare> {
@@ -657,7 +682,18 @@ export async function startLocalResources(
         `this project's local storage did not come up within ${String(START_SECONDS)}s, so nothing is published in this run`,
       ),
     ]);
-    return stopper(runtime, release, [...watchedFiles], sourcesChanged);
+    const storage = stopper(runtime, release, [...watchedFiles], sourcesChanged);
+    const aiSession = ai;
+    return {
+      ...storage,
+      dispose: async () => {
+        try {
+          await storage.dispose();
+        } finally {
+          await aiSession.dispose();
+        }
+      },
+    };
   } catch (error) {
     starting = false;
     console.warn(cannotStart(error));
@@ -666,7 +702,7 @@ export async function startLocalResources(
     // for that: this run has already said it has no storage, and what is being let go of was never
     // published to anybody.
     // eslint-disable-next-line @typescript-eslint/no-floating-promises -- said above, not waited for.
-    void letGo(attempt?.runtime, release);
+    void letGo(attempt?.runtime, release).finally(async () => ai?.dispose());
     return { ...NOTHING_STARTED, watchedFiles: [...watchedFiles], sourcesChanged };
   } finally {
     starting = false;

@@ -6,7 +6,8 @@ import type {
   Rpc,
 } from '@cloudflare/workers-types';
 
-import { BLOB, D1, type Kind, KV, DURABLE_OBJECT } from './kinds.ts';
+import { type AiInference, inference } from './ai-inference.ts';
+import { AI, BLOB, D1, type Kind, KV, DURABLE_OBJECT } from './kinds.ts';
 import { read, unreadable } from './published.ts';
 
 /**
@@ -58,4 +59,10 @@ export function durableObject<T extends Rpc.DurableObjectBranded | undefined = u
   name: string,
 ): DurableObjectNamespace<T> | undefined {
   return byName(name, DURABLE_OBJECT) as DurableObjectNamespace<T> | undefined;
+}
+
+/** The inference capability published under this name, or nothing. */
+export function ai(name: string): AiInference | undefined {
+  const binding = byName(name, AI);
+  return binding === undefined ? undefined : inference(binding);
 }

@@ -1,5 +1,10 @@
 # @stayingupwind/adapter
 
+Bundles declare `aiInference: 1` at the top level when their runtime supports publishing inference-only
+AI service bindings. The marker is independent of the bundle version and resource manifest version.
+A host must require it before publishing an AI-enabled deployment, including an uploaded bundle.
+The marker itself does not bind AI or include a host's AI service code in application Functions.
+
 `next build` calls this adapter with a description of the application, and it writes a deployment
 bundle under `<projectDir>/.arkor/` — `bundle.json`, the blobs it names, and the Functions (`app`,
 `middleware`, and `workflow` for a build that uses the Workflow SDK) that run the application's code

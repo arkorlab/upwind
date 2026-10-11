@@ -82,6 +82,34 @@ export const orm = drizzle(db, { schema });
 
 MIT or Apache-2.0, at your option.
 
+## Workers AI inference
+
+A host can publish an opt-in AI binding under a name. It is an inference capability, with only
+`run(model, inputs)`: it does not grant access to account gateways, AI Search, private LoRA assets,
+third-party providers, batches or WebSockets. A third argument is rejected, including in JavaScript.
+Known model inputs and outputs come from Cloudflare's model types; `stream: true` preserves the
+streaming return type. Newly published model names have an `unknown` return type until types catch up,
+and the host still checks whether the model is supported.
+
+```ts
+// app/api/generate/route.ts — only an explicit POST invokes inference.
+import ai from '@stayingupwind/sdk/ai';
+
+export async function POST(request: Request) {
+  const { prompt } = await request.json();
+  if (typeof prompt !== 'string') return new Response('A prompt is required', { status: 400 });
+  const result = await ai.run('@cf/meta/llama-3.1-8b-instruct', { prompt });
+  return Response.json(result);
+}
+```
+
+The default export selects exactly one published AI binding and resolves lazily. Use `ai('INFERENCE')`
+from `@stayingupwind/sdk` or `@stayingupwind/sdk/ai` when several are published. Missing names and names
+of another kind return `undefined`. The accessor exposes only `run` and forwards streams without
+buffering them. Importing the SDK does not invoke inference or add a request-time lookup to a host.
+
+For local declarations and explicit remote opt-in, see the [CLI documentation](../upwind/README.md#workers-ai).
+
 ## Durable Objects
 
 A host can register a binding name, a project-relative module path and its named class export.

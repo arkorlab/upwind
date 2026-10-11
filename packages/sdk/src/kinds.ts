@@ -49,3 +49,11 @@ export const DURABLE_OBJECT: Kind = {
   lookup: 'durableObject',
   module: '@stayingupwind/sdk/durable-object',
 };
+
+export const AI: Kind = {
+  type: 'ai',
+  called: 'AI binding',
+  accessor: 'ai',
+  lookup: 'ai',
+  module: '@stayingupwind/sdk/ai',
+};

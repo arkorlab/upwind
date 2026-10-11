@@ -45,6 +45,7 @@ export interface DevOptions {
   readonly projectDir: string;
   readonly hostname: string | undefined;
   readonly port: number;
+  readonly remoteAi?: boolean;
 }
 
 const STATUS_INTERNAL_ERROR = 500;
@@ -259,6 +260,7 @@ export async function serveDev(options: DevOptions): Promise<void> {
     // This run answers its own interrupts, above, and disposes of the runtime on its way out.
     answersSignals: true,
     mode: 'development',
+    remoteAi: options.remoteAi === true,
   });
   const stopWatchingObjects = watchSourceFiles(local.watchedFiles ?? []);
   if (local.sourcesChanged?.() === true) restart('Durable Object sources changed during startup');

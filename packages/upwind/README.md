@@ -1,5 +1,44 @@
 # upwind
 
+## Workers AI
+
+AI bindings are explicit capabilities. Declare their names as a JSON array:
+
+```sh
+export UPWIND_AI_BINDINGS='["INFERENCE"]'
+upwind dev
+```
+
+This publishes an unavailable inference capability, so AI calls give a clear opt-in error while local
+D1, KV, R2 and Durable Objects remain usable. There is no local AI emulator. Builds always keep AI
+disabled, including when the development flag was used in another process.
+
+To use real Workers AI during development, set your own `CLOUDFLARE_ACCOUNT_ID` and
+`CLOUDFLARE_API_TOKEN`, then run `upwind dev --remote-ai`. The token needs Workers AI access and the
+Worker preview permissions required by Wrangler's remote-binding session. Upwind does not initiate
+a login, invoke a model or load the model catalogue during setup. Actual inference uses your account
+and incurs Cloudflare charges; ordinary CI should use doubles instead.
+
+The remote session is disposed when development stops or restarts. A connection or authentication
+failure leaves other local resources available. Customer Durable Objects receive the same restricted
+service binding under the declared name in `this.env`, rather than the account-wide native `Ai`.
+
+`@stayingupwind/sdk/ai` selects the sole binding lazily. `ai(name)` supports named access. See the
+[SDK documentation](../sdk/README.md#workers-ai-inference) for an explicit POST Route Handler example.
+
+### 日本語
+
+`UPWIND_AI_BINDINGS='["INFERENCE"]'` で AI バインディング名を明示します。通常の開発とビルドでは
+推論を実行できません。実際の Workers AI を使う場合だけ、自分の Cloudflare アカウントの
+`CLOUDFLARE_ACCOUNT_ID` と `CLOUDFLARE_API_TOKEN` を設定し、`upwind dev --remote-ai` を実行します。
+推論はそのアカウントへ課金されます。起動時にモデルの呼び出しや自動ログインは行いません。
+接続や認証が失敗しても、ローカルの D1・KV・R2・Durable Objects は利用できます。
+
+SDK は `run(model, inputs)` のみ提供し、第三引数、AI Gateway、外部プロバイダー、私有 LoRA、
+Batch、WebSocket は提供しません。既定アクセサーは AI が一つの場合に選択し、複数の場合は
+`ai(name)` を使います。有料推論をビルドやプリフェッチで実行しないよう、POST Route Handler から
+明示的に呼び出してください。
+
 `upwind dev` runs a Next.js development server behind upwind's own front door.
 
 ```bash

@@ -26,7 +26,9 @@ const config: KnipConfig = {
     'packages/runtime': { ignoreDependencies: ['cloudflare', 'arkor'] },
     // Four entry points, and `exports` names the `dist` they are built into — so the sources behind
     // them are named here rather than looked for through files this has not built.
-    'packages/sdk': { entry: ['src/{index,db,kv,blob}.ts'] },
+    'packages/sdk': {
+      entry: ['src/{index,db,kv,blob,durable-object,ai}.ts', 'scripts/check-ai-types.ts'],
+    },
     // Reached by path rather than by import: it is the module `upwind build` tells the processes
     // below it to `--import`, so nothing in this repository imports it and `bin` does not lead there.
     'packages/upwind': { entry: ['src/resources/entry.ts'] },

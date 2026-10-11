@@ -19,6 +19,7 @@ export const RESOURCE_TYPES = [
   'r2_bucket',
   'd1',
   'durable_object_namespace',
+  'ai',
 ] as const;
 export type ResourceType = (typeof RESOURCE_TYPES)[number];
 

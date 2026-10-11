@@ -26,9 +26,13 @@ function localBindings(customerNames: readonly string[]): LocalStorageEntry[] {
   });
 }
 
-export function localEntries(customerNames: readonly string[]): LocalStorageEntry[] {
+export function localEntries(
+  customerNames: readonly string[],
+  ai: readonly LocalStorageEntry[] = [],
+): LocalStorageEntry[] {
   return [
-    ...localBindings(customerNames),
+    ...localBindings([...customerNames, ...ai.map((entry) => entry.name)]),
+    ...ai,
     ...customerNames.map((name): LocalStorageEntry => {
       return {
         name,

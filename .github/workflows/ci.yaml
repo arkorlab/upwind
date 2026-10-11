@@ -44,6 +44,8 @@ jobs:
       - run: pnpm check:deploy-tests
       # Native namespaces, SQLite storage and source isolation without a Next.js build.
       - run: pnpm check:durable-objects
+      # Inference contract and local capability isolation, without remote AI calls.
+      - run: pnpm check:ai
       # The agent rules `create-upwind` writes are still the ones Next.js writes. Text copied out of
       # another project goes stale without saying so, and this one is compared byte for byte.
       - run: pnpm check:agent-rules
