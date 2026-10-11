@@ -36,27 +36,17 @@ export function fetchedAgainBehind(
   return validity === 'stale' || ageMs / MS_PER_SECOND > revalidate;
 }
 
-/**
- * A revalidation of a key that Next.js begins behind a stale answer: the request it runs in — the
- * one answered stale — and what settles it.
- */
-interface Revalidation {
-  readonly owner: RequestContext;
+/** A request answered with a stale value of a key, held for its revalidation, and what settles it. */
+interface Hold {
   readonly done: Promise<unknown>;
   readonly settle: (landed: Promise<unknown>) => void;
-  /**
-   * Settled once the revalidation is let go of, whatever its write has come to: the requests that
-   * joined it go then, where `done` may stay out — it follows the write it was settled with.
-   */
-  readonly over: Promise<void>;
-  readonly end: () => void;
 }
 
-/** Each runtime's revalidations still out, by the store and key they are of. */
-const revalidations = new WeakMap<CacheRuntime, Map<string, Revalidation>>();
+/** Each runtime's requests held, by the store and key they are held for. */
+const revalidations = new WeakMap<CacheRuntime, Map<string, Map<RequestContext, Hold>>>();
 
-function tableIn(runtime: CacheRuntime): Map<string, Revalidation> {
-  const table = revalidations.get(runtime) ?? new Map<string, Revalidation>();
+function tableIn(runtime: CacheRuntime): Map<string, Map<RequestContext, Hold>> {
+  const table = revalidations.get(runtime) ?? new Map<string, Map<RequestContext, Hold>>();
   revalidations.set(runtime, table);
   return table;
 }
@@ -65,22 +55,37 @@ function idOf(store: string, key: string): string {
   return `${store}\u{0}${key}`;
 }
 
-/**
- * Let `made` go once it has settled, or once its lifetime is over, and the requests that joined it
- * with it (`over`): no write can be told to it once it has gone.
- */
-async function lapse(table: Map<string, Revalidation>, id: string, made: Revalidation) {
-  await settledWithin(made.done, REVALIDATION_LIFETIME_MS);
-  made.end();
-  if (table.get(id) === made) {
+/** Let `context`'s hold go — once it has settled, or its lifetime is over (`lapse`). */
+function letGo(
+  table: Map<string, Map<RequestContext, Hold>>,
+  id: string,
+  context: RequestContext,
+  hold: Hold,
+): void {
+  const holds = table.get(id);
+  if (holds?.get(context) !== hold) {
+    return;
+  }
+  holds.delete(context);
+  if (holds.size === 0) {
     table.delete(id);
   }
 }
 
+async function lapse(
+  table: Map<string, Map<RequestContext, Hold>>,
+  id: string,
+  context: RequestContext,
+  hold: Hold,
+): Promise<void> {
+  await settledWithin(hold.done, REVALIDATION_LIFETIME_MS);
+  letGo(table, id, context, hold);
+}
+
 /**
- * Keep the request answered with a stale value of `key` going until the revalidation Next.js
- * begins behind that answer, in that request, has set a value of the key again (`revalidated`), or
- * `REVALIDATION_LIFETIME_MS` have gone by.
+ * Keep the request answered with a stale value of `key` going until a revalidation of the key has
+ * written it again and the write has landed (`revalidated`), or for `REVALIDATION_LIFETIME_MS` from
+ * that answer.
  *
  * Next.js hands such a revalidation to the request's `waitUntil` only where it began before the
  * render's stream was made: `executeRevalidates`, which `app-render.tsx` calls once as it makes the
@@ -91,8 +96,11 @@ async function lapse(table: Map<string, Revalidation>, id: string, made: Revalid
  * `use-cache-wrapper.ts`), began no other: the key was answered stale for as long as the isolate
  * lived.
  *
- * A revalidation Next.js did not begin, or that failed, sets nothing: the hold lapses, and the next
- * stale answer of the key begins another.
+ * Each request counts its own lifetime. Next.js begins a revalidation behind a stale answer where
+ * none of the key is out, so the request answered after another may be the one whose revalidation
+ * runs — the first one's having failed, say — and a hold that ended with the first request's would
+ * leave it held by nothing. A revalidation Next.js did not begin, or that failed, sets nothing: the
+ * hold lapses.
  *
  * A regeneration takes none. It renders what it reads: a stale value misses here, Next.js computes
  * one past its `revalidate` in front of a prerender (`willConsumerServerCache`), and a prerender
@@ -106,36 +114,18 @@ export function holdForRevalidation(runtime: CacheRuntime, store: string, key: s
   }
   const table = tableIn(runtime);
   const id = idOf(store, key);
-  const out = table.get(id);
-  if (out !== undefined) {
-    keep(
-      runtime,
-      context,
-      settledWithin(Promise.race([out.done, out.over]), REVALIDATION_LIFETIME_MS),
-    );
+  const holds = table.get(id) ?? new Map<RequestContext, Hold>();
+  table.set(id, holds);
+  if (holds.has(context)) {
     return;
   }
-  const made = revalidationOf(context);
-  table.set(id, made);
-  if (!keep(runtime, context, lapse(table, id, made))) {
-    // No write reaches a revalidation its request could not be kept going for.
-    table.delete(id);
-    made.end();
-  }
-}
-
-function revalidationOf(owner: RequestContext): Revalidation {
   const { promise, resolve } = Promise.withResolvers<unknown>();
-  const over = Promise.withResolvers<undefined>();
-  return {
-    owner,
-    done: promise,
-    settle: resolve,
-    over: over.promise,
-    end: () => {
-      over.resolve(undefined);
-    },
-  };
+  const hold: Hold = { done: promise, settle: resolve };
+  holds.set(context, hold);
+  if (!keep(runtime, context, lapse(table, id, context, hold))) {
+    // No write reaches a request that could not be kept going.
+    letGo(table, id, context, hold);
+  }
 }
 
 /**
@@ -155,15 +145,13 @@ function keep(runtime: CacheRuntime, context: RequestContext, work: Promise<unkn
 }
 
 /**
- * A value of `key` was set, to land as `landed` settles: where it was set in the request a
- * revalidation of the key is kept going for (`holdForRevalidation`) — Next.js begins the
- * revalidation in the request it answered stale — that request goes on until it has landed.
- * Held until then, too: a stale answer of the key meanwhile is kept going for the same write,
- * rather than for one Next.js will not begin while this revalidation is out.
+ * A value of `key` was set, to land as `landed` settles. Set in a request held for the key, it is
+ * the revalidation Next.js began behind one of the stale answers — one at a time in an isolate —
+ * and every request held for the key goes on until it has landed.
  *
- * Another request's write of the key settles nothing: a regeneration's, or a render's that had
- * the value computed for it, lands while the revalidation may still be under way, which would
- * then go on held by nothing, as before.
+ * A write of the key in a request held for nothing settles nothing: a regeneration's, or a
+ * render's that had the value computed for it, lands while the revalidation the requests are held
+ * for may still be under way, which would then go on held by nothing, as before.
  */
 export function revalidated(
   runtime: CacheRuntime,
@@ -171,8 +159,12 @@ export function revalidated(
   key: string,
   landed: Promise<unknown>,
 ): void {
-  const out = revalidations.get(runtime)?.get(idOf(store, key));
-  if (out !== undefined && out.owner === requestContext()) {
-    out.settle(landed);
+  const holds = revalidations.get(runtime)?.get(idOf(store, key));
+  const context = requestContext();
+  if (holds === undefined || context === undefined || !holds.has(context)) {
+    return;
+  }
+  for (const hold of holds.values()) {
+    hold.settle(landed);
   }
 }
