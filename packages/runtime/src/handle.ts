@@ -1,4 +1,3 @@
-import { resolveRoutes } from '@next/routing';
 import { isPagesDataPathname } from '@stayingupwind/core/bundle';
 import type { ImagesConfig } from '@stayingupwind/core/images';
 import { staticFileStatus } from '@stayingupwind/core/manifest';
@@ -48,12 +47,7 @@ import {
 } from './image-fallback.ts';
 import { hasBody, isRscRequest, wantsBlockingMetadata } from './incoming.ts';
 import { isRead, methodNotAllowed, readsOnly } from './methods.ts';
-import {
-  answerMiddlewareOnly,
-  MIDDLEWARE_ENTRY_ID,
-  middlewareInvoker,
-  type MiddlewareTrace,
-} from './middleware-invoke.ts';
+import { answerMiddlewareOnly, MIDDLEWARE_ENTRY_ID } from './middleware-invoke.ts';
 import { type Resolved, servePagesData, serveRouteHandler, serveRsc } from './outputs.ts';
 import {
   misdirected,
@@ -63,19 +57,17 @@ import {
   withoutPlacementHeaders,
 } from './placement.ts';
 import { DEFAULT_PROXY_BODY_LIMIT, splitBody } from './request-body.ts';
+import { routingOf, untraced, withRoutingOf } from './resolve-request.ts';
 import { settleRewrittenPath } from './rewritten-path.ts';
 import {
   askedOf,
-  internalRedirect,
   landedRoute,
   parametersDecode,
-  pathnamesFor,
+  redirectedBeforeRouting,
   redirectResponse,
-  routingI18n,
-  routingTables,
   resolvedOf,
   routedHeaders,
-  withoutRepeatedSlashes,
+  undecodedResponse,
   withRewriteStatus,
   withRoutingHeaders,
 } from './routing.ts';
@@ -117,7 +109,6 @@ import { renderedBy, serveWithBody } from './with-body.ts';
  * rendered whole, and the cache holds no generation of it.
  */
 
-const HTTP_PERMANENT_REDIRECT = 308;
 const HTTP_BAD_REQUEST = 400;
 const HTTP_INTERNAL_ERROR = 500;
 export type { HandleInput } from './serve.ts';
@@ -257,12 +248,11 @@ async function handleFull(input: RoutedInput, store: Store): Promise<Response> {
   if (handedOff !== null) {
     return serveHandedOff(input, store, url, handedOff);
   }
-  const collapsed = withoutRepeatedSlashes(url);
-  if (collapsed !== undefined) {
-    return redirectResponse(collapsed, HTTP_PERMANENT_REDIRECT, undefined);
-  }
   const headers = routedHeaders(input.request, url, store.manifest.config.basePath);
-  return (await internalRedirect(store, url, headers)) ?? routeAndServe(input, store, url, headers);
+  return (
+    (await redirectedBeforeRouting(store, url, headers)) ??
+    routeAndServe(input, store, url, headers)
+  );
 }
 
 /**
@@ -279,16 +269,10 @@ async function routeAndServe(
   // Asked of the table, not of the module: a middleware the edge has already run is not loaded.
   const skipMiddleware =
     request.headers.get(MIDDLEWARE_DONE_HEADER) === '1' || !hasEntry(input, MIDDLEWARE_ENTRY_ID);
-  const trace: MiddlewareTrace = {
-    invoked: false,
-    response: undefined,
-    requestHeaders: undefined,
-    rewrite: undefined,
-    status: undefined,
-  };
+  const trace = untraced();
   // Split only where a middleware may read it: with none to run the router hands no body to
   // anything, and a side nobody reads would hold every byte the handler reads.
-  const { i18n, proxyClientMaxBodySize } = store.manifest.config;
+  const { proxyClientMaxBodySize } = store.manifest.config;
   const bodies = splitBody(
     request.body,
     skipMiddleware
@@ -305,16 +289,12 @@ async function routeAndServe(
   const dropHandlerBody = (): void => {
     releaseStream(bodies.handler, 'routing exit: handler body unused');
   };
-  const routed = await resolveRoutes({
+  const routed = await routingOf(input, store, {
     url,
-    buildId: store.manifest.buildId,
-    basePath: store.manifest.config.basePath,
-    requestBody: bodies.routing ?? new ReadableStream(),
     headers: requestHeaders,
-    pathnames: pathnamesFor(store, url),
-    ...(i18n !== null && i18n !== undefined && { i18n: routingI18n(i18n) }),
-    routes: routingTables(store, skipMiddleware, url),
-    invokeMiddleware: middlewareInvoker(input, store, trace),
+    body: bodies.routing,
+    skipMiddleware,
+    trace,
   });
   settleRewrittenPath(routed.resolvedHeaders, requestHeaders, url, trace.rewrite);
   if (routed.middlewareResponded === true && trace.response !== undefined) {
@@ -338,13 +318,7 @@ async function routeAndServe(
   }
   if (!parametersDecode(routed.routeMatches)) {
     dropHandlerBody();
-    return withRoutingHeaders(
-      new Response('Bad Request', {
-        status: HTTP_BAD_REQUEST,
-        headers: { 'content-type': 'text/plain; charset=utf-8' },
-      }),
-      routed.resolvedHeaders,
-    );
+    return undecodedResponse(routed.resolvedHeaders);
   }
   const forwarded: RoutedInput = {
     ...input,
@@ -548,7 +522,7 @@ async function routeRequest(input: RoutedInput): Promise<Response> {
   if (mode === 'foreground') {
     const foreground = await handleForeground(input, store);
     if (foreground.response !== undefined) {
-      return foreground.response;
+      return withRoutingOf(input, store, foreground.response);
     }
     // The regeneration answered nothing — a render dynamic here, a lease held elsewhere and a
     // render of the visitor's own that was dynamic too — and the usual path answers. That path

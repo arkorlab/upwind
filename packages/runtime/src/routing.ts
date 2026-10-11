@@ -35,6 +35,8 @@ import { entrypointKindOf, type Store } from './store.ts';
  */
 
 const STATIC_ASSETS_PREFIX = '/_next/static/';
+const HTTP_PERMANENT_REDIRECT = 308;
+const HTTP_BAD_REQUEST = 400;
 /** What asks with these `Sec-Fetch-Dest` values cannot show a page (Next.js's own list). */
 const SUBRESOURCE_DESTINATIONS: ReadonlySet<string> = new Set([
   'audio',
@@ -399,6 +401,17 @@ export function parametersDecode(matches: Readonly<Record<string, string>> | und
   return Object.values(matches).every((value) => decodes(value));
 }
 
+/** The 400 a request whose parameters do not decode is answered with (`parametersDecode`). */
+export function undecodedResponse(headers: Headers | undefined): Response {
+  return withRoutingHeaders(
+    new Response('Bad Request', {
+      status: HTTP_BAD_REQUEST,
+      headers: { 'content-type': 'text/plain; charset=utf-8' },
+    }),
+    headers,
+  );
+}
+
 function decodes(value: string): boolean {
   try {
     decodeURIComponent(value);
@@ -420,6 +433,24 @@ export function withoutRepeatedSlashes(url: URL): string | undefined {
     return undefined;
   }
   return `${url.pathname.replaceAll(/\/{2,}/gu, '/')}${url.search}`;
+}
+
+/**
+ * What the usual path answers a request with before it routes it (`handleFull`): a path that repeats
+ * a slash, redirected to the path without (`withoutRepeatedSlashes`); then a redirect Next.js's
+ * router makes ahead of the rules it was handed (`internalRedirect`) — an `i18n` application's
+ * trailing slash, which `routingTables` leaves out of what `@next/routing` is handed for this.
+ */
+export async function redirectedBeforeRouting(
+  store: Store,
+  url: URL,
+  headers: Headers,
+): Promise<Response | undefined> {
+  const collapsed = withoutRepeatedSlashes(url);
+  if (collapsed !== undefined) {
+    return redirectResponse(collapsed, HTTP_PERMANENT_REDIRECT, undefined);
+  }
+  return internalRedirect(store, url, headers);
 }
 
 /** `pathname` with `prefix` taken off its front, when it is there. */

@@ -9,10 +9,25 @@ import { plainNotFoundResponse, type RoutedInput } from './serve.ts';
 import type { Store } from './store.ts';
 
 /**
- * A request routing found no route for: a middleware redirect, or a rule that answers with a
- * status, comes back as headers and a status with no route behind them; anything else is the
- * not-found document, rendered for the request as the middleware left it — at the URL it
- * rewrote the request to, when it did, since the router hands back no URL of its own.
+ * What routing answers a request it found no route for itself: a middleware redirect, or a rule that
+ * answers with a status, comes back as headers and a status with no route behind them. `undefined`
+ * where it came back with no status.
+ */
+export function routingAnswer(routed: ResolveRoutesResult): Response | undefined {
+  if (routed.status === undefined) {
+    return undefined;
+  }
+  const location = routed.resolvedHeaders?.get('location') ?? undefined;
+  return location === undefined
+    ? new Response(null, { status: routed.status, headers: new Headers(routed.resolvedHeaders) })
+    : redirectResponse(location, routed.status, routed.resolvedHeaders);
+}
+
+/**
+ * A request routing found no route for: what routing answers it with (`routingAnswer`), where it
+ * does; anything else is the not-found document, rendered for the request as the middleware left
+ * it — at the URL it rewrote the request to, when it did, since the router hands back no URL of its
+ * own.
  */
 export async function unrouted(
   routed: ResolveRoutesResult,
@@ -20,14 +35,12 @@ export async function unrouted(
   store: Store,
   at: URL,
 ): Promise<Response> {
-  const location = routed.resolvedHeaders?.get('location') ?? undefined;
-  if (routed.status !== undefined) {
+  const answered = routingAnswer(routed);
+  if (answered !== undefined) {
     // Nothing below will read the forwarded body — the slower half of the request's tee — and
     // leaving it queued keeps the whole upload in the isolate for an answer that has no body.
     releaseStream(forwarded.request.body, 'routing exit: handler body unused');
-    return location === undefined
-      ? new Response(null, { status: routed.status, headers: new Headers(routed.resolvedHeaders) })
-      : redirectResponse(location, routed.status, routed.resolvedHeaders);
+    return answered;
   }
   // A data request is answered in its own terms. The client router parses what comes back as the
   // page's props, and a document under a 404 would be parsed as those — Next.js answers its own
