@@ -618,10 +618,9 @@ async function setUseCache(
       ? undefined
       : { context, landed: Promise.withResolvers<unknown>() };
   behind?.context.writes.add(behind.landed.promise);
-  // A revalidation a stale answer was kept going for, in this request, goes on until the write has
-  // landed (`revalidations.ts`) — one not made behind the request has as this answers.
+  // What the write came to, told once it is known (`revalidated`, below): the requests held for the
+  // key — those answered stale while the entry was collected among them — go once it has landed.
   const written = Promise.withResolvers<unknown>();
-  revalidated(runtime, useCacheStore(kind), cacheKey, behind?.landed.promise ?? written.promise);
   try {
     const entry = await pendingEntry;
     // As Next.js's own handler does: the wrapper serves one branch while the other is stored, and
@@ -657,12 +656,14 @@ async function setUseCache(
     });
     behind.context.waitUntil(write);
     behind.landed.resolve(write);
+    written.resolve(write);
   } finally {
     // Nothing written — an entry that expires at once, one too large, or one that failed on the
     // way — is nothing to wait for. Once the write has been handed over, this changes nothing; what
     // it settles with is read by nobody.
     behind?.landed.resolve(false);
     written.resolve(false);
+    revalidated(runtime, useCacheStore(kind), cacheKey, written.promise);
   }
 }
 
