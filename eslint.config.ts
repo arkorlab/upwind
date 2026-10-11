@@ -275,7 +275,7 @@ export default defineConfig([
       'unicorn/comment-content': 'off', // prose casing in comments is not a code-quality signal
       'unicorn/no-break-in-nested-loop': 'off', // `switch` inside parser loops is idiomatic
       'unicorn/no-non-function-verb-prefix': 'off', // zod schema names such as `createSiteRequestSchema` are nouns
-      'unicorn/prefer-iterator-to-array': 'off', // `Iterator#toArray` is not in the TypeScript 5.9 lib
+      'unicorn/prefer-iterator-to-array': 'off', // `Iterator#toArray` is not in the ES2024 lib the tsconfigs name
       'unicorn/prefer-number-coercion': 'off', // `parseInt` with an explicit radix is intentional for tolerant header parsing
       'unicorn/consistent-boolean-name': 'off', // rejects idiomatic predicates (`startsWith`, `equals`)
       'unicorn/import-style': 'off',
@@ -286,8 +286,8 @@ export default defineConfig([
       'unicorn/no-barrel-files': 'off', // package subpath entry points are barrels by design
       'unicorn/no-null': 'off', // React and Next.js APIs return `null`
       'unicorn/no-unreadable-new-expression': 'off', // `new URL(x).host` is idiomatic
-      'unicorn/prefer-error-is-error': 'off', // `Error.isError` is not in the TypeScript 5.9 lib
-      'unicorn/prefer-uint8array-base64': 'off', // `Uint8Array#toBase64` is not in the TypeScript 5.9 lib
+      'unicorn/prefer-error-is-error': 'off', // `Error.isError` is not in the ES2024 lib the tsconfigs name
+      'unicorn/prefer-uint8array-base64': 'off', // `Uint8Array#toBase64` is not in the ES2024 lib the tsconfigs name
       'unicorn/single-line-block-comment-style': 'off', // single-line JSDoc is idiomatic
       'unicorn/try-complexity': 'off', // a complexity budget of 1 per try block is unworkable for stream pumps
       'unicorn/prefer-top-level-await': 'off', // not valid in Next.js modules
