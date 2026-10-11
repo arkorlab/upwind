@@ -2,6 +2,7 @@ import { rolldown } from 'rolldown';
 
 import { jsLiteral } from './codegen.ts';
 import { generatedModulesPlugin } from './generated-modules.ts';
+import { THROWING_GLOBALS } from './throwing-globals.ts';
 
 /** What the runtime module of one Function is bundled from, and as. */
 export interface RuntimeBundleInput {
@@ -50,6 +51,7 @@ export async function bundleRuntimeModule(input: RuntimeBundleInput): Promise<vo
     transform: {
       target: 'es2024',
       define: {
+        ...THROWING_GLOBALS,
         'process.env.NODE_ENV': '"production"',
         __ARKOR_FUNCTION_KIND__: jsLiteral(input.kind),
         // Which Function this is, among a deployment's app Functions: what a request for a route of

@@ -10,6 +10,7 @@ import { dynamicLoadsInChunk } from './dynamic-loads.ts';
 import type { KeptMaps } from './kept-maps.ts';
 import { externalsPlugin, FUNCTION_BANNER } from './patches/index.ts';
 import { sourceMapsPlugin, sourcemapOutput } from './source-maps.ts';
+import { THROWING_GLOBALS } from './throwing-globals.ts';
 import { projectModuleName } from './traced-files.ts';
 
 /**
@@ -180,6 +181,7 @@ export function edgeBundleOptions(
     ],
     transform: {
       define: {
+        ...THROWING_GLOBALS,
         'process.env.NEXT_RUNTIME': '"edge"',
         'process.env.NODE_ENV': '"production"',
       },

@@ -6,6 +6,7 @@ import { type OutputChunk, type Plugin, rolldown } from 'rolldown';
 import { bundled, type BundleTrace } from './dependencies.ts';
 import { dynamicLoadsInChunk } from './dynamic-loads.ts';
 import { externalsPlugin } from './patches/index.ts';
+import { THROWING_GLOBALS } from './throwing-globals.ts';
 
 /**
  * The packages a build leaves to the runtime as ES modules, carried as modules of the Function's own.
@@ -118,7 +119,7 @@ export async function bundleLinkedExternals(input: {
     input: Object.fromEntries(linked.toSorted((a, b) => a.localeCompare(b)).map((id) => [id, id])),
     platform: 'node',
     plugins: [externalsPlugin((specifier) => externals.add(specifier))],
-    transform: { define: { 'process.env.NODE_ENV': '"production"' } },
+    transform: { define: { ...THROWING_GLOBALS, 'process.env.NODE_ENV': '"production"' } },
     // A module these packages name and nobody installed is left to fail as it would under
     // Node.js — at run time, when the import runs — rather than failing the build: the package
     // was loaded lazily before it was bundled here, and `esm-externals` guards an `import('fail')`

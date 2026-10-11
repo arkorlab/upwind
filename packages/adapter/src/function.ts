@@ -65,6 +65,7 @@ import {
   sourceMapsPlugin,
   sourcemapOutput,
 } from './source-maps.ts';
+import { THROWING_GLOBALS } from './throwing-globals.ts';
 import type { TracedFile } from './traced-files.ts';
 import { WASM_ENTRY_MODULE, type WasmCollector, wasmEntrySource, wasmModuleName } from './wasm.ts';
 
@@ -280,6 +281,7 @@ export function appBundleOptions(
     plugins: appBundlePlugins(context, sinks),
     transform: {
       define: {
+        ...THROWING_GLOBALS,
         'process.env.NEXT_RUNTIME': '"nodejs"',
         'process.env.NODE_ENV': '"production"',
       },
