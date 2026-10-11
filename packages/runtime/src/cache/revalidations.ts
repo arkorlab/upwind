@@ -149,7 +149,8 @@ export function holdForRevalidation(runtime: CacheRuntime, store: string, key: s
   const hold: Hold = { done: promise, settle: resolve };
   held.holds.set(context, hold);
   if (!keep(runtime, context, lapse(table, id, context, hold))) {
-    // No write reaches a request that could not be kept going.
+    // No write reaches a request that could not be kept going; settled, its lapse lets its timers go.
+    hold.settle(Promise.resolve());
     letGo(table, id, context, hold);
   }
 }
