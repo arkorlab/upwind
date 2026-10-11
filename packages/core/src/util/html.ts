@@ -28,12 +28,14 @@ const HTML_MEDIA_TYPE = 'text/html';
  * telemetry and does not condemn the manifest — so a monitor that judged this differently would
  * keep calling a project healthy while every request for it got a recovery reload.
  */
-// eslint-disable-next-line unicorn/prefer-default-parameters -- `Headers#get` answers `null`, which a default does not replace
 export function isHtmlContentType(value: string | null): boolean {
+  if (value === null) {
+    return false;
+  }
   // The media type itself, not a prefix of the field: `text/htmlx` is its own type, and splicing
   // one under the shell's `text/html` would hand the browser a document it will not parse — with
   // `nosniff`, not even the recovery script that gets the visitor off it. Proof requires the same
   // exact match, so a route admitted there is one this accepts.
-  const [type = ''] = (value ?? '').toLowerCase().split(';', 1);
+  const [type = ''] = value.toLowerCase().split(';', 1);
   return type.trim() === HTML_MEDIA_TYPE;
 }

@@ -18,9 +18,8 @@ const FIRST_COMMIT = 'Initial commit from create-upwind';
 async function git(args: readonly string[], cwd: string): Promise<number | undefined> {
   const child = spawn('git', args, { cwd, stdio: 'ignore' });
   try {
-    // eslint-disable-next-line unicorn/prefer-default-parameters -- a signal leaves the code `null`, which a default does not replace
-    const [code] = (await once(child, 'exit')) as [number | null, NodeJS.Signals | null];
-    return code ?? 1;
+    await once(child, 'exit');
+    return child.exitCode ?? 1;
   } catch {
     return undefined;
   }

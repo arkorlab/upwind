@@ -245,9 +245,11 @@ the two checks described under "Which Next.js" below, and recorded per build in
 
 The app module (`app.cjs`) is bundled by Rolldown, as one CommonJS module with the patches
 applied as each file is loaded — 5% smaller than esbuild made it from the same graph, and built
-sooner (see EXPERIMENTS.md, V-03); the runtime module (`index.mjs`) by esbuild, for its `workerd`
-conditions; the edge bundle (`edge.cjs`), where a build produced one, by Rolldown as well. All three
-are minified in whitespace and syntax and not in names, so a stack trace still names its function.
+sooner (see EXPERIMENTS.md, V-03). The runtime module (`index.mjs`) is Rolldown's as well, for the
+`workerd` and `worker` conditions, and so is the edge bundle (`edge.cjs`), where a build produced
+one. Rolldown shakes the members of a namespace object a dependency builds, which esbuild keeps
+whole: `import { z } from 'zod'` in a cache host kept all of zod in the runtime. All three are
+minified in whitespace and syntax and not in names, so a stack trace still names its function.
 
 One thing the build wrote is rewritten on its way into the app module, as the patches rewrite
 Next.js's files. With `experimental.turbopackModuleFragments` (Next.js 16.4) Turbopack registers

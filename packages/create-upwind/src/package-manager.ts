@@ -42,15 +42,14 @@ export async function install(manager: PackageManager, cwd: string): Promise<voi
     // shell here is what finds the launcher, and it is handed nothing to interpret.
     shell: process.platform === 'win32',
   });
-  let code;
   try {
-    [code] = (await once(child, 'exit')) as [number | null, NodeJS.Signals | null];
+    await once(child, 'exit');
   } catch {
     // `events.once` rejects on `error`, which is what a command that is not on the PATH raises — a
     // `--use-bun` on a machine with no bun. The raw `spawn bun ENOENT` says less than this does.
     refuse(manager, `\`${manager}\` could not be run; it may not be installed`);
   }
-  if (code !== 0) {
+  if (child.exitCode !== 0) {
     refuse(manager, `\`${manager} install\` failed`);
   }
 }

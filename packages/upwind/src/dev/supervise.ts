@@ -89,8 +89,8 @@ async function runChild(
   try {
     // `events.once` rejects if the child emits `error` instead — a fork that never started is a
     // failure of this command, and is thrown from here.
-    const [code, signal] = (await once(child, 'exit')) as [number | null, NodeJS.Signals | null];
-    return { code, signal, asked, port: bound };
+    await once(child, 'exit');
+    return { code: child.exitCode, signal: child.signalCode, asked, port: bound };
   } finally {
     process.off('SIGINT', onInterrupt);
     process.off('SIGTERM', onTerminate);
