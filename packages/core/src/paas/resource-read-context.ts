@@ -19,11 +19,9 @@ function holder(): PrimaryReadHolder {
 }
 
 function stores(): WeakSet<NextWorkStore> {
-  // eslint-disable-next-line unicorn/no-unsafe-property-key -- a fixed cross-bundle registry symbol
   const held = holder()[PRIMARY_STORES_KEY];
   if (held !== undefined) return held;
   const created = new WeakSet<NextWorkStore>();
-  // eslint-disable-next-line unicorn/no-unsafe-property-key -- the same fixed registry symbol
   holder()[PRIMARY_STORES_KEY] = created;
   return created;
 }
@@ -32,16 +30,12 @@ const primaryStores = stores();
 
 /** Supplied by the host; the contract itself requires neither Node nor another Next store. */
 export function installResourcePrimaryReadStorage(storage: ResourcePrimaryReadStorage): void {
-  // eslint-disable-next-line unicorn/no-unsafe-property-key -- a fixed registry symbol, never caller input
   const existing = holder()[PRIMARY_READ_KEY];
   if (existing === undefined) {
-    // eslint-disable-next-line unicorn/no-unsafe-property-key -- the same fixed registry symbol
     holder()[PRIMARY_READ_KEY] = storage;
   }
-  // eslint-disable-next-line unicorn/no-unsafe-property-key -- a fixed registry symbol, never caller input
   const capture = holder()[PRIMARY_STORE_KEY];
   if (capture !== undefined) return;
-  // eslint-disable-next-line unicorn/no-unsafe-property-key -- the same fixed registry symbol
   holder()[PRIMARY_STORE_KEY] = (store: NextWorkStore): NextWorkStore => {
     if (readsPrimary()) primaryStores.add(store);
     return store;
@@ -50,7 +44,6 @@ export function installResourcePrimaryReadStorage(storage: ResourcePrimaryReadSt
 
 /** Next's clean snapshot restores its own work store but intentionally drops ambient ALS. */
 export function readsPrimary(): boolean {
-  // eslint-disable-next-line unicorn/no-unsafe-property-key -- the fixed storage registry symbol
   const storage = holder()[PRIMARY_READ_KEY];
   return (
     storage?.getStore() === true ||
@@ -60,7 +53,6 @@ export function readsPrimary(): boolean {
 
 /** Internal regeneration scope; synchronous work and promises retain the same primary-read flag. */
 export function withPrimaryResourceReads<T>(work: () => T): T {
-  // eslint-disable-next-line unicorn/no-unsafe-property-key -- the fixed storage registry symbol
   const storage = holder()[PRIMARY_READ_KEY];
   if (storage === undefined)
     throw new Error('Upwind primary resource read context is not installed');

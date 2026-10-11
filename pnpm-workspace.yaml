@@ -15,7 +15,7 @@ packages:
 catalog:
   # Cloudflare's own types for the storage objects `@stayingupwind/sdk` hands an application. They
   # are in that package's public declarations, so they are a dependency of it and not a dev one.
-  '@cloudflare/workers-types': 5.20261009.1
+  '@cloudflare/workers-types': 5.20261010.1
   '@eslint/js': 10.0.1
   # What the adapter reads a build's source maps with: `sourcemap-codec` for a map's mappings as
   # numbers and back (`projectOnly`), `trace-mapping` for the index maps Turbopack writes when debug
@@ -25,7 +25,7 @@ catalog:
   '@next/routing': 16.4.0
   # The AST Rolldown's `this.parse` hands a plugin: the version Rolldown itself depends on.
   '@oxc-project/types': 0.153.0
-  '@types/node': 24.19.1
+  '@types/node': 24.19.2
   # What `@stayingupwind/auth` wraps. A peer dependency there, so a project brings its own copy and
   # this pin is what the repository builds and typechecks against — the same arrangement as `next`.
   better-auth: 1.7.7
@@ -50,17 +50,17 @@ catalog:
   # Reads a project's own config at build time, the way wrangler reads its own. Build-time only:
   # nothing of it reaches a Function.
   jsonc-parser: 3.3.1
-  knip: 6.40.0
+  knip: 6.41.0
   # The workerd `upwind dev` and `upwind build` bind a project's local storage to. The version is
   # the registry's `latest`, which is a prerelease: the last non-prerelease carries a workerd from
   # July, and a compatibility date a Function is built against (`FUNCTION_COMPATIBILITY_DATE` in
   # `@stayingupwind/adapter`) is newer than that — a local run must not be the older runtime.
-  miniflare: 5.20260925.0-alpha
+  miniflare: 5.20261006.1-alpha
   next: 16.4.0
   oxfmt: 0.72.0
   rolldown: 1.2.13
   wrangler: 4.147.0
-  typescript: 5.9.3
+  typescript: 6.0.3
   typescript-eslint: 8.71.1
 
 # Only these dependencies may run install scripts.

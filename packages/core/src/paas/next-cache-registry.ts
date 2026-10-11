@@ -41,14 +41,12 @@ function holder(): RegistryHolder {
 }
 
 function registry(): Registry {
-  // eslint-disable-next-line unicorn/no-unsafe-property-key -- a fixed registry symbol shared by separate bundles
   const held = holder()[STATE_KEY];
   if (held !== undefined) return held;
   const created: Registry = {
     units: new Set(),
     revalidation: new Map(),
   };
-  // eslint-disable-next-line unicorn/no-unsafe-property-key -- the same fixed registry symbol
   holder()[STATE_KEY] = created;
   return created;
 }
