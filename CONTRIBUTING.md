@@ -29,6 +29,8 @@ upwind/
 │   ├── runtime/   # @stayingupwind/runtime — what a deployment's Function runs
 │   ├── sdk/       # @stayingupwind/sdk — what an application reads its own storage through:
 │   │              #   the D1 database, KV namespace and R2 bucket its deployment published
+│   ├── auth/      # @stayingupwind/auth — Better Auth with nothing to configure: the config beside
+│   │              #   the app is mounted, given that database, and signed in against upwind itself
 │   ├── upwind/    # upwind — the CLI; `upwind dev` runs a Next.js dev server behind its own door
 │   └── create-upwind/
 │                   # create-upwind — `pnpm create upwind`, and the application it writes
@@ -36,16 +38,18 @@ upwind/
 ├── web-site/      # www.stayingupwind.com — the project's own site, in English and Japanese,
 │                   #   written by create-upwind and built by the released upwind
 ├── tools/
-│   └── next-matrix/  # builds those fixtures with each Next.js and checks what came out
+│   ├── next-matrix/   # builds those fixtures with each Next.js and checks what came out
+│   └── deploy-tests/  # deploys Next.js's own deploy-mode applications to a host for its suite to run
 └── .github/
-    ├── workflows/ci.yaml           # every check, on every pull request
-    ├── workflows/next-matrix.yaml  # the supported Next.js range, checked against Next.js itself
-    ├── workflows/release.yaml      # where a release enters; npm's trusted publisher names this file
-    ├── workflows/publish.yaml      # what a release does
-    └── release-signers.asc         # the keys a release tag may be signed with
+    ├── workflows/ci.yaml            # every check, on every pull request
+    ├── workflows/next-matrix.yaml   # the supported Next.js range, checked against Next.js itself
+    ├── workflows/deploy-tests.yaml  # that suite against a real host, which needs a credential
+    ├── workflows/release.yaml       # where a release enters; npm's trusted publisher names this file
+    ├── workflows/publish.yaml       # what a release does
+    └── release-signers.asc          # the keys a release tag may be signed with
 ```
 
-All six packages are published. The workspace root, `tools/`, `fixtures/` and `web-site/` are not —
+All seven packages are published. The workspace root, `tools/`, `fixtures/` and `web-site/` are not —
 and the fixtures are deliberately outside the pnpm workspace, since a workspace package would be
 pinned to the catalog's single Next.js, which is the one thing the matrix exists to look past.
 
@@ -66,20 +70,31 @@ git clone https://github.com/arkorlab/upwind.git
 cd upwind
 pnpm install
 
-pnpm typecheck         # tsc across every package, then the root config
-pnpm lint              # ESLint, type-aware, across every package
-pnpm format            # oxfmt --check; `pnpm format:write` writes
-pnpm knip              # unused files and unused dependencies
-pnpm build             # type-checks core and runtime; bundles the adapter's published entry
-pnpm check:patches     # the rewrites of Next.js's own package still find what they insist on
-pnpm check:agent-rules # the agent rules `create-upwind` writes are still Next.js's own
+pnpm build                 # bundles every `dist` a release ships, in dependency order
+pnpm typecheck             # tsc across every package, then the root config
+pnpm lint                  # ESLint, type-aware, across every package
+pnpm format                # oxfmt --check; `pnpm format:write` writes
+pnpm knip                  # unused files and unused dependencies
+pnpm check:patches         # the rewrites of Next.js's own package still find what they insist on
+pnpm check:deploy-tests    # the deploy-mode hooks, against a host that is not one
+pnpm check:durable-objects # native namespaces, SQLite storage and source isolation, without a build
+pnpm check:agent-rules     # the agent rules `create-upwind` writes are still Next.js's own
 ```
 
-Those seven, in that order, are exactly what CI runs — there is nothing else to pass. `pnpm lint` is
-type-aware over the whole workspace and wants more than Node's default heap; CI gives it 8 GB
+Those nine, in that order, are what CI runs, and beside them `pnpm audit --audit-level low` over both
+lockfiles — this one and the site's — so a pull request can also be stopped by an advisory against
+something neither of you wrote.
+
+**`pnpm build` comes first, and the order is not cosmetic.** `@stayingupwind/sdk` and
+`@stayingupwind/auth` are read through the `dist` they are built into rather than through their
+sources, since an application's own bundler reads them and neither can therefore name `src` in
+`exports`. A sibling that imports one of them resolves it to declarations that do not exist until
+`build` has run, so everything type-aware comes after it — and `pnpm -r` builds in dependency order,
+which is also what proves that order is right. `pnpm lint` is type-aware over the whole workspace and
+wants more than Node's default heap; CI gives it 8 GB
 (`NODE_OPTIONS=--max-old-space-size=8192`), and you may need to as well.
 
-**There is no test suite in this repository.** The checks above are the whole of CI, and some prose
+**There is no test suite in this repository.** Those checks are the whole of it, and some prose
 in the package readmes refers to suites by path; those suites are not here. What _is_ checked against
 something outside this repository is what this one matched against Next.js by text — the adapter's
 rewrites of Next.js's own output, and the agent rules `create-upwind` copies from it — because text
@@ -113,7 +128,7 @@ only matters if you touched `packages/adapter/src/patches/`. The patch checks ar
 
 ## Releases
 
-Maintainers only. The version of all six packages moves in lockstep, in a pull request like any
+Maintainers only. The version of all seven packages moves in lockstep, in a pull request like any
 other; a tag is not a place to make a change. A release that publishes a package for the first time
 also adds its row to `PACKAGES` in [`web-site/src/lib/site.ts`](web-site/src/lib/site.ts): the site's
 table links to npm, so it names what a reader can install rather than what the repository holds, and
@@ -122,14 +137,14 @@ the bump is the moment those two agree. Once the bump is on `main`:
 ```bash
 git switch main && git pull
 # The name is `v` and the version every package now says — nothing else is accepted.
-git tag -s v0.3.0 -m v0.3.0
-git push origin v0.3.0
+git tag -s v0.4.0 -m v0.4.0
+git push origin v0.4.0
 ```
 
 Pushing the tag is the whole of a release, for every release that publishes no new name. `verify`
-refuses a tag whose packages include one npm has never heard of, because there is no credential here
-that could publish it — which is a refusal and not a half-made release. The paragraph below is what
-to do when that is the release you are making.
+refuses a tag whose packages include one npm has never heard of, unless the run was asked for a
+credential that could publish it — which is a refusal and not a half-made release, and a tag push
+cannot do the asking. The steps below are what to do when that is the release you are making.
 
 Everything else is in [`publish.yaml`](.github/workflows/publish.yaml). A release refuses a tag that
 is not signed by a key in [`release-signers.asc`](.github/release-signers.asc), that does not stand
@@ -139,12 +154,43 @@ a provenance attestation it reads back off the registry afterwards.
 
 **A package published for the first time takes one release that cannot come through there.** npm will
 not hold a trusted publisher for a name that does not exist yet, and publishing such a name by hand
-would leave a version no provenance covers — which the release after it fails over. The answer, three
+would leave a version no provenance covers — which the release after it fails over. The answer, four
 times now, has been a temporary `bootstrap` input carrying a token for that one release and removed
-again afterwards. It is not in the workflow today, because no name needs it today: the shape is in
-[`publish.yaml`](.github/workflows/publish.yaml)'s history, and that file opens with what those
-releases taught — among them that the token needs npm's **Packages and scopes** permission, and that
-granting **Organizations** instead buys nothing a publish can use.
+again afterwards. `@stayingupwind/auth` is the name it is in the workflow for today, and the whole of
+such a release is:
+
+1. **A token, as small as npm will cut one.** Granular, **Packages and scopes → Read and write**,
+   limited to the `@stayingupwind` scope, shortest expiry. **Organizations** is not publishing
+   permission and buys nothing — and npm answers a token without rights `404 Not Found` rather than
+   `403`, so the log reads as though the package does not exist. A new _unscoped_ name cannot be
+   asked for this way at all, and needs a registry-wide token; a scoped one can, through its scope.
+2. `gh secret set NPM_TOKEN`, pasted rather than passed on a command line.
+3. **Dispatch** `Release` with the tag, `dry-run: false` and `bootstrap: true`. The tag still has to
+   be pushed first — it is what the dispatch verifies — and **the run that push starts fails, by
+   design**: a tag push cannot ask for a credential, so `verify` refuses it over the name npm has
+   never heard of, having published nothing. That red run is the guard working. Let it finish — one
+   release of a version runs at a time, so the dispatch queues behind it — and the dispatch then
+   verifies the same tag the same way and is the release.
+4. **Approve the `release` environment.** That gate is the last human checkpoint before something
+   that cannot be taken back.
+5. **Give the new name a trusted publisher of its own, now that it exists**, so the release after
+   this one needs none of the above:
+
+   ```bash
+   npm trust github @stayingupwind/auth \
+     --file release.yaml --repository arkorlab/upwind \
+     --environment release --allow-publish
+   ```
+
+   npm 11.15 or later, and it asks for an OTP. `--file` is the **caller's** filename, because npm
+   validates the OIDC token's `workflow_ref` and not `job_workflow_ref`.
+
+6. `gh secret delete NPM_TOKEN`, revoke the token, and take the `bootstrap` input back out.
+
+Step 5 is the one with no check behind it. By the next release the name exists, so `verify`'s probe
+is satisfied and a publish with no trusted publisher behind it fails partway instead — `npm trust
+list` needs an OTP, so nothing in CI can read whether the grant is there. It is a step to finish in
+the same sitting as the release, not one to leave for later.
 
 The last thing it does is draft a GitHub Release for the tag. Notes written; the tarballs npm is
 serving attached, each checked against the digest npm published beside it; and a bill of materials

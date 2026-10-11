@@ -691,9 +691,10 @@ jobs:
             # once it is published, so a flag that waits on somebody remembering a checkbox is one
             # that will be wrong eventually, and wrong permanently.
             #
-            # Not the same question as the dist-tag above, and deliberately not the same answer.
-            # `0.3.0` is what `npm install` should give you — `latest` — while being a release this
-            # repository has not called stable. Only a prerelease part holds a version back on npm.
+            # Not the same question as the dist-tag above, and deliberately not the same answer. A
+            # `0.x` release is what `npm install` should give you — `latest` — while being a release
+            # this repository has not called stable. Only a prerelease part holds a version back on
+            # npm.
             case "${version}" in
               0.* | *-*) set -- "$@" --prerelease ;;
             esac
