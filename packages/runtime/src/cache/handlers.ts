@@ -541,7 +541,7 @@ async function getUseCache(
     return undefined;
   }
   // Aged as the wrapper will age it, once this has answered: after the reads above.
-  if (revalidatedBehind(validity, nowMs() - entry.timestamp, entry.revalidate)) {
+  if (revalidatedBehind(validity, nowMs() - entry.timestamp, entry.revalidate, entry.expire)) {
     holdForRevalidation(runtime, useCacheStore(kind), cacheKey);
   }
   return {

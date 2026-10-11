@@ -6,18 +6,32 @@ import type { CacheRuntime } from './runtime.ts';
 
 /**
  * How long a request answered with a stale value is kept going for the revalidation Next.js begins
- * behind it (`holdForRevalidation`): the time a request may go on for once it has answered.
+ * behind it (`holdForRevalidation`), from its response's end: the time a request may go on for once
+ * it has answered.
  */
 const REVALIDATION_LIFETIME_MS = 30_000;
+/**
+ * The longest a request is held from the stale answer, its response's end reached or not: one whose
+ * end is never reached — its reader cancelled it — is let go then, long after the host has.
+ */
+const REVALIDATION_CAP_MS = 300_000;
 const MS_PER_SECOND = 1000;
 
 /**
  * Whether Next.js revalidates a `use cache` value it was answered, `ageMs` old, behind the render:
  * where a tag made it stale, and where its wrapper finds it past its `revalidate`, which it judges
- * once the value has been answered.
+ * once the value has been answered — but not past its `expire`, which the wrapper takes for a miss
+ * and computes in front of the render.
  */
-export function revalidatedBehind(validity: Validity, ageMs: number, revalidate: number): boolean {
-  return validity === 'stale' || ageMs > revalidate * MS_PER_SECOND;
+export function revalidatedBehind(
+  validity: Validity,
+  ageMs: number,
+  revalidate: number,
+  expire: number,
+): boolean {
+  return (
+    ageMs <= expire * MS_PER_SECOND && (validity === 'stale' || ageMs > revalidate * MS_PER_SECOND)
+  );
 }
 
 /**
@@ -82,14 +96,21 @@ async function lapse(
   context: RequestContext,
   hold: Hold,
 ): Promise<void> {
-  await settledWithin(hold.done, REVALIDATION_LIFETIME_MS);
+  // From the response's end, as the host counts the time it keeps `waitUntil` work going: while the
+  // response streams, the request goes on anyway, and a revalidation still under way at its end is
+  // given the whole of that time.
+  const afterEnd = (async () => {
+    await context.writes.ended;
+    await settledWithin(hold.done, REVALIDATION_LIFETIME_MS);
+  })();
+  await settledWithin(Promise.race([hold.done, afterEnd]), REVALIDATION_CAP_MS);
   letGo(table, id, context, hold);
 }
 
 /**
  * Keep the request answered with a stale value of `key` going until a revalidation of the key has
  * written it again and the write has landed (`revalidated`), or for `REVALIDATION_LIFETIME_MS` from
- * that answer.
+ * its response's end.
  *
  * Next.js hands such a revalidation to the request's `waitUntil` only where it began before the
  * render's stream was made: `executeRevalidates`, which `app-render.tsx` calls once as it makes the

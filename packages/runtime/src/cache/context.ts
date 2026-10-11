@@ -40,6 +40,7 @@ export interface RequestContext {
  */
 export class RequestWrites {
   readonly #out = new Set<Promise<unknown>>();
+  readonly #ended = Promise.withResolvers<undefined>();
 
   /** Let go of `write` once it has settled, whichever way. */
   async #letGo(write: Promise<unknown>): Promise<void> {
@@ -75,6 +76,7 @@ export class RequestWrites {
    */
   async landed(ms: number): Promise<void> {
     if (this.#out.size === 0) {
+      this.#ended.resolve(undefined);
       return;
     }
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -87,7 +89,18 @@ export class RequestWrites {
       ]);
     } finally {
       if (timer !== undefined) clearTimeout(timer);
+      this.#ended.resolve(undefined);
     }
+  }
+
+  /**
+   * Settled once the response has ended — its last byte reached, and what it waited for there
+   * (`landed`) — after which the host keeps the request's `waitUntil` work going for a while
+   * longer, and no longer. Never, for a response whose end was not reached: one its reader
+   * cancelled.
+   */
+  get ended(): Promise<undefined> {
+    return this.#ended.promise;
   }
 }
 
