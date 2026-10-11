@@ -743,7 +743,7 @@ export async function startLocalResources(
     };
   } catch (error) {
     starting = false;
-    console.warn(cannotStart(error));
+    if (options.signal?.aborted !== true) console.warn(cannotStart(error));
     // Whatever went wrong, a runtime process must not outlive the attempt that started it — including
     // an attempt still in the middle of starting one — and the claim goes back with it. Nothing waits
     // for that: this run has already said it has no storage, and what is being let go of was never
