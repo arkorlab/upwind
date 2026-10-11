@@ -150,7 +150,12 @@ export async function withRoutingOf(
   if (exit !== undefined) {
     return exitAnswer(input, answer, () => exit);
   }
-  const routedAnswer = withRoutingHeaders(answer, routed.resolvedHeaders);
+  // What the regeneration came to is said last, over routing's headers as over the render's: a rule
+  // of `next.config` may name any header, and this one is the runtime's to say, not the
+  // application's — as the usual path says it last (`outcomeOn` in `handle.ts`).
+  const outcome = answer.headers.get(CACHE_OUTCOME_HEADER);
+  const laid = withRoutingHeaders(answer, routed.resolvedHeaders);
+  const routedAnswer = outcome === null ? laid : outcomeOn(laid, outcome);
   // What the request uploads is let go of once the answer is done with — and only then, as the
   // render may read it while it streams. A request with none, as every document a regeneration is
   // asked for is, has nothing to let go of, and its answer goes out as it came.
