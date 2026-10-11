@@ -9,19 +9,19 @@ name: Publish
 # configured with is `release.yaml`. Renaming *that* file stops every release until npm is told.
 #
 # The shape follows SLSA: the tag is verified where nothing can publish, publishing authenticates
-# with an identity that outlives no run — there is no token here, and no secret to leak — and the
-# provenance the registry recorded is read back afterwards, so a release that produced no
-# attestation fails loudly instead of quietly.
+# with an identity that outlives no run, and the provenance the registry recorded is read back
+# afterwards, so a release that produced no attestation fails loudly instead of quietly. In the
+# steady state that leaves no token here and no secret to leak — which is not the state this file is
+# in right now, and the paragraph below is why and for how long.
 #
 # Adding a package takes one release that cannot come through here, because npm will not hold a
-# trusted publisher for a name that does not exist yet. Three times now the answer has been a
-# `bootstrap` input carrying a token for that one release and removed again afterwards; the history
-# has the shape of it, and every package has a publisher of its own again. Publishing a new name by
-# hand instead would leave a version no provenance covers — a statement is signed with this
-# workflow's identity, and nothing on a laptop has one — which the `provenance` job below then fails
-# the next release over.
+# trusted publisher for a name that does not exist yet. Four times now the answer has been a
+# `bootstrap` input carrying a token for that one release and removed again afterwards, and
+# `@stayingupwind/auth` is the one it is here for today. Publishing a new name by hand instead would
+# leave a version no provenance covers — a statement is signed with this workflow's identity, and
+# nothing on a laptop has one — which the `provenance` job below then fails the next release over.
 #
-# What those releases taught, for whoever adds the seventh package:
+# What the releases before this one taught, and it is all still true of this one:
 #
 #   * A granular token needs **Packages and scopes**, not **Organizations**. The second grants the
 #     org's membership and says nothing about publishing, and npm answers a token without rights
@@ -52,6 +52,26 @@ on:
         required: false
         default: false
         type: boolean
+      bootstrap:
+        description: >
+          Hand the publish step a token as well, for a package npm holds no trusted publisher for
+          because it does not exist yet. The packages that do have one still use theirs: pnpm asks per
+          package and falls back per package, so a release can carry both kinds at once, and the
+          attestation is the same either way — provenance is signed with this workflow's identity,
+          which is a separate thing from what publishing authenticated by.
+        required: false
+        default: false
+        type: boolean
+    secrets:
+      npm-token:
+        description: >
+          Needed by `bootstrap`, and by nothing else. A *scoped* new name can be named in a granular
+          token before it exists, through its scope — so this one needs write on `@stayingupwind` and
+          nothing wider, unlike the release that first published `upwind` and `create-upwind`, whose
+          unscoped names left no way to ask for less than everything. **Packages and scopes**, not
+          **Organizations**, as the note at the top of this file says. Short-lived all the same, and
+          revoked as soon as the release lands.
+        required: false
 
 permissions: {}
 
@@ -159,11 +179,32 @@ jobs:
             esac
           fi
 
-      # This workflow cannot publish a name npm has never seen: a first publish needs a token, and
-      # there is none here by design. Without this check the run would publish every package that does
-      # have a trusted publisher and fail on the one that does not — a release half made, and the half
-      # that landed cannot be taken back. Asked here, where nothing has been published yet.
-      - name: Nothing is being published for the first time
+      # The other half of the check below, for the releases that skip it. `bootstrap` turns off the
+      # probe that refuses a name npm has never heard of, so without this a bootstrap release whose
+      # secret was never set would verify clean, spend a person's approval, run every check, and fail
+      # at the last step before publishing — or, worse, rehearse green and fail only for real.
+      #
+      # Whether the secret is there, never its value: a boolean comes out of the expression, and this
+      # job is the one that holds nothing it could leak. It is also the job that runs before the
+      # environment's gate, which is the point — nobody should be asked to approve a release that
+      # cannot be made.
+      - name: A bootstrap release was given the credential it asked for
+        if: ${{ inputs.bootstrap }}
+        env:
+          TOKEN_PRESENT: ${{ secrets.npm-token != '' }}
+        run: |
+          set -euo pipefail
+          if [ "${TOKEN_PRESENT}" != true ]; then
+            echo '::error::bootstrap was asked for, and no npm-token was passed: set the NPM_TOKEN secret, or dispatch without bootstrap'
+            exit 1
+          fi
+
+      # A release that would publish a name npm has never seen needs `bootstrap`, and a tag push
+      # cannot ask for it. Without this the run would publish every package that does have a trusted
+      # publisher and fail on the one that does not — a release half made, and the half that landed
+      # cannot be taken back. Asked here, where nothing has been published yet.
+      - name: Nothing is being published for the first time without being asked for
+        if: ${{ !inputs.bootstrap }}
         run: |
           set -euo pipefail
           # A budget for the whole step, not for each request. Per-request deadlines alone say
@@ -210,7 +251,7 @@ jobs:
             case "${code}" in
               200) ;;
               404)
-                echo "::error::${name} has never been published, and no release can publish it from here: npm holds no trusted publisher for a name that does not exist, so the first one needs a token. The shape that carries one is in this file's history — see the note at the top."
+                echo "::error::${name} has never been published, and this run cannot publish it: a first publish needs a token, which only a dispatch with bootstrap: true carries. Cancel this run and dispatch Release with that tag instead."
                 exit 1
                 ;;
               *)
@@ -271,8 +312,16 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # The same checks CI runs. A tag on the default branch was green there, but "was green" is not
-      # "is green on this tree", and a release is the one place worth paying for the difference.
+      # The same checks CI runs, in the order CI runs them. A tag on the default branch was green
+      # there, but "was green" is not "is green on this tree", and a release is the one place worth
+      # paying for the difference.
+      #
+      # `build` first, and this is not a tidying: `@stayingupwind/sdk` and `@stayingupwind/auth` are
+      # read through the `dist` they are built into, which no checkout contains, and `auth` imports
+      # `@stayingupwind/sdk/db`. A runner that type-checks before building resolves that to
+      # declarations that do not exist and fails the release here — past the environment's approval,
+      # with a credential on its way, and nothing published.
+      - run: pnpm build
       - run: pnpm typecheck
       - run: pnpm lint
         env:
@@ -283,13 +332,14 @@ jobs:
       # without a rewrite it needs, and the adapter's own build says nothing about it. Cheap, and here
       # rather than only in CI: a tag can be pushed before that run finishes, or after it is cancelled.
       - run: pnpm check:patches
-      # And for the same reason: a `create-upwind` released with last version's agent rules writes
-      # every new project an uncommitted change, which nothing downstream would catch.
-      - run: pnpm check:agent-rules
-      # CI runs this and the release did not, which made a release the less-checked of the two. The
-      # deploy-mode hooks against a host that is not one: no credential, no network.
+      # CI runs these two and the release did not, which made a release the less-checked of the two.
+      # The deploy-mode hooks against a host that is not one — no credential, no network — and the
+      # Durable Object namespaces, their SQLite storage and their source isolation without a build.
       - run: pnpm check:deploy-tests
-      - run: pnpm build
+      - run: pnpm check:durable-objects
+      # And here for `check:patches`'s reason: a `create-upwind` released with last version's agent
+      # rules writes every new project an uncommitted change, which nothing downstream would catch.
+      - run: pnpm check:agent-rules
 
       # Made here, and before the publish, for two reasons. The install above populated pnpm's store,
       # which is what lets a licence and an author resolve rather than coming out `NOASSERTION`; and a
@@ -375,6 +425,29 @@ jobs:
             esac
           fi
 
+      # Last, and alone. Everything above — `pnpm install` and the lifecycle scripts it is allowed to
+      # run among them — has already happened; and the publish below runs no package code either,
+      # because `--ignore-scripts` is what makes that true. Without it `pnpm publish` would run each
+      # `prepack` *after* this step, in a process that loads a bundler, with the token on disk.
+      # `dry-run` as well as `bootstrap`: a rehearsal uploads nothing, so writing a token to the
+      # runner's disk for it would be a credential at rest with nothing to do. That a rehearsal
+      # proves nothing about the token is why `verify` asks whether one was passed at all, which it
+      # can do without reading it.
+      - name: A credential for a package that does not exist yet
+        if: ${{ inputs.bootstrap && !inputs.dry-run }}
+        env:
+          NPM_TOKEN: ${{ secrets.npm-token }}
+        run: |
+          set -euo pipefail
+          # Said twice, because an empty `.npmrc` entry would send the publish to npm with a
+          # credential rather than without one, and be refused as a bad token rather than fall back
+          # to the trusted publisher that the other six packages have.
+          if [ -z "${NPM_TOKEN:-}" ]; then
+            echo '::error::bootstrap was asked for, but no npm-token was passed'
+            exit 1
+          fi
+          printf '//registry.npmjs.org/:_authToken=%s\n' "${NPM_TOKEN}" >> ~/.npmrc
+
       - name: Publish
         env:
           TAG: ${{ inputs.tag }}
@@ -407,11 +480,11 @@ jobs:
     needs: publish
     if: ${{ !inputs.dry-run }}
     runs-on: ubuntu-latest
-    # Six packages, each given the ten minutes the comment below explains, and room to say so. The
+    # Seven packages, each given the ten minutes the comment below explains, and room to say so. The
     # read-back is serial, so this has to grow with the number of packages or a release that published
-    # cleanly would be killed while verifying the last one — and the hundred and twenty `npm view`
-    # calls and the checkout are on top of the sixty minutes the waiting alone can take.
-    timeout-minutes: 75
+    # cleanly would be killed while verifying the last one — and the hundred and forty `npm view`
+    # calls and the checkout are on top of the seventy minutes the waiting alone can take.
+    timeout-minutes: 85
     permissions:
       contents: read
     steps:
@@ -653,9 +726,10 @@ jobs:
             # once it is published, so a flag that waits on somebody remembering a checkbox is one
             # that will be wrong eventually, and wrong permanently.
             #
-            # Not the same question as the dist-tag above, and deliberately not the same answer.
-            # `0.3.0` is what `npm install` should give you — `latest` — while being a release this
-            # repository has not called stable. Only a prerelease part holds a version back on npm.
+            # Not the same question as the dist-tag above, and deliberately not the same answer. A
+            # `0.x` release is what `npm install` should give you — `latest` — while being a release
+            # this repository has not called stable. Only a prerelease part holds a version back on
+            # npm.
             case "${version}" in
               0.* | *-*) set -- "$@" --prerelease ;;
             esac

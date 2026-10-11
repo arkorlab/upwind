@@ -54,8 +54,12 @@ const SCOPE = '@stayingupwind';
  * **This list follows the registry, not `packages/`.** The repository can hold a package that has
  * not shipped yet — every row here is a link to npm, and a link to a version nobody can install is
  * a 404 on the day this site deploys, which is the day the change lands rather than the day it is
- * released. A release that publishes a new package adds its row here, and nothing else: no sentence
- * in `content/` counts these, so the list is the only place that knows how many there are.
+ * released. So a new package's row goes in **after** the release that published it, in the same
+ * change that moves this project's own pin to it, and not in the version bump that precedes the
+ * release — which merges first, and would stand the row up for however long the release then takes.
+ * A first publish of a scoped name takes a token, a tag, a dispatch and somebody's approval, so
+ * that is not a window to put a 404 in. The row is the whole edit, besides: no sentence in
+ * `content/` counts these, so the list is the only place that knows how many there are.
  *
  * Each row's prose is the dictionary's (`content/`), because it is the only part of a row that is
  * written in a language. The names and the links are here.
