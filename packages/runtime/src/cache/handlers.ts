@@ -26,6 +26,12 @@ import {
   writesIn,
 } from './held-writes.ts';
 import type { DataEntryMetadata } from './host.ts';
+import {
+  fetchedAgainBehind,
+  holdForRevalidation,
+  revalidated,
+  revalidatedBehind,
+} from './revalidations.ts';
 import type { CacheRuntime } from './runtime.ts';
 import { recordValidity } from './tags.ts';
 import { callsBehind, callsWaitedOn } from './turns.ts';
@@ -239,6 +245,8 @@ interface FetchGetContext {
   readonly kind: string;
   readonly tags?: string[] | undefined;
   readonly softTags?: string[] | undefined;
+  /** The `fetch`'s own, or the `unstable_cache` call's: what `IncrementalCache` judges age by. */
+  readonly revalidate?: number | false | undefined;
 }
 
 interface FetchSetContext {
@@ -377,6 +385,10 @@ export class PlatformFetchCache {
     if (!isFetchValue(value)) {
       return null;
     }
+    // Aged as `IncrementalCache` will age it, once this has answered: after the reads above.
+    if (fetchedAgainBehind(validity, nowMs() - entry.timestamp, ctx.revalidate, value.revalidate)) {
+      holdForRevalidation(runtime, FETCH_STORE, cacheKey);
+    }
     return { value, lastModified: validity === 'stale' ? 0 : entry.timestamp };
   }
 
@@ -438,6 +450,7 @@ export class PlatformFetchCache {
         bytes,
       });
       context.waitUntil(write);
+      revalidated(current.runtime, FETCH_STORE, cacheKey, write);
       // And the end of the response waits for it (`RequestWrites`), the first byte not — save a
       // regeneration's, made behind a response that served what was there before.
       if (!isRegeneration()) {
@@ -527,6 +540,10 @@ async function getUseCache(
   ) {
     return undefined;
   }
+  // Aged as the wrapper will age it, once this has answered: after the reads above.
+  if (revalidatedBehind(validity, nowMs() - entry.timestamp, entry.revalidate, entry.expire)) {
+    holdForRevalidation(runtime, useCacheStore(kind), cacheKey);
+  }
   return {
     value: new Blob([judged.held.bytes as BlobPart]).stream(),
     tags: [...entry.tags],
@@ -601,6 +618,9 @@ async function setUseCache(
       ? undefined
       : { context, landed: Promise.withResolvers<unknown>() };
   behind?.context.writes.add(behind.landed.promise);
+  // What the write came to, told once it is known (`revalidated`, below): the requests held for the
+  // key — those answered stale while the entry was collected among them — go once it has landed.
+  const written = Promise.withResolvers<unknown>();
   try {
     const entry = await pendingEntry;
     // As Next.js's own handler does: the wrapper serves one branch while the other is stored, and
@@ -636,11 +656,14 @@ async function setUseCache(
     });
     behind.context.waitUntil(write);
     behind.landed.resolve(write);
+    written.resolve(write);
   } finally {
     // Nothing written — an entry that expires at once, one too large, or one that failed on the
     // way — is nothing to wait for. Once the write has been handed over, this changes nothing; what
     // it settles with is read by nobody.
     behind?.landed.resolve(false);
+    written.resolve(false);
+    revalidated(runtime, useCacheStore(kind), cacheKey, written.promise);
   }
 }
 
