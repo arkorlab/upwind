@@ -7,6 +7,7 @@ const RAW_AI = 'UPWIND_INTERNAL_AI';
 const AI_WORKER = 'upwind-local-ai';
 const AI_MODULE = 'upwind-local-ai.mjs';
 const CONNECTION_TIMEOUT_MS = 15_000;
+const CLEANUP_TIMEOUT_MS = 1500;
 const NAME = /^[A-Za-z_$][\w$]{0,63}$/u;
 
 export interface RemoteAiSession {
@@ -26,6 +27,23 @@ export type RemoteAiFactory = (auth: {
   readonly accountId: string;
   readonly apiToken: string;
 }) => Promise<RemoteAiSession>;
+
+export interface RemoteAiCredentials {
+  readonly accountId?: string;
+  readonly apiToken?: string;
+}
+
+/** Only the dev child consumes these values; its supervisor retains them for future children. */
+export function takeRemoteAiCredentials(): RemoteAiCredentials {
+  const accountId = process.env['CLOUDFLARE_ACCOUNT_ID'];
+  const apiToken = process.env['CLOUDFLARE_API_TOKEN'];
+  Reflect.deleteProperty(process.env, 'CLOUDFLARE_ACCOUNT_ID');
+  Reflect.deleteProperty(process.env, 'CLOUDFLARE_API_TOKEN');
+  return {
+    ...(accountId !== undefined && { accountId }),
+    ...(apiToken !== undefined && { apiToken }),
+  };
+}
 
 type RemoteAiStart = (
   bindings: Record<string, { type: 'ai'; remote: true }>,
@@ -99,6 +117,7 @@ export default class Inference extends WorkerEntrypoint {
     if (typeof model !== 'string' || !/^@(cf|hf)\//.test(model)) throw new TypeError('Only public Workers AI models are supported');
     if (typeof inputs !== 'string' && (typeof inputs !== 'object' || inputs === null || Array.isArray(inputs))) throw new TypeError('AI inputs must be a string, object, binary or stream');
     if (typeof inputs === 'object' && Object.hasOwn(inputs, 'lora')) throw new TypeError('AI inputs cannot include private LoRA adapters');
+    if (typeof inputs === 'object' && (Object.hasOwn(inputs, 'request_id') || Object.hasOwn(inputs, 'requests'))) throw new TypeError('AI inference cannot access batch requests');
     if (!models.has(model)) {
       if (models.size >= 256) models.delete(models.keys().next().value);
       const pending = approved(this.env.${RAW_AI}, model).catch(error => {
@@ -148,10 +167,35 @@ async function withinDeadline(
   let expired = false;
   let current: RemoteAiSession | undefined;
   let disposal: Promise<void> | undefined;
+  let draining: Promise<void> | undefined;
   const release = async (): Promise<void> => {
-    if (current !== undefined) {
-      disposal ??= current.dispose();
+    draining ??= (async () => {
+      // Cancellation can precede the factory result. Keep ownership until it arrives and drains,
+      // or the cleanup window expires; the pending task still disposes a later result in dev.
+      let session = current;
+      if (session === undefined) {
+        try {
+          session = await starting;
+        } catch {
+          return;
+        }
+      }
+      current = session;
+      disposal ??= session.dispose();
       await disposal;
+    })();
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        draining,
+        new Promise<never>((_resolve, reject) => {
+          deadline = setTimeout(() => {
+            reject(new Error('remote AI cleanup timed out'));
+          }, CLEANUP_TIMEOUT_MS);
+        }),
+      ]);
+    } finally {
+      clearTimeout(deadline);
     }
   };
   const late = (): boolean => expired || signal?.aborted === true;
@@ -174,6 +218,10 @@ async function withinDeadline(
   const ready = (async () => {
     const session = await starting;
     current = session;
+    // A cancelled factory result can fail readiness while its disposer is draining.
+    void session.ready.catch(() => {
+      // The setup race reports readiness failures; cancelled sessions are owned by release.
+    });
     try {
       if (late()) throw new Error('the remote AI connection arrived after its deadline');
       await Promise.race([session.ready, timeout, cancelled]);
@@ -200,8 +248,9 @@ export async function prepareLocalAi(
   occupied: readonly string[],
   remote: boolean,
   factory: RemoteAiFactory = connectRemoteAi,
-  signal?: AbortSignal,
+  options: { readonly signal?: AbortSignal; readonly auth?: RemoteAiCredentials } = {},
 ): Promise<LocalAi> {
+  const { signal } = options;
   signal?.throwIfAborted();
   let names: string[];
   try {
@@ -213,8 +262,10 @@ export async function prepareLocalAi(
   const entries = names.map((name): LocalStorageEntry => ({ name, type: 'ai' }));
   let session: RemoteAiSession | undefined;
   if (remote && entries.length > 0) {
-    const accountId = process.env['CLOUDFLARE_ACCOUNT_ID'];
-    const apiToken = process.env['CLOUDFLARE_API_TOKEN'];
+    const { accountId, apiToken } = options.auth ?? {
+      accountId: process.env['CLOUDFLARE_ACCOUNT_ID'],
+      apiToken: process.env['CLOUDFLARE_API_TOKEN'],
+    };
     if (accountId === undefined || apiToken === undefined || accountId === '' || apiToken === '') {
       console.warn(
         'upwind: remote AI requires CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN; local storage remains available',

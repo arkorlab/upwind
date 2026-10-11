@@ -3,7 +3,16 @@ import type { AiModels, ReadableStream } from '@cloudflare/workers-types';
 type Primitive = string | number | boolean | bigint | symbol | null | undefined;
 type PublicInputs<Input> = Input extends Primitive
   ? Input
-  : Omit<Input, 'lora'> & { readonly lora?: never };
+  : 'request_id' extends keyof Input
+    ? never
+    : 'requests' extends keyof Input
+      ? never
+      : Omit<Input, 'lora'> & RestrictedInputs;
+interface RestrictedInputs {
+  readonly lora?: never;
+  readonly request_id?: never;
+  readonly requests?: never;
+}
 type StreamingInputs<Input> = Input extends unknown
   ? 'stream' extends keyof Input
     ? true extends Input['stream']
@@ -19,9 +28,7 @@ type NonStreamingInputs<Input> = Input extends unknown
 type Inputs<Name extends keyof AiModels> = PublicInputs<AiModels[Name]['inputs']>;
 type NewModelInputs =
   | string
-  | ((Record<string, unknown> | ArrayBuffer | ArrayBufferView | ReadableStream) & {
-      readonly lora?: never;
-    });
+  | ((Record<string, unknown> | ArrayBuffer | ArrayBufferView | ReadableStream) & RestrictedInputs);
 
 /** Public Workers AI inference; account management and gateway options are not capabilities. */
 export interface AiInference {
@@ -40,7 +47,7 @@ export interface AiInference {
   /** A newly published model can be used before this package's model types are updated. */
   run<Model extends string>(
     model: Model extends keyof AiModels ? never : Model,
-    inputs: Record<string, unknown> & { stream: true; readonly lora?: never },
+    inputs: Record<string, unknown> & RestrictedInputs & { stream: true },
   ): Promise<ReadableStream>;
   run<Model extends string>(
     model: Model extends keyof AiModels ? never : Model,
@@ -70,6 +77,13 @@ export function inference(binding: unknown): AiInference {
       const inputs = args[1];
       if (typeof inputs === 'object' && inputs !== null && Object.hasOwn(inputs, 'lora')) {
         throw new TypeError('AI inference cannot include private LoRA adapters');
+      }
+      if (
+        typeof inputs === 'object' &&
+        inputs !== null &&
+        (Object.hasOwn(inputs, 'request_id') || Object.hasOwn(inputs, 'requests'))
+      ) {
+        throw new TypeError('AI inference cannot access batch requests');
       }
       return await Reflect.apply(runner.run, runner, args);
     },

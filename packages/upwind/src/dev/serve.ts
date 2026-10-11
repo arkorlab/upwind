@@ -12,6 +12,7 @@ import {
 import { prepareAuth } from '../auth/prepare.ts';
 import { answerInternal } from '../internal/router.ts';
 import { ownVersion } from '../manifest.ts';
+import { takeRemoteAiCredentials } from '../resources/local-ai.ts';
 import { type LocalResources, startLocalResources } from '../resources/local.ts';
 import { installAdapterPath } from './adapter.ts';
 import { displayAddress, internalAddress } from './address.ts';
@@ -139,6 +140,7 @@ function internalPathname(pathname: string): string | undefined {
 type Phase = 'starting' | 'running' | 'stopping';
 
 export async function serveDev(options: DevOptions): Promise<void> {
+  const remoteAiAuth = options.remoteAi === true ? takeRemoteAiCredentials() : undefined;
   const devSession = createSession({
     projectDir: options.projectDir,
     hostname: options.hostname,
@@ -298,6 +300,7 @@ export async function serveDev(options: DevOptions): Promise<void> {
     answersSignals: true,
     mode: 'development',
     remoteAi: options.remoteAi === true,
+    ...(remoteAiAuth !== undefined && { remoteAiAuth }),
     signal: startup.signal,
   });
   shutdown.local = startingLocal;

@@ -11,17 +11,20 @@ import capability from '../../sdk/src/ai.ts';
 import { ai, durableObject } from '../../sdk/src/named.ts';
 import { parseDevRequest } from '../src/args.ts';
 import { bridgeNextRestartSource } from '../src/dev/next-restart-loader.ts';
-import { completeNextStartup } from '../src/dev/next-startup.ts';
 import { RESTART_EXIT_CODE } from '../src/dev/restart.ts';
-import { closeDevResources } from '../src/dev/shutdown.ts';
 import {
   aiBindingNames,
   connectRemoteAi,
   localInferenceSource,
   prepareLocalAi,
+  takeRemoteAiCredentials,
 } from '../src/resources/local-ai.ts';
 import { startLocalResources } from '../src/resources/local.ts';
-import { disposeLocalResources } from '../src/resources/shutdown.ts';
+import {
+  checkConcurrentShutdown,
+  checkFailedNextStartup,
+  checkPendingAiFactory,
+} from './check-ai-lifecycle.ts';
 
 const symbol = Symbol.for(RESOURCES_SYMBOL_KEY);
 const previous: unknown = Reflect.get(globalThis, symbol);
@@ -101,6 +104,15 @@ async function checkAccessors(): Promise<void> {
       [MODEL, { lora: 'private' }],
     );
   }, /private LoRA/u);
+  for (const input of [{ request_id: 'batch' }, { requests: [{}] }]) {
+    await assert.rejects(async () => {
+      return await Reflect.apply(
+        Reflect.get(named, 'run') as (...args: unknown[]) => Promise<unknown>,
+        named,
+        [MODEL, input],
+      );
+    }, /batch requests/u);
+  }
   assert.equal(calls, 2);
   await stream.cancel();
   assert.equal(cancelled, true);
@@ -130,8 +142,8 @@ async function checkSetup(): Promise<void> {
   await connection.dispose();
   let calls = 0;
   process.env['UPWIND_AI_BINDINGS'] = '["INFERENCE"]';
-  process.env['CLOUDFLARE_ACCOUNT_ID'] = 'fixture-account';
-  process.env['CLOUDFLARE_API_TOKEN'] = 'fixture-token';
+  process.env['CLOUDFLARE_ACCOUNT_ID'] = accountId;
+  process.env['CLOUDFLARE_API_TOKEN'] = apiToken;
   const disabled = await prepareLocalAi([], false, () => {
     calls += 1;
     return Promise.reject(new Error('must never connect'));
@@ -174,7 +186,7 @@ async function checkSetup(): Promise<void> {
         },
       });
     },
-    controller.signal,
+    { signal: controller.signal },
   );
   await connected.promise;
   controller.abort();
@@ -184,96 +196,25 @@ async function checkSetup(): Promise<void> {
     2,
     'cancellation awaits a returned session disposer while readiness is pending',
   );
-}
-
-async function checkConcurrentShutdown(): Promise<void> {
-  const localStopped = Promise.withResolvers<undefined>();
-  let remoteStarted = false;
-  const closing = disposeLocalResources(() => localStopped.promise, {
-    dispose: () => {
-      remoteStarted = true;
-      return Promise.resolve();
+  const captured = takeRemoteAiCredentials();
+  assert.deepEqual(captured, { accountId, apiToken });
+  assert.equal(process.env['CLOUDFLARE_ACCOUNT_ID'], undefined);
+  assert.equal(process.env['CLOUDFLARE_API_TOKEN'], undefined);
+  const privateSession = await prepareLocalAi(
+    [],
+    true,
+    (auth) => {
+      assert.deepEqual(auth, captured);
+      assert.equal(process.env['CLOUDFLARE_API_TOKEN'], undefined);
+      return Promise.resolve({
+        remoteProxyConnectionString: new URL(proxyUrl) as never,
+        ready: Promise.resolve(),
+        dispose: () => Promise.resolve(),
+      });
     },
-  });
-  assert.equal(remoteStarted, true, 'remote cleanup starts even while local shutdown is pending');
-  localStopped.resolve(undefined);
-  await closing;
-
-  const remoteFailure = new Error('remote fixture failure');
-  const storageFailure = new Error('storage fixture failure');
-  await assert.rejects(
-    disposeLocalResources(() => Promise.reject(storageFailure), {
-      dispose: () => Promise.reject(remoteFailure),
-    }),
-    (error: unknown) => {
-      assert.ok(error instanceof AggregateError);
-      assert.deepEqual(error.errors, [remoteFailure, storageFailure]);
-      return true;
-    },
+    { auth: captured },
   );
-
-  const warnings: string[] = [];
-  const originalWarn = console.warn;
-  let appClosed = false;
-  console.warn = (message: string): void => {
-    warnings.push(message);
-  };
-  try {
-    await closeDevResources(
-      () => Promise.reject(remoteFailure),
-      () => {
-        appClosed = true;
-        return Promise.resolve();
-      },
-    );
-    assert.equal(appClosed, true, 'remote cleanup rejection does not skip Next.js close');
-    assert.deepEqual(warnings, ['upwind: failed to close local resources']);
-    warnings.length = 0;
-    await closeDevResources(
-      () => Promise.resolve(),
-      () => Promise.reject(new Error('application fixture secret')),
-    );
-    assert.deepEqual(warnings, ['upwind: failed to close Next.js']);
-  } finally {
-    console.warn = originalWarn;
-  }
-}
-
-async function checkFailedNextStartup(): Promise<void> {
-  const failure = new Error('fixture startup failure');
-  const drained = Promise.withResolvers<undefined>();
-  const closeStarted = Promise.withResolvers<undefined>();
-  let closed = false;
-  const starting = completeNextStartup(
-    () => {
-      closed = true;
-      closeStarted.resolve(undefined);
-      return drained.promise;
-    },
-    () => Promise.reject(failure),
-  );
-  await closeStarted.promise;
-  assert.equal(closed, true, 'failed preparation starts partial application cleanup');
-  drained.resolve(undefined);
-  await assert.rejects(starting, (error: unknown) => error === failure);
-
-  const originalWarn = console.warn;
-  const warnings: string[] = [];
-  console.warn = (message: string): void => {
-    warnings.push(message);
-  };
-  try {
-    await assert.rejects(
-      completeNextStartup(
-        () => Promise.reject(new Error('fixture cleanup secret')),
-        () => Promise.reject(failure),
-      ),
-      (error: unknown) => error === failure,
-    );
-    assert.deepEqual(warnings, ['upwind: failed to close partially started Next.js']);
-  } finally {
-    console.warn = originalWarn;
-  }
+  await privateSession.dispose();
 }
 
 async function checkInference(): Promise<void> {
@@ -318,6 +259,9 @@ async function checkInference(): Promise<void> {
   assert.equal(await worker.run(MODEL, AUDIO), AUDIO);
   assert.equal(searches, 2);
   await assert.rejects(async () => worker.run(MODEL, { lora: 'private' }), /private LoRA/u);
+  for (const input of [{ request_id: 'batch' }, { requests: [{}] }]) {
+    await assert.rejects(async () => worker.run(MODEL, input), /batch requests/u);
+  }
   await assert.rejects(async () => worker.run(MODEL, {}, {}), /only run/u);
   await assert.rejects(async () => worker.run('external-provider/model', {}), /public Workers AI/u);
   assert.equal(calls, [stream, binary, AUDIO].length);
@@ -441,6 +385,7 @@ export class Probe extends DurableObject {
 try {
   await checkAccessors();
   await checkSetup();
+  await checkPendingAiFactory();
   await checkInference();
   await checkConcurrentShutdown();
   await checkFailedNextStartup();

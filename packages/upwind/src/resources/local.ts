@@ -13,7 +13,12 @@ import {
 import type { Miniflare, MiniflareOptions } from 'miniflare';
 
 import { guardListeners } from './listeners.ts';
-import { type LocalAi, localAiBinding, prepareLocalAi } from './local-ai.ts';
+import {
+  type LocalAi,
+  localAiBinding,
+  prepareLocalAi,
+  type RemoteAiCredentials,
+} from './local-ai.ts';
 import { localEntries, type LocalStorageEntry } from './local-bindings.ts';
 import { failedOwnerNames, runtimeStartupFailure } from './local-failure.ts';
 import { type LocalDurableObject, localObjects } from './local-objects.ts';
@@ -168,6 +173,8 @@ export interface LocalOptions {
   readonly mode?: 'development' | 'production';
   /** Explicit dev-only permission to connect declared AI bindings remotely. */
   readonly remoteAi?: boolean;
+  /** Credentials consumed from the dev child's environment before any application modules load. */
+  readonly remoteAiAuth?: RemoteAiCredentials;
   /** Cancel setup during a dev restart or interruption, including a pending remote AI session. */
   readonly signal?: AbortSignal;
   /**
@@ -654,7 +661,10 @@ export async function startLocalResources(
       objects.map((object) => object.declaration.name),
       options.mode !== 'production' && options.remoteAi === true,
       undefined,
-      options.signal,
+      {
+        ...(options.signal !== undefined && { signal: options.signal }),
+        ...(options.remoteAiAuth !== undefined && { auth: options.remoteAiAuth }),
+      },
     );
     options.signal?.throwIfAborted();
     const entries = localEntries(

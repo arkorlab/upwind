@@ -5,6 +5,7 @@ import type { AiInference } from '../src/ai-inference.ts';
 /** Compiled by the SDK typecheck; deliberately never invokes an inference. */
 const MODEL = '@cf/meta/llama-2-7b-chat-int8';
 const FUTURE_AUDIO = '@cf/example/new-audio';
+const FUTURE_MODEL = '@cf/example/new-model';
 
 export async function publicTypes(ai: AiInference, streaming: boolean): Promise<void> {
   const output = ai.run(MODEL, { prompt: 'Hello' });
@@ -12,7 +13,7 @@ export async function publicTypes(ai: AiInference, streaming: boolean): Promise<
     prompt: 'Hello',
     stream: true,
   });
-  const newer: Promise<unknown> = ai.run('@cf/example/new-model', { prompt: 'Hello' });
+  const newer: Promise<unknown> = ai.run(FUTURE_MODEL, { prompt: 'Hello' });
   const futureAudio = ai.run(FUTURE_AUDIO, 'encoded-audio');
   const futureBinary = ai.run(FUTURE_AUDIO, new Uint8Array([1, 2]));
   const futureStream = ai.run(FUTURE_AUDIO, await stream);
@@ -40,7 +41,13 @@ export async function publicTypes(ai: AiInference, streaming: boolean): Promise<
   // @ts-expect-error Private account LoRA assets are not public inference inputs.
   await ai.run(MODEL, { prompt: 'Hello', lora: 'private' });
   // @ts-expect-error Future models cannot open access to private LoRA assets either.
-  await ai.run('@cf/example/new-model', { prompt: 'Hello', lora: 'private' });
+  await ai.run(FUTURE_MODEL, { prompt: 'Hello', lora: 'private' });
+  // @ts-expect-error Batch result polling is outside this inference capability.
+  await ai.run('@cf/baai/bge-m3', { request_id: 'batch' });
+  // @ts-expect-error Batch creation payloads are not inference inputs.
+  await ai.run('@cf/baai/bge-m3', { requests: [{ text: 'Hello' }] });
+  // @ts-expect-error New model typing cannot allow batch polling either.
+  await ai.run(FUTURE_MODEL, { request_id: 'batch' });
   // @ts-expect-error The capability exposes no account management API.
   // eslint-disable-next-line @typescript-eslint/no-unsafe-call -- Negative type assertion deliberately calls an absent method.
   await ai.gateway('other');
