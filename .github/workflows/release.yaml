@@ -31,6 +31,11 @@ on:
         required: false
         default: true
         type: boolean
+      bootstrap:
+        description: The first publish of a package npm holds no trusted publisher for. By token, once.
+        required: false
+        default: false
+        type: boolean
 
 permissions: {}
 
@@ -52,3 +57,24 @@ jobs:
     with:
       tag: ${{ inputs.tag || github.ref_name }}
       dry-run: ${{ inputs.dry-run || false }}
+      bootstrap: ${{ inputs.bootstrap || false }}
+    secrets:
+      # Named rather than inherited, so the reusable half is handed this one secret and no other.
+      # Handed it only by the release that asked for it, too: every other run of this file — a tag
+      # push, a rehearsal, a release of a version that publishes no new name — is given an empty
+      # string, whether the secret exists or not.
+      #
+      # It is a *repository* secret and not one of the `release` environment's, which would be
+      # readable only by a job that had passed that environment's reviewers. Two reasons, and the
+      # second is the one that decides it. An environment secret reaches a reusable workflow only
+      # through `secrets: inherit`, which would hand this file every other secret this repository
+      # holds to scope one — and, being resolved per job, it would be empty in `verify`, where the
+      # question "was a credential passed at all" is worth asking *before* a person is sent an
+      # approval. And the exposure it would close is of a repository secret to whoever can trigger a
+      # workflow, which here is the two accounts that are themselves that environment's required
+      # reviewers: an attacker who holds one of them can approve the publish anyway. So the window
+      # is what bounds this, and the window is the point — set before the release, deleted after it,
+      # on a token scoped to `@stayingupwind` with the shortest expiry npm offers.
+      #
+      # This block and the secret both go away once every package has a trusted publisher.
+      npm-token: ${{ inputs.bootstrap && secrets.NPM_TOKEN || '' }}
