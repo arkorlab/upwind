@@ -66,7 +66,9 @@ export async function bundleRuntimeModule(input: RuntimeBundleInput): Promise<vo
     },
     onLog(_level, log) {
       // A module the bundler cannot find is one the Function would not have either; anything else
-      // it says (the stub cache host's missing blob reader among it) stays with the build.
+      // it says (the stub cache host's missing blob reader among it) stays with the build. Of a
+      // `require()` or an `import()` inside a `try` block Rolldown says nothing: the call is left
+      // to throw at run time, for the module's own fallback to catch, as esbuild left it.
       if (log.code === 'UNRESOLVED_IMPORT') {
         unresolved.push(log.message);
       }

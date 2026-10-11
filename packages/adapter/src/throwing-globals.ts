@@ -7,6 +7,10 @@
  * keeps; a name a module binds itself is not replaced. Every bundle the adapter makes defines these,
  * for the application's code as for the runtime's.
  *
+ * A module that binds `globalThis` itself reads the call off its own binding. The ones found among
+ * the dependencies bind it to the global object (core-js's internals require
+ * `../internals/global-this`), so the call is the one the module made.
+ *
  * The globals that only coerce their arguments (`parseInt`, `Math.*`, `String.fromCharCode`) stay
  * as they are: they throw on a Symbol or a BigInt alone, which the minifier assumes they are not
  * handed.
