@@ -26,6 +26,7 @@ import {
   writesIn,
 } from './held-writes.ts';
 import type { DataEntryMetadata } from './host.ts';
+import { holdForRevalidation, revalidated } from './revalidations.ts';
 import type { CacheRuntime } from './runtime.ts';
 import { recordValidity } from './tags.ts';
 import { callsBehind, callsWaitedOn } from './turns.ts';
@@ -377,6 +378,10 @@ export class PlatformFetchCache {
     if (!isFetchValue(value)) {
       return null;
     }
+    if (validity === 'stale') {
+      // Fetched again behind the render, by work Next.js may leave to nothing (`revalidations.ts`).
+      holdForRevalidation(runtime, FETCH_STORE, cacheKey);
+    }
     return { value, lastModified: validity === 'stale' ? 0 : entry.timestamp };
   }
 
@@ -438,6 +443,7 @@ export class PlatformFetchCache {
         bytes,
       });
       context.waitUntil(write);
+      revalidated(current.runtime, FETCH_STORE, cacheKey, write);
       // And the end of the response waits for it (`RequestWrites`), the first byte not — save a
       // regeneration's, made behind a response that served what was there before.
       if (!isRegeneration()) {
@@ -527,6 +533,10 @@ async function getUseCache(
   ) {
     return undefined;
   }
+  if (validity === 'stale') {
+    // Revalidated behind the render, by work Next.js may leave to nothing (`revalidations.ts`).
+    holdForRevalidation(runtime, useCacheStore(kind), cacheKey);
+  }
   return {
     value: new Blob([judged.held.bytes as BlobPart]).stream(),
     tags: [...entry.tags],
@@ -601,6 +611,9 @@ async function setUseCache(
       ? undefined
       : { context, landed: Promise.withResolvers<unknown>() };
   behind?.context.writes.add(behind.landed.promise);
+  if (behind !== undefined) {
+    revalidated(runtime, useCacheStore(kind), cacheKey, behind.landed.promise);
+  }
   try {
     const entry = await pendingEntry;
     // As Next.js's own handler does: the wrapper serves one branch while the other is stored, and
