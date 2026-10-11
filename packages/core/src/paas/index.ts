@@ -35,6 +35,7 @@ export {
   ORIGINAL_URL_HEADER,
   pathFromHeaders,
   pathHeaders,
+  parseScopeRevision,
   PLATFORM_REQUEST_HEADERS,
   REGENERATE_HEADER,
   REGENERATE_MODES,
@@ -45,6 +46,9 @@ export {
   RESUME_STATE_HEADER,
   RESUME_STATE_LENGTH_HEADER,
   ROUTED_HEADER,
+  SCOPE_REVISION_HEADER,
+  type ScopeRevision,
+  scopeRevisionValue,
   SERVED_GENERATION_HEADER,
   TEST_CLOCK_HEADER,
 } from './protocol.ts';
