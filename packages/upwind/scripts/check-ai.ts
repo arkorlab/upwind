@@ -18,7 +18,7 @@ import {
   localInferenceSource,
   prepareLocalAi,
 } from '../src/resources/local-ai.ts';
-import { startLocalResources } from '../src/resources/local.ts';
+import { disposeLocalResources, startLocalResources } from '../src/resources/local.ts';
 
 const symbol = Symbol.for(RESOURCES_SYMBOL_KEY);
 const previous: unknown = Reflect.get(globalThis, symbol);
@@ -181,6 +181,20 @@ async function checkSetup(): Promise<void> {
     2,
     'cancellation awaits a returned session disposer while readiness is pending',
   );
+}
+
+async function checkConcurrentShutdown(): Promise<void> {
+  const localStopped = Promise.withResolvers<undefined>();
+  let remoteStarted = false;
+  const closing = disposeLocalResources(() => localStopped.promise, {
+    dispose: () => {
+      remoteStarted = true;
+      return Promise.resolve();
+    },
+  });
+  assert.equal(remoteStarted, true, 'remote cleanup starts even while local shutdown is pending');
+  localStopped.resolve(undefined);
+  await closing;
 }
 
 async function checkInference(): Promise<void> {
@@ -349,6 +363,7 @@ try {
   await checkAccessors();
   await checkSetup();
   await checkInference();
+  await checkConcurrentShutdown();
   checkRestart();
   await checkNativeRuntime();
   console.log(
