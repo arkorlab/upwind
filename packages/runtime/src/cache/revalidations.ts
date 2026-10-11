@@ -42,11 +42,20 @@ interface Hold {
   readonly settle: (landed: Promise<unknown>) => void;
 }
 
-/** Each runtime's requests held, by the store and key they are held for. */
-const revalidations = new WeakMap<CacheRuntime, Map<string, Map<RequestContext, Hold>>>();
+/**
+ * The requests held for a key, and every request that has been — whose write is the key's
+ * revalidation, held or not by then (`revalidated`).
+ */
+interface Held {
+  readonly holds: Map<RequestContext, Hold>;
+  readonly heldBy: WeakSet<RequestContext>;
+}
 
-function tableIn(runtime: CacheRuntime): Map<string, Map<RequestContext, Hold>> {
-  const table = revalidations.get(runtime) ?? new Map<string, Map<RequestContext, Hold>>();
+/** Each runtime's requests held, by the store and key they are held for. */
+const revalidations = new WeakMap<CacheRuntime, Map<string, Held>>();
+
+function tableIn(runtime: CacheRuntime): Map<string, Held> {
+  const table = revalidations.get(runtime) ?? new Map<string, Held>();
   revalidations.set(runtime, table);
   return table;
 }
@@ -56,24 +65,19 @@ function idOf(store: string, key: string): string {
 }
 
 /** Let `context`'s hold go — once it has settled, or its lifetime is over (`lapse`). */
-function letGo(
-  table: Map<string, Map<RequestContext, Hold>>,
-  id: string,
-  context: RequestContext,
-  hold: Hold,
-): void {
-  const holds = table.get(id);
-  if (holds?.get(context) !== hold) {
+function letGo(table: Map<string, Held>, id: string, context: RequestContext, hold: Hold): void {
+  const held = table.get(id);
+  if (held?.holds.get(context) !== hold) {
     return;
   }
-  holds.delete(context);
-  if (holds.size === 0) {
+  held.holds.delete(context);
+  if (held.holds.size === 0) {
     table.delete(id);
   }
 }
 
 async function lapse(
-  table: Map<string, Map<RequestContext, Hold>>,
+  table: Map<string, Held>,
   id: string,
   context: RequestContext,
   hold: Hold,
@@ -114,14 +118,15 @@ export function holdForRevalidation(runtime: CacheRuntime, store: string, key: s
   }
   const table = tableIn(runtime);
   const id = idOf(store, key);
-  const holds = table.get(id) ?? new Map<RequestContext, Hold>();
-  table.set(id, holds);
-  if (holds.has(context)) {
+  const held = table.get(id) ?? { holds: new Map<RequestContext, Hold>(), heldBy: new WeakSet() };
+  table.set(id, held);
+  held.heldBy.add(context);
+  if (held.holds.has(context)) {
     return;
   }
   const { promise, resolve } = Promise.withResolvers<unknown>();
   const hold: Hold = { done: promise, settle: resolve };
-  holds.set(context, hold);
+  held.holds.set(context, hold);
   if (!keep(runtime, context, lapse(table, id, context, hold))) {
     // No write reaches a request that could not be kept going.
     letGo(table, id, context, hold);
@@ -145,9 +150,10 @@ function keep(runtime: CacheRuntime, context: RequestContext, work: Promise<unkn
 }
 
 /**
- * A value of `key` was set, to land as `landed` settles. Set in a request held for the key, it is
- * the revalidation Next.js began behind one of the stale answers — one at a time in an isolate —
- * and every request held for the key goes on until it has landed.
+ * A value of `key` was set, to land as `landed` settles. Set in a request held for the key — still,
+ * or until its own hold lapsed or was let go — it is the revalidation Next.js began behind one of
+ * the stale answers, one at a time in an isolate, and every request still held for the key goes on
+ * until it has landed.
  *
  * A write of the key in a request held for nothing settles nothing: a regeneration's, or a
  * render's that had the value computed for it, lands while the revalidation the requests are held
@@ -159,12 +165,12 @@ export function revalidated(
   key: string,
   landed: Promise<unknown>,
 ): void {
-  const holds = revalidations.get(runtime)?.get(idOf(store, key));
+  const held = revalidations.get(runtime)?.get(idOf(store, key));
   const context = requestContext();
-  if (holds === undefined || context === undefined || !holds.has(context)) {
+  if (held === undefined || context === undefined || !held.heldBy.has(context)) {
     return;
   }
-  for (const hold of holds.values()) {
+  for (const hold of held.holds.values()) {
     hold.settle(landed);
   }
 }
