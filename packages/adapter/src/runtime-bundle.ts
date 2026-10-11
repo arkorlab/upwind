@@ -34,7 +34,10 @@ export async function bundleRuntimeModule(input: RuntimeBundleInput): Promise<vo
   await using bundle = await rolldown({
     input: input.entry,
     platform: 'node',
-    resolve: { conditionNames: ['workerd', 'worker', 'node', 'import', 'default'] },
+    // esbuild's conditions for the platform, with `workerd` and `worker` added. Rolldown adds `import`
+    // or `require` to them by how a module is imported, as esbuild does: a `require` of a package
+    // gets what the package exports to `require`, and not what it exports to `import`.
+    resolve: { conditionNames: ['workerd', 'worker', 'node', 'default'] },
     external: [/^node:/u, /^cloudflare:/u],
     plugins: [
       generatedModulesPlugin({

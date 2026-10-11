@@ -5,7 +5,7 @@ import { WASM_ENTRY_MODULE } from './wasm.ts';
 /** The app bundle's name in the Function, which the runtime resolves `arkor:app` to. */
 export const APP_MODULE = 'app.cjs';
 
-const EMPTY_EDGE_MODULE = 'module.exports = { entries: {} };';
+const EMPTY_EDGE_MODULE = 'export default { entries: {} };';
 const EMPTY_WASM_MODULE = '// This deployment carries no WebAssembly.';
 /**
  * A build told of no cache host: the runtime asks, is answered nothing, and runs as it did
