@@ -39,7 +39,6 @@ function holder(): FunctionEnvHolder {
  */
 export function publishFunctionEnv(env: unknown): void {
   if (typeof env === 'object' && env !== null) {
-    // eslint-disable-next-line unicorn/no-unsafe-property-key -- a registry symbol, not a literal.
     holder()[FUNCTION_ENV] = env as Record<string, unknown>;
   }
 }
@@ -49,7 +48,6 @@ export function publishFunctionEnv(env: unknown): void {
  * Function: what the runtime reads a deployment's storage bindings from once it can.
  */
 export function publishedFunctionEnv(): Readonly<Record<string, unknown>> | undefined {
-  // eslint-disable-next-line unicorn/no-unsafe-property-key -- a registry symbol, not a literal.
   return holder()[FUNCTION_ENV];
 }
 
@@ -62,7 +60,6 @@ export function publishedFunctionEnv(): Readonly<Record<string, unknown>> | unde
  * for a service.
  */
 export function bindingFetch(name: string): typeof fetch | undefined {
-  // eslint-disable-next-line unicorn/no-unsafe-property-key -- as above.
   const value = holder()[FUNCTION_ENV]?.[name];
   if (typeof value !== 'object' || value === null) {
     return undefined;
