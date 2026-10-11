@@ -27,15 +27,27 @@ export type RemoteAiFactory = (auth: {
   readonly apiToken: string;
 }) => Promise<RemoteAiSession>;
 
-async function connect(auth: Parameters<RemoteAiFactory>[0]): Promise<RemoteAiSession> {
-  const { startRemoteProxySession } = await import('wrangler');
-  // Wrangler's published declaration references an unpublished internal type. Keep the documented
+type RemoteAiStart = (
+  bindings: Record<string, { type: 'ai'; remote: true }>,
+  options: {
+    auth: () => Promise<{ accountId: string; apiToken: { apiToken: string } }>;
+  },
+) => Promise<RemoteAiSession>;
+
+/** Explicit account credentials are wrapped in Wrangler's ApiCredentials object. */
+export async function connectRemoteAi(
+  auth: Parameters<RemoteAiFactory>[0],
+  suppliedStart?: RemoteAiStart,
+): Promise<RemoteAiSession> {
+  // Wrangler's published declaration references an unpublished internal type. Keep the audited
   // session contract explicit until its declarations are independently consumable.
-  const start = startRemoteProxySession as (
-    bindings: Record<string, { type: 'ai'; remote: true }>,
-    options: { auth: () => Promise<Parameters<RemoteAiFactory>[0]> },
-  ) => Promise<RemoteAiSession>;
-  return start({ [RAW_AI]: { type: 'ai', remote: true } }, { auth: () => Promise.resolve(auth) });
+  const start =
+    suppliedStart ?? ((await import('wrangler')).startRemoteProxySession as RemoteAiStart);
+  const account = { accountId: auth.accountId, apiToken: { apiToken: auth.apiToken } };
+  return start(
+    { [RAW_AI]: { type: 'ai', remote: true } },
+    { auth: () => Promise.resolve(account) },
+  );
 }
 
 /** Declaring AI never connects remotely, and malformed declarations cannot remove storage. */
@@ -159,7 +171,7 @@ async function withinDeadline(starting: Promise<RemoteAiSession>): Promise<Remot
 export async function prepareLocalAi(
   occupied: readonly string[],
   remote: boolean,
-  factory: RemoteAiFactory = connect,
+  factory: RemoteAiFactory = connectRemoteAi,
 ): Promise<LocalAi> {
   let names: string[];
   try {

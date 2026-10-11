@@ -11,7 +11,12 @@ import capability from '../../sdk/src/ai.ts';
 import { ai, durableObject } from '../../sdk/src/named.ts';
 import { parseDevRequest } from '../src/args.ts';
 import { RESTART_EXIT_CODE } from '../src/dev/restart.ts';
-import { aiBindingNames, localInferenceSource, prepareLocalAi } from '../src/resources/local-ai.ts';
+import {
+  aiBindingNames,
+  connectRemoteAi,
+  localInferenceSource,
+  prepareLocalAi,
+} from '../src/resources/local-ai.ts';
 import { startLocalResources } from '../src/resources/local.ts';
 
 const symbol = Symbol.for(RESOURCES_SYMBOL_KEY);
@@ -106,6 +111,18 @@ async function checkSetup(): Promise<void> {
   const request = parseDevRequest(['--remote-ai']);
   assert.equal(request.answer, undefined);
   assert.equal(request.options.remoteAi, true);
+  const accountId = 'fixture-account';
+  const apiToken = 'fixture-token';
+  const connection = await connectRemoteAi({ accountId, apiToken }, async (bindings, options) => {
+    assert.deepEqual(bindings, { UPWIND_INTERNAL_AI: { type: 'ai', remote: true } });
+    assert.deepEqual(await options.auth(), { accountId, apiToken: { apiToken } });
+    return {
+      remoteProxyConnectionString: new URL('https://fixture.invalid') as never,
+      ready: Promise.resolve(),
+      dispose: () => Promise.resolve(),
+    };
+  });
+  await connection.dispose();
   let calls = 0;
   process.env['UPWIND_AI_BINDINGS'] = '["INFERENCE"]';
   process.env['CLOUDFLARE_ACCOUNT_ID'] = 'fixture-account';
