@@ -1,7 +1,7 @@
 /**
- * The four kinds of storage, and the words each one is described with.
+ * The five resource kinds, including inference, and the words each one is described with.
  *
- * Here because one implementation decides all four: how a bare accessor resolves, and what it says
+ * Here because one implementation decides all five: how a bare accessor resolves, and what it says
  * when it cannot. A message that names the wrong thing is worse than no message, so the naming is
  * data rather than something each entry point writes out for itself.
  */

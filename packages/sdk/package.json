@@ -1,7 +1,7 @@
 {
   "name": "@stayingupwind/sdk",
   "version": "0.3.0",
-  "description": "What an application reads its own storage through: the KV namespaces, R2 buckets, D1 databases and Durable Object namespaces its deployment published, by name or \u2014 where there is exactly one of a kind \u2014 by no name at all.",
+  "description": "What an application reads its own storage through: the KV namespaces, R2 buckets, D1 databases and Durable Object namespaces its deployment published, by name or — where there is exactly one of a kind — by no name at all.",
   "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",
