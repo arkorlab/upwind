@@ -304,12 +304,6 @@ async function answerFromJob(
   outcome: RegenerationOutcome,
   want: Want,
 ): Promise<Response | undefined> {
-  if (outcome.kind === 'accepted') {
-    // The answer's end waits for the publish, as for the request's other writes
-    // (`RequestWrites`): a request made once it was read whole reads the generation published,
-    // rather than finding the one it replaced, or none, and rendering a page of its own.
-    requestContext()?.writes.add(outcome.published);
-  }
   if (outcome.kind === 'accepted' && servable(outcome.render.status, outcome.render.headers)) {
     const answered = await answerFromRender(job.input, job.target.handler, outcome.render, want);
     return answered === undefined ? undefined : withOutcome(answered, 'accepted');
@@ -549,7 +543,18 @@ async function answerMiss(
   once: boolean,
 ): Promise<Response | undefined> {
   if (onMiss === 'render' && once) {
-    return answerFromJob(job, await runJob(job, 'miss', null), want);
+    const outcome = await runJob(job, 'miss', null);
+    if (outcome.kind === 'accepted') {
+      // The answer's end waits for the publish of an entry's first generation, as for the
+      // request's other writes (`RequestWrites`): a request made once it was read whole reads the
+      // generation published, rather than finding none and rendering a page of its own. An expired
+      // entry's regeneration holds no answer so: the generation before it is there to be judged,
+      // and a publish behind a broad invalidation waits for that invalidation's records to be
+      // rewritten first — a page held open for it is one the browser has not finished loading,
+      // prefetching about it, for as long as the hold.
+      requestContext()?.writes.add(outcome.published);
+    }
+    return answerFromJob(job, outcome, want);
   }
   if (onMiss === 'behind' && once) {
     scheduleJob(job, 'miss', null);
