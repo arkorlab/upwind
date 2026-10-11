@@ -4,11 +4,20 @@ import { checkedImagesConfigSchema } from '../images/config.ts';
 import { runnableSourceRegexSchema, unsafeRoutePatternReason } from '../request/pattern-safety.ts';
 import * as z from '../schema/index.ts';
 import { isId } from '../util/id.ts';
+import { routeHasSchema, routerReferencesSchema, splitFunctionNameSchema } from './carried.ts';
 import {
   durableObjectDeclarationsSchema,
   DURABLE_OBJECT_BUNDLE_VERSION,
   DURABLE_OBJECT_SPLIT_BUNDLE_VERSION,
 } from './durable-objects.ts';
+
+export {
+  type RouteHas,
+  routeHasSchema,
+  type RouterReferences,
+  routerReferencesSchema,
+  splitFunctionNameSchema,
+} from './carried.ts';
 
 /**
  * The deployment bundle: what the Next.js adapter writes at the end of `next build`, and the only
@@ -65,14 +74,6 @@ const ONE_PASS_VERSIONS: ReadonlySet<number> = new Set([
  */
 export const MAX_APP_FUNCTIONS = 32;
 
-/**
- * The name of an app Function after the first: `app-2`, `app-3` and on, which is how the adapter
- * names them. The first is `app`, and is `functions.app` itself rather than a key of `split`.
- */
-export const splitFunctionNameSchema = z
-  .string()
-  .regex(/^app-(?:[2-9]|[1-9]\d+)$/u, 'expected app-2, app-3, …');
-
 export const DEPLOYMENT_ID_PREFIX = 'dpl';
 
 export const deploymentIdSchema = z
@@ -103,15 +104,9 @@ export const blobRefSchema = z.object({
 });
 export type BlobRef = z.infer<typeof blobRefSchema>;
 
-export const routeHasSchema = z.object({
-  type: z.enum(['header', 'cookie', 'query', 'host']),
-  key: z.string().optional(),
-  value: z.string().optional(),
-});
-export type RouteHas = z.infer<typeof routeHasSchema>;
-
 /**
- * The same condition, with its pattern held to what the edge may run on a shared Function.
+ * A route's condition (`routeHasSchema`, in `carried.ts`), with its pattern held to what the edge
+ * may run on a shared Function.
  *
  * A condition's value is tested against a header, cookie or query value the visitor chose, so a
  * pattern that backtracks catastrophically is CPU any caller can spend. Refused here, at the
@@ -431,16 +426,6 @@ export const bundleConfigSchema = z.looseObject({
   proxyClientMaxBodySize: z.number().int().positive().optional(),
 });
 export type BundleConfig = z.infer<typeof bundleConfigSchema>;
-
-/**
- * How a deployment's Functions fill the `$` references in a header's key and value. `one-pass` is
- * `@next/routing` from 16.4: one pass over the value, each reference read as the longest name it
- * spells — `$10` is the tenth capture or nothing, never the first and a `0` — and what that names
- * put in as it is. The router before it replaced each name over the whole value in turn, as a
- * replacement string, which is how a deployment whose bundle does not say has its headers filled.
- */
-export const routerReferencesSchema = z.literal('one-pass');
-export type RouterReferences = z.infer<typeof routerReferencesSchema>;
 
 const durableObjectFunctionsSchema = z.record(z.string(), functionSchema);
 
