@@ -75,6 +75,13 @@ interface ServedGeneration {
   readonly member: boolean;
   /** What the resume is told beside the request when the entry is to be regenerated behind it. */
   readonly regeneration: Readonly<Record<string, string>> | undefined;
+  /**
+   * What serving the record sets off behind the response (`readServedAgain`), called once the
+   * document is certain to go out from it, whole or resumed: not for one handed to the application
+   * whole instead (`delegateSandboxedDocument`), which serves nothing of the record and dispatches no
+   * resume for its regeneration to ride.
+   */
+  readonly onServed: (() => void) | undefined;
 }
 
 export interface DocumentInput {
@@ -606,6 +613,19 @@ function isCompleteDocument(input: DocumentInput): boolean {
 }
 
 /**
+ * The record is served from here on, whole or resumed — once it is certain to go out, and behind the
+ * resume's dispatch: a read from KV is reported to the host's observer as one served
+ * (`EdgeObserver.recordServed`), which a host may meter, and what serving it sets off goes too
+ * (`onServed`). Nothing for the build's shell.
+ */
+function servedFromRecord(edge: EdgeContext, generation: ServedGeneration | undefined): void {
+  if (generation?.readBytes !== undefined) {
+    edge.host.observer.recordServed(generation.readBytes);
+  }
+  generation?.onServed?.();
+}
+
+/**
  * TTFB-first document delivery: the shell lookup starts before the resume request is built, the
  * bytes are flushed before the application's Worker has produced one, then the suffix it renders
  * is spliced behind them. A generation the runtime cache holds is served the same way, from its
@@ -675,12 +695,7 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
           headers: toldBesideResume(input, generation),
         });
   const upstream = handle === undefined ? undefined : settle(handle.response);
-  // The record is served from here on, whole or resumed: a read from KV is reported to the host's
-  // observer as one served (`EdgeObserver.recordServed`), which a host may meter — once it is certain
-  // to go out, and behind the resume's dispatch.
-  if (generation?.readBytes !== undefined) {
-    edge.host.observer.recordServed(generation.readBytes);
-  }
+  servedFromRecord(edge, generation);
   const shell = await shellLookup;
   if (shell.kind !== 'ok') {
     // The dispatch is still in flight and nothing is going to read it; hand it to the runtime so it

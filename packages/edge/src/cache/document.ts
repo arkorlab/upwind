@@ -9,7 +9,7 @@ import type { EdgeContext } from '../strategies/context.ts';
 import { loadShell, type ShellLoadResult } from '../strategies/shell-loader.ts';
 import { condemnedIn } from './condemned.ts';
 import { decideGeneration, type GenerationDecision } from './decision.ts';
-import { heldGeneration } from './generation-hold.ts';
+import { heldGeneration, readServedAgain } from './generation-hold.ts';
 import { type GenerationKey, type GenerationLoad, readGeneration } from './generation-loader.ts';
 import { memberInHand, type MemberLoad, type MemberRead } from './member.ts';
 import {
@@ -154,6 +154,16 @@ function wantedRegeneration(
   return decision.validity === 'stale' ? target : upgrade;
 }
 
+/**
+ * The record `target` names is served asking for its regeneration: read again behind the response
+ * a second on rather than a hold on (`readServedAgain`). A member's own is read as it was, its
+ * absence held (`startMemberRead`).
+ */
+function readTargetAgain(input: CachedDocumentInput, target: RegenerationTarget): void {
+  const options = target.member === true ? { holdAbsence: true } : {};
+  readServedAgain(input.edge, target.pack, input.settings, options);
+}
+
 /** Serve a record fresh or stale; stale, regenerated behind the response. */
 function serveRecord(
   decided: Decided,
@@ -189,6 +199,17 @@ function serveRecord(
       regeneration:
         asked !== undefined && !complete
           ? regenerationHeaders(edge, 'background', asked)
+          : undefined,
+      // Served stale with its own regeneration wanted — asked for by this request, or by one before
+      // it within the cooldown — the record is read again a second on, for what that regeneration
+      // publishes: once the document is certain to go out from it, and not where it is handed to the
+      // application whole instead (`delegateSandboxedDocument`). A member's upgrade, asked beside a
+      // fresh record, replaces nothing served here.
+      onServed:
+        wanted === target
+          ? () => {
+              readTargetAgain(input, target);
+            }
           : undefined,
     },
   });
@@ -253,6 +274,9 @@ function regenerateInFront(
   if (input.request.method === 'HEAD') {
     return input.passthrough('head-expired', input.middleware, input.entry.pathname, waited);
   }
+  // The render the response is publishes the record that replaces this one, which every request
+  // regenerates in the foreground until the isolate holds that one: read again a second on.
+  readTargetAgain(input, target);
   const dispatch = {
     request: input.request,
     middleware: middlewareOf(input),

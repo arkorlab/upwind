@@ -59,20 +59,6 @@ interface RecordRead {
 }
 
 /**
- * Whether serving `pack` at `now` asks for its regeneration, whatever this isolate was told of it: a
- * 200 past its `revalidate`, regenerated behind the response, or past its `expire`, regenerated in
- * the foreground (`decideRecord`). A record of another status is handed on before its freshness is
- * looked at, and one whose freshness cannot be told (`unknown`) asks for nothing.
- */
-export function regeneratedWhenServed(pack: DecodedGenerationPack, now: number): boolean {
-  if (pack.header.status !== OK_STATUS) {
-    return false;
-  }
-  const validity = validityOf(pack, now);
-  return validity === 'stale' || validity === 'expired';
-}
-
-/**
  * What this isolate was told of a record (`condemnedIn`): condemned, invalidated with a window it
  * leaves to the Function, or nothing.
  */

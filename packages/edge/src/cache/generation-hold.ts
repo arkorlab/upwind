@@ -3,7 +3,6 @@ import type { RuntimeCacheSettings } from '@stayingupwind/host/delivery';
 
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeContext } from '../strategies/context.ts';
-import { regeneratedWhenServed } from './decision.ts';
 import {
   type GenerationKey,
   type GenerationLoad,
@@ -35,9 +34,13 @@ import {
  * A record whose serving asks for its regeneration — a 200 past its `revalidate`, regenerated
  * behind the response, or past its `expire`, regenerated in the foreground — is held for
  * `STALE_HOLD_MS` rather than the whole hold: the record that regeneration publishes is what the
- * requests after it should find, a second later rather than five. One that asks for none — of
- * another status, which is handed on, or whose freshness cannot be told, or served to a `HEAD` —
- * keeps the whole hold.
+ * requests after it should find, a second later rather than five. That is judged where a document
+ * is served from the record (`readServedAgain`), not where the record is read: a document's record
+ * is read ahead of the middleware, and a class shell's beside a member's own, so a request the
+ * middleware answers itself or that goes to the Worker whole, or a member whose own record answers,
+ * reads a record it neither serves nor asks to have regenerated. A record no request serves keeps
+ * the whole hold however stale it is, and so does one whose serving asks for none — of another
+ * status, which is handed on, or whose freshness cannot be told, or served to a `HEAD`.
  *
  * A hold of zero holds nothing, and every request reads the record before its first byte: a
  * setting for measuring the read, not for serving.
@@ -49,22 +52,6 @@ import {
  * waits for nothing more.
  */
 const STALE_HOLD_MS = 1000;
-
-/**
- * How long `pack` is held at `now` for the request `edge` serves: `STALE_HOLD_MS` while serving it
- * asks for its regeneration (`regeneratedWhenServed`) — never for a `HEAD`, which asks for none —
- * and the policy's hold otherwise.
- */
-function holdOf(
-  edge: EdgeContext,
-  pack: DecodedGenerationPack,
-  now: number,
-  settings: RuntimeCacheSettings,
-): number {
-  return edge.headOnly !== true && regeneratedWhenServed(pack, now)
-    ? Math.min(settings.holdMs, STALE_HOLD_MS)
-    : settings.holdMs;
-}
 
 /**
  * Read the entry behind the response, for the requests after this one. Never rejects: a read that
@@ -107,7 +94,7 @@ export function heldGeneration(
   const recordKey = kvGenerationKey(key.scopeId, key.entryId);
   const held = memory.generations.get(recordKey);
   if (held !== undefined) {
-    if (now - held.readAt >= holdOf(edge, held.pack, now, settings)) {
+    if (now - held.readAt >= settings.holdMs) {
       memory.generations.set(recordKey, { ...held, readAt: now }, held.bytes);
       edge.ctx.waitUntil(refresh(edge, key, settings, options));
     }
@@ -134,6 +121,35 @@ export function heldGeneration(
     edge.ctx.waitUntil(refresh(edge, key, settings, options));
   }
   return { kind: 'none', lookupMs: 0 };
+}
+
+/**
+ * A document is served from `pack` asking for its regeneration: once this isolate has held it
+ * `STALE_HOLD_MS`, it is held again, and its entry — the one its header names — read behind the
+ * response, as one past the whole hold is (`heldGeneration`), with the `options` it was read with.
+ * Asked once the request is known to serve the record — a document certain to go out from it
+ * (`onServed`), or the foreground regeneration that replaces it (`cache/document.ts`) — and not by
+ * what reads it. Nothing where this isolate no longer holds that record — one a read put in place
+ * since, or none — nor under a hold of zero, which holds nothing.
+ */
+export function readServedAgain(
+  edge: EdgeContext,
+  pack: DecodedGenerationPack,
+  settings: RuntimeCacheSettings,
+  options: LoadOptions = {},
+): void {
+  if (settings.holdMs === 0) {
+    return;
+  }
+  const { memory } = edge.runtime;
+  const key = { scopeId: pack.header.scopeId, entryId: pack.header.entryId };
+  const recordKey = kvGenerationKey(key.scopeId, key.entryId);
+  const held = memory.generations.get(recordKey);
+  const now = edge.runtime.now();
+  if (held?.pack === pack && now - held.readAt >= Math.min(settings.holdMs, STALE_HOLD_MS)) {
+    memory.generations.set(recordKey, { ...held, readAt: now }, held.bytes);
+    edge.ctx.waitUntil(refresh(edge, key, settings, options));
+  }
 }
 
 /**
