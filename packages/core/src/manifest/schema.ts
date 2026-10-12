@@ -3,7 +3,7 @@ import {
   routeHasSchema,
   routerReferencesSchema,
   splitFunctionNameSchema,
-} from '../bundle/schema.ts';
+} from '../bundle/carried.ts';
 import { KEY_SCHEMA_VERSION } from '../cache/keys.ts';
 import { deploymentFingerprintSchema } from '../deployment/fingerprint.ts';
 import { imagesConfigSchema } from '../images/config.ts';

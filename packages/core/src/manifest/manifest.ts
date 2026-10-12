@@ -1,6 +1,6 @@
 import { canonicalJson, sha256HexOfText } from '../artifact/hash.ts';
 import { MAX_IMMUTABLE_ASSET_BYTES } from '../assets/admission.ts';
-import type { RouterReferences } from '../bundle/schema.ts';
+import type { RouterReferences } from '../bundle/carried.ts';
 import type { DeploymentFingerprint } from '../deployment/fingerprint.ts';
 import type { ImagesConfig } from '../images/config.ts';
 import { compareCodeUnits } from '../util/bytes.ts';
