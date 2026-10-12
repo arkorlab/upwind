@@ -22,21 +22,21 @@ step. Its suites run inside workerd (`@cloudflare/vitest-plugin`).
 
 ## Entry points
 
-| Subpath                                                    | What it holds                                                                                                                |
-| ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `./standalone/worker`                                      | The cache as a Worker of its own: its gateway, the scope's object, and the entrypoint a deploy seeds and retires scopes with |
-| `./standalone/read-worker`                                 | The read gateway as a Worker of its own                                                                                      |
-| `./standalone/naming`                                      | The label a standalone cache signs its scopes' tokens over                                                                   |
-| `./prefetch-worker`                                        | A Worker that answers a blob of a deployment's bundle the build left out of its Function                                     |
-| `./authority`                                              | One deployment's cache authority, the scope's Durable Object                                                                 |
-| `./authority/{history,io,metering,schema,state,stub}`      | The authority's parts: a host's history, the writes after a commit, the metered writes, the tables, the scope row, the stub  |
-| `./gateway`, `./gateway/token`                             | The gateway a deployment's Function reaches, every route behind the scope's token                                            |
-| `./read-gateway`                                           | The read gateway: what a Function reads of its scope, answered from storage without the authority                            |
-| `./control`                                                | The entrypoint whatever deploys a site seeds, retires and invalidates its scopes through                                     |
-| `./signals`                                                | The entrypoint an edge asks where a scope stands, and what its reads may still be behind on                                  |
-| `./host`                                                   | What a host hands the cache: its tokens' label, where its scopes are placed, its meter, whom to tell when a scope moves      |
-| `./bindings`, `./env`                                      | What the cache reads of its environment, and the settings it parses from it                                                  |
-| `./function`, `./function/host`, `./function/bundle-blobs` | The client a deployment's Function reaches the cache with, and the blobs the build left out of it                            |
-| `./adapter`                                                | The deployment adapter with that client bundled into every Function it builds, for `NEXT_ADAPTER_PATH`                       |
-| `./logger`                                                 | Structured JSON logging, which never receives a token, a body or a cache key                                                 |
-| `./internal/*`                                             | Every module by its path, for suites and for a host that composes the parts itself                                           |
+| Subpath                                                    | What it holds                                                                                                                        |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `./standalone/worker`                                      | The cache as a Worker of its own: its gateway, the scope's object, and the entrypoint a deploy seeds and retires scopes with         |
+| `./standalone/read-worker`                                 | The read gateway as a Worker of its own                                                                                              |
+| `./standalone/naming`                                      | The label a standalone cache signs its scopes' tokens over                                                                           |
+| `./prefetch-worker`                                        | A Worker that answers a blob of a deployment's bundle the build left out of its Function                                             |
+| `./authority`                                              | One deployment's cache authority, the scope's Durable Object                                                                         |
+| `./authority/{history,io,metering,schema,state,stub}`      | The authority's parts: a host's history, the writes after a commit, the metered writes, the tables, the scope row, the stub          |
+| `./gateway`, `./gateway/token`                             | The gateway a deployment's Function reaches, every route behind the scope's token                                                    |
+| `./read-gateway`                                           | The read gateway: what a Function reads of its scope, answered from storage without the authority                                    |
+| `./control`                                                | The entrypoint whatever deploys a site seeds, retires and invalidates its scopes through                                             |
+| `./signals`                                                | The entrypoint an edge asks where a scope stands, and what its reads may still be behind on                                          |
+| `./host`                                                   | What a host hands the cache: its tokens' label, where its scopes are placed, its meter, whom to tell when a scope moves              |
+| `./bindings`, `./env`                                      | What the cache reads of its environment, and the settings it parses from it                                                          |
+| `./function`, `./function/host`, `./function/bundle-blobs` | The client a deployment's Function reaches the cache with, and the blobs the build left out of it                                    |
+| `./adapter`                                                | The deployment adapter with that client bundled into every Function it builds, for `NEXT_ADAPTER_PATH`                               |
+| `./logger`                                                 | Structured JSON logging, which never receives a token, a body or a cache key                                                         |
+| `./internal/*`                                             | Every module by its file path, `.ts` included (`./internal/scope/data.ts`), for suites and for a host that composes the parts itself |
