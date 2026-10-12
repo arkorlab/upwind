@@ -48,6 +48,7 @@ export {
 export { type RouteHas, routeHasSchema, splitFunctionNameSchema } from './carried.ts';
 export { PRIMARY_FUNCTION } from './function-name.ts';
 export { type ManifestHead, manifestHead } from './head.ts';
+export { type PackedPrerenders, packPrerenders, unpackPrerenders } from './packed-prerenders.ts';
 export {
   appFunctions,
   functionOfEntrypoint,

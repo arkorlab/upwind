@@ -40,6 +40,7 @@ import { servable } from './cache/servable.ts';
 import { nodeHandlerOf } from './entries.ts';
 import { observationOf } from './incoming.ts';
 import { PAGES_DATA, ROUTE_BODY, SEGMENT_PREFIX } from './representations.ts';
+import { routingParameters } from './route-parameters.ts';
 import { bypassesPrerender, resume, type RoutedInput } from './serve.ts';
 import { completedShell, entrypointKindOf, findShell, isClassShell, type Store } from './store.ts';
 
@@ -170,6 +171,7 @@ function runJob(
               descriptor.pathname,
             )
           : undefined,
+      parameters: routingParameters(store, descriptor.route, descriptor.pathname),
     },
     previewToken: store.manifest.bypassToken,
     waitUntil: input.waitUntil,
@@ -362,7 +364,11 @@ export async function handleForeground(
     holdFirstPublish(outcome);
   }
   return {
-    response: await answerFromJob(job, outcome, documentWant(input)),
+    response: await answerFromJob(
+      job,
+      outcome,
+      documentWant(input, job.store, job.target.descriptor.route),
+    ),
     outcome: outcome.kind,
     regenerated: job.target.descriptor,
   };
