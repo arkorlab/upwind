@@ -29,17 +29,17 @@ step. Its suites run inside workerd (`@cloudflare/vitest-plugin`).
 
 ## Entry points
 
-| Subpath                                            | What it holds                                                                                    |
-| -------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `./standalone`, `./standalone/worker`              | The edge on its own, serving one site, and the Worker a host deploys it as                       |
-| `./blob-worker`                                    | The Worker the edge reads a deployment's blobs and manifests through, by content                 |
-| `./route`                                          | A request whose site is known, from the reads its pointer names to the answer                    |
-| `./edge-host`, `./edge-runtime`, `./bindings`      | What a host hands the edge, what reaches a Function for it, and what it reads of its environment |
-| `./preview/{pointer,manifest,state,storage}`       | The pointer and the manifest as the edge reads them, and what it knows of a site for a request   |
-| `./memory/caches`                                  | What an isolate keeps between requests, and the budget it keeps it within                        |
-| `./reports`                                        | What the edge reports of a route as it serves it, for a host to act on                           |
-| `./observability/{logger,metrics}`                 | Structured logging, and the measurements of each answer an observer is told                      |
-| `./handlers/{csp-nonce,layered-clients,responses}` | A document's CSP nonce, the clients sent a second brotli layer, and the edge's own responses     |
-| `./strategies/{asset-upstream,context}`            | How an asset is fetched and kept, and what every strategy is handed for a request                |
-| `./request-context`                                | What the edge knows of a request before any handler looks at it                                  |
-| `./internal/*`                                     | Every module by its path, for suites and for a host that composes the parts itself               |
+| Subpath                                            | What it holds                                                                                                                            |
+| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `./standalone`, `./standalone/worker`              | The edge on its own, serving one site, and the Worker a host deploys it as                                                               |
+| `./blob-worker`                                    | The Worker the edge reads a deployment's blobs and manifests through, by content                                                         |
+| `./route`                                          | A request whose site is known, from the reads its pointer names to the answer                                                            |
+| `./edge-host`, `./edge-runtime`, `./bindings`      | What a host hands the edge, what reaches a Function for it, and what it reads of its environment                                         |
+| `./preview/{pointer,manifest,state,storage}`       | The pointer and the manifest as the edge reads them, and what it knows of a site for a request                                           |
+| `./memory/caches`                                  | What an isolate keeps between requests, and the budget it keeps it within                                                                |
+| `./reports`                                        | What the edge reports of a route as it serves it, for a host to act on                                                                   |
+| `./observability/{logger,metrics}`                 | Structured logging, and the measurements of each answer an observer is told                                                              |
+| `./handlers/{csp-nonce,layered-clients,responses}` | A document's CSP nonce, the clients sent a second brotli layer, and the edge's own responses                                             |
+| `./strategies/{asset-upstream,context}`            | How an asset is fetched and kept, and what every strategy is handed for a request                                                        |
+| `./request-context`                                | What the edge knows of a request before any handler looks at it                                                                          |
+| `./internal/*`                                     | Every module by its file path, `.ts` included (`./internal/cache/decision.ts`), for suites and for a host that composes the parts itself |
