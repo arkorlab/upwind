@@ -93,7 +93,13 @@ export class TagState {
     this.#log = options.log;
   }
 
-  async #pull(host: TagHost, now: number): Promise<void> {
+  /**
+   * Bring the view up to the host's revision through its delta, page by page, as asked at `now`:
+   * `true` once the last page is in, and `false` where the host could not be read to the end. What
+   * the pages before that brought stays in the view, and the revision with it; the hold it was last
+   * brought up for (`#syncedAt`) stands as it was.
+   */
+  async #pull(host: TagHost, now: number): Promise<boolean> {
     try {
       let truncated = true;
       while (truncated) {
@@ -110,10 +116,12 @@ export class TagState {
       // pull began, which is all `#syncedAt` claims, and what the other pull still has to bring
       // was made after that — a change the hold lets wait, as it lets wait one made after any pull.
       this.#syncedAt = Math.max(this.#syncedAt ?? now, now);
+      return true;
     } catch (error) {
       // What is known stays known: a read judged against an older view is a read that may be
       // served stale for one hold, never one that fails.
       this.#log?.('tags not synced', error instanceof Error ? error.message : String(error));
+      return false;
     }
   }
 
@@ -175,13 +183,16 @@ export class TagState {
    * request that started it, which the Workers runtime cancels once that request is over, and a
    * regeneration of another request waiting on it would wait as long as its request was let run.
    * What two pulls bring is merged, whichever answers first.
+   *
+   * Answers whether the view stands brought up: held within the hold, or pulled by this call — not
+   * by another that a clock reading the same moment could not tell from it. Never rejects.
    */
-  async sync(host: TagHost, now: number, options: { force?: boolean } = {}): Promise<void> {
+  async sync(host: TagHost, now: number, options: { force?: boolean } = {}): Promise<boolean> {
     const held = this.#syncedAt !== undefined && now - this.#syncedAt < this.#holdMs;
     if (held && options.force !== true) {
-      return;
+      return true;
     }
-    await this.#pull(host, now);
+    return this.#pull(host, now);
   }
 
   /**
