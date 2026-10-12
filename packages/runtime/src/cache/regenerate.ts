@@ -37,6 +37,7 @@ import {
   type Leased,
   RegenerationError,
   supersededBy,
+  within,
 } from './lease.ts';
 import {
   answeringAtOnce,
@@ -481,29 +482,6 @@ function commitRequest(
  */
 const TAG_SYNC_DEADLINE_MS = 10_000;
 
-/** `promise` settled, or a `RegenerationError` saying `what` once `ms` have gone by. */
-async function within(
-  promise: Promise<unknown>,
-  ms: number,
-  what: { readonly code: string; readonly message: string },
-): Promise<void> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([
-      promise,
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => {
-          reject(
-            new RegenerationError(`${what.message} within ${String(ms)} ms`, { code: what.code }),
-          );
-        }, ms);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 /**
  * Upload what the render made and commit it, behind whoever was answered from the render, and keep
  * the lease until the host has answered. Never throws: a publish that fails or is refused is
@@ -622,9 +600,10 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   const began = performance.now();
   const stopHeartbeat = heartbeat(input, lease);
   let observedTagRevision: number;
+  let viewed: boolean;
   let captured: CapturedRender | undefined;
   try {
-    await within(synced, TAG_SYNC_DEADLINE_MS, {
+    viewed = await within(synced, TAG_SYNC_DEADLINE_MS, {
       code: 'tags_not_synced',
       message: 'the tags were not synced',
     });
@@ -651,17 +630,27 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   // which says the same until the commit has landed, and the replacement from then on — however
   // long this isolate then takes to hear the commit answered.
   forgetRecord(runtime, lease.entryId);
-  const published = answeringUntilSettled(
-    runtime,
-    entryId ?? lease.entryId,
-    {
-      render: { ...captured, headers: generationHeadersOf(target, captured) },
-      tags: [...tagValuesOf(target, captured)],
-      observedTagRevision,
-      observedAt: askedAt,
-    },
-    publish(input, lease, { render: captured, observedTagRevision, began }, stopHeartbeat),
+  const publishing = publish(
+    input,
+    lease,
+    { render: captured, observedTagRevision, began },
+    stopHeartbeat,
   );
+  // Kept to answer for the entry only where its own pull answered. One that did not was rendered
+  // against a view older than the moment it asked for one, which its answers would be judged from.
+  const published = viewed
+    ? answeringUntilSettled(
+        runtime,
+        entryId ?? lease.entryId,
+        {
+          render: { ...captured, headers: generationHeadersOf(target, captured) },
+          tags: [...tagValuesOf(target, captured)],
+          observedTagRevision,
+          observedAt: askedAt,
+        },
+        publishing,
+      )
+    : publishing;
   input.waitUntil(published);
   return { kind: 'accepted', render: captured, published };
 }
