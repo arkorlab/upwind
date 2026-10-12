@@ -44,6 +44,17 @@ export interface CacheHost {
    */
   uploadArtifact(upload: ArtifactUpload): Promise<UploadedArtifact>;
 
+  /**
+   * Store several of the attempt's bodies in one call, as `uploadArtifact` stores each, answered in
+   * the order they were given: the small ones a page is made of — its document, its payload, its
+   * segments — which one call each sent a round trip at a time. Handed only outputs of 64 KiB or
+   * less, sixteen at the most and 512 KiB in all, whose content types are 256 characters or fewer
+   * of printable ASCII and tabs; the rest go through `uploadArtifact`. Optional; a host without it
+   * has each stored on its own, and so does one that throws a `CacheHostError` with the code
+   * `unsupported` — a host whose store has no such call after all — from then on.
+   */
+  uploadArtifacts?(uploads: readonly ArtifactUpload[]): Promise<readonly UploadedArtifact[]>;
+
   /** Say the attempt is still going, so the lease is not given to someone else. */
   heartbeat(attemptId: string, fencingToken: number): Promise<void>;
 
@@ -122,8 +133,10 @@ export interface CacheHost {
 /**
  * A call the host refused, as the runtime reports it.
  *
- * `code` is the host's own word for the refusal and is only ever logged: nothing the runtime does
- * next depends on which refusal it was, so no set of codes is agreed here.
+ * `code` is the host's own word for the refusal, and is logged. One word is agreed, and acted on:
+ * `unsupported`, from a call the host turns out not to have (`uploadArtifacts`), whose work the
+ * runtime then does as it did before there was such a call. Nothing else it does next depends on
+ * which refusal it was.
  */
 export class CacheHostError extends Error {
   readonly code: string;
@@ -197,7 +210,18 @@ export type AttemptOutcome =
        */
       readonly current?: CurrentSummary | null | undefined;
     }
-  | { readonly kind: 'busy'; readonly current?: CurrentSummary | null | undefined };
+  | {
+      readonly kind: 'busy';
+      readonly current?: CurrentSummary | null | undefined;
+      /**
+       * The attempt that holds the lease, where the host says: what tells this isolate's own
+       * publish of the entry, still out, from an attempt that took the entry after its lease lapsed
+       * (`answeringWhileBusy`).
+       */
+      readonly attemptId?: string | undefined;
+      /** When that attempt's lease lapses unless renewed, by the host's clock, where it says. */
+      readonly leaseExpiresAt?: number | undefined;
+    };
 
 export interface ArtifactUpload {
   readonly attemptId: string;

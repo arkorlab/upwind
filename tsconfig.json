@@ -5,5 +5,5 @@
     "types": ["node"],
     "allowImportingTsExtensions": true
   },
-  "include": ["eslint.config.ts", "knip.config.ts", "types/**/*.d.ts"]
+  "include": ["eslint.config.ts", "knip.config.ts", "vitest.config.ts", "types/**/*.d.ts"]
 }
