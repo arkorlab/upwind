@@ -1,7 +1,7 @@
 import type { FunctionSpec, SourceMapRef, WorkflowSpec } from '@stayingupwind/core/bundle';
 import type { AdapterOutput } from 'next';
 
-import { type FunctionsContext, patchFor } from './app-functions.ts';
+import { type FunctionsContext, patchFor, runtimeManifestJson } from './app-functions.ts';
 import { type BuildContext, collectEntrypoints } from './collect.ts';
 import type { FunctionDependencies } from './dependencies.ts';
 import { buildFunction, type BuiltFunction } from './function.ts';
@@ -170,7 +170,7 @@ export async function buildWorkflowFunction(
     edgeEntries: [],
     wasm: wasm.collector,
     manifests: context.manifests,
-    runtimeManifest: JSON.stringify(manifest),
+    runtimeManifest: runtimeManifestJson(manifest),
     cacheHostModule: context.cacheHostModule,
     ...(carriesMaps(context.sourceMaps) && {
       sourceMaps: context.sourceMaps,
