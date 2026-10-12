@@ -10,6 +10,12 @@ import { runInNewContext } from 'node:vm';
 export interface TextModule {
   readonly name: string;
   readonly contents: string;
+  /**
+   * For a route's own manifest, the file it was made from; none for a manifest every route reads.
+   * The trace of the route whose module reads it names that file, which is how a build that splits
+   * its routes across Functions gives it to the Function holding that route alone (`split.ts`).
+   */
+  readonly routeFile?: string | undefined;
 }
 
 async function exists(file: string): Promise<boolean> {
@@ -127,20 +133,28 @@ function moduleName(projectDir: string, file: string): string {
   return path.relative(projectDir, file).split(path.sep).join('/');
 }
 
-/** A route's own manifests: what its module reads next to itself. */
+/**
+ * A route's own manifests: what its module reads next to itself, by the module's page and no other
+ * (`loadManifests`, `server/route-modules/route-module.ts`).
+ */
 async function routeManifestModule(
   projectDir: string,
   file: string,
   deploymentId: string,
 ): Promise<TextModule | undefined> {
   if (file.endsWith('react-loadable-manifest.json')) {
-    return { name: moduleName(projectDir, file), contents: await readFile(file, 'utf8') };
+    return {
+      name: moduleName(projectDir, file),
+      contents: await readFile(file, 'utf8'),
+      routeFile: file,
+    };
   }
   if (file.endsWith('_client-reference-manifest.js')) {
     const source = await readFile(file, 'utf8');
     return {
       name: moduleName(projectDir, file).replace(/\.js$/u, '.json'),
       contents: evaluateManifestScript(source, deploymentId, file),
+      routeFile: file,
     };
   }
   return undefined;

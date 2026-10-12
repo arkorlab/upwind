@@ -13,6 +13,7 @@ import type { EdgeEntry } from './edge.ts';
 import type { BuiltFunction } from './function.ts';
 import type { AdapterOptions } from './index.ts';
 import { linkedImportsIn } from './linked-externals.ts';
+import type { TextModule } from './manifests.ts';
 import {
   type PlanBudget,
   type PlanItem,
@@ -165,6 +166,8 @@ export interface SplitInput {
    * carries those, so a prerendered body that is one of them byte for byte is no route's to weigh.
    */
   readonly staticDigests: ReadonlySet<string>;
+  /** The build's manifests: a route's own (`TextModule.routeFile`) is weighed with the route. */
+  readonly manifests: readonly TextModule[];
   /** The application built as one Function: what every piece of its code weighs. */
   readonly single: BuiltFunction;
   /** The entrypoints every Function holds (`everyFunction`). */
@@ -187,12 +190,14 @@ async function sizeOf(file: string): Promise<number> {
 
 /**
  * What the planner weighs pieces with: the bytes each file put into the one Function's code, and
- * every piece named so far; and the blobs each route's prerenders name.
+ * every piece named so far; the blobs each route's prerenders name; and the route manifests, by
+ * the file each was made from.
  */
 interface Weights {
   readonly code: ReadonlyMap<string, number>;
   readonly items: Map<string, PlanItem>;
   readonly blobsOf: ReadonlyMap<string, readonly string[]>;
+  readonly manifests: ReadonlyMap<string, string>;
   /**
    * The ES modules the one Function carried, by name and size: among them each package the chunks
    * linked from `.next/node_modules` (`linked-externals.ts`), under the name a chunk imports it by.
@@ -245,12 +250,27 @@ function weightsOf(input: SplitInput): Weights {
       blobsOf.set(route, named);
     }
   }
+  // A route's own manifest at what it weighed in the one Function, where it was a text module.
+  const texts = new Map(
+    input.single.spec.modules
+      .filter((module) => module.type === 'text')
+      .map((module) => [module.name, module.blob.byteLength]),
+  );
+  const manifests = new Map<string, string>();
+  for (const manifest of input.manifests) {
+    const bytes = texts.get(manifest.name);
+    if (bytes !== undefined && manifest.routeFile !== undefined) {
+      const name = `m:${manifest.name}`;
+      items.set(name, { bytes, code: false });
+      manifests.set(path.resolve(manifest.routeFile), name);
+    }
+  }
   const modules = new Map(
     input.single.spec.modules
       .filter((module) => module.type === 'esm')
       .map((module) => [module.name, module.blob.byteLength]),
   );
-  return { code, items, blobsOf, modules, linkedIn: new Map() };
+  return { code, items, blobsOf, manifests, modules, linkedIn: new Map() };
 }
 
 const SERVER_CHUNKS_SEGMENT = `${path.sep}server${path.sep}chunks${path.sep}`;
@@ -311,7 +331,8 @@ function wasmOf(route: RouteCode): string[] {
 /**
  * The pieces one route needs, by the name the planner weighs them under: the code its trace reaches
  * (`c:` in `app.cjs`, `e:` in `edge.cjs`), the linked packages that code imports (`l:`), its
- * WebAssembly (`w:`), the files it reads (`f:`) and the blobs its prerenders name (`b:`).
+ * WebAssembly (`w:`), the files it reads (`f:`), its own manifests (`m:`) and the blobs its
+ * prerenders name (`b:`).
  */
 async function piecesOf(route: RouteCode, input: SplitInput, weights: Weights): Promise<string[]> {
   const pieces: string[] = [];
@@ -345,6 +366,12 @@ async function piecesOf(route: RouteCode, input: SplitInput, weights: Weights): 
     const name = `f:${file.name}`;
     pieces.push(name);
     weights.items.set(name, { bytes: await sizeOf(file.filePath), code: false });
+  }
+  for (const file of Object.values(route.assets)) {
+    const name = weights.manifests.get(path.resolve(file));
+    if (name !== undefined) {
+      pieces.push(name);
+    }
   }
   pieces.push(...(weights.blobsOf.get(route.id) ?? []));
   return pieces;
@@ -424,8 +451,9 @@ async function planUnit(
 
 /**
  * What the one Function weighed beyond what any route can be credited with: what every Function of
- * the plan will weigh — Next.js's own server, the runtime, the manifests, the error pages, and a
- * prerendered body no route of the build names (`carriesBlob`).
+ * the plan will weigh — Next.js's own server, the runtime, the manifests every route reads, the
+ * error pages, and a prerendered body or a route manifest no route of the build names
+ * (`carriesBlob`, `manifestsOf`).
  */
 function baseWeight(
   input: SplitInput,
@@ -524,6 +552,55 @@ export function carriesBlob(
   known: ReadonlySet<string>,
 ): boolean {
   return blob.routes.some((route) => !known.has(route) || held.has(route));
+}
+
+/** What a trace is read off: an output's `assets`, the files it reads by where they are. */
+interface Traced {
+  readonly assets: Readonly<Record<string, string>>;
+}
+
+/** The route manifests (`TextModule.routeFile`, resolved) the traces of `outputs` name. */
+function routeFilesNamed(outputs: readonly Traced[], routeFiles: ReadonlySet<string>): Set<string> {
+  const named = new Set<string>();
+  for (const output of outputs) {
+    for (const file of Object.values(output.assets)) {
+      const resolved = path.resolve(file);
+      if (routeFiles.has(resolved)) {
+        named.add(resolved);
+      }
+    }
+  }
+  return named;
+}
+
+/**
+ * The manifests a Function of a plan carries, in the order the build collected them: each that is
+ * no route's own, and of the routes' own (`TextModule.routeFile`) those the traces of `held` name —
+ * the Function's routes, the ones every Function holds, the middleware and the hook. Next.js reads a
+ * route's own manifests in that route's module alone, by the module's page (`loadManifests`), and a
+ * Function hands a request for a route it does not hold on before any module is asked
+ * (`MISDIRECTED_STATUS`), so none of them is read anywhere else. One that no trace of `traced`, the
+ * whole build, names is carried by every Function, as the plan weighs it (`baseWeight`).
+ */
+export function manifestsOf(
+  manifests: readonly TextModule[],
+  held: readonly Traced[],
+  traced: readonly Traced[],
+): TextModule[] {
+  const routeFiles = new Set(
+    manifests.flatMap((manifest) =>
+      manifest.routeFile === undefined ? [] : [path.resolve(manifest.routeFile)],
+    ),
+  );
+  const own = routeFilesNamed(held, routeFiles);
+  const named = routeFilesNamed(traced, routeFiles);
+  return manifests.filter((manifest) => {
+    if (manifest.routeFile === undefined) {
+      return true;
+    }
+    const file = path.resolve(manifest.routeFile);
+    return own.has(file) || !named.has(file);
+  });
 }
 
 /** The plan as the build's record keeps it: per Function, its routes, and what it was expected to weigh. */
