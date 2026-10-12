@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { annotationOf } from './annotate.ts';
-import { type Hit, hitsOfFile, selfCheck, textOf } from './scan.ts';
+import { type Hit, hitsOfFile, hitsOfPath, selfCheck, textOf } from './scan.ts';
 
 /**
  * Holds the packages that serve and deploy a deployment to the words any host would use.
@@ -61,20 +61,20 @@ function listed(options: readonly string[]): string[] {
  * deleted from the working tree is in the index until its deletion is staged; what is read is the
  * tree as it stands, so such a file is not there to be read.
  */
-function gatedFiles(): { readonly file: string; readonly text: string }[] {
+function gatedFiles(): { readonly file: string; readonly text: string | undefined }[] {
   const deleted = new Set(listed(['--deleted']));
   return listed(['--cached', '--others', '--exclude-standard'])
     .filter((file) => !deleted.has(file))
     .toSorted(byCodeUnit)
-    .flatMap((file) => {
-      const text = textOf(file, readFileSync(path.join(REPO_ROOT, file)));
-      return text === undefined ? [] : [{ file, text }];
-    });
+    .map((file) => ({ file, text: textOf(file, readFileSync(path.join(REPO_ROOT, file))) }));
 }
 
 function report(hits: readonly Hit[], github: boolean): void {
   for (const hit of hits) {
-    const where = `${hit.file}:${String(hit.line)}:${String(hit.column)}`;
+    const where =
+      hit.inPath === true
+        ? `${hit.file} (path)`
+        : `${hit.file}:${String(hit.line)}:${String(hit.column)}`;
     if (github) {
       console.log(annotationOf(hit));
     } else {
@@ -97,9 +97,16 @@ function main(args: readonly string[]): number {
     return EXIT_USAGE;
   }
   const files = gatedFiles();
-  const hits = files.flatMap(({ file, text }) => hitsOfFile(file, text));
+  // A binary's name is read even where its bytes are not.
+  const hits = files.flatMap(({ file, text }) => {
+    const said = text === undefined ? [] : hitsOfFile(file, text);
+    return [...hitsOfPath(file), ...said];
+  });
+  const read = files.filter(({ text }) => text !== undefined).length;
   report(hits, github);
-  console.log(`vocabulary: ${String(files.length)} files read, ${String(hits.length)} terms found`);
+  console.log(
+    `vocabulary: ${String(files.length)} paths and ${String(read)} files read, ${String(hits.length)} terms found`,
+  );
   return hits.length === 0 ? 0 : EXIT_HITS;
 }
 

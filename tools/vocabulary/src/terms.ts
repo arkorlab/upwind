@@ -38,7 +38,13 @@ export const TERMS: readonly Term[] = [
     id: 'host-name',
     pattern: /\barkor(?![\da-z])/giu,
     why: 'a host by name: these packages serve a deployment on whichever host runs them, and keep only the identifiers upwind ships',
-    finds: ['Arkor', 'www.arkor.example', 'an arkor.example hostname'],
+    finds: [
+      'Arkor',
+      'www.arkor.example',
+      'an arkor.example hostname',
+      'not-x-arkor-edge',
+      'MY_ARKOR_KEY',
+    ],
     passes: [
       'x-arkor-edge',
       'ARKOR_CACHE',
@@ -130,17 +136,29 @@ export const TERMS: readonly Term[] = [
   },
   {
     id: 'tenancy',
-    // Not inside a word: a lieutenant is nobody's tenant.
-    pattern: /(?<![\da-z])tenan(?:cies|cy|ts?)/giu,
+    // Inside a word as well (`multitenant`, `subtenancy`), but for the one word that holds it
+    // without meaning it: a lieutenant is nobody's tenant.
+    pattern: /(?<!lieu)tenan(?:cies|cy|ts?)/giu,
     why: "a deployment these packages serve is one site; whose it is, is the host's business",
-    finds: ['tenant', 'tenants', 'tenantId', 'multiTenant', 'multi-tenancy', 'tenancies'],
-    passes: ['tenable', 'a lieutenant', 'lieutenancy'],
+    finds: [
+      'tenant',
+      'tenants',
+      'tenantId',
+      'multiTenant',
+      'multi-tenancy',
+      'tenancies',
+      'multitenant',
+      'multitenancy',
+      'singletenant',
+      'subtenant',
+    ],
+    passes: ['tenable', 'a lieutenant', 'Lieutenants', 'lieutenancy'],
   },
   {
     id: 'dashboard',
     pattern: /dashboard/giu,
     why: "a host's own interface",
-    finds: ['the dashboard', 'Dashboard'],
+    finds: ['the dashboard', 'Dashboard', 'x-arkor-dashboard', 'ARKOR_DASHBOARD_URL'],
     passes: ['dash board'],
   },
   {
@@ -194,17 +212,20 @@ export const TERMS: readonly Term[] = [
 ];
 
 /**
- * Identifiers upwind ships, blanked out of a file before it is searched, column for column. Each
- * names a header, a variable, a directory, a module, a marker, a cache or a value upwind publishes,
- * and renaming one is a change to that contract of its own; an addition here is reviewed as one.
+ * What upwind ships under its own name, blanked out of a file before it is searched, column for
+ * column: the prefixes of the headers, variables, modules and names it publishes (`x-arkor-edge`,
+ * `ARKOR_CACHE`, `arkor:cache-host`, `arkor-csp-1`), its build directory and a marker. A prefix is
+ * blanked alone, so what follows it is searched as any name is, and only where nothing of a name
+ * comes before it. Renaming one is a change to that contract of its own; an addition here is
+ * reviewed as one.
  */
 const ALLOWED: readonly RegExp[] = [
-  /x-arkor-[\w-]+/giu,
-  /\bARKOR_\w+/gu,
-  /\.arkor\//gu,
-  /\barkor:[\w./-]*/gu,
-  /__arkor\b/gu,
-  /\barkor-(?:csp|edge)\b/gu,
+  /(?<![\w-])x-arkor-/giu,
+  /\bARKOR_/gu,
+  /(?<![\w-])\.arkor\//gu,
+  /\barkor:/gu,
+  /\b__arkor\b/gu,
+  /(?<![\w-])arkor-(?:csp|edge)\b/gu,
   // The kind of artifact a document's shell is (`artifactKindSchema` in `@stayingupwind/core`):
   // the name alone, not another made from it on either side.
   /(?<![\w-])ppr-shell(?![\w-])/gu,
