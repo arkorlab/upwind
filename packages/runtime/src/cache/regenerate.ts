@@ -97,12 +97,6 @@ const ON_DEMAND_REASONS: ReadonlySet<AttemptReason> = new Set<AttemptReason>([
 ]);
 const HTTP_OK = 200;
 const HTTP_SERVER_ERROR = 500;
-/**
- * How long a render this isolate is publishing answers the isolate's requests for its entry at the
- * most. A publish takes about a second — its uploads, then the commit — and one still out past this
- * is one the host has stopped hearing from, whose lease ran out: a request after it asks the host.
- */
-const PUBLISHING_ANSWERS_MS = 10_000;
 
 interface RegenerationTarget {
   readonly descriptor: RouteEntryDescriptor;
@@ -154,9 +148,10 @@ export type RegenerationOutcome =
   | {
       readonly kind: 'busy';
       /**
-       * The render this isolate is publishing of the entry, which holds the lease (`Publishing`):
-       * what a visitor is answered with rather than a page of their own. Absent where the lease is
-       * another isolate's, or this one's render is not one to answer with now.
+       * The render this isolate is publishing of the entry, which holds the lease, as its
+       * generation answers (`Publishing`): what a visitor is answered with rather than a page of
+       * their own. Absent where the lease is another isolate's, or this one's render is not one to
+       * answer with now.
        */
       readonly publishing?: CapturedRender | undefined;
     }
@@ -430,6 +425,22 @@ interface Made {
   readonly observedTagRevision: number;
 }
 
+/**
+ * The headers the generation a render publishes is recorded with (`generationResponseHeaders`),
+ * which every answer from it carries, whether from the render itself while it is being published
+ * (`Publishing`) or from the generation once it is.
+ */
+function generationHeadersOf(
+  target: RegenerationTarget,
+  render: CapturedRender,
+): Record<string, string> {
+  return generationResponseHeaders(
+    target.descriptor.kind,
+    render.status,
+    Object.entries(render.headers),
+  );
+}
+
 function commitRequest(
   input: RegenerationInput,
   lease: Leased,
@@ -445,11 +456,7 @@ function commitRequest(
       producedAt: now,
       policy: policyFromCacheControl(render.cacheControl),
       status: render.status,
-      headers: generationResponseHeaders(
-        input.target.descriptor.kind,
-        render.status,
-        Object.entries(render.headers),
-      ),
+      headers: generationHeadersOf(input.target, render),
       // Handed in rather than read here, because `tagsOf` ran before the uploads did: a render
       // carrying more tags than a generation may is refused without paying to store its outputs.
       tags: [...made.tags],
@@ -548,7 +555,8 @@ async function publish(
 
 /**
  * `published`, the render it publishes answering the isolate's requests that would regenerate the
- * entry until it has settled (`Publishing`, `regenerate`). Never rejects, as `publish` never does.
+ * entry until it has settled, or until the isolate lets go of the render sooner (`Publishing`,
+ * `CacheRuntime.publishing`, `regenerate`). Never rejects, as `publish` never does.
  */
 async function answeringUntilSettled(
   runtime: CacheRuntime,
@@ -560,7 +568,9 @@ async function answeringUntilSettled(
   try {
     return await published;
   } finally {
-    if (runtime.publishing.get(entryId) === own) {
+    // Only where the entry is still this publish's, past its window or not: once the window or the
+    // budget has let go of it, a later publish of the entry may have set its own.
+    if (runtime.publishing.peek(entryId)?.value === own) {
       runtime.publishing.delete(entryId);
     }
   }
@@ -576,15 +586,12 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   const { runtime, target } = input;
   // This isolate's own regeneration of the entry, its render made and its publish out, holds the
   // lease: the host would say so. Its render answers instead of a page of the visitor's own — the
-  // page every request after the publish is answered with — unless the isolate's view of the tags
-  // has moved since the render read against it, when what moved it may be what the render missed.
+  // page every request after the publish is answered with — for as long as the isolate keeps it
+  // (`publishing`), unless the isolate's view of the tags has moved since the render read against
+  // it, when what moved it may be what the render missed.
   const entryId = await entryIdOf(runtime, target.descriptor);
   const publishing = runtime.publishing.get(entryId);
-  if (
-    publishing !== undefined &&
-    nowMs() - publishing.renderedAt < PUBLISHING_ANSWERS_MS &&
-    runtime.tags.revision <= publishing.observedTagRevision
-  ) {
+  if (publishing !== undefined && runtime.tags.revision <= publishing.observedTagRevision) {
     return { kind: 'busy', publishing: publishing.render };
   }
   // The view of the tags the render will judge its data-cache reads against, brought up to date
@@ -660,7 +667,10 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   const published = answeringUntilSettled(
     runtime,
     entryId,
-    { render: captured, observedTagRevision, renderedAt: nowMs() },
+    {
+      render: { ...captured, headers: generationHeadersOf(target, captured) },
+      observedTagRevision,
+    },
     publish(input, lease, { render: captured, observedTagRevision, began }, stopHeartbeat),
   );
   input.waitUntil(published);

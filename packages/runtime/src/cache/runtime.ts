@@ -37,16 +37,35 @@ const DATA_MEMO_BYTES = PAYLOAD_MEMO_MIB * MIB;
 const RECORD_MEMO_BYTES = PAYLOAD_MEMO_MIB * MIB;
 const ARTIFACT_MEMO_BYTES = ARTIFACT_MEMO_MIB * MIB;
 const UTF16_BYTES = 2;
+/**
+ * How long a render this isolate is publishing answers the isolate's requests for its entry at the
+ * most. A publish takes about a second — its uploads, then the commit — and one still out past this
+ * is one the host has stopped hearing from, whose lease ran out: a request after it asks the host.
+ */
+const PUBLISHING_ANSWERS_MS = 10_000;
+/** More renders than an isolate publishes at once, each for about a second. */
+const PUBLISHING_ENTRIES = 64;
+const PUBLISHING_MIB = 16;
+/**
+ * What the renders this isolate is publishing may hold together (`publishing`): twice a payload
+ * memo, as one render holds a page's document, its payload and its segments at once. A publish
+ * holds its render until it settles in any case; what this bounds is what is held past that — a
+ * publish its request ended under never settles — and a render larger than all of it is not kept:
+ * a request that would regenerate its entry meanwhile asks the host, whose lease turns it away.
+ */
+export const PUBLISHING_BYTES = PUBLISHING_MIB * MIB;
 
 /**
  * A render this isolate is publishing as an entry's next generation: from the render made until its
- * publish has settled. `observedTagRevision` is the revision of the tag view its reads were judged
- * against, and `renderedAt` when it was made.
+ * publish has settled. `render` is the render as its generation answers, with the headers the
+ * generation is recorded with (`generationResponseHeaders`) rather than every one the render was
+ * answered with: a cookie it set is the visitor's it was made for alone, and a header of the
+ * platform's own is no visitor's. `observedTagRevision` is the revision of the tag view its reads
+ * were judged against.
  */
 export interface Publishing {
   readonly render: CapturedRender;
   readonly observedTagRevision: number;
-  readonly renderedAt: number;
 }
 
 export interface CacheRuntime {
@@ -88,9 +107,11 @@ export interface CacheRuntime {
   /**
    * The renders this isolate is publishing, by entry (`Publishing`): a request of the isolate that
    * would regenerate the entry meanwhile is answered from one, as the request that made it was,
-   * rather than with a page of its own (`regenerate`). Each goes once its publish has settled.
+   * rather than with a page of its own (`regenerate`). Each goes once its publish has settled, ten
+   * seconds after it was made (`PUBLISHING_ANSWERS_MS`), or when the budget needs the room
+   * (`PUBLISHING_BYTES`).
    */
-  readonly publishing: Map<string, Publishing>;
+  readonly publishing: TtlCache<string, Publishing>;
   /**
    * Artifacts of current generations, by id, read for an output other than the record's own. An
    * artifact is named by its content and never rewritten, so what an id read once says it says for
@@ -160,6 +181,30 @@ function recordBytes(pack: DecodedGenerationPack | null): number {
   );
 }
 
+/**
+ * What a render holds: every buffer its outputs are views of, each charged in full and once — a
+ * view keeps the whole of its buffer alive, and outputs may share one — with its state, its headers
+ * and its segments' keys.
+ */
+function renderBytes(render: CapturedRender): number {
+  const buffers = new Set<ArrayBufferLike>([render.html.buffer]);
+  let characters = (render.postponed?.length ?? 0) + JSON.stringify(render.headers).length;
+  for (const bytes of [render.rscData, render.data]) {
+    if (bytes !== undefined) {
+      buffers.add(bytes.buffer);
+    }
+  }
+  for (const [key, bytes] of render.segments) {
+    buffers.add(bytes.buffer);
+    characters += key.length;
+  }
+  let total = characters * UTF16_BYTES;
+  for (const buffer of buffers) {
+    total += buffer.byteLength;
+  }
+  return total;
+}
+
 function log(message: string, fields: Record<string, string | number> = {}): void {
   // The Function's own log; nothing else records what its cache did.
   // eslint-disable-next-line no-console
@@ -215,7 +260,10 @@ export function createCacheRuntime(options: CacheRuntimeOptions): CacheRuntime |
     }),
     recordReads: new Map(),
     regenerationMemo: new TtlCache(holdMs, MEMO_ENTRIES, options.now),
-    publishing: new Map(),
+    publishing: new TtlCache(PUBLISHING_ANSWERS_MS, PUBLISHING_ENTRIES, options.now, {
+      maxBytes: PUBLISHING_BYTES,
+      sizeOf: (publishing, key) => renderBytes(publishing.render) + key.length * UTF16_BYTES,
+    }),
     artifactMemo: new TtlCache(Infinity, ARTIFACT_MEMO_ENTRIES, options.now, {
       maxBytes: ARTIFACT_MEMO_BYTES,
       sizeOf: (bytes, key) => bytes.buffer.byteLength + key.length * UTF16_BYTES,
