@@ -61,6 +61,14 @@ describe('a file', () => {
     ]);
   });
 
+  it('says nothing of the copyright holder, as a licence names it', () => {
+    expect(saidIn('Copyright (c) 2026 Arkor and Contributors')).toStrictEqual([]);
+    expect(saidIn('Copyright 2026 Arkor and Contributors')).toStrictEqual([]);
+    expect(saidIn('served by Arkor and Contributors')).toStrictEqual([
+      { id: 'host-name', text: 'Arkor' },
+    ]);
+  });
+
   it('says nothing of the identifiers upwind ships', () => {
     expect(
       saidIn("headers.set('x-arkor-edge', ARKOR_CACHE); const kind = 'ppr-shell';"),

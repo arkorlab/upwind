@@ -38,7 +38,14 @@ export const TERMS: readonly Term[] = [
     pattern: /\barkor(?![\da-z])/giu,
     why: 'a host by name: these packages serve a deployment on whichever host runs them, and keep only the identifiers upwind ships',
     finds: ['Arkor', 'www.arkor.example', 'an arkor.example hostname'],
-    passes: ['x-arkor-edge', 'ARKOR_CACHE', '.arkor/bundle.json', 'arkor:cache-host', 'darkorange'],
+    passes: [
+      'x-arkor-edge',
+      'ARKOR_CACHE',
+      '.arkor/bundle.json',
+      'arkor:cache-host',
+      'darkorange',
+      'Copyright 2026 Arkor and Contributors',
+    ],
   },
   {
     id: 'control-plane',
@@ -180,6 +187,8 @@ const ALLOWED: readonly RegExp[] = [
   // The kind of artifact a document's shell is (`artifactKindSchema` in `@stayingupwind/core`):
   // the name alone, not another made from it on either side.
   /(?<![\w-])ppr-shell(?![\w-])/gu,
+  // The copyright holder, as every package's licence and notice name it.
+  /\bCopyright (?:\(c\) )?\d{4} Arkor and Contributors\b/gu,
 ];
 
 function blankAllowed(text: string): string {
