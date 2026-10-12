@@ -303,6 +303,7 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     staticBlobs: await staticBlobsOf(shippedStatic, outDir),
     files,
     workflowSdk: workflow.flow !== undefined,
+    previewData: ctx.outputs.pages.length > 0 || ctx.outputs.pagesApi.length > 0,
   };
   const functions = await appFunctionsOf(
     context,
