@@ -29,9 +29,10 @@ const BATCHED_UPLOADS = 16;
 const BATCHED_UPLOADS_BYTES = BATCHED_UPLOADS_KIB * KIB;
 /**
  * The content types an output goes in one call with others under: no longer than this, and of
- * printable ASCII. Carried in the call's body rather than as a header of its own, a content type is
- * one the host reads out of that body and bounds there (`uploadArtifacts`); one past what it takes
- * goes on its own, as every output did before the call, rather than failing the whole call.
+ * printable ASCII and tabs, as a header's value may be. Carried in the call's body rather than as a
+ * header of its own, a content type is one the host reads out of that body and bounds there
+ * (`uploadArtifacts`); one past what it takes goes on its own, as every output did before the call,
+ * rather than failing the whole call.
  */
 const BATCHED_CONTENT_TYPE_LENGTH = 256;
 const BATCHED_CONTENT_TYPE = /^[\t\u{20}-\u{7E}]+$/u;

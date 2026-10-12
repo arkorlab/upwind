@@ -49,9 +49,9 @@ export interface CacheHost {
    * the order they were given: the small ones a page is made of — its document, its payload, its
    * segments — which one call each sent a round trip at a time. Handed only outputs of 64 KiB or
    * less, sixteen at the most and 512 KiB in all, whose content types are 256 characters or fewer
-   * of printable ASCII; the rest go through `uploadArtifact`. Optional; a host without it has each
-   * stored on its own, and so does one that throws a `CacheHostError` with the code `unsupported` —
-   * a host whose store has no such call after all — from then on.
+   * of printable ASCII and tabs; the rest go through `uploadArtifact`. Optional; a host without it
+   * has each stored on its own, and so does one that throws a `CacheHostError` with the code
+   * `unsupported` — a host whose store has no such call after all — from then on.
    */
   uploadArtifacts?(uploads: readonly ArtifactUpload[]): Promise<readonly UploadedArtifact[]>;
 
