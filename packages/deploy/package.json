@@ -1,0 +1,42 @@
+{
+  "name": "@stayingupwind/deploy",
+  "version": "0.4.0",
+  "private": true,
+  "description": "What deploying a build assembles from it: the manifest the edge serves by, the shells it stores, the delivery it plans, the cache it seeds, what each Function is bound to, and the pointer that sends a site's requests to the edge.",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arkorlab/upwind.git",
+    "directory": "packages/deploy"
+  },
+  "files": [
+    "src",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "NOTICE"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    "./bindings": "./src/bindings.ts",
+    "./cache-seed": "./src/cache-seed.ts",
+    "./delivery": "./src/delivery.ts",
+    "./deploy": "./src/deploy.ts",
+    "./fingerprint": "./src/fingerprint.ts",
+    "./manifest": "./src/manifest.ts",
+    "./pointer": "./src/pointer.ts",
+    "./shells": "./src/shells.ts",
+    "./static-files": "./src/static-files.ts"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@stayingupwind/core": "workspace:*",
+    "@stayingupwind/host": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "catalog:"
+  }
+}

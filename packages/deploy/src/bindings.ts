@@ -1,0 +1,107 @@
+import {
+  CACHE_GATEWAY_URL_BINDING,
+  CACHE_READ_GATEWAY_URL_BINDING,
+  CACHE_READ_SERVICE_BINDING,
+  CACHE_SERVICE_BINDING,
+  CACHE_TOKEN_BINDING,
+  DEPLOYMENT_ID_BINDING,
+  RESPONSE_CACHE_TTL_BINDING,
+  RESPONSE_CACHE_TTL_SECONDS,
+  RUNTIME_BINDING,
+} from '@stayingupwind/host/bindings';
+
+/**
+ * What every Function of a deployment is bound to by whatever deploys it, beside the application's
+ * own environment: its deployment's id, the runtime it is in, and the way to its runtime cache.
+ */
+
+const RUNTIME_NAME = 'workerd';
+
+/** A variable a Function is given: plain text, or a secret. */
+export interface TextBinding {
+  readonly name: string;
+  readonly value: string;
+  readonly secret: boolean;
+}
+
+/** Another Worker a Function reaches without going out to the internet, at its default entrypoint. */
+export interface ServiceBinding {
+  readonly name: string;
+  readonly service: string;
+}
+
+/**
+ * One way to reach one of the host's own Workers from a deployment's Worker: a service binding to
+ * it, or its public URL for a deployment that binds nothing.
+ */
+export type GatewayRoute =
+  | { readonly kind: 'service'; readonly service: string }
+  | { readonly kind: 'url'; readonly url: string };
+
+/** What a deployment's Workers are given to reach their runtime cache. */
+export interface CacheGrant {
+  readonly gateway: GatewayRoute;
+  readonly readGateway?: GatewayRoute | undefined;
+  /** Opens the deployment's own scope and no other; a secret binding on the Workers. */
+  readonly token: string;
+}
+
+/**
+ * The cache gateways as the deployment's Workers will see them: a service binding, or the URL to
+ * go out to, per gateway and never both.
+ *
+ * Never both is the point. A Worker that held the public name of a gateway beside a binding to it
+ * would still have somewhere to go when the binding failed, and a cache Worker reached by binding
+ * need answer no public name — the request would leave the host and find nothing. One transport,
+ * so a failure to reach the authority is a failure and not a silent detour.
+ */
+export function cacheBindings(grant: CacheGrant): {
+  readonly text: readonly TextBinding[];
+  readonly services: readonly ServiceBinding[];
+} {
+  const text: TextBinding[] = [];
+  const services: ServiceBinding[] = [];
+  const route = (
+    gateway: GatewayRoute | undefined,
+    serviceBinding: string,
+    urlBinding: string,
+  ): void => {
+    if (gateway === undefined) {
+      return;
+    }
+    if (gateway.kind === 'service') {
+      // No `entrypoint`: the default one is the only one placement acts on.
+      services.push({ name: serviceBinding, service: gateway.service });
+      return;
+    }
+    text.push({ name: urlBinding, value: gateway.url, secret: false });
+  };
+  route(grant.gateway, CACHE_SERVICE_BINDING, CACHE_GATEWAY_URL_BINDING);
+  route(grant.readGateway, CACHE_READ_SERVICE_BINDING, CACHE_READ_GATEWAY_URL_BINDING);
+  return { text, services };
+}
+
+/**
+ * What every Function of a deployment is bound to beside its environment, in the order it is bound
+ * in: Next.js's deployment id, the runtime, the way to the cache and the token that opens the
+ * deployment's own scope, and the response cache's lifetime.
+ */
+export function functionBindings(input: {
+  readonly deploymentId: string;
+  readonly cache: CacheGrant;
+}): {
+  readonly text: readonly TextBinding[];
+  readonly services: readonly ServiceBinding[];
+} {
+  const cache = cacheBindings(input.cache);
+  return {
+    text: [
+      { name: DEPLOYMENT_ID_BINDING, value: input.deploymentId, secret: false },
+      { name: RUNTIME_BINDING, value: RUNTIME_NAME, secret: false },
+      ...cache.text,
+      { name: CACHE_TOKEN_BINDING, value: input.cache.token, secret: true },
+      { name: RESPONSE_CACHE_TTL_BINDING, value: RESPONSE_CACHE_TTL_SECONDS, secret: false },
+    ],
+    services: cache.services,
+  };
+}
