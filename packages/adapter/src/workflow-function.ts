@@ -180,5 +180,8 @@ export async function buildWorkflowFunction(
     files: input.files,
     blobStore: context.blobs,
     workflowSdk: true,
+    // The flow route is the World's to call, with what its queue delivers: no visitor's cookie, and
+    // so no preview data to verify, whatever routes the build has.
+    previewData: false,
   });
 }
