@@ -52,6 +52,9 @@ const RUNTIME_NEUTRAL_FILES = [
   'packages/host/**/*.ts',
   // Run by whatever deploys a build, which may be a Worker or a command under Node.
   'packages/deploy/**/*.ts',
+  // A Worker's, and a Function's: the cache's authority and gateways, and the client a Function
+  // reaches them with. Its adapter preset runs under Node, and says so where it imports a built-in.
+  'packages/cache/**/*.ts',
   'packages/sdk/src/**/*.ts',
 ];
 /** The suites, and what they share, wherever a package or a tool keeps them. */
@@ -529,6 +532,28 @@ export default defineConfig([
         },
       ],
     },
+  },
+
+  // The packages that serve a deployment are refused a Node.js built-in by its resolved name as well
+  // as by the specifiers above, as they are wherever they are developed beside a host.
+  {
+    files: ['packages/{cache,deploy,host}/**/*.ts'],
+    rules: { 'import-x/no-nodejs-modules': 'error' },
+  },
+
+  // A Worker's entry is loaded for its default export, which is the Worker.
+  {
+    files: [
+      'packages/cache/src/prefetch/worker.ts',
+      'packages/cache/src/standalone/{read-worker,worker}.ts',
+    ],
+    rules: { 'import-x/no-default-export': 'off' },
+  },
+
+  // The cache's logger writes each line to the console, which is where a Worker's logs are read.
+  {
+    files: ['packages/cache/src/logger.ts'],
+    rules: { 'no-console': 'off' },
   },
 
   // An application may compile `@stayingupwind/host` into itself, so its zod is a namespace.

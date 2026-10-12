@@ -70,6 +70,11 @@ catalog:
   # where something takes zod's alone (`./zod`). What the edge reads is written with core's own
   # validator instead, which is cheap to build in an isolate that builds it before its first request.
   zod: 4.6.5
+  # What `@stayingupwind/cache`'s gateway routes a Function's requests with.
+  hono: 4.13.13
+  # Runs `@stayingupwind/cache`'s suites inside workerd. It carries a wrangler and a Miniflare of its
+  # own, exactly; its Miniflare is the one above.
+  '@cloudflare/vitest-plugin': 1.4.0
 
 # Only these dependencies may run install scripts.
 allowBuilds:
