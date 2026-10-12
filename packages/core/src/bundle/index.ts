@@ -7,10 +7,8 @@ export {
   bundleConfigSchema,
   type CacheLifeProfile,
   cacheLifeProfileSchema,
-  DEPLOYMENT_ID_PREFIX,
   type DeploymentBundle,
   deploymentBundleSchema,
-  deploymentIdSchema,
   type Entrypoint,
   type EntrypointKind,
   entrypointKindSchema,
@@ -46,6 +44,7 @@ export {
   type WorkflowSpec,
 } from './schema.ts';
 export { type RouteHas, routeHasSchema, splitFunctionNameSchema } from './carried.ts';
+export { DEPLOYMENT_ID_PREFIX, deploymentIdSchema } from './deployment-id.ts';
 export { PRIMARY_FUNCTION } from './function-name.ts';
 export { type ManifestHead, manifestHead } from './head.ts';
 export { type PackedPrerenders, packPrerenders, unpackPrerenders } from './packed-prerenders.ts';
