@@ -12,6 +12,7 @@
     "build": "pnpm -r build",
     "check:durable-objects": "node packages/upwind/scripts/check-durable-objects.ts",
     "check:agent-rules": "node packages/create-upwind/scripts/check-agent-rules.ts",
+    "check:vocabulary": "node tools/vocabulary/src/main.ts",
     "check:patches": "node packages/adapter/scripts/check-patches.ts",
     "check:patches:range": "node packages/adapter/scripts/check-patches.ts --range",
     "check:patches:canary": "node packages/adapter/scripts/check-patches.ts --canary",
@@ -23,12 +24,14 @@
     "knip": "knip",
     "lint": "eslint . --max-warnings 0",
     "lint:fix": "eslint . --max-warnings 0 --fix",
+    "test": "vitest run",
     "typecheck": "pnpm -r typecheck && tsc --noEmit -p tsconfig.json",
     "check:ai": "node packages/upwind/scripts/check-ai.ts"
   },
   "devDependencies": {
     "@eslint/js": "catalog:",
     "@types/node": "catalog:",
+    "@vitest/eslint-plugin": "catalog:",
     "eslint": "catalog:",
     "eslint-config-prettier": "catalog:",
     "eslint-import-resolver-typescript": "catalog:",
@@ -45,7 +48,8 @@
     "knip": "catalog:",
     "oxfmt": "catalog:",
     "typescript": "catalog:",
-    "typescript-eslint": "catalog:"
+    "typescript-eslint": "catalog:",
+    "vitest": "catalog:"
   },
   "devEngines": {
     "runtime": {
