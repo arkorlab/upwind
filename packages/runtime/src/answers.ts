@@ -16,16 +16,17 @@ import {
   type Representation,
   SEGMENT_PREFIX,
 } from './representations.ts';
+import { resumeUrlOf } from './route-parameters.ts';
 import {
   baseRequestMeta,
   concatShell,
   NEXT_CACHE_HEADER,
   type NextCacheState,
   resume,
-  resumeUrl,
   type RoutedInput,
   stripPlatformHeaders,
 } from './serve.ts';
+import type { Store } from './store.ts';
 
 /**
  * The visitor's answer from an entry's bytes — a render just made, or what a generation holds —
@@ -144,8 +145,8 @@ export function resumeRsc(
 }
 
 /** What the edge asks for on a document's behalf: the document itself. */
-export function documentWant(input: RoutedInput): Want {
-  return { representation: 'html', url: resumeUrl(input.request) };
+export function documentWant(input: RoutedInput, store: Store, route: string): Want {
+  return { representation: 'html', url: resumeUrlOf(store, route, input.request) };
 }
 
 /**

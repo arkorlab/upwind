@@ -59,6 +59,7 @@ import {
 import { DEFAULT_PROXY_BODY_LIMIT, splitBody } from './request-body.ts';
 import { routingOf, untraced, withRoutingOf } from './resolve-request.ts';
 import { settleRewrittenPath } from './rewritten-path.ts';
+import { resumeUrlOf } from './route-parameters.ts';
 import {
   askedOf,
   landedRoute,
@@ -80,7 +81,6 @@ import {
   initUrlOf,
   invokeEntry,
   resume,
-  resumeUrl,
   type RoutedInput,
   withInvalidatedTags,
   withoutBody,
@@ -139,7 +139,7 @@ async function handleResume(
     input,
     handler: entry.handler,
     postponed: postponedOf(store, prerender),
-    url: resumeUrl(input.request),
+    url: resumeUrlOf(store, prerender.route, input.request),
   });
 }
 
@@ -497,7 +497,7 @@ async function handleAnyResume(
   prerenderId: string | null,
 ): Promise<Response> {
   const response = await (prerenderId === null
-    ? handleRuntimeResume(input)
+    ? handleRuntimeResume(input, store)
     : handleResume(input, store, prerenderId));
   return await withBackgroundRegeneration(input, store, response);
 }
