@@ -2,6 +2,7 @@ import type { ResolveRoutesResult } from '@next/routing';
 import { standsForClass } from '@stayingupwind/core/bundle';
 import { builtNameOf } from '@stayingupwind/core/manifest';
 
+import { resumeUrl } from './incoming.ts';
 import { entrypointKindOf, type Store, unlocalizedRouteOf } from './store.ts';
 
 /** A parameter of a route, by the segment that declares it: `[id]`, `[...rest]` or `[[...rest]]`. */
@@ -234,29 +235,29 @@ function withoutEndSlash(pathname: string): string {
 }
 
 /**
- * The parameters a regeneration of a Pages Router member hands Next.js in its query (`nxtP…`), as
- * routing hands them to a render of a visitor's request; `undefined` where Next.js, matching the
- * member's name itself, reads them the same — every member but one whose catch-all holds an
- * escaped `/` in one of its segments.
+ * The parameters routing hands a render of `pathname` in its query (`nxtP…`), for a render the
+ * platform makes of a page by its path alone — a regeneration rendering a member by its name, a
+ * resume of a shell for the path the visitor asked by; `undefined` where Next.js, matching the path
+ * itself, reads them the same — every path but one whose catch-all holds an escaped `/` in one of
+ * its segments.
  *
  * Routing writes a catch-all's value into the query decoded, its segments joined by `/`, and
  * Next.js splits it there (`normalizeDynamicRouteParams`): `/docs/a%2Fb` of `/docs/[...slug]` is
  * `['a', 'b']`, which is how Next.js says the deployments of its own adapter read such a value
- * (`prerender-encoding`). Matching the name, it splits the path first and decodes each segment
- * after, which keeps the `/` in the value: `['a/b']`. A regeneration rendered the member by its
- * name, so the generation it published — and every answer from it — said one thing where a render
- * of the visitor's request said the other, and which of the two answered turned on whether the
- * entry's record was read in time (`incremental-cache-path-traversal`).
+ * (`prerender-encoding`). Matching the path, it splits it first and decodes each segment after,
+ * which keeps the `/` in the value: `['a/b']`. So a page rendered by its path said one thing where a
+ * render of the visitor's request said the other: a regeneration published the one, and every
+ * answer from it said so (`incremental-cache-path-traversal`); and the document a shell was resumed
+ * for said the one while the router's payloads for the same page said the other, so the client took
+ * them for two pages (`use-router-bfcache-id`).
  *
- * The member is read as routing reads the request for it: its segments as `valuesOf` reads them —
+ * The path is read as routing reads the request for it: its segments as `valuesOf` reads them —
  * its fixed ones too, matched in any case (`/DOCS/a%2Fb` lands on `/docs/[...slug]`) — a trailing
- * slash left off, and its locale, in an application with `i18n`, left out. Every parameter of
- * the route is named once one is, as routing names them all: Next.js takes the query's only where
- * it holds every one. Not an App Router member's: its shell is resumed for each visitor by the
- * member's own path, which Next.js reads as it reads the name, and a shell and its resume have to
- * agree.
+ * slash left off, and, for a Pages Router route of an application with `i18n`, its locale left
+ * out; an App Router route has none in front of it. Every parameter of the route is named once one
+ * is, as routing names them all: Next.js takes the query's only where it holds every one.
  */
-export function regenerationParameters(
+export function routingParameters(
   store: Store,
   route: string,
   pathname: string,
@@ -264,7 +265,12 @@ export function regenerationParameters(
   const template = store.prerendersByPathname.get(route)?.route ?? route;
   const bare = withoutEndSlash(pathname);
   const built = store.prerendersByPathname.has(bare);
-  const member = (unlocalizedRouteOf(store.manifest.config, bare) ?? bare).split('/');
+  const kind = entrypointKindOf(store, template);
+  const unlocalized =
+    kind === 'app-page' || kind === 'app-route'
+      ? undefined
+      : unlocalizedRouteOf(store.manifest.config, bare);
+  const member = (unlocalized ?? bare).split('/');
   const named: Record<string, string> = {};
   let separated = false;
   for (const [index, placeholder] of template.split('/').entries()) {
@@ -288,4 +294,28 @@ export function regenerationParameters(
     }
   }
   return separated ? named : undefined;
+}
+
+/** `url`, a path and its query, with `parameters` added to the query where there are any. */
+export function withParameters(
+  url: string,
+  parameters: Readonly<Record<string, string>> | undefined,
+): string {
+  if (parameters === undefined) {
+    return url;
+  }
+  const added = new URLSearchParams(parameters).toString();
+  return url.includes('?') ? `${url}&${added}` : `${url}?${added}`;
+}
+
+/**
+ * The URL a shell of `route` is resumed for: the path and query the visitor asked by, without the
+ * route's parameters a client may have put in it (`resumeUrl`), and with them as routing reads the
+ * path, where Next.js would read them otherwise (`routingParameters`).
+ */
+export function resumeUrlOf(store: Store, route: string, request: Request): string {
+  return withParameters(
+    resumeUrl(request),
+    routingParameters(store, route, new URL(request.url).pathname),
+  );
 }
