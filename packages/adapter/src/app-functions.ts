@@ -21,6 +21,7 @@ import { carriesMaps, type SourceMapsOption } from './source-maps.ts';
 import {
   carriesBlob,
   everyFunction,
+  manifestsOf,
   overBudget,
   placedEntrypoints,
   placementsOf,
@@ -69,6 +70,7 @@ export interface FunctionsContext {
   readonly sourceMaps: SourceMapsOption;
   /** The maps that came through the build's `runAfterProductionCompile` (`kept-maps.ts`). */
   readonly keptMaps: KeptMaps | undefined;
+  /** What Next.js's route modules read: all of it in a Function holding every route (`manifestsOf`). */
   readonly manifests: readonly TextModule[];
   readonly hook: HookParts;
   /** The module the cache handlers the app configured are loaded from (`writeCacheHandlers`). */
@@ -176,6 +178,7 @@ function partsOf(
   wasm: readonly string[];
   blobs: readonly { readonly sha256: string; readonly bytes: Uint8Array }[];
   files: readonly TracedFile[];
+  manifests: readonly TextModule[];
 } {
   if (held === undefined) {
     return {
@@ -185,11 +188,14 @@ function partsOf(
       wasm: context.wasm,
       blobs: distinct([...context.shipped, ...context.staticBlobs]),
       files: context.files.app,
+      manifests: context.manifests,
     };
   }
   const own = context.routes.filter((route) => held.routes.has(route.id));
   const known = new Set(context.routes.map((route) => route.id));
   const { output } = context.middleware;
+  // What every Function holds besides its routes, whose traces name what it reads as theirs do.
+  const base = [...(output === undefined ? [] : [output]), { assets: context.hook.assets }];
   return {
     modules: own.flatMap((route) => (route.module === undefined ? [] : [route.module])),
     edge: own.flatMap((route) => (route.edge === undefined ? [] : [route.edge])),
@@ -200,14 +206,11 @@ function partsOf(
       ...context.staticBlobs,
     ]),
     files: tracedFiles(
-      [
-        ...own.map((route) => ({ runtime: runtimeOf(route), assets: route.assets })),
-        ...(output === undefined ? [] : [output]),
-        { assets: context.hook.assets },
-      ],
+      [...own.map((route) => ({ runtime: runtimeOf(route), assets: route.assets })), ...base],
       context.ctx.projectDir,
       context.ctx.distDir,
     ),
+    manifests: manifestsOf(context.manifests, [...own, ...base], [...context.routes, ...base]),
   };
 }
 
@@ -238,7 +241,7 @@ export async function buildAppFunction(
     entries: [...parts.modules, ...middleware.node],
     edgeEntries,
     wasm: wasm.collector,
-    manifests: context.manifests,
+    manifests: parts.manifests,
     runtimeManifest,
     cacheHostModule: context.cacheHostModule,
     ...(carriesMaps(context.sourceMaps) && {
@@ -359,6 +362,7 @@ export async function appFunctionsOf<
     routes: context.routes,
     shipped: context.shipped,
     staticDigests: new Set(context.staticBlobs.map((blob) => blob.sha256)),
+    manifests: context.manifests,
     single,
     every,
     base: [
