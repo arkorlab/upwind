@@ -16,7 +16,8 @@ pnpm check:vocabulary --format github  # the same, as annotations on a pull requ
 
 There is no baseline: a package it reads says none of them. A file is searched whole — comments and
 Markdown included, a term of several words found where a soft line break falls inside it, and an
-identifier read as the words it is made of (`controlPlane`). The identifiers upwind ships under its
-own names (`x-arkor-*`, `ARKOR_*`, `.arkor/`, `arkor:` modules, the `ppr-shell` artifact kind) and the
-copyright line of a package's licence are blanked first; an addition to that list is a change to
-what upwind publishes, and is reviewed as one.
+identifier read as the words it is made of (`controlPlane`). A term is found in its plural as well,
+where the plural names the same thing. The identifiers upwind ships under its own names (`x-arkor-*`,
+`ARKOR_*`, `.arkor/`, `arkor:` modules, the `ppr-shell` artifact kind) and the copyright line of a
+package's licence are blanked first, to something that joins no words either side of it; an addition
+to that list is a change to what upwind publishes, and is reviewed as one.

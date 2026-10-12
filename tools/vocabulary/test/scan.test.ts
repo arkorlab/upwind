@@ -90,6 +90,15 @@ describe('a file', () => {
       { id: 'resource-name', text: 'ppr-' },
     ]);
   });
+
+  it('reads no term across an identifier upwind ships, which stands between words as itself', () => {
+    expect(
+      saidIn('control x-arkor-edge plane; this ARKOR_CACHE platform; analytics arkor:edge engine'),
+    ).toStrictEqual([]);
+    expect(hitsOfFile('a.ts', "'x-arkor-edge', the dashboard")).toMatchObject([
+      { line: 1, column: 21, text: 'dashboard' },
+    ]);
+  });
 });
 
 describe("a file's bytes", () => {
