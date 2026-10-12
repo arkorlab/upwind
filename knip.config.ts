@@ -35,6 +35,7 @@ const config: KnipConfig = {
     // The readers are started as child processes by path, so nothing here imports them.
     'tools/deploy-tests': { entry: ['src/read-env.ts', 'src/read-suite-env.ts'] },
     'tools/next-matrix': {},
+    'tools/vocabulary': {},
   },
   // Applications the matrix builds with a Next.js of their own, not code of this repository's — and
   // the site, which is an application too: its own project, its own lockfile, and its own install of

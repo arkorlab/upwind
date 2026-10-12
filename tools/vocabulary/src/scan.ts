@@ -1,0 +1,110 @@
+import path from 'node:path';
+
+import { searchable, type Searchable, type Term, TERMS } from './terms.ts';
+
+/** A term a file says: where, as the file wrote it. */
+export interface Hit {
+  readonly file: string;
+  readonly line: number;
+  readonly column: number;
+  readonly term: Term;
+  readonly text: string;
+}
+
+interface Found {
+  readonly term: Term;
+  readonly at: number;
+  readonly text: string;
+}
+
+/**
+ * What a match says, as the file wrote it: without the spaces `searchable` put between an
+ * identifier's words, which stand at the offset of the character after them, and with a run of
+ * spaces — a line break the term was wrapped across among them — as one.
+ */
+function asWritten(searched: Searchable, start: number, end: number): string {
+  let written = '';
+  for (let at = start; at < end; at += 1) {
+    if (searched.offsets[at] !== searched.offsets[at + 1]) {
+      written += searched.text.charAt(at);
+    }
+  }
+  return written.replaceAll(/ +/gu, ' ');
+}
+
+/** What a text says, each term at the offset in the text it starts at. */
+function hitsIn(text: string, terms: readonly Term[]): Found[] {
+  const searched = searchable(text);
+  return terms.flatMap((term) => {
+    return [...searched.text.matchAll(term.pattern)].map((match) => {
+      return {
+        term,
+        at: searched.offsets[match.index] ?? match.index,
+        text: asWritten(searched, match.index, match.index + match[0].length),
+      };
+    });
+  });
+}
+
+/**
+ * Every term finds what it says it finds, and passes over what it says it passes over. A pattern
+ * that is not global counts nothing (`matchAll` refuses it), so its examples are not tried.
+ */
+export function selfCheck(terms: readonly Term[] = TERMS): string[] {
+  const wrong: string[] = [];
+  const counting = terms.filter((term) => term.pattern.global);
+  for (const term of terms) {
+    if (!term.pattern.global) {
+      wrong.push(`${term.id}: the pattern must be global`);
+      continue;
+    }
+    for (const example of term.finds) {
+      if (hitsIn(example, counting).every((hit) => hit.term !== term)) {
+        wrong.push(`${term.id}: does not find ${JSON.stringify(example)}`);
+      }
+    }
+    for (const example of term.passes) {
+      if (hitsIn(example, counting).some((hit) => hit.term === term)) {
+        wrong.push(`${term.id}: finds ${JSON.stringify(example)}`);
+      }
+    }
+  }
+  return wrong;
+}
+
+/** Kinds of file binary by nature — images, fonts, compiled modules, archives — left unread. */
+const BINARY_EXTENSIONS = new Set(
+  '.avif .br .gif .gz .ico .jpeg .jpg .otf .pdf .png .ttf .wasm .webp .woff .woff2 .zip'.split(' '),
+);
+
+/**
+ * Every file is read as text, whatever its extension: a list of the extensions to read would leave
+ * out the next kind of source a package starts using. A NUL byte says a file is not the UTF-8 text
+ * every source here is, so one that holds one is left out only where its kind is binary
+ * (`BINARY_EXTENSIONS`), and refused anywhere else: read as UTF-8, a UTF-16 file's words would
+ * not be found, and a check that skipped it would pass whatever it said.
+ */
+export function textOf(file: string, bytes: Uint8Array): string | undefined {
+  if (!bytes.includes(0)) {
+    return new TextDecoder().decode(bytes);
+  }
+  if (BINARY_EXTENSIONS.has(path.extname(file).toLowerCase())) {
+    return undefined;
+  }
+  throw new Error(`${file} holds a NUL byte: save it as UTF-8, or name a binary by its kind`);
+}
+
+/** The offset each line of `text` starts at, the first line's first. */
+function lineStarts(text: string): number[] {
+  return [0, ...[...text.matchAll(/\n/gu)].map((match) => match.index + 1)];
+}
+
+/** What a file says, each hit at the line and column it starts at. */
+export function hitsOfFile(file: string, text: string, terms: readonly Term[] = TERMS): Hit[] {
+  const starts = lineStarts(text);
+  return hitsIn(text, terms).map((found) => {
+    const index = starts.findLastIndex((start) => start <= found.at);
+    const column = found.at - (starts[index] ?? 0) + 1;
+    return { ...found, file, line: index + 1, column };
+  });
+}
