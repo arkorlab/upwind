@@ -9,7 +9,8 @@ export interface Term {
   /**
    * Global, so every occurrence in a file is counted. Words are apart by ` +`, by `_` and a space in
    * an identifier, or by `-`, and a term ends where no letter or digit follows, an identifier's `_`
-   * among what may: a file is searched as `searchable` reads it.
+   * among what may — after its plural, where the plural names the same thing: a file is searched as
+   * `searchable` reads it.
    */
   readonly pattern: RegExp;
   readonly why: string;
@@ -49,7 +50,7 @@ export const TERMS: readonly Term[] = [
   },
   {
     id: 'control-plane',
-    pattern: /\bcontrol(?:-|_? +)plane(?![\da-z])/giu,
+    pattern: /\bcontrol(?:-|_? +)planes?(?![\da-z])/giu,
     why: 'whatever publishes a deployment is the host, and these packages do not name its parts',
     finds: [
       'the control plane',
@@ -60,8 +61,12 @@ export const TERMS: readonly Term[] = [
       'isControlPlaneRequest',
       'control_plane',
       'CONTROL_PLANE',
+      'control planes',
+      'control-planes',
+      'controlPlanes',
+      'CONTROL_PLANES',
     ],
-    passes: ['controls the plane', 'control\n\nplane'],
+    passes: ['controls the plane', 'control\n\nplane', 'control planet'],
   },
   {
     id: 'dispatch-namespace',
@@ -103,7 +108,7 @@ export const TERMS: readonly Term[] = [
   },
   {
     id: 'analytics-engine',
-    pattern: /\banalytics(?:-|_? +)engine(?![\da-z])/giu,
+    pattern: /\banalytics(?:-|_? +)engines?(?![\da-z])/giu,
     why: "where a host records what it measures is the host's own: these packages report to what they are given",
     finds: [
       'Analytics Engine',
@@ -111,8 +116,10 @@ export const TERMS: readonly Term[] = [
       'analyticsEngine',
       'ANALYTICS_ENGINE',
       'analytics-engine',
+      'analytics engines',
+      'analyticsEngines',
     ],
-    passes: ['analytics, an engine'],
+    passes: ['analytics, an engine', 'analytics engineer'],
   },
   {
     id: 'storage-region',
@@ -144,10 +151,10 @@ export const TERMS: readonly Term[] = [
   },
   {
     id: 'inspector',
-    pattern: /\binspector(?![\da-z])/giu,
+    pattern: /\binspectors?(?![\da-z])/giu,
     why: "a host's own view of a deployment's cache",
-    finds: ['the inspector', 'an Inspector', 'cacheInspector', 'inspector_link'],
-    passes: ['inspectors', 'inspect it'],
+    finds: ['the inspector', 'an Inspector', 'cacheInspector', 'inspector_link', 'inspectors'],
+    passes: ['inspectorate', 'inspect it'],
   },
   {
     id: 'repository-path',
@@ -204,10 +211,17 @@ const ALLOWED: readonly RegExp[] = [
   /\bCopyright (?:\(c\) )?\d{4} Arkor and Contributors\b/gu,
 ];
 
+/**
+ * What an allowed identifier is blanked to, column for column: neither a letter nor a digit, so it
+ * joins no word, and not a space or a hyphen, so the words either side of it are not read as one
+ * term — `control x-arkor-edge plane` says no control plane.
+ */
+const BLANK = '#';
+
 function blankAllowed(text: string): string {
   let blanked = text;
   for (const pattern of ALLOWED) {
-    blanked = blanked.replaceAll(pattern, (match) => ' '.repeat(match.length));
+    blanked = blanked.replaceAll(pattern, (match) => BLANK.repeat(match.length));
   }
   return blanked;
 }
