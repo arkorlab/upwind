@@ -15,9 +15,7 @@ import {
   publicOutputSnapshotSchema,
   tagKindSchema,
 } from '@stayingupwind/core/cache';
-import * as z from 'zod';
-
-import { toZod } from '../zod/index.ts';
+import * as z from '@stayingupwind/core/schema';
 
 /**
  * The cache's own model, as every Worker and any index of its history see it.
@@ -27,6 +25,9 @@ import { toZod } from '../zod/index.ts';
  * stored, only derived from a generation's timing, the invalidations recorded against it and the
  * clock (`freshness.ts`); storage says whether the bytes are still there. Every record carries a
  * `schemaVersion`, and a reader that meets a version it does not know says so rather than guessing.
+ *
+ * Written with core's validator (`@stayingupwind/core/schema`), for the reason `gateway-contract.ts`
+ * gives of its own.
  */
 
 export const ENTITY_SCHEMA_VERSION = 1;
@@ -45,7 +46,7 @@ export const cacheScopeSchema = z.object({
   organizationId: z.string().min(1),
   projectId: z.string().min(1),
   environmentId: cacheEnvironmentSchema,
-  deploymentId: toZod(deploymentIdSchema),
+  deploymentId: deploymentIdSchema,
   keySchemaVersion: z.literal(KEY_SCHEMA_VERSION),
   buildId: z.string().min(1),
   status: cacheScopeStatusSchema,
@@ -57,13 +58,13 @@ export type CacheScope = z.infer<typeof cacheScopeSchema>;
 export const cacheEntrySchema = z.object({
   entryId: z.string().min(1),
   scopeId: z.string().min(1),
-  kind: toZod(cacheEntryKindSchema),
+  kind: cacheEntryKindSchema,
   route: z.string().nullable(),
   pathname: z.string().nullable(),
-  cacheKeyDigest: toZod(sha256HexSchema),
+  cacheKeyDigest: sha256HexSchema,
   /** The prerender group this entry's outputs came from, when the build made it. */
   groupInstanceId: z.string().nullable(),
-  keyDescriptor: toZod(keyDescriptorSchema),
+  keyDescriptor: keyDescriptorSchema,
   handler: z.string().nullable(),
   createdAt: z.number().int(),
   createdRevision: z.number().int().nonnegative(),
@@ -102,13 +103,13 @@ const generationBaseSchema = z.object({
   entryId: z.string().min(1),
   scopeId: z.string().min(1),
   seq: z.number().int().positive(),
-  source: toZod(generationSourceKindSchema),
+  source: generationSourceKindSchema,
   attemptId: z.string().nullable(),
   cacheTimestamp: z.number().int().nullable(),
   producedAt: z.number().int().nullable(),
-  policy: toZod(cachePolicySchema),
+  policy: cachePolicySchema,
   status: z.number().int(),
-  tags: z.array(toZod(generationTagSchema)).max(MAX_TAGS_PER_ENTRY),
+  tags: z.array(generationTagSchema).max(MAX_TAGS_PER_ENTRY),
   dependencyCoverage: dependencyCoverageSchema,
   /** The scope revision the generation's inputs were read at; invalidations past it condemn it. */
   dependencyRevision: z.number().int().nonnegative(),
@@ -116,7 +117,7 @@ const generationBaseSchema = z.object({
   publishedRevision: z.number().int().nullable(),
   supersededRevision: z.number().int().nullable(),
   /** Set by the authority when an invalidation after `dependencyRevision` touched its tags. */
-  condemned: toZod(invalidationStateSchema).nullable(),
+  condemned: invalidationStateSchema.nullable(),
   storage: storageStateSchema,
   prunedAt: z.number().int().nullable(),
   bodyBytes: z.number().int().nonnegative(),
@@ -126,12 +127,12 @@ const generationBaseSchema = z.object({
 
 /** One render's outputs, published as a whole: the shell, its state and its related outputs. */
 export const cacheGenerationSchema = generationBaseSchema.extend({
-  outputs: z.array(toZod(outputSnapshotSchema)),
+  outputs: z.array(outputSnapshotSchema),
 });
 export type CacheGeneration = z.infer<typeof cacheGenerationSchema>;
 
 export const publicCacheGenerationSchema = generationBaseSchema.extend({
-  outputs: z.array(toZod(publicOutputSnapshotSchema)),
+  outputs: z.array(publicOutputSnapshotSchema),
 });
 export type PublicCacheGeneration = z.infer<typeof publicCacheGenerationSchema>;
 
@@ -168,7 +169,7 @@ export type CacheEntryState = z.infer<typeof cacheEntryStateSchema>;
 export const cacheTagSchema = z.object({
   tagId: z.string().min(1),
   scopeId: z.string().min(1),
-  kind: toZod(tagKindSchema),
+  kind: tagKindSchema,
   value: z.string().min(1).max(MAX_TAG_LENGTH),
   /** The revision of the last invalidation that named it; 0 when never invalidated. */
   revision: z.number().int().nonnegative(),
