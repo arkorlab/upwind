@@ -130,10 +130,11 @@ export const TERMS: readonly Term[] = [
   },
   {
     id: 'tenancy',
-    pattern: /tenan(?:cy|t)/giu,
+    // Not inside a word: a lieutenant is nobody's tenant.
+    pattern: /(?<![\da-z])tenan(?:cies|cy|ts?)/giu,
     why: "a deployment these packages serve is one site; whose it is, is the host's business",
-    finds: ['tenant', 'tenantId', 'multi-tenancy'],
-    passes: ['tenable'],
+    finds: ['tenant', 'tenants', 'tenantId', 'multiTenant', 'multi-tenancy', 'tenancies'],
+    passes: ['tenable', 'a lieutenant', 'lieutenancy'],
   },
   {
     id: 'dashboard',
