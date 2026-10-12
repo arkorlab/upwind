@@ -5,7 +5,12 @@ import path from 'node:path';
 import type { Plugin } from 'rolldown';
 
 import { arkorWasmGlobal, type WasmCollector } from '../wasm.ts';
-import { isStubbedModule, NODE_VM_MODULE, stubSourceFor } from './loader-hooks.ts';
+import {
+  isStubbedModule,
+  NODE_VM_MODULE,
+  PREVIEW_DATA_MODULE,
+  stubSourceFor,
+} from './loader-hooks.ts';
 import type { Patch, PatchContext, PatchResult } from './types.ts';
 import { OTEL_API, VENDORED_OTEL_API } from './vendored-otel.ts';
 
@@ -60,6 +65,18 @@ export function patchesPlugin(
 /** The id a stubbed module is bundled under; what the dependency record lists it as. */
 const STUB_ID_PREFIX = 'arkor-stub:';
 
+/** What a Function stubs beyond what every Function does (`stubPlugin`). */
+export interface StubOptions {
+  /** The workflow Function, whose server chunks' `node:vm` is stubbed (`isWorkflowVmImport`). */
+  readonly workflowFunction?: boolean | undefined;
+  /**
+   * Whether a request may carry preview data this build signed: true where the build has a Pages
+   * Router route, which is what sets it. False, the library that verifies it is not carried
+   * (`PREVIEW_DATA_MODULE`, `loader-hooks.ts`).
+   */
+  readonly previewData?: boolean | undefined;
+}
+
 function stubModule(id: string): { code: string; moduleType: 'js' } {
   return { code: stubSourceFor(id.slice(STUB_ID_PREFIX.length)), moduleType: 'js' };
 }
@@ -69,22 +86,25 @@ function stubModule(id: string): { code: string; moduleType: 'js' } {
  * optional module of a feature the platform does not run resolves to one that says so; a module
  * workerd cannot load resolves to the adapter's own copy, and `node:process`, which its `require`
  * does not find, to the global it is (`loader-hooks.ts`). In the workflow Function alone,
- * `node:vm` as the server chunks import it resolves to a module that throws when called.
+ * `node:vm` as the server chunks import it resolves to a module that throws when called; in a
+ * build with no Pages Router route, so does the library that verifies preview data.
  */
 export function stubPlugin(
   onStubbed?: (specifier: string) => void,
-  workflowFunction = false,
+  options: StubOptions = {},
 ): Plugin {
+  const { workflowFunction = false, previewData = true } = options;
   return {
     name: 'arkor-stubs',
     resolveId: {
       filter: {
-        id: /^(?:require|import)-in-the-middle|^critters$|compiled\/raw-body$|^(?:node:)?(?:process|vm)$/u,
+        id: /^(?:require|import)-in-the-middle|^critters$|compiled\/(?:raw-body|ws|jsonwebtoken)$|^(?:node:)?(?:process|vm)$/u,
       },
       handler(source, importer) {
         if (
           !isStubbedModule(source) &&
-          !(workflowFunction && isWorkflowVmImport(source, importer))
+          !(workflowFunction && isWorkflowVmImport(source, importer)) &&
+          (previewData || !PREVIEW_DATA_MODULE.test(source))
         ) {
           return null;
         }
@@ -196,13 +216,33 @@ export function wasmModulePlugin(
   };
 }
 
-/** `@opentelemetry/api` falls back to Next.js's own copy, as Next.js falls back to it. */
-export function vendoredOtelPlugin(onFallback?: (specifier: string) => void): Plugin {
+/**
+ * `@opentelemetry/api` falls back to Next.js's own copy, as Next.js falls back to it.
+ *
+ * And the other way: where the app has its own, Next.js's copy is never what its code reads. The
+ * tracer and the instrumentation extension take it only when requiring the app's throws, which a
+ * package bundled into the Function does not; the one other require of it, the page runtime's from
+ * 16.4, keeps nothing of what it returns. So it resolves to the app's own as well, and the Function
+ * carries one copy of the API where it carried two (26 KB).
+ */
+export function vendoredOtelPlugin(
+  onFallback?: (specifier: string) => void,
+  onShared?: (specifier: string) => void,
+): Plugin {
   return {
     name: 'arkor-vendored-otel',
     resolveId: {
-      filter: { id: /^@opentelemetry\/api$/u },
+      filter: { id: /^(?:@opentelemetry\/api|next\/dist\/compiled\/@opentelemetry\/api)$/u },
       async handler(source, importer, options) {
+        if (source === VENDORED_OTEL_API) {
+          // eslint-disable-next-line unicorn/no-this-outside-of-class -- the plugin API hands the context as `this`
+          const own = await this.resolve(OTEL_API, importer, { ...options, skipSelf: true });
+          if (own === null) {
+            return null;
+          }
+          onShared?.(VENDORED_OTEL_API);
+          return own;
+        }
         // The app's own copy, when it installed one: preferred, as Next.js prefers it. Asked
         // of every plugin but this one, so that asking does not come back here.
         // eslint-disable-next-line unicorn/no-this-outside-of-class -- the plugin API hands the context as `this`
