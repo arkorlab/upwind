@@ -8,13 +8,9 @@ import {
 
 import { nodeHandlerOf } from './entries.ts';
 import { readResumeState } from './resume-state.ts';
-import {
-  HTTP_NOT_FOUND,
-  resume,
-  resumeUrl,
-  type RoutedInput,
-  stripPlatformHeaders,
-} from './serve.ts';
+import { resumeUrlOf } from './route-parameters.ts';
+import { HTTP_NOT_FOUND, resume, type RoutedInput, stripPlatformHeaders } from './serve.ts';
+import type { Store } from './store.ts';
 
 /**
  * A resume of a generation the runtime cache made: the edge served the generation's shell from
@@ -30,7 +26,7 @@ export function carriesResumeState(request: Request): boolean {
 }
 
 /** The edge served a generation made at runtime: resume from the state it sent in the body. */
-export async function handleRuntimeResume(input: RoutedInput): Promise<Response> {
+export async function handleRuntimeResume(input: RoutedInput, store: Store): Promise<Response> {
   const route =
     pathFromHeaders(input.request.headers, CACHE_ROUTE_HEADER, CACHE_ROUTE_ESCAPED_HEADER) ?? '';
   const handler = await nodeHandlerOf(input, route);
@@ -49,7 +45,7 @@ export async function handleRuntimeResume(input: RoutedInput): Promise<Response>
     input,
     handler,
     postponed,
-    url: resumeUrl(input.request),
+    url: resumeUrlOf(store, route, input.request),
     request: new Request(input.request.url, { headers }),
   });
 }

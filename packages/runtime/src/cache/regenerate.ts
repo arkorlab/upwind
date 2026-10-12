@@ -115,7 +115,7 @@ interface RegenerationTarget {
   /**
    * The parameters the render is handed in its query, as routing hands them to a render of a
    * visitor's request, where Next.js would read them otherwise off the pathname
-   * (`regenerationParameters`); none by default.
+   * (`routingParameters`); none by default.
    */
   readonly parameters?: Readonly<Record<string, string>> | undefined;
   /**
