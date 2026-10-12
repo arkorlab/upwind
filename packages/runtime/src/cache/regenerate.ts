@@ -17,13 +17,7 @@ import { invokeNodeHandler, type Run } from '../node-bridge.ts';
 import { type CapturedRender, renderCaptured } from './capture.ts';
 import { nowMs } from './clock.ts';
 import { asRegeneration } from './context.ts';
-import {
-  entryIdOf,
-  forgetRecord,
-  forgetRecordBefore,
-  publishedRecordOf,
-  rememberRecord,
-} from './current.ts';
+import { forgetRecord, forgetRecordBefore, publishedRecordOf, rememberRecord } from './current.ts';
 import {
   type ArtifactUpload,
   type AttemptOutcome,
@@ -45,7 +39,13 @@ import {
   RegenerationError,
   supersededBy,
 } from './lease.ts';
-import type { CacheRuntime, Publishing } from './runtime.ts';
+import {
+  answeringAtOnce,
+  answeringUntilSettled,
+  answeringWhileBusy,
+  publishingKeyOf,
+} from './publishing.ts';
+import type { CacheRuntime } from './runtime.ts';
 import { servable } from './servable.ts';
 import { callsBehind } from './turns.ts';
 
@@ -63,8 +63,8 @@ import { callsBehind } from './turns.ts';
  * says, and a visitor answered from a render made for them no longer waits for any of them before
  * the first byte, as it once waited for every one. Until they have settled, the render answers the
  * isolate's other requests that would regenerate the entry, as the lease it holds turns them away
- * (`Publishing`): they are answered with the page the requests after the publish are, rather than
- * each with a page of its own.
+ * (`cache/publishing.ts`): they are answered with the page the requests after the publish are,
+ * rather than each with a page of its own.
  */
 
 const HTML_TYPE = 'text/html; charset=utf-8';
@@ -240,16 +240,8 @@ function renderStatic(
   });
 }
 
-/**
- * Every tag the render leaves on the entry: the ones it recorded, and the route's implicit ones.
- *
- * Refused here rather than at the gateway when there are too many. The contract bounds them
- * (`MAX_TAGS_PER_ENTRY`), and a request past that bound is turned away by a schema whose message
- * says nothing about tags — so the entry would go on failing every regeneration with no way to
- * read why. Said here, before the outputs are uploaded, the attempt carries the count and the
- * pathname into the inspector.
- */
-function tagsOf(target: RegenerationTarget, render: CapturedRender): GenerationTag[] {
+/** Every tag the render leaves on the entry: the ones it recorded, and the route's implicit ones. */
+function tagValuesOf(target: RegenerationTarget, render: CapturedRender): Set<string> {
   const { descriptor } = target;
   const recorded = parseCacheTagsHeader(render.headers[CACHE_TAGS_HEADER]);
   const concrete = descriptor.pathname.includes('[') ? undefined : descriptor.pathname;
@@ -261,9 +253,23 @@ function tagsOf(target: RegenerationTarget, render: CapturedRender): GenerationT
   for (const value of implicit) {
     values.add(value);
   }
+  return values;
+}
+
+/**
+ * The tags the render leaves on the entry, as the commit names them (`tagValuesOf`).
+ *
+ * Refused here rather than at the gateway when there are too many. The contract bounds them
+ * (`MAX_TAGS_PER_ENTRY`), and a request past that bound is turned away by a schema whose message
+ * says nothing about tags — so the entry would go on failing every regeneration with no way to
+ * read why. Said here, before the outputs are uploaded, the attempt carries the count and the
+ * pathname into the inspector.
+ */
+function tagsOf(target: RegenerationTarget, render: CapturedRender): GenerationTag[] {
+  const values = tagValuesOf(target, render);
   if (values.size > MAX_TAGS_PER_ENTRY) {
     throw new RegenerationError(
-      `the render of ${descriptor.pathname} left ${values.size} cache tags on the entry; a generation may carry ${MAX_TAGS_PER_ENTRY}`,
+      `the render of ${target.descriptor.pathname} left ${values.size} cache tags on the entry; a generation may carry ${MAX_TAGS_PER_ENTRY}`,
       { code: 'too_many_tags' },
     );
   }
@@ -554,29 +560,6 @@ async function publish(
 }
 
 /**
- * `published`, the render it publishes answering the isolate's requests that would regenerate the
- * entry until it has settled, or until the isolate lets go of the render sooner (`Publishing`,
- * `CacheRuntime.publishing`, `regenerate`). Never rejects, as `publish` never does.
- */
-async function answeringUntilSettled(
-  runtime: CacheRuntime,
-  entryId: string,
-  own: Publishing,
-  published: Promise<PublishOutcome>,
-): Promise<PublishOutcome> {
-  runtime.publishing.set(entryId, own);
-  try {
-    return await published;
-  } finally {
-    // Only where the entry is still this publish's, past its window or not: once the window or the
-    // budget has let go of it, a later publish of the entry may have set its own.
-    if (runtime.publishing.peek(entryId)?.value === own) {
-      runtime.publishing.delete(entryId);
-    }
-  }
-}
-
-/**
  * Take the lease and render the entry — or say why there is nothing to publish — and hand the
  * uploads and the commit to the runtime. Never throws. It answers once the render is made: what
  * follows is round trips to the host that change nothing the render says, and whoever answers from
@@ -585,14 +568,14 @@ async function answeringUntilSettled(
 export async function regenerate(input: RegenerationInput): Promise<RegenerationOutcome> {
   const { runtime, target } = input;
   // This isolate's own regeneration of the entry, its render made and its publish out, holds the
-  // lease: the host would say so. Its render answers instead of a page of the visitor's own — the
-  // page every request after the publish is answered with — for as long as the isolate keeps it
-  // (`publishing`), unless the isolate's view of the tags has moved since the render read against
-  // it, when what moved it may be what the render missed.
-  const entryId = await entryIdOf(runtime, target.descriptor);
-  const publishing = runtime.publishing.get(entryId);
-  if (publishing !== undefined && runtime.tags.revision <= publishing.observedTagRevision) {
-    return { kind: 'busy', publishing: publishing.render };
+  // lease: the host would turn this one away. Its render answers instead of a page of the visitor's
+  // own — the page every request after the publish is answered with — while the view of the tags
+  // says nothing it missed: at once within a hold of the view it read against, and past that once
+  // the host has said the lease stands and the view has been brought up (`cache/publishing.ts`).
+  const entryId = await publishingKeyOf(runtime, target.descriptor);
+  const atOnce = answeringAtOnce(runtime, entryId);
+  if (atOnce !== undefined) {
+    return { kind: 'busy', publishing: atOnce };
   }
   // The view of the tags the render will judge its data-cache reads against, brought up to date
   // whatever the hold says: the revision it stands at is what the commit claims the render knew,
@@ -603,7 +586,8 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   // and every read the render makes is judged against that view or one brought further along
   // since. Handed to the runtime as well, whatever the lease says: a pull cut off with its request
   // would be the one every later sync of this isolate joins for a hold (`TagState.sync`).
-  const synced = runtime.tags.sync(runtime.host, nowMs(), { force: true });
+  const askedAt = nowMs();
+  const synced = runtime.tags.sync(runtime.host, askedAt, { force: true });
   input.waitUntil(synced);
   let lease: AttemptOutcome;
   try {
@@ -622,7 +606,8 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
     return { kind: 'refused', reason };
   }
   if (lease.kind === 'busy') {
-    return { kind: 'busy' };
+    const publishing = await answeringWhileBusy(runtime, entryId, { synced, askedAt });
+    return publishing === undefined ? { kind: 'busy' } : { kind: 'busy', publishing };
   }
   if (supersededBy(target, lease.current, nowMs()) && answerable(lease.current)) {
     // Given back behind the answer, which waits for nothing of it: nobody holds the lease now.
@@ -666,10 +651,12 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   forgetRecord(runtime, lease.entryId);
   const published = answeringUntilSettled(
     runtime,
-    entryId,
+    entryId ?? lease.entryId,
     {
       render: { ...captured, headers: generationHeadersOf(target, captured) },
+      tags: [...tagValuesOf(target, captured)],
       observedTagRevision,
+      observedAt: askedAt,
     },
     publish(input, lease, { render: captured, observedTagRevision, began }, stopHeartbeat),
   );

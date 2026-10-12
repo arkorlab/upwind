@@ -185,6 +185,14 @@ export class TagState {
   }
 
   /**
+   * Whether a pull asked for at `at` or later has brought the view up to the host's: what a caller
+   * that asked for one reads to tell a pull answered from one that failed, or is still out.
+   */
+  syncedSince(at: number): boolean {
+    return this.#syncedAt !== undefined && this.#syncedAt >= at;
+  }
+
+  /**
    * Check only the tags a read uses, through KV in the caller's region.
    *
    * Every judgement a data cache makes runs after this — `getUseCache`, the fetch cache's `get`

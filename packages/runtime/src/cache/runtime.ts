@@ -38,20 +38,24 @@ const RECORD_MEMO_BYTES = PAYLOAD_MEMO_MIB * MIB;
 const ARTIFACT_MEMO_BYTES = ARTIFACT_MEMO_MIB * MIB;
 const UTF16_BYTES = 2;
 /**
- * How long a render this isolate is publishing answers the isolate's requests for its entry at the
- * most. A publish takes about a second — its uploads, then the commit — and one still out past this
- * is one the host has stopped hearing from, whose lease ran out: a request after it asks the host.
+ * How long a render this isolate is publishing is kept for the isolate's requests for its entry at
+ * the most: as long as the runtime lets work handed to it go on behind the answer — about 30 s on
+ * Workers — past which a publish still out is one it cut off, which never settles. A publish takes
+ * about a second, its uploads and then the commit; within this, how long its render answers is
+ * `cache/publishing.ts`'s to say.
  */
-const PUBLISHING_ANSWERS_MS = 10_000;
+const PUBLISHING_KEPT_MS = 30_000;
 /** More renders than an isolate publishes at once, each for about a second. */
 const PUBLISHING_ENTRIES = 64;
 const PUBLISHING_MIB = 16;
 /**
  * What the renders this isolate is publishing may hold together (`publishing`): twice a payload
- * memo, as one render holds a page's document, its payload and its segments at once. A publish
- * holds its render until it settles in any case; what this bounds is what is held past that — a
- * publish its request ended under never settles — and a render larger than all of it is not kept:
- * a request that would regenerate its entry meanwhile asks the host, whose lease turns it away.
+ * memo, as one render holds a page's document, its payload and its segments at once. What it bounds
+ * is what keeping them adds to what the publishes hold. A publish holds its render while it runs,
+ * the render being what it uploads; one whose request ended under it never settles, and its render
+ * goes with that request's I/O, which the runtime drops — what would have kept it past that is the
+ * map. A render larger than all of it is not kept: a request that would regenerate its entry
+ * meanwhile asks the host, whose lease turns it away.
  */
 export const PUBLISHING_BYTES = PUBLISHING_MIB * MIB;
 
@@ -60,12 +64,16 @@ export const PUBLISHING_BYTES = PUBLISHING_MIB * MIB;
  * publish has settled. `render` is the render as its generation answers, with the headers the
  * generation is recorded with (`generationResponseHeaders`) rather than every one the render was
  * answered with: a cookie it set is the visitor's it was made for alone, and a header of the
- * platform's own is no visitor's. `observedTagRevision` is the revision of the tag view its reads
- * were judged against.
+ * platform's own is no visitor's.
  */
 export interface Publishing {
   readonly render: CapturedRender;
+  /** The tags the render leaves on its generation: what an invalidation reaches it by. */
+  readonly tags: readonly string[];
+  /** The revision of the tag view its reads were judged against, which its commit claims. */
   readonly observedTagRevision: number;
+  /** When the pull that brought the view to that revision was asked for, by the isolate's clock. */
+  readonly observedAt: number;
 }
 
 export interface CacheRuntime {
@@ -107,9 +115,9 @@ export interface CacheRuntime {
   /**
    * The renders this isolate is publishing, by entry (`Publishing`): a request of the isolate that
    * would regenerate the entry meanwhile is answered from one, as the request that made it was,
-   * rather than with a page of its own (`regenerate`). Each goes once its publish has settled, ten
-   * seconds after it was made (`PUBLISHING_ANSWERS_MS`), or when the budget needs the room
-   * (`PUBLISHING_BYTES`).
+   * rather than with a page of its own (`cache/publishing.ts`). Each goes once its publish has
+   * settled, half a minute after it was made (`PUBLISHING_KEPT_MS`), or when the budget needs the
+   * room (`PUBLISHING_BYTES`).
    */
   readonly publishing: TtlCache<string, Publishing>;
   /**
@@ -205,6 +213,15 @@ function renderBytes(render: CapturedRender): number {
   return total;
 }
 
+/** What a render this isolate is publishing holds (`renderBytes`), with its tags and its key. */
+function publishingBytes(publishing: Publishing, key: string): number {
+  let characters = key.length;
+  for (const tag of publishing.tags) {
+    characters += tag.length;
+  }
+  return renderBytes(publishing.render) + characters * UTF16_BYTES;
+}
+
 function log(message: string, fields: Record<string, string | number> = {}): void {
   // The Function's own log; nothing else records what its cache did.
   // eslint-disable-next-line no-console
@@ -260,9 +277,9 @@ export function createCacheRuntime(options: CacheRuntimeOptions): CacheRuntime |
     }),
     recordReads: new Map(),
     regenerationMemo: new TtlCache(holdMs, MEMO_ENTRIES, options.now),
-    publishing: new TtlCache(PUBLISHING_ANSWERS_MS, PUBLISHING_ENTRIES, options.now, {
+    publishing: new TtlCache(PUBLISHING_KEPT_MS, PUBLISHING_ENTRIES, options.now, {
       maxBytes: PUBLISHING_BYTES,
-      sizeOf: (publishing, key) => renderBytes(publishing.render) + key.length * UTF16_BYTES,
+      sizeOf: publishingBytes,
     }),
     artifactMemo: new TtlCache(Infinity, ARTIFACT_MEMO_ENTRIES, options.now, {
       maxBytes: ARTIFACT_MEMO_BYTES,
