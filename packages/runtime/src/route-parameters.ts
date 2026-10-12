@@ -234,6 +234,41 @@ function withoutEndSlash(pathname: string): string {
 }
 
 /**
+ * `pathname` without the locale it leads with, in an application with `i18n`: matched in any case,
+ * as routing matches one (`normalizeLocalePath`) — `/FR/docs` is the `fr` page's — where the
+ * store's own lookups take the build's spelling alone (`unlocalizedRouteOf`).
+ */
+function withoutLocale(store: Store, pathname: string): string {
+  const { i18n, basePath } = store.manifest.config;
+  if (i18n === null || i18n === undefined || !pathname.startsWith(`${basePath}/`)) {
+    return pathname;
+  }
+  const bare = pathname.slice(basePath.length);
+  const end = bare.indexOf('/', 1);
+  const segment = (end === -1 ? bare.slice(1) : bare.slice(1, end)).toLowerCase();
+  if (i18n.locales.every((locale) => locale.toLowerCase() !== segment)) {
+    return pathname;
+  }
+  return end === -1 ? basePath || '/' : `${basePath}${bare.slice(end)}`;
+}
+
+/**
+ * Whether `segment` of a page's path stands for the template's fixed one: as it is spelled, or as
+ * its value reads (`valuesOf`) — a request's `%E8%A8%98%E4%BA%8B` is `記事`, where a folder the
+ * build names `%2F` is spelled so — in any case, as routing's patterns match it. The page and the
+ * route came paired from routing or from the build; this only keeps a path that does not line up
+ * with its route from naming anything.
+ */
+function isFixed(segment: string | undefined, placeholder: string, built: boolean): boolean {
+  if (segment === undefined) {
+    return false;
+  }
+  const wanted = placeholder.toLowerCase();
+  const [value] = valuesOf([segment], built) ?? [];
+  return segment.toLowerCase() === wanted || value?.toLowerCase() === wanted;
+}
+
+/**
  * The parameters a regeneration of a Pages Router member hands Next.js in its query (`nxtP…`), as
  * routing hands them to a render of a visitor's request; `undefined` where Next.js, matching the
  * member's name itself, reads them the same — every member but one whose catch-all holds an
@@ -248,9 +283,9 @@ function withoutEndSlash(pathname: string): string {
  * of the visitor's request said the other, and which of the two answered turned on whether the
  * entry's record was read in time (`incremental-cache-path-traversal`).
  *
- * The member is read as routing reads the request for it: its segments as `valuesOf` reads them —
- * its fixed ones too, matched in any case (`/DOCS/a%2Fb` lands on `/docs/[...slug]`) — a trailing
- * slash left off, and its locale, in an application with `i18n`, left out. Every parameter of
+ * The member is read as routing reads the request for it: its values as `valuesOf` reads them, its
+ * fixed segments matched as `isFixed` matches them, a trailing slash left off, and its locale, in an
+ * application with `i18n`, left out in any case (`withoutLocale`). Every parameter of
  * the route is named once one is, as routing names them all: Next.js takes the query's only where
  * it holds every one. Not an App Router member's: its shell is resumed for each visitor by the
  * member's own path, which Next.js reads as it reads the name, and a shell and its resume have to
@@ -264,16 +299,13 @@ export function regenerationParameters(
   const template = store.prerendersByPathname.get(route)?.route ?? route;
   const bare = withoutEndSlash(pathname);
   const built = store.prerendersByPathname.has(bare);
-  const member = (unlocalizedRouteOf(store.manifest.config, bare) ?? bare).split('/');
+  const member = withoutLocale(store, bare).split('/');
   const named: Record<string, string> = {};
   let separated = false;
   for (const [index, placeholder] of template.split('/').entries()) {
     const parameter = parameterOf(placeholder);
     if (parameter === undefined) {
-      // Read as a value is, since the template is spelled as the build names a page: a request's
-      // `/%E8%A8%98%E4%BA%8B/a%2Fb` lands on `/記事/[...slug]`.
-      const [fixed] = valuesOf([member[index] ?? ''], built) ?? [];
-      if (fixed?.toLowerCase() !== placeholder.toLowerCase()) {
+      if (!isFixed(member[index], placeholder, built)) {
         return undefined;
       }
       continue;
