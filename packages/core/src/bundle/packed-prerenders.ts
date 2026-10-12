@@ -1,15 +1,15 @@
 /**
  * How a Function's runtime manifest (`runtime.json`) carries the deployment's prerenders: a field
- * whose values repeat from record to record is written once for each value it takes, and each
- * record holds the place of its value in that list.
+ * whose values repeat from record to record is written once for each value it takes, each record
+ * holds the place of its value in that list, and an id that is its record's pathname is left out.
  *
  * A Function reads the whole manifest before it answers its first request, and the prerenders are
  * most of it: a record for every page the build rendered, with the headers it is served with, the
  * request headers its renders may see, the conditions that bypass it, its route and its body. Most
  * of that is the same for every page of a route, or of the build, and was written out again in
  * each record. A manifest of 3,500 prerenders came to 5.1 MiB that way, took 10 ms to read, and
- * held 6.5 MiB of the isolate's memory once read; written as here, it is 2.2 MiB, reads in 6 ms,
- * and holds 2.3 MiB.
+ * held 6.5 MiB of the isolate's memory once read; with each value written once, it is 2.2 MiB,
+ * reads in 6 ms, and holds 2.3 MiB.
  *
  * Which fields are written once per value is the writer's to decide from what it writes: a field
  * is when its list of values — its name, each value once — and a place in each record that has it
@@ -18,6 +18,11 @@
  * they are written under and no more. The reader puts the values back, so what it hands on is the
  * records as they were before they were written, except that the records that hold a value hold
  * the one copy of it: nothing that reads a prerender may change one.
+ *
+ * A prerender's id is left out where it is its pathname, and the reader puts it back from the
+ * pathname. That is every prerender of every build this has been read against, and the id was,
+ * beside the pathname, the one field written whole in every record: 244 KiB of the 2.2 MiB above.
+ * An id that is not its pathname is written as it is.
  */
 
 /** A prerender as this module reads one: its fields, by name. */
@@ -81,13 +86,20 @@ function worthPacking(
   return packed < field.inline;
 }
 
+/** The field left out of a record where it is the record's `PATHNAME`, and put back from it. */
+const ID = 'id';
+const PATHNAME = 'pathname';
+
 /** The prerenders, to be written in a runtime manifest: see the module's comment. */
 export function packPrerenders(prerenders: readonly Fields[]): PackedPrerenders {
-  // Each record's fields as JSON writes them: a field that is `undefined` is not written.
+  // Each record's fields as JSON writes them: a field that is `undefined` is not written, and nor is
+  // an id that is the record's pathname.
   const written = prerenders.map((prerender) => {
-    const fields = Object.entries(prerender).flatMap(([key, value]) =>
-      value === undefined ? [] : [[key, JSON.stringify(value)] as const],
-    );
+    const fields = Object.entries(prerender).flatMap(([key, value]) => {
+      return value === undefined || (key === ID && value === prerender[PATHNAME])
+        ? []
+        : [[key, JSON.stringify(value)] as const];
+    });
     return new Map(fields);
   });
   const fields = new Map(
@@ -108,8 +120,9 @@ export function packPrerenders(prerenders: readonly Fields[]): PackedPrerenders 
 
 /**
  * The prerenders a runtime manifest carries, as they were before `packPrerenders` wrote them: each
- * value put back in the records that hold its place. The records are the ones handed in, just read
- * from the manifest, and are changed where they are rather than copied.
+ * value put back in the records that hold its place, and the id in those written without one. The
+ * records are the ones handed in, just read from the manifest, and are changed where they are
+ * rather than copied.
  */
 export function unpackPrerenders<T>(packed: PackedPrerenders): T[] {
   if (Array.isArray(packed)) {
@@ -132,6 +145,10 @@ export function unpackPrerenders<T>(packed: PackedPrerenders): T[] {
         );
       }
       record[key] = value;
+    }
+    // After the values: the pathname it is put back from may be one of them.
+    if (record[ID] === undefined) {
+      record[ID] = record[PATHNAME];
     }
   }
   return records as T[];

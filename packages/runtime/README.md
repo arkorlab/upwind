@@ -32,10 +32,11 @@ deployment bundle without what only its host needs, parsed whole on the first re
 middleware Function's is the head of it alone, with no routes or prerenders. The prerenders are
 packed (`packPrerenders` in `@stayingupwind/core/bundle`): a field whose values repeat from record
 to record is written once for each value it takes, where that comes to fewer bytes than writing it
-in every record, and each record holds the place of its value. The runtime puts them back as they
-were before it reads any, and refuses prerenders written as a plain list, since the adapter writes
-the manifest and the runtime into a Function together. A manifest of a few thousand prerenders is
-less than half the bytes that way, and reads in about three fifths of the time.
+in every record, and each record holds the place of its value; an id that is its prerender's
+pathname is left out. The runtime puts them back as they were before it reads any, and refuses
+prerenders written as a plain list, since the adapter writes the manifest and the runtime into a
+Function together. A manifest of a few thousand prerenders is less than half the bytes that way, and
+reads in about three fifths of the time.
 
 Module order matters at the top of `./function`: the scheduler a prerender's tasks run on, and the
 hooks Next.js reads off the global at its first request, are installed before any Next.js module is

@@ -224,6 +224,12 @@ export function wasmModulePlugin(
  * package bundled into the Function does not; the one other require of it, the page runtime's from
  * 16.4, keeps nothing of what it returns. So it resolves to the app's own as well, and the Function
  * carries one copy of the API where it carried two (26 KB).
+ *
+ * The app's own is found as Next.js's modules find it, from Next.js's package, whoever asks for
+ * Next.js's copy. The copies Turbopack bundled into the chunks become requires of it
+ * (`otel-chunks.ts`), which ask from the build's output: a project that has the API only as
+ * Next.js's peer dependency, where a strict install leaves it, has none there to find, and the
+ * tracer in those chunks was compiled against the one Next.js finds.
  */
 export function vendoredOtelPlugin(
   onFallback?: (specifier: string) => void,
@@ -236,9 +242,17 @@ export function vendoredOtelPlugin(
       async handler(source, importer, options) {
         if (source === VENDORED_OTEL_API) {
           // eslint-disable-next-line unicorn/no-this-outside-of-class -- the plugin API hands the context as `this`
-          const own = await this.resolve(OTEL_API, importer, { ...options, skipSelf: true });
-          if (own === null) {
+          const vendored = await this.resolve(VENDORED_OTEL_API, importer, {
+            ...options,
+            skipSelf: true,
+          });
+          if (vendored === null) {
             return null;
+          }
+          // eslint-disable-next-line unicorn/no-this-outside-of-class -- the plugin API hands the context as `this`
+          const own = await this.resolve(OTEL_API, vendored.id, { ...options, skipSelf: true });
+          if (own === null) {
+            return vendored;
           }
           onShared?.(VENDORED_OTEL_API);
           return own;
