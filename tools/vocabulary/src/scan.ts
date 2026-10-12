@@ -9,6 +9,8 @@ export interface Hit {
   readonly column: number;
   readonly term: Term;
   readonly text: string;
+  /** Said by the file's path rather than by what the file holds: no line is the one. */
+  readonly inPath?: true;
 }
 
 interface Found {
@@ -75,7 +77,18 @@ export function selfCheck(terms: readonly Term[] = TERMS): string[] {
 
 /** Kinds of file binary by nature — images, fonts, compiled modules, archives — left unread. */
 const BINARY_EXTENSIONS = new Set(
-  '.avif .br .gif .gz .ico .jpeg .jpg .otf .pdf .png .ttf .wasm .webp .woff .woff2 .zip'.split(' '),
+  [
+    // Images and fonts.
+    '.avif .bmp .gif .heic .ico .jpeg .jpg .png .tif .tiff .webp .eot .otf .ttf .woff .woff2',
+    // Audio and video.
+    '.aac .flac .m4a .mov .mp3 .mp4 .oga .ogg .ogv .opus .wav .webm',
+    // Archives and compressed files.
+    '.7z .br .bz2 .gz .rar .tar .tgz .xz .zip .zst',
+    // Documents, data and compiled code.
+    '.bin .db .dll .dylib .exe .jar .node .parquet .pdf .so .sqlite .sqlite3 .wasm',
+  ]
+    .join(' ')
+    .split(' '),
 );
 
 /**
@@ -107,6 +120,17 @@ export function textOf(file: string, bytes: Uint8Array): string | undefined {
 /** The offset each line of `text` starts at, the first line's first. */
 function lineStarts(text: string): number[] {
   return [0, ...[...text.matchAll(/\n/gu)].map((match) => match.index + 1)];
+}
+
+/**
+ * What a file's path says, read as text is: a package names what it holds by its files' names as
+ * much as by what they say, and an entry point found by its name says nothing of it inside.
+ */
+export function hitsOfPath(file: string, terms: readonly Term[] = TERMS): Hit[] {
+  return hitsIn(file, terms).map((found) => {
+    const column = found.at + 1;
+    return { ...found, file, line: 1, column, inPath: true };
+  });
 }
 
 /** What a file says, each hit at the line and column it starts at. */
