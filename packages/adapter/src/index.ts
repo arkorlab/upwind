@@ -26,7 +26,8 @@ import {
   reportSplit,
 } from './app-functions.ts';
 import { BlobStore } from './blobs.ts';
-import { bundleConfig, customCacheHandlerPaths } from './bundle-config.ts';
+import { bundleConfig } from './bundle-config.ts';
+import { cacheHandlersModule } from './cache-handlers.ts';
 import {
   type BuildContext,
   bundleRouting,
@@ -91,22 +92,6 @@ export const BUNDLE_FILE = 'bundle.json';
 /** What went into each Function, and what was done to it: for a diff, not for the platform. */
 const DEPENDENCIES_FILE = 'dependencies.json';
 const MIDDLEWARE_ENTRY_ID = '/_middleware';
-
-/**
- * A custom cache handler is refused when the config is loaded for a build (before anything is
- * compiled) and again at the end, since a standalone config skips `modifyConfig`. The Function
- * cannot load a module by path, and the platform installs its own ISR and `use cache` handlers.
- * Neither refusal is made of a static export, whose Function runs none of the application's code:
- * nothing there loads the module, and no handler of the platform's is there to conflict with it.
- */
-function refuseCustomCacheHandlers(config: BuildContext['config']): void {
-  const customHandlers = customCacheHandlerPaths(config);
-  if (customHandlers.length > 0) {
-    throw new Error(
-      `@stayingupwind/adapter: a custom cacheHandler / cacheHandlers module cannot run on this platform's Function (${customHandlers.join(', ')}); remove it — the platform provides the ISR and "use cache" handlers itself`,
-    );
-  }
-}
 
 /**
  * The instrumentation hook and what it reaches, for a build that has one to run.
@@ -210,11 +195,7 @@ async function emptyOutDir(projectDir: string): Promise<string> {
 
 async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Promise<void> {
   const exported = isStaticExport(ctx.config);
-  // A custom handler is refused because the platform runs its own in the Function and two cannot
-  // both be the cache. A static export has no handler at all — nothing loads the module, and
-  // there is nothing for it to conflict with — so the option is unused there rather than unsupported.
   if (!exported) {
-    refuseCustomCacheHandlers(ctx.config);
     refuseOutputOutsideProject(ctx.projectDir, ctx.distDir);
   }
   // Read before anything is written: a cron this platform cannot run fails the build here, where
@@ -234,6 +215,8 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     worldModule: options.workflowWorldModule,
   });
   const instrumentation = await instrumentationOf(ctx.distDir, outDir, exported, workflow.hosts);
+  // Not asked of a static export, whose Function runs none of the application's code.
+  const cacheHandlers = exported ? undefined : await cacheHandlersModule(ctx.distDir, outDir);
   const id = deploymentId();
   // Next.js's build manifests are what its route modules read at request time. A static export
   // has no route module in the Function, and the middleware Function has none either, so nothing
@@ -313,6 +296,7 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     keptMaps,
     manifests,
     hook: instrumentation,
+    cacheHandlers,
     middleware: { output: middleware, ...middlewarePlacement(middleware) },
     ...collected,
     shipped,
@@ -782,12 +766,6 @@ export function createAdapter(options: AdapterOptions = {}): NextAdapter {
           config.rewrites = reserved;
         }
       } else if (phase === 'phase-production-build') {
-        // The same exception `onBuildComplete` makes, made here too, since this runs first and
-        // would otherwise stop a static export before the build that has nothing to load the
-        // module.
-        if (!isStaticExport(config)) {
-          refuseCustomCacheHandlers(config);
-        }
         // Content-addressed `/_next/static/immutable/*`: shared across deployments, cached
         // forever. Asked for unconditionally. Before 16.4 Next.js refuses it for a static export,
         // turning the option off in `finalizeConfig` after this hook has run; such a build's
