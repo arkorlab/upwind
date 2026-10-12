@@ -1,4 +1,4 @@
-import type { RouterReferences } from '../bundle/schema.ts';
+import type { RouterReferences } from '../bundle/carried.ts';
 import {
   type CompiledRule,
   compiledRules,
