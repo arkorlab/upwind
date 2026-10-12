@@ -248,9 +248,9 @@ function withoutEndSlash(pathname: string): string {
  * of the visitor's request said the other, and which of the two answered turned on whether the
  * entry's record was read in time (`incremental-cache-path-traversal`).
  *
- * The member is read as routing reads the request for it: its values as `valuesOf` reads them, a
- * trailing slash left off, its fixed segments matched in any case (`/DOCS/a%2Fb` lands on
- * `/docs/[...slug]`), and its locale, in an application with `i18n`, left out. Every parameter of
+ * The member is read as routing reads the request for it: its segments as `valuesOf` reads them —
+ * its fixed ones too, matched in any case (`/DOCS/a%2Fb` lands on `/docs/[...slug]`) — a trailing
+ * slash left off, and its locale, in an application with `i18n`, left out. Every parameter of
  * the route is named once one is, as routing names them all: Next.js takes the query's only where
  * it holds every one. Not an App Router member's: its shell is resumed for each visitor by the
  * member's own path, which Next.js reads as it reads the name, and a shell and its resume have to
@@ -270,7 +270,10 @@ export function regenerationParameters(
   for (const [index, placeholder] of template.split('/').entries()) {
     const parameter = parameterOf(placeholder);
     if (parameter === undefined) {
-      if (member[index]?.toLowerCase() !== placeholder.toLowerCase()) {
+      // Read as a value is, since the template is spelled as the build names a page: a request's
+      // `/%E8%A8%98%E4%BA%8B/a%2Fb` lands on `/記事/[...slug]`.
+      const [fixed] = valuesOf([member[index] ?? ''], built) ?? [];
+      if (fixed?.toLowerCase() !== placeholder.toLowerCase()) {
         return undefined;
       }
       continue;
