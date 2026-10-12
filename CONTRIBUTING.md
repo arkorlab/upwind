@@ -53,8 +53,8 @@ upwind/
 ```
 
 The packages under `packages/` are what a release publishes, and all of them move together — all
-but a package whose manifest says `private`, which a release leaves out until it is ready for its
-first.
+but a package whose manifest says `private`, which a release leaves out until it is ready to be
+published for the first time.
 The workspace root, `tools/`, `fixtures/` and `web-site/` are not —
 and the fixtures are deliberately outside the pnpm workspace, since a workspace package would be
 pinned to the catalog's single Next.js, which is the one thing the matrix exists to look past.

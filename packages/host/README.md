@@ -8,8 +8,8 @@ something which deploys has to agree with — so that the three cannot disagree 
 a key or a header means.
 
 The published package is TypeScript sources: `exports` names `.ts` files, and there is no build
-step. `sideEffects: false` is true of it — nothing here initializes anything — and a module that only
-reads a schema's type imports nothing it builds.
+step. `sideEffects: false` is true of it: importing a module builds its schemas and constants and
+touches nothing outside it, and a module that only reads a schema's type imports nothing it builds.
 
 ## Entry points
 
