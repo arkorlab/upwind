@@ -131,25 +131,30 @@ interface TurnedAway {
   readonly entryId: string | undefined;
   /** The attempt holding the lease, where the host says (`AttemptOutcome`). */
   readonly holder: string | undefined;
+  /** When the holder's lease lapses unless renewed, where the host says. */
+  readonly holderUntil: number | undefined;
 }
 
 /**
  * A regeneration the host turned away for a lease of the entry, with the render this isolate is
- * publishing of it: where the lease is that publish's own. Where the host names the attempt that
- * holds it, it is the publish's (`Publishing.attemptId`) — an attempt that took the entry after the
- * publish's lease lapsed holds it otherwise, and the publish's commit is refused, though the publish
- * may still be out — and where it names none, the publish is taken for the holder while it is out.
+ * publishing of it: only where the host names the attempt that holds the lease, and it is the
+ * publish's own (`Publishing.attemptId`). An attempt that took the entry after the publish's lease
+ * lapsed holds it otherwise, and the publish's commit is refused, though the publish may still be
+ * out; a host that names no holder has a request it turns away answered as before, with a render of
+ * its own.
  * Only once the request's own pull of the tags (`pulled`) has brought the view up to the host's —
  * not another pull's, which a clock reading the same moment could not tell from it — and while
  * nothing it brought says the render missed an invalidation; for a second at the most
- * (`PUBLISHING_PULL_MS`).
+ * (`PUBLISHING_PULL_MS`), and only while the lease the host named still stands once that pull is
+ * in (`holderUntil`, which it has to say as well): one that lapsed meanwhile may be another
+ * attempt's by then.
  *
  * Asked only past a hold of the render's pull (`answeringAtOnce`), which no lease lapses within: the
  * lease was taken before the render, for longer than that.
  */
 export async function answeringWhileBusy(
   runtime: CacheRuntime,
-  { reason, entryId, holder }: TurnedAway,
+  { reason, entryId, holder, holderUntil }: TurnedAway,
   pulled: Promise<boolean>,
 ): Promise<Busy> {
   const held = publishingFor(runtime, reason, entryId);
@@ -157,7 +162,7 @@ export async function answeringWhileBusy(
   if (
     entryId === undefined ||
     held === undefined ||
-    (holder !== undefined && holder !== held.attemptId) ||
+    holder !== held.attemptId ||
     !unmovedSince(runtime, held)
   ) {
     return { kind: 'busy' };
@@ -168,7 +173,8 @@ export async function answeringWhileBusy(
   // Looked up again: a publish that has settled meanwhile is one the host's answer now speaks for,
   // and one set since is not the one the host named.
   const publishing = runtime.publishing.get(entryId);
-  return publishing === held && unmovedSince(runtime, publishing)
+  const leaseStands = holderUntil !== undefined && nowMs() < holderUntil;
+  return publishing === held && leaseStands && unmovedSince(runtime, publishing)
     ? { kind: 'busy', publishing: publishing.render }
     : { kind: 'busy' };
 }

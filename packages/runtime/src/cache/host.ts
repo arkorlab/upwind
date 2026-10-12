@@ -219,6 +219,8 @@ export type AttemptOutcome =
        * (`answeringWhileBusy`).
        */
       readonly attemptId?: string | undefined;
+      /** When that attempt's lease lapses unless renewed, by the host's clock, where it says. */
+      readonly leaseExpiresAt?: number | undefined;
     };
 
 export interface ArtifactUpload {

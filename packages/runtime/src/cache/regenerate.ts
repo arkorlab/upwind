@@ -565,7 +565,12 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   if (lease.kind === 'busy') {
     return answeringWhileBusy(
       runtime,
-      { reason: target.reason, entryId, holder: lease.attemptId },
+      {
+        reason: target.reason,
+        entryId,
+        holder: lease.attemptId,
+        holderUntil: lease.leaseExpiresAt,
+      },
       synced,
     );
   }
