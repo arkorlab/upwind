@@ -22,10 +22,12 @@ import { parseAst } from 'rolldown/parseAst';
  * fixture's middleware: its code 1,436 → 642 KB, its cold start 25 ms sooner.
  *
  * Only where that is known to be enough. What the middleware's chunks read of the runtime is read off
- * them once the bundle is built (`readsOfPageRuntime`): every require of it has to be the external a
- * server chunk declares for it, and every use of that external — through any module that only
- * re-exports it — the read of `vendored["react-rsc"].React`. A build where it is anything else, or
- * where the chunks are not written as this reads them, is bundled again with the runtime itself.
+ * them before anything is bundled (`chunkReadsOfPageRuntime`): every use of the external a server
+ * chunk declares for it — through any module that only re-exports it — has to be the read of
+ * `vendored["react-rsc"].React`, and nothing else may name it. Chunks where it is anything else, or
+ * that are not written as this reads them, are bundled with the runtime itself. Every require of the
+ * runtime the bundler then follows has to be one of those externals (`foreignRequireOfPageRuntime`),
+ * or the Function is bundled again with the runtime.
  */
 
 /** The page runtime as Turbopack names it external, in either release of React. */
@@ -105,17 +107,6 @@ function childrenOf(visit: Visit): Visit[] {
     }
   }
   return children;
-}
-
-/** Every node of `program`, each with its parent. Walked with a stack: a chunk is megabytes. */
-function visitsOf(program: Program): Visit[] {
-  const visits: Visit[] = [];
-  const pending: Visit[] = [{ node: program, up: undefined, key: undefined }];
-  for (let visit = pending.pop(); visit !== undefined; visit = pending.pop()) {
-    visits.push(visit);
-    pending.push(...childrenOf(visit));
-  }
-  return visits;
 }
 
 /** A member's name, written `a.name` or `a["name"]`; nothing for one computed otherwise. */
@@ -257,64 +248,132 @@ function readsReactOnly(visit: Visit): boolean {
   return true;
 }
 
-/** A chunk as read for this question: where it is, and every node of it. */
-interface ParsedChunk {
+/** A reach of a module by its id, where it was made. */
+interface Reference {
   readonly file: string;
-  readonly visits: readonly Visit[];
+  readonly visit: Visit;
+  readonly method: string;
+  readonly id: number;
+}
+
+/** What the question turns on in the chunks: each string naming the runtime, and every reference. */
+interface ChunkMarks {
+  readonly names: { readonly file: string; readonly visit: Visit }[];
+  readonly references: Reference[];
 }
 
 /**
- * The modules that are the runtime — each external a chunk declares for it — or why they cannot be
- * told: a chunk that names the runtime anywhere else.
+ * The marks of one chunk, added to `marks`: one walk of its syntax, keeping only the nodes the
+ * question turns on (with their ancestors, which those nodes are read by). Walked with a stack: a
+ * chunk is megabytes of syntax.
  */
-function runtimeExternals(parsed: readonly ParsedChunk[]): {
-  readonly ids: Set<number>;
-  readonly refusal?: string;
-} {
-  const ids = new Set<number>();
-  for (const { file, visits } of parsed) {
-    for (const visit of visits) {
-      if (!namesRuntime(visit.node)) {
-        continue;
-      }
-      const declaration = declarationOf(visit);
-      const id = declaration === undefined ? undefined : moduleIdOf(declaration);
-      if (id === undefined) {
-        return {
-          ids,
-          refusal: `${file} names the page runtime other than in the external a module of its table declares`,
-        };
-      }
-      ids.add(id);
+function markChunk(file: string, program: Program, marks: ChunkMarks): void {
+  const pending: Visit[] = [{ node: program, up: undefined, key: undefined }];
+  for (let visit = pending.pop(); visit !== undefined; visit = pending.pop()) {
+    if (namesRuntime(visit.node)) {
+      marks.names.push({ file, visit });
     }
+    const reference = moduleReference(visit.node);
+    if (reference !== undefined) {
+      marks.references.push({ file, visit, ...reference });
+    }
+    pending.push(...childrenOf(visit));
   }
-  return { ids };
+}
+
+/** Every chunk read and walked once, or why one cannot be: a chunk the parser refuses. */
+async function marksOf(
+  chunks: readonly string[],
+): Promise<{ readonly marks: ChunkMarks; readonly refusal?: string }> {
+  const marks: ChunkMarks = { names: [], references: [] };
+  for (const file of chunks) {
+    const source = await readFile(file, 'utf8');
+    let program: Program;
+    try {
+      program = parseAst(source, { lang: 'js' }, file);
+    } catch (error) {
+      return {
+        marks,
+        refusal: `${file} cannot be read: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+    markChunk(file, program, marks);
+  }
+  return { marks };
 }
 
 /**
  * The modules that are nothing but a re-export of one in `runtime`, added to it until no more are
  * found; the references that make them, returned to be passed over as uses.
  */
-function addReexports(parsed: readonly ParsedChunk[], runtime: Set<number>): Set<Node> {
-  const reexports = new Set<Node>();
+function addReexports(references: readonly Reference[], runtime: Set<number>): Set<Visit> {
+  const reexports = new Set<Visit>();
   for (let grew = true; grew;) {
     grew = false;
-    for (const { visits } of parsed) {
-      for (const visit of visits) {
-        const reference = moduleReference(visit.node);
-        if (reference?.method !== 'r' || !runtime.has(reference.id) || !isWholeModule(visit)) {
-          continue;
-        }
-        reexports.add(visit.node);
-        const id = moduleIdOf(visit);
-        if (id !== undefined && !runtime.has(id)) {
-          runtime.add(id);
-          grew = true;
-        }
+    for (const { visit, method, id } of references) {
+      if (method !== 'r' || !runtime.has(id) || reexports.has(visit) || !isWholeModule(visit)) {
+        continue;
+      }
+      reexports.add(visit);
+      const reexporting = moduleIdOf(visit);
+      if (reexporting !== undefined && !runtime.has(reexporting)) {
+        runtime.add(reexporting);
+        grew = true;
       }
     }
   }
   return reexports;
+}
+
+/**
+ * Why the page runtime cannot be React alone for the server chunks a Function carries (`chunks`),
+ * or nothing where it can: the externals they declare for it, every use of those through modules
+ * that only re-export them, and nothing else that names it, as the module comment says. Asked
+ * before the bundle is built, so a middleware that reads more is bundled once, with the runtime.
+ */
+export async function chunkReadsOfPageRuntime(
+  chunks: readonly string[],
+): Promise<string | undefined> {
+  const { marks, refusal } = await marksOf(chunks);
+  if (refusal !== undefined) {
+    return refusal;
+  }
+  const runtime = new Set<number>();
+  for (const { file, visit } of marks.names) {
+    const declaration = declarationOf(visit);
+    const id = declaration === undefined ? undefined : moduleIdOf(declaration);
+    if (id === undefined) {
+      return `${file} names the page runtime other than in the external a module of its table declares`;
+    }
+    runtime.add(id);
+  }
+  if (runtime.size === 0) {
+    return 'no server chunk declares the page runtime';
+  }
+  const reexports = addReexports(marks.references, runtime);
+  for (const { file, visit, method, id } of marks.references) {
+    const use = runtime.has(id) && !reexports.has(visit);
+    if (use && (!MODULE_REQUIRES.has(method) || !readsReactOnly(visit))) {
+      return `${file} reads more of the page runtime (module ${String(id)}) than vendored["react-rsc"].React`;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Why a require of the runtime the bundler followed (`requires`) is not one a server chunk makes
+ * through the external it declares — Next.js's own module requiring it, say — or nothing where
+ * none is.
+ */
+export function foreignRequireOfPageRuntime(
+  requires: readonly PageRuntimeRequire[],
+): string | undefined {
+  const foreign = requires.find(
+    ({ importer }) => importer === undefined || !SERVER_CHUNK.test(importer),
+  );
+  return foreign === undefined
+    ? undefined
+    : `${foreign.importer ?? 'the entry'} requires ${foreign.specifier} other than as a chunk's external`;
 }
 
 /** One bundle of a Function's code: what it required of the page runtime, and what it stubbed. */
@@ -327,60 +386,25 @@ export interface PageRuntimeBundle {
  * The middleware's Function's code, bundled with the page runtime as React alone where its chunks
  * (`chunks`) read nothing more of it, and with the runtime itself where they do. `write` bundles it
  * once, as React alone when told to; the runtime bundled so is listed among its stubs.
+ *
+ * What the chunks read is known before anything is bundled, so a middleware that reads more costs
+ * one bundle. A require of the runtime from outside the chunks is known only once the bundler has
+ * followed every import, and the build that has one is bundled again.
  */
 export async function withPageRuntimeAsReact<T extends PageRuntimeBundle>(
   write: (reactOnly: boolean) => Promise<T>,
   chunks: readonly string[],
 ): Promise<T> {
+  if ((await chunkReadsOfPageRuntime(chunks)) !== undefined) {
+    return write(false);
+  }
   const built = await write(true);
   if (built.pageRuntime.length === 0) {
     return built;
   }
-  if ((await readsOfPageRuntime(built.pageRuntime, chunks)) !== undefined) {
+  if (foreignRequireOfPageRuntime(built.pageRuntime) !== undefined) {
     return write(false);
   }
   built.sinks.stubs.push(...new Set(built.pageRuntime.map((required) => required.specifier)));
   return built;
-}
-
-/**
- * Why the page runtime cannot be React alone in this Function, or nothing where it can: every
- * require of it (`requires`) and every use of it in the server chunks the Function carries
- * (`chunks`), as the module comment says.
- */
-export async function readsOfPageRuntime(
-  requires: readonly PageRuntimeRequire[],
-  chunks: readonly string[],
-): Promise<string | undefined> {
-  for (const { specifier, importer } of requires) {
-    if (importer === undefined || !SERVER_CHUNK.test(importer)) {
-      return `${importer ?? 'the entry'} requires ${specifier} other than as a chunk's external`;
-    }
-  }
-  const parsed: ParsedChunk[] = await Promise.all(
-    chunks.map(async (file) => {
-      const source = await readFile(file, 'utf8');
-      return { file, visits: visitsOf(parseAst(source, { lang: 'js' }, file)) };
-    }),
-  );
-  const { ids: runtime, refusal } = runtimeExternals(parsed);
-  if (refusal !== undefined) {
-    return refusal;
-  }
-  if (runtime.size === 0) {
-    return 'no server chunk declares the page runtime it requires';
-  }
-  const reexports = addReexports(parsed, runtime);
-  for (const { file, visits } of parsed) {
-    for (const visit of visits) {
-      const reference = moduleReference(visit.node);
-      if (reference === undefined || !runtime.has(reference.id) || reexports.has(visit.node)) {
-        continue;
-      }
-      if (!MODULE_REQUIRES.has(reference.method) || !readsReactOnly(visit)) {
-        return `${file} reads more of the page runtime (module ${String(reference.id)}) than vendored["react-rsc"].React`;
-      }
-    }
-  }
-  return undefined;
 }
