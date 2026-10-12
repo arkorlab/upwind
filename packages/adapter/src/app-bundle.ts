@@ -3,6 +3,7 @@ import type { InputOptions, Plugin as RolldownPlugin } from 'rolldown';
 import { constExportSettersPlugin } from './const-export-setters.ts';
 import type { KeptMaps } from './kept-maps.ts';
 import { linkedImportsPlugin } from './linked-externals.ts';
+import { manglePackagesPlugin } from './mangle-packages.ts';
 import { type PageRuntimeRequire, pageRuntimeReactPlugin } from './page-runtime-react.ts';
 import {
   type AppliedPatch,
@@ -97,6 +98,8 @@ export function appBundlePlugins(
     styledJsxPlugin(context.patch.projectDir),
     externalsPlugin((specifier) => sinks.externals.add(specifier)),
     linkedImportsPlugin((id) => sinks.linked.add(id)),
+    // Last, so that every plugin above reads a module as it was written (`manglePackagesPlugin`).
+    manglePackagesPlugin(context.patch.distDir),
   ];
 }
 

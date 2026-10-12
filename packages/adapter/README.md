@@ -259,7 +259,15 @@ sooner (see EXPERIMENTS.md, V-03). The runtime module (`index.mjs`) is Rolldown'
 `workerd` and `worker` conditions, and so is the edge bundle (`edge.cjs`), where a build produced
 one. Rolldown shakes the members of a namespace object a dependency builds, which esbuild keeps
 whole: `import { z } from 'zod'` in a cache host kept all of zod in the runtime. All three are
-minified in whitespace and syntax and not in names, so a stack trace still names its function.
+minified in whitespace and syntax. The runtime's variables and parameters are renamed short as
+well, and so are those of the CommonJS modules `app.cjs` bundles from a package's own files —
+Next.js's server, and what the build leaves to the Function — one module at a time
+(`mangle-packages.ts`). No function or class is renamed anywhere, so a stack trace names every
+frame as before, and nothing Turbopack or Next.js's own build minified is renamed again: React
+reads a page's postponed state back by the names of the components that rendered it, and with the
+whole of `app.cjs` renamed every resume fell back to client rendering. In a fixture's app Function
+that took the runtime from 360,851 to 273,664 bytes and `app.cjs` from 2,652,998 to 2,589,634; in
+its middleware Function, 132,926 to 103,041 and 586,901 to 525,443.
 
 One thing the build wrote is rewritten on its way into the app module, as the patches rewrite
 Next.js's files. With `experimental.turbopackModuleFragments` (Next.js 16.4) Turbopack registers

@@ -368,9 +368,10 @@ function isAllowedExternal(specifier: string): boolean {
  * `externalRequire.resolve`, a `require.resolve` for a module that asks the runtime to; the
  * loader the same runtime keeps on its module context (`contextPrototype.t`, `typeof require
  * === "function" ? require : ...`), for a module compiled to ask the runtime for it; and the
- * resolver the require hook keeps (`let resolve = ... : require.resolve`, as rendered) for the
- * aliases it installs. They stay in the record, for a Next.js that moves them to show in a
- * diff; a use of the loader anywhere else fails the build.
+ * resolver the require hook keeps (`let resolve = ... : require.resolve`, as written, and under
+ * whatever name the bundle renamed it to: `manglePackagesPlugin`) for the aliases it installs.
+ * They stay in the record, for a Next.js that moves them to show in a diff; a use of the loader
+ * anywhere else fails the build.
  *
  * The edge bundle's chunks carry a Turbopack runtime of their own, with the same three: an
  * `import()` of an external of the build, the `require.resolve` it offers a module that asks for
@@ -403,7 +404,7 @@ const ALLOWED_DYNAMIC_LOADS: readonly RegExp[] = [
   /^\.next\/server\/chunks\/(?:ssr\/)?\[turbopack\]_runtime\.js:\d+: (?:import\(|require\.resolve\(|contextPrototype\.t = typeof require )/u,
   /^\.next\/server\/edge\/chunks\/(?:ssr\/)?[^/]+_next_dist_esm_build_templates_edge-wrapper_[^/]+\.js:\d+: (?:import\(|require\.resolve\(|\w+\.t = "function" == typeof require \? require :|contextPrototype\.t = typeof require === "function" \? require :)/u,
   /^next\/dist\/compiled\/next-server\/[\w-]+\.runtime\.prod\.js:\d+: import\(/u,
-  /^next\/dist\/server\/require-hook\.js:\d+: (?:const|let) resolve = /u,
+  /^next\/dist\/server\/require-hook\.js:\d+: (?:const|let) [\w$]+ = /u,
 ];
 
 /** Where the patterns above find the build's output: `.next`, unless `distDir` says otherwise. */
