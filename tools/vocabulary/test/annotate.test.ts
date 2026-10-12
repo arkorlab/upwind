@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { annotationOf } from '../src/annotate.ts';
-import { hitsOfFile } from '../src/scan.ts';
+import { hitsOfFile, hitsOfPath } from '../src/scan.ts';
 
 describe('an annotation', () => {
   it('names the file, the line, the column and the term', () => {
@@ -9,6 +9,14 @@ describe('an annotation', () => {
 
     expect(hit && annotationOf(hit)).toBe(
       `::error file=packages/host/a.ts,line=1,col=8,title=vocabulary/dashboard::"dashboard": a host's own interface`,
+    );
+  });
+
+  it('names the file alone where its path says the term', () => {
+    const [hit] = hitsOfPath('packages/host/dashboard.ts');
+
+    expect(hit && annotationOf(hit)).toBe(
+      `::error file=packages/host/dashboard.ts,title=vocabulary/dashboard::"dashboard" (in the path): a host's own interface`,
     );
   });
 

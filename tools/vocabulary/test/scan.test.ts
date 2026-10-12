@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { hitsOfFile, selfCheck, textOf } from '../src/scan.ts';
+import { hitsOfFile, hitsOfPath, selfCheck, textOf } from '../src/scan.ts';
 import type { Term } from '../src/terms.ts';
 
 /** What a file says, each term by its id and as the file wrote it. */
@@ -91,6 +91,16 @@ describe('a file', () => {
     ]);
   });
 
+  it('says a term that follows a prefix upwind ships, or that puts something before one', () => {
+    expect(saidIn("headers.set('x-arkor-dashboard', ARKOR_BILLING_KEY);")).toStrictEqual([
+      { id: 'dashboard', text: 'dashboard' },
+      { id: 'billing', text: 'BILLING' },
+    ]);
+    expect(saidIn("const header = 'not-x-arkor-edge';")).toStrictEqual([
+      { id: 'host-name', text: 'arkor' },
+    ]);
+  });
+
   it('reads no term across an identifier upwind ships, which stands between words as itself', () => {
     expect(
       saidIn('control x-arkor-edge plane; this ARKOR_CACHE platform; analytics arkor:edge engine'),
@@ -98,6 +108,18 @@ describe('a file', () => {
     expect(hitsOfFile('a.ts', "'x-arkor-edge', the dashboard")).toMatchObject([
       { line: 1, column: 21, text: 'dashboard' },
     ]);
+  });
+});
+
+describe("a file's path", () => {
+  it('says a term it names, as the file does, at the column it starts at', () => {
+    expect(hitsOfPath('packages/host/src/dashboard.ts')).toMatchObject([
+      { file: 'packages/host/src/dashboard.ts', column: 19, text: 'dashboard', inPath: true },
+    ]);
+    expect(hitsOfPath('packages/host/src/controlPlane/index.ts')).toMatchObject([
+      { text: 'controlPlane', inPath: true },
+    ]);
+    expect(hitsOfPath('packages/host/src/delivery/policy.ts')).toStrictEqual([]);
   });
 });
 
