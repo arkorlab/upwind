@@ -98,6 +98,12 @@ interface RegenerationTarget {
   /** A Pages Router page's data route, which its data output is recorded under. */
   readonly dataPathname?: string | undefined;
   /**
+   * The parameters the render is handed in its query, as routing hands them to a render of a
+   * visitor's request, where Next.js would read them otherwise off the pathname
+   * (`regenerationParameters`); none by default.
+   */
+  readonly parameters?: Readonly<Record<string, string>> | undefined;
+  /**
    * The generation the request judged and would replace — `null` for an entry it found none of —
    * where it judged one (`supersededBy`); absent where it did not say.
    */
@@ -151,6 +157,17 @@ function detail(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * The URL a static render is handed: the entry's pathname, with the parameters routing would name
+ * in its query where there are any (`RegenerationTarget.parameters`).
+ */
+function staticUrl(target: RegenerationTarget): string {
+  const { descriptor, parameters } = target;
+  return parameters === undefined
+    ? descriptor.pathname
+    : `${descriptor.pathname}?${new URLSearchParams(parameters).toString()}`;
+}
+
 /** The request a static render is given: the pathname, and nothing of the visitor's. */
 function staticRequest(input: RegenerationInput, attemptId: string): Request {
   const url = new URL(input.target.descriptor.pathname, input.request.url);
@@ -190,7 +207,7 @@ function renderStatic(
     return invokeNodeHandler({
       handler: input.handler,
       request,
-      url: input.target.descriptor.pathname,
+      url: staticUrl(input.target),
       requestMeta: {
         minimalMode: true,
         relativeProjectDir: '.',

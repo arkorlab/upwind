@@ -198,3 +198,126 @@ export function routeQuery(
   const named = Object.entries(held).filter(([key]) => !Object.hasOwn(target.query, key));
   return named.length === 0 ? target.query : { ...target.query, ...Object.fromEntries(named) };
 }
+
+/** What `builtSegment` escapes in a value: a path delimiter, or one already escaped. */
+const BUILT_ESCAPE = /%25(?:2f|23|3f|5c)|%(?:2f|23|3f|5c)/giu;
+
+/** One escape `builtSegment` wrote, read back. */
+function unescaped(found: string): string {
+  return found.startsWith('%25') ? `%${found.slice('%25'.length)}` : decodeURIComponent(found);
+}
+
+/**
+ * The values `segments` of a page's name hold. A page the build named is named as `builtSegment`
+ * spells a value — its path delimiters escaped and nothing else, so a value's own `100%20` is
+ * written as it is — and is read back so. A page a request names is spelled as the request spelled
+ * it, and each segment is decoded once, as routing decodes what it captures. `undefined` where one
+ * does not decode.
+ */
+function valuesOf(segments: readonly string[], built: boolean): string[] | undefined {
+  const values: string[] = [];
+  for (const segment of segments) {
+    const value = built
+      ? segment.replaceAll(BUILT_ESCAPE, (found) => unescaped(found))
+      : decodedSegment(segment);
+    if (value === undefined) {
+      return undefined;
+    }
+    values.push(value);
+  }
+  return values;
+}
+
+/** `pathname` without the slash a `trailingSlash` application keeps at its end. */
+function withoutEndSlash(pathname: string): string {
+  return pathname.length > 1 && pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
+}
+
+/**
+ * `pathname` without the locale it leads with, in an application with `i18n`: matched in any case,
+ * as routing matches one (`normalizeLocalePath`) — `/FR/docs` is the `fr` page's — where the
+ * store's own lookups take the build's spelling alone (`unlocalizedRouteOf`).
+ */
+function withoutLocale(store: Store, pathname: string): string {
+  const { i18n, basePath } = store.manifest.config;
+  if (i18n === null || i18n === undefined || !pathname.startsWith(`${basePath}/`)) {
+    return pathname;
+  }
+  const bare = pathname.slice(basePath.length);
+  const end = bare.indexOf('/', 1);
+  const segment = (end === -1 ? bare.slice(1) : bare.slice(1, end)).toLowerCase();
+  if (i18n.locales.every((locale) => locale.toLowerCase() !== segment)) {
+    return pathname;
+  }
+  return end === -1 ? basePath || '/' : `${basePath}${bare.slice(end)}`;
+}
+
+/**
+ * Whether `segment` of a page's path stands for the template's fixed one: as it is spelled, or as
+ * its value reads (`valuesOf`) — a request's `%E8%A8%98%E4%BA%8B` is `記事`, where a folder the
+ * build names `%2F` is spelled so — in any case, as routing's patterns match it. The page and the
+ * route came paired from routing or from the build; this only keeps a path that does not line up
+ * with its route from naming anything.
+ */
+function isFixed(segment: string | undefined, placeholder: string, built: boolean): boolean {
+  if (segment === undefined) {
+    return false;
+  }
+  const wanted = placeholder.toLowerCase();
+  const [value] = valuesOf([segment], built) ?? [];
+  return segment.toLowerCase() === wanted || value?.toLowerCase() === wanted;
+}
+
+/**
+ * The parameters a regeneration of a Pages Router member hands Next.js in its query (`nxtP…`), as
+ * routing hands them to a render of a visitor's request; `undefined` where Next.js, matching the
+ * member's name itself, reads them the same — every member but one whose catch-all holds an
+ * escaped `/` in one of its segments.
+ *
+ * Routing writes a catch-all's value into the query decoded, its segments joined by `/`, and
+ * Next.js splits it there (`normalizeDynamicRouteParams`): `/docs/a%2Fb` of `/docs/[...slug]` is
+ * `['a', 'b']`, which is how Next.js says the deployments of its own adapter read such a value
+ * (`prerender-encoding`). Matching the name, it splits the path first and decodes each segment
+ * after, which keeps the `/` in the value: `['a/b']`. A regeneration rendered the member by its
+ * name, so the generation it published — and every answer from it — said one thing where a render
+ * of the visitor's request said the other, and which of the two answered turned on whether the
+ * entry's record was read in time (`incremental-cache-path-traversal`).
+ *
+ * The member is read as routing reads the request for it: its values as `valuesOf` reads them, its
+ * fixed segments matched as `isFixed` matches them, a trailing slash left off, and its locale, in an
+ * application with `i18n`, left out in any case (`withoutLocale`). Every parameter of
+ * the route is named once one is, as routing names them all: Next.js takes the query's only where
+ * it holds every one. Not an App Router member's: its shell is resumed for each visitor by the
+ * member's own path, which Next.js reads as it reads the name, and a shell and its resume have to
+ * agree.
+ */
+export function regenerationParameters(
+  store: Store,
+  route: string,
+  pathname: string,
+): Record<string, string> | undefined {
+  const template = store.prerendersByPathname.get(route)?.route ?? route;
+  const bare = withoutEndSlash(pathname);
+  const built = store.prerendersByPathname.has(bare);
+  const member = withoutLocale(store, bare).split('/');
+  const named: Record<string, string> = {};
+  let separated = false;
+  for (const [index, placeholder] of template.split('/').entries()) {
+    const parameter = parameterOf(placeholder);
+    if (parameter === undefined) {
+      if (!isFixed(member[index], placeholder, built)) {
+        return undefined;
+      }
+      continue;
+    }
+    const values = valuesOf(segmentsAt(parameter, member, index), built);
+    if (values === undefined || (values.length === 0 && !parameter.optional)) {
+      return undefined;
+    }
+    if (values.length > 0) {
+      separated ||= parameter.rest && values.some((value) => value.includes('/'));
+      named[`nxtP${parameter.name}`] = values.join('/');
+    }
+  }
+  return separated ? named : undefined;
+}
