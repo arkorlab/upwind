@@ -115,11 +115,21 @@ function isUnsafe(visit: Visit, strict: boolean): boolean {
   const { node } = visit;
   return (
     (node.type === 'CatchClause' && node.param !== null && node.param.type !== 'Identifier') ||
-    (node.type === 'CallExpression' &&
-      node.callee.type === 'Identifier' &&
-      node.callee.name === 'eval') ||
+    (node.type === 'CallExpression' && isEval(node.callee)) ||
     (!strict && !visit.topLevel && node.type === 'FunctionDeclaration')
   );
+}
+
+/**
+ * Whether a call's callee is `eval` itself, however many parentheses are around it: `(eval)(code)`
+ * is as direct an `eval` as `eval(code)`, and only `(0, eval)(code)` is not.
+ */
+function isEval(callee: Node): boolean {
+  let at = callee;
+  while (at.type === 'ParenthesizedExpression') {
+    at = at.expression;
+  }
+  return at.type === 'Identifier' && at.name === 'eval';
 }
 
 /**
