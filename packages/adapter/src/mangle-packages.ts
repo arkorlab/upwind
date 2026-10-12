@@ -50,8 +50,12 @@ const PRINTED = { module: false, compress: false, codegen: { removeWhitespace: t
 const PURE = /^\s*[#@]__PURE__\s*$/u;
 /** What marks a function as free of side effects; nothing here puts one back. */
 const NO_SIDE_EFFECTS = /^\s*[#@]__NO_SIDE_EFFECTS__\s*$/u;
-/** The annotation as it is put back. */
-const PURE_COMMENT = '/*@__PURE__*/';
+/**
+ * The annotation as it is put back, after a space: printed without whitespace, a call after a
+ * division follows the `/` directly, and `//*@__PURE__*\/` would make the rest of the line a
+ * comment — the whole of the module, which the printer writes on one line.
+ */
+const PURE_COMMENT = ' /*@__PURE__*/';
 
 const FUNCTIONS: ReadonlySet<string> = new Set([
   'ArrowFunctionExpression',
