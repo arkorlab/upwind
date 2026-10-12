@@ -15,14 +15,27 @@ import * as z from 'zod';
 
 import { toZod } from '../zod/index.ts';
 import {
-  cacheEntrySchema,
-  cacheEntryStateSchema,
-  cacheScopeSchema,
-  cacheScopeStatusSchema,
-  dependencyCoverageSchema,
-  publicCacheGenerationSchema,
+  cacheEntrySchema as cacheEntryEntity,
+  cacheEntryStateSchema as cacheEntryStateEntity,
+  cacheScopeSchema as cacheScopeEntity,
+  cacheScopeStatusSchema as cacheScopeStatusEntity,
+  dependencyCoverageSchema as dependencyCoverageEntity,
+  publicCacheGenerationSchema as publicCacheGenerationEntity,
 } from './entities.ts';
-import { invalidateRequestSchema } from './gateway-contract.ts';
+import { invalidateRequestSchema as invalidateRequestEntity } from './gateway-contract.ts';
+
+/**
+ * The entities and the request this contract carries, which `entities.ts` and `gateway-contract.ts`
+ * write with core's validator — a deployment's Function reads them, and so builds no zod — as the
+ * zod schemas this contract, which only a host's deploy and the authority read, composes them into.
+ */
+const cacheEntrySchema = toZod(cacheEntryEntity);
+const cacheEntryStateSchema = toZod(cacheEntryStateEntity);
+const cacheScopeSchema = toZod(cacheScopeEntity);
+const cacheScopeStatusSchema = toZod(cacheScopeStatusEntity);
+const dependencyCoverageSchema = toZod(dependencyCoverageEntity);
+const publicCacheGenerationSchema = toZod(publicCacheGenerationEntity);
+const invalidateRequestSchema = toZod(invalidateRequestEntity);
 
 /**
  * What a host's deploy may ask of the cache authority — seed a scope and its entries, retire it,

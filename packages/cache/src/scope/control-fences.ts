@@ -1,4 +1,5 @@
 import { tagDeltaEntrySchema, type TagDeltaEntry } from '@stayingupwind/host/cache';
+import { toZod } from '@stayingupwind/host/zod';
 import { z } from 'zod';
 
 import type { InvalidationRow } from './rows.ts';
@@ -17,7 +18,7 @@ const SWEEP_BATCH = 200;
 const CLOCK_DIGITS = 16;
 
 const fenceSchema = z.object({
-  tag: tagDeltaEntrySchema,
+  tag: toZod(tagDeltaEntrySchema),
   invalidationId: z.string(),
   cause: z.string(),
   recordedAt: z.number(),

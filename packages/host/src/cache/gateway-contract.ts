@@ -14,9 +14,8 @@ import {
   tagKindSchema,
   generationTagSchema,
 } from '@stayingupwind/core/cache';
-import * as z from 'zod';
+import * as z from '@stayingupwind/core/schema';
 
-import { toZod } from '../zod/index.ts';
 import {
   attemptErrorSchema,
   attemptReasonSchema,
@@ -37,6 +36,11 @@ import {
  * Every route lives under `/v1/scopes/<scopeId>/` and carries the scope's token as a bearer; the
  * gateway answers `{ ok: true, result }` or `{ ok: false, error }`. The runtime's cache handlers and
  * the gateway import these same schemas, so what one sends is what the other reads.
+ *
+ * Written with core's validator (`@stayingupwind/core/schema`) rather than zod, as `entities.ts` is:
+ * the runtime checks every answer against these, and builds them as its module is evaluated, before
+ * an application's first answer. What composes them into zod schemas of its own takes them through
+ * `toZod`.
  */
 
 export const GATEWAY_API_VERSION = 'v1';
@@ -92,9 +96,14 @@ export const gatewayErrorSchema = z.object({
 });
 export type GatewayError = z.infer<typeof gatewayErrorSchema>;
 
-export function gatewayResultSchema<T extends z.ZodType>(
+export function gatewayResultSchema<const T extends z.Schema>(
   result: T,
-): z.ZodUnion<[z.ZodObject<{ ok: z.ZodLiteral<true>; result: T }>, typeof gatewayErrorSchema]> {
+): z.UnionSchema<
+  readonly [
+    z.ObjectSchema<{ readonly ok: z.ValueSchema<true>; readonly result: T }, 'strip'>,
+    typeof gatewayErrorSchema,
+  ]
+> {
   return z.union([z.object({ ok: z.literal(true), result }), gatewayErrorSchema]);
 }
 
@@ -107,7 +116,7 @@ export type ObservationInput = z.infer<typeof observationInputSchema>;
 
 /** `POST /attempts` */
 export const startAttemptRequestSchema = z.object({
-  entry: toZod(entryDescriptorSchema),
+  entry: entryDescriptorSchema,
   allowQuery: z.array(z.string()).optional(),
   reason: attemptReasonSchema,
   producer: generationProducerSchema.optional(),
@@ -120,8 +129,8 @@ export const currentGenerationSummarySchema = z.object({
   generationId: z.string().min(1),
   seq: z.number().int().positive(),
   cacheTimestamp: z.number().int().nullable(),
-  policy: toZod(cachePolicySchema),
-  condemned: toZod(invalidationStateSchema).nullable(),
+  policy: cachePolicySchema,
+  condemned: invalidationStateSchema.nullable(),
   /**
    * The status the generation answers with, and where it redirects (`location`, `null` for
    * nowhere): whether a visitor may be answered with it. Absent from an authority that says not.
@@ -158,11 +167,11 @@ export type HeartbeatResponse = z.infer<typeof heartbeatResponseSchema>;
 
 /** An artifact the commit names; each must have been uploaded to the attempt first. */
 export const commitArtifactSchema = z.object({
-  role: toZod(artifactRoleSchema),
-  sha256: toZod(sha256HexSchema),
+  role: artifactRoleSchema,
+  sha256: sha256HexSchema,
   byteLength: z.number().int().nonnegative(),
   contentType: z.string().min(1),
-  encoding: toZod(artifactEncodingSchema),
+  encoding: artifactEncodingSchema,
 });
 export type CommitArtifact = z.infer<typeof commitArtifactSchema>;
 
@@ -170,9 +179,9 @@ export const commitOutputSchema = z.object({
   representationKey: z.string().min(1),
   pathname: z.string().nullable(),
   status: z.number().int().nullable(),
-  headers: toZod(headerValuesSchema),
-  compute: toZod(outputComputeSchema),
-  response: toZod(outputResponseSchema),
+  headers: headerValuesSchema,
+  compute: outputComputeSchema,
+  response: outputResponseSchema,
   htmlSize: z.number().int().nonnegative().nullable(),
   artifacts: z.array(commitArtifactSchema),
 });
@@ -195,11 +204,11 @@ export type CommitDependency = z.infer<typeof commitDependencySchema>;
 export const commitGenerationSchema = z.object({
   cacheTimestamp: z.number().int(),
   producedAt: z.number().int(),
-  policy: toZod(cachePolicySchema),
+  policy: cachePolicySchema,
   status: z.number().int(),
   /** The headers the generation is answered with, already filtered (`generationResponseHeaders`). */
   headers: z.record(z.string(), z.string()),
-  tags: z.array(toZod(generationTagSchema)).max(MAX_TAGS_PER_ENTRY),
+  tags: z.array(generationTagSchema).max(MAX_TAGS_PER_ENTRY),
   outputs: z.array(commitOutputSchema).min(1),
   dependencies: z.array(commitDependencySchema),
   dependencyCoverage: dependencyCoverageSchema,
@@ -223,7 +232,7 @@ export const commitResponseSchema = z.discriminatedUnion('kind', [
     seq: z.number().int().positive(),
     revision: z.number().int().positive(),
     /** Present when an invalidation after the lease made it stale on arrival. */
-    condemned: toZod(invalidationStateSchema).nullable(),
+    condemned: invalidationStateSchema.nullable(),
     /**
      * The entry's delivery record as KV holds it for the generation the commit published, base64,
      * where it is small enough to be handed back — written by the commit's own settle or another's:
@@ -264,7 +273,7 @@ export const failResponseSchema = z.object({
 export type FailResponse = z.infer<typeof failResponseSchema>;
 
 /** `POST /entries/resolve`: the current generation of an entry, with no side effect. */
-export const resolveRequestSchema = z.object({ entry: toZod(entryDescriptorSchema) });
+export const resolveRequestSchema = z.object({ entry: entryDescriptorSchema });
 export type ResolveRequest = z.infer<typeof resolveRequestSchema>;
 
 export const resolveResponseSchema = z.object({
@@ -334,7 +343,7 @@ export const dataSetResponseSchema = z.object({
    * write was that generation already, or before it arrived, when the value was made before the
    * invalidation: what a read of the entry would say too.
    */
-  invalidation: toZod(invalidationStateSchema).optional(),
+  invalidation: invalidationStateSchema.optional(),
   /**
    * Set when the entry has a later write of this one's writer (`order`), whatever came between: the
    * write arrived after the later one, nothing was written, and the generation named is that one's.
@@ -364,14 +373,14 @@ export const dataGetResponseSchema = z.object({
   entry: dataEntryMetadataSchema,
   value: dataValueSchema,
   /** Set once an invalidation touched the entry; what the tag delta will say too. */
-  invalidation: toZod(invalidationStateSchema).optional(),
+  invalidation: invalidationStateSchema.optional(),
 });
 export type DataGetResponse = z.infer<typeof dataGetResponseSchema>;
 
 /** `GET /tags/delta?since=<revision>` */
 export const tagDeltaEntrySchema = z.object({
   tagId: z.string().min(1),
-  kind: toZod(tagKindSchema),
+  kind: tagKindSchema,
   value: z.string().min(1),
   revision: z.number().int().positive(),
   staleAt: z.number().int(),
@@ -412,7 +421,7 @@ export type TagsGetResponse = z.infer<typeof tagsGetResponseSchema>;
 /** `POST /invalidations` */
 const invalidateTagSchema = z.object({
   value: tagValueSchema,
-  kind: toZod(tagKindSchema).optional(),
+  kind: tagKindSchema.optional(),
 });
 
 export const invalidateRequestSchema = z.object({

@@ -76,7 +76,7 @@ export const dataRecordSchema = z.object({
   generationId: z.string().min(1),
   revision: z.number().int().nonnegative(),
   dependencyRevision: z.number().int().nonnegative(),
-  entry: dataEntryMetadataSchema,
+  entry: toZod(dataEntryMetadataSchema),
   value: dataValueSchema,
   invalidation: toZod(invalidationStateSchema).optional(),
 });
