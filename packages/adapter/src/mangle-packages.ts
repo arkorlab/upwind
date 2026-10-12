@@ -8,16 +8,19 @@ import { isUnder } from './fs.ts';
 
 /**
  * The CommonJS modules a Function bundles from Next.js's and React's own files — Next.js's server
- * (`next/dist/server`, `shared`, `lib`) and React's — with their variables and parameters renamed
- * short, one module at a time, and every function and class keeping its name.
+ * (`next/dist/server`, `shared`, `lib`), React's, and React's server renderer (`react-dom`) — with
+ * their variables and parameters renamed short, one module at a time, and every function and class
+ * keeping its name.
  *
- * Those two packages and no other. They are what the adapter's tests and Next.js's deploy tests
+ * Those three packages and no other. They are what the adapter's tests and Next.js's deploy tests
  * run, and nearly all of what renaming takes off: renaming every package's CommonJS instead took ten
- * bytes more off the minimal fixture's app Function. Renamed, any other package's code would be run
- * by none of those tests, and two things could break it that no check of a module can see: a
- * mangler bug nobody has reported yet, and a package that reads its own functions' parameter names
- * — a container that injects dependencies by them, through `Function.prototype.toString()` — which
- * would read renamed ones. The module that reads the names need not be the one that declares them.
+ * bytes more off the minimal fixture's app Function. `react-dom` is most of it where a page renders
+ * with the application's own copy, as the Pages Router does; the App Router renders with the copy
+ * Next.js precompiles. Renamed, any other package's code would be run by none of those tests, and
+ * two things could break it that no check of a module can see: a mangler bug nobody has reported
+ * yet, and a package that reads its own functions' parameter names — a container that injects
+ * dependencies by them, through `Function.prototype.toString()` — which would read renamed ones.
+ * The module that reads the names need not be the one that declares them.
  *
  * One module at a time, because most of a Function's code was minified by the build that made it,
  * and renaming it again costs a prerender its resume. The names Turbopack gave its chunks' code,
@@ -47,9 +50,9 @@ import { isUnder } from './fs.ts';
  */
 
 /** The packages whose CommonJS is renamed (see above). */
-const RENAMED_PACKAGES: ReadonlySet<string> = new Set(['next', 'react']);
+const RENAMED_PACKAGES: ReadonlySet<string> = new Set(['next', 'react', 'react-dom']);
 /** What may be one of their files, before its path is read for whose it is (`isRenamed`). */
-const RENAMED_FILE = /[/\\]node_modules[/\\](?:next|react)[/\\].+\.c?js$/u;
+const RENAMED_FILE = /[/\\]node_modules[/\\](?:next|react|react-dom)[/\\].+\.c?js$/u;
 /** Minified by Next.js's own build, the page runtime among them: see above. */
 const PRECOMPILED = /[/\\]node_modules[/\\]next[/\\]dist[/\\]compiled[/\\]/u;
 
@@ -344,9 +347,9 @@ export function manglerGetsWrong(id: string, code: string): boolean {
 }
 
 /**
- * Whether `id` is a file the transform renames: Next.js's or React's own — the innermost package of
- * its path, as pnpm's store lays a package out too, so a dependency of either is not — and not
- * Next.js's precompiled code or the build's own output (`distDir`).
+ * Whether `id` is a file the transform renames: one of those packages' own — the innermost package
+ * of its path, as pnpm's store lays a package out too, so a dependency of any of them is not — and
+ * not Next.js's precompiled code or the build's own output (`distDir`).
  */
 function isRenamed(id: string, distDir: string): boolean {
   const owner = packageOf(id);
