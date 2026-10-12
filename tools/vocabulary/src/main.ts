@@ -44,17 +44,27 @@ function byCodeUnit(left: string, right: string): number {
   return Number(left > right) - Number(left < right);
 }
 
-/** The text files those packages hold, tracked or not, minus what `.gitignore` leaves out. */
-function gatedFiles(): { readonly file: string; readonly text: string }[] {
-  const listed = execFileSync(
+/** What `git ls-files` lists of those packages with these options. */
+function listed(options: readonly string[]): string[] {
+  return execFileSync(
     // eslint-disable-next-line sonarjs/no-os-command-from-path -- the developer's own git, reached through their own PATH.
     'git',
-    ['ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', ...GATED],
+    ['ls-files', ...options, '-z', '--', ...GATED],
     { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: GIT_OUTPUT_LIMIT_MIB * MIB },
-  );
-  return listed
+  )
     .split('\0')
-    .filter((file) => file !== '')
+    .filter((file) => file !== '');
+}
+
+/**
+ * The text files those packages hold, tracked or not, minus what `.gitignore` leaves out. A file
+ * deleted from the working tree is in the index until its deletion is staged; what is read is the
+ * tree as it stands, so such a file is not there to be read.
+ */
+function gatedFiles(): { readonly file: string; readonly text: string }[] {
+  const deleted = new Set(listed(['--deleted']));
+  return listed(['--cached', '--others', '--exclude-standard'])
+    .filter((file) => !deleted.has(file))
     .toSorted(byCodeUnit)
     .flatMap((file) => {
       const text = textOf(file, readFileSync(path.join(REPO_ROOT, file)));
