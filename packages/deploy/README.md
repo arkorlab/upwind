@@ -7,9 +7,10 @@ edge. Each piece is a function of the bundle and the host's choices, and does no
 the host keeps its objects. What writes them is a target the host hands in (`DeployTarget`): the
 build's blobs, a bucket, a key-value namespace, and the runtime cache to seed, where there is one.
 
-A deployment is staged first (`stageDeployment`), with nothing the edge reads written yet, so a
-refusal leaves nothing to serve; then it is published (`publishDeployment`). `deployBundle` does
-both. The pointer it returns is the caller's to write where its edge looks.
+A deployment is staged first (`stageDeployment`): its blobs and shells are stored and its cache
+seeded, but its manifest is not yet where the edge reads one, so a refusal leaves nothing routed to
+it. Then it is published (`publishDeployment`). `deployBundle` does both. The pointer it returns is
+the caller's to write where its edge looks.
 
 The published package is TypeScript sources: `exports` names `.ts` files, and there is no build
 step. It runs as a Worker or under Node.
