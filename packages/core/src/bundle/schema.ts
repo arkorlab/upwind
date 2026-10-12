@@ -3,8 +3,8 @@ import { cronsSchema } from '../cron/schema.ts';
 import { checkedImagesConfigSchema } from '../images/build.ts';
 import { runnableSourceRegexSchema, unsafeRoutePatternReason } from '../request/pattern-safety.ts';
 import * as z from '../schema/index.ts';
-import { isId } from '../util/id.ts';
 import { routeHasSchema, routerReferencesSchema, splitFunctionNameSchema } from './carried.ts';
+import { deploymentIdSchema } from './deployment-id.ts';
 import {
   durableObjectDeclarationsSchema,
   DURABLE_OBJECT_BUNDLE_VERSION,
@@ -18,6 +18,7 @@ export {
   routerReferencesSchema,
   splitFunctionNameSchema,
 } from './carried.ts';
+export { DEPLOYMENT_ID_PREFIX, deploymentIdSchema } from './deployment-id.ts';
 
 /**
  * The deployment bundle: what the Next.js adapter writes at the end of `next build`, and the only
@@ -73,12 +74,6 @@ const ONE_PASS_VERSIONS: ReadonlySet<number> = new Set([
  * adapter's planner makes, and is here so that no bundle can ask for thousands.
  */
 export const MAX_APP_FUNCTIONS = 32;
-
-export const DEPLOYMENT_ID_PREFIX = 'dpl';
-
-export const deploymentIdSchema = z
-  .string()
-  .refine((value) => isId(DEPLOYMENT_ID_PREFIX, value), 'expected a deployment id');
 
 /**
  * What a blob is served as.
