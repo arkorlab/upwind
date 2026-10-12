@@ -1,4 +1,4 @@
-import type { RouteEntryDescriptor } from '@stayingupwind/core/cache';
+import { MAX_TAGS_PER_ENTRY, type RouteEntryDescriptor } from '@stayingupwind/core/cache';
 
 import type { CapturedRender } from './capture.ts';
 import { nowMs } from './clock.ts';
@@ -111,7 +111,8 @@ export async function answeringWhileBusy(
 /**
  * `published`, the render it publishes answering the isolate's requests that would regenerate the
  * entry until it has settled, or until the isolate lets go of the render sooner (`publishing`).
- * Never rejects where `published` never does.
+ * Never rejects where `published` never does. Not a render that carries more tags than a generation
+ * may: its publish refuses it before anything is sent, and nothing after it is answered with it.
  */
 export async function answeringUntilSettled<T>(
   runtime: CacheRuntime,
@@ -119,6 +120,9 @@ export async function answeringUntilSettled<T>(
   own: Publishing,
   published: Promise<T>,
 ): Promise<T> {
+  if (own.tags.length > MAX_TAGS_PER_ENTRY) {
+    return published;
+  }
   runtime.publishing.set(entryId, own);
   try {
     return await published;
