@@ -1,6 +1,7 @@
 import { builtinModules } from 'node:module';
 
 import js from '@eslint/js';
+import vitest from '@vitest/eslint-plugin';
 import type { Linter } from 'eslint';
 import prettierConfig from 'eslint-config-prettier';
 import { createTypeScriptImportResolver } from 'eslint-import-resolver-typescript';
@@ -48,6 +49,8 @@ const RUNTIME_NEUTRAL_FILES = [
   'packages/core/**/*.ts',
   'packages/sdk/src/**/*.ts',
 ];
+/** The suites, and what they share, wherever a package or a tool keeps them. */
+const TEST_FILES = ['**/*.{test,spec}.{ts,mts}', '**/test/**/*.{ts,mts}'];
 
 /**
  * Plugin `configs` maps are index signatures typed as unions of legacy and flat shapes; resolve one
@@ -502,6 +505,36 @@ export default defineConfig([
           }),
         },
       ],
+    },
+  },
+
+  // The suites. A literal in a test is the case it is about, and the same literal across tests is
+  // the same case: naming either would hide what each test asks.
+  {
+    files: TEST_FILES,
+    ...configOf(vitest.configs, 'all'),
+  },
+  {
+    files: TEST_FILES,
+    rules: {
+      '@typescript-eslint/no-magic-numbers': 'off',
+      '@typescript-eslint/no-non-null-assertion': 'off',
+      'max-lines': 'off',
+      'sonarjs/no-duplicate-string': 'off',
+      'sonarjs/no-clear-text-protocols': 'off', // `http://` literals are test data
+      'sonarjs/no-hardcoded-ip': 'off', // IP literals are test data
+      'unicorn/prefer-https': 'off', // `http://` literals are test data
+      // `expectTypeOf` asserts at typecheck rather than at runtime; a test that makes one is not a
+      // test without assertions.
+      'vitest/expect-expect': [
+        'error',
+        { assertFunctionNames: ['expect', 'expectTypeOf', 'assert'] },
+      ],
+      'vitest/max-expects': ['error', { max: 8 }],
+      'vitest/no-hooks': 'off',
+      'vitest/prefer-describe-function-title': 'off', // a title names a behaviour, not only a function
+      'vitest/prefer-expect-assertions': 'off',
+      'vitest/require-mock-type-parameters': 'off',
     },
   },
 

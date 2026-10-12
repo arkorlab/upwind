@@ -327,7 +327,10 @@ export function rememberRecord(
  * has ended: a second request waiting on it could wait on something that never settles, for a
  * digest that costs less than the wait.
  */
-async function entryIdOf(runtime: CacheRuntime, descriptor: RouteEntryDescriptor): Promise<string> {
+export async function entryIdOf(
+  runtime: CacheRuntime,
+  descriptor: RouteEntryDescriptor,
+): Promise<string> {
   const key = JSON.stringify([descriptor.kind, descriptor.route, descriptor.pathname]);
   const known = runtime.entryIds.get(key);
   if (known !== undefined) {

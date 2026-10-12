@@ -39,7 +39,8 @@ upwind/
 │                   #   written by create-upwind and built by the released upwind
 ├── tools/
 │   ├── next-matrix/   # builds those fixtures with each Next.js and checks what came out
-│   └── deploy-tests/  # deploys Next.js's own deploy-mode applications to a host for its suite to run
+│   ├── deploy-tests/  # deploys Next.js's own deploy-mode applications to a host for its suite to run
+│   └── vocabulary/    # holds the packages that serve and deploy a deployment to words any host uses
 └── .github/
     ├── workflows/ci.yaml            # every check, on every pull request
     ├── workflows/next-matrix.yaml   # the supported Next.js range, checked against Next.js itself
@@ -79,12 +80,16 @@ pnpm knip                  # unused files and unused dependencies
 pnpm check:patches         # the rewrites of Next.js's own package still find what they insist on
 pnpm check:deploy-tests    # the deploy-mode hooks, against a host that is not one
 pnpm check:durable-objects # native namespaces, SQLite storage and source isolation, without a build
+pnpm check:ai              # the inference contract and local AI isolation, without a remote call
 pnpm check:agent-rules     # the agent rules `create-upwind` writes are still Next.js's own
+pnpm check:vocabulary      # the packages that serve and deploy a deployment name no host's own parts
+pnpm test                  # every suite a package or a tool keeps, under one Vitest runner
 ```
 
-Those nine, in that order, are what CI runs, and beside them `pnpm audit --audit-level low` over both
-lockfiles — this one and the site's — so a pull request can also be stopped by an advisory against
-something neither of you wrote.
+All but the last, in that order, are what CI's `check` job runs; `pnpm test` is a job of its own
+beside it. And beside both, `pnpm audit --audit-level low` over both lockfiles — this one and the
+site's — so a pull request can also be stopped by an advisory against something neither of you
+wrote.
 
 **`pnpm build` comes first, and the order is not cosmetic.** `@stayingupwind/sdk` and
 `@stayingupwind/auth` are read through the `dist` they are built into rather than through their
@@ -95,11 +100,12 @@ which is also what proves that order is right. `pnpm lint` is type-aware over th
 wants more than Node's default heap; CI gives it 8 GB
 (`NODE_OPTIONS=--max-old-space-size=8192`), and you may need to as well.
 
-**There is no test suite in this repository.** Those checks are the whole of it, and some prose
-in the package readmes refers to suites by path; those suites are not here. What _is_ checked against
-something outside this repository is what this one matched against Next.js by text — the adapter's
-rewrites of Next.js's own output, and the agent rules `create-upwind` copies from it — because text
-goes stale silently:
+**Suites are few.** `pnpm test` runs what a package or a tool keeps under its own `test/`, each in
+the environment its `vitest.config.mts` names; beyond those, the checks above are the whole of it,
+and some prose in the package readmes refers by path to suites that are not here. What _is_ checked
+against something outside this repository is what this one matched against Next.js by text — the
+adapter's rewrites of Next.js's own output, and the agent rules `create-upwind` copies from it —
+because text goes stale silently:
 
 | Command                  | What it does                                                                                                                                                                                                                                                                |
 | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -122,7 +128,9 @@ only matters if you touched `packages/adapter/src/patches/`. The patch checks ar
   it sits above. A patch against Next.js's own output without that line is the thing that rots.
 - **Say what the code does, not whose platform runs it.** These packages describe a Next.js build
   and the Function that serves it. A host's control plane, topology, or tenancy has no business in
-  the prose here, however true it is elsewhere.
+  the prose here, however true it is elsewhere. The packages that serve and deploy a deployment are
+  held to that by `pnpm check:vocabulary`, which names each word it refuses and says why
+  ([`tools/vocabulary/src/terms.ts`](tools/vocabulary/src/terms.ts)).
 - **`knip` fails on an unused file or dependency.** Unused _exports_ are not checked and cannot be:
   every package here is a library whose readers are a host's own code, which is not in this
   repository.
@@ -212,9 +220,10 @@ error — are genuinely welcome. Please don't let any of this stop you:
 - **Size doesn't matter.** A large diff is fine. We would much rather split it up on our side than
   have you sit on it.
 - **A sparse description is OK.** We will ask follow-ups in review rather than bounce the patch.
-- **There is no suite to add to.** If your change fixes something you can demonstrate, the most
-  useful thing you can include is how to see it: the `next build` that produced it, the route, and
-  what was served instead.
+- **A test is welcome, not required.** Where the package you changed has suites, one that fails
+  without your change says it best. Elsewhere, if your change fixes something you can demonstrate,
+  the most useful thing you can include is how to see it: the `next build` that produced it, the
+  route, and what was served instead.
 - **Breaking changes are fine** before `1.0`, including to the bundle. Say so in the description —
   a host reads these fields, and a release note that stays honest is worth more than a shim.
 

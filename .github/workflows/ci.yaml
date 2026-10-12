@@ -49,6 +49,26 @@ jobs:
       # The agent rules `create-upwind` writes are still the ones Next.js writes. Text copied out of
       # another project goes stale without saying so, and this one is compared byte for byte.
       - run: pnpm check:agent-rules
+      # The packages that serve and deploy a deployment say nothing of any one host
+      # (`tools/vocabulary`): each mention is annotated on the line that makes it.
+      - run: pnpm check:vocabulary --format github
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # For the same reason as in `check`: a suite that imports a package read through its `dist`
+      # resolves it to declarations that exist once this has run.
+      - run: pnpm build
+      # Every suite, under one runner (`vitest.config.ts`), beside `check` rather than after it.
+      - run: pnpm test
 
   audit:
     runs-on: ubuntu-latest
