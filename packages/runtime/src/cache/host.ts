@@ -44,6 +44,15 @@ export interface CacheHost {
    */
   uploadArtifact(upload: ArtifactUpload): Promise<UploadedArtifact>;
 
+  /**
+   * Store several of the attempt's bodies in one call, as `uploadArtifact` stores each, answered in
+   * the order they were given: the small ones a page is made of — its document, its payload, its
+   * segments — which one call each sent a round trip at a time. Optional; a host without it has
+   * each stored on its own, and so does one that throws a `CacheHostError` with the code
+   * `unsupported` — a host whose store has no such call after all — from then on.
+   */
+  uploadArtifacts?(uploads: readonly ArtifactUpload[]): Promise<readonly UploadedArtifact[]>;
+
   /** Say the attempt is still going, so the lease is not given to someone else. */
   heartbeat(attemptId: string, fencingToken: number): Promise<void>;
 
