@@ -82,30 +82,38 @@ export function answeringAtOnce(
   return unmovedSince(runtime, publishing) ? publishing.render : undefined;
 }
 
+/** A regeneration the host turned away, answered from the render being published where it may be. */
+interface Busy {
+  readonly kind: 'busy';
+  readonly publishing?: CapturedRender;
+}
+
 /**
- * The render this isolate is publishing of the entry, where the host turned the request away for a
- * lease of it: the publish's own, while it is out — one whose lease lapsed has its next call
- * refused, and that ends it. Only once the pull the request asked for at `askedAt` (`synced`) has
- * brought the view of the tags up to the host's, and while nothing it brought says the render
+ * A regeneration the host turned away for a lease of the entry, with the render this isolate is
+ * publishing of it: the publish's own lease, while it is out — one whose lease lapsed has its next
+ * call refused, and that ends it. Only once the pull the request asked for at `askedAt` (`synced`)
+ * has brought the view of the tags up to the host's, and while nothing it brought says the render
  * missed an invalidation; for a second at the most (`PUBLISHING_PULL_MS`).
  */
 export async function answeringWhileBusy(
   runtime: CacheRuntime,
   entryId: string | undefined,
   pull: { readonly synced: Promise<void>; readonly askedAt: number },
-): Promise<CapturedRender | undefined> {
+): Promise<Busy> {
   const held = entryId === undefined ? undefined : runtime.publishing.get(entryId);
   // Not waited for where the view already says the render missed something: a pull only adds to it.
   if (entryId === undefined || held === undefined || !unmovedSince(runtime, held)) {
-    return undefined;
+    return { kind: 'busy' };
   }
   await settledWithin(pull.synced, PUBLISHING_PULL_MS);
   // Looked up again: a publish that has settled meanwhile is one the host's answer now speaks for.
   const publishing = runtime.publishing.get(entryId);
   if (publishing === undefined || !runtime.tags.syncedSince(pull.askedAt)) {
-    return undefined;
+    return { kind: 'busy' };
   }
-  return unmovedSince(runtime, publishing) ? publishing.render : undefined;
+  return unmovedSince(runtime, publishing)
+    ? { kind: 'busy', publishing: publishing.render }
+    : { kind: 'busy' };
 }
 
 /**

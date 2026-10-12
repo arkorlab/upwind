@@ -606,9 +606,11 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
     return { kind: 'refused', reason };
   }
   if (lease.kind === 'busy') {
-    const publishing = await answeringWhileBusy(runtime, entryId, { synced, askedAt });
-    return publishing === undefined ? { kind: 'busy' } : { kind: 'busy', publishing };
+    return answeringWhileBusy(runtime, entryId, { synced, askedAt });
   }
+  // A render this isolate still keeps of the entry is one whose lease has lapsed, as this one could
+  // not have been taken otherwise: its commit is refused, and it answers nothing more.
+  runtime.publishing.delete(entryId ?? lease.entryId);
   if (supersededBy(target, lease.current, nowMs()) && answerable(lease.current)) {
     // Given back behind the answer, which waits for nothing of it: nobody holds the lease now.
     input.waitUntil(abandon(input, lease, 'skipped'));
