@@ -27,6 +27,14 @@ constant the adapter defines:
 | `__ARKOR_FUNCTION_KIND__` | `'app'` or `'middleware'` — which of a deployment's two Functions this bundle became. The middleware one runs the middleware and answers everything else `404`                                                                                  |
 | `__ARKOR_FUNCTION_NAME__` | The Function's own name: `app`, or `app-2`, `app-3`… in a deployment whose routes the build split across app Functions, and `middleware` for the middleware one; what a request for another Function's route is told apart by                   |
 
+It reads the deployment's manifest from the bundle as well: `runtime.json`, the deployment bundle
+without what only its host needs, parsed whole on the first request. Its prerenders are packed — a
+field whose values repeat from record to record is written once for each value it takes, and each
+record holds the place of its value (`packPrerenders` in `@stayingupwind/core/bundle`, which is how
+the adapter writes them) — and the runtime puts them back as they were before it reads any. A
+manifest of a few thousand prerenders is less than half the bytes that way, and reads in about
+three fifths of the time.
+
 Module order matters at the top of `./function`: the scheduler a prerender's tasks run on, and the
 hooks Next.js reads off the global at its first request, are installed before any Next.js module is
 evaluated — whichever module asks for one first.
