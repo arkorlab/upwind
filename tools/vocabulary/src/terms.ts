@@ -43,7 +43,10 @@ export const TERMS: readonly Term[] = [
       'www.arkor.example',
       'an arkor.example hostname',
       'not-x-arkor-edge',
+      'éx-arkor-edge',
       'MY_ARKOR_KEY',
+      'not-arkor:edge',
+      'my__arkor',
     ],
     passes: [
       'x-arkor-edge',
@@ -215,20 +218,20 @@ export const TERMS: readonly Term[] = [
  * What upwind ships under its own name, blanked out of a file before it is searched, column for
  * column: the prefixes of the headers, variables, modules and names it publishes (`x-arkor-edge`,
  * `ARKOR_CACHE`, `arkor:cache-host`, `arkor-csp-1`), its build directory and a marker. A prefix is
- * blanked alone, so what follows it is searched as any name is, and only where nothing of a name
- * comes before it. Renaming one is a change to that contract of its own; an addition here is
- * reviewed as one.
+ * blanked alone, so what follows it is searched as any name is, and only where nothing of a name —
+ * a letter or a digit of any script, `_` or `-` — comes before it. Renaming one is a change to that
+ * contract of its own; an addition here is reviewed as one.
  */
 const ALLOWED: readonly RegExp[] = [
-  /(?<![\w-])x-arkor-/giu,
-  /\bARKOR_/gu,
-  /(?<![\w-])\.arkor\//gu,
-  /\barkor:/gu,
-  /\b__arkor\b/gu,
-  /(?<![\w-])arkor-(?:csp|edge)\b/gu,
+  /(?<![\p{L}\p{N}_-])x-arkor-/giu,
+  /(?<![\p{L}\p{N}_-])ARKOR_/gu,
+  /(?<![\p{L}\p{N}_-])\.arkor\//gu,
+  /(?<![\p{L}\p{N}_-])arkor:/gu,
+  /(?<![\p{L}\p{N}_-])__arkor(?![\p{L}\p{N}_])/gu,
+  /(?<![\p{L}\p{N}_-])arkor-(?:csp|edge)(?![\p{L}\p{N}_])/gu,
   // The kind of artifact a document's shell is (`artifactKindSchema` in `@stayingupwind/core`):
   // the name alone, not another made from it on either side.
-  /(?<![\w-])ppr-shell(?![\w-])/gu,
+  /(?<![\p{L}\p{N}_-])ppr-shell(?![\p{L}\p{N}_-])/gu,
   // The copyright holder, as every package's licence and notice name it.
   /\bCopyright (?:\(c\) )?\d{4} Arkor and Contributors\b/gu,
 ];

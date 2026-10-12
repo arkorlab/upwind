@@ -77,7 +77,18 @@ export function selfCheck(terms: readonly Term[] = TERMS): string[] {
 
 /** Kinds of file binary by nature — images, fonts, compiled modules, archives — left unread. */
 const BINARY_EXTENSIONS = new Set(
-  '.avif .br .gif .gz .ico .jpeg .jpg .otf .pdf .png .ttf .wasm .webp .woff .woff2 .zip'.split(' '),
+  [
+    // Images and fonts.
+    '.avif .bmp .gif .heic .ico .jpeg .jpg .png .tif .tiff .webp .eot .otf .ttf .woff .woff2',
+    // Audio and video.
+    '.aac .flac .m4a .mov .mp3 .mp4 .oga .ogg .ogv .opus .wav .webm',
+    // Archives and compressed files.
+    '.7z .br .bz2 .gz .rar .tar .tgz .xz .zip .zst',
+    // Documents, data and compiled code.
+    '.bin .db .dll .dylib .exe .jar .node .parquet .pdf .so .sqlite .sqlite3 .wasm',
+  ]
+    .join(' ')
+    .split(' '),
 );
 
 /**
