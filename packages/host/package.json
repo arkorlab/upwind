@@ -1,0 +1,47 @@
+{
+  "name": "@stayingupwind/host",
+  "version": "0.4.0",
+  "private": true,
+  "description": "What a host shares between the edge that serves a deployment, its cache, and what deploys it: the delivery policy, the pointer the edge reads, the cache's contracts, and where a deployment's objects are kept.",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arkorlab/upwind.git",
+    "directory": "packages/host"
+  },
+  "files": [
+    "src",
+    "LICENSE-APACHE",
+    "LICENSE-MIT",
+    "NOTICE"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    "./bindings": "./src/bindings/index.ts",
+    "./bundle": "./src/bundle/index.ts",
+    "./cache": "./src/cache/index.ts",
+    "./credentials": "./src/credentials/index.ts",
+    "./delivery": "./src/delivery/index.ts",
+    "./domains": "./src/domains/index.ts",
+    "./next-support": "./src/next-support/index.ts",
+    "./preloads": "./src/preloads/index.ts",
+    "./splice": "./src/splice/index.ts",
+    "./storage": "./src/storage/index.ts",
+    "./util": "./src/util/index.ts",
+    "./zod": "./src/zod/index.ts"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@stayingupwind/core": "workspace:*",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

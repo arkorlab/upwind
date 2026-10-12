@@ -1,0 +1,229 @@
+import {
+  type DeploymentBundle,
+  pagesDataPathnameUnder,
+  type Prerender,
+  prerenderResponseHeaders,
+} from '@stayingupwind/core/bundle';
+import {
+  appPathFor,
+  buildGenerationIdFor,
+  deriveEntry,
+  generationResponseHeaders,
+  implicitTagsFor,
+  parseCacheTagsHeader,
+  policyFromBuild,
+  type RouteEntryDescriptor,
+  type RouteEntryKind,
+  tagKindOf,
+  type GenerationTag,
+} from '@stayingupwind/core/cache';
+import type { RouteCache } from '@stayingupwind/core/manifest';
+import type { SeedArtifact, SeedEntryInput, SeedOutput } from '@stayingupwind/host/cache';
+import { blobObjectKey } from '@stayingupwind/host/storage';
+
+/**
+ * The build's generation of a route, as deploying it seeds the runtime cache with it: the
+ * document (and the state that resumes it) the build wrote, under the build's own storage keys,
+ * with the lifetime Next.js gave it and the tags it recorded. Sequence one of every entry the
+ * edge may serve — and of every route handler the build rendered, which the deployment's Worker
+ * serves. A Pages Router page brings the data its route serves beside the document.
+ */
+
+const CACHE_TAGS_HEADER = 'x-next-cache-tags';
+/** Seconds the client router may keep the page, as the build records it. */
+const STALE_TIME_HEADER = 'x-nextjs-stale-time';
+const HTTP_OK = 200;
+
+export interface SeedContext {
+  readonly scopeId: string;
+  /** When the build ran (unix ms): the origin every lifetime is measured from. */
+  readonly generatedAt: number;
+}
+
+export interface SeededRoute {
+  readonly input: SeedEntryInput;
+  /** What the manifest carries for the route; nothing for a route handler, which no route names. */
+  readonly cache: RouteCache | undefined;
+}
+
+function isTemplate(pathname: string): boolean {
+  return pathname.includes('[');
+}
+
+function headerText(value: string | readonly string[] | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  return typeof value === 'string' ? value : value.join(', ');
+}
+
+/** The router a prerender belongs to, and the kind of output: from its entrypoint. */
+export function prerenderEntryKind(bundle: DeploymentBundle, prerender: Prerender): RouteEntryKind {
+  const entrypoint = bundle.entrypoints.find((entry) => entry.pathname === prerender.route);
+  if (entrypoint?.kind === 'pages') {
+    return 'pages';
+  }
+  return entrypoint?.kind === 'app-route' ? 'app-route' : 'app-page';
+}
+
+/**
+ * The tags the build recorded for the page, and the ones Next.js derives from its route: a
+ * `revalidatePath` reaches the page through the latter. A class shell (unresolved parameters)
+ * gets no pathname tag, as Next.js gives it none.
+ */
+export function buildTagsOf(kind: RouteEntryKind, prerender: Prerender): GenerationTag[] {
+  const recorded = parseCacheTagsHeader(headerText(prerender.initialHeaders?.[CACHE_TAGS_HEADER]));
+  const concrete = isTemplate(prerender.pathname) ? undefined : prerender.pathname;
+  const implicit =
+    kind === 'pages' ? [] : implicitTagsFor(appPathFor(kind, prerender.route), concrete);
+  const values = new Set(recorded);
+  for (const value of implicit) {
+    values.add(value);
+  }
+  return [...values].map((value) => ({ kind: tagKindOf(value), value }));
+}
+
+/** When the build ran, in unix milliseconds: the origin every seeded lifetime is measured from. */
+export function bundleGeneratedAtMs(bundle: DeploymentBundle): number {
+  // eslint-disable-next-line unicorn/prefer-temporal -- Temporal is not available in the Workers runtime.
+  return Date.parse(bundle.generatedAt);
+}
+
+function clientStaleOf(prerender: Prerender): number | undefined {
+  const text = headerText(prerender.initialHeaders?.[STALE_TIME_HEADER]);
+  if (text === undefined) {
+    return undefined;
+  }
+  const seconds = Number.parseInt(text, 10);
+  return Number.isSafeInteger(seconds) && seconds >= 0 ? seconds : undefined;
+}
+
+function artifactOf(
+  role: SeedArtifact['role'],
+  blob: NonNullable<Prerender['body']>,
+): SeedArtifact {
+  return {
+    role,
+    sha256: blob.sha256,
+    byteLength: blob.byteLength,
+    contentType: blob.contentType,
+    encoding: 'identity',
+    storageRef: blobObjectKey(blob.sha256),
+  };
+}
+
+function outputOf(
+  prerender: Prerender,
+  representationKey: string,
+  artifacts: SeedArtifact[],
+  htmlSize: number | null,
+): SeedOutput {
+  return {
+    representationKey,
+    pathname: prerender.pathname,
+    status: prerender.initialStatus ?? HTTP_OK,
+    headers: prerender.initialHeaders ?? {},
+    compute: prerender.compute ?? 'unknown',
+    response: prerender.response ?? 'unknown',
+    htmlSize,
+    artifacts,
+  };
+}
+
+/**
+ * The data route's prerender beside a Pages Router page: the props it was rendered with, named as
+ * the build names it, under the base path (`<basePath>/_next/data/<buildId>/…`).
+ */
+function pagesDataOf(bundle: DeploymentBundle, prerender: Prerender): Prerender | undefined {
+  const pathname = pagesDataPathnameUnder(
+    bundle.buildId,
+    bundle.config.basePath,
+    prerender.pathname,
+  );
+  return bundle.prerenders.find((twin) => twin.pathname === pathname && twin.body !== undefined);
+}
+
+/** The outputs of the build's generation: the primary body, its state, and a page's data. */
+function outputsOf(
+  bundle: DeploymentBundle,
+  kind: RouteEntryKind,
+  prerender: Prerender,
+  body: NonNullable<Prerender['body']>,
+): SeedOutput[] {
+  if (kind === 'app-route') {
+    return [outputOf(prerender, 'route-body', [artifactOf('route-body', body)], null)];
+  }
+  const document = outputOf(
+    prerender,
+    'html',
+    [
+      artifactOf('html', body),
+      ...(prerender.postponed === undefined ? [] : [artifactOf('postponed', prerender.postponed)]),
+    ],
+    prerender.htmlSize ?? null,
+  );
+  const data = kind === 'pages' ? pagesDataOf(bundle, prerender) : undefined;
+  if (data?.body === undefined) {
+    return [document];
+  }
+  return [document, outputOf(data, 'pages-data', [artifactOf('pages-data', data.body)], null)];
+}
+
+/**
+ * The seed of one prerender. `undefined` for a prerender without a body, which
+ * `cacheablePrerenders` never yields.
+ */
+export async function seedRouteFor(
+  bundle: DeploymentBundle,
+  prerender: Prerender,
+  ctx: SeedContext,
+): Promise<SeededRoute | undefined> {
+  const { body } = prerender;
+  if (body === undefined) {
+    return undefined;
+  }
+  const kind = prerenderEntryKind(bundle, prerender);
+  const descriptor: RouteEntryDescriptor = {
+    kind,
+    route: prerender.route,
+    pathname: prerender.pathname,
+  };
+  const derived = await deriveEntry(ctx.scopeId, descriptor);
+  const generationId = await buildGenerationIdFor(ctx.scopeId, derived.entryId);
+  const input: SeedEntryInput = {
+    descriptor,
+    groupInstanceId: String(prerender.groupId),
+    generation: {
+      generationId,
+      cacheTimestamp: ctx.generatedAt,
+      producedAt: ctx.generatedAt,
+      policy: policyFromBuild({
+        initialRevalidate: prerender.initialRevalidate,
+        initialExpiration: prerender.initialExpiration,
+        clientStale: clientStaleOf(prerender),
+      }),
+      status: prerender.initialStatus ?? HTTP_OK,
+      headers: generationResponseHeaders(
+        kind,
+        prerender.initialStatus ?? HTTP_OK,
+        prerenderResponseHeaders(bundle, prerender),
+      ),
+      tags: buildTagsOf(kind, prerender),
+      outputs: outputsOf(bundle, kind, prerender, body),
+      dependencyCoverage: 'complete',
+    },
+  };
+  return {
+    input,
+    cache:
+      kind === 'app-route'
+        ? undefined
+        : {
+            entryId: derived.entryId,
+            kind,
+            delivery: prerender.postponed === undefined ? 'complete' : 'resume',
+            // What a member's own entry is keyed by beside a class's: the route, not the template.
+            ...(isTemplate(prerender.pathname) && { route: prerender.route }),
+          },
+  };
+}
