@@ -320,6 +320,20 @@ function renamed(
 }
 
 /**
+ * Whether the pinned mangler would rename `code` wrongly anywhere (`isUnsafe`): for a bundle that
+ * is renamed whole, as the runtime is. An ES module is strict throughout; code that will not parse
+ * is taken to be renamed wrongly.
+ */
+export function manglerGetsWrong(id: string, code: string): boolean {
+  const parsed = parseSync(id, code, { sourceType: 'unambiguous' });
+  if (parsed.errors.length > 0) {
+    return true;
+  }
+  const { program } = parsed;
+  return walk(program, parsed.module.hasModuleSyntax || isStrict(program)).unsafe;
+}
+
+/**
  * Renames the locals of each CommonJS module of a package as it is loaded. Last among a bundle's
  * plugins, so that every other one reads a module as it was written, a patch's rewrite included;
  * the build's own output (`distDir`), Turbopack's chunks, is left as it is.
