@@ -528,6 +528,10 @@ export interface AdapterOptions {
    * `arkor:cache-host` resolves to, bundled into the app Function's runtime. The middleware
    * Function is built without it: nothing on its path reads or writes the cache.
    *
+   * Bundled into the runtime, it is renamed with it: its functions and classes keep their names, and
+   * its variables and parameters are renamed short. A module that reads its own functions'
+   * parameter names, through `Function.prototype.toString()`, would read renamed ones and not work.
+   *
    * Left out, the runtime is given no cache and answers every read a miss: a bundle that is
    * correct, serves what the build produced, and revalidates nothing. A host that stores
    * generations names its own module here.

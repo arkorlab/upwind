@@ -132,8 +132,11 @@ export interface BundleTrace {
 
 const NODE_MODULES = `${path.sep}node_modules${path.sep}`;
 
-/** The package a `node_modules` path belongs to: the innermost `node_modules/<name>`. */
-function packageOf(file: string): string | undefined {
+/**
+ * The package a `node_modules` path belongs to: the innermost `node_modules/<name>`, which in pnpm's
+ * store (`node_modules/.pnpm/<name>@<version>/node_modules/<name>/…`) is the package's own as well.
+ */
+export function packageOf(file: string): string | undefined {
   const at = file.lastIndexOf(NODE_MODULES);
   if (at === -1) {
     return undefined;
@@ -368,9 +371,9 @@ function isAllowedExternal(specifier: string): boolean {
  * `externalRequire.resolve`, a `require.resolve` for a module that asks the runtime to; the
  * loader the same runtime keeps on its module context (`contextPrototype.t`, `typeof require
  * === "function" ? require : ...`), for a module compiled to ask the runtime for it; and the
- * resolver the require hook keeps (`let resolve = ... : require.resolve`, as rendered) for the
- * aliases it installs. They stay in the record, for a Next.js that moves them to show in a
- * diff; a use of the loader anywhere else fails the build.
+ * resolver the require hook keeps for the aliases it installs (`isRequireHookResolver`). They stay
+ * in the record, for a Next.js that moves them to show in a diff; a use of the loader anywhere
+ * else fails the build.
  *
  * The edge bundle's chunks carry a Turbopack runtime of their own, with the same three: an
  * `import()` of an external of the build, the `require.resolve` it offers a module that asks for
@@ -403,8 +406,31 @@ const ALLOWED_DYNAMIC_LOADS: readonly RegExp[] = [
   /^\.next\/server\/chunks\/(?:ssr\/)?\[turbopack\]_runtime\.js:\d+: (?:import\(|require\.resolve\(|contextPrototype\.t = typeof require )/u,
   /^\.next\/server\/edge\/chunks\/(?:ssr\/)?[^/]+_next_dist_esm_build_templates_edge-wrapper_[^/]+\.js:\d+: (?:import\(|require\.resolve\(|\w+\.t = "function" == typeof require \? require :|contextPrototype\.t = typeof require === "function" \? require :)/u,
   /^next\/dist\/compiled\/next-server\/[\w-]+\.runtime\.prod\.js:\d+: import\(/u,
-  /^next\/dist\/server\/require-hook\.js:\d+: (?:const|let) resolve = /u,
 ];
+
+/**
+ * The statement the require hook keeps its resolver by (`next/dist/server/require-hook.js`), as the
+ * record shows it: the binding under any name, which the bundle renames (`manglePackagesPlugin`),
+ * and the value it keeps.
+ */
+const REQUIRE_HOOK_RESOLVER =
+  /^next\/dist\/server\/require-hook\.js:\d+: (?:const|let) [\w$]+ = (?<value>.+)$/u;
+/** The value that statement keeps: the resolver of whichever loader the code is run by. */
+const RESOLVER_VALUE =
+  'process.env.NEXT_MINIMAL ? __non_webpack_require__.resolve : require.resolve;';
+
+/**
+ * Whether a load is the resolver the require hook keeps for the aliases it installs: `let resolve =
+ * process.env.NEXT_MINIMAL ? __non_webpack_require__.resolve : require.resolve;`, its binding under
+ * whatever name the bundle gave it, and the value exactly that. The record shows the statement whole
+ * (`DYNAMIC_LOAD_TEXT`, in `dynamic-loads.ts`): cut short, `require.resolve` could not be told from
+ * the loader itself. The loader kept under any name — `const loader = require`, or `require` where
+ * `require.resolve` was — is refused as any other use of it is, and so is a statement too long to
+ * be shown whole.
+ */
+function isRequireHookResolver(load: string): boolean {
+  return REQUIRE_HOOK_RESOLVER.exec(load)?.groups?.['value'] === RESOLVER_VALUE;
+}
 
 /** Where the patterns above find the build's output: `.next`, unless `distDir` says otherwise. */
 const NAMED_OUTPUT = '.next';
@@ -428,7 +454,9 @@ function isAllowedDynamicLoad(load: string, output: string): boolean {
     output !== NAMED_OUTPUT && load.startsWith(`${output}/`)
       ? `${NAMED_OUTPUT}${load.slice(output.length)}`
       : load;
-  return ALLOWED_DYNAMIC_LOADS.some((pattern) => pattern.test(named));
+  return (
+    ALLOWED_DYNAMIC_LOADS.some((pattern) => pattern.test(named)) || isRequireHookResolver(named)
+  );
 }
 
 /** What must not survive in a bundled app: each is a Function that fails to start or to serve. */

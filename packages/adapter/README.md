@@ -258,13 +258,31 @@ the two checks described under "Which Next.js" below, and recorded per build in
 | Node built-ins                                                                                                                                                             | `node:*` and the bare names are left to the deployment runtime; a built-in outside the list in `dependencies.ts` fails the build                                                                                                                                                                                                                                                                                 | under `nodejs_compat` every built-in import resolves (the unimplemented ones as stubs that throw when used), so the list is what is known to be reached only where it works                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `*.json` under `.next/` and `.next/server/`, `BUILD_ID`, each route's `react-loadable-manifest.json` and `*_client-reference-manifest.js` (as `.json`)                     | shipped as text modules of the app Function under their `.next/...` names; the runtime mounts them at `/bundle/...`. The middleware Function carries none                                                                                                                                                                                                                                                        | excluded rather than listed (`*.nft.json` are the only files known to be of no use): a manifest Next.js reads without a fallback that a list left out fails every route. Only a route module reads one: the middleware module and its hook open none                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 
-The app module (`app.cjs`) is bundled by Rolldown, as one CommonJS module with the patches
-applied as each file is loaded — 5% smaller than esbuild made it from the same graph, and built
-sooner (see EXPERIMENTS.md, V-03). The runtime module (`index.mjs`) is Rolldown's as well, for the
-`workerd` and `worker` conditions, and so is the edge bundle (`edge.cjs`), where a build produced
-one. Rolldown shakes the members of a namespace object a dependency builds, which esbuild keeps
-whole: `import { z } from 'zod'` in a cache host kept all of zod in the runtime. All three are
-minified in whitespace and syntax and not in names, so a stack trace still names its function.
+The app module (`app.cjs`) is bundled by Rolldown, as one CommonJS module with the patches applied
+as each file is loaded — 5% smaller than esbuild made it from the same graph, and built sooner (see
+EXPERIMENTS.md, V-03). The runtime module (`index.mjs`) is Rolldown's as well, for the `workerd` and
+`worker` conditions, and so is the edge bundle (`edge.cjs`), where a build produced one. Rolldown
+shakes the members of a namespace object a dependency builds, which esbuild keeps whole:
+`import { z } from 'zod'` in a cache host kept all of zod in the runtime. All three are minified in
+whitespace and syntax. The runtime's variables and parameters are renamed short as well, and so are
+those of the CommonJS modules `app.cjs` bundles from Next.js's and React's own files — Next.js's
+server, React, and React's server renderer (`react-dom`) — one module at a time
+(`mangle-packages.ts`). No other package's code is renamed. Next.js and React are what the adapter's
+tests and Next.js's deploy tests run, and nearly all of what renaming takes off. Any other package
+would be renamed untested, where a mangler bug nobody has reported yet, or a package that reads its
+own functions' parameter names, would break it unseen. No function or class is renamed anywhere, so
+a stack trace names every frame as before, and nothing Turbopack or Next.js's own build minified is
+renamed again: React reads a page's postponed state back by the names of the components that
+rendered it, and with the whole of `app.cjs` renamed every resume fell back to client rendering. A
+module's `/*#__PURE__*/` annotations, which the minifier drops as it prints, are put back before the
+calls they mark. A module with code the pinned mangler renames wrongly — a catch parameter taken
+apart, a direct `eval`, a function declared in a block of sloppy code (oxc-project/oxc#24331,
+#26485) — or one that marks a function `#__NO_SIDE_EFFECTS__` is left as it was written, and so is a
+runtime with any of that code. The runtime is renamed whole, the host's cache module among it
+(below). In a fixture's app Function that took the runtime from 348,545 to 263,742 bytes and
+`app.cjs` from 2,544,044 to 2,480,829; in its middleware Function, 141,809 to 109,476 and 550,583 to
+489,274. A Pages Router fixture's pages render with the application's own `react-dom`, and its app
+Function's `app.cjs` went from 2,447,874 to 2,163,473, 221,203 bytes of that `react-dom`'s.
 
 Two things the build wrote are rewritten on their way into the app module, as the patches rewrite
 Next.js's files. With `experimental.turbopackModuleFragments` (Next.js 16.4) Turbopack registers
@@ -324,6 +342,11 @@ rules without the entrypoints, prerenders, files and dynamic routes, it has no b
 its runtime is built without the host's cache module (`cacheHostModule`), since the cache handlers
 are installed in the app Function alone. The instrumentation hook travels in both, as Next.js runs it
 before either.
+
+In the app Function the host's cache module, and what it imports, is bundled into the runtime and
+renamed with it (above): its functions and classes keep their names, and its variables and
+parameters are renamed short. A cache module that reads its own functions' parameter names, through
+`Function.prototype.toString()`, would read renamed ones and not work.
 
 ## The edge runtime
 

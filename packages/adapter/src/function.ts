@@ -187,8 +187,10 @@ function runtimeEntry(): string {
  * The app Function's code: Next.js's CommonJS output, bundled by Rolldown into one CommonJS module
  * with the patches applied as each file is loaded. Rolldown's output is 5% smaller than esbuild's
  * for the same graph and comes 40% sooner (see EXPERIMENTS.md, V-03); the runtime bundle is
- * Rolldown's as well (`bundleRuntime`). Whitespace and syntax are minified, names are not: the
- * audit reads them.
+ * Rolldown's as well (`bundleRuntime`). Whitespace and syntax are minified, and the local names of
+ * the CommonJS modules bundled from a package's own files, one module at a time
+ * (`manglePackagesPlugin`); no function or class is renamed, and nothing of Turbopack's: the audit
+ * reads it by its names.
  */
 async function bundleApp(
   input: BuildFunctionInput,
@@ -266,6 +268,9 @@ async function writeAppBundle(
     // request that renders an image and by no other.
     codeSplitting: false,
     banner: FUNCTION_BANNER,
+    // Not mangled as a whole: most of it was minified by the build already, under names a
+    // prerender's postponed state is read back by (`manglePackagesPlugin`, which renames what is
+    // worth renaming one module at a time).
     minify: { compress: true, mangle: false, codegen: { removeWhitespace: true } },
     comments: { legal: false },
     ...sourcemapOutput(carriesMaps(input.sourceMaps)),
