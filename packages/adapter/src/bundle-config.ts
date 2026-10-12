@@ -48,19 +48,6 @@ function cacheLifeProfiles(
 }
 
 /**
- * The cache handler modules an app configured, by path. The platform's Function cannot load a
- * module by path, so a build that names one is refused (`index.ts`) rather than deployed to fail
- * on its first cached request; the platform supplies the handlers itself.
- */
-export function customCacheHandlerPaths(config: BuildContext['config']): string[] {
-  const configured: (string | undefined)[] = [
-    orDefault(config.cacheHandler, undefined),
-    ...Object.values(orDefault(config.cacheHandlers, {})),
-  ];
-  return configured.filter((value): value is string => typeof value === 'string' && value !== '');
-}
-
-/**
  * The path Next.js serves the application's `_next` files under as well, for its `assetPrefix`:
  * `next build` rewrites `<path>/_next/:path+` to `<basePath>/_next/:path+` before the filesystem
  * is checked, the path being the prefix, or the pathname of a prefix that is a URL (`loadRewrites`,
