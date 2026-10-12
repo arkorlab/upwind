@@ -12,11 +12,12 @@
  * and holds 2.3 MiB.
  *
  * Which fields are written once per value is the writer's to decide from what it writes: a field
- * is when its values, written once, and a place in each record that has it come to fewer bytes
- * than the field written in every record — a route, say, and never a pathname. The reader puts the
- * values back, so what it hands on is the records as they were before they were written, except
- * that the records that hold a value hold the one copy of it: nothing that reads a prerender may
- * change one.
+ * is when its list of values — its name, each value once — and a place in each record that has it
+ * come to fewer bytes than the field written in every record: a route, say, and never a pathname.
+ * Prerenders with nothing worth packing are written with no list at all, and cost the two names
+ * they are written under and no more. The reader puts the values back, so what it hands on is the
+ * records as they were before they were written, except that the records that hold a value hold
+ * the one copy of it: nothing that reads a prerender may change one.
  */
 
 /** A prerender as this module reads one: its fields, by name. */
@@ -66,8 +67,9 @@ function worthPacking(
   field: Field,
   written: readonly ReadonlyMap<string, string>[],
 ): boolean {
-  // Each value, and the comma after it; then each record's place, as long as its digits.
-  let packed = 0;
+  // The field's own entry in `values`, with the comma after it; each value, and the comma after
+  // it; then each record's place, as long as its digits.
+  let packed = `${JSON.stringify(key)}:[],`.length;
   for (const json of field.values.keys()) {
     packed += json.length + 1;
   }
