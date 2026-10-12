@@ -41,6 +41,29 @@ interface RegenerationErrorOptions extends ErrorOptions {
   readonly code: string;
 }
 
+/** What `promise` settles to, or a `RegenerationError` saying `what` once `ms` have gone by. */
+export async function within<T>(
+  promise: Promise<T>,
+  ms: number,
+  what: { readonly code: string; readonly message: string },
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(
+            new RegenerationError(`${what.message} within ${String(ms)} ms`, { code: what.code }),
+          );
+        }, ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function abandon(
   input: LeaseHolder,
   lease: { attemptId: string; fencingToken: number },
@@ -134,7 +157,7 @@ export function heartbeat(input: LeaseHolder, lease: Leased): () => void {
 }
 
 /** The reasons a judgement of the entry gave, which a later generation answers as a render would. */
-const JUDGED_REASONS: ReadonlySet<AttemptReason> = new Set<AttemptReason>([
+export const JUDGED_REASONS: ReadonlySet<AttemptReason> = new Set<AttemptReason>([
   'expired',
   'miss',
   'stale',
