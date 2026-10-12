@@ -68,6 +68,19 @@ const NODE_BUILTINS = builtinModules.flatMap((name) =>
   name.startsWith('_') ? [] : [name, `node:${name}`],
 );
 
+/** Syntax no TypeScript here is written in. */
+const RESTRICTED_SYNTAX = [
+  { selector: 'TSEnumDeclaration', message: 'Use string literal unions instead of enums.' },
+  {
+    selector: 'TSParameterProperty',
+    message: 'Parameter properties are not erasable syntax; declare fields explicitly.',
+  },
+  {
+    selector: 'ExportDefaultDeclaration > ArrowFunctionExpression',
+    message: 'Default-export a named function declaration, not an arrow function.',
+  },
+];
+
 export default defineConfig([
   globalIgnores([
     '**/node_modules/**',
@@ -209,18 +222,7 @@ export default defineConfig([
         'error',
         { considerDefaultExhaustiveForUnions: false, requireDefaultForNonUnion: true },
       ],
-      'no-restricted-syntax': [
-        'error',
-        { selector: 'TSEnumDeclaration', message: 'Use string literal unions instead of enums.' },
-        {
-          selector: 'TSParameterProperty',
-          message: 'Parameter properties are not erasable syntax; declare fields explicitly.',
-        },
-        {
-          selector: 'ExportDefaultDeclaration > ArrowFunctionExpression',
-          message: 'Default-export a named function declaration, not an arrow function.',
-        },
-      ],
+      'no-restricted-syntax': ['error', ...RESTRICTED_SYNTAX],
     },
   },
 
