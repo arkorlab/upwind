@@ -108,17 +108,19 @@ const functionsSchema = z.object({ split: z.union([z.boolean(), splitBudgetSchem
 const upwindConfigSchema = projectConfigSchema.extend({ functions: functionsSchema.optional() });
 
 /**
- * What a project's own configuration may declare — `upwind.config.ts`, `upwind.jsonc`,
- * `upwind.json`, or a name its host reads (`configFileOrder`) — as the input of the schema those
- * files are read with, so that the type and the reader cannot drift apart. A config that exports a
+ * The shape a project's own configuration is written in — `upwind.config.ts`, `upwind.jsonc`,
+ * `upwind.json`, or a name its host reads (`configFileOrder`): the input of the schema those files
+ * are read with, so that the type and the reader cannot drift apart. A config that exports a
  * function returns one of these, or a promise of one.
  *
  * Meant for a type-only import (`import type`, then `satisfies UpwindConfig`), which Node strips
  * with the rest of the types: the file still needs nothing of this package when the build
  * evaluates it. The type differs from the reader in two ways. A key it does not name fails
  * `satisfies`, where the build ignores it, because checked against this version that key is one
- * this version does not read. And a schedule is any string here: whether it can be run is decided
- * when the build reads the file.
+ * this version does not read. And it is the shape alone: what a type cannot say, the reader still
+ * checks when the build reads the file — that each path is one (from `/` but not `//`, printable
+ * ASCII, at most 512 characters), that each schedule can be run, that there are no more than
+ * `MAX_CRONS_PER_PROJECT` jobs and no path twice on one schedule, and that a budget is positive.
  *
  * It resolves only where this package resolves to its TypeScript sources, as in a workspace. The
  * published package ships its `dist` as JavaScript alone, with no declarations, so a project that
