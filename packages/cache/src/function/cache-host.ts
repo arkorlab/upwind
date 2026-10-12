@@ -361,6 +361,10 @@ class GatewayHost implements CacheHost {
     return this.#gateway.uploadArtifact(upload);
   }
 
+  uploadArtifacts(uploads: readonly ArtifactUpload[]): Promise<readonly UploadedArtifact[]> {
+    return this.#gateway.uploadArtifacts(uploads);
+  }
+
   async heartbeat(attemptId: string, fencingToken: number): Promise<void> {
     await this.#gateway.heartbeat(attemptId, fencingToken);
   }

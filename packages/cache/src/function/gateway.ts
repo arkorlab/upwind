@@ -1,6 +1,6 @@
 import { sha256Hex } from '@stayingupwind/core/artifact';
 import { TEST_CLOCK_HEADER } from '@stayingupwind/core/paas';
-import { isDeadlineError, withDeadline } from '@stayingupwind/core/util';
+import { isDeadlineError, toBase64, withDeadline } from '@stayingupwind/core/util';
 import {
   ARTIFACT_ENCODING_HEADER,
   ARTIFACT_ROLE_HEADER,
@@ -27,6 +27,7 @@ import {
   type InvalidateRequest,
   type InvalidateResponse,
   invalidateResponseSchema,
+  NO_SUCH_ENDPOINT,
   type StartAttemptRequest,
   type StartAttemptResponse,
   startAttemptResponseSchema,
@@ -34,6 +35,7 @@ import {
   tagRevisionSchema,
   type TagsDeltaResponse,
   tagsDeltaResponseSchema,
+  uploadArtifactsResponseSchema,
 } from '@stayingupwind/host/cache';
 import {
   type ArtifactUpload,
@@ -187,13 +189,18 @@ export class Gateway {
    * schema look load-bearing.
    */
   async #throwFailure(response: Response): Promise<never> {
+    throw await this.#failureOf(response);
+  }
+
+  /** A response already known to have failed, as the error it stands for (`#throwFailure`). */
+  async #failureOf(response: Response): Promise<CacheHostError> {
     let body: Envelope = {};
     try {
       body = (await response.json()) as Envelope;
     } catch {
       // A refusal with no JSON body says only its status, which is what the fallback below says.
     }
-    throw this.#refusal(response, body);
+    return this.#refusal(response, body);
   }
 
   #refusal(response: Response, body: Envelope): CacheHostError {
@@ -258,6 +265,50 @@ export class Gateway {
       await this.#throwFailure(response);
     }
     return { sha256, byteLength: upload.bytes.byteLength };
+  }
+
+  /**
+   * Several of one attempt's artifacts in one request (`uploadArtifactsRequestSchema`), answered in
+   * their order; a gateway from before the call throws `unsupported`, as `CacheHost` says, and the
+   * runtime uploads each on its own.
+   */
+  async uploadArtifacts(uploads: readonly ArtifactUpload[]): Promise<UploadedArtifact[]> {
+    const [first] = uploads;
+    if (first === undefined) {
+      return [];
+    }
+    const artifacts = await Promise.all(
+      uploads.map(async (upload) => {
+        return {
+          role: upload.role,
+          sha256: await sha256Hex(upload.bytes),
+          contentType: upload.contentType,
+          bytes: toBase64(upload.bytes),
+        };
+      }),
+    );
+    const response = await this.#send(`/attempts/${first.attemptId}/artifacts`, {
+      method: 'POST',
+      headers: this.#headers({ 'content-type': JSON_TYPE }),
+      body: JSON.stringify({ fencingToken: first.fencingToken, artifacts }),
+    });
+    // Its status before its body, which a gateway's answer may not have as JSON. A gateway from
+    // before the call has no such route — its answer to one it does not have, or a 404 with no
+    // envelope from whatever stands in front of it — and the runtime is told so as the contract
+    // says (`unsupported`), where a `not_found` of the attempt is the attempt's to fail on.
+    if (!response.ok) {
+      const failure = await this.#failureOf(response);
+      const noSuchRoute =
+        response.status === HTTP_NOT_FOUND &&
+        (failure.code === 'internal' || failure.message === NO_SUCH_ENDPOINT);
+      throw noSuchRoute
+        ? new CacheHostError('the gateway takes no batch of uploads', {
+            code: 'unsupported',
+            status: response.status,
+          })
+        : failure;
+    }
+    return (await this.#result(response, uploadArtifactsResponseSchema)).artifacts;
   }
 
   /** Say the attempt is still going, so the authority does not give its lease to someone else. */

@@ -1,4 +1,4 @@
-import { GATEWAY_API_VERSION } from '@stayingupwind/host/cache';
+import { GATEWAY_API_VERSION, NO_SUCH_ENDPOINT } from '@stayingupwind/host/cache';
 import { Hono } from 'hono';
 
 import type { AuthorityHost } from '../authority-host.ts';
@@ -31,7 +31,7 @@ export function createGatewayApp(host: AuthorityHost): Hono<GatewayEnv> {
       });
       return fail(c, 'internal', 'internal error');
     })
-    .notFound((c) => fail(c, 'not_found', 'no such endpoint'))
+    .notFound((c) => fail(c, 'not_found', NO_SUCH_ENDPOINT))
     .get(`/${GATEWAY_API_VERSION}/healthz`, (c) => c.json({ ok: true as const }))
     .use(`${SCOPE_PREFIX}/*`, scopeAuthOf(host))
     .route(SCOPE_PREFIX, attemptRoutes)
