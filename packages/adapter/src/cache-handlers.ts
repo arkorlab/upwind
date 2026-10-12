@@ -23,8 +23,13 @@ import { exists } from './fs.ts';
  * `revalidateTag`, `revalidatePath` and `updateTag` reach the platform's cache as well.
  */
 
-/** The generated module's name under the build's own directory. */
+/**
+ * The generated module's name, under the directory the build works in and removes once the
+ * Functions are made: it is an input of their bundles alone, and names files by where the build
+ * ran.
+ */
 const MODULE_NAME = 'cache-handlers.cjs';
+const WORK_DIR = 'work';
 /** What Next.js records the configuration a route module reads at request time in. */
 const SERVER_FILES_MANIFEST = 'required-server-files.json';
 
@@ -92,9 +97,15 @@ export async function configuredCacheHandlers(distDir: string): Promise<CacheHan
  *
  * Each handler is required once it is asked for, as Next.js imports it, rather than when the
  * Function starts: a handler that throws as it loads fails what it was asked for, as it would under
- * Next.js. And each is answered by its default export where it has one, as `dynamicImportEsmDefault`
- * answers: a CommonJS module's `module.exports`, an ES module's `export default`, and a compiled
- * one's `exports.default` alike.
+ * Next.js. And each is answered by its default export where it has one, as
+ * `dynamicImportEsmDefault` answers: a CommonJS module's `module.exports`, an ES module's
+ * `export default`, and a compiled one's `exports.default` alike.
+ *
+ * A handler travels as what it imports, bundled with it. A file it reads at run time does not:
+ * Next.js traces a handler only into the whole server's trace, among everything else the server
+ * reads, and nothing here traces it apart. And an ES module that awaits at its top level is not
+ * taken by the Function's CommonJS bundle, however it were loaded; Rolldown refuses the build, as
+ * it would for a route's.
  */
 export async function writeCacheHandlers(
   outDir: string,
@@ -119,8 +130,9 @@ export async function writeCacheHandlers(
     '};',
     '',
   ].join('\n');
-  await mkdir(outDir, { recursive: true });
-  const file = path.join(outDir, MODULE_NAME);
+  const workDir = path.join(outDir, WORK_DIR);
+  await mkdir(workDir, { recursive: true });
+  const file = path.join(workDir, MODULE_NAME);
   await writeFile(file, source);
   return file;
 }
@@ -133,21 +145,21 @@ export function cacheHandlersWarning(handlers: readonly CacheHandlerModule[]): s
   const named = handlers.map((handler) => `${handler.option} (${handler.recorded})`).join(', ');
   return [
     `@stayingupwind/adapter: this build configures its own cache handler: ${named}.`,
-    'It is bundled into the Function and takes what Next.js hands it from the platform’s cache —',
-    'a cacheHandler the data cache (fetch, unstable_cache), a kind of cacheHandlers that kind of',
-    '"use cache" — while pages stay the platform’s, and revalidateTag and revalidatePath still reach',
-    'the platform’s cache. It runs in each isolate of the Function: what it keeps in memory is that',
-    'isolate’s alone, and a store every isolate reaches is what makes a cache shared. And what the',
-    'platform’s own handlers do beside the cache is not done for it: a write is not held to land',
-    'before the response ends, and a value Next.js answers stale is revalidated behind the response',
-    'only as far as the request’s work goes on.',
+    'It is bundled into the Function and takes what Next.js hands it from the platform’s cache',
+    '— a cacheHandler the data cache (fetch, unstable_cache), a kind of cacheHandlers that kind',
+    'of "use cache" — while pages stay the platform’s, and revalidateTag, revalidatePath and',
+    'updateTag still reach the platform’s cache. It runs in each isolate of the Function: what',
+    'it keeps in memory is that isolate’s alone, and a store every isolate reaches is what',
+    'makes a cache shared. And what the platform’s own handlers do beside the cache is not done',
+    'for it: a write is not held to land before the response ends, and a value Next.js answers',
+    'stale is revalidated behind the response only as far as the request’s work goes on. What',
+    'it imports is bundled with it; a file it reads at run time is not.',
   ].join(' ');
 }
 
 /**
- * The module the cache handlers the app configured are loaded from, written into the build's own
- * directory, and the warning a build that configures one is given; nothing for a build that
- * configures none.
+ * The module the cache handlers the app configured are loaded from (`writeCacheHandlers`), and the
+ * warning a build that configures one is given; nothing for a build that configures none.
  */
 export async function cacheHandlersModule(
   distDir: string,
