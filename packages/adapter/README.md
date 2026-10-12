@@ -265,18 +265,22 @@ sooner (see EXPERIMENTS.md, V-03). The runtime module (`index.mjs`) is Rolldown'
 one. Rolldown shakes the members of a namespace object a dependency builds, which esbuild keeps
 whole: `import { z } from 'zod'` in a cache host kept all of zod in the runtime. All three are
 minified in whitespace and syntax. The runtime's variables and parameters are renamed short as
-well, and so are those of the CommonJS modules `app.cjs` bundles from a package's own files —
-Next.js's server, and what the build leaves to the Function — one module at a time
-(`mangle-packages.ts`). No function or class is renamed anywhere, so a stack trace names every
-frame as before, and nothing Turbopack or Next.js's own build minified is renamed again: React
-reads a page's postponed state back by the names of the components that rendered it, and with the
-whole of `app.cjs` renamed every resume fell back to client rendering. A module's `/*#__PURE__*/`
-annotations, which the minifier drops as it prints, are put back before the calls they mark. A
-module with code the pinned mangler renames wrongly — a catch parameter taken apart, a direct
-`eval`, a function declared in a block of sloppy code (oxc-project/oxc#24331, #26485) — or one that
-marks a function `#__NO_SIDE_EFFECTS__` is left as it was written. In a fixture's app Function that
-took the runtime from 360,851 to 273,664 bytes and `app.cjs` from 2,652,998 to 2,589,773; in its
-middleware Function, 132,926 to 103,041 and 586,901 to 525,582.
+well, and so are those of the CommonJS modules `app.cjs` bundles from Next.js's and React's own
+files — Next.js's server, and React — one module at a time (`mangle-packages.ts`). No other
+package's code is renamed. Next.js and React are what the adapter's tests and Next.js's deploy
+tests run, and nearly all of what renaming takes off. Any other package would be renamed untested,
+where a mangler bug nobody has reported yet, or a package that reads its own functions' parameter
+names, would break it unseen.
+No function or class is renamed anywhere, so a stack trace names every frame as before, and
+nothing Turbopack or Next.js's own build minified is renamed again: React reads a page's postponed
+state back by the names of the components that rendered it, and with the whole of `app.cjs`
+renamed every resume fell back to client rendering. A module's `/*#__PURE__*/` annotations, which
+the minifier drops as it prints, are put back before the calls they mark. A module with code the
+pinned mangler renames wrongly — a catch parameter taken apart, a direct `eval`, a function
+declared in a block of sloppy code (oxc-project/oxc#24331, #26485) — or one that marks a function
+`#__NO_SIDE_EFFECTS__` is left as it was written, and so is a runtime with any of that code. In a
+fixture's app Function that took the runtime from 348,545 to 263,742 bytes and `app.cjs` from
+2,544,044 to 2,480,829; in its middleware Function, 141,809 to 109,476 and 550,583 to 489,274.
 
 Two things the build wrote are rewritten on their way into the app module, as the patches rewrite
 Next.js's files. With `experimental.turbopackModuleFragments` (Next.js 16.4) Turbopack registers

@@ -132,8 +132,11 @@ export interface BundleTrace {
 
 const NODE_MODULES = `${path.sep}node_modules${path.sep}`;
 
-/** The package a `node_modules` path belongs to: the innermost `node_modules/<name>`. */
-function packageOf(file: string): string | undefined {
+/**
+ * The package a `node_modules` path belongs to: the innermost `node_modules/<name>`, which in pnpm's
+ * store (`node_modules/.pnpm/<name>@<version>/node_modules/<name>/…`) is the package's own as well.
+ */
+export function packageOf(file: string): string | undefined {
   const at = file.lastIndexOf(NODE_MODULES);
   if (at === -1) {
     return undefined;
