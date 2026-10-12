@@ -1,7 +1,7 @@
 import type { FunctionSpec, SourceMapRef, WorkflowSpec } from '@stayingupwind/core/bundle';
 import type { AdapterOutput } from 'next';
 
-import { type FunctionsContext, patchFor } from './app-functions.ts';
+import { type FunctionsContext, patchFor, runtimeManifestJson } from './app-functions.ts';
 import { type BuildContext, collectEntrypoints } from './collect.ts';
 import type { FunctionDependencies } from './dependencies.ts';
 import { buildFunction, type BuiltFunction } from './function.ts';
@@ -170,7 +170,7 @@ export async function buildWorkflowFunction(
     edgeEntries: [],
     wasm: wasm.collector,
     manifests: context.manifests,
-    runtimeManifest: JSON.stringify(manifest),
+    runtimeManifest: runtimeManifestJson(manifest),
     cacheHostModule: context.cacheHostModule,
     ...(carriesMaps(context.sourceMaps) && {
       sourceMaps: context.sourceMaps,
@@ -180,5 +180,8 @@ export async function buildWorkflowFunction(
     files: input.files,
     blobStore: context.blobs,
     workflowSdk: true,
+    // The flow route is the World's to call, with what its queue delivers: no visitor's cookie, and
+    // so no preview data to verify, whatever routes the build has.
+    previewData: false,
   });
 }
