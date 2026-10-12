@@ -4,7 +4,6 @@ import {
   generationResponseHeaders,
   type GenerationTag,
   implicitTagsFor,
-  MAX_TAGS_PER_ENTRY,
   parseCacheTagsHeader,
   policyFromCacheControl,
   type RouteEntryDescriptor,
@@ -47,6 +46,7 @@ import {
 } from './publishing.ts';
 import type { CacheRuntime } from './runtime.ts';
 import { servable } from './servable.ts';
+import { refusedTags } from './tag-bounds.ts';
 import { callsBehind } from './turns.ts';
 
 /**
@@ -259,21 +259,21 @@ function tagValuesOf(target: RegenerationTarget, render: CapturedRender): Set<st
 /**
  * The tags the render leaves on the entry, as the commit names them (`tagValuesOf`).
  *
- * Refused here rather than at the gateway when there are too many. The contract bounds them
- * (`MAX_TAGS_PER_ENTRY`), and a request past that bound is turned away by a schema whose message
- * says nothing about tags — so the entry would go on failing every regeneration with no way to
- * read why. Said here, before the outputs are uploaded, the attempt carries the count and the
- * pathname into the inspector.
+ * Refused here rather than at the gateway where a generation may not carry them (`refusedTags`): a
+ * request past the contract's bounds is turned away by a schema whose message says nothing about
+ * tags — so the entry would go on failing every regeneration with no way to read why. Said here,
+ * before the outputs are uploaded, the attempt carries what was wrong and the pathname into the
+ * inspector.
  */
 function tagsOf(target: RegenerationTarget, render: CapturedRender): GenerationTag[] {
-  const values = tagValuesOf(target, render);
-  if (values.size > MAX_TAGS_PER_ENTRY) {
-    throw new RegenerationError(
-      `the render of ${target.descriptor.pathname} left ${values.size} cache tags on the entry; a generation may carry ${MAX_TAGS_PER_ENTRY}`,
-      { code: 'too_many_tags' },
-    );
+  const values = [...tagValuesOf(target, render)];
+  const refused = refusedTags(values);
+  if (refused !== undefined) {
+    throw new RegenerationError(`the render of ${target.descriptor.pathname} ${refused.message}`, {
+      code: refused.code,
+    });
   }
-  return [...values].map((value) => ({ kind: tagKindOf(value), value }));
+  return values.map((value) => ({ kind: tagKindOf(value), value }));
 }
 
 interface Uploads {
@@ -483,7 +483,7 @@ const TAG_SYNC_DEADLINE_MS = 10_000;
 
 /** `promise` settled, or a `RegenerationError` saying `what` once `ms` have gone by. */
 async function within(
-  promise: Promise<void>,
+  promise: Promise<unknown>,
   ms: number,
   what: { readonly code: string; readonly message: string },
 ): Promise<void> {
@@ -573,7 +573,7 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   // says nothing it missed: at once within a hold of the view it read against, and past that once
   // the host has said the lease stands and the view has been brought up (`cache/publishing.ts`).
   const entryId = await publishingKeyOf(runtime, target.descriptor);
-  const atOnce = answeringAtOnce(runtime, entryId);
+  const atOnce = answeringAtOnce(runtime, target.reason, entryId);
   if (atOnce !== undefined) {
     return { kind: 'busy', publishing: atOnce };
   }
@@ -606,7 +606,7 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
     return { kind: 'refused', reason };
   }
   if (lease.kind === 'busy') {
-    return answeringWhileBusy(runtime, entryId, { synced, askedAt });
+    return answeringWhileBusy(runtime, target.reason, entryId, synced);
   }
   // A render this isolate still keeps of the entry is one whose lease has lapsed, as this one could
   // not have been taken otherwise: its commit is refused, and it answers nothing more.

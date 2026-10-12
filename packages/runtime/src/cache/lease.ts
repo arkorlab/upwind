@@ -134,7 +134,7 @@ export function heartbeat(input: LeaseHolder, lease: Leased): () => void {
 }
 
 /** The reasons a judgement of the entry gave, which a later generation answers as a render would. */
-const JUDGED_REASONS: ReadonlySet<AttemptReason> = new Set<AttemptReason>([
+export const JUDGED_REASONS: ReadonlySet<AttemptReason> = new Set<AttemptReason>([
   'expired',
   'miss',
   'stale',

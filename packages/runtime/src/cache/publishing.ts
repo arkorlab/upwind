@@ -1,10 +1,12 @@
-import { MAX_TAGS_PER_ENTRY, type RouteEntryDescriptor } from '@stayingupwind/core/cache';
+import type { RouteEntryDescriptor } from '@stayingupwind/core/cache';
 
 import type { CapturedRender } from './capture.ts';
 import { nowMs } from './clock.ts';
 import { entryIdOf } from './current.ts';
-import { settledWithin } from './pulls.ts';
+import type { AttemptReason } from './host.ts';
+import { JUDGED_REASONS } from './lease.ts';
 import type { CacheRuntime, Publishing } from './runtime.ts';
+import { refusedTags } from './tag-bounds.ts';
 
 /**
  * The renders this isolate is publishing as their entries' next generations, answering the
@@ -17,6 +19,11 @@ import type { CacheRuntime, Publishing } from './runtime.ts';
  * hold of the pull the render read against, without a word to the host (`answeringAtOnce`); past
  * it, once the host has turned the request away for a lease of the entry and the view has been
  * brought up to the host's (`answeringWhileBusy`).
+ *
+ * Only a regeneration a judgement of the entry asked for (`JUDGED_REASONS`) is answered so: one
+ * that asked for a page to answer with. `revalidate()` and an invalidation ask for a render whatever
+ * the entry holds, and one made before they asked is not it — they ask the host, and a lease that
+ * has come free is theirs to take.
  */
 
 /**
@@ -66,6 +73,17 @@ function unmovedSince(runtime: CacheRuntime, publishing: Publishing): boolean {
   );
 }
 
+/** The render this isolate is publishing of the entry, for a regeneration a judgement asked for. */
+function publishingFor(
+  runtime: CacheRuntime,
+  reason: AttemptReason,
+  entryId: string | undefined,
+): Publishing | undefined {
+  return entryId === undefined || !JUDGED_REASONS.has(reason)
+    ? undefined
+    : runtime.publishing.get(entryId);
+}
+
 /**
  * The render this isolate is publishing of the entry, where it may answer without asking the host:
  * within a hold of the pull it read against, as the isolate holds every view of the tags it judges
@@ -73,13 +91,31 @@ function unmovedSince(runtime: CacheRuntime, publishing: Publishing): boolean {
  */
 export function answeringAtOnce(
   runtime: CacheRuntime,
+  reason: AttemptReason,
   entryId: string | undefined,
 ): CapturedRender | undefined {
-  const publishing = entryId === undefined ? undefined : runtime.publishing.get(entryId);
+  const publishing = publishingFor(runtime, reason, entryId);
   if (publishing === undefined || nowMs() - publishing.observedAt >= runtime.holdMs) {
     return undefined;
   }
   return unmovedSince(runtime, publishing) ? publishing.render : undefined;
+}
+
+/** What `pull` answered, or `false` once `ms` have gone by first. */
+async function pulledWithin(pull: Promise<boolean>, ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      pull,
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => {
+          resolve(false);
+        }, ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** A regeneration the host turned away, answered from the render being published where it may be. */
@@ -91,27 +127,28 @@ interface Busy {
 /**
  * A regeneration the host turned away for a lease of the entry, with the render this isolate is
  * publishing of it: the publish's own lease, while it is out — one whose lease lapsed has its next
- * call refused, and that ends it. Only once the pull the request asked for at `askedAt` (`synced`)
- * has brought the view of the tags up to the host's, and while nothing it brought says the render
- * missed an invalidation; for a second at the most (`PUBLISHING_PULL_MS`).
+ * call refused, and that ends it. Only once the request's own pull of the tags (`pulled`) has
+ * brought the view up to the host's — not another pull's, which a clock reading the same moment
+ * could not tell from it — and while nothing it brought says the render missed an invalidation;
+ * for a second at the most (`PUBLISHING_PULL_MS`).
  */
 export async function answeringWhileBusy(
   runtime: CacheRuntime,
+  reason: AttemptReason,
   entryId: string | undefined,
-  pull: { readonly synced: Promise<void>; readonly askedAt: number },
+  pulled: Promise<boolean>,
 ): Promise<Busy> {
-  const held = entryId === undefined ? undefined : runtime.publishing.get(entryId);
+  const held = publishingFor(runtime, reason, entryId);
   // Not waited for where the view already says the render missed something: a pull only adds to it.
   if (entryId === undefined || held === undefined || !unmovedSince(runtime, held)) {
     return { kind: 'busy' };
   }
-  await settledWithin(pull.synced, PUBLISHING_PULL_MS);
-  // Looked up again: a publish that has settled meanwhile is one the host's answer now speaks for.
-  const publishing = runtime.publishing.get(entryId);
-  if (publishing === undefined || !runtime.tags.syncedSince(pull.askedAt)) {
+  if (!(await pulledWithin(pulled, PUBLISHING_PULL_MS))) {
     return { kind: 'busy' };
   }
-  return unmovedSince(runtime, publishing)
+  // Looked up again: a publish that has settled meanwhile is one the host's answer now speaks for.
+  const publishing = runtime.publishing.get(entryId);
+  return publishing !== undefined && unmovedSince(runtime, publishing)
     ? { kind: 'busy', publishing: publishing.render }
     : { kind: 'busy' };
 }
@@ -119,8 +156,9 @@ export async function answeringWhileBusy(
 /**
  * `published`, the render it publishes answering the isolate's requests that would regenerate the
  * entry until it has settled, or until the isolate lets go of the render sooner (`publishing`).
- * Never rejects where `published` never does. Not a render that carries more tags than a generation
- * may: its publish refuses it before anything is sent, and nothing after it is answered with it.
+ * Never rejects where `published` never does. Not a render whose tags a generation may not carry
+ * (`refusedTags`): its publish refuses it before anything is sent, and nothing after it is
+ * answered with it.
  */
 export async function answeringUntilSettled<T>(
   runtime: CacheRuntime,
@@ -128,7 +166,7 @@ export async function answeringUntilSettled<T>(
   own: Publishing,
   published: Promise<T>,
 ): Promise<T> {
-  if (own.tags.length > MAX_TAGS_PER_ENTRY) {
+  if (refusedTags(own.tags) !== undefined) {
     return published;
   }
   runtime.publishing.set(entryId, own);
