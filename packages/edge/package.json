@@ -11,6 +11,7 @@
   },
   "files": [
     "src",
+    "types",
     "LICENSE-APACHE",
     "LICENSE-MIT",
     "NOTICE"
