@@ -52,6 +52,11 @@ export interface PatchContext {
   readonly copies?: ReadonlyMap<string, string> | undefined;
   /** Absolute path of `.next/server/instrumentation.js`, when the app has a hook. */
   readonly instrumentation: string | undefined;
+  /**
+   * Absolute path of the module the build wrote for the cache handlers the app configured
+   * (`writeCacheHandlers`), when it configured any.
+   */
+  readonly cacheHandlers?: string | undefined;
   /** The WebAssembly Turbopack's Node.js loader asks for, by the path it asks for it under. */
   readonly wasm: readonly { readonly chunkPath: string; readonly global: string }[];
   /**

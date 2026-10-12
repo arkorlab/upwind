@@ -101,7 +101,7 @@ flowchart TB
 <details>
 <summary><b>まだ向いていないケース</b></summary>
 
-- **webpack でビルドしている、または独自の `cacheHandler` に頼っている。** どちらも対応していません。[配信できるもの](#-配信できるもの)を見てください。
+- **webpack でビルドしている。** 対応していません。[配信できるもの](#-配信できるもの)を見てください。
 - **1コマンドでアプリをビルドしてデプロイしたい。** upwind の役目は、バンドルを書き出すところまでです。上の注記を見てください。
 - **1.0 相当の保証が必要。** [状態についての注記](#status)を見てください。
 
@@ -332,6 +332,7 @@ upwind が待ち受け、Next.js はその後ろの同じプロセスで、Next.
 | ✅  | App Router: Server Components、ストリーミング、Server Actions               |                                                                        |
 | ✅  | Partial Prerendering、Cache Components                                      | シェルはストレージから、残りは Function から                           |
 | ✅  | `"use cache"`、ISR、`revalidateTag` / `updateTag`、キャッシュされた `fetch` | ビルド時に指定したホストのキャッシュモジュールが保持（下を参照）       |
+| ✅  | 自作の `cacheHandler` / `cacheHandlers`                                     | Function に同梱し、ホストのキャッシュと並べて使う（下を参照）          |
 | ✅  | Pages Router: `getStaticProps`、`getServerSideProps`、API ルート            | クライアントのルーターが要求する `_next/data` も                       |
 | ✅  | `proxy.ts` と、非推奨の `middleware.ts`                                     | 独立した Function にもなる                                             |
 | ✅  | `export const runtime = 'edge'` のルート                                    | ビルド時の出力をそのまま配信するか、リクエストごとに全体をレンダリング |
@@ -346,13 +347,14 @@ upwind が待ち受け、Next.js はその後ろの同じプロセスで、Next.
 
 **キャッシュはホストのもので、ビルド時に決まります。** ランタイムはキャッシュの読み書きをすべて、ホストが独自のアダプター（`createAdapter({ cacheHostModule })`）で指定したモジュールに渡します。上の手順で使う既定のアダプターは何も指定しないので、そのバンドルはビルドが作ったものを配信し、再検証は行いません。
 
+**アプリ自作のハンドラーは、その隣で動きます。** `cacheHandler` や `cacheHandlers` を設定したビルドでは、それぞれのモジュールを Function に同梱し、そのことを警告で知らせます。それぞれが受け持つのは、Next.js がそこで渡すものです。`cacheHandler` はデータキャッシュ（`fetch` と `unstable_cache`）を受け持ちます。Function の上の Next.js はページをそこに置かないので、ページはホストのものです。`cacheHandlers` の各種類は、その種類の `"use cache"` を受け持ちます。`revalidateTag`、`revalidatePath`、`updateTag` は、ホストのキャッシュにもこれまでどおり届きます。ハンドラーは Function の isolate ごとに動くので、メモリーに持つものはその isolate だけのものです。キャッシュを共有するには、どの isolate からも届くストアを使ってください。また、ホストのキャッシュモジュールがキャッシュのほかに行っていることは、自作のハンドラーには行いません。書き込みが応答の終わりまでに届くようには待たず、Next.js が古い値を返したときの裏の再検証も、そのリクエストの処理が続く間しか進みません。
+
 **ワークフローの World も同じです。** Workflow SDK を使うビルドは、ワークフローとステップを専用の Function の中で SDK の QuickJS エンジンを使って実行し、Run はホストが指定した World（`createAdapter({ workflowWorldModule })`）に保存します。SDK のキューをその Function に届けるのはホストで、訪問者のリクエストがそこに届くことはありません。ホストが用意するものは[アダプターの README（英語）](packages/adapter/README.md#the-workflow-sdk)にあります。
 
 <details>
 <summary><b>対応していないもの</b></summary>
 
 - **webpack でのビルド。** Turbopack のみです。静的エクスポートはビルドされたコードを含まないので、どのバンドラーのものでも受け付けます。
-- **独自の `cacheHandler` / `cacheHandlers`。** 意図してビルドを失敗させます。ISR 用の incremental cache と `"use cache"` のハンドラーはホストが用意します。ハンドラーを動かさない静的エクスポートだけは例外です。
 - **edge ランタイムのルートの再検証。** その出力は、ビルド時のものをそのまま配信するか、リクエストごとに全体をレンダリングします。
 - **`experimental.optimizeCss`。** ビルドしたスタイルシートを、Function にはないディスクから読もうとします。それが必要な最初のレンダリングが、理由を示して失敗します。
 - **`partialFallback`。** バンドルに記録はしますが、それに基づいては動きません。

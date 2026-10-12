@@ -63,7 +63,7 @@ the bundle at all, so no consumer can come to depend on it by accident.
 | `outputs.prerenders[].fallback.initialRevalidate`, `initialExpiration`; `config.allowHeader`                                                     | same names                                                                                                                           | the host (the lifetime it seeds a build's generation with); runtime (the headers a regeneration may see)                                                                                                      |
 | `outputs.prerenders[].config.bypassToken`                                                                                                        | `bypassToken`, once for the build                                                                                                    | runtime (a request whose `__prerender_bypass` carries it is in draft mode, and is rendered rather than answered from the build or the cache)                                                                  |
 | `config.cacheComponents`, `partialPrefetching`, `expireTime`, `cacheLife` (as resolved)                                                          | `config.*`                                                                                                                           | recorded (what a runtime lifetime by name means); the inspector shows them                                                                                                                                    |
-| `config.cacheHandler`, `cacheHandlers`                                                                                                           | —                                                                                                                                    | a build that names one **fails**: the Function cannot load a module by path, and the platform supplies the handlers itself                                                                                    |
+| `config.cacheHandler`, `cacheHandlers` (as `required-server-files.json` records them)                                                            | —                                                                                                                                    | each module bundled into the Function and loaded by the `cache-handlers` patch (`cache-handlers.ts`); the build warns that the handler runs in each isolate, beside the platform's cache                      |
 | `outputs.staticFiles[]`: `pathname`, `filePath`, `immutableHash`                                                                                 | `staticFiles[]` (`pathname`, `blob`, `immutable`); the one named `/index` is offered under `/` too                                   | edge and control (served from storage); runtime (the small ones the Function carries)                                                                                                                         |
 | `public/` (from `projectDir`)                                                                                                                    | `staticFiles[]`, URL-encoded pathnames under the `basePath`                                                                          | as above; not walked for a static export, whose `out/` already holds it                                                                                                                                       |
 
@@ -487,15 +487,12 @@ servable from the edge.
 
 ## Not supported, and not prepared for
 
-builds by webpack (except for a static export, which carries no built code and so is taken from
-any bundler); a custom `cacheHandler` / `cacheHandlers` module in a build that has code to load it
-with (the platform's Function cannot load a module by path, and the platform supplies the incremental
-and `use cache` handlers itself; a static export runs no handler of its own, so the option is
-unused rather than unsupported); revalidation of a route on the edge runtime (its outputs are
-served as built, or rendered whole, and never regenerated); `partialFallback` (recorded only);
-`experimental.runtimeServerDeploymentId` (its manifests evaluate — see
-`test/manifests.test.ts` — but the Function would need `process.env.NEXT_DEPLOYMENT_ID` at request
-time, which the deploy step sets and the runtime tests do not).
+builds by webpack (except for a static export, which carries no built code and so is taken from any
+bundler); revalidation of a route on the edge runtime (its outputs are served as built, or rendered
+whole, and never regenerated); `partialFallback` (recorded only);
+`experimental.runtimeServerDeploymentId` (its manifests evaluate — see `test/manifests.test.ts` —
+but the Function would need `process.env.NEXT_DEPLOYMENT_ID` at request time, which the deploy step
+sets and the runtime tests do not).
 
 ## Experiments
 

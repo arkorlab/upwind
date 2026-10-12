@@ -1,3 +1,4 @@
+import { cacheHandlersPatch } from './cache-handlers.ts';
 import { cacheSignalTimersPatch } from './cache-signal-timers.ts';
 import { fastImmediatesPatch } from './fast-immediates.ts';
 import { fetchCacheWaitUntilPatch } from './fetch-cache-wait-until.ts';
@@ -41,6 +42,7 @@ export const PATCHES: readonly Patch[] = [
   fetchCacheWaitUntilPatch,
   hangingInputAbortPatch,
   instrumentationPatch,
+  cacheHandlersPatch,
   loadManifestPatch,
   resumeCacheLimitPatch,
   resourceCacheBridgePatch,
