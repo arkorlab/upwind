@@ -12,6 +12,7 @@ import { regenerate } from './cache/regenerate.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
 import { type EntryTables, nodeHandlerOf } from './entries.ts';
 import { descriptorFor } from './generations.ts';
+import { routingParameters } from './route-parameters.ts';
 import { bypassesPrerender } from './serve.ts';
 import { findShell, getStore, isClassShell } from './store.ts';
 
@@ -87,6 +88,9 @@ export async function warmResourceRoute(input: ResourceWarmInput): Promise<Resou
     waitUntil,
     clock: runtime.clockOf(request),
   });
+  // As routing hands a render of a request for it the page's parameters, where Next.js would read
+  // them otherwise off its name (`routingParameters`).
+  const parameters = routingParameters(store, entry.route, entry.pathname);
   return context.run(() => {
     return withPrimaryResourceReads(async (): Promise<ResourceWarmResult> => {
       const outcome = await regenerate({
@@ -104,6 +108,7 @@ export async function warmResourceRoute(input: ResourceWarmInput): Promise<Resou
               entry.pathname,
             ),
           }),
+          ...(parameters !== undefined && { parameters }),
         },
         previewToken: store.manifest.bypassToken,
         waitUntil,

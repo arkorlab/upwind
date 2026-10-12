@@ -6,11 +6,13 @@ import {
   type EntrypointKind,
   isPagesDataPathname,
   type ManifestHead,
+  type PackedPrerenders,
   placeholderSegments,
   type Prerender,
   type Route,
   standsForClass,
   type StaticFile,
+  unpackPrerenders,
 } from '@stayingupwind/core/bundle';
 import { completedPathname, keyedParameters } from '@stayingupwind/core/manifest';
 import { ByteLru } from '@stayingupwind/core/util';
@@ -425,12 +427,19 @@ const shared: { manifest: ManifestHead | undefined; store: Store | undefined } =
 /**
  * The manifest this Function carries: whole in the app Function, and in the middleware Function
  * its head alone — the fields the adapter writes it from (`MANIFEST_HEAD_KEYS`), which are all that
- * is typed here.
+ * is typed here. Its prerenders, where it has them, are written packed (`packPrerenders`): they are
+ * put back as they were before anything reads them.
  */
 function readManifest(): ManifestHead {
-  shared.manifest ??= JSON.parse(
-    new TextDecoder().decode(readBundleFile(RUNTIME_MANIFEST)),
-  ) as ManifestHead;
+  if (shared.manifest === undefined) {
+    const manifest = JSON.parse(
+      new TextDecoder().decode(readBundleFile(RUNTIME_MANIFEST)),
+    ) as ManifestHead & { prerenders?: unknown };
+    if (manifest.prerenders !== undefined) {
+      manifest.prerenders = unpackPrerenders<Prerender>(manifest.prerenders as PackedPrerenders);
+    }
+    shared.manifest = manifest;
+  }
   return shared.manifest;
 }
 

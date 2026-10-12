@@ -1,6 +1,8 @@
 import {
   type Entrypoint,
   ONE_PASS_SPLIT_BUNDLE_VERSION,
+  packPrerenders,
+  type Prerender,
   PRIMARY_FUNCTION,
 } from '@stayingupwind/core/bundle';
 import type { AdapterOutput } from 'next';
@@ -88,6 +90,12 @@ export interface FunctionsContext {
   };
   /** Whether the build carries the Workflow SDK, which every one of its Functions is told. */
   readonly workflowSdk: boolean;
+  /**
+   * Whether the build has a Pages Router route, which is what signs preview data into a cookie: a
+   * request to any of its Functions may then carry some to verify (`StubOptions.previewData`). Asked
+   * of the build rather than of a Function, since the cookie one Function sets is sent to all.
+   */
+  readonly previewData: boolean;
 }
 
 /**
@@ -242,6 +250,7 @@ export async function buildAppFunction(
     blobStore: context.blobs,
     deferSizeAudit,
     workflowSdk: context.workflowSdk,
+    previewData: context.previewData,
   });
 }
 
@@ -280,6 +289,7 @@ export async function buildMiddlewareFunction(
     files: [...context.files.middleware, ...inlineAssetFiles(middleware.edge, ctx.projectDir)],
     blobStore: context.blobs,
     workflowSdk: context.workflowSdk,
+    previewData: context.previewData,
   });
 }
 
@@ -290,6 +300,16 @@ export interface AppFunctions<M> {
   readonly built: readonly { readonly name: string; readonly built: BuiltFunction }[];
   /** The plan, as the build's record keeps it, when the routes were split. */
   readonly plan: Record<string, unknown> | undefined;
+}
+
+/**
+ * The `runtime.json` of a Function that carries the deployment's prerenders, as it is written: the
+ * manifest with its prerenders packed (`packPrerenders`), which is how the runtime reads them.
+ */
+export function runtimeManifestJson(
+  manifest: Readonly<Record<string, unknown>> & { readonly prerenders: readonly Prerender[] },
+): string {
+  return JSON.stringify({ ...manifest, prerenders: packPrerenders(manifest.prerenders) });
 }
 
 /** A Function the build will upload as it is: held to Cloudflare's limit, which nothing raises. */
@@ -305,7 +325,11 @@ function finalSize(name: string, built: BuiltFunction): void {
  * measured is what the plan is weighed with, and it is set aside for the Functions the plan makes.
  */
 export async function appFunctionsOf<
-  M extends { readonly v: number; readonly entrypoints: readonly Entrypoint[] },
+  M extends {
+    readonly v: number;
+    readonly entrypoints: readonly Entrypoint[];
+    readonly prerenders: readonly Prerender[];
+  },
 >(
   context: FunctionsContext,
   runtimeManifest: M,
@@ -313,7 +337,7 @@ export async function appFunctionsOf<
 ): Promise<AppFunctions<M>> {
   const single = await buildAppFunction(
     context,
-    JSON.stringify(runtimeManifest),
+    runtimeManifestJson(runtimeManifest),
     undefined,
     budget !== undefined,
   );
@@ -360,7 +384,7 @@ export async function appFunctionsOf<
     v: ONE_PASS_SPLIT_BUNDLE_VERSION,
     entrypoints: placedEntrypoints(runtimeManifest.entrypoints, placements),
   };
-  const json = JSON.stringify(split);
+  const json = runtimeManifestJson(split);
   const built: { name: string; built: BuiltFunction }[] = [];
   for (const planned of plan) {
     const routes = routesOf(planned, context.routes, placements, every);
