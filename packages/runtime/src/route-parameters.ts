@@ -198,3 +198,65 @@ export function routeQuery(
   const named = Object.entries(held).filter(([key]) => !Object.hasOwn(target.query, key));
   return named.length === 0 ? target.query : { ...target.query, ...Object.fromEntries(named) };
 }
+
+/** The values `segments` hold, each decoded once; `undefined` where one does not decode. */
+function decodedSegments(segments: readonly string[]): string[] | undefined {
+  const values: string[] = [];
+  for (const segment of segments) {
+    const value = decodedSegment(segment);
+    if (value === undefined) {
+      return undefined;
+    }
+    values.push(value);
+  }
+  return values;
+}
+
+/**
+ * The parameters a regeneration of a Pages Router member hands Next.js in its query (`nxtP…`), as
+ * routing hands them to a render of a visitor's request; `undefined` where Next.js, matching the
+ * member's name itself, reads them the same — every member but one whose catch-all holds an
+ * escaped `/` in one of its segments.
+ *
+ * Routing writes a catch-all's value into the query decoded, its segments joined by `/`, and
+ * Next.js splits it there (`normalizeDynamicRouteParams`): `/docs/a%2Fb` of `/docs/[...slug]` is
+ * `['a', 'b']`, which is how Next.js says the deployments of its own adapter read such a value
+ * (`prerender-encoding`). Matching the name, it splits the path first and decodes each segment
+ * after, which keeps the `/` in the value: `['a/b']`. A regeneration rendered the member by its
+ * name, so the generation it published — and every answer from it — said one thing where a render
+ * of the visitor's request said the other, and which of the two answered turned on whether the
+ * entry's record was read in time (`incremental-cache-path-traversal`).
+ *
+ * Every parameter of the route is named once one is, as routing names them all: Next.js takes the
+ * query's only where it holds every one. Not an App Router member's: its shell is resumed for each
+ * visitor by the member's own path, which Next.js reads as it reads the name, and a shell and its
+ * resume have to agree.
+ */
+export function regenerationParameters(
+  store: Store,
+  route: string,
+  pathname: string,
+): Record<string, string> | undefined {
+  const template = store.prerendersByPathname.get(route)?.route ?? route;
+  const member = (unlocalizedRouteOf(store.manifest.config, pathname) ?? pathname).split('/');
+  const named: Record<string, string> = {};
+  let separated = false;
+  for (const [index, placeholder] of template.split('/').entries()) {
+    const parameter = parameterOf(placeholder);
+    if (parameter === undefined) {
+      if (member[index] !== placeholder) {
+        return undefined;
+      }
+      continue;
+    }
+    const values = decodedSegments(segmentsAt(parameter, member, index));
+    if (values === undefined || (values.length === 0 && !parameter.optional)) {
+      return undefined;
+    }
+    if (values.length > 0) {
+      separated ||= parameter.rest && values.some((value) => value.includes('/'));
+      named[`nxtP${parameter.name}`] = values.join('/');
+    }
+  }
+  return separated ? named : undefined;
+}
