@@ -3,6 +3,7 @@ import type { InputOptions, Plugin as RolldownPlugin } from 'rolldown';
 import { constExportSettersPlugin } from './const-export-setters.ts';
 import type { KeptMaps } from './kept-maps.ts';
 import { linkedImportsPlugin } from './linked-externals.ts';
+import { otelChunksPlugin } from './otel-chunks.ts';
 import { type PageRuntimeRequire, pageRuntimeReactPlugin } from './page-runtime-react.ts';
 import {
   type AppliedPatch,
@@ -92,6 +93,7 @@ export function appBundlePlugins(
     wasmModulePlugin(context.wasm, (file, global) => {
       sinks.wasm.push(`${file} -> ${global}`);
     }),
+    otelChunksPlugin(context.patch.chunks),
     vendoredOtelPlugin(),
     sharedRuntimePlugin(),
     styledJsxPlugin(context.patch.projectDir),
