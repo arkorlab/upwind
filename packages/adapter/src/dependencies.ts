@@ -408,27 +408,25 @@ const ALLOWED_DYNAMIC_LOADS: readonly RegExp[] = [
 /**
  * The statement the require hook keeps its resolver by (`next/dist/server/require-hook.js`), as the
  * record shows it: the binding under any name, which the bundle renames (`manglePackagesPlugin`),
- * and whatever of the value the record shows.
+ * and the value it keeps.
  */
 const REQUIRE_HOOK_RESOLVER =
   /^next\/dist\/server\/require-hook\.js:\d+: (?:const|let) [\w$]+ = (?<value>.+)$/u;
 /** The value that statement keeps: the resolver of whichever loader the code is run by. */
 const RESOLVER_VALUE =
   'process.env.NEXT_MINIMAL ? __non_webpack_require__.resolve : require.resolve;';
-/** How much of the value a record has to show: through the first of the two resolvers. */
-const RESOLVER_SHOWN = RESOLVER_VALUE.indexOf('require.resolve;');
 
 /**
  * Whether a load is the resolver the require hook keeps for the aliases it installs: `let resolve =
  * process.env.NEXT_MINIMAL ? __non_webpack_require__.resolve : require.resolve;`, its binding under
- * whatever name the bundle gave it. The record cuts the statement short (`DYNAMIC_LOAD_TEXT`, in
- * `dynamic-loads.ts`), so what it shows of the value has to be the start of that value, through the
- * first resolver at least. The loader itself kept under any name — `const loader = require`, or
- * `require` where `require.resolve` was — is refused as any other use of it is.
+ * whatever name the bundle gave it, and the value exactly that. The record shows the statement whole
+ * (`DYNAMIC_LOAD_TEXT`, in `dynamic-loads.ts`): cut short, `require.resolve` could not be told from
+ * the loader itself. The loader kept under any name — `const loader = require`, or `require` where
+ * `require.resolve` was — is refused as any other use of it is, and so is a statement too long to
+ * be shown whole.
  */
 function isRequireHookResolver(load: string): boolean {
-  const value = REQUIRE_HOOK_RESOLVER.exec(load)?.groups?.['value'];
-  return value !== undefined && value.length >= RESOLVER_SHOWN && RESOLVER_VALUE.startsWith(value);
+  return REQUIRE_HOOK_RESOLVER.exec(load)?.groups?.['value'] === RESOLVER_VALUE;
 }
 
 /** Where the patterns above find the build's output: `.next`, unless `distDir` says otherwise. */

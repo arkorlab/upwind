@@ -59,8 +59,12 @@ export interface DynamicLoad {
   readonly guarded: boolean;
 }
 
-/** As much of a use as the record shows. */
-const DYNAMIC_LOAD_TEXT = 80;
+/**
+ * As much of a use as the record shows: enough for the whole of the longest statement the audit
+ * reads to the end, the require hook's resolver (`isRequireHookResolver`, in `dependencies.ts`),
+ * whose 91 characters 80 cut inside `require.resolve`, where it reads as `require` kept.
+ */
+const DYNAMIC_LOAD_TEXT = 100;
 
 /** A node on the way down: the visit it is under, by which field, and the statement it is in. */
 interface Visit {
