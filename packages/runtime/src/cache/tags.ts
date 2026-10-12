@@ -93,6 +93,11 @@ export class TagState {
     this.#log = options.log;
   }
 
+  /**
+   * Bring the view up to the host's revision through its delta, page by page, as asked at `now`:
+   * `true` once the last page is in, and `false` where the host could not be read — the view then
+   * stands as it was, and so does the hold it was last brought up for (`#syncedAt`).
+   */
   async #pull(host: TagHost, now: number): Promise<boolean> {
     try {
       let truncated = true;

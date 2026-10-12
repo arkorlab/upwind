@@ -32,6 +32,7 @@ import { refusedTags } from './tag-bounds.ts';
  */
 const PUBLISHING_PULL_MS = 1000;
 
+/** What a failure says of itself, for the Function's log. */
 function detail(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
