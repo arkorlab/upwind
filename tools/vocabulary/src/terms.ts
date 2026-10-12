@@ -7,9 +7,9 @@
 export interface Term {
   readonly id: string;
   /**
-   * Global, so every occurrence in a file is counted. Words are apart by ` +`, or by `_` and a space
-   * in an identifier, and a term ends where no letter or digit follows, an identifier's `_` among
-   * what may: a file is searched as `searchable` reads it.
+   * Global, so every occurrence in a file is counted. Words are apart by ` +`, by `_` and a space in
+   * an identifier, or by `-`, and a term ends where no letter or digit follows, an identifier's `_`
+   * among what may: a file is searched as `searchable` reads it.
    */
   readonly pattern: RegExp;
   readonly why: string;
