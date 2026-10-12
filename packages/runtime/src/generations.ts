@@ -300,8 +300,12 @@ export async function withBackgroundRegeneration(
  * it is one the browser has not finished loading, prefetching about it, for as long as the hold.
  */
 function holdFirstPublish(outcome: RegenerationOutcome): void {
-  if (outcome.kind === 'accepted') {
-    requestContext()?.writes.add(outcome.published);
+  // A request answered from a render this isolate is publishing of the entry waits for that
+  // publish as the request the render was made for does: its answer is the first generation's too.
+  const published =
+    outcome.kind === 'accepted' || outcome.kind === 'busy' ? outcome.published : undefined;
+  if (published !== undefined) {
+    requestContext()?.writes.add(published);
   }
 }
 
@@ -326,6 +330,23 @@ async function answerFromJob(
   }
   if (outcome.kind === 'skipped') {
     return undefined;
+  }
+  // The render this isolate is publishing of the entry: the page the requests after its publish are
+  // answered with, already made.
+  if (
+    outcome.kind === 'busy' &&
+    outcome.publishing !== undefined &&
+    servable(outcome.publishing.status, outcome.publishing.headers)
+  ) {
+    const answered = await answerFromRender(
+      job.input,
+      job.target.handler,
+      outcome.publishing,
+      want,
+    );
+    if (answered !== undefined) {
+      return withOutcome(answered, 'publishing');
+    }
   }
   // `busy`, and `superseded` — a later generation than the one judged is the host's, which this
   // isolate's read is behind — are answered alike: with a render of the visitor's own, kept by no

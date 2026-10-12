@@ -349,7 +349,12 @@ class GatewayHost implements CacheHost {
           leaseExpiresAt: answer.leaseExpiresAt,
           current: currentOf(answer.current),
         }
-      : { kind: 'busy', current: currentOf(answer.current) };
+      : {
+          kind: 'busy',
+          current: currentOf(answer.current),
+          attemptId: answer.attemptId,
+          leaseExpiresAt: answer.leaseExpiresAt,
+        };
   }
 
   uploadArtifact(upload: ArtifactUpload): Promise<UploadedArtifact> {
