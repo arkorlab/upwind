@@ -50,7 +50,7 @@ const RUNTIME_NEUTRAL_FILES = [
   'packages/sdk/src/**/*.ts',
 ];
 /** The suites, and what they share, wherever a package or a tool keeps them. */
-const TEST_FILES = ['**/*.test.ts', '**/test/**/*.ts'];
+const TEST_FILES = ['**/*.{test,spec}.{ts,mts}', '**/test/**/*.{ts,mts}'];
 
 /**
  * Plugin `configs` maps are index signatures typed as unions of legacy and flat shapes; resolve one

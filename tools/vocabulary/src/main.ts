@@ -2,10 +2,11 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
+import { annotationOf } from './annotate.ts';
 import { type Hit, hitsOfFile, selfCheck, textOf } from './scan.ts';
 
 /**
- * Holds the packages that serve and deploy a deployment to the words any host's would use.
+ * Holds the packages that serve and deploy a deployment to the words any host would use.
  *
  * Those packages are an edge, the runtime cache behind it, the assembly that deploys a build to
  * them, what the three share, and the stack that runs them on one machine. Each is written for
@@ -65,9 +66,7 @@ function report(hits: readonly Hit[], github: boolean): void {
   for (const hit of hits) {
     const where = `${hit.file}:${String(hit.line)}:${String(hit.column)}`;
     if (github) {
-      console.log(
-        `::error file=${hit.file},line=${String(hit.line)},col=${String(hit.column)},title=vocabulary/${hit.term.id}::${JSON.stringify(hit.text)}: ${hit.term.why}`,
-      );
+      console.log(annotationOf(hit));
     } else {
       console.error(`${where}  ${hit.term.id}  ${JSON.stringify(hit.text)}: ${hit.term.why}`);
     }

@@ -40,7 +40,7 @@ upwind/
 ├── tools/
 │   ├── next-matrix/   # builds those fixtures with each Next.js and checks what came out
 │   ├── deploy-tests/  # deploys Next.js's own deploy-mode applications to a host for its suite to run
-│   └── vocabulary/    # holds the packages that serve and deploy a deployment to any host's words
+│   └── vocabulary/    # holds the packages that serve and deploy a deployment to words any host uses
 └── .github/
     ├── workflows/ci.yaml            # every check, on every pull request
     ├── workflows/next-matrix.yaml   # the supported Next.js range, checked against Next.js itself

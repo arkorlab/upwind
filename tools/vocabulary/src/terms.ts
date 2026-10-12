@@ -78,28 +78,40 @@ export const TERMS: readonly Term[] = [
   },
   {
     id: 'workers-for-platforms',
-    pattern: /\bworkers_? +for_? +platforms(?![\da-z])/giu,
+    pattern: /\bworkers(?:-|_? +)for(?:-|_? +)platforms(?![\da-z])/giu,
     why: 'a deployment reaches its Functions through the bindings it is given, whatever a host runs them in',
     finds: [
       'Workers for Platforms',
       'Workers for\r\nPlatforms',
       'workersForPlatforms',
       'WORKERS_FOR_PLATFORMS',
+      'workers-for-platforms',
     ],
     passes: ['workers for a platform'],
   },
   {
     id: 'validation-namespace',
-    pattern: /\bvalidation_? +namespaces?(?![\da-z])/giu,
+    pattern: /\bvalidation(?:-|_? +)namespaces?(?![\da-z])/giu,
     why: "how a host proves a deployment before it goes live is the host's own",
-    finds: ['the validation namespace', 'the validation\n# namespace', 'validationNamespaces'],
+    finds: [
+      'the validation namespace',
+      'the validation\n# namespace',
+      'validationNamespaces',
+      'validation-namespace',
+    ],
     passes: ['validation of a namespace'],
   },
   {
     id: 'analytics-engine',
-    pattern: /\banalytics_? +engine(?![\da-z])/giu,
+    pattern: /\banalytics(?:-|_? +)engine(?![\da-z])/giu,
     why: "where a host records what it measures is the host's own: these packages report to what they are given",
-    finds: ['Analytics Engine', 'Analytics\n> Engine', 'analyticsEngine', 'ANALYTICS_ENGINE'],
+    finds: [
+      'Analytics Engine',
+      'Analytics\n> Engine',
+      'analyticsEngine',
+      'ANALYTICS_ENGINE',
+      'analytics-engine',
+    ],
     passes: ['analytics, an engine'],
   },
   {
@@ -153,7 +165,7 @@ export const TERMS: readonly Term[] = [
   },
   {
     id: 'the-platform',
-    pattern: /\b(?:the|this)_? +platform(?![\da-z])/giu,
+    pattern: /\b(?:the|this)(?:-|_? +)platform(?![\da-z])/giu,
     why: 'these packages speak of a host',
     finds: [
       'this platform',
@@ -161,6 +173,7 @@ export const TERMS: readonly Term[] = [
       'this\nplatform',
       'the\n   * platform',
       'thisPlatform',
+      'this-platform',
     ],
     passes: [
       'a platform',

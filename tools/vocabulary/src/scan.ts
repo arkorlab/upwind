@@ -32,10 +32,10 @@ function asWritten(searched: Searchable, start: number, end: number): string {
   return written.replaceAll(/ +/gu, ' ');
 }
 
-/** What a text says, each term at the offset in the text it starts at. */
+/** What a text says, each term at the offset in the text it starts at, in the order it says them. */
 function hitsIn(text: string, terms: readonly Term[]): Found[] {
   const searched = searchable(text);
-  return terms.flatMap((term) => {
+  const found = terms.flatMap((term) => {
     return [...searched.text.matchAll(term.pattern)].map((match) => {
       return {
         term,
@@ -44,6 +44,7 @@ function hitsIn(text: string, terms: readonly Term[]): Found[] {
       };
     });
   });
+  return found.toSorted((left, right) => left.at - right.at);
 }
 
 /**
@@ -79,19 +80,28 @@ const BINARY_EXTENSIONS = new Set(
 
 /**
  * Every file is read as text, whatever its extension: a list of the extensions to read would leave
- * out the next kind of source a package starts using. A NUL byte says a file is not the UTF-8 text
- * every source here is, so one that holds one is left out only where its kind is binary
- * (`BINARY_EXTENSIONS`), and refused anywhere else: read as UTF-8, a UTF-16 file's words would
- * not be found, and a check that skipped it would pass whatever it said.
+ * out the next kind of source a package starts using. A NUL byte, or a byte that is not UTF-8, says
+ * a file is not the text every source here is, so one like that is left out only where its kind is
+ * binary (`BINARY_EXTENSIONS`), and refused anywhere else: read as UTF-8, a UTF-16 file's words
+ * would not be found, nor a word an invalid byte had been put inside, and a check that skipped
+ * either would pass whatever it said.
  */
 export function textOf(file: string, bytes: Uint8Array): string | undefined {
-  if (!bytes.includes(0)) {
-    return new TextDecoder().decode(bytes);
+  const binary = BINARY_EXTENSIONS.has(path.extname(file).toLowerCase());
+  if (bytes.includes(0)) {
+    if (binary) {
+      return undefined;
+    }
+    throw new Error(`${file} holds a NUL byte: save it as UTF-8, or name a binary by its kind`);
   }
-  if (BINARY_EXTENSIONS.has(path.extname(file).toLowerCase())) {
-    return undefined;
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    if (binary) {
+      return undefined;
+    }
+    throw new Error(`${file} is not UTF-8: save it as UTF-8, or name a binary by its kind`);
   }
-  throw new Error(`${file} holds a NUL byte: save it as UTF-8, or name a binary by its kind`);
 }
 
 /** The offset each line of `text` starts at, the first line's first. */

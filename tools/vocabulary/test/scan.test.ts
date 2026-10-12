@@ -48,6 +48,19 @@ describe('a file', () => {
     expect(hit).toMatchObject({ file: 'src/a.ts', line: 2, column: 8, text: 'control plane' });
   });
 
+  it('says its terms in the order it writes them, whatever order the terms are listed in', () => {
+    expect(saidIn('// billing\n// the dashboard\n// a tenant').map(({ id }) => id)).toStrictEqual([
+      'billing',
+      'dashboard',
+      'tenancy',
+    ]);
+    expect(saidIn('// a tenant\n// the dashboard\n// billing').map(({ id }) => id)).toStrictEqual([
+      'tenancy',
+      'dashboard',
+      'billing',
+    ]);
+  });
+
   it('says a term across a wrapped comment, but not across a paragraph', () => {
     expect(saidIn('/**\n * what the control\n * plane does\n */')).toStrictEqual([
       { id: 'control-plane', text: 'control plane' },
@@ -94,5 +107,15 @@ describe("a file's bytes", () => {
     expect(() => textOf('a.ts', Uint8Array.of(0x61, 0x00))).toThrow(
       'a.ts holds a NUL byte: save it as UTF-8, or name a binary by its kind',
     );
+  });
+
+  it('are refused where a byte is not UTF-8, which could split a word unseen', () => {
+    // `dash` `0xff` `board`: decoded leniently, a replacement character between two halves.
+    const split = Uint8Array.of(...encoder.encode('dash'), 0xff, ...encoder.encode('board'));
+
+    expect(() => textOf('a.ts', split)).toThrow(
+      'a.ts is not UTF-8: save it as UTF-8, or name a binary by its kind',
+    );
+    expect(textOf('a.webp', split)).toBeUndefined();
   });
 });

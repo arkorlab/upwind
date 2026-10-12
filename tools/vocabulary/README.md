@@ -2,7 +2,7 @@
 
 Holds the packages that serve and deploy a deployment — the edge, the runtime cache behind it, the
 assembly that deploys a build to them, what the three share, and the stack that runs them on one
-machine — to the words any host's would use.
+machine — to the words any host would use.
 
 Each of those packages is written for whichever host runs it, so none of them may describe one host
 in particular: by its name, by the names of its own resources or the parts it is made of, or by
