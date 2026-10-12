@@ -563,7 +563,11 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
     return { kind: 'refused', reason };
   }
   if (lease.kind === 'busy') {
-    return answeringWhileBusy(runtime, target.reason, entryId, synced);
+    return answeringWhileBusy(
+      runtime,
+      { reason: target.reason, entryId, holder: lease.attemptId },
+      synced,
+    );
   }
   // A render this isolate still keeps of the entry is one whose lease has lapsed, as this one could
   // not have been taken otherwise: its commit is refused, and it answers nothing more.
@@ -623,6 +627,7 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
         entryId ?? lease.entryId,
         {
           render: { ...captured, headers: generationHeadersOf(target, captured) },
+          attemptId: lease.attemptId,
           tags: [...tagValuesOf(target, captured)],
           observedTagRevision,
           observedAt: askedAt,

@@ -125,31 +125,50 @@ interface Busy {
   readonly publishing?: CapturedRender;
 }
 
+/** A regeneration the host turned away: why it was asked for, of what, and whose lease stands. */
+interface TurnedAway {
+  readonly reason: AttemptReason;
+  readonly entryId: string | undefined;
+  /** The attempt holding the lease, where the host says (`AttemptOutcome`). */
+  readonly holder: string | undefined;
+}
+
 /**
  * A regeneration the host turned away for a lease of the entry, with the render this isolate is
- * publishing of it: the publish's own lease, while it is out — one whose lease lapsed has its next
- * call refused, and that ends it. Only once the request's own pull of the tags (`pulled`) has
- * brought the view up to the host's — not another pull's, which a clock reading the same moment
- * could not tell from it — and while nothing it brought says the render missed an invalidation;
- * for a second at the most (`PUBLISHING_PULL_MS`).
+ * publishing of it: where the lease is that publish's own. Where the host names the attempt that
+ * holds it, it is the publish's (`Publishing.attemptId`) — an attempt that took the entry after the
+ * publish's lease lapsed holds it otherwise, and the publish's commit is refused, though the publish
+ * may still be out — and where it names none, the publish is taken for the holder while it is out.
+ * Only once the request's own pull of the tags (`pulled`) has brought the view up to the host's —
+ * not another pull's, which a clock reading the same moment could not tell from it — and while
+ * nothing it brought says the render missed an invalidation; for a second at the most
+ * (`PUBLISHING_PULL_MS`).
+ *
+ * Asked only past a hold of the render's pull (`answeringAtOnce`), which no lease lapses within: the
+ * lease was taken before the render, for longer than that.
  */
 export async function answeringWhileBusy(
   runtime: CacheRuntime,
-  reason: AttemptReason,
-  entryId: string | undefined,
+  { reason, entryId, holder }: TurnedAway,
   pulled: Promise<boolean>,
 ): Promise<Busy> {
   const held = publishingFor(runtime, reason, entryId);
   // Not waited for where the view already says the render missed something: a pull only adds to it.
-  if (entryId === undefined || held === undefined || !unmovedSince(runtime, held)) {
+  if (
+    entryId === undefined ||
+    held === undefined ||
+    (holder !== undefined && holder !== held.attemptId) ||
+    !unmovedSince(runtime, held)
+  ) {
     return { kind: 'busy' };
   }
   if (!(await pulledWithin(pulled, PUBLISHING_PULL_MS))) {
     return { kind: 'busy' };
   }
-  // Looked up again: a publish that has settled meanwhile is one the host's answer now speaks for.
+  // Looked up again: a publish that has settled meanwhile is one the host's answer now speaks for,
+  // and one set since is not the one the host named.
   const publishing = runtime.publishing.get(entryId);
-  return publishing !== undefined && unmovedSince(runtime, publishing)
+  return publishing === held && unmovedSince(runtime, publishing)
     ? { kind: 'busy', publishing: publishing.render }
     : { kind: 'busy' };
 }

@@ -210,7 +210,16 @@ export type AttemptOutcome =
        */
       readonly current?: CurrentSummary | null | undefined;
     }
-  | { readonly kind: 'busy'; readonly current?: CurrentSummary | null | undefined };
+  | {
+      readonly kind: 'busy';
+      readonly current?: CurrentSummary | null | undefined;
+      /**
+       * The attempt that holds the lease, where the host says: what tells this isolate's own
+       * publish of the entry, still out, from an attempt that took the entry after its lease lapsed
+       * (`answeringWhileBusy`).
+       */
+      readonly attemptId?: string | undefined;
+    };
 
 export interface ArtifactUpload {
   readonly attemptId: string;

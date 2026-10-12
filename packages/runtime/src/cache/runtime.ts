@@ -68,6 +68,8 @@ export const PUBLISHING_BYTES = PUBLISHING_MIB * MIB;
  */
 export interface Publishing {
   readonly render: CapturedRender;
+  /** The attempt whose lease the publish holds. */
+  readonly attemptId: string;
   /** The tags the render leaves on its generation: what an invalidation reaches it by. */
   readonly tags: readonly string[];
   /** The revision of the tag view its reads were judged against, which its commit claims. */
