@@ -1,6 +1,6 @@
 import { sha256Hex } from '@stayingupwind/core/artifact';
 import { artifactEncodingSchema, artifactRoleSchema, r2BlobKey } from '@stayingupwind/core/cache';
-import { toBase64 } from '@stayingupwind/core/util';
+import { fromBase64, toBase64 } from '@stayingupwind/core/util';
 import {
   ARTIFACT_ENCODING_HEADER,
   ARTIFACT_ROLE_HEADER,
@@ -8,7 +8,11 @@ import {
   failRequestSchema,
   FENCING_TOKEN_HEADER,
   heartbeatRequestSchema,
+  MAX_ARTIFACT_BATCH_BYTES,
+  MAX_BATCHED_ARTIFACT_BYTES,
+  MAX_BATCHED_ARTIFACTS,
   startAttemptRequestSchema,
+  uploadArtifactsRequestSchema,
 } from '@stayingupwind/host/cache';
 import { Hono } from 'hono';
 import { z } from 'zod';
@@ -125,6 +129,118 @@ async function uploadArtifact(c: GatewayContext): Promise<Response> {
   return ok(c, { sha256, byteLength: bytes.byteLength });
 }
 
+const BASE64_GROUP_BYTES = 3;
+const BASE64_GROUP_CHARACTERS = 4;
+/**
+ * How far a batch is read: its artifacts' base64, at a byte a character, and a kibibyte beside each
+ * for what names it — its role, its hash, its type.
+ */
+export const BATCH_BODY_BYTES =
+  Math.ceil(MAX_ARTIFACT_BATCH_BYTES / BASE64_GROUP_BYTES) * BASE64_GROUP_CHARACTERS +
+  MAX_BATCHED_ARTIFACTS * KIB;
+
+/** An artifact of a batch, decoded and hashed. */
+interface DecodedArtifact {
+  readonly upload: UploadedArtifact;
+  readonly bytes: Uint8Array;
+}
+
+function decodedBase64(value: string): Uint8Array | undefined {
+  try {
+    return fromBase64(value);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * `POST /attempts/:attemptId/artifacts`. Several of the attempt's small artifacts in one request:
+ * each read no further than a batch may hold, decoded and hashed before anything is written,
+ * counted against the scope by the authority before any is stored, as one upload's bytes are
+ * (`uploadArtifact`), and then stored together, each under its content. Where the authority refuses
+ * one, the others it recorded are stored all the same and stay the attempt's, as an upload's does
+ * when one beside it is refused, and the refusal is the answer.
+ */
+async function uploadArtifacts(c: GatewayContext): Promise<Response> {
+  const request = await readRequest(c, uploadArtifactsRequestSchema, BATCH_BODY_BYTES);
+  if (request instanceof Response) {
+    return request;
+  }
+  const maxBytes = Math.min(c.get('vars').MAX_ARTIFACT_BYTES, MAX_BATCHED_ARTIFACT_BYTES);
+  const decoded: DecodedArtifact[] = [];
+  let total = 0;
+  for (const artifact of request.artifacts) {
+    const bytes = decodedBase64(artifact.bytes);
+    if (bytes === undefined) {
+      return fail(c, 'invalid_request', "an artifact's bytes must be base64");
+    }
+    total += bytes.byteLength;
+    if (bytes.byteLength > maxBytes || total > MAX_ARTIFACT_BATCH_BYTES) {
+      return fail(
+        c,
+        'invalid_request',
+        `a batch may hold artifacts of ${maxBytes} bytes, ${MAX_ARTIFACT_BATCH_BYTES} in all`,
+      );
+    }
+    const sha256 = await sha256Hex(bytes);
+    if (sha256 !== artifact.sha256) {
+      return fail(
+        c,
+        'artifact_mismatch',
+        'the bytes do not hash to the name they were uploaded under',
+      );
+    }
+    const upload: UploadedArtifact = {
+      sha256,
+      byteLength: bytes.byteLength,
+      contentType: artifact.contentType,
+      encoding: 'identity',
+      role: artifact.role,
+      storageRef: r2BlobKey(c.get('scopeId'), sha256),
+    };
+    decoded.push({ upload, bytes });
+  }
+  // Asked of the authority together, which takes them one after another: the round trips overlap.
+  const attemptId = c.req.param('attemptId') ?? '';
+  const recorded = await Promise.all(
+    decoded.map(({ upload }) => {
+      return c
+        .get('scope')
+        .recordArtifact(attemptId, { ...upload, fencingToken: request.fencingToken }, c.get('now'));
+    }),
+  );
+  // Each artifact the authority recorded is stored, refused beside another or not, as one upload's
+  // bytes are once it is recorded; each blob once, as the first of the batch's artifacts that are
+  // its bytes types it, as the first upload of them does.
+  const blobs = new Map<string, DecodedArtifact>();
+  for (const [index, artifact] of decoded.entries()) {
+    if (!isRefusal(recorded[index]) && !blobs.has(artifact.upload.storageRef)) {
+      blobs.set(artifact.upload.storageRef, artifact);
+    }
+  }
+  await Promise.all(
+    [...blobs.values()].map(async ({ upload, bytes }) => {
+      if ((await c.env.ARTIFACTS.head(upload.storageRef)) === null) {
+        await c.env.ARTIFACTS.put(upload.storageRef, bytes as BufferSource, {
+          httpMetadata: { contentType: upload.contentType },
+        });
+      }
+    }),
+  );
+  const refused = recorded.find(isRefusal);
+  if (refused !== undefined) {
+    return answerScope(c, refused);
+  }
+  return ok(c, {
+    artifacts: decoded.map(({ upload }) => {
+      return {
+        sha256: upload.sha256,
+        byteLength: upload.byteLength,
+      };
+    }),
+  });
+}
+
 export const attemptRoutes = new Hono<GatewayEnv>()
   // Not `zValidator`: it parses whatever arrives before anything has measured it.
   .post('/attempts', async (c) => {
@@ -144,6 +260,7 @@ export const attemptRoutes = new Hono<GatewayEnv>()
     );
   })
   .put('/attempts/:attemptId/artifacts/:sha256', (c) => uploadArtifact(c))
+  .post('/attempts/:attemptId/artifacts', (c) => uploadArtifacts(c))
   .post('/attempts/:attemptId/commit', async (c) => {
     const request = await readRequest(c, commitRequestSchema, COMMIT_BODY_BYTES);
     if (request instanceof Response) {
