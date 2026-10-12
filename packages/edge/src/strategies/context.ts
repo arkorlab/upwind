@@ -38,6 +38,11 @@ export interface EdgeContext {
   readonly app: AppRuntime | undefined;
   /** The URL the client asked for, when a middleware rewrote the request being served. */
   readonly originalUrl: string | undefined;
+  /**
+   * The request is a `HEAD`: answered with headers alone, it asks for no regeneration
+   * (`wantedRegeneration`), so a record it is served from keeps the whole hold (`heldGeneration`).
+   */
+  readonly headOnly?: boolean | undefined;
   readonly policy: DeliveryPolicy;
   /** The project handed CSP nonces to the edge, so every document gets one minted here. */
   readonly cspNonce: boolean;

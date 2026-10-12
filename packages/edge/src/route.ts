@@ -328,6 +328,7 @@ function edgeContextFor(
     forwarding,
     app: state.app,
     originalUrl: undefined,
+    headOnly: request.method === 'HEAD',
     policy: state.policy,
     cspNonce: state.cspNonce,
     cspNonceMode: state.cspNonceMode,

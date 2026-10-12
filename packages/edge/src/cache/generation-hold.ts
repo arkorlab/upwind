@@ -1,8 +1,9 @@
-import { kvGenerationKey } from '@stayingupwind/core/cache';
+import { type DecodedGenerationPack, kvGenerationKey } from '@stayingupwind/core/cache';
 import type { RuntimeCacheSettings } from '@stayingupwind/host/delivery';
 
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeContext } from '../strategies/context.ts';
+import { regeneratedWhenServed } from './decision.ts';
 import {
   type GenerationKey,
   type GenerationLoad,
@@ -31,9 +32,39 @@ import {
  * judged when it is served (`decideGeneration`), so one that expired while it was held is
  * regenerated in the foreground, as it always was.
  *
+ * A record whose serving asks for its regeneration — a 200 past its `revalidate`, regenerated
+ * behind the response, or past its `expire`, regenerated in the foreground — is held for
+ * `STALE_HOLD_MS` rather than the whole hold: the record that regeneration publishes is what the
+ * requests after it should find, a second later rather than five. One that asks for none — of
+ * another status, which is handed on, or whose freshness cannot be told, or served to a `HEAD` —
+ * keeps the whole hold.
+ *
  * A hold of zero holds nothing, and every request reads the record before its first byte: a
  * setting for measuring the read, not for serving.
  */
+
+/**
+ * How long a record whose serving asks for its regeneration is held at most: one second, or the
+ * policy's hold where that is shorter. The read behind the response moves sooner; the first byte
+ * waits for nothing more.
+ */
+const STALE_HOLD_MS = 1000;
+
+/**
+ * How long `pack` is held at `now` for the request `edge` serves: `STALE_HOLD_MS` while serving it
+ * asks for its regeneration (`regeneratedWhenServed`) — never for a `HEAD`, which asks for none —
+ * and the policy's hold otherwise.
+ */
+function holdOf(
+  edge: EdgeContext,
+  pack: DecodedGenerationPack,
+  now: number,
+  settings: RuntimeCacheSettings,
+): number {
+  return edge.headOnly !== true && regeneratedWhenServed(pack, now)
+    ? Math.min(settings.holdMs, STALE_HOLD_MS)
+    : settings.holdMs;
+}
 
 /**
  * Read the entry behind the response, for the requests after this one. Never rejects: a read that
@@ -76,7 +107,7 @@ export function heldGeneration(
   const recordKey = kvGenerationKey(key.scopeId, key.entryId);
   const held = memory.generations.get(recordKey);
   if (held !== undefined) {
-    if (now - held.readAt >= settings.holdMs) {
+    if (now - held.readAt >= holdOf(edge, held.pack, now, settings)) {
       memory.generations.set(recordKey, { ...held, readAt: now }, held.bytes);
       edge.ctx.waitUntil(refresh(edge, key, settings, options));
     }
