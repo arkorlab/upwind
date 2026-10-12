@@ -1,0 +1,123 @@
+import type { AssetRejection } from '@stayingupwind/core/assets';
+import { NO_STORE_CACHE_CONTROL } from '@stayingupwind/core/request';
+import type {
+  AssetDeliveryStrategy,
+  AssetHandleResult,
+  AssetKeepOutcome,
+} from '@stayingupwind/host/delivery';
+
+import { logWarn } from '../observability/logger.ts';
+import type { EdgeContext } from '../strategies/context.ts';
+import { badGatewayResponse, removeSharedCacheOverrides } from './responses.ts';
+
+export interface AssetInput {
+  readonly request: Request;
+  readonly clientUrl: URL;
+  readonly strategy: AssetDeliveryStrategy<EdgeContext>;
+  readonly edge: EdgeContext;
+}
+
+export interface AssetOutcome {
+  readonly response: Response;
+  /** False when the origin's answer was refused: the caller may have a better one to give. */
+  readonly admitted: boolean;
+  /** Why it was refused, when it was. */
+  readonly rejection: AssetRejection | undefined;
+}
+
+/**
+ * What the metric says happened. An asset the edge streamed but could not keep is `admitted` on
+ * the wire and never in a cache, so the reason it was not kept is named here or nowhere.
+ */
+function assetOutcomeKind(admitted: boolean, kept: AssetKeepOutcome | undefined): string {
+  if (!admitted) {
+    return 'not-admitted';
+  }
+  return kept === undefined || kept === 'kept' ? 'admitted' : `uncached-${kept}`;
+}
+
+/**
+ * The answer as a project whose delivery is private gives it (`privateDelivery`): kept by nobody,
+ * the browser or a cache between, either of which could hand the asset back without the host
+ * being asked — to a visitor it no longer lets through, or to one it never did. A copy with
+ * headers of its own, so the entry the edge keeps behind it is the asset's as the strategy made it.
+ */
+function keptByNobody(response: Response): Response {
+  const headers = new Headers(response.headers);
+  removeSharedCacheOverrides(headers);
+  headers.set('cache-control', NO_STORE_CACHE_CONTROL);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+/** Serve an immutable-asset candidate through the policy's asset strategy. */
+export async function handleAsset(input: AssetInput): Promise<AssetOutcome> {
+  const startedAt = input.edge.runtime.now();
+  const originUrl = new URL(
+    `https://${input.edge.forwarding.previewHost}${input.clientUrl.pathname}${input.clientUrl.search}`,
+  );
+  let result: AssetHandleResult;
+  try {
+    result = await input.strategy.handle(input.request, originUrl, input.edge);
+  } catch (error) {
+    // The same controlled answer the document and passthrough paths give. Letting this out would
+    // end the request as an unhandled Worker exception instead.
+    logWarn('asset upstream fetch failed', {
+      pathname: input.clientUrl.pathname,
+      detail: error instanceof Error ? error.message : String(error),
+    });
+    return {
+      response: badGatewayResponse('asset-upstream-error'),
+      admitted: false,
+      rejection: undefined,
+    };
+  }
+  const firstByteMs = input.edge.runtime.now() - startedAt;
+  const { response } = result;
+  const report = (kept: AssetKeepOutcome | undefined): void => {
+    input.edge.host.observer.metric({
+      projectId: input.edge.projectId,
+      kind: 'asset',
+      pathname: input.clientUrl.pathname,
+      shellStrategy: '',
+      shellSource: '',
+      outcomeKind: assetOutcomeKind(result.admitted, kept),
+      colo: input.edge.colo ?? '',
+      originCacheHeader: response.headers.get('x-vercel-cache') ?? '',
+      encoding: '',
+      manifestId: input.edge.manifestId,
+      policyId: input.edge.policy.id,
+      // A time to first byte again: on a miss the strategy answers on the origin's headers and
+      // streams the body behind them, and on a hit this is the Cache API read.
+      ttfbInternalMs: firstByteMs,
+      shellLookupMs: 0,
+      originFirstByteMs: 0,
+      originTotalMs: 0,
+      shellBytes: 0,
+      suffixBytes: 0,
+      recovery: 0,
+      retry: 0,
+      assetHit: result.hit ? 1 : 0,
+      subrequests: result.subrequests,
+    });
+  };
+  // A copy kept behind the response is the one thing this cannot report yet, and the reason an
+  // asset went unstored is the only place that shows — the header committed `admit=1` long before.
+  if (result.kept === undefined) {
+    report(undefined);
+  } else {
+    input.edge.ctx.waitUntil(
+      (async (): Promise<void> => {
+        report(await result.kept);
+      })(),
+    );
+  }
+  return {
+    response: input.edge.privateDelivery ? keptByNobody(response) : response,
+    admitted: result.admitted,
+    rejection: result.rejection,
+  };
+}

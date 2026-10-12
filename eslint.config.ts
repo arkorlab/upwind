@@ -55,6 +55,9 @@ const RUNTIME_NEUTRAL_FILES = [
   // A Worker's, and a Function's: the cache's authority and gateways, and the client a Function
   // reaches them with. Its adapter preset runs under Node, and says so where it imports a built-in.
   'packages/cache/**/*.ts',
+  // A Worker's: the edge in front of a deployment. Where it compresses a document as it goes out, it
+  // reads the one built-in the Workers runtime gives it for that, and says so.
+  'packages/edge/**/*.ts',
   'packages/sdk/src/**/*.ts',
 ];
 /** The suites, and what they share, wherever a package or a tool keeps them. */
@@ -537,7 +540,7 @@ export default defineConfig([
   // The packages that serve a deployment are refused a Node.js built-in by its resolved name as well
   // as by the specifiers above, as they are wherever they are developed beside a host.
   {
-    files: ['packages/{cache,deploy,host}/**/*.ts'],
+    files: ['packages/{cache,deploy,edge,host}/**/*.ts'],
     rules: { 'import-x/no-nodejs-modules': 'error' },
   },
 
@@ -546,13 +549,14 @@ export default defineConfig([
     files: [
       'packages/cache/src/prefetch/worker.ts',
       'packages/cache/src/standalone/{read-worker,worker}.ts',
+      'packages/edge/src/{blob,standalone}/worker.ts',
     ],
     rules: { 'import-x/no-default-export': 'off' },
   },
 
-  // The cache's logger writes each line to the console, which is where a Worker's logs are read.
+  // A Worker's logger writes each line to the console, which is where a Worker's logs are read.
   {
-    files: ['packages/cache/src/logger.ts'],
+    files: ['packages/cache/src/logger.ts', 'packages/edge/src/{blob,observability}/logger.ts'],
     rules: { 'no-console': 'off' },
   },
 
