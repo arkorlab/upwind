@@ -5,6 +5,7 @@ import { fetchCacheWaitUntilPatch } from './fetch-cache-wait-until.ts';
 import { graphManifestsPatch } from './graph-manifests.ts';
 import { hangingInputAbortPatch } from './hanging-input-abort.ts';
 import { instrumentationPatch } from './instrumentation.ts';
+import { lazySourceMapPatch } from './lazy-source-map.ts';
 import { loadManifestPatch } from './load-manifest.ts';
 import { resourceCacheBridgePatch } from './resource-cache-bridge.ts';
 import { resumeCacheLimitPatch } from './resume-cache-limit.ts';
@@ -49,6 +50,7 @@ export const PATCHES: readonly Patch[] = [
   taskTimersPatch,
   fastImmediatesPatch,
   graphManifestsPatch,
+  lazySourceMapPatch,
   workflowQuickjsWasmPatch,
 ];
 
