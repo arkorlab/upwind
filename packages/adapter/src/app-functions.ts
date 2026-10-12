@@ -69,6 +69,8 @@ export interface FunctionsContext {
   readonly keptMaps: KeptMaps | undefined;
   readonly manifests: readonly TextModule[];
   readonly hook: HookParts;
+  /** The module the cache handlers the app configured are loaded from (`writeCacheHandlers`). */
+  readonly cacheHandlers: string | undefined;
   readonly middleware: MiddlewareParts;
   /** What `collectEntrypoints` collected: the merged lists, and each route's own. */
   readonly modules: readonly EntryModule[];
@@ -122,6 +124,7 @@ export async function patchFor(
       }),
     }),
     instrumentation: context.hook.file,
+    cacheHandlers: context.cacheHandlers,
     wasm: wasm.chunks,
     embeddedWasm: await offerEmbeddedWasm(chunks, wasm.collector),
   };

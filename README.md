@@ -101,7 +101,7 @@ flowchart TB
 <details>
 <summary><b>Not a fit yet if…</b></summary>
 
-- **you build with webpack, or rely on a custom `cacheHandler`.** Neither is supported; see [what it serves](#-what-it-serves).
+- **you build with webpack.** It is not supported; see [what it serves](#-what-it-serves).
 - **you want one command that builds and deploys your app.** upwind stops at the bundle; see the note above.
 - **you need 1.0 guarantees.** See [the status note](#status).
 
@@ -332,6 +332,7 @@ Apart from `--port` and `--hostname`, `next dev`'s flags — `--experimental-htt
 | ✅  | App Router: Server Components, streaming, Server Actions          |                                                                   |
 | ✅  | Partial Prerendering, Cache Components                            | the shell from storage, the rest from the Function                |
 | ✅  | `"use cache"`, ISR, `revalidateTag` / `updateTag`, cached `fetch` | kept by a host's cache module, named at build time (below)        |
+| ✅  | A `cacheHandler` / `cacheHandlers` of your own                    | bundled into a Function (not a static export's); see below        |
 | ✅  | Pages Router: `getStaticProps`, `getServerSideProps`, API routes  | including the `_next/data` outputs the client router asks for     |
 | ✅  | `proxy.ts`, and the deprecated `middleware.ts`                    | also a Function of its own                                        |
 | ✅  | Routes with `export const runtime = 'edge'`                       | served as built, or rendered in full on each request              |
@@ -344,7 +345,9 @@ Apart from `--port` and `--hostname`, `next dev`'s flags — `--experimental-htt
 | ✅  | Cron jobs                                                         | [declared beside `next.config`](#-scheduled-work)                 |
 | ✅  | The Workflow SDK (`"use workflow"`, `workflow` 5.x)               | its flow route a Function of its own; the World a host's (below)  |
 
-**The cache is a host's, and it is chosen at build time.** The runtime hands every cache read and write to a module the host names in an adapter of its own, `createAdapter({ cacheHostModule })`. The default adapter — the one the steps above use — names none, so its bundle serves what the build produced and revalidates nothing.
+**The cache is a host's, and it is chosen at build time.** The runtime hands every cache read and write — save those an application's own handler takes (below) — to a module the host names in an adapter of its own, `createAdapter({ cacheHostModule })`. The default adapter — the one the steps above use — names none, so its bundle serves what the build produced and revalidates nothing.
+
+**An application's own handlers sit beside it.** A build that configures `cacheHandler` or `cacheHandlers` has each module bundled into the Function, and says so in a warning; a static export, which has no Function to run one, bundles none. Each takes what Next.js hands it there: a `cacheHandler` the data cache, `fetch` and `unstable_cache` — on a Function Next.js keeps no page in it, so pages stay the host's — and a kind of `cacheHandlers` that kind of `"use cache"`. `revalidateTag`, `revalidatePath` and `updateTag` still reach the host's cache. A handler runs in each isolate of the Function, so what it keeps in memory is that isolate's alone; a store every isolate reaches is what makes a cache shared. And what a host's cache module does beside the cache is not done for one: a write is not held to land before the response ends, and a value Next.js answers stale is revalidated behind it only as far as the request's work goes on. What a handler imports is bundled with it; a file it reads at run time is not carried, and an ES module that awaits at its top level is refused, since the Function's bundle is CommonJS.
 
 **So is a workflow's World.** A build that uses the Workflow SDK runs its workflows and steps in a Function of their own, on the SDK's QuickJS engine, and keeps its runs in a World the host names, `createAdapter({ workflowWorldModule })`: the host delivers the SDK's queue to that Function, and nothing a visitor sends reaches it. The adapter's readme says [what the host provides](packages/adapter/README.md#the-workflow-sdk).
 
@@ -352,7 +355,6 @@ Apart from `--port` and `--hostname`, `next dev`'s flags — `--experimental-htt
 <summary><b>Not supported</b></summary>
 
 - **webpack builds.** Turbopack only; a static export is taken from any bundler, since it carries no built code.
-- **A custom `cacheHandler` / `cacheHandlers`.** The build fails, by design: the host supplies the incremental-cache (ISR) and `"use cache"` handlers. A static export, which runs no handler, is the exception.
 - **Revalidating a route on the edge runtime.** Its outputs are served as built, or rendered in full on each request.
 - **`experimental.optimizeCss`.** It reads built stylesheets off a disk a Function does not have; the first render that needs it fails, and says why.
 - **`partialFallback`.** Recorded in the bundle, not acted on.
