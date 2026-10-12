@@ -21,8 +21,6 @@ export {
   prerenderRouteTypeSchema,
   prerenderSchema,
   type Route,
-  type RouteHas,
-  routeHasSchema,
   routeSchema,
   type Routing,
   routingSchema,
@@ -44,10 +42,10 @@ export {
   ONE_PASS_BUNDLE_VERSION,
   ONE_PASS_SPLIT_BUNDLE_VERSION,
   SPLIT_BUNDLE_VERSION,
-  splitFunctionNameSchema,
   workflowSchema,
   type WorkflowSpec,
 } from './schema.ts';
+export { type RouteHas, routeHasSchema, splitFunctionNameSchema } from './carried.ts';
 export { PRIMARY_FUNCTION } from './function-name.ts';
 export { type ManifestHead, manifestHead } from './head.ts';
 export {

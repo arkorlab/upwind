@@ -1,4 +1,4 @@
-import type { RouteHas } from '../bundle/schema.ts';
+import type { RouteHas } from '../bundle/carried.ts';
 import { ROUTER_REQUEST_HEADERS } from './constants.ts';
 import { assertAffordable } from './pattern-budget.ts';
 
