@@ -1,8 +1,9 @@
 # @stayingupwind/edge
 
-The edge in front of a deployment, as a host runs it. A document is answered from its shell first,
-and its continuation is spliced in as the deployment's Function renders it. Around that, the edge
-serves:
+The edge in front of a deployment, as a host runs it. Where a route has a shell the edge can serve,
+a document goes out from that shell first, and its continuation is spliced in as the deployment's
+Function renders it; any other document, and one whose shell cannot be read in time, is the
+Function's to answer whole. Around that, the edge serves:
 
 - the build's files and optimized images;
 - prefetch segments;
