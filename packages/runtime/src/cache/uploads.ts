@@ -27,6 +27,16 @@ const BATCHED_UPLOAD_BYTES = BATCHED_UPLOAD_KIB * KIB;
 /** No more outputs than this in one call, nor more bytes in all than that. */
 const BATCHED_UPLOADS = 16;
 const BATCHED_UPLOADS_BYTES = BATCHED_UPLOADS_KIB * KIB;
+/**
+ * The content types an output goes in one call with others under: no longer than this, and of
+ * printable ASCII. Carried in the call's body rather than as a header of its own, a content type is
+ * one the host reads out of that body and bounds there (`uploadArtifacts`); one past what it takes
+ * goes on its own, as every output did before the call, rather than failing the whole call.
+ */
+const BATCHED_CONTENT_TYPE_LENGTH = 256;
+const BATCHED_CONTENT_TYPE = /^[\t\u{20}-\u{7E}]+$/u;
+/** A SHA-256 as hosts name what they stored: 64 lower-case hex digits. */
+const SHA256_HEX = /^[\da-f]{64}$/u;
 
 /**
  * Hosts whose `uploadArtifacts` answered that there is no such call — one from before it — whose
@@ -39,30 +49,51 @@ function noSuchCall(error: unknown): boolean {
   return error instanceof CacheHostError && error.code === 'unsupported';
 }
 
-/** `value` is what a host answers an upload with: the name and length of the bytes it stored. */
-function isUploaded(value: unknown): value is UploadedArtifact {
+/**
+ * `value` is what a host answers `upload` with: the name of the bytes it stored, and their length,
+ * which is the length of the bytes sent. An answer of another length is another output's — the
+ * host's answers out of their order — and would name in the commit what this output is not.
+ */
+function isUploadOf(upload: ArtifactUpload, value: unknown): value is UploadedArtifact {
+  if (typeof value !== 'object' || value === null) {
+    return false;
+  }
+  const { sha256, byteLength } = value as {
+    readonly sha256?: unknown;
+    readonly byteLength?: unknown;
+  };
   return (
-    typeof value === 'object' &&
-    value !== null &&
-    typeof (value as { readonly sha256?: unknown }).sha256 === 'string' &&
-    typeof (value as { readonly byteLength?: unknown }).byteLength === 'number'
+    typeof sha256 === 'string' && SHA256_HEX.test(sha256) && byteLength === upload.bytes.byteLength
   );
 }
 
 /**
- * The answers of a batch of `count`, one for each output in their order, or why they are not:
- * every answer is checked before any output is answered with one.
+ * The answers of a batch, one for each output in their order, or why they are not: every answer is
+ * checked against its output before any output is answered with one. By index, every one of them:
+ * a gap in what the host answered is an answer missing, which a walk over the answers would skip.
  */
-function answersFor(count: number, answers: readonly unknown[]): UploadedArtifact[] {
-  if (answers.length !== count) {
-    throw new Error(`the host answered ${answers.length} of ${count} uploads`);
+function answersFor(sent: readonly Batched[], answers: readonly unknown[]): UploadedArtifact[] {
+  if (answers.length !== sent.length) {
+    throw new Error(`the host answered ${answers.length} of ${sent.length} uploads`);
   }
-  return answers.map((answer, index) => {
-    if (!isUploaded(answer)) {
-      throw new TypeError(`the host answered no upload ${index}`);
+  const checked: UploadedArtifact[] = [];
+  for (const [index, { pending }] of sent.entries()) {
+    const answer = answers[index];
+    if (!isUploadOf(pending, answer)) {
+      throw new TypeError(
+        `the host answered no upload ${index} of ${pending.bytes.byteLength} bytes`,
+      );
     }
-    return answer;
-  });
+    checked.push(answer);
+  }
+  return checked;
+}
+
+/** `contentType` is one an output goes in one call with others under (`BATCHED_CONTENT_TYPE`). */
+function batchable(contentType: string): boolean {
+  return (
+    contentType.length <= BATCHED_CONTENT_TYPE_LENGTH && BATCHED_CONTENT_TYPE.test(contentType)
+  );
 }
 
 /** Settle `answer` as `work` settles. Never rejects. */
@@ -113,9 +144,12 @@ export function uploaderFor(
       }
     });
   };
+  /** Each of `sent` on its own, as a host without `uploadArtifacts` takes them. */
+  const sendEach = async (sent: readonly Batched[]): Promise<void> => {
+    await Promise.all(sent.map(async ({ pending, answer }) => settleAs(answer, own(pending))));
+  };
   const batch: Batched[] = [];
   let batchedBytes = 0;
-  const batches = host.uploadArtifacts !== undefined && !unbatched.has(host);
   const sendBatch = async (sent: readonly Batched[]): Promise<void> => {
     try {
       // Failed or not is said inside the turn, as `own` says it: the turn wakes the next output as
@@ -124,21 +158,29 @@ export function uploaderFor(
         if (failed) {
           throw new Error('not uploaded: an output beside it failed to upload');
         }
+        // Asked as the call would go rather than when the outputs were handed over: another
+        // attempt of the isolate may have learned meanwhile that the host has no such call.
+        if (unbatched.has(host) || host.uploadArtifacts === undefined) {
+          return;
+        }
         try {
-          const answered = await host.uploadArtifacts?.(sent.map(({ pending }) => pending));
-          return answersFor(sent.length, answered ?? []);
+          return answersFor(sent, await host.uploadArtifacts(sent.map(({ pending }) => pending)));
         } catch (error) {
           failed ||= !noSuchCall(error);
           throw error;
         }
       });
+      if (answers === undefined) {
+        await sendEach(sent);
+        return;
+      }
       for (const [index, answered] of answers.entries()) {
         sent[index]?.answer.resolve(answered);
       }
     } catch (error) {
       if (noSuchCall(error)) {
         unbatched.add(host);
-        await Promise.all(sent.map(async ({ pending, answer }) => settleAs(answer, own(pending))));
+        await sendEach(sent);
         return;
       }
       for (const { answer } of sent) {
@@ -150,7 +192,9 @@ export function uploaderFor(
     send: (role, bytes, contentType) => {
       const pending: ArtifactUpload = { ...lease, role, bytes, contentType };
       if (
-        batches &&
+        host.uploadArtifacts !== undefined &&
+        !unbatched.has(host) &&
+        batchable(contentType) &&
         bytes.byteLength <= BATCHED_UPLOAD_BYTES &&
         batch.length < BATCHED_UPLOADS &&
         batchedBytes + bytes.byteLength <= BATCHED_UPLOADS_BYTES
