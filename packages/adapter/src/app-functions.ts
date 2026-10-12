@@ -1,6 +1,8 @@
 import {
   type Entrypoint,
   ONE_PASS_SPLIT_BUNDLE_VERSION,
+  packPrerenders,
+  type Prerender,
   PRIMARY_FUNCTION,
 } from '@stayingupwind/core/bundle';
 import type { AdapterOutput } from 'next';
@@ -300,6 +302,16 @@ export interface AppFunctions<M> {
   readonly plan: Record<string, unknown> | undefined;
 }
 
+/**
+ * The `runtime.json` of a Function that carries the deployment's prerenders, as it is written: the
+ * manifest with its prerenders packed (`packPrerenders`), which is how the runtime reads them.
+ */
+export function runtimeManifestJson(
+  manifest: Readonly<Record<string, unknown>> & { readonly prerenders: readonly Prerender[] },
+): string {
+  return JSON.stringify({ ...manifest, prerenders: packPrerenders(manifest.prerenders) });
+}
+
 /** A Function the build will upload as it is: held to Cloudflare's limit, which nothing raises. */
 function finalSize(name: string, built: BuiltFunction): void {
   auditFunctionSize(name, { modules: built.spec.modules, size: built.dependencies.size });
@@ -313,7 +325,11 @@ function finalSize(name: string, built: BuiltFunction): void {
  * measured is what the plan is weighed with, and it is set aside for the Functions the plan makes.
  */
 export async function appFunctionsOf<
-  M extends { readonly v: number; readonly entrypoints: readonly Entrypoint[] },
+  M extends {
+    readonly v: number;
+    readonly entrypoints: readonly Entrypoint[];
+    readonly prerenders: readonly Prerender[];
+  },
 >(
   context: FunctionsContext,
   runtimeManifest: M,
@@ -321,7 +337,7 @@ export async function appFunctionsOf<
 ): Promise<AppFunctions<M>> {
   const single = await buildAppFunction(
     context,
-    JSON.stringify(runtimeManifest),
+    runtimeManifestJson(runtimeManifest),
     undefined,
     budget !== undefined,
   );
@@ -368,7 +384,7 @@ export async function appFunctionsOf<
     v: ONE_PASS_SPLIT_BUNDLE_VERSION,
     entrypoints: placedEntrypoints(runtimeManifest.entrypoints, placements),
   };
-  const json = JSON.stringify(split);
+  const json = runtimeManifestJson(split);
   const built: { name: string; built: BuiltFunction }[] = [];
   for (const planned of plan) {
     const routes = routesOf(planned, context.routes, placements, every);

@@ -18,7 +18,6 @@ import { nowMs } from './clock.ts';
 import { asRegeneration } from './context.ts';
 import { forgetRecord, forgetRecordBefore, publishedRecordOf, rememberRecord } from './current.ts';
 import {
-  type ArtifactUpload,
   type AttemptOutcome,
   type AttemptReason,
   CacheHostError,
@@ -48,7 +47,7 @@ import {
 import type { CacheRuntime } from './runtime.ts';
 import { servable } from './servable.ts';
 import { refusedTags } from './tag-bounds.ts';
-import { callsBehind } from './turns.ts';
+import { uploaderFor } from './uploads.ts';
 
 /**
  * A regeneration: one attempt at publishing a new generation of an entry. The lease is taken
@@ -302,46 +301,26 @@ async function upload(
   lease: { attemptId: string; fencingToken: number },
   render: CapturedRender,
 ): Promise<Uploads> {
-  const { host } = input.runtime;
-  // In the request's turns for the calls behind its work, which the data cache's writes take too
-  // (`CALLS_BEHIND_AT_ONCE`): a page's every output at once took all six a Function has.
-  const turn = callsBehind();
-  // An output that fails to upload fails the attempt (`publish`), and the outputs still waiting
-  // for their turn are not sent after it: no commit would name them, and they would hold the turns
-  // the request's writes wait for. Said inside the turn, before it is given back: the turn wakes
-  // the next output as it is given back, ahead of anything that waits on this one.
-  let failed = false;
-  const one = (role: ArtifactUpload['role'], bytes: Uint8Array, contentType: string) => {
-    return turn(async () => {
-      if (failed) {
-        throw new Error('not uploaded: an output beside it failed to upload');
-      }
-      try {
-        return await host.uploadArtifact({ ...lease, role, bytes, contentType });
-      } catch (error) {
-        failed = true;
-        throw error;
-      }
-    });
-  };
+  const uploads = uploaderFor(input.runtime.host, lease);
   const encoder = new TextEncoder();
   const primary = bodyArtifact(input.target, render);
-  // The outputs together, the segments with the rest, as many at once as the turns let out. Each
-  // is a call of its own to the host, which none of the others waits on, and one after another a
-  // page's segments were a round trip each between the render and its commit.
-  const [body, postponed, rsc, data, segments] = await Promise.all([
-    one(primary.role, render.html, primary.contentType),
+  // The outputs together, the segments with the rest: the small ones in one call, sent once every
+  // output has been handed over, and the rest each in its turn. One after another, a page's
+  // segments were a round trip each between the render and its commit.
+  const sent = Promise.all([
+    uploads.send(primary.role, render.html, primary.contentType),
     render.postponed === undefined
       ? undefined
-      : one('postponed', encoder.encode(render.postponed), JSON_TYPE),
-    render.rscData === undefined ? undefined : one('rsc', render.rscData, RSC_TYPE),
-    render.data === undefined ? undefined : one(PAGES_DATA, render.data, JSON_UTF8_TYPE),
+      : uploads.send('postponed', encoder.encode(render.postponed), JSON_TYPE),
+    render.rscData === undefined ? undefined : uploads.send('rsc', render.rscData, RSC_TYPE),
+    render.data === undefined ? undefined : uploads.send(PAGES_DATA, render.data, JSON_UTF8_TYPE),
     Promise.all(
       [...render.segments].map(
-        async ([key, bytes]) => [key, await one('segment', bytes, RSC_TYPE)] as const,
+        async ([key, bytes]) => [key, await uploads.send('segment', bytes, RSC_TYPE)] as const,
       ),
     ),
   ]);
+  const [[body, postponed, rsc, data, segments]] = await Promise.all([sent, uploads.flush()]);
   return { body, postponed, rsc, data, segments: new Map(segments) };
 }
 
