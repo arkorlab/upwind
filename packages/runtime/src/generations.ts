@@ -330,6 +330,23 @@ async function answerFromJob(
   if (outcome.kind === 'skipped') {
     return undefined;
   }
+  // The render this isolate is publishing of the entry: the page the requests after its publish are
+  // answered with, already made.
+  if (
+    outcome.kind === 'busy' &&
+    outcome.publishing !== undefined &&
+    servable(outcome.publishing.status, outcome.publishing.headers)
+  ) {
+    const answered = await answerFromRender(
+      job.input,
+      job.target.handler,
+      outcome.publishing,
+      want,
+    );
+    if (answered !== undefined) {
+      return withOutcome(answered, 'publishing');
+    }
+  }
   // `busy`, and `superseded` — a later generation than the one judged is the host's, which this
   // isolate's read is behind — are answered alike: with a render of the visitor's own, kept by no
   // one.

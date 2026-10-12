@@ -2,6 +2,7 @@ import type { DecodedGenerationPack } from '@stayingupwind/core/cache';
 import { TtlCache } from '@stayingupwind/core/util';
 import { createCacheHost } from 'arkor:cache-host';
 
+import type { CapturedRender } from './capture.ts';
 import type { CacheHost, CacheHostLookup, DataRead, FetchLike } from './host.ts';
 import { TagState } from './tags.ts';
 
@@ -36,6 +37,17 @@ const DATA_MEMO_BYTES = PAYLOAD_MEMO_MIB * MIB;
 const RECORD_MEMO_BYTES = PAYLOAD_MEMO_MIB * MIB;
 const ARTIFACT_MEMO_BYTES = ARTIFACT_MEMO_MIB * MIB;
 const UTF16_BYTES = 2;
+
+/**
+ * A render this isolate is publishing as an entry's next generation: from the render made until its
+ * publish has settled. `observedTagRevision` is the revision of the tag view its reads were judged
+ * against, and `renderedAt` when it was made.
+ */
+export interface Publishing {
+  readonly render: CapturedRender;
+  readonly observedTagRevision: number;
+  readonly renderedAt: number;
+}
 
 export interface CacheRuntime {
   readonly scopeId: string;
@@ -73,6 +85,12 @@ export interface CacheRuntime {
   readonly recordReads: Map<string, RecordRead>;
   /** Entries a regeneration was asked for lately; a second ask within the hold is not repeated. */
   readonly regenerationMemo: TtlCache<string, true>;
+  /**
+   * The renders this isolate is publishing, by entry (`Publishing`): a request of the isolate that
+   * would regenerate the entry meanwhile is answered from one, as the request that made it was,
+   * rather than with a page of its own (`regenerate`). Each goes once its publish has settled.
+   */
+  readonly publishing: Map<string, Publishing>;
   /**
    * Artifacts of current generations, by id, read for an output other than the record's own. An
    * artifact is named by its content and never rewritten, so what an id read once says it says for
@@ -197,6 +215,7 @@ export function createCacheRuntime(options: CacheRuntimeOptions): CacheRuntime |
     }),
     recordReads: new Map(),
     regenerationMemo: new TtlCache(holdMs, MEMO_ENTRIES, options.now),
+    publishing: new Map(),
     artifactMemo: new TtlCache(Infinity, ARTIFACT_MEMO_ENTRIES, options.now, {
       maxBytes: ARTIFACT_MEMO_BYTES,
       sizeOf: (bytes, key) => bytes.buffer.byteLength + key.length * UTF16_BYTES,

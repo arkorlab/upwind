@@ -17,7 +17,13 @@ import { invokeNodeHandler, type Run } from '../node-bridge.ts';
 import { type CapturedRender, renderCaptured } from './capture.ts';
 import { nowMs } from './clock.ts';
 import { asRegeneration } from './context.ts';
-import { forgetRecord, forgetRecordBefore, publishedRecordOf, rememberRecord } from './current.ts';
+import {
+  entryIdOf,
+  forgetRecord,
+  forgetRecordBefore,
+  publishedRecordOf,
+  rememberRecord,
+} from './current.ts';
 import {
   type ArtifactUpload,
   type AttemptOutcome,
@@ -39,7 +45,7 @@ import {
   RegenerationError,
   supersededBy,
 } from './lease.ts';
-import type { CacheRuntime } from './runtime.ts';
+import type { CacheRuntime, Publishing } from './runtime.ts';
 import { servable } from './servable.ts';
 import { callsBehind } from './turns.ts';
 
@@ -55,7 +61,10 @@ import { callsBehind } from './turns.ts';
  * The uploads and the commit go on behind whoever answers from the render, handed to the runtime
  * once the render is made: they are round trips to the host, none of which changes what the render
  * says, and a visitor answered from a render made for them no longer waits for any of them before
- * the first byte, as it once waited for every one.
+ * the first byte, as it once waited for every one. Until they have settled, the render answers the
+ * isolate's other requests that would regenerate the entry, as the lease it holds turns them away
+ * (`Publishing`): they are answered with the page the requests after the publish are, rather than
+ * each with a page of its own.
  */
 
 const HTML_TYPE = 'text/html; charset=utf-8';
@@ -88,6 +97,12 @@ const ON_DEMAND_REASONS: ReadonlySet<AttemptReason> = new Set<AttemptReason>([
 ]);
 const HTTP_OK = 200;
 const HTTP_SERVER_ERROR = 500;
+/**
+ * How long a render this isolate is publishing answers the isolate's requests for its entry at the
+ * most. A publish takes about a second — its uploads, then the commit — and one still out past this
+ * is one the host has stopped hearing from, whose lease ran out: a request after it asks the host.
+ */
+const PUBLISHING_ANSWERS_MS = 10_000;
 
 interface RegenerationTarget {
   readonly descriptor: RouteEntryDescriptor;
@@ -136,7 +151,15 @@ export type RegenerationOutcome =
       /** The uploads and the commit, already handed to the runtime; it never rejects. */
       readonly published: Promise<PublishOutcome>;
     }
-  | { readonly kind: 'busy' }
+  | {
+      readonly kind: 'busy';
+      /**
+       * The render this isolate is publishing of the entry, which holds the lease (`Publishing`):
+       * what a visitor is answered with rather than a page of their own. Absent where the lease is
+       * another isolate's, or this one's render is not one to answer with now.
+       */
+      readonly publishing?: CapturedRender | undefined;
+    }
   /** The host holds a later generation than the one judged, which may be served (`supersededBy`). */
   | { readonly kind: 'superseded' }
   | { readonly kind: 'skipped'; readonly render: CapturedRender | undefined }
@@ -524,6 +547,26 @@ async function publish(
 }
 
 /**
+ * `published`, the render it publishes answering the isolate's requests that would regenerate the
+ * entry until it has settled (`Publishing`, `regenerate`). Never rejects, as `publish` never does.
+ */
+async function answeringUntilSettled(
+  runtime: CacheRuntime,
+  entryId: string,
+  own: Publishing,
+  published: Promise<PublishOutcome>,
+): Promise<PublishOutcome> {
+  runtime.publishing.set(entryId, own);
+  try {
+    return await published;
+  } finally {
+    if (runtime.publishing.get(entryId) === own) {
+      runtime.publishing.delete(entryId);
+    }
+  }
+}
+
+/**
  * Take the lease and render the entry — or say why there is nothing to publish — and hand the
  * uploads and the commit to the runtime. Never throws. It answers once the render is made: what
  * follows is round trips to the host that change nothing the render says, and whoever answers from
@@ -531,6 +574,19 @@ async function publish(
  */
 export async function regenerate(input: RegenerationInput): Promise<RegenerationOutcome> {
   const { runtime, target } = input;
+  // This isolate's own regeneration of the entry, its render made and its publish out, holds the
+  // lease: the host would say so. Its render answers instead of a page of the visitor's own — the
+  // page every request after the publish is answered with — unless the isolate's view of the tags
+  // has moved since the render read against it, when what moved it may be what the render missed.
+  const entryId = await entryIdOf(runtime, target.descriptor);
+  const publishing = runtime.publishing.get(entryId);
+  if (
+    publishing !== undefined &&
+    nowMs() - publishing.renderedAt < PUBLISHING_ANSWERS_MS &&
+    runtime.tags.revision <= publishing.observedTagRevision
+  ) {
+    return { kind: 'busy', publishing: publishing.render };
+  }
   // The view of the tags the render will judge its data-cache reads against, brought up to date
   // whatever the hold says: the revision it stands at is what the commit claims the render knew,
   // and a claim older than the render is one the host refuses the generation for. Pulled beside
@@ -601,11 +657,11 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   // which says the same until the commit has landed, and the replacement from then on — however
   // long this isolate then takes to hear the commit answered.
   forgetRecord(runtime, lease.entryId);
-  const published = publish(
-    input,
-    lease,
-    { render: captured, observedTagRevision, began },
-    stopHeartbeat,
+  const published = answeringUntilSettled(
+    runtime,
+    entryId,
+    { render: captured, observedTagRevision, renderedAt: nowMs() },
+    publish(input, lease, { render: captured, observedTagRevision, began }, stopHeartbeat),
   );
   input.waitUntil(published);
   return { kind: 'accepted', render: captured, published };
