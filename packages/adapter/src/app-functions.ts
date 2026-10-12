@@ -88,6 +88,12 @@ export interface FunctionsContext {
   };
   /** Whether the build carries the Workflow SDK, which every one of its Functions is told. */
   readonly workflowSdk: boolean;
+  /**
+   * Whether the build has a Pages Router route, which is what signs preview data into a cookie: a
+   * request to any of its Functions may then carry some to verify (`StubOptions.previewData`). Asked
+   * of the build rather than of a Function, since the cookie one Function sets is sent to all.
+   */
+  readonly previewData: boolean;
 }
 
 /**
@@ -242,6 +248,7 @@ export async function buildAppFunction(
     blobStore: context.blobs,
     deferSizeAudit,
     workflowSdk: context.workflowSdk,
+    previewData: context.previewData,
   });
 }
 
@@ -280,6 +287,7 @@ export async function buildMiddlewareFunction(
     files: [...context.files.middleware, ...inlineAssetFiles(middleware.edge, ctx.projectDir)],
     blobStore: context.blobs,
     workflowSdk: context.workflowSdk,
+    previewData: context.previewData,
   });
 }
 

@@ -180,5 +180,6 @@ export async function buildWorkflowFunction(
     files: input.files,
     blobStore: context.blobs,
     workflowSdk: true,
+    previewData: context.previewData,
   });
 }
