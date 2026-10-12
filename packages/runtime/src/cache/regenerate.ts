@@ -154,6 +154,8 @@ export type RegenerationOutcome =
        * answer with now.
        */
       readonly publishing?: CapturedRender | undefined;
+      /** That render's publish, where there is one: never rejects (`Publishing.published`). */
+      readonly published?: Promise<unknown> | undefined;
     }
   /** The host holds a later generation than the one judged, which may be served (`supersededBy`). */
   | { readonly kind: 'superseded' }
@@ -532,7 +534,7 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   const entryId = await publishingKeyOf(runtime, target.descriptor);
   const atOnce = answeringAtOnce(runtime, target.reason, entryId);
   if (atOnce !== undefined) {
-    return { kind: 'busy', publishing: atOnce };
+    return { kind: 'busy', publishing: atOnce.render, published: atOnce.published };
   }
   // The view of the tags the render will judge its data-cache reads against, brought up to date
   // whatever the hold says: the revision it stands at is what the commit claims the render knew,
@@ -636,6 +638,7 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
           tags: [...tagValuesOf(target, captured)],
           observedTagRevision,
           observedAt: askedAt,
+          published: publishing,
         },
         publishing,
       )

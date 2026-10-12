@@ -76,6 +76,12 @@ export interface Publishing {
   readonly observedTagRevision: number;
   /** When the pull that brought the view to that revision was asked for, by the isolate's clock. */
   readonly observedAt: number;
+  /**
+   * The publish itself, settled once the host has answered its commit: what a request answered from
+   * the render waits for where the entry had no generation (`holdFirstPublish`), as the request the
+   * render was made for does. Never rejects.
+   */
+  readonly published: Promise<unknown>;
 }
 
 export interface CacheRuntime {

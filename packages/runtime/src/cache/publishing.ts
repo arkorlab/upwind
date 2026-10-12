@@ -94,12 +94,12 @@ export function answeringAtOnce(
   runtime: CacheRuntime,
   reason: AttemptReason,
   entryId: string | undefined,
-): CapturedRender | undefined {
+): Publishing | undefined {
   const publishing = publishingFor(runtime, reason, entryId);
   if (publishing === undefined || nowMs() - publishing.observedAt >= runtime.holdMs) {
     return undefined;
   }
-  return unmovedSince(runtime, publishing) ? publishing.render : undefined;
+  return unmovedSince(runtime, publishing) ? publishing : undefined;
 }
 
 /** What `pull` answered, or `false` once `ms` have gone by first. */
@@ -123,6 +123,8 @@ async function pulledWithin(pull: Promise<boolean>, ms: number): Promise<boolean
 interface Busy {
   readonly kind: 'busy';
   readonly publishing?: CapturedRender;
+  /** That render's publish (`Publishing.published`). */
+  readonly published?: Promise<unknown>;
 }
 
 /** A regeneration the host turned away: why it was asked for, of what, and whose lease stands. */
@@ -175,7 +177,7 @@ export async function answeringWhileBusy(
   const publishing = runtime.publishing.get(entryId);
   const leaseStands = holderUntil !== undefined && nowMs() < holderUntil;
   return publishing === held && leaseStands && unmovedSince(runtime, publishing)
-    ? { kind: 'busy', publishing: publishing.render }
+    ? { kind: 'busy', publishing: publishing.render, published: publishing.published }
     : { kind: 'busy' };
 }
 
