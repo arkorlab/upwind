@@ -70,6 +70,13 @@ export const MAX_DATA_KEY_LENGTH = DATA_KEY_KIB * KIB;
  */
 export const MAX_DATA_HANDLER_LENGTH = 256;
 
+/**
+ * What the gateway answers a request for a route it does not have, a 404 `not_found`: told apart
+ * from the `not_found` of something a route looked for — an attempt, an entry — by a client asking
+ * a route a gateway from before it may not have (`POST /attempts/:attemptId/artifacts`).
+ */
+export const NO_SUCH_ENDPOINT = 'no such endpoint';
+
 export function gatewayScopePath(scopeId: string): string {
   return `/${GATEWAY_API_VERSION}/scopes/${encodeURIComponent(scopeId)}`;
 }
@@ -164,6 +171,61 @@ export type StartAttemptResponse = z.infer<typeof startAttemptResponseSchema>;
 export const heartbeatRequestSchema = z.object({ fencingToken: z.number().int().positive() });
 export const heartbeatResponseSchema = z.object({ leaseExpiresAt: z.number().int() });
 export type HeartbeatResponse = z.infer<typeof heartbeatResponseSchema>;
+
+const BATCHED_ARTIFACT_KIB = 64;
+const ARTIFACT_BATCH_KIB = 512;
+/**
+ * The largest artifact a batch carries (`uploadArtifactsRequestSchema`), how many a batch carries,
+ * and how many bytes in all. A batch is an attempt's small outputs in one request — a page's
+ * document, payload and segments — which one upload each made a round trip apiece, to the authority
+ * and to the blob store, and most of a publish.
+ */
+export const MAX_BATCHED_ARTIFACT_BYTES = BATCHED_ARTIFACT_KIB * KIB;
+export const MAX_BATCHED_ARTIFACTS = 16;
+export const MAX_ARTIFACT_BATCH_BYTES = ARTIFACT_BATCH_KIB * KIB;
+
+/**
+ * The longest content type a batch's artifact may name: an upload alone names its own in a header,
+ * which the runtime's header limits bound, and one in a batch is bound here instead.
+ */
+export const MAX_BATCHED_CONTENT_TYPE_LENGTH = 256;
+
+/**
+ * What a batch's content type may be made of: what an upload alone could carry in its header, which
+ * the edge sets on a response serving the artifact — printable ASCII, a space and a tab, none of
+ * which JSON escapes to more than two bytes (`BATCH_BODY_BYTES` counts on it).
+ */
+const HEADER_VALUE = /^[\t\u{20}-\u{7E}]+$/u;
+
+/** One artifact of a batch: what an upload's headers and path say of it, and its bytes in base64. */
+export const batchedArtifactSchema = z.object({
+  role: artifactRoleSchema,
+  sha256: sha256HexSchema,
+  contentType: z.string().min(1).max(MAX_BATCHED_CONTENT_TYPE_LENGTH).regex(HEADER_VALUE),
+  bytes: z.string(),
+});
+export type BatchedArtifact = z.infer<typeof batchedArtifactSchema>;
+
+/**
+ * `POST /attempts/:attemptId/artifacts`: several of an attempt's artifacts at once, each taken as
+ * `PUT /attempts/:attemptId/artifacts/:sha256` takes one, and answered in their order.
+ */
+export const uploadArtifactsRequestSchema = z.object({
+  fencingToken: z.number().int().positive(),
+  artifacts: z.array(batchedArtifactSchema).min(1).max(MAX_BATCHED_ARTIFACTS),
+});
+export type UploadArtifactsRequest = z.infer<typeof uploadArtifactsRequestSchema>;
+
+/** What a batch's artifact came to: its name, and how many bytes it holds. */
+const uploadedArtifactSchema = z.object({
+  sha256: sha256HexSchema,
+  byteLength: z.number().int().nonnegative(),
+});
+
+export const uploadArtifactsResponseSchema = z.object({
+  artifacts: z.array(uploadedArtifactSchema),
+});
+export type UploadArtifactsResponse = z.infer<typeof uploadArtifactsResponseSchema>;
 
 /** An artifact the commit names; each must have been uploaded to the attempt first. */
 export const commitArtifactSchema = z.object({
