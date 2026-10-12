@@ -4,6 +4,7 @@ import { IMPLICIT_TAG_PREFIX, type RouteEntryDescriptor } from '@stayingupwind/c
 import { nodeHandlerOf } from '../entries.ts';
 import { descriptorFor } from '../generations.ts';
 import { elsewhere } from '../placement.ts';
+import { regenerationParameters } from '../route-parameters.ts';
 import { completedShell, findShell, getStore, type Store } from '../store.ts';
 import { requestContext } from './context.ts';
 import { invalidateNow } from './handlers.ts';
@@ -79,6 +80,12 @@ export async function platformRevalidate(input: RevalidateInput): Promise<void> 
     await invalidateNow(context.runtime, pathTags(pathname));
     return;
   }
+  // As routing hands a render of a request for it the page's parameters, where Next.js would read
+  // them otherwise off its name (`regenerationParameters`).
+  const parameters =
+    descriptor.kind === 'pages'
+      ? regenerationParameters(store, descriptor.route, descriptor.pathname)
+      : undefined;
   const outcome = await regenerate({
     runtime: context.runtime,
     request: context.request,
@@ -91,6 +98,7 @@ export async function platformRevalidate(input: RevalidateInput): Promise<void> 
         descriptor.kind === 'pages'
           ? pagesDataPathnameUnder(store.manifest.buildId, store.manifest.config.basePath, pathname)
           : undefined,
+      ...(parameters !== undefined && { parameters }),
     },
     previewToken: store.manifest.bypassToken,
     waitUntil: context.waitUntil,

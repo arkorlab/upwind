@@ -199,17 +199,38 @@ export function routeQuery(
   return named.length === 0 ? target.query : { ...target.query, ...Object.fromEntries(named) };
 }
 
-/** The values `segments` hold, each decoded once; `undefined` where one does not decode. */
-function decodedSegments(segments: readonly string[]): string[] | undefined {
+/** What `builtSegment` escapes in a value: a path delimiter, or one already escaped. */
+const BUILT_ESCAPE = /%25(?:2f|23|3f|5c)|%(?:2f|23|3f|5c)/giu;
+
+/** One escape `builtSegment` wrote, read back. */
+function unescaped(found: string): string {
+  return found.startsWith('%25') ? `%${found.slice('%25'.length)}` : decodeURIComponent(found);
+}
+
+/**
+ * The values `segments` of a page's name hold. A page the build named is named as `builtSegment`
+ * spells a value — its path delimiters escaped and nothing else, so a value's own `100%20` is
+ * written as it is — and is read back so. A page a request names is spelled as the request spelled
+ * it, and each segment is decoded once, as routing decodes what it captures. `undefined` where one
+ * does not decode.
+ */
+function valuesOf(segments: readonly string[], built: boolean): string[] | undefined {
   const values: string[] = [];
   for (const segment of segments) {
-    const value = decodedSegment(segment);
+    const value = built
+      ? segment.replaceAll(BUILT_ESCAPE, (found) => unescaped(found))
+      : decodedSegment(segment);
     if (value === undefined) {
       return undefined;
     }
     values.push(value);
   }
   return values;
+}
+
+/** `pathname` without the slash a `trailingSlash` application keeps at its end. */
+function withoutEndSlash(pathname: string): string {
+  return pathname.length > 1 && pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
 }
 
 /**
@@ -227,10 +248,13 @@ function decodedSegments(segments: readonly string[]): string[] | undefined {
  * of the visitor's request said the other, and which of the two answered turned on whether the
  * entry's record was read in time (`incremental-cache-path-traversal`).
  *
- * Every parameter of the route is named once one is, as routing names them all: Next.js takes the
- * query's only where it holds every one. Not an App Router member's: its shell is resumed for each
- * visitor by the member's own path, which Next.js reads as it reads the name, and a shell and its
- * resume have to agree.
+ * The member is read as routing reads the request for it: its values as `valuesOf` reads them, a
+ * trailing slash left off, its fixed segments matched in any case (`/DOCS/a%2Fb` lands on
+ * `/docs/[...slug]`), and its locale, in an application with `i18n`, left out. Every parameter of
+ * the route is named once one is, as routing names them all: Next.js takes the query's only where
+ * it holds every one. Not an App Router member's: its shell is resumed for each visitor by the
+ * member's own path, which Next.js reads as it reads the name, and a shell and its resume have to
+ * agree.
  */
 export function regenerationParameters(
   store: Store,
@@ -238,18 +262,20 @@ export function regenerationParameters(
   pathname: string,
 ): Record<string, string> | undefined {
   const template = store.prerendersByPathname.get(route)?.route ?? route;
-  const member = (unlocalizedRouteOf(store.manifest.config, pathname) ?? pathname).split('/');
+  const bare = withoutEndSlash(pathname);
+  const built = store.prerendersByPathname.has(bare);
+  const member = (unlocalizedRouteOf(store.manifest.config, bare) ?? bare).split('/');
   const named: Record<string, string> = {};
   let separated = false;
   for (const [index, placeholder] of template.split('/').entries()) {
     const parameter = parameterOf(placeholder);
     if (parameter === undefined) {
-      if (member[index] !== placeholder) {
+      if (member[index]?.toLowerCase() !== placeholder.toLowerCase()) {
         return undefined;
       }
       continue;
     }
-    const values = decodedSegments(segmentsAt(parameter, member, index));
+    const values = valuesOf(segmentsAt(parameter, member, index), built);
     if (values === undefined || (values.length === 0 && !parameter.optional)) {
       return undefined;
     }
