@@ -3,8 +3,8 @@ import type { RouteEntryDescriptor } from '@stayingupwind/core/cache';
 import type { CapturedRender } from './capture.ts';
 import { nowMs } from './clock.ts';
 import { entryIdOf } from './current.ts';
-import type { AttemptReason } from './host.ts';
-import { JUDGED_REASONS } from './lease.ts';
+import type { AttemptReason, CurrentSummary } from './host.ts';
+import { JUDGED_REASONS, namesStanding } from './lease.ts';
 import type { CacheRuntime, GivenBack, Publishing } from './runtime.ts';
 import { refusedTags } from './tag-bounds.ts';
 
@@ -171,6 +171,8 @@ interface TurnedAway {
   readonly holder: string | undefined;
   /** When the holder's lease lapses unless renewed, where the host says. */
   readonly holderUntil: number | undefined;
+  /** The entry's current generation as the host held it when it turned the regeneration away. */
+  readonly current: CurrentSummary | null | undefined;
 }
 
 /**
@@ -199,12 +201,13 @@ function leaseStands({ holderUntil }: TurnedAway): boolean {
  * lapsed holds it otherwise, and the publish's commit is refused, though the publish may still be
  * out; a host that names no holder has a request it turns away answered as before, with a render of
  * its own.
- * Only once the request's own pull of the tags (`pulled`) has brought the view up to the host's —
- * not another pull's, which a clock reading the same moment could not tell from it — and while
- * nothing it brought says the render missed an invalidation; for a second at the most
- * (`PUBLISHING_PULL_MS`), and only while the lease the host named still stands once that pull is
- * in (`holderUntil`, which it has to say as well): one that lapsed meanwhile may be another
- * attempt's by then.
+ * Only once a pull of the tags this request asked for as the host's answer came in (`pull`) has
+ * brought the view up to the host's — not another pull's, which a clock reading the same moment
+ * could not tell from it, nor one asked for before the lease was, which may have answered before
+ * an invalidation the host recorded ahead of its answer — and while nothing it brought says the
+ * render missed an invalidation; for a second at the most (`PUBLISHING_PULL_MS`), and only while the
+ * lease the host named still stands once that pull is in (`holderUntil`, which it has to say as
+ * well): one that lapsed meanwhile may be another attempt's by then.
  *
  * Asked only past a hold of the render's pull (`answeringAtOnce`), which no lease lapses within: the
  * lease was taken before the render, for longer than that.
@@ -212,9 +215,12 @@ function leaseStands({ holderUntil }: TurnedAway): boolean {
  * Where the holder is instead a lease this isolate gave back unused once the publish had let go of
  * its own (`givingBack`), which the host had yet to have back, the request is answered as the one
  * the lease was handed to is, from the render kept with the lease, its publish settled or not: by
- * the host's word to that request (`CacheRuntime.givenBack`), and once this request's own pull is
- * in, which brings what the host has recorded since — and only while that word stands by then, as
- * above: past the moment the host said the lease lapses (`holderUntil`), it speaks for it no more.
+ * the host's word to that request (`CacheRuntime.givenBack`), where its word to this one does not
+ * name another generation current, or the same one condemned since (`namesStanding`); and once
+ * this request's own pull is in, asked for as that word came in and waited for beside the render's
+ * publish (`answeringAsNamed`), which brings what the host has recorded since — and only while that
+ * word stands by then, as above: past the moment the host said the lease lapses (`holderUntil`),
+ * it speaks for it no more.
  * The lease's return, which lets another attempt take the entry before that, keeps no request from
  * the render. The host names the lease only while it holds it, so no request asked once a later
  * generation was published is turned away for it, and a visitor answered with that generation is
@@ -224,12 +230,12 @@ function leaseStands({ holderUntil }: TurnedAway): boolean {
 export async function answeringWhileBusy(
   runtime: CacheRuntime,
   turnedAway: TurnedAway,
-  pulled: Promise<boolean>,
+  pull: () => Promise<boolean>,
 ): Promise<Busy> {
   const givenBack = givenBackFor(runtime, turnedAway);
   if (givenBack !== undefined) {
-    const render = (await settledWithin(pulled, false))
-      ? await identifiedAmong(runtime, givenBack.publishings, givenBack.generationId)
+    const render = namesStanding(turnedAway.current, givenBack.generationId, nowMs())
+      ? await answeringAsNamed(runtime, givenBack.publishings, givenBack.generationId, pull)
       : undefined;
     return render === undefined || !leaseStands(turnedAway)
       ? { kind: 'busy' }
@@ -246,7 +252,7 @@ export async function answeringWhileBusy(
   ) {
     return { kind: 'busy' };
   }
-  if (!(await settledWithin(pulled, false))) {
+  if (!(await settledWithin(pull(), false))) {
     return { kind: 'busy' };
   }
   // Looked up again: a publish that has settled meanwhile is one the host's answer now speaks for,
@@ -263,7 +269,7 @@ export async function answeringWhileBusy(
  * the lease is in, and the one it kept when the lease was asked for, where they differ: where that
  * generation is the one a render's own publish committed — the host had committed it, and let go of
  * its lease, while the commit's answer was still on its way here — the first such render answers, as
- * it answers every request after its publish (`identifiedAmong`). Only once a pull of the tags asked
+ * it answers every request after its publish (`answeringAsNamed`). Only once a pull of the tags asked
  * for as the lease came in (`pull`) has brought the view up: an invalidation recorded since the host
  * named the generation, which its word cannot speak for, may be in it. The pull and each render are
  * waited for at once, a second at the most; where no render is the generation, nothing more is.
@@ -276,15 +282,41 @@ export async function answeringWhenSuperseded(
   current: { readonly generationId: string } | null | undefined,
   pull: () => Promise<boolean>,
 ): Promise<CapturedRender | undefined> {
-  const candidates = candidatesOf(kept);
-  // Nothing to wait for where there is no render to answer with, or no generation to name.
-  if (current === undefined || current === null || candidates.length === 0) {
+  // Nothing to wait for where there is no generation to name.
+  return current === undefined || current === null
+    ? undefined
+    : answeringAsNamed(runtime, candidatesOf(kept), current.generationId, pull);
+}
+
+/**
+ * The render of the first of `candidates` whose publish says it became the generation the host
+ * named (`generationId`), where, once a pull of the tags asked for now (`pull`) is in as well, no
+ * mark on its tags says it missed an invalidation (`unmarkedSince`): an `updateTag` made while
+ * another was waited for is one too. The pull and each render are waited for at once, a second at
+ * the most (`PUBLISHING_PULL_MS`): an answer in flight lands within that, and a render whose lease
+ * lapsed has its publish refused. Where no render is the generation, nothing more is waited for.
+ *
+ * The host's word speaks for every invalidation it had recorded when it named the generation: one
+ * that reached the generation condemned it (`CurrentSummary.condemned`), and `supersededBy` takes a
+ * condemned generation for none. What the word cannot speak for is an invalidation this isolate made
+ * that the host had not recorded yet — an `updateTag` racing the lease, in force here at once — or
+ * one recorded since, which the pull brings. The scope's revision moving on says nothing besides: it
+ * moves for other tags too, and for invalidations the host's word spoke for.
+ */
+async function answeringAsNamed(
+  runtime: CacheRuntime,
+  candidates: readonly Publishing[],
+  generationId: string,
+  pull: () => Promise<boolean>,
+): Promise<CapturedRender | undefined> {
+  // Nothing to wait for where there is no render to answer with.
+  if (candidates.length === 0) {
     return undefined;
   }
   // Asked for now, beside the renders' answers: the host's word speaks for what it had recorded
   // when it named the generation, and a pull asked for once that word is in for what it has since.
   const pulled = settledWithin(pull(), false);
-  const named = await namedAmong(candidates, current.generationId);
+  const named = await namedAmong(candidates, generationId);
   if (named === undefined) {
     return undefined;
   }
@@ -298,31 +330,8 @@ function candidatesOf(kept: readonly (Publishing | undefined)[]): Publishing[] {
 }
 
 /**
- * The render of the first of `candidates` whose publish says it became the generation the host
- * named (`generationId`) — each waited for at once, a second at the most (`PUBLISHING_PULL_MS`): an
- * answer in flight lands within that, and a render whose lease lapsed has its publish refused —
- * where, once all of them are in, no mark on its tags says it missed an invalidation
- * (`unmarkedSince`): an `updateTag` made while another was waited for is one too.
- *
- * The host's word speaks for every invalidation it had recorded when it named the generation: one
- * that reached the generation condemned it (`CurrentSummary.condemned`), and `supersededBy` takes a
- * condemned generation for none. What the word cannot speak for is an invalidation this isolate made
- * that the host had not recorded yet — an `updateTag` racing the lease, in force here at once — or
- * one recorded since that a read here has been told of. The scope's revision moving on says nothing
- * besides: it moves for other tags too, and for invalidations the host's word spoke for.
- */
-async function identifiedAmong(
-  runtime: CacheRuntime,
-  candidates: readonly Publishing[],
-  generationId: string,
-): Promise<CapturedRender | undefined> {
-  const named = await namedAmong(candidates, generationId);
-  return named !== undefined && unmarkedSince(runtime, named) ? named.render : undefined;
-}
-
-/**
  * The first of `candidates` whose publish says it became the generation the host named, each waited
- * for at once, a second at the most (`identifiedAmong`).
+ * for at once, a second at the most (`answeringAsNamed`).
  */
 async function namedAmong(
   candidates: readonly Publishing[],

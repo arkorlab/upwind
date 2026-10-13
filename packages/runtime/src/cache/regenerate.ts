@@ -573,6 +573,12 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
     });
     return { kind: 'refused', reason };
   }
+  // A pull of the tags asked for once the host's answer is in: what it has recorded since its word.
+  const pullAfresh = (): Promise<boolean> => {
+    const pulled = runtime.tags.sync(runtime.host, nowMs(), { force: true });
+    input.waitUntil(pulled);
+    return pulled;
+  };
   if (lease.kind === 'busy') {
     return answeringWhileBusy(
       runtime,
@@ -581,8 +587,9 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
         entryId,
         holder: lease.attemptId,
         holderUntil: lease.leaseExpiresAt,
+        current: lease.current,
       },
-      synced,
+      pullAfresh,
     );
   }
   // A render this isolate still keeps of the entry let go of its lease, as this one could not have
@@ -604,11 +611,7 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
     // What stands is what the next request should find: a record of it, or of a later one, that
     // another request of this isolate learned while this one waited for the lease stays held.
     forgetRecordBefore(runtime, lease.entryId, lease.current?.seq ?? Infinity);
-    const ours = await answeringWhenSuperseded(runtime, candidates, lease.current, () => {
-      const pulled = runtime.tags.sync(runtime.host, nowMs(), { force: true });
-      input.waitUntil(pulled);
-      return pulled;
-    });
+    const ours = await answeringWhenSuperseded(runtime, candidates, lease.current, pullAfresh);
     return ours === undefined ? { kind: 'superseded' } : { kind: 'superseded', publishing: ours };
   }
   // It answers nothing more: what the host holds is not a later generation that stands.
