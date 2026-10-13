@@ -5,7 +5,7 @@ import { nowMs } from './clock.ts';
 import { entryIdOf } from './current.ts';
 import type { AttemptReason } from './host.ts';
 import { JUDGED_REASONS } from './lease.ts';
-import type { CacheRuntime, Publishing } from './runtime.ts';
+import type { CacheRuntime, GivenBack, Publishing } from './runtime.ts';
 import { refusedTags } from './tag-bounds.ts';
 
 /**
@@ -18,7 +18,10 @@ import { refusedTags } from './tag-bounds.ts';
  * (`unmovedSince`), and only by a view no older than the isolate holds any it judges by: within a
  * hold of the pull the render read against, without a word to the host (`answeringAtOnce`); past
  * it, once the host has turned the request away for a lease of the entry and the view has been
- * brought up to the host's (`answeringWhileBusy`).
+ * brought up to the host's (`answeringWhileBusy`). Once the publish has let go of its lease — the
+ * host committed it while the answer was on its way here — by the host's word that the generation it
+ * holds is the one the render became, and while no mark on the render's tags says what that word
+ * could not (`answeringWhenSuperseded`).
  *
  * Only a regeneration a judgement of the entry asked for (`JUDGED_REASONS`) is answered so: one
  * that asked for a page to answer with. `revalidate()` and an invalidation ask for a render whatever
@@ -58,19 +61,26 @@ export async function publishingKeyOf(
 }
 
 /**
- * Whether nothing the view of the tags has taken in since the render's reads were judged says the
- * render missed an invalidation: the scope's delta has brought nothing since the pull the render
- * read against (`observedTagRevision`), and none of the render's tags has a mark at or after that
- * pull was asked for (`observedAt`). The second is what the first cannot see — an invalidation this
- * isolate made, in force here before the delta says so (`applyLocal`), and one another read was
- * told of (`syncLocal`) — and asks of each tag what `validityOf` asks of an entry made at that
+ * Whether none of the render's tags has a mark at or after the pull the render read against was
+ * asked for (`observedAt`): an invalidation in force here that the render's reads may have missed —
+ * one this isolate made, in force here before the delta says so (`applyLocal`), or one another read
+ * was told of (`syncLocal`). Asks of each tag what `validityOf` asks of an entry made at that
  * moment. A mark from before the pull was asked for is one the pull brought or the view already
  * held, and the render's reads were judged against it.
  */
+function unmarkedSince(runtime: CacheRuntime, publishing: Publishing): boolean {
+  return runtime.tags.validityOf(publishing.tags, publishing.observedAt, nowMs()) === 'fresh';
+}
+
+/**
+ * Whether nothing the view of the tags has taken in since the render's reads were judged says the
+ * render missed an invalidation: the scope's delta has brought nothing since the pull the render
+ * read against (`observedTagRevision`), and no mark on a tag of the render says so
+ * (`unmarkedSince`) — which is what the first cannot see.
+ */
 function unmovedSince(runtime: CacheRuntime, publishing: Publishing): boolean {
   return (
-    runtime.tags.revision <= publishing.observedTagRevision &&
-    runtime.tags.validityOf(publishing.tags, publishing.observedAt, nowMs()) === 'fresh'
+    runtime.tags.revision <= publishing.observedTagRevision && unmarkedSince(runtime, publishing)
   );
 }
 
@@ -138,6 +148,46 @@ interface TurnedAway {
 }
 
 /**
+ * The render, where its publish says it became the generation the host named (`generationId`) —
+ * waited for a second at the most (`PUBLISHING_PULL_MS`): an answer in flight lands within that,
+ * and a render whose lease lapsed has its publish refused — and while no mark on its tags says it
+ * missed an invalidation (`unmarkedSince`).
+ *
+ * The host's word speaks for every invalidation it had recorded when it named the generation: one
+ * that reached the generation condemned it (`CurrentSummary.condemned`), and `supersededBy` takes a
+ * condemned generation for none. What the word cannot speak for is an invalidation this isolate made
+ * that the host had not recorded yet — an `updateTag` racing the lease, in force here at once — or
+ * one recorded since that a read here has been told of. The scope's revision moving on says nothing
+ * besides: it moves for other tags too, and for invalidations the host's word spoke for.
+ */
+async function identified(
+  runtime: CacheRuntime,
+  publishing: Publishing,
+  generationId: string,
+): Promise<CapturedRender | undefined> {
+  const outcome = await settledWithin(publishing.published, undefined);
+  return outcome?.kind === 'published' &&
+    outcome.generationId === generationId &&
+    unmarkedSince(runtime, publishing)
+    ? publishing.render
+    : undefined;
+}
+
+/**
+ * The lease the host turned the regeneration away for, as this isolate gave it back (`GivenBack`):
+ * where it is one the isolate gave back unused (`answeringWhenSuperseded`), and the regeneration is
+ * one a judgement of the entry asked for (`JUDGED_REASONS`).
+ */
+function givenBackFor(
+  runtime: CacheRuntime,
+  { reason, holder }: TurnedAway,
+): GivenBack | undefined {
+  return holder === undefined || !JUDGED_REASONS.has(reason)
+    ? undefined
+    : runtime.givenBack.get(holder);
+}
+
+/**
  * A regeneration the host turned away for a lease of the entry, with the render this isolate is
  * publishing of it: only where the host names the attempt that holds the lease, and it is the
  * publish's own (`Publishing.attemptId`). An attempt that took the entry after the publish's lease
@@ -153,12 +203,23 @@ interface TurnedAway {
  *
  * Asked only past a hold of the render's pull (`answeringAtOnce`), which no lease lapses within: the
  * lease was taken before the render, for longer than that.
+ *
+ * Where the holder is instead a lease this isolate gave back unused once the publish had let go of
+ * its own (`answeringWhenSuperseded`), and the host has yet to have it back, the request is answered
+ * as the one the lease was handed to: by the host's word to it, within a hold of that word
+ * (`CacheRuntime.givenBack`).
  */
 export async function answeringWhileBusy(
   runtime: CacheRuntime,
-  { reason, entryId, holder, holderUntil }: TurnedAway,
+  turnedAway: TurnedAway,
   pulled: Promise<boolean>,
 ): Promise<Busy> {
+  const givenBack = givenBackFor(runtime, turnedAway);
+  if (givenBack !== undefined) {
+    const render = await identified(runtime, givenBack.publishing, givenBack.generationId);
+    return render === undefined ? { kind: 'busy' } : { kind: 'busy', publishing: render };
+  }
+  const { reason, entryId, holder, holderUntil } = turnedAway;
   const held = publishingFor(runtime, reason, entryId);
   // Not waited for where the view already says the render missed something: a pull only adds to it.
   if (
@@ -183,30 +244,29 @@ export async function answeringWhileBusy(
 
 /**
  * A regeneration the host leased the entry to, and that a generation the host holds supersedes
- * (`supersededBy`), with the render this isolate kept of the entry when the lease was taken
+ * (`supersededBy`), with the render this isolate kept of the entry when the lease was asked for
  * (`kept`): where that generation is the one the render's own publish committed — the host had
  * committed it, and let go of its lease, while the commit's answer was still on its way here — the
- * render answers, as it answers every request after its publish. Its publish is waited for to say so
- * (`Publishing.published`), for a second at the most (`PUBLISHING_PULL_MS`): an answer in flight
- * lands within that, and a render whose lease lapsed has its publish refused. Only while the view of
- * the tags, once that is said, still says nothing the render missed (`unmovedSince`), as everywhere
- * else a publishing render answers: an invalidation this isolate made while the request waited is in
- * force here before the host's answer says anything of it.
+ * render answers, as it answers every request after its publish (`identified`).
+ *
+ * The lease, given back unused, is kept as given back with the generation the host named
+ * (`CacheRuntime.givenBack`): until the host has it back, it turns a request of the entry away for
+ * it, and that request is answered as this one is (`answeringWhileBusy`).
  */
 export async function answeringWhenSuperseded(
   runtime: CacheRuntime,
   kept: Publishing | undefined,
-  current: { readonly generationId: string } | null | undefined,
+  lease: {
+    readonly attemptId: string;
+    readonly current?: { readonly generationId: string } | null | undefined;
+  },
 ): Promise<CapturedRender | undefined> {
+  const { attemptId, current } = lease;
   if (kept === undefined || current === undefined || current === null) {
     return undefined;
   }
-  const outcome = await settledWithin(kept.published, undefined);
-  return outcome?.kind === 'published' &&
-    outcome.generationId === current.generationId &&
-    unmovedSince(runtime, kept)
-    ? kept.render
-    : undefined;
+  runtime.givenBack.set(attemptId, { publishing: kept, generationId: current.generationId });
+  return identified(runtime, kept, current.generationId);
 }
 
 /**

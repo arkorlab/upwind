@@ -584,18 +584,21 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
     );
   }
   // A render this isolate still keeps of the entry let go of its lease, as this one could not have
-  // been taken otherwise: its commit is refused, or it has landed and its answer is on its way. It
-  // answers nothing more, unless the generation the host holds is the one it became (below).
-  runtime.publishing.delete(entryId ?? lease.entryId);
+  // been taken otherwise: its commit is refused, or it has landed and its answer is on its way.
   if (supersededBy(target, lease.current, nowMs()) && answerable(lease.current)) {
     // Given back behind the answer, which waits for nothing of it: nobody holds the lease now.
     input.waitUntil(abandon(input, lease, 'skipped'));
     // What stands is what the next request should find: a record of it, or of a later one, that
     // another request of this isolate learned while this one waited for the lease stays held.
     forgetRecordBefore(runtime, lease.entryId, lease.current?.seq ?? Infinity);
-    const ours = await answeringWhenSuperseded(runtime, kept, lease.current);
+    // The generation the host holds may be the one the render became. The render stays until its
+    // publish settles: for this request, and for any other of the isolate the host leases the entry
+    // to, or turns away for this lease, meanwhile.
+    const ours = await answeringWhenSuperseded(runtime, kept, lease);
     return ours === undefined ? { kind: 'superseded' } : { kind: 'superseded', publishing: ours };
   }
+  // It answers nothing more: what the host holds is not a later generation that stands.
+  runtime.publishing.delete(entryId ?? lease.entryId);
   const began = performance.now();
   const stopHeartbeat = heartbeat(input, lease);
   let observedTagRevision: number;
