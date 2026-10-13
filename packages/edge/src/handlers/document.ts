@@ -16,7 +16,7 @@ import {
   gzipWire,
   identityWire,
   joinedWire,
-  type SpliceOptions,
+  type MiddlewareCookies,
   type SpliceOutcome,
   type WireEncoding,
 } from '@stayingupwind/host/splice';
@@ -383,16 +383,17 @@ function toldBesideResume(
  * What the middleware set, as the splice weighs a resume's cookies against it (`createSplice`): the
  * `Set-Cookie` values the shell goes out with, which the resume may answer with again, and the
  * `x-middleware-set-cookie` it was handed, whose cookies it may also answer with as Next.js writes
- * them back. Read only where the middleware set one, as only then is the resume handed any.
+ * them back — where that stores them where the client keeps them, which for one naming no path is
+ * under the path the client asked for, not the one the middleware rewrote it to. Read only where
+ * the middleware set one, as only then is the resume handed any.
  */
-function middlewareCookiesOf(
-  input: DocumentInput,
-): Pick<SpliceOptions, 'handedCookies' | 'sentCookies'> {
+function middlewareCookiesOf(input: DocumentInput): MiddlewareCookies {
   const { middleware } = input;
   return middleware?.kind === 'continue' && middleware.setCookie !== undefined
     ? {
         sentCookies: middleware.responseHeaders.getSetCookie(),
         handedCookies: middleware.setCookie,
+        requestPathname: new URL(input.request.url).pathname,
       }
     : {};
 }
