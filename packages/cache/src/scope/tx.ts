@@ -21,6 +21,11 @@ export interface TxInput {
   readonly history: ScopeHistory;
   /** Private exact marks this mutation must project before answering, captured at commit. */
   readonly controlTagIds?: string[];
+  /**
+   * The tags this mutation invalidates, whose records go out before it is answered: captured at
+   * commit, as a later change may invalidate one again before this one's run begins.
+   */
+  readonly invalidatedTagIds?: string[];
 }
 
 export type Apply<T> = () => T;

@@ -18,7 +18,6 @@ import {
   latestTagRevision,
   retiredControlTagScan,
   tagsDelta,
-  tagsOfRevision,
   toDeltaEntry,
 } from './tags.ts';
 
@@ -59,29 +58,30 @@ function chunks<T>(items: readonly T[]): T[][] {
   return out;
 }
 
-/** The change a run answers: the revision it committed at, and the control tags it wrote first. */
+/** The change a run answers: the tags it invalidated, and the control tags it wrote first. */
 interface OwnChange {
-  readonly revision: number;
+  readonly tags: readonly string[];
   readonly controlTags: ReadonlySet<string>;
 }
 
 /**
- * The records of the tags the change this run answers invalidated, ahead of the page the cursor
- * names. A change is answered once its run has written what it owes, and a reader judges a tag by
- * its record: behind older records still to be written — a page that failed, say — the page would
- * leave this change's own to a later run, after the answer. The page skips them once written
- * (`published`). A control tag is left to the control path, which wrote it first
+ * The records of the tags the change this run answers invalidated, as they now stand, ahead of the
+ * page the cursor names. A change is answered once its run has written what it owes, and a reader
+ * judges a tag by its record: behind older records still to be written — a page that failed, say —
+ * the page would leave this change's own to a later run, after the answer. The page skips them
+ * once written (`published`). A control tag is left to the control path, which wrote it first
  * (`projectOwnTags`).
  */
-async function projectRevisionTags(
+async function projectChangedTags(
   deps: TagProjectionDeps,
   retired: boolean,
   change: OwnChange,
   published: Map<string, number>,
 ): Promise<void> {
-  const tags = tagsOfRevision(deps.sql, change.revision)
-    .filter((row) => !change.controlTags.has(row.tag_id))
-    .map((row) => toDeltaEntry(row));
+  const tags = change.tags.flatMap((tagId) => {
+    const row = change.controlTags.has(tagId) ? undefined : findTag(deps.sql, tagId);
+    return typeof row?.stale_at === 'number' ? [toDeltaEntry(row)] : [];
+  });
 
   for (const batch of chunks(tags)) {
     const outcomes = await Promise.allSettled(
@@ -243,13 +243,13 @@ async function deleteRetiredControlTags(deps: TagProjectionDeps): Promise<void> 
 
 /**
  * Tags are projected independently of entry fanout, including tags with no current entry.
- * `ownRevision` is the revision the change this run answers committed at, whose tags' records go
- * first (`projectRevisionTags`).
+ * `ownTags` are the tags the change this run answers invalidated, whose records go first
+ * (`projectChangedTags`).
  */
 export async function projectTags(
   deps: TagProjectionDeps,
   own?: ControlTagWork,
-  ownRevision?: number,
+  ownTags: readonly string[] = [],
 ): Promise<void> {
   const retired = readScope(deps.sql)?.status === 'retired';
   // Capture identity at commit and fetch current values: promotion/replacement can happen while
@@ -258,14 +258,7 @@ export async function projectTags(
   if (own !== undefined) own.projected = true;
   const ownedIds = new Set(own?.ids);
 
-  if (ownRevision !== undefined) {
-    await projectRevisionTags(
-      deps,
-      retired,
-      { revision: ownRevision, controlTags: ownedIds },
-      published,
-    );
-  }
+  await projectChangedTags(deps, retired, { tags: ownTags, controlTags: ownedIds }, published);
   await projectPermanentTags(deps, retired, published);
   const backlog = controlTagProjections(deps.sql, MAX_TAGS_PER_CALL)
     .filter((projection) => !ownedIds.has(projection.tag.tagId))
