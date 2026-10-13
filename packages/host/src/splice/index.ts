@@ -6,7 +6,13 @@ export {
   recoveryScriptCspSource,
 } from './recovery.ts';
 export { unsentCookieNames } from './cookies.ts';
-export { behavioralHeader, createSplice, type Splice, type SpliceOptions } from './splice.ts';
+export {
+  behavioralHeader,
+  createSplice,
+  type MiddlewareCookies,
+  type Splice,
+  type SpliceOptions,
+} from './splice.ts';
 export {
   BROTLI_STORED_WINDOW_BITS,
   brotliStoredHead,

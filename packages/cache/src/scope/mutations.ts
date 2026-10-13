@@ -66,6 +66,7 @@ export async function commitMutation<T>(
     host.createdTables();
   }
   const controlTagIds: string[] = [];
+  const invalidatedTagIds: string[] = [];
   const input = {
     sql,
     scopeId: host.scopeId,
@@ -74,6 +75,7 @@ export async function commitMutation<T>(
     revision: readRevision(sql) + 1,
     history: host.history,
     controlTagIds,
+    invalidatedTagIds,
   };
   const apply = await plan(input);
   // Projection acknowledgments may commit while asynchronous ID planning yields.
@@ -82,7 +84,7 @@ export async function commitMutation<T>(
   const committed = readRevision(sql) >= input.revision;
   return {
     value,
-    own: committed ? ownRecordsOf(sql, input.revision, controlTagIds) : null,
+    own: committed ? ownRecordsOf(sql, input.revision, controlTagIds, invalidatedTagIds) : null,
     tables: true,
   };
 }

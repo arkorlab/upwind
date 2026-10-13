@@ -207,6 +207,7 @@ function applyTarget(
     return;
   }
   markTagInvalidated(input.sql, write);
+  input.invalidatedTagIds?.push(target.ref.tagId);
   insertInvalidation(input.sql, row);
   const tag = findTag(input.sql, target.ref.tagId);
   events.push({

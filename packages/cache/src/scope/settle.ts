@@ -244,6 +244,11 @@ export interface OwnRecords {
   readonly first: readonly string[];
   readonly controlTags: ControlTagWork;
   /**
+   * The tags it invalidated, named as it committed: a later change may invalidate one again before
+   * this change's run begins, and the tag's row then names that change's revision, not this one's.
+   */
+  readonly tags: readonly string[];
+  /**
    * Which of the generations' delivery records the run writes the change wants back, and where they
    * are kept (`WantedRecords`): a commit's entry's own, which it hands back to the Function that
    * published it (`CacheScope.commit`).
@@ -256,11 +261,13 @@ export function ownRecordsOf(
   sql: SqlStorage,
   revision: number,
   controlTags: readonly string[] = [],
+  tags: readonly string[] = [],
 ): OwnRecords {
   return {
     revision,
     first: recordIdsBehindAt(sql, revision, PROJECTION_BATCH),
     controlTags: { ids: [...controlTags], projected: controlTags.length === 0 },
+    tags: [...tags],
   };
 }
 
@@ -594,7 +601,7 @@ export async function settlePending(
   const [projection, marker, tags] = await Promise.allSettled([
     projectRecords(deps, from),
     writeScopeMarker(deps),
-    projectTags(deps, from?.controlTags),
+    projectTags(deps, from?.controlTags, from?.tags),
   ]);
   const projectionFailed = projection.status === 'fulfilled' && projection.value.failed > 0;
   const shortfall =

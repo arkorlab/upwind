@@ -58,6 +58,48 @@ function chunks<T>(items: readonly T[]): T[][] {
   return out;
 }
 
+/** The change a run answers: the tags it invalidated, and the control tags it wrote first. */
+interface OwnChange {
+  readonly tags: readonly string[];
+  readonly controlTags: ReadonlySet<string>;
+}
+
+/**
+ * The records of the tags the change this run answers invalidated, as they now stand, ahead of the
+ * page the cursor names. A change is answered once its run has written what it owes, and a reader
+ * judges a tag by its record: behind older records still to be written — a page that failed, say —
+ * the page would leave this change's own to a later run, after the answer. The page skips them
+ * once written (`published`). A control tag is left to the control path, which wrote it first
+ * (`projectOwnTags`).
+ */
+async function projectChangedTags(
+  deps: TagProjectionDeps,
+  retired: boolean,
+  change: OwnChange,
+  published: Map<string, number>,
+): Promise<void> {
+  const tags = change.tags.flatMap((tagId) => {
+    const row = change.controlTags.has(tagId) ? undefined : findTag(deps.sql, tagId);
+    return typeof row?.stale_at === 'number' ? [toDeltaEntry(row)] : [];
+  });
+
+  for (const batch of chunks(tags)) {
+    const outcomes = await Promise.allSettled(
+      batch.map((tag) => {
+        return retired
+          ? deps.kv.delete(kvTagKey(deps.scopeId, tag.tagId))
+          : deps.kv.put(kvTagKey(deps.scopeId, tag.tagId), JSON.stringify(tag));
+      }),
+    );
+
+    if (outcomes.some((outcome) => outcome.status === 'rejected')) {
+      throw new Error('one or more tag records were not written');
+    }
+
+    for (const tag of batch) published.set(tag.tagId, tag.revision);
+  }
+}
+
 async function projectPermanentTags(
   deps: TagProjectionDeps,
   retired: boolean,
@@ -199,16 +241,25 @@ async function deleteRetiredControlTags(deps: TagProjectionDeps): Promise<void> 
   });
 }
 
-/** Tags are projected independently of entry fanout, including tags with no current entry. */
-export async function projectTags(deps: TagProjectionDeps, own?: ControlTagWork): Promise<void> {
+/**
+ * Tags are projected independently of entry fanout, including tags with no current entry.
+ * `ownTags` are the tags the change this run answers invalidated, whose records go first
+ * (`projectChangedTags`).
+ */
+export async function projectTags(
+  deps: TagProjectionDeps,
+  own?: ControlTagWork,
+  ownTags: readonly string[] = [],
+): Promise<void> {
   const retired = readScope(deps.sql)?.status === 'retired';
   // Capture identity at commit and fetch current values: promotion/replacement can happen while
   // settle waits. Only failure of this bounded own phase prevents a private acknowledgment.
   const published = await projectOwnTags(deps, retired, own?.ids ?? []);
   if (own !== undefined) own.projected = true;
-
-  await projectPermanentTags(deps, retired, published);
   const ownedIds = new Set(own?.ids);
+
+  await projectChangedTags(deps, retired, { tags: ownTags, controlTags: ownedIds }, published);
+  await projectPermanentTags(deps, retired, published);
   const backlog = controlTagProjections(deps.sql, MAX_TAGS_PER_CALL)
     .filter((projection) => !ownedIds.has(projection.tag.tagId))
     .slice(0, MAX_TAGS_PER_CALL - ownedIds.size);
