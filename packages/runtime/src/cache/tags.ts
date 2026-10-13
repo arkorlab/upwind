@@ -305,10 +305,10 @@ export class TagState {
 
   /**
    * What all that is known of `tag` says of an entry made at `timestamp`, judged at `now` (`validityOf`).
-   * What the host said at a revision, what it answered of this isolate's own, and what is known at no
-   * revision — told so, out, or for good — are each asked of apart, and the worst answer stands:
-   * taken as one mark, the one stamped latest would hide a deadline the others set, whatever the
-   * clocks that stamped them read.
+   * What the host said at a revision, what it said at none, what it answered of this isolate's own,
+   * and what of its own is out or known at no revision for good are each asked of apart, and the
+   * worst answer stands: taken as one mark, the one stamped latest would hide a deadline the others
+   * set, whatever the clocks that stamped them read.
    * Known at a revision past the one the entry's view was brought up to (`held`), an invalidation is
    * one that view missed, whatever its time says of the moment the entry was made.
    */
@@ -327,22 +327,13 @@ export class TagState {
       missed(applied?.answeredRevision) ? -Infinity : timestamp,
       now,
     );
-    const byUnrevised = markValidity(
-      strongest([
-        known?.unknown,
-        applied?.unanswered?.mark,
-        applied?.overflow?.mark,
-        applied?.unrevised,
-      ]),
+    const byUnknown = markValidity(known?.unknown, timestamp, now);
+    const byOwn = markValidity(
+      strongest([applied?.unanswered?.mark, applied?.overflow?.mark, applied?.unrevised]),
       timestamp,
       now,
     );
-    if (byTold === 'expired' || byAnswered === 'expired' || byUnrevised === 'expired') {
-      return 'expired';
-    }
-    return byTold === 'stale' || byAnswered === 'stale' || byUnrevised === 'stale'
-      ? 'stale'
-      : 'fresh';
+    return worst(worst(byTold, byAnswered), worst(byUnknown, byOwn));
   }
 
   /**
@@ -692,6 +683,14 @@ function strongest(marks: readonly (TagMark | undefined)[]): TagMark | undefined
     }
   }
   return found;
+}
+
+/** The worse of two answers of what a tag says of an entry. */
+function worst(a: Validity, b: Validity): Validity {
+  if (a === 'expired' || b === 'expired') {
+    return 'expired';
+  }
+  return a === 'stale' || b === 'stale' ? 'stale' : 'fresh';
 }
 
 /** What one mark says of an entry made at `timestamp`, judged at `now` (`validityOf`). */
