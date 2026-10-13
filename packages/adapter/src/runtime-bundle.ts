@@ -80,16 +80,18 @@ export async function bundleRuntimeModule(input: RuntimeBundleInput): Promise<vo
       }
     },
   });
-  if (unresolved.length > 0) {
-    throw new Error(
-      `@stayingupwind/adapter: the runtime imports what it cannot resolve\n${unresolved.join('\n')}`,
-    );
-  }
   // The runtime carries code this package did not write — the cache host a host names, and the
   // packages both import — and the mangler has open bugs that rename some code wrongly
   // (`manglerGetsWrong`). The bundle is rendered once, as the minifier would be handed it, and read
   // for them: one that has any is minified without renaming.
   const { output } = await bundle.generate({ format: 'esm', codeSplitting: false });
+  // Read once the bundle is generated: Rolldown reads the modules then, and not before, so what it
+  // could not resolve is said then too. Nothing has been written yet.
+  if (unresolved.length > 0) {
+    throw new Error(
+      `@stayingupwind/adapter: the runtime imports what it cannot resolve\n${unresolved.join('\n')}`,
+    );
+  }
   const rendered = output.find((item): item is OutputChunk => item.type === 'chunk');
   const renaming = rendered !== undefined && !manglerGetsWrong(input.outFile, rendered.code);
   await bundle.write({
