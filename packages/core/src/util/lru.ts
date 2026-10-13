@@ -121,20 +121,25 @@ interface TtlEntry<V> {
   readonly value: V;
   readonly expiresAt: number;
   readonly bytes: number;
-  /** What holds the bytes, where entries may share them (`ByteBudget.holderOf`). */
+  /** What holds the bytes the entry shares with others, where it does (`ByteBudget.sharedOf`). */
   readonly holder?: unknown;
+}
+
+/** Bytes the values of several entries may hold together, and what holds them. */
+export interface SharedBytes {
+  readonly holder: unknown;
+  readonly bytes: number;
 }
 
 interface ByteBudget<K, V> {
   readonly maxBytes: number;
   readonly sizeOf: (value: V, key: K) => number;
   /**
-   * What holds the bytes `sizeOf` counts of a value, where the values of several entries may share
-   * them: the entries whose values name one holder — the same one, not an equal one — are charged
-   * them once, as the first of them was sized, from the first of them set until the last of them is
-   * gone. A value it names none for holds its bytes alone.
+   * What a value holds that the values of other entries may hold too, which `sizeOf` leaves out: the
+   * entries whose values name one holder — the same one, not an equal one — are charged its bytes
+   * once, as the first of them said, from the first of them set until the last of them is gone.
    */
-  readonly holderOf?: ((value: V) => unknown) | undefined;
+  readonly sharedOf?: ((value: V) => SharedBytes | undefined) | undefined;
 }
 
 /** What the entries sharing one holder are charged, once, and how many of them there are. */
@@ -171,35 +176,35 @@ export class TtlCache<K, V> {
     this.#budget = budget;
   }
 
-  /** Charge an entry set its bytes: for an entry whose holder is shared, only the first time. */
-  #charge({ bytes, holder }: TtlEntry<V>): void {
-    if (holder === undefined) {
-      this.#usedBytes += bytes;
+  /** Charge an entry set its own bytes, and what it shares only where nothing set holds that yet. */
+  #charge(bytes: number, shared: SharedBytes | undefined): void {
+    this.#usedBytes += bytes;
+    if (shared === undefined) {
       return;
     }
-    const shared = this.#shared.get(holder);
-    this.#shared.set(holder, {
-      bytes: shared?.bytes ?? bytes,
-      entries: (shared?.entries ?? 0) + 1,
+    const held = this.#shared.get(shared.holder);
+    this.#shared.set(shared.holder, {
+      bytes: held?.bytes ?? shared.bytes,
+      entries: (held?.entries ?? 0) + 1,
     });
-    if (shared === undefined) {
-      this.#usedBytes += bytes;
+    if (held === undefined) {
+      this.#usedBytes += shared.bytes;
     }
   }
 
-  /** Give back what an entry gone was charged: a shared holder's bytes once the last of it goes. */
+  /** Give back what an entry gone was charged: what it shared, once the last entry sharing it goes. */
   #discharge({ bytes, holder }: TtlEntry<V>): void {
-    if (holder === undefined) {
-      this.#usedBytes -= bytes;
+    this.#usedBytes -= bytes;
+    const held = holder === undefined ? undefined : this.#shared.get(holder);
+    if (held === undefined) {
       return;
     }
-    const shared = this.#shared.get(holder);
-    if (shared !== undefined && shared.entries > 1) {
-      this.#shared.set(holder, { bytes: shared.bytes, entries: shared.entries - 1 });
+    if (held.entries > 1) {
+      this.#shared.set(holder, { bytes: held.bytes, entries: held.entries - 1 });
       return;
     }
     this.#shared.delete(holder);
-    this.#usedBytes -= shared?.bytes ?? bytes;
+    this.#usedBytes -= held.bytes;
   }
 
   get(key: K): V | undefined {
@@ -235,18 +240,18 @@ export class TtlCache<K, V> {
   set(key: K, value: V, ttlMs = this.#ttlMs): void {
     this.delete(key);
     const bytes = this.#budget?.sizeOf(value, key) ?? 0;
+    const shared = this.#budget?.sharedOf?.(value);
     const maxBytes = this.#budget?.maxBytes ?? Infinity;
-    if (bytes > maxBytes) {
+    if (bytes + (shared?.bytes ?? 0) > maxBytes) {
       return;
     }
-    const entry = {
+    this.#entries.set(key, {
       value,
       expiresAt: this.#now() + ttlMs,
       bytes,
-      holder: this.#budget?.holderOf?.(value),
-    };
-    this.#entries.set(key, entry);
-    this.#charge(entry);
+      holder: shared?.holder,
+    });
+    this.#charge(bytes, shared);
     while (this.#entries.size > this.#maxEntries || this.#usedBytes > maxBytes) {
       const oldest = this.#entries.keys().next();
       if (oldest.done === true) {

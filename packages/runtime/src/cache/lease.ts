@@ -64,16 +64,12 @@ export async function within<T>(
   }
 }
 
-/**
- * End the attempt, giving its lease back: whether the host answered that it had, which a failure to
- * reach it, logged here, leaves unsaid. Never rejects.
- */
 export async function abandon(
   input: LeaseHolder,
   lease: { attemptId: string; fencingToken: number },
   outcome: 'failed' | 'skipped',
   error?: unknown,
-): Promise<boolean> {
+): Promise<void> {
   try {
     await input.runtime.host.fail(lease.attemptId, {
       fencingToken: lease.fencingToken,
@@ -87,10 +83,8 @@ export async function abandon(
         },
       }),
     });
-    return true;
   } catch (error_) {
     input.runtime.log('attempt not ended', { attemptId: lease.attemptId, detail: detail(error_) });
-    return false;
   }
 }
 

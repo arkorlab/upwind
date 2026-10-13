@@ -231,7 +231,7 @@ function givenBackFor(
  * lease was taken before the render, for longer than that.
  *
  * Where the holder is instead a lease this isolate gave back unused once the publish had let go of
- * its own (`givingBack`), and the host has yet to have it back, the request is answered as the one
+ * its own (`givingBack`), which the host had yet to have back, the request is answered as the one
  * the lease was handed to is, from the render kept with the lease, its publish settled or not: by
  * the host's word to that request (`CacheRuntime.givenBack`), and once this request's own pull is
  * in, which brings what the host has recorded since.
@@ -291,112 +291,34 @@ export async function answeringWhenSuperseded(
 }
 
 /**
- * `asked`, a lease of the entry a request of this isolate asks the host for, counted as asked until
- * its answer is in (`CacheRuntime.asking`): what the caller is handed to wait on is what is counted,
- * so the caller hears the answer before anything waiting on the count does.
- */
-export function askingFor<T>(
-  runtime: CacheRuntime,
-  entryId: string | undefined,
-  asked: Promise<T>,
-): Promise<T> {
-  if (entryId === undefined) {
-    return asked;
-  }
-  const now = nowMs();
-  forgetLongAsked(runtime, now);
-  const pending = runtime.asking.get(entryId) ?? new Map<Promise<unknown>, number>();
-  runtime.asking.set(entryId, pending);
-  const answered: Promise<T> = settledThen(asked, () => {
-    pending.delete(answered);
-    if (pending.size === 0 && runtime.asking.get(entryId) === pending) {
-      runtime.asking.delete(entryId);
-    }
-  });
-  pending.set(answered, now);
-  return answered;
-}
-
-/**
- * Forget the leases asked a hold ago or more, of every entry (`CacheRuntime.asking`): the requests
- * that asked for them have surely ended under them, and they never answer.
- */
-function forgetLongAsked(runtime: CacheRuntime, now: number): void {
-  for (const [entryId, pending] of runtime.asking) {
-    for (const [ask, askedAt] of pending) {
-      if (now - askedAt >= runtime.holdMs) {
-        pending.delete(ask);
-      }
-    }
-    if (pending.size === 0) {
-      runtime.asking.delete(entryId);
-    }
-  }
-}
-
-/** What `promise` settles to, once `then` has run on its settling. */
-async function settledThen<T>(promise: Promise<T>, then: () => void): Promise<T> {
-  try {
-    return await promise;
-  } finally {
-    then();
-  }
-}
-
-/** The render a superseded regeneration kept of the entry, by the key it looked it up with. */
-interface Kept {
-  readonly entryId: string | undefined;
-  readonly kept: Publishing | undefined;
-}
-
-/**
  * The lease a superseded regeneration gives back unused, kept as given back with the render the
- * isolate kept of the entry and the generation the host named (`CacheRuntime.givenBack`) until the
- * host has said it has it back (`returned`): until then it turns a request of the entry away for it,
- * and that request is answered as the superseded one is (`answeringWhileBusy`), the render's publish
- * settled meanwhile or not. Let go of once the host has said so, and the answers to the leases of
- * the entry the isolate had asked for by then are in (`askingFor`), however long they take: one of
- * them may turn a request away for this lease, sent before the host had it back. One whose request
- * ended under it never answers, and where the host did not answer the lease's return it may hold
- * the lease still: the lease is kept for its hold then. Never rejects.
+ * isolate kept of the entry and the generation the host named (`CacheRuntime.givenBack`) for as long
+ * as the host may name it: until the lease lapses, a hold at the least. Until the host has it back it
+ * turns a request of the entry away for it, and that request is answered as the superseded one is
+ * (`answeringWhileBusy`), the render's publish settled meanwhile or not — and an answer that turned
+ * one away before the host had the lease back may come in after, however long it was on its way.
+ * Waits for the lease's return (`returned`), as work of the request's that its end must not cut off.
+ * Never rejects.
  */
 export async function givingBack(
   runtime: CacheRuntime,
-  { entryId, kept }: Kept,
+  kept: Publishing | undefined,
   lease: {
     readonly attemptId: string;
     readonly leaseExpiresAt: number;
     readonly current?: { readonly generationId: string } | null | undefined;
   },
-  returned: Promise<boolean>,
+  returned: Promise<unknown>,
 ): Promise<void> {
-  const { attemptId, current } = lease;
-  const keeping = kept !== undefined && current !== undefined && current !== null;
-  if (keeping) {
-    // For as long as the host may name the lease a request is turned away for: until the lease
-    // lapses, should its return go unanswered — and a hold at the least.
+  const { current } = lease;
+  if (kept !== undefined && current !== undefined && current !== null) {
     runtime.givenBack.set(
-      attemptId,
+      lease.attemptId,
       { publishing: kept, generationId: current.generationId },
       Math.max(runtime.holdMs, lease.leaseExpiresAt - nowMs()),
     );
   }
-  // Waited for whatever is kept: the lease's return is work of this request's that its end must not
-  // cut off.
-  const answered = await returned;
-  if (!keeping || !answered) {
-    return;
-  }
-  const asked = entryId === undefined ? undefined : runtime.asking.get(entryId);
-  const answeredAll = settledThen(
-    Promise.allSettled(asked === undefined ? [] : [...asked.keys()]),
-    () => {
-      runtime.givenBack.delete(attemptId);
-    },
-  );
-  // Waited for here a second at the most, as this request's work: an answer still out past that
-  // lets go of the lease as it lands, with the request that asked for it.
-  await settledWithin(answeredAll, []);
+  await returned;
 }
 
 /**
