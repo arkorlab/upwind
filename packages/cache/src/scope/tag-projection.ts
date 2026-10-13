@@ -1,4 +1,5 @@
 import { kvTagKey, MAX_TAGS_PER_CALL } from '@stayingupwind/core/cache';
+import type { TagDeltaEntry } from '@stayingupwind/host/cache';
 
 import {
   controlFenceSweepPending,
@@ -26,12 +27,46 @@ const PROJECTION_CONCURRENCY = 8;
 const META_TAG_REVISION = 'tags_projected_revision';
 const META_RETIRED_TAG_REVISION = 'tags_deleted_revision';
 
+/** How soon KV takes a second write of a key: one within a second it refuses (429). */
+const KEY_WRITE_INTERVAL_MS = 1000;
+/** How KV says it refused a write for the key's second (`… 429 Too Many Requests`). */
+const RATE_LIMITED = /\b429\b/u;
+
 interface TagProjectionDeps {
   readonly sql: SqlStorage;
   readonly scopeId: string;
   readonly kv: KvSink;
   readonly transaction: <T>(body: () => T) => T;
   readonly now: () => number;
+}
+
+/**
+ * Write a tag's record as it stands, or take it off for a retired scope. KV refuses a second write
+ * of a key within a second (429), and a tag invalidated again while its record went out, by a
+ * change that committed while a run waited, is written again within one. A write refused so is
+ * tried once more a second later rather than failing the run, so that the change is answered with
+ * its record out; any other failure, or a second refusal, fails the run as before. Nothing is kept
+ * of earlier writes, which an object's restart would lose.
+ */
+async function writeTagRecord(
+  deps: TagProjectionDeps,
+  retired: boolean,
+  tag: TagDeltaEntry,
+): Promise<void> {
+  const key = kvTagKey(deps.scopeId, tag.tagId);
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await (retired ? deps.kv.delete(key) : deps.kv.put(key, JSON.stringify(tag)));
+      return;
+    } catch (error) {
+      if (attempt > 1 || !(error instanceof Error) || !RATE_LIMITED.test(error.message)) {
+        throw error;
+      }
+    }
+    await new Promise((resolve) => {
+      setTimeout(resolve, KEY_WRITE_INTERVAL_MS);
+    });
+  }
 }
 
 /** Identities are fixed at commit; completion is evidence for the caller's serialized settle. */
@@ -92,11 +127,7 @@ async function projectChangedTags(
 
   for (const batch of chunks(tags)) {
     const outcomes = await Promise.allSettled(
-      batch.map((tag) => {
-        return retired
-          ? deps.kv.delete(kvTagKey(deps.scopeId, tag.tagId))
-          : deps.kv.put(kvTagKey(deps.scopeId, tag.tagId), JSON.stringify(tag));
-      }),
+      batch.map((tag) => writeTagRecord(deps, retired, tag)),
     );
 
     if (outcomes.some((outcome) => outcome.status === 'rejected')) {
@@ -133,11 +164,7 @@ async function projectPermanentTags(
     const outcomes = await Promise.allSettled(
       batch
         .filter((tag) => published.get(tag.tagId) !== tag.revision)
-        .map((tag) => {
-          return retired
-            ? deps.kv.delete(kvTagKey(deps.scopeId, tag.tagId))
-            : deps.kv.put(kvTagKey(deps.scopeId, tag.tagId), JSON.stringify(tag));
-        }),
+        .map((tag) => writeTagRecord(deps, retired, tag)),
     );
 
     // Drain the whole batch before the serialized settle queue can start another write.
@@ -171,11 +198,7 @@ async function projectExactTag(
 
   if (tag === undefined) return;
 
-  if (retired) {
-    await deps.kv.delete(kvTagKey(deps.scopeId, tagId));
-  } else {
-    await deps.kv.put(kvTagKey(deps.scopeId, tagId), JSON.stringify(tag));
-  }
+  await writeTagRecord(deps, retired, tag);
 
   if (projection !== undefined) {
     deps.transaction(() => {
