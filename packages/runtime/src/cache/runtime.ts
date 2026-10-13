@@ -32,6 +32,12 @@ const DATA_STATE_BYTES = DATA_STATE_KIB * KIB;
 const DATA_STATE_ENTRY_BYTES = 128;
 /** What a lease given back holds besides its render and its ids (`givenBack`): the entry itself. */
 const GIVEN_BACK_ENTRY_BYTES = 128;
+/**
+ * How many leases given back this isolate keeps at the most (`givenBack`): far more than it gives
+ * back within the minute a lease lasts, each a superseded request's, and a bound on the records
+ * themselves whatever their renders share.
+ */
+export const GIVEN_BACK_ENTRIES = 4096;
 const ENTRY_IDS_KIB = 256;
 const ENTRY_IDS_BYTES = ENTRY_IDS_KIB * KIB;
 /** Leave the rest of a Function's 128 MB for Next.js, rendering and concurrent requests. */
@@ -156,8 +162,8 @@ export interface CacheRuntime {
    * settled by then. Each until the lease lapses, a hold at the least (`givingBack`): an answer that
    * turned a request away for it may come in after the host has it back. Within a byte budget of its
    * own, as the renders being published are (`PUBLISHING_BYTES`), in which a render kept with more
-   * than one lease counts once and each lease its own few bytes besides; no count of leases pushes
-   * one out.
+   * than one lease counts once and each lease its own few bytes besides, and within a count of
+   * leases far past what a minute's leases come to (`GIVEN_BACK_ENTRIES`).
    */
   readonly givenBack: TtlCache<string, GivenBack>;
   /**
@@ -327,7 +333,7 @@ export function createCacheRuntime(options: CacheRuntimeOptions): CacheRuntime |
       sizeOf: publishingBytes,
     }),
     letGo: new WeakSet(),
-    givenBack: new TtlCache(holdMs, Infinity, options.now, {
+    givenBack: new TtlCache(holdMs, GIVEN_BACK_ENTRIES, options.now, {
       maxBytes: PUBLISHING_BYTES,
       sizeOf: (given, key) =>
         GIVEN_BACK_ENTRY_BYTES + (key.length + given.generationId.length) * UTF16_BYTES,

@@ -129,12 +129,15 @@ interface Overflow {
 }
 
 /**
- * How many calls of this Function's out that name one tag are counted one by one (`Unanswered`): past
- * that many, the one out longest is counted with the others past it (`Overflow`). A call is never
- * taken for one the host never answers for being out long, or one of many: its request may be
- * running yet, and the runtime cannot tell one that is from one that ended under it.
+ * How many calls of this Function's out that name one tag are counted one by one (`Unanswered`), each
+ * taking its own mark out with it as it is answered: more than calls a host answering at all leaves
+ * out at once. Past that many, the one out longest is counted with the others past it (`Overflow`),
+ * whose marks stay in force until the last of them is answered — calls whose requests ended under
+ * them, which never answer, piling up. A call is never taken for one the host never answers for
+ * being out long, or one of many: its request may be running yet, and the runtime cannot tell one
+ * that is from one that ended under it.
  */
-const MAX_CALLS_OUT = 64;
+const MAX_CALLS_OUT = 1024;
 
 /**
  * This isolate's own invalidations of one tag, all in force here: those the host has answered at a
