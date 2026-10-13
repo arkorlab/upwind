@@ -85,6 +85,16 @@ export interface Publishing {
   readonly published: Promise<{ readonly kind: string; readonly generationId?: string }>;
 }
 
+/**
+ * A lease of an entry this isolate gave back unused: handed out while a render of the isolate's own
+ * was publishing the entry, by a host that named a later generation of it current (`supersededBy`).
+ * That render, and the generation the host named.
+ */
+export interface GivenBack {
+  readonly publishing: Publishing;
+  readonly generationId: string;
+}
+
 export interface CacheRuntime {
   readonly scopeId: string;
   readonly host: CacheHost;
@@ -138,13 +148,14 @@ export interface CacheRuntime {
    */
   readonly letGo: WeakSet<Publishing>;
   /**
-   * The leases this isolate gave back unused because the host named a later generation of the entry
-   * current, by attempt: the generation it named. Until the host has one back, it turns a request of
-   * the entry away for it, and the isolate answers that request as it answered the one the lease was
-   * handed to (`cache/publishing.ts`). Each for a hold, as every word of the host's the isolate
-   * judges by; no render is held here.
+   * The leases this isolate gave back unused, by attempt (`GivenBack`): until the host has one back,
+   * it turns a request of the entry away for it, and the isolate answers that request as it answered
+   * the one the lease was handed to (`cache/publishing.ts`) — from the render, whose publish may have
+   * settled by then. Each until the host has said it has the lease back, for a hold at the most, as
+   * every word of the host's the isolate judges by, and within a byte budget of its own, as the
+   * renders being published are (`PUBLISHING_BYTES`).
    */
-  readonly givenBack: TtlCache<string, string>;
+  readonly givenBack: TtlCache<string, GivenBack>;
   /**
    * Artifacts of current generations, by id, read for an output other than the record's own. An
    * artifact is named by its content and never rewritten, so what an id read once says it says for
@@ -307,7 +318,10 @@ export function createCacheRuntime(options: CacheRuntimeOptions): CacheRuntime |
       sizeOf: publishingBytes,
     }),
     letGo: new WeakSet(),
-    givenBack: new TtlCache(holdMs, PUBLISHING_ENTRIES, options.now),
+    givenBack: new TtlCache(holdMs, PUBLISHING_ENTRIES, options.now, {
+      maxBytes: PUBLISHING_BYTES,
+      sizeOf: (given, key) => publishingBytes(given.publishing, key),
+    }),
     artifactMemo: new TtlCache(Infinity, ARTIFACT_MEMO_ENTRIES, options.now, {
       maxBytes: ARTIFACT_MEMO_BYTES,
       sizeOf: (bytes, key) => bytes.buffer.byteLength + key.length * UTF16_BYTES,

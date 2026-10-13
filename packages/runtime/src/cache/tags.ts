@@ -25,6 +25,14 @@ export type TagHost = Pick<CacheHost, 'getTags' | 'tagsDelta'>;
 export interface TagMark {
   readonly staleAt: number;
   readonly hardExpireAt: number | null;
+  /**
+   * A revision of the scope the invalidation was recorded at or before, where one is known: the
+   * revision the page of the delta that brought the mark was read at, or the one the host recorded
+   * this isolate's own invalidation at once it has answered (`applyLocal`). What tells a view that
+   * held the invalidation from one that did not, whatever the clocks that stamped it said: a view
+   * brought up to that revision held it (`validityOf`).
+   */
+  readonly revision?: number | undefined;
 }
 
 export interface TagStateOptions {
@@ -105,7 +113,11 @@ export class TagState {
       while (truncated) {
         const delta = await host.tagsDelta(this.#revision);
         for (const tag of delta.tags) {
-          this.#mark(tag.value, { staleAt: tag.staleAt, hardExpireAt: tag.hardExpireAt });
+          this.#mark(tag.value, {
+            staleAt: tag.staleAt,
+            hardExpireAt: tag.hardExpireAt,
+            revision: delta.revision,
+          });
         }
         this.#revision = Math.max(this.#revision, delta.revision);
         truncated = delta.truncated;
@@ -242,12 +254,21 @@ export class TagState {
    * holds an entry against the expiration a handler reports (`shouldDiscardCacheEntry`), which is
    * what `getExpiration` hands it from here; the price of the other kind of tie, a value made just
    * after an invalidation, is one render more.
+   *
+   * Where the entry was made against a view brought up to a revision of the scope (`held`), an
+   * invalidation the mark says was recorded at or before it was in that view, whatever its time
+   * says: the clock that stamped it may read later than the moment the view was asked for, and the
+   * pull that brought the view up brought it all the same.
    */
-  validityOf(tags: readonly string[], timestamp: number, now: number): Validity {
+  validityOf(tags: readonly string[], timestamp: number, now: number, held?: number): Validity {
     let validity: Validity = 'fresh';
     for (const tag of tags) {
       const mark = this.#markOf(tag);
-      if (mark === undefined || mark.staleAt < timestamp) {
+      if (
+        mark === undefined ||
+        mark.staleAt < timestamp ||
+        (held !== undefined && mark.revision !== undefined && mark.revision <= held)
+      ) {
         continue;
       }
       if (mark.hardExpireAt !== null && mark.hardExpireAt <= now) {
@@ -273,13 +294,26 @@ export class TagState {
  * and that is what an isolate starting now would hold. Keeping the later `staleAt` beside the
  * earlier `hardExpireAt` would make a window nobody opened, and would make this isolate judge an
  * entry differently from the one next to it; two recorded in the same millisecond are settled by
- * the earlier deadline.
+ * the earlier deadline, and stand at the later revision either is known at — the one known where
+ * the other is not: this isolate's own invalidation, applied before the host has answered, and
+ * again with the revision the host answered with at the same moment.
  */
 function stronger(a: TagMark, b: TagMark): TagMark {
   if (a.staleAt !== b.staleAt) {
     return a.staleAt > b.staleAt ? a : b;
   }
-  return { staleAt: a.staleAt, hardExpireAt: earliest(a.hardExpireAt, b.hardExpireAt) };
+  return {
+    staleAt: a.staleAt,
+    hardExpireAt: earliest(a.hardExpireAt, b.hardExpireAt),
+    revision: latestKnown(a.revision, b.revision),
+  };
+}
+
+function latestKnown(a: number | undefined, b: number | undefined): number | undefined {
+  if (a === undefined) {
+    return b;
+  }
+  return b === undefined ? a : Math.max(a, b);
 }
 
 function earliest(a: number | null, b: number | null): number | null {

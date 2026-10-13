@@ -5,7 +5,7 @@ import { nowMs } from './clock.ts';
 import { entryIdOf } from './current.ts';
 import type { AttemptReason } from './host.ts';
 import { JUDGED_REASONS } from './lease.ts';
-import type { CacheRuntime, Publishing } from './runtime.ts';
+import type { CacheRuntime, GivenBack, Publishing } from './runtime.ts';
 import { refusedTags } from './tag-bounds.ts';
 
 /**
@@ -66,10 +66,19 @@ export async function publishingKeyOf(
  * one this isolate made, in force here before the delta says so (`applyLocal`), or one another read
  * was told of (`syncLocal`). Asks of each tag what `validityOf` asks of an entry made at that
  * moment. A mark from before the pull was asked for is one the pull brought or the view already
- * held, and the render's reads were judged against it.
+ * held, and the render's reads were judged against it; so is one recorded at or before the revision
+ * the pull brought the view to (`observedTagRevision`), whenever it says it was made — the
+ * invalidation that sent the request here, recorded by the host as the pull was on its way, say.
  */
 function unmarkedSince(runtime: CacheRuntime, publishing: Publishing): boolean {
-  return runtime.tags.validityOf(publishing.tags, publishing.observedAt, nowMs()) === 'fresh';
+  return (
+    runtime.tags.validityOf(
+      publishing.tags,
+      publishing.observedAt,
+      nowMs(),
+      publishing.observedTagRevision,
+    ) === 'fresh'
+  );
 }
 
 /**
@@ -158,8 +167,6 @@ interface Busy {
 interface TurnedAway {
   readonly reason: AttemptReason;
   readonly entryId: string | undefined;
-  /** The render this isolate kept of the entry when the lease was asked for, let go of or not. */
-  readonly kept: Publishing | undefined;
   /** The attempt holding the lease, where the host says (`AttemptOutcome`). */
   readonly holder: string | undefined;
   /** When the holder's lease lapses unless renewed, where the host says. */
@@ -193,11 +200,14 @@ async function identified(
 }
 
 /**
- * The generation the host named when it handed out the lease it turned the regeneration away for:
- * where that is a lease this isolate gave back unused (`answeringWhenSuperseded`), and the
- * regeneration one a judgement of the entry asked for (`JUDGED_REASONS`).
+ * The lease the host turned the regeneration away for, as this isolate gave it back (`GivenBack`):
+ * where it is one the isolate gave back unused (`givingBack`), and the regeneration is one a
+ * judgement of the entry asked for (`JUDGED_REASONS`).
  */
-function givenBackFor(runtime: CacheRuntime, { reason, holder }: TurnedAway): string | undefined {
+function givenBackFor(
+  runtime: CacheRuntime,
+  { reason, holder }: TurnedAway,
+): GivenBack | undefined {
   return holder === undefined || !JUDGED_REASONS.has(reason)
     ? undefined
     : runtime.givenBack.get(holder);
@@ -221,23 +231,21 @@ function givenBackFor(runtime: CacheRuntime, { reason, holder }: TurnedAway): st
  * lease was taken before the render, for longer than that.
  *
  * Where the holder is instead a lease this isolate gave back unused once the publish had let go of
- * its own (`answeringWhenSuperseded`), and the host has yet to have it back, the request is answered
- * from the render it kept as the one the lease was handed to is: by the host's word to that request,
- * within a hold of it (`CacheRuntime.givenBack`), and once this request's own pull is in, which
- * brings what the host has recorded since.
+ * its own (`givingBack`), and the host has yet to have it back, the request is answered as the one
+ * the lease was handed to is, from the render kept with the lease, its publish settled or not: by
+ * the host's word to that request (`CacheRuntime.givenBack`), and once this request's own pull is
+ * in, which brings what the host has recorded since.
  */
 export async function answeringWhileBusy(
   runtime: CacheRuntime,
   turnedAway: TurnedAway,
   pulled: Promise<boolean>,
 ): Promise<Busy> {
-  const named = givenBackFor(runtime, turnedAway);
-  if (named !== undefined) {
-    const { kept } = turnedAway;
-    const render =
-      kept !== undefined && (await settledWithin(pulled, false))
-        ? await identified(runtime, kept, named)
-        : undefined;
+  const givenBack = givenBackFor(runtime, turnedAway);
+  if (givenBack !== undefined) {
+    const render = (await settledWithin(pulled, false))
+      ? await identified(runtime, givenBack.publishing, givenBack.generationId)
+      : undefined;
     return render === undefined ? { kind: 'busy' } : { kind: 'busy', publishing: render };
   }
   const { reason, entryId, holder, holderUntil } = turnedAway;
@@ -268,27 +276,43 @@ export async function answeringWhileBusy(
  * (`supersededBy`), with the render this isolate kept of the entry when the lease was asked for
  * (`kept`): where that generation is the one the render's own publish committed — the host had
  * committed it, and let go of its lease, while the commit's answer was still on its way here — the
- * render answers, as it answers every request after its publish (`identified`).
- *
- * The lease, given back unused, is kept as given back with the generation the host named
- * (`CacheRuntime.givenBack`): until the host has it back, it turns a request of the entry away for
- * it, and that request is answered as this one is (`answeringWhileBusy`). The render, let go of
- * (`lettingGo`), answers no request at once any more: only as here, or as there.
+ * render answers, as it answers every request after its publish (`identified`). The render, let go
+ * of (`lettingGo`), answers no request at once any more: only as here, or for a request the host
+ * turns away for this lease (`givingBack`).
  */
 export async function answeringWhenSuperseded(
+  runtime: CacheRuntime,
+  kept: Publishing | undefined,
+  current: { readonly generationId: string } | null | undefined,
+): Promise<CapturedRender | undefined> {
+  return kept === undefined || current === undefined || current === null
+    ? undefined
+    : identified(runtime, kept, current.generationId);
+}
+
+/**
+ * The lease a superseded regeneration gives back unused, kept as given back with the render the
+ * isolate kept of the entry and the generation the host named (`CacheRuntime.givenBack`) until the
+ * host has said it has it back (`returned`): until then it turns a request of the entry away for it,
+ * and that request is answered as the superseded one is (`answeringWhileBusy`), the render's publish
+ * settled meanwhile or not. From then on the host turns nobody away for it, and the render need not
+ * outlive that. Settles with `returned`, which never rejects.
+ */
+export async function givingBack(
   runtime: CacheRuntime,
   kept: Publishing | undefined,
   lease: {
     readonly attemptId: string;
     readonly current?: { readonly generationId: string } | null | undefined;
   },
-): Promise<CapturedRender | undefined> {
+  returned: Promise<void>,
+): Promise<void> {
   const { attemptId, current } = lease;
-  if (kept === undefined || current === undefined || current === null) {
-    return undefined;
+  if (kept !== undefined && current !== undefined && current !== null) {
+    runtime.givenBack.set(attemptId, { publishing: kept, generationId: current.generationId });
   }
-  runtime.givenBack.set(attemptId, current.generationId);
-  return identified(runtime, kept, current.generationId);
+  await returned;
+  runtime.givenBack.delete(attemptId);
 }
 
 /**

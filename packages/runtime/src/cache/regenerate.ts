@@ -43,6 +43,7 @@ import {
   answeringUntilSettled,
   answeringWhenSuperseded,
   answeringWhileBusy,
+  givingBack,
   lettingGo,
   publishingKeyOf,
 } from './publishing.ts';
@@ -578,7 +579,6 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
       {
         reason: target.reason,
         entryId,
-        kept,
         holder: lease.attemptId,
         holderUntil: lease.leaseExpiresAt,
       },
@@ -590,15 +590,15 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   // answers no request at once from now on.
   lettingGo(runtime, entryId ?? lease.entryId);
   if (supersededBy(target, lease.current, nowMs()) && answerable(lease.current)) {
-    // Given back behind the answer, which waits for nothing of it: nobody holds the lease now.
-    input.waitUntil(abandon(input, lease, 'skipped'));
+    // Given back behind the answer, which waits for nothing of it: nobody holds the lease now. The
+    // generation the host holds may be the one the render became: the render stays until its publish
+    // settles, for any other request of the isolate the host leases the entry to meanwhile, and with
+    // this lease until the host has it back, for one it turns away for this lease.
+    input.waitUntil(givingBack(runtime, kept, lease, abandon(input, lease, 'skipped')));
     // What stands is what the next request should find: a record of it, or of a later one, that
     // another request of this isolate learned while this one waited for the lease stays held.
     forgetRecordBefore(runtime, lease.entryId, lease.current?.seq ?? Infinity);
-    // The generation the host holds may be the one the render became. The render stays until its
-    // publish settles: for this request, and for any other of the isolate the host leases the entry
-    // to, or turns away for this lease, meanwhile.
-    const ours = await answeringWhenSuperseded(runtime, kept, lease);
+    const ours = await answeringWhenSuperseded(runtime, kept, lease.current);
     return ours === undefined ? { kind: 'superseded' } : { kind: 'superseded', publishing: ours };
   }
   // It answers nothing more: what the host holds is not a later generation that stands.

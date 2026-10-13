@@ -113,9 +113,11 @@ async function invalidate(
     requestContext()?.invalidated.add(tags, outcome.revision);
   }
   // In force here at once: the request that invalidated must not read what it invalidated, nor
-  // may the next one in this isolate, before the delta says so.
+  // may the next one in this isolate, before the delta says so. At the revision the host recorded
+  // it at: a view that pulls the delta up to there holds it, whatever the clocks say.
   for (const invalidation of outcome.invalidations) {
     runtime.tags.applyLocal([invalidation.value], {
+      revision: outcome.revision,
       // The request may have read cache data while the invalidation call was in flight.
       staleAt: Math.max(now, invalidation.staleAt),
       // The deadline by this isolate's clock too, whichever comes first: a host whose clock
