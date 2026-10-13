@@ -261,7 +261,10 @@ the two checks described under "Which Next.js" below, and recorded per build in
 The app module (`app.cjs`) is bundled by Rolldown, as one CommonJS module with the patches applied
 as each file is loaded — 5% smaller than esbuild made it from the same graph, and built sooner (see
 EXPERIMENTS.md, V-03). The runtime module (`index.mjs`) is Rolldown's as well, for the `workerd` and
-`worker` conditions, and so is the edge bundle (`edge.cjs`), where a build produced one. Rolldown
+`worker` conditions, and so is the edge bundle (`edge.cjs`), where a build produced one. An import
+that Rolldown cannot resolve, in the runtime or in the cache host it bundles, fails the build: the
+Function would not have that module either. One inside a `try` — a `require()`, or an awaited
+`import()` — is left to fail when it runs, for the fallback around it to catch. Rolldown
 shakes the members of a namespace object a dependency builds, which esbuild keeps whole:
 `import { z } from 'zod'` in a cache host kept all of zod in the runtime. All three are minified in
 whitespace and syntax. The runtime's variables and parameters are renamed short as well, and so are
