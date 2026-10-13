@@ -66,11 +66,12 @@ function handedCookies(handed: string): Set<string> {
 
 /**
  * Where a browser keeps a cookie that names no path it takes: the path asked for, up to its last
- * `/` (RFC 6265, section 5.1.4).
+ * `/`, and the root for one that does not begin with `/` or holds no other (RFC 6265, section
+ * 5.1.4).
  */
 function defaultPathOf(pathname: string): string {
   const last = pathname.lastIndexOf('/');
-  return last <= 0 ? '/' : pathname.slice(0, last);
+  return last === 0 || !pathname.startsWith('/') ? '/' : pathname.slice(0, last);
 }
 
 /** The path a `Set-Cookie` names last, which is the one a browser takes where it begins with `/`. */
