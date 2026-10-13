@@ -387,6 +387,23 @@ export class TagState {
     return this.#revision;
   }
 
+  /**
+   * The latest revision of the scope an invalidation of `tag` is known here at: of what this isolate
+   * was told of it and of what the host answered of its own, the later; 0 where neither is known at
+   * one. A judgement of the tag made now is made against every invalidation of it up to there — a
+   * tag stands at its latest — and against none after.
+   *
+   * Not the revision the view was brought up to (`revision`), which stays where it was as the tags it
+   * keeps are let go of (`MAX_TAGS_HELD`): a tag let go of is judged by what the host says of it when
+   * it is next read (`syncLocal`), which may be behind the invalidation the view was told of before.
+   */
+  knownRevisionOf(tag: string): number {
+    return Math.max(
+      this.#tags.get(tag)?.knownRevision ?? 0,
+      this.#applied.get(tag)?.answeredRevision ?? 0,
+    );
+  }
+
   /** How many calls of this Function's out are counted one by one, of every tag (`MAX_CALLS_OUT`). */
   get callsOut(): number {
     return this.#out.size;

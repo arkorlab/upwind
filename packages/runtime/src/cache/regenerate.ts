@@ -17,6 +17,7 @@ import { type CapturedRender, renderCaptured } from './capture.ts';
 import { nowMs } from './clock.ts';
 import { asRegeneration } from './context.ts';
 import { forgetRecord, forgetRecordBefore, publishedRecordOf, rememberRecord } from './current.ts';
+import { HeldTags } from './held-tags.ts';
 import {
   type AttemptOutcome,
   type AttemptReason,
@@ -227,6 +228,7 @@ function staticRequest(input: RegenerationInput, attemptId: string): Request {
 function renderStatic(
   input: RegenerationInput,
   attemptId: string,
+  held: HeldTags,
 ): Promise<CapturedRender | undefined> {
   const request = staticRequest(input, attemptId);
   return renderCaptured(input.target.descriptor.kind, (meta) => {
@@ -242,7 +244,7 @@ function renderStatic(
         ...meta.requestMeta,
       },
       waitUntil: input.waitUntil,
-      run: (work) => input.run(() => asRegeneration(work)),
+      run: (work) => input.run(() => asRegeneration(() => held.run(work))),
       expectNoResponse: meta.expectNoResponse,
     });
   });
@@ -410,13 +412,14 @@ function outputsOf(
 }
 
 /**
- * What the render came to: the outputs that were stored, the tags it left on the entry, and the
- * revision of the tag view its reads were judged against.
+ * What the render came to: the outputs that were stored, the tags it left on the entry, the
+ * revision of the tag view its reads were judged against, and what that view held of each tag.
  */
 interface Made {
   readonly uploads: Uploads;
   readonly tags: readonly GenerationTag[];
   readonly observedTagRevision: number;
+  readonly heldTagRevisions: Readonly<Record<string, number>>;
 }
 
 /**
@@ -445,6 +448,7 @@ function commitRequest(
   return {
     fencingToken: lease.fencingToken,
     observedTagRevision: made.observedTagRevision,
+    heldTagRevisions: made.heldTagRevisions,
     generation: {
       cacheTimestamp: now,
       producedAt: now,
@@ -480,21 +484,25 @@ async function publish(
   rendered: {
     readonly render: CapturedRender;
     readonly observedTagRevision: number;
+    readonly held: HeldTags;
     readonly began: number;
   },
   stopHeartbeat: () => void,
 ): Promise<PublishOutcome> {
   const { runtime, target } = input;
-  const { render, observedTagRevision, began } = rendered;
+  const { render, observedTagRevision, held, began } = rendered;
   let published: DecodedGenerationPack | undefined;
   try {
     // Ahead of the uploads: a render the contract will not take is one whose outputs are not
     // worth sending, and what says so is `tagsOf`.
     const tags = tagsOf(target, render);
     const uploads = await upload(input, lease, render);
+    // What the render's view held of each of its tags (`HeldTags`), its reads over with it.
+    const values = tags.map((tag) => tag.value);
+    const heldTagRevisions = held.of(values, observedTagRevision);
     const committed = await runtime.host.commit(
       lease.attemptId,
-      commitRequest(input, lease, render, { uploads, tags, observedTagRevision }),
+      commitRequest(input, lease, render, { uploads, tags, observedTagRevision, heldTagRevisions }),
     );
     if (committed.kind === 'published') {
       published = await publishedRecordOf(committed.record, lease.entryId, committed.generationId);
@@ -618,6 +626,8 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   runtime.publishing.delete(key);
   const began = performance.now();
   const stopHeartbeat = heartbeat(input, lease);
+  // What the render's reads were judged against, of each tag they were judged under (`HeldTags`).
+  const held = new HeldTags();
   let observedTagRevision: number;
   let viewed: boolean;
   let captured: CapturedRender | undefined;
@@ -627,7 +637,7 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
       message: 'the tags were not synced',
     });
     observedTagRevision = runtime.tags.revision;
-    captured = await renderStatic(input, lease.attemptId);
+    captured = await renderStatic(input, lease.attemptId, held);
     if (captured === undefined) {
       stopHeartbeat();
       await abandon(input, lease, 'skipped');
@@ -652,7 +662,7 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   const publishing = publish(
     input,
     lease,
-    { render: captured, observedTagRevision, began },
+    { render: captured, observedTagRevision, held, began },
     stopHeartbeat,
   );
   // Kept to answer for the entry only where its own pull answered. One that did not was rendered

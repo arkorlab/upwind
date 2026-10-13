@@ -17,6 +17,7 @@ import {
 } from './context.ts';
 import { readData, writeData } from './data.ts';
 import { heldIn, laterIfAny } from './held-reads.ts';
+import { judgedStaleAt, judgedValidity } from './held-tags.ts';
 import {
   heldOut,
   type HeldValue,
@@ -33,7 +34,6 @@ import {
   revalidatedBehind,
 } from './revalidations.ts';
 import type { CacheRuntime } from './runtime.ts';
-import { recordValidity } from './tags.ts';
 import { callsBehind, callsWaitedOn } from './turns.ts';
 
 /**
@@ -338,7 +338,7 @@ export class PlatformFetchCache {
     }
     const judge = async (value: HeldValue): Promise<Validity> => {
       await runtime.tags.syncLocal(runtime.host, value.entry.tags, now);
-      return recordValidity(runtime.tags, {
+      return judgedValidity(runtime.tags, {
         tags: [...value.entry.tags, ...(ctx.tags ?? []), ...(ctx.softTags ?? [])],
         timestamp: value.entry.timestamp,
         invalidation: value.invalidation,
@@ -507,7 +507,7 @@ async function getUseCache(
   }
   const judge = async (value: HeldValue): Promise<Validity> => {
     await runtime.tags.syncLocal(runtime.host, value.entry.tags, now);
-    return recordValidity(runtime.tags, {
+    return judgedValidity(runtime.tags, {
       tags: [...value.entry.tags, ...softTags],
       timestamp: value.entry.timestamp,
       invalidation: value.invalidation,
@@ -691,7 +691,7 @@ export function useCacheHandler(kind: string): UseCacheHandler {
     getExpiration: (tags) => {
       const latestStaleAt = async (runtime: CacheRuntime): Promise<number> => {
         await runtime.tags.syncLocal(runtime.host, tags, nowMs());
-        return runtime.tags.staleAtOf(tags);
+        return judgedStaleAt(runtime.tags, tags);
       };
       return withRuntime(0, latestStaleAt, 'expiration');
     },
