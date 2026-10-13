@@ -5,5 +5,5 @@
     "types": [],
     "allowImportingTsExtensions": true
   },
-  "include": ["src/**/*"]
+  "include": ["src/**/*", "test/**/*", "vitest.config.mts"]
 }
