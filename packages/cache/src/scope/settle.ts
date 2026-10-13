@@ -594,7 +594,7 @@ export async function settlePending(
   const [projection, marker, tags] = await Promise.allSettled([
     projectRecords(deps, from),
     writeScopeMarker(deps),
-    projectTags(deps, from?.controlTags),
+    projectTags(deps, from?.controlTags, from?.revision),
   ]);
   const projectionFailed = projection.status === 'fulfilled' && projection.value.failed > 0;
   const shortfall =

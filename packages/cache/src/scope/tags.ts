@@ -289,7 +289,8 @@ export function toDeltaEntry(row: TagRow): TagDeltaEntry {
   };
 }
 
-function tagsOfRevision(sql: SqlStorage, revision: number): TagRow[] {
+/** The tags one change invalidated: every row it wrote at its revision, and still holds. */
+export function tagsOfRevision(sql: SqlStorage, revision: number): TagRow[] {
   return sql
     .exec<TagRow>(`SELECT * FROM tags WHERE revision = ? AND stale_at IS NOT NULL`, revision)
     .toArray();
