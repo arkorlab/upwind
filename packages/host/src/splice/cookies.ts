@@ -21,6 +21,11 @@ import { compareCodeUnits } from '@stayingupwind/core/util';
  * though (`handedCookies`): one the middleware wrote on its response alone — a `Set-Cookie` of its
  * own, appended after `cookies.set` — the render never saw, and a resume that sets it as Next.js
  * would write it back sets a cookie of its own, which the client may not have.
+ *
+ * And only where the copy is stored as the cookie it copies was. A cookie that names no path of its
+ * own is stored under the directory of the path the client asked for (RFC 6265, sections 5.1.4 and
+ * 5.2.4), and Next.js writes it back with `Path=/`: below the root that is another cookie, which a
+ * whole render would send beside it, and the client does not have.
  */
 
 const EXPIRES = 'expires';
@@ -59,8 +64,38 @@ function handedCookies(handed: string): Set<string> {
   );
 }
 
-/** A `Set-Cookie` as a browser stores it; two that differ only in how they are written agree. */
-function storedAs(setCookie: string): string {
+/**
+ * Where a browser keeps a cookie that names no path it takes: the path asked for, up to its last
+ * `/` (RFC 6265, section 5.1.4).
+ */
+function defaultPathOf(pathname: string): string {
+  const last = pathname.lastIndexOf('/');
+  return last <= 0 ? '/' : pathname.slice(0, last);
+}
+
+/** The path a `Set-Cookie` names last, which is the one a browser takes where it begins with `/`. */
+function pathOf(setCookie: string): string | undefined {
+  let path: string | undefined;
+  for (const each of setCookie.split(';').slice(1)) {
+    const attribute = attributeOf(each);
+    if (attribute.name === PATH) {
+      path = attribute.value;
+    }
+  }
+  return path;
+}
+
+/** The path a browser stores a `Set-Cookie` under: its own, or else `defaultPath` (5.2.4). */
+function storedPathOf(setCookie: string, defaultPath: string): string {
+  const path = pathOf(setCookie);
+  return path?.startsWith('/') === true ? path : defaultPath;
+}
+
+/**
+ * A `Set-Cookie` as a browser stores it, under the path it is kept at; two that differ only in how
+ * they are written agree.
+ */
+function storedAs(setCookie: string, defaultPath: string): string {
   const [pair = '', ...written] = setCookie.split(';');
   const attributes = new Map<string, string>();
   for (const each of written) {
@@ -78,6 +113,7 @@ function storedAs(setCookie: string): string {
   if (attributes.has(MAX_AGE)) {
     attributes.delete(EXPIRES);
   }
+  attributes.set(PATH, storedPathOf(setCookie, defaultPath));
   const kept = [...attributes]
     .map(([name, value]) => `${name}=${value}`)
     .toSorted(compareCodeUnits);
@@ -182,28 +218,34 @@ function nameOf(setCookie: string): string {
 
 /**
  * The names of the cookies among `set` that `sent` does not carry, either as it was written or —
- * one the render was `handed` as well — as Next.js writes it back. `sent` is what the shell's
- * headers went out with, and `handed` the `x-middleware-set-cookie` the render was given. Nothing
- * is compared while the resume sets no cookie at all.
+ * one the render was `handed` as well — as Next.js writes it back where that is the same cookie.
+ * `sent` is what the shell's headers went out with, `handed` the `x-middleware-set-cookie` the
+ * render was given, and `pathname` the path the client asked for, which a cookie naming no path of
+ * its own is stored under. Nothing is compared while the resume sets no cookie at all.
  */
 export function unsentCookieNames(
   set: readonly string[],
   sent: readonly string[] = [],
   handed = '',
+  pathname = '/',
 ): string[] {
   if (set.length === 0) {
     return [];
   }
+  const defaultPath = defaultPathOf(pathname);
   const given = handedCookies(handed);
   const carried = new Set<string>();
   for (const setCookie of sent) {
-    carried.add(storedAs(setCookie));
-    const echo = given.has(setCookie.trim()) ? echoOf(setCookie) : undefined;
+    carried.add(storedAs(setCookie, defaultPath));
+    // Written back as the cookie stored where the client keeps it: one Next.js moves to the root
+    // is not this one, and does not match it.
+    const placed = `${setCookie}; Path=${storedPathOf(setCookie, defaultPath)}`;
+    const echo = given.has(setCookie.trim()) ? echoOf(placed) : undefined;
     if (echo !== undefined) {
-      carried.add(storedAs(echo));
+      carried.add(storedAs(echo, defaultPath));
     }
   }
   return set
-    .filter((setCookie) => !carried.has(storedAs(setCookie)))
+    .filter((setCookie) => !carried.has(storedAs(setCookie, defaultPath)))
     .map((setCookie) => nameOf(setCookie));
 }
