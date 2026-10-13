@@ -42,7 +42,13 @@ export function getCookieValue(header: string | null, name: string): string | un
   return parseCookieHeader(header).find((pair) => pair.name === name)?.value;
 }
 
-const DOMAIN_ATTRIBUTE_RE = /;\s*domain=([^;]*)/giu;
+/**
+ * A `Domain` attribute of a `Set-Cookie`, and its value. A browser trims the whitespace around an
+ * attribute's name and its value (RFC 6265, section 5.2), so `Domain =example.com` scopes a cookie
+ * just as `Domain=example.com` does: the name may have whitespace on either side here, and
+ * `keepsDomain` trims the value's.
+ */
+const DOMAIN_ATTRIBUTE_RE = /;\s*domain\s*=([^;]*)/giu;
 
 /** The host a response is answered on, and the apex a host's preview hostnames sit under. */
 export interface CookieHostContext {
