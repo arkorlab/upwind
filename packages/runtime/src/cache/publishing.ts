@@ -188,9 +188,13 @@ export async function answeringWhileBusy(
  * committed it, and let go of its lease, while the commit's answer was still on its way here — the
  * render answers, as it answers every request after its publish. Its publish is waited for to say so
  * (`Publishing.published`), for a second at the most (`PUBLISHING_PULL_MS`): an answer in flight
- * lands within that, and a render whose lease lapsed has its publish refused.
+ * lands within that, and a render whose lease lapsed has its publish refused. Only while the view of
+ * the tags, once that is said, still says nothing the render missed (`unmovedSince`), as everywhere
+ * else a publishing render answers: an invalidation this isolate made while the request waited is in
+ * force here before the host's answer says anything of it.
  */
 export async function answeringWhenSuperseded(
+  runtime: CacheRuntime,
   kept: Publishing | undefined,
   current: { readonly generationId: string } | null | undefined,
 ): Promise<CapturedRender | undefined> {
@@ -198,7 +202,9 @@ export async function answeringWhenSuperseded(
     return undefined;
   }
   const outcome = await settledWithin(kept.published, undefined);
-  return outcome?.kind === 'published' && outcome.generationId === current.generationId
+  return outcome?.kind === 'published' &&
+    outcome.generationId === current.generationId &&
+    unmovedSince(runtime, kept)
     ? kept.render
     : undefined;
 }
