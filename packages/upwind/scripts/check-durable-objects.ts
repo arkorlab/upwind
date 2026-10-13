@@ -83,6 +83,13 @@ async function checkBuildMetadata(): Promise<void> {
   assert.equal(parsed.sourcesContent, undefined);
   const split = await durableObjectParts({ ...input, split: true });
   assert.equal(split.bundle.v, DURABLE_OBJECT_SPLIT_BUNDLE_VERSION);
+  // A project directory given as a relative path still has its files named absolutely.
+  const [relative] = await bundleDurableObjects(path.relative(process.cwd(), project), [
+    declaration,
+  ]);
+  assert.ok(relative);
+  assert.ok(relative.inputs.includes(path.join(project, MODULE)));
+  assert.ok(relative.inputs.every((file) => path.isAbsolute(file)));
   assert.deepEqual(split.sourceMaps, []);
   await checkDefinitionRevision(project, declaration);
   const commonjs = await durableObjectParts({

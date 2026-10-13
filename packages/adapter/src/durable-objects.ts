@@ -113,9 +113,10 @@ function isSourceFile(id: string): boolean {
  */
 function projectNamed(projectDir: string, root: string, file: string): string {
   const relative = path.relative(root, file);
+  // Resolved, not joined: a project directory given as a relative path names its files absolutely.
   return relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)
     ? file
-    : path.join(projectDir, relative);
+    : path.resolve(projectDir, relative);
 }
 
 /**
@@ -196,7 +197,8 @@ async function bundleDurableObject(
     },
     onLog(_level, log) {
       // A module the bundler cannot find is one the class would not have either: Rolldown leaves a
-      // package it cannot find external, with this log. Anything else it says stays with the build.
+      // package it cannot find external, with this log. Anything else it says is not printed, as
+      // the adapter's other bundles print nothing of Rolldown's and esbuild ran here silent.
       if (log.code === 'UNRESOLVED_IMPORT') unresolved.push(log.message);
     },
   });
