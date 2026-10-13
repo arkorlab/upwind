@@ -28,7 +28,6 @@ const EXTERNAL = [
   // `rolldown` by pattern, not by name: `rolldown/parseAst` is a subpath, and inlining it drags
   // in the loader that finds rolldown's native binding — which then looks for it beside *this*
   // file and fails.
-  'esbuild',
   /^rolldown(\/|$)/u,
   '@oxc-project/types',
   'jsonc-parser',

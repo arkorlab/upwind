@@ -108,7 +108,7 @@ async function checkBuildMetadata(): Promise<void> {
   );
   await assert.rejects(
     durableObjectParts({ ...input, declarations: [{ ...declaration, module: 'dynamic.ts' }] }),
-    /durable-object\/COUNTERS\/durable-object\.mjs:1/u,
+    /dynamic\.ts:\d+: import\(specifier\)/u,
   );
   await writeFile(
     path.join(project, 'native-imports.ts'),

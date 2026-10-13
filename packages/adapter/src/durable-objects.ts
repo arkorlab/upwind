@@ -12,37 +12,38 @@ import {
   type SourceMapRef,
 } from '@stayingupwind/core/bundle';
 import { UPWIND_DURABLE_OBJECTS_ENV } from '@stayingupwind/core/paas';
-import { build } from 'esbuild';
+import { compareCodeUnits } from '@stayingupwind/core/util';
+import { type OutputChunk, type Plugin, rolldown } from 'rolldown';
 
 import { type BlobStore } from './blobs.ts';
 import { jsLiteral } from './codegen.ts';
 import {
   auditFunction,
   auditFunctionSize,
+  bundled,
   type BundleTrace,
   type FunctionDependencies,
   functionDependencies,
 } from './dependencies.ts';
-import { dynamicLoadsOf } from './dynamic-loads.ts';
+import { dynamicLoadsInChunk } from './dynamic-loads.ts';
 import { functionSize } from './function-size.ts';
 import { FUNCTION_COMPATIBILITY_DATE, FUNCTION_COMPATIBILITY_FLAGS } from './function.ts';
-import { NODE_BUILTIN_NAMESPACE, nodeBuiltinRequires } from './node-requires.ts';
-import { OBJECT_WASM_NAMESPACE, objectWasm } from './object-wasm.ts';
+import { nodeBuiltinRequires } from './node-requires.ts';
+import { objectWasm } from './object-wasm.ts';
 import { projectOnly } from './project-maps.ts';
-import { carriesMaps, type SourceMapsOption } from './source-maps.ts';
+import { carriesMaps, type SourceMapsOption, sourcemapOutput } from './source-maps.ts';
 import { watchBuildSources } from './source-watch.ts';
+import { GLOBAL_OBJECT, globalObjectPlugin, THROWING_GLOBALS } from './throwing-globals.ts';
 import { wasmModuleName } from './wasm.ts';
 
 const OBJECT_MODULE = 'durable-object.mjs';
-
-function realInput(file: string, declaration: DurableObjectDeclaration): boolean {
-  return (
-    file !== '<stdin>' &&
-    file !== `${declaration.name}-durable-object.mjs` &&
-    !file.startsWith(`${NODE_BUILTIN_NAMESPACE}:`) &&
-    !file.startsWith(`${OBJECT_WASM_NAMESPACE}:`)
-  );
-}
+/** The id a class module's generated entry is bundled under: no file is read for it. */
+const ENTRY_PREFIX = '\0upwind-durable-object:';
+/**
+ * What an import is tried with: Rolldown's own extensions, and a stylesheet's, which a module the
+ * class shares with the application's pages may import (`moduleTypes`, below).
+ */
+const RESOLVE_EXTENSIONS = ['.tsx', '.ts', '.jsx', '.js', '.css', '.json'];
 
 export interface BundledDurableObject {
   readonly declaration: DurableObjectDeclaration;
@@ -54,10 +55,21 @@ export interface BundledDurableObject {
   readonly map?: { readonly path: string; readonly source: string };
 }
 
+/** How `bundleDurableObjects` is asked to build. */
+interface BundleOptions {
+  readonly outDir?: string;
+  readonly sourceMaps?: SourceMapsOption;
+  /** Adapter output defaults to production; local resources select development. */
+  readonly mode?: 'development' | 'production';
+  /** Called before reading each source dependency, for local restart detection. */
+  readonly onSourceFile?: (file: string) => void;
+}
+
+/** The class module's real path, and the project directory's, which the module is checked to be in. */
 async function sourcePath(
   projectDir: string,
   declaration: DurableObjectDeclaration,
-): Promise<string> {
+): Promise<{ readonly root: string; readonly module: string }> {
   const root = await realpath(projectDir);
   let module: string;
   try {
@@ -80,126 +92,190 @@ async function sourcePath(
       `@stayingupwind/adapter: ${declaration.name}: the Durable Object module must be a file inside the project directory`,
     );
   }
-  return module;
+  return { root, module };
+}
+
+/**
+ * Whether a module of the bundle is a file it read. A module of the bundler's own — the entry, a
+ * built-in's or a compiled module's re-export, Rolldown's runtime — is named by a `\0` id, and an
+ * external by its specifier.
+ */
+function isSourceFile(id: string): boolean {
+  return path.isAbsolute(id);
+}
+
+/**
+ * A file the bundle read, named under the project directory as the caller spells it. Rolldown names
+ * a module by its real path, so a project directory reached through a symbolic link — a temporary
+ * directory on macOS is one — would see its own files named elsewhere: missed by a caller that looks
+ * for them under its own path, and named in the record by a path that climbs out of the project. A
+ * file outside the project keeps its real path, which no spelling of the project's could name.
+ */
+function projectNamed(projectDir: string, root: string, file: string): string {
+  const relative = path.relative(root, file);
+  return relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)
+    ? file
+    : path.join(projectDir, relative);
+}
+
+/**
+ * The generated entry — the class re-exported under the name the Function exports — and what the
+ * build read for it: every module it loaded from a file, those tree-shaking left out of the bundle
+ * among them, for the restart watch.
+ */
+function entryPlugin(id: string, source: string, read: Set<string>): Plugin {
+  return {
+    name: 'upwind-durable-object-entry',
+    resolveId: (specifier, importer) => (specifier === id && importer === undefined ? id : null),
+    load: (loaded) => (loaded === id ? source : null),
+    buildEnd() {
+      // eslint-disable-next-line unicorn/no-this-outside-of-class -- the plugin API hands the context as `this`
+      for (const module of this.getModuleIds()) if (isSourceFile(module)) read.add(module);
+    },
+  };
+}
+
+/** One class module, bundled by Rolldown into one ES module of the class code alone. */
+async function bundleDurableObject(
+  projectDir: string,
+  declaration: DurableObjectDeclaration,
+  options: BundleOptions,
+): Promise<BundledDurableObject> {
+  const { root, module } = await sourcePath(projectDir, declaration);
+  const named = (file: string): string => projectNamed(projectDir, root, file);
+  // The restart watch is told of a file by the name the caller gave its project, as `inputs` are.
+  const { onSourceFile } = options;
+  const beforeRead =
+    onSourceFile === undefined
+      ? undefined
+      : (file: string): void => {
+          onSourceFile(named(file));
+        };
+  const nodeEnv = jsLiteral(options.mode ?? 'production');
+  const entryId = `${ENTRY_PREFIX}${declaration.name}`;
+  const read = new Set<string>();
+  const wasm = objectWasm(beforeRead);
+  const unresolved: string[] = [];
+  await using bundle = await rolldown({
+    cwd: projectDir,
+    input: entryId,
+    // Match Wrangler's browser package mappings without implicitly activating `node`: the `browser`
+    // field, as a package's entry and as a map of its own files, and the conditions below, to which
+    // Rolldown adds `import` or `require` by how a module is imported.
+    platform: 'browser',
+    resolve: {
+      conditionNames: ['workerd', 'worker', 'browser', 'default'],
+      extensions: RESOLVE_EXTENSIONS,
+    },
+    // A stylesheet resolves as any import does and brings nothing into the class module, which has
+    // no document for it to style.
+    moduleTypes: { '.css': 'empty' },
+    external: [/^cloudflare:/u],
+    plugins: [
+      globalObjectPlugin(),
+      entryPlugin(
+        entryId,
+        `export { ${declaration.className} as ${DURABLE_OBJECT_EXPORT} } from ${jsLiteral(module)};\nexport default {};`,
+        read,
+      ),
+      // After the two above, so that what they answer for — the global object injected into every
+      // module, the entry — is never watched as a file of the project's.
+      ...(beforeRead === undefined ? [] : [watchBuildSources(beforeRead)]),
+      nodeBuiltinRequires(),
+      wasm.plugin,
+    ],
+    transform: {
+      target: 'es2024',
+      inject: GLOBAL_OBJECT,
+      define: {
+        ...THROWING_GLOBALS,
+        'process.env.NODE_ENV': nodeEnv,
+        'global.process.env.NODE_ENV': nodeEnv,
+        'globalThis.process.env.NODE_ENV': nodeEnv,
+      },
+    },
+    onLog(_level, log) {
+      // A module the bundler cannot find is one the class would not have either: Rolldown leaves a
+      // package it cannot find external, with this log. Anything else it says stays with the build.
+      if (log.code === 'UNRESOLVED_IMPORT') unresolved.push(log.message);
+    },
+  });
+  const outFile = path.join(
+    options.outDir ?? path.join(projectDir, '.upwind'),
+    'work',
+    `${declaration.name}.mjs`,
+  );
+  const { output } = await bundle.generate({
+    format: 'esm',
+    // Where the map's sources are relative to; nothing is written.
+    file: outFile,
+    codeSplitting: false,
+    // Whitespace and syntax, and no name changed.
+    minify: { compress: true, mangle: false, codegen: { removeWhitespace: true } },
+    comments: { legal: false },
+    ...sourcemapOutput(carriesMaps(options.sourceMaps)),
+  });
+  // Read once the bundle is generated: Rolldown reads the modules then, and not before.
+  if (unresolved.length > 0)
+    throw new Error(
+      `@stayingupwind/adapter: ${declaration.name}: the Durable Object module ${declaration.module} imports what cannot be resolved\n${unresolved.join('\n')}`,
+    );
+  const chunk = output.find((item): item is OutputChunk => item.type === 'chunk');
+  if (chunk === undefined)
+    throw new Error(
+      `@stayingupwind/adapter: ${declaration.name}: no Durable Object module was emitted`,
+    );
+  const wasmModules = wasm.collector.modules.map((entry) => {
+    return {
+      name: wasmModuleName(entry.sha256),
+      bytes: entry.bytes,
+    };
+  });
+  const internalImports = new Set(wasmModules.map((entry) => `./${entry.name}`));
+  return {
+    declaration,
+    source: chunk.code,
+    // In a stable order: Rolldown reads modules in parallel, and lists them as they were read.
+    inputs: [...read, ...wasm.inputs.keys()]
+      .map((file) => named(file))
+      .toSorted((a, b) => compareCodeUnits(a, b)),
+    wasmModules,
+    trace: {
+      inputs: [
+        ...Object.entries(chunk.modules)
+          .filter(([file]) => isSourceFile(file))
+          .map(([file, rendered]) => bundled(named(file), rendered)),
+        ...[...wasm.inputs].map(([file, input]) => ({ file: named(file), bytes: input.bytes })),
+      ],
+      externals: [...chunk.imports, ...chunk.dynamicImports].filter(
+        (specifier) => !internalImports.has(specifier),
+      ),
+      patches: [],
+      stubs: [],
+      wasmModules: [],
+      compiledWasmModules: [...wasm.inputs].map(([file, input]) => {
+        return {
+          file: named(file),
+          module: input.module,
+        };
+      }),
+      dynamicLoads: dynamicLoadsInChunk(chunk).map((load) =>
+        isSourceFile(load.file) ? { ...load, file: named(load.file) } : load,
+      ),
+    },
+    ...(chunk.map !== null && { map: { path: `${outFile}.map`, source: chunk.map.toString() } }),
+  };
 }
 
 /** Build class code alone; no Next.js runtime or host cache code is included. */
 export async function bundleDurableObjects(
   projectDir: string,
   declarations: readonly DurableObjectDeclaration[],
-  options: {
-    readonly outDir?: string;
-    readonly sourceMaps?: SourceMapsOption;
-    /** Adapter output defaults to production; local resources select development. */
-    readonly mode?: 'development' | 'production';
-    /** Called before reading each source dependency, for local restart detection. */
-    readonly onSourceFile?: (file: string) => void;
-  } = {},
+  options: BundleOptions = {},
 ): Promise<BundledDurableObject[]> {
   const checked = durableObjectDeclarationsSchema.parse(declarations);
-  const nodeEnv = jsLiteral(options.mode ?? 'production');
   return Promise.all(
-    checked.map(async (declaration) => {
-      const module = await sourcePath(projectDir, declaration);
-      const wasm = objectWasm(options.onSourceFile);
-      const result = await build({
-        absWorkingDir: projectDir,
-        stdin: {
-          contents: `export { ${declaration.className} as ${DURABLE_OBJECT_EXPORT} } from ${jsLiteral(module)};\nexport default {};`,
-          resolveDir: projectDir,
-          sourcefile: `${declaration.name}-durable-object.mjs`,
-        },
-        bundle: true,
-        write: false,
-        outfile: path.join(
-          options.outDir ?? path.join(projectDir, '.upwind'),
-          'work',
-          `${declaration.name}.mjs`,
-        ),
-        format: 'esm',
-        // Match Wrangler's browser package mappings without implicitly activating `node`.
-        platform: 'browser',
-        target: 'es2024',
-        conditions: ['workerd', 'worker', 'browser'],
-        define: {
-          'process.env.NODE_ENV': nodeEnv,
-          'global.process.env.NODE_ENV': nodeEnv,
-          'globalThis.process.env.NODE_ENV': nodeEnv,
-        },
-        external: ['cloudflare:*'],
-        plugins: [
-          ...(options.onSourceFile === undefined ? [] : [watchBuildSources(options.onSourceFile)]),
-          nodeBuiltinRequires(),
-          wasm.plugin,
-        ],
-        metafile: true,
-        minifyWhitespace: true,
-        minifySyntax: true,
-        minifyIdentifiers: false,
-        legalComments: 'none',
-        logLevel: 'silent',
-        sourcemap: carriesMaps(options.sourceMaps) && 'external',
-        sourcesContent: false,
-      });
-      const output = result.outputFiles.find((file) => file.path.endsWith('.mjs'));
-      if (output === undefined)
-        throw new Error(
-          `@stayingupwind/adapter: ${declaration.name}: no Durable Object module was emitted`,
-        );
-      const emitted = Object.values(result.metafile.outputs).find(
-        (file) => file.entryPoint !== undefined,
-      );
-      if (emitted === undefined)
-        throw new Error(
-          `@stayingupwind/adapter: ${declaration.name}: no Durable Object output trace was emitted`,
-        );
-      const inputs = Object.keys(result.metafile.inputs)
-        .filter((input) => realInput(input, declaration))
-        .map((input) => path.resolve(projectDir, input));
-      inputs.push(...wasm.inputs.keys());
-      const wasmModules = wasm.collector.modules.map((entry) => {
-        return {
-          name: wasmModuleName(entry.sha256),
-          bytes: entry.bytes,
-        };
-      });
-      const internalImports = new Set(wasmModules.map((entry) => `./${entry.name}`));
-      const map = result.outputFiles.find((file) => file.path.endsWith('.map'));
-      return {
-        declaration,
-        source: output.text,
-        inputs,
-        wasmModules,
-        trace: {
-          inputs: [
-            ...Object.entries(emitted.inputs)
-              .filter(([file]) => realInput(file, declaration))
-              .map(([file, input]) => {
-                const absoluteFile = path.resolve(projectDir, file);
-                return { file: absoluteFile, bytes: input.bytesInOutput };
-              }),
-            ...[...wasm.inputs].map(([file, input]) => ({ file, bytes: input.bytes })),
-          ],
-          externals: emitted.imports
-            .filter((entry) => entry.external === true && !internalImports.has(entry.path))
-            .map((entry) => entry.path),
-          patches: [],
-          stubs: [],
-          wasmModules: [],
-          compiledWasmModules: [...wasm.inputs].map(([file, input]) => {
-            return {
-              file,
-              module: input.module,
-            };
-          }),
-          dynamicLoads: dynamicLoadsOf(
-            path.join(projectDir, 'durable-object', declaration.name, OBJECT_MODULE),
-            output.text,
-          ),
-        },
-        ...(map !== undefined && { map: { path: map.path, source: map.text } }),
-      };
-    }),
+    checked.map(async (declaration) => bundleDurableObject(projectDir, declaration, options)),
   );
 }
 

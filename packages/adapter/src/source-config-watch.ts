@@ -59,7 +59,7 @@ export function watchSourceConfigs(
       try {
         watchFile(require.resolve(base));
       } catch {
-        // esbuild reports unresolved inherited configs; candidates remain watched for recovery.
+        // The bundler reports unresolved inherited configs; candidates remain watched for recovery.
       }
     }
   }

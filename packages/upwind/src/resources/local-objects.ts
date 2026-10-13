@@ -17,11 +17,18 @@ export interface LocalDurableObject {
   readonly wasmModules?: readonly { readonly name: string; readonly bytes: Uint8Array }[];
 }
 
+/** The file a bundler's error is in: esbuild's `location.file`, or Rolldown's `loc.file` or `id`. */
 function fileInBuildError(error: unknown): string | undefined {
-  if (typeof error !== 'object' || error === null || !('location' in error)) return undefined;
-  const { location } = error;
-  if (typeof location !== 'object' || location === null || !('file' in location)) return undefined;
-  return typeof location.file === 'string' ? location.file : undefined;
+  if (typeof error !== 'object' || error === null) return undefined;
+  const { id, loc, location } = error as {
+    readonly id?: unknown;
+    readonly loc?: unknown;
+    readonly location?: unknown;
+  };
+  for (const at of [location, loc])
+    if (typeof at === 'object' && at !== null && 'file' in at && typeof at.file === 'string')
+      return at.file;
+  return typeof id === 'string' && path.isAbsolute(id) ? id : undefined;
 }
 
 function watchBuildErrors(projectDir: string, error: unknown, watchedFiles: Set<string>): void {
