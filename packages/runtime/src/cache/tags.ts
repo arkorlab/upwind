@@ -117,14 +117,21 @@ interface Unanswered {
 }
 
 /**
- * How long a call of this Function's that records invalidations is counted as out at the most, from
- * the moment its mark says it was made: as long as the runtime lets work go on behind an answer,
- * about 30 s on Workers. One out longer had its request end under it, and never answers: once the tag
- * is invalidated again here, it is taken for a call the host never answered (`settleLocal`), in force
- * at no revision for good. A call the host answers within that is never taken so, however many are
- * out beside it.
+ * How long a call of this Function's that records invalidations is out before it may be taken for
+ * one the host never answers, from the moment its mark says it was made: as long as the runtime lets
+ * work go on behind an answer, about 30 s on Workers. A call out for less is never taken so, however
+ * many are out beside it.
  */
 const CALL_OUT_MS = 30_000;
+
+/**
+ * How many calls of one tag out for `CALL_OUT_MS` or longer are counted as out still: the request
+ * of one may be running yet, and its answer takes the call out as any other's does. Past that many,
+ * the one out longest is taken for a call the host never answers (`settleLocal`), in force here at no
+ * revision for good: a call whose request ended under it never answers, and those would otherwise
+ * pile up in a tag invalidated again and again.
+ */
+const MAX_LONG_OUT = 64;
 
 /**
  * This isolate's own invalidations of one tag, all in force here: those the host has answered at a
@@ -206,7 +213,7 @@ export class TagState {
     const { revision } = mark;
     this.#tags.set(value, {
       ...known,
-      mark: held === undefined ? mark : stronger(held, mark),
+      mark: held === undefined ? mark : latestOf(held, known, mark),
       ...(revision === undefined
         ? { unknownAt: Math.max(known?.unknownAt ?? mark.staleAt, mark.staleAt) }
         : { knownRevision: Math.max(known?.knownRevision ?? revision, revision) }),
@@ -277,20 +284,28 @@ export class TagState {
   }
 
   /**
-   * Take each call of the tag out for `CALL_OUT_MS` or longer by `now` for one the host never
-   * answered (`settleLocal`): the calls out are in the order they were made, so the first one out
-   * for less ends it.
+   * Take the calls of the tag out longest for ones the host never answered (`settleLocal`), where
+   * more than `MAX_LONG_OUT` of them have been out for `CALL_OUT_MS` or longer by `now`. The calls out
+   * are in the order they were made, so those come first.
    */
   #settleLongOut(value: string, now: number): void {
     const calls = this.#applied.get(value)?.unanswered?.calls;
     if (calls === undefined) {
       return;
     }
+    let longOut = 0;
+    for (const call of calls) {
+      if (now - call.mark.staleAt < CALL_OUT_MS) {
+        break;
+      }
+      longOut += 1;
+    }
     for (const longest of calls) {
-      if (now - longest.mark.staleAt < CALL_OUT_MS) {
+      if (longOut <= MAX_LONG_OUT) {
         return;
       }
       this.settleLocal(longest, [value]);
+      longOut -= 1;
     }
   }
 
@@ -489,22 +504,32 @@ export class TagState {
       }
       const applied = this.#applied.get(tag);
       const known = this.#tags.get(tag);
-      // What is out, or known at no revision for good, is asked of apart, and the worse answer
-      // stands: an answer of the host's, whatever its clock read, is not taken for newer than an
-      // invalidation of this isolate's it holds no revision of.
-      const told = strongest([known?.mark, applied?.answered]);
-      const own = strongest([applied?.unanswered?.mark, applied?.unrevised]);
-      // Known at a revision past the one the entry's view was brought up to, an invalidation is one
-      // that view missed, whatever its time says of the moment the entry was made.
-      const missed =
-        held !== undefined &&
-        Math.max(known?.knownRevision ?? held, applied?.answeredRevision ?? held) > held;
-      const byTold = markValidity(told, missed ? -Infinity : timestamp, now);
-      const byOwn = markValidity(own, timestamp, now);
-      if (byTold === 'expired' || byOwn === 'expired') {
+      // What the host said, what it answered of this isolate's own, and what is out or known at no
+      // revision for good are each asked of apart, and the worst answer stands: taken as one mark,
+      // the one stamped latest would hide a deadline the others set, whatever the clocks that stamped
+      // them read. Known at a revision past the one the entry's view was brought up to, an
+      // invalidation is one that view missed, whatever its time says of the moment the entry was made.
+      const missed = (revision: number | undefined): boolean =>
+        held !== undefined && revision !== undefined && revision > held;
+      const byTold = markValidity(
+        known?.mark,
+        missed(known?.knownRevision) ? -Infinity : timestamp,
+        now,
+      );
+      const byAnswered = markValidity(
+        applied?.answered,
+        missed(applied?.answeredRevision) ? -Infinity : timestamp,
+        now,
+      );
+      const byOwn = markValidity(
+        strongest([applied?.unanswered?.mark, applied?.unrevised]),
+        timestamp,
+        now,
+      );
+      if (byTold === 'expired' || byAnswered === 'expired' || byOwn === 'expired') {
         return 'expired';
       }
-      if (byTold === 'stale' || byOwn === 'stale') {
+      if (byTold === 'stale' || byAnswered === 'stale' || byOwn === 'stale') {
         validity = 'stale';
       }
     }
@@ -556,6 +581,22 @@ function without(out: Unanswered | undefined, call: LocalInvalidation): Unanswer
 /** Whether two marks say the same of every entry: the same moment, and the same deadline. */
 function sameMark(a: TagMark, b: TagMark): boolean {
   return a.staleAt === b.staleAt && a.hardExpireAt === b.hardExpireAt;
+}
+
+/**
+ * What is held of a tag the host has said `mark` of besides `held` (`TagKnowledge.mark`): where both
+ * are known at revisions of the scope, and nothing held is known at none, the one known at the later.
+ * The host keeps the latest invalidation it recorded, and that is what an isolate starting now holds,
+ * whatever the clocks that stamped the two say — a later one stamped earlier keeps its own deadline.
+ * Otherwise, and of one revision, the stronger (`stronger`).
+ */
+function latestOf(held: TagMark, known: TagKnowledge | undefined, mark: TagMark): TagMark {
+  const heldAt = known?.knownRevision;
+  const at = mark.revision;
+  if (heldAt === undefined || at === undefined || heldAt === at || known?.unknownAt !== undefined) {
+    return stronger(held, mark);
+  }
+  return at > heldAt ? mark : held;
 }
 
 /** The strongest of `marks` (`stronger`), or none where there are none. */
