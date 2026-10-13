@@ -331,10 +331,10 @@ async function answerFromJob(
   if (outcome.kind === 'skipped') {
     return undefined;
   }
-  // The render this isolate is publishing of the entry: the page the requests after its publish are
-  // answered with, already made.
+  // The render this isolate is publishing of the entry, or has just published: the page the requests
+  // after its publish are answered with, already made.
   if (
-    outcome.kind === 'busy' &&
+    (outcome.kind === 'busy' || outcome.kind === 'superseded') &&
     outcome.publishing !== undefined &&
     servable(outcome.publishing.status, outcome.publishing.headers)
   ) {

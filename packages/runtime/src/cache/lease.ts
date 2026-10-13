@@ -192,6 +192,28 @@ export function supersededBy(
   ) {
     return false;
   }
+  return stands(current, now);
+}
+
+/**
+ * Whether the host's word on an entry's current generation, where it gives one, names `generationId`
+ * as one that may be served as it stands (`supersededBy`): neither another generation, nor none,
+ * nor one an invalidation the host recorded reached. A host that says nothing of it says nothing
+ * against it.
+ */
+export function namesStanding(
+  current: CurrentSummary | null | undefined,
+  generationId: string,
+  now: number,
+): boolean {
+  if (current === undefined) {
+    return true;
+  }
+  return current !== null && current.generationId === generationId && stands(current, now);
+}
+
+/** Whether a generation the host holds may be served as it stands at `now`. */
+function stands(current: CurrentSummary, now: number): boolean {
   const { validity } = evaluateFreshness({
     policy: current.policy,
     cacheTimestamp: current.cacheTimestamp,
