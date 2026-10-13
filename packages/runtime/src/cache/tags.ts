@@ -105,6 +105,8 @@ interface TagKnowledge {
 export interface LocalInvalidation {
   readonly values: readonly string[];
   readonly mark: TagMark;
+  /** Where the call stands among this Function's calls, the first made first. */
+  readonly seq: number;
 }
 
 /**
@@ -152,6 +154,8 @@ interface AppliedKnowledge {
   readonly unanswered?: Unanswered | undefined;
   readonly overflow?: Overflow | undefined;
   readonly unrevised?: TagMark | undefined;
+  /** The call the one known at no revision for good was made by (`LocalInvalidation.seq`). */
+  readonly unrevisedSeq?: number | undefined;
 }
 
 export class TagState {
@@ -159,6 +163,8 @@ export class TagState {
   readonly #applied = new Lru<string, AppliedKnowledge>(MAX_APPLIED_MARKS);
   /** The calls out counted one by one, of every tag, the one out longest first (`MAX_CALLS_OUT`). */
   readonly #out = new Set<LocalInvalidation>();
+  /** How many calls this Function has made (`LocalInvalidation.seq`). */
+  #calls = 0;
   readonly #holdMs: number;
   readonly #log: TagStateOptions['log'];
   #revision = 0;
@@ -428,10 +434,12 @@ export class TagState {
    * what its answer settles (`answerLocal`, `settleLocal`).
    */
   applyLocal(values: readonly string[], mark: TagMark): LocalInvalidation {
+    this.#calls += 1;
     const call: LocalInvalidation = {
       // Each tag once: a host answers a tag named twice in one call once.
       values: [...new Set(values)],
       mark: { staleAt: mark.staleAt, hardExpireAt: mark.hardExpireAt },
+      seq: this.#calls,
     };
     for (const value of call.values) {
       const held = this.#applied.get(value);
@@ -539,7 +547,7 @@ export class TagState {
       const held = this.#applied.get(value);
       this.#applied.set(value, {
         ...held,
-        unrevised: held?.unrevised === undefined ? unknown : stronger(held.unrevised, unknown),
+        ...latestUnrevised(held, unknown, call.seq),
         unanswered: without(held?.unanswered, call),
         overflow: overflowWithout(held?.overflow, call),
       });
@@ -672,6 +680,23 @@ function overflowWithout(
     return overflow;
   }
   return overflow.count <= 1 ? undefined : { ...overflow, count: overflow.count - 1 };
+}
+
+/**
+ * What of this isolate's own invalidations of a tag is known at no revision for good once `call`'s
+ * (`mark`) is too (`AppliedKnowledge.unrevised`): the one the later call made, as the host keeps the
+ * latest it records, whatever the clocks that stamped them read; of one call, the stronger.
+ */
+function latestUnrevised(
+  held: AppliedKnowledge | undefined,
+  mark: TagMark,
+  seq: number,
+): Pick<AppliedKnowledge, 'unrevised' | 'unrevisedSeq'> {
+  const heldSeq = held?.unrevisedSeq;
+  if (heldSeq === undefined || heldSeq < seq || held?.unrevised === undefined) {
+    return { unrevised: mark, unrevisedSeq: seq };
+  }
+  return heldSeq === seq ? { unrevised: stronger(held.unrevised, mark), unrevisedSeq: seq } : {};
 }
 
 /** The strongest of `marks` (`stronger`), or none where there are none. */

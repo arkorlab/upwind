@@ -251,10 +251,10 @@ export async function answeringWhileBusy(
  * the lease is in, and the one it kept when the lease was asked for, where they differ: where that
  * generation is the one a render's own publish committed — the host had committed it, and let go of
  * its lease, while the commit's answer was still on its way here — the first such render answers, as
- * it answers every request after its publish (`identifiedAmong`). Only once the request's own pull of
- * the tags (`pulled`) has brought the view up, as one the host turned away for a lease given back is
- * answered: an invalidation recorded since the host named the generation, which its word cannot
- * speak for, may be in it. The pull and each render are waited for at once, a second at the most.
+ * it answers every request after its publish (`identifiedAmong`). Only once a pull of the tags asked
+ * for as the lease came in (`pull`) has brought the view up: an invalidation recorded since the host
+ * named the generation, which its word cannot speak for, may be in it. The pull and each render are
+ * waited for at once, a second at the most; where no render is the generation, nothing more is.
  * A render let go of (`lettingGo`) answers no request at once any more: only as here, or for a
  * request the host turns away for this lease (`givingBack`).
  */
@@ -262,19 +262,22 @@ export async function answeringWhenSuperseded(
   runtime: CacheRuntime,
   kept: readonly (Publishing | undefined)[],
   current: { readonly generationId: string } | null | undefined,
-  pulled: Promise<boolean>,
+  pull: () => Promise<boolean>,
 ): Promise<CapturedRender | undefined> {
   const candidates = candidatesOf(kept);
   // Nothing to wait for where there is no render to answer with, or no generation to name.
   if (current === undefined || current === null || candidates.length === 0) {
     return undefined;
   }
-  const [brought, named] = await Promise.all([
-    settledWithin(pulled, false),
-    namedAmong(candidates, current.generationId),
-  ]);
-  // Asked of once both are in: the pull may have answered after the renders did.
-  return brought && named !== undefined && unmarkedSince(runtime, named) ? named.render : undefined;
+  // Asked for now, beside the renders' answers: the host's word speaks for what it had recorded
+  // when it named the generation, and a pull asked for once that word is in for what it has since.
+  const pulled = settledWithin(pull(), false);
+  const named = await namedAmong(candidates, current.generationId);
+  if (named === undefined) {
+    return undefined;
+  }
+  // Asked of once both are in: the pull may answer after the renders do.
+  return (await pulled) && unmarkedSince(runtime, named) ? named.render : undefined;
 }
 
 /** The renders of `kept` there are, each once. */
