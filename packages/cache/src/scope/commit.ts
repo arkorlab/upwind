@@ -34,7 +34,13 @@ import {
   toPublicGeneration,
 } from './rows.ts';
 import { isRefusal, type Refusal, refuse, requireActiveScope } from './state.ts';
-import { condemningInvalidations, replaceEntryTags, type TagRef, tagRefsFor } from './tags.ts';
+import {
+  condemningInvalidations,
+  replaceEntryTags,
+  type TagRef,
+  tagRefsFor,
+  viewHeld,
+} from './tags.ts';
 import { type Apply, record, type TxInput } from './tx.ts';
 
 /**
@@ -537,12 +543,21 @@ function applyCommit(input: TxInput, plan: CommitPlan): CommitOutcome | Refusal 
     return refuse('quota_exceeded', 'the scope holds as many bytes as it may');
   }
   const tagIds = plan.tagRefs.map((ref) => ref.tagId);
-  const behind = Math.min(attempt.dependency_revision, plan.request.observedTagRevision);
+  const held = viewHeld(plan.request.observedTagRevision, plan.tagRefs);
+  const behind = Math.min(attempt.dependency_revision, held.revision);
   const floor = controlFenceFloorInvalidations(sql, { tagIds, afterRevision: behind });
   if (floor.length > 0) return refuseStale(input, attempt, entry, floor);
+  // A tag's invalidation at or before the revision the renderer's view was brought up to is one the
+  // render read against, whatever revision the lease was taken at: a runtime pulls the delta after
+  // it asks for the lease and before it renders, and one recorded between the two — the
+  // `revalidatePath` that sent the request here, which Next.js records behind its response — was
+  // in that pull. An immediate one neither refuses nor condemns what the render made (`held`): its
+  // reads were made afresh against it, and so against nothing recorded of its tag before it. One
+  // with a window the view held last of its tag still condemns it, as any after the lease does: its
+  // reads may have been answered stale under it.
+  const query = { entryId: entry.entry_id, tagIds, held };
   const invalidations = condemningInvalidations(sql, {
-    entryId: entry.entry_id,
-    tagIds,
+    ...query,
     afterRevision: attempt.dependency_revision,
   });
   if (invalidations.some((row) => row.meaning === 'immediate')) {
@@ -556,7 +571,7 @@ function applyCommit(input: TxInput, plan: CommitPlan): CommitOutcome | Refusal 
   const observed =
     behind === attempt.dependency_revision
       ? invalidations
-      : condemningInvalidations(sql, { entryId: entry.entry_id, tagIds, afterRevision: behind });
+      : condemningInvalidations(sql, { ...query, afterRevision: behind });
   return publish(input, plan, {
     attempt,
     entry,

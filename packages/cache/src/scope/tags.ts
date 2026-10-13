@@ -414,6 +414,33 @@ export interface CondemnationQuery {
   readonly entryId: string;
   readonly tagIds: readonly string[];
   readonly afterRevision: number;
+  /**
+   * What a render's view of the tags held, where it says: the revision of the scope it was brought
+   * up to, and the tags the delta brings a reader of. An immediate invalidation of one of those tags
+   * at or before that revision is one the render read against, and made its reads afresh for; so is
+   * one with a window (`swr`) that such an immediate one of its tag came after, since a tag stands at
+   * its latest invalidation and that is what the view held of it. Not one with a window the view held
+   * last of its tag, under which the render's reads may have been answered stale; nor one of an entry,
+   * a control fence, or a tag of another kind, which the delta brings no reader.
+   */
+  readonly held?: { readonly revision: number; readonly tagIds: ReadonlySet<string> } | undefined;
+}
+
+/**
+ * What a render's view of the tags held (`CondemnationQuery.held`): the revision it was brought up to,
+ * and those of its tags the delta brings a runtime — it leaves out one whose kind is not the one its
+ * value names (`GatewayHost.tagsDelta`), a platform-delivery tag sharing a Next.js tag's value say.
+ */
+export function viewHeld(
+  revision: number,
+  refs: readonly TagRef[],
+): { readonly revision: number; readonly tagIds: ReadonlySet<string> } {
+  return {
+    revision,
+    tagIds: new Set(
+      refs.filter((ref) => ref.kind === tagKindOf(ref.value)).map((ref) => ref.tagId),
+    ),
+  };
 }
 
 /** The invalidations recorded after a render read its inputs that name what it depends on. */
@@ -433,5 +460,25 @@ export function condemningInvalidations(
       query.entryId,
     )
     .toArray();
-  return [...persistent, ...controlFenceInvalidations(sql, query)];
+  const { held } = query;
+  if (held === undefined) {
+    return [...persistent, ...controlFenceInvalidations(sql, query)];
+  }
+  const inView = (row: InvalidationRow): boolean =>
+    row.target_kind === 'tag' && row.revision <= held.revision && held.tagIds.has(row.target_id);
+  // The latest immediate invalidation of each tag the view held: the render read that tag afresh
+  // against it, and against nothing recorded of it before.
+  const afresh = new Map<string, number>();
+  for (const row of persistent) {
+    if (inView(row) && row.meaning === 'immediate') {
+      afresh.set(row.target_id, Math.max(afresh.get(row.target_id) ?? row.revision, row.revision));
+    }
+  }
+  const unheld = persistent.filter((row) => {
+    return (
+      !inView(row) ||
+      (row.meaning !== 'immediate' && (afresh.get(row.target_id) ?? row.revision) <= row.revision)
+    );
+  });
+  return [...unheld, ...controlFenceInvalidations(sql, query)];
 }
