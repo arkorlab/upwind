@@ -49,6 +49,20 @@ export interface RegenerationTarget {
   readonly member?: boolean | undefined;
 }
 
+/**
+ * Whether the runtime renders the request's own pathname rather than the record's
+ * (`CACHE_UPGRADE_HEADER`): for a member's own record, and for a member asked beside the class
+ * shell it was answered with. Not for a record the class keeps for every member that completes to
+ * it (`MemberRoute.keyedBy`), whose pathname is the template's: rendered as the member, it would be
+ * kept under the member's own pathname, and the record the edge goes on serving never replaced.
+ */
+function rendersTheMember(target: RegenerationTarget): boolean {
+  const { header } = target.pack;
+  return (
+    target.member === true && (target.entryId !== header.entryId || !header.pathname.includes('['))
+  );
+}
+
 /** What the runtime is told beside the request: the entry, the base the edge served, and when. */
 export function regenerationHeaders(
   edge: EdgeContext,
@@ -61,7 +75,7 @@ export function regenerationHeaders(
     [REGENERATE_HEADER]: mode,
     ...pathHeaders(CACHE_ROUTE_HEADER, CACHE_ROUTE_ESCAPED_HEADER, header.route),
     [CACHE_ENTRY_HEADER]: target.entryId,
-    ...(target.member === true && { [CACHE_UPGRADE_HEADER]: '1' }),
+    ...(rendersTheMember(target) && { [CACHE_UPGRADE_HEADER]: '1' }),
     [GENERATION_HEADER]: header.generationId,
     [GENERATION_SEQ_HEADER]: String(header.seq),
     [SERVED_GENERATION_HEADER]: `${header.generationId}${colo};at=${edge.runtime.now()}`,
