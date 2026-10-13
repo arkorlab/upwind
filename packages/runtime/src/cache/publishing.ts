@@ -187,6 +187,11 @@ function givenBackFor(
     : runtime.givenBack.get(holder);
 }
 
+/** Whether the lease the host turned a regeneration away for stands yet, as it said (`holderUntil`). */
+function leaseStands({ holderUntil }: TurnedAway): boolean {
+  return holderUntil !== undefined && nowMs() < holderUntil;
+}
+
 /**
  * A regeneration the host turned away for a lease of the entry, with the render this isolate is
  * publishing of it: only where the host names the attempt that holds the lease, and it is the
@@ -208,7 +213,8 @@ function givenBackFor(
  * its own (`givingBack`), which the host had yet to have back, the request is answered as the one
  * the lease was handed to is, from the render kept with the lease, its publish settled or not: by
  * the host's word to that request (`CacheRuntime.givenBack`), and once this request's own pull is
- * in, which brings what the host has recorded since.
+ * in, which brings what the host has recorded since — while that lease still stands by then, as
+ * above: one that lapsed meanwhile may have let another attempt publish a later generation.
  */
 export async function answeringWhileBusy(
   runtime: CacheRuntime,
@@ -220,9 +226,11 @@ export async function answeringWhileBusy(
     const render = (await settledWithin(pulled, false))
       ? await identifiedAmong(runtime, givenBack.publishings, givenBack.generationId)
       : undefined;
-    return render === undefined ? { kind: 'busy' } : { kind: 'busy', publishing: render };
+    return render === undefined || !leaseStands(turnedAway)
+      ? { kind: 'busy' }
+      : { kind: 'busy', publishing: render };
   }
-  const { reason, entryId, holder, holderUntil } = turnedAway;
+  const { reason, entryId, holder } = turnedAway;
   const held = publishingFor(runtime, reason, entryId);
   // Not waited for where the view already says the render missed something: a pull only adds to it.
   if (
@@ -239,8 +247,7 @@ export async function answeringWhileBusy(
   // Looked up again: a publish that has settled meanwhile is one the host's answer now speaks for,
   // and one set since is not the one the host named.
   const publishing = runtime.publishing.get(entryId);
-  const leaseStands = holderUntil !== undefined && nowMs() < holderUntil;
-  return publishing === held && leaseStands && unmovedSince(runtime, publishing)
+  return publishing === held && leaseStands(turnedAway) && unmovedSince(runtime, publishing)
     ? { kind: 'busy', publishing: publishing.render, published: publishing.published }
     : { kind: 'busy' };
 }
