@@ -264,12 +264,14 @@ export async function answeringWhenSuperseded(
   current: { readonly generationId: string } | null | undefined,
   pulled: Promise<boolean>,
 ): Promise<CapturedRender | undefined> {
-  if (current === undefined || current === null) {
+  const candidates = candidatesOf(kept);
+  // Nothing to wait for where there is no render to answer with, or no generation to name.
+  if (current === undefined || current === null || candidates.length === 0) {
     return undefined;
   }
   const [brought, named] = await Promise.all([
     settledWithin(pulled, false),
-    namedAmong(candidatesOf(kept), current.generationId),
+    namedAmong(candidates, current.generationId),
   ]);
   // Asked of once both are in: the pull may have answered after the renders did.
   return brought && named !== undefined && unmarkedSince(runtime, named) ? named.render : undefined;
