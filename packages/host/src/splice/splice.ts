@@ -32,12 +32,23 @@ export interface SpliceOptions {
    * shell carried, those it names the resume may also answer with as Next.js writes them back.
    */
   readonly handedCookies?: string | undefined;
+  /**
+   * The path the client asked for: a cookie the shell carried naming no path of its own is stored
+   * under it (`cookies.ts`). The root where absent.
+   */
+  readonly requestPathname?: string | undefined;
   readonly recoveryHtml: Uint8Array;
   readonly now: () => number;
   readonly firstByteTimeoutMs: number;
   readonly totalTimeoutMs: number;
   readonly abortUpstream: (reason: string) => void;
 }
+
+/** What a middleware set, as a resume's cookies are weighed against it (`unsentCookieNames`). */
+export type MiddlewareCookies = Pick<
+  SpliceOptions,
+  'handedCookies' | 'requestPathname' | 'sentCookies'
+>;
 
 export interface Splice {
   readonly readable: ReadableStream<Uint8Array>;
@@ -260,6 +271,7 @@ class SplicePump {
       response.headers.getSetCookie(),
       this.#options.sentCookies,
       this.#options.handedCookies,
+      this.#options.requestPathname,
     );
     if (cookies.length > 0) {
       this.#fail({ kind: 'set-cookie-observed', names: cookies, recovered: false });
