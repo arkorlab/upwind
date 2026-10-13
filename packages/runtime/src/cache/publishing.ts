@@ -244,7 +244,7 @@ export async function answeringWhileBusy(
   const givenBack = givenBackFor(runtime, turnedAway);
   if (givenBack !== undefined) {
     const render = (await settledWithin(pulled, false))
-      ? await identified(runtime, givenBack.publishing, givenBack.generationId)
+      ? await identifiedAmong(runtime, givenBack.publishings, givenBack.generationId)
       : undefined;
     return render === undefined ? { kind: 'busy' } : { kind: 'busy', publishing: render };
   }
@@ -273,27 +273,48 @@ export async function answeringWhileBusy(
 
 /**
  * A regeneration the host leased the entry to, and that a generation the host holds supersedes
- * (`supersededBy`), with the render this isolate kept of the entry when the lease was asked for
- * (`kept`): where that generation is the one the render's own publish committed — the host had
- * committed it, and let go of its lease, while the commit's answer was still on its way here — the
- * render answers, as it answers every request after its publish (`identified`). The render, let go
- * of (`lettingGo`), answers no request at once any more: only as here, or for a request the host
- * turns away for this lease (`givingBack`).
+ * (`supersededBy`), with the renders this isolate kept of the entry (`kept`) — the one it keeps once
+ * the lease is in, and the one it kept when the lease was asked for, where they differ: where that
+ * generation is the one a render's own publish committed — the host had committed it, and let go of
+ * its lease, while the commit's answer was still on its way here — the first such render answers, as
+ * it answers every request after its publish (`identified`). Each is waited for at once, a second
+ * at the most. A render let go of (`lettingGo`) answers no request at once any more: only as here,
+ * or for a request the host turns away for this lease (`givingBack`).
  */
 export async function answeringWhenSuperseded(
   runtime: CacheRuntime,
-  kept: Publishing | undefined,
+  kept: readonly (Publishing | undefined)[],
   current: { readonly generationId: string } | null | undefined,
 ): Promise<CapturedRender | undefined> {
-  return kept === undefined || current === undefined || current === null
+  return current === undefined || current === null
     ? undefined
-    : identified(runtime, kept, current.generationId);
+    : identifiedAmong(runtime, candidatesOf(kept), current.generationId);
+}
+
+/** The renders of `kept` there are, each once. */
+function candidatesOf(kept: readonly (Publishing | undefined)[]): Publishing[] {
+  return [...new Set(kept)].filter((each) => each !== undefined);
 }
 
 /**
- * The lease a superseded regeneration gives back unused, kept as given back with the render the
- * isolate kept of the entry and the generation the host named (`CacheRuntime.givenBack`) for as long
- * as the host may name it: until the lease lapses, a hold at the least. Until the host has it back it
+ * The first of `candidates` whose publish says it became the generation the host named
+ * (`identified`), each waited for at once, a second at the most.
+ */
+async function identifiedAmong(
+  runtime: CacheRuntime,
+  candidates: readonly Publishing[],
+  generationId: string,
+): Promise<CapturedRender | undefined> {
+  const renders = await Promise.all(
+    candidates.map((each) => identified(runtime, each, generationId)),
+  );
+  return renders.find((render) => render !== undefined);
+}
+
+/**
+ * The lease a superseded regeneration gives back unused, kept as given back with the renders the
+ * isolate kept of the entry (`kept`) and the generation the host named (`CacheRuntime.givenBack`) for
+ * as long as the host may name it: until the lease lapses, a hold at the least. Until the host has it back it
  * turns a request of the entry away for it, and that request is answered as the superseded one is
  * (`answeringWhileBusy`), the render's publish settled meanwhile or not — and an answer that turned
  * one away before the host had the lease back may come in after, however long it was on its way.
@@ -302,7 +323,7 @@ export async function answeringWhenSuperseded(
  */
 export async function givingBack(
   runtime: CacheRuntime,
-  kept: Publishing | undefined,
+  kept: readonly (Publishing | undefined)[],
   lease: {
     readonly attemptId: string;
     readonly leaseExpiresAt: number;
@@ -311,10 +332,11 @@ export async function givingBack(
   returned: Promise<unknown>,
 ): Promise<void> {
   const { current } = lease;
-  if (kept !== undefined && current !== undefined && current !== null) {
+  const publishings = candidatesOf(kept);
+  if (current !== undefined && current !== null && publishings.length > 0) {
     runtime.givenBack.set(
       lease.attemptId,
-      { publishing: kept, generationId: current.generationId },
+      { publishings, generationId: current.generationId },
       Math.max(runtime.holdMs, lease.leaseExpiresAt - nowMs()),
     );
   }

@@ -96,10 +96,11 @@ export interface Publishing {
 /**
  * A lease of an entry this isolate gave back unused: handed out while a render of the isolate's own
  * was publishing the entry, by a host that named a later generation of it current (`supersededBy`).
- * That render, and the generation the host named.
+ * The renders it may be — the one the isolate kept once the lease was in, and the one it kept when
+ * the lease was asked for — and the generation the host named.
  */
 export interface GivenBack {
-  readonly publishing: Publishing;
+  readonly publishings: readonly Publishing[];
   readonly generationId: string;
 }
 
@@ -268,9 +269,9 @@ function publishingBytes(publishing: Publishing, key: string): number {
   return renderBytes(publishing.render) + characters * UTF16_BYTES;
 }
 
-/** What a lease given back holds with every other given back with the same render: that render. */
-function sharedRender(given: GivenBack): SharedBytes {
-  return { holder: given.publishing, bytes: publishingBytes(given.publishing, '') };
+/** What a lease given back holds with every other given back with the same renders: those renders. */
+function sharedRenders(given: GivenBack): SharedBytes[] {
+  return given.publishings.map((holder) => ({ holder, bytes: publishingBytes(holder, '') }));
 }
 
 function log(message: string, fields: Record<string, string | number> = {}): void {
@@ -338,7 +339,7 @@ export function createCacheRuntime(options: CacheRuntimeOptions): CacheRuntime |
       sizeOf: (given, key) =>
         GIVEN_BACK_ENTRY_BYTES + (key.length + given.generationId.length) * UTF16_BYTES,
       // One render given back with two leases is held once: it is the render that holds the bytes.
-      sharedOf: sharedRender,
+      sharedOf: sharedRenders,
     }),
     artifactMemo: new TtlCache(Infinity, ARTIFACT_MEMO_ENTRIES, options.now, {
       maxBytes: ARTIFACT_MEMO_BYTES,

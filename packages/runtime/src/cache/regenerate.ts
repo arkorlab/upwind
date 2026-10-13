@@ -591,20 +591,20 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   const key = entryId ?? lease.entryId;
   lettingGo(runtime, key);
   if (supersededBy(target, lease.current, nowMs()) && answerable(lease.current)) {
-    // The render the isolate keeps of the entry now, where it keeps one: another request of the
-    // isolate may have published one since this one asked for the lease, its commit landed and its
-    // answer on the way, and the generation the host names may be that one. The one kept before the
-    // lease was asked for otherwise, whose publish may have settled meanwhile.
-    const keptNow = runtime.publishing.get(key) ?? kept;
+    // The renders the generation the host names may be: the one the isolate keeps of the entry now —
+    // another request of the isolate may have published one since this one asked for the lease, its
+    // commit landed and its answer on the way — and the one it kept when the lease was asked for,
+    // whose publish may have settled meanwhile, or which another stands in the place of.
+    const candidates = [runtime.publishing.get(key), kept];
     // Given back behind the answer, which waits for nothing of it: nobody holds the lease now. The
     // generation the host holds may be the one the render became: the render stays until its publish
     // settles, for any other request of the isolate the host leases the entry to meanwhile, and with
     // this lease for as long as the host may name it, for one it turns away for this lease.
-    input.waitUntil(givingBack(runtime, keptNow, lease, abandon(input, lease, 'skipped')));
+    input.waitUntil(givingBack(runtime, candidates, lease, abandon(input, lease, 'skipped')));
     // What stands is what the next request should find: a record of it, or of a later one, that
     // another request of this isolate learned while this one waited for the lease stays held.
     forgetRecordBefore(runtime, lease.entryId, lease.current?.seq ?? Infinity);
-    const ours = await answeringWhenSuperseded(runtime, keptNow, lease.current);
+    const ours = await answeringWhenSuperseded(runtime, candidates, lease.current);
     return ours === undefined ? { kind: 'superseded' } : { kind: 'superseded', publishing: ours };
   }
   // It answers nothing more: what the host holds is not a later generation that stands.
