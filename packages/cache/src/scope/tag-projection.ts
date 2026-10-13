@@ -71,6 +71,10 @@ interface OwnChange {
  * the page would leave this change's own to a later run, after the answer. The page skips them
  * once written (`published`). A control tag is left to the control path, which wrote it first
  * (`projectOwnTags`).
+ *
+ * Each record once: a tag the change names twice, and one a page has written as it stands
+ * already (at or below the cursor), are not written again. KV refuses a second write of a key
+ * within a second, and the run would fail on a record that is out.
  */
 async function projectChangedTags(
   deps: TagProjectionDeps,
@@ -78,9 +82,12 @@ async function projectChangedTags(
   change: OwnChange,
   published: Map<string, number>,
 ): Promise<void> {
-  const tags = change.tags.flatMap((tagId) => {
+  const cursor = Number(
+    readMeta(deps.sql, retired ? META_RETIRED_TAG_REVISION : META_TAG_REVISION) ?? '0',
+  );
+  const tags = [...new Set(change.tags)].flatMap((tagId) => {
     const row = change.controlTags.has(tagId) ? undefined : findTag(deps.sql, tagId);
-    return typeof row?.stale_at === 'number' ? [toDeltaEntry(row)] : [];
+    return typeof row?.stale_at === 'number' && row.revision > cursor ? [toDeltaEntry(row)] : [];
   });
 
   for (const batch of chunks(tags)) {
@@ -100,20 +107,29 @@ async function projectChangedTags(
   }
 }
 
+/**
+ * One page of the records behind the cursor, going no further than `bound`: the scope's revision
+ * as the run began. A tag invalidated since is its own change's, whose run writes it first
+ * (`projectChangedTags`); written here as well, it would be written twice within a second, which
+ * KV refuses.
+ */
 async function projectPermanentTags(
   deps: TagProjectionDeps,
   retired: boolean,
   published: ReadonlyMap<string, number>,
+  bound: number,
 ): Promise<void> {
   const cursor = retired ? META_RETIRED_TAG_REVISION : META_TAG_REVISION;
   const since = Number(readMeta(deps.sql, cursor) ?? '0');
-  const revision = latestTagRevision(deps.sql);
+  const revision = Math.min(latestTagRevision(deps.sql), bound);
 
   if (since >= revision) return;
 
   const page = tagsDelta(deps.sql, { since, revision, limit: PROJECTION_BATCH });
+  // The delta reads on past `revision`; what it reads there is left to its own change's run.
+  const rows = page.tags.filter((tag) => tag.revision <= revision);
 
-  for (const batch of chunks(page.tags)) {
+  for (const batch of chunks(rows)) {
     const outcomes = await Promise.allSettled(
       batch
         .filter((tag) => published.get(tag.tagId) !== tag.revision)
@@ -131,7 +147,7 @@ async function projectPermanentTags(
   }
 
   deps.transaction(() => {
-    writeMeta(deps.sql, cursor, String(page.revision));
+    writeMeta(deps.sql, cursor, String(Math.min(page.revision, revision)));
   });
 }
 
@@ -252,6 +268,8 @@ export async function projectTags(
   ownTags: readonly string[] = [],
 ): Promise<void> {
   const retired = readScope(deps.sql)?.status === 'retired';
+  // As the run begins: what its page goes no further than (`projectPermanentTags`).
+  const bound = latestTagRevision(deps.sql);
   // Capture identity at commit and fetch current values: promotion/replacement can happen while
   // settle waits. Only failure of this bounded own phase prevents a private acknowledgment.
   const published = await projectOwnTags(deps, retired, own?.ids ?? []);
@@ -259,7 +277,7 @@ export async function projectTags(
   const ownedIds = new Set(own?.ids);
 
   await projectChangedTags(deps, retired, { tags: ownTags, controlTags: ownedIds }, published);
-  await projectPermanentTags(deps, retired, published);
+  await projectPermanentTags(deps, retired, published, bound);
   const backlog = controlTagProjections(deps.sql, MAX_TAGS_PER_CALL)
     .filter((projection) => !ownedIds.has(projection.tag.tagId))
     .slice(0, MAX_TAGS_PER_CALL - ownedIds.size);
