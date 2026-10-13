@@ -47,19 +47,25 @@ export interface RegenerationTarget {
    * answers the member: the runtime regenerates the concrete pathname.
    */
   readonly member?: boolean | undefined;
+  /**
+   * The member's record is the one its class completes to (`MemberRoute.keyedBy`), which every
+   * member sharing its keys is served, rather than one of its own.
+   */
+  readonly keyed?: boolean | undefined;
 }
 
 /**
  * Whether the runtime renders the request's own pathname rather than the record's
  * (`CACHE_UPGRADE_HEADER`): for a member's own record, and for a member asked beside the class
- * shell it was answered with. Not for a record the class keeps for every member that completes to
- * it (`MemberRoute.keyedBy`), whose pathname is the template's: rendered as the member, it would be
- * kept under the member's own pathname, and the record the edge goes on serving never replaced.
+ * shell it was answered with. Not for a record a keyed class keeps for every member that completes
+ * to it (`keyed`): rendered as the member, it would be kept under the member's own pathname, and the
+ * record the edge goes on serving never replaced. Told by where the record was read, not by its
+ * pathname, which a member's own may hold a bracket in as well (`/blog/[draft]`).
  */
 function rendersTheMember(target: RegenerationTarget): boolean {
-  const { header } = target.pack;
   return (
-    target.member === true && (target.entryId !== header.entryId || !header.pathname.includes('['))
+    target.member === true &&
+    (target.entryId !== target.pack.header.entryId || target.keyed !== true)
   );
 }
 

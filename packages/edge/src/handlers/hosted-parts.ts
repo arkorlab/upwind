@@ -55,12 +55,22 @@ const RSC_PAYLOAD = 'rsc-payload';
 const PAGES_DATA = 'pages-data';
 const RSC_ROLE = 'rsc';
 
+/**
+ * A member's record, read as the member's: one of its own, or the one its class completes to
+ * (`keyed`, `MemberRoute.keyedBy`). Told by where it was read, not by its pathname.
+ */
+interface MemberRecord {
+  readonly keyed: boolean;
+}
+
 type PartGeneration =
   | { readonly kind: 'build' }
   | {
       readonly kind: 'runtime';
       readonly pack: DecodedGenerationPack;
       readonly validity: 'fresh' | 'stale' | 'unknown';
+      /** Where the record is a member's; a class's or a route's own is none. */
+      readonly member: MemberRecord | undefined;
     }
   | { readonly kind: 'function' };
 
@@ -72,13 +82,16 @@ type PartGeneration =
  * old record for as long as it is asked for. A fresh record is still judged as held, with nothing
  * read behind it (`generationAsHeld`). A member's own is read as it was, its absence held.
  */
-function readPartAgain(input: PartInput, entry: RouteEntry, pack: DecodedGenerationPack): void {
-  const member = entry.pathname.includes('[') && !pack.header.pathname.includes('[');
+function readPartAgain(
+  input: PartInput,
+  pack: DecodedGenerationPack,
+  member: MemberRecord | undefined,
+): void {
   readServedAgain(
     input.edge,
     pack,
     runtimeCacheOf(input.edge.policy),
-    member ? { holdAbsence: true } : {},
+    member === undefined ? {} : { holdAbsence: true },
   );
 }
 
@@ -88,7 +101,7 @@ function readPartAgain(input: PartInput, entry: RouteEntry, pack: DecodedGenerat
  */
 async function partGeneration(
   input: PartInput,
-  { entry, pathname, kind, held }: PartAnswer,
+  { entry, pathname, kind, held, keyed }: PartAnswer,
 ): Promise<PartGeneration> {
   let key = generationKeyOf(input, entry);
   if (key === undefined) return { kind: 'build' };
@@ -99,8 +112,10 @@ async function partGeneration(
   if (kind === 'payload' && held === undefined && member && !settings.concreteUpgrade) {
     return { kind: 'function' };
   }
+  let own: MemberRecord | undefined = held === undefined ? undefined : { keyed: keyed === true };
   // Read an upgraded member's own generation; the class pack cannot describe its parts.
   if (held === undefined && upgradesMember(settings, entry, pathname)) {
+    own = { keyed: false };
     const route = entry.cache?.route ?? entry.pathname;
     const memoryKey = memberEntryKey(key.scopeId, route, pathname);
     let entryId = input.edge.runtime.memory.memberEntries.get(memoryKey);
@@ -119,26 +134,26 @@ async function partGeneration(
   if (decision.kind === 'build') {
     return { kind: upgradesMember(settings, entry, pathname) ? 'function' : 'build' };
   }
-  return partFrom(input, entry, decision);
+  return partFrom(input, decision, own);
 }
 
 /** What a part is answered from, as the record its page is judged by decides it. */
 function partFrom(
   input: PartInput,
-  entry: RouteEntry,
   decision: Exclude<GenerationDecision, { readonly kind: 'build' }>,
+  member: MemberRecord | undefined,
 ): PartGeneration {
   if (decision.kind === 'regenerate') {
-    readPartAgain(input, entry, decision.pack);
+    readPartAgain(input, decision.pack, member);
     return { kind: 'function' };
   }
   if (decision.kind !== 'serve') return { kind: 'function' };
   if (decision.pack.header.source === 'build') {
     if (decision.validity === 'fresh') return { kind: 'build' };
-    readPartAgain(input, entry, decision.pack);
+    readPartAgain(input, decision.pack, member);
     return { kind: 'function' };
   }
-  return { kind: 'runtime', pack: decision.pack, validity: decision.validity };
+  return { kind: 'runtime', pack: decision.pack, validity: decision.validity, member };
 }
 
 /** What a request of the router is answered with, once it is known to be answered here. */
@@ -233,6 +248,8 @@ interface PartAnswer {
   readonly startedAt: number;
   readonly reason: string;
   readonly held?: GenerationLoad | undefined;
+  /** The held record is the one the member's class completes to (`MemberRoute.keyedBy`). */
+  readonly keyed?: boolean | undefined;
 }
 
 const PART_ROLES = { segment: 'segment', payload: RSC_ROLE, data: PAGES_DATA } as const;
@@ -259,7 +276,8 @@ function refreshPart(
     target: {
       pack,
       entryId,
-      member: part.entry.pathname.includes('[') && !pack.header.pathname.includes('['),
+      member: generation.member !== undefined,
+      keyed: generation.member?.keyed,
     },
   });
 }
@@ -301,7 +319,7 @@ async function answerPart(input: PartInput, part: PartAnswer): Promise<Response>
   if (artifact === undefined || storageRef === undefined) return fallback();
   if (generation.validity === 'stale') {
     refreshPart(input, part, generation);
-    readPartAgain(input, entry, generation.pack);
+    readPartAgain(input, generation.pack, generation.member);
   }
   // loadShell retains the existing memory / Cache API race and hash verification. No authority read.
   const strategy: ShellDeliveryStrategy<EdgeContext> = {
@@ -373,7 +391,7 @@ export async function composePayload(
   input: PartInput,
   entry: RouteEntry,
   middleware: MiddlewareOutcome,
-  held?: GenerationLoad,
+  own?: { readonly held: GenerationLoad; readonly keyed: boolean },
 ): Promise<Response> {
   const startedAt = input.edge.runtime.now();
   const left = requestAsLeft(input, middleware);
@@ -391,7 +409,8 @@ export async function composePayload(
     pathname: left.url.pathname,
     startedAt,
     reason: RSC_PAYLOAD,
-    held,
+    held: own?.held,
+    keyed: own?.keyed,
   });
 }
 

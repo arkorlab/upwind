@@ -108,6 +108,11 @@ export interface CachedDocumentInput extends Omit<DocumentInput, 'shellRead' | '
    */
   readonly noBuild?: ((recordLookupMs: number) => Promise<Response>) | undefined;
   /**
+   * The record read alone (`noBuild`) is the one the member's class completes to
+   * (`MemberRoute.keyedBy`), not one of its own: regenerated as itself.
+   */
+  readonly keyed?: boolean | undefined;
+  /**
    * Proxy the request to the application's Worker, with what the middleware decided, counted under
    * the route the document was classified as (`route`).
    */
@@ -333,8 +338,9 @@ export async function serveCachedDocument(input: CachedDocumentInput): Promise<R
   if (decision.kind !== 'build') {
     abandonShell(edge, read);
   }
-  // A member's own record, where there is no class shell, is regenerated as the member's.
-  const own = input.noBuild === undefined ? {} : { member: true };
+  // A member's record, where there is no class shell, is regenerated as the member's — or as
+  // itself, where it is the one the member's keyed class completes to.
+  const own = input.noBuild === undefined ? {} : { member: true, keyed: input.keyed };
   switch (decision.kind) {
     case 'build': {
       if (input.noBuild !== undefined) {

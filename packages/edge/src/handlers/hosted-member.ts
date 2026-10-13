@@ -155,7 +155,7 @@ async function serveOwnRecord(
       },
       ownRecordEntry(member, loaded.key.entryId),
       middleware,
-      loaded.load,
+      { held: loaded.load, keyed: member.members.keyedBy !== undefined },
     );
   }
   return serveCachedDocument({
@@ -172,5 +172,6 @@ async function serveOwnRecord(
     generationRead: { load: Promise.resolve(loaded.load), shell: undefined },
     member: undefined,
     noBuild: (recordLookupMs) => unserved({ recordLookupMs }),
+    keyed: member.members.keyedBy !== undefined,
   });
 }
