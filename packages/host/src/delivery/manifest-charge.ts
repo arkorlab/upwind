@@ -26,6 +26,20 @@ export const EDGE_ISOLATE_BUDGET_BYTES = EDGE_ISOLATE_BUDGET_MIB * MIB;
  */
 const MANIFEST_JSON_FACTOR = 1.5;
 const MANIFEST_OBJECT_BYTES = 80;
+/**
+ * Each pathname a split deployment names an app Function for (`exactFunctions`) is charged 48 bytes
+ * beside its JSON. It is a pathname `exactPathnames` lists as well (`withFunctions`,
+ * `@stayingupwind/core/bundle`), which both tables key on as one string once parsed, and the name
+ * it maps to is one of a few every entry shares, so what an entry adds is its share of a table of
+ * its own, which doubles as it fills. As measured in Node 24 with the JSON held parsed, for
+ * pathnames of four characters each named a Function, that came to 63 bytes an entry at two
+ * hundred thousand of them — 30.0 MB held, charged 24.6 MB without these — and to 72, the most, at
+ * 174,800, just after the table grew: 29.4 MB held, charged 21.4 MB. An entry's JSON, 16 bytes
+ * charged one and a half times, comes to 24 of those 72, and 48 covers the rest. At 80, as for an
+ * entry of its own, each would be charged 104 bytes, more than any took, and a manifest of such
+ * pathnames refused past some 207 thousand of them rather than 245 thousand.
+ */
+const EXACT_FUNCTION_BYTES = 48;
 
 /** A rule as a manifest lists one: a pattern, and perhaps conditions and headers. */
 interface RuleObjects {
@@ -85,5 +99,9 @@ function manifestObjects(manifest: ProjectManifest): number {
  * less than it takes, it was held as if it fit, and two of them could take the isolate's memory.
  */
 export function manifestCharge(manifest: ProjectManifest, jsonBytes: number): number {
-  return MANIFEST_JSON_FACTOR * jsonBytes + MANIFEST_OBJECT_BYTES * manifestObjects(manifest);
+  return (
+    MANIFEST_JSON_FACTOR * jsonBytes +
+    MANIFEST_OBJECT_BYTES * manifestObjects(manifest) +
+    EXACT_FUNCTION_BYTES * keysOf(manifest.exactFunctions)
+  );
 }
