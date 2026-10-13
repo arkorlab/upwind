@@ -25,7 +25,7 @@ import {
   tableOf,
   writesIn,
 } from './held-writes.ts';
-import type { DataEntryMetadata } from './host.ts';
+import type { DataEntryMetadata, InvalidateOutcome } from './host.ts';
 import {
   fetchedAgainBehind,
   holdForRevalidation,
@@ -99,40 +99,30 @@ async function invalidate(
   const expire = durations?.expire ?? 0;
   // In force here before the host has answered: a read in this isolate while the call is out must
   // not be answered with what is being invalidated. What the host answers stands for it below.
-  runtime.tags.applyLocal(tags, {
+  const applied = {
     staleAt: now,
     hardExpireAt: expire > 0 ? now + expire * MS_PER_SECOND : now,
-  });
-  const outcome = await runtime.host.invalidate({
-    tags,
-    ...(expire > 0 && { expire }),
-    api: durations === undefined ? 'updateTag' : 'revalidateTag',
-  });
+  };
+  runtime.tags.applyLocal(tags, applied);
+  let outcome: InvalidateOutcome;
+  try {
+    outcome = await runtime.host.invalidate({
+      tags,
+      ...(expire > 0 && { expire }),
+      api: durations === undefined ? 'updateTag' : 'revalidateTag',
+    });
+  } catch (error) {
+    // In force here all the same, and known at no revision: the host may never have recorded it.
+    runtime.tags.settleLocal(tags, applied);
+    throw error;
+  }
   if (expire === 0) {
     // And on the response, to the edge: the next request may be one it answers from what it holds.
     requestContext()?.invalidated.add(tags, outcome.revision);
   }
   // In force here at once: the request that invalidated must not read what it invalidated, nor
-  // may the next one in this isolate, before the delta says so. At the revision the host recorded
-  // it at, answering the mark applied while the call was out: a view that pulls the delta up to
-  // there holds it, whatever the clocks say.
-  for (const invalidation of outcome.invalidations) {
-    runtime.tags.confirmLocal(invalidation.value, {
-      revision: invalidation.revision ?? outcome.revision,
-      // The request may have read cache data while the invalidation call was in flight.
-      staleAt: Math.max(now, invalidation.staleAt),
-      // The deadline by this isolate's clock too, whichever comes first: a host whose clock
-      // runs ahead must not leave an `updateTag` servable here, as stale, until this clock catches
-      // up with it.
-      hardExpireAt:
-        invalidation.hardExpireAt === null
-          ? null
-          : Math.min(
-              invalidation.hardExpireAt,
-              now + Math.max(0, invalidation.hardExpireAt - invalidation.staleAt),
-            ),
-    });
-  }
+  // may the next one in this isolate, before the delta says so.
+  runtime.tags.answerLocal(tags, applied, outcome, now);
 }
 
 /** Invalidate `tags` at once, as `updateTag` does: in force for the next read anywhere, and here. */

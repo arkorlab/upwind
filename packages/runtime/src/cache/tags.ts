@@ -5,7 +5,7 @@ import {
 } from '@stayingupwind/core/cache';
 import { Lru } from '@stayingupwind/core/util';
 
-import type { CacheHost } from './host.ts';
+import type { CacheHost, InvalidateOutcome } from './host.ts';
 
 /**
  * What this isolate knows of the scope's invalidations: the tags the host has recorded an
@@ -83,20 +83,29 @@ const MAX_TAGS_HELD = 4096;
  */
 const MAX_APPLIED_MARKS = 4096;
 
-/** What this isolate knows of one tag: its latest invalidation, and when the host last said so. */
+/**
+ * What this isolate knows of one tag: its latest invalidation, and when the host last said so —
+ * with what tells a view that held what it was told from one that did not (`TagMark.revision`): the
+ * latest revision a mark it was told was known at, and the latest moment of one known at none.
+ */
 interface TagKnowledge {
   readonly mark?: TagMark | undefined;
   readonly checkedAt?: number | undefined;
+  readonly knownRevision?: number | undefined;
+  readonly unknownAt?: number | undefined;
 }
 
 /**
- * This isolate's own invalidations of one tag: those the host has answered, at the revisions it
- * answered with (`confirmLocal`), and those it has yet to answer — in force here all the same, and
- * known at no revision — with how many of them are out (`applyLocal`).
+ * This isolate's own invalidations of one tag, all in force here: those the host has answered at a
+ * revision of the scope's (`confirmLocal`), with the latest of those revisions; those it has yet to
+ * answer, with how many of them are out (`applyLocal`); and those known at no revision for good —
+ * the host never answered them, or answered at a revision of another kind (`settleLocal`).
  */
 interface AppliedKnowledge {
   readonly answered?: TagMark | undefined;
+  readonly answeredRevision?: number | undefined;
   readonly unanswered?: { readonly mark: TagMark; readonly count: number } | undefined;
+  readonly unrevised?: TagMark | undefined;
 }
 
 export class TagState {
@@ -152,7 +161,13 @@ export class TagState {
   #mark(value: string, mark: TagMark): void {
     const known = this.#tags.get(value);
     const held = known?.mark;
-    this.#tags.set(value, { ...known, mark: held === undefined ? mark : stronger(held, mark) });
+    this.#tags.set(value, {
+      ...known,
+      mark: held === undefined ? mark : stronger(held, mark),
+      ...(mark.revision === undefined
+        ? { unknownAt: Math.max(known?.unknownAt ?? mark.staleAt, mark.staleAt) }
+        : { knownRevision: Math.max(known?.knownRevision ?? mark.revision, mark.revision) }),
+    });
   }
 
   async #pullLocal(host: TagHost, values: readonly string[], now: number): Promise<void> {
@@ -180,20 +195,41 @@ export class TagState {
   }
 
   /**
-   * What this isolate knows of a tag, in its parts: what it was told, and what it did itself — what
-   * the host has answered of it, and what it has yet to. The second is kept apart because it is the
-   * only one no read brings back — see `MAX_APPLIED_MARKS`.
+   * What this isolate knows of a tag: what it was told, and what it did itself, the strongest of
+   * them. The second is kept apart because it is the only one no read brings back — see
+   * `MAX_APPLIED_MARKS`.
    */
-  #marksOf(value: string): TagMark[] {
+  #markOf(value: string): TagMark | undefined {
     const applied = this.#applied.get(value);
-    return [this.#tags.get(value)?.mark, applied?.answered, applied?.unanswered?.mark].filter(
-      (mark) => mark !== undefined,
-    );
+    return strongest([
+      this.#tags.get(value)?.mark,
+      applied?.answered,
+      applied?.unanswered?.mark,
+      applied?.unrevised,
+    ]);
   }
 
-  /** What this isolate knows of a tag: the strongest of its parts (`#marksOf`). */
-  #markOf(value: string): TagMark | undefined {
-    return strongest(this.#marksOf(value));
+  /**
+   * Whether a view brought up to the revision `held` held every invalidation of the tag known here
+   * that reaches an entry made at `timestamp`: one this isolate was told, known at a revision no
+   * later than `held` — none known at no revision reaching it — and one of its own the host answered
+   * at such a revision. One of its own out, or known at no revision for good, that reaches it is one
+   * no view is known to have held.
+   */
+  #heldBy(value: string, timestamp: number, held: number): boolean {
+    const told = this.#tags.get(value);
+    const applied = this.#applied.get(value);
+    const reaches = (mark: TagMark | undefined): boolean =>
+      mark !== undefined && mark.staleAt >= timestamp;
+    const within = (revision: number | undefined): boolean =>
+      revision === undefined || revision <= held;
+    return (
+      !reaches(applied?.unanswered?.mark) &&
+      !reaches(applied?.unrevised) &&
+      (!reaches(applied?.answered) || within(applied?.answeredRevision)) &&
+      (!reaches(told?.mark) ||
+        ((told?.unknownAt ?? timestamp - 1) < timestamp && within(told?.knownRevision)))
+    );
   }
 
   get revision(): number {
@@ -257,7 +293,8 @@ export class TagState {
    */
   applyLocal(values: readonly string[], mark: TagMark): void {
     const unknown = { staleAt: mark.staleAt, hardExpireAt: mark.hardExpireAt };
-    for (const value of values) {
+    // Each tag once: a host answers a tag named twice in one call once.
+    for (const value of new Set(values)) {
       const held = this.#applied.get(value);
       const out = held?.unanswered;
       this.#applied.set(value, {
@@ -271,19 +308,80 @@ export class TagState {
   }
 
   /**
-   * What the host answered one of this Function's invalidations of the tag with, at the revision it
-   * recorded it at (`answered`): one fewer is out. The marks of those still out stay as they were,
-   * known at no revision, until the last of them has been answered — a moment two of them read is no
-   * proof which one an answer is for.
+   * What the host answered one of this Function's invalidations of the tag with, at the revision of
+   * the scope it recorded it at (`answered`): one fewer is out. The marks of those still out stay as
+   * they were, known at no revision, until the last of them has been answered — a moment two of them
+   * read is no proof which one an answer is for. An answer that says no revision is one the
+   * invalidation is known at none by for good (`settleLocal`).
    */
   confirmLocal(value: string, answered: TagMark): void {
+    if (answered.revision === undefined) {
+      this.settleLocal([value], answered);
+      return;
+    }
     const held = this.#applied.get(value);
-    const out = held?.unanswered;
-    const count = (out?.count ?? 0) - 1;
     this.#applied.set(value, {
+      ...held,
       answered: held?.answered === undefined ? answered : stronger(held.answered, answered),
-      unanswered: out !== undefined && count > 0 ? { mark: out.mark, count } : undefined,
+      answeredRevision: Math.max(held?.answeredRevision ?? answered.revision, answered.revision),
+      unanswered: oneFewer(held?.unanswered),
     });
+  }
+
+  /**
+   * What the host answered this Function's invalidation of `values` with (`outcome`), the call made
+   * at `now` with `applied` in force while it was out: each tag it recorded, at the revision it
+   * recorded it at (`confirmLocal`) — a view that pulls the delta up to there holds it, whatever the
+   * clocks say — and each it recorded nothing of, in force as it was applied, at no revision
+   * (`settleLocal`).
+   */
+  answerLocal(
+    values: readonly string[],
+    applied: TagMark,
+    outcome: InvalidateOutcome,
+    now: number,
+  ): void {
+    const answered = new Set<string>();
+    for (const invalidation of outcome.invalidations) {
+      answered.add(invalidation.value);
+      this.confirmLocal(invalidation.value, {
+        revision: invalidation.revision ?? outcome.revision,
+        // The request may have read cache data while the invalidation call was in flight.
+        staleAt: Math.max(now, invalidation.staleAt),
+        // The deadline by this isolate's clock too, whichever comes first: a host whose clock
+        // runs ahead must not leave an `updateTag` servable here, as stale, until this clock catches
+        // up with it.
+        hardExpireAt:
+          invalidation.hardExpireAt === null
+            ? null
+            : Math.min(
+                invalidation.hardExpireAt,
+                now + Math.max(0, invalidation.hardExpireAt - invalidation.staleAt),
+              ),
+      });
+    }
+    this.settleLocal(
+      values.filter((value) => !answered.has(value)),
+      applied,
+    );
+  }
+
+  /**
+   * One of this Function's invalidations of these tags no longer out, and known at no revision of
+   * the scope for good: the host did not answer it, or answered at a revision of another kind. In
+   * force here as before, and held against an entry it reaches whatever revision that entry's view
+   * was brought up to.
+   */
+  settleLocal(values: readonly string[], mark: TagMark): void {
+    const unknown = { staleAt: mark.staleAt, hardExpireAt: mark.hardExpireAt };
+    for (const value of new Set(values)) {
+      const held = this.#applied.get(value);
+      this.#applied.set(value, {
+        ...held,
+        unrevised: held?.unrevised === undefined ? unknown : stronger(held.unrevised, unknown),
+        unanswered: oneFewer(held?.unanswered),
+      });
+    }
   }
 
   /**
@@ -309,19 +407,23 @@ export class TagState {
   validityOf(tags: readonly string[], timestamp: number, now: number, held?: number): Validity {
     let validity: Validity = 'fresh';
     for (const tag of tags) {
-      const marks = this.#marksOf(tag);
-      const mark = strongest(marks);
-      if (
-        mark === undefined ||
-        mark.staleAt < timestamp ||
-        (held !== undefined && marks.every((one) => one.staleAt < timestamp || seenBy(one, held)))
-      ) {
+      if (held !== undefined && this.#heldBy(tag, timestamp, held)) {
         continue;
       }
-      if (mark.hardExpireAt !== null && mark.hardExpireAt <= now) {
+      const applied = this.#applied.get(tag);
+      // What is out, or known at no revision for good, is asked of apart, and the worse answer
+      // stands: an answer of the host's, whatever its clock read, is not taken for newer than an
+      // invalidation of this isolate's it holds no revision of.
+      const told = strongest([this.#tags.get(tag)?.mark, applied?.answered]);
+      const own = strongest([applied?.unanswered?.mark, applied?.unrevised]);
+      const byTold = markValidity(told, timestamp, now);
+      const byOwn = markValidity(own, timestamp, now);
+      if (byTold === 'expired' || byOwn === 'expired') {
         return 'expired';
       }
-      validity = 'stale';
+      if (byTold === 'stale' || byOwn === 'stale') {
+        validity = 'stale';
+      }
     }
     return validity;
   }
@@ -341,32 +443,38 @@ export class TagState {
  * and that is what an isolate starting now would hold. Keeping the later `staleAt` beside the
  * earlier `hardExpireAt` would make a window nobody opened, and would make this isolate judge an
  * entry differently from the one next to it; two recorded in the same millisecond are settled by
- * the earlier deadline. The two stand at the later of their revisions, and at none known where
- * either's is unknown: an invalidation known at no revision may be one no view has held.
+ * the earlier deadline. What revision each is known at is kept apart from the mark they make
+ * (`TagKnowledge`, `AppliedKnowledge`), and read off neither.
  */
 function stronger(a: TagMark, b: TagMark): TagMark {
-  const revision =
-    a.revision === undefined || b.revision === undefined
-      ? undefined
-      : Math.max(a.revision, b.revision);
   if (a.staleAt !== b.staleAt) {
-    return { ...(a.staleAt > b.staleAt ? a : b), revision };
+    return a.staleAt > b.staleAt ? a : b;
   }
-  return { staleAt: a.staleAt, hardExpireAt: earliest(a.hardExpireAt, b.hardExpireAt), revision };
+  return { staleAt: a.staleAt, hardExpireAt: earliest(a.hardExpireAt, b.hardExpireAt) };
+}
+
+/** What is out of this Function's own invalidations of a tag once one more is no longer out. */
+function oneFewer(out: AppliedKnowledge['unanswered']): AppliedKnowledge['unanswered'] | undefined {
+  return out === undefined || out.count <= 1 ? undefined : { mark: out.mark, count: out.count - 1 };
 }
 
 /** The strongest of `marks` (`stronger`), or none where there are none. */
-function strongest(marks: readonly TagMark[]): TagMark | undefined {
+function strongest(marks: readonly (TagMark | undefined)[]): TagMark | undefined {
   let found: TagMark | undefined;
   for (const mark of marks) {
-    found = found === undefined ? mark : stronger(found, mark);
+    if (mark !== undefined) {
+      found = found === undefined ? mark : stronger(found, mark);
+    }
   }
   return found;
 }
 
-/** Whether a view brought up to `held` held the invalidation `mark` stands for. */
-function seenBy(mark: TagMark, held: number): boolean {
-  return mark.revision !== undefined && mark.revision <= held;
+/** What one mark says of an entry made at `timestamp`, judged at `now` (`validityOf`). */
+function markValidity(mark: TagMark | undefined, timestamp: number, now: number): Validity {
+  if (mark === undefined || mark.staleAt < timestamp) {
+    return 'fresh';
+  }
+  return mark.hardExpireAt !== null && mark.hardExpireAt <= now ? 'expired' : 'stale';
 }
 
 function earliest(a: number | null, b: number | null): number | null {

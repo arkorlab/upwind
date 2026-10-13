@@ -35,6 +35,9 @@ import { refusedTags } from './tag-bounds.ts';
  */
 const PUBLISHING_PULL_MS = 1000;
 
+/** More leases of one entry than an isolate's requests ask for at once (`askingFor`). */
+const MAX_ASKS_KEPT = 16;
+
 /** What a failure says of itself, for the Function's log. */
 function detail(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -304,13 +307,18 @@ export function askingFor<T>(
     return asked;
   }
   const pending = runtime.asking.get(entryId) ?? new Set<Promise<unknown>>();
+  // Each ask holds its entry for a hold again: one whose request ends under it never answers.
   runtime.asking.set(entryId, pending);
   const answered: Promise<T> = settledThen(asked, () => {
     pending.delete(answered);
-    if (pending.size === 0 && runtime.asking.get(entryId) === pending) {
+    if (pending.size === 0 && runtime.asking.peek(entryId)?.value === pending) {
       runtime.asking.delete(entryId);
     }
   });
+  const oldest = pending.size >= MAX_ASKS_KEPT ? pending.values().next().value : undefined;
+  if (oldest !== undefined) {
+    pending.delete(oldest);
+  }
   pending.add(answered);
   return answered;
 }
@@ -360,8 +368,10 @@ export async function givingBack(
   if (!keeping || !answered) {
     return;
   }
+  // For a second at the most: an answer in flight lands within that, and one whose request ended
+  // under it never does.
   const asked = entryId === undefined ? undefined : runtime.asking.get(entryId);
-  await Promise.allSettled(asked === undefined ? [] : [...asked]);
+  await settledWithin(Promise.allSettled(asked === undefined ? [] : [...asked]), []);
   runtime.givenBack.delete(attemptId);
 }
 
