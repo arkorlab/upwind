@@ -86,8 +86,8 @@ const MAX_APPLIED_MARKS = 4096;
 /**
  * What this isolate knows of one tag: its latest invalidation, and when the host last said so —
  * with what tells a view that held what it was told from one that did not (`TagMark.revision`): the
- * latest revision an invalidation of it is known at (`knownAt`), and the latest moment of one known
- * at none.
+ * latest revision an invalidation of it is known at (`#mark`), and the latest moment of one known at
+ * none.
  */
 interface TagKnowledge {
   readonly mark?: TagMark | undefined;
@@ -109,8 +109,7 @@ export interface LocalInvalidation {
 
 /**
  * The calls of this Function's still out that name a tag, each added and taken out where it stands,
- * and the strongest of the marks they applied: in force, known at no revision, until the last of
- * them is out no more.
+ * and the strongest of the marks they applied, in force here at no revision.
  */
 interface Unanswered {
   readonly mark: TagMark;
@@ -118,12 +117,14 @@ interface Unanswered {
 }
 
 /**
- * How many calls of this Function's naming one tag are counted as out at once. Past that, the one
- * out longest is taken for a call the host never answers (`settleLocal`), in force here at no
- * revision for good: a call whose request ended under it never answers, and none of the others
- * would take its place in a tag invalidated again and again.
+ * How long a call of this Function's that records invalidations is counted as out at the most, from
+ * the moment its mark says it was made: as long as the runtime lets work go on behind an answer,
+ * about 30 s on Workers. One out longer had its request end under it, and never answers: once the tag
+ * is invalidated again here, it is taken for a call the host never answered (`settleLocal`), in force
+ * at no revision for good. A call the host answers within that is never taken so, however many are
+ * out beside it.
  */
-const MAX_CALLS_OUT = 64;
+const CALL_OUT_MS = 30_000;
 
 /**
  * This isolate's own invalidations of one tag, all in force here: those the host has answered at a
@@ -161,20 +162,13 @@ export class TagState {
     try {
       let truncated = true;
       while (truncated) {
-        const since = this.#revision;
-        const delta = await host.tagsDelta(since);
+        const delta = await host.tagsDelta(this.#revision);
         for (const tag of delta.tags) {
-          this.#mark(
-            tag.value,
-            {
-              staleAt: tag.staleAt,
-              hardExpireAt: tag.hardExpireAt,
-              revision: tag.revision ?? delta.revision,
-            },
-            // Where the host says no revision of the mark, the page says it was recorded past the
-            // revision the page was read from, and at or before the page's own.
-            tag.revision === undefined ? since : undefined,
-          );
+          this.#mark(tag.value, {
+            staleAt: tag.staleAt,
+            hardExpireAt: tag.hardExpireAt,
+            revision: tag.revision ?? delta.revision,
+          });
         }
         this.#revision = Math.max(this.#revision, delta.revision);
         truncated = delta.truncated;
@@ -196,11 +190,17 @@ export class TagState {
 
   /**
    * What the host said of a tag, kept whole beside what was already known of it: the latest revision
-   * an invalidation of it is known at (`knownAt`), and the latest moment of one known at none. Where
-   * the mark's revision is the page's of the delta that brought it rather than its own, `since` is
-   * the revision that page was read from.
+   * an invalidation of it is known at, and the latest moment of one known at none.
+   *
+   * Every revision the host says it recorded an invalidation at is an invalidation of its own, whatever
+   * its mark says — two `updateTag`s of one millisecond, or a later one stamped by a clock that reads
+   * behind — and a view brought up short of it missed it. So is a mark the host says no revision of,
+   * known at the revision of the page of the delta that brought it, though a pull that overlapped the
+   * one that brought it first may be bringing it again: the two cannot be told apart by what such a
+   * host says, and a render taken for one that missed an invalidation is made again, where one taken
+   * for one that held it would be served stale. A host that says each mark's revision is spared that.
    */
-  #mark(value: string, mark: TagMark, since?: number): void {
+  #mark(value: string, mark: TagMark): void {
     const known = this.#tags.get(value);
     const held = known?.mark;
     const { revision } = mark;
@@ -209,7 +209,7 @@ export class TagState {
       mark: held === undefined ? mark : stronger(held, mark),
       ...(revision === undefined
         ? { unknownAt: Math.max(known?.unknownAt ?? mark.staleAt, mark.staleAt) }
-        : { knownRevision: knownAt(known, mark, revision, since) }),
+        : { knownRevision: Math.max(known?.knownRevision ?? revision, revision) }),
     });
   }
 
@@ -274,6 +274,24 @@ export class TagState {
       within(told?.knownRevision) &&
       (told?.unknownAt ?? timestamp - 1) < timestamp
     );
+  }
+
+  /**
+   * Take each call of the tag out for `CALL_OUT_MS` or longer by `now` for one the host never
+   * answered (`settleLocal`): the calls out are in the order they were made, so the first one out
+   * for less ends it.
+   */
+  #settleLongOut(value: string, now: number): void {
+    const calls = this.#applied.get(value)?.unanswered?.calls;
+    if (calls === undefined) {
+      return;
+    }
+    for (const longest of calls) {
+      if (now - longest.mark.staleAt < CALL_OUT_MS) {
+        return;
+      }
+      this.settleLocal(longest, [value]);
+    }
   }
 
   get revision(): number {
@@ -343,6 +361,7 @@ export class TagState {
       mark: { staleAt: mark.staleAt, hardExpireAt: mark.hardExpireAt },
     };
     for (const value of call.values) {
+      this.#settleLongOut(value, call.mark.staleAt);
       const held = this.#applied.get(value);
       const out = held?.unanswered;
       const calls = out?.calls ?? new Set<LocalInvalidation>();
@@ -351,12 +370,6 @@ export class TagState {
         ...held,
         unanswered: { mark: out === undefined ? call.mark : stronger(out.mark, call.mark), calls },
       });
-      for (const longest of calls) {
-        if (calls.size <= MAX_CALLS_OUT) {
-          break;
-        }
-        this.settleLocal(longest, [value]);
-      }
     }
     return call;
   }
@@ -525,47 +538,24 @@ function stronger(a: TagMark, b: TagMark): TagMark {
 
 /**
  * What is out of this Function's own invalidations of a tag once `call` is no longer out: the others,
- * under the marks they were applied with, until the last of them is out no more. A call not among
- * them — settled already, or out from before the tag was forgotten (`MAX_APPLIED_MARKS`) — takes
- * none of them out.
+ * under the strongest of the marks they applied — worked out again from them only where `call`'s mark
+ * was that one, since otherwise it is one of theirs. A call not among them — settled already, or out
+ * from before the tag was forgotten (`MAX_APPLIED_MARKS`) — takes none of them out.
  */
 function without(out: Unanswered | undefined, call: LocalInvalidation): Unanswered | undefined {
-  out?.calls.delete(call);
-  return out?.calls.size === 0 ? undefined : out;
+  if (out?.calls.delete(call) !== true) {
+    return out;
+  }
+  if (!sameMark(out.mark, call.mark)) {
+    return out;
+  }
+  const mark = strongest([...out.calls].map((each) => each.mark));
+  return mark === undefined ? undefined : { mark, calls: out.calls };
 }
 
 /** Whether two marks say the same of every entry: the same moment, and the same deadline. */
 function sameMark(a: TagMark, b: TagMark): boolean {
   return a.staleAt === b.staleAt && a.hardExpireAt === b.hardExpireAt;
-}
-
-/**
- * The latest revision of the scope an invalidation of a tag is known at (`TagKnowledge.knownRevision`),
- * once the host has said `mark` is known at `revision`. Every invalidation the host records is one of
- * its own, whatever its mark says — two `updateTag`s of one millisecond, or a later one stamped by a
- * clock that reads behind — and a view brought up short of its revision missed it.
- *
- * All but one case: a mark the host says no revision of, which a page of the delta read from `since`
- * brings at the page's own revision. Recorded past `since`, it may be the invalidation already known
- * — brought again by a pull that overlapped the one that brought it first — where its mark is the one
- * held and `since` falls short of the revision that one is known at; and then it moves nothing. A
- * host that says each mark's revision is never guessed at so.
- */
-function knownAt(
-  known: TagKnowledge | undefined,
-  mark: TagMark,
-  revision: number,
-  since: number | undefined,
-): number {
-  const heldAt = known?.knownRevision;
-  const held = known?.mark;
-  const again =
-    since !== undefined &&
-    heldAt !== undefined &&
-    since < heldAt &&
-    held !== undefined &&
-    sameMark(held, mark);
-  return again ? heldAt : Math.max(heldAt ?? revision, revision);
 }
 
 /** The strongest of `marks` (`stronger`), or none where there are none. */

@@ -121,8 +121,8 @@ interface TtlEntry<V> {
   readonly value: V;
   readonly expiresAt: number;
   readonly bytes: number;
-  /** What holds the bytes the entry shares with others, where it does (`ByteBudget.sharedOf`). */
-  readonly holder?: unknown;
+  /** What the entry shares with others, where it does (`ByteBudget.sharedOf`). */
+  readonly shared?: SharedBytes | undefined;
 }
 
 /** Bytes the values of several entries may hold together, and what holds them. */
@@ -193,18 +193,18 @@ export class TtlCache<K, V> {
   }
 
   /** Give back what an entry gone was charged: what it shared, once the last entry sharing it goes. */
-  #discharge({ bytes, holder }: TtlEntry<V>): void {
+  #discharge({ bytes, shared }: TtlEntry<V>): void {
     this.#usedBytes -= bytes;
-    const held = holder === undefined ? undefined : this.#shared.get(holder);
-    if (held === undefined) {
+    if (shared === undefined) {
       return;
     }
-    if (held.entries > 1) {
-      this.#shared.set(holder, { bytes: held.bytes, entries: held.entries - 1 });
+    const held = this.#shared.get(shared.holder);
+    if (held !== undefined && held.entries > 1) {
+      this.#shared.set(shared.holder, { bytes: held.bytes, entries: held.entries - 1 });
       return;
     }
-    this.#shared.delete(holder);
-    this.#usedBytes -= held.bytes;
+    this.#shared.delete(shared.holder);
+    this.#usedBytes -= held?.bytes ?? shared.bytes;
   }
 
   get(key: K): V | undefined {
@@ -245,12 +245,7 @@ export class TtlCache<K, V> {
     if (bytes + (shared?.bytes ?? 0) > maxBytes) {
       return;
     }
-    this.#entries.set(key, {
-      value,
-      expiresAt: this.#now() + ttlMs,
-      bytes,
-      holder: shared?.holder,
-    });
+    this.#entries.set(key, { value, expiresAt: this.#now() + ttlMs, bytes, shared });
     this.#charge(bytes, shared);
     while (this.#entries.size > this.#maxEntries || this.#usedBytes > maxBytes) {
       const oldest = this.#entries.keys().next();
