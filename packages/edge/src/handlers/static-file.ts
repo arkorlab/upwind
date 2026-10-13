@@ -185,7 +185,7 @@ function fileHeaders(input: StaticFileInput, source: string): Headers {
   const configured = Object.entries(input.configured?.headers ?? {});
   for (const [name, value] of configured) {
     if (!ENTITY_HEADERS.has(name.toLowerCase())) {
-      setConfigured(headers, name, value);
+      setConfigured(headers, name, value, edge.forwarding);
     }
   }
   if (input.middleware !== undefined) {

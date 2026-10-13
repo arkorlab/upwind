@@ -354,7 +354,7 @@ function clientHeaders(input: ImageInput, headers: Headers, src: string): Header
   const out = new Headers(headers);
   const configured = headerRulesFor(input.manifest, input.url, input.request.headers);
   for (const [name, value] of Object.entries(configured.headers)) {
-    setConfiguredUnder(out, name, value);
+    setConfiguredUnder(out, name, value, input.edge.forwarding);
   }
   // A rule the request itself selected answers the next visitor differently, so this optimized
   // image is one visitor's however public the optimizer's own lifetime is.

@@ -212,7 +212,7 @@ function applicationHeaders(input: SegmentInput, headers: Headers): void {
   for (const [name, value] of Object.entries(input.routeHeaders)) {
     const normalized = name.toLowerCase();
     if ((normalized !== 'link' || input.kind === 'data') && !leftBehind.has(normalized)) {
-      setConfigured(headers, name, value);
+      setConfigured(headers, name, value, input.edge.forwarding);
     }
   }
   // Explicit rules describe this request, including any Link the application intentionally sets.
@@ -221,7 +221,7 @@ function applicationHeaders(input: SegmentInput, headers: Headers): void {
       // A rule may interpolate a path capture into a header *name*, and a capture that spans
       // segments makes one the `Headers` API refuses with a throw — which would take the whole
       // answer down rather than one header of it (`setConfigured`).
-      setConfigured(headers, name, value);
+      setConfigured(headers, name, value, input.edge.forwarding);
     }
   }
 }
