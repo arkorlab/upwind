@@ -5,7 +5,7 @@ import { nowMs } from './clock.ts';
 import { entryIdOf } from './current.ts';
 import type { AttemptReason } from './host.ts';
 import { JUDGED_REASONS } from './lease.ts';
-import type { CacheRuntime, GivenBack, Publishing } from './runtime.ts';
+import type { CacheRuntime, Publishing } from './runtime.ts';
 import { refusedTags } from './tag-bounds.ts';
 
 /**
@@ -21,7 +21,7 @@ import { refusedTags } from './tag-bounds.ts';
  * brought up to the host's (`answeringWhileBusy`). Once the publish has let go of its lease — the
  * host committed it while the answer was on its way here — by the host's word that the generation it
  * holds is the one the render became, and while no mark on the render's tags says what that word
- * could not (`answeringWhenSuperseded`).
+ * could not (`answeringWhenSuperseded`) — and from then on only so (`lettingGo`).
  *
  * Only a regeneration a judgement of the entry asked for (`JUDGED_REASONS`) is answered so: one
  * that asked for a page to answer with. `revalidate()` and an invalidation ask for a render whatever
@@ -84,15 +84,32 @@ function unmovedSince(runtime: CacheRuntime, publishing: Publishing): boolean {
   );
 }
 
-/** The render this isolate is publishing of the entry, for a regeneration a judgement asked for. */
+/**
+ * The render this isolate is publishing of the entry, for a regeneration a judgement asked for, while
+ * its publish holds its lease: not one let go of (`CacheRuntime.letGo`).
+ */
 function publishingFor(
   runtime: CacheRuntime,
   reason: AttemptReason,
   entryId: string | undefined,
 ): Publishing | undefined {
-  return entryId === undefined || !JUDGED_REASONS.has(reason)
-    ? undefined
-    : runtime.publishing.get(entryId);
+  const publishing =
+    entryId === undefined || !JUDGED_REASONS.has(reason)
+      ? undefined
+      : runtime.publishing.get(entryId);
+  return publishing === undefined || runtime.letGo.has(publishing) ? undefined : publishing;
+}
+
+/**
+ * Mark the render this isolate is publishing of the entry as let go of (`CacheRuntime.letGo`): a
+ * lease of the entry has been handed to a request of the isolate, which the host does only once the
+ * publish's own lease is free.
+ */
+export function lettingGo(runtime: CacheRuntime, entryId: string): void {
+  const publishing = runtime.publishing.get(entryId);
+  if (publishing !== undefined) {
+    runtime.letGo.add(publishing);
+  }
 }
 
 /**
@@ -141,6 +158,8 @@ interface Busy {
 interface TurnedAway {
   readonly reason: AttemptReason;
   readonly entryId: string | undefined;
+  /** The render this isolate kept of the entry when the lease was asked for, let go of or not. */
+  readonly kept: Publishing | undefined;
   /** The attempt holding the lease, where the host says (`AttemptOutcome`). */
   readonly holder: string | undefined;
   /** When the holder's lease lapses unless renewed, where the host says. */
@@ -174,14 +193,11 @@ async function identified(
 }
 
 /**
- * The lease the host turned the regeneration away for, as this isolate gave it back (`GivenBack`):
- * where it is one the isolate gave back unused (`answeringWhenSuperseded`), and the regeneration is
- * one a judgement of the entry asked for (`JUDGED_REASONS`).
+ * The generation the host named when it handed out the lease it turned the regeneration away for:
+ * where that is a lease this isolate gave back unused (`answeringWhenSuperseded`), and the
+ * regeneration one a judgement of the entry asked for (`JUDGED_REASONS`).
  */
-function givenBackFor(
-  runtime: CacheRuntime,
-  { reason, holder }: TurnedAway,
-): GivenBack | undefined {
+function givenBackFor(runtime: CacheRuntime, { reason, holder }: TurnedAway): string | undefined {
   return holder === undefined || !JUDGED_REASONS.has(reason)
     ? undefined
     : runtime.givenBack.get(holder);
@@ -206,17 +222,22 @@ function givenBackFor(
  *
  * Where the holder is instead a lease this isolate gave back unused once the publish had let go of
  * its own (`answeringWhenSuperseded`), and the host has yet to have it back, the request is answered
- * as the one the lease was handed to: by the host's word to it, within a hold of that word
- * (`CacheRuntime.givenBack`).
+ * from the render it kept as the one the lease was handed to is: by the host's word to that request,
+ * within a hold of it (`CacheRuntime.givenBack`), and once this request's own pull is in, which
+ * brings what the host has recorded since.
  */
 export async function answeringWhileBusy(
   runtime: CacheRuntime,
   turnedAway: TurnedAway,
   pulled: Promise<boolean>,
 ): Promise<Busy> {
-  const givenBack = givenBackFor(runtime, turnedAway);
-  if (givenBack !== undefined) {
-    const render = await identified(runtime, givenBack.publishing, givenBack.generationId);
+  const named = givenBackFor(runtime, turnedAway);
+  if (named !== undefined) {
+    const { kept } = turnedAway;
+    const render =
+      kept !== undefined && (await settledWithin(pulled, false))
+        ? await identified(runtime, kept, named)
+        : undefined;
     return render === undefined ? { kind: 'busy' } : { kind: 'busy', publishing: render };
   }
   const { reason, entryId, holder, holderUntil } = turnedAway;
@@ -251,7 +272,8 @@ export async function answeringWhileBusy(
  *
  * The lease, given back unused, is kept as given back with the generation the host named
  * (`CacheRuntime.givenBack`): until the host has it back, it turns a request of the entry away for
- * it, and that request is answered as this one is (`answeringWhileBusy`).
+ * it, and that request is answered as this one is (`answeringWhileBusy`). The render, let go of
+ * (`lettingGo`), answers no request at once any more: only as here, or as there.
  */
 export async function answeringWhenSuperseded(
   runtime: CacheRuntime,
@@ -265,7 +287,7 @@ export async function answeringWhenSuperseded(
   if (kept === undefined || current === undefined || current === null) {
     return undefined;
   }
-  runtime.givenBack.set(attemptId, { publishing: kept, generationId: current.generationId });
+  runtime.givenBack.set(attemptId, current.generationId);
   return identified(runtime, kept, current.generationId);
 }
 

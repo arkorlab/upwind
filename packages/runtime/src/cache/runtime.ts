@@ -85,16 +85,6 @@ export interface Publishing {
   readonly published: Promise<{ readonly kind: string; readonly generationId?: string }>;
 }
 
-/**
- * A lease of an entry this isolate gave back unused: handed out while a render of the isolate's own
- * was publishing the entry, by a host that named a later generation of it current (`supersededBy`).
- * That render, and the generation the host named.
- */
-export interface GivenBack {
-  readonly publishing: Publishing;
-  readonly generationId: string;
-}
-
 export interface CacheRuntime {
   readonly scopeId: string;
   readonly host: CacheHost;
@@ -140,12 +130,21 @@ export interface CacheRuntime {
    */
   readonly publishing: TtlCache<string, Publishing>;
   /**
-   * The leases this isolate gave back unused, by attempt (`GivenBack`): until the host has one back,
-   * it turns a request of the entry away for it, and the isolate answers that request as it answered
-   * the one the lease was handed to (`cache/publishing.ts`). Each for a hold, as every word of the
-   * host's the isolate judges by.
+   * The renders of `publishing` whose publish has let go of its lease: a lease of the entry has been
+   * handed to a request of this isolate since, which the host does only once that lease is free. Its
+   * commit is refused, or it has landed and its answer is on its way: such a render answers no
+   * request at once any more, only once its publish says which generation it became
+   * (`cache/publishing.ts`). Held weakly, as the render is held by `publishing` alone.
    */
-  readonly givenBack: TtlCache<string, GivenBack>;
+  readonly letGo: WeakSet<Publishing>;
+  /**
+   * The leases this isolate gave back unused because the host named a later generation of the entry
+   * current, by attempt: the generation it named. Until the host has one back, it turns a request of
+   * the entry away for it, and the isolate answers that request as it answered the one the lease was
+   * handed to (`cache/publishing.ts`). Each for a hold, as every word of the host's the isolate
+   * judges by; no render is held here.
+   */
+  readonly givenBack: TtlCache<string, string>;
   /**
    * Artifacts of current generations, by id, read for an output other than the record's own. An
    * artifact is named by its content and never rewritten, so what an id read once says it says for
@@ -307,6 +306,7 @@ export function createCacheRuntime(options: CacheRuntimeOptions): CacheRuntime |
       maxBytes: PUBLISHING_BYTES,
       sizeOf: publishingBytes,
     }),
+    letGo: new WeakSet(),
     givenBack: new TtlCache(holdMs, PUBLISHING_ENTRIES, options.now),
     artifactMemo: new TtlCache(Infinity, ARTIFACT_MEMO_ENTRIES, options.now, {
       maxBytes: ARTIFACT_MEMO_BYTES,

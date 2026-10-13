@@ -43,6 +43,7 @@ import {
   answeringUntilSettled,
   answeringWhenSuperseded,
   answeringWhileBusy,
+  lettingGo,
   publishingKeyOf,
 } from './publishing.ts';
 import type { CacheRuntime } from './runtime.ts';
@@ -577,6 +578,7 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
       {
         reason: target.reason,
         entryId,
+        kept,
         holder: lease.attemptId,
         holderUntil: lease.leaseExpiresAt,
       },
@@ -584,7 +586,9 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
     );
   }
   // A render this isolate still keeps of the entry let go of its lease, as this one could not have
-  // been taken otherwise: its commit is refused, or it has landed and its answer is on its way.
+  // been taken otherwise: its commit is refused, or it has landed and its answer is on its way. It
+  // answers no request at once from now on.
+  lettingGo(runtime, entryId ?? lease.entryId);
   if (supersededBy(target, lease.current, nowMs()) && answerable(lease.current)) {
     // Given back behind the answer, which waits for nothing of it: nobody holds the lease now.
     input.waitUntil(abandon(input, lease, 'skipped'));
