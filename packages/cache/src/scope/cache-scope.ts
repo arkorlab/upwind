@@ -114,8 +114,8 @@ import type { Apply, TxInput } from './tx.ts';
  * owes to KV, and whatever the host's history owes for it (`ScopeHistory.publish`), is settled
  * afterwards — awaited by the caller as far as the delivery and tag records, which are what is
  * served and judged, so those are written before a change is answered, while what the history owes
- * follows the answer — and by the alarm when that fails, or when a rewrite is larger than one
- * run's slice.
+ * follows the answer, and a change that owes no such record is answered as it commits — and by the
+ * alarm when that fails, or when a rewrite is larger than one run's slice.
  *
  * It holds no tables until it is seeded, and none once retention has erased it. Reached for a scope
  * it holds no tables of, it answers as for one never seeded, and writes nothing: a straggler's call
@@ -130,8 +130,17 @@ const NOT_SEEDED = refuse('not_found', 'the scope has not been seeded');
 const NOT_RECORDED = { kind: 'not-recorded' } as const;
 /** What a change to an object that holds no tables is answered with (`#mutate`). */
 const REFUSED = { empty: NOT_SEEDED } as const;
+/**
+ * The same, for a change of an operation that never leaves a delivery or tag record of its own,
+ * which is answered as it commits rather than after the settle runs (`#mutate`).
+ */
+const AT_ONCE = { ...REFUSED, atOnce: true } as const;
 const UNKNOWN = { empty: { kind: 'unknown' } } as const;
-const RETIRED = { seed: { kind: 'conflict', reason: 'the scope is retired' } } as const;
+/**
+ * What a seed is answered with where retention erased a retired scope here. A seed leaves no record
+ * of its own either, and is answered as it commits (`AT_ONCE`).
+ */
+const SEED = { seed: { kind: 'conflict', reason: 'the scope is retired' }, atOnce: true } as const;
 
 export class CacheScope extends DurableObject<CacheBindings> {
   /** The history a host keeps of each scope, made as each object is (`ScopeHistory`): none here. */
@@ -196,11 +205,30 @@ export class CacheScope extends DurableObject<CacheBindings> {
    * written, settled or armed. A seed makes the tables instead — unless retention erased a retired
    * scope here, whose marker in KV outlives it: a retired scope is never seeded again, and the seed
    * is answered with `seed`. Both are decided under the lock, where erasure happens.
+   *
+   * A change that committed is answered once the run that follows its commit has written the
+   * delivery and tag records it left, and runs go one after another (`#settle`): it waits for the
+   * runs asked for before its own as well, an invalidation's rewrite say. A change of an operation
+   * that never leaves such a record — a lease, a heartbeat, an upload's record, a failed attempt's
+   * end, a seed — is answered as it commits instead (`AT_ONCE`, `SEED`). Its answer is read from
+   * its own transaction, and nothing its caller does next is held to what a run writes: KV is read
+   * where the caller runs, behind by its cache and its propagation whatever has been written, and
+   * a render is held to the tags by its own pull of the delta, which the authority answers from
+   * its tables and the render's commit is judged against (`observedTagRevision`). Its run is asked
+   * for all the same, behind the others: it publishes what the history owes for the change and
+   * takes up what the runs before it left, and it fails as a run does after its answer — logged,
+   * with its retry armed as it ends, or owed to the alarm armed below.
+   *
+   * An operation that may leave records waits for its run though a call of it left none, a refusal
+   * say: a call made again for a change already made — a commit that published, a batch seeded, a
+   * resource change applied, a scope retired — is answered for what that change left, which the
+   * runs before its own may still be writing. A commit made again carries the record of its
+   * generation only once that is written (`withWrittenRecord`).
    */
   async #mutate<T>(
     now: number,
     plan: (input: TxInput) => Apply<T> | Promise<Apply<T>>,
-    unseeded: { readonly empty: T } | { readonly seed: T },
+    answers: { readonly atOnce?: boolean } & ({ readonly empty: T } | { readonly seed: T }),
     wanted?: WantedRecords,
   ): Promise<T> {
     const result = await this.#mutations.run(async () => {
@@ -218,15 +246,15 @@ export class CacheScope extends DurableObject<CacheBindings> {
         },
         now,
         plan,
-        unseeded,
+        answers,
       );
       this.#tables = committed.tables;
       return committed;
     });
-    if (result.own === undefined) {
-      return result.value;
-    }
-    await this.#settle(result.own === null ? null : { ...result.own, wanted }).answered;
+    if (result.own === undefined) return result.value;
+    const run = this.#settle(result.own === null ? null : { ...result.own, wanted });
+    if (answers.atOnce === true) run.answerNow();
+    await run.answered;
     // Armed before the answer, not after it: what the run still does once the change is answered —
     // what the host's history owes for it — is owed to this alarm, or to an earlier one, should the
     // object be reset before the run is over. Erasure may have come between: what is gone is not
@@ -240,9 +268,10 @@ export class CacheScope extends DurableObject<CacheBindings> {
   /**
    * Settles run one after another; a caller waits for the run that follows its commit — for the
    * whole of it (`done`), or only until what its change owes is done (`answered`, see
-   * `settlePending`). A run that fails before then fails the caller's wait as well. `from` is what
-   * a change left behind as it committed (`ownRecordsOf`), whose records its run writes, or `null`
-   * when it committed nothing; the alarm's runs leave it out and write the backlog.
+   * `settlePending`), or not at all where it owes nothing before its answer (`answerNow`). A run
+   * that fails before then fails the caller's wait as well. `from` is what a change left behind as
+   * it committed (`ownRecordsOf`), whose records its run writes, or `null` when it committed
+   * nothing; the alarm's runs leave it out and write the backlog.
    */
   #settle(from?: OwnRecords | null, ended?: (outcome: SettleOutcome) => void): SettleRun {
     this.#waiting += 1;
@@ -299,9 +328,9 @@ export class CacheScope extends DurableObject<CacheBindings> {
    * the change whose settle owed the work, and the one party that can try again — or, for the
    * alarm's own settle, to the runtime, which retries a failed alarm. A change answered before its
    * run was over — any whose delivery and tag records went out, since what the host's history owes
-   * follows the answer — has gone by then: the failure is logged, and what is owed waits for the
-   * next change's run to arm the alarm, or for the one armed before that change was answered
-   * (`#mutate`).
+   * follows the answer, and any that owed no such record (`AT_ONCE`) — has gone by then: the
+   * failure is logged, and what is owed waits for the next change's run to arm the alarm, or for
+   * the one armed before that change was answered (`#mutate`).
    */
   async #afterSettle(outcome: SettleOutcome): Promise<void> {
     const failures = countSettleFailures(this.#sql, this.#log, outcome);
@@ -371,7 +400,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
   // ---- what a deploy calls ---------------------------------------------------------------------
 
   async seedScope(input: SeedScopeInput, now: number): Promise<SeedScopeResult> {
-    const outcome = await this.#mutate(now, (tx) => () => applySeedScope(tx, input), RETIRED);
+    const outcome = await this.#mutate(now, (tx) => () => applySeedScope(tx, input), SEED);
     if (this.#tables && readScope(this.#sql)?.status === 'active') {
       // An upload may never reach setData at all. Seeding must arm its eventual orphan sweep.
       await this.#armAlarm(now + RETENTION_INTERVAL_MS);
@@ -449,7 +478,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
     request: StartAttemptRequest,
     now: number,
   ): Promise<StartAttemptResponse | Refusal> {
-    const result = await this.#mutate(now, (tx) => planStartAttempt(tx, request), REFUSED);
+    const result = await this.#mutate(now, (tx) => planStartAttempt(tx, request), AT_ONCE);
     if (result.kind === 'leased') {
       await this.#armAlarm(result.leaseExpiresAt + LEASE_SWEEP_GRACE_MS);
     }
@@ -461,7 +490,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
     fencingToken: number,
     now: number,
   ): Promise<Refusal | { readonly leaseExpiresAt: number }> {
-    return this.#mutate(now, (tx) => () => applyHeartbeat(tx, attemptId, fencingToken), REFUSED);
+    return this.#mutate(now, (tx) => () => applyHeartbeat(tx, attemptId, fencingToken), AT_ONCE);
   }
 
   recordArtifact(
@@ -469,7 +498,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
     upload: UploadedArtifact & { readonly fencingToken: number },
     now: number,
   ): Promise<Refusal | { readonly ok: true }> {
-    return this.#mutate(now, (tx) => () => applyRecordArtifact(tx, attemptId, upload), REFUSED);
+    return this.#mutate(now, (tx) => () => applyRecordArtifact(tx, attemptId, upload), AT_ONCE);
   }
 
   /** Publish an attempt's generation, answered with the record its settle wrote (`withWrittenRecord`). */
@@ -486,7 +515,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
   }
 
   fail(attemptId: string, request: FailRequest, now: number): Promise<FailResponse | Refusal> {
-    return this.#mutate(now, (tx) => () => applyFail(tx, attemptId, request), REFUSED);
+    return this.#mutate(now, (tx) => () => applyFail(tx, attemptId, request), AT_ONCE);
   }
 
   // ---- data cache and invalidation ------------------------------------------------------------

@@ -370,8 +370,8 @@ async function projectPage(
  * as it stands now. Past it, the records are read off the revision, and one a later change has
  * touched is that change's to rewrite: this change is answered after its first slice, which gives
  * way to the later change's run, waiting behind it, after the chunk in hand. Another change's
- * records are its own run's, and older ones the alarm's, so a lease, which leaves none, is answered
- * at once.
+ * records are its own run's, and older ones the alarm's; a lease leaves none, and is answered
+ * without waiting for any run (`SettleRun.answerNow`).
  */
 async function projectOwn(
   deps: SettleDeps,
@@ -524,12 +524,18 @@ export function countSettleFailures(sql: SqlStorage, log: Logger, outcome: Settl
 export interface SettleRun {
   readonly answered: Promise<void>;
   readonly done: Promise<void>;
+  /**
+   * Let its change be answered now, before the runs ahead of this one are over: for a change that
+   * leaves the run nothing to write before its answer, a lease say (`CacheScope#mutate`).
+   */
+  readonly answerNow: () => void;
 }
 
 /**
  * Start a run once the one before it is over. Its change waits for `answered`, which comes early
- * when the run says so and otherwise with the end of the run — or with its failure, so a run that
- * fails before its change has an answer fails the change as well.
+ * when the run says so, or at once when the change does (`answerNow`), and otherwise with the end
+ * of the run — or with its failure, so a run that fails before its change has an answer fails the
+ * change as well.
  */
 export function chainSettle(
   previous: Promise<void>,
@@ -542,6 +548,10 @@ export function chainSettle(
     // failure — and one nobody asked for must not go unhandled.
   });
   const said = { early: false };
+  const answerNow = (): void => {
+    said.early = true;
+    answer.resolve(undefined);
+  };
   const done = (async (): Promise<void> => {
     try {
       await previous;
@@ -552,10 +562,7 @@ export function chainSettle(
       // memory. The run that follows a failure is the one that would repair it.
       log.warn('previous settle interrupted', { detail: detailOf(error) });
     }
-    await run(() => {
-      said.early = true;
-      answer.resolve(undefined);
-    });
+    await run(answerNow);
   })();
   const over = async (): Promise<void> => {
     await done;
@@ -569,7 +576,7 @@ export function chainSettle(
       answer.reject(error);
     }
   });
-  return { answered: answer.promise, done };
+  return { answered: answer.promise, done, answerNow };
 }
 
 /**
@@ -591,7 +598,8 @@ export function chainSettle(
  * `failed`), and what a reset of the object cuts short — a deploy, say — to the next change's run
  * or to the alarm the change armed before its answer. A change that follows before the run is over
  * waits for it as for any run before its own, unless the history leaves its share to that
- * change's run (`HistoryDeps.othersWaiting`).
+ * change's run (`HistoryDeps.othersWaiting`) — or unless it leaves no record of its own, a lease
+ * say, and waits for no run at all (`SettleRun.answerNow`).
  */
 export async function settlePending(
   deps: SettleDeps,
