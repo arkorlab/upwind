@@ -211,10 +211,10 @@ export class TagState {
 
   /**
    * Whether a view brought up to the revision `held` held every invalidation of the tag known here
-   * that reaches an entry made at `timestamp`: one this isolate was told, known at a revision no
-   * later than `held` — none known at no revision reaching it — and one of its own the host answered
-   * at such a revision. One of its own out, or known at no revision for good, that reaches it is one
-   * no view is known to have held.
+   * that reaches an entry made at `timestamp`: every one this isolate was told, and every one of its
+   * own the host answered, known at a revision no later than `held` — one known past it is one the
+   * view missed, whatever its time — and none known at no revision reaching it. One of its own out,
+   * or known at no revision for good, that reaches it is one no view is known to have held.
    */
   #heldBy(value: string, timestamp: number, held: number): boolean {
     const told = this.#tags.get(value);
@@ -223,12 +223,13 @@ export class TagState {
       mark !== undefined && mark.staleAt >= timestamp;
     const within = (revision: number | undefined): boolean =>
       revision === undefined || revision <= held;
+    // One known at a revision past `held` is one the view missed, whatever its time says.
     return (
       !reaches(applied?.unanswered?.mark) &&
       !reaches(applied?.unrevised) &&
-      (!reaches(applied?.answered) || within(applied?.answeredRevision)) &&
-      (!reaches(told?.mark) ||
-        ((told?.unknownAt ?? timestamp - 1) < timestamp && within(told?.knownRevision)))
+      within(applied?.answeredRevision) &&
+      within(told?.knownRevision) &&
+      (told?.unknownAt ?? timestamp - 1) < timestamp
     );
   }
 
@@ -409,7 +410,8 @@ export class TagState {
    * Where the entry was made against a view brought up to a revision of the scope (`held`), an
    * invalidation the mark says was recorded at or before it was in that view, whatever its time
    * says: the clock that stamped it may read later than the moment the view was asked for, and the
-   * pull that brought the view up brought it all the same.
+   * pull that brought the view up brought it all the same. One known only at a revision past it is
+   * one the view missed, whatever its time says, for the same reason.
    */
   validityOf(tags: readonly string[], timestamp: number, now: number, held?: number): Validity {
     let validity: Validity = 'fresh';
@@ -418,12 +420,18 @@ export class TagState {
         continue;
       }
       const applied = this.#applied.get(tag);
+      const known = this.#tags.get(tag);
       // What is out, or known at no revision for good, is asked of apart, and the worse answer
       // stands: an answer of the host's, whatever its clock read, is not taken for newer than an
       // invalidation of this isolate's it holds no revision of.
-      const told = strongest([this.#tags.get(tag)?.mark, applied?.answered]);
+      const told = strongest([known?.mark, applied?.answered]);
       const own = strongest([applied?.unanswered?.mark, applied?.unrevised]);
-      const byTold = markValidity(told, timestamp, now);
+      // Known at a revision past the one the entry's view was brought up to, an invalidation is one
+      // that view missed, whatever its time says of the moment the entry was made.
+      const missed =
+        held !== undefined &&
+        Math.max(known?.knownRevision ?? held, applied?.answeredRevision ?? held) > held;
+      const byTold = markValidity(told, missed ? -Infinity : timestamp, now);
       const byOwn = markValidity(own, timestamp, now);
       if (byTold === 'expired' || byOwn === 'expired') {
         return 'expired';

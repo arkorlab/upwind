@@ -304,23 +304,34 @@ export function askingFor<T>(
     return asked;
   }
   const now = nowMs();
+  forgetLongAsked(runtime, now);
   const pending = runtime.asking.get(entryId) ?? new Map<Promise<unknown>, number>();
-  // One asked a hold ago is one whose request ended under it, which never answers: forgotten. Each
-  // ask holds its entry for a hold again.
-  for (const [ask, askedAt] of pending) {
-    if (now - askedAt >= runtime.holdMs) {
-      pending.delete(ask);
-    }
-  }
   runtime.asking.set(entryId, pending);
   const answered: Promise<T> = settledThen(asked, () => {
     pending.delete(answered);
-    if (pending.size === 0 && runtime.asking.peek(entryId)?.value === pending) {
+    if (pending.size === 0 && runtime.asking.get(entryId) === pending) {
       runtime.asking.delete(entryId);
     }
   });
   pending.set(answered, now);
   return answered;
+}
+
+/**
+ * Forget the leases asked a hold ago or more, of every entry (`CacheRuntime.asking`): the requests
+ * that asked for them have surely ended under them, and they never answer.
+ */
+function forgetLongAsked(runtime: CacheRuntime, now: number): void {
+  for (const [entryId, pending] of runtime.asking) {
+    for (const [ask, askedAt] of pending) {
+      if (now - askedAt >= runtime.holdMs) {
+        pending.delete(ask);
+      }
+    }
+    if (pending.size === 0) {
+      runtime.asking.delete(entryId);
+    }
+  }
 }
 
 /** What `promise` settles to, once `then` has run on its settling. */
@@ -353,6 +364,7 @@ export async function givingBack(
   { entryId, kept }: Kept,
   lease: {
     readonly attemptId: string;
+    readonly leaseExpiresAt: number;
     readonly current?: { readonly generationId: string } | null | undefined;
   },
   returned: Promise<boolean>,
@@ -360,7 +372,13 @@ export async function givingBack(
   const { attemptId, current } = lease;
   const keeping = kept !== undefined && current !== undefined && current !== null;
   if (keeping) {
-    runtime.givenBack.set(attemptId, { publishing: kept, generationId: current.generationId });
+    // For as long as the host may name the lease a request is turned away for: until the lease
+    // lapses, should its return go unanswered — and a hold at the least.
+    runtime.givenBack.set(
+      attemptId,
+      { publishing: kept, generationId: current.generationId },
+      Math.max(runtime.holdMs, lease.leaseExpiresAt - nowMs()),
+    );
   }
   // Waited for whatever is kept: the lease's return is work of this request's that its end must not
   // cut off.
