@@ -122,8 +122,10 @@ export function foregroundDocument(
     runtime: edge.runtime,
     host: edge.host,
     app: edge.app,
+    cspReportingPath: edge.cspReportingPath,
     function: input.function ?? PRIMARY_FUNCTION,
     reason: 'regenerate',
+    privateDelivery: edge.privateDelivery,
     middleware: input.middleware,
     headers: regenerationHeaders(edge, 'foreground', input.target),
     metrics: {

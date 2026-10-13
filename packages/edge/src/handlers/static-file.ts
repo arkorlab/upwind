@@ -3,7 +3,7 @@ import {
   staticFileStatus,
   type StaticFileEntry,
 } from '@stayingupwind/core/manifest';
-import { mergeMiddlewareResponseHeaders, type MiddlewareResult } from '@stayingupwind/core/paas';
+import type { MiddlewareResult } from '@stayingupwind/core/paas';
 import {
   EDGE_DEBUG_HEADER,
   EDGE_VALIDATED_HEADER,
@@ -21,7 +21,11 @@ import { validatorMatches } from '../strategies/asset-upstream.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { setConfigured } from './configured-headers.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
-import { removeSharedCacheOverrides, serviceUnavailableResponse } from './responses.ts';
+import {
+  mergeScopedMiddlewareHeaders,
+  removeSharedCacheOverrides,
+  serviceUnavailableResponse,
+} from './responses.ts';
 
 /**
  * A file the build shipped, served from storage without asking anyone.
@@ -185,7 +189,7 @@ function fileHeaders(input: StaticFileInput, source: string): Headers {
     }
   }
   if (input.middleware !== undefined) {
-    mergeMiddlewareResponseHeaders(headers, input.middleware.responseHeaders);
+    mergeScopedMiddlewareHeaders(headers, input.middleware.responseHeaders, edge.forwarding);
   }
   // A client router asked for React Server Components and is answered with the file — a Pages
   // Router page's HTML, which it then loads as a document. Next.js marks such an answer as one that

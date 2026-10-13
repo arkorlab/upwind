@@ -150,6 +150,7 @@ function passthroughFor(
     function: input.state.function,
     reason,
     validated: input.state.validated,
+    privateDelivery: input.state.privateDelivery,
     ...(middleware?.kind === 'continue' && { middleware }),
     // A probe proves the Worker it names answers, and nothing of what the middleware would make of
     // the path — as validation proves a shell and not the middleware's redirect or cookie

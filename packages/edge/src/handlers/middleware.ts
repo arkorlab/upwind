@@ -1,6 +1,5 @@
 import { headerRulesFor, type ProjectManifest } from '@stayingupwind/core/manifest';
 import {
-  mergeMiddlewareResponseHeaders,
   MIDDLEWARE_ONLY_HEADER,
   middlewareApplies,
   type MiddlewareResult,
@@ -19,7 +18,12 @@ import type { DispatchApp } from '../edge-runtime.ts';
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
-import { badGatewayResponse, privateCacheControl } from './responses.ts';
+import {
+  badGatewayResponse,
+  keptByNobody,
+  mergeScopedMiddlewareHeaders,
+  privateCacheControl,
+} from './responses.ts';
 
 /**
  * Run a hosted application's middleware before a shell is served.
@@ -334,9 +338,14 @@ export async function followExternalRewrite(
     // propagate it would end the request as an uncaught exception.
     return badGatewayResponse('external-rewrite-unavailable');
   }
-  const responseHeaders = new Headers(upstream.headers);
-  mergeMiddlewareResponseHeaders(responseHeaders, rewrite.responseHeaders);
+  // As a Worker's answer is taken (`handlePassthrough`): cookies scoped to the host the client
+  // used, and nothing of the edge's protocol, nor what a proxy may not replay, carried over.
+  const responseHeaders = rewritePassthroughResponseHeaders(upstream.headers, edge.forwarding);
+  mergeScopedMiddlewareHeaders(responseHeaders, rewrite.responseHeaders, edge.forwarding);
   privateCacheControl(responseHeaders);
+  if (edge.privateDelivery) {
+    keptByNobody(responseHeaders);
+  }
   responseHeaders.set(EDGE_DEBUG_HEADER, 'passthrough;reason=external-rewrite');
   applyCspReporting(responseHeaders, edge.cspReportingPath);
   return new Response(upstream.body, {
@@ -350,6 +359,9 @@ export async function followExternalRewrite(
 export function middlewareResponse(edge: EdgeContext, response: Response): Response {
   const headers = rewritePassthroughResponseHeaders(response.headers, edge.forwarding);
   privateCacheControl(headers);
+  if (edge.privateDelivery) {
+    keptByNobody(headers);
+  }
   headers.set(EDGE_DEBUG_HEADER, 'passthrough;reason=middleware');
   applyCspReporting(headers, edge.cspReportingPath);
   return new Response(response.body, {

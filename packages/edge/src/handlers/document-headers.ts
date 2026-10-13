@@ -1,6 +1,6 @@
 import type { ShellEncoding } from '@stayingupwind/core/artifact';
 import type { ConfiguredHeaders, RouteEntry } from '@stayingupwind/core/manifest';
-import { mergeMiddlewareResponseHeaders, type MiddlewareResult } from '@stayingupwind/core/paas';
+import type { MiddlewareResult } from '@stayingupwind/core/paas';
 import {
   EDGE_DEBUG_HEADER,
   EDGE_VALIDATED_HEADER,
@@ -14,7 +14,7 @@ import { serverTiming, type ServerTimingEntry } from '../observability/server-ti
 import type { EdgeContext } from '../strategies/context.ts';
 import { acceptsNonce, applyNonceToHeaders } from './csp-nonce.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
-import { removeSharedCacheOverrides } from './responses.ts';
+import { mergeScopedMiddlewareHeaders, removeSharedCacheOverrides } from './responses.ts';
 
 /** The headers a composed document goes out under: what it is, how it is encoded, who answered. */
 
@@ -346,7 +346,7 @@ export function documentHeaders(header: DocumentHeaderInput): DocumentHeaders {
   // Last, so nothing above can drop them: what the middleware set is part of what the application
   // answers with, whether the edge or its Worker composes the document.
   if (header.middleware !== undefined) {
-    mergeMiddlewareResponseHeaders(headers, header.middleware.responseHeaders);
+    mergeScopedMiddlewareHeaders(headers, header.middleware.responseHeaders, edge.forwarding);
     joinServerTiming(headers, header.middleware.responseHeaders, timing);
   }
   // Every composed document is one visitor's — `documentCacheControl` says `private` whatever else

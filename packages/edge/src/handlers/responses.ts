@@ -1,6 +1,10 @@
+import { mergeMiddlewareResponseHeaders } from '@stayingupwind/core/paas';
 import {
   EDGE_DEBUG_HEADER,
   NO_STORE_CACHE_CONTROL,
+  type PassthroughResponseContext,
+  PLATFORM_HEADER_PREFIX,
+  rewriteSetCookieForPreview,
   SHARED_CACHE_CONTROL_HEADERS,
 } from '@stayingupwind/core/request';
 
@@ -62,11 +66,51 @@ function isBarePrivate(part: string): boolean {
   return part.toLowerCase() === PRIVATE_DIRECTIVE;
 }
 
+const SET_COOKIE_HEADER = 'set-cookie';
+
+/**
+ * Merge what a middleware answered with into a response, its cookies scoped as a Function's are
+ * (`rewritePassthroughResponseHeaders`): on a host under the shared domain, a `Domain` that would
+ * hand a cookie to every other site under it is taken off. And none of the edge's own headers is
+ * a middleware's to set.
+ *
+ * Scoped where they are merged, not where the middleware answered: the splice compares what a
+ * resume writes back with the cookies the middleware handed the render, as the render was given
+ * them (`sentCookies`).
+ */
+export function mergeScopedMiddlewareHeaders(
+  target: Headers,
+  added: Headers,
+  scope: PassthroughResponseContext,
+): void {
+  const scoped = new Headers();
+  for (const [name, value] of added) {
+    if (name.startsWith(PLATFORM_HEADER_PREFIX)) {
+      continue;
+    }
+    scoped.append(
+      name,
+      name === SET_COOKIE_HEADER ? rewriteSetCookieForPreview(value, scope) : value,
+    );
+  }
+  mergeMiddlewareResponseHeaders(target, scoped);
+}
+
 /** Upstream CDN directives must not override the edge's admission or privacy decision. */
 export function removeSharedCacheOverrides(headers: Headers): void {
   for (const name of SHARED_CACHE_CONTROL_HEADERS) {
     headers.delete(name);
   }
+}
+
+/**
+ * Keep a response from everybody, the browser included: what a project whose delivery is private
+ * (`privateDelivery`) answers with, however the application said it may be kept. A browser could
+ * otherwise hand it back without the host being asked — to a visitor it no longer lets through.
+ */
+export function keptByNobody(headers: Headers): void {
+  removeSharedCacheOverrides(headers);
+  headers.set(CACHE_CONTROL_HEADER, NO_STORE_CACHE_CONTROL);
 }
 
 /**

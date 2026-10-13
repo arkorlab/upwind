@@ -5,7 +5,6 @@ import {
   MIDDLEWARE_DONE_HEADER,
   MIDDLEWARE_SET_COOKIE_HEADER,
   type MiddlewareResult,
-  mergeMiddlewareResponseHeaders,
   ORIGINAL_URL_HEADER,
 } from '@stayingupwind/core/paas';
 import {
@@ -25,7 +24,12 @@ import { logWarn } from '../observability/logger.ts';
 import { stripEdgeHeaders } from '../request-context.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
-import { badGatewayResponse, privateCacheControl } from './responses.ts';
+import {
+  badGatewayResponse,
+  keptByNobody,
+  mergeScopedMiddlewareHeaders,
+  privateCacheControl,
+} from './responses.ts';
 import {
   type Dispatched,
   dispatchedOf,
@@ -146,6 +150,12 @@ export interface PassthroughInput {
   readonly reason: string;
   /** The request carried a validation header the edge accepted, so the candidate answered it. */
   readonly validated?: boolean | undefined;
+  /**
+   * Nothing the project serves is to be kept, by a browser or a cache between (`privateDelivery`):
+   * the answer is `no-store`, whatever the Worker said, as every answer the edge composes for such a
+   * project is.
+   */
+  readonly privateDelivery?: boolean | undefined;
   /**
    * What the application's middleware decided, when the edge ran it and then found nothing to
    * serve itself: the request goes on as the middleware left it, and the runtime is told so.
@@ -375,9 +385,12 @@ export async function handlePassthrough(input: PassthroughInput): Promise<Respon
     // After the Worker's own, which may repeat the middleware's cookies as Next.js writes them back
     // (`splice/cookies.ts`): a browser keeps the last of a cookie set twice, and the middleware's
     // is the one it meant — a `Max-Age=0` that the copy before it lost, say.
-    mergeMiddlewareResponseHeaders(headers, input.middleware.responseHeaders);
+    mergeScopedMiddlewareHeaders(headers, input.middleware.responseHeaders, input.forwarding);
   }
   privateCacheControl(headers);
+  if (input.privateDelivery === true) {
+    keptByNobody(headers);
+  }
   headers.set(EDGE_DEBUG_HEADER, passthroughDebug(input, originResponse));
   // Ordinary passthroughs do not name a manifest; foreground regeneration names its selected
   // deployment above. Whether the validation header was accepted is only the edge's to say. Taken

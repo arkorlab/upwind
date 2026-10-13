@@ -11,7 +11,6 @@ import {
   upstreamMaxAge,
 } from '@stayingupwind/core/images';
 import { headerRulesFor, type ProjectManifest } from '@stayingupwind/core/manifest';
-import { mergeMiddlewareResponseHeaders } from '@stayingupwind/core/paas';
 import { EDGE_DEBUG_HEADER, NO_STORE_CACHE_CONTROL } from '@stayingupwind/core/request';
 import {
   type BoundedBody,
@@ -37,7 +36,7 @@ import {
   type SourceError,
   sourceLimit,
 } from './image-source.ts';
-import { removeSharedCacheOverrides } from './responses.ts';
+import { mergeScopedMiddlewareHeaders, removeSharedCacheOverrides } from './responses.ts';
 
 /**
  * `/_next/image` for a hosted application: the source resized and re-encoded by the Images
@@ -365,7 +364,7 @@ function clientHeaders(input: ImageInput, headers: Headers, src: string): Header
   // The middleware's headers, then the caching they must not widen: a result the middleware
   // admitted for one visitor stays private whatever it said, as a gated file does.
   if (input.middleware !== undefined) {
-    mergeMiddlewareResponseHeaders(out, input.middleware.responseHeaders);
+    mergeScopedMiddlewareHeaders(out, input.middleware.responseHeaders, input.edge.forwarding);
     out.set(CACHE_CONTROL_HEADER, GATED_CACHE_CONTROL);
   }
   if (input.edge.validated) {

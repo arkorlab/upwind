@@ -1,6 +1,6 @@
 import type { ArtifactLocator } from '@stayingupwind/core/artifact';
 import type { ConfiguredHeaders, RouteSegment } from '@stayingupwind/core/manifest';
-import { mergeMiddlewareResponseHeaders, type MiddlewareResult } from '@stayingupwind/core/paas';
+import type { MiddlewareResult } from '@stayingupwind/core/paas';
 import {
   EDGE_DEBUG_HEADER,
   EDGE_VALIDATED_HEADER,
@@ -20,7 +20,11 @@ import type { EdgeContext } from '../strategies/context.ts';
 import { loadShell } from '../strategies/shell-loader.ts';
 import { setConfigured } from './configured-headers.ts';
 import { ACCEPT_ENCODING_HEADER, IDENTITY_ENCODING, varyOn } from './document-headers.ts';
-import { removeSharedCacheOverrides, serviceUnavailableResponse } from './responses.ts';
+import {
+  mergeScopedMiddlewareHeaders,
+  removeSharedCacheOverrides,
+  serviceUnavailableResponse,
+} from './responses.ts';
 
 /**
  * A prefetch of part of a page, answered from what the build wrote for that part — or a router's
@@ -246,7 +250,7 @@ function segmentHeaders(input: SegmentInput, rendering: Rendering, source: strin
   const headers = new Headers();
   applicationHeaders(input, headers);
   if (input.middleware !== undefined) {
-    mergeMiddlewareResponseHeaders(headers, input.middleware.responseHeaders);
+    mergeScopedMiddlewareHeaders(headers, input.middleware.responseHeaders, edge.forwarding);
   }
   if (input.kind !== 'data' || !headers.has(CONTENT_TYPE)) {
     headers.set(CONTENT_TYPE, input.segment.artifact.contentType);

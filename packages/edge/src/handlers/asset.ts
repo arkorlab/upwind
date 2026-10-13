@@ -1,5 +1,4 @@
 import type { AssetRejection } from '@stayingupwind/core/assets';
-import { NO_STORE_CACHE_CONTROL } from '@stayingupwind/core/request';
 import type {
   AssetDeliveryStrategy,
   AssetHandleResult,
@@ -8,7 +7,7 @@ import type {
 
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeContext } from '../strategies/context.ts';
-import { badGatewayResponse, removeSharedCacheOverrides } from './responses.ts';
+import { badGatewayResponse, keptByNobody } from './responses.ts';
 
 export interface AssetInput {
   readonly request: Request;
@@ -42,10 +41,9 @@ function assetOutcomeKind(admitted: boolean, kept: AssetKeepOutcome | undefined)
  * being asked — to a visitor it no longer lets through, or to one it never did. A copy with
  * headers of its own, so the entry the edge keeps behind it is the asset's as the strategy made it.
  */
-function keptByNobody(response: Response): Response {
+function privateCopy(response: Response): Response {
   const headers = new Headers(response.headers);
-  removeSharedCacheOverrides(headers);
-  headers.set('cache-control', NO_STORE_CACHE_CONTROL);
+  keptByNobody(headers);
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
@@ -116,7 +114,7 @@ export async function handleAsset(input: AssetInput): Promise<AssetOutcome> {
     );
   }
   return {
-    response: input.edge.privateDelivery ? keptByNobody(response) : response,
+    response: input.edge.privateDelivery ? privateCopy(response) : response,
     admitted: result.admitted,
     rejection: result.rejection,
   };
