@@ -160,7 +160,9 @@ export function readServedAgain(
  * set off behind itself could adopt a record rendered since, while the prefetch is still being
  * answered, and the navigation after it would then land on a document its parts did not describe.
  * Judged on what is held, the prefetch agrees with the next document, which is served from that
- * same record first and reads behind its own response.
+ * same record first and reads behind its own response. A part answered from a record that asks
+ * for its regeneration is read again only once it is answered, as that document is
+ * (`readServedAgain`).
  */
 export async function generationAsHeld(
   edge: EdgeContext,

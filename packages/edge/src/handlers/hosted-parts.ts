@@ -20,8 +20,8 @@ import {
 } from '@stayingupwind/host/delivery';
 
 import { condemnedIn } from '../cache/condemned.ts';
-import { decideGeneration } from '../cache/decision.ts';
-import { generationAsHeld } from '../cache/generation-hold.ts';
+import { decideGeneration, type GenerationDecision } from '../cache/decision.ts';
+import { generationAsHeld, readServedAgain } from '../cache/generation-hold.ts';
 import type { GenerationLoad } from '../cache/generation-loader.ts';
 import { upgradesMember } from '../cache/member.ts';
 import { shouldAsk, triggerDetached } from '../cache/regenerate.ts';
@@ -64,7 +64,28 @@ type PartGeneration =
     }
   | { readonly kind: 'function' };
 
-/** Read the same held generation as HTML, without another metadata read behind a prefetch. */
+/**
+ * A part answered from a record that asks for its regeneration — stale, or past its expiry, or a
+ * stale build's handed to the Function — has the record read again behind the response a second
+ * on, as a document has (`readServedAgain`). What the regeneration publishes then reaches an
+ * isolate that serves the page's parts and none of its documents, which would otherwise keep the
+ * old record for as long as it is asked for. A fresh record is still judged as held, with nothing
+ * read behind it (`generationAsHeld`). A member's own is read as it was, its absence held.
+ */
+function readPartAgain(input: PartInput, entry: RouteEntry, pack: DecodedGenerationPack): void {
+  const member = entry.pathname.includes('[') && !pack.header.pathname.includes('[');
+  readServedAgain(
+    input.edge,
+    pack,
+    runtimeCacheOf(input.edge.policy),
+    member ? { holdAbsence: true } : {},
+  );
+}
+
+/**
+ * Read the same held generation as HTML, without another metadata read ahead of a prefetch: a
+ * record that asks for its regeneration is read again only behind the response (`readPartAgain`).
+ */
 async function partGeneration(
   input: PartInput,
   { entry, pathname, kind, held }: PartAnswer,
@@ -98,9 +119,24 @@ async function partGeneration(
   if (decision.kind === 'build') {
     return { kind: upgradesMember(settings, entry, pathname) ? 'function' : 'build' };
   }
+  return partFrom(input, entry, decision);
+}
+
+/** What a part is answered from, as the record its page is judged by decides it. */
+function partFrom(
+  input: PartInput,
+  entry: RouteEntry,
+  decision: Exclude<GenerationDecision, { readonly kind: 'build' }>,
+): PartGeneration {
+  if (decision.kind === 'regenerate') {
+    readPartAgain(input, entry, decision.pack);
+    return { kind: 'function' };
+  }
   if (decision.kind !== 'serve') return { kind: 'function' };
   if (decision.pack.header.source === 'build') {
-    return { kind: decision.validity === 'fresh' ? 'build' : 'function' };
+    if (decision.validity === 'fresh') return { kind: 'build' };
+    readPartAgain(input, entry, decision.pack);
+    return { kind: 'function' };
   }
   return { kind: 'runtime', pack: decision.pack, validity: decision.validity };
 }
@@ -263,7 +299,10 @@ async function answerPart(input: PartInput, part: PartAnswer): Promise<Response>
   });
   const storageRef = artifact?.storageRef;
   if (artifact === undefined || storageRef === undefined) return fallback();
-  if (generation.validity === 'stale') refreshPart(input, part, generation);
+  if (generation.validity === 'stale') {
+    refreshPart(input, part, generation);
+    readPartAgain(input, entry, generation.pack);
+  }
   // loadShell retains the existing memory / Cache API race and hash verification. No authority read.
   const strategy: ShellDeliveryStrategy<EdgeContext> = {
     id: 'r2',
