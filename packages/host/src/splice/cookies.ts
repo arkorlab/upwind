@@ -240,10 +240,13 @@ export function unsentCookieNames(
     carried.add(storedAs(setCookie, defaultPath));
     // Written back as the cookie stored where the client keeps it: one Next.js moves to the root
     // is not this one, and does not match it.
-    const placed = `${setCookie}; Path=${storedPathOf(setCookie, defaultPath)}`;
-    const echo = given.has(setCookie.trim()) ? echoOf(placed) : undefined;
+    const stored = storedPathOf(setCookie, defaultPath);
+    const echo = given.has(setCookie.trim()) ? echoOf(`${setCookie}; Path=${stored}`) : undefined;
     if (echo !== undefined) {
-      carried.add(storedAs(echo, defaultPath));
+      // Next.js decodes a path it reads. One the cookie names is read so; the path given it here,
+      // where it names none, is the client's own as stored, which no copy of it is decoded from.
+      const named = pathOf(setCookie)?.startsWith('/') === true;
+      carried.add(storedAs(named ? echo : `${echo}; Path=${stored}`, defaultPath));
     }
   }
   return set
