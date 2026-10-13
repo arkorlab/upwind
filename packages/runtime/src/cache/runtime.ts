@@ -159,11 +159,12 @@ export interface CacheRuntime {
   /**
    * The leases of each entry this isolate's requests have asked the host for and not yet heard back
    * about, by entry: what a lease given back waits on before it is let go of (`givingBack`), since
-   * an answer the host sent before it had that lease back may still be on its way. Each goes as its
-   * answer comes; one whose request ended under it never answers, and goes with its entry's hold,
-   * as entries past the budget's count go.
+   * an answer the host sent before it had that lease back may still be on its way: each, by when it
+   * was asked. Each goes as its answer comes; one whose request ended under it never answers, and
+   * goes a hold after it was asked, or with its entry, a hold after the entry's last ask, as entries
+   * past the budget's count go.
    */
-  readonly asking: TtlCache<string, Set<Promise<unknown>>>;
+  readonly asking: TtlCache<string, Map<Promise<unknown>, number>>;
   /**
    * Artifacts of current generations, by id, read for an output other than the record's own. An
    * artifact is named by its content and never rewritten, so what an id read once says it says for

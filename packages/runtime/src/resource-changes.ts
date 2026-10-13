@@ -61,8 +61,13 @@ export async function reportResourceChange(
   context?.runtime?.tags.applyLocal([DEFAULT_D1_CACHE_TAG], applied);
   // Known at no revision of the scope's once delivered or given up on: the receipt's revision is the
   // service's own, and the scope records the invalidation after it answers.
+  let settledOnce = false;
   const settled = (): void => {
-    context?.runtime?.tags.settleLocal([DEFAULT_D1_CACHE_TAG], applied);
+    // Once for the report, however many ways its delivery ends.
+    if (!settledOnce) {
+      settledOnce = true;
+      context?.runtime?.tags.settleLocal([DEFAULT_D1_CACHE_TAG], applied);
+    }
   };
   let lastError: unknown;
   const deliver = async (): Promise<boolean> => {

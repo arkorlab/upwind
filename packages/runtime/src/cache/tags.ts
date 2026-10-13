@@ -294,7 +294,8 @@ export class TagState {
   applyLocal(values: readonly string[], mark: TagMark): void {
     const unknown = { staleAt: mark.staleAt, hardExpireAt: mark.hardExpireAt };
     // Each tag once: a host answers a tag named twice in one call once.
-    for (const value of new Set(values)) {
+    const distinct = new Set(values);
+    for (const value of distinct) {
       const held = this.#applied.get(value);
       const out = held?.unanswered;
       this.#applied.set(value, {
@@ -341,8 +342,13 @@ export class TagState {
     outcome: InvalidateOutcome,
     now: number,
   ): void {
+    const asked = new Set(values);
     const answered = new Set<string>();
     for (const invalidation of outcome.invalidations) {
+      // Only a tag this call applied: an answer for another takes none of the others' out.
+      if (!asked.has(invalidation.value) || answered.has(invalidation.value)) {
+        continue;
+      }
       answered.add(invalidation.value);
       this.confirmLocal(invalidation.value, {
         revision: invalidation.revision ?? outcome.revision,
@@ -361,7 +367,7 @@ export class TagState {
       });
     }
     this.settleLocal(
-      values.filter((value) => !answered.has(value)),
+      [...asked].filter((value) => !answered.has(value)),
       applied,
     );
   }
@@ -374,7 +380,8 @@ export class TagState {
    */
   settleLocal(values: readonly string[], mark: TagMark): void {
     const unknown = { staleAt: mark.staleAt, hardExpireAt: mark.hardExpireAt };
-    for (const value of new Set(values)) {
+    const distinct = new Set(values);
+    for (const value of distinct) {
       const held = this.#applied.get(value);
       this.#applied.set(value, {
         ...held,
