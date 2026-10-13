@@ -41,7 +41,10 @@ import {
 import {
   answeringAtOnce,
   answeringUntilSettled,
+  answeringWhenSuperseded,
   answeringWhileBusy,
+  givingBack,
+  lettingGo,
   publishingKeyOf,
 } from './publishing.ts';
 import type { CacheRuntime } from './runtime.ts';
@@ -157,8 +160,11 @@ export type RegenerationOutcome =
       /** That render's publish, where there is one: never rejects (`Publishing.published`). */
       readonly published?: Promise<unknown> | undefined;
     }
-  /** The host holds a later generation than the one judged, which may be served (`supersededBy`). */
-  | { readonly kind: 'superseded' }
+  /**
+   * The host holds a later generation than the one judged, which may be served (`supersededBy`);
+   * with the render of it this isolate published, where it is the one (`answeringWhenSuperseded`).
+   */
+  | { readonly kind: 'superseded'; readonly publishing?: CapturedRender | undefined }
   | { readonly kind: 'skipped'; readonly render: CapturedRender | undefined }
   | { readonly kind: 'refused'; readonly reason: string }
   | {
@@ -532,6 +538,9 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   // says nothing it missed: at once within a hold of the view it read against, and past that once
   // the host has said the lease stands and the view has been brought up (`cache/publishing.ts`).
   const entryId = await publishingKeyOf(runtime, target.descriptor);
+  // Read before the lease is asked for: the publish may settle, and let go of it, while the host
+  // answers the lease.
+  const kept = entryId === undefined ? undefined : runtime.publishing.get(entryId);
   const atOnce = answeringAtOnce(runtime, target.reason, entryId);
   if (atOnce !== undefined) {
     return { kind: 'busy', publishing: atOnce.render, published: atOnce.published };
@@ -564,6 +573,12 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
     });
     return { kind: 'refused', reason };
   }
+  // A pull of the tags asked for once the host's answer is in: what it has recorded since its word.
+  const pullAfresh = (): Promise<boolean> => {
+    const pulled = runtime.tags.sync(runtime.host, nowMs(), { force: true });
+    input.waitUntil(pulled);
+    return pulled;
+  };
   if (lease.kind === 'busy') {
     return answeringWhileBusy(
       runtime,
@@ -572,21 +587,35 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
         entryId,
         holder: lease.attemptId,
         holderUntil: lease.leaseExpiresAt,
+        current: lease.current,
       },
-      synced,
+      pullAfresh,
     );
   }
-  // A render this isolate still keeps of the entry is one whose lease has lapsed, as this one could
-  // not have been taken otherwise: its commit is refused, and it answers nothing more.
-  runtime.publishing.delete(entryId ?? lease.entryId);
+  // A render this isolate still keeps of the entry let go of its lease, as this one could not have
+  // been taken otherwise: its commit is refused, or it has landed and its answer is on its way. It
+  // answers no request at once from now on.
+  const key = entryId ?? lease.entryId;
+  lettingGo(runtime, key);
   if (supersededBy(target, lease.current, nowMs()) && answerable(lease.current)) {
-    // Given back behind the answer, which waits for nothing of it: nobody holds the lease now.
-    input.waitUntil(abandon(input, lease, 'skipped'));
+    // The renders the generation the host names may be: the one the isolate keeps of the entry now —
+    // another request of the isolate may have published one since this one asked for the lease, its
+    // commit landed and its answer on the way — and the one it kept when the lease was asked for,
+    // whose publish may have settled meanwhile, or which another stands in the place of.
+    const candidates = [runtime.publishing.get(key), kept];
+    // Given back behind the answer, which waits for nothing of it: nobody holds the lease now. The
+    // generation the host holds may be the one the render became: the render stays until its publish
+    // settles, for any other request of the isolate the host leases the entry to meanwhile, and with
+    // this lease for as long as the host may name it, for one it turns away for this lease.
+    input.waitUntil(givingBack(runtime, candidates, lease, abandon(input, lease, 'skipped')));
     // What stands is what the next request should find: a record of it, or of a later one, that
     // another request of this isolate learned while this one waited for the lease stays held.
     forgetRecordBefore(runtime, lease.entryId, lease.current?.seq ?? Infinity);
-    return { kind: 'superseded' };
+    const ours = await answeringWhenSuperseded(runtime, candidates, lease.current, pullAfresh);
+    return ours === undefined ? { kind: 'superseded' } : { kind: 'superseded', publishing: ours };
   }
+  // It answers nothing more: what the host holds is not a later generation that stands.
+  runtime.publishing.delete(key);
   const began = performance.now();
   const stopHeartbeat = heartbeat(input, lease);
   let observedTagRevision: number;
@@ -631,7 +660,7 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   const published = viewed
     ? answeringUntilSettled(
         runtime,
-        entryId ?? lease.entryId,
+        key,
         {
           render: { ...captured, headers: generationHeadersOf(target, captured) },
           attemptId: lease.attemptId,
