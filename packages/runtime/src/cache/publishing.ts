@@ -102,16 +102,16 @@ export function answeringAtOnce(
   return unmovedSince(runtime, publishing) ? publishing : undefined;
 }
 
-/** What `pull` answered, or `false` once `ms` have gone by first. */
-async function pulledWithin(pull: Promise<boolean>, ms: number): Promise<boolean> {
+/** What `promise` settled to, or `otherwise` once `PUBLISHING_PULL_MS` have gone by first. */
+async function settledWithin<T>(promise: Promise<T>, otherwise: T): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
-      pull,
-      new Promise<boolean>((resolve) => {
+      promise,
+      new Promise<T>((resolve) => {
         timer = setTimeout(() => {
-          resolve(false);
-        }, ms);
+          resolve(otherwise);
+        }, PUBLISHING_PULL_MS);
       }),
     ]);
   } finally {
@@ -169,7 +169,7 @@ export async function answeringWhileBusy(
   ) {
     return { kind: 'busy' };
   }
-  if (!(await pulledWithin(pulled, PUBLISHING_PULL_MS))) {
+  if (!(await settledWithin(pulled, false))) {
     return { kind: 'busy' };
   }
   // Looked up again: a publish that has settled meanwhile is one the host's answer now speaks for,
@@ -179,6 +179,28 @@ export async function answeringWhileBusy(
   return publishing === held && leaseStands && unmovedSince(runtime, publishing)
     ? { kind: 'busy', publishing: publishing.render, published: publishing.published }
     : { kind: 'busy' };
+}
+
+/**
+ * A regeneration the host leased the entry to, and that a generation the host holds supersedes
+ * (`supersededBy`), with the render this isolate kept of the entry when the lease was taken
+ * (`kept`): where that generation is the one the render's own publish committed — the host had
+ * committed it, and let go of its lease, while the commit's answer was still on its way here — the
+ * render answers, as it answers every request after its publish. Its publish is waited for to say so
+ * (`Publishing.published`), for a second at the most (`PUBLISHING_PULL_MS`): an answer in flight
+ * lands within that, and a render whose lease lapsed has its publish refused.
+ */
+export async function answeringWhenSuperseded(
+  kept: Publishing | undefined,
+  current: { readonly generationId: string } | null | undefined,
+): Promise<CapturedRender | undefined> {
+  if (kept === undefined || current === undefined || current === null) {
+    return undefined;
+  }
+  const outcome = await settledWithin(kept.published, undefined);
+  return outcome?.kind === 'published' && outcome.generationId === current.generationId
+    ? kept.render
+    : undefined;
 }
 
 /**

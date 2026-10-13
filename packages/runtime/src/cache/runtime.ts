@@ -79,9 +79,10 @@ export interface Publishing {
   /**
    * The publish itself, settled once the host has answered its commit: what a request answered from
    * the render waits for where the entry had no generation (`holdFirstPublish`), as the request the
-   * render was made for does. Never rejects.
+   * render was made for does, and what says which generation the render became (`generationId`,
+   * where it was published). Never rejects.
    */
-  readonly published: Promise<unknown>;
+  readonly published: Promise<{ readonly kind: string; readonly generationId?: string }>;
 }
 
 export interface CacheRuntime {

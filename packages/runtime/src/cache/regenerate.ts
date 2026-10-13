@@ -41,6 +41,7 @@ import {
 import {
   answeringAtOnce,
   answeringUntilSettled,
+  answeringWhenSuperseded,
   answeringWhileBusy,
   publishingKeyOf,
 } from './publishing.ts';
@@ -157,8 +158,11 @@ export type RegenerationOutcome =
       /** That render's publish, where there is one: never rejects (`Publishing.published`). */
       readonly published?: Promise<unknown> | undefined;
     }
-  /** The host holds a later generation than the one judged, which may be served (`supersededBy`). */
-  | { readonly kind: 'superseded' }
+  /**
+   * The host holds a later generation than the one judged, which may be served (`supersededBy`);
+   * with the render of it this isolate published, where it is the one (`answeringWhenSuperseded`).
+   */
+  | { readonly kind: 'superseded'; readonly publishing?: CapturedRender | undefined }
   | { readonly kind: 'skipped'; readonly render: CapturedRender | undefined }
   | { readonly kind: 'refused'; readonly reason: string }
   | {
@@ -532,6 +536,9 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   // says nothing it missed: at once within a hold of the view it read against, and past that once
   // the host has said the lease stands and the view has been brought up (`cache/publishing.ts`).
   const entryId = await publishingKeyOf(runtime, target.descriptor);
+  // Read before the lease is asked for: the publish may settle, and let go of it, while the host
+  // answers the lease.
+  const kept = entryId === undefined ? undefined : runtime.publishing.get(entryId);
   const atOnce = answeringAtOnce(runtime, target.reason, entryId);
   if (atOnce !== undefined) {
     return { kind: 'busy', publishing: atOnce.render, published: atOnce.published };
@@ -576,8 +583,9 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
       synced,
     );
   }
-  // A render this isolate still keeps of the entry is one whose lease has lapsed, as this one could
-  // not have been taken otherwise: its commit is refused, and it answers nothing more.
+  // A render this isolate still keeps of the entry let go of its lease, as this one could not have
+  // been taken otherwise: its commit is refused, or it has landed and its answer is on its way. It
+  // answers nothing more, unless the generation the host holds is the one it became (below).
   runtime.publishing.delete(entryId ?? lease.entryId);
   if (supersededBy(target, lease.current, nowMs()) && answerable(lease.current)) {
     // Given back behind the answer, which waits for nothing of it: nobody holds the lease now.
@@ -585,7 +593,8 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
     // What stands is what the next request should find: a record of it, or of a later one, that
     // another request of this isolate learned while this one waited for the lease stays held.
     forgetRecordBefore(runtime, lease.entryId, lease.current?.seq ?? Infinity);
-    return { kind: 'superseded' };
+    const ours = await answeringWhenSuperseded(kept, lease.current);
+    return ours === undefined ? { kind: 'superseded' } : { kind: 'superseded', publishing: ours };
   }
   const began = performance.now();
   const stopHeartbeat = heartbeat(input, lease);
