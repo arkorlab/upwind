@@ -89,15 +89,19 @@ const MAX_APPLIED_MARKS = 4096;
  * Nothing tells which of them the host recorded last. Taken as one mark, the one stamped latest
  * would hide a deadline another set, and taken by the order of the calls that made them, one the
  * host recorded later than it was asked for would be lost.
+ *
+ * Kept the one made earliest first, each made later sets a later deadline too — else it would say
+ * all of the one before — so of those that reach an entry, the first sets the earliest deadline.
  */
 type Marks = readonly TagMark[];
 
 /**
- * How many marks of a tag known at no revision are kept apart at the most (`withMark`): more than
- * calls stamped in that order with deadlines in that order come to. Past that many, the two made
- * earliest are taken as one that says all of both — the later moment, and the earlier deadline —
- * which holds more back than either did, and never less. Of this Function's calls still out, those
- * taken together are held apart again once no more than that many are out (`without`).
+ * How many marks of a tag known at no revision for good, or of calls counted together, are kept
+ * apart at the most (`withMark`): more than calls stamped in that order with deadlines in that order
+ * come to. Past that many, the two made earliest are taken as one that says all of both — the later
+ * moment, and the earlier deadline — which holds more back than either did, and never less. Nothing
+ * of either is taken out one by one. The marks of the calls still out counted one by one are kept
+ * apart however many they are, each taken out with its call (`without`): no more than the calls.
  */
 const MAX_MARKS = 16;
 
@@ -126,11 +130,11 @@ export interface LocalInvalidation {
 }
 
 /**
- * The calls of this Function's still out that name a tag, each added and taken out where it stands,
- * and the marks they applied (`Marks`), in force here at no revision.
+ * The calls of this Function's still out that name a tag, and the marks they applied (`Marks`), each
+ * as its call made it, in force here at no revision: both added to and taken out of where they stand.
  */
 interface Unanswered {
-  readonly marks: Marks;
+  readonly marks: TagMark[];
   readonly calls: Set<LocalInvalidation>;
 }
 
@@ -284,11 +288,11 @@ export class TagState {
     const told = this.#tags.get(value);
     return strongest([
       told?.mark,
-      ...(told?.unknown ?? []),
+      told?.unknown?.at(-1),
       applied?.answered,
-      ...(applied?.unanswered?.marks ?? []),
-      ...(applied?.overflow?.marks ?? []),
-      ...(applied?.unrevised ?? []),
+      applied?.unanswered?.marks.at(-1),
+      applied?.overflow?.marks.at(-1),
+      applied?.unrevised?.at(-1),
     ]);
   }
 
@@ -340,15 +344,15 @@ export class TagState {
       missed(applied?.answeredRevision) ? -Infinity : timestamp,
       now,
     );
-    const byUnrevised = marksValidity(
-      [
-        ...(known?.unknown ?? []),
-        ...(applied?.unanswered?.marks ?? []),
-        ...(applied?.overflow?.marks ?? []),
-        ...(applied?.unrevised ?? []),
-      ],
-      timestamp,
-      now,
+    const byUnrevised = worst(
+      worst(
+        marksValidity(known?.unknown, timestamp, now),
+        marksValidity(applied?.unanswered?.marks, timestamp, now),
+      ),
+      worst(
+        marksValidity(applied?.overflow?.marks, timestamp, now),
+        marksValidity(applied?.unrevised, timestamp, now),
+      ),
     );
     return worst(worst(byTold, byAnswered), byUnrevised);
   }
@@ -452,13 +456,10 @@ export class TagState {
     };
     for (const value of call.values) {
       const held = this.#applied.get(value);
-      const out = held?.unanswered;
-      const calls = out?.calls ?? new Set<LocalInvalidation>();
-      calls.add(call);
-      this.#applied.set(value, {
-        ...held,
-        unanswered: { marks: withMark(out?.marks, call.mark), calls },
-      });
+      const out = held?.unanswered ?? { marks: [], calls: new Set<LocalInvalidation>() };
+      out.calls.add(call);
+      addMark(out.marks, call.mark, Infinity);
+      this.#applied.set(value, { ...held, unanswered: out });
     }
     this.#out.add(call);
     for (const longest of this.#out) {
@@ -629,9 +630,8 @@ function stronger(a: TagMark, b: TagMark): TagMark {
 
 /**
  * What is out of this Function's own invalidations of a tag once `call` is no longer out: the others,
- * under the marks they applied (`Marks`), each held apart as it was made once no more than
- * `MAX_MARKS` are out. Of more, where `call`'s mark was one of theirs, the marks of the others it
- * said all of come forward in its place; otherwise another says all of it, and they stand as they
+ * under the marks they applied (`Marks`). Where `call`'s mark was one of them, the marks of the others
+ * it said all of come forward in its place; otherwise another says all of it, and they stand as they
  * were. A call not among them — settled already, or out from before the tag was forgotten
  * (`MAX_APPLIED_MARKS`) — takes none of them out.
  */
@@ -642,26 +642,18 @@ function without(out: Unanswered | undefined, call: LocalInvalidation): Unanswer
   if (out.calls.size === 0) {
     return undefined;
   }
-  if (out.calls.size <= MAX_MARKS) {
-    let marks: Marks = [];
-    for (const each of out.calls) {
-      marks = withMark(marks, each.mark);
-    }
-    return { marks, calls: out.calls };
-  }
-  const gone = out.marks.find((each) => sameMark(each, call.mark));
-  if (gone === undefined) {
+  const at = firstReaching(out.marks, call.mark.staleAt);
+  const gone = out.marks[at];
+  if (gone === undefined || !sameMark(gone, call.mark)) {
     return out;
   }
-  let marks = out.marks.filter((each) => each !== gone);
-  // The call made last first: calls stamp their marks in the order they are made, so the first to
-  // come forward says all of the most, and those it says all of are passed over (`withMark`).
-  for (const each of [...out.calls].toReversed()) {
+  out.marks.splice(at, 1);
+  for (const each of out.calls) {
     if (covers(gone, each.mark)) {
-      marks = withMark(marks, each.mark);
+      addMark(out.marks, each.mark, Infinity);
     }
   }
-  return { marks, calls: out.calls };
+  return out;
 }
 
 /** Whether two marks say the same of every entry: the same moment, and the same deadline. */
@@ -713,44 +705,75 @@ function overflowWithout(
 
 /** Whether `a` says all that `b` does of every entry: made no earlier, with a deadline no later. */
 function covers(a: TagMark, b: TagMark): boolean {
-  return a.staleAt >= b.staleAt && (a.hardExpireAt ?? Infinity) <= (b.hardExpireAt ?? Infinity);
+  return a.staleAt >= b.staleAt && deadlineOf(a) <= deadlineOf(b);
+}
+
+/** The moment a mark expires what it reaches, where it sets one; never, where it does not. */
+function deadlineOf(mark: TagMark): number {
+  return mark.hardExpireAt ?? Infinity;
 }
 
 /**
- * `marks` with `mark` in force beside them (`Marks`): none kept that another says all of (`covers`),
- * the one made earliest first. Past `MAX_MARKS`, the two made earliest are taken as one.
+ * Where in `marks` the first of them is that reaches an entry made at `timestamp` (`Marks`): of those
+ * that do, the one with the earliest deadline. Past the last, where none does.
  */
+function firstReaching(marks: Marks, timestamp: number): number {
+  let low = 0;
+  let high = marks.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if ((marks[middle]?.staleAt ?? timestamp) < timestamp) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  return low;
+}
+
+/**
+ * Put `mark` in force beside `marks`, where they stand (`Marks`): none kept that another says all of
+ * (`covers`). Past `most`, the two made earliest are taken as one.
+ */
+function addMark(marks: TagMark[], mark: TagMark, most: number): void {
+  const at = firstReaching(marks, mark.staleAt);
+  const next = marks[at];
+  if (next !== undefined && deadlineOf(next) <= deadlineOf(mark)) {
+    return;
+  }
+  // Those `mark` says all of: the last run of those made before it whose deadlines come no earlier
+  // than its own, and one made at its very moment.
+  let from = at;
+  while (from > 0 && deadlineOf(marks[from - 1] ?? mark) >= deadlineOf(mark)) {
+    from -= 1;
+  }
+  marks.splice(from, (next?.staleAt === mark.staleAt ? at + 1 : at) - from, mark);
+  const [first, second] = marks;
+  if (first !== undefined && second !== undefined && marks.length > most) {
+    marks.splice(0, 2, { staleAt: second.staleAt, hardExpireAt: first.hardExpireAt });
+  }
+}
+
+/** `marks` with `mark` in force beside them (`addMark`), past `MAX_MARKS` the earliest taken together. */
 function withMark(marks: Marks | undefined, mark: TagMark): Marks {
-  const held = marks ?? [];
-  if (held.some((each) => covers(each, mark))) {
-    return held;
-  }
-  const kept = [
-    ...held.filter((each) => !covers(mark, each)),
-    { staleAt: mark.staleAt, hardExpireAt: mark.hardExpireAt },
-  ].toSorted((a, b) => a.staleAt - b.staleAt);
-  const [first, second, ...rest] = kept;
-  if (first === undefined || second === undefined || kept.length <= MAX_MARKS) {
-    return kept;
-  }
-  return [
-    { staleAt: second.staleAt, hardExpireAt: earliest(first.hardExpireAt, second.hardExpireAt) },
-    ...rest,
-  ];
+  const kept = [...(marks ?? [])];
+  addMark(kept, mark, MAX_MARKS);
+  return kept;
 }
 
-/** Whether any of `marks` reaches an entry made at `timestamp`. */
+/** Whether any of `marks` reaches an entry made at `timestamp`: the one made last does. */
 function reachesAny(marks: Marks | undefined, timestamp: number): boolean {
-  return marks?.some((mark) => mark.staleAt >= timestamp) === true;
+  return (marks?.at(-1)?.staleAt ?? -Infinity) >= timestamp;
 }
 
-/** What `marks` say of an entry made at `timestamp`, judged at `now`: the worst any of them does. */
-function marksValidity(marks: Marks, timestamp: number, now: number): Validity {
-  let validity: Validity = 'fresh';
-  for (const mark of marks) {
-    validity = worst(validity, markValidity(mark, timestamp, now));
-  }
-  return validity;
+/**
+ * What `marks` say of an entry made at `timestamp`, judged at `now`: the worst any of them does, which
+ * the first of them that reaches it does (`Marks`).
+ */
+function marksValidity(marks: Marks | undefined, timestamp: number, now: number): Validity {
+  return marks === undefined
+    ? 'fresh'
+    : markValidity(marks[firstReaching(marks, timestamp)], timestamp, now);
 }
 
 /** The strongest of `marks` (`stronger`), or none where there are none. */
