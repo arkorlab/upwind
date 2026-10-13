@@ -213,8 +213,13 @@ function leaseStands({ holderUntil }: TurnedAway): boolean {
  * its own (`givingBack`), which the host had yet to have back, the request is answered as the one
  * the lease was handed to is, from the render kept with the lease, its publish settled or not: by
  * the host's word to that request (`CacheRuntime.givenBack`), and once this request's own pull is
- * in, which brings what the host has recorded since — while that lease still stands by then, as
- * above: one that lapsed meanwhile may have let another attempt publish a later generation.
+ * in, which brings what the host has recorded since — and only while that word stands by then, as
+ * above: past the moment the host said the lease lapses (`holderUntil`), it speaks for it no more.
+ * The lease's return, which lets another attempt take the entry before that, keeps no request from
+ * the render. The host names the lease only while it holds it, so no request asked once a later
+ * generation was published is turned away for it, and a visitor answered with that generation is
+ * not answered with this render after it; a render of the request's own would be one no other
+ * request was answered with.
  */
 export async function answeringWhileBusy(
   runtime: CacheRuntime,
