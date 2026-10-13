@@ -24,6 +24,11 @@ its own. It serves one site, with its pointer pinned on the Worker or kept in `E
 Functions reached over service bindings. The other entry points are its parts, for a host that
 composes its own.
 
+A Worker that holds the edge needs Node.js compatibility. The module that compresses live answers
+imports `node:zlib` as it loads, whether or not a request needs compressing, so a Worker without it
+does not load. Set the `nodejs_compat` flag, or a compatibility date of 2026-08-04 or later, from
+which it is the default.
+
 The published package is TypeScript sources: `exports` names `.ts` files, and there is no build
 step. Its suites run inside workerd (`@cloudflare/vitest-plugin`).
 
