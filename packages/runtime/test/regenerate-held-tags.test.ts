@@ -47,6 +47,8 @@ const INVALIDATED = 5;
 const INVALIDATED_AT = NOW - 10 * SECOND;
 /** The revision the delta is read at: the view's, which the commit says it was brought up to. */
 const REVISION = 10;
+/** A revision of the scope past the view's, which the host's copy of a tag may say. */
+const PAST_THE_VIEW = 12;
 
 /** A read the route handler makes through the fetch cache: its key, under its tags. */
 interface Read {
@@ -65,6 +67,8 @@ interface Scenario {
   /** What the render reads, in order, and the tags it leaves on the generation. */
   readonly reads: readonly Read[];
   readonly tags: readonly string[];
+  /** What it reads behind its answer, in work handed to `waitUntil`, once the render is over. */
+  readonly behind?: readonly Read[] | undefined;
 }
 
 /** The moment every clock of these tests reads: the isolate's, and what a request acts at. */
@@ -96,9 +100,13 @@ function unasked(): Promise<never> {
 
 /**
  * A host that leases the entry, keeps the commit it is sent in `commits`, and answers the delta and
- * the reads as `scenario` says.
+ * the reads as `scenario` says. Its uploads, which come once the render is over, wait for `behind`.
  */
-function hostOf(scenario: Scenario, commits: CommitRequest[]): CacheHost {
+function hostOf(
+  scenario: Scenario,
+  commits: CommitRequest[],
+  behind: { readonly rendered: () => void; readonly done: Promise<unknown> },
+): CacheHost {
   const delta: TagDelta = {
     revision: REVISION,
     truncated: false,
@@ -126,8 +134,11 @@ function hostOf(scenario: Scenario, commits: CommitRequest[]): CacheHost {
         current: null,
       });
     },
-    uploadArtifact: (upload) =>
-      Promise.resolve({ sha256: '0'.repeat(64), byteLength: upload.bytes.byteLength }),
+    uploadArtifact: async (upload) => {
+      behind.rendered();
+      await behind.done;
+      return { sha256: '0'.repeat(64), byteLength: upload.bytes.byteLength };
+    },
     heartbeat: () => Promise.resolve(),
     commit: (_attemptId, request) => {
       commits.push(request);
@@ -191,13 +202,30 @@ interface Regenerated {
 async function regenerated(scenario: Scenario): Promise<Regenerated> {
   const commits: CommitRequest[] = [];
   const logged: string[] = [];
-  const runtime = runtimeOf(hostOf(scenario, commits), logged);
+  const rendered = Promise.withResolvers<undefined>();
+  const done = Promise.withResolvers<undefined>();
+  const runtime = runtimeOf(
+    hostOf(scenario, commits, {
+      rendered: () => {
+        rendered.resolve(undefined);
+      },
+      done: done.promise,
+    }),
+    logged,
+  );
   configureCacheHandlers(runtime);
   let answers: unknown[] = [];
   vi.mocked(invokeNodeHandler).mockImplementation(async (input) => {
     const run = input.run ?? ((work) => work());
     return run(async () => {
       answers = await readEach(scenario.reads);
+      input.waitUntil(
+        (async () => {
+          await rendered.promise;
+          await readEach(scenario.behind ?? []);
+          done.resolve(undefined);
+        })(),
+      );
       return new Response('{}', {
         headers: { 'cache-control': CACHE_CONTROL, 'x-next-cache-tags': scenario.tags.join(',') },
       });
@@ -220,6 +248,9 @@ async function regenerated(scenario: Scenario): Promise<Regenerated> {
   if (outcome.kind === 'accepted') {
     await outcome.published;
   }
+  // The work behind the answer goes on once the uploads begin; a regeneration that never got to
+  // them lets it go here, rather than leaving it to wait for good.
+  rendered.resolve(undefined);
   await Promise.allSettled(pending);
   return { commit: commits[0], answers, logged };
 }
@@ -264,5 +295,42 @@ describe('what a regeneration commits of what its render held of each tag', () =
     // A regeneration misses what the invalidation expired, and renders it afresh.
     expect(answers).toStrictEqual([null]);
     expect(commit?.heldTagRevisions).toMatchObject({ [TAG]: INVALIDATED, [UNREAD]: REVISION });
+  });
+
+  /**
+   * A read of the render that knew a mark past the view's revision says that revision; a read
+   * behind its answer is none of the render's, whatever it knew — past the view's revision, or a
+   * mark from long before it — and the tag it reads under is one the render read nothing under.
+   */
+  it('says nothing past the view’s revision, nor anything a read behind the answer knew', async () => {
+    const copy = (value: string, revision: number): TagInvalidation => {
+      return {
+        value,
+        staleAt: NOW - 60 * SECOND,
+        hardExpireAt: null,
+        revision,
+      };
+    };
+    const { commit } = await regenerated({
+      later: 0,
+      copies: [copy('during', PAST_THE_VIEW), copy('after', PAST_THE_VIEW), copy('older', 3)],
+      entries: {
+        during: entryOf(['during'], NOW - SECOND),
+        after: entryOf(['after'], NOW - SECOND),
+        older: entryOf(['older'], NOW - SECOND),
+      },
+      reads: [{ key: 'during', tags: ['during'] }],
+      behind: [
+        { key: 'after', tags: ['after'] },
+        { key: 'older', tags: ['older'] },
+      ],
+      tags: ['during', 'after', 'older'],
+    });
+
+    expect(commit?.heldTagRevisions).toMatchObject({
+      during: REVISION,
+      after: REVISION,
+      older: REVISION,
+    });
   });
 });

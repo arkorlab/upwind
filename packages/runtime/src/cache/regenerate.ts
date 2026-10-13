@@ -638,6 +638,8 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
     });
     observedTagRevision = runtime.tags.revision;
     captured = await renderStatic(input, lease.attemptId, held);
+    // What the render read is all read: work it left behind its answer reads in its context still.
+    held.close();
     if (captured === undefined) {
       stopHeartbeat();
       await abandon(input, lease, 'skipped');

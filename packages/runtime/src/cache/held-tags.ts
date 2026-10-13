@@ -20,6 +20,13 @@ import { recordValidity, type TagState } from './tags.ts';
  * A tag no read was judged under is one nothing the render read from the cache was kept under: what
  * was made under it was made afresh, once the pull that brought the view up had answered, and the
  * commit says that revision of it.
+ *
+ * What is noted is what the render's own reads knew, and the commit says no revision of a tag past
+ * the view's. A read behind the render's answer — in work it handed to `after()` or `waitUntil` —
+ * runs in its context still, and knows what the view holds then, of a tag the render may never have
+ * read: the record is closed as the render ends (`close`). A read of the render that knew a mark past
+ * the view's revision — the view pulled further meanwhile, or a newer copy of the tags — is held at
+ * the view's revision, which is all the commit claims the render was judged against.
  */
 
 /** The render each regeneration runs, with what it holds of its tags (`HeldTags.run`). */
@@ -33,6 +40,8 @@ export class HeldTags {
    * may carry. A tag not kept is then not known to be one no read was judged under.
    */
   #full = false;
+  /** Whether the render is over (`close`), past which a read is noted nowhere. */
+  #closed = false;
 
   /** Run `work`, the render, with each read it judges noted here (`judgedValidity`). */
   run<T>(work: () => Promise<T>): Promise<T> {
@@ -41,6 +50,9 @@ export class HeldTags {
 
   /** Note a read judged now under `tags`, by what `state` knows of each. */
   note(state: TagState, tags: readonly string[]): void {
+    if (this.#closed) {
+      return;
+    }
     for (const tag of tags) {
       const known = state.knownRevisionOf(tag);
       const noted = this.#known.get(tag);
@@ -55,16 +67,24 @@ export class HeldTags {
   }
 
   /**
-   * What the commit says the render held of each of `values`, the generation's tags: of one a read
-   * was judged under, the least revision an invalidation of it was known at as one was; of one none
-   * was, `observed`, the revision the view was brought up to before the render. Nothing of a tag it
-   * held nothing of: one known at no revision, or one not noted once more were judged under than are
-   * kept.
+   * The render is over: a read from now on — behind its answer, in work it handed to `after()` or
+   * `waitUntil` — is none of what it was made from, and is noted nowhere.
+   */
+  close(): void {
+    this.#closed = true;
+  }
+
+  /**
+   * What the commit says the render held of each of `values`, the generation's tags, never past
+   * `observed`, the revision the view was brought up to before the render: of one a read was judged
+   * under, the least revision an invalidation of it was known at as one was; of one none was,
+   * `observed` itself. Nothing of a tag it held nothing of: one known at no revision, or one not
+   * noted once more were judged under than are kept.
    */
   of(values: readonly string[], observed: number): Readonly<Record<string, number>> {
     const held: [string, number][] = [];
     for (const value of values) {
-      const revision = this.#known.get(value) ?? (this.#full ? 0 : observed);
+      const revision = Math.min(this.#known.get(value) ?? (this.#full ? 0 : observed), observed);
       if (revision > 0) {
         held.push([value, revision]);
       }
