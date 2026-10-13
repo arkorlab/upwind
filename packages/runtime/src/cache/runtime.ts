@@ -151,9 +151,10 @@ export interface CacheRuntime {
    * The leases this isolate gave back unused, by attempt (`GivenBack`): until the host has one back,
    * it turns a request of the entry away for it, and the isolate answers that request as it answered
    * the one the lease was handed to (`cache/publishing.ts`) — from the render, whose publish may have
-   * settled by then. Each until the host has said it has the lease back, for a hold at the most, as
-   * every word of the host's the isolate judges by, and within a byte budget of its own, as the
-   * renders being published are (`PUBLISHING_BYTES`).
+   * settled by then. Each until the host has said it has the lease back and the answers the isolate
+   * was waiting on by then are in, or until the lease lapses, a hold at the least (`givingBack`); and
+   * within a byte budget of its own, as the renders being published are (`PUBLISHING_BYTES`), a
+   * render kept with more than one lease counted once.
    */
   readonly givenBack: TtlCache<string, GivenBack>;
   /**
@@ -329,6 +330,8 @@ export function createCacheRuntime(options: CacheRuntimeOptions): CacheRuntime |
     givenBack: new TtlCache(holdMs, PUBLISHING_ENTRIES, options.now, {
       maxBytes: PUBLISHING_BYTES,
       sizeOf: (given, key) => publishingBytes(given.publishing, key),
+      // One render given back with two leases is held once: it is the render that holds the bytes.
+      holderOf: (given) => given.publishing,
     }),
     asking: new Map(),
     artifactMemo: new TtlCache(Infinity, ARTIFACT_MEMO_ENTRIES, options.now, {

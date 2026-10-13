@@ -355,9 +355,10 @@ interface Kept {
  * host has said it has it back (`returned`): until then it turns a request of the entry away for it,
  * and that request is answered as the superseded one is (`answeringWhileBusy`), the render's publish
  * settled meanwhile or not. Let go of once the host has said so, and the answers to the leases of
- * the entry the isolate had asked for by then are in (`askingFor`): one of them may turn a request
- * away for this lease, sent before the host had it back. Where the host did not answer the lease's
- * return it may hold the lease still, and it is kept for its hold. Never rejects.
+ * the entry the isolate had asked for by then are in (`askingFor`), however long they take: one of
+ * them may turn a request away for this lease, sent before the host had it back. One whose request
+ * ended under it never answers, and where the host did not answer the lease's return it may hold
+ * the lease still: the lease is kept for its hold then. Never rejects.
  */
 export async function givingBack(
   runtime: CacheRuntime,
@@ -386,11 +387,16 @@ export async function givingBack(
   if (!keeping || !answered) {
     return;
   }
-  // For a second at the most: an answer in flight lands within that, and one whose request ended
-  // under it never does.
   const asked = entryId === undefined ? undefined : runtime.asking.get(entryId);
-  await settledWithin(Promise.allSettled(asked === undefined ? [] : [...asked.keys()]), []);
-  runtime.givenBack.delete(attemptId);
+  const answeredAll = settledThen(
+    Promise.allSettled(asked === undefined ? [] : [...asked.keys()]),
+    () => {
+      runtime.givenBack.delete(attemptId);
+    },
+  );
+  // Waited for here a second at the most, as this request's work: an answer still out past that
+  // lets go of the lease as it lands, with the request that asked for it.
+  await settledWithin(answeredAll, []);
 }
 
 /**

@@ -58,7 +58,7 @@ export async function reportResourceChange(
   const context = requestContext();
   const now = nowMs();
   const applied = { staleAt: now, hardExpireAt: now + NEXT_ONE_YEAR_SECONDS * MS_PER_SECOND };
-  context?.runtime?.tags.applyLocal([DEFAULT_D1_CACHE_TAG], applied);
+  const call = context?.runtime?.tags.applyLocal([DEFAULT_D1_CACHE_TAG], applied);
   // Known at no revision of the scope's once delivered or given up on: the receipt's revision is the
   // service's own, and the scope records the invalidation after it answers.
   let settledOnce = false;
@@ -66,7 +66,7 @@ export async function reportResourceChange(
     // Once for the report, however many ways its delivery ends.
     if (!settledOnce) {
       settledOnce = true;
-      context?.runtime?.tags.settleLocal([DEFAULT_D1_CACHE_TAG], applied);
+      if (call !== undefined) context?.runtime?.tags.settleLocal(call);
     }
   };
   let lastError: unknown;

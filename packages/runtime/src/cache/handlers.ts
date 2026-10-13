@@ -99,11 +99,10 @@ async function invalidate(
   const expire = durations?.expire ?? 0;
   // In force here before the host has answered: a read in this isolate while the call is out must
   // not be answered with what is being invalidated. What the host answers stands for it below.
-  const applied = {
+  const call = runtime.tags.applyLocal(tags, {
     staleAt: now,
     hardExpireAt: expire > 0 ? now + expire * MS_PER_SECOND : now,
-  };
-  runtime.tags.applyLocal(tags, applied);
+  });
   let outcome: InvalidateOutcome;
   try {
     outcome = await runtime.host.invalidate({
@@ -113,7 +112,7 @@ async function invalidate(
     });
   } catch (error) {
     // In force here all the same, and known at no revision: the host may never have recorded it.
-    runtime.tags.settleLocal(tags, applied);
+    runtime.tags.settleLocal(call);
     throw error;
   }
   if (expire === 0) {
@@ -122,7 +121,7 @@ async function invalidate(
   }
   // In force here at once: the request that invalidated must not read what it invalidated, nor
   // may the next one in this isolate, before the delta says so.
-  runtime.tags.answerLocal(tags, applied, outcome, now);
+  runtime.tags.answerLocal(call, outcome, now);
 }
 
 /** Invalidate `tags` at once, as `updateTag` does: in force for the next read anywhere, and here. */
