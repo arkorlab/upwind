@@ -26,11 +26,12 @@ export interface TagMark {
   readonly staleAt: number;
   readonly hardExpireAt: number | null;
   /**
-   * A revision of the scope the invalidation was recorded at or before, where one is known: the
-   * revision the page of the delta that brought the mark was read at, or the one the host recorded
-   * this isolate's own invalidation at once it has answered (`applyLocal`). What tells a view that
-   * held the invalidation from one that did not, whatever the clocks that stamped it said: a view
-   * brought up to that revision held it (`validityOf`).
+   * A revision of the scope the invalidation was recorded at or before, where one is known: the one
+   * the host says it recorded it at, or, for a mark the delta brought where it does not say, the
+   * revision that page of the delta was read at; for this isolate's own invalidation, the one the
+   * host answered it with (`confirmLocal`). What tells a view that held the invalidation from one
+   * that did not, whatever the clocks that stamped it said: a view brought up to that revision held
+   * it (`validityOf`). Unknown for an invalidation of this isolate's the host has yet to answer.
    */
   readonly revision?: number | undefined;
 }
@@ -116,7 +117,7 @@ export class TagState {
           this.#mark(tag.value, {
             staleAt: tag.staleAt,
             hardExpireAt: tag.hardExpireAt,
-            revision: delta.revision,
+            revision: tag.revision ?? delta.revision,
           });
         }
         this.#revision = Math.max(this.#revision, delta.revision);
@@ -147,7 +148,11 @@ export class TagState {
   async #pullLocal(host: TagHost, values: readonly string[], now: number): Promise<void> {
     const result = await host.getTags(values);
     for (const tag of result.tags) {
-      this.#mark(tag.value, { staleAt: tag.staleAt, hardExpireAt: tag.hardExpireAt });
+      this.#mark(tag.value, {
+        staleAt: tag.staleAt,
+        hardExpireAt: tag.hardExpireAt,
+        revision: tag.revision,
+      });
     }
     // Every tag asked about, not only the ones the host had something to say about: the answer
     // that a tag has no invalidation is worth the same hold as the answer that it has one.
@@ -241,6 +246,21 @@ export class TagState {
   }
 
   /**
+   * What the host answered an invalidation of this Function's with (`answered`), in place of the
+   * mark applied while the call was out (`applied`), where that mark is still what is held of the
+   * tag: the two are one invalidation, and the answer says the revision it is at. Where another
+   * invalidation of the tag has been applied since, the answer joins what is held as any mark does:
+   * a moment both read is no proof they are one.
+   */
+  confirmLocal(value: string, applied: TagMark, answered: TagMark): void {
+    const held = this.#applied.get(value);
+    this.#applied.set(
+      value,
+      held === undefined || held === applied ? answered : stronger(held, answered),
+    );
+  }
+
+  /**
    * The state of an entry made at `timestamp` under these tags, judged at `now`.
    *
    * An invalidation reaches the entries made before it and no others, so that is the one question
@@ -294,9 +314,9 @@ export class TagState {
  * and that is what an isolate starting now would hold. Keeping the later `staleAt` beside the
  * earlier `hardExpireAt` would make a window nobody opened, and would make this isolate judge an
  * entry differently from the one next to it; two recorded in the same millisecond are settled by
- * the earlier deadline, and stand at the later revision either is known at — the one known where
- * the other is not: this isolate's own invalidation, applied before the host has answered, and
- * again with the revision the host answered with at the same moment.
+ * the earlier deadline, and stand at the later of their revisions — at none known where either is
+ * unknown: one of this isolate's the host has yet to answer may be one no view has held, and a
+ * moment both read is no proof they are one invalidation.
  */
 function stronger(a: TagMark, b: TagMark): TagMark {
   if (a.staleAt !== b.staleAt) {
@@ -305,15 +325,11 @@ function stronger(a: TagMark, b: TagMark): TagMark {
   return {
     staleAt: a.staleAt,
     hardExpireAt: earliest(a.hardExpireAt, b.hardExpireAt),
-    revision: latestKnown(a.revision, b.revision),
+    revision:
+      a.revision === undefined || b.revision === undefined
+        ? undefined
+        : Math.max(a.revision, b.revision),
   };
-}
-
-function latestKnown(a: number | undefined, b: number | undefined): number | undefined {
-  if (a === undefined) {
-    return b;
-  }
-  return b === undefined ? a : Math.max(a, b);
 }
 
 function earliest(a: number | null, b: number | null): number | null {

@@ -291,27 +291,77 @@ export async function answeringWhenSuperseded(
 }
 
 /**
+ * `asked`, a lease of the entry a request of this isolate asks the host for, counted as asked until
+ * its answer is in (`CacheRuntime.asking`): what the caller is handed to wait on is what is counted,
+ * so the caller hears the answer before anything waiting on the count does.
+ */
+export function askingFor<T>(
+  runtime: CacheRuntime,
+  entryId: string | undefined,
+  asked: Promise<T>,
+): Promise<T> {
+  if (entryId === undefined) {
+    return asked;
+  }
+  const pending = runtime.asking.get(entryId) ?? new Set<Promise<unknown>>();
+  runtime.asking.set(entryId, pending);
+  const answered: Promise<T> = settledThen(asked, () => {
+    pending.delete(answered);
+    if (pending.size === 0 && runtime.asking.get(entryId) === pending) {
+      runtime.asking.delete(entryId);
+    }
+  });
+  pending.add(answered);
+  return answered;
+}
+
+/** What `promise` settles to, once `then` has run on its settling. */
+async function settledThen<T>(promise: Promise<T>, then: () => void): Promise<T> {
+  try {
+    return await promise;
+  } finally {
+    then();
+  }
+}
+
+/** The render a superseded regeneration kept of the entry, by the key it looked it up with. */
+interface Kept {
+  readonly entryId: string | undefined;
+  readonly kept: Publishing | undefined;
+}
+
+/**
  * The lease a superseded regeneration gives back unused, kept as given back with the render the
  * isolate kept of the entry and the generation the host named (`CacheRuntime.givenBack`) until the
  * host has said it has it back (`returned`): until then it turns a request of the entry away for it,
  * and that request is answered as the superseded one is (`answeringWhileBusy`), the render's publish
- * settled meanwhile or not. From then on the host turns nobody away for it, and the render need not
- * outlive that. Settles with `returned`, which never rejects.
+ * settled meanwhile or not. Let go of once the host has said so, and the answers to the leases of
+ * the entry the isolate had asked for by then are in (`askingFor`): one of them may turn a request
+ * away for this lease, sent before the host had it back. Where the host did not answer the lease's
+ * return it may hold the lease still, and it is kept for its hold. Never rejects.
  */
 export async function givingBack(
   runtime: CacheRuntime,
-  kept: Publishing | undefined,
+  { entryId, kept }: Kept,
   lease: {
     readonly attemptId: string;
     readonly current?: { readonly generationId: string } | null | undefined;
   },
-  returned: Promise<void>,
+  returned: Promise<boolean>,
 ): Promise<void> {
   const { attemptId, current } = lease;
-  if (kept !== undefined && current !== undefined && current !== null) {
+  const keeping = kept !== undefined && current !== undefined && current !== null;
+  if (keeping) {
     runtime.givenBack.set(attemptId, { publishing: kept, generationId: current.generationId });
   }
-  await returned;
+  // Waited for whatever is kept: the lease's return is work of this request's that its end must not
+  // cut off.
+  const answered = await returned;
+  if (!keeping || !answered) {
+    return;
+  }
+  const asked = entryId === undefined ? undefined : runtime.asking.get(entryId);
+  await Promise.allSettled(asked === undefined ? [] : [...asked]);
   runtime.givenBack.delete(attemptId);
 }
 

@@ -43,6 +43,7 @@ import {
   answeringUntilSettled,
   answeringWhenSuperseded,
   answeringWhileBusy,
+  askingFor,
   givingBack,
   lettingGo,
   publishingKeyOf,
@@ -559,11 +560,15 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   input.waitUntil(synced);
   let lease: AttemptOutcome;
   try {
-    lease = await runtime.host.startAttempt({
-      entry: target.descriptor,
-      reason: target.reason,
-      ...(target.observation !== undefined && { observation: target.observation }),
-    });
+    lease = await askingFor(
+      runtime,
+      entryId,
+      runtime.host.startAttempt({
+        entry: target.descriptor,
+        reason: target.reason,
+        ...(target.observation !== undefined && { observation: target.observation }),
+      }),
+    );
   } catch (error) {
     const reason =
       error instanceof CacheHostError ? `${error.code}: ${error.message}` : detail(error);
@@ -594,7 +599,9 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
     // generation the host holds may be the one the render became: the render stays until its publish
     // settles, for any other request of the isolate the host leases the entry to meanwhile, and with
     // this lease until the host has it back, for one it turns away for this lease.
-    input.waitUntil(givingBack(runtime, kept, lease, abandon(input, lease, 'skipped')));
+    input.waitUntil(
+      givingBack(runtime, { entryId, kept }, lease, abandon(input, lease, 'skipped')),
+    );
     // What stands is what the next request should find: a record of it, or of a later one, that
     // another request of this isolate learned while this one waited for the lease stays held.
     forgetRecordBefore(runtime, lease.entryId, lease.current?.seq ?? Infinity);

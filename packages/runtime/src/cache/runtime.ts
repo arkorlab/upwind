@@ -157,6 +157,13 @@ export interface CacheRuntime {
    */
   readonly givenBack: TtlCache<string, GivenBack>;
   /**
+   * The leases of each entry this isolate's requests have asked the host for and not yet heard back
+   * about, by entry: what a lease given back waits on before it is let go of (`givingBack`), since
+   * an answer the host sent before it had that lease back may still be on its way. Each goes as its
+   * answer comes.
+   */
+  readonly asking: Map<string, Set<Promise<unknown>>>;
+  /**
    * Artifacts of current generations, by id, read for an output other than the record's own. An
    * artifact is named by its content and never rewritten, so what an id read once says it says for
    * good: kept until the budget needs the room rather than for a hold, after which every request
@@ -322,6 +329,7 @@ export function createCacheRuntime(options: CacheRuntimeOptions): CacheRuntime |
       maxBytes: PUBLISHING_BYTES,
       sizeOf: (given, key) => publishingBytes(given.publishing, key),
     }),
+    asking: new Map(),
     artifactMemo: new TtlCache(Infinity, ARTIFACT_MEMO_ENTRIES, options.now, {
       maxBytes: ARTIFACT_MEMO_BYTES,
       sizeOf: (bytes, key) => bytes.buffer.byteLength + key.length * UTF16_BYTES,

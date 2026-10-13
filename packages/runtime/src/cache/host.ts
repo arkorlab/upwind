@@ -382,6 +382,12 @@ export interface TagInvalidation {
   readonly value: string;
   readonly staleAt: number;
   readonly hardExpireAt: number | null;
+  /**
+   * The revision of the scope the host recorded the invalidation at, where it says: what tells a
+   * view that held the invalidation from one that did not, whatever the clocks say
+   * (`TagMark.revision`).
+   */
+  readonly revision?: number | undefined;
 }
 
 export interface TagInvalidations {

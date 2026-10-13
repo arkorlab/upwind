@@ -99,10 +99,11 @@ async function invalidate(
   const expire = durations?.expire ?? 0;
   // In force here before the host has answered: a read in this isolate while the call is out must
   // not be answered with what is being invalidated. What the host answers replaces it below.
-  runtime.tags.applyLocal(tags, {
+  const applied = {
     staleAt: now,
     hardExpireAt: expire > 0 ? now + expire * MS_PER_SECOND : now,
-  });
+  };
+  runtime.tags.applyLocal(tags, applied);
   const outcome = await runtime.host.invalidate({
     tags,
     ...(expire > 0 && { expire }),
@@ -114,10 +115,11 @@ async function invalidate(
   }
   // In force here at once: the request that invalidated must not read what it invalidated, nor
   // may the next one in this isolate, before the delta says so. At the revision the host recorded
-  // it at: a view that pulls the delta up to there holds it, whatever the clocks say.
+  // it at, in place of the mark applied while the call was out: a view that pulls the delta up to
+  // there holds it, whatever the clocks say.
   for (const invalidation of outcome.invalidations) {
-    runtime.tags.applyLocal([invalidation.value], {
-      revision: outcome.revision,
+    runtime.tags.confirmLocal(invalidation.value, applied, {
+      revision: invalidation.revision ?? outcome.revision,
       // The request may have read cache data while the invalidation call was in flight.
       staleAt: Math.max(now, invalidation.staleAt),
       // The deadline by this isolate's clock too, whichever comes first: a host whose clock
