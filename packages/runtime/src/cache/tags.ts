@@ -84,16 +84,16 @@ const MAX_TAGS_HELD = 4096;
 const MAX_APPLIED_MARKS = 4096;
 
 /**
- * What this isolate knows of one tag: its latest invalidation, and when the host last said so —
- * with what tells a view that held what it was told from one that did not (`TagMark.revision`): the
- * latest revision an invalidation of it is known at (`#mark`), and the latest moment of one known at
- * none.
+ * What this isolate knows of one tag, and when the host last said so (`checkedAt`): its latest
+ * invalidation the host said the revision of (`mark`), with the latest revision one is known at
+ * (`knownRevision`) — what tells a view that held it from one that did not (`TagMark.revision`) —
+ * and, apart, the strongest of those it said none of (`unknown`), known at no revision.
  */
 interface TagKnowledge {
   readonly mark?: TagMark | undefined;
   readonly checkedAt?: number | undefined;
   readonly knownRevision?: number | undefined;
-  readonly unknownAt?: number | undefined;
+  readonly unknown?: TagMark | undefined;
 }
 
 /**
@@ -129,15 +129,15 @@ interface Overflow {
 }
 
 /**
- * How many calls of this Function's out that name one tag are counted one by one (`Unanswered`), each
+ * How many calls of this Function's out, of every tag, are counted one by one (`Unanswered`), each
  * taking its own mark out with it as it is answered: more than calls a host answering at all leaves
- * out at once. Past that many, the one out longest is counted with the others past it (`Overflow`),
- * whose marks stay in force until the last of them is answered — calls whose requests ended under
- * them, which never answer, piling up. A call is never taken for one the host never answers for
- * being out long, or one of many: its request may be running yet, and the runtime cannot tell one
- * that is from one that ended under it.
+ * out at once. Past that many, the one out longest is counted with the others past it of each tag it
+ * names (`Overflow`), whose marks stay in force until the last of them is answered — calls whose
+ * requests ended under them, which never answer, piling up. A call is never taken for one the host
+ * never answers for being out long, or one of many: its request may be running yet, and the runtime
+ * cannot tell one that is from one that ended under it.
  */
-const MAX_CALLS_OUT = 1024;
+const MAX_CALLS_OUT = 4096;
 
 /**
  * This isolate's own invalidations of one tag, all in force here: those the host has answered at a
@@ -157,6 +157,8 @@ interface AppliedKnowledge {
 export class TagState {
   readonly #tags = new Lru<string, TagKnowledge>(MAX_TAGS_HELD);
   readonly #applied = new Lru<string, AppliedKnowledge>(MAX_APPLIED_MARKS);
+  /** The calls out counted one by one, of every tag, the one out longest first (`MAX_CALLS_OUT`). */
+  readonly #out = new Set<LocalInvalidation>();
   readonly #holdMs: number;
   readonly #log: TagStateOptions['log'];
   #revision = 0;
@@ -217,16 +219,20 @@ export class TagState {
    */
   #mark(value: string, mark: TagMark): void {
     const known = this.#tags.get(value);
-    const held = known?.mark;
     const { revision } = mark;
-    // Known at a revision, unless something held is known at none.
-    const heldAt = known?.unknownAt === undefined ? known?.knownRevision : undefined;
+    if (revision === undefined) {
+      const { unknown } = known ?? {};
+      this.#tags.set(value, {
+        ...known,
+        unknown: unknown === undefined ? mark : stronger(unknown, mark),
+      });
+      return;
+    }
+    const held = known?.mark;
     this.#tags.set(value, {
       ...known,
-      mark: held === undefined ? mark : latestOf(held, heldAt, mark, revision),
-      ...(revision === undefined
-        ? { unknownAt: Math.max(known?.unknownAt ?? mark.staleAt, mark.staleAt) }
-        : { knownRevision: Math.max(known?.knownRevision ?? revision, revision) }),
+      mark: held === undefined ? mark : latestOf(held, known?.knownRevision, mark, revision),
+      knownRevision: Math.max(known?.knownRevision ?? revision, revision),
     });
   }
 
@@ -261,8 +267,10 @@ export class TagState {
    */
   #markOf(value: string): TagMark | undefined {
     const applied = this.#applied.get(value);
+    const told = this.#tags.get(value);
     return strongest([
-      this.#tags.get(value)?.mark,
+      told?.mark,
+      told?.unknown,
       applied?.answered,
       applied?.unanswered?.mark,
       applied?.overflow?.mark,
@@ -291,15 +299,16 @@ export class TagState {
       !reaches(applied?.unrevised) &&
       within(applied?.answeredRevision) &&
       within(told?.knownRevision) &&
-      (told?.unknownAt ?? timestamp - 1) < timestamp
+      !reaches(told?.unknown)
     );
   }
 
   /**
    * What all that is known of `tag` says of an entry made at `timestamp`, judged at `now` (`validityOf`).
-   * What the host said, what it answered of this isolate's own, and what is out or known at no
-   * revision for good are each asked of apart, and the worst answer stands: taken as one mark, the one
-   * stamped latest would hide a deadline the others set, whatever the clocks that stamped them read.
+   * What the host said at a revision, what it answered of this isolate's own, and what is known at no
+   * revision — told so, out, or for good — are each asked of apart, and the worst answer stands:
+   * taken as one mark, the one stamped latest would hide a deadline the others set, whatever the
+   * clocks that stamped them read.
    * Known at a revision past the one the entry's view was brought up to (`held`), an invalidation is
    * one that view missed, whatever its time says of the moment the entry was made.
    */
@@ -318,19 +327,57 @@ export class TagState {
       missed(applied?.answeredRevision) ? -Infinity : timestamp,
       now,
     );
-    const byOwn = markValidity(
-      strongest([applied?.unanswered?.mark, applied?.overflow?.mark, applied?.unrevised]),
+    const byUnrevised = markValidity(
+      strongest([
+        known?.unknown,
+        applied?.unanswered?.mark,
+        applied?.overflow?.mark,
+        applied?.unrevised,
+      ]),
       timestamp,
       now,
     );
-    if (byTold === 'expired' || byAnswered === 'expired' || byOwn === 'expired') {
+    if (byTold === 'expired' || byAnswered === 'expired' || byUnrevised === 'expired') {
       return 'expired';
     }
-    return byTold === 'stale' || byAnswered === 'stale' || byOwn === 'stale' ? 'stale' : 'fresh';
+    return byTold === 'stale' || byAnswered === 'stale' || byUnrevised === 'stale'
+      ? 'stale'
+      : 'fresh';
+  }
+
+  /**
+   * Count `call` with the others past those counted one by one, of each tag it names that has it out
+   * still (`Overflow`).
+   */
+  #overflowing(call: LocalInvalidation): void {
+    for (const value of call.values) {
+      const held = this.#applied.get(value);
+      if (held?.unanswered?.calls.has(call) === true) {
+        this.#applied.set(value, {
+          ...held,
+          unanswered: without(held.unanswered, call),
+          overflow: overflowing(held.overflow, call),
+        });
+      }
+    }
+  }
+
+  /** Count `call` out no more (`#out`) once no tag it names has it out one by one. */
+  #counted(call: LocalInvalidation): void {
+    if (
+      call.values.every((value) => this.#applied.get(value)?.unanswered?.calls.has(call) !== true)
+    ) {
+      this.#out.delete(call);
+    }
   }
 
   get revision(): number {
     return this.#revision;
+  }
+
+  /** How many calls of this Function's out are counted one by one, of every tag (`MAX_CALLS_OUT`). */
+  get callsOut(): number {
+    return this.#out.size;
   }
 
   /**
@@ -400,19 +447,18 @@ export class TagState {
       const out = held?.unanswered;
       const calls = out?.calls ?? new Set<LocalInvalidation>();
       calls.add(call);
-      let unanswered: Unanswered | undefined = {
-        mark: out === undefined ? call.mark : stronger(out.mark, call.mark),
-        calls,
-      };
-      let { overflow } = held ?? {};
-      for (const longest of calls) {
-        if (calls.size <= MAX_CALLS_OUT) {
-          break;
-        }
-        overflow = overflowing(overflow, longest);
-        unanswered = without(unanswered, longest);
+      this.#applied.set(value, {
+        ...held,
+        unanswered: { mark: out === undefined ? call.mark : stronger(out.mark, call.mark), calls },
+      });
+    }
+    this.#out.add(call);
+    for (const longest of this.#out) {
+      if (this.#out.size <= MAX_CALLS_OUT) {
+        break;
       }
-      this.#applied.set(value, { ...held, unanswered, overflow });
+      this.#out.delete(longest);
+      this.#overflowing(longest);
     }
     return call;
   }
@@ -439,6 +485,7 @@ export class TagState {
       unanswered: without(held?.unanswered, call),
       overflow: overflowWithout(held?.overflow, call),
     });
+    this.#counted(call);
   }
 
   /**
@@ -506,6 +553,7 @@ export class TagState {
         overflow: overflowWithout(held?.overflow, call),
       });
     }
+    this.#counted(call);
   }
 
   /**

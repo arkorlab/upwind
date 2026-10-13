@@ -174,32 +174,6 @@ interface TurnedAway {
 }
 
 /**
- * The render, where its publish says it became the generation the host named (`generationId`) —
- * waited for a second at the most (`PUBLISHING_PULL_MS`): an answer in flight lands within that,
- * and a render whose lease lapsed has its publish refused — and while no mark on its tags says it
- * missed an invalidation (`unmarkedSince`).
- *
- * The host's word speaks for every invalidation it had recorded when it named the generation: one
- * that reached the generation condemned it (`CurrentSummary.condemned`), and `supersededBy` takes a
- * condemned generation for none. What the word cannot speak for is an invalidation this isolate made
- * that the host had not recorded yet — an `updateTag` racing the lease, in force here at once — or
- * one recorded since that a read here has been told of. The scope's revision moving on says nothing
- * besides: it moves for other tags too, and for invalidations the host's word spoke for.
- */
-async function identified(
-  runtime: CacheRuntime,
-  publishing: Publishing,
-  generationId: string,
-): Promise<CapturedRender | undefined> {
-  const outcome = await settledWithin(publishing.published, undefined);
-  return outcome?.kind === 'published' &&
-    outcome.generationId === generationId &&
-    unmarkedSince(runtime, publishing)
-    ? publishing.render
-    : undefined;
-}
-
-/**
  * The lease the host turned the regeneration away for, as this isolate gave it back (`GivenBack`):
  * where it is one the isolate gave back unused (`givingBack`), and the regeneration is one a
  * judgement of the entry asked for (`JUDGED_REASONS`).
@@ -277,7 +251,7 @@ export async function answeringWhileBusy(
  * the lease is in, and the one it kept when the lease was asked for, where they differ: where that
  * generation is the one a render's own publish committed — the host had committed it, and let go of
  * its lease, while the commit's answer was still on its way here — the first such render answers, as
- * it answers every request after its publish (`identified`). Each is waited for at once, a second
+ * it answers every request after its publish (`identifiedAmong`). Each is waited for at once, a second
  * at the most. A render let go of (`lettingGo`) answers no request at once any more: only as here,
  * or for a request the host turns away for this lease (`givingBack`).
  */
@@ -297,18 +271,32 @@ function candidatesOf(kept: readonly (Publishing | undefined)[]): Publishing[] {
 }
 
 /**
- * The first of `candidates` whose publish says it became the generation the host named
- * (`identified`), each waited for at once, a second at the most.
+ * The render of the first of `candidates` whose publish says it became the generation the host
+ * named (`generationId`) — each waited for at once, a second at the most (`PUBLISHING_PULL_MS`): an
+ * answer in flight lands within that, and a render whose lease lapsed has its publish refused —
+ * where, once all of them are in, no mark on its tags says it missed an invalidation
+ * (`unmarkedSince`): an `updateTag` made while another was waited for is one too.
+ *
+ * The host's word speaks for every invalidation it had recorded when it named the generation: one
+ * that reached the generation condemned it (`CurrentSummary.condemned`), and `supersededBy` takes a
+ * condemned generation for none. What the word cannot speak for is an invalidation this isolate made
+ * that the host had not recorded yet — an `updateTag` racing the lease, in force here at once — or
+ * one recorded since that a read here has been told of. The scope's revision moving on says nothing
+ * besides: it moves for other tags too, and for invalidations the host's word spoke for.
  */
 async function identifiedAmong(
   runtime: CacheRuntime,
   candidates: readonly Publishing[],
   generationId: string,
 ): Promise<CapturedRender | undefined> {
-  const renders = await Promise.all(
-    candidates.map((each) => identified(runtime, each, generationId)),
+  const outcomes = await Promise.all(
+    candidates.map((each) => settledWithin(each.published, undefined)),
   );
-  return renders.find((render) => render !== undefined);
+  const named = candidates.find((_, index) => {
+    const outcome = outcomes[index];
+    return outcome?.kind === 'published' && outcome.generationId === generationId;
+  });
+  return named !== undefined && unmarkedSince(runtime, named) ? named.render : undefined;
 }
 
 /**
