@@ -251,18 +251,28 @@ export async function answeringWhileBusy(
  * the lease is in, and the one it kept when the lease was asked for, where they differ: where that
  * generation is the one a render's own publish committed — the host had committed it, and let go of
  * its lease, while the commit's answer was still on its way here — the first such render answers, as
- * it answers every request after its publish (`identifiedAmong`). Each is waited for at once, a second
- * at the most. A render let go of (`lettingGo`) answers no request at once any more: only as here,
- * or for a request the host turns away for this lease (`givingBack`).
+ * it answers every request after its publish (`identifiedAmong`). Only once the request's own pull of
+ * the tags (`pulled`) has brought the view up, as one the host turned away for a lease given back is
+ * answered: an invalidation recorded since the host named the generation, which its word cannot
+ * speak for, may be in it. The pull and each render are waited for at once, a second at the most.
+ * A render let go of (`lettingGo`) answers no request at once any more: only as here, or for a
+ * request the host turns away for this lease (`givingBack`).
  */
 export async function answeringWhenSuperseded(
   runtime: CacheRuntime,
   kept: readonly (Publishing | undefined)[],
   current: { readonly generationId: string } | null | undefined,
+  pulled: Promise<boolean>,
 ): Promise<CapturedRender | undefined> {
-  return current === undefined || current === null
-    ? undefined
-    : identifiedAmong(runtime, candidatesOf(kept), current.generationId);
+  if (current === undefined || current === null) {
+    return undefined;
+  }
+  const [brought, named] = await Promise.all([
+    settledWithin(pulled, false),
+    namedAmong(candidatesOf(kept), current.generationId),
+  ]);
+  // Asked of once both are in: the pull may have answered after the renders did.
+  return brought && named !== undefined && unmarkedSince(runtime, named) ? named.render : undefined;
 }
 
 /** The renders of `kept` there are, each once. */
@@ -289,14 +299,25 @@ async function identifiedAmong(
   candidates: readonly Publishing[],
   generationId: string,
 ): Promise<CapturedRender | undefined> {
+  const named = await namedAmong(candidates, generationId);
+  return named !== undefined && unmarkedSince(runtime, named) ? named.render : undefined;
+}
+
+/**
+ * The first of `candidates` whose publish says it became the generation the host named, each waited
+ * for at once, a second at the most (`identifiedAmong`).
+ */
+async function namedAmong(
+  candidates: readonly Publishing[],
+  generationId: string,
+): Promise<Publishing | undefined> {
   const outcomes = await Promise.all(
     candidates.map((each) => settledWithin(each.published, undefined)),
   );
-  const named = candidates.find((_, index) => {
+  return candidates.find((_, index) => {
     const outcome = outcomes[index];
     return outcome?.kind === 'published' && outcome.generationId === generationId;
   });
-  return named !== undefined && unmarkedSince(runtime, named) ? named.render : undefined;
 }
 
 /**

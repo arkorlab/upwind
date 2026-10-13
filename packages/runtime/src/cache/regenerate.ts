@@ -604,7 +604,7 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
     // What stands is what the next request should find: a record of it, or of a later one, that
     // another request of this isolate learned while this one waited for the lease stays held.
     forgetRecordBefore(runtime, lease.entryId, lease.current?.seq ?? Infinity);
-    const ours = await answeringWhenSuperseded(runtime, candidates, lease.current);
+    const ours = await answeringWhenSuperseded(runtime, candidates, lease.current, synced);
     return ours === undefined ? { kind: 'superseded' } : { kind: 'superseded', publishing: ours };
   }
   // It answers nothing more: what the host holds is not a later generation that stands.
