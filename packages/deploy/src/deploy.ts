@@ -426,8 +426,11 @@ async function requireBlobs(
 }
 
 /**
- * A write a publication relies on, read back: a store that lost the value or changed it refuses the
- * deployment, before the pointer that would send requests to it exists.
+ * A write a publication relies on, read back, before the pointer that would send requests to it
+ * exists: a store that changed the value refuses the deployment. One that does not show it yet is
+ * no fault of the deployment's — KV may answer a read from a copy it took before the write, a miss
+ * among them, for as long as it keeps that copy — so the publication fails without a refusal, and
+ * the same staged deployment is published again once the write shows.
  */
 async function readBack(
   read: (key: string) => Promise<Uint8Array | undefined>,
@@ -435,7 +438,10 @@ async function readBack(
   ref: BlobRef,
 ): Promise<void> {
   const bytes = await read(key);
-  if (bytes === undefined || !(await holds(bytes, ref))) {
+  if (bytes === undefined) {
+    throw new Error(`${key} does not show what was written to it yet; publish it again`);
+  }
+  if (!(await holds(bytes, ref))) {
     throw new DeployRefusalError(`${key} does not hold what was written to it`, {
       code: 'bundle_invalid',
     });
@@ -477,6 +483,10 @@ async function manifestOf(
  * Publish a staged deployment: the manifest stored, every shell it names placed, then the manifest
  * where the edge reads it — and the pointer that sends the site's requests to it, under its policy,
  * for the caller to write where its edge looks.
+ *
+ * A failure that is no `DeployRefusalError` is the store's — a write that threw, or one it does not
+ * show yet (`readBack`) — and the same staged deployment can be published again: every write is
+ * under a digest or an id.
  */
 export async function publishDeployment(
   target: DeployTarget,
