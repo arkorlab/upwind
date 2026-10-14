@@ -1,7 +1,13 @@
 import { MAX_TAGS_PER_CALL, MAX_TAGS_PER_ENTRY } from '@stayingupwind/core/cache';
 import { describe, expect, it } from 'vitest';
 
-import { dataGetResponseSchema, dataSetRequestSchema } from '../src/cache/gateway-contract.ts';
+import {
+  dataGetRequestSchema,
+  dataGetResponseSchema,
+  dataSetRequestSchema,
+  MAX_DATA_HANDLER_LENGTH,
+  MAX_DATA_KEY_LENGTH,
+} from '../src/cache/gateway-contract.ts';
 
 function entry(kind: 'data:fetch' | 'data:use-cache', count: number) {
   return {
@@ -41,3 +47,31 @@ describe('data-cache tag bounds', () => {
     ).toBe(false);
   });
 });
+
+describe('a data read', () => {
+  const read = {
+    key: 'k'.repeat(MAX_DATA_KEY_LENGTH),
+    kind: 'data:use-cache',
+    handler: 'h'.repeat(MAX_DATA_HANDLER_LENGTH),
+  };
+
+  it('names a key and a handler as long as a write may', () => {
+    expect(dataGetRequestSchema.safeParse(read).success).toBe(true);
+  });
+
+  /** Nothing is stored under a longer one, so a read of it has nothing to find. */
+  it('names no key or handler longer than a write may', () => {
+    const longKey = { ...read, key: `${read.key}k` };
+    const longHandler = { ...read, handler: `${read.handler}h` };
+
+    expect(dataSetRequestSchema.safeParse({ ...useCacheWrite(), key: longKey.key }).success).toBe(
+      false,
+    );
+    expect(dataGetRequestSchema.safeParse(longKey).success).toBe(false);
+    expect(dataGetRequestSchema.safeParse(longHandler).success).toBe(false);
+  });
+});
+
+function useCacheWrite() {
+  return { key: 'key', entry: entry('data:use-cache', 1), valueBase64: '' };
+}

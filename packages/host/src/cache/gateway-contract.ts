@@ -415,11 +415,17 @@ export const dataSetResponseSchema = z.object({
 
 export type DataSetResponse = z.infer<typeof dataSetResponseSchema>;
 
-/** `POST /data/get` (the key is a body, never a path: it is Next.js's, and may be long). */
+/**
+ * `POST /data/get` (the key is a body, never a path: it is Next.js's, and may be long).
+ *
+ * Held to the bounds a write is: no value is ever stored under a longer key or handler, so a read
+ * of one has nothing to find, and is refused as a write of it is. A runtime's cache handler takes a
+ * read that fails for a miss, which is what a read of such a key always was.
+ */
 export const dataGetRequestSchema = z.object({
-  key: z.string().min(1),
+  key: z.string().min(1).max(MAX_DATA_KEY_LENGTH),
   kind: z.enum(['data:fetch', 'data:use-cache']),
-  handler: z.string().min(1).optional(),
+  handler: z.string().min(1).max(MAX_DATA_HANDLER_LENGTH).optional(),
 });
 export type DataGetRequest = z.infer<typeof dataGetRequestSchema>;
 
