@@ -262,9 +262,13 @@ async function fetchJudged(input: ImageInput, imageSource: ImageSource): Promise
   try {
     peeked = await peekBody(source.body, IMAGE_SIGNATURE_BYTES, IMAGE_BUDGET_MS);
   } catch (error) {
+    // A source can run past its limit within the bytes its type is read from: too large still,
+    // as it is when that happens later, whatever chunks it came in.
     return {
       kind: 'error',
-      error: badGateway(`image source unreadable: ${errorDetail(error)}`, source.requests),
+      error: isBodyLimitError(error)
+        ? tooLarge(imageSource, source.requests)
+        : badGateway(`image source unreadable: ${errorDetail(error)}`, source.requests),
     };
   }
   const verdict = judge(peeked.prefix, config, source.requests);
