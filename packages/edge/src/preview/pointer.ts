@@ -142,8 +142,6 @@ interface KeyReads {
    * another read is adopted (`adoptWarmingSafety`), since the pointer held has moved since.
    */
   readonly warming: Map<number, Answered>;
-  /** Reads sent up to this ticket were given up on (`MAX_READS_OUT_PER_KEY`), and none is adopted. */
-  givenUp: number;
 }
 
 /** The reads of pointers out in one isolate. */
@@ -151,8 +149,6 @@ interface ReadsOut {
   readonly keys: Map<string, KeyReads>;
   /** How many reads have been sent: the ticket of the latest. */
   sent: number;
-  /** Reads sent up to this ticket went out before the list was emptied, and none is adopted. */
-  forgotten: number;
 }
 
 /**
@@ -167,6 +163,10 @@ interface ReadsOut {
  * held cannot tell two reads apart: refreshes of a missing pointer all replace the same `null`, and
  * a deleted project's pointer, read by one refresh before the deletion, must not come back after a
  * later one found it gone.
+ *
+ * And a read is adopted only while it is out: one given up on (`MAX_READS_OUT_PER_KEY`), one
+ * forgotten with the list, and one of a key whose reads were all let go of since it went — whose
+ * next read begins the key's list afresh, which knows nothing of it — are let go of where they land.
  */
 const readsOut = new WeakMap<EdgeRuntime['memory']['pointers'], ReadsOut>();
 /**
@@ -187,11 +187,10 @@ const MAX_READS_OUT_PER_KEY = 8;
 function sendRead(runtime: EdgeRuntime, key: string): number {
   let out = readsOut.get(runtime.memory.pointers);
   if (out === undefined) {
-    out = { keys: new Map(), sent: 0, forgotten: 0 };
+    out = { keys: new Map(), sent: 0 };
     readsOut.set(runtime.memory.pointers, out);
   } else if (out.keys.size >= MAX_KEYS_WITH_A_READ_OUT) {
     out.keys.clear();
-    out.forgotten = out.sent;
   }
   out.sent += 1;
   const reads = out.keys.get(key) ?? {
@@ -199,7 +198,6 @@ function sendRead(runtime: EdgeRuntime, key: string): number {
     adopted: 0,
     parked: undefined,
     warming: new Map<number, Answered>(),
-    givenUp: 0,
   };
   // Oldest first: tickets are added as they are sent.
   for (const ticket of reads.out) {
@@ -208,7 +206,6 @@ function sendRead(runtime: EdgeRuntime, key: string): number {
     }
     reads.out.delete(ticket);
     reads.warming.delete(ticket);
-    reads.givenUp = ticket;
   }
   reads.out.add(out.sent);
   out.keys.set(key, reads);
@@ -332,9 +329,11 @@ function adopt(at: KeyRead<EdgePointer>, answered: Answered, ticket: number): vo
   if (out === undefined || reads === undefined) {
     return;
   }
-  reads.out.delete(ticket);
+  // Only a read still out has its say (`readsOut`): one given up on, forgotten with the list, or
+  // of a list begun afresh since it went is not among the reads out.
+  const stillOut = reads.out.delete(ticket);
   reads.warming.delete(ticket);
-  if (ticket > reads.adopted && ticket > out.forgotten && ticket > reads.givenUp) {
+  if (stillOut && ticket > reads.adopted) {
     settle(at, reads, { ticket, answered });
   }
   if (reads.out.size === 0 && reads.parked === undefined) {
@@ -504,8 +503,8 @@ async function refreshPointer<P extends EdgePointer>(
   // Judged against the pointer held as it lands, not the one the request was served: an older
   // refresh adopted meanwhile — the protection taken off — makes the newer, which puts it back, a
   // safety too. One that lands before such an adoption is judged again by it (`adoptWarmingSafety`).
-  // A read no longer out — given up on (`MAX_READS_OUT_PER_KEY`), or forgotten with the list — is
-  // never adopted: it reads nothing ahead, and is kept nowhere while it would.
+  // A read no longer out — given up on (`MAX_READS_OUT_PER_KEY`), forgotten with the list, or of a
+  // list begun afresh since — is never adopted: it reads nothing ahead, and is kept nowhere.
   const reads = readsOf(runtime, key);
   if (
     reads?.out.has(refresh.ticket) === true &&
