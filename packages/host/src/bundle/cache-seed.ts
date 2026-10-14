@@ -133,6 +133,10 @@ function outputOf(
 /**
  * The data route's prerender beside a Pages Router page: the props it was rendered with, named as
  * the build names it, under the base path (`<basePath>/_next/data/<buildId>/…`).
+ *
+ * Of the page's own route and prerender group, as `routePagesData` takes it
+ * (`@stayingupwind/core/bundle`): a bundle does not hold a pathname to one prerender, and another
+ * group's prerender of the same data pathname holds the props of another render.
  */
 function pagesDataOf(bundle: DeploymentBundle, prerender: Prerender): Prerender | undefined {
   const pathname = pagesDataPathnameUnder(
@@ -140,7 +144,14 @@ function pagesDataOf(bundle: DeploymentBundle, prerender: Prerender): Prerender 
     bundle.config.basePath,
     prerender.pathname,
   );
-  return bundle.prerenders.find((twin) => twin.pathname === pathname && twin.body !== undefined);
+  return bundle.prerenders.find((twin) => {
+    return (
+      twin.pathname === pathname &&
+      twin.route === prerender.route &&
+      twin.groupId === prerender.groupId &&
+      twin.body !== undefined
+    );
+  });
 }
 
 /** The outputs of the build's generation: the primary body, its state, and a page's data. */
