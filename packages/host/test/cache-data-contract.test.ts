@@ -9,10 +9,11 @@ import {
   MAX_DATA_KEY_LENGTH,
 } from '../src/cache/gateway-contract.ts';
 
+/** An entry's metadata: a `use cache` entry's under the handler that made it, a fetch entry's under none. */
 function entry(kind: 'data:fetch' | 'data:use-cache', count: number) {
   return {
     kind,
-    handler: 'default',
+    ...(kind === 'data:use-cache' && { handler: 'default' }),
     tags: Array.from({ length: count }, (_, index) => `tag-${index}`),
     stale: 300,
     timestamp: 1,
@@ -75,3 +76,42 @@ describe('a data read', () => {
 function useCacheWrite() {
   return { key: 'key', entry: entry('data:use-cache', 1), valueBase64: '' };
 }
+
+describe("a data entry's handler", () => {
+  const { handler, ...unnamed } = entry('data:use-cache', 1);
+  const fetched = entry('data:fetch', 1);
+
+  it('is named by a use-cache entry, and by no fetch entry', () => {
+    expect(dataSetRequestSchema.safeParse({ ...useCacheWrite(), entry: fetched }).success).toBe(
+      true,
+    );
+    expect(dataGetRequestSchema.safeParse({ key: 'key', kind: 'data:fetch' }).success).toBe(true);
+    expect(
+      dataGetRequestSchema.safeParse({ key: 'key', kind: 'data:use-cache', handler }).success,
+    ).toBe(true);
+  });
+
+  /** Left out, every handler's values would be one namespace; given, one no runtime reads. */
+  it.each([
+    ['a use-cache entry that names none', unnamed, { key: 'key', kind: 'data:use-cache' }],
+    [
+      'a fetch entry that names one',
+      { ...fetched, handler },
+      { key: 'key', kind: 'data:fetch', handler },
+    ],
+  ] as const)('is refused for %s', (_, metadata, request) => {
+    const read = { entryId: 'ent_1', generationId: 'gen_1', dependencyRevision: 1 };
+
+    expect(dataSetRequestSchema.safeParse({ ...useCacheWrite(), entry: metadata }).success).toBe(
+      false,
+    );
+    expect(
+      dataGetResponseSchema.safeParse({
+        ...read,
+        entry: metadata,
+        value: { kind: 'inline', base64: '' },
+      }).success,
+    ).toBe(false);
+    expect(dataGetRequestSchema.safeParse(request).success).toBe(false);
+  });
+});

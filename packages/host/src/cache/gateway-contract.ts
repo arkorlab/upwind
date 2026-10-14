@@ -351,6 +351,24 @@ export const generationResponseSchema = z.object({ generation: publicCacheGenera
 
 /** What the data cache keeps beside a value: the `CacheEntry` fields of Next.js's handler contract. */
 const DATA_USE_CACHE_KIND = 'data:use-cache';
+
+/**
+ * Whether a data entry names a handler as its kind has one: a `use cache` entry is kept under the
+ * handler that made it (`default`, `remote`, one of `cacheHandlers`), which is part of what names
+ * the entry, and a `fetch` entry under none. Omitted from a `use cache` entry, every handler's
+ * values would be one namespace; named on a `fetch` entry, it would be one no runtime reads.
+ */
+function namesItsHandler(entry: {
+  readonly kind: string;
+  readonly handler?: string | undefined;
+}): boolean {
+  return (entry.kind === DATA_USE_CACHE_KIND) === (entry.handler !== undefined);
+}
+const HANDLER_OF_KIND = {
+  message: 'a use-cache entry names its handler, and a fetch entry none',
+  path: ['handler'],
+} as const;
+
 export const dataEntryMetadataSchema = z
   .object({
     kind: z.enum(['data:fetch', DATA_USE_CACHE_KIND]),
@@ -367,7 +385,8 @@ export const dataEntryMetadataSchema = z
   .refine((entry) => entry.kind === DATA_USE_CACHE_KIND || entry.tags.length <= MAX_TAGS_PER_CALL, {
     message: `A fetch entry may carry at most ${MAX_TAGS_PER_CALL} tags`,
     path: ['tags'],
-  });
+  })
+  .refine(namesItsHandler, HANDLER_OF_KIND);
 export type DataEntryMetadata = z.infer<typeof dataEntryMetadataSchema>;
 
 /**
@@ -422,11 +441,13 @@ export type DataSetResponse = z.infer<typeof dataSetResponseSchema>;
  * of one has nothing to find, and is refused as a write of it is. A runtime's cache handler takes a
  * read that fails for a miss, which is what a read of such a key always was.
  */
-export const dataGetRequestSchema = z.object({
-  key: z.string().min(1).max(MAX_DATA_KEY_LENGTH),
-  kind: z.enum(['data:fetch', 'data:use-cache']),
-  handler: z.string().min(1).max(MAX_DATA_HANDLER_LENGTH).optional(),
-});
+export const dataGetRequestSchema = z
+  .object({
+    key: z.string().min(1).max(MAX_DATA_KEY_LENGTH),
+    kind: z.enum(['data:fetch', DATA_USE_CACHE_KIND]),
+    handler: z.string().min(1).max(MAX_DATA_HANDLER_LENGTH).optional(),
+  })
+  .refine(namesItsHandler, HANDLER_OF_KIND);
 export type DataGetRequest = z.infer<typeof dataGetRequestSchema>;
 
 const dataValueSchema = z.discriminatedUnion('kind', [
