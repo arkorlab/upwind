@@ -1,11 +1,12 @@
 import { sha256Hex } from '@stayingupwind/core/artifact';
 import {
   fromStoredManifest,
+  MAX_MANIFEST_BYTES,
   parseProjectManifest,
   type ProjectManifest,
   READ_MANIFEST_SCHEMA_VERSIONS,
 } from '@stayingupwind/core/manifest';
-import { decodeUtf8 } from '@stayingupwind/core/util';
+import { decodeUtf8, releaseStream } from '@stayingupwind/core/util';
 import {
   builtinDeliveryPolicy,
   DEFAULT_DELIVERY_POLICY,
@@ -53,8 +54,18 @@ async function durableManifest(
       return cached;
     }
     const object = await env.ARTIFACTS.get(r2ManifestKey(manifestId));
-    const bytes = await object?.arrayBuffer();
-    return bytes !== undefined && (await takenUnder(bytes, manifestId, 'r2')) ? bytes : undefined;
+    if (object === null) {
+      return;
+    }
+    // No manifest a deploy writes is larger than this (`oversizedManifest`): an object that is
+    // is a store's fault, refused on the size it states before its body is read into memory.
+    if (object.size > MAX_MANIFEST_BYTES) {
+      releaseStream(object.body, 'a manifest object larger than any manifest');
+      logWarn('manifest copy is larger than any manifest', { manifestId, bytes: object.size });
+      return;
+    }
+    const bytes = await object.arrayBuffer();
+    return (await takenUnder(bytes, manifestId, 'r2')) ? bytes : undefined;
   });
 }
 
