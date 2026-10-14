@@ -180,10 +180,11 @@ export interface BacklogCursor {
 }
 
 /**
- * A page of the backlog after `after` and before `until`, least recently written first — by the
+ * A page of the backlog after `after` and up to `until`, least recently written first — by the
  * revision a record last went out at: a record a rewrite reaches goes to the back, so one that is
  * behind is never kept there by others that go out again and again. Read off the partial index of
- * the records behind.
+ * the records behind. Up to `until` and not short of it: a pass that comes round to where the last
+ * run stopped tries again the record it stopped at, should that one have failed.
  */
 export function backlogRecords(
   sql: SqlStorage,
@@ -194,7 +195,7 @@ export function backlogRecords(
   return sql
     .exec<EntryRow>(
       `SELECT * FROM entries WHERE kv_revision < record_revision
-         AND (kv_revision, entry_id) > (?, ?) AND (kv_revision, entry_id) < (?, ?)
+         AND (kv_revision, entry_id) > (?, ?) AND (kv_revision, entry_id) <= (?, ?)
        ORDER BY kv_revision, entry_id LIMIT ?`,
       after.kvRevision,
       after.entryId,
