@@ -206,7 +206,10 @@ export function finishControlTagProjection(
     projection.key,
     projection.value,
   ).rowsWritten;
-  if (deleted > 0) writeMeta(sql, META_CONTROL_TAG_PENDING_COUNT, String(count - deleted));
+  // What went is one mark, its key the table's: `rowsWritten` counts what SQLite wrote, an index's
+  // entries beside a row's (one row inserted into `meta` reports two), and says here only whether
+  // the mark went.
+  if (deleted > 0) writeMeta(sql, META_CONTROL_TAG_PENDING_COUNT, String(count - 1));
 }
 
 export function controlTagsPending(sql: SqlStorage, retired: boolean): boolean {
