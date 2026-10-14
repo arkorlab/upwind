@@ -285,12 +285,6 @@ export function memberEntryKey(scopeId: string, route: string, pathname: string)
   return `${scopeId}:${route}:${pathname}`;
 }
 
-/**
- * Condemns one route within this isolate until the pointer arrives with it demoted. A continuation
- * that sets a cookie, sends a header the shell cannot carry, or sends nothing at all makes that
- * route unsuitable for splicing; the other isolates cannot read this restriction, and learn of the
- * route from the pointer they read.
- */
 /** The key a document's rewrite is remembered under: the manifest names what the middleware is. */
 export function rewriteSeenKey(manifestId: string, pathname: string): string {
   return `${manifestId}:${pathname}`;
@@ -309,6 +303,12 @@ export function refusedAssetKey(
   return `${manifestId}:${host}:${variant}:${url}`;
 }
 
+/**
+ * The key a route is condemned under within this isolate (`suspects`), until the pointer arrives
+ * with it demoted. A continuation that sets a cookie, sends a header the shell cannot carry, or
+ * sends nothing at all makes that route unsuitable for splicing; the other isolates cannot read this
+ * restriction, and learn of the route from the pointer they read.
+ */
 export function routeSuspectKey(projectId: string, manifestId: string, pathname: string): string {
   return `${projectId}:${manifestId}:${pathname}`;
 }
