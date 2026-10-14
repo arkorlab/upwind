@@ -1,7 +1,8 @@
-import { rolldown } from 'rolldown';
+import { type OutputChunk, rolldown } from 'rolldown';
 
 import { jsLiteral } from './codegen.ts';
 import { generatedModulesPlugin } from './generated-modules.ts';
+import { manglerGetsWrong } from './mangle-packages.ts';
 import { GLOBAL_OBJECT, globalObjectPlugin, THROWING_GLOBALS } from './throwing-globals.ts';
 
 /** What the runtime module of one Function is bundled from, and as. */
@@ -79,18 +80,38 @@ export async function bundleRuntimeModule(input: RuntimeBundleInput): Promise<vo
       }
     },
   });
+  // The runtime carries code this package did not write — the cache host a host names, and the
+  // packages both import — and the mangler has open bugs that rename some code wrongly
+  // (`manglerGetsWrong`). The bundle is rendered once, as the minifier would be handed it, and read
+  // for them: one that has any is minified without renaming.
+  const { output } = await bundle.generate({ format: 'esm', codeSplitting: false });
+  // Read once the bundle is generated: Rolldown reads the modules then, and not before, so what it
+  // could not resolve is said then too. Nothing has been written yet.
   if (unresolved.length > 0) {
     throw new Error(
       `@stayingupwind/adapter: the runtime imports what it cannot resolve\n${unresolved.join('\n')}`,
     );
   }
+  const rendered = output.find((item): item is OutputChunk => item.type === 'chunk');
+  const renaming = rendered !== undefined && !manglerGetsWrong(input.outFile, rendered.code);
   await bundle.write({
     file: input.outFile,
     format: 'esm',
     codeSplitting: false,
-    // Whitespace and syntax, as `app.cjs` is minified, and not names: a stack trace out of the
-    // runtime still says which function it came from.
-    minify: { compress: true, mangle: false, codegen: { removeWhitespace: true } },
+    // Whitespace and syntax, as `app.cjs` is minified, and the names of variables and parameters,
+    // the module's top level among them: an ES module's top level is its own, and what it exports
+    // keeps the name it is exported by. The names of functions and classes are kept
+    // (`keepNames`), so a stack trace out of the runtime still says which function it came from,
+    // wherever it is read — an error reporter in the Worker reads it as V8 wrote it, with no map
+    // to read it back through. On a fixture's app Function that took the runtime from 360,851 to
+    // 273,664 bytes and the middleware Function's from 132,926 to 103,041, with every function and
+    // class in them named as before; mangled as well, those names would have taken off another
+    // 33,316 and 12,784 bytes, and left every frame of the runtime's named by a letter or two.
+    minify: {
+      compress: true,
+      mangle: renaming && { toplevel: true, keepNames: true },
+      codegen: { removeWhitespace: true },
+    },
     comments: { legal: false },
     sourcemap: false,
   });
