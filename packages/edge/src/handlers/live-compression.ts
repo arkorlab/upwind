@@ -1,3 +1,5 @@
+// eslint-disable-next-line @typescript-eslint/triple-slash-reference -- the runtime's module has no declarations of its own, and a consumer that imports this one without `@types/node` reads them from here: no type entry or import can name a file of ambient declarations.
+/// <reference path="../../types/node-zlib.d.ts" />
 // eslint-disable-next-line no-restricted-imports, import-x/no-nodejs-modules -- the Workers runtime has no other compressor that can be told to flush; this module is the one place that compresses on the way out.
 import { constants, createBrotliCompress, createGzip } from 'node:zlib';
 
