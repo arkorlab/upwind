@@ -225,7 +225,9 @@ function outputsOf(
 
 /**
  * The seed of one prerender. `undefined` for a prerender without a body, which
- * `cacheablePrerenders` never yields.
+ * `cacheablePrerenders` never yields, and for one of a Pages Router API route. `next build` renders
+ * no such route, and Next.js caches none: `cacheablePrerenders` takes one a bundle names for a
+ * route handler's, but it is neither a page nor a handler a Function would regenerate.
  */
 export async function seedRouteFor(
   bundle: DeploymentBundle,
@@ -233,7 +235,7 @@ export async function seedRouteFor(
   ctx: SeedContext,
 ): Promise<SeededRoute | undefined> {
   const { body } = prerender;
-  if (body === undefined) {
+  if (body === undefined || indexOf(bundle).kinds.get(prerender.route) === 'pages-api') {
     return undefined;
   }
   const kind = prerenderEntryKind(bundle, prerender);
