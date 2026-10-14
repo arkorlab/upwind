@@ -42,6 +42,8 @@ const NOTHING = '\u{0000}';
 const VALUE_SEPARATOR = ',';
 const PARAMETER_SEPARATOR = ';';
 const BACKSLASH = '\\';
+/** What begins a URL's fragment, which the browser keeps and never requests. */
+const FRAGMENT = '#';
 const FETCH_PRIORITY_ATTR = 'fetchpriority';
 /** Media a link is conditional on nothing by: the attribute's own default, written or empty. */
 const UNCONDITIONAL_MEDIA: ReadonlySet<string> = new Set(['', 'all']);
@@ -493,6 +495,10 @@ function splitOutsideQuotes(value: string, separator: string): string[] {
  * What makes two preloads the same one: the file, what the browser would fetch it as, and whether
  * it would fetch it in CORS mode.
  *
+ * The file as it is requested. A fragment never leaves the browser, so `/app.css#one` and
+ * `/app.css#two` are one fetch: they take one of the values a header carries between them, and a
+ * header's own `</app.css>` stands in for both.
+ *
  * The mode is part of what a preload is matched on, and `crossorigin` is what sets it — absent is
  * not the same as written, which is why one the markup never wrote is spelled differently here
  * rather than folded in with the anonymous state. A font the header names without it cannot answer
@@ -506,7 +512,9 @@ function splitOutsideQuotes(value: string, separator: string): string[] {
  * attribute can hold, so no value can be read as the absence of one.
  */
 function preloadKey(shape: PreloadShape, href: string): string {
-  return [shape.destination, shape.crossorigin ?? NOTHING, shape.type ?? NOTHING, href].join(
+  const fragment = href.indexOf(FRAGMENT);
+  const requested = fragment === -1 ? href : href.slice(0, fragment);
+  return [shape.destination, shape.crossorigin ?? NOTHING, shape.type ?? NOTHING, requested].join(
     NOTHING,
   );
 }
