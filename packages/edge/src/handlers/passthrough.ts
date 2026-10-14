@@ -325,7 +325,9 @@ async function answeredAgain(
 export async function handlePassthrough(input: PassthroughInput): Promise<Response> {
   const client = new Request(input.request, {
     headers: stripEdgeHeaders(input.request.headers),
-    ...(input.observedBody !== undefined && { body: input.observedBody }),
+    // A stream in place of the request's own body, which Fetch takes in half-duplex mode alone: a
+    // runtime that keeps to the standard refuses the request without it.
+    ...(input.observedBody !== undefined && { body: input.observedBody, duplex: 'half' }),
   });
   const forwarded =
     input.middleware === undefined ? client : afterMiddleware(client, input.middleware);
