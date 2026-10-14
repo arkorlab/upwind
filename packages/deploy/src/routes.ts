@@ -7,6 +7,7 @@ import {
   type Prerender,
   PRIMARY_FUNCTION,
   routePathnameOf,
+  type ServableOptions,
   shellHeaders,
 } from '@stayingupwind/core/bundle';
 import type {
@@ -249,10 +250,10 @@ export function routeEntryOf(
 }
 
 /**
- * The prefetch segments of each route the edge serves, by the document's pathname as the build
- * named it, each named with the renderings compressed for it. `routeEntryOf` looks them up
- * by that same name, and names them on the route the request is answered under, whatever its
- * spelling (`routePathnameOf`).
+ * The prefetch segments of each route the edge serves, as `servable` asks it of the documents, by
+ * the document's pathname as the build named it, each named with the renderings compressed for
+ * it. `routeEntryOf` looks them up by that same name, and names them on the route the request is
+ * answered under, whatever its spelling (`routePathnameOf`).
  *
  * Keyed by the document's own pathname rather than by the segment's, because that is the page a
  * request asks for part of: a prefetch arrives at the page's URL, and the segment's own path is
@@ -261,9 +262,10 @@ export function routeEntryOf(
 export function routeSegmentsOf(
   bundle: DeploymentBundle,
   encodings: ReadonlyMap<string, readonly EncodedShellRef[]>,
+  servable: ServableOptions,
 ): ReadonlyMap<string, Record<string, RouteSegment>> {
   const routes = new Map<string, Record<string, RouteSegment>>();
-  const found = prefetchSegments(bundle, { complete: true });
+  const found = prefetchSegments(bundle, servable);
   for (const segment of found) {
     const { body } = segment.prerender;
     if (body === undefined) {

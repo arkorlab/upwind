@@ -95,7 +95,8 @@ export interface AssembleManifestInput {
   /**
    * Whether the deployment has a runtime cache its routes are served from. `false` names none — no
    * entry on a route, no scope on the manifest — for a host that seeds none, whose edge then serves
-   * each route from its shell alone. Absent, it has one.
+   * each route from its shell alone, and routes no page the build finished: the edge tells one from
+   * a page it resumes by its entry. Absent, it has one.
    */
   readonly runtimeCache?: boolean | undefined;
 }
@@ -140,9 +141,14 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
   if (foreign !== undefined) {
     return { kind: 'refused', reason: foreign };
   }
-  const prerenders = edgeServablePrerenders(bundle, { complete: true });
   // The scope is the deployment; the same derivation the seed used names each entry.
   const cached = input.runtimeCache !== false;
+  // The edge tells a page the build finished from one it resumes by the page's entry
+  // (`cache.delivery`), and without a runtime cache there is none: it would resume a finished page
+  // and splice a render of the whole page behind it. Such a deployment leaves those pages, and what
+  // the build wrote beside them, to its Function, which serves them whole.
+  const servable = { complete: cached };
+  const prerenders = edgeServablePrerenders(bundle, servable);
   const caches = cached ? await routeCachesOf(bundle, input.deploymentId) : new Map();
   const middlewareMatchers = middlewareMatchersOf(bundle);
   const rules = headerRulesOf(bundle);
@@ -161,9 +167,9 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
     }),
     recoverySource: input.recoverySource,
     resumable: new Set(resumablePrerenders(bundle).map((prerender) => prerender.id)),
-    segments: routeSegmentsOf(bundle, input.encodings),
-    payloads: routeArtifactsOf(routePayloads(bundle, { complete: true }), input.encodings),
-    pagesData: routeArtifactsOf(routePagesData(bundle, { complete: true }), input.encodings),
+    segments: routeSegmentsOf(bundle, input.encodings, servable),
+    payloads: routeArtifactsOf(routePayloads(bundle, servable), input.encodings),
+    pagesData: routeArtifactsOf(routePagesData(bundle, servable), input.encodings),
   };
   const routes = prerenders.flatMap((prerender) => {
     const entry = routeEntryOf(prerender, context);
