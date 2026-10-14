@@ -42,6 +42,23 @@ describe('resolvePolicy', () => {
     expect(resolved.shell.id).toBe('r2');
     expect(resolved.assets.id).toBe('cache-api-readthrough');
   });
+
+  /**
+   * Each backend is the strategy that names itself so, which the type holds a registry to: a
+   * strategy filed under another backend's name would report the wrong backend once resolved.
+   */
+  it('files each strategy under the backend it names itself', () => {
+    const misfiled: StrategyRegistry<undefined> = {
+      ...registry,
+      shell: {
+        ...registry.shell,
+        // @ts-expect-error -- `r2`'s strategy under `kv`.
+        kv: { id: 'r2', ...noShell },
+      },
+    };
+
+    expect(resolvePolicy(misfiled, DEFAULT_DELIVERY_POLICY).shell.id).toBe('r2');
+  });
 });
 
 describe('deliveryPolicySchema', () => {
