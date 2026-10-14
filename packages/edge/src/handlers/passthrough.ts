@@ -92,6 +92,8 @@ export interface PassthroughMetrics {
   readonly recordLookupMs?: number | undefined;
   /** The reads of storage before this, for a document it could not serve (`PassthroughWait`). */
   readonly storageReads?: number | undefined;
+  /** The dispatches of a resume let go before this (`PassthroughWait`). */
+  readonly resumeDispatches?: number | undefined;
   readonly projectId: string;
   readonly manifestId: string;
   readonly policyId: string;
@@ -113,6 +115,11 @@ export interface PassthroughWait {
    * (`storageReadsOf`).
    */
   readonly storageReads?: number | undefined;
+  /**
+   * The dispatches of the resume such a document had sent before its shell failed, which the edge
+   * then let go (`fallbackToApp`): requests made all the same, none where none went out.
+   */
+  readonly resumeDispatches?: number | undefined;
 }
 
 /** What the upstream could not be reached at all is reported as, with the reason kept. */
@@ -240,9 +247,12 @@ function reportPassthrough(
     recovery: 0,
     retry: 0,
     assetHit: 0,
-    // The Workers asked, and the reads of storage that came before them, as a served document's
-    // point counts both.
-    subrequests: (dispatched?.redispatched === true ? 2 : 1) + (metrics.storageReads ?? 0),
+    // The Workers asked, and what came before them — reads of storage, a resume let go — as a
+    // served document's point counts each.
+    subrequests:
+      (dispatched?.redispatched === true ? 2 : 1) +
+      (metrics.storageReads ?? 0) +
+      (metrics.resumeDispatches ?? 0),
   });
 }
 

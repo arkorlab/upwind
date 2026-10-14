@@ -5,6 +5,7 @@ import type { ContinuationFailureKind } from '../reports.ts';
 import type { ShellLoadResult } from '../strategies/shell-loader.ts';
 import type { DocumentInput } from './document.ts';
 import { sendReport } from './observer.ts';
+import { dispatchesMade } from './upstream.ts';
 
 /**
  * The resume as the document handler holds it: observed from the moment it starts, and what
@@ -97,12 +98,16 @@ export function fallbackToApp(
   if (sent !== undefined) {
     edge.ctx.waitUntil(sent);
   }
+  // What the resume had sent before it is let go: none where there was no resume to send.
+  const resumeDispatches = handle === undefined ? 0 : dispatchesMade(handle.response);
   handle?.abort(reason);
   edge.ctx.waitUntil(releaseUpstream(upstream));
   // As every passthrough of the request goes: routed again from the pointer when its Workers turned
   // out to be gone (`DocumentInput.passthrough`), and counted under the route — with the reads that
-  // found no shell to serve, which went out all the same, as a served document's are counted.
+  // found no shell to serve and the resume let go, which went out all the same, as a served
+  // document's are counted.
   return input.passthrough(reason, input.middleware, entry.pathname, {
     storageReads: failure.storageReads,
+    resumeDispatches,
   });
 }

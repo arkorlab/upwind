@@ -59,6 +59,15 @@ const UNDER_WAY = new WeakMap<Promise<Response>, Progress>();
 /** How far a split deployment's request had got where the Worker it was sent on to failed. */
 const FAILED = new WeakMap<Error, Dispatched>();
 
+/** What `fetchUpstream` handed back without sending anything, there being nowhere to send it. */
+const UNSENT = new WeakSet<Promise<Response>>();
+
+function unsent(reason: Error): Promise<Response> {
+  const refused = Promise.reject(reason);
+  UNSENT.add(refused);
+  return refused;
+}
+
 /**
  * Where the answer of a split deployment came from (`fetchUpstream`); `undefined` for any other
  * answer — a deployment that was not split records nothing, and pays nothing to.
@@ -178,6 +187,14 @@ export function dispatchesSoFar(answer: Promise<Response>): number {
 }
 
 /**
+ * The dispatches a request had made when it was let go, as `dispatchesSoFar` counts them: none where
+ * `fetchUpstream` had nowhere to send it, since nothing went out.
+ */
+export function dispatchesMade(answer: Promise<Response>): number {
+  return UNSENT.has(answer) ? 0 : dispatchesSoFar(answer);
+}
+
+/**
  * The dispatches a request that failed had taken, by what it failed with, for a caller that has
  * the error and not the request (`fetchUpstream`), counted as `dispatchesOf` counts an answer's:
  * two where the Worker first asked named another, and the one it was sent on to failed or named
@@ -258,10 +275,10 @@ export function fetchUpstream(
   fn?: string,
 ): Promise<Response> {
   if (app === undefined) {
-    return Promise.reject(new NoApplicationError());
+    return unsent(new NoApplicationError());
   }
   if (runtime.dispatchApp === undefined) {
-    return Promise.reject(new NoDispatchError());
+    return unsent(new NoDispatchError());
   }
   // Told where the deployment's scope stands, as this isolate last found it: a Function behind it
   // catches up before it judges anything (`SCOPE_REVISION_HEADER`). A deployment's scope is its id.

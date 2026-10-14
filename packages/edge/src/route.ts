@@ -196,8 +196,9 @@ function passthroughFor(
       ...(middleware?.middlewareMs !== undefined && { middlewareMs: middleware.middlewareMs }),
       // And a record read for the request that served nothing.
       ...(waited?.recordLookupMs !== undefined && { recordLookupMs: waited.recordLookupMs }),
-      // And the reads of storage a document it could not serve took.
+      // And what a document it could not serve took: reads of storage, and a resume let go.
       ...(waited?.storageReads !== undefined && { storageReads: waited.storageReads }),
+      ...(waited?.resumeDispatches !== undefined && { resumeDispatches: waited.resumeDispatches }),
     },
   };
   // Only a request the host observes pays for the observer; any other keeps the forwarding's own
