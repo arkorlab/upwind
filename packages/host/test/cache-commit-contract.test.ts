@@ -1,3 +1,4 @@
+import { MAX_TAG_LENGTH, MAX_TAGS_PER_ENTRY } from '@stayingupwind/core/cache';
 import { describe, expect, it } from 'vitest';
 
 import { commitRequestSchema } from '../src/cache/gateway-contract.ts';
@@ -77,5 +78,38 @@ describe("a commit's headers", () => {
   ])('are not %s', (_, headers) => {
     expect(() => new Headers(headers)).toThrow(TypeError);
     expect(commitRequestSchema.safeParse(commit({ headers })).success).toBe(false);
+  });
+});
+
+/** What the commit says its renderer's view held of `count` tags, each at a revision of its own. */
+function heldOf(count: number): Record<string, number> {
+  return Object.fromEntries(
+    Array.from({ length: count }, (_, index) => [`tag-${String(index)}`, index]),
+  );
+}
+
+describe('what a commit says its view held of its tags', () => {
+  /** A runtime from before says nothing of it, and its commit is judged as one whose view held none. */
+  it('may be left out', () => {
+    expect(commitRequestSchema.safeParse(commit()).success).toBe(true);
+  });
+
+  it('is a revision of each of as many tags as a generation may carry', () => {
+    const request = { ...commit(), heldTagRevisions: heldOf(MAX_TAGS_PER_ENTRY) };
+
+    expect(commitRequestSchema.safeParse(request).success).toBe(true);
+  });
+
+  it.each([
+    ['of more tags than a generation may carry', heldOf(MAX_TAGS_PER_ENTRY + 1)],
+    ['of an empty tag', { '': 1 }],
+    ['of a tag longer than a tag may be', { ['t'.repeat(MAX_TAG_LENGTH + 1)]: 1 }],
+    ['at a revision below none', { home: -1 }],
+    ['at a revision that is no whole number', { home: 1.5 }],
+    ['at a revision that is no number', { home: '1' }],
+  ])('is not %s', (_, heldTagRevisions) => {
+    const request = { ...commit(), heldTagRevisions };
+
+    expect(commitRequestSchema.safeParse(request).success).toBe(false);
   });
 });

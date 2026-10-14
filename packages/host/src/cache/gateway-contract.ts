@@ -297,11 +297,32 @@ export const commitGenerationSchema = z.object({
 });
 export type CommitGeneration = z.infer<typeof commitGenerationSchema>;
 
+/**
+ * What a render's view of the tags held of each of the generation's tags, by value: the revision of
+ * the scope through which every read the render made under the tag was judged against its
+ * invalidations — the view's own revision of a tag no read was made under — and nothing of a tag it
+ * held nothing of. Of no more tags than a generation carries.
+ */
+const heldTagRevisionsSchema = z
+  .record(tagValueSchema, z.number().int().nonnegative())
+  .refine((held) => Object.keys(held).length <= MAX_TAGS_PER_ENTRY, {
+    message: `A commit may say what its view held of at most ${MAX_TAGS_PER_ENTRY} tags`,
+  });
+
 /** `POST /attempts/:attemptId/commit` */
 export const commitRequestSchema = z.object({
   fencingToken: z.number().int().positive(),
   /** The tag revision the renderer had synced when it read its inputs. */
   observedTagRevision: z.number().int().nonnegative(),
+  /**
+   * What the renderer's view held of each of the generation's tags (`heldTagRevisionsSchema`): an
+   * invalidation of a tag at or before both what this says of it and `observedTagRevision` is one
+   * the render's reads under the tag were judged against. Absent from a runtime from before it,
+   * whose commit is judged as one whose view held no tag: `observedTagRevision` says what the view
+   * was brought up to, not what it kept of each tag — it lets a tag go past so many, and judges a
+   * read under it by a copy of the tags that may be behind.
+   */
+  heldTagRevisions: heldTagRevisionsSchema.optional(),
   generation: commitGenerationSchema,
 });
 export type CommitRequest = z.infer<typeof commitRequestSchema>;
