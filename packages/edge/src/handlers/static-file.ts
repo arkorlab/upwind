@@ -50,6 +50,8 @@ export interface StaticFileInput {
   readonly middleware?: Extract<MiddlewareResult, { kind: 'continue' }> | undefined;
   /** The dispatches the middleware took before the file was served, which its metric counts. */
   readonly middlewareDispatches?: number | undefined;
+  /** How long the middleware took, where it ran, which its metric reports. */
+  readonly middlewareMs?: number | undefined;
   /** What `next.config`'s header rules set on this request, as the application would have. */
   readonly configured?: ConfiguredHeaders | undefined;
 }
@@ -673,6 +675,7 @@ function deliveryMetric(
     assetHit: delivered.cache !== undefined && SERVED_FROM_CACHE.has(delivered.cache) ? 1 : 0,
     // Storage's, and the middleware's before them: every service call the answer made.
     subrequests: delivered.requests + (input.middlewareDispatches ?? 0),
+    middlewareMs: input.middlewareMs,
   };
 }
 

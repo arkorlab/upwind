@@ -7,11 +7,7 @@ import {
 } from '@stayingupwind/core/manifest';
 
 import type { EdgeContext } from '../strategies/context.ts';
-import {
-  type HostedGateInput,
-  type MiddlewareContinue,
-  serveAfterMiddleware,
-} from './hosted-gate.ts';
+import { type HostedGateInput, serveAfterMiddleware, type TimedContinue } from './hosted-gate.ts';
 import {
   abandonFileRead,
   type EarlyFileRead,
@@ -49,7 +45,7 @@ interface ServedFile {
 function serveFile(
   input: HostedFileInput,
   served: ServedFile,
-  middleware: MiddlewareContinue | undefined,
+  middleware: TimedContinue | undefined,
   dispatches: number,
 ): Promise<Response> {
   // The request as the middleware left it. It may have removed a `Range` or an `If-None-Match`,
@@ -67,6 +63,7 @@ function serveFile(
       edge: input.edge,
       middleware,
       middlewareDispatches: dispatches,
+      middlewareMs: middleware?.middlewareMs,
       // Judged on the request as it reached the edge, as the document path judges them: the
       // router runs these rules before the middleware, so neither a path it rewrote nor a header it
       // took away — or added — is what Next.js selected them with.
@@ -98,7 +95,7 @@ function shippedFileAt(manifest: ProjectManifest, url: URL): ServedFile | undefi
 export function serveHostedFile(
   input: HostedFileInput,
   url: URL,
-  middleware: MiddlewareContinue | undefined,
+  middleware: TimedContinue | undefined,
   dispatches: number,
 ): Promise<Response> | undefined {
   const served = shippedFileAt(input.manifest, url);

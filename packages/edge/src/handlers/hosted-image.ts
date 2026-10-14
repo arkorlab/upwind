@@ -6,13 +6,9 @@ import {
 import { type ConfiguredHeaders, headerRulesFor } from '@stayingupwind/core/manifest';
 import { PatternBudgetExceededError } from '@stayingupwind/core/request';
 
-import {
-  type HostedGateInput,
-  type MiddlewareContinue,
-  serveAfterMiddleware,
-} from './hosted-gate.ts';
+import { type HostedGateInput, serveAfterMiddleware, type TimedContinue } from './hosted-gate.ts';
 import { handleImage, type ImageAnswerInput, refuseImage } from './image.ts';
-import type { MiddlewareOutcome } from './middleware.ts';
+import type { MiddlewareOutcome, MiddlewareTiming } from './middleware.ts';
 import { PATTERN_BUDGET } from './passthrough.ts';
 
 export interface HostedImageInput extends HostedGateInput {
@@ -32,7 +28,7 @@ const UNJUDGED: ConfiguredHeaders = { headers: {}, conditioned: false };
  */
 function answering(
   input: HostedImageInput,
-  middleware: MiddlewareContinue | undefined,
+  middleware: TimedContinue | undefined,
   dispatches: number,
   configured: ConfiguredHeaders,
 ): ImageAnswerInput {
@@ -41,7 +37,15 @@ function answering(
       ? input.request
       : new Request(input.request, { headers: middleware.requestHeaders });
   const { edge, config } = input;
-  return { request, edge, config, configured, middleware, middlewareDispatches: dispatches };
+  return {
+    request,
+    edge,
+    config,
+    configured,
+    middleware,
+    middlewareDispatches: dispatches,
+    middlewareMs: middleware?.middlewareMs,
+  };
 }
 
 /** The path's rules for a refusal: none where it is one of theirs that costs too much to judge. */
@@ -65,7 +69,7 @@ function rulesForRefusal(input: HostedImageInput): ConfiguredHeaders {
  */
 function refused(
   input: HostedImageInput,
-  middleware?: MiddlewareOutcome,
+  middleware?: MiddlewareOutcome & Partial<MiddlewareTiming>,
   dispatches = 0,
 ): Promise<Response> {
   const continued = middleware?.kind === 'continue' ? middleware : undefined;
@@ -98,7 +102,7 @@ export async function routeHostedImage(input: HostedImageInput): Promise<Respons
 function optimized(
   input: HostedImageInput,
   target: URL,
-  middleware: MiddlewareContinue | undefined,
+  middleware: TimedContinue | undefined,
   dispatches: number,
 ): Promise<Response> {
   const { url, manifest, config } = input;

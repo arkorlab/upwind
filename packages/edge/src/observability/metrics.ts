@@ -15,8 +15,8 @@ export interface EdgeMetric {
   readonly manifestId: string;
   readonly policyId: string;
   /**
-   * How long the middleware took. Left out — recorded as 0 — by a kind that runs none: an asset
-   * and an image are answered without one.
+   * How long the middleware took. Left out — recorded as 0 — where none ran: an asset is answered
+   * without one, as is a file or an image whose path the middleware's matchers leave out.
    *
    * The budget it is held to (`policy.middleware.timeoutMs`) is a guess until something measures
    * against it: a cold isolate of a large bundle can come close to it, and the distribution of this

@@ -74,6 +74,8 @@ export interface ImageAnswerInput {
   readonly middleware: MiddlewareContinue | undefined;
   /** The dispatches the middleware took before the image was served, which its metric counts. */
   readonly middlewareDispatches?: number | undefined;
+  /** How long the middleware took, where it ran, which its metric reports. */
+  readonly middlewareMs?: number | undefined;
 }
 
 export interface ImageInput extends ImageAnswerInput {
@@ -480,6 +482,7 @@ function record(input: ImageAnswerInput, { src, startedAt, bytes, subrequests }:
     assetHit: src === 'cache' ? 1 : 0,
     // The image's own, and the middleware's before them: every service call the answer made.
     subrequests: subrequests + (input.middlewareDispatches ?? 0),
+    middlewareMs: input.middlewareMs,
   });
 }
 

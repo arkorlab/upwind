@@ -33,22 +33,22 @@ export interface HostedGateInput {
   ) => Promise<Response>;
 }
 
+/** What the middleware decided where it let the request on, and how long deciding it took. */
+export type TimedContinue = MiddlewareContinue & Partial<MiddlewareTiming>;
+
 export interface HostedGate {
   /**
-   * Answer the request as it stands, with what the middleware set when it ran, and the dispatches
-   * it took to decide (`decideMiddleware`: none, one, or two after a retry), which the answer's
-   * metric counts among its subrequests.
+   * Answer the request as it stands, with what the middleware set when it ran and how long it took
+   * (`middlewareMs`), and the dispatches it took to decide (`decideMiddleware`: none, one, or two
+   * after a retry): what the answer's metric reports of the middleware.
    */
-  readonly serve: (
-    middleware: MiddlewareContinue | undefined,
-    dispatches: number,
-  ) => Promise<Response>;
+  readonly serve: (middleware: TimedContinue | undefined, dispatches: number) => Promise<Response>;
   /**
    * Answer a request the middleware rewrote elsewhere, when the edge can; `undefined` hands it to
    * the Worker. Absent, every rewrite is the Worker's.
    */
   readonly rewritten?: (
-    middleware: MiddlewareContinue,
+    middleware: TimedContinue,
     dispatches: number,
   ) => Promise<Response> | undefined;
   /**
