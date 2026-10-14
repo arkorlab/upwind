@@ -1,4 +1,4 @@
-import type { AppRuntime, ProjectManifest } from '@stayingupwind/core/manifest';
+import type { AppRuntime, MiddlewareMatcher, ProjectManifest } from '@stayingupwind/core/manifest';
 import { MIDDLEWARE_DONE_HEADER } from '@stayingupwind/core/paas';
 import {
   budgetPatterns,
@@ -7,6 +7,7 @@ import {
   PatternBudgetExceededError,
   type RequestClass,
 } from '@stayingupwind/core/request';
+import { type HostCredentials, withoutHostCredentials } from '@stayingupwind/host/credentials';
 import { type EdgePointer, resolvePolicy } from '@stayingupwind/host/delivery';
 
 import type { EdgeBindings } from './bindings.ts';
@@ -203,6 +204,37 @@ function passthroughFor(
     handlePassthrough({ ...passthrough, observedBody: observed.body }),
     observed.finish,
   );
+}
+
+/** A rule of the application's routing, as far as its conditions go. */
+type Conditioned = Pick<MiddlewareMatcher, 'has' | 'missing'>;
+
+/** Whether any of `rules` has a condition, which is what reads a request's headers. */
+function conditioned(rules: readonly Conditioned[] | undefined): boolean {
+  return rules?.some((rule) => rule.has !== undefined || rule.missing !== undefined) === true;
+}
+
+/**
+ * The headers a request is classified on (`classifyRequest`). The rules of the build it judges — a
+ * redirect or a rewrite ahead of the routes (`reservedRoutes`), a dynamic route (`dynamicRoutes`)
+ * — are judged without the host's own credentials (`withoutHostCredentials`), as the middleware's
+ * matchers are (`middlewareMatches`): the application's routing is never handed them, so a
+ * `missing` that names one holds for every request, and a `has` that names one for none. Only a
+ * rule with conditions reads the headers, and most have none, and a host that keeps no credentials
+ * has none to take off: the headers are copied only where both hold.
+ *
+ * The rest of the classification reads the copy too. What it reads there is the browser's or
+ * Next.js's own, which no host keeps as a credential; one it did keep never reaches Next.js either.
+ */
+function classifiedHeaders(
+  manifest: ProjectManifest,
+  headers: Headers,
+  credentials: HostCredentials,
+): Headers {
+  const kept = credentials.cookies.length > 0 || credentials.headers.length > 0;
+  return kept && (conditioned(manifest.reservedRoutes) || conditioned(manifest.dynamicRoutes))
+    ? withoutHostCredentials(new Headers(headers), credentials)
+    : headers;
 }
 
 function servedAtEdge(classification: RequestClass): boolean {
@@ -432,7 +464,7 @@ async function routeWithinBudget(input: RoutingInput): Promise<Response> {
   const classification = classifyRequest({
     method: request.method,
     url,
-    headers: request.headers,
+    headers: classifiedHeaders(state.manifest, request.headers, input.host.credentials),
     manifest: state.manifest,
     deployment: state.manifest.deployment,
   });

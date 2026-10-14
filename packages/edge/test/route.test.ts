@@ -2,6 +2,7 @@ import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test'
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 
+import type { EdgeHost } from '../src/edge-host.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
 import type { IncomingRequest } from '../src/request-context.ts';
 import { type PointerRequest, serveFromPointer } from '../src/route.ts';
@@ -18,12 +19,28 @@ import { navigation, pprDocument, seedSite, type SiteOptions } from './helpers/s
 const QUADRATIC = String.raw`^/(?<slug>\w+\w+)!$`;
 /** Long enough that the pattern's cost against it is past what a test is allowed. */
 const CRAFTED = `/${'a'.repeat(4096)}`;
+/** A cookie a host keeps as its own credential, which no application it hosts is handed. */
+const HOST_SESSION = 'host_session';
+/** A condition of the application's routing on that cookie. */
+const ON_HOST_SESSION = [{ type: 'cookie' as const, key: HOST_SESSION }];
+/** Any member of a class at the site's root, as Next.js compiles `/[slug]`. */
+const SLUG = '^/(?<slug>[^/]+?)(?:/)?$';
+
+/** The standalone host, keeping `HOST_SESSION` as its own (`HostCredentials`). */
+function credentialedHost(): EdgeHost {
+  return { ...standaloneHost(env), credentials: { cookies: [HOST_SESSION], headers: [] } };
+}
+
+/** A navigation of a visitor who holds the host's cookie beside one of the application's. */
+function withHostSession(path: string): IncomingRequest {
+  return navigation(path, { headers: { cookie: `${HOST_SESSION}=signed-in; theme=dark` } });
+}
 
 /** `request` routed by a host of its own, the site seeded as `site` says, its Function answering. */
 async function routed(
   request: IncomingRequest,
   site: Omit<SiteOptions, 'document'>,
-  composed: Pick<PointerRequest, 'observePassthrough'> = {},
+  composed: Partial<Pick<PointerRequest, 'host' | 'observePassthrough'>> = {},
 ): Promise<{ readonly response: Response; readonly body: string; readonly asked: string[] }> {
   const { pointer } = await seedSite({ document: pprDocument(), ...site });
   const asked: string[] = [];
@@ -86,5 +103,48 @@ describe('the routing a host composes', () => {
 
     expect(response.status).toBe(200);
     expect(body).toBe('from the Function');
+  });
+
+  /**
+   * The application's rules are judged as its own routing judges them, on a request that never
+   * holds the host's credentials: a `missing` that names one holds for every visitor, so a rule
+   * ahead of the filesystem claims the page from one who carries it, and the Function answers as
+   * the rule says.
+   */
+  it('hands the Function a page a rule claims for want of a host credential', async () => {
+    const { response, body, asked } = await routed(
+      withHostSession('/'),
+      { reservedRoutes: [{ sourceRegex: '^/$', beforeFiles: true, missing: ON_HOST_SESSION }] },
+      { host: credentialedHost() },
+    );
+
+    expect(response.headers.get('x-arkor-edge')).toBe('passthrough;reason=route-not-proved');
+    expect(body).toBe('from the Function');
+    expect(asked).toStrictEqual(['/']);
+  });
+
+  /** And a `has` that names one holds for no visitor: the rule claims the page from none. */
+  it('serves a page a rule would claim only for a host credential', async () => {
+    const { response } = await routed(
+      withHostSession('/'),
+      { reservedRoutes: [{ sourceRegex: '^/$', beforeFiles: true, has: ON_HOST_SESSION }] },
+      { host: credentialedHost() },
+    );
+
+    expect(response.headers.get('x-arkor-edge')).toMatch(/^shell;/u);
+  });
+
+  /** So is a dynamic route's own condition: its `missing` holds, and the class's shell is served. */
+  it('serves a member of a class whose route wants a host credential missing', async () => {
+    const { response } = await routed(
+      withHostSession('/hello'),
+      {
+        pathname: '/[slug]',
+        dynamicRoutes: [{ sourceRegex: SLUG, route: '/[slug]', missing: ON_HOST_SESSION }],
+      },
+      { host: credentialedHost() },
+    );
+
+    expect(response.headers.get('x-arkor-edge')).toMatch(/^shell;/u);
   });
 });

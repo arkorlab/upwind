@@ -6,6 +6,7 @@ import {
   computeManifestId,
   type DynamicRoute,
   type ProjectManifest,
+  type ReservedRoute,
   type RouteEntry,
   type RouteSegment,
   serializeManifest,
@@ -68,6 +69,8 @@ export interface SiteOptions {
   readonly images?: ImagesConfig | undefined;
   /** The build's dynamic routes, in Next.js's order; none, absent. */
   readonly dynamicRoutes?: readonly DynamicRoute[] | undefined;
+  /** The redirects and rewrites Next.js evaluates ahead of its dynamic routes; none, absent. */
+  readonly reservedRoutes?: readonly ReservedRoute[] | undefined;
   /** The page's prefetch segments, by the path the router names each with, each stored in KV. */
   readonly segments?: Readonly<Record<string, string>> | undefined;
 }
@@ -149,6 +152,7 @@ export async function seedSite(options: SiteOptions): Promise<Site> {
     staticFiles: await fileEntries(options.files ?? {}),
     images: options.images,
     ...(options.dynamicRoutes !== undefined && { dynamicRoutes: [...options.dynamicRoutes] }),
+    ...(options.reservedRoutes !== undefined && { reservedRoutes: options.reservedRoutes }),
     crawlersStreamed: true,
   });
   const manifestId = await computeManifestId(manifest);
