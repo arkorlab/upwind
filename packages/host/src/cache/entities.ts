@@ -17,14 +17,22 @@ import {
 } from '@stayingupwind/core/cache';
 import * as z from '@stayingupwind/core/schema';
 
+import { SIGNABLE_SCOPE_ID } from './token.ts';
+
 /**
  * The cache's own model, as every Worker and any index of its history see it.
  *
  * Four things are kept apart on purpose. Publication (which generation is current) is an entry's
  * state, updated on its own; a generation is an immutable snapshot of one render; validity is never
  * stored, only derived from a generation's timing, the invalidations recorded against it and the
- * clock (`freshness.ts`); storage says whether the bytes are still there. Every record carries a
- * `schemaVersion`, and a reader that meets a version it does not know says so rather than guessing.
+ * clock (`freshness.ts`); storage says whether the bytes are still there.
+ *
+ * A record read back whole on its own — a scope, an entry, a generation, an attempt, an
+ * invalidation — carries a `schemaVersion`, and a reader that meets a version it does not know says
+ * so rather than guessing. The rest carry none. An entry's state and a tag go out only inside
+ * something that says the version for them: an answer of the gateway's API, which its path
+ * versions, or a change told to a scope's history (`ScopeHistory`), which the history keeps under a
+ * version of its own. A dependency and an observation are not handed out at all.
  *
  * Written with core's validator (`@stayingupwind/core/schema`), for the reason `gateway-contract.ts`
  * gives of its own.
@@ -42,7 +50,8 @@ export type CacheScopeStatus = z.infer<typeof cacheScopeStatusSchema>;
 
 /** The boundary of authorization, keys, storage and invalidation: one deployment, for now. */
 export const cacheScopeSchema = z.object({
-  scopeId: z.string().min(1),
+  /** Signed into the token that opens the scope, so it carries neither of a token's separators. */
+  scopeId: z.string().min(1).regex(SIGNABLE_SCOPE_ID, 'a scope id may carry neither . nor |'),
   organizationId: z.string().min(1),
   projectId: z.string().min(1),
   environmentId: cacheEnvironmentSchema,

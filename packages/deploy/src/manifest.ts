@@ -9,6 +9,7 @@ import {
   resumablePrerenders,
   routePagesData,
   routePayloads,
+  type ServableOptions,
   staticFileAssetPrefixOf,
   staticFileLocalesOf,
 } from '@stayingupwind/core/bundle';
@@ -70,6 +71,22 @@ export function oversizedManifest(
     : undefined;
 }
 
+/** The policies a hint answers to (`withoutForbidden`), by the lowercase names they go by. */
+const POLICY_HEADERS: ReadonlySet<string> = new Set(['content-security-policy', 'referrer-policy']);
+
+/**
+ * The pages a deployment's manifest routes, asked of the build as its servability is
+ * (`ServableOptions`): every page the edge serves where the deployment has a runtime cache, and
+ * only the pages the edge resumes where it has none. The edge tells a page the build finished from
+ * one it resumes by the page's entry (`cache.delivery`), and without a runtime cache there is none:
+ * it would resume a finished page and splice a render of the whole page behind it. Such a
+ * deployment leaves those pages, and what the build wrote beside them, to its Function, which
+ * serves them whole — and staging it imports none of their artifacts (`shellsOf`).
+ */
+export function routedPages(runtimeCache: boolean | undefined): ServableOptions {
+  return { complete: runtimeCache !== false };
+}
+
 export interface AssembleManifestInput {
   readonly bundle: DeploymentBundle;
   /** The bundle of the deployment served just before this one, whose `_next/static` files stay. */
@@ -92,7 +109,8 @@ export interface AssembleManifestInput {
   /**
    * Whether the deployment has a runtime cache its routes are served from. `false` names none — no
    * entry on a route, no scope on the manifest — for a host that seeds none, whose edge then serves
-   * each route from its shell alone. Absent, it has one.
+   * each route from its shell alone, and routes no page the build finished: the edge tells one from
+   * a page it resumes by its entry. Absent, it has one.
    */
   readonly runtimeCache?: boolean | undefined;
 }
@@ -109,17 +127,41 @@ export type AssembledManifest =
       /** The rules the manifest publishes for the edge to route by (`dynamicRouting`). */
       readonly routing: ReturnType<typeof dynamicRouting>;
     }
-  /** Too large to publish (`oversizedManifest`), and why. */
+  /** Not to publish — too large (`oversizedManifest`), or fingerprinted as another bundle — and why. */
   | { readonly kind: 'refused'; readonly reason: string };
+
+/**
+ * Why a fingerprint is not this bundle's, or `undefined` for one that is. The edge holds every
+ * request of the deployment to the one it names — a `dpl` its documents ask with, the build id its
+ * continuations carry — so another bundle's would turn this one's own requests away, or take
+ * another build's for them.
+ */
+function foreignFingerprint(
+  bundle: DeploymentBundle,
+  fingerprint: DeploymentFingerprint,
+): string | undefined {
+  if (fingerprint.dplId !== bundle.deploymentId) {
+    return `the fingerprint names deployment ${fingerprint.dplId ?? '(none)'}, not ${bundle.deploymentId}`;
+  }
+  return fingerprint.buildId === undefined || fingerprint.buildId === bundle.buildId
+    ? undefined
+    : `the fingerprint names build ${fingerprint.buildId}, not ${bundle.buildId}`;
+}
 
 /** Assemble the manifest from the build: one entry per edge-servable prerender. */
 export async function assembleManifest(input: AssembleManifestInput): Promise<AssembledManifest> {
   const { bundle } = input;
-  const prerenders = edgeServablePrerenders(bundle, { complete: true });
+  const foreign = foreignFingerprint(bundle, input.fingerprint);
+  if (foreign !== undefined) {
+    return { kind: 'refused', reason: foreign };
+  }
   // The scope is the deployment; the same derivation the seed used names each entry.
   const cached = input.runtimeCache !== false;
+  const servable = routedPages(input.runtimeCache);
+  const prerenders = edgeServablePrerenders(bundle, servable);
   const caches = cached ? await routeCachesOf(bundle, input.deploymentId) : new Map();
   const middlewareMatchers = middlewareMatchersOf(bundle);
+  const rules = headerRulesOf(bundle);
   const context: ManifestContext = {
     bundle,
     placed: placedRoutes(bundle.entrypoints),
@@ -127,11 +169,17 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
     preloads: input.preloads,
     caches,
     matchers: middlewareMatchers ?? [],
+    policyRules: rules.filter((rule) => {
+      return (
+        (rule.has !== undefined || rule.missing !== undefined) &&
+        Object.keys(rule.headers).some((name) => POLICY_HEADERS.has(name.toLowerCase()))
+      );
+    }),
     recoverySource: input.recoverySource,
     resumable: new Set(resumablePrerenders(bundle).map((prerender) => prerender.id)),
-    segments: routeSegmentsOf(bundle, input.encodings),
-    payloads: routeArtifactsOf(routePayloads(bundle, { complete: true }), input.encodings),
-    pagesData: routeArtifactsOf(routePagesData(bundle, { complete: true }), input.encodings),
+    segments: routeSegmentsOf(bundle, input.encodings, servable),
+    payloads: routeArtifactsOf(routePayloads(bundle, servable), input.encodings),
+    pagesData: routeArtifactsOf(routePagesData(bundle, servable), input.encodings),
   };
   const routes = prerenders.flatMap((prerender) => {
     const entry = routeEntryOf(prerender, context);
@@ -149,7 +197,7 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
     const changed = Object.entries(rule.headers).some(([name, value]) => widened[name] !== value);
     return changed ? { ...rule, documentHeaders: widened } : rule;
   };
-  const headerRules = headerRulesOf(bundle).map((rule) => forDocuments(rule));
+  const headerRules = rules.map((rule) => forDocuments(rule));
   // A build the edge does not route folds its unconditional rules into its routes' headers; they
   // travel apart as well, widened the same way, to be laid over a regenerated page's own headers.
   const foldedHeaderRules = foldedHeaderRulesOf(bundle)?.map((rule) => forDocuments(rule));

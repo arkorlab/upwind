@@ -1,3 +1,4 @@
+import * as s from '@stayingupwind/core/schema';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as z from 'zod';
 
@@ -18,11 +19,36 @@ const MIB = KIB * KIB;
 const EMPTY_OUTPUTS_BYTES = 256 * KIB;
 /** Far past what refusing the body above without its issues costs, far short of listing them. */
 const HEAP_BUDGET_BYTES = 32 * MIB;
+/**
+ * A commit as a runtime sends one, but for its outputs: every field it holds is valid, so checking
+ * it comes to the outputs, and what is wrong with it is theirs alone.
+ */
+const COMMIT_BUT_OUTPUTS = {
+  fencingToken: 1,
+  observedTagRevision: 0,
+  generation: {
+    cacheTimestamp: 1,
+    producedAt: 1,
+    policy: {
+      revalidateAfter: { kind: 'unknown' },
+      expireAfter: { kind: 'unknown' },
+      clientStale: { kind: 'unknown' },
+      source: 'runtime-output',
+    },
+    status: 200,
+    headers: {},
+    tags: [],
+    dependencies: [],
+    dependencyCoverage: 'complete',
+    outputs: [],
+  },
+};
 
-/** `{"generation":{"outputs":[{},{},…]}}`, as long as `bytes` allows. */
+/** That commit with its outputs `[{},{},…]`, as long as `bytes` allows. */
 function emptyOutputs(bytes: number): { readonly text: string; readonly value: unknown } {
-  const opening = '{"generation":{"outputs":[';
-  const closing = ']}}';
+  const [before = '', after = ''] = JSON.stringify(COMMIT_BUT_OUTPUTS).split('"outputs":[]', 2);
+  const opening = `${before}"outputs":[`;
+  const closing = `]${after}`;
   const count = Math.floor((bytes - opening.length - closing.length) / '{},'.length);
   const text = `${opening}${Array.from({ length: count }, () => '{}').join(',')}${closing}`;
   return { text, value: JSON.parse(text) };
@@ -38,6 +64,10 @@ describe('a body short enough to list its issues', () => {
     expect(parsed.success ? undefined : parsed.error?.issues).toStrictEqual(
       commitRequestSchema.safeParse(body.value).error?.issues,
     );
+    // Every one of them an output's: nothing ahead of the outputs stops a check short of them.
+    expect(
+      parsed.success ? [] : parsed.error?.issues.filter(({ path }) => path[1] !== 'outputs'),
+    ).toStrictEqual([]);
   });
 });
 
@@ -77,6 +107,33 @@ describe('a longer body', () => {
     expect(parsed.success ? parsed.data.items.at(-1) : undefined).toStrictEqual({
       name: `n${count - 1}`,
     });
+  });
+});
+
+describe("a longer body a schema of core's validator takes", () => {
+  /**
+   * Asked `validate` and then `safeParse`, every check of the schema ran twice for each value that
+   * passed. A run as `validate` makes, through a value with nothing wrong in it, is the parse.
+   */
+  it('is checked once, and answered with what safeParse makes of it', () => {
+    let checks = 0;
+    const counted = s
+      .string()
+      .trim()
+      .refine(() => {
+        checks += 1;
+        return true;
+      });
+    const schema = s.object({ items: s.array(s.object({ name: counted })) });
+    const count = MAX_LISTED_BYTES;
+    const value = { items: Array.from({ length: count }, (_, index) => ({ name: ` n${index} ` })) };
+
+    const parsed = safeParseBounded(schema, value, JSON.stringify(value).length);
+
+    expect(parsed.success ? parsed.data.items.at(-1) : undefined).toStrictEqual({
+      name: `n${count - 1}`,
+    });
+    expect(checks).toBe(count);
   });
 });
 

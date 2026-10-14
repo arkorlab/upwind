@@ -263,13 +263,32 @@ export const commitDependencySchema = z.object({
 });
 export type CommitDependency = z.infer<typeof commitDependencySchema>;
 
+/**
+ * The statuses a `Response` may be made with, which a bundle's prerender is held to as well. A
+ * generation is answered with its status, so one committed past these is one no host could ever
+ * answer with: it would stand as the entry's current generation and serve nothing.
+ */
+const LOWEST_RESPONSE_STATUS = 200;
+const HIGHEST_RESPONSE_STATUS = 599;
+
+/**
+ * A header a response can be made with, as a bundle's prerender is held to as well: a name that is
+ * a token (RFC 9110), and a value `Headers` takes — no NUL, CR or LF, and no character a single
+ * byte cannot carry. `Headers` throws on any other wherever the generation is served.
+ */
+const RESPONSE_HEADER_NAME = /^[!#$%&'*+\-.^`|~\w]+$/u;
+const RESPONSE_HEADER_VALUE = /^[^\0\n\r\u{100}-\u{10FFFF}]*$/u;
+
 export const commitGenerationSchema = z.object({
   cacheTimestamp: z.number().int(),
   producedAt: z.number().int(),
   policy: cachePolicySchema,
-  status: z.number().int(),
+  status: z.number().int().min(LOWEST_RESPONSE_STATUS).max(HIGHEST_RESPONSE_STATUS),
   /** The headers the generation is answered with, already filtered (`generationResponseHeaders`). */
-  headers: z.record(z.string(), z.string()),
+  headers: z.record(
+    z.string().regex(RESPONSE_HEADER_NAME, 'must be a header name'),
+    z.string().regex(RESPONSE_HEADER_VALUE, 'must be a value a header can carry'),
+  ),
   tags: z.array(generationTagSchema).max(MAX_TAGS_PER_ENTRY),
   outputs: z.array(commitOutputSchema).min(1),
   dependencies: z.array(commitDependencySchema),
@@ -278,11 +297,32 @@ export const commitGenerationSchema = z.object({
 });
 export type CommitGeneration = z.infer<typeof commitGenerationSchema>;
 
+/**
+ * What a render's view of the tags held of each of the generation's tags, by value: the revision of
+ * the scope through which every read the render made under the tag was judged against its
+ * invalidations — the view's own revision of a tag no read was made under — and nothing of a tag it
+ * held nothing of. Of no more tags than a generation carries.
+ */
+const heldTagRevisionsSchema = z
+  .record(tagValueSchema, z.number().int().nonnegative())
+  .refine((held) => Object.keys(held).length <= MAX_TAGS_PER_ENTRY, {
+    message: `A commit may say what its view held of at most ${MAX_TAGS_PER_ENTRY} tags`,
+  });
+
 /** `POST /attempts/:attemptId/commit` */
 export const commitRequestSchema = z.object({
   fencingToken: z.number().int().positive(),
   /** The tag revision the renderer had synced when it read its inputs. */
   observedTagRevision: z.number().int().nonnegative(),
+  /**
+   * What the renderer's view held of each of the generation's tags (`heldTagRevisionsSchema`): an
+   * invalidation of a tag at or before both what this says of it and `observedTagRevision` is one
+   * the render's reads under the tag were judged against. Absent from a runtime from before it,
+   * whose commit is judged as one whose view held no tag: `observedTagRevision` says what the view
+   * was brought up to, not what it kept of each tag — it lets a tag go past so many, and judges a
+   * read under it by a copy of the tags that may be behind.
+   */
+  heldTagRevisions: heldTagRevisionsSchema.optional(),
   generation: commitGenerationSchema,
 });
 export type CommitRequest = z.infer<typeof commitRequestSchema>;
@@ -351,6 +391,24 @@ export const generationResponseSchema = z.object({ generation: publicCacheGenera
 
 /** What the data cache keeps beside a value: the `CacheEntry` fields of Next.js's handler contract. */
 const DATA_USE_CACHE_KIND = 'data:use-cache';
+
+/**
+ * Whether a data entry names a handler as its kind has one: a `use cache` entry is kept under the
+ * handler that made it (`default`, `remote`, one of `cacheHandlers`), which is part of what names
+ * the entry, and a `fetch` entry under none. Omitted from a `use cache` entry, every handler's
+ * values would be one namespace; named on a `fetch` entry, it would be one no runtime reads.
+ */
+function namesItsHandler(entry: {
+  readonly kind: string;
+  readonly handler?: string | undefined;
+}): boolean {
+  return (entry.kind === DATA_USE_CACHE_KIND) === (entry.handler !== undefined);
+}
+const HANDLER_OF_KIND = {
+  message: 'a use-cache entry names its handler, and a fetch entry none',
+  path: ['handler'],
+} as const;
+
 export const dataEntryMetadataSchema = z
   .object({
     kind: z.enum(['data:fetch', DATA_USE_CACHE_KIND]),
@@ -367,7 +425,8 @@ export const dataEntryMetadataSchema = z
   .refine((entry) => entry.kind === DATA_USE_CACHE_KIND || entry.tags.length <= MAX_TAGS_PER_CALL, {
     message: `A fetch entry may carry at most ${MAX_TAGS_PER_CALL} tags`,
     path: ['tags'],
-  });
+  })
+  .refine(namesItsHandler, HANDLER_OF_KIND);
 export type DataEntryMetadata = z.infer<typeof dataEntryMetadataSchema>;
 
 /**
@@ -407,20 +466,30 @@ export const dataSetResponseSchema = z.object({
    */
   invalidation: invalidationStateSchema.optional(),
   /**
-   * Set when the entry has a later write of this one's writer (`order`), whatever came between: the
-   * write arrived after the later one, nothing was written, and the generation named is that one's.
+   * Set when the entry has a later write of this one's writer (`order`), or has had this very write
+   * already — the same writer and count, its request sent again after its answer was lost —
+   * whatever came between: nothing was written, and the generation named is the one that later
+   * write, or the first arrival of this one, made.
    */
   superseded: z.literal(true).optional(),
 });
 
 export type DataSetResponse = z.infer<typeof dataSetResponseSchema>;
 
-/** `POST /data/get` (the key is a body, never a path: it is Next.js's, and may be long). */
-export const dataGetRequestSchema = z.object({
-  key: z.string().min(1),
-  kind: z.enum(['data:fetch', 'data:use-cache']),
-  handler: z.string().min(1).optional(),
-});
+/**
+ * `POST /data/get` (the key is a body, never a path: it is Next.js's, and may be long).
+ *
+ * Held to the bounds a write is: no value is ever stored under a longer key or handler, so a read
+ * of one has nothing to find, and is refused as a write of it is. A runtime's cache handler takes a
+ * read that fails for a miss, which is what a read of such a key always was.
+ */
+export const dataGetRequestSchema = z
+  .object({
+    key: z.string().min(1).max(MAX_DATA_KEY_LENGTH),
+    kind: z.enum(['data:fetch', DATA_USE_CACHE_KIND]),
+    handler: z.string().min(1).max(MAX_DATA_HANDLER_LENGTH).optional(),
+  })
+  .refine(namesItsHandler, HANDLER_OF_KIND);
 export type DataGetRequest = z.infer<typeof dataGetRequestSchema>;
 
 const dataValueSchema = z.discriminatedUnion('kind', [
@@ -443,7 +512,8 @@ export type DataGetResponse = z.infer<typeof dataGetResponseSchema>;
 export const tagDeltaEntrySchema = z.object({
   tagId: z.string().min(1),
   kind: tagKindSchema,
-  value: z.string().min(1),
+  /** A tag an invalidation named, which no request names longer; a runtime keys a cache on it. */
+  value: tagValueSchema,
   revision: z.number().int().positive(),
   staleAt: z.number().int(),
   hardExpireAt: z.number().int().nullable(),
@@ -473,11 +543,27 @@ export const tagsDeltaResponseSchema = z.object({
 });
 export type TagsDeltaResponse = z.infer<typeof tagsDeltaResponseSchema>;
 
+/**
+ * Whether a delta asked for from `since` moves its reader on. A page that is not the last is read on
+ * from its `revision`, so one whose revision does not pass `since` would be asked for again, and
+ * answered the same, for as long as its reader went on asking. The shape cannot say so, as it does
+ * not know `since`; whatever asks for a delta asks this of each page.
+ */
+export function deltaMovesOn(
+  since: number,
+  delta: Pick<TagsDeltaResponse, 'revision' | 'truncated'>,
+): boolean {
+  return !delta.truncated || delta.revision > since;
+}
+
 /** Regional reads are bounded independently of the number of tags in a deployment. */
 export const tagsGetRequestSchema = z.object({
   tags: z.array(tagValueSchema).max(MAX_TAGS_PER_CALL),
 });
-export const tagsGetResponseSchema = z.object({ tags: z.array(tagDeltaEntrySchema) });
+/** At most a record for each tag the read named, so no more than a read may name. */
+export const tagsGetResponseSchema = z.object({
+  tags: z.array(tagDeltaEntrySchema).max(MAX_TAGS_PER_CALL),
+});
 export type TagsGetResponse = z.infer<typeof tagsGetResponseSchema>;
 
 /** `POST /invalidations` */

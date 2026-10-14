@@ -54,6 +54,27 @@ function movedAssetPrefix(
     : before.assetPrefix;
 }
 
+/**
+ * A file only the deployment before built, kept for the documents of it still open, which ask for
+ * it by its `dpl`. One under the build id both builds have — Next.js gives every build with a
+ * deployment id the same one — answers only those (`dplOnly`): its name is this deployment's to
+ * answer, with whatever its routing makes of it, for a request that names no deployment, and the
+ * documents before put their `dpl` on every request for one of these.
+ */
+function keptEntry(
+  file: BundledStaticFile,
+  bundle: DeploymentBundle,
+  previous: DeploymentBundle,
+): StaticFileEntry {
+  const underBuildId = `${previous.config.basePath}${NEXT_STATIC_PREFIX}${previous.buildId}/`;
+  const ownName = bundle.buildId === previous.buildId && file.pathname.startsWith(underBuildId);
+  return {
+    ...staticFileEntry(file, previous.config.basePath),
+    deploymentId: previous.deploymentId,
+    ...(ownName && { dplOnly: true as const }),
+  };
+}
+
 /** A name both builds have: this build's entry, with the previous build's bytes beside it. */
 function sharedEntry(
   entry: StaticFileEntry,
@@ -82,6 +103,10 @@ function underMovedPrefix(
     return;
   }
   const own = new Map(bundle.staticFiles.map((file) => [file.pathname, file]));
+  // The prefix this deployment loads its own files from as well, onto another base path: `next
+  // build` rewrites a request under it to the file under this build's base path before it looks
+  // for one at the path itself (`beforeFiles`), so a file this build ships at the name answers none.
+  const ownPrefix = staticFileAssetPrefixOf(bundle)?.assetPrefix === movedFrom;
   const prefix = `${previous.config.basePath}${NEXT_STATIC_PREFIX}`;
   for (const file of previous.staticFiles) {
     if (!file.pathname.startsWith(prefix)) {
@@ -90,7 +115,7 @@ function underMovedPrefix(
     const rest = file.pathname.slice(previous.config.basePath.length);
     const key = `${movedFrom}${rest}`;
     const filed = files[key];
-    if (filed !== undefined) {
+    if (filed !== undefined && !ownPrefix) {
       // The prefix before is this deployment's base path: the name is this build's own file, and
       // a shared one takes the bytes the documents before were built with beside its own.
       if (filed.deploymentId === undefined && filed.previous === undefined) {
@@ -101,10 +126,7 @@ function underMovedPrefix(
     const mine = own.get(`${bundle.config.basePath}${rest}`);
     files[key] =
       mine === undefined
-        ? {
-            ...staticFileEntry(file, previous.config.basePath),
-            deploymentId: previous.deploymentId,
-          }
+        ? keptEntry(file, bundle, previous)
         : sharedEntry(staticFileEntry(mine, bundle.config.basePath), file, previous);
   }
 }
@@ -144,10 +166,7 @@ export function staticFilesOf(
     }
     const current = files[file.pathname];
     if (current === undefined) {
-      files[file.pathname] = {
-        ...staticFileEntry(file, previous.config.basePath),
-        deploymentId: previous.deploymentId,
-      };
+      files[file.pathname] = keptEntry(file, bundle, previous);
     } else if (!current.immutable) {
       files[file.pathname] = {
         ...current,

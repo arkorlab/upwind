@@ -43,7 +43,9 @@ export function cspNoncePointerFields(
 /**
  * The pointer that has the edge serve a site from `payload`'s manifest. The nonce's mode is named
  * only where it is not the one a pointer without it means, so a pointer that enforces says nothing
- * more than one written before modes existed.
+ * more than one written before modes existed. Its fields are in the order the pointer's schema
+ * writes them (`edgePointerSchema`), so one stored as it is handed back is the bytes one stored
+ * from a parse of it would be.
  */
 export function edgePointerOf(
   site: PointerSite,
@@ -58,8 +60,8 @@ export function edgePointerOf(
     manifestId: payload.manifestId,
     policyId: payload.policyId,
     deployment: payload.fingerprint,
-    ...(payload.app !== undefined && { app: payload.app }),
     ...cspNoncePointerFields(payload.cspNonce, payload.cspNonceMode, payload.cspStrictDynamic),
+    ...(payload.app !== undefined && { app: payload.app }),
     // eslint-disable-next-line unicorn/prefer-temporal -- Temporal is not available in the Workers runtime.
     updatedAt: new Date(now).toISOString(),
   };

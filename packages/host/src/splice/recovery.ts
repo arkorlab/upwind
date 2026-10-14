@@ -17,10 +17,9 @@ const MS_PER_SECOND = 1000;
 /**
  * Elements whose content the parser does not read as markup.
  *
- * Inside any of them the recovery `<script>` is text — or, in a template, an element that never
- * executes. Only the matching end tag leaves the state, so all of them are emitted: an end tag with
- * nothing open is a parse error the parser ignores, and a `</template>` with no template on the
- * stack is ignored too. `plaintext` has no end tag at all and is the one state nothing escapes.
+ * Inside any of them the recovery `<script>` is text. Only the matching end tag leaves the state,
+ * so all of them are emitted: an end tag with nothing open is a parse error the parser ignores.
+ * `plaintext` has no end tag at all and is the one state nothing escapes.
  */
 const MARKUP_BLIND_ELEMENTS: readonly string[] = [
   'script',
@@ -32,20 +31,45 @@ const MARKUP_BLIND_ELEMENTS: readonly string[] = [
   'noframes',
   'iframe',
   'xmp',
-  'template',
 ];
 
-const END_TAGS = MARKUP_BLIND_ELEMENTS.map((name) => `</${name}>`).join('');
+/**
+ * How many templates the escape closes, after the elements above: in a template's own text-holding
+ * child, a `</template>` is text until that child is left.
+ *
+ * In a template the recovery `<script>` is an element that never executes, and one `</template>`
+ * closes only the innermost. Templates nest, client-side templating writing one inside another, so
+ * the escape closes this many; one with no template open is ignored, as a stray end tag is, and
+ * costs its bytes and nothing else. Past this depth the script is left inert, on markup nothing
+ * writes.
+ */
+const NESTED_TEMPLATES = 16;
+
+const END_TAGS = [
+  ...MARKUP_BLIND_ELEMENTS.map((name) => `</${name}>`),
+  '</template>'.repeat(NESTED_TEMPLATES),
+].join('');
+/**
+ * A start tag SVG and MathML hand back to HTML.
+ *
+ * Inside either, a `<script>` is that language's element, and a MathML one never runs. This tag is
+ * one the foreign-content rules break out on: it pops every foreign element, however deep they
+ * nest, down to the nearest HTML one or integration point, where a `<script>` is HTML's. Elsewhere
+ * it is an empty `<meta>`, which shows nothing and sets nothing.
+ */
+const LEAVE_FOREIGN_CONTENT = '<meta>';
 /**
  * Leaves whatever HTML state the origin stopped in, so the recovery script is markup and runs.
  *
  * The continuation can be cut at any byte. `"'">` closes an attribute value of either quoting — or
- * none, or one not started yet — and then the tag itself; `-->` closes a comment; the end tags
- * leave the elements above. In the ordinary case, a cut in character data, this is a few stray
- * characters on a document that is about to reload itself: the trade against a reload that never
- * happens and a user left on a truncated page.
+ * none, or one not started yet — and then the tag itself; `]]>` closes a CDATA section, which SVG
+ * and MathML may hold and only that ends; `-->` closes a comment; the end tags leave the elements
+ * above, and then every template the cut was in; and last, inside none of them, a `<meta>` leaves
+ * SVG and MathML. In the ordinary case, a cut in character data, this is a few stray characters on
+ * a document that is about to reload itself: the trade against a reload that never happens and a
+ * user left on a truncated page.
  */
-const ESCAPE_PREFIX = `"'">-->${END_TAGS}`;
+const ESCAPE_PREFIX = `"'">]]>-->${END_TAGS}${LEAVE_FOREIGN_CONTENT}`;
 
 /**
  * Appended when the continuation cannot be completed after the shell was flushed: sets a

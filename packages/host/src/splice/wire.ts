@@ -26,7 +26,13 @@ export interface WireEncoding {
   readonly shell: Uint8Array;
   /** Wire bytes for one suffix chunk, in order. Never called with an empty chunk. */
   frame(chunk: Uint8Array): readonly Uint8Array[];
-  /** Bytes that end the stream after the last suffix chunk; empty when the format needs none. */
+  /**
+   * Bytes that end the stream after the last suffix chunk; empty when the format needs none.
+   *
+   * Bytes of their own at every call. Whoever reads the stream is handed them, and may write into
+   * them — or take their buffer away, as a byte stream does with every chunk it is given — so one
+   * shared by every stream would be every stream's end gone at once.
+   */
   finish(): Uint8Array;
 }
 
@@ -59,7 +65,7 @@ export function identityWire(shell: Uint8Array): WireEncoding {
     encoding: 'identity',
     shell,
     frame: (chunk) => [chunk],
-    finish: () => NO_BYTES,
+    finish: () => new Uint8Array(),
   };
 }
 
@@ -111,7 +117,7 @@ export function brotliWire(head: Uint8Array): WireEncoding {
     encoding: 'br',
     shell: head,
     frame: brotliUncompressed,
-    finish: () => BROTLI_LAST_EMPTY_META_BLOCK,
+    finish: () => Uint8Array.from(BROTLI_LAST_EMPTY_META_BLOCK),
   };
 }
 

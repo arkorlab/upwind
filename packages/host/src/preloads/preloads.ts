@@ -31,6 +31,7 @@ const DISABLED_ATTR = 'disabled';
 const INTEGRITY_ATTR = 'integrity';
 const REFERRER_POLICY_ATTR = 'referrerpolicy';
 const NONCE_ATTR = 'nonce';
+const TITLE_ATTR = 'title';
 /**
  * What separates the parts of a key, and stands in for a part that was never written.
  *
@@ -41,6 +42,8 @@ const NOTHING = '\u{0000}';
 const VALUE_SEPARATOR = ',';
 const PARAMETER_SEPARATOR = ';';
 const BACKSLASH = '\\';
+/** What begins a URL's fragment, which the browser keeps and never requests. */
+const FRAGMENT = '#';
 const FETCH_PRIORITY_ATTR = 'fetchpriority';
 /** Media a link is conditional on nothing by: the attribute's own default, written or empty. */
 const UNCONDITIONAL_MEDIA: ReadonlySet<string> = new Set(['', 'all']);
@@ -63,6 +66,8 @@ interface LinkTag {
   /** The media query the link is conditional on, when the markup gave it one. */
   readonly media: string | undefined;
   readonly disabled: boolean;
+  /** Whether the markup gives it a title, which makes a stylesheet one of a named set. */
+  readonly titled: boolean;
   /** Whether the markup asks for this one to be checked against a digest. */
   readonly integrity: boolean;
   /** Whether the markup fetches this one under a referrer policy of its own. */
@@ -161,6 +166,7 @@ function parseLinkTag(attributes: ReadonlyMap<string, string>): LinkTag | undefi
     type: attributes.get(TYPE_ATTR),
     media: asciiLowerOf(attributes.get(MEDIA_ATTR)),
     disabled: attributes.has(DISABLED_ATTR),
+    titled: (attributes.get(TITLE_ATTR) ?? '') !== '',
     integrity: attributes.has(INTEGRITY_ATTR),
     referrerPolicy: (attributes.get(REFERRER_POLICY_ATTR) ?? '') !== '',
     nonce: (attributes.get(NONCE_ATTR) ?? '') !== '',
@@ -179,10 +185,23 @@ function parseLinkTag(attributes: ReadonlyMap<string, string>): LinkTag | undefi
  * may contain the comma that separates one `Link` value from the next.
  */
 function isActiveLink(tag: LinkTag): boolean {
-  if (tag.disabled || tag.rels.has(ALTERNATE_REL)) {
+  if (tag.disabled || tag.rels.has(ALTERNATE_REL) || inStyleSheetSet(tag)) {
     return false;
   }
   return unconditional(tag.media);
+}
+
+/**
+ * Whether a `title` makes this stylesheet one of a named set.
+ *
+ * A set is applied only while it is the one the document prefers: the first titled sheet's, until
+ * a `<meta http-equiv="default-style">` names another — which one may do anywhere in the document,
+ * the body included. A sheet of any other set is never applied, and the head alone cannot say which
+ * set that will be, so a titled sheet is left to the markup. An empty `title` names no set, and a
+ * preload's names none at all: those are fetched whatever the document prefers.
+ */
+function inStyleSheetSet(tag: LinkTag): boolean {
+  return tag.titled && tag.rels.has(STYLESHEET_REL);
 }
 
 /**
@@ -219,8 +238,14 @@ function isSameOriginPath(href: string): boolean {
  * of a URI, and a control character is refused outright when the header is set, taking down every
  * response for the route long after the proof that recorded it. A shell is the origin's to write;
  * what this turns it into is the edge's to answer.
+ *
+ * And only where the grammar puts them, since a hop that parses the reference may drop one it
+ * cannot read: a `%` begins an escape of two hex digits, a `#` the one fragment there is, and `[`
+ * and `]` belong to the host of an IP literal, which a path on this origin has none of. A browser
+ * fetches `/asset%zz.css` all the same; a header that names it is one nothing promises to carry.
  */
-const SAFE_HREF = /^[\w!#$%&'()*+./:=?@[\]~-]+$/u;
+const SAFE_HREF =
+  /^(?:[\w!$&'()*+./:=?@~-]|%[\dA-Fa-f]{2})+(?:#(?:[\w!$&'()*+./:=?@~-]|%[\dA-Fa-f]{2})*)?$/u;
 /** What this will quote into a parameter: a media type, and nothing that is not shaped like one. */
 const SAFE_TOKEN = /^[\w+./-]*$/u;
 /** A URL that names its own scheme, and so its own origin. */
@@ -351,8 +376,10 @@ function withoutEdgeControls(value: string): string {
  *
  * `/app.css` under `<base href="https://cdn.example/">` is a file on that host, while the same
  * path on a `Link` header is a file on the one that answered: a header resolves against the
- * request, and the document's base never reaches it. So a head that moves its own origin is a head
- * whose paths this cannot repeat, and it is left to say what it means on its own.
+ * request, and the document's base never reaches it. So the paths a head names after it moves its
+ * own origin are paths this cannot repeat, and they are left to say what they mean on their own.
+ * Those it named before are not: a parser had fetched them against the document's URL before the
+ * base was there, and a link already fetched is not fetched again for it.
  *
  * Read as written. A tokenizer resolves the character references in an attribute before the URL is
  * parsed, so `https&#58;//cdn.example/` is that same other host, and a base carrying a reference
@@ -468,22 +495,40 @@ function splitOutsideQuotes(value: string, separator: string): string[] {
  * What makes two preloads the same one: the file, what the browser would fetch it as, and whether
  * it would fetch it in CORS mode.
  *
+ * The file as it is requested. A fragment never leaves the browser, so `/app.css#one` and
+ * `/app.css#two` are one fetch: they take one of the values a header carries between them, and a
+ * header's own `</app.css>` stands in for both.
+ *
  * The mode is part of what a preload is matched on, and `crossorigin` is what sets it — absent is
  * not the same as written, which is why one the markup never wrote is spelled differently here
  * rather than folded in with the anonymous state. A font the header names without it cannot answer
  * the markup's own request, so it does not stand in for the hint that can. What was written is
  * read as the state it names (`corsSetting`), so the two spellings of one mode are one key.
  *
- * `type` decides whether the fetch happens at all, and differs the same way — but it is not folded
- * with it. A media type is compared by its essence without case, and the parameters behind that
- * essence are not all compared the same way, so folding the whole of it would put two requests
- * under one key and send the hint for only one of them. The parts are joined on a character no
- * attribute can hold, so no value can be read as the absence of one.
+ * `type` decides whether the fetch happens at all, and differs the same way. A media type is
+ * compared by its essence without case, so `TEXT/CSS` is the `text/css` request; the parameters
+ * behind that essence are not all compared the same way, so they are kept as written — folding the
+ * whole of it would put two requests under one key and send the hint for only one of them. The
+ * parts are joined on a character no attribute can hold, so no value can be read as the absence of
+ * one.
  */
 function preloadKey(shape: PreloadShape, href: string): string {
-  return [shape.destination, shape.crossorigin ?? NOTHING, shape.type ?? NOTHING, href].join(
+  const fragment = href.indexOf(FRAGMENT);
+  const requested = fragment === -1 ? href : href.slice(0, fragment);
+  return [shape.destination, shape.crossorigin ?? NOTHING, typeKey(shape.type), requested].join(
     NOTHING,
   );
+}
+
+/** A `type` as a key holds it: the essence folded, as a browser reads it, and the rest as written. */
+function typeKey(type: string | undefined): string {
+  if (type === undefined) {
+    return NOTHING;
+  }
+  const parameters = type.indexOf(PARAMETER_SEPARATOR);
+  return parameters === -1
+    ? asciiLower(type)
+    : asciiLower(type.slice(0, parameters)) + type.slice(parameters);
 }
 
 /** What a preload is, beside the file: what it would be fetched as, and how. */
@@ -624,12 +669,10 @@ export function scanPreloadLinks(shell: Uint8Array): string[] {
 /** The links a head names, minus the ones `already` covers, up to `limit` of what is left. */
 function collectPreloads(shell: Uint8Array, already: ReadonlySet<string>, limit: number): string[] {
   const scan = scanHead(shell);
-  if (movesTheOrigin(scan.base)) {
-    return [];
-  }
+  const named = movesTheOrigin(scan.base) ? scan.links.slice(0, scan.linksBeforeBase) : scan.links;
   const seen = new Set<string>();
   const links: string[] = [];
-  for (const attributes of scan.links) {
+  for (const attributes of named) {
     if (links.length >= limit) {
       break;
     }

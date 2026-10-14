@@ -27,15 +27,19 @@ export const CACHE_READ_GATEWAY_URL_BINDING = 'ARKOR_CACHE_READ_GATEWAY_URL';
 /** The token that opens the deployment's own scope, and no other. A secret binding. */
 export const CACHE_TOKEN_BINDING = 'ARKOR_CACHE_TOKEN';
 /**
- * Next.js's own: the seconds its minimal-mode response cache keeps a render. One, so a
- * regeneration asked for a moment after a render is never answered from that cache.
+ * Next.js's own: the milliseconds its minimal-mode response cache keeps a render
+ * (`server/response-cache`, ten seconds where unset). One, the least it takes — it reads nothing
+ * but a positive integer, and falls back to its default for anything else — so a regeneration
+ * asked for a moment after a render is never answered from that cache.
  */
 export const RESPONSE_CACHE_TTL_BINDING = 'NEXT_PRIVATE_RESPONSE_CACHE_TTL';
-export const RESPONSE_CACHE_TTL_SECONDS = '1';
+export const RESPONSE_CACHE_TTL_MS = '1';
 /** The deployment's id, which Next.js reads as its own: what its assets carry as `?dpl`. */
 export const DEPLOYMENT_ID_BINDING = 'NEXT_DEPLOYMENT_ID';
 /** Tells the application where it runs, for the few things it does differently there. */
 export const RUNTIME_BINDING = 'ARKOR_RUNTIME';
+/** What `RUNTIME_BINDING` holds, and what the application compares it with: the runtime it is in. */
+export const RUNTIME_NAME = 'workerd';
 /**
  * Where a deployment's Worker reads one blob of its **own bundle** that the build left out of it:
  * the prefetch Worker's default entrypoint.

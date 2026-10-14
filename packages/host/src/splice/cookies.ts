@@ -24,8 +24,9 @@ import { compareCodeUnits } from '@stayingupwind/core/util';
  *
  * And only where the copy is stored as the cookie it copies was. A cookie that names no path of its
  * own is stored under the directory of the path the client asked for (RFC 6265, sections 5.1.4 and
- * 5.2.4), and Next.js writes it back with `Path=/`: below the root that is another cookie, which a
- * whole render would send beside it, and the client does not have.
+ * 5.2.4), and Next.js writes it back with `Path=/`; one that names a path is read decoded, and
+ * written back so, `/a%2Fb` as `/a/b`. Anywhere but where the client keeps the original, the copy
+ * is another cookie, which a whole render would send beside it, and the client does not have.
  */
 
 const EXPIRES = 'expires';
@@ -238,15 +239,11 @@ export function unsentCookieNames(
   const carried = new Set<string>();
   for (const setCookie of sent) {
     carried.add(storedAs(setCookie, defaultPath));
-    // Written back as the cookie stored where the client keeps it: one Next.js moves to the root
-    // is not this one, and does not match it.
-    const stored = storedPathOf(setCookie, defaultPath);
-    const echo = given.has(setCookie.trim()) ? echoOf(`${setCookie}; Path=${stored}`) : undefined;
+    const echo = given.has(setCookie.trim()) ? echoOf(setCookie) : undefined;
     if (echo !== undefined) {
-      // Next.js decodes a path it reads. One the cookie names is read so; the path given it here,
-      // where it names none, is the client's own as stored, which no copy of it is decoded from.
-      const named = pathOf(setCookie)?.startsWith('/') === true;
-      carried.add(storedAs(named ? echo : `${echo}; Path=${stored}`, defaultPath));
+      // Weighed where the client keeps the original, as stored: a copy Next.js writes anywhere
+      // else — to the root, or to the path it decoded — is not this cookie, and does not match it.
+      carried.add(storedAs(`${echo}; Path=${storedPathOf(setCookie, defaultPath)}`, defaultPath));
     }
   }
   return set
