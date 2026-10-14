@@ -323,22 +323,28 @@ function dropUnusedEntries(input: RetentionInput): boolean {
   if (entries.length === 0) {
     return false;
   }
-  const revision = readRevision(sql) + 1;
-  commitRevision(sql, revision);
-  for (const entry of entries) {
-    sql.exec(
-      `UPDATE entries SET publication = 'retired', revision = ? WHERE entry_id = ?`,
-      revision,
-      entry.entry_id,
-    );
-    // One retirement, one event: an entry whose value expired was announced retired as its record
-    // was withdrawn (`retireExpiredData`), and one that never published is announced now.
-    if (entry.publication !== 'retired') {
+  // One retirement, one event: an entry whose value expired was announced retired as its record
+  // was withdrawn (`retireExpiredData`), and one that never published is announced now, at a
+  // revision the batch commits for it. Letting go of the first says nothing, and commits no
+  // revision: every revision says what was done at it, and a history read back in order would
+  // wait for good at one that says nothing.
+  const unannounced = entries.filter((entry) => entry.publication !== 'retired');
+  if (unannounced.length > 0) {
+    const revision = readRevision(sql) + 1;
+    commitRevision(sql, revision);
+    for (const entry of unannounced) {
+      sql.exec(
+        `UPDATE entries SET publication = 'retired', revision = ? WHERE entry_id = ?`,
+        revision,
+        entry.entry_id,
+      );
       input.history.append(
         { sql, revision, now },
         { ...entryStateEvent(sql, entry.entry_id), kind: 'entry.retired' },
       );
     }
+  }
+  for (const entry of entries) {
     sql.exec(`DELETE FROM entry_tags WHERE entry_id = ?`, entry.entry_id);
     // Not its writers' marks: a write delayed past its entry's reclamation must still find them
     // (`writtenAfter`), and they age out on their own (`forgetWriterMarks`).
