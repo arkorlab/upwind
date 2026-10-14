@@ -53,6 +53,7 @@ import {
   routedHeaders,
 } from './middleware.ts';
 import { observeServed } from './observer.ts';
+import type { PassthroughWait } from './passthrough.ts';
 import { dispatchedSoFar } from './upstream.ts';
 
 /** What a hosted application's middleware decided for this request, when the edge ran it. */
@@ -111,12 +112,14 @@ export interface DocumentInput {
    * again from the pointer when the Workers it names turned out to be gone
    * (`RoutingInput.servedAgain`), and counted under the route it was classified as (`route`) — the
    * class of a dynamic route's member, not a pathname of its own — with the read of the records,
-   * where they were read (`serveCachedDocument`).
+   * where they were read (`serveCachedDocument`), and the reads of a shell that could not be served
+   * (`fallbackToApp`).
    */
   readonly passthrough: (
     reason: string,
     middleware?: MiddlewareOutcome,
     route?: string,
+    waited?: PassthroughWait,
   ) => Promise<Response>;
   /**
    * The delivery record read for the route when the build's shell answers in its place — there was
@@ -263,6 +266,21 @@ function renderingReads(
     return 0;
   }
   return ready === undefined ? 1 : storageReadsOf(ready);
+}
+
+/**
+ * What reading a document's bytes took, for its metric, served or handed on: the build's shell's
+ * read, and the rendering's beside it (`renderingReads`). A record's own read is not the shell's.
+ */
+function storageReadsFor(
+  input: DocumentInput,
+  shell: ShellLoadResult,
+  tracked: TrackedRendering | undefined,
+  ready: ShellLoadResult | undefined,
+): number {
+  return (
+    (input.generation === undefined ? storageReadsOf(shell) : 0) + renderingReads(tracked, ready)
+  );
 }
 
 /**
@@ -658,7 +676,11 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
     if (encodedRead !== undefined) {
       edge.ctx.waitUntil(encodedRead.pending);
     }
-    return fallbackToApp(input, upstream ?? noContinuation(), shellFailure(shell), handle);
+    // Counted with the passthrough, as a served document counts them: the rendering as it stands,
+    // since nothing waits on it any longer.
+    const storageReads = storageReadsFor(input, shell, encodedRead, encodedRead?.ready());
+    const failure = { ...shellFailure(shell), storageReads };
+    return fallbackToApp(input, upstream ?? noContinuation(), failure, handle);
   }
   // Read here: the rendering's turn below is not shell lookup and may not be reported as it. A
   // generation the cache answered with reports its own lookup.
@@ -678,10 +700,10 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
     manifest.continuation.totalTimeoutMs,
     edge.policy.continuation.timeoutMs,
   );
-  // What reading the bytes took, for the metric: a record's own read is not the shell's.
-  const storageReads =
-    (generation === undefined ? storageReadsOf(shell) : 0) + renderingReads(encodedRead, encoded);
-  const read = { shell: delivery, storageReads };
+  const read = {
+    shell: delivery,
+    storageReads: storageReadsFor(input, shell, encodedRead, encoded),
+  };
   if (handle === undefined || upstream === undefined) {
     const outcome: SpliceOutcome = { kind: 'ok', suffixBytes: 0, originFirstByteMs: 0, totalMs: 0 };
     edge.ctx.waitUntil(reportOutcome({ input, outcome, ...read, subrequests: 0, head }));

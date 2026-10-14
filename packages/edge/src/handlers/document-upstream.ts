@@ -49,6 +49,11 @@ export interface ShellFailure {
   readonly detail: string | undefined;
 }
 
+/** A shell that could not be served: why, and the reads of storage it and its rendering took. */
+export interface FailedShell extends ShellFailure {
+  readonly storageReads: number;
+}
+
 export function shellFailure(shell: Exclude<ShellLoadResult, { kind: 'ok' }>): ShellFailure {
   switch (shell.kind) {
     case 'missing': {
@@ -71,7 +76,7 @@ export function shellFailure(shell: Exclude<ShellLoadResult, { kind: 'ok' }>): S
 export function fallbackToApp(
   input: DocumentInput,
   upstream: Promise<Upstream>,
-  failure: ShellFailure,
+  failure: FailedShell,
   handle?: ContinuationHandle,
 ): Promise<Response> {
   const { edge, entry } = input;
@@ -95,6 +100,9 @@ export function fallbackToApp(
   handle?.abort(reason);
   edge.ctx.waitUntil(releaseUpstream(upstream));
   // As every passthrough of the request goes: routed again from the pointer when its Workers turned
-  // out to be gone (`DocumentInput.passthrough`), and counted under the route.
-  return input.passthrough(reason, input.middleware, entry.pathname);
+  // out to be gone (`DocumentInput.passthrough`), and counted under the route — with the reads that
+  // found no shell to serve, which went out all the same, as a served document's are counted.
+  return input.passthrough(reason, input.middleware, entry.pathname, {
+    storageReads: failure.storageReads,
+  });
 }

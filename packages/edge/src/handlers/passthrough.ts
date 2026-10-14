@@ -90,6 +90,8 @@ export interface PassthroughMetrics {
    * again.
    */
   readonly recordLookupMs?: number | undefined;
+  /** The reads of storage before this, for a document it could not serve (`PassthroughWait`). */
+  readonly storageReads?: number | undefined;
   readonly projectId: string;
   readonly manifestId: string;
   readonly policyId: string;
@@ -105,6 +107,12 @@ export const PATTERN_BUDGET = 'pattern-budget';
 /** What the edge waited on before it handed the request on, where it waited on more than routing. */
 export interface PassthroughWait {
   readonly recordLookupMs?: number | undefined;
+  /**
+   * The reads of storage made for a document the edge then could not serve: its shell's, which
+   * failed, and its rendering's beside it, each counted as a served document's are
+   * (`storageReadsOf`).
+   */
+  readonly storageReads?: number | undefined;
 }
 
 /** What the upstream could not be reached at all is reported as, with the reason kept. */
@@ -232,7 +240,9 @@ function reportPassthrough(
     recovery: 0,
     retry: 0,
     assetHit: 0,
-    subrequests: dispatched?.redispatched === true ? 2 : 1,
+    // The Workers asked, and the reads of storage that came before them, as a served document's
+    // point counts both.
+    subrequests: (dispatched?.redispatched === true ? 2 : 1) + (metrics.storageReads ?? 0),
   });
 }
 

@@ -324,8 +324,8 @@ export async function serveCachedDocument(input: CachedDocumentInput): Promise<R
       middleware: input.middleware,
       shellRead: undefined,
       generation: undefined,
-      passthrough: (reason, middleware, route) =>
-        input.passthrough(reason, middleware, route, waited),
+      passthrough: (reason, middleware, route, more) =>
+        input.passthrough(reason, middleware, route, { ...more, ...waited }),
     },
     member: memberLoad,
   };
