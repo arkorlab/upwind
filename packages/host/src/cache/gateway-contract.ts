@@ -271,13 +271,24 @@ export type CommitDependency = z.infer<typeof commitDependencySchema>;
 const LOWEST_RESPONSE_STATUS = 200;
 const HIGHEST_RESPONSE_STATUS = 599;
 
+/**
+ * A header a response can be made with, as a bundle's prerender is held to as well: a name that is
+ * a token (RFC 9110), and a value `Headers` takes — no NUL, CR or LF, and no character a single
+ * byte cannot carry. `Headers` throws on any other wherever the generation is served.
+ */
+const RESPONSE_HEADER_NAME = /^[!#$%&'*+\-.^`|~\w]+$/u;
+const RESPONSE_HEADER_VALUE = /^[^\0\n\r\u{100}-\u{10FFFF}]*$/u;
+
 export const commitGenerationSchema = z.object({
   cacheTimestamp: z.number().int(),
   producedAt: z.number().int(),
   policy: cachePolicySchema,
   status: z.number().int().min(LOWEST_RESPONSE_STATUS).max(HIGHEST_RESPONSE_STATUS),
   /** The headers the generation is answered with, already filtered (`generationResponseHeaders`). */
-  headers: z.record(z.string(), z.string()),
+  headers: z.record(
+    z.string().regex(RESPONSE_HEADER_NAME, 'must be a header name'),
+    z.string().regex(RESPONSE_HEADER_VALUE, 'must be a value a header can carry'),
+  ),
   tags: z.array(generationTagSchema).max(MAX_TAGS_PER_ENTRY),
   outputs: z.array(commitOutputSchema).min(1),
   dependencies: z.array(commitDependencySchema),
