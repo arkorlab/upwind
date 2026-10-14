@@ -166,6 +166,8 @@ const MIB = KIB * KIB;
 const MAX_KV_VALUE_MIB = 25;
 /** The largest value Workers KV holds under one key. */
 const MAX_KV_VALUE_BYTES = MAX_KV_VALUE_MIB * MIB;
+/** The most of a key's metadata Workers KV keeps, as JSON. */
+const MAX_KV_METADATA_BYTES = KIB;
 
 function isoOf(ms: number): string {
   // eslint-disable-next-line unicorn/prefer-temporal -- Temporal is not available in the Workers runtime.
@@ -369,6 +371,24 @@ async function storedAs(
 }
 
 /**
+ * What an artifact is placed in KV with: what it is, and the route it was first captured from —
+ * provenance, which nothing reads to serve it, and left out where that route's pathname would take
+ * the metadata past what KV keeps of it (`MAX_KV_METADATA_BYTES`) and fail the write.
+ */
+function kvMetadataOf(
+  unit: Pick<ShellPlacement, 'byteLength' | 'contentType' | 'sha256'> & {
+    readonly encoding: string;
+  },
+  sourcePath: string,
+): Readonly<Record<string, unknown>> {
+  const { contentType, byteLength, sha256, encoding } = unit;
+  const traced = { contentType, byteLength, sha256, sourcePath, encoding };
+  return encodeUtf8(JSON.stringify(traced)).byteLength > MAX_KV_METADATA_BYTES
+    ? { contentType, byteLength, sha256, encoding }
+    : traced;
+}
+
+/**
  * A shell, and each rendering of it the manifest names, placed where the policy's shell backend
  * reads them from: in KV beside the edge's other state, from the artifacts staging and whatever
  * compressed them stored, or nowhere new under an R2 policy, where those artifacts are the
@@ -388,13 +408,7 @@ async function placeShell(
       continue;
     }
     const key = kvArtifactKey(unit.sha256);
-    await target.edgeState.put(key, bytes, {
-      contentType: unit.contentType,
-      byteLength: unit.byteLength,
-      sha256: unit.sha256,
-      sourcePath: shell.sourcePath,
-      encoding: unit.encoding,
-    });
+    await target.edgeState.put(key, bytes, kvMetadataOf(unit, shell.sourcePath));
     await readBack((written) => target.edgeState.get(written), key, unit);
   }
 }
