@@ -54,6 +54,27 @@ function movedAssetPrefix(
     : before.assetPrefix;
 }
 
+/**
+ * A file only the deployment before built, kept for the documents of it still open, which ask for
+ * it by its `dpl`. One under the build id both builds have — Next.js gives every build with a
+ * deployment id the same one — answers only those (`dplOnly`): its name is this deployment's to
+ * answer, with whatever its routing makes of it, for a request that names no deployment, and the
+ * documents before put their `dpl` on every request for one of these.
+ */
+function keptEntry(
+  file: BundledStaticFile,
+  bundle: DeploymentBundle,
+  previous: DeploymentBundle,
+): StaticFileEntry {
+  const underBuildId = `${previous.config.basePath}${NEXT_STATIC_PREFIX}${previous.buildId}/`;
+  const ownName = bundle.buildId === previous.buildId && file.pathname.startsWith(underBuildId);
+  return {
+    ...staticFileEntry(file, previous.config.basePath),
+    deploymentId: previous.deploymentId,
+    ...(ownName && { dplOnly: true as const }),
+  };
+}
+
 /** A name both builds have: this build's entry, with the previous build's bytes beside it. */
 function sharedEntry(
   entry: StaticFileEntry,
@@ -101,10 +122,7 @@ function underMovedPrefix(
     const mine = own.get(`${bundle.config.basePath}${rest}`);
     files[key] =
       mine === undefined
-        ? {
-            ...staticFileEntry(file, previous.config.basePath),
-            deploymentId: previous.deploymentId,
-          }
+        ? keptEntry(file, bundle, previous)
         : sharedEntry(staticFileEntry(mine, bundle.config.basePath), file, previous);
   }
 }
@@ -144,10 +162,7 @@ export function staticFilesOf(
     }
     const current = files[file.pathname];
     if (current === undefined) {
-      files[file.pathname] = {
-        ...staticFileEntry(file, previous.config.basePath),
-        deploymentId: previous.deploymentId,
-      };
+      files[file.pathname] = keptEntry(file, bundle, previous);
     } else if (!current.immutable) {
       files[file.pathname] = {
         ...current,
