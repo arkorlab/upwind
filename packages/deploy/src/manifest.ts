@@ -70,6 +70,9 @@ export function oversizedManifest(
     : undefined;
 }
 
+/** The policies a hint answers to (`withoutForbidden`), by the lowercase names they go by. */
+const POLICY_HEADERS: ReadonlySet<string> = new Set(['content-security-policy', 'referrer-policy']);
+
 export interface AssembleManifestInput {
   readonly bundle: DeploymentBundle;
   /** The bundle of the deployment served just before this one, whose `_next/static` files stay. */
@@ -142,6 +145,7 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
   const cached = input.runtimeCache !== false;
   const caches = cached ? await routeCachesOf(bundle, input.deploymentId) : new Map();
   const middlewareMatchers = middlewareMatchersOf(bundle);
+  const rules = headerRulesOf(bundle);
   const context: ManifestContext = {
     bundle,
     placed: placedRoutes(bundle.entrypoints),
@@ -149,6 +153,12 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
     preloads: input.preloads,
     caches,
     matchers: middlewareMatchers ?? [],
+    policyRules: rules.filter((rule) => {
+      return (
+        (rule.has !== undefined || rule.missing !== undefined) &&
+        Object.keys(rule.headers).some((name) => POLICY_HEADERS.has(name.toLowerCase()))
+      );
+    }),
     recoverySource: input.recoverySource,
     resumable: new Set(resumablePrerenders(bundle).map((prerender) => prerender.id)),
     segments: routeSegmentsOf(bundle, input.encodings),
@@ -171,7 +181,7 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
     const changed = Object.entries(rule.headers).some(([name, value]) => widened[name] !== value);
     return changed ? { ...rule, documentHeaders: widened } : rule;
   };
-  const headerRules = headerRulesOf(bundle).map((rule) => forDocuments(rule));
+  const headerRules = rules.map((rule) => forDocuments(rule));
   // A build the edge does not route folds its unconditional rules into its routes' headers; they
   // travel apart as well, widened the same way, to be laid over a regenerated page's own headers.
   const foldedHeaderRules = foldedHeaderRulesOf(bundle)?.map((rule) => forDocuments(rule));

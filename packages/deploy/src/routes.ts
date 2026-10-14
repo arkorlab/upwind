@@ -10,6 +10,7 @@ import {
   shellHeaders,
 } from '@stayingupwind/core/bundle';
 import type {
+  HeaderRule,
   MiddlewareMatcher,
   RouteCache,
   RouteEntry,
@@ -73,6 +74,47 @@ function middlewareCovers(matchers: readonly MiddlewareMatcher[], pathname: stri
   });
 }
 
+/**
+ * The rules judged on each request that may lay a policy over this route's own, for some of the
+ * requests it answers (`ManifestContext.policyRules`): one whose pattern names its pathname, and
+ * any at all for a class shell, judged by the company it keeps as for a middleware's matchers.
+ */
+function policyRulesCovering(
+  rules: readonly HeaderRule[],
+  pathname: string,
+): readonly HeaderRule[] {
+  if (isTemplate(pathname)) {
+    return rules;
+  }
+  // As the edge judges them (`documentHeaderRulesFor`): case-insensitive, without the unicode flag.
+  // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
+  return rules.filter((rule) => new RegExp(rule.sourceRegex, 'i').test(pathname));
+}
+
+/** A rule's headers, under the lowercase names a route's own are recorded by. */
+function lowercased(headers: Readonly<Record<string, string>>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value]),
+  );
+}
+
+/**
+ * The hints the route's own policies leave standing, less what a rule judged on each request
+ * forbids or quietens with the policies it lays over them: a `103` replays the same hints to the
+ * requests the rule holds for as to any other, before either policy can reach the browser.
+ */
+function withoutRuledOut(
+  hints: readonly string[],
+  headers: Readonly<Record<string, string>>,
+  rules: readonly HeaderRule[],
+): string[] {
+  let kept = [...hints];
+  for (const rule of rules) {
+    kept = withoutForbidden(kept, { ...headers, ...lowercased(rule.headers) });
+  }
+  return kept;
+}
+
 /** What every route entry of one deployment is built from, beside the prerender itself. */
 export interface ManifestContext {
   readonly bundle: DeploymentBundle;
@@ -88,6 +130,12 @@ export interface ManifestContext {
   readonly caches: ReadonlyMap<string, RouteCache>;
   /** The middleware matchers of the build, for the routes whose answer they can change. */
   readonly matchers: readonly MiddlewareMatcher[];
+  /**
+   * The rules of `next.config` the edge judges on each request — the ones with a condition, `has`
+   * or `missing`, which no route's own headers can carry — that set a policy a hint answers to
+   * (`withoutForbidden`): a `Content-Security-Policy` or a `Referrer-Policy`.
+   */
+  readonly policyRules: readonly HeaderRule[];
   /** The CSP source that authorises the recovery script, added to every policy recorded here. */
   readonly recoverySource: string;
   /**
@@ -164,7 +212,11 @@ export function routeEntryOf(
     : (context.preloads[prerender.body.sha256] ?? []);
   // And what the route's own policies forbid or quieten goes out with it: a hint replayed as a
   // `103` arrives before either can reach the browser, so both are read here instead.
-  const preloads = withoutForbidden(withoutAdvertised(named, headers['link']), headers);
+  const preloads = withoutRuledOut(
+    withoutForbidden(withoutAdvertised(named, headers['link']), headers),
+    headers,
+    policyRulesCovering(context.policyRules, pathname),
+  );
   const segments = context.segments.get(prerender.pathname);
   const payload = context.payloads.get(prerender.pathname);
   const pagesData = context.pagesData.get(prerender.pathname);
