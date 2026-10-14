@@ -470,7 +470,8 @@ export type DataGetResponse = z.infer<typeof dataGetResponseSchema>;
 export const tagDeltaEntrySchema = z.object({
   tagId: z.string().min(1),
   kind: tagKindSchema,
-  value: z.string().min(1),
+  /** A tag an invalidation named, which no request names longer; a runtime keys a cache on it. */
+  value: tagValueSchema,
   revision: z.number().int().positive(),
   staleAt: z.number().int(),
   hardExpireAt: z.number().int().nullable(),

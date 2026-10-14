@@ -1,4 +1,4 @@
-import { MAX_TAGS_PER_CALL, MAX_TAGS_PER_ENTRY } from '@stayingupwind/core/cache';
+import { MAX_TAG_LENGTH, MAX_TAGS_PER_CALL, MAX_TAGS_PER_ENTRY } from '@stayingupwind/core/cache';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -7,6 +7,7 @@ import {
   dataSetRequestSchema,
   MAX_DATA_HANDLER_LENGTH,
   MAX_DATA_KEY_LENGTH,
+  tagDeltaEntrySchema,
   tagsGetResponseSchema,
 } from '../src/cache/gateway-contract.ts';
 
@@ -143,5 +144,18 @@ describe("a tag read's answer", () => {
   /** A record for each tag the read named at the most, which no read names more of. */
   it('holds no more records than a read may name tags', () => {
     expect(tagsGetResponseSchema.safeParse(tagsAnswer(MAX_TAGS_PER_CALL + 1)).success).toBe(false);
+  });
+});
+
+describe("a tag's record in a delta or a tag read", () => {
+  /** What a runtime keeps each one under, as a key of its tag cache. */
+  it('names a tag no longer than an invalidation may', () => {
+    const longest = 't'.repeat(MAX_TAG_LENGTH);
+
+    expect(tagDeltaEntrySchema.safeParse(tagRecord(longest)).success).toBe(true);
+    expect(tagDeltaEntrySchema.safeParse(tagRecord(`${longest}t`)).success).toBe(false);
+    expect(tagsGetResponseSchema.safeParse({ tags: [tagRecord(`${longest}t`)] }).success).toBe(
+      false,
+    );
   });
 });
