@@ -95,6 +95,12 @@ export interface OutcomeReport {
   readonly shell: ShellDelivery;
   /** Requests the resume made: one, or none for a document complete in itself. */
   readonly subrequests: number;
+  /**
+   * Reads of storage the document's bytes took: the build's shell and a rendering of it, each
+   * none where the isolate held it (`storageReadsOf`). A record's own read is left out, as a
+   * router part leaves it out.
+   */
+  readonly storageReads: number;
   /** A `HEAD`, answered with the document's headers alone: recorded as `head`, nothing sent. */
   readonly head?: boolean | undefined;
   /** Where the resume went, for a deployment split across app Workers (`dispatchedSoFar`). */
@@ -200,7 +206,8 @@ export async function reportOutcome(report: OutcomeReport): Promise<void> {
     recovery: wasRecovered(outcome) ? 1 : 0,
     retry: 0,
     assetHit: 0,
-    subrequests: report.subrequests + (report.dispatched?.redispatched === true ? 1 : 0),
+    subrequests:
+      report.subrequests + report.storageReads + (report.dispatched?.redispatched === true ? 1 : 0),
     pointerLookupMs: edge.timings.pointerMs,
     manifestLookupMs: edge.timings.manifestMs,
     // The same number the document's `Server-Timing` names `mw` (`document-headers.ts`): taken

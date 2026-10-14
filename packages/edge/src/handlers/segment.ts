@@ -17,7 +17,7 @@ import type { ShellDeliveryStrategy } from '@stayingupwind/host/delivery';
 import { brotliWire, gzipWire } from '@stayingupwind/host/splice';
 
 import type { EdgeContext } from '../strategies/context.ts';
-import { loadShell, type ShellLoadResult } from '../strategies/shell-loader.ts';
+import { loadShell, storageReadsOf } from '../strategies/shell-loader.ts';
 import { setConfigured } from './configured-headers.ts';
 import { ACCEPT_ENCODING_HEADER, IDENTITY_ENCODING, varyOn } from './document-headers.ts';
 import { observeMetric } from './observer.ts';
@@ -316,17 +316,8 @@ interface SegmentDelivery {
   /** What reading the bytes cost, apart from what deciding to read them cost. */
   readonly lookupMs: number;
   readonly bytes: number;
-  /** The reads of storage the bytes took (`storageReads`). */
+  /** The reads of storage the bytes took (`storageReadsOf`). */
   readonly reads: number;
-}
-
-/**
- * The reads of storage one load of a part's bytes made: none where the isolate's memory held them,
- * and otherwise the backend's, which `loadShell` asks as soon as memory misses, whichever layer
- * then answers first.
- */
-function storageReads(loaded: ShellLoadResult): number {
-  return loaded.kind === 'ok' && loaded.read.source === 'memory' ? 0 : 1;
 }
 
 function recordDelivery(input: SegmentInput, delivered: SegmentDelivery): void {
@@ -408,7 +399,7 @@ export async function handleSegment(input: SegmentInput): Promise<Response> {
     rendering,
     lookupMs: edge.runtime.now() - lookupStartedAt,
     bytes: bytes.byteLength + (rendering.close?.byteLength ?? 0),
-    reads: storageReads(first) + (fallback === undefined ? 0 : storageReads(fallback)),
+    reads: storageReadsOf(first) + (fallback === undefined ? 0 : storageReadsOf(fallback)),
   });
   if (rendering.encoding === IDENTITY_ENCODING) {
     // Left to the runtime, which compresses it on the way out for a client that accepts one — the

@@ -20,6 +20,15 @@ export type ShellLoadResult =
   /** The backend threw (rate limit, internal error, timeout): an infrastructure fact, not a data one. */
   | { readonly kind: 'unavailable'; readonly detail: string };
 
+/**
+ * The reads of storage a load made: none where the isolate's memory held the bytes, and otherwise
+ * the backend's, which `loadShell` asks as soon as memory misses, whichever layer then answers
+ * first.
+ */
+export function storageReadsOf(loaded: ShellLoadResult): number {
+  return loaded.kind === 'ok' && loaded.read.source === 'memory' ? 0 : 1;
+}
+
 function errorDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }

@@ -22,7 +22,7 @@ import { logWarn } from '../observability/logger.ts';
 import { stripEdgeHeaders } from '../request-context.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { resumeContinuation } from '../strategies/continuation-resume.ts';
-import { loadShell, type ShellLoadResult } from '../strategies/shell-loader.ts';
+import { loadShell, type ShellLoadResult, storageReadsOf } from '../strategies/shell-loader.ts';
 import { mintCspNonce, rewriteDocumentNonces } from './csp-nonce.ts';
 import { deliveryFor, type Layering } from './document-delivery.ts';
 import { delegateSandboxedDocument, headToApplication } from './document-handoffs.ts';
@@ -243,6 +243,21 @@ async function readyRendering(
     edge.ctx.waitUntil(tracked.pending);
   }
   return ready;
+}
+
+/**
+ * The reads of storage a rendering asked for took: none where none was asked for, and one for a
+ * rendering still out once the shell's turn had passed, which the isolate's memory would have
+ * answered within it (`readyRendering`).
+ */
+function renderingReads(
+  tracked: TrackedRendering | undefined,
+  ready: ShellLoadResult | undefined,
+): number {
+  if (tracked === undefined) {
+    return 0;
+  }
+  return ready === undefined ? 1 : storageReadsOf(ready);
 }
 
 /**
@@ -656,9 +671,13 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
     manifest.continuation.totalTimeoutMs,
     edge.policy.continuation.timeoutMs,
   );
+  // What reading the bytes took, for the metric: a record's own read is not the shell's.
+  const storageReads =
+    (generation === undefined ? storageReadsOf(shell) : 0) + renderingReads(encodedRead, encoded);
+  const read = { shell: delivery, storageReads };
   if (handle === undefined || upstream === undefined) {
     const outcome: SpliceOutcome = { kind: 'ok', suffixBytes: 0, originFirstByteMs: 0, totalMs: 0 };
-    edge.ctx.waitUntil(reportOutcome({ input, outcome, shell: delivery, subrequests: 0, head }));
+    edge.ctx.waitUntil(reportOutcome({ input, outcome, ...read, subrequests: 0, head }));
     // What the `GET` would say of itself, a resume included: the headers are the `GET`'s.
     return composeDocument(input, {
       headers,
@@ -689,7 +708,7 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
       // Where the resume went, as far as it got: the Worker that answered or failed, or the one it
       // was still out to when the first-byte timeout ended it — the report waits for none of them.
       const dispatched = dispatchedSoFar(handle.response);
-      await reportOutcome({ input, outcome, shell: delivery, subrequests: 1, dispatched });
+      await reportOutcome({ input, outcome, ...read, subrequests: 1, dispatched });
     })(),
   );
   return composeDocument(input, {
