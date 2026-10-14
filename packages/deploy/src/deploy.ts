@@ -292,6 +292,15 @@ export async function stageDeployment(
   input: StageInput,
 ): Promise<StagedDeployment> {
   const { bundle } = input;
+  // The Functions the manifest and the pointer name are where the edge sends the deployment's
+  // requests, and the id they carry is the scope it tells them of (`AppRuntime.deploymentId`):
+  // another deployment's would answer this one's requests, under a scope it was not seeded in.
+  if (input.app.deploymentId !== bundle.deploymentId) {
+    throw new DeployRefusalError(
+      `the Functions handed in are ${input.app.deploymentId}'s, not ${bundle.deploymentId}'s`,
+      { code: 'bundle_invalid' },
+    );
+  }
   const fingerprint = await deploymentFingerprintOf(bundle, input.json, isoOf(input.now()));
   const blobs = await stageBlobs(target, bundle);
   const preloads = await importShells(target, input);
