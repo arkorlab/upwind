@@ -339,12 +339,16 @@ export function claimResourceWarmJobs(
   if (readScope(sql)?.status !== 'active') return { jobs: [], nextRetryAt: null };
   // Entry retention may remove an unpublishable member while nothing was claiming the jobs.
   sql.exec(`DELETE FROM resource_warm_jobs WHERE entry_id NOT IN (SELECT entry_id FROM entries)`);
+  // Taken up in the order they came due: a pending job at its retry, and one whose dispatch lease
+  // ran out with no answer once it ran out. By its first retry, a job whose answers keep being lost
+  // would be taken up again ahead of every job that came due since, each time.
   const candidates = sql
     .exec<WarmJobRow>(
       `SELECT * FROM resource_warm_jobs
        WHERE (status = 'pending' AND retry_at <= ?)
           OR (status = 'leased' AND lease_expires_at <= ?)
-       ORDER BY retry_at, job_id LIMIT ?`,
+       ORDER BY CASE status WHEN 'leased' THEN lease_expires_at ELSE retry_at END, job_id
+       LIMIT ?`,
       now,
       now,
       input.limit ?? 2,
