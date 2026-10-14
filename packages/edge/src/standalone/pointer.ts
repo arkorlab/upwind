@@ -1,6 +1,7 @@
 import { type EdgePointer, edgePointerSchema } from '@stayingupwind/host/delivery';
 
 import type { EdgeRuntime } from '../edge-runtime.ts';
+import { logWarn } from '../observability/logger.ts';
 import { createPointerReader } from '../preview/pointer.ts';
 import { heldBehind, type Lookup, MISSING } from '../preview/storage.ts';
 import type { StandaloneEnv } from './env.ts';
@@ -20,7 +21,8 @@ const pinned = new WeakMap<StandaloneEnv, Lookup<EdgePointer>>();
 /**
  * The pointer this version of the edge was deployed with (`POINTER`), parsed once per `env`. One
  * that is not a pointer is no pointer to serve, and every request is answered `503` until the edge
- * is deployed with one.
+ * is deployed with one: said once, where it is parsed, as one in `EDGE_STATE` that is not a pointer
+ * is (`invalid active pointer`), so that whoever deployed it can tell why the site answers nothing.
  */
 function pinnedPointer(env: StandaloneEnv, json: string): Lookup<EdgePointer> {
   const held = pinned.get(env);
@@ -28,12 +30,16 @@ function pinnedPointer(env: StandaloneEnv, json: string): Lookup<EdgePointer> {
     return held;
   }
   let raw: unknown;
+  let notJson = false;
   try {
     raw = JSON.parse(json);
   } catch {
-    raw = undefined;
+    notJson = true;
   }
   const pointer = parsed(raw);
+  if (pointer === undefined) {
+    logWarn('invalid pinned pointer', { detail: notJson ? 'not JSON' : 'not a pointer' });
+  }
   const lookup: Lookup<EdgePointer> =
     pointer === undefined ? UNAVAILABLE : { kind: 'found', value: pointer };
   pinned.set(env, lookup);

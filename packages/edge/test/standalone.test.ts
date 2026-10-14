@@ -2,7 +2,7 @@ import type { ImagesConfig } from '@stayingupwind/core/images';
 import { concatBytes, encodeUtf8 } from '@stayingupwind/core/util';
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createEdgeMemory } from '../src/memory/caches.ts';
 import type { IncomingRequest } from '../src/request-context.ts';
@@ -127,6 +127,30 @@ describe('a standalone edge', () => {
     expect(broken.response.status).toBe(503);
     expect(broken.response.headers.get('x-arkor-edge')).toContain('pointer-unavailable');
   });
+
+  /** Every request is answered 503 for as long as it is deployed: whoever deployed it is told why. */
+  it.each([
+    ['{', 'not JSON'],
+    ['{"v":1}', 'not a pointer'],
+  ])(
+    'says once that the pointer it was deployed with, %j, is no pointer',
+    async (pinned, detail) => {
+      const warned = vi.spyOn(console, 'warn').mockImplementation(() => {
+        // Read below, not printed.
+      });
+      try {
+        const site = { ...env, POINTER: pinned };
+        await serve(site, navigation('/'));
+        await serve(site, navigation('/'));
+
+        expect(warned.mock.calls).toStrictEqual([
+          [JSON.stringify({ level: 'warn', message: 'invalid pinned pointer', detail })],
+        ]);
+      } finally {
+        warned.mockRestore();
+      }
+    },
+  );
 
   it('hands what the build does not answer to the Function, as it answered it', async () => {
     const { pointer } = await seedSite({ document: pprDocument() });
