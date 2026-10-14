@@ -43,9 +43,11 @@ export interface AssetHandleResult {
 /**
  * What became of the copy an asset strategy kept while the body went to the client.
  *
- * Anything but `kept` means the asset was delivered whole and stored nowhere, so the next request
- * for it asks the origin again. The reason is the only place that shows, which is why it is a
- * value and not a log line.
+ * Anything but `kept` means nothing here vouches for a stored copy, so the next request for the
+ * asset may ask the origin again: the copy was let go of, or its write may yet land
+ * (`store-unconfirmed`). It says nothing of the body the client was sent, which goes on beside the
+ * copy, whole where the origin's was and short where it was not, as an `interrupted` one may be.
+ * The reason is the only place that shows, which is why it is a value and not a log line.
  */
 export type AssetKeepOutcome =
   | 'kept'
