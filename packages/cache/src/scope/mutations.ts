@@ -24,6 +24,30 @@ export class ScopeQueue {
   }
 }
 
+/**
+ * The object's one alarm, which fires at the earliest of what anything asked for. Each call reads,
+ * compares and sets it in turn. Two that read it before either set it would each find it later than
+ * their own, and the later of the two, set last, would put back what the earlier one brought
+ * forward: a lease's sweep or a failed run's retry, left to the hour's retention.
+ */
+export class Alarm {
+  readonly #storage: DurableObjectStorage;
+  readonly #turns = new ScopeQueue();
+
+  constructor(storage: DurableObjectStorage) {
+    this.#storage = storage;
+  }
+
+  arm(at: number): Promise<void> {
+    return this.#turns.run(async () => {
+      const existing = await this.#storage.getAlarm();
+      if (existing === null || existing > at) {
+        await this.#storage.setAlarm(at);
+      }
+    });
+  }
+}
+
 export function scopeName(ctx: DurableObjectState): string {
   const name = ctx.id.name;
   if (name === undefined) {

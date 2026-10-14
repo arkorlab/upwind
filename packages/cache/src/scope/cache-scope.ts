@@ -56,7 +56,7 @@ import {
 } from './history.ts';
 import { type InvalidateResult, planInvalidate } from './invalidations.ts';
 import { type BlobStore, blobStore, checkFault, kvSink, type TestFaults } from './io.ts';
-import { commitMutation, initializeScope, scopeName, ScopeQueue } from './mutations.ts';
+import { Alarm, commitMutation, initializeScope, scopeName, ScopeQueue } from './mutations.ts';
 import {
   type ArtifactLocation,
   locateArtifact,
@@ -146,6 +146,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
   /** The history a host keeps of each scope, made as each object is (`ScopeHistory`): none here. */
   static readonly historyOf: HistoryFactory = () => NO_HISTORY;
   readonly #mutations = new ScopeQueue();
+  readonly #alarm = new Alarm(this.ctx.storage);
   #settling: Promise<void> = Promise.resolve();
   /** Settle runs asked for and not begun: a run's slice gives way to them (`othersWaiting`). */
   #waiting = 0;
@@ -342,10 +343,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
   /** The alarm is one per object: it fires at the earliest of what anything asked for. */
   async #armAlarm(at: number): Promise<void> {
     checkFault(() => this.#faults, 'alarm');
-    const existing = await this.ctx.storage.getAlarm();
-    if (existing === null || existing > at) {
-      await this.ctx.storage.setAlarm(at);
-    }
+    await this.#alarm.arm(at);
   }
 
   async #rearm(now: number): Promise<void> {
