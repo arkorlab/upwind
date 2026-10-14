@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   builtNameOf,
+  builtSegment,
   escapedPathOf,
+  memberValuesOf,
+  readablePathOf,
   requestPathOf,
   spellingsOf,
 } from '../src/manifest/built-names.ts';
@@ -214,5 +217,29 @@ describe('the spellings of a path', () => {
     for (const spelling of spellingsOf(['', 'a b', '%'])) {
       expect(decodeURIComponent(spelling)).toBe('/a b/%');
     }
+  });
+});
+
+describe('the values a page’s name was built from', () => {
+  const NAME = ['', 'a%2Fb%252F%2523'];
+
+  /** An escaped escape was built from the escape, or from itself: each on its own. */
+  it('reads a delimiter back, and each escaped escape both ways, each read back first', () => {
+    expect([...memberValuesOf(NAME)]).toStrictEqual([
+      ['', 'a/b%2F%23'],
+      ['', 'a/b%2F%2523'],
+      ['', 'a/b%252F%23'],
+      ['', 'a/b%252F%2523'],
+    ]);
+  });
+
+  it('builds each back to the name', () => {
+    for (const values of memberValuesOf(NAME)) {
+      expect(values.map((value) => builtSegment(value))).toStrictEqual(NAME);
+    }
+  });
+
+  it('asks for values by a path that holds each segment whole', () => {
+    expect(readablePathOf(['', 'docs', 'a/b%252F'])).toBe('/docs/a%2Fb%25252F');
   });
 });

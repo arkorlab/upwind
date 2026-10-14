@@ -1,12 +1,6 @@
 import { compiledRules, patternOf } from '../request/compiled-patterns.ts';
 import { testWithin } from '../request/pattern-budget.ts';
-import {
-  builtNameOf,
-  escapedPathOf,
-  requestPathOf,
-  segmentValueOf,
-  spellingReaching,
-} from './built-names.ts';
+import { builtNameOf } from './built-names.ts';
 import type { DynamicRoute, ProjectManifest } from './schema.ts';
 
 /** What of a manifest tells a page of its own from a member of a dynamic route. */
@@ -108,38 +102,4 @@ function memberKey(
     return pathname;
   }
   return other !== undefined && Object.hasOwn(record, other) ? other : undefined;
-}
-
-/**
- * The path a request asks for the route `key` of `manifest` by, as the edge finds the route it asks
- * for (`pageKeyOf`): its name read as a member's, escaped as a request names one (`requestPathOf`),
- * or as a page of its own's, escaped whole (`escapedPathOf`) — whichever the edge reads back as
- * `key`. A page of its own's name is its path as it is: a `%2F` in it is a `%` and a `2F`, and asked
- * for as a member's escaped `/`, it is another page. Where another route is named as one of those
- * spells it (`/docs/100%25` beside `/docs/100%`), the edge finds that route as spelled first, and
- * the name is asked by another spelling of it, read the same way: one byte after another escaped,
- * an escape's letters in either case, until one no route is named as (`spellingReaching`).
- *
- * `undefined` where none is: no request reaches the route. A member a page of its own shadows
- * (`/docs/a%2Fb` beside the page `/docs/a/b`) is never served — Next.js, and the edge, find the page
- * first, for every path that names the member — and a name no path names reaches nothing at all.
- */
-export function routeRequestPathOf(
-  manifest: PagesOfTheirOwn & { readonly routes: Readonly<Record<string, unknown>> },
-  key: string,
-): string | undefined {
-  const member = requestPathOf(key);
-  const own = escapedPathOf(key);
-  if (member === undefined || own === undefined) {
-    return undefined;
-  }
-  const read = (pathname: string): string | undefined =>
-    pageKeyOf(manifest.routes, pathname, manifest);
-  const segments = key.split('/');
-  const values = segments.map((segment) => segmentValueOf(segment));
-  // A name with no escape `builtSegment` wrote reads the same either way: one search is all of it.
-  return (
-    spellingReaching(key, read, member, values) ??
-    (values.join('/') === key ? undefined : spellingReaching(key, read, own, segments))
-  );
 }

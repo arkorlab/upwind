@@ -4,7 +4,14 @@ import type { RouterReferences } from '../bundle/carried.ts';
 import type { DeploymentFingerprint } from '../deployment/fingerprint.ts';
 import type { ImagesConfig } from '../images/config.ts';
 import { compareCodeUnits } from '../util/bytes.ts';
-import { escapedPathOf, spellingReaching } from './built-names.ts';
+import {
+  escapedPathOf,
+  memberValuesOf,
+  type Reading,
+  readablePathOf,
+  requestPathOf,
+  spellingReaching,
+} from './built-names.ts';
 import { pageKeyOf } from './page-keys.ts';
 import { namesPagesDataPrefix, pagesDataPrefixOf } from './pages-data-prefix.ts';
 import {
@@ -410,7 +417,95 @@ export function fileRequestPathOf(
     return undefined;
   }
   const read = (pathname: string): string | undefined => staticFileKey(manifest, pathname);
-  return spellingReaching(key, read, readable, spelling.split('/'));
+  return spellingReaching(key, read, [{ readable, values: spelling.split('/') }]);
+}
+
+/** What of a manifest finds what a request asks for: a file it ships, and then a route. */
+type RouteLookup = FileLookup &
+  Pick<ProjectManifest, 'dynamicRoutes' | 'filesystemPages'> & {
+    readonly routes: Readonly<Record<string, unknown>>;
+  };
+
+/**
+ * The file the edge serves a request that names no deployment (no `dpl`) at `pathname` with, ahead
+ * of every route (`classifyStaticFile`): one the manifest ships, but for a kept build — the
+ * deployment before's — that answers only its own deployment's `dpl`.
+ */
+function fileServedAt(manifest: FileLookup, pathname: string): string | undefined {
+  const key = staticFileKey(manifest, pathname);
+  const file = key === undefined ? undefined : manifest.staticFiles?.[key];
+  return file === undefined || staticFileBuildWithoutDpl(file, undefined) === undefined
+    ? undefined
+    : key;
+}
+
+/** What a request served a file reads as: no route's name, each of which starts with `/`. */
+const FILE_READING = 'file ';
+
+/**
+ * The readings a request reaches the route `key` by (`spellingReaching`): as a member, by the
+ * values its name was built from — each escaped escape read back first (`requestPathOf`), and then
+ * each other way (`memberValuesOf`) — and as a page of its own, by its name as it is
+ * (`escapedPathOf`), after the first. A reading of a member reaches no route only where a name the
+ * manifest holds stands in its way — a page of its own, or a file, named as it decodes, or a route
+ * named as each of its spellings — so no more of the others are tried than the manifest holds
+ * names. A manifest from before the pages of their own were listed finds a member by its path
+ * decoded whole (`pageKeyOf`), which none of the others decodes to.
+ */
+function* routeReadings(
+  manifest: RouteLookup,
+  key: string,
+  readable: { readonly member: string; readonly own: string },
+): Generator<Reading, void, undefined> {
+  const segments = key.split('/');
+  const members = memberValuesOf(segments);
+  const first = members.next();
+  if (first.done !== true) {
+    yield { readable: readable.member, values: first.value };
+  }
+  yield { readable: readable.own, values: segments };
+  let names: number | undefined;
+  let tried = 0;
+  for (const values of members) {
+    names ??= Object.keys(manifest.routes).length + Object.keys(manifest.staticFiles ?? {}).length;
+    if (tried > names) {
+      return;
+    }
+    tried += 1;
+    yield { readable: readablePathOf(values), values };
+  }
+}
+
+/**
+ * The path a request asks for the route `key` of `manifest` by, as the edge finds what a request
+ * asks for: a file the manifest ships ahead of every route (`fileServedAt`), and then the route
+ * (`pageKeyOf`) — its name read as a member's, escaped as a request names one (`requestPathOf`),
+ * or as a page of its own's, escaped whole (`escapedPathOf`), whichever the edge reads back as
+ * `key`. A page of its own's name is its path as it is: a `%2F` in it is a `%` and a `2F`, and
+ * asked for as a member's escaped `/`, it is another page. Where a file or another route is named
+ * as one of those spells it (`/docs/100%25` beside `/docs/100%`, the file `/docs/a%20b` beside the
+ * route `/docs/a b`), the edge finds that one first, and the name is asked by another spelling of
+ * it, read the same way: one byte after another escaped, an escape's letters in either case, until
+ * one none is named as (`spellingReaching`) — or by another reading of it (`routeReadings`).
+ *
+ * `undefined` where none is: no request reaches the route. A member a page of its own shadows
+ * (`/docs/a%2Fb` beside the page `/docs/a/b`) is never served — Next.js, and the edge, find the page
+ * first, for every path that names the member — nor is a route a file is found ahead of at every
+ * spelling, and a name no path names reaches nothing at all.
+ */
+export function routeRequestPathOf(manifest: RouteLookup, key: string): string | undefined {
+  const member = requestPathOf(key);
+  const own = escapedPathOf(key);
+  if (member === undefined || own === undefined) {
+    return undefined;
+  }
+  const read = (pathname: string): string | undefined => {
+    const file = fileServedAt(manifest, pathname);
+    return file === undefined
+      ? pageKeyOf(manifest.routes, pathname, manifest)
+      : `${FILE_READING}${file}`;
+  };
+  return spellingReaching(key, read, routeReadings(manifest, key, { member, own }));
 }
 
 /**

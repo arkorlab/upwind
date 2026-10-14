@@ -40,22 +40,10 @@ const HEX = 16;
 
 /**
  * What `builtSegment` escaped back in a segment of a page's name: a delimiter (`%2F` for `/`), or an
- * escape that stood in the value as it is (`%252F` for `%2F`).
+ * escape that stood in the value as it is (`%252F` for `%2F`) — which a value that held `%252F`
+ * already holds too, as `builtSegment` leaves it as it is.
  */
 const BUILT_ESCAPE = /%25(2f|23|3f|5c)|%(?:2f|23|3f|5c)/giu;
-
-/**
- * The value a segment of a page's name stands for, `builtSegment` read back: an escaped delimiter is
- * the delimiter, and an escaped escape the escape as it stood.
- */
-export function segmentValueOf(segment: string): string {
-  return segment.replaceAll(BUILT_ESCAPE, (found, escape?: string) => {
-    // The delimiter's escape is the match itself: `%2F`, whose code is the two digits after `%`.
-    return escape === undefined
-      ? String.fromCodePoint(Number.parseInt(found.slice(1), HEX))
-      : `%${escape}`;
-  });
-}
 
 /**
  * What a URL reads as its own in a path that a name may hold as it is: a `%`, which would start an
@@ -122,13 +110,13 @@ function formsOf(byte: number): readonly string[] {
 }
 
 /**
- * `chosen`, the form each byte is written in, moved on to the next spelling as a counter counts: the
- * last byte's form first, and a byte with no form left back to its first. Whether there was one.
+ * `chosen`, the choice made for each of `sizes` places, moved on to the next as a counter counts:
+ * the last place first, and a place with no choice left back to its first. Whether there was one.
  */
-function advance(chosen: number[], forms: readonly (readonly string[])[]): boolean {
+function advance(chosen: number[], sizes: readonly number[]): boolean {
   for (let index = chosen.length - 1; index >= 0; index -= 1) {
     const next = (chosen[index] ?? 0) + 1;
-    if (next < (forms[index]?.length ?? 0)) {
+    if (next < (sizes[index] ?? 0)) {
       chosen[index] = next;
       return true;
     }
@@ -150,11 +138,58 @@ export function* spellingsOf(segments: readonly string[]): Generator<string, voi
     [...encoder.encode(segment)].map((byte) => formsOf(byte)),
   );
   const forms = bySegment.flat();
+  const sizes = forms.map((byteForms) => byteForms.length);
   const chosen = forms.map(() => 0);
   do {
     const written = chosen.map((choice, index) => forms[index]?.[choice] ?? '');
     yield bySegment.map((bytes) => written.splice(0, bytes.length).join('')).join('/');
-  } while (advance(chosen, forms));
+  } while (advance(chosen, sizes));
+}
+
+/** Both ways an escaped escape reads back (`memberValuesOf`). */
+const BOTH_WAYS = 2;
+
+/**
+ * Every list of values the segments of a page's name may stand for, `builtSegment` read back. An
+ * escaped delimiter is the delimiter. An escaped escape (`%252F`) is either the escape (`%2F`),
+ * which `builtSegment` escapes, or itself, which it leaves as it is — each one on its own, so a name
+ * that holds several was built from as many lists as the choices multiply to: each read back
+ * first, and each left as it is last.
+ */
+export function* memberValuesOf(
+  segments: readonly string[],
+): Generator<readonly string[], void, undefined> {
+  const escapes = segments.flatMap((segment) =>
+    [...segment.matchAll(BUILT_ESCAPE)].filter((match) => match[1] !== undefined),
+  );
+  const sizes = escapes.map(() => BOTH_WAYS);
+  const kept = escapes.map(() => 0);
+  do {
+    const choices = kept.values();
+    yield segments.map((segment) =>
+      segment.replaceAll(BUILT_ESCAPE, (found, escape?: string) => {
+        if (escape === undefined) {
+          // The delimiter's escape is the match itself: `%2F`, whose code is the two digits after `%`.
+          return String.fromCodePoint(Number.parseInt(found.slice(1), HEX));
+        }
+        return choices.next().value === 1 ? found : `%${escape}`;
+      }),
+    );
+  } while (advance(kept, sizes));
+}
+
+/** What a URL reads as its own in a segment of a path: `URL_SYNTAX`, and a `/`, which ends it. */
+const SEGMENT_SYNTAX = /[\p{Cc} %#?\\/]/gu;
+
+/**
+ * The path a request asks by for a page whose segments stand for `values`: each escaped as little
+ * as a request may (`SEGMENT_SYNTAX`), and the rest left to the URL it is written into, as
+ * `requestPathOf` asks for a page by its name.
+ */
+export function readablePathOf(values: readonly string[]): string {
+  return values
+    .map((value) => value.replaceAll(SEGMENT_SYNTAX, (found) => encodeURIComponent(found)))
+    .join('/');
 }
 
 /** `readable`, and then every spelling of the path of `segments` (`spellingsOf`). */
@@ -170,25 +205,27 @@ function* readableFirst(
 const REQUEST_ORIGIN = 'https://request.invalid';
 
 /**
- * The spelling a request reaches `key` by: of `readable`, and then every spelling of the path whose
- * segments are `segments` (`spellingsOf`), the first whose path, read out of a URL it is written
- * into, `read` finds `key` by. The edge finds a name as spelled before it reads a path any other
- * way — decoded, or as the name it builds to — and every spelling of one path reads alike those
- * ways: a spelling reads as the name spelled as it, or as what every spelling no name is spelled as
- * reads as. So once one reads as nothing, or as a name another read as already, no spelling left
- * reaches `key` — its own, where it has one, is the most readable, and was first — and the search
- * ends: it tries at most two spellings more than there are names spelled as one of them.
- * `undefined` where none reaches `key`.
+ * A way a request's path is read as a name: the values its segments decode to, and the spelling of
+ * them a request asks by first, escaped as little as it may.
  */
-export function spellingReaching(
+export interface Reading {
+  readonly readable: string;
+  readonly values: readonly string[];
+}
+
+/**
+ * The spelling of one reading a request reaches `key` by (`spellingReaching`): the first whose
+ * path, read out of a URL it is written into, `read` finds `key` by; `undefined` once one reads as
+ * nothing, or as a name another read as already.
+ */
+function spellingOf(
   key: string,
   read: (pathname: string) => string | undefined,
-  readable: string,
-  segments: readonly string[],
+  reading: Reading,
 ): string | undefined {
   const tried = new Set<string>();
   const readAs = new Set<string>();
-  for (const spelling of readableFirst(readable, segments)) {
+  for (const spelling of readableFirst(reading.readable, reading.values)) {
     const { pathname } = new URL(spelling, REQUEST_ORIGIN);
     if (tried.has(pathname)) {
       continue;
@@ -202,6 +239,38 @@ export function spellingReaching(
       return undefined;
     }
     readAs.add(name);
+  }
+  return undefined;
+}
+
+/**
+ * The spelling a request reaches `key` by: of each of `readings` in turn, its readable spelling and
+ * then every other (`spellingsOf`), the first whose path, read out of a URL it is written into,
+ * `read` finds `key` by. The edge finds a name as spelled before it reads a path any other way —
+ * decoded, or as the name it builds to — and every spelling of one reading reads alike those ways:
+ * a spelling reads as the name spelled as it, or as what every spelling of the reading no name is
+ * spelled as reads as. So once one reads as nothing, or as a name another of its reading read as
+ * already, none left of the reading reaches `key` — `key`'s own spelling, where it has one, is the
+ * most readable, and was first — and the search goes on to the next reading. Of each, it tries at
+ * most two spellings more than there are names spelled as one of them. `undefined` where none
+ * reaches `key`.
+ */
+export function spellingReaching(
+  key: string,
+  read: (pathname: string) => string | undefined,
+  readings: Iterable<Reading>,
+): string | undefined {
+  const walked = new Set<string>();
+  for (const reading of readings) {
+    // Two readings of the same values are spelled alike, and read alike.
+    const values = JSON.stringify(reading.values);
+    if (!walked.has(values)) {
+      walked.add(values);
+      const spelling = spellingOf(key, read, reading);
+      if (spelling !== undefined) {
+        return spelling;
+      }
+    }
   }
   return undefined;
 }

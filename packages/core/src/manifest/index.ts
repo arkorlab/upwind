@@ -29,10 +29,10 @@ export {
   staticFileKey,
   staticFileStatus,
   parseProjectManifest,
+  routeRequestPathOf,
   serializeManifest,
 } from './manifest.ts';
 export { functionFor, functionScript } from './functions.ts';
-export { routeRequestPathOf } from './page-keys.ts';
 export { parsePreloads, serializePreloads } from './preloads.ts';
 export {
   type AppRuntime,

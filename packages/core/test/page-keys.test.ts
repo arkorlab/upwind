@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { builtNameOf } from '../src/manifest/built-names.ts';
-import { pageKeyOf, routeRequestPathOf } from '../src/manifest/page-keys.ts';
+import { routeRequestPathOf, staticFileKey } from '../src/manifest/manifest.ts';
+import { pageKeyOf } from '../src/manifest/page-keys.ts';
 
 /**
  * The path a request asks for a route by (`routeRequestPathOf`), as the edge finds the route: a
@@ -17,6 +18,9 @@ function manifestOf(keys: readonly string[], own: readonly string[] = []) {
     filesystemPages: Object.fromEntries(own.map((page) => [page, true as const])),
   };
 }
+
+/** A file the build shipped. */
+const FILE = { sha256: 'a'.repeat(64), byteLength: 1, contentType: 'text/plain', immutable: false };
 
 /** The path a URL holds once `path`, a path a request asks by, is written into it. */
 function asked(path: string | undefined): string {
@@ -94,6 +98,40 @@ describe('the path a request asks for a route by', () => {
     const manifest = manifestOf(['/?', '/%3F', '/%3f'], ['/?', '/%3F', '/%3f']);
 
     expect(routeRequestPathOf(manifest, '/?')).toBeUndefined();
+  });
+
+  /**
+   * An escaped escape in a member's name (`%252F`) was built from the escape (`%2F`), or from itself:
+   * where a page of its own is named as the one value decodes, the other reaches the member.
+   */
+  it('asks for a member by another value its name was built from, where the first is shadowed', () => {
+    const manifest = manifestOf(['/docs/a%2Fb%252F', '/docs/a/b%2F'], ['/docs/a/b%2F']);
+    const path = asked(routeRequestPathOf(manifest, '/docs/a%2Fb%252F'));
+
+    expect(pageKeyOf(manifest.routes, path, manifest)).toBe('/docs/a%2Fb%252F');
+  });
+
+  /** The edge serves a file the build shipped ahead of every route (`classifyStaticFile`). */
+  it('asks for a route a file is named as the spelling of by a spelling no file is found at', () => {
+    const manifest = { ...manifestOf(['/docs/a b']), staticFiles: { '/docs/a%20b': FILE } };
+    const path = asked(routeRequestPathOf(manifest, '/docs/a b'));
+
+    expect(staticFileKey(manifest, path)).toBeUndefined();
+    expect(pageKeyOf(manifest.routes, path, manifest)).toBe('/docs/a b');
+  });
+
+  it('names no path for a route a file is found ahead of at every spelling', () => {
+    const manifest = { ...manifestOf(['/docs/a%2Fb']), staticFiles: { '/docs/a/b': FILE } };
+
+    expect(routeRequestPathOf(manifest, '/docs/a%2Fb')).toBeUndefined();
+  });
+
+  /** A build kept from the deployment before that answers only its own `dpl` is no file of this one. */
+  it('asks for a route at a kept file’s name where that file answers only its own deployment', () => {
+    const kept = { ...FILE, deploymentId: 'dpl_before', dplOnly: true as const };
+    const manifest = { ...manifestOf(['/docs/a b']), staticFiles: { '/docs/a%20b': kept } };
+
+    expect(asked(routeRequestPathOf(manifest, '/docs/a b'))).toBe('/docs/a%20b');
   });
 
   /** The router redirects a path with an empty segment to the one without it. */
