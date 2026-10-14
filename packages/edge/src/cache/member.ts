@@ -14,10 +14,11 @@ import type { GenerationKey, GenerationLoad } from './generation-loader.ts';
  * The class shell's record is read for every member of the class; the member's own is read beside
  * it, in parallel, and costs the first byte nothing the class shell's read did not cost already:
  * when the class shell's record came from this isolate's memory or this data center's copy, the
- * member's is used only when it is in memory too, and a read of it that is still under way is left
- * to finish for the next request — a backend read in front of a first byte already in hand is the
- * wait the edge exists to avoid. When the class shell's record was read from KV, the member's read
- * went out beside it and is waited for as one.
+ * member's is used only when it is in memory too — held as the request began, or landed by the time
+ * the class shell's is judged — and a read of it that is still under way is left to finish for the
+ * next request: a backend read in front of a first byte already in hand is the wait the edge exists
+ * to avoid. When the class shell's record was read from KV, the member's read went out beside it and
+ * is waited for as one.
  *
  * A member's entry is named by a digest of its pathname, derived once per isolate and kept in
  * memory; with the id in memory, and the record or its absence held, the lookup is synchronous —
@@ -42,6 +43,11 @@ export interface MemberLoad {
   readonly load: GenerationLoad;
 }
 
+/** What a member's read came to, once it has landed; nothing while it is out. */
+interface Landing {
+  landed: { readonly load: MemberLoad | undefined } | undefined;
+}
+
 export interface MemberRead {
   /** The member's pathname, as the request asks for it. */
   readonly pathname: string;
@@ -52,9 +58,31 @@ export interface MemberRead {
    * member that cannot be read is `undefined`, and the class shell answers.
    */
   readonly pending: Promise<MemberLoad | undefined>;
+  /**
+   * What `pending` came to, once it has landed — in memory by then, as a held one is: a read that
+   * went out ahead of the middleware is often in hand long before the class shell's is judged.
+   */
+  readonly landing: Landing;
 }
 
 const HOLD_ABSENCE = { holdAbsence: true } as const;
+
+/** Note what `pending` came to as it lands. */
+async function noteLanding(
+  landing: Landing,
+  pending: Promise<MemberLoad | undefined>,
+): Promise<void> {
+  landing.landed = { load: await pending };
+}
+
+/** A read still out, whose result is noted as it lands (`MemberRead.landing`). */
+function outstanding(pathname: string, pending: Promise<MemberLoad | undefined>): MemberRead {
+  const landing: Landing = { landed: undefined };
+  void noteLanding(landing, pending).catch(() => {
+    // It never rejects; one that did is in hand as nothing.
+  });
+  return { pathname, held: undefined, pending, landing };
+}
 
 function isTemplate(pathname: string): boolean {
   return pathname.includes('[');
@@ -125,21 +153,26 @@ export function startMemberRead(
     memberEntryKey(named.scopeId, named.route, pathname),
   );
   if (entryId === undefined) {
-    return { pathname, held: undefined, pending: deriveAndRead(edge, settings, named) };
+    return outstanding(pathname, deriveAndRead(edge, settings, named));
   }
   const key = { scopeId: named.scopeId, entryId };
   const held = heldGeneration(edge, key, settings, HOLD_ABSENCE);
   if (held !== undefined) {
     const settled = { key, load: held };
-    return { pathname, held: settled, pending: Promise.resolve(settled) };
+    return {
+      pathname,
+      held: settled,
+      pending: Promise.resolve(settled),
+      landing: { landed: { load: settled } },
+    };
   }
-  return { pathname, held: undefined, pending: readMember(edge, settings, key) };
+  return outstanding(pathname, readMember(edge, settings, key));
 }
 
 /**
  * The member's record, when it is in hand by the time the class shell's is: held by this isolate,
- * or read beside a read of the class shell's own. A read the class shell's did not wait for is
- * left to finish, and answers the next request.
+ * landed by then, or read beside a read of the class shell's own. A read the class shell's did not
+ * wait for is left to finish, and answers the next request.
  */
 export async function memberInHand(
   edge: EdgeContext,
@@ -154,8 +187,13 @@ export async function memberInHand(
   }
   // Held by this isolate or answered by this data center's copy, the class shell's record is in
   // hand ahead of any KV read: a member's read that is not is left to finish for the next request.
-  // One served from memory only once KV had answered behind it waited as a read from KV does.
+  // One that has landed by now is in memory, as a held one is, and answers at no wait. One served
+  // from memory only once KV had answered behind it waited as a read from KV does.
   if (beside.kind === 'generation' && beside.source !== 'kv' && beside.afterKv !== true) {
+    const { landed } = member.landing;
+    if (landed !== undefined) {
+      return landed.load;
+    }
     edge.ctx.waitUntil(member.pending);
     return undefined;
   }
