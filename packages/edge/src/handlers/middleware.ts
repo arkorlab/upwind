@@ -100,7 +100,14 @@ function describe(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).slice(0, MAX_REASON_LENGTH);
 }
 
-/** Whether this request would run the application's middleware at all. */
+/**
+ * Whether this request would run the application's middleware at all.
+ *
+ * Judged on the headers the middleware is handed (`runMiddleware`), without the host's own
+ * credentials (`withoutHostCredentials`): a `has` or `missing` that names one of them holds or
+ * fails as it does where Next.js judges it, on a request that never carries them. Only a matcher
+ * with conditions reads the headers, and most have none, so only then are they copied.
+ */
 export function middlewareMatches(
   edge: EdgeContext,
   manifest: ProjectManifest,
@@ -113,7 +120,14 @@ export function middlewareMatches(
   if (manifest.middleware === undefined) {
     return false;
   }
-  return middlewareApplies(manifest.middleware.matchers, url, headers);
+  const { matchers } = manifest.middleware;
+  const conditioned = matchers.some(
+    (matcher) => matcher.has !== undefined || matcher.missing !== undefined,
+  );
+  const handed = conditioned
+    ? withoutHostCredentials(new Headers(headers), edge.host.credentials)
+    : headers;
+  return middlewareApplies(matchers, url, handed);
 }
 
 /**
