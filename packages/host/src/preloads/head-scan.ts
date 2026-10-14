@@ -479,6 +479,8 @@ export interface HeadScan {
   foreign: number;
   /** The first `<base href>`, which is the one a parser resolves the markup's URLs against. */
   base: string | undefined;
+  /** How many of `links` the head named before that base: a parser resolved those without it. */
+  linksBeforeBase: number;
 }
 /** What the walk found at a `<`: a tag it read, or nothing it could read as one. */
 interface OpenTag {
@@ -662,6 +664,13 @@ function quietensTheReferrer(tag: OpenTag): boolean {
   const content = tag.attributes.get(CONTENT_ATTR) ?? '';
   return content.includes('&') || quietensASameOriginFetch(metaReferrerPolicy(content));
 }
+/** The first `<base href>` a head gives, and how many links it had named before it. */
+function noteBase(tag: OpenTag, scan: HeadScan): void {
+  if (scan.base === undefined) {
+    scan.base = tag.attributes.get(HREF_ATTR);
+    scan.linksBeforeBase = scan.links.length;
+  }
+}
 /**
  * Read the tag at `start`, note it if it is a `<link>`, and say where the walk carries on from.
  *
@@ -702,7 +711,7 @@ function stepOverTag(html: string, start: number, scan: HeadScan): number {
     scan.links.push(tag.attributes);
   }
   if (tag.name === BASE_NAME) {
-    scan.base ??= tag.attributes.get(HREF_ATTR);
+    noteBase(tag, scan);
   }
   return tag.next;
 }
@@ -717,7 +726,7 @@ function stepOverTag(html: string, start: number, scan: HeadScan): number {
  */
 export function scanHead(shell: Uint8Array): HeadScan {
   const html = decodeUtf8(shell.subarray(0, Math.min(shell.byteLength, HEAD_SCAN_BYTES)));
-  const scan: HeadScan = { links: [], inert: 0, foreign: 0, base: undefined };
+  const scan: HeadScan = { links: [], inert: 0, foreign: 0, base: undefined, linksBeforeBase: 0 };
   let at = 0;
   while (at < html.length) {
     const start = html.indexOf(TAG_START, at);

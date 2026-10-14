@@ -351,8 +351,10 @@ function withoutEdgeControls(value: string): string {
  *
  * `/app.css` under `<base href="https://cdn.example/">` is a file on that host, while the same
  * path on a `Link` header is a file on the one that answered: a header resolves against the
- * request, and the document's base never reaches it. So a head that moves its own origin is a head
- * whose paths this cannot repeat, and it is left to say what it means on its own.
+ * request, and the document's base never reaches it. So the paths a head names after it moves its
+ * own origin are paths this cannot repeat, and they are left to say what they mean on their own.
+ * Those it named before are not: a parser had fetched them against the document's URL before the
+ * base was there, and a link already fetched is not fetched again for it.
  *
  * Read as written. A tokenizer resolves the character references in an attribute before the URL is
  * parsed, so `https&#58;//cdn.example/` is that same other host, and a base carrying a reference
@@ -624,12 +626,10 @@ export function scanPreloadLinks(shell: Uint8Array): string[] {
 /** The links a head names, minus the ones `already` covers, up to `limit` of what is left. */
 function collectPreloads(shell: Uint8Array, already: ReadonlySet<string>, limit: number): string[] {
   const scan = scanHead(shell);
-  if (movesTheOrigin(scan.base)) {
-    return [];
-  }
+  const named = movesTheOrigin(scan.base) ? scan.links.slice(0, scan.linksBeforeBase) : scan.links;
   const seen = new Set<string>();
   const links: string[] = [];
-  for (const attributes of scan.links) {
+  for (const attributes of named) {
     if (links.length >= limit) {
       break;
     }
