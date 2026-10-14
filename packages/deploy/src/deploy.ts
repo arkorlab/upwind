@@ -49,6 +49,15 @@ import { DOCUMENT_KIND, shellsOf } from './shells.ts';
  * Each writes what it writes in one go, and neither proves that every route answers: that is the
  * caller's to prove, before it writes the pointer that sends requests to the deployment. Every key
  * written is the one the edge and the cache read (`@stayingupwind/host/storage`).
+ *
+ * Each does as much in its one call as the build is large: a read of every blob, a write of every
+ * artifact, a seed of every entry and, under a KV policy, a write and a read-back of every
+ * placement. That is for a process that may make as many calls out as it needs — a command under
+ * Node, a local runner. A host that deploys from a Worker, whose every invocation has a cap on
+ * them, calls neither: it spreads the pure modules they are made of over invocations of its own —
+ * `shellsOf` (`./shells`) to import, `cacheEntryIdsOf` and `seedEntriesOf` (`./cache-seed`) to
+ * seed in batches, `assembleManifest` (`./manifest`) to assemble, and `shellPlacementsOf`
+ * (`./delivery`) to place.
  */
 
 /** The build's blobs, by digest: where its upload left them, or the directory it was built in. */
