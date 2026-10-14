@@ -403,7 +403,9 @@ function refusal(input: ImageAnswerInput, error: SourceError, reason: string): R
   const headers = clientHeaders(input, own, 'error');
   keptByNobody(headers);
   headers.set(EDGE_DEBUG_HEADER, `error;reason=${reason}`);
-  return new Response(error.message, { status: error.status, headers });
+  // A `HEAD` is answered with the headers alone, a refusal as an image is (`respond`).
+  const body = input.request.method === 'HEAD' ? null : error.message;
+  return new Response(body, { status: error.status, headers });
 }
 
 const NOT_MODIFIED_STATUS = 304;
