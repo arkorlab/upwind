@@ -1,3 +1,5 @@
+import { EDGE_BYPASS_COOKIE } from '@stayingupwind/core/request';
+import type { HostCredentials } from '@stayingupwind/host/credentials';
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
@@ -35,6 +37,14 @@ function credentialedHost(): EdgeHost {
 function cookielessHost(): EdgeHost {
   return { ...standaloneHost(env), credentials: { cookies: [], headers: ['Cookie'] } };
 }
+
+/** The standalone host, keeping `credentials` as its own. */
+function hostKeeping(credentials: HostCredentials): EdgeHost {
+  return { ...standaloneHost(env), credentials };
+}
+
+/** Draft mode's cookie, as Next.js names it: a visitor who sends it is rendered a draft. */
+const DRAFT_COOKIE = '__prerender_bypass=draft-secret; theme=dark';
 
 /** A navigation of a visitor who holds the host's cookie beside one of the application's. */
 function withHostSession(path: string): IncomingRequest {
@@ -176,5 +186,58 @@ describe('the routing a host composes', () => {
     );
 
     expect(response.headers.get('x-arkor-edge')).toMatch(/^shell;/u);
+  });
+
+  /**
+   * What the classification reads by name is read on the same headers, conditions or none: a host
+   * that keeps draft mode's cookie as its own never hands it on, so its visitor is not in draft
+   * mode where Next.js renders the page, and is served it.
+   */
+  it('serves a page to a visitor whose draft cookie the host keeps as its own', async () => {
+    const { response } = await routed(
+      navigation('/', { headers: { cookie: DRAFT_COOKIE } }),
+      {},
+      { host: hostKeeping({ cookies: ['__prerender_bypass'], headers: [] }) },
+    );
+
+    expect(response.headers.get('x-arkor-edge')).toMatch(/^shell;/u);
+  });
+
+  /** As it does where the host keeps the `cookie` header whole. */
+  it('serves a page to a visitor whose draft cookie the host keeps the header of', async () => {
+    const { response } = await routed(
+      navigation('/', { headers: { cookie: DRAFT_COOKIE } }),
+      {},
+      { host: cookielessHost() },
+    );
+
+    expect(response.headers.get('x-arkor-edge')).toMatch(/^shell;/u);
+  });
+
+  /** And of a header it turns a request away for, which Next.js would never be handed either. */
+  it('serves a page to a visitor whose internal-looking header the host keeps as its own', async () => {
+    const { response } = await routed(
+      navigation('/', { headers: { 'x-prerender-token': 'host-secret' } }),
+      {},
+      { host: hostKeeping({ cookies: [], headers: ['X-Prerender-Token'] }) },
+    );
+
+    expect(response.headers.get('x-arkor-edge')).toMatch(/^shell;/u);
+  });
+
+  /**
+   * The edge's own cookie is no application's, and is read as the visitor sent it whatever the host
+   * keeps: a visitor whose page broke and who reloads with it is passed on, not sent the shell
+   * again.
+   */
+  it('passes on a visitor with the edge’s own cookie where the host keeps the header whole', async () => {
+    const { response, body } = await routed(
+      navigation('/', { headers: { cookie: `${EDGE_BYPASS_COOKIE}=1; theme=dark` } }),
+      {},
+      { host: cookielessHost() },
+    );
+
+    expect(response.headers.get('x-arkor-edge')).toBe('passthrough;reason=bypass-cookie');
+    expect(body).toBe('from the Function');
   });
 });

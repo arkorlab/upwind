@@ -1,11 +1,22 @@
 import type { AppRuntime, MiddlewareMatcher, ProjectManifest } from '@stayingupwind/core/manifest';
 import { MIDDLEWARE_DONE_HEADER } from '@stayingupwind/core/paas';
 import {
+  BYPASS_COOKIE_NAMES,
   budgetPatterns,
   classifyRequest,
+  DEPLOYMENT_ID_REQUEST_HEADER,
+  EDGE_BYPASS_COOKIE,
   type ForwardingContext,
+  getCookieValue,
+  INTERNAL_REQUEST_HEADERS,
+  NAVIGATION_REQUEST_HEADERS,
+  parseCookieHeader,
   PatternBudgetExceededError,
+  PREFETCH_HINT_HEADERS,
   type RequestClass,
+  ROUTER_REQUEST_HEADERS,
+  serializeCookieHeader,
+  SKEW_PROTECTION_COOKIE,
 } from '@stayingupwind/core/request';
 import { type HostCredentials, withoutHostCredentials } from '@stayingupwind/host/credentials';
 import { type EdgePointer, resolvePolicy } from '@stayingupwind/host/delivery';
@@ -249,6 +260,80 @@ function routingReadsCredentials(manifest: ProjectManifest, credentials: HostCre
 }
 
 /**
+ * The headers the classification reads by name (`classifyRequest`), beside the application's
+ * conditions, and what is read of the request as it came after it (`requestAsLeft`): the router's
+ * and a Server Action's, a service worker's and a range's, the internal ones no client may send, a
+ * navigation's Fetch Metadata and its prefetch hints, the agent, `accept`, and the `cookie` header
+ * the cookies below are read from.
+ */
+const CLASSIFIED_HEADERS: ReadonlySet<string> = new Set([
+  ...ROUTER_REQUEST_HEADERS,
+  DEPLOYMENT_ID_REQUEST_HEADER,
+  'range',
+  'service-worker',
+  ...INTERNAL_REQUEST_HEADERS,
+  ...Object.keys(NAVIGATION_REQUEST_HEADERS),
+  ...PREFETCH_HINT_HEADERS,
+  'accept',
+  'cookie',
+  'user-agent',
+]);
+/** How the internal headers it turns a request away for begin (`hasInternalDocumentHeader`). */
+const CLASSIFIED_HEADER_PREFIXES: readonly string[] = ['x-middleware-', 'x-prerender-'];
+/**
+ * The cookies it reads by name: draft mode's, Next.js's testing one, and the deployment a client is
+ * pinned to. Not the edge's own (`EDGE_BYPASS_COOKIE`), which no application is handed whatever the
+ * host keeps, and which the classification reads as the visitor sent it (`withoutCredentials`).
+ */
+const CLASSIFIED_COOKIES: ReadonlySet<string> = new Set([
+  ...BYPASS_COOKIE_NAMES.filter((name) => name !== EDGE_BYPASS_COOKIE),
+  SKEW_PROTECTION_COOKIE,
+]);
+
+/** What `classificationReadsCredentials` found for a host's credentials. */
+const credentialsRead = new WeakMap<HostCredentials, boolean>();
+
+/**
+ * Whether the classification reads one of the host's credentials by name (`CLASSIFIED_HEADERS`,
+ * `CLASSIFIED_COOKIES`): a cookie it names, a header it names, or the `cookie` header whole. Asked
+ * once for a host's credentials, which are the host's for as long as it is.
+ */
+function classificationReadsCredentials(credentials: HostCredentials): boolean {
+  let reads = credentialsRead.get(credentials);
+  if (reads === undefined) {
+    reads =
+      credentials.cookies.some((name) => CLASSIFIED_COOKIES.has(name)) ||
+      credentials.headers.some((header) => {
+        const name = header.toLowerCase();
+        return (
+          CLASSIFIED_HEADERS.has(name) ||
+          CLASSIFIED_HEADER_PREFIXES.some((prefix) => name.startsWith(prefix))
+        );
+      });
+    credentialsRead.set(credentials, reads);
+  }
+  return reads;
+}
+
+/**
+ * A copy of `headers` with the host's credentials taken off, keeping the edge's own cookie
+ * (`EDGE_BYPASS_COOKIE`) where the visitor sent it. The edge's recovery sets it for the edge, which
+ * turns the visitor's next request away from the shell for it, and forwarding takes it off what
+ * any application is handed (`sanitizePassthroughHeaders`). Taken off here with the `cookie`
+ * header whole, or by its name, it would leave a visitor whose page broke on the same shell again.
+ */
+function withoutCredentials(headers: Headers, credentials: HostCredentials): Headers {
+  const copy = withoutHostCredentials(new Headers(headers), credentials);
+  const own = getCookieValue(headers.get('cookie'), EDGE_BYPASS_COOKIE);
+  const left = copy.get('cookie');
+  if (own !== undefined && getCookieValue(left, EDGE_BYPASS_COOKIE) === undefined) {
+    const pairs = [...parseCookieHeader(left), { name: EDGE_BYPASS_COOKIE, value: own }];
+    copy.set('cookie', serializeCookieHeader(pairs));
+  }
+  return copy;
+}
+
+/**
  * The headers a request is classified on (`classifyRequest`), and its route's conditions are judged
  * on where no middleware runs (`requestAsLeft`): the class of a member served from its record, what
  * a route is not served a prerender under. The application's conditions among them are judged
@@ -259,8 +344,9 @@ function routingReadsCredentials(manifest: ProjectManifest, credentials: HostCre
  * any condition at all, since Next.js writes one on `rsc` into every build with a deployment id —
  * and never for a host that keeps none.
  *
- * The rest of the classification reads the copy too. What it reads there is the browser's or
- * Next.js's own, which no host keeps as a credential; one it did keep never reaches Next.js either.
+ * What the classification reads by name besides — a router's headers, a navigation's, draft mode's
+ * cookies — is read on the same headers, and a host that keeps one of those as its own has them
+ * copied for that alone (`classificationReadsCredentials`): Next.js is never handed it either.
  */
 function headersToClassify(
   manifest: ProjectManifest,
@@ -268,9 +354,10 @@ function headersToClassify(
   credentials: HostCredentials,
 ): Headers {
   const kept = credentials.cookies.length > 0 || credentials.headers.length > 0;
-  return kept && routingReadsCredentials(manifest, credentials)
-    ? withoutHostCredentials(new Headers(headers), credentials)
-    : headers;
+  const copied =
+    kept &&
+    (classificationReadsCredentials(credentials) || routingReadsCredentials(manifest, credentials));
+  return copied ? withoutCredentials(headers, credentials) : headers;
 }
 
 function servedAtEdge(classification: RequestClass): boolean {
