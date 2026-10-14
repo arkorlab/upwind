@@ -1,4 +1,8 @@
-import { type ImagesConfig, parseImageRequest } from '@stayingupwind/core/images';
+import {
+  classifyImageRequest,
+  type ImagesConfig,
+  parseImageRequest,
+} from '@stayingupwind/core/images';
 import { type ConfiguredHeaders, headerRulesFor } from '@stayingupwind/core/manifest';
 import { PatternBudgetExceededError } from '@stayingupwind/core/request';
 
@@ -87,23 +91,44 @@ export async function routeHostedImage(input: HostedImageInput): Promise<Respons
   }
 }
 
-function routeWithinBudget(input: HostedImageInput): Promise<Response> {
+/**
+ * The optimizer's answer for the parameters `target` carries — the request's own, or those of the
+ * optimizer's path a middleware rewrote it to — under the rules the request as it came selected.
+ */
+function optimized(
+  input: HostedImageInput,
+  target: URL,
+  middleware: MiddlewareContinue | undefined,
+  dispatches: number,
+): Promise<Response> {
   const { url, manifest, config } = input;
+  const configured = headerRulesFor(manifest, url, input.request.headers);
+  const answer = answering(input, middleware, dispatches, configured);
+  const parsed = parseImageRequest(
+    target.searchParams,
+    answer.request.headers.get('accept'),
+    config,
+  );
+  if (parsed.kind === 'invalid') {
+    const error = { status: HTTP_BAD_REQUEST, message: parsed.errorMessage, requests: 0 };
+    return Promise.resolve(refuseImage(answer, error, 'image-invalid'));
+  }
+  return handleImage({ ...answer, manifest, params: parsed.params });
+}
+
+function routeWithinBudget(input: HostedImageInput): Promise<Response> {
+  const { request, manifest } = input;
   return serveAfterMiddleware(input, {
     overBudget: (middleware, dispatches) => refused(input, middleware, dispatches),
-    serve: (middleware, dispatches) => {
-      const configured = headerRulesFor(manifest, url, input.request.headers);
-      const answer = answering(input, middleware, dispatches, configured);
-      const parsed = parseImageRequest(
-        url.searchParams,
-        answer.request.headers.get('accept'),
-        config,
-      );
-      if (parsed.kind === 'invalid') {
-        const error = { status: HTTP_BAD_REQUEST, message: parsed.errorMessage, requests: 0 };
-        return Promise.resolve(refuseImage(answer, error, 'image-invalid'));
-      }
-      return handleImage({ ...answer, manifest, params: parsed.params });
+    serve: (middleware, dispatches) => optimized(input, input.url, middleware, dispatches),
+    // A rewrite that stays on the optimizer's path — another source, width or quality — is the
+    // optimizer's to answer, as Next.js's router hands it the rewritten parameters: no Worker of
+    // the application has one. A rewrite anywhere else is the Worker's.
+    rewritten: (middleware, dispatches) => {
+      const still = classifyImageRequest({ method: request.method, url: middleware.url, manifest });
+      return still === undefined
+        ? undefined
+        : optimized(input, middleware.url, middleware, dispatches);
     },
   });
 }
