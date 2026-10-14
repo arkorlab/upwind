@@ -1,3 +1,4 @@
+import { sha256HexSchema } from '@stayingupwind/core/artifact';
 import * as z from '@stayingupwind/core/schema';
 
 /**
@@ -28,6 +29,7 @@ export type Placement = z.infer<typeof placementSchema>;
 
 export const placementMapSchema = z.object({
   manifestId: z.string().min(1),
-  placements: z.record(z.string(), z.array(placementSchema)),
+  /** By the digest of the artifact placed: what the artifact is found by on every backend. */
+  placements: z.record(sha256HexSchema, z.array(placementSchema)),
 });
 export type PlacementMap = z.infer<typeof placementMapSchema>;
