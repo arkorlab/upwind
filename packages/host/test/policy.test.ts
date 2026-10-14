@@ -4,8 +4,11 @@ import {
   builtinDeliveryPolicy,
   DEFAULT_DELIVERY_POLICY,
   DEFAULT_RUNTIME_CACHE_SETTINGS,
+  type DeliveryPolicy,
   deliveryPolicySchema,
   edgePointerSchema,
+  type RuntimeCacheSettings,
+  runtimeCacheOf,
 } from '../src/delivery/policy.ts';
 import { resolvePolicy, type StrategyRegistry } from '../src/delivery/strategy.ts';
 import { kvManifestKey, kvPolicyKey } from '../src/storage/keys.ts';
@@ -174,6 +177,30 @@ describe('the policy an application is served under', () => {
     });
     expect(deliveryPolicySchema.parse(retired)).toStrictEqual(retired);
     expect(builtinDeliveryPolicy('site-default')).toBeUndefined();
+  });
+});
+
+describe('the runtime cache settings of a policy that states none', () => {
+  const stating: DeliveryPolicy = {
+    id: 'states-none',
+    shell: DEFAULT_DELIVERY_POLICY.shell,
+    assets: DEFAULT_DELIVERY_POLICY.assets,
+    continuation: DEFAULT_DELIVERY_POLICY.continuation,
+    middleware: DEFAULT_DELIVERY_POLICY.middleware,
+  };
+
+  it('are the defaults', () => {
+    expect(runtimeCacheOf(stating)).toStrictEqual(DEFAULT_RUNTIME_CACHE_SETTINGS);
+  });
+
+  /** One object is handed to every caller whose policy states none. */
+  it('are defaults no caller can change for the next', () => {
+    const settings = runtimeCacheOf(stating) as RuntimeCacheSettings;
+
+    expect(() => {
+      settings.generations = 'on';
+    }).toThrow(TypeError);
+    expect(runtimeCacheOf(stating).generations).toBe('off');
   });
 });
 
