@@ -97,20 +97,21 @@ function heldThroughView(publishing: Publishing): boolean {
 }
 
 /**
- * Whether the isolate's view knows the whole of each of the render's tags through the revision it
- * stands at now (`TagState.heldRevisionOf`): then an invalidation of one of them recorded since the
- * pull the render read against is a mark the view holds, known at a revision past the render's
- * (`unmarkedSince`). One the view let go of a mark of is one it can say nothing of since.
+ * Whether the isolate's view holds the whole of what it was told of each of the render's tags
+ * (`TagState.holdsWhole`): then an invalidation of one of them recorded since the pull the render
+ * read against is a mark the view holds — the delta brings each one past where the view stood, and
+ * a read is told of one past it too — known at a revision past the render's (`unmarkedSince`). One
+ * the view let go of a mark of is one it can say nothing of since, at whatever revision it stands.
  */
 function wholeInView(runtime: CacheRuntime, publishing: Publishing): boolean {
-  const { revision } = runtime.tags;
-  return publishing.tags.every((tag) => runtime.tags.heldRevisionOf(tag) >= revision);
+  return publishing.tags.every((tag) => runtime.tags.holdsWhole(tag));
 }
 
 /**
  * Whether nothing says the render missed an invalidation while its commit is out: it held each of
- * its tags through the view it read against (`heldThroughView`), the view knows the whole of each
- * of them now (`wholeInView`), and no mark on a tag of the render says so (`unmarkedSince`).
+ * its tags through the view it read against (`heldThroughView`), the view holds the whole of what it
+ * was told of each of them (`wholeInView`), and no mark on a tag of the render says so
+ * (`unmarkedSince`).
  *
  * Not whether the view has moved past the render's revision: the scope's revision moves for other
  * tags too, and for every lease and commit of its entries — the publish's own lease among them,

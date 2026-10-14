@@ -440,8 +440,22 @@ export class TagState {
    * of a tag knows the whole of it up to its revision, whether or not it was told anything of it.
    */
   heldRevisionOf(tag: string): number {
-    const known = this.knownRevisionOf(tag);
-    return known >= Math.max(this.#lost.get(tag) ?? 0, this.#lostPast) ? this.#revision : known;
+    return this.holdsWhole(tag) ? this.#revision : this.knownRevisionOf(tag);
+  }
+
+  /**
+   * Whether this view holds the whole of what it was told of `tag`: it let go of no mark of the tag
+   * past the latest it knows of it now (`#lost`, `knownRevisionOf`), nor of any tag past that once
+   * it could remember no more of what it let go of (`#lostPast`). Then every invalidation of the tag
+   * it was told of is a mark it holds, whichever revision it was known at — a read is told of a tag
+   * at the host's revision of it, which may be past the view's own (`syncLocal`).
+   *
+   * Not whether `heldRevisionOf` reaches the view's revision: where the view let go of a mark known
+   * past the revision it stands at, the latest it still knows of the tag may reach that revision,
+   * though a mark past it is gone.
+   */
+  holdsWhole(tag: string): boolean {
+    return this.knownRevisionOf(tag) >= Math.max(this.#lost.get(tag) ?? 0, this.#lostPast);
   }
 
   /** How many calls of this Function's out are counted one by one, of every tag (`MAX_CALLS_OUT`). */

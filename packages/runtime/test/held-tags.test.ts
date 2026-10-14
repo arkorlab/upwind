@@ -203,3 +203,36 @@ describe('what a regeneration says its render held of its tags', () => {
     });
   });
 });
+
+describe('whether a view holds the whole of what it was told of a tag', () => {
+  it('holds the whole of a tag it let go of nothing of, and of one it was told nothing of', async () => {
+    const state = await viewOf(hostOf(TAGS_HELD - 1));
+
+    expect(state.holdsWhole(TAG)).toBe(true);
+    expect(state.holdsWhole(UNREAD)).toBe(true);
+  });
+
+  it('does not hold the whole of a tag whose mark it let go of', async () => {
+    const state = await viewOf(hostOf(TAGS_HELD));
+
+    expect(state.holdsWhole(TAG)).toBe(false);
+    expect(state.holdsWhole(UNREAD)).toBe(true);
+  });
+
+  /**
+   * A read is told of the tag at the host's revision of it, past the view's: the view, brought up
+   * to no revision, lets that mark go with the tags read after it. What it knows of the tag now
+   * reaches the revision it stands at, and says nothing of the mark it let go of.
+   */
+  it('does not hold the whole of a tag whose mark it was told past its revision and let go of', async () => {
+    const host = hostOf(0, [copyOf(INVALIDATED, INVALIDATED_AT)]);
+    const state = new TagState({ holdMs: HOLD_MS });
+
+    await state.syncLocal(host, [TAG], NOW);
+    await state.syncLocal(host, othersOf(TAGS_HELD), NOW);
+
+    expect(state.revision).toBe(0);
+    expect(state.heldRevisionOf(TAG)).toBeGreaterThanOrEqual(state.revision);
+    expect(state.holdsWhole(TAG)).toBe(false);
+  });
+});
