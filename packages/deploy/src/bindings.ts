@@ -84,24 +84,29 @@ export function cacheBindings(grant: CacheGrant): {
 /**
  * What every Function of a deployment is bound to beside its environment, in the order it is bound
  * in: Next.js's deployment id, the runtime, the way to the cache and the token that opens the
- * deployment's own scope, and the response cache's lifetime.
+ * deployment's own scope, and the response cache's lifetime. A deployment without a runtime cache
+ * is given no way to one and no token: it has no scope to open.
  */
 export function functionBindings(input: {
   readonly deploymentId: string;
-  readonly cache: CacheGrant;
+  /** What the deployment's Functions reach their runtime cache with; none for a host that runs none. */
+  readonly cache?: CacheGrant | undefined;
 }): {
   readonly text: readonly TextBinding[];
   readonly services: readonly ServiceBinding[];
 } {
-  const cache = cacheBindings(input.cache);
+  const { cache } = input;
+  const reached = cache === undefined ? { text: [], services: [] } : cacheBindings(cache);
+  const token: TextBinding[] =
+    cache === undefined ? [] : [{ name: CACHE_TOKEN_BINDING, value: cache.token, secret: true }];
   return {
     text: [
       { name: DEPLOYMENT_ID_BINDING, value: input.deploymentId, secret: false },
       { name: RUNTIME_BINDING, value: RUNTIME_NAME, secret: false },
-      ...cache.text,
-      { name: CACHE_TOKEN_BINDING, value: input.cache.token, secret: true },
+      ...reached.text,
+      ...token,
       { name: RESPONSE_CACHE_TTL_BINDING, value: RESPONSE_CACHE_TTL_MS, secret: false },
     ],
-    services: cache.services,
+    services: reached.services,
   };
 }
