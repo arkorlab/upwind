@@ -109,6 +109,22 @@ export interface ManifestContext {
   readonly pagesData: ReadonlyMap<string, RouteSegment>;
 }
 
+/**
+ * The headers a route is recorded with. Its own Content-Security-Policy goes out with the shell,
+ * long before the edge can learn it has to append the recovery script. A policy that restricts
+ * inline scripts would then block the one piece of code that gets a reader off a broken document,
+ * so the hash is added here, where the policy is recorded. Not to a document the edge serves whole
+ * — the one its entry says is complete — which has no continuation to fail, and keeps the policy it
+ * was given.
+ */
+function recordedHeaders(
+  built: Readonly<Record<string, string>>,
+  cache: RouteCache | undefined,
+  recoverySource: string,
+): Readonly<Record<string, string>> {
+  return cache?.delivery === 'complete' ? built : allowRecoveryScript(built, recoverySource);
+}
+
 export function routeEntryOf(
   prerender: Prerender,
   context: ManifestContext,
@@ -129,11 +145,8 @@ export function routeEntryOf(
     return undefined;
   }
   const shellEncodings = shellEncodingsOf(context.encodings.get(prerender.body.sha256) ?? []);
-  // The route's own Content-Security-Policy goes out with the shell, long before the edge can
-  // learn it has to append the recovery script. A policy that restricts inline scripts would then
-  // block the one piece of code that gets a reader off a broken document, so the hash is added
-  // here, where the policy is recorded.
-  const headers = allowRecoveryScript(built, context.recoverySource);
+  const cache = context.caches.get(prerender.id);
+  const headers = recordedHeaders(built, cache, context.recoverySource);
   const csp = headers['content-security-policy'];
   // The scan ran before this route's headers were known, so what the build already preloads on
   // its own `Link` — the font React puts there — is taken out here rather than promoted twice.
@@ -152,7 +165,6 @@ export function routeEntryOf(
   // And what the route's own policies forbid or quieten goes out with it: a hint replayed as a
   // `103` arrives before either can reach the browser, so both are read here instead.
   const preloads = withoutForbidden(withoutAdvertised(named, headers['link']), headers);
-  const cache = context.caches.get(prerender.id);
   const segments = context.segments.get(prerender.pathname);
   const payload = context.payloads.get(prerender.pathname);
   const pagesData = context.pagesData.get(prerender.pathname);
