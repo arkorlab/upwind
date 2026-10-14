@@ -36,7 +36,11 @@ import {
   type SourceError,
   sourceLimit,
 } from './image-source.ts';
-import { mergeScopedMiddlewareHeaders, removeSharedCacheOverrides } from './responses.ts';
+import {
+  keptByNobody,
+  mergeScopedMiddlewareHeaders,
+  removeSharedCacheOverrides,
+} from './responses.ts';
 
 /**
  * `/_next/image` for a hosted application: the source resized and re-encoded by the Images
@@ -52,13 +56,12 @@ import { mergeScopedMiddlewareHeaders, removeSharedCacheOverrides } from './resp
  * judged then, as a refusal, rather than met halfway through an answer already committed.
  */
 
-export interface ImageInput {
+/** What an answer on the optimizer's path goes out under and is counted by, whatever it is. */
+export interface ImageAnswerInput {
   /** The request as the middleware left it, when it ran: what the format and a validator are. */
   readonly request: Request;
   readonly edge: EdgeContext;
-  readonly manifest: ProjectManifest;
   readonly config: ImagesConfig;
-  readonly params: ImageRequestParams;
   /**
    * What `next.config`'s header rules set on the path, selected on the request as it reached the
    * edge: the router runs them before the middleware, so neither a header it took away nor one it
@@ -69,6 +72,11 @@ export interface ImageInput {
   readonly middleware: MiddlewareContinue | undefined;
   /** The dispatches the middleware took before the image was served, which its metric counts. */
   readonly middlewareDispatches?: number | undefined;
+}
+
+export interface ImageInput extends ImageAnswerInput {
+  readonly manifest: ProjectManifest;
+  readonly params: ImageRequestParams;
 }
 
 /** Longest a request waits on the Cache API before optimizing instead. */
@@ -175,18 +183,6 @@ async function storeCache(cacheName: string, key: Request, response: Response): 
   } catch (error) {
     logWarn('image cache write failed', { detail: errorDetail(error) });
   }
-}
-
-/** A refusal in the optimizer's own words: plain text, uncached. */
-export function imageErrorResponse(error: SourceError, reason: string): Response {
-  return new Response(error.message, {
-    status: error.status,
-    headers: {
-      'content-type': 'text/plain; charset=utf-8',
-      [CACHE_CONTROL_HEADER]: NO_STORE_CACHE_CONTROL,
-      [EDGE_DEBUG_HEADER]: `error;reason=${reason}`,
-    },
-  });
 }
 
 function invalidImage(message: string, requests: number): SourceError {
@@ -345,7 +341,7 @@ async function optimize(input: ImageInput, imageSource: ImageSource): Promise<Op
   }
 }
 
-function debugHeader(input: ImageInput, src: string): string {
+function debugHeader(input: ImageAnswerInput, src: string): string {
   const { edge } = input;
   const middleware = input.middleware === undefined ? '' : ';mw=hit';
   return `image;src=${src};project=${edge.projectId};policy=${edge.policy.id}${middleware}`;
@@ -356,7 +352,7 @@ function debugHeader(input: ImageInput, src: string): string {
  * optimizer sets itself, as the application's router layers them; then validation and a
  * middleware's say each narrow the caching.
  */
-function clientHeaders(input: ImageInput, headers: Headers, src: string): Headers {
+function clientHeaders(input: ImageAnswerInput, headers: Headers, src: string): Headers {
   const out = new Headers(headers);
   const { configured } = input;
   for (const [name, value] of Object.entries(configured.headers)) {
@@ -396,6 +392,20 @@ function clientHeaders(input: ImageInput, headers: Headers, src: string): Header
   return out;
 }
 
+/**
+ * A refusal in the optimizer's own words, plain text, under what the path's rules and the
+ * middleware set: the application's router answers every request on the path with them, an error
+ * included, and a cookie the middleware sets on each is not lost to one. Kept by nobody, whatever
+ * either of them said of keeping it.
+ */
+function refusal(input: ImageAnswerInput, error: SourceError, reason: string): Response {
+  const own = new Headers({ 'content-type': 'text/plain; charset=utf-8' });
+  const headers = clientHeaders(input, own, 'error');
+  keptByNobody(headers);
+  headers.set(EDGE_DEBUG_HEADER, `error;reason=${reason}`);
+  return new Response(error.message, { status: error.status, headers });
+}
+
 const NOT_MODIFIED_STATUS = 304;
 
 /**
@@ -408,7 +418,7 @@ function notModified(headers: Headers): Response {
   return new Response(null, { status: NOT_MODIFIED_STATUS, headers: kept });
 }
 
-function respond(input: ImageInput, headers: Headers, body: BodyInit | null): Response {
+function respond(input: ImageAnswerInput, headers: Headers, body: BodyInit | null): Response {
   if (validatorMatches(input.request, headers.get('etag'))) {
     releaseStream(body instanceof ReadableStream ? body : undefined, 'not modified');
     return notModified(headers);
@@ -427,7 +437,7 @@ interface Outcome {
   readonly subrequests: number;
 }
 
-function record(input: ImageInput, { src, startedAt, bytes, subrequests }: Outcome): void {
+function record(input: ImageAnswerInput, { src, startedAt, bytes, subrequests }: Outcome): void {
   const { edge } = input;
   edge.host.observer.metric({
     projectId: edge.projectId,
@@ -518,6 +528,17 @@ function fromCache(input: ImageInput, cached: Response, startedAt: number): Resp
   return respond(input, clientHeaders(input, headers, 'cache'), cached.body);
 }
 
+/**
+ * Refuse a request before any source is asked for — parameters the optimizer does not take, a
+ * pattern of the application's too costly to judge — as one is refused after: under the path's
+ * headers, and counted.
+ */
+export function refuseImage(input: ImageAnswerInput, error: SourceError, reason: string): Response {
+  const startedAt = input.edge.runtime.now();
+  record(input, { src: 'error', startedAt, bytes: 0, subrequests: error.requests });
+  return refusal(input, error, reason);
+}
+
 export async function handleImage(input: ImageInput): Promise<Response> {
   const { edge, params } = input;
   const startedAt = edge.runtime.now();
@@ -538,7 +559,7 @@ export async function handleImage(input: ImageInput): Promise<Response> {
   const optimized = await optimize(input, source);
   if (optimized.kind === 'error') {
     record(input, { src: 'error', startedAt, bytes: 0, subrequests: optimized.error.requests });
-    return imageErrorResponse(optimized.error, 'image-source');
+    return refusal(input, optimized.error, 'image-source');
   }
   const { image } = optimized;
   const subrequests = image.requests;
@@ -557,7 +578,8 @@ export async function handleImage(input: ImageInput): Promise<Response> {
   } catch (error) {
     // A source can run past the limit, or stop, while it is being read.
     record(input, { src: 'error', startedAt, bytes: 0, subrequests });
-    return imageErrorResponse(
+    return refusal(
+      input,
       isBodyLimitError(error)
         ? tooLarge(source, subrequests)
         : badGateway(`image unreadable: ${errorDetail(error)}`, subrequests),

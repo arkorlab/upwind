@@ -61,10 +61,14 @@ export interface HostedGate {
   readonly abandon?: () => void;
   /**
    * What answers where a pattern of the application's costs more against the request, as the
-   * middleware left it, than the edge runs (`budgetPatterns`). Absent, the Worker, handed what the
-   * middleware decided; an image refuses instead, since no Worker of the application optimizes one.
+   * middleware left it, than the edge runs (`budgetPatterns`): handed what the middleware decided,
+   * and the dispatches it took. Absent, the Worker, handed what the middleware decided; an image
+   * refuses instead, since no Worker of the application optimizes one.
    */
-  readonly overBudget?: () => Promise<Response>;
+  readonly overBudget?: (
+    middleware: MiddlewareOutcome & Partial<MiddlewareTiming>,
+    dispatches: number,
+  ) => Promise<Response>;
 }
 
 /**
@@ -116,7 +120,9 @@ export async function serveAfterMiddleware(
     // left it (`budgetPatterns`): handed on with what the middleware decided, which the Function
     // does not run again — or refused, where the Function cannot answer either.
     gate.abandon?.();
-    return gate.overBudget?.() ?? input.passthrough(PATTERN_BUDGET, middleware);
+    return (
+      gate.overBudget?.(middleware, dispatches) ?? input.passthrough(PATTERN_BUDGET, middleware)
+    );
   }
 }
 

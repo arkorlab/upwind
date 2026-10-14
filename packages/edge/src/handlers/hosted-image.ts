@@ -1,9 +1,14 @@
 import { type ImagesConfig, parseImageRequest } from '@stayingupwind/core/images';
-import { headerRulesFor } from '@stayingupwind/core/manifest';
+import { type ConfiguredHeaders, headerRulesFor } from '@stayingupwind/core/manifest';
 import { PatternBudgetExceededError } from '@stayingupwind/core/request';
 
-import { type HostedGateInput, serveAfterMiddleware } from './hosted-gate.ts';
-import { handleImage, imageErrorResponse } from './image.ts';
+import {
+  type HostedGateInput,
+  type MiddlewareContinue,
+  serveAfterMiddleware,
+} from './hosted-gate.ts';
+import { handleImage, type ImageAnswerInput, refuseImage } from './image.ts';
+import type { MiddlewareOutcome } from './middleware.ts';
 import { PATTERN_BUDGET } from './passthrough.ts';
 
 export interface HostedImageInput extends HostedGateInput {
@@ -13,20 +18,56 @@ export interface HostedImageInput extends HostedGateInput {
 const HTTP_BAD_REQUEST = 400;
 /** The optimizer's words for a source the configuration does not allow. */
 const NOT_ALLOWED = '"url" parameter is not allowed';
+/** What a refusal carries of the path's rules where one of them cost too much to judge. */
+const UNJUDGED: ConfiguredHeaders = { headers: {}, conditioned: false };
+
+/**
+ * What an answer to the request goes out under, once the middleware had its say: the request as it
+ * left it — an `accept` it overrode decides the format, a conditional it removed is gone — and the
+ * path's rules, which the router selects on the request as it came.
+ */
+function answering(
+  input: HostedImageInput,
+  middleware: MiddlewareContinue | undefined,
+  dispatches: number,
+  configured: ConfiguredHeaders,
+): ImageAnswerInput {
+  const request =
+    middleware === undefined
+      ? input.request
+      : new Request(input.request, { headers: middleware.requestHeaders });
+  const { edge, config } = input;
+  return { request, edge, config, configured, middleware, middlewareDispatches: dispatches };
+}
+
+/** The path's rules for a refusal: none where it is one of theirs that costs too much to judge. */
+function rulesForRefusal(input: HostedImageInput): ConfiguredHeaders {
+  try {
+    return headerRulesFor(input.manifest, input.url, input.request.headers);
+  } catch (error) {
+    if (error instanceof PatternBudgetExceededError) {
+      return UNJUDGED;
+    }
+    throw error;
+  }
+}
 
 /**
  * Where one of the application's patterns costs more against the request than the edge runs
  * (`budgetPatterns`) — a source's against the configuration's, a rule's, a matcher's — the request
  * is refused as one the configuration does not allow. Not handed to the application's Worker, as a
  * document is: no Worker of the application optimizes an image, and it would answer with a 404.
+ * Under what the middleware set, where it ran.
  */
-function refused(): Promise<Response> {
-  return Promise.resolve(
-    imageErrorResponse(
-      { status: HTTP_BAD_REQUEST, message: NOT_ALLOWED, requests: 0 },
-      PATTERN_BUDGET,
-    ),
-  );
+function refused(
+  input: HostedImageInput,
+  middleware?: MiddlewareOutcome,
+  dispatches = 0,
+): Promise<Response> {
+  const continued = middleware?.kind === 'continue' ? middleware : undefined;
+  const answer = answering(input, continued, dispatches, rulesForRefusal(input));
+  const error = { status: HTTP_BAD_REQUEST, message: NOT_ALLOWED, requests: 0 };
+  return Promise.resolve(refuseImage(answer, error, PATTERN_BUDGET));
 }
 
 /**
@@ -40,42 +81,29 @@ export async function routeHostedImage(input: HostedImageInput): Promise<Respons
     return await routeWithinBudget(input);
   } catch (error) {
     if (error instanceof PatternBudgetExceededError) {
-      return refused();
+      return refused(input);
     }
     throw error;
   }
 }
 
 function routeWithinBudget(input: HostedImageInput): Promise<Response> {
-  const { url, edge, manifest, config } = input;
+  const { url, manifest, config } = input;
   return serveAfterMiddleware(input, {
-    overBudget: refused,
+    overBudget: (middleware, dispatches) => refused(input, middleware, dispatches),
     serve: (middleware, dispatches) => {
-      // As the middleware left it: an `accept` it overrode decides the format, a conditional it
-      // removed is gone.
-      const request =
-        middleware === undefined
-          ? input.request
-          : new Request(input.request, { headers: middleware.requestHeaders });
-      const parsed = parseImageRequest(url.searchParams, request.headers.get('accept'), config);
-      if (parsed.kind === 'invalid') {
-        return Promise.resolve(
-          imageErrorResponse(
-            { status: HTTP_BAD_REQUEST, message: parsed.errorMessage, requests: 0 },
-            'image-invalid',
-          ),
-        );
-      }
-      return handleImage({
-        request,
-        edge,
-        manifest,
+      const configured = headerRulesFor(manifest, url, input.request.headers);
+      const answer = answering(input, middleware, dispatches, configured);
+      const parsed = parseImageRequest(
+        url.searchParams,
+        answer.request.headers.get('accept'),
         config,
-        params: parsed.params,
-        configured: headerRulesFor(manifest, url, input.request.headers),
-        middleware,
-        middlewareDispatches: dispatches,
-      });
+      );
+      if (parsed.kind === 'invalid') {
+        const error = { status: HTTP_BAD_REQUEST, message: parsed.errorMessage, requests: 0 };
+        return Promise.resolve(refuseImage(answer, error, 'image-invalid'));
+      }
+      return handleImage({ ...answer, manifest, params: parsed.params });
     },
   });
 }
