@@ -1,6 +1,7 @@
 import {
   headerRulesFor,
   type ProjectManifest,
+  staticFileBuildWithoutDpl,
   type StaticFileEntry,
   staticFileKey,
 } from '@stayingupwind/core/manifest';
@@ -78,11 +79,15 @@ function serveFile(
 
 /**
  * The shipped file a middleware rewrite lands on, as this deployment ships it: the request's `dpl`
- * named the path it asked for, not the one it was sent to. `undefined` when `url` names no file.
+ * named the path it asked for, not the one it was sent to. So the build is chosen as for a request
+ * naming no deployment (`staticFileBuildWithoutDpl`), and a build kept from the deployment before
+ * that answers only its own `dpl` is no file of this one's. `undefined` when `url` names no file.
  */
 function shippedFileAt(manifest: ProjectManifest, url: URL): ServedFile | undefined {
   const pathname = staticFileKey(manifest, url.pathname);
-  const file = pathname === undefined ? undefined : manifest.staticFiles?.[pathname];
+  const entry = pathname === undefined ? undefined : manifest.staticFiles?.[pathname];
+  const file =
+    entry === undefined ? undefined : staticFileBuildWithoutDpl(entry, manifest.deployment.dplId);
   return pathname === undefined || file === undefined ? undefined : { pathname, file };
 }
 
