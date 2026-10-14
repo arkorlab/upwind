@@ -11,7 +11,16 @@ export interface Logger {
 type LogLevel = 'info' | 'warn' | 'error';
 
 function emit(level: LogLevel, base: LogFields, message: string, fields?: LogFields): void {
-  const line = JSON.stringify({ level, msg: message, component: 'cache', ...base, ...fields });
+  // What a line is, its method and its message say, and what it is of, the logger's base: first in
+  // the line, as they always were, and a field of the same name changes none of them.
+  const record: LogFields = { level, msg: message, component: base['component'] ?? 'cache' };
+  const given = Object.entries({ ...base, ...fields });
+  for (const [name, value] of given) {
+    if (!Object.hasOwn(record, name)) {
+      record[name] = value;
+    }
+  }
+  const line = JSON.stringify(record);
   if (level === 'error') {
     console.error(line);
   } else if (level === 'warn') {
