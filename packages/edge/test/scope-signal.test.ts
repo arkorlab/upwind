@@ -262,6 +262,60 @@ describe('where a scope stands, as the edge comes to know it', () => {
     expect(answered.asked()).toBe(1);
   });
 
+  /** A copy that cannot be read is none, as one that is gone is. */
+  it('is asked where the copy the data center has cannot be read', async () => {
+    const scopeId = scopeOfItsOwn();
+    const cache = `signals-${crypto.randomUUID()}`;
+    const copies = await caches.open(cache);
+    const keptAt = String(Date.now());
+    const unreadable = new Response('not the signals', {
+      headers: { 'cache-control': 'max-age=3600', 'x-arkor-kept-at': keptAt },
+    });
+    await copies.put(`https://cache.test.invalid/scope-signals/${scopeId}`, unreadable);
+    const answered = authority(() => ({ ...UNMOVED, revision: 5 }));
+    const runtime = runtimeOf();
+    const behind: Promise<unknown>[] = [];
+
+    await look(runtime, hostOf(cache, answered.source), scopeId, behind);
+    await Promise.all(behind);
+
+    expect(answered.asked()).toBe(1);
+    expect(runtime.memory.scopes.get(scopeId)?.revision).toBe(5);
+  });
+
+  /**
+   * A purge takes the claim of the question with the copy (`claimQuestion`): an isolate that left
+   * the question to another's claim asks itself once the copy is gone, rather than once the claim
+   * it saw would have lapsed.
+   */
+  it('is asked at once once a purge took the claim it left the question to', async () => {
+    const scopeId = scopeOfItsOwn();
+    const cache = `signals-${crypto.randomUUID()}`;
+    const never = Promise.withResolvers<true>();
+    const answered = authority(() => ({ ...UNMOVED, revision: 5 }), never.promise);
+    const host = hostOf(cache, answered.source);
+    const firstBehind: Promise<unknown>[] = [];
+    await look(runtimeOf(), host, scopeId, firstBehind);
+    await vi.waitFor(() => {
+      expect(answered.asked()).toBe(1);
+    });
+    const other = runtimeOf();
+    const leftBehind: Promise<unknown>[] = [];
+    await look(other, host, scopeId, leftBehind);
+    await Promise.all(leftBehind);
+
+    await purge(cache, scopeId);
+    const askedBehind: Promise<unknown>[] = [];
+    await look(other, host, scopeId, askedBehind);
+
+    await vi.waitFor(() => {
+      expect(answered.asked()).toBe(2);
+    });
+    never.resolve(true);
+    await Promise.all(firstBehind);
+    await Promise.all(askedBehind);
+  });
+
   it('is not waited for by the request that asks', async () => {
     const scopeId = scopeOfItsOwn();
     const gate = Promise.withResolvers<true>();

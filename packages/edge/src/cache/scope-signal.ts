@@ -423,6 +423,16 @@ function askBehind(look: ScopeLook, source: ScopeSignalSource, scopeId: string):
 }
 
 /**
+ * Ask behind where the data center has no copy, or none that can be read: a claim this isolate saw
+ * another make is looked at again rather than trusted until it lapses, since a purge takes it with
+ * the copy (`claimQuestion`), and the scope may have moved since it was made.
+ */
+function askForNone(look: ScopeLook, source: ScopeSignalSource, scopeId: string): void {
+  look.runtime.memory.claimedElsewhere.delete(scopeId);
+  askBehind(look, source, scopeId);
+}
+
+/**
  * Bring this isolate's knowledge of the scope up to its data center's copy, and ask the authority
  * behind where the copy is gone, or a moment old — a minute, where the host purges it. Nothing
  * waits for it, and nothing where the host keeps no signals (`EdgeHost.scopeSignals`). Never
@@ -441,7 +451,7 @@ export async function lookAtScope(look: ScopeLook, scopeId: string): Promise<voi
   try {
     const copy = await readCopy(look, scopeId);
     if (copy === undefined) {
-      askBehind(look, source, scopeId);
+      askForNone(look, source, scopeId);
       return;
     }
     takeIn(runtime, scopeId, copy.signals);
@@ -451,7 +461,9 @@ export async function lookAtScope(look: ScopeLook, scopeId: string): Promise<voi
     }
   } catch (error) {
     // What the isolate knew stands: the request is judged as it would have been without signals.
+    // A copy that cannot be read, or taken in, is none, and the authority is asked as for one gone.
     logWarn('scope signals not looked at', { scopeId, detail: errorDetail(error) });
+    askForNone(look, source, scopeId);
   }
 }
 
