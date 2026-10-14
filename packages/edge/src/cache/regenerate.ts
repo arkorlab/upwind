@@ -118,6 +118,15 @@ export interface DispatchInput {
 }
 
 /**
+ * The visitor's request as a regeneration is sent with it, but not cancelled with it, as a
+ * passthrough is (`buildPassthroughRequest`): what a regeneration renders is published for every
+ * visitor after this one, and one who leaves before the Worker answers does not take it with them.
+ */
+function keptPastTheVisitor(request: Request): Request {
+  return new Request(request, { signal: null });
+}
+
+/**
  * No valid generation exists: the Worker renders the page, publishes it, and its render is the
  * response — the same request the Worker would answer in full, told what it is for. Counted with
  * the read of the record that turned out to have expired, which the request waited on first. Where
@@ -130,7 +139,7 @@ export function foregroundDocument(
   { recordLookupMs }: PassthroughWait = {},
 ): Promise<Response> {
   return handlePassthrough({
-    request: input.request,
+    request: keptPastTheVisitor(input.request),
     forwarding: edge.forwarding,
     runtime: edge.runtime,
     host: edge.host,
@@ -152,7 +161,7 @@ export function foregroundDocument(
 async function askDetached(edge: EdgeContext, input: DispatchInput): Promise<void> {
   try {
     const response = await handlePassthrough({
-      request: input.request,
+      request: keptPastTheVisitor(input.request),
       forwarding: edge.forwarding,
       runtime: edge.runtime,
       host: edge.host,

@@ -267,6 +267,8 @@ function requestInit(request: Request): RequestInit & { duplex?: 'half' } {
   return {
     method: request.method,
     redirect: 'manual',
+    // Cancelled with the client's, as the request the middleware did not change is.
+    signal: request.signal,
     ...(hasBody && { body: request.body, duplex: 'half' }),
   };
 }

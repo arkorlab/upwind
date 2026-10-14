@@ -37,7 +37,9 @@ export function buildResumeRequest(
 
 /**
  * Build a transparent proxy request (any method, streamed body), on the host the client used:
- * the application's Worker is reached by name, so it is asked on the host it was asked on.
+ * the application's Worker is reached by name, so it is asked on the host it was asked on. It is
+ * cancelled with the client's: a visitor who leaves takes the render they no longer wait for with
+ * them, where the runtime says so of a request (its `signal`).
  */
 export function buildPassthroughRequest(
   clientRequest: Request,
@@ -54,6 +56,7 @@ export function buildPassthroughRequest(
       credentials,
     ),
     redirect: 'manual',
+    signal: clientRequest.signal,
   };
   if (hasBody) {
     init.body = clientRequest.body;
