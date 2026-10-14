@@ -12,6 +12,13 @@ const PARTS = 3;
 const NAMING = { tokenLabel: 'test-cache-token' };
 /** Scope ids holding what no bearer token in a header can: whitespace, a control, past ASCII. */
 const UNCARRIED = ['a b', 'a\tb', 'a\nb', 'a\0b', 'a\u{7F}b', 'café', '日本'];
+/**
+ * Scope ids holding what a header carries, but a bearer token does not (RFC 6750, `b64token`), and
+ * `=`, a token's padding, which a scope id has no use for at its end or anywhere else.
+ */
+const UNTOKENED = ['a,b', 'a"b', String.raw`a\b`, 'a=b', 'ab='];
+/** Every character a bearer token holds, but `.` and `=`. */
+const TOKENED = 'AZaz09-_~+/';
 
 describe('cache tokens', () => {
   afterEach(() => {
@@ -148,11 +155,14 @@ describe('cache tokens', () => {
 
   /**
    * A token is a bearer an `Authorization` header carries: one signed for a scope id holding any of
-   * these could not be presented by any request.
+   * these could not be presented by any request, or could be refused by a strict reader of it.
    */
-  it.each(UNCARRIED)('cannot be minted for a scope id that holds %j', async (id) => {
-    await expect(signCacheToken(SECRET, id, NAMING)).rejects.toThrow(/visible ASCII/u);
-  });
+  it.each([...UNCARRIED, ...UNTOKENED])(
+    'cannot be minted for a scope id that holds %j',
+    async (id) => {
+      await expect(signCacheToken(SECRET, id, NAMING)).rejects.toThrow(/ASCII letters, digits/u);
+    },
+  );
 
   it('can be presented in an Authorization header', async () => {
     const token = await signCacheToken(SECRET, SCOPE, NAMING);
@@ -160,6 +170,15 @@ describe('cache tokens', () => {
     expect(new Headers({ authorization: `Bearer ${token}` }).get('authorization')).toBe(
       `Bearer ${token}`,
     );
+  });
+
+  it('can be minted for a scope id of every other character a bearer token holds', async () => {
+    const token = await signCacheToken(SECRET, TOKENED, NAMING);
+
+    expect(parseCacheToken(token)?.scopeId).toBe(TOKENED);
+    await expect(
+      verifyCacheToken({ token, scopeId: TOKENED, secret: SECRET, naming: NAMING }),
+    ).resolves.toBe(true);
   });
 });
 
@@ -176,11 +195,12 @@ describe('a scope', () => {
 
   it('is seeded under an id a token can be signed for', async () => {
     expect(scopeSeedSchema.safeParse(scope).success).toBe(true);
+    expect(scopeSeedSchema.safeParse({ ...scope, scopeId: TOKENED }).success).toBe(true);
     await expect(signCacheToken(SECRET, scope.scopeId, NAMING)).resolves.toMatch(/^v1\./u);
   });
 
   /** Refused where the scope is made, rather than once it is and its token cannot be signed. */
-  it.each(['a.b', 'b|v1|c', ...UNCARRIED])(
+  it.each(['a.b', 'b|v1|c', ...UNCARRIED, ...UNTOKENED])(
     'is not seeded under %j, which no token can be signed for',
     (id) => {
       expect(scopeSeedSchema.safeParse({ ...scope, scopeId: id }).success).toBe(false);
