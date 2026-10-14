@@ -74,6 +74,36 @@ async function refresh(
 }
 
 /**
+ * When this isolate found KV without the entry's record, for a read asked to hold absences:
+ * `undefined` where none is held, or where the one held no longer stands, which is let go.
+ */
+function heldAbsence(
+  edge: EdgeContext,
+  key: GenerationKey,
+  recordKey: string,
+  options: LoadOptions,
+): number | undefined {
+  const { memory } = edge.runtime;
+  // An absence is held as a record is, however long ago it was found — `peek` answers past the
+  // memory's own TTL, which is not the hold — and asked about again past the hold the same way.
+  const absentAt =
+    options.holdAbsence === true ? memory.absentRecords.peek(recordKey)?.value : undefined;
+  if (absentAt === undefined) {
+    return undefined;
+  }
+  // Nor one found before the scope's latest at-once invalidation, or while KV may still have
+  // answered with what it held before it (`absencesHeldFrom`): the record it said KV had none of may
+  // be there now, and be one the invalidation reached. Absences carry no tags, so every one of the
+  // scope goes, and the entry is read as one held nothing of.
+  const heldFrom = memory.invalidations.absencesHeldFrom(key.scopeId);
+  if (heldFrom !== undefined && absentAt < heldFrom) {
+    memory.absentRecords.delete(recordKey);
+    return undefined;
+  }
+  return absentAt;
+}
+
+/**
  * What this isolate holds of the entry, answering without a read before the first byte: the
  * record, or — asked to hold absences — that KV had none. Past the hold it is held again before
  * the entry is read behind the response, so one read goes out per hold however many requests
@@ -100,20 +130,8 @@ export function heldGeneration(
     }
     return { kind: 'generation', pack: held.pack, source: 'memory', lookupMs: 0 };
   }
-  // An absence is held as a record is, however long ago it was found — `peek` answers past the
-  // memory's own TTL, which is not the hold — and asked about again past the hold the same way.
-  const absentAt =
-    options.holdAbsence === true ? memory.absentRecords.peek(recordKey)?.value : undefined;
+  const absentAt = heldAbsence(edge, key, recordKey, options);
   if (absentAt === undefined) {
-    return undefined;
-  }
-  // Nor one found before the scope's latest at-once invalidation, or while KV may still have
-  // answered with what it held before it (`absencesHeldFrom`): the record it said KV had none of may
-  // be there now, and be one the invalidation reached. Absences carry no tags, so every one of the
-  // scope goes, and the entry is read as one held nothing of.
-  const heldFrom = memory.invalidations.absencesHeldFrom(key.scopeId);
-  if (heldFrom !== undefined && absentAt < heldFrom) {
-    memory.absentRecords.delete(recordKey);
     return undefined;
   }
   if (now - absentAt >= settings.holdMs) {
@@ -163,19 +181,32 @@ export function readServedAgain(
  * same record first and reads behind its own response. A part answered from a record that asks
  * for its regeneration is read again only once it is answered, as that document is
  * (`readServedAgain`).
+ *
+ * Asked to hold absences — a member's own record — an absence held answers within the hold, as it
+ * answers the member's next document, which is the class shell's then. Past the hold the entry is
+ * read now, its absence held again if KV still has none: an absence has no freshness of its own to
+ * be judged by later, as a record does, and one judged as held for good would hand the member's
+ * parts to the Function in an isolate asked for none of its documents however long ago its record
+ * was made.
  */
 export async function generationAsHeld(
   edge: EdgeContext,
   key: GenerationKey,
   settings: RuntimeCacheSettings,
+  options: LoadOptions = {},
 ): Promise<GenerationLoad> {
   if (settings.holdMs !== 0) {
-    const held = edge.runtime.memory.generations.get(kvGenerationKey(key.scopeId, key.entryId));
+    const recordKey = kvGenerationKey(key.scopeId, key.entryId);
+    const held = edge.runtime.memory.generations.get(recordKey);
     if (held !== undefined) {
       return { kind: 'generation', pack: held.pack, source: 'memory', lookupMs: 0 };
     }
+    const absentAt = heldAbsence(edge, key, recordKey, options);
+    if (absentAt !== undefined && edge.runtime.now() - absentAt < settings.holdMs) {
+      return { kind: 'none', lookupMs: 0 };
+    }
   }
-  return readGeneration(edge, key, settings);
+  return readGeneration(edge, key, settings, options);
 }
 
 /** The entry's record: what this isolate holds of it, or else a read before the first byte. */

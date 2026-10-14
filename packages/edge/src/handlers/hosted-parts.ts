@@ -125,7 +125,9 @@ async function partGeneration(
     }
     key = { scopeId: key.scopeId, entryId };
   }
-  const load = held ?? (await generationAsHeld(input.edge, key, settings));
+  // A member's own is judged as its document's read is, its absence held (`startMemberRead`).
+  const options = own === undefined ? {} : { holdAbsence: true };
+  const load = held ?? (await generationAsHeld(input.edge, key, settings, options));
   const decision = decideGeneration(
     load,
     input.edge.runtime.now(),
