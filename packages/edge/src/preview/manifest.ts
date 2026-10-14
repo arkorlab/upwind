@@ -471,6 +471,12 @@ async function readPolicy(env: EdgeBindings, policyId: string): Promise<Lookup<D
     logWarn('invalid delivery policy', { policyId });
     return MISSING;
   }
+  // A document is kept under the id it names (`kvPolicyKey`): one under another's key is a store's
+  // fault, and taken for none, rather than served as the policy asked for under its own name.
+  if (parsed.data.id !== policyId) {
+    logWarn('delivery policy names another id', { policyId, named: parsed.data.id });
+    return MISSING;
+  }
   return { kind: 'found', value: parsed.data };
 }
 
