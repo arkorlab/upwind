@@ -174,6 +174,24 @@ function defaultCacheControl(file: StaticFileEntry): string {
   return file.immutable ? IMMUTABLE_CACHE_CONTROL : REVALIDATE_CACHE_CONTROL;
 }
 
+/**
+ * What the application set on the file's path, laid over `headers`: what `next.config` sets, as the
+ * application's router would; then what the middleware set, part of what the application answers
+ * with for a file as for a document. A cookie of either is scoped as a Function's is.
+ */
+function applicationHeaders(input: StaticFileInput, headers: Headers): void {
+  const { forwarding } = input.edge;
+  const configured = Object.entries(input.configured?.headers ?? {});
+  for (const [name, value] of configured) {
+    if (!ENTITY_HEADERS.has(name.toLowerCase())) {
+      setConfigured(headers, name, value, forwarding);
+    }
+  }
+  if (input.middleware !== undefined) {
+    mergeScopedMiddlewareHeaders(headers, input.middleware.responseHeaders, forwarding);
+  }
+}
+
 function fileHeaders(input: StaticFileInput, source: string): Headers {
   const { file, edge } = input;
   const middleware = input.middleware === undefined ? '' : ';mw=hit';
@@ -184,17 +202,7 @@ function fileHeaders(input: StaticFileInput, source: string): Headers {
     etag: etagOf(file),
     'cache-control': defaultCacheControl(file),
   });
-  // What `next.config` sets on the file, as the application's router would; then what the
-  // middleware set, part of what the application answers with for a file as for a document.
-  const configured = Object.entries(input.configured?.headers ?? {});
-  for (const [name, value] of configured) {
-    if (!ENTITY_HEADERS.has(name.toLowerCase())) {
-      setConfigured(headers, name, value, edge.forwarding);
-    }
-  }
-  if (input.middleware !== undefined) {
-    mergeScopedMiddlewareHeaders(headers, input.middleware.responseHeaders, edge.forwarding);
-  }
+  applicationHeaders(input, headers);
   // A client router asked for React Server Components and is answered with the file — a Pages
   // Router page's HTML, which it then loads as a document. Next.js marks such an answer as one that
   // varies on what the router sent (`setVaryHeader`), so no cache keyed on the URL alone hands it to
@@ -236,6 +244,25 @@ function fileHeaders(input: StaticFileInput, source: string): Headers {
   }
   applyCspReporting(headers, edge.cspReportingPath);
   return headers;
+}
+
+/**
+ * Storage gave no file: the edge's own 503, under what the application set on the path — its router
+ * answers every request there with it, an error included, and a cookie the middleware sets on each
+ * is not lost to one — and kept by nobody, whatever either said of keeping it. Its type, coding and
+ * account of itself are its own.
+ */
+function storageFailure(input: StaticFileInput, reason: string): Response {
+  const own = serviceUnavailableResponse(reason);
+  const headers = new Headers();
+  applicationHeaders(input, headers);
+  headers.delete('content-encoding');
+  headers.delete(EDGE_VALIDATED_HEADER);
+  for (const [name, value] of own.headers) {
+    headers.set(name, value);
+  }
+  keptByNobody(headers);
+  return new Response(own.body, { status: own.status, headers });
 }
 
 /**
@@ -571,7 +598,7 @@ export async function handleStaticFile(
     const requests = (asksBlobWorker(edge.runtime.blobWorker, input.file) ? 1 : 0) + 1;
     const failed = deliveryMetric(input, { source: 'unavailable', requests }, startedAt, 0);
     recordDelivery(input, failed, [abandoned, replaced]);
-    return serviceUnavailableResponse('static-file-unavailable');
+    return storageFailure(input, 'static-file-unavailable');
   }
   const read = settled.read.file;
   if (read === undefined) {
@@ -579,7 +606,7 @@ export async function handleStaticFile(
     logWarn('static file missing from storage', { pathname: input.pathname });
     const missing = { source: 'missing', requests: settled.read.requests } as const;
     recordDelivery(input, deliveryMetric(input, missing, startedAt, 0), [abandoned, replaced]);
-    return serviceUnavailableResponse('static-file-missing');
+    return storageFailure(input, 'static-file-missing');
   }
   const headers = fileHeaders(input, sourceOf(read));
   const sentBytes = range === undefined ? input.file.byteLength : range.end - range.start + 1;
