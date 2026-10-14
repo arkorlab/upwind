@@ -34,7 +34,7 @@ import {
   type ServedObservation,
   type UploadedArtifact,
 } from './host.ts';
-import { answerable, laterCarried, turnedAway } from './later.ts';
+import { answerable, supersededWith, turnedAway } from './later.ts';
 import {
   abandon,
   elapsedSince,
@@ -628,9 +628,7 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
     // another request of this isolate learned while this one waited for the lease stays held.
     forgetRecordBefore(runtime, lease.entryId, lease.current?.seq ?? Infinity);
     const ours = await answeringWhenSuperseded(runtime, candidates, lease.current, pullAfresh);
-    return ours === undefined
-      ? { kind: 'superseded', current: await laterCarried(runtime, key, target, lease) }
-      : { kind: 'superseded', publishing: ours };
+    return supersededWith(runtime, target, lease, { entryId: key, pull: pullAfresh, ours });
   }
   // It answers nothing more: what the host holds is not a later generation that stands.
   runtime.publishing.delete(key);

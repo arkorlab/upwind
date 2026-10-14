@@ -139,7 +139,7 @@ export function answeringAtOnce(
 }
 
 /** What `promise` settled to, or `otherwise` once `PUBLISHING_PULL_MS` have gone by first. */
-async function settledWithin<T>(promise: Promise<T>, otherwise: T): Promise<T> {
+export async function settledWithin<T>(promise: Promise<T>, otherwise: T): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
