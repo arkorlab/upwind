@@ -49,6 +49,14 @@ const invalidateRequestSchema = toZod(invalidateRequestEntity);
  */
 
 export const MAX_SEED_BATCH = 200;
+/**
+ * The most outputs the build's generation of one entry is seeded with, and the most artifacts one
+ * output is made of. A build seeds a document and its Pages data, or a handler's body, each made of
+ * its bytes and perhaps the state that resumes it; these leave room for more than that, and bound
+ * what a batch of `MAX_SEED_BATCH` entries holds, which the entry count alone did not.
+ */
+export const MAX_SEED_OUTPUTS = 64;
+export const MAX_SEED_OUTPUT_ARTIFACTS = 16;
 const NOT_RECORDED = 'not-recorded';
 const UNAVAILABLE = 'unavailable';
 export const MAX_WARM_FAILURE_DETAIL_LENGTH = 2048;
@@ -106,7 +114,7 @@ export const seedOutputSchema = z.object({
   compute: toZod(outputComputeSchema),
   response: toZod(outputResponseSchema),
   htmlSize: z.number().int().nonnegative().nullable(),
-  artifacts: z.array(seedArtifactSchema),
+  artifacts: z.array(seedArtifactSchema).max(MAX_SEED_OUTPUT_ARTIFACTS),
 });
 export type SeedOutput = z.infer<typeof seedOutputSchema>;
 
@@ -118,7 +126,7 @@ const seedGenerationSchema = z.object({
   status: z.number().int(),
   headers: z.record(z.string(), z.string()),
   tags: z.array(toZod(generationTagSchema)).max(MAX_TAGS_PER_ENTRY),
-  outputs: z.array(seedOutputSchema).min(1),
+  outputs: z.array(seedOutputSchema).min(1).max(MAX_SEED_OUTPUTS),
   dependencyCoverage: dependencyCoverageSchema,
 });
 

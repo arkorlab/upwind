@@ -181,6 +181,8 @@ export {
   listResourceWarmJobsResultSchema,
   MAX_RESOURCE_WARM_JOBS,
   MAX_SEED_BATCH,
+  MAX_SEED_OUTPUT_ARTIFACTS,
+  MAX_SEED_OUTPUTS,
   MAX_WARM_FAILURE_DETAIL_LENGTH,
   notRecordedSchema,
   type ReadArtifactLocationResult,

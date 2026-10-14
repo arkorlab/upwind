@@ -3,6 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
   listResourceWarmJobsResultSchema,
   MAX_RESOURCE_WARM_JOBS,
+  MAX_SEED_OUTPUT_ARTIFACTS,
+  MAX_SEED_OUTPUTS,
+  seedEntriesInputSchema,
   seedScopeResultSchema,
 } from '../src/cache/scope-contract.ts';
 
@@ -54,5 +57,75 @@ describe('the warm jobs one call leases', () => {
     expect(
       listResourceWarmJobsResultSchema.safeParse(answer(MAX_RESOURCE_WARM_JOBS + 1)).success,
     ).toBe(false);
+  });
+});
+
+/** One entry of a batch, its build's generation made of `outputs`. */
+function batchOf(outputs: readonly unknown[]) {
+  const unknown = { kind: 'unknown' };
+  return {
+    scopeId: 'dpl_scope',
+    batchIndex: 0,
+    entries: [
+      {
+        descriptor: { kind: 'app-page', route: '/', pathname: '/' },
+        groupInstanceId: null,
+        generation: {
+          generationId: 'gen_1',
+          cacheTimestamp: 1,
+          producedAt: 1,
+          policy: {
+            revalidateAfter: unknown,
+            expireAfter: unknown,
+            clientStale: unknown,
+            source: 'build-output',
+          },
+          status: 200,
+          headers: {},
+          tags: [],
+          outputs,
+          dependencyCoverage: 'complete',
+        },
+      },
+    ],
+  };
+}
+
+describe('a seed batch', () => {
+  const artifact = {
+    role: 'html',
+    sha256: 'a'.repeat(64),
+    byteLength: 1,
+    contentType: 'text/html',
+    encoding: 'identity',
+    storageRef: `blobs/${'a'.repeat(64)}`,
+  };
+  const output = {
+    representationKey: 'html',
+    pathname: '/',
+    status: 200,
+    headers: {},
+    compute: 'static',
+    response: 'complete',
+    htmlSize: null,
+    artifacts: [artifact],
+  };
+
+  it('holds an entry of as many outputs, each of as many artifacts, as a seed may', () => {
+    const artifacts = Array.from({ length: MAX_SEED_OUTPUT_ARTIFACTS }, () => artifact);
+    const outputs = Array.from({ length: MAX_SEED_OUTPUTS }, () => ({ ...output, artifacts }));
+
+    expect(seedEntriesInputSchema.safeParse(batchOf(outputs)).success).toBe(true);
+  });
+
+  /** The entry count alone bounded nothing of what each entry held. */
+  it('holds no entry of more outputs, or of an output of more artifacts, than a seed may', () => {
+    const outputs = Array.from({ length: MAX_SEED_OUTPUTS + 1 }, () => output);
+    const artifacts = Array.from({ length: MAX_SEED_OUTPUT_ARTIFACTS + 1 }, () => artifact);
+
+    expect(seedEntriesInputSchema.safeParse(batchOf(outputs)).success).toBe(false);
+    expect(seedEntriesInputSchema.safeParse(batchOf([{ ...output, artifacts }])).success).toBe(
+      false,
+    );
   });
 });
