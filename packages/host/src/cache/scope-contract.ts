@@ -5,11 +5,11 @@ import {
   cachePolicySchema,
   generationTagSchema,
   headerValuesSchema,
-  MAX_TAGS_PER_ENTRY,
   outputComputeSchema,
   outputResponseSchema,
   routeEntryDescriptorSchema,
   routeEntryKindSchema,
+  tagKindSchema,
 } from '@stayingupwind/core/cache';
 import * as z from 'zod';
 
@@ -118,6 +118,17 @@ export const seedOutputSchema = z.object({
 });
 export type SeedOutput = z.infer<typeof seedOutputSchema>;
 
+/**
+ * A tag of the build's generation of an entry, as the deploy names it: of a kind, and not empty.
+ * How long it is, and how many an entry carries, is not bounded here. A route's tags are its
+ * build's, and a pathname long enough makes its implicit tag longer than a tag may be: refused in
+ * the shape of the batch, one such route would leave every other entry of the batch unseeded. The
+ * authority refuses an entry whose tags are past a generation's bounds (`MAX_TAGS_PER_ENTRY`,
+ * `MAX_TAG_LENGTH`) alone, and says so (`SeedEntriesResult.refused`), as it refuses one no record of
+ * could be written.
+ */
+const seedTagSchema = z.object({ kind: toZod(tagKindSchema), value: z.string().min(1) });
+
 const seedGenerationSchema = z.object({
   generationId: z.string().min(1),
   cacheTimestamp: z.number().int().nullable(),
@@ -125,7 +136,7 @@ const seedGenerationSchema = z.object({
   policy: toZod(cachePolicySchema),
   status: z.number().int(),
   headers: z.record(z.string(), z.string()),
-  tags: z.array(toZod(generationTagSchema)).max(MAX_TAGS_PER_ENTRY),
+  tags: z.array(seedTagSchema),
   outputs: z.array(seedOutputSchema).min(1).max(MAX_SEED_OUTPUTS),
   dependencyCoverage: dependencyCoverageSchema,
 });

@@ -1,3 +1,4 @@
+import { MAX_TAG_LENGTH, MAX_TAGS_PER_ENTRY } from '@stayingupwind/core/cache';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -60,8 +61,8 @@ describe('the warm jobs one call leases', () => {
   });
 });
 
-/** One entry of a batch, its build's generation made of `outputs`. */
-function batchOf(outputs: readonly unknown[]) {
+/** One entry of a batch, its build's generation made of `outputs` and carrying `tags`. */
+function batchOf(outputs: readonly unknown[], tags: readonly unknown[] = []) {
   const unknown = { kind: 'unknown' };
   return {
     scopeId: 'dpl_scope',
@@ -82,7 +83,7 @@ function batchOf(outputs: readonly unknown[]) {
           },
           status: 200,
           headers: {},
-          tags: [],
+          tags,
           outputs,
           dependencyCoverage: 'complete',
         },
@@ -127,5 +128,28 @@ describe('a seed batch', () => {
     expect(seedEntriesInputSchema.safeParse(batchOf([{ ...output, artifacts }])).success).toBe(
       false,
     );
+  });
+
+  /**
+   * A route's tags are its build's: past what a generation may carry, they leave the authority to
+   * refuse that entry alone, where refused in the batch's shape they would leave every entry of it
+   * unseeded.
+   */
+  it('holds an entry whose tags are past what a generation may carry', () => {
+    const long = [{ kind: 'next-implicit', value: `_N_T_/${'a'.repeat(MAX_TAG_LENGTH)}` }];
+    const many = Array.from({ length: MAX_TAGS_PER_ENTRY + 1 }, (_, index) => `tag-${index}`).map(
+      (value) => ({ kind: 'next-explicit', value }),
+    );
+
+    expect(seedEntriesInputSchema.safeParse(batchOf([output], long)).success).toBe(true);
+    expect(seedEntriesInputSchema.safeParse(batchOf([output], many)).success).toBe(true);
+  });
+
+  it('holds no tag that is empty, or of no kind a tag may be', () => {
+    const empty = [{ kind: 'next-explicit', value: '' }];
+    const kindless = [{ kind: 'unknown-kind', value: 'tag' }];
+
+    expect(seedEntriesInputSchema.safeParse(batchOf([output], empty)).success).toBe(false);
+    expect(seedEntriesInputSchema.safeParse(batchOf([output], kindless)).success).toBe(false);
   });
 });
