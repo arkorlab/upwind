@@ -206,22 +206,29 @@ type Adoption =
 
 type Decoded = Extract<ReturnType<typeof decodeGenerationPack>, { kind: 'ok' }>;
 
+/** What is logged of bytes that are not the record they are to be served as (`untrusted`). */
+type Refusal = string | undefined;
+const NOT_THE_COPY = 'record copy is not the record its stamps say';
+const NOT_THE_DIGESTS = 'delivery record does not match its digests';
+
 /**
- * Whether decoded bytes are the record they are to be served as. Bytes from KV are held to their
- * digests. A copy is bytes an isolate held to them before it kept them, which is why a hit is not
- * hashed again; what is asked of it is only that it is the record of the entry it is kept under, at
- * the revision its stamp says — the stamp is what copies are ordered by.
+ * Why decoded bytes are not the record they are to be served as, or `undefined` where they are.
+ * Wherever they came from, they are the record of the entry they were read under: a header naming
+ * another scope or entry is no record of this one, however sound its bytes. Bytes from KV are held
+ * to their digests as well. A copy is bytes an isolate held to them before it kept them, which is
+ * why a hit is not hashed again; what is asked of it besides is only that it is at the revision its
+ * stamp says — the stamp is what copies are ordered by.
  */
-async function trusted(decoded: Decoded, key: GenerationKey, origin: Origin): Promise<boolean> {
-  if (origin.kind === 'copy') {
-    const { header } = decoded.pack;
-    return (
-      header.scopeId === key.scopeId &&
-      header.entryId === key.entryId &&
-      header.revision === origin.revision
-    );
+async function untrusted(decoded: Decoded, key: GenerationKey, from: Origin): Promise<Refusal> {
+  const { header } = decoded.pack;
+  const ofTheEntry = header.scopeId === key.scopeId && header.entryId === key.entryId;
+  if (from.kind === 'copy') {
+    return ofTheEntry && header.revision === from.revision ? undefined : NOT_THE_COPY;
   }
-  return verifyGenerationPack(decoded.pack);
+  if (!ofTheEntry) {
+    return 'delivery record is not the entry it was read under';
+  }
+  return (await verifyGenerationPack(decoded.pack)) ? undefined : NOT_THE_DIGESTS;
 }
 
 /** The entry, and the KV key its record is kept under. */
@@ -278,13 +285,9 @@ async function adoptDecoded(
   decoded: Decoded,
   from: { readonly origin: Origin; readonly byteLength: number },
 ): Promise<Adoption> {
-  if (!(await trusted(decoded, read.key, from.origin))) {
-    logWarn(
-      from.origin.kind === 'kv'
-        ? 'delivery record does not match its digests'
-        : 'record copy is not the record its stamps say',
-      { key: read.recordKey },
-    );
+  const refused = await untrusted(decoded, read.key, from.origin);
+  if (refused !== undefined) {
+    logWarn(refused, { key: read.recordKey });
     return { kind: 'unusable', reason: 'corrupt' };
   }
   const pack =
