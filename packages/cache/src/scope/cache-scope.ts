@@ -538,11 +538,9 @@ export class CacheScope extends DurableObject<CacheBindings> {
         return () => refuse('lease_expired', 'the data upload expired before adoption');
       }
       // A key that carries no upload clock (`dataUploadStartedAt`) is checked for existence under
-      // the same mutex as GC; current uploads use the timestamp fence without another R2 read.
-      if (
-        startedAt === undefined &&
-        (await this.env.ARTIFACTS.head(input.value.storageRef)) === null
-      ) {
+      // the same mutex as GC, through the store every other read of storage goes through; current
+      // uploads use the timestamp fence without another R2 read.
+      if (startedAt === undefined && !(await this.#blobs().exists(input.value.storageRef))) {
         return () => refuse('artifact_missing', 'the data upload is no longer present');
       }
       return planSetData(tx, input);
