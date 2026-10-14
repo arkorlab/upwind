@@ -96,7 +96,8 @@ const UTF16_BYTES = 2;
  * The largest artifact the authority keeps (`MAX_ARTIFACT_BYTES`, 25 MiB): no copy of one runs
  * longer. A copy's body is read whole before it is held to its id, and the application's own code
  * can write into the copies' cache — a body read whatever its size could run past the isolate's
- * memory. One that runs longer is not the artifact, and is read no further than this.
+ * memory. One that runs longer is not the artifact, and is read no further than this. Nor is one
+ * kept: an authority configured to keep larger artifacts has them read from it every time.
  */
 const MAX_COPY_MIB = 25;
 const MAX_COPY_BYTES = MAX_COPY_MIB * MIB;
@@ -264,9 +265,14 @@ async function matchCopy(
 
 /**
  * Keep the authority's bytes as the data center's copy, unless the copy's own read found one. Only
- * ever behind the response, and a failure is only logged: the authority answers without it.
+ * ever behind the response, and a failure is only logged: the authority answers without it. Bytes
+ * longer than a copy is read for are not kept (`MAX_COPY_BYTES`): no read would find them, and
+ * every read the authority answers would write them again.
  */
 async function keepCopy(target: CopyTarget, bytes: Uint8Array): Promise<void> {
+  if (bytes.byteLength > MAX_COPY_BYTES) {
+    return;
+  }
   try {
     if (!(await target.missed)) {
       return;
