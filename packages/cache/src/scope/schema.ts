@@ -232,6 +232,9 @@ const STATEMENTS: readonly string[] = [
     storage_ref TEXT PRIMARY KEY,
     queued_at INTEGER NOT NULL
   )`,
+  // Oldest first, a page at a time (`pendingDeletions`): deletes storage keeps refusing pile up here,
+  // and each run reads only the page it asks again for.
+  `CREATE INDEX IF NOT EXISTS pending_deletions_by_age ON pending_deletions (queued_at, storage_ref)`,
 ];
 
 /**

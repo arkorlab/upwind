@@ -101,7 +101,7 @@ function forgetReferenced(sql: SqlStorage): void {
 function pendingDeletions(sql: SqlStorage, limit: number): string[] {
   const rows = sql
     .exec<{ storage_ref: string }>(
-      `SELECT storage_ref FROM pending_deletions ORDER BY queued_at LIMIT ?`,
+      `SELECT storage_ref FROM pending_deletions ORDER BY queued_at, storage_ref LIMIT ?`,
       limit,
     )
     .toArray();
