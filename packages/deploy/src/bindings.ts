@@ -5,6 +5,7 @@ import {
   CACHE_SERVICE_BINDING,
   CACHE_TOKEN_BINDING,
   DEPLOYMENT_ID_BINDING,
+  PREFETCH_SERVICE_BINDING,
   RESPONSE_CACHE_TTL_BINDING,
   RESPONSE_CACHE_TTL_MS,
   RUNTIME_BINDING,
@@ -12,7 +13,8 @@ import {
 
 /**
  * What every Function of a deployment is bound to by whatever deploys it, beside the application's
- * own environment: its deployment's id, the runtime it is in, and the way to its runtime cache.
+ * own environment: its deployment's id, the runtime it is in, the way to its runtime cache, and the
+ * way to the blobs its build left out of it.
  */
 
 const RUNTIME_NAME = 'workerd';
@@ -85,12 +87,19 @@ export function cacheBindings(grant: CacheGrant): {
  * What every Function of a deployment is bound to beside its environment, in the order it is bound
  * in: Next.js's deployment id, the runtime, the way to the cache and the token that opens the
  * deployment's own scope, and the response cache's lifetime. A deployment without a runtime cache
- * is given no way to one and no token: it has no scope to open.
+ * is given no way to one and no token: it has no scope to open. The prefetch Worker follows the
+ * cache's services, where the host runs one.
  */
 export function functionBindings(input: {
   readonly deploymentId: string;
   /** What the deployment's Functions reach their runtime cache with; none for a host that runs none. */
   readonly cache?: CacheGrant | undefined;
+  /**
+   * The service name of the Worker a Function reads a blob its build left out of it from
+   * (`PREFETCH_SERVICE_BINDING`) — a build without its prefetch segments falls back to it for a
+   * prefetch the edge did not serve; none for a host that runs none.
+   */
+  readonly prefetch?: string | undefined;
 }): {
   readonly text: readonly TextBinding[];
   readonly services: readonly ServiceBinding[];
@@ -107,6 +116,11 @@ export function functionBindings(input: {
       ...token,
       { name: RESPONSE_CACHE_TTL_BINDING, value: RESPONSE_CACHE_TTL_MS, secret: false },
     ],
-    services: reached.services,
+    services: [
+      ...reached.services,
+      ...(input.prefetch === undefined
+        ? []
+        : [{ name: PREFETCH_SERVICE_BINDING, service: input.prefetch }]),
+    ],
   };
 }
