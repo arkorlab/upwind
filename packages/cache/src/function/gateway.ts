@@ -14,6 +14,7 @@ import {
   type DataSetRequest,
   type DataSetResponse,
   dataSetResponseSchema,
+  deltaMovesOn,
   type TagsGetResponse,
   tagsGetResponseSchema,
   type FailRequest,
@@ -424,7 +425,15 @@ export class Gateway {
       method: 'GET',
       headers: this.#headers(),
     });
-    return this.#result(response, tagsDeltaResponseSchema);
+    const delta = await this.#result(response, tagsDeltaResponseSchema);
+    // Asked for again, such a page would be answered the same, and its reader would never be done.
+    if (!deltaMovesOn(since, delta)) {
+      throw new CacheHostError(`the delta from revision ${since} does not move past it`, {
+        code: 'internal',
+        status: response.status,
+      });
+    }
+    return delta;
   }
 
   invalidate(request: InvalidateRequest): Promise<InvalidateResponse> {
