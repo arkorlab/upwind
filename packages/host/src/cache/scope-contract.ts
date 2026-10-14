@@ -229,7 +229,8 @@ export const listResourceWarmJobsInputSchema = z.object({
 export type ListResourceWarmJobsInput = z.infer<typeof listResourceWarmJobsInputSchema>;
 
 export const listResourceWarmJobsResultSchema = z.object({
-  jobs: z.array(resourceWarmJobSchema),
+  /** No more than a call may ask for: an answer past it is no answer to the call. */
+  jobs: z.array(resourceWarmJobSchema).max(MAX_RESOURCE_WARM_JOBS),
   /** The next pending retry or live dispatch lease; null when no work remains. */
   nextRetryAt: z.number().int().nullable(),
 });
