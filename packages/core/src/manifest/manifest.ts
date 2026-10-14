@@ -398,9 +398,11 @@ const REQUEST_ORIGIN = 'https://request.invalid';
  * spelling the edge finds it by besides, behind a default locale or under the asset prefix: the
  * spelling escaped as a request names a file (`escapedPathOf`), or — where another file is named as
  * that spells it, which the edge finds as spelled first (`/a%252F.txt` beside `/a%2F.txt`, `/a%20b`
- * beside `/a b`) — with every byte of it escaped (`escapedBytesOf`), in capitals or, where a file is
- * named as that spells it too (`/%3F` beside `/?`), in small letters. `undefined` where none finds
- * the file: no request reaches it at that spelling.
+ * beside `/a b`) — with every byte of its last segment escaped (`escapedBytesOf`), in capitals or,
+ * where a file is named as that spells it too (`/%3F` beside `/?`), in small letters. The rest is
+ * left readable: the edge decodes a path whole once it finds none as spelled, and reads a locale or
+ * the asset prefix ahead of the name as it is (`/en/%61%20%62.txt` for `/a b.txt` behind `en`).
+ * `undefined` where none finds the file: no request reaches it at that spelling.
  */
 export function fileRequestPathOf(
   manifest: FileLookup,
@@ -411,9 +413,11 @@ export function fileRequestPathOf(
   if (readable === undefined) {
     return undefined;
   }
-  const whole = spelling
-    .split('/')
-    .map((segment) => escapedBytesOf(segment))
+  const segments = readable.split('/');
+  const names = spelling.split('/');
+  const last = names.findLastIndex((segment) => segment !== '');
+  const whole = segments
+    .map((segment, index) => (index === last ? escapedBytesOf(names[index] ?? '') : segment))
     .join('/');
   return [readable, whole, whole.toLowerCase()].find(
     (asked) => staticFileKey(manifest, new URL(asked, REQUEST_ORIGIN).pathname) === key,

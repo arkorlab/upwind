@@ -158,6 +158,18 @@ describe('the path a request asks for a shipped file by', () => {
     expect(asked(fileRequestPathOf(manifest, '/a%20b'))).toBe('/a%2520b');
   });
 
+  /** A locale ahead of the name is read as it is, so only the name is escaped whole. */
+  it('asks for a file behind a default locale with its name escaped and the locale as it is', () => {
+    const manifest = {
+      ...shipping(['/a b.txt', '/en/a%20b.txt']),
+      staticFileLocales: { basePath: '', locales: ['en'] },
+    };
+    const path = asked(fileRequestPathOf(manifest, '/en/a b.txt', '/a b.txt'));
+
+    expect(path).toBe('/en/%61%20%62%2E%74%78%74');
+    expect(staticFileKey(manifest, path)).toBe('/a b.txt');
+  });
+
   it('names no path for a file no request reaches', () => {
     expect(fileRequestPathOf(shipping(['//x.txt']), '//x.txt')).toBeUndefined();
   });
