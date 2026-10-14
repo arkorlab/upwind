@@ -219,8 +219,14 @@ function isSameOriginPath(href: string): boolean {
  * of a URI, and a control character is refused outright when the header is set, taking down every
  * response for the route long after the proof that recorded it. A shell is the origin's to write;
  * what this turns it into is the edge's to answer.
+ *
+ * And only where the grammar puts them, since a hop that parses the reference may drop one it
+ * cannot read: a `%` begins an escape of two hex digits, a `#` the one fragment there is, and `[`
+ * and `]` belong to the host of an IP literal, which a path on this origin has none of. A browser
+ * fetches `/asset%zz.css` all the same; a header that names it is one nothing promises to carry.
  */
-const SAFE_HREF = /^[\w!#$%&'()*+./:=?@[\]~-]+$/u;
+const SAFE_HREF =
+  /^(?:[\w!$&'()*+./:=?@~-]|%[\dA-Fa-f]{2})+(?:#(?:[\w!$&'()*+./:=?@~-]|%[\dA-Fa-f]{2})*)?$/u;
 /** What this will quote into a parameter: a media type, and nothing that is not shaped like one. */
 const SAFE_TOKEN = /^[\w+./-]*$/u;
 /** A URL that names its own scheme, and so its own origin. */
