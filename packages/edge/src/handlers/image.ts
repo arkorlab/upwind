@@ -119,6 +119,12 @@ interface Optimized {
   readonly etag: string | undefined;
   /** Subrequests it took: the source's, and one for the service when it was asked. */
   readonly requests: number;
+  /**
+   * The source standing in for a transformation the service did not make — it failed, or there is
+   * none to ask — rather than what the optimizer serves as it is by type: kept for its own
+   * lifetime alone, however content-addressed, so a request after it asks the service again.
+   */
+  readonly fallback: boolean;
 }
 
 function errorDetail(error: unknown): string {
@@ -288,6 +294,7 @@ function asItIs(judged: Extract<Judged, { kind: 'ok' }>, maxAge: number): Optimi
     maxAge,
     etag: judged.source.etag ?? undefined,
     requests: judged.source.requests,
+    fallback: verdict.kind !== 'bypass',
   };
 }
 
@@ -323,6 +330,7 @@ async function optimize(input: ImageInput, imageSource: ImageSource): Promise<Op
         maxAge,
         etag: undefined,
         requests: judged.source.requests + 1,
+        fallback: false,
       },
     };
   } catch (error) {
@@ -629,8 +637,9 @@ export async function handleImage(input: ImageInput): Promise<Response> {
       [CONTENT_LENGTH_HEADER]: String(bytes.byteLength),
       etag,
       [MAX_AGE_HEADER]: String(image.maxAge),
-      // A shipped file's result is content-addressed, so the entry outlives its client lifetime.
-      [CACHE_CONTROL_HEADER]: `public, max-age=${isContentAddressed(source) ? ONE_YEAR_SECONDS : image.maxAge}`,
+      // A shipped file's result is content-addressed, so the entry outlives its client lifetime —
+      // unless the source stood in for a transformation, which would then outlive it too.
+      [CACHE_CONTROL_HEADER]: `public, max-age=${isContentAddressed(source) && !image.fallback ? ONE_YEAR_SECONDS : image.maxAge}`,
     });
     edge.ctx.waitUntil(
       storeCache(edge.host.names.imageCache, key, new Response(bytes, { headers: entry })),
