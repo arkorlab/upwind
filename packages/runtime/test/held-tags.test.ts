@@ -203,3 +203,109 @@ describe('what a regeneration says its render held of its tags', () => {
     });
   });
 });
+
+describe('whether a view holds the whole of what it was told of a tag', () => {
+  it('holds the whole of a tag it let go of nothing of, and of one it was told nothing of', async () => {
+    const state = await viewOf(hostOf(TAGS_HELD - 1));
+
+    expect(state.holdsWhole(TAG)).toBe(true);
+    expect(state.holdsWhole(UNREAD)).toBe(true);
+  });
+
+  it('does not hold the whole of a tag whose mark it let go of', async () => {
+    const state = await viewOf(hostOf(TAGS_HELD));
+
+    expect(state.holdsWhole(TAG)).toBe(false);
+    expect(state.holdsWhole(UNREAD)).toBe(true);
+  });
+
+  /**
+   * A read is told of the tag at the host's revision of it, past the view's: the view, brought up
+   * to no revision, lets that mark go with the tags read after it. What it knows of the tag now
+   * reaches the revision it stands at, and says nothing of the mark it let go of.
+   */
+  it('does not hold the whole of a tag whose mark it was told past its revision and let go of', async () => {
+    const host = hostOf(0, [copyOf(INVALIDATED, INVALIDATED_AT)]);
+    const state = new TagState({ holdMs: HOLD_MS });
+
+    await state.syncLocal(host, [TAG], NOW);
+    await state.syncLocal(host, othersOf(TAGS_HELD), NOW);
+
+    expect(state.revision).toBe(0);
+    expect(state.heldRevisionOf(TAG)).toBeGreaterThanOrEqual(state.revision);
+    expect(state.holdsWhole(TAG)).toBe(false);
+  });
+});
+
+describe('what marks of tags a view has let go of since a moment', () => {
+  /** How many of its own invalidations' tags a view keeps (`MAX_APPLIED_MARKS`). */
+  const APPLIED_HELD = 4096;
+
+  it('counts nothing where it let go of nothing', async () => {
+    const state = await viewOf(hostOf(TAGS_HELD - 1));
+
+    expect(state.losses.count).toBe(0);
+    expect(state.losses.lostSince(TAG, 0)).toBe(false);
+  });
+
+  it('counts a mark it was told at a revision and let go of, of that tag alone', async () => {
+    const state = new TagState({ holdMs: HOLD_MS });
+    const before = state.losses.count;
+
+    await state.sync(hostOf(TAGS_HELD), NOW, { force: true });
+
+    expect(state.losses.lostSince(TAG, before)).toBe(true);
+    expect(state.losses.lostSince(UNREAD, before)).toBe(false);
+    expect(state.losses.lostSince(TAG, state.losses.count)).toBe(false);
+  });
+
+  /**
+   * A mark told at no revision is known at none: letting it go leaves nothing the revisions the view
+   * knows would say, and the view still holds the tag whole by them.
+   */
+  it('counts a mark it was told at no revision and let go of, though it holds the tag whole', async () => {
+    const host = hostOf(0, [{ value: TAG, staleAt: INVALIDATED_AT, hardExpireAt: INVALIDATED_AT }]);
+    const state = new TagState({ holdMs: HOLD_MS });
+    await state.syncLocal(host, [TAG], NOW);
+    const before = state.losses.count;
+
+    await state.syncLocal(host, othersOf(TAGS_HELD), NOW);
+
+    expect(state.holdsWhole(TAG)).toBe(true);
+    expect(state.losses.lostSince(TAG, before)).toBe(true);
+  });
+
+  it('counts a mark of its own it let go of, though it holds the tag whole', () => {
+    const state = new TagState({ holdMs: HOLD_MS });
+    state.applyLocal([TAG], { staleAt: INVALIDATED_AT, hardExpireAt: INVALIDATED_AT });
+    const before = state.losses.count;
+
+    state.applyLocal(othersOf(APPLIED_HELD), { staleAt: NOW, hardExpireAt: NOW });
+
+    expect(state.holdsWhole(TAG)).toBe(true);
+    expect(state.losses.lostSince(TAG, before)).toBe(true);
+    expect(state.losses.lostSince(UNREAD, before)).toBe(false);
+  });
+
+  it('counts no tag it let go of that held no mark', async () => {
+    const state = new TagState({ holdMs: HOLD_MS });
+    const host = hostOf(0);
+    await state.syncLocal(host, [TAG], NOW);
+
+    await state.syncLocal(host, othersOf(TAGS_HELD), NOW);
+
+    expect(state.losses.count).toBe(0);
+    expect(state.losses.lostSince(TAG, 0)).toBe(false);
+  });
+
+  /** Past as many tags let go of as it remembers, every tag is held to have been let go of since. */
+  it('holds every tag let go of since a count once it remembers no more of them', () => {
+    const state = new TagState({ holdMs: HOLD_MS });
+    const before = state.losses.count;
+
+    state.applyLocal(othersOf(APPLIED_HELD + TAGS_HELD + 1), { staleAt: NOW, hardExpireAt: NOW });
+
+    expect(state.losses.count).toBe(TAGS_HELD + 1);
+    expect(state.losses.lostSince(UNREAD, before)).toBe(true);
+  });
+});
