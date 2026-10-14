@@ -31,6 +31,7 @@ const DISABLED_ATTR = 'disabled';
 const INTEGRITY_ATTR = 'integrity';
 const REFERRER_POLICY_ATTR = 'referrerpolicy';
 const NONCE_ATTR = 'nonce';
+const TITLE_ATTR = 'title';
 /**
  * What separates the parts of a key, and stands in for a part that was never written.
  *
@@ -63,6 +64,8 @@ interface LinkTag {
   /** The media query the link is conditional on, when the markup gave it one. */
   readonly media: string | undefined;
   readonly disabled: boolean;
+  /** Whether the markup gives it a title, which makes a stylesheet one of a named set. */
+  readonly titled: boolean;
   /** Whether the markup asks for this one to be checked against a digest. */
   readonly integrity: boolean;
   /** Whether the markup fetches this one under a referrer policy of its own. */
@@ -161,6 +164,7 @@ function parseLinkTag(attributes: ReadonlyMap<string, string>): LinkTag | undefi
     type: attributes.get(TYPE_ATTR),
     media: asciiLowerOf(attributes.get(MEDIA_ATTR)),
     disabled: attributes.has(DISABLED_ATTR),
+    titled: (attributes.get(TITLE_ATTR) ?? '') !== '',
     integrity: attributes.has(INTEGRITY_ATTR),
     referrerPolicy: (attributes.get(REFERRER_POLICY_ATTR) ?? '') !== '',
     nonce: (attributes.get(NONCE_ATTR) ?? '') !== '',
@@ -179,10 +183,23 @@ function parseLinkTag(attributes: ReadonlyMap<string, string>): LinkTag | undefi
  * may contain the comma that separates one `Link` value from the next.
  */
 function isActiveLink(tag: LinkTag): boolean {
-  if (tag.disabled || tag.rels.has(ALTERNATE_REL)) {
+  if (tag.disabled || tag.rels.has(ALTERNATE_REL) || inStyleSheetSet(tag)) {
     return false;
   }
   return unconditional(tag.media);
+}
+
+/**
+ * Whether a `title` makes this stylesheet one of a named set.
+ *
+ * A set is applied only while it is the one the document prefers: the first titled sheet's, until
+ * a `<meta http-equiv="default-style">` names another — which one may do anywhere in the document,
+ * the body included. A sheet of any other set is never applied, and the head alone cannot say which
+ * set that will be, so a titled sheet is left to the markup. An empty `title` names no set, and a
+ * preload's names none at all: those are fetched whatever the document prefers.
+ */
+function inStyleSheetSet(tag: LinkTag): boolean {
+  return tag.titled && tag.rels.has(STYLESHEET_REL);
 }
 
 /**
