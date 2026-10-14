@@ -1,3 +1,5 @@
+import { MAX_TAG_LENGTH } from '@stayingupwind/core/cache';
+
 import type { TagDeltaEntry } from './gateway-contract.ts';
 
 /**
@@ -40,3 +42,21 @@ export const RECENT_INVALIDATIONS_MS = RECENT_INVALIDATION_MINUTES * MS_PER_MINU
 
 /** The most invalidations an edge is told of at once; past it, `truncated`. */
 export const MAX_RECENT_INVALIDATIONS = 64;
+
+/** What JSON writes one character as at its longest: `\u0000`. */
+const JSON_BYTES_PER_CHARACTER = 6;
+/** Room for the rest of an invalidation's record, its tag's id and its moments among them. */
+const RECORD_ROOM_BYTES = 512;
+/** Room for where the scope stands, beside the records. */
+const ANSWER_ROOM_BYTES = 1024;
+
+/**
+ * The longest an answer comes to as JSON, the form an edge keeps a copy of it in:
+ * `MAX_RECENT_INVALIDATIONS` records, each of a tag as long as a tag may be in the characters JSON
+ * writes longest, and where the scope stands. A tag of ordinary characters comes to a fraction of
+ * it; one of control characters comes to six bytes each, and 64 of them to some 100 KiB. A copy read
+ * back to no more than this is never too long for an answer the authority gave.
+ */
+export const MAX_SIGNALS_BYTES =
+  MAX_RECENT_INVALIDATIONS * (MAX_TAG_LENGTH * JSON_BYTES_PER_CHARACTER + RECORD_ROOM_BYTES) +
+  ANSWER_ROOM_BYTES;

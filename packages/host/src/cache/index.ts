@@ -218,4 +218,9 @@ export {
   seedScopeResultSchema,
   unavailableSchema,
 } from './scope-contract.ts';
-export { MAX_RECENT_INVALIDATIONS, RECENT_INVALIDATIONS_MS, type ScopeSignals } from './signals.ts';
+export {
+  MAX_RECENT_INVALIDATIONS,
+  MAX_SIGNALS_BYTES,
+  RECENT_INVALIDATIONS_MS,
+  type ScopeSignals,
+} from './signals.ts';
