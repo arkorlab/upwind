@@ -43,7 +43,6 @@ import { type CommitOutcome, planCommit } from './commit.ts';
 import {
   dataUploadExpired,
   type DataUploadPage,
-  dataUploadScanPending,
   dataUploadStartedAt,
   listDataUploads,
 } from './data-uploads.ts';
@@ -73,7 +72,7 @@ import {
 } from './resource-changes.ts';
 import {
   eraseScopeStorage,
-  META_LAST_RETENTION,
+  nextRetentionAt,
   retentionDue,
   runRetention,
   type TickOptions,
@@ -95,7 +94,6 @@ import {
 } from './settle.ts';
 import {
   isRefusal,
-  readMeta,
   readRevision,
   readScope,
   type Refusal,
@@ -123,7 +121,6 @@ import type { Apply, TxInput } from './tx.ts';
  * to a scope retention erased leaves no object behind.
  */
 
-const MILLISECONDS_PER_SECOND = 1000;
 const LEASE_SWEEP_GRACE_MS = 1000;
 const MILLISECONDS_PER_HOUR = 3_600_000;
 const RETENTION_INTERVAL_MS = MILLISECONDS_PER_HOUR;
@@ -357,11 +354,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
     if (lease !== undefined) {
       await this.#armAlarm(lease + LEASE_SWEEP_GRACE_MS);
     }
-    const lastRetention = Number(readMeta(this.#sql, META_LAST_RETENTION) ?? '0');
-    if (dataUploadScanPending(this.#sql)) {
-      await this.#armAlarm(now + MILLISECONDS_PER_SECOND);
-    }
-    await this.#armAlarm(Math.max(now, lastRetention + RETENTION_INTERVAL_MS));
+    await this.#armAlarm(nextRetentionAt(this.#sql, now, RETENTION_INTERVAL_MS));
   }
 
   async #listDataUploads(): Promise<DataUploadPage | undefined> {
