@@ -30,7 +30,7 @@ import { toEntry, toEntryState, toPublicGeneration, toScope } from './rows.ts';
 import { isRefusal, readScope, type Refusal, refuse, requireActiveScope } from './state.ts';
 import {
   condemnationOf,
-  condemningInvalidations,
+  weighInvalidations,
   replaceEntryTags,
   type TagRef,
   tagRefsFor,
@@ -242,11 +242,11 @@ function seedOne(input: TxInput, plan: SeedPlan, events: EventInput[]): void {
   // (`condemnCurrent`): its record goes out at a later revision, which a reader would otherwise take
   // to be past the invalidation.
   const condemned = condemnationOf(
-    condemningInvalidations(sql, {
+    weighInvalidations(sql, {
       entryId: entry.entry_id,
       tagIds: plan.tagRefs.map((ref) => ref.tagId),
       afterRevision: 0,
-    }),
+    }).condemning,
   );
   insertGeneration(sql, {
     generationId: generation.generationId,

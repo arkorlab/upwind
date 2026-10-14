@@ -517,11 +517,23 @@ export function viewHeld(
   return held;
 }
 
+/**
+ * What the invalidations recorded after a render read its inputs that name what it depends on come
+ * to (`weighInvalidations`): those that condemn what it made, and how far it stands past its lease
+ * by those its view held, which condemn nothing.
+ */
+export interface Weighed {
+  readonly condemning: InvalidationRow[];
+  /**
+   * The latest revision of an invalidation the render's view held that condemns nothing
+   * (`CondemnationQuery.held`), 0 where there is none: what the render made stands as of it as it
+   * stands as of its lease, each invalidation of its tags up to it judged.
+   */
+  readonly heldThrough: number;
+}
+
 /** The invalidations recorded after a render read its inputs that name what it depends on. */
-export function condemningInvalidations(
-  sql: SqlStorage,
-  query: CondemnationQuery,
-): InvalidationRow[] {
+export function weighInvalidations(sql: SqlStorage, query: CondemnationQuery): Weighed {
   const persistent = sql
     .exec<InvalidationRow>(
       `SELECT * FROM invalidations
@@ -536,7 +548,10 @@ export function condemningInvalidations(
     .toArray();
   const { held } = query;
   if (held === undefined) {
-    return [...persistent, ...controlFenceInvalidations(sql, query)];
+    return {
+      condemning: [...persistent, ...controlFenceInvalidations(sql, query)],
+      heldThrough: 0,
+    };
   }
   const inView = (row: InvalidationRow): boolean =>
     row.target_kind === 'tag' && row.revision <= (held.get(row.target_id) ?? 0);
@@ -548,17 +563,23 @@ export function condemningInvalidations(
       afresh.set(row.target_id, Math.max(afresh.get(row.target_id) ?? row.revision, row.revision));
     }
   }
-  const unheld = persistent.filter((row) => {
-    return (
-      !inView(row) ||
-      (row.meaning !== 'immediate' && (afresh.get(row.target_id) ?? row.revision) <= row.revision)
-    );
-  });
-  return [...unheld, ...controlFenceInvalidations(sql, query)];
+  const condemning: InvalidationRow[] = [];
+  let heldThrough = 0;
+  for (const row of persistent) {
+    const excused =
+      inView(row) &&
+      (row.meaning === 'immediate' || (afresh.get(row.target_id) ?? row.revision) > row.revision);
+    if (excused) {
+      heldThrough = Math.max(heldThrough, row.revision);
+    } else {
+      condemning.push(row);
+    }
+  }
+  return { condemning: [...condemning, ...controlFenceInvalidations(sql, query)], heldThrough };
 }
 
 /**
- * What the invalidations a generation is published under leave it with (`condemningInvalidations`):
+ * What the invalidations a generation is published under leave it with (`weighInvalidations`):
  * stale from the earliest of them, expired at the earliest hard deadline among them, and as of the
  * latest; nothing where there are none.
  */

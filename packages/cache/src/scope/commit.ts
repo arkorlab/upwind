@@ -36,11 +36,11 @@ import {
 import { isRefusal, type Refusal, refuse, requireActiveScope } from './state.ts';
 import {
   condemnationOf,
-  condemningInvalidations,
   replaceEntryTags,
   type TagRef,
   tagRefsFor,
   viewHeld,
+  weighInvalidations,
 } from './tags.ts';
 import { type Apply, record, type TxInput } from './tx.ts';
 
@@ -372,6 +372,14 @@ interface Publication {
   readonly entry: EntryRow;
   readonly outputs: readonly OutputSnapshot[];
   readonly condemned: InvalidationState | null;
+  /**
+   * The revision the generation's inputs stand as of: the lease's, or the latest invalidation its
+   * view held past it that condemns nothing (`Weighed.heldThrough`), whichever is later — every
+   * invalidation of its tags up to there was weighed, and condemns it or was read against. A change
+   * that asks for a render made after it (`resource-changes.ts`) takes such a generation for one,
+   * and the same change delivered again does not condemn it.
+   */
+  readonly dependencyRevision: number;
 }
 
 function publish(input: TxInput, plan: CommitPlan, state: Publication): CommitOutcome {
@@ -407,7 +415,7 @@ function publish(input: TxInput, plan: CommitPlan, state: Publication): CommitOu
     headers: generation.headers,
     tags: generation.tags,
     dependencyCoverage: generation.dependencyCoverage,
-    dependencyRevision: attempt.dependency_revision,
+    dependencyRevision: state.dependencyRevision,
     publishedRevision: revision,
     condemned: state.condemned,
     bodyBytes,
@@ -553,7 +561,7 @@ function applyCommit(input: TxInput, plan: CommitPlan): CommitOutcome | Refusal 
   // sound, and only the next one of it can say. An immediate one refuses it: published, it would be
   // expired on arrival, its hard deadline the invalidation's, in the place of the generation before
   // it, which the invalidation may not have reached.
-  const invalidations = condemningInvalidations(sql, {
+  const { condemning: invalidations, heldThrough } = weighInvalidations(sql, {
     entryId: entry.entry_id,
     tagIds,
     held,
@@ -567,5 +575,6 @@ function applyCommit(input: TxInput, plan: CommitPlan): CommitOutcome | Refusal 
     entry,
     outputs,
     condemned: condemnationOf(invalidations),
+    dependencyRevision: Math.max(attempt.dependency_revision, heldThrough),
   });
 }
