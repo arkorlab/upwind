@@ -72,6 +72,13 @@ const URL_SYNTAX = /[\p{Cc} %#?\\]/gu;
 const NAME_SYNTAX = /%(?!(?:25)?(?:2f|23|3f|5c))|[\p{Cc} #?\\]/giu;
 
 /**
+ * A surrogate standing alone: read a code point at a time, a pair is the character it encodes, and
+ * only a half without its other half is a surrogate. What `isWellFormed` tells, for a library that
+ * predates it.
+ */
+const LONE_SURROGATE = /\p{Cs}/u;
+
+/**
  * Whether no path a request asks by names `name`: one a URL resolves away a segment of (`.` or `..`),
  * one with an empty segment (`//`), which the router redirects to the path without it — and which,
  * first, a URL written relative to the site reads as naming another host — one that is no absolute
@@ -80,7 +87,7 @@ const NAME_SYNTAX = /%(?!(?:25)?(?:2f|23|3f|5c))|[\p{Cc} #?\\]/giu;
  */
 function unaddressable(name: string): boolean {
   return (
-    !name.isWellFormed() ||
+    LONE_SURROGATE.test(name) ||
     !name.startsWith('/') ||
     name.includes('//') ||
     name.split('/').some((segment) => segment === '.' || segment === '..')
