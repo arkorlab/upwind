@@ -225,8 +225,10 @@ function conditioned(rules: readonly Conditioned[] | undefined): boolean {
  *
  * The rest of the classification reads the copy too. What it reads there is the browser's or
  * Next.js's own, which no host keeps as a credential; one it did keep never reaches Next.js either.
+ * So does what is judged of the request as it came once it is classified — the class of a member
+ * served from its record, a route's own conditions — where no middleware runs (`requestAsLeft`).
  */
-function classifiedHeaders(
+function headersToClassify(
   manifest: ProjectManifest,
   headers: Headers,
   credentials: HostCredentials,
@@ -461,10 +463,15 @@ async function routeWithinBudget(input: RoutingInput): Promise<Response> {
   if (state.mode !== EDGE_MODE || state.manifest === undefined) {
     return passthrough(state.passthroughReason);
   }
+  const classifiedHeaders = headersToClassify(
+    state.manifest,
+    request.headers,
+    input.host.credentials,
+  );
   const classification = classifyRequest({
     method: request.method,
     url,
-    headers: classifiedHeaders(state.manifest, request.headers, input.host.credentials),
+    headers: classifiedHeaders,
     manifest: state.manifest,
     deployment: state.manifest.deployment,
   });
@@ -495,6 +502,7 @@ async function routeWithinBudget(input: RoutingInput): Promise<Response> {
     manifest: state.manifest,
     resolved,
     classification,
+    classifiedHeaders,
     passthrough: (reason, middleware, route, waited) =>
       passthroughFor(input, reason, middleware, { route, waited }),
   });

@@ -47,6 +47,12 @@ export interface HostedDocumentInput {
   readonly resolved: ResolvedPolicy<EdgeContext>;
   readonly classification: RequestClass;
   /**
+   * The headers the request was classified on, which a route's conditions are judged on where no
+   * middleware ran (`requestAsLeft`): the request's own, the host's credentials taken off where a
+   * rule of the application's would read one.
+   */
+  readonly classifiedHeaders: Headers;
+  /**
    * Proxy the request to the application's Worker, with what the middleware decided if it ran, and
    * counted under the route it was classified as where there is one (`route`).
    */

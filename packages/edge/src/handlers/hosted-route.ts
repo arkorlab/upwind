@@ -16,14 +16,23 @@ import type { MiddlewareOutcome } from './middleware.ts';
  * serve its prerender to the request at all.
  */
 
-/** The request as the middleware left it, or as it came: what the route's conditions are judged on. */
+/**
+ * The request as the middleware left it, or as it came: what the route's conditions are judged on.
+ * As it came, on the headers it was classified on (`classifiedHeaders`), which have the host's
+ * credentials taken off where a rule of the application's would read one, as the middleware's
+ * request has them taken off: the application's routing is never handed them.
+ */
 export function requestAsLeft(
-  input: { readonly url: URL; readonly request: Request },
+  input: {
+    readonly url: URL;
+    readonly request: Request;
+    readonly classifiedHeaders?: Headers | undefined;
+  },
   middleware: MiddlewareOutcome,
 ): { readonly url: URL; readonly headers: Headers } {
   return middleware.kind === 'continue'
     ? { url: middleware.url, headers: middleware.requestHeaders }
-    : { url: input.url, headers: input.request.headers };
+    : { url: input.url, headers: input.classifiedHeaders ?? input.request.headers };
 }
 
 /**

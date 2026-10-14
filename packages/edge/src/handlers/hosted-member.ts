@@ -40,6 +40,8 @@ export interface MemberInput {
   readonly manifest: ProjectManifest;
   readonly resolved: ResolvedPolicy<EdgeContext>;
   readonly classification: RequestClass;
+  /** The headers the request was classified on, which the class is found by (`requestAsLeft`). */
+  readonly classifiedHeaders: Headers;
   readonly passthrough: (
     reason: string,
     middleware?: MiddlewareOutcome,
