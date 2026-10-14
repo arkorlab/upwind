@@ -531,7 +531,11 @@ async function refreshPointer<P extends EdgePointer>(
   });
 }
 
-/** An isolate holding nothing waits for KV; for a live request, what it waited is reported. */
+/**
+ * An isolate holding nothing waits for KV; for a live request, what it waited is reported. The
+ * observer is the host's own code, told in a `try` of its own: what it throws is logged and goes no
+ * further, and the read answers the request all the same.
+ */
 async function loadObserved<P extends EdgePointer>(
   at: KeyRead<P>,
   observer: unknown,
@@ -540,11 +544,19 @@ async function loadObserved<P extends EdgePointer>(
   const startedAt = runtime.now();
   const loaded = await loadPointer(at);
   if (observer !== undefined && kind.observer !== undefined && loaded.kind !== 'unavailable') {
-    kind.observer.cold(observer, {
+    const read = {
       key,
       pointer: loaded.kind === 'found' ? loaded.value : null,
       kvMs: runtime.now() - startedAt,
-    });
+    };
+    try {
+      kind.observer.cold(observer, read);
+    } catch (error) {
+      logWarn('the host observer threw', {
+        told: 'cold',
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
   return loaded;
 }
