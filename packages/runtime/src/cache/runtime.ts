@@ -1,8 +1,9 @@
 import type { DecodedGenerationPack } from '@stayingupwind/core/cache';
-import { TtlCache } from '@stayingupwind/core/util';
+import { type SharedBytes, TtlCache } from '@stayingupwind/core/util';
 import { createCacheHost } from 'arkor:cache-host';
 
 import type { CapturedRender } from './capture.ts';
+import type { HeldTags } from './held-tags.ts';
 import type { CacheHost, CacheHostLookup, DataRead, FetchLike } from './host.ts';
 import { TagState } from './tags.ts';
 
@@ -30,6 +31,14 @@ const ARTIFACT_MEMO_MIB = 4;
 const DATA_STATE_KIB = 128;
 const DATA_STATE_BYTES = DATA_STATE_KIB * KIB;
 const DATA_STATE_ENTRY_BYTES = 128;
+/** What a lease given back holds besides its render and its ids (`givenBack`): the entry itself. */
+const GIVEN_BACK_ENTRY_BYTES = 128;
+/**
+ * How many leases given back this isolate keeps at the most (`givenBack`): far more than it gives
+ * back within the minute a lease lasts, each a superseded request's, and a bound on the records
+ * themselves whatever their renders share.
+ */
+export const GIVEN_BACK_ENTRIES = 4096;
 const ENTRY_IDS_KIB = 256;
 const ENTRY_IDS_BYTES = ENTRY_IDS_KIB * KIB;
 /** Leave the rest of a Function's 128 MB for Next.js, rendering and concurrent requests. */
@@ -74,14 +83,31 @@ export interface Publishing {
   readonly tags: readonly string[];
   /** The revision of the tag view its reads were judged against, which its commit claims. */
   readonly observedTagRevision: number;
+  /**
+   * What the render's view held of each of its tags, closed as the render ended: what its commit
+   * says of each (`HeldTags.revisionOf`), and what it answers by while the commit is out.
+   */
+  readonly held: HeldTags;
   /** When the pull that brought the view to that revision was asked for, by the isolate's clock. */
   readonly observedAt: number;
   /**
    * The publish itself, settled once the host has answered its commit: what a request answered from
    * the render waits for where the entry had no generation (`holdFirstPublish`), as the request the
-   * render was made for does. Never rejects.
+   * render was made for does, and what says which generation the render became (`generationId`,
+   * where it was published). Never rejects.
    */
-  readonly published: Promise<unknown>;
+  readonly published: Promise<{ readonly kind: string; readonly generationId?: string }>;
+}
+
+/**
+ * A lease of an entry this isolate gave back unused: handed out while a render of the isolate's own
+ * was publishing the entry, by a host that named a later generation of it current (`supersededBy`).
+ * The renders it may be — the one the isolate kept once the lease was in, and the one it kept when
+ * the lease was asked for — and the generation the host named.
+ */
+export interface GivenBack {
+  readonly publishings: readonly Publishing[];
+  readonly generationId: string;
 }
 
 export interface CacheRuntime {
@@ -128,6 +154,25 @@ export interface CacheRuntime {
    * room (`PUBLISHING_BYTES`).
    */
   readonly publishing: TtlCache<string, Publishing>;
+  /**
+   * The renders of `publishing` whose publish has let go of its lease: a lease of the entry has been
+   * handed to a request of this isolate since, which the host does only once that lease is free. Its
+   * commit is refused, or it has landed and its answer is on its way: such a render answers no
+   * request at once any more, only once its publish says which generation it became
+   * (`cache/publishing.ts`). Held weakly, as the render is held by `publishing` alone.
+   */
+  readonly letGo: WeakSet<Publishing>;
+  /**
+   * The leases this isolate gave back unused, by attempt (`GivenBack`): until the host has one back,
+   * it turns a request of the entry away for it, and the isolate answers that request as it answered
+   * the one the lease was handed to (`cache/publishing.ts`) — from the render, whose publish may have
+   * settled by then. Each until the lease lapses, a hold at the least (`givingBack`): an answer that
+   * turned a request away for it may come in after the host has it back. Within a byte budget of its
+   * own, as the renders being published are (`PUBLISHING_BYTES`), in which a render kept with more
+   * than one lease counts once and each lease its own few bytes besides, and within a count of
+   * leases far past what a minute's leases come to (`GIVEN_BACK_ENTRIES`).
+   */
+  readonly givenBack: TtlCache<string, GivenBack>;
   /**
    * Artifacts of current generations, by id, read for an output other than the record's own. An
    * artifact is named by its content and never rewritten, so what an id read once says it says for
@@ -230,6 +275,11 @@ function publishingBytes(publishing: Publishing, key: string): number {
   return renderBytes(publishing.render) + characters * UTF16_BYTES;
 }
 
+/** What a lease given back holds with every other given back with the same renders: those renders. */
+function sharedRenders(given: GivenBack): SharedBytes[] {
+  return given.publishings.map((holder) => ({ holder, bytes: publishingBytes(holder, '') }));
+}
+
 function log(message: string, fields: Record<string, string | number> = {}): void {
   // The Function's own log; nothing else records what its cache did.
   // eslint-disable-next-line no-console
@@ -288,6 +338,14 @@ export function createCacheRuntime(options: CacheRuntimeOptions): CacheRuntime |
     publishing: new TtlCache(PUBLISHING_KEPT_MS, PUBLISHING_ENTRIES, options.now, {
       maxBytes: PUBLISHING_BYTES,
       sizeOf: publishingBytes,
+    }),
+    letGo: new WeakSet(),
+    givenBack: new TtlCache(holdMs, GIVEN_BACK_ENTRIES, options.now, {
+      maxBytes: PUBLISHING_BYTES,
+      sizeOf: (given, key) =>
+        GIVEN_BACK_ENTRY_BYTES + (key.length + given.generationId.length) * UTF16_BYTES,
+      // One render given back with two leases is held once: it is the render that holds the bytes.
+      sharedOf: sharedRenders,
     }),
     artifactMemo: new TtlCache(Infinity, ARTIFACT_MEMO_ENTRIES, options.now, {
       maxBytes: ARTIFACT_MEMO_BYTES,

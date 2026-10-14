@@ -34,7 +34,6 @@
     "@jridgewell/trace-mapping": "catalog:",
     "@stayingupwind/core": "workspace:*",
     "@stayingupwind/runtime": "workspace:*",
-    "esbuild": "catalog:",
     "jsonc-parser": "catalog:",
     "rolldown": "catalog:"
   },

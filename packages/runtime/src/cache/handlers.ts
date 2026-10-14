@@ -17,6 +17,7 @@ import {
 } from './context.ts';
 import { readData, writeData } from './data.ts';
 import { heldIn, laterIfAny } from './held-reads.ts';
+import { judgedStaleAt, judgedValidity } from './held-tags.ts';
 import {
   heldOut,
   type HeldValue,
@@ -25,7 +26,7 @@ import {
   tableOf,
   writesIn,
 } from './held-writes.ts';
-import type { DataEntryMetadata } from './host.ts';
+import type { DataEntryMetadata, InvalidateOutcome } from './host.ts';
 import {
   fetchedAgainBehind,
   holdForRevalidation,
@@ -33,7 +34,6 @@ import {
   revalidatedBehind,
 } from './revalidations.ts';
 import type { CacheRuntime } from './runtime.ts';
-import { recordValidity } from './tags.ts';
 import { callsBehind, callsWaitedOn } from './turns.ts';
 
 /**
@@ -98,38 +98,30 @@ async function invalidate(
   // `updateTag`, and `revalidateTag` without a window, take effect at once.
   const expire = durations?.expire ?? 0;
   // In force here before the host has answered: a read in this isolate while the call is out must
-  // not be answered with what is being invalidated. What the host answers replaces it below.
-  runtime.tags.applyLocal(tags, {
+  // not be answered with what is being invalidated. What the host answers stands for it below.
+  const call = runtime.tags.applyLocal(tags, {
     staleAt: now,
     hardExpireAt: expire > 0 ? now + expire * MS_PER_SECOND : now,
   });
-  const outcome = await runtime.host.invalidate({
-    tags,
-    ...(expire > 0 && { expire }),
-    api: durations === undefined ? 'updateTag' : 'revalidateTag',
-  });
+  let outcome: InvalidateOutcome;
+  try {
+    outcome = await runtime.host.invalidate({
+      tags,
+      ...(expire > 0 && { expire }),
+      api: durations === undefined ? 'updateTag' : 'revalidateTag',
+    });
+  } catch (error) {
+    // In force here all the same, and known at no revision: the host may never have recorded it.
+    runtime.tags.settleLocal(call);
+    throw error;
+  }
   if (expire === 0) {
     // And on the response, to the edge: the next request may be one it answers from what it holds.
     requestContext()?.invalidated.add(tags, outcome.revision);
   }
   // In force here at once: the request that invalidated must not read what it invalidated, nor
   // may the next one in this isolate, before the delta says so.
-  for (const invalidation of outcome.invalidations) {
-    runtime.tags.applyLocal([invalidation.value], {
-      // The request may have read cache data while the invalidation call was in flight.
-      staleAt: Math.max(now, invalidation.staleAt),
-      // The deadline by this isolate's clock too, whichever comes first: a host whose clock
-      // runs ahead must not leave an `updateTag` servable here, as stale, until this clock catches
-      // up with it.
-      hardExpireAt:
-        invalidation.hardExpireAt === null
-          ? null
-          : Math.min(
-              invalidation.hardExpireAt,
-              now + Math.max(0, invalidation.hardExpireAt - invalidation.staleAt),
-            ),
-    });
-  }
+  runtime.tags.answerLocal(call, outcome, now);
 }
 
 /** Invalidate `tags` at once, as `updateTag` does: in force for the next read anywhere, and here. */
@@ -346,7 +338,7 @@ export class PlatformFetchCache {
     }
     const judge = async (value: HeldValue): Promise<Validity> => {
       await runtime.tags.syncLocal(runtime.host, value.entry.tags, now);
-      return recordValidity(runtime.tags, {
+      return judgedValidity(runtime.tags, {
         tags: [...value.entry.tags, ...(ctx.tags ?? []), ...(ctx.softTags ?? [])],
         timestamp: value.entry.timestamp,
         invalidation: value.invalidation,
@@ -515,7 +507,7 @@ async function getUseCache(
   }
   const judge = async (value: HeldValue): Promise<Validity> => {
     await runtime.tags.syncLocal(runtime.host, value.entry.tags, now);
-    return recordValidity(runtime.tags, {
+    return judgedValidity(runtime.tags, {
       tags: [...value.entry.tags, ...softTags],
       timestamp: value.entry.timestamp,
       invalidation: value.invalidation,
@@ -699,7 +691,7 @@ export function useCacheHandler(kind: string): UseCacheHandler {
     getExpiration: (tags) => {
       const latestStaleAt = async (runtime: CacheRuntime): Promise<number> => {
         await runtime.tags.syncLocal(runtime.host, tags, nowMs());
-        return runtime.tags.staleAtOf(tags);
+        return judgedStaleAt(runtime.tags, tags);
       };
       return withRuntime(0, latestStaleAt, 'expiration');
     },

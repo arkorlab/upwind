@@ -79,14 +79,17 @@ export class ByteLru<K, V> {
  *
  * For what is true until something says otherwise, rather than for what goes stale on a clock: the
  * bound is there so an isolate that sees unboundedly many keys does not grow without end, and the
- * caller decides what a missing key means.
+ * caller decides what a missing key means. A caller for whom an entry let go of is knowledge lost
+ * is told of each as it goes (`letGo`).
  */
 export class Lru<K, V> {
   readonly #maxEntries: number;
   readonly #entries = new Map<K, V>();
+  readonly #letGo: ((key: K, value: V) => void) | undefined;
 
-  constructor(maxEntries: number) {
+  constructor(maxEntries: number, letGo?: (key: K, value: V) => void) {
     this.#maxEntries = maxEntries;
+    this.#letGo = letGo;
   }
 
   get(key: K): V | undefined {
@@ -104,11 +107,13 @@ export class Lru<K, V> {
     this.#entries.delete(key);
     this.#entries.set(key, value);
     while (this.#entries.size > this.#maxEntries) {
-      const oldest = this.#entries.keys().next();
+      const oldest = this.#entries.entries().next();
       if (oldest.done === true) {
         break;
       }
-      this.#entries.delete(oldest.value);
+      const [goneKey, goneValue] = oldest.value;
+      this.#entries.delete(goneKey);
+      this.#letGo?.(goneKey, goneValue);
     }
   }
 
@@ -121,11 +126,31 @@ interface TtlEntry<V> {
   readonly value: V;
   readonly expiresAt: number;
   readonly bytes: number;
+  /** What the entry shares with others, where it does (`ByteBudget.sharedOf`). */
+  readonly shared?: readonly SharedBytes[] | undefined;
+}
+
+/** Bytes the values of several entries may hold together, and what holds them. */
+export interface SharedBytes {
+  readonly holder: unknown;
+  readonly bytes: number;
 }
 
 interface ByteBudget<K, V> {
   readonly maxBytes: number;
   readonly sizeOf: (value: V, key: K) => number;
+  /**
+   * What a value holds that the values of other entries may hold too, which `sizeOf` leaves out: the
+   * entries whose values name one holder — the same one, not an equal one — are charged its bytes
+   * once, as the first of them said, from the first of them set until the last of them is gone.
+   */
+  readonly sharedOf?: ((value: V) => readonly SharedBytes[] | undefined) | undefined;
+}
+
+/** What the entries sharing one holder are charged, once, and how many of them there are. */
+interface Shared {
+  readonly bytes: number;
+  readonly entries: number;
 }
 
 /** An isolate hit, including one whose TTL has elapsed and may be served while KV refreshes. */
@@ -141,6 +166,7 @@ export class TtlCache<K, V> {
   readonly #now: () => number;
   readonly #entries = new Map<K, TtlEntry<V>>();
   readonly #budget: ByteBudget<K, V> | undefined;
+  readonly #shared = new Map<unknown, Shared>();
   #usedBytes = 0;
 
   constructor(
@@ -153,6 +179,35 @@ export class TtlCache<K, V> {
     this.#maxEntries = maxEntries;
     this.#now = now;
     this.#budget = budget;
+  }
+
+  /** Charge an entry set its own bytes, and what it shares only where nothing set holds that yet. */
+  #charge(bytes: number, shared: readonly SharedBytes[]): void {
+    this.#usedBytes += bytes;
+    for (const each of shared) {
+      const held = this.#shared.get(each.holder);
+      this.#shared.set(each.holder, {
+        bytes: held?.bytes ?? each.bytes,
+        entries: (held?.entries ?? 0) + 1,
+      });
+      if (held === undefined) {
+        this.#usedBytes += each.bytes;
+      }
+    }
+  }
+
+  /** Give back what an entry gone was charged: what it shared, once the last entry sharing it goes. */
+  #discharge({ bytes, shared = [] }: TtlEntry<V>): void {
+    this.#usedBytes -= bytes;
+    for (const each of shared) {
+      const held = this.#shared.get(each.holder);
+      if (held !== undefined && held.entries > 1) {
+        this.#shared.set(each.holder, { bytes: held.bytes, entries: held.entries - 1 });
+      } else {
+        this.#shared.delete(each.holder);
+        this.#usedBytes -= held?.bytes ?? each.bytes;
+      }
+    }
   }
 
   get(key: K): V | undefined {
@@ -188,12 +243,17 @@ export class TtlCache<K, V> {
   set(key: K, value: V, ttlMs = this.#ttlMs): void {
     this.delete(key);
     const bytes = this.#budget?.sizeOf(value, key) ?? 0;
+    const shared = this.#budget?.sharedOf?.(value) ?? [];
     const maxBytes = this.#budget?.maxBytes ?? Infinity;
-    if (bytes > maxBytes) {
+    let whole = bytes;
+    for (const each of shared) {
+      whole += each.bytes;
+    }
+    if (whole > maxBytes) {
       return;
     }
-    this.#entries.set(key, { value, expiresAt: this.#now() + ttlMs, bytes });
-    this.#usedBytes += bytes;
+    this.#entries.set(key, { value, expiresAt: this.#now() + ttlMs, bytes, shared });
+    this.#charge(bytes, shared);
     while (this.#entries.size > this.#maxEntries || this.#usedBytes > maxBytes) {
       const oldest = this.#entries.keys().next();
       if (oldest.done === true) {
@@ -204,8 +264,11 @@ export class TtlCache<K, V> {
   }
 
   delete(key: K): void {
-    this.#usedBytes -= this.#entries.get(key)?.bytes ?? 0;
-    this.#entries.delete(key);
+    const entry = this.#entries.get(key);
+    if (entry !== undefined) {
+      this.#entries.delete(key);
+      this.#discharge(entry);
+    }
   }
 
   get usedBytes(): number {

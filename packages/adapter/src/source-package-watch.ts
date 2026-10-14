@@ -32,7 +32,7 @@ function packageScope(
           exports: fields['exports'],
         };
       } catch {
-        // esbuild diagnoses malformed manifests; their creation and correction stay watched.
+        // The bundler diagnoses malformed manifests; their creation and correction stay watched.
         return;
       }
     }
@@ -101,7 +101,7 @@ function dependencyTargets(
   try {
     parsed = JSON.parse(readFileSync(manifest, 'utf8'));
   } catch {
-    // Missing and malformed manifests remain watched; esbuild reports their resolution error.
+    // Missing and malformed manifests remain watched; the bundler reports their resolution error.
     return [];
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return [];
@@ -115,7 +115,7 @@ function dependencyTargets(
   );
 }
 
-/** Missing exports and legacy entries need a watch even when esbuild cannot resolve the package. */
+/** Missing exports and legacy entries need a watch even when the bundler cannot resolve the package. */
 export function watchPackageExports(
   startingDirectory: string,
   specifier: string,
