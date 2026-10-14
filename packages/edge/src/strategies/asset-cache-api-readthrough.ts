@@ -73,7 +73,10 @@ export async function readThrough(
   const cacheKey = new Request(
     admittedAssetCacheKey(originUrl, ctx.forwarding.previewHost, ctx.projectId),
   );
-  const cached = await lookupCache(ctx.host.names.assetCache, cacheKey);
+  // Shadow validation reads the candidate's own Worker and nothing in front of it, as a shell's read
+  // does (`loadShell`): an entry live traffic kept under the active deployment would answer under
+  // the candidate's policy without the candidate being asked at all.
+  const cached = ctx.validated ? undefined : await lookupCache(ctx.host.names.assetCache, cacheKey);
   if (cached !== undefined) {
     const headers = new Headers(cached.headers);
     // Belt and braces on the way out of the cache: an entry an older Worker stored can still
