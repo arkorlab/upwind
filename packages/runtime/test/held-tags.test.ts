@@ -2,7 +2,7 @@ import type { Validity } from '@stayingupwind/core/cache';
 import { describe, expect, it } from 'vitest';
 
 import { HeldTags, judgedStaleAt, judgedValidity } from '../src/cache/held-tags.ts';
-import type { TagDelta } from '../src/cache/host.ts';
+import type { TagDelta, TagInvalidation } from '../src/cache/host.ts';
 import { type TagHost, TagState } from '../src/cache/tags.ts';
 
 /**
@@ -36,10 +36,10 @@ function othersOf(count: number): string[] {
 
 /**
  * A host whose delta brings `TAG`'s invalidation and, after it, one of each of `later` other tags,
- * in one pull; and whose copy of the tags says nothing of any of them yet — read through its cache,
- * or before the records are written.
+ * in one pull; and whose copy of the tags says only `copies` — nothing of any of them, unless a test
+ * says, as one read through its cache or before the records are written.
  */
-function hostOf(later: number): TagHost {
+function hostOf(later: number, copies: readonly TagInvalidation[] = []): TagHost {
   const delta: TagDelta = {
     revision: REVISION,
     truncated: false,
@@ -51,8 +51,14 @@ function hostOf(later: number): TagHost {
   const past: TagDelta = { revision: REVISION, truncated: false, tags: [] };
   return {
     tagsDelta: (since) => Promise.resolve(since < REVISION ? delta : past),
-    getTags: () => Promise.resolve({ tags: [] }),
+    getTags: (values) =>
+      Promise.resolve({ tags: copies.filter((copy) => values.includes(copy.value)) }),
   };
+}
+
+/** What the host's copy says of `TAG`: an invalidation at `revision`, at once from `at`. */
+function copyOf(revision: number, at: number): TagInvalidation {
+  return { value: TAG, staleAt: at, hardExpireAt: at, revision };
 }
 
 /** The view a regeneration brings up before its render, through `host`'s delta. */
@@ -85,10 +91,32 @@ describe('what a regeneration says its render held of its tags', () => {
     expect(validity).toBe('fresh');
     expect(state.revision).toBe(REVISION);
     expect(state.knownRevisionOf(TAG)).toBe(0);
+    expect(state.heldRevisionOf(TAG)).toBe(0);
     expect(held.of([TAG, UNREAD], state.revision)).toStrictEqual({ [UNREAD]: REVISION });
   });
 
-  it('vouches for the invalidation a read was judged against where the view kept its mark', async () => {
+  /**
+   * What the host's copy says of the tag once the view let go of its mark is all the view knows of
+   * it: an invalidation from before the one let go of, which the read is judged by, and which is
+   * what the commit holds the tag at — until the copy says the one let go of, or a later one.
+   */
+  it('holds a tag whose mark the view let go of at what the host’s copy says of it', async () => {
+    const behind = hostOf(TAGS_HELD, [copyOf(3, 100)]);
+    const caughtUp = hostOf(TAGS_HELD, [copyOf(INVALIDATED, INVALIDATED_AT)]);
+    const behindState = await viewOf(behind);
+    const caughtUpState = await viewOf(caughtUp);
+    const behindHeld = new HeldTags();
+    const caughtUpHeld = new HeldTags();
+
+    await behindHeld.run(() => readUnder(behindState, behind));
+    await caughtUpHeld.run(() => readUnder(caughtUpState, caughtUp));
+
+    expect(behindHeld.of([TAG], REVISION)).toStrictEqual({ [TAG]: 3 });
+    expect(caughtUpHeld.of([TAG], REVISION)).toStrictEqual({ [TAG]: REVISION });
+  });
+
+  /** A view that let go of nothing of a tag knows the whole of it up to its revision. */
+  it('holds a tag whose mark the view kept through the view’s revision', async () => {
     const host = hostOf(TAGS_HELD - 1);
     const state = await viewOf(host);
     const held = new HeldTags();
@@ -96,8 +124,9 @@ describe('what a regeneration says its render held of its tags', () => {
     const validity = await held.run(() => readUnder(state, host));
 
     expect(validity).toBe('expired');
+    expect(state.heldRevisionOf(TAG)).toBe(REVISION);
     expect(held.of([TAG, UNREAD], state.revision)).toStrictEqual({
-      [TAG]: INVALIDATED,
+      [TAG]: REVISION,
       [UNREAD]: REVISION,
     });
   });
@@ -136,7 +165,7 @@ describe('what a regeneration says its render held of its tags', () => {
     ];
 
     expect(staleAts).toStrictEqual([INVALIDATED_AT, 0]);
-    expect(keptHeld.of([TAG], REVISION)).toStrictEqual({ [TAG]: INVALIDATED });
+    expect(keptHeld.of([TAG], REVISION)).toStrictEqual({ [TAG]: REVISION });
     expect(lostHeld.of([TAG], REVISION)).toStrictEqual({});
   });
 
@@ -167,9 +196,9 @@ describe('what a regeneration says its render held of its tags', () => {
     full.note(state, [TAG, ...othersOf(TAGS_NOTED)]);
     room.note(state, [TAG, ...othersOf(TAGS_NOTED - 1)]);
 
-    expect(full.of([TAG, UNREAD], REVISION)).toStrictEqual({ [TAG]: INVALIDATED });
+    expect(full.of([TAG, UNREAD], REVISION)).toStrictEqual({ [TAG]: REVISION });
     expect(room.of([TAG, UNREAD], REVISION)).toStrictEqual({
-      [TAG]: INVALIDATED,
+      [TAG]: REVISION,
       [UNREAD]: REVISION,
     });
   });

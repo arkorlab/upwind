@@ -694,6 +694,7 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
           attemptId: lease.attemptId,
           tags: [...tagValuesOf(target, captured)],
           observedTagRevision,
+          held,
           observedAt: askedAt,
           published: publishing,
         },

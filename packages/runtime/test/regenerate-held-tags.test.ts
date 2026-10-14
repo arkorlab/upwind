@@ -11,6 +11,7 @@ import type {
   TagDelta,
   TagInvalidation,
 } from '../src/cache/host.ts';
+import { answeringAtOnce, publishingKeyOf } from '../src/cache/publishing.ts';
 import { regenerate } from '../src/cache/regenerate.ts';
 import type { CacheRuntime } from '../src/cache/runtime.ts';
 import { TagState } from '../src/cache/tags.ts';
@@ -98,15 +99,22 @@ function unasked(): Promise<never> {
   return Promise.reject(new Error('not asked of a regeneration'));
 }
 
+/** What the host waits for: the work behind the render's answer, and what is asked at its commit. */
+interface Hooks {
+  /** Told once the render is over, as its uploads begin. */
+  readonly rendered: () => void;
+  /** The work behind the render's answer, which the uploads wait for. */
+  readonly done: Promise<unknown>;
+  /** What is asked while the publish is out, as its commit comes in. */
+  readonly committing: () => Promise<void>;
+}
+
 /**
  * A host that leases the entry, keeps the commit it is sent in `commits`, and answers the delta and
- * the reads as `scenario` says. Its uploads, which come once the render is over, wait for `behind`.
+ * the reads as `scenario` says. Its uploads, which come once the render is over, wait for the work
+ * behind the render's answer, and its commit for what is asked as it comes in (`hooks`).
  */
-function hostOf(
-  scenario: Scenario,
-  commits: CommitRequest[],
-  behind: { readonly rendered: () => void; readonly done: Promise<unknown> },
-): CacheHost {
+function hostOf(scenario: Scenario, commits: CommitRequest[], hooks: Hooks): CacheHost {
   const delta: TagDelta = {
     revision: REVISION,
     truncated: false,
@@ -135,14 +143,15 @@ function hostOf(
       });
     },
     uploadArtifact: async (upload) => {
-      behind.rendered();
-      await behind.done;
+      hooks.rendered();
+      await hooks.done;
       return { sha256: '0'.repeat(64), byteLength: upload.bytes.byteLength };
     },
     heartbeat: () => Promise.resolve(),
-    commit: (_attemptId, request) => {
+    commit: async (_attemptId, request) => {
+      await hooks.committing();
       commits.push(request);
-      return Promise.resolve({ kind: 'published', generationId: 'generation' });
+      return { kind: 'published', generationId: 'generation' };
     },
     fail: () => Promise.resolve(),
     readRecord: () => Promise.resolve(undefined),
@@ -191,11 +200,16 @@ async function readEach(reads: readonly Read[]): Promise<unknown[]> {
   return answers;
 }
 
-/** What a regeneration came to: the commit it sent, its render's answers, and what it logged. */
+/**
+ * What a regeneration came to: the commit it sent, its render's answers, what it logged, and whether
+ * another request of the isolate for the entry was answered from the render while its publish was
+ * out (`answeringAtOnce`).
+ */
 interface Regenerated {
   readonly commit: CommitRequest | undefined;
   readonly answers: unknown[];
   readonly logged: readonly string[];
+  readonly answeredAtOnce: boolean | undefined;
 }
 
 /** A regeneration of the route, its render reading as `scenario` says. */
@@ -204,15 +218,24 @@ async function regenerated(scenario: Scenario): Promise<Regenerated> {
   const logged: string[] = [];
   const rendered = Promise.withResolvers<undefined>();
   const done = Promise.withResolvers<undefined>();
+  const asking: { runtime?: CacheRuntime; answered?: boolean } = {};
   const runtime = runtimeOf(
     hostOf(scenario, commits, {
       rendered: () => {
         rendered.resolve(undefined);
       },
       done: done.promise,
+      committing: async () => {
+        const made = asking.runtime;
+        if (made !== undefined) {
+          const entryId = await publishingKeyOf(made, FEED);
+          asking.answered = answeringAtOnce(made, 'expired', entryId) !== undefined;
+        }
+      },
     }),
     logged,
   );
+  asking.runtime = runtime;
   configureCacheHandlers(runtime);
   let answers: unknown[] = [];
   vi.mocked(invokeNodeHandler).mockImplementation(async (input) => {
@@ -252,7 +275,7 @@ async function regenerated(scenario: Scenario): Promise<Regenerated> {
   // them lets it go here, rather than leaving it to wait for good.
   rendered.resolve(undefined);
   await Promise.allSettled(pending);
-  return { commit: commits[0], answers, logged };
+  return { commit: commits[0], answers, logged, answeredAtOnce: asking.answered };
 }
 
 describe('what a regeneration commits of what its render held of each tag', () => {
@@ -283,7 +306,29 @@ describe('what a regeneration commits of what its render held of each tag', () =
     expect(commit?.heldTagRevisions).not.toHaveProperty(TAG);
   });
 
-  it('holds a tag the render read at the invalidation it read against', async () => {
+  /** The host's copy says an invalidation from before the one the view let go of the mark of. */
+  it('holds a tag the render read with its mark let go of at what the host’s copy said of it', async () => {
+    const { commit, answers } = await regenerated({
+      later: TAGS_HELD,
+      copies: [
+        {
+          value: TAG,
+          staleAt: INVALIDATED_AT - 60 * SECOND,
+          hardExpireAt: INVALIDATED_AT - 60 * SECOND,
+          revision: 3,
+        },
+      ],
+      entries: { product: entryOf([TAG], INVALIDATED_AT - 10 * SECOND) },
+      reads: [{ key: 'product', tags: [TAG] }],
+      tags: [TAG, UNREAD],
+    });
+
+    expect(answers[0]).not.toBeNull();
+    expect(commit?.heldTagRevisions).toMatchObject({ [TAG]: 3, [UNREAD]: REVISION });
+  });
+
+  /** A view that let go of nothing of a tag knows the whole of it up to its revision. */
+  it('holds a tag the render read with its mark kept through the view’s revision', async () => {
     const { commit, answers } = await regenerated({
       later: TAGS_HELD - 1,
       copies: [],
@@ -294,7 +339,7 @@ describe('what a regeneration commits of what its render held of each tag', () =
 
     // A regeneration misses what the invalidation expired, and renders it afresh.
     expect(answers).toStrictEqual([null]);
-    expect(commit?.heldTagRevisions).toMatchObject({ [TAG]: INVALIDATED, [UNREAD]: REVISION });
+    expect(commit?.heldTagRevisions).toMatchObject({ [TAG]: REVISION, [UNREAD]: REVISION });
   });
 
   /**
@@ -332,5 +377,48 @@ describe('what a regeneration commits of what its render held of each tag', () =
       after: REVISION,
       older: REVISION,
     });
+  });
+
+  /**
+   * While its publish is out, a render answers the isolate's other requests for the entry by what
+   * its commit says it held: one it held a tag through less than its view of is one its reads may
+   * have missed an invalidation of, which the host may refuse it for, and nothing this isolate
+   * holds says so — it let go of the mark.
+   */
+  it('answers no other request of the isolate from a render that held a tag through less than its view', async () => {
+    const { commit, answeredAtOnce } = await regenerated({
+      later: TAGS_HELD,
+      copies: [],
+      entries: { product: entryOf([TAG], INVALIDATED_AT - 10 * SECOND) },
+      reads: [{ key: 'product', tags: [TAG] }],
+      tags: [TAG, UNREAD],
+    });
+
+    expect(commit?.heldTagRevisions).not.toHaveProperty(TAG);
+    expect(answeredAtOnce).toBe(false);
+  });
+
+  /** A tag never invalidated is one the view knows the whole of, read or not. */
+  it('answers another request of the isolate from a render that held each of its tags through its view', async () => {
+    const { commit, answeredAtOnce } = await regenerated({
+      later: TAGS_HELD - 1,
+      copies: [],
+      entries: {
+        product: entryOf([TAG], INVALIDATED_AT - 10 * SECOND),
+        catalog: entryOf(['catalog'], INVALIDATED_AT - 10 * SECOND),
+      },
+      reads: [
+        { key: 'product', tags: [TAG] },
+        { key: 'catalog', tags: ['catalog'] },
+      ],
+      tags: [TAG, 'catalog', UNREAD],
+    });
+
+    expect(commit?.heldTagRevisions).toMatchObject({
+      [TAG]: REVISION,
+      catalog: REVISION,
+      [UNREAD]: REVISION,
+    });
+    expect(answeredAtOnce).toBe(true);
   });
 });

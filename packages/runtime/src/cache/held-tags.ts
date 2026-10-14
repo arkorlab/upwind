@@ -14,8 +14,9 @@ import { recordValidity, type TagState } from './tags.ts';
  * (`MAX_TAGS_HELD`), and its revision stays where it was as it lets one go; a read under a tag it let
  * go of is judged by what the host says of the tag then (`syncLocal`), which may be behind the very
  * invalidation the view was told of — by its cache, or by a record not written yet. So each read
- * notes, of each tag it is judged under, the latest revision an invalidation of the tag is known at
- * here as it is judged (`TagState.knownRevisionOf`), and the commit says the least of those.
+ * notes, of each tag it is judged under, the revision through which what the view knows of the tag
+ * is whole as it is judged (`TagState.heldRevisionOf`) — the view's own, unless it let go of a mark
+ * of the tag past what it knows of it now — and the commit says the least of those.
  *
  * A tag no read was judged under is one nothing the render read from the cache was kept under: what
  * was made under it was made afresh, once the pull that brought the view up had answered, and the
@@ -27,13 +28,17 @@ import { recordValidity, type TagState } from './tags.ts';
  * read: the record is closed as the render ends (`close`). A read of the render that knew a mark past
  * the view's revision — the view pulled further meanwhile, or a newer copy of the tags — is held at
  * the view's revision, which is all the commit claims the render was judged against.
+ *
+ * What the commit says of each tag is what the render answers the isolate's other requests by while
+ * its publish is out (`cache/publishing.ts`): one it held through less than the view's revision is
+ * one its reads may have missed an invalidation of, which the host may refuse it for.
  */
 
 /** The render each regeneration runs, with what it holds of its tags (`HeldTags.run`). */
 const renders = new AsyncLocalStorage<HeldTags>();
 
 export class HeldTags {
-  /** Of each tag a read was judged under, the least revision it was known at as one was. */
+  /** Of each tag a read was judged under, the least revision it was held through as one was. */
   readonly #known = new Map<string, number>();
   /**
    * Whether a read was judged under a tag past as many as `#known` keeps — as many as a generation
@@ -54,7 +59,7 @@ export class HeldTags {
       return;
     }
     for (const tag of tags) {
-      const known = state.knownRevisionOf(tag);
+      const known = state.heldRevisionOf(tag);
       const noted = this.#known.get(tag);
       if (noted !== undefined) {
         this.#known.set(tag, Math.min(noted, known));
@@ -75,16 +80,21 @@ export class HeldTags {
   }
 
   /**
-   * What the commit says the render held of each of `values`, the generation's tags, never past
-   * `observed`, the revision the view was brought up to before the render: of one a read was judged
-   * under, the least revision an invalidation of it was known at as one was; of one none was,
-   * `observed` itself. Nothing of a tag it held nothing of: one known at no revision, or one not
-   * noted once more were judged under than are kept.
+   * What the commit says the render held of `value`, never past `observed`, the revision the view
+   * was brought up to before the render: of a tag a read was judged under, the least revision it
+   * was held through as one was; of one none was, `observed` itself. 0 — nothing — of a tag it held
+   * nothing of: one the view knew no part of as it was read, or one not noted once more were judged
+   * under than are kept.
    */
+  revisionOf(value: string, observed: number): number {
+    return Math.min(this.#known.get(value) ?? (this.#full ? 0 : observed), observed);
+  }
+
+  /** What the commit says of each of `values`, the generation's tags (`revisionOf`). */
   of(values: readonly string[], observed: number): Readonly<Record<string, number>> {
     const held: [string, number][] = [];
     for (const value of values) {
-      const revision = Math.min(this.#known.get(value) ?? (this.#full ? 0 : observed), observed);
+      const revision = this.revisionOf(value, observed);
       if (revision > 0) {
         held.push([value, revision]);
       }

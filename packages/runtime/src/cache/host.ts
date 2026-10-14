@@ -298,15 +298,16 @@ export interface CommitRequest {
   /** The tag revision the render had synced when it read its inputs. */
   readonly observedTagRevision: number;
   /**
-   * What the render's view held of each of the generation's tags, by value: the latest revision of
-   * the scope an invalidation of the tag was known at as the render's reads were judged under it,
-   * the least of those; `observedTagRevision` of a tag no read of the render was judged under,
-   * while the reads noted no more tags than a generation may carry (`MAX_TAGS_PER_ENTRY`), and
-   * nothing of it once they noted more; nothing of one the view held nothing of; and never past
-   * `observedTagRevision` (`cache/held-tags.ts`). An invalidation of a tag at or before what this
-   * says of it is one every read under the tag was judged against. `observedTagRevision` alone
-   * does not say it: the view keeps so many tags, and its revision stays where it was as it lets
-   * one go.
+   * What the render's view held of each of the generation's tags, by value: the revision of the
+   * scope through which what the view knew of the tag was whole as the render's reads were judged
+   * under it — the view's own, unless it had let go of a mark of the tag past what it knew of it
+   * then, and that otherwise — the least of those; `observedTagRevision` of a tag no read of the
+   * render was judged under, while the reads noted no more tags than a generation may carry
+   * (`MAX_TAGS_PER_ENTRY`), and nothing of it once they noted more; nothing of one the view held
+   * nothing of; and never past `observedTagRevision` (`cache/held-tags.ts`). An invalidation of a
+   * tag at or before what this says of it is one every read under the tag was judged against.
+   * `observedTagRevision` alone does not say it: the view keeps so many tags, and its revision
+   * stays where it was as it lets one go.
    */
   readonly heldTagRevisions: Readonly<Record<string, number>>;
   readonly generation: CommitGeneration;

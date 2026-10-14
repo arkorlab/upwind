@@ -63,6 +63,11 @@ export interface TagStateOptions {
  * asking the host again before judging would put a round trip on the path a Function answers a
  * document from, which is the one thing that may not get slower. What may not wait is this
  * isolate's own invalidation, and that is `MAX_APPLIED_MARKS`.
+ *
+ * What a mark let go of costs a judgement made after it is said rather than assumed: the view
+ * remembers the tags it let go of a mark of, and the revision each was at (`#lost`), and holds a
+ * tag it now knows less of than that only through what it knows of it (`heldRevisionOf`) — what a
+ * read of the tag is judged by then may be behind the mark it let go of.
  */
 const MAX_TAGS_HELD = 4096;
 
@@ -177,7 +182,19 @@ interface AppliedKnowledge {
 }
 
 export class TagState {
-  readonly #tags = new Lru<string, TagKnowledge>(MAX_TAGS_HELD);
+  readonly #tags = new Lru<string, TagKnowledge>(MAX_TAGS_HELD, (value, known) => {
+    this.#lose(value, known);
+  });
+  /**
+   * Of each tag the view let go of a mark of (`MAX_TAGS_HELD`), the latest revision such a mark was
+   * at: what is read of the tag afterwards may be behind it (`heldRevisionOf`). As many as the
+   * marks are, past which the latest revision of the ones let go of from here is held against every
+   * tag.
+   */
+  readonly #lost = new Lru<string, number>(MAX_TAGS_HELD, (_value, revision) => {
+    this.#lostPast = Math.max(this.#lostPast, revision);
+  });
+  #lostPast = 0;
   readonly #applied = new Lru<string, AppliedKnowledge>(MAX_APPLIED_MARKS);
   /** The calls out counted one by one, of every tag, the one out longest first (`MAX_CALLS_OUT`). */
   readonly #out = new Set<LocalInvalidation>();
@@ -252,6 +269,13 @@ export class TagState {
       mark: held === undefined ? mark : latestOf(held, known?.knownRevision, mark, revision),
       knownRevision: Math.max(known?.knownRevision ?? revision, revision),
     });
+  }
+
+  /** Remember that the view let go of what it knew of `value` (`#lost`), where that was a mark. */
+  #lose(value: string, known: TagKnowledge): void {
+    if (known.knownRevision !== undefined) {
+      this.#lost.set(value, Math.max(this.#lost.get(value) ?? 0, known.knownRevision));
+    }
   }
 
   async #pullLocal(host: TagHost, values: readonly string[], now: number): Promise<void> {
@@ -402,6 +426,22 @@ export class TagState {
       this.#tags.get(tag)?.knownRevision ?? 0,
       this.#applied.get(tag)?.answeredRevision ?? 0,
     );
+  }
+
+  /**
+   * The revision of the scope through which what this view knows of `tag` is whole: the one it was
+   * brought up to (`revision`), unless it let go of a mark of the tag at a revision past the latest
+   * it knows of the tag now (`#lost`, `knownRevisionOf`) — then only that latest, as what it has
+   * read of the tag since (`syncLocal`) may be behind the mark it let go of. A judgement of the tag
+   * made now is made against every invalidation of it up to there.
+   *
+   * The delta brings the view every invalidation past where it stood, and one older than the delta
+   * reaches back is in what the host says of a tag when it is read: a view that let go of nothing
+   * of a tag knows the whole of it up to its revision, whether or not it was told anything of it.
+   */
+  heldRevisionOf(tag: string): number {
+    const known = this.knownRevisionOf(tag);
+    return known >= Math.max(this.#lost.get(tag) ?? 0, this.#lostPast) ? this.#revision : known;
   }
 
   /** How many calls of this Function's out are counted one by one, of every tag (`MAX_CALLS_OUT`). */
