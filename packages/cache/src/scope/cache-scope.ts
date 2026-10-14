@@ -257,11 +257,27 @@ export class CacheScope extends DurableObject<CacheBindings> {
     // Armed before the answer, not after it: what the run still does once the change is answered —
     // what the host's history owes for it — is owed to this alarm, or to an earlier one, should the
     // object be reset before the run is over. Erasure may have come between: what is gone is not
-    // asked for.
+    // asked for. An answer read from its own transaction is not taken back for it (`#armOrLog`).
     if (this.#tables && readScope(this.#sql) !== undefined) {
-      await this.#armAlarm(now + RETENTION_INTERVAL_MS);
+      const at = now + RETENTION_INTERVAL_MS;
+      await (answers.atOnce === true ? this.#armOrLog(at) : this.#armAlarm(at));
     }
     return result.value;
+  }
+
+  /**
+   * Arm the alarm for a change answered as it commits (`AT_ONCE`), whose answer is read from its own
+   * transaction: a failure to is logged, not thrown. Its caller, told nothing, would make the change
+   * again or give it up — a lease's would never have its fencing token, and the lease would stand
+   * until its time ran out. What the alarm would come back for waits for the next change's run, or
+   * for the host's check on the scope's retention (`ensureRetention`).
+   */
+  async #armOrLog(at: number): Promise<void> {
+    try {
+      await this.#armAlarm(at);
+    } catch (error) {
+      this.#log.error('alarm not armed', { detail: detailOf(error) });
+    }
   }
 
   /**
@@ -351,9 +367,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
       return;
     }
     const lease = nextLeaseExpiry(this.#sql);
-    if (lease !== undefined) {
-      await this.#armAlarm(lease + LEASE_SWEEP_GRACE_MS);
-    }
+    if (lease !== undefined) await this.#armAlarm(lease + LEASE_SWEEP_GRACE_MS);
     await this.#armAlarm(nextRetentionAt(this.#sql, now, RETENTION_INTERVAL_MS));
   }
 
@@ -474,7 +488,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
   ): Promise<StartAttemptResponse | Refusal> {
     const result = await this.#mutate(now, (tx) => planStartAttempt(tx, request), AT_ONCE);
     if (result.kind === 'leased') {
-      await this.#armAlarm(result.leaseExpiresAt + LEASE_SWEEP_GRACE_MS);
+      await this.#armOrLog(result.leaseExpiresAt + LEASE_SWEEP_GRACE_MS);
     }
     return result;
   }
