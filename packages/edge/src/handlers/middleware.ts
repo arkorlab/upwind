@@ -353,6 +353,8 @@ export async function followExternalRewrite(
         headers,
         body: request.body,
         redirect: 'manual',
+        // With no deadline of its own, the client leaving is what lets it go.
+        signal: request.signal,
       }),
     );
   } catch {
