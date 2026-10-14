@@ -64,7 +64,9 @@ export function standaloneRuntime(
   overrides: Partial<EdgeRuntime> = {},
 ): EdgeRuntime {
   const now = overrides.now ?? ((): number => Date.now());
-  const memory = overrides.memory ?? (shared.memory ??= createEdgeMemory(now));
+  // On the real clock, whatever clock a runtime brings: the memory is every request's, and the clock
+  // of whichever runtime came first would otherwise judge the age of all it holds.
+  const memory = overrides.memory ?? (shared.memory ??= createEdgeMemory((): number => Date.now()));
   return {
     fetchImpl: overrides.fetchImpl ?? ((request, init): Promise<Response> => fetch(request, init)),
     now,

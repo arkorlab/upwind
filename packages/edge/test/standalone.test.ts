@@ -250,6 +250,26 @@ describe('a standalone edge', () => {
     expect(fetched).toStrictEqual([`https://cdn.${SITE}/moved.png`]);
   });
 
+  /**
+   * The isolate's memory is every request's, so it keeps time by the real clock whatever clock the
+   * runtime that first used it brought.
+   */
+  it('keeps the memory it shares on the real clock, whatever clock a runtime brings', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(1_800_000_000_000);
+      const frozen = standaloneRuntime({ ...env }, { now: () => 0 });
+      frozen.memory.absentPointers.set('a key nothing is published under', true);
+      vi.setSystemTime(1_800_000_000_000 + 60_000);
+      const later = standaloneRuntime({ ...env });
+
+      expect(later.memory).toBe(frozen.memory);
+      expect(later.memory.absentPointers.get('a key nothing is published under')).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps what it caches under names of its own, and binds a Function by a name a binding holds', () => {
     const { names } = standaloneHost(env);
 
