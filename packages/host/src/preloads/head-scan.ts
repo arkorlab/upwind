@@ -369,11 +369,17 @@ function endOfComment(html: string, from: number): number {
  * close, and `script` opening or ending a tag — the whole name, folded only where it is ASCII, as a
  * tokenizer folds it, so `<SCRIPT>` opens the double escape a browser opens for it.
  *
+ * `--!>` is matched only to be passed over as the text script data reads it as. In both dash-dash
+ * states its `!` is "anything else", which goes back to the escape (§13.2.5.22 and §13.2.5.29), so
+ * only `-->` ends either escape. A comment does end at `--!>`, and one is read by `endOfComment`,
+ * which ends it there. Matching it here says as much to whoever reads this pattern, a checker for
+ * comment patterns blind to `--!>` included.
+ *
  * One search, carried on from each mark to the next, so a script is read once however many marks it
  * holds. Looking for every kind afresh at each mark would read the rest of the window once a mark —
  * quadratic, in a script of nested `<script` markers, which the window has room for thousands of.
  */
-const SCRIPT_MARK = /<!--|-->|<\/?[Ss][Cc][Rr][Ii][Pp][Tt](?=[\t\n\f\r />])/u;
+const SCRIPT_MARK = /<!--|-->|--!>|<\/?[Ss][Cc][Rr][Ii][Pp][Tt](?=[\t\n\f\r />])/u;
 /**
  * Where a `<script>` ends, which is not always at the first `</script>` written in it.
  *
@@ -395,6 +401,10 @@ function endOfScript(html: string, from: number): number {
   marks.lastIndex = from;
   for (let mark = marks.exec(html); mark !== null; mark = marks.exec(html)) {
     const [written] = mark;
+    // Text in script data, which leaves either escape as it was (`SCRIPT_MARK`).
+    if (written === COMMENT_CLOSE_BANG) {
+      continue;
+    }
     if (written === COMMENT_OPEN) {
       escaped = true;
       // Its dashes are a close's first two as well: past them the tokenizer is where `--` leaves
