@@ -355,29 +355,34 @@ async function storedAs(
 }
 
 /**
- * A shell, placed where the policy's shell backend reads it from: in KV beside the edge's other
- * state, from the artifact staging stored, or nowhere new under an R2 policy, where that artifact
- * is the placement. Either way the artifact is read as it is now (`storedAs`).
+ * A shell, and each rendering of it the manifest names, placed where the policy's shell backend
+ * reads them from: in KV beside the edge's other state, from the artifacts staging and whatever
+ * compressed them stored, or nowhere new under an R2 policy, where those artifacts are the
+ * placement. Either way each artifact is read as it is now (`storedAs`). A manifest that names a
+ * rendering serves it to a client that asks for its encoding, so one not placed is a request the
+ * edge cannot answer from what it promised.
  */
 async function placeShell(
   target: DeployTarget,
   backend: ShellBackendId,
   shell: ShellPlacement,
 ): Promise<void> {
-  const bytes = await storedAs(target, r2ArtifactKey(shell.sha256), shell, 'artifact');
-  if (backend === 'r2') {
-    return;
+  const units = [{ ...shell, encoding: 'identity' as const }, ...shell.renderings];
+  for (const unit of units) {
+    const bytes = await storedAs(target, r2ArtifactKey(unit.sha256), unit, 'artifact');
+    if (backend === 'r2') {
+      continue;
+    }
+    const key = kvArtifactKey(unit.sha256);
+    await target.edgeState.put(key, bytes, {
+      contentType: unit.contentType,
+      byteLength: unit.byteLength,
+      sha256: unit.sha256,
+      sourcePath: shell.sourcePath,
+      encoding: unit.encoding,
+    });
+    await readBack((written) => target.edgeState.get(written), key, unit);
   }
-  // No renderings beside it: `stageDeployment` assembles none (see there).
-  const key = kvArtifactKey(shell.sha256);
-  await target.edgeState.put(key, bytes, {
-    contentType: shell.contentType,
-    byteLength: shell.byteLength,
-    sha256: shell.sha256,
-    sourcePath: shell.sourcePath,
-    encoding: 'identity',
-  });
-  await readBack((written) => target.edgeState.get(written), key, shell);
 }
 
 /**
