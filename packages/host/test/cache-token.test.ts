@@ -10,6 +10,8 @@ const SCOPE = 'dpl_4Fixture2Minima1AppXy';
 const OTHER = 'dpl_3Qk9mWpZ2rT7bX1vN8sLd';
 const PARTS = 3;
 const NAMING = { tokenLabel: 'test-cache-token' };
+/** Scope ids holding what no bearer token in a header can: whitespace, a control, past ASCII. */
+const UNCARRIED = ['a b', 'a\tb', 'a\nb', 'a\0b', 'a\u{7F}b', 'café', '日本'];
 
 describe('cache tokens', () => {
   afterEach(() => {
@@ -143,6 +145,22 @@ describe('cache tokens', () => {
   it('cannot be minted for a scope id that carries the separator', async () => {
     await expect(signCacheToken(SECRET, 'a.b', NAMING)).rejects.toThrow(/separator/u);
   });
+
+  /**
+   * A token is a bearer an `Authorization` header carries: one signed for a scope id holding any of
+   * these could not be presented by any request.
+   */
+  it.each(UNCARRIED)('cannot be minted for a scope id that holds %j', async (id) => {
+    await expect(signCacheToken(SECRET, id, NAMING)).rejects.toThrow(/visible ASCII/u);
+  });
+
+  it('can be presented in an Authorization header', async () => {
+    const token = await signCacheToken(SECRET, SCOPE, NAMING);
+
+    expect(new Headers({ authorization: `Bearer ${token}` }).get('authorization')).toBe(
+      `Bearer ${token}`,
+    );
+  });
 });
 
 describe('a scope', () => {
@@ -162,16 +180,19 @@ describe('a scope', () => {
   });
 
   /** Refused where the scope is made, rather than once it is and its token cannot be signed. */
-  it.each(['a.b', 'b|v1|c'])('is not seeded under %j, which no token can be signed for', (id) => {
-    expect(scopeSeedSchema.safeParse({ ...scope, scopeId: id }).success).toBe(false);
-    expect(
-      cacheScopeSchema.safeParse({
-        ...scope,
-        scopeId: id,
-        status: 'active',
-        seededAt: 1,
-        schemaVersion: ENTITY_SCHEMA_VERSION,
-      }).success,
-    ).toBe(false);
-  });
+  it.each(['a.b', 'b|v1|c', ...UNCARRIED])(
+    'is not seeded under %j, which no token can be signed for',
+    (id) => {
+      expect(scopeSeedSchema.safeParse({ ...scope, scopeId: id }).success).toBe(false);
+      expect(
+        cacheScopeSchema.safeParse({
+          ...scope,
+          scopeId: id,
+          status: 'active',
+          seededAt: 1,
+          schemaVersion: ENTITY_SCHEMA_VERSION,
+        }).success,
+      ).toBe(false);
+    },
+  );
 });

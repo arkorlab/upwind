@@ -22,10 +22,14 @@ const SEPARATOR = '.';
 /** What joins the fields a token signs (`message`). */
 const FIELD_SEPARATOR = '|';
 /**
- * A scope id a token can be signed for: one that carries neither separator. A scope's schema holds
- * its id to it (`cacheScopeSchema`), so a scope no token could open is refused where it is made.
+ * A scope id a token can be signed for, and presented with: visible ASCII but either separator. A
+ * token is a bearer an `Authorization` header carries, which holds no control character and
+ * nothing a byte cannot, and a bearer token holds no space (RFC 6750): a scope named with any of
+ * them would be given a token no request could present. A scope's schema holds its id to this
+ * (`cacheScopeSchema`), and `signCacheToken` signs no other, so a scope no token could open is
+ * refused where it is made.
  */
-export const SIGNABLE_SCOPE_ID = /^[^.|]+$/u;
+export const SIGNABLE_SCOPE_ID = /^[\u{21}-\u{2D}\u{2F}-\u{7B}\u{7D}\u{7E}]+$/u;
 const HMAC = { name: 'HMAC', hash: 'SHA-256' } as const;
 /**
  * What HMAC-SHA-256 signs to: every signature a token carries is this many bytes, and one of any
@@ -72,6 +76,9 @@ export async function signCacheToken(
   const signed = message(scopeId, naming);
   if (signed === undefined) {
     throw new Error(`neither a token label nor a scope id may carry ${FIELD_SEPARATOR}`);
+  }
+  if (!SIGNABLE_SCOPE_ID.test(scopeId)) {
+    throw new Error('a scope id is visible ASCII, as the bearer token it is signed into');
   }
   const key = await importKey(secret, 'sign');
   const signature = await crypto.subtle.sign(HMAC, key, signed);
