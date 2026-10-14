@@ -84,7 +84,22 @@ async function putCacheApi(
   }
 }
 
-type BackendMiss = Extract<ShellLoadResult, { kind: 'missing' | 'unavailable' }>;
+/**
+ * What a backend throws for an object under a shell's key that cannot be the shell, told before
+ * any of its bytes are read: the size it states is not the shell's. Corrupt, as a read whose bytes
+ * are not the shell's is (`verifyRead`), rather than a backend that failed.
+ */
+export class ShellSizeMismatchError extends Error {
+  readonly statedBytes: number;
+
+  constructor(statedBytes: number, options?: ErrorOptions) {
+    super(`a shell object of ${String(statedBytes)} bytes`, options);
+    this.name = 'ShellSizeMismatchError';
+    this.statedBytes = statedBytes;
+  }
+}
+
+type BackendMiss = Extract<ShellLoadResult, { kind: 'missing' | 'corrupt' | 'unavailable' }>;
 
 /** The backend read is the one place every shell backend's exception is folded into a result. */
 async function readBackend(
@@ -95,6 +110,15 @@ async function readBackend(
   try {
     return (await strategy.getShell(ref, ctx)) ?? { kind: 'missing' };
   } catch (error) {
+    if (error instanceof ShellSizeMismatchError) {
+      logWarn('shell backend length mismatch', {
+        source: strategy.id,
+        sha256: ref.sha256,
+        expected: ref.byteLength,
+        actual: error.statedBytes,
+      });
+      return { kind: 'corrupt', source: strategy.id };
+    }
     const detail = errorDetail(error);
     logWarn('shell backend read failed', { source: strategy.id, sha256: ref.sha256, detail });
     return { kind: 'unavailable', detail };
