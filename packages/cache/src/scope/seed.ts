@@ -1,4 +1,9 @@
-import { type OutputSnapshot } from '@stayingupwind/core/cache';
+import {
+  generationTagSchema,
+  MAX_TAG_LENGTH,
+  MAX_TAGS_PER_ENTRY,
+  type OutputSnapshot,
+} from '@stayingupwind/core/cache';
 import { createId } from '@stayingupwind/core/util';
 import {
   type SeedEntriesInput,
@@ -103,9 +108,30 @@ interface SeedPlan {
   readonly identity: EntryIdentity;
   readonly tagRefs: readonly TagRef[];
   readonly outputs: readonly OutputSnapshot[];
+  /** Why the entry's generation may not carry its tags (`tagsRefusal`): it is then not seeded. */
+  readonly tagsRefused: string | undefined;
 }
 
 type SeedRefusal = SeedEntriesResult['refused'][number];
+
+/** A tag's value as a generation may carry one: what a commit's tags are held to. */
+const TAG_VALUE = generationTagSchema.shape.value;
+
+/**
+ * Why the build's generation of an entry may not carry its tags, as a generation's are bounded
+ * (`MAX_TAGS_PER_ENTRY`, `MAX_TAG_LENGTH`), or nothing where it may. The batch's shape leaves these
+ * to be judged here, entry by entry: a route's tags are its build's, and one route past them is no
+ * reason to leave the rest of its batch unseeded. A regeneration of such an entry is refused for
+ * them as well, by the runtime that renders it.
+ */
+function tagsRefusal(tags: SeedEntryInput['generation']['tags']): string | undefined {
+  if (tags.length > MAX_TAGS_PER_ENTRY) {
+    return `the build left ${tags.length} cache tags on the entry; a generation may carry ${MAX_TAGS_PER_ENTRY}`;
+  }
+  return tags.every(({ value }) => TAG_VALUE.validate(value))
+    ? undefined
+    : `the build left a cache tag longer than a tag may be on the entry; a tag may have ${MAX_TAG_LENGTH} characters`;
+}
 
 export async function planSeedEntries(
   input: TxInput,
@@ -113,9 +139,11 @@ export async function planSeedEntries(
 ): Promise<Apply<SeedEntriesResult | Refusal>> {
   const plans = await Promise.all(
     batch.entries.map(async (entry) => {
+      // Judged before a tag of it is named: an entry that may not carry its tags keeps none.
+      const tagsRefused = tagsRefusal(entry.generation.tags);
       const [identity, tagRefs, artifactIds] = await Promise.all([
         identifyEntry(input.scopeId, entry.descriptor, entry.allowQuery),
-        tagRefsFor(input.scopeId, entry.generation.tags),
+        tagsRefused === undefined ? tagRefsFor(input.scopeId, entry.generation.tags) : [],
         artifactIdsFor(
           input.scopeId,
           entry.generation.outputs.flatMap((output) =>
@@ -123,7 +151,7 @@ export async function planSeedEntries(
           ),
         ),
       ]);
-      return { entry, identity, tagRefs, outputs: seedOutputs(entry, artifactIds) };
+      return { entry, identity, tagRefs, outputs: seedOutputs(entry, artifactIds), tagsRefused };
     }),
   );
   return () => applySeedEntries(input, plans);
@@ -286,11 +314,14 @@ function applySeedEntries(input: TxInput, plans: readonly SeedPlan[]): SeedEntri
   // An entry no record of could ever be written is left out and said so, and the rest of the
   // batch is seeded without it. Seeded, it would be current with nothing to deliver: its record
   // retried on every settle, failing every time, and enough of them ahead in that queue to hold up
-  // every other entry of the scope. Unseeded, it is served as an entry without a record is.
+  // every other entry of the scope. Unseeded, it is served as an entry without a record is. So is
+  // one whose generation may not carry its tags, which no record could carry either.
   const seedable: SeedPlan[] = [];
   const refused: SeedRefusal[] = [];
   for (const plan of fresh) {
-    const reason = unwritableRecord(recordFields(input.scopeId, plan), limits.maxRecordBytes);
+    const reason =
+      plan.tagsRefused ??
+      unwritableRecord(recordFields(input.scopeId, plan), limits.maxRecordBytes);
     if (reason === undefined) {
       seedable.push(plan);
     } else {
