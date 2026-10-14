@@ -43,7 +43,7 @@ import {
   type UploadedArtifact,
 } from '@stayingupwind/runtime/cache-host';
 
-import type { FunctionCacheNaming } from './artifacts.ts';
+import { behindResponse, type FunctionCacheNaming } from './artifacts.ts';
 import { DataCopies } from './data-copies.ts';
 import { Gateway } from './gateway.ts';
 import { RecordCopies } from './record-copies.ts';
@@ -215,7 +215,10 @@ function publishedRecord(base64: string | undefined):
   }
 }
 
-/** How many leases a host remembers the entry of, for a commit that hands back no record. */
+/**
+ * How many leases a host remembers the entry of, for a commit that hands back no record; past it,
+ * the oldest is let go of with its entry's copy (`#remember`).
+ */
 const MAX_LEASES_REMEMBERED = 256;
 
 /** What a host remembers of a lease: its entry, and the generation that stood when it was granted. */
@@ -258,14 +261,23 @@ class GatewayHost implements CacheHost {
     this.#beacon = copies.beacon;
   }
 
-  /** Remember the entry a lease is for, the oldest let go of past the bound. */
+  /**
+   * Remember the entry a lease is for. Past the bound the oldest is let go of, though it may still be
+   * out, and its entry's copy with it, behind the response: once its commit is answered with no
+   * record, nothing would say which entry's copy to let go of. As for a commit whose answer never
+   * came (`#committed`), the copy of what stood when it was granted goes, or of anything earlier.
+   */
   #remember(attemptId: string, held: LeaseHeld): void {
     this.#leased.set(attemptId, held);
-    for (const oldest of this.#leased.keys()) {
+    for (const [oldest, lease] of this.#leased) {
       if (this.#leased.size <= MAX_LEASES_REMEMBERED) {
         break;
       }
       this.#leased.delete(oldest);
+      const letGo = this.#records?.drop(lease.entryId, { seq: lease.seq + 1, revision: 0 });
+      if (letGo !== undefined) {
+        behindResponse(letGo);
+      }
     }
   }
 
