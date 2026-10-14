@@ -14,14 +14,15 @@ import { refusedTags } from './tag-bounds.ts';
  * the page every request after a publish is answered with, already made, where the lease the
  * publish holds would have the host turn each of those requests away to a page of its own.
  *
- * A render answers only while the isolate's view of the tags says nothing it missed
- * (`unmovedSince`), and only by a view no older than the isolate holds any it judges by: within a
- * hold of the pull the render read against, without a word to the host (`answeringAtOnce`); past
- * it, once the host has turned the request away for a lease of the entry and the view has been
- * brought up to the host's (`answeringWhileBusy`). Once the publish has let go of its lease — the
- * host committed it while the answer was on its way here — by the host's word that the generation it
- * holds is the one the render became, and while no mark on the render's tags says what that word
- * could not (`answeringWhenSuperseded`) — and from then on only so (`lettingGo`).
+ * A render answers only while the isolate's view of the tags says nothing it missed, and only where
+ * its commit says it held each of its tags through the view it read against (`unmovedSince`), and
+ * only by a view no older than the isolate holds any it judges by: within a hold of the pull the
+ * render read against, without a word to the host (`answeringAtOnce`); past it, once the host has
+ * turned the request away for a lease of the entry and the view has been brought up to the host's
+ * (`answeringWhileBusy`). Once the publish has let go of its lease — the host committed it while
+ * the answer was on its way here — by the host's word that the generation it holds is the one the
+ * render became, and while no mark on the render's tags says what that word could not
+ * (`answeringWhenSuperseded`) — and from then on only so (`lettingGo`).
  *
  * Only a regeneration a judgement of the entry asked for (`JUDGED_REASONS`) is answered so: one
  * that asked for a page to answer with. `revalidate()` and an invalidation ask for a render whatever
@@ -82,14 +83,30 @@ function unmarkedSince(runtime: CacheRuntime, publishing: Publishing): boolean {
 }
 
 /**
- * Whether nothing the view of the tags has taken in since the render's reads were judged says the
- * render missed an invalidation: the scope's delta has brought nothing since the pull the render
- * read against (`observedTagRevision`), and no mark on a tag of the render says so
- * (`unmarkedSince`) — which is what the first cannot see.
+ * Whether the render held each of its tags through the revision its view was brought up to, as its
+ * commit says (`Publishing.held`). One it held through less is one its reads may have missed an
+ * invalidation of: the view had let go of the tag's mark, and what it read of the tag was behind
+ * it. Nothing this isolate holds may say so — it let go of that mark — and the host may refuse the
+ * commit for it: the render answers no one in the meantime.
+ */
+function heldThroughView(publishing: Publishing): boolean {
+  const { held, observedTagRevision } = publishing;
+  return publishing.tags.every(
+    (tag) => held.revisionOf(tag, observedTagRevision) >= observedTagRevision,
+  );
+}
+
+/**
+ * Whether nothing says the render missed an invalidation while its commit is out: it held each of
+ * its tags through the view it read against (`heldThroughView`), the scope's delta has brought
+ * nothing since the pull the render read against (`observedTagRevision`), and no mark on a tag of
+ * the render says so (`unmarkedSince`) — which is what the second cannot see.
  */
 function unmovedSince(runtime: CacheRuntime, publishing: Publishing): boolean {
   return (
-    runtime.tags.revision <= publishing.observedTagRevision && unmarkedSince(runtime, publishing)
+    heldThroughView(publishing) &&
+    runtime.tags.revision <= publishing.observedTagRevision &&
+    unmarkedSince(runtime, publishing)
   );
 }
 

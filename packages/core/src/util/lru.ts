@@ -79,14 +79,17 @@ export class ByteLru<K, V> {
  *
  * For what is true until something says otherwise, rather than for what goes stale on a clock: the
  * bound is there so an isolate that sees unboundedly many keys does not grow without end, and the
- * caller decides what a missing key means.
+ * caller decides what a missing key means. A caller for whom an entry let go of is knowledge lost
+ * is told of each as it goes (`letGo`).
  */
 export class Lru<K, V> {
   readonly #maxEntries: number;
   readonly #entries = new Map<K, V>();
+  readonly #letGo: ((key: K, value: V) => void) | undefined;
 
-  constructor(maxEntries: number) {
+  constructor(maxEntries: number, letGo?: (key: K, value: V) => void) {
     this.#maxEntries = maxEntries;
+    this.#letGo = letGo;
   }
 
   get(key: K): V | undefined {
@@ -104,11 +107,13 @@ export class Lru<K, V> {
     this.#entries.delete(key);
     this.#entries.set(key, value);
     while (this.#entries.size > this.#maxEntries) {
-      const oldest = this.#entries.keys().next();
+      const oldest = this.#entries.entries().next();
       if (oldest.done === true) {
         break;
       }
-      this.#entries.delete(oldest.value);
+      const [goneKey, goneValue] = oldest.value;
+      this.#entries.delete(goneKey);
+      this.#letGo?.(goneKey, goneValue);
     }
   }
 

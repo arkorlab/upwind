@@ -3,6 +3,7 @@ import { type SharedBytes, TtlCache } from '@stayingupwind/core/util';
 import { createCacheHost } from 'arkor:cache-host';
 
 import type { CapturedRender } from './capture.ts';
+import type { HeldTags } from './held-tags.ts';
 import type { CacheHost, CacheHostLookup, DataRead, FetchLike } from './host.ts';
 import { TagState } from './tags.ts';
 
@@ -82,6 +83,11 @@ export interface Publishing {
   readonly tags: readonly string[];
   /** The revision of the tag view its reads were judged against, which its commit claims. */
   readonly observedTagRevision: number;
+  /**
+   * What the render's view held of each of its tags, closed as the render ended: what its commit
+   * says of each (`HeldTags.revisionOf`), and what it answers by while the commit is out.
+   */
+  readonly held: HeldTags;
   /** When the pull that brought the view to that revision was asked for, by the isolate's clock. */
   readonly observedAt: number;
   /**
