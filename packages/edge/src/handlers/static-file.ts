@@ -23,6 +23,7 @@ import { setConfigured } from './configured-headers.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
 import { observeMetric } from './observer.ts';
 import {
+  keptByNobody,
   mergeScopedMiddlewareHeaders,
   removeSharedCacheOverrides,
   serviceUnavailableResponse,
@@ -278,6 +279,9 @@ function requestedRange(input: StaticFileInput): BlobRange | null | undefined {
 function rangeNotSatisfiable(headers: Headers, file: StaticFileEntry): Response {
   headers.delete(CONTENT_LENGTH);
   headers.set(CONTENT_RANGE, `bytes */${file.byteLength}`);
+  // The file's lifetime is the file's, not this refusal's: a cache keyed on the URL alone would hand
+  // the 416 to every request for the file, ranged or not, for as long as it keeps the file.
+  keptByNobody(headers);
   return new Response(null, { status: RANGE_NOT_SATISFIABLE_STATUS, headers });
 }
 
