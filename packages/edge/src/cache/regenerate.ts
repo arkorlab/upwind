@@ -32,7 +32,10 @@ import type { EdgeContext } from '../strategies/context.ts';
  * per cooldown: one regeneration at a time is what the entry's lease allows anyway.
  */
 
-/** Longest an isolate remembers having asked; the policy's cooldown decides, within it. */
+/**
+ * How long an isolate remembers having asked, at the least; the policy's cooldown decides within it,
+ * and a cooldown longer than it is remembered for as long (`shouldAsk`).
+ */
 export const REGENERATION_MEMORY_TTL_MS = 3_600_000;
 
 export interface RegenerationTarget {
@@ -100,7 +103,9 @@ export function shouldAsk(
   if (askedAt !== undefined && now - askedAt < settings.regenerateCooldownMs) {
     return false;
   }
-  edge.runtime.memory.regenerations.set(key, now);
+  // Kept for the whole cooldown: forgotten sooner, the entry would be asked for again within it.
+  const keptMs = Math.max(REGENERATION_MEMORY_TTL_MS, settings.regenerateCooldownMs);
+  edge.runtime.memory.regenerations.set(key, now, keptMs);
   return true;
 }
 
