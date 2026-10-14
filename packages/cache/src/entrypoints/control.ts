@@ -36,13 +36,13 @@ import { scopeStub } from '../scope/stub.ts';
 /**
  * The token a scope's Workers present to the gateways, signed with the key only this Worker holds,
  * under the host's label (`AuthorityHost.naming`). None for an id another scope's keys could hold,
- * longer than an edge may ask about, or that no header could present a token for (`isScopeId`),
- * which no scope is seeded under either.
+ * longer than an edge may ask about, or holding what a bearer token does not (`isScopeId`), which
+ * no scope is seeded under either.
  */
 export function scopeToken(env: CacheVars, scopeId: string, naming: CacheNaming): Promise<string> {
   if (!isScopeId(scopeId)) {
     throw new Error(
-      'a scope id is at most 256 characters of visible ASCII, and carries neither : nor /',
+      'a scope id is at most 256 ASCII letters, digits, -, _, ~ and +, and carries neither : nor /',
     );
   }
   const key = parseVars(env).CACHE_TOKEN_KEY;
