@@ -35,11 +35,12 @@ import {
 } from './rows.ts';
 import { isRefusal, type Refusal, refuse, requireActiveScope } from './state.ts';
 import {
-  condemningInvalidations,
+  condemnationOf,
   replaceEntryTags,
   type TagRef,
   tagRefsFor,
   viewHeld,
+  weighInvalidations,
 } from './tags.ts';
 import { type Apply, record, type TxInput } from './tx.ts';
 
@@ -246,21 +247,6 @@ function locateArtifacts(sql: SqlStorage, plan: CommitPlan): Map<string, string>
   return refs;
 }
 
-function condemnationOf(invalidations: readonly InvalidationRow[]): InvalidationState | null {
-  if (invalidations.length === 0) {
-    return null;
-  }
-  const staleAt = Math.min(...invalidations.map((row) => row.stale_at));
-  const hardExpiries = invalidations.flatMap((row) =>
-    row.hard_expire_at === null ? [] : [row.hard_expire_at],
-  );
-  return {
-    revision: Math.max(...invalidations.map((row) => row.revision)),
-    staleAt,
-    ...(hardExpiries.length > 0 && { hardExpireAt: Math.min(...hardExpiries) }),
-  };
-}
-
 /** What the delivery record of the generation this commit would publish is made of. */
 function recordFields(
   input: TxInput,
@@ -386,6 +372,14 @@ interface Publication {
   readonly entry: EntryRow;
   readonly outputs: readonly OutputSnapshot[];
   readonly condemned: InvalidationState | null;
+  /**
+   * The revision the generation's inputs stand as of: the lease's, or the latest invalidation its
+   * view held past it that condemns nothing (`Weighed.heldThrough`), whichever is later — every
+   * invalidation of its tags up to there was weighed, and condemns it or was read against. A change
+   * that asks for a render made after it (`resource-changes.ts`) takes such a generation for one,
+   * and the same change delivered again does not condemn it.
+   */
+  readonly dependencyRevision: number;
 }
 
 function publish(input: TxInput, plan: CommitPlan, state: Publication): CommitOutcome {
@@ -421,7 +415,7 @@ function publish(input: TxInput, plan: CommitPlan, state: Publication): CommitOu
     headers: generation.headers,
     tags: generation.tags,
     dependencyCoverage: generation.dependencyCoverage,
-    dependencyRevision: attempt.dependency_revision,
+    dependencyRevision: state.dependencyRevision,
     publishedRevision: revision,
     condemned: state.condemned,
     bodyBytes,
@@ -543,39 +537,44 @@ function applyCommit(input: TxInput, plan: CommitPlan): CommitOutcome | Refusal 
     return refuse('quota_exceeded', 'the scope holds as many bytes as it may');
   }
   const tagIds = plan.tagRefs.map((ref) => ref.tagId);
-  const held = viewHeld(plan.request.observedTagRevision, plan.tagRefs);
-  const behind = Math.min(attempt.dependency_revision, held.revision);
+  const held = viewHeld(plan.request, plan.tagRefs);
+  const behind = Math.min(attempt.dependency_revision, plan.request.observedTagRevision);
   const floor = controlFenceFloorInvalidations(sql, { tagIds, afterRevision: behind });
   if (floor.length > 0) return refuseStale(input, attempt, entry, floor);
-  // A tag's invalidation at or before the revision the renderer's view was brought up to is one the
-  // render read against, whatever revision the lease was taken at: a runtime pulls the delta after
-  // it asks for the lease and before it renders, and one recorded between the two — the
-  // `revalidatePath` that sent the request here, which Next.js records behind its response — was
-  // in that pull. An immediate one neither refuses nor condemns what the render made (`held`): its
+  // A tag's invalidation at or before what the renderer's view held of the tag (`viewHeld`) is one
+  // the render read against, whatever revision the lease was taken at: a runtime pulls the delta
+  // after it asks for the lease and before it renders, and one recorded between the two — the
+  // `revalidatePath` that sent the request here, which Next.js records behind its response — was in
+  // that pull. An immediate one neither refuses nor condemns what the render made (`held`): its
   // reads were made afresh against it, and so against nothing recorded of its tag before it. One
   // with a window the view held last of its tag still condemns it, as any after the lease does: its
-  // reads may have been answered stale under it.
-  const query = { entryId: entry.entry_id, tagIds, held };
-  const invalidations = condemningInvalidations(sql, {
-    ...query,
-    afterRevision: attempt.dependency_revision,
+  // reads may have been answered stale under it. What the view held of each tag is the runtime's to
+  // say, and a commit that says nothing of it is judged as one whose view held none: the revision
+  // the view was brought up to does not say it of a tag the view let go of, a read under which was
+  // judged by a copy of the tags that may be behind.
+  //
+  // The lease's revision says when the render was allowed to start; the request's says what the
+  // renderer's view of the tags was synced to, which a hold window leaves behind by up to its
+  // length. An invalidation between the two is one a data-cache read may have been judged against
+  // without knowing of it, as one after the lease is, and is weighed as that one is. One with a
+  // window has the generation published condemned rather than refused: the render may well be
+  // sound, and only the next one of it can say. An immediate one refuses it: published, it would be
+  // expired on arrival, its hard deadline the invalidation's, in the place of the generation before
+  // it, which the invalidation may not have reached.
+  const { condemning: invalidations, heldThrough } = weighInvalidations(sql, {
+    entryId: entry.entry_id,
+    tagIds,
+    held,
+    afterRevision: behind,
   });
   if (invalidations.some((row) => row.meaning === 'immediate')) {
     return refuseStale(input, attempt, entry, invalidations);
   }
-  // The lease's revision says when the render was allowed to start; the request's says what the
-  // renderer's view of the tags was synced to, which a hold window leaves behind by up to its
-  // length. An invalidation between the two is one a data-cache read may have been judged against
-  // without knowing of it, so the generation is published condemned rather than refused: the
-  // render may well be sound, and only the next one of it can say.
-  const observed =
-    behind === attempt.dependency_revision
-      ? invalidations
-      : condemningInvalidations(sql, { ...query, afterRevision: behind });
   return publish(input, plan, {
     attempt,
     entry,
     outputs,
-    condemned: condemnationOf(observed),
+    condemned: condemnationOf(invalidations),
+    dependencyRevision: Math.max(attempt.dependency_revision, heldThrough),
   });
 }

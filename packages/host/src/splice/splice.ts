@@ -396,10 +396,11 @@ class SplicePump {
         if (done) {
           return true;
         }
+        // An empty chunk is no first byte, and no suffix to forward: the phase stays the head's.
         if (value.byteLength > 0) {
           this.#firstByteAt ??= this.#options.now();
+          this.#forwardSuffix(value);
         }
-        this.#forwardSuffix(value);
       }
     } catch (error) {
       this.#handleReadError(error);

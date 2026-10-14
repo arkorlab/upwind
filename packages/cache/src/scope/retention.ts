@@ -55,6 +55,11 @@ export interface RetentionPlan {
   readonly deletable: string[];
   /** The scope is retired, past its history window, and holds nothing left to delete. */
   readonly deleteAll: boolean;
+  /**
+   * A batch came back full (`PRUNE_BATCH`): more is left than one run lets go of, and the next run
+   * comes soon rather than an interval later (`nextRetentionAt`).
+   */
+  readonly more: boolean;
 }
 
 /**
@@ -101,7 +106,7 @@ function forgetReferenced(sql: SqlStorage): void {
 function pendingDeletions(sql: SqlStorage, limit: number): string[] {
   const rows = sql
     .exec<{ storage_ref: string }>(
-      `SELECT storage_ref FROM pending_deletions ORDER BY queued_at LIMIT ?`,
+      `SELECT storage_ref FROM pending_deletions ORDER BY queued_at, storage_ref LIMIT ?`,
       limit,
     )
     .toArray();
@@ -188,11 +193,12 @@ function windowsOf(input: RetentionInput): Windows {
       };
 }
 
+/** Whether the batch came back full (`RetentionPlan.more`). */
 function pruneFormerGenerations(
   input: RetentionInput,
   windows: Windows,
   deletable: string[],
-): void {
+): boolean {
   const expired = prunableGenerations(input.sql, {
     before: input.now - windows.noncurrentMs,
     retain: input.limits.retainNoncurrentGenerations,
@@ -201,16 +207,19 @@ function pruneFormerGenerations(
   for (const generation of expired) {
     releaseGeneration(input, generation, deletable);
   }
+  return expired.length === PRUNE_BATCH;
 }
 
-function pruneEverything(input: RetentionInput, deletable: string[]): void {
-  for (const generation of presentGenerations(input.sql, PRUNE_BATCH)) {
+function pruneEverything(input: RetentionInput, deletable: string[]): boolean {
+  const present = presentGenerations(input.sql, PRUNE_BATCH);
+  for (const generation of present) {
     releaseGeneration(input, generation, deletable);
   }
+  return present.length === PRUNE_BATCH;
 }
 
 /** Uploads of attempts that ended without publishing them, or whose attempt has aged out. */
-function dropOrphanedUploads(input: RetentionInput, deletable: string[]): void {
+function dropOrphanedUploads(input: RetentionInput, deletable: string[]): boolean {
   const rows = input.sql
     .exec<AttemptArtifactRow>(
       `SELECT aa.* FROM attempt_artifacts aa
@@ -237,6 +246,7 @@ function dropOrphanedUploads(input: RetentionInput, deletable: string[]): void {
       row.role,
     );
   }
+  return rows.length === PRUNE_BATCH;
 }
 
 function ageOutHistory(input: RetentionInput, windows: Windows, deletable: string[]): void {
@@ -255,7 +265,7 @@ function ageOutHistory(input: RetentionInput, windows: Windows, deletable: strin
 }
 
 /** Expired data has no useful current value; withdraw it before reclaiming its entry slot. */
-function retireExpiredData(input: RetentionInput): void {
+function retireExpiredData(input: RetentionInput): boolean {
   const { sql, now } = input;
   const entries = sql
     .exec<EntryRow>(
@@ -271,7 +281,7 @@ function retireExpiredData(input: RetentionInput): void {
     )
     .toArray();
   if (entries.length === 0) {
-    return;
+    return false;
   }
   const revision = readRevision(sql) + 1;
   commitRevision(sql, revision);
@@ -292,10 +302,11 @@ function retireExpiredData(input: RetentionInput): void {
       { ...entryStateEvent(sql, entry.entry_id), kind: 'entry.retired' },
     );
   }
+  return entries.length === PRUNE_BATCH;
 }
 
 /** Keep historical attempts/generations, but release entries that can no longer serve a value. */
-function dropUnusedEntries(input: RetentionInput): void {
+function dropUnusedEntries(input: RetentionInput): boolean {
   const { sql, now } = input;
   const entries = sql
     .exec<EntryRow>(
@@ -310,26 +321,37 @@ function dropUnusedEntries(input: RetentionInput): void {
     )
     .toArray();
   if (entries.length === 0) {
-    return;
+    return false;
   }
-  const revision = readRevision(sql) + 1;
-  commitRevision(sql, revision);
+  // One retirement, one event: an entry whose value expired was announced retired as its record
+  // was withdrawn (`retireExpiredData`), and one that never published is announced now, at a
+  // revision the batch commits for it. Letting go of the first says nothing, and commits no
+  // revision: every revision says what was done at it, and a history read back in order would
+  // wait for good at one that says nothing.
+  const unannounced = entries.filter((entry) => entry.publication !== 'retired');
+  if (unannounced.length > 0) {
+    const revision = readRevision(sql) + 1;
+    commitRevision(sql, revision);
+    for (const entry of unannounced) {
+      sql.exec(
+        `UPDATE entries SET publication = 'retired', revision = ? WHERE entry_id = ?`,
+        revision,
+        entry.entry_id,
+      );
+      input.history.append(
+        { sql, revision, now },
+        { ...entryStateEvent(sql, entry.entry_id), kind: 'entry.retired' },
+      );
+    }
+  }
   for (const entry of entries) {
-    sql.exec(
-      `UPDATE entries SET publication = 'retired', revision = ? WHERE entry_id = ?`,
-      revision,
-      entry.entry_id,
-    );
-    input.history.append(
-      { sql, revision, now },
-      { ...entryStateEvent(sql, entry.entry_id), kind: 'entry.retired' },
-    );
     sql.exec(`DELETE FROM entry_tags WHERE entry_id = ?`, entry.entry_id);
     // Not its writers' marks: a write delayed past its entry's reclamation must still find them
     // (`writtenAfter`), and they age out on their own (`forgetWriterMarks`).
     sql.exec(`DELETE FROM entries WHERE entry_id = ?`, entry.entry_id);
   }
   sql.exec(`UPDATE scope SET entry_count = MAX(0, entry_count - ?)`, entries.length);
+  return entries.length === PRUNE_BATCH;
 }
 
 /** The writers' marks past the window a write can cross a later one in (`WRITER_MARK_WINDOW_MS`). */
@@ -342,29 +364,46 @@ export function applyRetention(input: RetentionInput): RetentionPlan {
   const deletable: string[] = [];
   const scope = readScope(input.sql);
   if (scope === undefined) {
-    return { deletable, deleteAll: false };
+    return { deletable, deleteAll: false, more: false };
   }
   const retired = scope.status === 'retired';
   const windows = windowsOf(input);
   expireControlFences(input.sql, input.now);
+  // A step whose batch came back full leaves the rest to a run that comes soon (`more`).
+  const full: boolean[] = [];
   if (retired) {
-    pruneEverything(input, deletable);
+    full.push(pruneEverything(input, deletable));
   } else {
-    retireExpiredData(input);
-    pruneFormerGenerations(input, windows, deletable);
-    dropUnusedEntries(input);
+    full.push(
+      retireExpiredData(input),
+      pruneFormerGenerations(input, windows, deletable),
+      dropUnusedEntries(input),
+    );
     forgetWriterMarks(input);
   }
-  dropOrphanedUploads(input, deletable);
+  full.push(dropOrphanedUploads(input, deletable));
   ageOutHistory(input, windows, deletable);
   queueDeletions(input.sql, deletable, input.now);
   forgetReferenced(input.sql);
-  const historyOver =
-    retired &&
-    scope.retired_at !== null &&
-    input.now - scope.retired_at > input.limits.retainHistoryMs;
+  const page = pendingDeletions(input.sql, PRUNE_BATCH);
   return {
-    deletable: pendingDeletions(input.sql, PRUNE_BATCH),
-    deleteAll: historyOver && !bytesRemain(input.sql),
+    deletable: page,
+    deleteAll: scopeErasable(input),
+    more: full.includes(true) || page.length === PRUNE_BATCH,
   };
+}
+
+/**
+ * Whether the scope's storage may go whole: it is retired, past its history window, and holds
+ * nothing left to delete (`bytesRemain`). Asked again once a run's deletes are confirmed, which may
+ * have been the last of its bytes (`runRetention`).
+ */
+export function scopeErasable(input: Omit<RetentionInput, 'history'>): boolean {
+  const scope = readScope(input.sql);
+  return (
+    scope?.status === 'retired' &&
+    scope.retired_at !== null &&
+    input.now - scope.retired_at > input.limits.retainHistoryMs &&
+    !bytesRemain(input.sql)
+  );
 }

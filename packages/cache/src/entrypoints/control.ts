@@ -29,14 +29,19 @@ import { announceBehind } from '../announce.ts';
 import type { AuthorityHost } from '../authority-host.ts';
 import type { CacheBindings } from '../bindings.ts';
 import { type CacheVars, parseVars } from '../env.ts';
+import { isScopeId } from '../scope-id.ts';
 import { isRefusal } from '../scope/state.ts';
 import { scopeStub } from '../scope/stub.ts';
 
 /**
  * The token a scope's Workers present to the gateways, signed with the key only this Worker holds,
- * under the host's label (`AuthorityHost.naming`).
+ * under the host's label (`AuthorityHost.naming`). None for an id another scope's keys could hold,
+ * or longer than an edge may ask about (`isScopeId`), which no scope is seeded under either.
  */
 export function scopeToken(env: CacheVars, scopeId: string, naming: CacheNaming): Promise<string> {
+  if (!isScopeId(scopeId)) {
+    throw new Error('a scope id is at most 256 characters, and carries neither : nor /');
+  }
   const key = parseVars(env).CACHE_TOKEN_KEY;
   if (key === undefined) {
     throw new Error('CACHE_TOKEN_KEY is not configured: no scope can be opened');
@@ -55,9 +60,10 @@ export function cacheControl(authority: AuthorityHost): CacheControlClass {
     async seedScope(input: SeedScopeInput): Promise<SeedScopeResult> {
       const parsed = seedScopeInputSchema.parse(input);
       const { scopeId } = parsed.scope;
-      // Signed before the scope is seeded: a token that cannot be signed — no key, or a label or a
-      // scope the signature cannot carry — refuses the seed, rather than failing the answer to one
-      // committed, which every retry would find seeded and fail to answer again.
+      // Signed before the scope is seeded: a token that cannot be signed — no key, a label or a
+      // scope the signature cannot carry, or a scope another's keys could hold — refuses the seed,
+      // rather than failing the answer to one committed, which every retry would find seeded and
+      // fail to answer again.
       const token = await scopeToken(this.env, scopeId, authority.naming);
       const result = await scopeStub(this.env, scopeId, authority.locationHint).seedScope(
         parsed,

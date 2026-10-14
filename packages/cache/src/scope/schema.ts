@@ -177,9 +177,11 @@ const STATEMENTS: readonly string[] = [
   // By when each took effect: what a data write made before some of them asks (`dataCondemnation`).
   `CREATE INDEX IF NOT EXISTS invalidations_by_target_stale
     ON invalidations (target_kind, target_id, stale_at)`,
-  // And across every target: what an edge is told moved recently (`recentDelta`). A scope keeps
-  // every invalidation it ever recorded, and the window holds few of them.
+  // And across every target: what an edge is told moved recently (`recentDelta`), down the
+  // revisions past the one it names, and through when each took effect where its window is quiet.
+  // A scope keeps every invalidation it ever recorded.
   `CREATE INDEX IF NOT EXISTS invalidations_by_stale_at ON invalidations (stale_at)`,
+  `CREATE INDEX IF NOT EXISTS invalidations_by_revision ON invalidations (revision)`,
   `CREATE TABLE IF NOT EXISTS attempts (
     attempt_id TEXT PRIMARY KEY,
     entry_id TEXT NOT NULL,
@@ -198,6 +200,9 @@ const STATEMENTS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS attempts_by_entry ON attempts (entry_id, started_at)`,
   `CREATE INDEX IF NOT EXISTS attempts_leased
     ON attempts (lease_expires_at) WHERE status IN ('leased', 'uploading')`,
+  // By when each ended: what retention ages out of a scope's history (`ageOutHistory`), which keeps
+  // the attempts that ended for as long as the history is kept, and may hold millions of them.
+  `CREATE INDEX IF NOT EXISTS attempts_by_finished_at ON attempts (finished_at)`,
   `CREATE TABLE IF NOT EXISTS attempt_artifacts (
     attempt_id TEXT NOT NULL,
     sha256 TEXT NOT NULL,
@@ -229,6 +234,9 @@ const STATEMENTS: readonly string[] = [
     storage_ref TEXT PRIMARY KEY,
     queued_at INTEGER NOT NULL
   )`,
+  // Oldest first, a page at a time (`pendingDeletions`): deletes storage keeps refusing pile up here,
+  // and each run reads only the page it asks again for.
+  `CREATE INDEX IF NOT EXISTS pending_deletions_by_age ON pending_deletions (queued_at, storage_ref)`,
 ];
 
 /**

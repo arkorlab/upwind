@@ -7,15 +7,18 @@ import type { AuthorityHost } from './authority-host.ts';
  */
 const ANNOUNCE_WAIT_MS = 1000;
 
-/** What the host's telling comes to, its failures — the host's to log — included; none to tell. */
+/**
+ * What the host's telling comes to, its failures — the host's to log — included; none to tell. A
+ * hook that throws as it is called fails as one that rejects does: the change it follows is
+ * committed, and a caller told otherwise would make it again.
+ */
 function told(host: AuthorityHost, scopeId: string, env: unknown): Promise<void> | undefined {
-  const telling = host.announce?.(scopeId, env);
-  if (telling === undefined) {
+  if (host.announce === undefined) {
     return undefined;
   }
   return (async () => {
     try {
-      await telling;
+      await host.announce?.(scopeId, env);
     } catch {
       // The host logs its own failures: the invalidation is recorded all the same.
     }

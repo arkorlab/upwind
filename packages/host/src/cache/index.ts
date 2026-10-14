@@ -98,6 +98,7 @@ export {
   type DataSetRequest,
   dataSetRequestSchema,
   dataSetResponseSchema,
+  deltaMovesOn,
   type DataSetResponse,
   type FailRequest,
   failRequestSchema,
@@ -180,6 +181,8 @@ export {
   listResourceWarmJobsResultSchema,
   MAX_RESOURCE_WARM_JOBS,
   MAX_SEED_BATCH,
+  MAX_SEED_OUTPUT_ARTIFACTS,
+  MAX_SEED_OUTPUTS,
   MAX_WARM_FAILURE_DETAIL_LENGTH,
   notRecordedSchema,
   type ReadArtifactLocationResult,
@@ -215,4 +218,9 @@ export {
   seedScopeResultSchema,
   unavailableSchema,
 } from './scope-contract.ts';
-export { MAX_RECENT_INVALIDATIONS, RECENT_INVALIDATIONS_MS, type ScopeSignals } from './signals.ts';
+export {
+  MAX_RECENT_INVALIDATIONS,
+  MAX_SIGNALS_BYTES,
+  RECENT_INVALIDATIONS_MS,
+  type ScopeSignals,
+} from './signals.ts';

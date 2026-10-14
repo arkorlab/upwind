@@ -14,6 +14,7 @@ import {
   type DataSetRequest,
   type DataSetResponse,
   dataSetResponseSchema,
+  deltaMovesOn,
   type TagsGetResponse,
   tagsGetResponseSchema,
   type FailRequest,
@@ -71,7 +72,8 @@ export interface GatewayOptions {
    * placed and has more to lose. Inheriting the authority's transport here would send the read to
    * the authority carrying the read gateway's URL — which it would answer, from wherever it is
    * placed, correctly and far too late. So this is left out only together with `readGatewayUrl`,
-   * where reads go to the authority because that is genuinely where they go.
+   * where reads go to the authority because that is genuinely where they go; a `readGatewayUrl`
+   * given without it is refused.
    */
   readonly readFetchImpl?: FetchLike | undefined;
 }
@@ -97,6 +99,14 @@ const READ_DEADLINE_MS = 300;
  * anything. Held to the local read's 300 ms, every such read there would be a miss.
  */
 const AUTHORITY_READ_DEADLINE_MS = 1000;
+/**
+ * How long an artifact read from the authority takes at the most, from the request to its last
+ * byte: what a copy of one is read for (`COPY_READ_LIMIT_MS`, `artifacts.ts`). An artifact can be
+ * tens of MiB, read from wherever the authority keeps it, so it is given far longer than a value;
+ * one whose gateway or body goes quiet past this is given up, and the runtime goes on without the
+ * output it could not read rather than holding its render open for as long as the request lasts.
+ */
+const ARTIFACT_READ_DEADLINE_MS = 10_000;
 
 /**
  * `read`, given up once it has taken `deadlineMs`, and the request under it with it: it rejects
@@ -142,6 +152,9 @@ export class Gateway {
   readonly #artifacts: ArtifactCopies;
 
   constructor(options: GatewayOptions) {
+    if (options.readGatewayUrl !== undefined && options.readFetchImpl === undefined) {
+      throw new Error('a read gateway URL needs a transport of its own (`readFetchImpl`)');
+    }
     this.#base = `${options.gatewayUrl.replace(/\/$/u, '')}${gatewayScopePath(options.scopeId)}`;
     this.#readBase = `${(options.readGatewayUrl ?? options.gatewayUrl).replace(/\/$/u, '')}${gatewayScopePath(options.scopeId)}`;
     this.#token = options.token;
@@ -225,24 +238,29 @@ export class Gateway {
     return this.#result(response, schema);
   }
 
-  /** An artifact's bytes as the authority answers them: `undefined` when it holds none. */
-  async #artifactFromAuthority(
+  /**
+   * An artifact's bytes as the authority answers them: `undefined` when it holds none. Given up past
+   * `ARTIFACT_READ_DEADLINE_MS`, and called off once `signal` aborts: either, its body and all.
+   */
+  #artifactFromAuthority(
     artifactId: string,
     signal?: AbortSignal,
   ): Promise<Uint8Array | undefined> {
-    const response = await this.#send(`/artifacts/${artifactId}`, {
-      method: 'GET',
-      headers: this.#headers(),
-      ...(signal !== undefined && { signal }),
+    return readWithin('artifact read', ARTIFACT_READ_DEADLINE_MS, async (deadline) => {
+      const response = await this.#send(`/artifacts/${artifactId}`, {
+        method: 'GET',
+        headers: this.#headers(),
+        signal: signal === undefined ? deadline : AbortSignal.any([signal, deadline]),
+      });
+      if (response.status === HTTP_NOT_FOUND) {
+        await response.body?.cancel();
+        return;
+      }
+      if (!response.ok) {
+        await this.#throwFailure(response);
+      }
+      return new Uint8Array(await response.arrayBuffer());
     });
-    if (response.status === HTTP_NOT_FOUND) {
-      await response.body?.cancel();
-      return undefined;
-    }
-    if (!response.ok) {
-      await this.#throwFailure(response);
-    }
-    return new Uint8Array(await response.arrayBuffer());
   }
 
   startAttempt(request: StartAttemptRequest): Promise<StartAttemptResponse> {
@@ -424,7 +442,15 @@ export class Gateway {
       method: 'GET',
       headers: this.#headers(),
     });
-    return this.#result(response, tagsDeltaResponseSchema);
+    const delta = await this.#result(response, tagsDeltaResponseSchema);
+    // Asked for again, such a page would be answered the same, and its reader would never be done.
+    if (!deltaMovesOn(since, delta)) {
+      throw new CacheHostError(`the delta from revision ${since} does not move past it`, {
+        code: 'internal',
+        status: response.status,
+      });
+    }
+    return delta;
   }
 
   invalidate(request: InvalidateRequest): Promise<InvalidateResponse> {

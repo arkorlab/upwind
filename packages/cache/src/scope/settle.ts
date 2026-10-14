@@ -12,7 +12,7 @@ import {
 } from './entries.ts';
 import { findGeneration } from './generations.ts';
 import type { ScopeHistory } from './history.ts';
-import type { BlobStore, KvSink } from './io.ts';
+import { type BlobStore, type KvSink, writeKey } from './io.ts';
 import { dataRecordJson, generationRecordBytes } from './records.ts';
 import type { EntryRow } from './rows.ts';
 import {
@@ -27,6 +27,7 @@ import {
   ControlTagProjectionError,
   type ControlTagWork,
   projectTags,
+  tagProjectionDueAt,
   tagProjectionPending,
 } from './tag-projection.ts';
 
@@ -78,6 +79,12 @@ export interface SettleOutcome {
    * and the alarm comes back at once (`settleRetryMs`).
    */
   readonly continued: boolean;
+  /**
+   * How long what is owed waits yet, where all of it waits for a moment: a retired scope's second
+   * listing of its control tags, which waits out KV's consistency window after the first. The alarm
+   * comes back then (`settleRetryMs`), not every second until.
+   */
+  readonly waitMs?: number;
   /** Only an owned private mark failure rejects that caller after its retry alarm is armed. */
   readonly controlTagsFailed?: boolean;
 }
@@ -106,10 +113,11 @@ export function retryDelayMs(failures: number): number {
 /**
  * When the alarm comes back for what a run left: at once for a rewrite the run cut at its slice
  * while making progress — a record that keeps failing does not hold the rest back — and otherwise
- * after `retryDelayMs` of the runs in a row that failed.
+ * after `retryDelayMs` of the runs in a row that failed, or once what is owed comes due, where it
+ * waits for a moment (`waitMs`).
  */
 export function settleRetryMs(outcome: SettleOutcome, failures: number): number {
-  return outcome.continued ? 0 : retryDelayMs(failures);
+  return outcome.continued ? 0 : Math.max(retryDelayMs(failures), outcome.waitMs ?? 0);
 }
 
 function chunks<T>(items: readonly T[], size: number): T[][] {
@@ -153,7 +161,10 @@ interface Writing {
 
 /**
  * Write the entry's delivery record as it stands, or delete it (`Writing`): the bytes of a
- * generation's record written, where the change wants them, and nothing otherwise.
+ * generation's record written, where the change wants them, and nothing otherwise. A record a change
+ * rewrites just after the one before it went out — an invalidation's of a commit's — is refused by
+ * KV for its key's second, and written once more a second later (`writeKey`), so that its change is
+ * answered with it out, as it is with a tag's.
  */
 async function projectEntry(
   deps: SettleDeps,
@@ -170,15 +181,16 @@ async function projectEntry(
       ? undefined
       : findGeneration(deps.sql, entry.current_generation_id);
   if (retired || current === undefined || entry.publication === 'retired') {
-    await deps.kv.delete(key);
+    await writeKey(() => deps.kv.delete(key));
     return undefined;
   }
   if (data) {
-    await deps.kv.put(key, await dataRecordJson(deps, entry, current));
+    const json = await dataRecordJson(deps, entry, current);
+    await writeKey(() => deps.kv.put(key, json));
     return undefined;
   }
   const bytes = await generationRecordBytes(deps, entry, current);
-  await deps.kv.put(key, bytes);
+  await writeKey(() => deps.kv.put(key, bytes));
   return wanted?.wants(entry.entry_id, bytes.byteLength) === true ? bytes : undefined;
 }
 
@@ -480,6 +492,18 @@ async function writeScopeMarker(deps: SettleDeps): Promise<void> {
   });
 }
 
+/**
+ * A retirement is acknowledged once its scope's marker is in KV. A straggling Worker is refused by
+ * the marker, and a retirement answered without it would leave the retired deployment's token
+ * reading the scope's records until a later run wrote it. Its caller tries again, and is answered
+ * once a run — the retry's own, or the alarm's — has written it (`writeScopeMarker`).
+ */
+export function requireScopeMarker(sql: SqlStorage): void {
+  if (readMeta(sql, META_SCOPE_MARKER) === undefined) {
+    throw new Error('the scope is retired, but its marker is not written yet');
+  }
+}
+
 function failure(deps: SettleDeps, what: string, outcome: PromiseSettledResult<unknown>): boolean {
   if (outcome.status === 'rejected') {
     deps.log.warn(`${what} not settled`, { detail: detailOf(outcome.reason) });
@@ -491,6 +515,18 @@ function failure(deps: SettleDeps, what: string, outcome: PromiseSettledResult<u
 function workRemains(deps: SettleDeps): boolean {
   const { sql } = deps;
   return deps.history.owes(sql) || anyRecordBehind(sql) || tagProjectionPending(sql);
+}
+
+/**
+ * How long what a run that failed nowhere left owed waits yet, where all of it waits for a moment
+ * (`SettleOutcome.waitMs`): none where the history owes anything, or a record is behind.
+ */
+function waitOf(deps: SettleDeps): { readonly waitMs?: number } {
+  const { sql } = deps;
+  if (deps.history.owes(sql) || anyRecordBehind(sql)) return {};
+  const now = deps.now();
+  const dueAt = tagProjectionDueAt(sql, now);
+  return dueAt === undefined ? {} : { waitMs: dueAt - now };
 }
 
 /** How many settle runs in a row have failed (`countSettleFailures`). */
@@ -630,12 +666,15 @@ export async function settlePending(
     failure(deps, 'delivery records', projection),
     ...continuation.map((outcome) => failure(deps, 'continuation alarm', outcome)),
   ];
+  const failed = rejected.includes(true) || projectionFailed;
+  const pending = workRemains(deps);
   return {
-    pending: workRemains(deps),
-    failed: rejected.includes(true) || projectionFailed,
+    pending,
+    failed,
     continued:
       projection.status === 'fulfilled' && projection.value.cut && projection.value.written > 0,
     ...(tags.status === 'rejected' &&
       tags.reason instanceof ControlTagProjectionError && { controlTagsFailed: true }),
+    ...(pending && !failed && waitOf(deps)),
   };
 }

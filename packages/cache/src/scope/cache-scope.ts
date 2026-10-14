@@ -43,7 +43,6 @@ import { type CommitOutcome, planCommit } from './commit.ts';
 import {
   dataUploadExpired,
   type DataUploadPage,
-  dataUploadScanPending,
   dataUploadStartedAt,
   listDataUploads,
 } from './data-uploads.ts';
@@ -56,7 +55,7 @@ import {
 } from './history.ts';
 import { type InvalidateResult, planInvalidate } from './invalidations.ts';
 import { type BlobStore, blobStore, checkFault, kvSink, type TestFaults } from './io.ts';
-import { commitMutation, initializeScope, scopeName, ScopeQueue } from './mutations.ts';
+import { Alarm, commitMutation, initializeScope, scopeName, ScopeQueue } from './mutations.ts';
 import {
   type ArtifactLocation,
   locateArtifact,
@@ -73,7 +72,7 @@ import {
 } from './resource-changes.ts';
 import {
   eraseScopeStorage,
-  META_LAST_RETENTION,
+  nextRetentionAt,
   retentionDue,
   runRetention,
   type TickOptions,
@@ -83,6 +82,7 @@ import {
   chainSettle,
   finishSettle,
   type OwnRecords,
+  requireScopeMarker,
   retryDelayMs,
   type SettleDeps,
   type SettleOutcome,
@@ -94,7 +94,6 @@ import {
 } from './settle.ts';
 import {
   isRefusal,
-  readMeta,
   readRevision,
   readScope,
   type Refusal,
@@ -122,7 +121,6 @@ import type { Apply, TxInput } from './tx.ts';
  * to a scope retention erased leaves no object behind.
  */
 
-const MILLISECONDS_PER_SECOND = 1000;
 const LEASE_SWEEP_GRACE_MS = 1000;
 const MILLISECONDS_PER_HOUR = 3_600_000;
 const RETENTION_INTERVAL_MS = MILLISECONDS_PER_HOUR;
@@ -146,6 +144,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
   /** The history a host keeps of each scope, made as each object is (`ScopeHistory`): none here. */
   static readonly historyOf: HistoryFactory = () => NO_HISTORY;
   readonly #mutations = new ScopeQueue();
+  readonly #alarm = new Alarm(this.ctx.storage);
   #settling: Promise<void> = Promise.resolve();
   /** Settle runs asked for and not begun: a run's slice gives way to them (`othersWaiting`). */
   #waiting = 0;
@@ -258,11 +257,27 @@ export class CacheScope extends DurableObject<CacheBindings> {
     // Armed before the answer, not after it: what the run still does once the change is answered —
     // what the host's history owes for it — is owed to this alarm, or to an earlier one, should the
     // object be reset before the run is over. Erasure may have come between: what is gone is not
-    // asked for.
+    // asked for. An answer read from its own transaction is not taken back for it (`#armOrLog`).
     if (this.#tables && readScope(this.#sql) !== undefined) {
-      await this.#armAlarm(now + RETENTION_INTERVAL_MS);
+      const at = now + RETENTION_INTERVAL_MS;
+      await (answers.atOnce === true ? this.#armOrLog(at) : this.#armAlarm(at));
     }
     return result.value;
+  }
+
+  /**
+   * Arm the alarm for a change answered as it commits (`AT_ONCE`), whose answer is read from its own
+   * transaction: a failure to is logged, not thrown. Its caller, told nothing, would make the change
+   * again or give it up — a lease's would never have its fencing token, and the lease would stand
+   * until its time ran out. What the alarm would come back for waits for the next change's run, or
+   * for the host's check on the scope's retention (`ensureRetention`).
+   */
+  async #armOrLog(at: number): Promise<void> {
+    try {
+      await this.#armAlarm(at);
+    } catch (error) {
+      this.#log.error('alarm not armed', { detail: detailOf(error) });
+    }
   }
 
   /**
@@ -342,10 +357,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
   /** The alarm is one per object: it fires at the earliest of what anything asked for. */
   async #armAlarm(at: number): Promise<void> {
     checkFault(() => this.#faults, 'alarm');
-    const existing = await this.ctx.storage.getAlarm();
-    if (existing === null || existing > at) {
-      await this.ctx.storage.setAlarm(at);
-    }
+    await this.#alarm.arm(at);
   }
 
   async #rearm(now: number): Promise<void> {
@@ -355,14 +367,8 @@ export class CacheScope extends DurableObject<CacheBindings> {
       return;
     }
     const lease = nextLeaseExpiry(this.#sql);
-    if (lease !== undefined) {
-      await this.#armAlarm(lease + LEASE_SWEEP_GRACE_MS);
-    }
-    const lastRetention = Number(readMeta(this.#sql, META_LAST_RETENTION) ?? '0');
-    if (dataUploadScanPending(this.#sql)) {
-      await this.#armAlarm(now + MILLISECONDS_PER_SECOND);
-    }
-    await this.#armAlarm(Math.max(now, lastRetention + RETENTION_INTERVAL_MS));
+    if (lease !== undefined) await this.#armAlarm(lease + LEASE_SWEEP_GRACE_MS);
+    await this.#armAlarm(nextRetentionAt(this.#sql, now, RETENTION_INTERVAL_MS));
   }
 
   async #listDataUploads(): Promise<DataUploadPage | undefined> {
@@ -442,6 +448,8 @@ export class CacheScope extends DurableObject<CacheBindings> {
       // nothing would come back to prune its bodies or, in the end, delete it.
       await this.#armAlarm(now);
     }
+    // Answered once its marker is out, the run before the answer having written it or failed to.
+    if (outcome.kind !== 'unknown' && this.#tables) requireScopeMarker(this.#sql);
     return outcome;
   }
 
@@ -480,7 +488,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
   ): Promise<StartAttemptResponse | Refusal> {
     const result = await this.#mutate(now, (tx) => planStartAttempt(tx, request), AT_ONCE);
     if (result.kind === 'leased') {
-      await this.#armAlarm(result.leaseExpiresAt + LEASE_SWEEP_GRACE_MS);
+      await this.#armOrLog(result.leaseExpiresAt + LEASE_SWEEP_GRACE_MS);
     }
     return result;
   }
@@ -530,11 +538,9 @@ export class CacheScope extends DurableObject<CacheBindings> {
         return () => refuse('lease_expired', 'the data upload expired before adoption');
       }
       // A key that carries no upload clock (`dataUploadStartedAt`) is checked for existence under
-      // the same mutex as GC; current uploads use the timestamp fence without another R2 read.
-      if (
-        startedAt === undefined &&
-        (await this.env.ARTIFACTS.head(input.value.storageRef)) === null
-      ) {
+      // the same mutex as GC, through the store every other read of storage goes through; current
+      // uploads use the timestamp fence without another R2 read.
+      if (startedAt === undefined && !(await this.#blobs().exists(input.value.storageRef))) {
         return () => refuse('artifact_missing', 'the data upload is no longer present');
       }
       return planSetData(tx, input);

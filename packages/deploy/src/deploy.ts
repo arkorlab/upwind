@@ -24,13 +24,19 @@ import type {
   EdgePointer,
   ShellBackendId,
 } from '@stayingupwind/host/delivery';
+import { nextVersionSupported, SUPPORTED_NEXT_RANGE } from '@stayingupwind/host/next-support';
 import { scanPreloadLinks } from '@stayingupwind/host/preloads';
 import { blobObjectKey, kvManifestKey, r2ManifestKey } from '@stayingupwind/host/storage';
 
-import { cacheEntryIdsOf, seededGenerationAt, seedEntriesOf, seedScopeOf } from './cache-seed.ts';
-import { type ShellPlacement, shellPlacementsOf, unimplementedBackend } from './delivery.ts';
+import { cacheEntriesOf, seededGenerationAt, seedEntriesOf, seedScopeOf } from './cache-seed.ts';
+import {
+  reservedPolicyRefusal,
+  type ShellPlacement,
+  shellPlacementsOf,
+  unimplementedBackend,
+} from './delivery.ts';
 import { deploymentFingerprintOf } from './fingerprint.ts';
-import { assembleManifest, oversizedManifest } from './manifest.ts';
+import { assembleManifest, oversizedManifest, routedPages } from './manifest.ts';
 import { edgePointerOf } from './pointer.ts';
 import { DOCUMENT_KIND, shellsOf } from './shells.ts';
 
@@ -43,6 +49,15 @@ import { DOCUMENT_KIND, shellsOf } from './shells.ts';
  * Each writes what it writes in one go, and neither proves that every route answers: that is the
  * caller's to prove, before it writes the pointer that sends requests to the deployment. Every key
  * written is the one the edge and the cache read (`@stayingupwind/host/storage`).
+ *
+ * Each does as much in its one call as the build is large: a read of every blob, a write of every
+ * artifact, a seed of every entry and, under a KV policy, a write and a read-back of every
+ * placement. That is for a process that may make as many calls out as it needs — a command under
+ * Node, a local runner. A host that deploys from a Worker, whose every invocation has a cap on
+ * them, calls neither: it spreads the pure modules they are made of over invocations of its own —
+ * `shellsOf` (`./shells`) to import, `cacheEntryIdsOf` and `seedEntriesOf` (`./cache-seed`) to
+ * seed in batches, `assembleManifest` (`./manifest`) to assemble, and `shellPlacementsOf`
+ * (`./delivery`) to place.
  */
 
 /** The build's blobs, by digest: where its upload left them, or the directory it was built in. */
@@ -103,7 +118,11 @@ export interface DeployTarget {
 }
 
 /** Why a deployment was refused: a code to branch on, beside the message that says why. */
-export type DeployRefusalCode = 'backend_unsupported' | 'bundle_invalid' | 'cache_scope_conflict';
+export type DeployRefusalCode =
+  | 'backend_unsupported'
+  | 'bundle_invalid'
+  | 'cache_scope_conflict'
+  | 'policy_reserved';
 
 export class DeployRefusalError extends Error {
   readonly code: DeployRefusalCode;
@@ -152,7 +171,13 @@ export interface StagedDeployment {
 
 /** Entries per call: within `MAX_SEED_BATCH`, and as many as a failed call has to send again. */
 const SEED_BATCH = 100;
-const SHELL_CONTENT_TYPE = 'text/html; charset=utf-8';
+const KIB = 1024;
+const MIB = KIB * KIB;
+const MAX_KV_VALUE_MIB = 25;
+/** The largest value Workers KV holds under one key. */
+const MAX_KV_VALUE_BYTES = MAX_KV_VALUE_MIB * MIB;
+/** The most of a key's metadata Workers KV keeps, as JSON. */
+const MAX_KV_METADATA_BYTES = KIB;
 
 function isoOf(ms: number): string {
   // eslint-disable-next-line unicorn/prefer-temporal -- Temporal is not available in the Workers runtime.
@@ -226,10 +251,14 @@ async function importShells(
   input: StageInput,
 ): Promise<Record<string, string[]>> {
   const preloads: Record<string, string[]> = {};
-  for (const shell of shellsOf(input.bundle)) {
+  // Those of the pages the manifest routes, as it routes them (`routedPages`): without a runtime
+  // cache, none of a page the build finished, which the manifest leaves to the Function.
+  const shells = shellsOf(input.bundle, routedPages(target.cache !== undefined));
+  for (const shell of shells) {
     const bytes = await blobOf(target.blobs, shell);
+    // As what it is: a segment or a payload is an RSC payload, and a page's props are JSON.
     await target.bucket.put(r2ArtifactKey(shell.sha256), bytes, {
-      contentType: SHELL_CONTENT_TYPE,
+      contentType: shell.contentType,
       customMetadata: {
         kind: shell.kind,
         byteLength: String(shell.byteLength),
@@ -268,11 +297,13 @@ async function seedCache(cache: DeployCache, input: StageInput): Promise<string>
   if (seeded.kind === 'conflict') {
     throw new DeployRefusalError(seeded.reason, { code: 'cache_scope_conflict' });
   }
-  const ids = cacheEntryIdsOf(bundle);
+  // Classified once for every batch: a bundle of many prerenders is many batches.
+  const byId = cacheEntriesOf(bundle);
+  const ids = [...byId.keys()];
   const context = { scopeId, generatedAt: seededGenerationAt(bundle, input.now()) };
   for (let batchIndex = 0; batchIndex * SEED_BATCH < ids.length; batchIndex += 1) {
     const batch = ids.slice(batchIndex * SEED_BATCH, (batchIndex + 1) * SEED_BATCH);
-    const entries = await seedEntriesOf(bundle, batch, context);
+    const entries = await seedEntriesOf(bundle, batch, context, byId);
     await cache.seedEntries({ scopeId, batchIndex, entries });
   }
   return seeded.token;
@@ -292,6 +323,24 @@ export async function stageDeployment(
   input: StageInput,
 ): Promise<StagedDeployment> {
   const { bundle } = input;
+  // The Functions the manifest and the pointer name are where the edge sends the deployment's
+  // requests, and the id they carry is the scope it tells them of (`AppRuntime.deploymentId`):
+  // another deployment's would answer this one's requests, under a scope it was not seeded in.
+  if (input.app.deploymentId !== bundle.deploymentId) {
+    throw new DeployRefusalError(
+      `the Functions handed in are ${input.app.deploymentId}'s, not ${bundle.deploymentId}'s`,
+      { code: 'bundle_invalid' },
+    );
+  }
+  // A build outside the adapter's range gets nothing of what a host serves (`NextSupport`), and
+  // is refused here, before anything is written; one with limited support is deployed as any is.
+  if (!nextVersionSupported(bundle.nextVersion)) {
+    const { min, max } = SUPPORTED_NEXT_RANGE;
+    throw new DeployRefusalError(
+      `next ${bundle.nextVersion} is outside the versions deployed (>=${min.join('.')} <${max.join('.')})`,
+      { code: 'bundle_invalid' },
+    );
+  }
   const fingerprint = await deploymentFingerprintOf(bundle, input.json, isoOf(input.now()));
   const blobs = await stageBlobs(target, bundle);
   const preloads = await importShells(target, input);
@@ -344,29 +393,67 @@ async function storedAs(
 }
 
 /**
- * A shell, placed where the policy's shell backend reads it from: in KV beside the edge's other
- * state, from the artifact staging stored, or nowhere new under an R2 policy, where that artifact
- * is the placement. Either way the artifact is read as it is now (`storedAs`).
+ * What an artifact is placed in KV with: what it is, and the route it was first captured from —
+ * provenance, which nothing reads to serve it, and left out where that route's pathname would take
+ * the metadata past what KV keeps of it (`MAX_KV_METADATA_BYTES`) and fail the write.
+ */
+function kvMetadataOf(
+  unit: Pick<ShellPlacement, 'byteLength' | 'contentType' | 'sha256'> & {
+    readonly encoding: string;
+  },
+  sourcePath: string,
+): Readonly<Record<string, unknown>> {
+  const { contentType, byteLength, sha256, encoding } = unit;
+  const traced = { contentType, byteLength, sha256, sourcePath, encoding };
+  return encodeUtf8(JSON.stringify(traced)).byteLength > MAX_KV_METADATA_BYTES
+    ? { contentType, byteLength, sha256, encoding }
+    : traced;
+}
+
+/**
+ * A shell, and each rendering of it the manifest names, placed where the policy's shell backend
+ * reads them from: in KV beside the edge's other state, from the artifacts staging and whatever
+ * compressed them stored, or nowhere new under an R2 policy, where those artifacts are the
+ * placement. Either way each artifact is read as it is now (`storedAs`). A manifest that names a
+ * rendering serves it to a client that asks for its encoding, so one not placed is a request the
+ * edge cannot answer from what it promised.
  */
 async function placeShell(
   target: DeployTarget,
   backend: ShellBackendId,
   shell: ShellPlacement,
 ): Promise<void> {
-  const bytes = await storedAs(target, r2ArtifactKey(shell.sha256), shell, 'artifact');
-  if (backend === 'r2') {
-    return;
+  const units = [{ ...shell, encoding: 'identity' as const }, ...shell.renderings];
+  for (const unit of units) {
+    const bytes = await storedAs(target, r2ArtifactKey(unit.sha256), unit, 'artifact');
+    if (backend === 'r2') {
+      continue;
+    }
+    const key = kvArtifactKey(unit.sha256);
+    await target.edgeState.put(key, bytes, kvMetadataOf(unit, shell.sourcePath));
+    await readBack((written) => target.edgeState.get(written), key, unit);
   }
-  // No renderings beside it: `stageDeployment` assembles none (see there).
-  const key = kvArtifactKey(shell.sha256);
-  await target.edgeState.put(key, bytes, {
-    contentType: shell.contentType,
-    byteLength: shell.byteLength,
-    sha256: shell.sha256,
-    sourcePath: shell.sourcePath,
-    encoding: 'identity',
-  });
-  await readBack((written) => target.edgeState.get(written), key, shell);
+}
+
+/**
+ * Why the policy's shell backend cannot hold what the manifest places, or `undefined` where it can:
+ * under `kv`, an artifact past the largest value KV holds (`MAX_KV_VALUE_BYTES`), whose write would
+ * fail once the manifest and the shells before it were written. Judged on the sizes the manifest
+ * names, before anything is. Under `r2` the artifact staging stored is the placement, whatever its
+ * size.
+ */
+function unplaceable(
+  backend: ShellBackendId,
+  placements: readonly ShellPlacement[],
+): string | undefined {
+  if (backend !== 'kv') {
+    return undefined;
+  }
+  const units = placements.flatMap((shell) => [shell, ...shell.renderings]);
+  const past = units.find((unit) => unit.byteLength > MAX_KV_VALUE_BYTES);
+  return past === undefined
+    ? undefined
+    : `artifact ${past.sha256} is ${past.byteLength} bytes, past the ${MAX_KV_VALUE_BYTES} a KV shell backend holds, so a policy that reads shells from the bucket`;
 }
 
 /**
@@ -417,8 +504,11 @@ async function requireBlobs(
 }
 
 /**
- * A write a publication relies on, read back: a store that lost the value or changed it refuses the
- * deployment, before the pointer that would send requests to it exists.
+ * A write a publication relies on, read back, before the pointer that would send requests to it
+ * exists: a store that changed the value refuses the deployment. One that does not show it yet is
+ * no fault of the deployment's — KV may answer a read from a copy it took before the write, a miss
+ * among them, for as long as it keeps that copy — so the publication fails without a refusal, and
+ * the same staged deployment is published again once the write shows.
  */
 async function readBack(
   read: (key: string) => Promise<Uint8Array | undefined>,
@@ -426,7 +516,10 @@ async function readBack(
   ref: BlobRef,
 ): Promise<void> {
   const bytes = await read(key);
-  if (bytes === undefined || !(await holds(bytes, ref))) {
+  if (bytes === undefined) {
+    throw new Error(`${key} does not show what was written to it yet; publish it again`);
+  }
+  if (!(await holds(bytes, ref))) {
     throw new DeployRefusalError(`${key} does not hold what was written to it`, {
       code: 'bundle_invalid',
     });
@@ -468,6 +561,10 @@ async function manifestOf(
  * Publish a staged deployment: the manifest stored, every shell it names placed, then the manifest
  * where the edge reads it — and the pointer that sends the site's requests to it, under its policy,
  * for the caller to write where its edge looks.
+ *
+ * A failure that is no `DeployRefusalError` is the store's — a write that threw, or one it does not
+ * show yet (`readBack`) — and the same staged deployment can be published again: every write is
+ * under a digest or an id.
  */
 export async function publishDeployment(
   target: DeployTarget,
@@ -480,7 +577,16 @@ export async function publishDeployment(
       code: 'backend_unsupported',
     });
   }
+  const reserved = reservedPolicyRefusal(input.policy);
+  if (reserved !== undefined) {
+    throw new DeployRefusalError(reserved, { code: 'policy_reserved' });
+  }
   const manifest = await manifestOf(staged);
+  const placements = shellPlacementsOf(manifest);
+  const oversized = unplaceable(input.policy.shell.backend, placements);
+  if (oversized !== undefined) {
+    throw new DeployRefusalError(oversized, { code: 'backend_unsupported' });
+  }
   await requireBlobs(target, staged.blobs, manifest);
   const stored: BlobRef = {
     sha256: staged.manifestId,
@@ -490,7 +596,7 @@ export async function publishDeployment(
     contentType: 'application/json',
   });
   await readBack((key) => target.bucket.get(key), r2ManifestKey(staged.manifestId), stored);
-  for (const shell of shellPlacementsOf(manifest)) {
+  for (const shell of placements) {
     await placeShell(target, input.policy.shell.backend, shell);
   }
   await target.edgeState.put(kvManifestKey(staged.manifestId), staged.serialized);

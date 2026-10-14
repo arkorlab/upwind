@@ -38,8 +38,9 @@ const COMMIT_MIB = 1;
  * generation's own and each output's, and Cloudflare sends no response whose headers come to more
  * than 128 KB in all (Workers limits, "Response header size":
  * https://developers.cloudflare.com/workers/platform/limits/): a commit replaying more could never
- * be delivered. Beside them it carries tags, at most 1,024 of 256 characters; the outputs' keys and
- * artifacts, which the authority holds with the headers to the 256 KiB of a record's header
+ * be delivered. Beside them it carries tags, at most 1,024 of 256 characters, and again with a
+ * revision each where it says what its view held of them (`heldTagRevisions`); the outputs' keys
+ * and artifacts, which the authority holds with the headers to the 256 KiB of a record's header
  * (`MAX_PACK_HEADER_BYTES`); and dependencies, which the runtime sends none of. A mebibyte is room
  * for all of it. More would buy nothing but memory: `JSON.parse` makes 22 MiB of heap of a mebibyte
  * of `[{},{},…]`, and 89 of four.

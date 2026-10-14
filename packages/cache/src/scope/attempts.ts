@@ -73,6 +73,20 @@ function liveLeaseOf(sql: SqlStorage, entryId: string, now: number): AttemptRow 
     .toArray()[0];
 }
 
+/**
+ * The attempt an entry in backoff is held back by: its latest, whose failure set the backoff, or
+ * one leased past it by hand that has ended since. Kept for as long as the history is, past any
+ * backoff of a few minutes; `undefined` where it has aged out all the same.
+ */
+function latestAttemptOf(sql: SqlStorage, entryId: string): string | undefined {
+  return sql
+    .exec<{ attempt_id: string }>(
+      `SELECT attempt_id FROM attempts WHERE entry_id = ? ORDER BY started_at DESC LIMIT 1`,
+      entryId,
+    )
+    .toArray()[0]?.attempt_id;
+}
+
 function expiredLeases(sql: SqlStorage, now: number): AttemptRow[] {
   return sql
     .exec<AttemptRow>(
@@ -277,10 +291,13 @@ function applyStartAttempt(input: TxInput, plan: StartPlan): StartAttemptRespons
     plan.request.reason !== 'manual'
   ) {
     finish(input, events);
+    // No lease stands to name: the attempt the backoff is for, a recorded one, rather than the id
+    // this start was planned with, which nothing ever recorded.
     return {
       kind: 'busy',
       entryId: entry.entry_id,
-      attemptId: entry.regeneration_attempt_id ?? plan.attemptId,
+      attemptId:
+        entry.regeneration_attempt_id ?? latestAttemptOf(sql, entry.entry_id) ?? plan.attemptId,
       leaseExpiresAt: entry.next_retry_at,
       current,
     };

@@ -1,5 +1,6 @@
 import {
   type DeploymentBundle,
+  type EntrypointKind,
   pagesDataPathnameUnder,
   type Prerender,
   prerenderResponseHeaders,
@@ -57,13 +58,54 @@ function headerText(value: string | readonly string[] | undefined): string | und
   return typeof value === 'string' ? value : value.join(', ');
 }
 
+/** What seeding looks a bundle up by, for each of its routes. */
+interface BundleIndex {
+  /** The kind of the entrypoint a route is served by: the first the bundle names for it. */
+  readonly kinds: ReadonlyMap<string, EntrypointKind>;
+  /** The prerenders of each pathname, in the bundle's order. */
+  readonly prerenders: ReadonlyMap<string, readonly Prerender[]>;
+}
+
+/**
+ * The index of each bundle seeding has read. Every cacheable prerender is seeded on its own, and
+ * found its entrypoint, and a Pages Router page its data, by going through the whole bundle: the
+ * seeding of a deployment grew with the square of its routes. A bundle is not changed once it is
+ * read, so its index is made the first time it is asked, and goes with it.
+ */
+const INDEXES = new WeakMap<DeploymentBundle, BundleIndex>();
+
+function indexOf(bundle: DeploymentBundle): BundleIndex {
+  const held = INDEXES.get(bundle);
+  if (held !== undefined) {
+    return held;
+  }
+  const kinds = new Map<string, EntrypointKind>();
+  for (const entrypoint of bundle.entrypoints) {
+    if (!kinds.has(entrypoint.pathname)) {
+      kinds.set(entrypoint.pathname, entrypoint.kind);
+    }
+  }
+  const prerenders = new Map<string, Prerender[]>();
+  for (const prerender of bundle.prerenders) {
+    const named = prerenders.get(prerender.pathname);
+    if (named === undefined) {
+      prerenders.set(prerender.pathname, [prerender]);
+    } else {
+      named.push(prerender);
+    }
+  }
+  const index = { kinds, prerenders };
+  INDEXES.set(bundle, index);
+  return index;
+}
+
 /** The router a prerender belongs to, and the kind of output: from its entrypoint. */
 export function prerenderEntryKind(bundle: DeploymentBundle, prerender: Prerender): RouteEntryKind {
-  const entrypoint = bundle.entrypoints.find((entry) => entry.pathname === prerender.route);
-  if (entrypoint?.kind === 'pages') {
+  const kind = indexOf(bundle).kinds.get(prerender.route);
+  if (kind === 'pages') {
     return 'pages';
   }
-  return entrypoint?.kind === 'app-route' ? 'app-route' : 'app-page';
+  return kind === 'app-route' ? 'app-route' : 'app-page';
 }
 
 /**
@@ -133,6 +175,10 @@ function outputOf(
 /**
  * The data route's prerender beside a Pages Router page: the props it was rendered with, named as
  * the build names it, under the base path (`<basePath>/_next/data/<buildId>/…`).
+ *
+ * Of the page's own route and prerender group, as `routePagesData` takes it
+ * (`@stayingupwind/core/bundle`): a bundle does not hold a pathname to one prerender, and another
+ * group's prerender of the same data pathname holds the props of another render.
  */
 function pagesDataOf(bundle: DeploymentBundle, prerender: Prerender): Prerender | undefined {
   const pathname = pagesDataPathnameUnder(
@@ -140,7 +186,15 @@ function pagesDataOf(bundle: DeploymentBundle, prerender: Prerender): Prerender 
     bundle.config.basePath,
     prerender.pathname,
   );
-  return bundle.prerenders.find((twin) => twin.pathname === pathname && twin.body !== undefined);
+  return indexOf(bundle)
+    .prerenders.get(pathname)
+    ?.find((twin) => {
+      return (
+        twin.route === prerender.route &&
+        twin.groupId === prerender.groupId &&
+        twin.body !== undefined
+      );
+    });
 }
 
 /** The outputs of the build's generation: the primary body, its state, and a page's data. */
@@ -171,7 +225,9 @@ function outputsOf(
 
 /**
  * The seed of one prerender. `undefined` for a prerender without a body, which
- * `cacheablePrerenders` never yields.
+ * `cacheablePrerenders` never yields, and for one of a Pages Router API route. `next build` renders
+ * no such route, and Next.js caches none: `cacheablePrerenders` takes one a bundle names for a
+ * route handler's, but it is neither a page nor a handler a Function would regenerate.
  */
 export async function seedRouteFor(
   bundle: DeploymentBundle,
@@ -179,7 +235,7 @@ export async function seedRouteFor(
   ctx: SeedContext,
 ): Promise<SeededRoute | undefined> {
   const { body } = prerender;
-  if (body === undefined) {
+  if (body === undefined || indexOf(bundle).kinds.get(prerender.route) === 'pages-api') {
     return undefined;
   }
   const kind = prerenderEntryKind(bundle, prerender);

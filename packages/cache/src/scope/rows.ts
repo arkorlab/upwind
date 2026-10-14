@@ -199,7 +199,9 @@ export function toScope(row: ScopeRow): CacheScope {
     projectId: row.project_id,
     environmentId: cacheEnvironmentSchema.parse(row.environment_id),
     deploymentId: row.deployment_id,
-    keySchemaVersion: KEY_SCHEMA_VERSION,
+    // The schema its keys were made under, as it was seeded: one this authority does not know is a
+    // fault to surface, as a column's schema is, not this authority's own to serve in its place.
+    keySchemaVersion: z.literal(KEY_SCHEMA_VERSION).parse(row.key_schema_version),
     buildId: row.build_id,
     status: cacheScopeStatusSchema.parse(row.status),
     seededAt: row.seeded_at,

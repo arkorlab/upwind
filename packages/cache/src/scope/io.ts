@@ -76,6 +76,34 @@ export function kvSink(kv: KVNamespace, faults: () => TestFaults): KvSink {
   };
 }
 
+/** How soon KV takes a second write of a key: one within a second it refuses (429). */
+const KEY_WRITE_INTERVAL_MS = 1000;
+/** How KV says it refused a write for the key's second (`… 429 Too Many Requests`). */
+const RATE_LIMITED = /\b429\b/u;
+
+/**
+ * Make a write of one KV key, and make it once more a second later where KV refused it for the
+ * key's second (429): a record a change rewrites just after the one before it went out — an
+ * invalidation's of a commit's, a tag's of the run before — is written again within one. Any other
+ * failure, or a second refusal, is the write's. Nothing is kept of earlier writes, which an object's
+ * restart would lose, and the wait is the caller's, over when it is.
+ */
+export async function writeKey(write: () => Promise<void>): Promise<void> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await write();
+      return;
+    } catch (error) {
+      if (attempt > 1 || !(error instanceof Error) || !RATE_LIMITED.test(error.message)) {
+        throw error;
+      }
+    }
+    await new Promise((resolve) => {
+      setTimeout(resolve, KEY_WRITE_INTERVAL_MS);
+    });
+  }
+}
+
 export function blobStore(bucket: R2Bucket, faults: () => TestFaults): BlobStore {
   return {
     read: async (key) => {

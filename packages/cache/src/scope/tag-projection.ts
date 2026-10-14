@@ -6,7 +6,7 @@ import {
   controlFenceTag,
   expireControlFences,
 } from './control-fences.ts';
-import type { KvSink } from './io.ts';
+import { type KvSink, writeKey } from './io.ts';
 import { readMeta, readScope, writeMeta } from './state.ts';
 import {
   controlTagProjections,
@@ -17,6 +17,7 @@ import {
   finishControlTagProjection,
   finishRetiredControlTagPage,
   latestTagRevision,
+  retiredControlTagListingAt,
   retiredControlTagScan,
   tagsDelta,
   toDeltaEntry,
@@ -26,11 +27,6 @@ const PROJECTION_BATCH = 50;
 const PROJECTION_CONCURRENCY = 8;
 const META_TAG_REVISION = 'tags_projected_revision';
 const META_RETIRED_TAG_REVISION = 'tags_deleted_revision';
-
-/** How soon KV takes a second write of a key: one within a second it refuses (429). */
-const KEY_WRITE_INTERVAL_MS = 1000;
-/** How KV says it refused a write for the key's second (`… 429 Too Many Requests`). */
-const RATE_LIMITED = /\b429\b/u;
 
 interface TagProjectionDeps {
   readonly sql: SqlStorage;
@@ -44,9 +40,8 @@ interface TagProjectionDeps {
  * Write a tag's record as it stands, or take it off for a retired scope. KV refuses a second write
  * of a key within a second (429), and a tag invalidated again while its record went out, by a
  * change that committed while a run waited, is written again within one. A write refused so is
- * tried once more a second later rather than failing the run, so that the change is answered with
- * its record out; any other failure, or a second refusal, fails the run as before. Nothing is kept
- * of earlier writes, which an object's restart would lose.
+ * tried once more a second later rather than failing the run (`writeKey`), so that the change is
+ * answered with its record out; any other failure, or a second refusal, fails the run as before.
  */
 async function writeTagRecord(
   deps: TagProjectionDeps,
@@ -54,19 +49,7 @@ async function writeTagRecord(
   tag: TagDeltaEntry,
 ): Promise<void> {
   const key = kvTagKey(deps.scopeId, tag.tagId);
-  for (let attempt = 1; ; attempt += 1) {
-    try {
-      await (retired ? deps.kv.delete(key) : deps.kv.put(key, JSON.stringify(tag)));
-      return;
-    } catch (error) {
-      if (attempt > 1 || !(error instanceof Error) || !RATE_LIMITED.test(error.message)) {
-        throw error;
-      }
-    }
-    await new Promise((resolve) => {
-      setTimeout(resolve, KEY_WRITE_INTERVAL_MS);
-    });
-  }
+  await writeKey(() => (retired ? deps.kv.delete(key) : deps.kv.put(key, JSON.stringify(tag))));
 }
 
 /** Identities are fixed at commit; completion is evidence for the caller's serialized settle. */
@@ -310,6 +293,19 @@ export async function projectTags(
   });
 
   if (retired) await deleteRetiredControlTags(deps);
+}
+
+/**
+ * When the tag records' work comes due, where all it owes is a retired scope's second listing of its
+ * control tags (`retiredControlTagListingAt`): `undefined` where anything else is owed, or that
+ * listing is due already.
+ */
+export function tagProjectionDueAt(sql: SqlStorage, now: number): number | undefined {
+  if (readScope(sql)?.status !== 'retired' || controlFenceSweepPending(sql)) return undefined;
+  if (latestTagRevision(sql) > Number(readMeta(sql, META_RETIRED_TAG_REVISION) ?? '0')) {
+    return undefined;
+  }
+  return retiredControlTagListingAt(sql, now);
 }
 
 export function tagProjectionPending(sql: SqlStorage): boolean {

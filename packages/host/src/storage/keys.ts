@@ -7,9 +7,13 @@
 /**
  * The pointer a hostname is served by, under the full hostname: that is what a request arrives
  * with, so the edge resolves a hostname with one read.
+ *
+ * Spelled as DNS compares a name, which a key is not: in lower case, and without the root's dot
+ * that a fully qualified spelling ends in. A pointer written for `Example.com` is then the one a
+ * request for `example.com.` finds, whichever of the two spellings either side was handed.
  */
 export function kvHostPointerKey(hostname: string): string {
-  return `host:${hostname}`;
+  return `host:${hostname.toLowerCase().replace(/\.$/u, '')}`;
 }
 
 /** A manifest, by its id: the digest of its bytes, so what is under a key never changes. */

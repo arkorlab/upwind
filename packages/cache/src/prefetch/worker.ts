@@ -1,4 +1,7 @@
 import { PREFETCH_BLOB_PATH } from '@stayingupwind/host/bindings';
+// The key the upload writes, from the module of the storage keys alone: imported once from behind a
+// barrel of build schemas, it brought zod and every schema with it, 819 KiB of this Worker's 820.
+import { blobObjectKey } from '@stayingupwind/host/storage';
 
 /**
  * One blob of a deployment's own bundle, by the sha256 the bundle names it with.
@@ -30,36 +33,31 @@ import { PREFETCH_BLOB_PATH } from '@stayingupwind/host/bindings';
 
 /** What a sha256 looks like written down; anything else is not a key this Worker will build. */
 const SHA256 = /^[0-9a-f]{64}$/u;
-
-/**
- * `blobObjectKey` (`@stayingupwind/host/storage`), written out rather than imported.
- *
- * Measured when it was imported from behind a barrel of build schemas: it brought zod and every
- * schema with it — **819 KiB of this Worker's 820**, for a key of one line. Which is parsed on
- * every cold start of a Worker whose whole job is to be quick about a blob the edge could not
- * serve. Nothing here holds the copy to the real one, so a change to either is a change to both.
- */
-function blobObjectKey(sha256: string): string {
-  return `blobs/${sha256}`;
-}
 const HTTP_NOT_FOUND = 404;
 const HTTP_METHOD_NOT_ALLOWED = 405;
 /** A deployment is immutable and a blob is its content, so a hit is good for as long as anyone has. */
 const IMMUTABLE = 'public, max-age=31536000, immutable';
+/**
+ * What a blob is answered with. The type is the asking Function's to decide: it knows what the blob
+ * is from its own manifest, and a blob is bytes here. Saying `application/octet-stream` keeps this
+ * Worker out of that.
+ */
+const FOUND_HEADERS = { 'content-type': 'application/octet-stream', 'cache-control': IMMUTABLE };
 
 export interface PrefetchEnv {
   /** The bundle blobs of every deployment, as the upload put them (`blobObjectKey`). */
   readonly ARTIFACTS: R2Bucket;
 }
 
-function empty(status: number): Response {
-  return new Response(null, { status, headers: { 'cache-control': 'no-store' } });
+function empty(status: number, headers: Readonly<Record<string, string>> = {}): Response {
+  return new Response(null, { status, headers: { 'cache-control': 'no-store', ...headers } });
 }
 
 export default {
   async fetch(request: Request, env: PrefetchEnv): Promise<Response> {
     if (request.method !== 'GET' && request.method !== 'HEAD') {
-      return empty(HTTP_METHOD_NOT_ALLOWED);
+      // Named with the methods this Worker does answer, as a 405 is (RFC 9110, section 15.5.6).
+      return empty(HTTP_METHOD_NOT_ALLOWED, { allow: 'GET, HEAD' });
     }
     const { pathname } = new URL(request.url);
     if (!pathname.startsWith(PREFETCH_BLOB_PATH)) {
@@ -71,14 +69,17 @@ export default {
     if (!SHA256.test(sha256)) {
       return empty(HTTP_NOT_FOUND);
     }
+    if (request.method === 'HEAD') {
+      // Whether the blob is there, and no more: its object is looked at, and no body opened.
+      const found = await env.ARTIFACTS.head(blobObjectKey(sha256));
+      return found === null
+        ? empty(HTTP_NOT_FOUND)
+        : new Response(null, { headers: FOUND_HEADERS });
+    }
     const stored = await env.ARTIFACTS.get(blobObjectKey(sha256));
     if (stored === null) {
       return empty(HTTP_NOT_FOUND);
     }
-    // The type is the asking Function's to decide: it knows what the blob is from its own manifest,
-    // and a blob is bytes here. Saying `application/octet-stream` keeps this Worker out of that.
-    return new Response(stored.body, {
-      headers: { 'content-type': 'application/octet-stream', 'cache-control': IMMUTABLE },
-    });
+    return new Response(stored.body, { headers: FOUND_HEADERS });
   },
 } satisfies ExportedHandler<PrefetchEnv>;

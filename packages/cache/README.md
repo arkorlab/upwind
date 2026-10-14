@@ -17,6 +17,10 @@ nothing, nothing is added.
 `./standalone/worker` is the cache as a Worker of its own, for a host that runs it as it stands;
 the other entry points are its parts, for a host that composes its own.
 
+`@stayingupwind/adapter` is an optional peer, for `./adapter` alone: a host that builds with that
+preset installs it beside the cache, as it installs Next.js. Nothing else in the package imports it,
+so a host that runs only the standalone Worker, the gateways or the authority leaves it out.
+
 The published package is TypeScript sources: `exports` names `.ts` files, and there is no build
 step. Its suites run inside workerd (`@cloudflare/vitest-plugin`).
 
@@ -37,6 +41,6 @@ step. Its suites run inside workerd (`@cloudflare/vitest-plugin`).
 | `./host`                                                   | What a host hands the cache: its tokens' label, where its scopes are placed, its meter, whom to tell when a scope moves              |
 | `./bindings`, `./env`                                      | What the cache reads of its environment, and the settings it parses from it                                                          |
 | `./function`, `./function/host`, `./function/bundle-blobs` | The client a deployment's Function reaches the cache with, and the blobs the build left out of it                                    |
-| `./adapter`                                                | The deployment adapter with that client bundled into every Function it builds, for `NEXT_ADAPTER_PATH`                               |
+| `./adapter`                                                | The deployment adapter with that client bundled into every Function it builds but the middleware's, for `NEXT_ADAPTER_PATH`          |
 | `./logger`                                                 | Structured JSON logging, which never receives a token, a body or a cache key                                                         |
 | `./internal/*`                                             | Every module by its file path, `.ts` included (`./internal/scope/data.ts`), for suites and for a host that composes the parts itself |

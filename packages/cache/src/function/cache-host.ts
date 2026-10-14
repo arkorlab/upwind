@@ -13,6 +13,7 @@ import {
 import {
   type CommitArtifact as GatewayCommitArtifact,
   type CommitOutput as GatewayCommitOutput,
+  type CommitRequest as GatewayCommitRequest,
   type CurrentGenerationSummary,
   type DataSetRequest,
   type InvalidateResponse as GatewayInvalidateResponse,
@@ -43,7 +44,7 @@ import {
   type UploadedArtifact,
 } from '@stayingupwind/runtime/cache-host';
 
-import type { FunctionCacheNaming } from './artifacts.ts';
+import { behindResponse, type FunctionCacheNaming } from './artifacts.ts';
 import { DataCopies } from './data-copies.ts';
 import { Gateway } from './gateway.ts';
 import { RecordCopies } from './record-copies.ts';
@@ -187,6 +188,23 @@ function currentOf(current: CurrentGenerationSummary | null): CurrentSummary | n
 }
 
 /**
+ * What the commit says of the render's view of the tags: the revision it was brought up to, and what
+ * it held of each of the generation's tags, where the runtime says (`heldTagRevisions`). A runtime
+ * from before that says nothing of it, and the authority judges its commit as one whose view held
+ * no tag. Read through a shape of this host's own, which the runtime it is built beside matches
+ * whether it says it or not.
+ */
+function viewOf(request: {
+  readonly observedTagRevision: number;
+  readonly heldTagRevisions?: Readonly<Record<string, number>> | undefined;
+}): Pick<GatewayCommitRequest, 'observedTagRevision' | 'heldTagRevisions'> {
+  return {
+    observedTagRevision: request.observedTagRevision,
+    ...(request.heldTagRevisions !== undefined && { heldTagRevisions: request.heldTagRevisions }),
+  };
+}
+
+/**
  * The record a published commit was answered with, decoded from its base64 with the entry and the
  * generation it is of — which its settle may have written for a generation later than the commit's
  * own; `undefined` where the gateway handed none back, or bytes that are no record.
@@ -215,7 +233,10 @@ function publishedRecord(base64: string | undefined):
   }
 }
 
-/** How many leases a host remembers the entry of, for a commit that hands back no record. */
+/**
+ * How many leases a host remembers the entry of, for a commit that hands back no record; past it,
+ * the oldest is let go of with its entry's copy (`#remember`).
+ */
 const MAX_LEASES_REMEMBERED = 256;
 
 /** What a host remembers of a lease: its entry, and the generation that stood when it was granted. */
@@ -258,14 +279,23 @@ class GatewayHost implements CacheHost {
     this.#beacon = copies.beacon;
   }
 
-  /** Remember the entry a lease is for, the oldest let go of past the bound. */
+  /**
+   * Remember the entry a lease is for. Past the bound the oldest is let go of, though it may still be
+   * out, and its entry's copy with it, behind the response: once its commit is answered with no
+   * record, nothing would say which entry's copy to let go of. As for a commit whose answer never
+   * came (`#committed`), the copy of what stood when it was granted goes, or of anything earlier.
+   */
   #remember(attemptId: string, held: LeaseHeld): void {
     this.#leased.set(attemptId, held);
-    for (const oldest of this.#leased.keys()) {
+    for (const [oldest, lease] of this.#leased) {
       if (this.#leased.size <= MAX_LEASES_REMEMBERED) {
         break;
       }
       this.#leased.delete(oldest);
+      const letGo = this.#records?.drop(lease.entryId, { seq: lease.seq + 1, revision: 0 });
+      if (letGo !== undefined) {
+        behindResponse(letGo);
+      }
     }
   }
 
@@ -375,7 +405,7 @@ class GatewayHost implements CacheHost {
     this.#leased.delete(attemptId);
     const committed = await this.#committed(attemptId, lease, {
       fencingToken: request.fencingToken,
-      observedTagRevision: request.observedTagRevision,
+      ...viewOf(request),
       generation: {
         cacheTimestamp: generation.cacheTimestamp,
         producedAt: generation.producedAt,

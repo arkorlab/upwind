@@ -7,9 +7,11 @@ import {
   type Prerender,
   PRIMARY_FUNCTION,
   routePathnameOf,
+  type ServableOptions,
   shellHeaders,
 } from '@stayingupwind/core/bundle';
 import type {
+  HeaderRule,
   MiddlewareMatcher,
   RouteCache,
   RouteEntry,
@@ -73,6 +75,47 @@ function middlewareCovers(matchers: readonly MiddlewareMatcher[], pathname: stri
   });
 }
 
+/**
+ * The rules judged on each request that may lay a policy over this route's own, for some of the
+ * requests it answers (`ManifestContext.policyRules`): one whose pattern names its pathname, and
+ * any at all for a class shell, judged by the company it keeps as for a middleware's matchers.
+ */
+function policyRulesCovering(
+  rules: readonly HeaderRule[],
+  pathname: string,
+): readonly HeaderRule[] {
+  if (isTemplate(pathname)) {
+    return rules;
+  }
+  // As the edge judges them (`documentHeaderRulesFor`): case-insensitive, without the unicode flag.
+  // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
+  return rules.filter((rule) => new RegExp(rule.sourceRegex, 'i').test(pathname));
+}
+
+/** A rule's headers, under the lowercase names a route's own are recorded by. */
+function lowercased(headers: Readonly<Record<string, string>>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value]),
+  );
+}
+
+/**
+ * The hints the route's own policies leave standing, less what a rule judged on each request
+ * forbids or quietens with the policies it lays over them: a `103` replays the same hints to the
+ * requests the rule holds for as to any other, before either policy can reach the browser.
+ */
+function withoutRuledOut(
+  hints: readonly string[],
+  headers: Readonly<Record<string, string>>,
+  rules: readonly HeaderRule[],
+): string[] {
+  let kept = [...hints];
+  for (const rule of rules) {
+    kept = withoutForbidden(kept, { ...headers, ...lowercased(rule.headers) });
+  }
+  return kept;
+}
+
 /** What every route entry of one deployment is built from, beside the prerender itself. */
 export interface ManifestContext {
   readonly bundle: DeploymentBundle;
@@ -88,6 +131,12 @@ export interface ManifestContext {
   readonly caches: ReadonlyMap<string, RouteCache>;
   /** The middleware matchers of the build, for the routes whose answer they can change. */
   readonly matchers: readonly MiddlewareMatcher[];
+  /**
+   * The rules of `next.config` the edge judges on each request — the ones with a condition, `has`
+   * or `missing`, which no route's own headers can carry — that set a policy a hint answers to
+   * (`withoutForbidden`): a `Content-Security-Policy` or a `Referrer-Policy`.
+   */
+  readonly policyRules: readonly HeaderRule[];
   /** The CSP source that authorises the recovery script, added to every policy recorded here. */
   readonly recoverySource: string;
   /**
@@ -107,6 +156,22 @@ export interface ManifestContext {
   readonly payloads: ReadonlyMap<string, RouteSegment>;
   /** A Pages Router page's props, keyed as `segments` is (`routeArtifactsOf`). */
   readonly pagesData: ReadonlyMap<string, RouteSegment>;
+}
+
+/**
+ * The headers a route is recorded with. Its own Content-Security-Policy goes out with the shell,
+ * long before the edge can learn it has to append the recovery script. A policy that restricts
+ * inline scripts would then block the one piece of code that gets a reader off a broken document,
+ * so the hash is added here, where the policy is recorded. Not to a document the edge serves whole
+ * — the one its entry says is complete — which has no continuation to fail, and keeps the policy it
+ * was given.
+ */
+function recordedHeaders(
+  built: Readonly<Record<string, string>>,
+  cache: RouteCache | undefined,
+  recoverySource: string,
+): Readonly<Record<string, string>> {
+  return cache?.delivery === 'complete' ? built : allowRecoveryScript(built, recoverySource);
 }
 
 export function routeEntryOf(
@@ -129,11 +194,8 @@ export function routeEntryOf(
     return undefined;
   }
   const shellEncodings = shellEncodingsOf(context.encodings.get(prerender.body.sha256) ?? []);
-  // The route's own Content-Security-Policy goes out with the shell, long before the edge can
-  // learn it has to append the recovery script. A policy that restricts inline scripts would then
-  // block the one piece of code that gets a reader off a broken document, so the hash is added
-  // here, where the policy is recorded.
-  const headers = allowRecoveryScript(built, context.recoverySource);
+  const cache = context.caches.get(prerender.id);
+  const headers = recordedHeaders(built, cache, context.recoverySource);
   const csp = headers['content-security-policy'];
   // The scan ran before this route's headers were known, so what the build already preloads on
   // its own `Link` — the font React puts there — is taken out here rather than promoted twice.
@@ -151,8 +213,11 @@ export function routeEntryOf(
     : (context.preloads[prerender.body.sha256] ?? []);
   // And what the route's own policies forbid or quieten goes out with it: a hint replayed as a
   // `103` arrives before either can reach the browser, so both are read here instead.
-  const preloads = withoutForbidden(withoutAdvertised(named, headers['link']), headers);
-  const cache = context.caches.get(prerender.id);
+  const preloads = withoutRuledOut(
+    withoutForbidden(withoutAdvertised(named, headers['link']), headers),
+    headers,
+    policyRulesCovering(context.policyRules, pathname),
+  );
   const segments = context.segments.get(prerender.pathname);
   const payload = context.payloads.get(prerender.pathname);
   const pagesData = context.pagesData.get(prerender.pathname);
@@ -185,10 +250,10 @@ export function routeEntryOf(
 }
 
 /**
- * The prefetch segments of each route the edge serves, by the document's pathname as the build
- * named it, each named with the renderings compressed for it. `routeEntryOf` looks them up
- * by that same name, and names them on the route the request is answered under, whatever its
- * spelling (`routePathnameOf`).
+ * The prefetch segments of each route the edge serves, as `servable` asks it of the documents, by
+ * the document's pathname as the build named it, each named with the renderings compressed for
+ * it. `routeEntryOf` looks them up by that same name, and names them on the route the request is
+ * answered under, whatever its spelling (`routePathnameOf`).
  *
  * Keyed by the document's own pathname rather than by the segment's, because that is the page a
  * request asks for part of: a prefetch arrives at the page's URL, and the segment's own path is
@@ -197,9 +262,10 @@ export function routeEntryOf(
 export function routeSegmentsOf(
   bundle: DeploymentBundle,
   encodings: ReadonlyMap<string, readonly EncodedShellRef[]>,
+  servable: ServableOptions,
 ): ReadonlyMap<string, Record<string, RouteSegment>> {
   const routes = new Map<string, Record<string, RouteSegment>>();
-  const found = prefetchSegments(bundle, { complete: true });
+  const found = prefetchSegments(bundle, servable);
   for (const segment of found) {
     const { body } = segment.prerender;
     if (body === undefined) {

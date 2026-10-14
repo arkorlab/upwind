@@ -61,10 +61,16 @@ const SELF_CLOSING = '/';
 /**
  * Where the markup stops being HTML.
  *
- * Nothing inside one of these is a resource an HTML head asks for — an SVG `<link>` is an SVG
- * element — so the walk reads them the way it reads a template: through, and promoting nothing.
- * What it is inside one for is knowing where the element ends, and that a `<![CDATA[` written
- * there is a declaration it cannot read either way.
+ * A head holds neither, so the walk only meets one inside a template, where it promotes nothing
+ * anyway. What it cannot do there is read on the way a parser does. In SVG and MathML a `<style>`
+ * or a `<title>` holds markup rather than text, unless an integration point above it makes it
+ * HTML again; `<![CDATA[` opens a section; and `</svg>` or `</math>` leaves the element only where
+ * nothing HTML is open beneath it, and a `</math>` never leaves an `<svg>`. All of that turns on
+ * the stack of open elements, which is a tree builder's, not a walk's.
+ *
+ * So the walk does not try to say where the foreign element ends. The template around it is what
+ * ends it for certain — its end tag pops everything opened inside — and until then the walk ends
+ * at whatever it would read otherwise than a parser, rather than guess which reading holds.
  */
 const FOREIGN_ROOTS: ReadonlySet<string> = new Set(['math', 'svg']);
 /** What can follow a `<` and still not be text: a declaration, a processing instruction, an end tag. */
@@ -95,10 +101,11 @@ const PUBLIC_AND_SYSTEM = 2;
  * that ends at the first `>`. Telling the two apart takes the stack of open elements and their
  * namespaces, which is a tree builder; this is a walk that counts how deep it is.
  *
- * So the walk ends here instead of guessing, because both guesses are wrong somewhere: a section
- * read as a comment hands it markup a browser never sees, and a comment read as a section steps
- * over markup a browser does — including the `<body>` that would have ended the head. What ending
- * costs is the hints a head might still have named after its SVG, which no shell writes.
+ * So wherever the walk may be in foreign content, it ends here instead of guessing, because both
+ * guesses are wrong somewhere: a section read as a comment hands it markup a browser never sees,
+ * and a comment read as a section steps over markup a browser does — including the `<body>` that
+ * would have ended the head. What ending costs is the hints a head might still have named after
+ * its SVG, which no shell writes.
  */
 const CDATA_OPEN = '<![CDATA[';
 const LINK_NAME = 'link';
@@ -357,53 +364,16 @@ function endOfComment(html: string, from: number): number {
     ? plain + COMMENT_CLOSE.length
     : bang + COMMENT_CLOSE_BANG.length;
 }
-/** Where a mark the script tokenizer changes state on sits, and where to look on from. */
-interface ScriptMark {
-  readonly kind: 'comment-open' | 'comment-close' | 'nested-open' | 'end-tag';
-  readonly at: number;
-  readonly next: number;
-}
-function markAt(kind: ScriptMark['kind'], at: number, next: number): ScriptMark | undefined {
-  return at === -1 ? undefined : { kind, at, next };
-}
-/** The next thing in script data that moves the tokenizer between its states, or nothing left. */
-function nextScriptMark(html: string, from: number): ScriptMark | undefined {
-  const open = html.indexOf(COMMENT_OPEN, from);
-  const close = html.indexOf(COMMENT_CLOSE, from);
-  const nested = indexOfScriptTag(html, false, from);
-  const end = indexOfScriptTag(html, true, from);
-  const past = SCRIPT_NAME.length + TAG_START.length;
-  let found: ScriptMark | undefined;
-  for (const mark of [
-    markAt('comment-open', open, open + COMMENT_OPEN.length),
-    markAt('comment-close', close, close + COMMENT_CLOSE.length),
-    markAt('nested-open', nested, nested + past),
-    markAt('end-tag', end, end + past + 1),
-  ]) {
-    found = mark !== undefined && (found === undefined || mark.at < found.at) ? mark : found;
-  }
-  return found;
-}
-/** Where `<script` or `</script` sits, folded the way a tokenizer folds a tag name, or `-1`. */
-function indexOfScriptTag(html: string, closing: boolean, from: number): number {
-  let at = from;
-  while (at < html.length) {
-    const start = html.indexOf(TAG_START, at);
-    if (start === -1) {
-      return -1;
-    }
-    at = start + TAG_START.length;
-    if ((html[at] === '/') !== closing) {
-      continue;
-    }
-    // `consumeTagName` folds it, so `<SCRIPT>` opens the double escape a browser opens for it.
-    const found = consumeTagName(html, closing ? at + 1 : at);
-    if (found?.name === SCRIPT_NAME) {
-      return start;
-    }
-  }
-  return -1;
-}
+/**
+ * The marks script data changes state on, in the order they are written: a comment's opening and
+ * close, and `script` opening or ending a tag — the whole name, folded only where it is ASCII, as a
+ * tokenizer folds it, so `<SCRIPT>` opens the double escape a browser opens for it.
+ *
+ * One search, carried on from each mark to the next, so a script is read once however many marks it
+ * holds. Looking for every kind afresh at each mark would read the rest of the window once a mark —
+ * quadratic, in a script of nested `<script` markers, which the window has room for thousands of.
+ */
+const SCRIPT_MARK = /<!--|-->|<\/?[Ss][Cc][Rr][Ii][Pp][Tt](?=[\t\n\f\r />])/u;
 /**
  * Where a `<script>` ends, which is not always at the first `</script>` written in it.
  *
@@ -421,35 +391,25 @@ function indexOfScriptTag(html: string, closing: boolean, from: number): number 
 function endOfScript(html: string, from: number): number {
   let escaped = false;
   let doubleEscaped = false;
-  let at = from;
-  while (at < html.length) {
-    const mark = nextScriptMark(html, at);
-    if (mark === undefined) {
-      return -1;
-    }
-    at = mark.next;
-    switch (mark.kind) {
-      case 'comment-open': {
-        escaped = true;
-        break;
-      }
-      case 'comment-close': {
-        escaped = false;
-        doubleEscaped = false;
-        break;
-      }
-      case 'nested-open': {
-        doubleEscaped = escaped;
-        break;
-      }
-      case 'end-tag': {
-        if (doubleEscaped) {
-          doubleEscaped = false;
-          break;
-        }
-        const end = readAttributes(html, mark.next);
-        return end.closed ? end.next : -1;
-      }
+  const marks = new RegExp(SCRIPT_MARK, 'gu');
+  marks.lastIndex = from;
+  for (let mark = marks.exec(html); mark !== null; mark = marks.exec(html)) {
+    const [written] = mark;
+    if (written === COMMENT_OPEN) {
+      escaped = true;
+      // Its dashes are a close's first two as well: past them the tokenizer is where `--` leaves
+      // it, so the `>` of `<!-->` or `<!--->` ends the escape it has just begun.
+      marks.lastIndex = mark.index + COMMENT_OPEN.indexOf(COMMENT_DASH);
+    } else if (written === COMMENT_CLOSE) {
+      escaped = false;
+      doubleEscaped = false;
+    } else if (written[TAG_START.length] !== '/') {
+      doubleEscaped = escaped;
+    } else if (doubleEscaped) {
+      doubleEscaped = false;
+    } else {
+      const end = readAttributes(html, marks.lastIndex);
+      return end.closed ? end.next : -1;
     }
   }
   return -1;
@@ -512,10 +472,15 @@ export interface HeadScan {
   readonly links: Map<string, string>[];
   /** How many inert templates the walk is inside. Nothing written in one is loaded. */
   inert: number;
-  /** How many foreign elements the walk is inside, where `<![CDATA[` may be a section. */
+  /**
+   * How many templates deep the walk was when it went into SVG or MathML, or `0` while it is in
+   * neither: from there until that template closes, it may be in foreign content.
+   */
   foreign: number;
   /** The first `<base href>`, which is the one a parser resolves the markup's URLs against. */
   base: string | undefined;
+  /** How many of `links` the head named before that base: a parser resolved those without it. */
+  linksBeforeBase: number;
 }
 /** What the walk found at a `<`: a tag it read, or nothing it could read as one. */
 interface OpenTag {
@@ -622,29 +587,39 @@ function endOfIdentifier(html: string, from: number): number {
   return ends === -1 ? -1 : ends + 1;
 }
 /**
- * An end tag: where it leaves the walk, and what it closes on the way.
+ * An end tag: where it leaves the walk.
  *
- * Only a foreign element the walk went into is closed by one. A stray `</svg>` closes nothing for
- * a parser either, and taking it for an exit would step out of a template it was written inside —
- * making the markup after it live when a browser leaves it inert.
+ * None takes it out of a foreign element: whether `</svg>` or `</math>` closes one is the stack's
+ * to say (`FOREIGN_ROOTS`), and an exit taken where a parser takes none — a `</math>` inside an
+ * `<svg>` — reads what follows as HTML that a browser still reads as SVG.
  */
 function stepOverEndTag(tag: OpenTag, scan: HeadScan): number {
-  if (FOREIGN_ROOTS.has(tag.name) && scan.foreign > 0) {
-    scan.foreign -= 1;
-    // A `</template>` written inside the element takes a count no `<template>` added — a parser
-    // ignores that end tag, having no template open to close. Letting the exit take the count
-    // again would leave it below zero, and a walk that is never back at zero is a head that
-    // never ends: every link the body names would be read as the head's.
-    scan.inert = Math.max(scan.inert - 1, 0);
-  }
   return CLOSES_THE_HEAD.has(tag.name) && scan.inert === 0 ? -1 : tag.next;
 }
 
-/** `<svg/>` opens nothing: a foreign element is the one place a `/` ends a tag on its own. */
+/**
+ * A template's tag, one deeper into inert markup or one back out.
+ *
+ * Its end tag pops everything opened inside it, so foreign content the walk went into there ends
+ * with it.
+ */
+function stepOverTemplate(tag: OpenTag, scan: HeadScan): number {
+  scan.inert = Math.max(scan.inert + (tag.closing ? -1 : 1), 0);
+  if (scan.inert < scan.foreign) {
+    scan.foreign = 0;
+  }
+  return tag.next;
+}
+
+/**
+ * Note the depth the walk goes into foreign content at, the outermost if it nests.
+ *
+ * `<svg/>` opens nothing: a foreign element is the one place a `/` ends a tag on its own.
+ */
 function stepIntoForeign(tag: OpenTag, scan: HeadScan): number {
-  const opened = tag.selfClosing ? 0 : 1;
-  scan.foreign += opened;
-  scan.inert += opened;
+  if (!tag.selfClosing && scan.foreign === 0) {
+    scan.foreign = scan.inert;
+  }
   return tag.next;
 }
 
@@ -689,6 +664,13 @@ function quietensTheReferrer(tag: OpenTag): boolean {
   const content = tag.attributes.get(CONTENT_ATTR) ?? '';
   return content.includes('&') || quietensASameOriginFetch(metaReferrerPolicy(content));
 }
+/** The first `<base href>` a head gives, and how many links it had named before it. */
+function noteBase(tag: OpenTag, scan: HeadScan): void {
+  if (scan.base === undefined) {
+    scan.base = tag.attributes.get(HREF_ATTR);
+    scan.linksBeforeBase = scan.links.length;
+  }
+}
 /**
  * Read the tag at `start`, note it if it is a `<link>`, and say where the walk carries on from.
  *
@@ -700,8 +682,7 @@ function stepOverTag(html: string, start: number, scan: HeadScan): number {
     return stepOverDeclaration(html, start, scan);
   }
   if (tag.name === TEMPLATE_NAME) {
-    scan.inert = Math.max(scan.inert + (tag.closing ? -1 : 1), 0);
-    return tag.next;
+    return stepOverTemplate(tag, scan);
   }
   if (tag.closing) {
     return stepOverEndTag(tag, scan);
@@ -715,7 +696,9 @@ function stepOverTag(html: string, start: number, scan: HeadScan): number {
     return stepIntoForeign(tag, scan);
   }
   if (OPAQUE_ELEMENTS.has(tag.name)) {
-    return endOfRawText(html, tag.name, tag.next);
+    // Text to HTML, and markup in SVG or MathML unless an integration point is above it, which the
+    // walk cannot see: read either way, it may step over a template's end tag or read one in.
+    return scan.foreign > 0 ? -1 : endOfRawText(html, tag.name, tag.next);
   }
   if (scan.inert > 0) {
     // A template holds markup a head could not: reading it is not being in the body.
@@ -728,7 +711,7 @@ function stepOverTag(html: string, start: number, scan: HeadScan): number {
     scan.links.push(tag.attributes);
   }
   if (tag.name === BASE_NAME) {
-    scan.base ??= tag.attributes.get(HREF_ATTR);
+    noteBase(tag, scan);
   }
   return tag.next;
 }
@@ -743,7 +726,7 @@ function stepOverTag(html: string, start: number, scan: HeadScan): number {
  */
 export function scanHead(shell: Uint8Array): HeadScan {
   const html = decodeUtf8(shell.subarray(0, Math.min(shell.byteLength, HEAD_SCAN_BYTES)));
-  const scan: HeadScan = { links: [], inert: 0, foreign: 0, base: undefined };
+  const scan: HeadScan = { links: [], inert: 0, foreign: 0, base: undefined, linksBeforeBase: 0 };
   let at = 0;
   while (at < html.length) {
     const start = html.indexOf(TAG_START, at);

@@ -21,7 +21,7 @@ export interface ReadBindings extends TokenKeys {
 
 interface ReadEnv {
   Bindings: ReadBindings;
-  Variables: { scopeId: string; retired: Promise<boolean> };
+  Variables: { scopeId: string };
 }
 
 const SCOPE_PREFIX = `/${GATEWAY_API_VERSION}/scopes/:scope`;
@@ -36,15 +36,6 @@ function readAuthOf(host: AuthorityHost): MiddlewareHandler<ReadEnv> {
       return fail(c, 'unauthorized', 'the token does not open this scope');
     }
     c.set('scopeId', scopeId);
-    // A tag read opens nothing, so the marker guards nothing there, and the render judging a value it
-    // read would wait for it.
-    if (!c.req.path.endsWith('/tags/get')) {
-      const retired = scopeRetired(c.env.CACHE_STATE, scopeId);
-      void retired.catch(() => {
-        /* The read handler reports failures; validation may exit first. */
-      });
-      c.set('retired', retired);
-    }
     c.header('cache-control', 'private, no-store');
     await next();
     return undefined;
@@ -67,9 +58,11 @@ export function createReadGateway(host: AuthorityHost): Hono<ReadEnv> {
           return request;
         }
         const scopeId = c.get('scopeId');
+        // Beside the record, once the body is in, as the authority's gateway reads it: a marker read
+        // before a body that took long would say where the scope stood before the record was read.
         const [record, retired] = await Promise.all([
           readDataRecord(c.env.CACHE_STATE, scopeId, request),
-          c.get('retired'),
+          scopeRetired(c.env.CACHE_STATE, scopeId),
         ]);
         if (retired) {
           return fail(c, 'scope_retired', 'the scope is retired');
@@ -80,6 +73,8 @@ export function createReadGateway(host: AuthorityHost): Hono<ReadEnv> {
         host.meter.read(scopeId, dataReadBytes(record));
         return ok(c, record);
       })
+      // A tag read opens nothing, so the marker guards nothing there, and the render judging a value
+      // it read would wait for it.
       .post(`${SCOPE_PREFIX}/tags/get`, async (c) => {
         const request = await readRequest(c, tagsGetRequestSchema, TAGS_BODY_BYTES);
         return request instanceof Response
@@ -94,7 +89,7 @@ export function createReadGateway(host: AuthorityHost): Hono<ReadEnv> {
             type: 'arrayBuffer',
             cacheTtl: RECORD_CACHE_TTL_SECONDS,
           }),
-          c.get('retired'),
+          scopeRetired(c.env.CACHE_STATE, scopeId),
         ]);
         if (retired) {
           return fail(c, 'scope_retired', 'the scope is retired');

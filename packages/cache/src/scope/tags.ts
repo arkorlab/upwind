@@ -1,11 +1,13 @@
 import {
   type GenerationTag,
+  type InvalidationState,
   tagIdFor,
   type TagKind,
   tagKindOf,
   tagKindSchema,
 } from '@stayingupwind/core/cache';
 import {
+  type CommitRequest,
   invalidationMeaningSchema,
   type TagDeltaEntry,
   tagDeltaEntrySchema,
@@ -205,10 +207,14 @@ export function finishControlTagProjection(
     projection.key,
     projection.value,
   ).rowsWritten;
-  if (deleted > 0) writeMeta(sql, META_CONTROL_TAG_PENDING_COUNT, String(count - deleted));
+  // What went is one mark, its key the table's: `rowsWritten` counts what SQLite wrote, an index's
+  // entries beside a row's (one row inserted into `meta` reports two), and says here only whether
+  // the mark went.
+  if (deleted > 0) writeMeta(sql, META_CONTROL_TAG_PENDING_COUNT, String(count - 1));
 }
 
-export function controlTagsPending(sql: SqlStorage, retired: boolean): boolean {
+/** Whether a private mark waits in the outbox to be projected. */
+function controlMarksQueued(sql: SqlStorage): boolean {
   return (
     sql
       .exec(
@@ -216,11 +222,32 @@ export function controlTagsPending(sql: SqlStorage, retired: boolean): boolean {
         META_CONTROL_TAG_PREFIX,
         META_CONTROL_TAG_END,
       )
-      .toArray().length > 0 ||
+      .toArray().length > 0
+  );
+}
+
+export function controlTagsPending(sql: SqlStorage, retired: boolean): boolean {
+  return (
+    controlMarksQueued(sql) ||
     (retired &&
       readMeta(sql, META_CONTROL_TAGS_SEEN) !== undefined &&
       readMeta(sql, META_RETIRED_CONTROL_TAGS_DELETED) === undefined)
   );
+}
+
+/**
+ * When a retired scope's second listing of its control tags is due, where it is all those tags owe
+ * and waits out KV's consistency window after the first (`finishRetiredControlTagPage`); `undefined`
+ * where a mark waits to be projected, or the listing is due already.
+ */
+export function retiredControlTagListingAt(sql: SqlStorage, now: number): number | undefined {
+  const repeatAt = readMeta(sql, META_RETIRED_CONTROL_TAG_REPEAT_AT);
+  if (repeatAt === undefined || now >= Number(repeatAt) || controlMarksQueued(sql)) {
+    return undefined;
+  }
+  return readMeta(sql, META_RETIRED_CONTROL_TAGS_DELETED) === undefined
+    ? Number(repeatAt)
+    : undefined;
 }
 
 /** Retirement lists KV after the transient admission history has already been reclaimed. */
@@ -366,6 +393,16 @@ export function tagsDelta(
   );
 }
 
+/** How many of the invalidations past a reader's revision a recent delta reads, newest first. */
+const RECENT_NEWEST = 256;
+
+interface RecentQuery {
+  readonly since: number;
+  readonly limit: number;
+  readonly revision: number;
+  readonly from: number;
+}
+
 /**
  * The invalidations of tags past `since` that took effect from `from` on, each as its tag stood by
  * it, oldest first and the newest `limit` at the most, `truncated` where more were: what a reader
@@ -375,16 +412,43 @@ export function tagsDelta(
  *
  * Each invalidation, not each tag's latest: a tag's row keeps the deadlines of the last that named
  * it, and one invalidated at once and then with a window would read as the window alone, though a
- * record from before both is past its deadline, as the authority's own condemnation keeps it. Read
- * through when each took effect (`invalidations_by_stale_at`), not by revision: a scope keeps every
- * invalidation it ever recorded, an edge asks every moment, and a walk down the revisions in search
- * of the window's few would read them all wherever there are fewer than `limit`.
+ * record from before both is past its deadline, as the authority's own condemnation keeps it.
+ *
+ * Read first down the revisions past `since`, a few hundred at the most (`RECENT_NEWEST`): an edge
+ * asks every moment, and one that heard of the scope lately has few to read, where its window may
+ * hold thousands on a busy scope. Those answer it where they are all there are past `since`, or
+ * where they fill an answer. Otherwise the window is read through when each took effect
+ * (`recentWindow`): a scope keeps every invalidation it ever recorded, and a walk down the
+ * revisions in search of a quiet window's few would read them all.
  */
-function recentDelta(
-  sql: SqlStorage,
-  input: { since: number; limit: number; revision: number; from: number },
-): TagsDeltaResponse {
-  const rows = sql
+function recentDelta(sql: SqlStorage, input: RecentQuery): TagsDeltaResponse {
+  const newest = sql
+    .exec<TagRow>(
+      `SELECT t.tag_id AS tag_id, t.kind AS kind, t.value AS value, i.revision AS revision,
+              i.stale_at AS stale_at, i.hard_expire_at AS hard_expire_at, i.meaning AS meaning
+       FROM invalidations AS i INDEXED BY invalidations_by_revision
+       JOIN tags AS t ON t.tag_id = i.target_id
+       WHERE i.target_kind = 'tag' AND i.revision > ?
+       ORDER BY i.revision DESC LIMIT ?`,
+      input.since,
+      RECENT_NEWEST,
+    )
+    .toArray();
+  const recent = newest.filter((row) => (row.stale_at ?? 0) >= input.from);
+  const rows =
+    newest.length < RECENT_NEWEST || recent.length > input.limit
+      ? recent
+      : recentWindow(sql, input);
+  return delta(sql, {
+    revision: input.revision,
+    truncated: rows.length > input.limit,
+    rows: rows.slice(0, input.limit).toReversed(),
+  });
+}
+
+/** The invalidations past `since` that took effect from `from` on, newest first (`recentDelta`). */
+function recentWindow(sql: SqlStorage, input: RecentQuery): TagRow[] {
+  return sql
     .exec<TagRow>(
       `SELECT t.tag_id AS tag_id, t.kind AS kind, t.value AS value, i.revision AS revision,
               i.stale_at AS stale_at, i.hard_expire_at AS hard_expire_at, i.meaning AS meaning
@@ -397,11 +461,6 @@ function recentDelta(
       input.limit + 1,
     )
     .toArray();
-  return delta(sql, {
-    revision: input.revision,
-    truncated: rows.length > input.limit,
-    rows: rows.slice(0, input.limit).toReversed(),
-  });
 }
 
 export function latestTagRevision(sql: SqlStorage): number {
@@ -415,39 +474,66 @@ export interface CondemnationQuery {
   readonly tagIds: readonly string[];
   readonly afterRevision: number;
   /**
-   * What a render's view of the tags held, where it says: the revision of the scope it was brought
-   * up to, and the tags the delta brings a reader of. An immediate invalidation of one of those tags
-   * at or before that revision is one the render read against, and made its reads afresh for; so is
-   * one with a window (`swr`) that such an immediate one of its tag came after, since a tag stands at
-   * its latest invalidation and that is what the view held of it. Not one with a window the view held
-   * last of its tag, under which the render's reads may have been answered stale; nor one of an entry,
-   * a control fence, or a tag of another kind, which the delta brings no reader.
+   * What a render's view of the tags held, where its runtime says (`viewHeld`): of each tag it held,
+   * by id, the revision through which the render's reads under the tag were judged against its
+   * invalidations. An immediate invalidation of one of those tags at or before it is one the render
+   * read against, and made its reads afresh for; so is one with a window (`swr`) that such an
+   * immediate one of its tag came after, since a tag stands at its latest invalidation and that is
+   * what the view held of it. Not one with a window the view held last of its tag, under which the
+   * render's reads may have been answered stale; nor one of an entry, a control fence, or a tag the
+   * view held nothing of past it, which the render's reads were not judged against.
    */
-  readonly held?: { readonly revision: number; readonly tagIds: ReadonlySet<string> } | undefined;
+  readonly held?: ReadonlyMap<string, number> | undefined;
 }
 
 /**
- * What a render's view of the tags held (`CondemnationQuery.held`): the revision it was brought up to,
- * and those of its tags the delta brings a runtime — it leaves out one whose kind is not the one its
- * value names (`GatewayHost.tagsDelta`), a platform-delivery tag sharing a Next.js tag's value say.
+ * What a render's view of the tags held (`CondemnationQuery.held`), where its runtime says
+ * (`heldTagRevisions`): of each of the generation's tags it says it of, what it says, though no more
+ * than the revision the view was brought up to (`observedTagRevision`); and only of those of the kind
+ * their value names, which the delta brings a runtime — it leaves out one of another kind
+ * (`GatewayHost.tagsDelta`), a platform-delivery tag sharing a Next.js tag's value say.
+ *
+ * Nothing where the runtime says nothing. One from before it says only the revision its view was
+ * brought up to, which does not say what the view kept of each tag: it lets a tag go past so many,
+ * and judges a read under it by a copy of the tags that may be behind. Its commit is judged as one
+ * whose view held no tag, as every commit was before what a view held excused anything.
  */
 export function viewHeld(
-  revision: number,
+  request: Pick<CommitRequest, 'observedTagRevision' | 'heldTagRevisions'>,
   refs: readonly TagRef[],
-): { readonly revision: number; readonly tagIds: ReadonlySet<string> } {
-  return {
-    revision,
-    tagIds: new Set(
-      refs.filter((ref) => ref.kind === tagKindOf(ref.value)).map((ref) => ref.tagId),
-    ),
-  };
+): ReadonlyMap<string, number> | undefined {
+  const { heldTagRevisions, observedTagRevision } = request;
+  if (heldTagRevisions === undefined) {
+    return undefined;
+  }
+  const said = new Map(Object.entries(heldTagRevisions));
+  const held = new Map<string, number>();
+  for (const ref of refs) {
+    const revision = said.get(ref.value);
+    if (revision !== undefined && ref.kind === tagKindOf(ref.value)) {
+      held.set(ref.tagId, Math.min(revision, observedTagRevision));
+    }
+  }
+  return held;
+}
+
+/**
+ * What the invalidations recorded after a render read its inputs that name what it depends on come
+ * to (`weighInvalidations`): those that condemn what it made, and how far it stands past its lease
+ * by those its view held, which condemn nothing.
+ */
+export interface Weighed {
+  readonly condemning: InvalidationRow[];
+  /**
+   * The latest revision of an invalidation the render's view held that condemns nothing
+   * (`CondemnationQuery.held`), 0 where there is none: what the render made stands as of it as it
+   * stands as of its lease, each invalidation of its tags up to it judged.
+   */
+  readonly heldThrough: number;
 }
 
 /** The invalidations recorded after a render read its inputs that name what it depends on. */
-export function condemningInvalidations(
-  sql: SqlStorage,
-  query: CondemnationQuery,
-): InvalidationRow[] {
+export function weighInvalidations(sql: SqlStorage, query: CondemnationQuery): Weighed {
   const persistent = sql
     .exec<InvalidationRow>(
       `SELECT * FROM invalidations
@@ -462,10 +548,13 @@ export function condemningInvalidations(
     .toArray();
   const { held } = query;
   if (held === undefined) {
-    return [...persistent, ...controlFenceInvalidations(sql, query)];
+    return {
+      condemning: [...persistent, ...controlFenceInvalidations(sql, query)],
+      heldThrough: 0,
+    };
   }
   const inView = (row: InvalidationRow): boolean =>
-    row.target_kind === 'tag' && row.revision <= held.revision && held.tagIds.has(row.target_id);
+    row.target_kind === 'tag' && row.revision <= (held.get(row.target_id) ?? 0);
   // The latest immediate invalidation of each tag the view held: the render read that tag afresh
   // against it, and against nothing recorded of it before.
   const afresh = new Map<string, number>();
@@ -474,11 +563,39 @@ export function condemningInvalidations(
       afresh.set(row.target_id, Math.max(afresh.get(row.target_id) ?? row.revision, row.revision));
     }
   }
-  const unheld = persistent.filter((row) => {
-    return (
-      !inView(row) ||
-      (row.meaning !== 'immediate' && (afresh.get(row.target_id) ?? row.revision) <= row.revision)
-    );
-  });
-  return [...unheld, ...controlFenceInvalidations(sql, query)];
+  const condemning: InvalidationRow[] = [];
+  let heldThrough = 0;
+  for (const row of persistent) {
+    const excused =
+      inView(row) &&
+      (row.meaning === 'immediate' || (afresh.get(row.target_id) ?? row.revision) > row.revision);
+    if (excused) {
+      heldThrough = Math.max(heldThrough, row.revision);
+    } else {
+      condemning.push(row);
+    }
+  }
+  return { condemning: [...condemning, ...controlFenceInvalidations(sql, query)], heldThrough };
+}
+
+/**
+ * What the invalidations a generation is published under leave it with (`weighInvalidations`):
+ * stale from the earliest of them, expired at the earliest hard deadline among them, and as of the
+ * latest; nothing where there are none.
+ */
+export function condemnationOf(
+  invalidations: readonly InvalidationRow[],
+): InvalidationState | null {
+  if (invalidations.length === 0) {
+    return null;
+  }
+  const staleAt = Math.min(...invalidations.map((row) => row.stale_at));
+  const hardExpiries = invalidations.flatMap((row) =>
+    row.hard_expire_at === null ? [] : [row.hard_expire_at],
+  );
+  return {
+    revision: Math.max(...invalidations.map((row) => row.revision)),
+    staleAt,
+    ...(hardExpiries.length > 0 && { hardExpireAt: Math.min(...hardExpiries) }),
+  };
 }

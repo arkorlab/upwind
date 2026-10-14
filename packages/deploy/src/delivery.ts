@@ -5,7 +5,12 @@ import type {
   ShellEncodings,
 } from '@stayingupwind/core/artifact';
 import type { ProjectManifest } from '@stayingupwind/core/manifest';
-import type { DeliveryPolicy } from '@stayingupwind/host/delivery';
+import {
+  builtinDeliveryPolicy,
+  type DeliveryPolicy,
+  deliveryPolicySchema,
+  PLATFORM_POLICY_ID_PATTERN,
+} from '@stayingupwind/host/delivery';
 
 /**
  * What delivering a manifest asks of storage: the shells and segments it names, each placed once,
@@ -49,27 +54,61 @@ export function unimplementedBackend(policy: DeliveryPolicy): string | undefined
   return undefined;
 }
 
+/** Whether two policies say the same, as their schema writes them. */
+function isSamePolicy(one: DeliveryPolicy, other: DeliveryPolicy): boolean {
+  return (
+    JSON.stringify(deliveryPolicySchema.parse(one)) ===
+    JSON.stringify(deliveryPolicySchema.parse(other))
+  );
+}
+
+/**
+ * Why nothing is delivered under a policy, or `undefined` for one it may be: a policy of a host's
+ * own under the id of a built-in one, or under an id the built-ins will take
+ * (`PLATFORM_POLICY_ID_PATTERN`). The edge reads such an id as the built-in where no document of it
+ * has reached the data center yet, and a host's document under it as the policy of every pointer
+ * that names the built-in: either way, requests are delivered under a policy their deployment was
+ * not placed for. Whatever stores a host's policies refuses such an id; one stored before it did is
+ * refused here.
+ */
+export function reservedPolicyRefusal(policy: DeliveryPolicy): string | undefined {
+  const builtin = builtinDeliveryPolicy(policy.id);
+  const reserved =
+    builtin === undefined
+      ? PLATFORM_POLICY_ID_PATTERN.test(policy.id)
+      : !isSamePolicy(builtin, policy);
+  return reserved
+    ? `${policy.id} is an id the built-in policies hold, which no other policy may`
+    : undefined;
+}
+
 /** The distinct shells a manifest needs placed, in the order its routes name them. */
 export function shellPlacementsOf(manifest: ProjectManifest): ShellPlacement[] {
-  const shells = new Map<string, ShellPlacement>();
+  const shells = new Map<string, ShellPlacement & { readonly renderings: ShellRendering[] }>();
   // Everything the manifest names has to be in place before it is published, whether a request
   // arrives for a page's document, for one of the prefetch segments beside it or for its whole
   // payload: a manifest naming bytes nobody placed is a route the edge promises and cannot keep.
+  // So a shell that two routes name is placed once, with the renderings either names beside it.
   const place = (
     artifact: ArtifactRef,
     encodings: ShellEncodings | undefined,
     sourcePath: string,
   ): void => {
-    if (shells.has(artifact.sha256)) {
+    const renderings = [encodings?.br, encodings?.gzip].filter(
+      (rendering) => rendering !== undefined,
+    );
+    const placed = shells.get(artifact.sha256);
+    if (placed !== undefined) {
+      const named = new Set(placed.renderings.map((rendering) => rendering.sha256));
+      placed.renderings.push(...renderings.filter((rendering) => !named.has(rendering.sha256)));
       return;
     }
-    const renderings = [encodings?.br, encodings?.gzip];
     shells.set(artifact.sha256, {
       sha256: artifact.sha256,
       contentType: artifact.contentType,
       byteLength: artifact.byteLength,
       sourcePath,
-      renderings: renderings.filter((rendering) => rendering !== undefined),
+      renderings,
     });
   };
   const routes = Object.values(manifest.routes);

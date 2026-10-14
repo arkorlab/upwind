@@ -6,6 +6,7 @@ import {
   type Prerender,
   routePagesData,
   routePayloads,
+  type ServableOptions,
 } from '@stayingupwind/core/bundle';
 
 /**
@@ -20,6 +21,9 @@ type StoredArtifactKind = Extract<ArtifactKind, 'ppr-shell' | 'static-rsc' | 'st
 
 /** What a page's own document is stored as: the one kind with a head to read hints from. */
 export const DOCUMENT_KIND = 'ppr-shell' satisfies StoredArtifactKind;
+
+/** Every page the edge serves a document for: the pages a deployment with a runtime cache routes. */
+const EVERY_SERVED_PAGE: ServableOptions = { complete: true };
 
 /** One artifact to pre-compress, as the build wrote it; its length lets a compressor budget CPU. */
 export interface ShellToEncode {
@@ -48,8 +52,15 @@ export interface ShellToEncode {
  * segment that `edgeServablePrerenders` asks of a document, through the same options). A page left
  * to the deployment's Function keeps its prefetches with it, and storing them here would be bytes
  * moved for requests that never come.
+ *
+ * Which pages the edge serves is `servable`'s to say, as the manifest says it (`routedPages`,
+ * `./manifest`): every page it serves documents for, by default, as a deployment with a runtime
+ * cache does; without one, only the pages it resumes, and so only their artifacts are stored.
  */
-export function shellsOf(bundle: DeploymentBundle): ShellToEncode[] {
+export function shellsOf(
+  bundle: DeploymentBundle,
+  servable: ServableOptions = EVERY_SERVED_PAGE,
+): ShellToEncode[] {
   const shells = new Map<string, ShellToEncode>();
   const add = (prerender: Prerender, kind: StoredArtifactKind): void => {
     const { body } = prerender;
@@ -64,19 +75,19 @@ export function shellsOf(bundle: DeploymentBundle): ShellToEncode[] {
       kind,
     });
   };
-  const documents = edgeServablePrerenders(bundle, { complete: true });
+  const documents = edgeServablePrerenders(bundle, servable);
   for (const prerender of documents) {
     add(prerender, DOCUMENT_KIND);
   }
-  const segments = prefetchSegments(bundle, { complete: true });
+  const segments = prefetchSegments(bundle, servable);
   for (const segment of segments) {
     add(segment.prerender, 'static-rsc');
   }
-  const payloads = routePayloads(bundle, { complete: true });
+  const payloads = routePayloads(bundle, servable);
   for (const payload of payloads) {
     add(payload.prerender, 'static-rsc');
   }
-  const props = routePagesData(bundle, { complete: true });
+  const props = routePagesData(bundle, servable);
   for (const data of props) {
     add(data.prerender, 'static-data');
   }

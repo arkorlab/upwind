@@ -1,5 +1,6 @@
 import {
   artifactIdFor,
+  type CachePolicy,
   finiteSeconds,
   GENERATION_ID_PREFIX,
   type GenerationTag,
@@ -86,8 +87,9 @@ export interface DataSetOutcome {
    */
   readonly invalidation?: InvalidationState;
   /**
-   * Set when the entry has a later write of this one's writer, whatever came between: nothing was
-   * written, and the generation named is that write's (`writtenAfter`).
+   * Set when the entry has a later write of this one's writer, or has had this one already,
+   * whatever came between: nothing was written, and the generation named is that write's
+   * (`writtenAfter`).
    */
   readonly superseded?: true;
   /** Internal only: the upload adopted by the content-addressed artifact row, if one was. */
@@ -106,6 +108,16 @@ interface DataPlan {
 
 function generationTags(entry: DataEntryMetadata): GenerationTag[] {
   return entry.tags.map((value) => ({ kind: tagKindOf(value), value }));
+}
+
+/** The lifetime Next.js gave a value, as its generation keeps it. */
+function dataPolicy(entry: DataEntryMetadata): CachePolicy {
+  return {
+    revalidateAfter: finiteSeconds(entry.revalidate),
+    expireAfter: finiteSeconds(entry.expire),
+    clientStale: finiteSeconds(entry.stale),
+    source: 'runtime-output',
+  };
 }
 
 export async function planSetData(
@@ -169,7 +181,11 @@ function dataCondemnation(sql: SqlStorage, plan: DataPlan): InvalidationState | 
   };
 }
 
-/** The same value, made at the same time, with the same tags: the current generation already is it. */
+/**
+ * The same value, made at the same time, with the same tags, lifetime and dependency coverage: the
+ * current generation already is it. A write that differs in any of them is a new one, whose lifetime
+ * and coverage the generation and its record carry from then on.
+ */
 function unchangedGeneration(
   sql: SqlStorage,
   entry: EntryRow,
@@ -178,13 +194,16 @@ function unchangedGeneration(
   if (entry.current_generation_id === null) {
     return undefined;
   }
+  const { entry: metadata, value } = plan.input;
   const current = findGeneration(sql, entry.current_generation_id);
-  if (current?.cache_timestamp !== plan.input.entry.timestamp) {
+  if (current?.cache_timestamp !== metadata.timestamp) {
     return undefined;
   }
   const sha = generationOutputs(current)[0]?.artifacts[0]?.sha256;
-  return sha === plan.input.value.sha256 &&
-    current.tags === JSON.stringify(generationTags(plan.input.entry))
+  return sha === value.sha256 &&
+    current.tags === JSON.stringify(generationTags(metadata)) &&
+    current.policy === JSON.stringify(dataPolicy(metadata)) &&
+    current.dependency_coverage === metadata.dependencyCoverage
     ? current
     : undefined;
 }
@@ -212,6 +231,11 @@ interface LaterWrite {
  * (`markWriter`). Writes of a writer whose later writes the entry has not had, or of one that says
  * nothing of its order, are published as they arrive: nothing orders writes of different writers
  * but their arrival.
+ *
+ * Or the generation of this write itself, the entry's latest of its writer, arriving again: its
+ * request sent once more, its answer lost the first time. A writer raises its count with each
+ * write, so its place names the write, and published again it would take back what another
+ * writer's write has made current since.
  */
 function writtenAfter(sql: SqlStorage, plan: DataPlan, now: number): LaterWrite | undefined {
   const { order } = plan.input;
@@ -221,7 +245,7 @@ function writtenAfter(sql: SqlStorage, plan: DataPlan, now: number): LaterWrite 
   return sql
     .exec<{ generation_id: string; revision: number }>(
       `SELECT generation_id, revision FROM writer_marks
-       WHERE entry_id = ? AND writer = ? AND seq > ? AND marked_at >= ?`,
+       WHERE entry_id = ? AND writer = ? AND seq >= ? AND marked_at >= ?`,
       plan.identity.entryId,
       order.writer,
       order.seq,
@@ -393,12 +417,7 @@ function applySetData(input: TxInput, plan: DataPlan): DataSetOutcome | Refusal 
     attemptId: null,
     cacheTimestamp: metadata.timestamp,
     producedAt: now,
-    policy: {
-      revalidateAfter: finiteSeconds(metadata.revalidate),
-      expireAfter: finiteSeconds(metadata.expire),
-      clientStale: finiteSeconds(metadata.stale),
-      source: 'runtime-output',
-    },
+    policy: dataPolicy(metadata),
     status: 200,
     headers: {},
     tags: generationTags(metadata),
