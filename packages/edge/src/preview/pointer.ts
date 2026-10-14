@@ -391,13 +391,15 @@ function changesSettings(served: EdgePointer | null, next: EdgePointer): boolean
 }
 
 /**
- * Whether a refreshed pointer demotes, now, a route of the manifest served that the pointer served
- * does not demote now (`demotedRoutes`, judged against the clock as a request judges it,
+ * Whether a refreshed pointer demotes, now, a route of the manifest served for longer than the
+ * pointer served does (`demotedRoutes`, judged against the clock as a request judges it,
  * `isDemoted`): the host has judged the route's document wrong to split, and an isolate that goes
- * on splitting it serves what was judged wrong. That includes a route the pointer served still
- * lists but whose demotion has ended, which this isolate splits again, demoted anew because it
- * failed again. A pointer naming another manifest demotes routes of one not served yet, and a route
- * that comes back to the edge is no such hurry.
+ * on splitting it serves what was judged wrong. That includes a route the pointer served does not
+ * list, one it lists but whose demotion has ended, which this isolate splits again, demoted anew
+ * because it failed again, and one whose demotion the refreshed pointer extends: held back, the
+ * pointer served lets the route go at the moment it names, and the isolate splits it again. A
+ * pointer naming another manifest demotes routes of one not served yet, and a route that comes back
+ * to the edge sooner is no such hurry.
  */
 function demotesMore(served: EdgePointer | null, next: EdgePointer, now: number): boolean {
   if (served === null || served.manifestId !== next.manifestId) {
@@ -408,11 +410,11 @@ function demotesMore(served: EdgePointer | null, next: EdgePointer, now: number)
     return false;
   }
   const held = demotedRoutesOf(served);
-  for (const pathname of ahead.keys()) {
-    if (
-      isDemoted(ahead, pathname, now) &&
-      (held === undefined || !isDemoted(held, pathname, now))
-    ) {
+  for (const [pathname, until] of ahead) {
+    // When the pointer served lets the route back onto the edge: now, where it does not keep it off.
+    const heldUntil =
+      held !== undefined && isDemoted(held, pathname, now) ? (held.get(pathname) ?? now) : now;
+    if (isDemoted(ahead, pathname, now) && heldUntil < until) {
       return true;
     }
   }
