@@ -102,6 +102,8 @@ export function compressWith(
   let failure: Error | undefined;
   /** Whether the small first piece has been cut yet. The head is in it, and it is cut once. */
   let started = false;
+  /** Whether the client has gone, and with it anything that takes what the encoder writes. */
+  let cancelled = false;
   const step = (run: (done: () => void) => void): Promise<undefined> => {
     if (failure !== undefined) {
       return Promise.reject(failure);
@@ -117,6 +119,11 @@ export function compressWith(
   const transform = new TransformStream<Uint8Array, Uint8Array>({
     start(controller) {
       stream.on('data', (chunk) => {
+        // Nothing takes it once the client has gone: the readable would throw, where no one
+        // catches it, on the output of a step that was under way.
+        if (cancelled) {
+          return;
+        }
         // A copy: the chunk is the encoder's own buffer, and the stream may hold it a while.
         controller.enqueue(new Uint8Array(chunk));
       });
@@ -140,6 +147,10 @@ export function compressWith(
           stream.write(piece);
           stream.flush(flushKind, done);
         });
+        // The client may have left while the piece was encoded: no more of it is.
+        if (cancelled) {
+          return;
+        }
       }
     },
     flush: () => {
@@ -147,6 +158,16 @@ export function compressWith(
         stream.on('end', done);
         stream.end();
       });
+    },
+    // The client left: the encoder is let go now rather than when it is collected, and a step it
+    // was in the middle of is settled, so nothing goes on encoding what nobody reads.
+    cancel: () => {
+      cancelled = true;
+      pending?.resolve(undefined);
+      pending = undefined;
+      if (failure === undefined) {
+        stream.end();
+      }
     },
   });
   return body.pipeThrough(transform);
