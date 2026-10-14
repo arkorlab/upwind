@@ -37,25 +37,43 @@ export function builtNameOf(path: string): string | undefined {
 
 /**
  * What a URL reads as its own in a path that a name may hold as it is: a `%`, which would start an
- * escape, a `#` or a `?`, which would end the path, and a `\`, which it reads as a `/`.
+ * escape, a `#` or a `?`, which would end the path, a `\`, which it reads as a `/`, and a control
+ * character or a space, which it drops — a tab or a line break wherever it stands, and the others
+ * at either end of what it is handed.
  */
-const URL_SYNTAX = /[%#?\\]/gu;
+const URL_SYNTAX = /[\p{Cc} %#?\\]/gu;
 
 /**
  * The same, of a page's name, but for a `%` that starts an escape `builtSegment` wrote (`%2F` for a
  * parameter's `/`, `%252F` for an escape that stood in its value as it is): the name's own.
  */
-const NAME_SYNTAX = /%(?!(?:25)?(?:2f|23|3f|5c))|[#?\\]/giu;
+const NAME_SYNTAX = /%(?!(?:25)?(?:2f|23|3f|5c))|[\p{Cc} #?\\]/giu;
+
+/**
+ * Whether no path a request asks by names `name`: one a URL resolves away a segment of (`.` or `..`),
+ * one whose first segment is empty (`//…`), which a URL written relative to the site reads as naming
+ * another host and Next.js redirects, and one that is no absolute path.
+ */
+function unaddressable(name: string): boolean {
+  return (
+    !name.startsWith('/') ||
+    name.startsWith('//') ||
+    name.split('/').some((segment) => segment === '.' || segment === '..')
+  );
+}
 
 /**
  * A file's path as a request names it: what a URL reads as its own escaped (`URL_SYNTAX`), and the
- * rest left to the URL it is written into, which escapes a space or a character past ASCII as a
- * browser's does. Read back decoded whole, it is `path` again, as the edge finds a file the build
- * shipped (`staticFileKey`). Written into a URL as it is, `/50% off.png` asks for no file: its `%`
- * and the escape its space becomes read as one escape that is none.
+ * rest left to the URL it is written into, which escapes a character past ASCII as a browser's
+ * does. Read back decoded whole, it is `path` again, as the edge finds a file the build shipped
+ * (`staticFileKey`). Written into a URL as it is, `/50% off.png` asks for no file: its `%` and the
+ * escape its space becomes read as one escape that is none. `undefined` where no path a request asks
+ * by names it (`unaddressable`).
  */
-export function escapedPathOf(path: string): string {
-  return path.replaceAll(URL_SYNTAX, (found) => encodeURIComponent(found));
+export function escapedPathOf(path: string): string | undefined {
+  return unaddressable(path)
+    ? undefined
+    : path.replaceAll(URL_SYNTAX, (found) => encodeURIComponent(found));
 }
 
 /**
@@ -63,8 +81,13 @@ export function escapedPathOf(path: string): string {
  * escaped (`NAME_SYNTAX`) — a `%` that stood in a parameter's value as it is, above all — and the
  * rest left to the URL it is written into, as a browser leaves a link's. Read back (`builtNameOf`),
  * it is the name again. Written into a URL as it is, a name asks for another page, or for none:
- * `/docs/100%` holds a `%` that starts no escape, which no reading of the path decodes.
+ * `/docs/100%` holds a `%` that starts no escape, which no reading of the path decodes. `undefined`
+ * where no path a request asks by names it (`unaddressable`): a parameter whose value is `..` names
+ * a page no URL reaches, as `['', 'other.example']` for a root catch-all names one at
+ * `//other.example`.
  */
-export function requestPathOf(name: string): string {
-  return name.replaceAll(NAME_SYNTAX, (found) => encodeURIComponent(found));
+export function requestPathOf(name: string): string | undefined {
+  return unaddressable(name)
+    ? undefined
+    : name.replaceAll(NAME_SYNTAX, (found) => encodeURIComponent(found));
 }

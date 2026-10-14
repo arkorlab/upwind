@@ -19,11 +19,18 @@ const NAMES = [
   '/q%3Fx%23y%5Cz',
   '/記事',
   '/docs/50% off/',
+  '/a\nb\tc',
+  '/trailing ',
+  '/\u{1}led',
+  '/docs/...',
   '/',
 ];
 
-/** The path a URL holds once `path` is written into it. */
-function asked(path: string): string {
+/** The path a URL holds once `path`, a path a request asks by, is written into it. */
+function asked(path: string | undefined): string {
+  if (path === undefined) {
+    throw new Error('no path a request asks by');
+  }
   return new URL(path, 'https://app.test').pathname;
 }
 
@@ -51,6 +58,12 @@ describe('the path a request asks for a built page by', () => {
     expect(requestPathOf('/a%25')).toBe('/a%2525');
   });
 
+  /** A URL drops a tab or a line break wherever it stands, and a space at either end of it. */
+  it('escapes what a URL drops', () => {
+    expect(asked(requestPathOf('/a\nb\tc'))).toBe('/a%0Ab%09c');
+    expect(asked(requestPathOf('/trailing '))).toBe('/trailing%20');
+  });
+
   it('escapes what would end the path or turn into a slash, where a name holds it as it is', () => {
     expect(requestPathOf(String.raw`/a?b#c\d`)).toBe('/a%3Fb%23c%5Cd');
   });
@@ -61,6 +74,17 @@ describe('the path a request asks for a built page by', () => {
 
       expect(builtNameOf(path)).toBe(name);
     }
+  });
+
+  /**
+   * A URL resolves a dot segment away, and reads a path whose first segment is empty, written
+   * relative to the site, as another host's: a page so named is one no request reaches.
+   */
+  it('names no path for a page no request reaches', () => {
+    expect(requestPathOf('/docs/..')).toBeUndefined();
+    expect(requestPathOf('/docs/./a')).toBeUndefined();
+    expect(requestPathOf('//other.example')).toBeUndefined();
+    expect(requestPathOf('docs')).toBeUndefined();
   });
 
   /** A name written into a URL as it is asks for another page, or for none. */
@@ -82,6 +106,8 @@ describe('the path a request asks for a file by', () => {
       '/q?#.txt',
       String.raw`/a\b.txt`,
       '/a;b&c.txt',
+      '/a\nb\t.txt',
+      '/trailing ',
     ];
 
     expect(asked(escapedPathOf('/50% off.png'))).toBe('/50%25%20off.png');
@@ -91,5 +117,10 @@ describe('the path a request asks for a file by', () => {
 
       expect(decodeURIComponent(escaped)).toBe(path);
     }
+  });
+
+  it('names no path for a file no request reaches', () => {
+    expect(escapedPathOf('/a/../b.txt')).toBeUndefined();
+    expect(escapedPathOf('//other.example/x.txt')).toBeUndefined();
   });
 });
