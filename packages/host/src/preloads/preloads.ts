@@ -505,18 +505,30 @@ function splitOutsideQuotes(value: string, separator: string): string[] {
  * the markup's own request, so it does not stand in for the hint that can. What was written is
  * read as the state it names (`corsSetting`), so the two spellings of one mode are one key.
  *
- * `type` decides whether the fetch happens at all, and differs the same way — but it is not folded
- * with it. A media type is compared by its essence without case, and the parameters behind that
- * essence are not all compared the same way, so folding the whole of it would put two requests
- * under one key and send the hint for only one of them. The parts are joined on a character no
- * attribute can hold, so no value can be read as the absence of one.
+ * `type` decides whether the fetch happens at all, and differs the same way. A media type is
+ * compared by its essence without case, so `TEXT/CSS` is the `text/css` request; the parameters
+ * behind that essence are not all compared the same way, so they are kept as written — folding the
+ * whole of it would put two requests under one key and send the hint for only one of them. The
+ * parts are joined on a character no attribute can hold, so no value can be read as the absence of
+ * one.
  */
 function preloadKey(shape: PreloadShape, href: string): string {
   const fragment = href.indexOf(FRAGMENT);
   const requested = fragment === -1 ? href : href.slice(0, fragment);
-  return [shape.destination, shape.crossorigin ?? NOTHING, shape.type ?? NOTHING, requested].join(
+  return [shape.destination, shape.crossorigin ?? NOTHING, typeKey(shape.type), requested].join(
     NOTHING,
   );
+}
+
+/** A `type` as a key holds it: the essence folded, as a browser reads it, and the rest as written. */
+function typeKey(type: string | undefined): string {
+  if (type === undefined) {
+    return NOTHING;
+  }
+  const parameters = type.indexOf(PARAMETER_SEPARATOR);
+  return parameters === -1
+    ? asciiLower(type)
+    : asciiLower(type.slice(0, parameters)) + type.slice(parameters);
 }
 
 /** What a preload is, beside the file: what it would be fetched as, and how. */
