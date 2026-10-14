@@ -85,6 +85,7 @@ describe('the path a request asks for a built page by', () => {
     expect(requestPathOf('/docs/./a')).toBeUndefined();
     expect(requestPathOf('//other.example')).toBeUndefined();
     expect(requestPathOf('docs')).toBeUndefined();
+    expect(requestPathOf('/docs/\u{D800}')).toBeUndefined();
   });
 
   /** A name written into a URL as it is asks for another page, or for none. */
@@ -122,5 +123,6 @@ describe('the path a request asks for a file by', () => {
   it('names no path for a file no request reaches', () => {
     expect(escapedPathOf('/a/../b.txt')).toBeUndefined();
     expect(escapedPathOf('//other.example/x.txt')).toBeUndefined();
+    expect(escapedPathOf('/a\u{DC00}.txt')).toBeUndefined();
   });
 });

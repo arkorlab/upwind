@@ -1,6 +1,6 @@
 import { compiledRules, patternOf } from '../request/compiled-patterns.ts';
 import { testWithin } from '../request/pattern-budget.ts';
-import { builtNameOf } from './built-names.ts';
+import { builtNameOf, escapedPathOf, requestPathOf } from './built-names.ts';
 import type { DynamicRoute, ProjectManifest } from './schema.ts';
 
 /** What of a manifest tells a page of its own from a member of a dynamic route. */
@@ -102,4 +102,30 @@ function memberKey(
     return pathname;
   }
   return other !== undefined && Object.hasOwn(record, other) ? other : undefined;
+}
+
+/** Only ever used to read out of a URL the path a request asking by `asked` holds. */
+const REQUEST_ORIGIN = 'https://request.invalid';
+
+/**
+ * The path a request asks for the route `key` of `manifest` by, as the edge finds the route it asks
+ * for (`pageKeyOf`): its name read as a member's, escaped as a request names one (`requestPathOf`),
+ * or as a page of its own's, escaped whole (`escapedPathOf`) — whichever the edge reads back as
+ * `key`. A page of its own's name is its path as it is: a `%2F` in it is a `%` and a `2F`, and asked
+ * for as a member's escaped `/`, it is another page.
+ *
+ * `undefined` where neither is: no request reaches the route. A member a page of its own shadows
+ * (`/docs/a%2Fb` beside the page `/docs/a/b`) is never served — Next.js, and the edge, find the page
+ * first, for every path that names the member — and a name no path names reaches nothing at all.
+ */
+export function routeRequestPathOf(
+  manifest: PagesOfTheirOwn & { readonly routes: Readonly<Record<string, unknown>> },
+  key: string,
+): string | undefined {
+  return [requestPathOf(key), escapedPathOf(key)].find((asked) => {
+    return (
+      asked !== undefined &&
+      pageKeyOf(manifest.routes, new URL(asked, REQUEST_ORIGIN).pathname, manifest) === key
+    );
+  });
 }

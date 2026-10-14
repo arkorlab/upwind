@@ -52,10 +52,12 @@ const NAME_SYNTAX = /%(?!(?:25)?(?:2f|23|3f|5c))|[\p{Cc} #?\\]/giu;
 /**
  * Whether no path a request asks by names `name`: one a URL resolves away a segment of (`.` or `..`),
  * one whose first segment is empty (`//…`), which a URL written relative to the site reads as naming
- * another host and Next.js redirects, and one that is no absolute path.
+ * another host and Next.js redirects, one that is no absolute path, and one that is no well-formed
+ * text, whose lone surrogate a URL takes for a replacement character.
  */
 function unaddressable(name: string): boolean {
   return (
+    !name.isWellFormed() ||
     !name.startsWith('/') ||
     name.startsWith('//') ||
     name.split('/').some((segment) => segment === '.' || segment === '..')
