@@ -66,7 +66,12 @@ serve fresh; and it can hand back the record a commit wrote (`CommitOutcome.reco
 isolate that published answers the entry's next request from. A regeneration whose lease finds a later generation standing than
 the one it judged (`AttemptOutcome.current`) gives the lease back rather than replace it with a
 render of the same thing, and an answer made from a regeneration ends once its publish has landed,
-as it does for the request's other cache writes.
+as it does for the request's other cache writes. A lease is asked for with the generation the
+request judged (`AttemptRequest.replaces`), and a host may answer it, handed out or turned away,
+with the record of the later generation that stands (`AttemptOutcome.record`): an isolate that
+holds nothing of that generation — another published it, and the host's reads are behind it —
+answers the request with that record, as with one read, where its view of the tags says it is
+fresh, rather than with a render of its own that no other request is answered with.
 
 An invalidation made in one isolate reaches the others through their reads of the tags, which such a
 host may also cache. Where the scope's tags stand can come sooner: on the request, from an edge that

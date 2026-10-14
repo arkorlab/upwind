@@ -16,18 +16,26 @@ import { invokeNodeHandler, type Run } from '../node-bridge.ts';
 import { type CapturedRender, renderCaptured } from './capture.ts';
 import { nowMs } from './clock.ts';
 import { asRegeneration } from './context.ts';
-import { forgetRecord, forgetRecordBefore, publishedRecordOf, rememberRecord } from './current.ts';
+import {
+  type CurrentGeneration,
+  forgetRecord,
+  forgetRecordBefore,
+  publishedRecordOf,
+  rememberRecord,
+} from './current.ts';
+import { HeldTags } from './held-tags.ts';
 import {
   type AttemptOutcome,
   type AttemptReason,
+  type AttemptRequest,
   CacheHostError,
   type CommitArtifact,
   type CommitOutput,
   type CommitRequest,
-  type CurrentSummary,
   type ServedObservation,
   type UploadedArtifact,
 } from './host.ts';
+import { answerable, supersededWith, turnedAway } from './later.ts';
 import {
   abandon,
   elapsedSince,
@@ -41,11 +49,12 @@ import {
 import {
   answeringAtOnce,
   answeringUntilSettled,
-  answeringWhileBusy,
+  answeringWhenSuperseded,
+  givingBack,
+  lettingGo,
   publishingKeyOf,
 } from './publishing.ts';
 import type { CacheRuntime } from './runtime.ts';
-import { servable } from './servable.ts';
 import { refusedTags } from './tag-bounds.ts';
 import { uploaderFor } from './uploads.ts';
 
@@ -156,9 +165,23 @@ export type RegenerationOutcome =
       readonly publishing?: CapturedRender | undefined;
       /** That render's publish, where there is one: never rejects (`Publishing.published`). */
       readonly published?: Promise<unknown> | undefined;
+      /**
+       * A later generation than the one judged that the host holds, from the record its answer
+       * carried (`laterCarried`), where no render of this isolate's answers: the visitor is answered
+       * with it as with any record read.
+       */
+      readonly current?: CurrentGeneration | undefined;
     }
-  /** The host holds a later generation than the one judged, which may be served (`supersededBy`). */
-  | { readonly kind: 'superseded' }
+  /**
+   * The host holds a later generation than the one judged, which may be served (`supersededBy`);
+   * with the render of it this isolate published, where it is the one (`answeringWhenSuperseded`),
+   * or else the generation itself, where the host's answer carried its record (`laterCarried`).
+   */
+  | {
+      readonly kind: 'superseded';
+      readonly publishing?: CapturedRender | undefined;
+      readonly current?: CurrentGeneration | undefined;
+    }
   | { readonly kind: 'skipped'; readonly render: CapturedRender | undefined }
   | { readonly kind: 'refused'; readonly reason: string }
   | {
@@ -221,6 +244,7 @@ function staticRequest(input: RegenerationInput, attemptId: string): Request {
 function renderStatic(
   input: RegenerationInput,
   attemptId: string,
+  held: HeldTags,
 ): Promise<CapturedRender | undefined> {
   const request = staticRequest(input, attemptId);
   return renderCaptured(input.target.descriptor.kind, (meta) => {
@@ -236,7 +260,7 @@ function renderStatic(
         ...meta.requestMeta,
       },
       waitUntil: input.waitUntil,
-      run: (work) => input.run(() => asRegeneration(work)),
+      run: (work) => input.run(() => asRegeneration(() => held.run(work))),
       expectNoResponse: meta.expectNoResponse,
     });
   });
@@ -404,13 +428,14 @@ function outputsOf(
 }
 
 /**
- * What the render came to: the outputs that were stored, the tags it left on the entry, and the
- * revision of the tag view its reads were judged against.
+ * What the render came to: the outputs that were stored, the tags it left on the entry, the
+ * revision of the tag view its reads were judged against, and what that view held of each tag.
  */
 interface Made {
   readonly uploads: Uploads;
   readonly tags: readonly GenerationTag[];
   readonly observedTagRevision: number;
+  readonly heldTagRevisions: Readonly<Record<string, number>>;
 }
 
 /**
@@ -439,6 +464,7 @@ function commitRequest(
   return {
     fencingToken: lease.fencingToken,
     observedTagRevision: made.observedTagRevision,
+    heldTagRevisions: made.heldTagRevisions,
     generation: {
       cacheTimestamp: now,
       producedAt: now,
@@ -474,21 +500,25 @@ async function publish(
   rendered: {
     readonly render: CapturedRender;
     readonly observedTagRevision: number;
+    readonly held: HeldTags;
     readonly began: number;
   },
   stopHeartbeat: () => void,
 ): Promise<PublishOutcome> {
   const { runtime, target } = input;
-  const { render, observedTagRevision, began } = rendered;
+  const { render, observedTagRevision, held, began } = rendered;
   let published: DecodedGenerationPack | undefined;
   try {
     // Ahead of the uploads: a render the contract will not take is one whose outputs are not
     // worth sending, and what says so is `tagsOf`.
     const tags = tagsOf(target, render);
     const uploads = await upload(input, lease, render);
+    // What the render's view held of each of its tags (`HeldTags`), its reads over with it.
+    const values = tags.map((tag) => tag.value);
+    const heldTagRevisions = held.of(values, observedTagRevision);
     const committed = await runtime.host.commit(
       lease.attemptId,
-      commitRequest(input, lease, render, { uploads, tags, observedTagRevision }),
+      commitRequest(input, lease, render, { uploads, tags, observedTagRevision, heldTagRevisions }),
     );
     if (committed.kind === 'published') {
       published = await publishedRecordOf(committed.record, lease.entryId, committed.generationId);
@@ -519,6 +549,20 @@ async function publish(
 }
 
 /**
+ * What the host is asked for a lease of the entry with: what the edge served, where it said, and the
+ * generation the request judged (`replaces`), for a host to hand back the record of a later one it
+ * holds (`AttemptOutcome.record`).
+ */
+function attemptRequestOf(target: RegenerationTarget): AttemptRequest {
+  return {
+    entry: target.descriptor,
+    reason: target.reason,
+    ...(target.observation !== undefined && { observation: target.observation }),
+    ...(target.replaces !== undefined && { replaces: target.replaces }),
+  };
+}
+
+/**
  * Take the lease and render the entry — or say why there is nothing to publish — and hand the
  * uploads and the commit to the runtime. Never throws. It answers once the render is made: what
  * follows is round trips to the host that change nothing the render says, and whoever answers from
@@ -532,6 +576,9 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   // says nothing it missed: at once within a hold of the view it read against, and past that once
   // the host has said the lease stands and the view has been brought up (`cache/publishing.ts`).
   const entryId = await publishingKeyOf(runtime, target.descriptor);
+  // Read before the lease is asked for: the publish may settle, and let go of it, while the host
+  // answers the lease.
+  const kept = entryId === undefined ? undefined : runtime.publishing.get(entryId);
   const atOnce = answeringAtOnce(runtime, target.reason, entryId);
   if (atOnce !== undefined) {
     return { kind: 'busy', publishing: atOnce.render, published: atOnce.published };
@@ -550,11 +597,7 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   input.waitUntil(synced);
   let lease: AttemptOutcome;
   try {
-    lease = await runtime.host.startAttempt({
-      entry: target.descriptor,
-      reason: target.reason,
-      ...(target.observation !== undefined && { observation: target.observation }),
-    });
+    lease = await runtime.host.startAttempt(attemptRequestOf(target));
   } catch (error) {
     const reason =
       error instanceof CacheHostError ? `${error.code}: ${error.message}` : detail(error);
@@ -564,31 +607,43 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
     });
     return { kind: 'refused', reason };
   }
+  // A pull of the tags asked for once the host's answer is in: what it has recorded since its word.
+  const pullAfresh = (): Promise<boolean> => {
+    const pulled = runtime.tags.sync(runtime.host, nowMs(), { force: true });
+    input.waitUntil(pulled);
+    return pulled;
+  };
   if (lease.kind === 'busy') {
-    return answeringWhileBusy(
-      runtime,
-      {
-        reason: target.reason,
-        entryId,
-        holder: lease.attemptId,
-        holderUntil: lease.leaseExpiresAt,
-      },
-      synced,
-    );
+    return turnedAway(runtime, target, lease, { entryId, pull: pullAfresh });
   }
-  // A render this isolate still keeps of the entry is one whose lease has lapsed, as this one could
-  // not have been taken otherwise: its commit is refused, and it answers nothing more.
-  runtime.publishing.delete(entryId ?? lease.entryId);
+  // A render this isolate still keeps of the entry let go of its lease, as this one could not have
+  // been taken otherwise: its commit is refused, or it has landed and its answer is on its way. It
+  // answers no request at once from now on.
+  const key = entryId ?? lease.entryId;
+  lettingGo(runtime, key);
   if (supersededBy(target, lease.current, nowMs()) && answerable(lease.current)) {
-    // Given back behind the answer, which waits for nothing of it: nobody holds the lease now.
-    input.waitUntil(abandon(input, lease, 'skipped'));
+    // The renders the generation the host names may be: the one the isolate keeps of the entry now —
+    // another request of the isolate may have published one since this one asked for the lease, its
+    // commit landed and its answer on the way — and the one it kept when the lease was asked for,
+    // whose publish may have settled meanwhile, or which another stands in the place of.
+    const candidates = [runtime.publishing.get(key), kept];
+    // Given back behind the answer, which waits for nothing of it: nobody holds the lease now. The
+    // generation the host holds may be the one the render became: the render stays until its publish
+    // settles, for any other request of the isolate the host leases the entry to meanwhile, and with
+    // this lease for as long as the host may name it, for one it turns away for this lease.
+    input.waitUntil(givingBack(runtime, candidates, lease, abandon(input, lease, 'skipped')));
     // What stands is what the next request should find: a record of it, or of a later one, that
     // another request of this isolate learned while this one waited for the lease stays held.
     forgetRecordBefore(runtime, lease.entryId, lease.current?.seq ?? Infinity);
-    return { kind: 'superseded' };
+    const ours = await answeringWhenSuperseded(runtime, candidates, lease.current, pullAfresh);
+    return supersededWith(runtime, target, lease, { entryId: key, pull: pullAfresh, ours });
   }
+  // It answers nothing more: what the host holds is not a later generation that stands.
+  runtime.publishing.delete(key);
   const began = performance.now();
   const stopHeartbeat = heartbeat(input, lease);
+  // What the render's reads were judged against, of each tag they were judged under (`HeldTags`).
+  const held = new HeldTags();
   let observedTagRevision: number;
   let viewed: boolean;
   let captured: CapturedRender | undefined;
@@ -598,7 +653,9 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
       message: 'the tags were not synced',
     });
     observedTagRevision = runtime.tags.revision;
-    captured = await renderStatic(input, lease.attemptId);
+    captured = await renderStatic(input, lease.attemptId, held);
+    // What the render read is all read: work it left behind its answer reads in its context still.
+    held.close();
     if (captured === undefined) {
       stopHeartbeat();
       await abandon(input, lease, 'skipped');
@@ -623,7 +680,7 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   const publishing = publish(
     input,
     lease,
-    { render: captured, observedTagRevision, began },
+    { render: captured, observedTagRevision, held, began },
     stopHeartbeat,
   );
   // Kept to answer for the entry only where its own pull answered. One that did not was rendered
@@ -631,12 +688,13 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   const published = viewed
     ? answeringUntilSettled(
         runtime,
-        entryId ?? lease.entryId,
+        key,
         {
           render: { ...captured, headers: generationHeadersOf(target, captured) },
           attemptId: lease.attemptId,
           tags: [...tagValuesOf(target, captured)],
           observedTagRevision,
+          held,
           observedAt: askedAt,
           published: publishing,
         },
@@ -645,17 +703,4 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
     : publishing;
   input.waitUntil(published);
   return { kind: 'accepted', render: captured, published };
-}
-
-/**
- * Whether a visitor may be answered with the generation a lease says stands (`servable`): one whose
- * status the host did not say is not taken to be, so that a regeneration is never given up for a
- * generation that answers no visitor — a redirect that says not where to, say.
- */
-function answerable(current: CurrentSummary | null | undefined): boolean {
-  if (current?.status === undefined) {
-    return false;
-  }
-  const location = current.location ?? undefined;
-  return servable(current.status, location === undefined ? {} : { location });
 }
