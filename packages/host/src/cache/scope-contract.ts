@@ -82,7 +82,8 @@ export const seedScopeResultSchema = z.discriminatedUnion('kind', [
       token: z.string().min(1),
     })
     .catchall(historyValueSchema),
-  z.object({ kind: z.literal('conflict'), reason: z.string() }),
+  // A refusal is an answer too, and keeps what a history says beside it as the others do.
+  z.object({ kind: z.literal('conflict'), reason: z.string() }).catchall(historyValueSchema),
 ]);
 export type SeedScopeResult = z.infer<typeof seedScopeResultSchema>;
 
