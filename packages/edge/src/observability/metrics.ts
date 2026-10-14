@@ -89,7 +89,10 @@ export interface EdgeMetric {
   readonly retry: number;
   readonly assetHit: number;
   readonly subrequests: number;
-  /** The pointer's lookup and the manifest's (`RequestTimings`); the middleware's is above. */
+  /**
+   * The pointer's lookup, and the manifest's with the policy's beside it (`RequestTimings`); the
+   * middleware's is above.
+   */
   readonly pointerLookupMs?: number | undefined;
   readonly manifestLookupMs?: number | undefined;
   /** The delivery record's read, served or not (`RecordTiming`). */

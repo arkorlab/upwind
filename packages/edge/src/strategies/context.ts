@@ -9,15 +9,20 @@ import type { DemotedRoutes } from '../preview/pointer.ts';
 
 /**
  * What a request waited on before the document was composed, in milliseconds: the pointer's lookup,
- * the manifest's, and the application's middleware. Each is `undefined` where the request made no
- * such wait — a validation request reads the pointer only when its header does not say whether the
- * project mints nonces, and most requests run no middleware — and none of them is a wait of its
- * own: they are the lookups' own times, taken as they finished, and go out on the document's
- * `Server-Timing` and in the metric the edge hands its host (`EdgeObserver.metric`), which records
- * it where it will, or nowhere.
+ * the manifest's with the policy's beside it, and the application's middleware. Each is `undefined`
+ * where the request made no such wait — a validation request reads the pointer only when its header
+ * does not say whether the project mints nonces, and most requests run no middleware — and none of
+ * them is a wait of its own: they are the lookups' own times, taken as they finished, and go out on
+ * the document's `Server-Timing` and in the metric the edge hands its host (`EdgeObserver.metric`),
+ * which records it where it will, or nowhere.
  */
 export interface RequestTimings {
   readonly pointerMs: number | undefined;
+  /**
+   * The manifest's lookup and the policy's, read side by side and waited on together
+   * (`serveFromPointer`): the policy's can lengthen it — a named policy with no document reads the
+   * stand-in's pointer and document after — so it is the wait for both, not the manifest's alone.
+   */
   readonly manifestMs: number | undefined;
   readonly middlewareMs: number | undefined;
 }
