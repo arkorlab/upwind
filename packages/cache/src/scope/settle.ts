@@ -480,6 +480,18 @@ async function writeScopeMarker(deps: SettleDeps): Promise<void> {
   });
 }
 
+/**
+ * A retirement is acknowledged once its scope's marker is in KV. A straggling Worker is refused by
+ * the marker, and a retirement answered without it would leave the retired deployment's token
+ * reading the scope's records until a later run wrote it. Its caller tries again, and is answered
+ * once a run — the retry's own, or the alarm's — has written it (`writeScopeMarker`).
+ */
+export function requireScopeMarker(sql: SqlStorage): void {
+  if (readMeta(sql, META_SCOPE_MARKER) === undefined) {
+    throw new Error('the scope is retired, but its marker is not written yet');
+  }
+}
+
 function failure(deps: SettleDeps, what: string, outcome: PromiseSettledResult<unknown>): boolean {
   if (outcome.status === 'rejected') {
     deps.log.warn(`${what} not settled`, { detail: detailOf(outcome.reason) });

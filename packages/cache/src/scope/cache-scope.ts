@@ -83,6 +83,7 @@ import {
   chainSettle,
   finishSettle,
   type OwnRecords,
+  requireScopeMarker,
   retryDelayMs,
   type SettleDeps,
   type SettleOutcome,
@@ -440,6 +441,8 @@ export class CacheScope extends DurableObject<CacheBindings> {
       // nothing would come back to prune its bodies or, in the end, delete it.
       await this.#armAlarm(now);
     }
+    // Answered once its marker is out, the run before the answer having written it or failed to.
+    if (outcome.kind !== 'unknown' && this.#tables) requireScopeMarker(this.#sql);
     return outcome;
   }
 
