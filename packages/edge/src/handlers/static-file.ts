@@ -547,12 +547,19 @@ export async function handleStaticFile(
       pathname: input.pathname,
       detail: errorDetail(settled.error),
     });
+    // Counted as a delivery is, outage and all: the bucket's read failed, after the blob Worker's
+    // where that was asked first.
+    const requests = (asksBlobWorker(edge.runtime.blobWorker, input.file) ? 1 : 0) + 1;
+    const failed = deliveryMetric(input, { source: 'unavailable', requests }, startedAt, 0);
+    recordDelivery(input, failed, [abandoned, replaced]);
     return serviceUnavailableResponse('static-file-unavailable');
   }
   const read = settled.read.file;
   if (read === undefined) {
     // The manifest names a blob storage does not hold: the deployment is broken, not the request.
     logWarn('static file missing from storage', { pathname: input.pathname });
+    const missing = { source: 'missing', requests: settled.read.requests } as const;
+    recordDelivery(input, deliveryMetric(input, missing, startedAt, 0), [abandoned, replaced]);
     return serviceUnavailableResponse('static-file-missing');
   }
   const headers = fileHeaders(input, sourceOf(read));
@@ -617,7 +624,10 @@ async function recordWithAbandoned(
 function deliveryMetric(
   input: StaticFileInput,
   delivered: Pick<FileBody, 'cache'> &
-    Pick<FileRead, 'requests'> & { readonly source: FileBody['source'] | 'manifest' },
+    Pick<FileRead, 'requests'> & {
+      /** Where the bytes came from, or why storage gave none: it failed, or holds none. */
+      readonly source: FileBody['source'] | 'manifest' | 'unavailable' | 'missing';
+    },
   startedAt: number,
   sentBytes: number,
 ): EdgeMetric {
