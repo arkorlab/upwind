@@ -445,8 +445,10 @@ export const dataSetResponseSchema = z.object({
    */
   invalidation: invalidationStateSchema.optional(),
   /**
-   * Set when the entry has a later write of this one's writer (`order`), whatever came between: the
-   * write arrived after the later one, nothing was written, and the generation named is that one's.
+   * Set when the entry has a later write of this one's writer (`order`), or has had this very write
+   * already — the same writer and count, its request sent again after its answer was lost —
+   * whatever came between: nothing was written, and the generation named is the one that later
+   * write, or the first arrival of this one, made.
    */
   superseded: z.literal(true).optional(),
 });
