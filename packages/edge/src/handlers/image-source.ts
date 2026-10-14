@@ -256,11 +256,15 @@ async function fetchLocal(
   // To the Worker the manifest's tables place the path in, as a passthrough is sent: one dispatch,
   // where the first Worker would only have named the one that holds it.
   const fn = functionOfRequest(edge.app, local.manifest, request);
-  const answer = fetchUpstream(edge.runtime, edge.app, request, fn);
+  // A source past its budget is let go, not left rendering behind the refusal: nobody reads it.
+  const controller = new AbortController();
+  const signalled = new Request(request, { signal: controller.signal });
+  const answer = fetchUpstream(edge.runtime, edge.app, signalled, fn);
   let response: Response;
   try {
     response = await withDeadline(answer, budgetMs, 'image source');
   } catch (error) {
+    controller.abort(error);
     // Two where the Worker the first named failed, or was still out when the budget ran out: the
     // deadline's error is its own, so the dispatch is what says how far it got.
     const requests = earlier + dispatchesSoFar(answer);
@@ -404,13 +408,18 @@ async function fetchHop(
   if (remaining <= 0) {
     return refused(HTTP_GATEWAY_TIMEOUT, TIMED_OUT, requests);
   }
+  // A hop past the budget is let go, not left holding a connection behind the refusal.
+  const controller = new AbortController();
   try {
     return await withDeadline(
-      edge.runtime.fetchImpl(new Request(url.href, { redirect: 'manual' })),
+      edge.runtime.fetchImpl(
+        new Request(url.href, { redirect: 'manual', signal: controller.signal }),
+      ),
       remaining,
       'image source',
     );
   } catch (error) {
+    controller.abort(error);
     return isDeadlineError(error)
       ? refused(HTTP_GATEWAY_TIMEOUT, TIMED_OUT, requests + 1)
       : refused(HTTP_BAD_REQUEST, UPSTREAM_INVALID, requests + 1);
