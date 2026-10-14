@@ -87,7 +87,13 @@ function runtimeOf(site: StandaloneEnv, png: Uint8Array): EdgeRuntime {
       Promise.resolve(new Response(png, { headers: { 'content-type': 'image/png' } })),
     transformImage: async (source) => {
       await new Response(source).arrayBuffer();
-      return { contentType: 'image/webp', body: new Blob([OPTIMIZED]).stream() };
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(OPTIMIZED);
+          controller.close();
+        },
+      });
+      return { contentType: 'image/webp', body };
     },
   });
 }
