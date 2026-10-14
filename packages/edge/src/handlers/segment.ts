@@ -17,7 +17,7 @@ import type { ShellDeliveryStrategy } from '@stayingupwind/host/delivery';
 import { brotliWire, gzipWire } from '@stayingupwind/host/splice';
 
 import type { EdgeContext } from '../strategies/context.ts';
-import { loadShell } from '../strategies/shell-loader.ts';
+import { loadShell, type ShellLoadResult } from '../strategies/shell-loader.ts';
 import { setConfigured } from './configured-headers.ts';
 import { ACCEPT_ENCODING_HEADER, IDENTITY_ENCODING, varyOn } from './document-headers.ts';
 import { observeMetric } from './observer.ts';
@@ -64,6 +64,8 @@ export interface SegmentInput {
   readonly strategy: ShellDeliveryStrategy<EdgeContext>;
   /** What the application's middleware set, when the edge ran it and it let the request on. */
   readonly middleware: Extract<MiddlewareResult, { kind: 'continue' }> | undefined;
+  /** The dispatches the middleware took before the part was answered, which its metric counts. */
+  readonly middlewareDispatches?: number | undefined;
   /**
    * When the answer began, which is before the caller read the runtime cache to decide whether the
    * page is still the build's. On a cache-backed route that read is most of what the request costs,
@@ -314,10 +316,21 @@ interface SegmentDelivery {
   /** What reading the bytes cost, apart from what deciding to read them cost. */
   readonly lookupMs: number;
   readonly bytes: number;
+  /** The reads of storage the bytes took (`storageReads`). */
+  readonly reads: number;
+}
+
+/**
+ * The reads of storage one load of a part's bytes made: none where the isolate's memory held them,
+ * and otherwise the backend's, which `loadShell` asks as soon as memory misses, whichever layer
+ * then answers first.
+ */
+function storageReads(loaded: ShellLoadResult): number {
+  return loaded.kind === 'ok' && loaded.read.source === 'memory' ? 0 : 1;
 }
 
 function recordDelivery(input: SegmentInput, delivered: SegmentDelivery): void {
-  const { source, rendering, lookupMs, bytes } = delivered;
+  const { source, rendering, lookupMs, bytes, reads } = delivered;
   const { edge } = input;
   observeMetric(edge.host, {
     projectId: edge.projectId,
@@ -340,7 +353,8 @@ function recordDelivery(input: SegmentInput, delivered: SegmentDelivery): void {
     recovery: 0,
     retry: 0,
     assetHit: 0,
-    subrequests: 0,
+    // Storage's, and the middleware's before them: every service call the answer made.
+    subrequests: reads + (input.middlewareDispatches ?? 0),
   });
 }
 
@@ -394,6 +408,7 @@ export async function handleSegment(input: SegmentInput): Promise<Response> {
     rendering,
     lookupMs: edge.runtime.now() - lookupStartedAt,
     bytes: bytes.byteLength + (rendering.close?.byteLength ?? 0),
+    reads: storageReads(first) + (fallback === undefined ? 0 : storageReads(fallback)),
   });
   if (rendering.encoding === IDENTITY_ENCODING) {
     // Left to the runtime, which compresses it on the way out for a client that accepts one — the

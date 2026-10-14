@@ -28,7 +28,7 @@ import { shouldAsk, triggerDetached } from '../cache/regenerate.ts';
 import { memberEntryKey } from '../memory/caches.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { generationKeyOf, requestAsLeft } from './hosted-route.ts';
-import type { MiddlewareOutcome } from './middleware.ts';
+import { dispatchedFor, type MiddlewareOutcome } from './middleware.ts';
 import { handleSegment, type RouterPart } from './segment.ts';
 
 /**
@@ -235,6 +235,7 @@ function answer(input: PartInput, answered: Answer): Promise<Response> {
           },
     onUnavailable: answered.onUnavailable,
     middleware: middleware.kind === 'continue' ? middleware : undefined,
+    middlewareDispatches: dispatchedFor(middleware),
     startedAt: answered.startedAt,
   });
 }
