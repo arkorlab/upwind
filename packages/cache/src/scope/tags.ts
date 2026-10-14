@@ -1,5 +1,6 @@
 import {
   type GenerationTag,
+  type InvalidationState,
   tagIdFor,
   type TagKind,
   tagKindOf,
@@ -481,4 +482,26 @@ export function condemningInvalidations(
     );
   });
   return [...unheld, ...controlFenceInvalidations(sql, query)];
+}
+
+/**
+ * What the invalidations a generation is published under leave it with (`condemningInvalidations`):
+ * stale from the earliest of them, expired at the earliest hard deadline among them, and as of the
+ * latest; nothing where there are none.
+ */
+export function condemnationOf(
+  invalidations: readonly InvalidationRow[],
+): InvalidationState | null {
+  if (invalidations.length === 0) {
+    return null;
+  }
+  const staleAt = Math.min(...invalidations.map((row) => row.stale_at));
+  const hardExpiries = invalidations.flatMap((row) =>
+    row.hard_expire_at === null ? [] : [row.hard_expire_at],
+  );
+  return {
+    revision: Math.max(...invalidations.map((row) => row.revision)),
+    staleAt,
+    ...(hardExpiries.length > 0 && { hardExpireAt: Math.min(...hardExpiries) }),
+  };
 }

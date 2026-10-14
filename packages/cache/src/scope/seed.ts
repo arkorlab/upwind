@@ -23,7 +23,13 @@ import type { EventInput } from './history.ts';
 import { type PackHeaderFields, unwritableRecord } from './records.ts';
 import { toEntry, toEntryState, toPublicGeneration, toScope } from './rows.ts';
 import { isRefusal, readScope, type Refusal, refuse, requireActiveScope } from './state.ts';
-import { replaceEntryTags, type TagRef, tagRefsFor } from './tags.ts';
+import {
+  condemnationOf,
+  condemningInvalidations,
+  replaceEntryTags,
+  type TagRef,
+  tagRefsFor,
+} from './tags.ts';
 import { type Apply, record, type TxInput } from './tx.ts';
 
 /**
@@ -202,6 +208,18 @@ function seedOne(input: TxInput, plan: SeedPlan, events: EventInput[]): void {
       referenceArtifact(sql, { ...artifact, owned: false }, now);
     }
   }
+  // The build's output is older than anything its scope has recorded. An invalidation of one of its
+  // tags, recorded while the deploy's batches were still on their way, reached that output all the
+  // same, and the generation arrives condemned by it, as one seeded before it was condemned
+  // (`condemnCurrent`): its record goes out at a later revision, which a reader would otherwise take
+  // to be past the invalidation.
+  const condemned = condemnationOf(
+    condemningInvalidations(sql, {
+      entryId: entry.entry_id,
+      tagIds: plan.tagRefs.map((ref) => ref.tagId),
+      afterRevision: 0,
+    }),
+  );
   insertGeneration(sql, {
     generationId: generation.generationId,
     entryId: entry.entry_id,
@@ -217,7 +235,7 @@ function seedOne(input: TxInput, plan: SeedPlan, events: EventInput[]): void {
     dependencyCoverage: generation.dependencyCoverage,
     dependencyRevision: revision,
     publishedRevision: revision,
-    condemned: null,
+    condemned,
     bodyBytes,
     producer: { kind: 'build' },
     outputs,

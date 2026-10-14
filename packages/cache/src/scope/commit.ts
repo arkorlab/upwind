@@ -35,6 +35,7 @@ import {
 } from './rows.ts';
 import { isRefusal, type Refusal, refuse, requireActiveScope } from './state.ts';
 import {
+  condemnationOf,
   condemningInvalidations,
   replaceEntryTags,
   type TagRef,
@@ -244,21 +245,6 @@ function locateArtifacts(sql: SqlStorage, plan: CommitPlan): Map<string, string>
     }
   }
   return refs;
-}
-
-function condemnationOf(invalidations: readonly InvalidationRow[]): InvalidationState | null {
-  if (invalidations.length === 0) {
-    return null;
-  }
-  const staleAt = Math.min(...invalidations.map((row) => row.stale_at));
-  const hardExpiries = invalidations.flatMap((row) =>
-    row.hard_expire_at === null ? [] : [row.hard_expire_at],
-  );
-  return {
-    revision: Math.max(...invalidations.map((row) => row.revision)),
-    staleAt,
-    ...(hardExpiries.length > 0 && { hardExpireAt: Math.min(...hardExpiries) }),
-  };
 }
 
 /** What the delivery record of the generation this commit would publish is made of. */
