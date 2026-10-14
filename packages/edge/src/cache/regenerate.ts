@@ -120,7 +120,9 @@ export interface DispatchInput {
 /**
  * No valid generation exists: the Worker renders the page, publishes it, and its render is the
  * response — the same request the Worker would answer in full, told what it is for. Counted with
- * the read of the record that turned out to have expired, which the request waited on first.
+ * the read of the record that turned out to have expired, which the request waited on first. Where
+ * the Workers that served the record are gone, the request is routed again from the pointer KV
+ * holds now, as any passthrough of it is (`EdgeContext.whenGone`).
  */
 export function foregroundDocument(
   edge: EdgeContext,
@@ -139,6 +141,7 @@ export function foregroundDocument(
     privateDelivery: edge.privateDelivery,
     middleware: input.middleware,
     headers: regenerationHeaders(edge, 'foreground', input.target),
+    whenGone: edge.whenGone,
     metrics: {
       ...passthroughMetrics(edge, input.target.pack.header.route),
       ...(recordLookupMs !== undefined && { recordLookupMs }),

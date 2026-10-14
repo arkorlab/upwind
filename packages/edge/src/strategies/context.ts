@@ -77,4 +77,10 @@ export interface EdgeContext {
    */
   readonly privateDelivery: boolean;
   readonly timings: RequestTimings;
+  /**
+   * The request routed again from the pointer KV holds now, for a dispatch the edge makes itself
+   * that finds the Workers it was sent to gone (`RoutingInput.servedAgain`): a foreground
+   * regeneration's, as a passthrough's. Absent where there is no second try.
+   */
+  readonly whenGone?: (() => Promise<Response | undefined>) | undefined;
 }

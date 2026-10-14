@@ -321,7 +321,7 @@ function edgeContextFor(
   manifest: ProjectManifest,
   forwarding: ForwardingContext,
 ): EdgeContext {
-  const { request, env, ctx, runtime, host, state } = input;
+  const { request, env, ctx, runtime, host, state, servedAgain } = input;
   return {
     env,
     ctx,
@@ -344,6 +344,8 @@ function edgeContextFor(
     validated: state.validated,
     demotedRoutes: state.demotedRoutes,
     timings: input.timings,
+    // As a passthrough's (`passthroughFor`).
+    ...(servedAgain !== undefined && { whenGone: () => servedAgain(state.app) }),
   };
 }
 
