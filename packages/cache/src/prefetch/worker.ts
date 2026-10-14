@@ -1,4 +1,7 @@
 import { PREFETCH_BLOB_PATH } from '@stayingupwind/host/bindings';
+// The key the upload writes, from the module of the storage keys alone: imported once from behind a
+// barrel of build schemas, it brought zod and every schema with it, 819 KiB of this Worker's 820.
+import { blobObjectKey } from '@stayingupwind/host/storage';
 
 /**
  * One blob of a deployment's own bundle, by the sha256 the bundle names it with.
@@ -30,18 +33,6 @@ import { PREFETCH_BLOB_PATH } from '@stayingupwind/host/bindings';
 
 /** What a sha256 looks like written down; anything else is not a key this Worker will build. */
 const SHA256 = /^[0-9a-f]{64}$/u;
-
-/**
- * `blobObjectKey` (`@stayingupwind/host/storage`), written out rather than imported.
- *
- * Measured when it was imported from behind a barrel of build schemas: it brought zod and every
- * schema with it — **819 KiB of this Worker's 820**, for a key of one line. Which is parsed on
- * every cold start of a Worker whose whole job is to be quick about a blob the edge could not
- * serve. Nothing here holds the copy to the real one, so a change to either is a change to both.
- */
-function blobObjectKey(sha256: string): string {
-  return `blobs/${sha256}`;
-}
 const HTTP_NOT_FOUND = 404;
 const HTTP_METHOD_NOT_ALLOWED = 405;
 /** A deployment is immutable and a blob is its content, so a hit is good for as long as anyone has. */
