@@ -46,6 +46,12 @@ const HTTP_NOT_FOUND = 404;
 const HTTP_METHOD_NOT_ALLOWED = 405;
 /** A deployment is immutable and a blob is its content, so a hit is good for as long as anyone has. */
 const IMMUTABLE = 'public, max-age=31536000, immutable';
+/**
+ * What a blob is answered with. The type is the asking Function's to decide: it knows what the blob
+ * is from its own manifest, and a blob is bytes here. Saying `application/octet-stream` keeps this
+ * Worker out of that.
+ */
+const FOUND_HEADERS = { 'content-type': 'application/octet-stream', 'cache-control': IMMUTABLE };
 
 export interface PrefetchEnv {
   /** The bundle blobs of every deployment, as the upload put them (`blobObjectKey`). */
@@ -71,14 +77,17 @@ export default {
     if (!SHA256.test(sha256)) {
       return empty(HTTP_NOT_FOUND);
     }
+    if (request.method === 'HEAD') {
+      // Whether the blob is there, and no more: its object is looked at, and no body opened.
+      const found = await env.ARTIFACTS.head(blobObjectKey(sha256));
+      return found === null
+        ? empty(HTTP_NOT_FOUND)
+        : new Response(null, { headers: FOUND_HEADERS });
+    }
     const stored = await env.ARTIFACTS.get(blobObjectKey(sha256));
     if (stored === null) {
       return empty(HTTP_NOT_FOUND);
     }
-    // The type is the asking Function's to decide: it knows what the blob is from its own manifest,
-    // and a blob is bytes here. Saying `application/octet-stream` keeps this Worker out of that.
-    return new Response(stored.body, {
-      headers: { 'content-type': 'application/octet-stream', 'cache-control': IMMUTABLE },
-    });
+    return new Response(stored.body, { headers: FOUND_HEADERS });
   },
 } satisfies ExportedHandler<PrefetchEnv>;
