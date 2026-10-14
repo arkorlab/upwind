@@ -1,3 +1,4 @@
+import * as s from '@stayingupwind/core/schema';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as z from 'zod';
 
@@ -77,6 +78,33 @@ describe('a longer body', () => {
     expect(parsed.success ? parsed.data.items.at(-1) : undefined).toStrictEqual({
       name: `n${count - 1}`,
     });
+  });
+});
+
+describe("a longer body a schema of core's validator takes", () => {
+  /**
+   * Asked `validate` and then `safeParse`, every check of the schema ran twice for each value that
+   * passed. A run as `validate` makes, through a value with nothing wrong in it, is the parse.
+   */
+  it('is checked once, and answered with what safeParse makes of it', () => {
+    let checks = 0;
+    const counted = s
+      .string()
+      .trim()
+      .refine(() => {
+        checks += 1;
+        return true;
+      });
+    const schema = s.object({ items: s.array(s.object({ name: counted })) });
+    const count = MAX_LISTED_BYTES;
+    const value = { items: Array.from({ length: count }, (_, index) => ({ name: ` n${index} ` })) };
+
+    const parsed = safeParseBounded(schema, value, JSON.stringify(value).length);
+
+    expect(parsed.success ? parsed.data.items.at(-1) : undefined).toStrictEqual({
+      name: `n${count - 1}`,
+    });
+    expect(checks).toBe(count);
   });
 });
 
