@@ -1,5 +1,6 @@
 import {
   type DeploymentBundle,
+  type EntrypointKind,
   pagesDataPathnameUnder,
   type Prerender,
   prerenderResponseHeaders,
@@ -57,13 +58,54 @@ function headerText(value: string | readonly string[] | undefined): string | und
   return typeof value === 'string' ? value : value.join(', ');
 }
 
+/** What seeding looks a bundle up by, for each of its routes. */
+interface BundleIndex {
+  /** The kind of the entrypoint a route is served by: the first the bundle names for it. */
+  readonly kinds: ReadonlyMap<string, EntrypointKind>;
+  /** The prerenders of each pathname, in the bundle's order. */
+  readonly prerenders: ReadonlyMap<string, readonly Prerender[]>;
+}
+
+/**
+ * The index of each bundle seeding has read. Every cacheable prerender is seeded on its own, and
+ * found its entrypoint, and a Pages Router page its data, by going through the whole bundle: the
+ * seeding of a deployment grew with the square of its routes. A bundle is not changed once it is
+ * read, so its index is made the first time it is asked, and goes with it.
+ */
+const INDEXES = new WeakMap<DeploymentBundle, BundleIndex>();
+
+function indexOf(bundle: DeploymentBundle): BundleIndex {
+  const held = INDEXES.get(bundle);
+  if (held !== undefined) {
+    return held;
+  }
+  const kinds = new Map<string, EntrypointKind>();
+  for (const entrypoint of bundle.entrypoints) {
+    if (!kinds.has(entrypoint.pathname)) {
+      kinds.set(entrypoint.pathname, entrypoint.kind);
+    }
+  }
+  const prerenders = new Map<string, Prerender[]>();
+  for (const prerender of bundle.prerenders) {
+    const named = prerenders.get(prerender.pathname);
+    if (named === undefined) {
+      prerenders.set(prerender.pathname, [prerender]);
+    } else {
+      named.push(prerender);
+    }
+  }
+  const index = { kinds, prerenders };
+  INDEXES.set(bundle, index);
+  return index;
+}
+
 /** The router a prerender belongs to, and the kind of output: from its entrypoint. */
 export function prerenderEntryKind(bundle: DeploymentBundle, prerender: Prerender): RouteEntryKind {
-  const entrypoint = bundle.entrypoints.find((entry) => entry.pathname === prerender.route);
-  if (entrypoint?.kind === 'pages') {
+  const kind = indexOf(bundle).kinds.get(prerender.route);
+  if (kind === 'pages') {
     return 'pages';
   }
-  return entrypoint?.kind === 'app-route' ? 'app-route' : 'app-page';
+  return kind === 'app-route' ? 'app-route' : 'app-page';
 }
 
 /**
@@ -144,14 +186,15 @@ function pagesDataOf(bundle: DeploymentBundle, prerender: Prerender): Prerender 
     bundle.config.basePath,
     prerender.pathname,
   );
-  return bundle.prerenders.find((twin) => {
-    return (
-      twin.pathname === pathname &&
-      twin.route === prerender.route &&
-      twin.groupId === prerender.groupId &&
-      twin.body !== undefined
-    );
-  });
+  return indexOf(bundle)
+    .prerenders.get(pathname)
+    ?.find((twin) => {
+      return (
+        twin.route === prerender.route &&
+        twin.groupId === prerender.groupId &&
+        twin.body !== undefined
+      );
+    });
 }
 
 /** The outputs of the build's generation: the primary body, its state, and a page's data. */
