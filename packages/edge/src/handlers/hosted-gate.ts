@@ -13,6 +13,7 @@ import {
   type MiddlewareOutcome,
   middlewareResponse,
   type MiddlewareTiming,
+  routedHeaders,
 } from './middleware.ts';
 import { PATTERN_BUDGET } from './passthrough.ts';
 
@@ -90,7 +91,9 @@ export async function serveAfterMiddleware(
   gate: HostedGate,
 ): Promise<Response> {
   const { request, url, edge, manifest } = input;
-  if (isReserved(manifest, url, request.headers, true)) {
+  // On the headers the application's routing is handed, as the middleware's matchers are judged.
+  const routed = routedHeaders(edge, manifest.reservedRoutes, request.headers);
+  if (isReserved(manifest, url, routed, true)) {
     return input.passthrough('reserved');
   }
   // Ahead of the middleware, and of whatever serving the file costs — a read of storage, a source

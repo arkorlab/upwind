@@ -1,4 +1,8 @@
-import { headerRulesFor, type ProjectManifest } from '@stayingupwind/core/manifest';
+import {
+  headerRulesFor,
+  type MiddlewareMatcher,
+  type ProjectManifest,
+} from '@stayingupwind/core/manifest';
 import {
   MIDDLEWARE_ONLY_HEADER,
   middlewareApplies,
@@ -101,13 +105,29 @@ function describe(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).slice(0, MAX_REASON_LENGTH);
 }
 
+/** A rule of the application's routing, as far as its conditions go. */
+type Conditioned = Pick<MiddlewareMatcher, 'has' | 'missing'>;
+
 /**
- * Whether this request would run the application's middleware at all.
- *
- * Judged on the headers the middleware is handed (`runMiddleware`), without the host's own
- * credentials (`withoutHostCredentials`): a `has` or `missing` that names one of them holds or
- * fails as it does where Next.js judges it, on a request that never carries them. Only a matcher
- * with conditions reads the headers, and most have none, so only then are they copied.
+ * The headers the application's routing judges `rules` on: without the host's own credentials
+ * (`withoutHostCredentials`), which never reach the application, so a `has` or `missing` that names
+ * one holds or fails as it does where Next.js judges it. Only a rule with conditions reads the
+ * headers, and most have none: only then are they copied.
+ */
+export function routedHeaders(
+  edge: EdgeContext,
+  rules: readonly Conditioned[] | undefined,
+  headers: Headers,
+): Headers {
+  const conditioned = rules?.some((rule) => rule.has !== undefined || rule.missing !== undefined);
+  return conditioned === true
+    ? withoutHostCredentials(new Headers(headers), edge.host.credentials)
+    : headers;
+}
+
+/**
+ * Whether this request would run the application's middleware at all, judged on the headers the
+ * middleware is handed (`runMiddleware`, `routedHeaders`).
  */
 export function middlewareMatches(
   edge: EdgeContext,
@@ -122,13 +142,7 @@ export function middlewareMatches(
     return false;
   }
   const { matchers } = manifest.middleware;
-  const conditioned = matchers.some(
-    (matcher) => matcher.has !== undefined || matcher.missing !== undefined,
-  );
-  const handed = conditioned
-    ? withoutHostCredentials(new Headers(headers), edge.host.credentials)
-    : headers;
-  return middlewareApplies(matchers, url, handed);
+  return middlewareApplies(matchers, url, routedHeaders(edge, matchers, headers));
 }
 
 /**
