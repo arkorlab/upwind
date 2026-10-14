@@ -5,6 +5,7 @@ import {
   buildProjectManifest,
   computeManifestId,
   type DynamicRoute,
+  type HeaderRule,
   type ProjectManifest,
   type ReservedRoute,
   type RouteEntry,
@@ -73,6 +74,8 @@ export interface SiteOptions {
   readonly reservedRoutes?: readonly ReservedRoute[] | undefined;
   /** The page's prefetch segments, by the path the router names each with, each stored in KV. */
   readonly segments?: Readonly<Record<string, string>> | undefined;
+  /** The rules of `next.config` `headers()`, in Next.js's order; none, absent. */
+  readonly headerRules?: readonly HeaderRule[] | undefined;
 }
 
 export interface Site {
@@ -151,6 +154,7 @@ export async function seedSite(options: SiteOptions): Promise<Site> {
     app: APP,
     staticFiles: await fileEntries(options.files ?? {}),
     images: options.images,
+    ...(options.headerRules !== undefined && { headerRules: [...options.headerRules] }),
     ...(options.dynamicRoutes !== undefined && { dynamicRoutes: [...options.dynamicRoutes] }),
     ...(options.reservedRoutes !== undefined && { reservedRoutes: options.reservedRoutes }),
     crawlersStreamed: true,

@@ -112,18 +112,16 @@ type Condition = NonNullable<Conditioned['has']>[number];
 
 /**
  * Whether a condition can read otherwise once `withoutHostCredentials` has run: it deletes the
- * host's headers, and where the host names cookies it writes the `cookie` header again, so a cookie
- * condition — whichever cookie it names — or one on that header whole can too. Every other condition
- * reads the same value either way.
+ * host's headers, and where the host names cookies it writes the `cookie` header again. A cookie
+ * condition reads that header, whichever cookie it names, so it can read otherwise wherever one on
+ * the header whole can: where the host names cookies, or names the header itself. Every other
+ * condition reads the same value either way.
  */
 function readsCredentials(condition: Condition, credentials: HostCredentials): boolean {
-  if (condition.type === 'cookie') {
-    return credentials.cookies.length > 0;
-  }
-  if (condition.type !== 'header') {
+  if (condition.type !== 'cookie' && condition.type !== 'header') {
     return false;
   }
-  const name = (condition.key ?? '').toLowerCase();
+  const name = condition.type === 'cookie' ? 'cookie' : (condition.key ?? '').toLowerCase();
   return (
     (name === 'cookie' && credentials.cookies.length > 0) ||
     credentials.headers.some((header) => header.toLowerCase() === name)
