@@ -36,7 +36,7 @@ import {
   unimplementedBackend,
 } from './delivery.ts';
 import { deploymentFingerprintOf } from './fingerprint.ts';
-import { assembleManifest, oversizedManifest } from './manifest.ts';
+import { assembleManifest, oversizedManifest, routedPages } from './manifest.ts';
 import { edgePointerOf } from './pointer.ts';
 import { DOCUMENT_KIND, shellsOf } from './shells.ts';
 
@@ -251,7 +251,10 @@ async function importShells(
   input: StageInput,
 ): Promise<Record<string, string[]>> {
   const preloads: Record<string, string[]> = {};
-  for (const shell of shellsOf(input.bundle)) {
+  // Those of the pages the manifest routes, as it routes them (`routedPages`): without a runtime
+  // cache, none of a page the build finished, which the manifest leaves to the Function.
+  const shells = shellsOf(input.bundle, routedPages(target.cache !== undefined));
+  for (const shell of shells) {
     const bytes = await blobOf(target.blobs, shell);
     // As what it is: a segment or a payload is an RSC payload, and a page's props are JSON.
     await target.bucket.put(r2ArtifactKey(shell.sha256), bytes, {

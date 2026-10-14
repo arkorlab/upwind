@@ -9,6 +9,7 @@ import {
   resumablePrerenders,
   routePagesData,
   routePayloads,
+  type ServableOptions,
   staticFileAssetPrefixOf,
   staticFileLocalesOf,
 } from '@stayingupwind/core/bundle';
@@ -72,6 +73,19 @@ export function oversizedManifest(
 
 /** The policies a hint answers to (`withoutForbidden`), by the lowercase names they go by. */
 const POLICY_HEADERS: ReadonlySet<string> = new Set(['content-security-policy', 'referrer-policy']);
+
+/**
+ * The pages a deployment's manifest routes, asked of the build as its servability is
+ * (`ServableOptions`): every page the edge serves where the deployment has a runtime cache, and
+ * only the pages the edge resumes where it has none. The edge tells a page the build finished from
+ * one it resumes by the page's entry (`cache.delivery`), and without a runtime cache there is none:
+ * it would resume a finished page and splice a render of the whole page behind it. Such a
+ * deployment leaves those pages, and what the build wrote beside them, to its Function, which
+ * serves them whole — and staging it imports none of their artifacts (`shellsOf`).
+ */
+export function routedPages(runtimeCache: boolean | undefined): ServableOptions {
+  return { complete: runtimeCache !== false };
+}
 
 export interface AssembleManifestInput {
   readonly bundle: DeploymentBundle;
@@ -143,11 +157,7 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
   }
   // The scope is the deployment; the same derivation the seed used names each entry.
   const cached = input.runtimeCache !== false;
-  // The edge tells a page the build finished from one it resumes by the page's entry
-  // (`cache.delivery`), and without a runtime cache there is none: it would resume a finished page
-  // and splice a render of the whole page behind it. Such a deployment leaves those pages, and what
-  // the build wrote beside them, to its Function, which serves them whole.
-  const servable = { complete: cached };
+  const servable = routedPages(input.runtimeCache);
   const prerenders = edgeServablePrerenders(bundle, servable);
   const caches = cached ? await routeCachesOf(bundle, input.deploymentId) : new Map();
   const middlewareMatchers = middlewareMatchersOf(bundle);
