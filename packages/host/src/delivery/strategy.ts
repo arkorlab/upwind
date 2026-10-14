@@ -14,10 +14,11 @@ export interface ShellRead {
 
 /**
  * Reads shells; generic over the runtime context so this contract stays Cloudflare-free. A
- * pre-compressed rendering of a shell is stored and read exactly like the shell itself.
+ * pre-compressed rendering of a shell is stored and read exactly like the shell itself. `Id` is the
+ * backend the strategy is, which a registry files it under (`StrategyRegistry`).
  */
-export interface ShellDeliveryStrategy<C> {
-  readonly id: ShellBackendId;
+export interface ShellDeliveryStrategy<C, Id extends ShellBackendId = ShellBackendId> {
+  readonly id: Id;
   getShell(ref: ArtifactLocator, ctx: C): Promise<ShellRead | undefined>;
 }
 
@@ -43,9 +44,11 @@ export interface AssetHandleResult {
 /**
  * What became of the copy an asset strategy kept while the body went to the client.
  *
- * Anything but `kept` means the asset was delivered whole and stored nowhere, so the next request
- * for it asks the origin again. The reason is the only place that shows, which is why it is a
- * value and not a log line.
+ * Anything but `kept` means nothing here vouches for a stored copy, so the next request for the
+ * asset may ask the origin again: the copy was let go of, or its write may yet land
+ * (`store-unconfirmed`). It says nothing of the body the client was sent, which goes on beside the
+ * copy, whole where the origin's was and short where it was not, as an `interrupted` one may be.
+ * The reason is the only place that shows, which is why it is a value and not a log line.
  */
 export type AssetKeepOutcome =
   | 'kept'
@@ -68,8 +71,8 @@ export type AssetKeepOutcome =
   | 'store-unconfirmed';
 
 /** Serves immutable-asset candidates (admission is decided inside the strategy). */
-export interface AssetDeliveryStrategy<C> {
-  readonly id: AssetBackendId;
+export interface AssetDeliveryStrategy<C, Id extends AssetBackendId = AssetBackendId> {
+  readonly id: Id;
   handle(request: Request, originUrl: URL, ctx: C): Promise<AssetHandleResult>;
 }
 
@@ -103,11 +106,12 @@ export interface ContinuationStart<C> {
 /**
  * Every backend the contract names, implemented. Total rather than partial: a policy is checked
  * against these ids where it is written, so a policy that parses always resolves, and the hot
- * path has no closed-fail branch to take.
+ * path has no closed-fail branch to take. Each backend is the strategy that names itself so: the
+ * id a resolved policy's strategy reports is the backend the policy chose.
  */
 export interface StrategyRegistry<C> {
-  readonly shell: Record<ShellBackendId, ShellDeliveryStrategy<C>>;
-  readonly assets: Record<AssetBackendId, AssetDeliveryStrategy<C>>;
+  readonly shell: { readonly [Id in ShellBackendId]: ShellDeliveryStrategy<C, Id> };
+  readonly assets: { readonly [Id in AssetBackendId]: AssetDeliveryStrategy<C, Id> };
 }
 
 export interface ResolvedPolicy<C> {

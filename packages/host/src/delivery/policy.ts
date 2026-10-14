@@ -174,15 +174,20 @@ const DEFAULT_REGENERATE_COOLDOWN_MS = 5000;
  */
 const DEFAULT_CACHE_API_MAX_AGE_MS = 300_000;
 
-export const DEFAULT_RUNTIME_CACHE_SETTINGS: RuntimeCacheSettings = {
+/**
+ * The runtime cache settings of a policy that states none. Frozen: `runtimeCacheOf` hands this one
+ * object to every caller whose policy states none, and a change one of them made would be every
+ * other's defaults after it.
+ */
+export const DEFAULT_RUNTIME_CACHE_SETTINGS: Readonly<RuntimeCacheSettings> = Object.freeze({
   generations: 'off',
   holdMs: DEFAULT_GENERATION_HOLD_MS,
   regenerateCooldownMs: DEFAULT_REGENERATE_COOLDOWN_MS,
   concreteUpgrade: false,
-};
+});
 
 /** The runtime cache settings a policy states, or the defaults for one that states none. */
-export function runtimeCacheOf(policy: DeliveryPolicy): RuntimeCacheSettings {
+export function runtimeCacheOf(policy: DeliveryPolicy): Readonly<RuntimeCacheSettings> {
   return policy.runtimeCache ?? DEFAULT_RUNTIME_CACHE_SETTINGS;
 }
 

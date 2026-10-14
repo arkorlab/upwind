@@ -49,11 +49,28 @@ export const FULL_SUPPORT_NEXT_MIN = [16, 3, 0] as const;
  */
 export type NextSupport = 'full' | 'limited' | 'unsupported';
 
-const VERSION = /^(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)/u;
+/**
+ * A version as Next.js publishes one: `major.minor.patch`, then perhaps a semantic version's
+ * prerelease (`-canary.48`) and its build (`+…`). Anything else after the patch makes it no version
+ * at all.
+ */
+const VERSION =
+  /^(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)(?:-(?<pre>[^+]*))?(?:\+(?<build>.*))?$/u;
+/** A prerelease or a build, as a semantic version writes one: identifiers joined by dots. */
+const IDENTIFIERS = /^[\dA-Za-z-]+(?:\.[\dA-Za-z-]+)*$/u;
+
+/** Whether a prerelease or a build is one a semantic version may carry, or there is none. */
+function identifiersOrNone(text: string | undefined): boolean {
+  return text === undefined || IDENTIFIERS.test(text);
+}
 
 function versionTuple(version: string): readonly [number, number, number] | undefined {
   const groups = VERSION.exec(version)?.groups;
-  if (groups === undefined) {
+  if (
+    groups === undefined ||
+    !identifiersOrNone(groups['pre']) ||
+    !identifiersOrNone(groups['build'])
+  ) {
     return undefined;
   }
   return [Number(groups['major']), Number(groups['minor']), Number(groups['patch'])];
@@ -69,6 +86,17 @@ function compareTuples(a: readonly number[], b: readonly number[]): number {
   return 0;
 }
 
+/**
+ * How much of what a host serves `version` gets.
+ *
+ * A prerelease is read as the release it is numbered as, and so is a build's metadata: a canary of
+ * a version the range admits (`16.4.0-canary.48`) gets what that version gets. Next.js publishes
+ * each release as canaries first, and an application tries the next one on them; admitted as the
+ * release it is numbered as, such a build deploys, held to that release's support. The adapter
+ * vouches for published releases, and checks the current canary only as a forecast of the next,
+ * so what a canary changes that no release has yet is met in its build, which fails there rather
+ * than being refused here. Text after the patch that is neither is no version, and gets nothing.
+ */
 export function nextSupportOf(version: string): NextSupport {
   const tuple = versionTuple(version);
   if (
