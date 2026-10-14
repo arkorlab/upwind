@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 
 import { scopeStub } from '../src/scope/stub.ts';
 import { STANDALONE_AUTHORITY } from '../src/standalone/host.ts';
-import { CacheControl } from '../src/standalone/worker.ts';
+import { CacheControl, CacheSignals } from '../src/standalone/worker.ts';
 
 const SCOPE_ID = createId(DEPLOYMENT_ID_PREFIX);
 
@@ -103,6 +103,10 @@ describe('a standalone cache', () => {
     'seeds no scope whose id holds %j, and signs it no token',
     async (held) => {
       const control = new CacheControl(createExecutionContext(), env);
+      // Asked of an instance, as `control` is, not over `exports`: an RPC call's promise is
+      // callable, so `rejects` calls it and awaits that call instead, and the refusal of the call
+      // itself is left unhandled.
+      const signals = new CacheSignals(createExecutionContext(), env);
       const scopeId = `${createId(DEPLOYMENT_ID_PREFIX)}${held}b`;
       const seed = seedInput(createId(DEPLOYMENT_ID_PREFIX));
 
@@ -110,9 +114,7 @@ describe('a standalone cache', () => {
         control.seedScope({ ...seed, scope: { ...seed.scope, scopeId } }),
       ).rejects.toThrow(/visible ASCII/u);
       await expect(control.issueToken({ scopeId })).rejects.toThrow(/visible ASCII/u);
-      await expect(exports.CacheSignals.scopeSignals(scopeId, null)).rejects.toThrow(
-        /no such scope/u,
-      );
+      await expect(signals.scopeSignals(scopeId, null)).rejects.toThrow(/no such scope/u);
     },
   );
 
