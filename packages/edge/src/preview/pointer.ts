@@ -142,6 +142,8 @@ interface KeyReads {
    * another read is adopted (`adoptWarmingSafety`), since the pointer held has moved since.
    */
   readonly warming: Map<number, Answered>;
+  /** Reads sent up to this ticket were given up on (`MAX_READS_OUT_PER_KEY`), and none is adopted. */
+  givenUp: number;
 }
 
 /** The reads of pointers out in one isolate. */
@@ -173,6 +175,13 @@ const readsOut = new WeakMap<EdgeRuntime['memory']['pointers'], ReadsOut>();
  * lets the reads still out land without being adopted.
  */
 const MAX_KEYS_WITH_A_READ_OUT = 1024;
+/**
+ * More reads of one key out at once than an isolate ever has: one goes out per pointer TTL, and none
+ * lives past its request's time behind the response. A read that never settles — its read ahead
+ * stalled until that time ran out — leaves its ticket out, one more each TTL, so past this the
+ * oldest are given up on: let go of, and not adopted should they land after all.
+ */
+const MAX_READS_OUT_PER_KEY = 8;
 
 /** The ticket of a read of `key` about to go out, the latest sent for it. */
 function sendRead(runtime: EdgeRuntime, key: string): number {
@@ -190,7 +199,17 @@ function sendRead(runtime: EdgeRuntime, key: string): number {
     adopted: 0,
     parked: undefined,
     warming: new Map<number, Answered>(),
+    givenUp: 0,
   };
+  // Oldest first: tickets are added as they are sent.
+  for (const ticket of reads.out) {
+    if (reads.out.size < MAX_READS_OUT_PER_KEY) {
+      break;
+    }
+    reads.out.delete(ticket);
+    reads.warming.delete(ticket);
+    reads.givenUp = ticket;
+  }
   reads.out.add(out.sent);
   out.keys.set(key, reads);
   return out.sent;
@@ -199,6 +218,14 @@ function sendRead(runtime: EdgeRuntime, key: string): number {
 /** The reads of `key` this isolate has out, if any. */
 function readsOf(runtime: EdgeRuntime, key: string): KeyReads | undefined {
   return readsOut.get(runtime.memory.pointers)?.keys.get(key);
+}
+
+/**
+ * How many reads of `key` this isolate has out: never more than `MAX_READS_OUT_PER_KEY`, however
+ * many of them never settle.
+ */
+export function pointerReadsOut(runtime: EdgeRuntime, key: string): number {
+  return readsOf(runtime, key)?.out.size ?? 0;
 }
 
 /** Whether a read of the key sent after `ticket` is still out. */
@@ -297,7 +324,7 @@ function adopt(at: KeyRead<EdgePointer>, answered: Answered, ticket: number): vo
   }
   reads.out.delete(ticket);
   reads.warming.delete(ticket);
-  if (ticket > reads.adopted && ticket > out.forgotten) {
+  if (ticket > reads.adopted && ticket > out.forgotten && ticket > reads.givenUp) {
     settle(at, reads, { ticket, answered });
   }
   if (reads.out.size === 0 && reads.parked === undefined) {
