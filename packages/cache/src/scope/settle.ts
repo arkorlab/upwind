@@ -12,7 +12,7 @@ import {
 } from './entries.ts';
 import { findGeneration } from './generations.ts';
 import type { ScopeHistory } from './history.ts';
-import type { BlobStore, KvSink } from './io.ts';
+import { type BlobStore, type KvSink, writeKey } from './io.ts';
 import { dataRecordJson, generationRecordBytes } from './records.ts';
 import type { EntryRow } from './rows.ts';
 import {
@@ -153,7 +153,10 @@ interface Writing {
 
 /**
  * Write the entry's delivery record as it stands, or delete it (`Writing`): the bytes of a
- * generation's record written, where the change wants them, and nothing otherwise.
+ * generation's record written, where the change wants them, and nothing otherwise. A record a change
+ * rewrites just after the one before it went out — an invalidation's of a commit's — is refused by
+ * KV for its key's second, and written once more a second later (`writeKey`), so that its change is
+ * answered with it out, as it is with a tag's.
  */
 async function projectEntry(
   deps: SettleDeps,
@@ -170,15 +173,16 @@ async function projectEntry(
       ? undefined
       : findGeneration(deps.sql, entry.current_generation_id);
   if (retired || current === undefined || entry.publication === 'retired') {
-    await deps.kv.delete(key);
+    await writeKey(() => deps.kv.delete(key));
     return undefined;
   }
   if (data) {
-    await deps.kv.put(key, await dataRecordJson(deps, entry, current));
+    const json = await dataRecordJson(deps, entry, current);
+    await writeKey(() => deps.kv.put(key, json));
     return undefined;
   }
   const bytes = await generationRecordBytes(deps, entry, current);
-  await deps.kv.put(key, bytes);
+  await writeKey(() => deps.kv.put(key, bytes));
   return wanted?.wants(entry.entry_id, bytes.byteLength) === true ? bytes : undefined;
 }
 
