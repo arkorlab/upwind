@@ -98,13 +98,19 @@ function heldThroughView(publishing: Publishing): boolean {
 
 /**
  * Whether the isolate's view holds the whole of what it was told of each of the render's tags
- * (`TagState.holdsWhole`): then an invalidation of one of them recorded since the pull the render
- * read against is a mark the view holds — the delta brings each one past where the view stood, and
- * a read is told of one past it too — known at a revision past the render's (`unmarkedSince`). One
- * the view let go of a mark of is one it can say nothing of since, at whatever revision it stands.
+ * (`TagState.holdsWhole`), and has let go of no mark of one since the render began
+ * (`TagLosses.lostSince`): then an invalidation of one of them since the pull the render read
+ * against is a mark the view holds — the delta brings each one past where the view stood, a read is
+ * told of one past it too, and the isolate's own are in force here — and `unmarkedSince` weighs it.
+ * One the view let go of a mark of is one it can say nothing of since, at whatever revision it
+ * stands: a mark of the isolate's own, or one told at no revision, is known at none.
  */
 function wholeInView(runtime: CacheRuntime, publishing: Publishing): boolean {
-  return publishing.tags.every((tag) => runtime.tags.holdsWhole(tag));
+  return publishing.tags.every((tag) => {
+    return (
+      runtime.tags.holdsWhole(tag) && !runtime.tags.losses.lostSince(tag, publishing.observedLosses)
+    );
+  });
 }
 
 /**
