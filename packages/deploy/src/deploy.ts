@@ -152,7 +152,6 @@ export interface StagedDeployment {
 
 /** Entries per call: within `MAX_SEED_BATCH`, and as many as a failed call has to send again. */
 const SEED_BATCH = 100;
-const SHELL_CONTENT_TYPE = 'text/html; charset=utf-8';
 
 function isoOf(ms: number): string {
   // eslint-disable-next-line unicorn/prefer-temporal -- Temporal is not available in the Workers runtime.
@@ -228,8 +227,9 @@ async function importShells(
   const preloads: Record<string, string[]> = {};
   for (const shell of shellsOf(input.bundle)) {
     const bytes = await blobOf(target.blobs, shell);
+    // As what it is: a segment or a payload is an RSC payload, and a page's props are JSON.
     await target.bucket.put(r2ArtifactKey(shell.sha256), bytes, {
-      contentType: SHELL_CONTENT_TYPE,
+      contentType: shell.contentType,
       customMetadata: {
         kind: shell.kind,
         byteLength: String(shell.byteLength),
