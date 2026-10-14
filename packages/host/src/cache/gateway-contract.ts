@@ -501,6 +501,19 @@ export const tagsDeltaResponseSchema = z.object({
 });
 export type TagsDeltaResponse = z.infer<typeof tagsDeltaResponseSchema>;
 
+/**
+ * Whether a delta asked for from `since` moves its reader on. A page that is not the last is read on
+ * from its `revision`, so one whose revision does not pass `since` would be asked for again, and
+ * answered the same, for as long as its reader went on asking. The shape cannot say so, as it does
+ * not know `since`; whatever asks for a delta asks this of each page.
+ */
+export function deltaMovesOn(
+  since: number,
+  delta: Pick<TagsDeltaResponse, 'revision' | 'truncated'>,
+): boolean {
+  return !delta.truncated || delta.revision > since;
+}
+
 /** Regional reads are bounded independently of the number of tags in a deployment. */
 export const tagsGetRequestSchema = z.object({
   tags: z.array(tagValueSchema).max(MAX_TAGS_PER_CALL),

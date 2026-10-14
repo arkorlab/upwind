@@ -98,6 +98,7 @@ export {
   type DataSetRequest,
   dataSetRequestSchema,
   dataSetResponseSchema,
+  deltaMovesOn,
   type DataSetResponse,
   type FailRequest,
   failRequestSchema,
