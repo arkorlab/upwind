@@ -6,7 +6,7 @@ import { controlFenceSweepPending } from './control-fences.ts';
 import { dataUploadScanPending, type DataUploadPage, queueDataUploads } from './data-uploads.ts';
 import type { ScopeHistory } from './history.ts';
 import type { BlobStore } from './io.ts';
-import { applyRetention, forgetDeletions } from './retention.ts';
+import { applyRetention, forgetDeletions, scopeErasable } from './retention.ts';
 import { readMeta, writeMeta } from './state.ts';
 
 export interface TickOptions {
@@ -70,10 +70,12 @@ export async function runRetention(
     });
     return false;
   }
-  run.transaction(() => {
+  // Asked again once the deletes are forgotten: where they were the last of the scope's bytes, this
+  // run erases it, rather than the run an interval later.
+  return run.transaction(() => {
     forgetDeletions(run.sql, plan.deletable);
+    return scopeErasable({ sql: run.sql, limits: run.limits, now });
   });
-  return plan.deleteAll;
 }
 
 /** Remove all scope blobs only once no unsettled records or retention obligations remain. */

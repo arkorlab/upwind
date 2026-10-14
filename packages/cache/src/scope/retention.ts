@@ -359,12 +359,23 @@ export function applyRetention(input: RetentionInput): RetentionPlan {
   ageOutHistory(input, windows, deletable);
   queueDeletions(input.sql, deletable, input.now);
   forgetReferenced(input.sql);
-  const historyOver =
-    retired &&
-    scope.retired_at !== null &&
-    input.now - scope.retired_at > input.limits.retainHistoryMs;
   return {
     deletable: pendingDeletions(input.sql, PRUNE_BATCH),
-    deleteAll: historyOver && !bytesRemain(input.sql),
+    deleteAll: scopeErasable(input),
   };
+}
+
+/**
+ * Whether the scope's storage may go whole: it is retired, past its history window, and holds
+ * nothing left to delete (`bytesRemain`). Asked again once a run's deletes are confirmed, which may
+ * have been the last of its bytes (`runRetention`).
+ */
+export function scopeErasable(input: Omit<RetentionInput, 'history'>): boolean {
+  const scope = readScope(input.sql);
+  return (
+    scope?.status === 'retired' &&
+    scope.retired_at !== null &&
+    input.now - scope.retired_at > input.limits.retainHistoryMs &&
+    !bytesRemain(input.sql)
+  );
 }
