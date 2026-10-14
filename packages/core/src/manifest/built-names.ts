@@ -88,9 +88,9 @@ function unaddressable(name: string): boolean {
 }
 
 /**
- * Every byte of `segment` escaped: a spelling of it no name holds as it is, which a request may ask
- * by where another name is the spelling a request would ask by otherwise (`routeRequestPathOf`,
- * `fileRequestPathOf`) — the edge finds a name as spelled before it decodes one.
+ * Every byte of `segment` escaped, in capitals: a spelling of it a request may ask by where another
+ * name is the spelling a request would ask by otherwise (`routeRequestPathOf`, `fileRequestPathOf`)
+ * — the edge finds a name as spelled before it decodes one. Its small letters are a spelling too.
  */
 export function escapedBytesOf(segment: string): string {
   return [...new TextEncoder().encode(segment)]

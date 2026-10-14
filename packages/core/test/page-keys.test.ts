@@ -66,6 +66,7 @@ describe('the path a request asks for a route by', () => {
    */
   it('asks for a route another is named as the spelling of, with every byte escaped', () => {
     const percent = manifestOf(['/docs/100%', '/docs/100%25']);
+    const question = manifestOf(['/?', '/%3F'], ['/?', '/%3F']);
     const accented = manifestOf(['/docs/é', '/docs/%C3%A9']);
     const spelledOut = asked(routeRequestPathOf(percent, '/docs/100%'));
     const accentedOut = asked(routeRequestPathOf(accented, '/docs/é'));
@@ -73,6 +74,12 @@ describe('the path a request asks for a route by', () => {
     expect(asked(routeRequestPathOf(percent, '/docs/100%25'))).toBe('/docs/100%2525');
     expect(pageKeyOf(percent.routes, spelledOut, percent)).toBe('/docs/100%');
     expect(pageKeyOf(accented.routes, accentedOut, accented)).toBe('/docs/é');
+
+    for (const key of ['/?', '/%3F']) {
+      const path = asked(routeRequestPathOf(question, key));
+
+      expect(pageKeyOf(question.routes, path, question)).toBe(key);
+    }
   });
 
   /** The router redirects a path with an empty segment to the one without it. */

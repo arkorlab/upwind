@@ -146,9 +146,10 @@ describe('the path a request asks for a shipped file by', () => {
    * request would spell this one, it is asked with every byte escaped.
    */
   it('asks for a file another is named as the spelling of, with every byte escaped', () => {
-    const manifest = shipping(['/a%2F.txt', '/a%252F.txt', '/a b', '/a%20b']);
+    const names = ['/a%2F.txt', '/a%252F.txt', '/a b', '/a%20b', '/?', '/%3F'];
+    const manifest = shipping(names);
 
-    for (const name of ['/a%2F.txt', '/a%252F.txt', '/a b', '/a%20b']) {
+    for (const name of names) {
       const path = asked(fileRequestPathOf(manifest, name));
 
       expect(staticFileKey(manifest, path)).toBe(name);

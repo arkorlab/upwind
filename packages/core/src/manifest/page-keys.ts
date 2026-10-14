@@ -120,8 +120,9 @@ const REQUEST_ORIGIN = 'https://request.invalid';
  * `key`. A page of its own's name is its path as it is: a `%2F` in it is a `%` and a `2F`, and asked
  * for as a member's escaped `/`, it is another page. Where another route is named as one of those
  * spells it (`/docs/100%25` beside `/docs/100%`), the edge finds that route as spelled first, and
- * the name is asked with every byte of it escaped, a spelling no name holds as it is, read either
- * way.
+ * the name is asked with every byte of it escaped, read either way: in capitals, or, where a route
+ * is named as that spells it too, in small letters — a spelling the URL keeps as it is, and that no
+ * name holds then.
  *
  * `undefined` where none is: no request reaches the route. A member a page of its own shadows
  * (`/docs/a%2Fb` beside the page `/docs/a/b`) is never served — Next.js, and the edge, find the page
@@ -136,11 +137,15 @@ export function routeRequestPathOf(
     return undefined;
   }
   const segments = key.split('/');
+  const asMember = segments.map((segment) => escapedBytesOf(segmentValueOf(segment))).join('/');
+  const asOwn = segments.map((segment) => escapedBytesOf(segment)).join('/');
   const spellings = [
     member,
     escapedPathOf(key),
-    segments.map((segment) => escapedBytesOf(segmentValueOf(segment))).join('/'),
-    segments.map((segment) => escapedBytesOf(segment)).join('/'),
+    asMember,
+    asOwn,
+    asMember.toLowerCase(),
+    asOwn.toLowerCase(),
   ];
   return spellings.find((asked) => {
     return (
