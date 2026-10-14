@@ -522,7 +522,10 @@ export async function handleImage(input: ImageInput): Promise<Response> {
     await imageSourceId(source, edge.app?.deploymentId ?? '', edge.forwarding.previewHost),
     params,
   );
-  const cached = await lookupCache(edge.host.names.imageCache, key);
+  // Validation reads nothing live traffic cached, as it writes nothing (below): the key names no
+  // policy, so an entry would answer for the candidate without its source or its transformer being
+  // asked, and a candidate whose image path is broken would pass.
+  const cached = edge.validated ? undefined : await lookupCache(edge.host.names.imageCache, key);
   if (cached !== undefined) {
     return fromCache(input, cached, startedAt);
   }
