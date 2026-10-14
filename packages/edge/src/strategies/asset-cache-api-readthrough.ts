@@ -115,7 +115,10 @@ export async function readThrough(
   };
 }
 
-export const cacheApiReadthroughAssetStrategy: AssetDeliveryStrategy<EdgeContext> = {
+export const cacheApiReadthroughAssetStrategy: AssetDeliveryStrategy<
+  EdgeContext,
+  typeof STRATEGY_ID
+> = {
   id: STRATEGY_ID,
   handle: (request, originUrl, ctx) => readThrough(request, originUrl, ctx, STRATEGY_ID),
 };

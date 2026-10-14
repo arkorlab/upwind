@@ -15,7 +15,7 @@ import type { EdgeContext } from './context.ts';
  */
 const SHELL_KV_CACHE_TTL_SECONDS = 30;
 
-export const kvShellStrategy: ShellDeliveryStrategy<EdgeContext> = {
+export const kvShellStrategy: ShellDeliveryStrategy<EdgeContext, 'kv'> = {
   id: 'kv',
   async getShell(ref, ctx) {
     const startedAt = ctx.runtime.now();

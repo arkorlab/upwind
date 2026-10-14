@@ -3,7 +3,7 @@ import type { ShellDeliveryStrategy } from '@stayingupwind/host/delivery';
 
 import type { EdgeContext } from './context.ts';
 
-export const r2ShellStrategy: ShellDeliveryStrategy<EdgeContext> = {
+export const r2ShellStrategy: ShellDeliveryStrategy<EdgeContext, 'r2'> = {
   id: 'r2',
   async getShell(ref, ctx) {
     const startedAt = ctx.runtime.now();

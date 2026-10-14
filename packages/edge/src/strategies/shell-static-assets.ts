@@ -20,7 +20,7 @@ class NoStaticAssetsError extends Error {
 }
 
 /** Shells uploaded as Workers Static Assets under `/__arkor/shell/<sha256>`. */
-export const staticAssetsShellStrategy: ShellDeliveryStrategy<EdgeContext> = {
+export const staticAssetsShellStrategy: ShellDeliveryStrategy<EdgeContext, 'static-assets'> = {
   id: 'static-assets',
   async getShell(ref, ctx) {
     const assets = ctx.env.ASSETS;

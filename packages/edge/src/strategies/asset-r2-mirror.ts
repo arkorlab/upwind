@@ -12,7 +12,7 @@ const STRATEGY_ID = 'r2-mirror';
  * this far (`static-file`). What reaches this strategy is an asset the manifest does not name, and
  * the only party that can say what it is is the deployment's own Worker: a read-through of it.
  */
-export const r2MirrorAssetStrategy: AssetDeliveryStrategy<EdgeContext> = {
+export const r2MirrorAssetStrategy: AssetDeliveryStrategy<EdgeContext, typeof STRATEGY_ID> = {
   id: STRATEGY_ID,
   handle: (request, originUrl, ctx) => readThrough(request, originUrl, ctx, STRATEGY_ID),
 };
