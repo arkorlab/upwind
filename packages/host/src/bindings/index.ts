@@ -38,6 +38,8 @@ export const RESPONSE_CACHE_TTL_MS = '1';
 export const DEPLOYMENT_ID_BINDING = 'NEXT_DEPLOYMENT_ID';
 /** Tells the application where it runs, for the few things it does differently there. */
 export const RUNTIME_BINDING = 'ARKOR_RUNTIME';
+/** What `RUNTIME_BINDING` holds, and what the application compares it with: the runtime it is in. */
+export const RUNTIME_NAME = 'workerd';
 /**
  * Where a deployment's Worker reads one blob of its **own bundle** that the build left out of it:
  * the prefetch Worker's default entrypoint.
