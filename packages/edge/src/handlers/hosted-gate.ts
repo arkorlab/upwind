@@ -7,6 +7,7 @@ import {
   decideMiddleware,
   followExternalRewrite,
   judgeHeaderRulesAhead,
+  type MiddlewareDecision,
   middlewareFailedReason,
   middlewareMatches,
   type MiddlewareOutcome,
@@ -95,7 +96,16 @@ export async function serveAfterMiddleware(
     return gate.serve(undefined, 0);
   }
   gate.start?.();
-  const { outcome: middleware, dispatches } = await decideMiddleware(edge, request);
+  let decided: MiddlewareDecision;
+  try {
+    decided = await decideMiddleware(edge, request);
+  } catch (error) {
+    // An answer of the middleware's that cannot be read — a rewrite to no URL at all — answers
+    // nothing here: what was started for the answer is let go, as wherever no answer takes it.
+    gate.abandon?.();
+    throw error;
+  }
+  const { outcome: middleware, dispatches } = decided;
   try {
     return await actOnMiddleware(input, gate, { middleware, dispatches });
   } catch (error) {
