@@ -7,6 +7,7 @@ import {
   tagKindSchema,
 } from '@stayingupwind/core/cache';
 import {
+  type CommitRequest,
   invalidationMeaningSchema,
   type TagDeltaEntry,
   tagDeltaEntrySchema,
@@ -473,32 +474,47 @@ export interface CondemnationQuery {
   readonly tagIds: readonly string[];
   readonly afterRevision: number;
   /**
-   * What a render's view of the tags held, where it says: the revision of the scope it was brought
-   * up to, and the tags the delta brings a reader of. An immediate invalidation of one of those tags
-   * at or before that revision is one the render read against, and made its reads afresh for; so is
-   * one with a window (`swr`) that such an immediate one of its tag came after, since a tag stands at
-   * its latest invalidation and that is what the view held of it. Not one with a window the view held
-   * last of its tag, under which the render's reads may have been answered stale; nor one of an entry,
-   * a control fence, or a tag of another kind, which the delta brings no reader.
+   * What a render's view of the tags held, where its runtime says (`viewHeld`): of each tag it held,
+   * by id, the revision through which the render's reads under the tag were judged against its
+   * invalidations. An immediate invalidation of one of those tags at or before it is one the render
+   * read against, and made its reads afresh for; so is one with a window (`swr`) that such an
+   * immediate one of its tag came after, since a tag stands at its latest invalidation and that is
+   * what the view held of it. Not one with a window the view held last of its tag, under which the
+   * render's reads may have been answered stale; nor one of an entry, a control fence, or a tag the
+   * view held nothing of past it, which the render's reads were not judged against.
    */
-  readonly held?: { readonly revision: number; readonly tagIds: ReadonlySet<string> } | undefined;
+  readonly held?: ReadonlyMap<string, number> | undefined;
 }
 
 /**
- * What a render's view of the tags held (`CondemnationQuery.held`): the revision it was brought up to,
- * and those of its tags the delta brings a runtime — it leaves out one whose kind is not the one its
- * value names (`GatewayHost.tagsDelta`), a platform-delivery tag sharing a Next.js tag's value say.
+ * What a render's view of the tags held (`CondemnationQuery.held`), where its runtime says
+ * (`heldTagRevisions`): of each of the generation's tags it says it of, what it says, though no more
+ * than the revision the view was brought up to (`observedTagRevision`); and only of those of the kind
+ * their value names, which the delta brings a runtime — it leaves out one of another kind
+ * (`GatewayHost.tagsDelta`), a platform-delivery tag sharing a Next.js tag's value say.
+ *
+ * Nothing where the runtime says nothing. One from before it says only the revision its view was
+ * brought up to, which does not say what the view kept of each tag: it lets a tag go past so many,
+ * and judges a read under it by a copy of the tags that may be behind. Its commit is judged as one
+ * whose view held no tag, as every commit was before what a view held excused anything.
  */
 export function viewHeld(
-  revision: number,
+  request: Pick<CommitRequest, 'observedTagRevision' | 'heldTagRevisions'>,
   refs: readonly TagRef[],
-): { readonly revision: number; readonly tagIds: ReadonlySet<string> } {
-  return {
-    revision,
-    tagIds: new Set(
-      refs.filter((ref) => ref.kind === tagKindOf(ref.value)).map((ref) => ref.tagId),
-    ),
-  };
+): ReadonlyMap<string, number> | undefined {
+  const { heldTagRevisions, observedTagRevision } = request;
+  if (heldTagRevisions === undefined) {
+    return undefined;
+  }
+  const said = new Map(Object.entries(heldTagRevisions));
+  const held = new Map<string, number>();
+  for (const ref of refs) {
+    const revision = said.get(ref.value);
+    if (revision !== undefined && ref.kind === tagKindOf(ref.value)) {
+      held.set(ref.tagId, Math.min(revision, observedTagRevision));
+    }
+  }
+  return held;
 }
 
 /** The invalidations recorded after a render read its inputs that name what it depends on. */
@@ -523,7 +539,7 @@ export function condemningInvalidations(
     return [...persistent, ...controlFenceInvalidations(sql, query)];
   }
   const inView = (row: InvalidationRow): boolean =>
-    row.target_kind === 'tag' && row.revision <= held.revision && held.tagIds.has(row.target_id);
+    row.target_kind === 'tag' && row.revision <= (held.get(row.target_id) ?? 0);
   // The latest immediate invalidation of each tag the view held: the render read that tag afresh
   // against it, and against nothing recorded of it before.
   const afresh = new Map<string, number>();

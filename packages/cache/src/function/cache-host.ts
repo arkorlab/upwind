@@ -13,6 +13,7 @@ import {
 import {
   type CommitArtifact as GatewayCommitArtifact,
   type CommitOutput as GatewayCommitOutput,
+  type CommitRequest as GatewayCommitRequest,
   type CurrentGenerationSummary,
   type DataSetRequest,
   type InvalidateResponse as GatewayInvalidateResponse,
@@ -184,6 +185,23 @@ function currentOf(current: CurrentGenerationSummary | null): CurrentSummary | n
         ...(current.status !== undefined && { status: current.status }),
         ...(current.location !== undefined && { location: current.location }),
       };
+}
+
+/**
+ * What the commit says of the render's view of the tags: the revision it was brought up to, and what
+ * it held of each of the generation's tags, where the runtime says (`heldTagRevisions`). A runtime
+ * from before that says nothing of it, and the authority judges its commit as one whose view held
+ * no tag. Read through a shape of this host's own, which the runtime it is built beside matches
+ * whether it says it or not.
+ */
+function viewOf(request: {
+  readonly observedTagRevision: number;
+  readonly heldTagRevisions?: Readonly<Record<string, number>> | undefined;
+}): Pick<GatewayCommitRequest, 'observedTagRevision' | 'heldTagRevisions'> {
+  return {
+    observedTagRevision: request.observedTagRevision,
+    ...(request.heldTagRevisions !== undefined && { heldTagRevisions: request.heldTagRevisions }),
+  };
 }
 
 /**
@@ -387,7 +405,7 @@ class GatewayHost implements CacheHost {
     this.#leased.delete(attemptId);
     const committed = await this.#committed(attemptId, lease, {
       fencingToken: request.fencingToken,
-      observedTagRevision: request.observedTagRevision,
+      ...viewOf(request),
       generation: {
         cacheTimestamp: generation.cacheTimestamp,
         producedAt: generation.producedAt,

@@ -529,18 +529,21 @@ function applyCommit(input: TxInput, plan: CommitPlan): CommitOutcome | Refusal 
     return refuse('quota_exceeded', 'the scope holds as many bytes as it may');
   }
   const tagIds = plan.tagRefs.map((ref) => ref.tagId);
-  const held = viewHeld(plan.request.observedTagRevision, plan.tagRefs);
-  const behind = Math.min(attempt.dependency_revision, held.revision);
+  const held = viewHeld(plan.request, plan.tagRefs);
+  const behind = Math.min(attempt.dependency_revision, plan.request.observedTagRevision);
   const floor = controlFenceFloorInvalidations(sql, { tagIds, afterRevision: behind });
   if (floor.length > 0) return refuseStale(input, attempt, entry, floor);
-  // A tag's invalidation at or before the revision the renderer's view was brought up to is one the
-  // render read against, whatever revision the lease was taken at: a runtime pulls the delta after
-  // it asks for the lease and before it renders, and one recorded between the two — the
-  // `revalidatePath` that sent the request here, which Next.js records behind its response — was
-  // in that pull. An immediate one neither refuses nor condemns what the render made (`held`): its
+  // A tag's invalidation at or before what the renderer's view held of the tag (`viewHeld`) is one
+  // the render read against, whatever revision the lease was taken at: a runtime pulls the delta
+  // after it asks for the lease and before it renders, and one recorded between the two — the
+  // `revalidatePath` that sent the request here, which Next.js records behind its response — was in
+  // that pull. An immediate one neither refuses nor condemns what the render made (`held`): its
   // reads were made afresh against it, and so against nothing recorded of its tag before it. One
   // with a window the view held last of its tag still condemns it, as any after the lease does: its
-  // reads may have been answered stale under it.
+  // reads may have been answered stale under it. What the view held of each tag is the runtime's to
+  // say, and a commit that says nothing of it is judged as one whose view held none: the revision
+  // the view was brought up to does not say it of a tag the view let go of, a read under which was
+  // judged by a copy of the tags that may be behind.
   //
   // The lease's revision says when the render was allowed to start; the request's says what the
   // renderer's view of the tags was synced to, which a hold window leaves behind by up to its
