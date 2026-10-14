@@ -88,14 +88,115 @@ function unaddressable(name: string): boolean {
 }
 
 /**
- * Every byte of `segment` escaped, in capitals: a spelling of it a request may ask by where another
- * name is the spelling a request would ask by otherwise (`routeRequestPathOf`, `fileRequestPathOf`)
- * — the edge finds a name as spelled before it decodes one. Its small letters are a spelling too.
+ * What a URL keeps in a path as it is written and reads as nothing but itself: a letter, a digit,
+ * and the marks it lets stand. A `%` starts an escape, and a `/` ends a segment.
  */
-export function escapedBytesOf(segment: string): string {
-  return [...new TextEncoder().encode(segment)]
-    .map((byte) => `%${byte.toString(HEX).toUpperCase().padStart(2, '0')}`)
-    .join('');
+const PLAIN = /^[\w!$&'()*+,.:;=@[\]|~-]$/u;
+
+/** A digit of an escape in capitals, and, where it is a letter, in small letters too. */
+function casesOf(digit: string): readonly string[] {
+  const small = digit.toLowerCase();
+  return small === digit ? [digit] : [digit, small];
+}
+
+/**
+ * The ways a request may write `byte` in a path, each read back as that byte: as it is, where a URL
+ * keeps it so (`PLAIN`), and escaped, each letter of the escape in capitals or in small letters —
+ * a URL keeps an escape as it is written.
+ */
+function formsOf(byte: number): readonly string[] {
+  const digits = byte.toString(HEX).toUpperCase().padStart(2, '0');
+  const lows = casesOf(digits.slice(1));
+  const escapes = casesOf(digits.slice(0, 1)).flatMap((high) =>
+    lows.map((low) => `%${high}${low}`),
+  );
+  const plain = String.fromCodePoint(byte);
+  return PLAIN.test(plain) ? [plain, ...escapes] : escapes;
+}
+
+/**
+ * `chosen`, the form each byte is written in, moved on to the next spelling as a counter counts: the
+ * last byte's form first, and a byte with no form left back to its first. Whether there was one.
+ */
+function advance(chosen: number[], forms: readonly (readonly string[])[]): boolean {
+  for (let index = chosen.length - 1; index >= 0; index -= 1) {
+    const next = (chosen[index] ?? 0) + 1;
+    if (next < (forms[index]?.length ?? 0)) {
+      chosen[index] = next;
+      return true;
+    }
+    chosen[index] = 0;
+  }
+  return false;
+}
+
+/**
+ * Every spelling of the path whose segments are `segments`, each byte of them written in each of
+ * its forms (`formsOf`), so that each reads back decoded as the path: one at a time, as many as the
+ * forms multiply to. The most readable comes first, then one byte after another is written
+ * otherwise, the path's last first: its first segments, where a locale or a prefix the edge reads as
+ * it is stands, are the last to change.
+ */
+export function* spellingsOf(segments: readonly string[]): Generator<string, void, undefined> {
+  const encoder = new TextEncoder();
+  const bySegment = segments.map((segment) =>
+    [...encoder.encode(segment)].map((byte) => formsOf(byte)),
+  );
+  const forms = bySegment.flat();
+  const chosen = forms.map(() => 0);
+  do {
+    const written = chosen.map((choice, index) => forms[index]?.[choice] ?? '');
+    yield bySegment.map((bytes) => written.splice(0, bytes.length).join('')).join('/');
+  } while (advance(chosen, forms));
+}
+
+/** `readable`, and then every spelling of the path of `segments` (`spellingsOf`). */
+function* readableFirst(
+  readable: string,
+  segments: readonly string[],
+): Generator<string, void, undefined> {
+  yield readable;
+  yield* spellingsOf(segments);
+}
+
+/** Only ever used to read out of a URL the path a request asking by a spelling holds. */
+const REQUEST_ORIGIN = 'https://request.invalid';
+
+/**
+ * The spelling a request reaches `key` by: of `readable`, and then every spelling of the path whose
+ * segments are `segments` (`spellingsOf`), the first whose path, read out of a URL it is written
+ * into, `read` finds `key` by. The edge finds a name as spelled before it reads a path any other
+ * way — decoded, or as the name it builds to — and every spelling of one path reads alike those
+ * ways: a spelling reads as the name spelled as it, or as what every spelling no name is spelled as
+ * reads as. So once one reads as nothing, or as a name another read as already, no spelling left
+ * reaches `key` — its own, where it has one, is the most readable, and was first — and the search
+ * ends: it tries at most two spellings more than there are names spelled as one of them.
+ * `undefined` where none reaches `key`.
+ */
+export function spellingReaching(
+  key: string,
+  read: (pathname: string) => string | undefined,
+  readable: string,
+  segments: readonly string[],
+): string | undefined {
+  const tried = new Set<string>();
+  const readAs = new Set<string>();
+  for (const spelling of readableFirst(readable, segments)) {
+    const { pathname } = new URL(spelling, REQUEST_ORIGIN);
+    if (tried.has(pathname)) {
+      continue;
+    }
+    tried.add(pathname);
+    const name = read(pathname);
+    if (name === key) {
+      return spelling;
+    }
+    if (name === undefined || readAs.has(name)) {
+      return undefined;
+    }
+    readAs.add(name);
+  }
+  return undefined;
 }
 
 /**

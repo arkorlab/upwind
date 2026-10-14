@@ -4,7 +4,7 @@ import type { RouterReferences } from '../bundle/carried.ts';
 import type { DeploymentFingerprint } from '../deployment/fingerprint.ts';
 import type { ImagesConfig } from '../images/config.ts';
 import { compareCodeUnits } from '../util/bytes.ts';
-import { escapedBytesOf, escapedPathOf } from './built-names.ts';
+import { escapedPathOf, spellingReaching } from './built-names.ts';
 import { pageKeyOf } from './page-keys.ts';
 import { namesPagesDataPrefix, pagesDataPrefixOf } from './pages-data-prefix.ts';
 import {
@@ -390,19 +390,15 @@ export function staticFileKey(manifest: FileLookup, pathname: string): string | 
   return unprefixed === undefined ? undefined : keyOf(staticFiles, unprefixed);
 }
 
-/** Only ever used to read out of a URL the path a request asking by `asked` holds. */
-const REQUEST_ORIGIN = 'https://request.invalid';
-
 /**
  * The path a request asks for the file `key` of `manifest` by, at `spelling` — its own name, or a
  * spelling the edge finds it by besides, behind a default locale or under the asset prefix: the
  * spelling escaped as a request names a file (`escapedPathOf`), or — where another file is named as
  * that spells it, which the edge finds as spelled first (`/a%252F.txt` beside `/a%2F.txt`, `/a%20b`
- * beside `/a b`) — with every byte of its last segment escaped (`escapedBytesOf`), in capitals or,
- * where a file is named as that spells it too (`/%3F` beside `/?`), in small letters. The rest is
- * left readable: the edge decodes a path whole once it finds none as spelled, and reads a locale or
- * the asset prefix ahead of the name as it is (`/en/%61%20%62.txt` for `/a b.txt` behind `en`).
- * `undefined` where none finds the file: no request reaches it at that spelling.
+ * beside `/a b`) — another spelling of it, one byte after another escaped, an escape's letters in
+ * either case, the name's last byte first, until one no file is named as (`spellingReaching`). A
+ * locale or the asset prefix ahead of the name, which the edge reads as it is, is the last to
+ * change. `undefined` where none finds the file: no request reaches it at that spelling.
  */
 export function fileRequestPathOf(
   manifest: FileLookup,
@@ -413,15 +409,8 @@ export function fileRequestPathOf(
   if (readable === undefined) {
     return undefined;
   }
-  const segments = readable.split('/');
-  const names = spelling.split('/');
-  const last = names.findLastIndex((segment) => segment !== '');
-  const whole = segments
-    .map((segment, index) => (index === last ? escapedBytesOf(names[index] ?? '') : segment))
-    .join('/');
-  return [readable, whole, whole.toLowerCase()].find(
-    (asked) => staticFileKey(manifest, new URL(asked, REQUEST_ORIGIN).pathname) === key,
-  );
+  const read = (pathname: string): string | undefined => staticFileKey(manifest, pathname);
+  return spellingReaching(key, read, readable, spelling.split('/'));
 }
 
 /**

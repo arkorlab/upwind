@@ -62,24 +62,38 @@ describe('the path a request asks for a route by', () => {
 
   /**
    * The edge finds a route as spelled before it decodes one: where another is named as a request
-   * would spell this one, it is asked with every byte escaped, a spelling no name holds as it is.
+   * would spell this one, it is asked by a spelling no name holds as it is.
    */
-  it('asks for a route another is named as the spelling of, with every byte escaped', () => {
+  it('asks for a route another is named as the spelling of, by a spelling none is named as', () => {
     const percent = manifestOf(['/docs/100%', '/docs/100%25']);
-    const question = manifestOf(['/?', '/%3F'], ['/?', '/%3F']);
-    const accented = manifestOf(['/docs/é', '/docs/%C3%A9']);
-    const spelledOut = asked(routeRequestPathOf(percent, '/docs/100%'));
-    const accentedOut = asked(routeRequestPathOf(accented, '/docs/é'));
+    const manifests = [
+      percent,
+      manifestOf(['/?', '/%3F'], ['/?', '/%3F']),
+      manifestOf(['/docs/é', '/docs/%C3%A9', '/docs/%c3%a9']),
+      manifestOf([
+        '/docs/a b',
+        '/docs/a%20b',
+        '/%64%6F%63%73/%61%20%62',
+        '/%64%6f%63%73/%61%20%62',
+      ]),
+    ];
+
+    for (const manifest of manifests) {
+      for (const key of Object.keys(manifest.routes)) {
+        const path = asked(routeRequestPathOf(manifest, key));
+
+        expect(pageKeyOf(manifest.routes, path, manifest)).toBe(key);
+      }
+    }
 
     expect(asked(routeRequestPathOf(percent, '/docs/100%25'))).toBe('/docs/100%2525');
-    expect(pageKeyOf(percent.routes, spelledOut, percent)).toBe('/docs/100%');
-    expect(pageKeyOf(accented.routes, accentedOut, accented)).toBe('/docs/é');
+  });
 
-    for (const key of ['/?', '/%3F']) {
-      const path = asked(routeRequestPathOf(question, key));
+  /** Each spelling of a name another is named as reaches that other, and there is none left. */
+  it('names no path for a route every spelling of which another is named as', () => {
+    const manifest = manifestOf(['/?', '/%3F', '/%3f'], ['/?', '/%3F', '/%3f']);
 
-      expect(pageKeyOf(question.routes, path, question)).toBe(key);
-    }
+    expect(routeRequestPathOf(manifest, '/?')).toBeUndefined();
   });
 
   /** The router redirects a path with an empty segment to the one without it. */

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { builtNameOf, escapedPathOf, requestPathOf } from '../src/manifest/built-names.ts';
+import {
+  builtNameOf,
+  escapedPathOf,
+  requestPathOf,
+  spellingsOf,
+} from '../src/manifest/built-names.ts';
 import { fileRequestPathOf, staticFileKey } from '../src/manifest/manifest.ts';
 
 /**
@@ -143,34 +148,71 @@ describe('the path a request asks for a shipped file by', () => {
 
   /**
    * The edge finds a file as spelled before it decodes one: where another file is named as a
-   * request would spell this one, it is asked with every byte escaped.
+   * request would spell this one, it is asked by a spelling no file is named as.
    */
-  it('asks for a file another is named as the spelling of, with every byte escaped', () => {
-    const names = ['/a%2F.txt', '/a%252F.txt', '/a b', '/a%20b', '/?', '/%3F'];
-    const manifest = shipping(names);
+  it('asks for a file another is named as the spelling of, by a spelling none is named as', () => {
+    const shipped = [
+      ['/a%2F.txt', '/a%252F.txt'],
+      ['/a b', '/a%20b'],
+      ['/?', '/%3F'],
+      ['/a b/x', '/a%20b/x', '/a%20b/%78'],
+      ['/Dir/?', '/Dir/%3F'],
+    ];
 
-    for (const name of names) {
-      const path = asked(fileRequestPathOf(manifest, name));
+    for (const names of shipped) {
+      const manifest = shipping(names);
 
-      expect(staticFileKey(manifest, path)).toBe(name);
+      for (const name of names) {
+        const path = asked(fileRequestPathOf(manifest, name));
+
+        expect(staticFileKey(manifest, path)).toBe(name);
+      }
     }
 
-    expect(asked(fileRequestPathOf(manifest, '/a%20b'))).toBe('/a%2520b');
+    const spaced = shipping(['/a b', '/a%20b']);
+
+    expect(asked(fileRequestPathOf(spaced, '/a%20b'))).toBe('/a%2520b');
   });
 
-  /** A locale ahead of the name is read as it is, so only the name is escaped whole. */
-  it('asks for a file behind a default locale with its name escaped and the locale as it is', () => {
+  /** An escape's letters are a URL's to keep as written, and a directory's are the name's own. */
+  it('writes an escape in small letters, and leaves the rest of the name as it is', () => {
+    const manifest = shipping(['/Dir/?', '/Dir/%3F']);
+
+    expect(asked(fileRequestPathOf(manifest, '/Dir/?'))).toBe('/Dir/%3f');
+  });
+
+  /** A locale ahead of the name is read as it is, and so the last to be written otherwise. */
+  it('asks for a file behind a default locale with the locale as it is', () => {
     const manifest = {
       ...shipping(['/a b.txt', '/en/a%20b.txt']),
       staticFileLocales: { basePath: '', locales: ['en'] },
     };
     const path = asked(fileRequestPathOf(manifest, '/en/a b.txt', '/a b.txt'));
 
-    expect(path).toBe('/en/%61%20%62%2E%74%78%74');
+    expect(path).toBe('/en/a%20b.tx%74');
     expect(staticFileKey(manifest, path)).toBe('/a b.txt');
+  });
+
+  /** Each spelling of a name another is named as reaches that other, and there is none left. */
+  it('names no path for a file every spelling of which another is named as', () => {
+    expect(fileRequestPathOf(shipping(['/?', '/%3F', '/%3f']), '/?')).toBeUndefined();
   });
 
   it('names no path for a file no request reaches', () => {
     expect(fileRequestPathOf(shipping(['//x.txt']), '//x.txt')).toBeUndefined();
+  });
+});
+
+describe('the spellings of a path', () => {
+  /** Each byte as it is or escaped, an escape's letters either way, the path's last byte first. */
+  it('writes one byte after another otherwise, the last first, and ends', () => {
+    expect([...spellingsOf(['', 'a?'])]).toStrictEqual(['/a%3F', '/a%3f', '/%61%3F', '/%61%3f']);
+    expect([...spellingsOf(['', 'é'])]).toStrictEqual(['/%C3%A9', '/%C3%a9', '/%c3%A9', '/%c3%a9']);
+  });
+
+  it('reads back decoded as the path', () => {
+    for (const spelling of spellingsOf(['', 'a b', '%'])) {
+      expect(decodeURIComponent(spelling)).toBe('/a b/%');
+    }
   });
 });
