@@ -50,16 +50,26 @@ const END_TAGS = [
   '</template>'.repeat(NESTED_TEMPLATES),
 ].join('');
 /**
+ * A start tag SVG and MathML hand back to HTML.
+ *
+ * Inside either, a `<script>` is that language's element, and a MathML one never runs. This tag is
+ * one the foreign-content rules break out on: it pops every foreign element, however deep they
+ * nest, down to the nearest HTML one or integration point, where a `<script>` is HTML's. Elsewhere
+ * it is an empty `<meta>`, which shows nothing and sets nothing.
+ */
+const LEAVE_FOREIGN_CONTENT = '<meta>';
+/**
  * Leaves whatever HTML state the origin stopped in, so the recovery script is markup and runs.
  *
  * The continuation can be cut at any byte. `"'">` closes an attribute value of either quoting — or
  * none, or one not started yet — and then the tag itself; `]]>` closes a CDATA section, which SVG
  * and MathML may hold and only that ends; `-->` closes a comment; the end tags leave the elements
- * above, and then every template the cut was in. In the ordinary case, a cut in character data,
- * this is a few stray characters on a document that is about to reload itself: the trade against a
- * reload that never happens and a user left on a truncated page.
+ * above, and then every template the cut was in; and last, inside none of them, a `<meta>` leaves
+ * SVG and MathML. In the ordinary case, a cut in character data, this is a few stray characters on
+ * a document that is about to reload itself: the trade against a reload that never happens and a
+ * user left on a truncated page.
  */
-const ESCAPE_PREFIX = `"'">]]>-->${END_TAGS}`;
+const ESCAPE_PREFIX = `"'">]]>-->${END_TAGS}${LEAVE_FOREIGN_CONTENT}`;
 
 /**
  * Appended when the continuation cannot be completed after the shell was flushed: sets a
