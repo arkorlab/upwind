@@ -3,12 +3,16 @@ import {
   type ImagesConfig,
   parseImageRequest,
 } from '@stayingupwind/core/images';
-import { type ConfiguredHeaders, headerRulesFor } from '@stayingupwind/core/manifest';
+import type { ConfiguredHeaders } from '@stayingupwind/core/manifest';
 import { PatternBudgetExceededError } from '@stayingupwind/core/request';
 
 import { type HostedGateInput, serveAfterMiddleware, type TimedContinue } from './hosted-gate.ts';
 import { handleImage, type ImageAnswerInput, refuseImage } from './image.ts';
-import type { MiddlewareOutcome, MiddlewareTiming } from './middleware.ts';
+import {
+  headerRulesAsRouted,
+  type MiddlewareOutcome,
+  type MiddlewareTiming,
+} from './middleware.ts';
 import { PATTERN_BUDGET } from './passthrough.ts';
 
 export interface HostedImageInput extends HostedGateInput {
@@ -51,7 +55,7 @@ function answering(
 /** The path's rules for a refusal: none where it is one of theirs that costs too much to judge. */
 function rulesForRefusal(input: HostedImageInput): ConfiguredHeaders {
   try {
-    return headerRulesFor(input.manifest, input.url, input.request.headers);
+    return headerRulesAsRouted(input.edge, input.manifest, input.url, input.request.headers);
   } catch (error) {
     if (error instanceof PatternBudgetExceededError) {
       return UNJUDGED;
@@ -106,7 +110,7 @@ function optimized(
   dispatches: number,
 ): Promise<Response> {
   const { url, manifest, config } = input;
-  const configured = headerRulesFor(manifest, url, input.request.headers);
+  const configured = headerRulesAsRouted(input.edge, manifest, url, input.request.headers);
   const answer = answering(input, middleware, dispatches, configured);
   const parsed = parseImageRequest(
     target.searchParams,

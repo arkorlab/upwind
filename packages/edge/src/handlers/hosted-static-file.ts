@@ -1,5 +1,4 @@
 import {
-  headerRulesFor,
   type ProjectManifest,
   staticFileBuildWithoutDpl,
   type StaticFileEntry,
@@ -8,6 +7,7 @@ import {
 
 import type { EdgeContext } from '../strategies/context.ts';
 import { type HostedGateInput, serveAfterMiddleware, type TimedContinue } from './hosted-gate.ts';
+import { headerRulesAsRouted } from './middleware.ts';
 import {
   abandonFileRead,
   type EarlyFileRead,
@@ -64,10 +64,10 @@ function serveFile(
       middleware,
       middlewareDispatches: dispatches,
       middlewareMs: middleware?.middlewareMs,
-      // Judged on the request as it reached the edge, as the document path judges them: the
-      // router runs these rules before the middleware, so neither a path it rewrote nor a header it
-      // took away — or added — is what Next.js selected them with.
-      configured: headerRulesFor(input.manifest, input.url, input.request.headers),
+      // Judged on the request as it reached the edge, less the host's credentials, as the document
+      // path judges them: the router runs these rules before the middleware, so neither a path it
+      // rewrote nor a header it took away — or added — is what Next.js selected them with.
+      configured: headerRulesAsRouted(input.edge, input.manifest, input.url, input.request.headers),
     },
     served.early,
     served.replaced,

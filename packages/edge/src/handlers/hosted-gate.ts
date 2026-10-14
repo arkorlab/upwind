@@ -98,7 +98,7 @@ export async function serveAfterMiddleware(
   }
   // Ahead of the middleware, and of whatever serving the file costs — a read of storage, a source
   // fetched and transformed — with the middleware or without it.
-  judgeHeaderRulesAhead(manifest, url, request.headers);
+  judgeHeaderRulesAhead(edge, manifest, url, request.headers);
   if (edge.validated || !middlewareMatches(edge, manifest, url, request.headers)) {
     return gate.serve(undefined, 0);
   }

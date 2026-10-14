@@ -46,7 +46,12 @@ import {
 } from './document-upstream.ts';
 import { decodesLayeredBrotli } from './layered-clients.ts';
 import { onTheWayOut } from './live-compression.ts';
-import type { MiddlewareOutcome, MiddlewareSkipped, MiddlewareTiming } from './middleware.ts';
+import {
+  type MiddlewareOutcome,
+  type MiddlewareSkipped,
+  type MiddlewareTiming,
+  routedHeaders,
+} from './middleware.ts';
 import { observeServed } from './observer.ts';
 import { dispatchedSoFar } from './upstream.ts';
 
@@ -609,11 +614,13 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
     generation === undefined
       ? (input.shellRead ?? loadShell(entry.shell, resolved.shell, input.edge))
       : generationShell(generation);
-  // Judge rules on the original request, as Next's router does, and reuse the prepared headers
-  // at composition. Middleware replaces this policy when it supplies one; no later decoration
-  // changes sandbox flags. Decide before dispatching a resume, which cannot serve a whole document.
+  // Judge rules on the original request, as Next's router does — without the host's credentials,
+  // which never reach it (`routedHeaders`) — and reuse the prepared headers at composition.
+  // Middleware replaces this policy when it supplies one; no later decoration changes sandbox
+  // flags. Decide before dispatching a resume, which cannot serve a whole document.
   const recorded = recordedHeaders(input);
-  const rules = documentHeaderRulesFor(manifest, new URL(input.request.url), input.request.headers);
+  const routed = routedHeaders(input.edge, manifest.headerRules, input.request.headers);
+  const rules = documentHeaderRulesFor(manifest, new URL(input.request.url), routed);
   const headers = replayedDocumentHeaders(recorded, rules);
   const delegated = delegateSandboxedDocument(input, complete, headers);
   if (delegated !== undefined) {

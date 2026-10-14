@@ -29,7 +29,7 @@ import { shouldAsk, triggerDetached } from '../cache/regenerate.ts';
 import { memberEntryKey } from '../memory/caches.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { generationKeyOf, requestAsLeft } from './hosted-route.ts';
-import { dispatchedFor, type MiddlewareOutcome } from './middleware.ts';
+import { dispatchedFor, type MiddlewareOutcome, routedHeaders } from './middleware.ts';
 import { handleSegment, type RouterPart } from './segment.ts';
 
 /**
@@ -178,7 +178,11 @@ function configuredHeadersForPart(input: PartInput, answered: Answer): Configure
   const configured = headerRulesFor(
     input.manifest,
     input.url,
-    answered.kind === 'data' ? dataRequestHeaders(input.request.headers) : input.request.headers,
+    routedHeaders(
+      input.edge,
+      input.manifest.headerRules,
+      answered.kind === 'data' ? dataRequestHeaders(input.request.headers) : input.request.headers,
+    ),
   );
   if (
     answered.kind === 'data' ||

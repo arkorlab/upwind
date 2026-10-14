@@ -359,7 +359,7 @@ export async function routeHostedDocument(input: HostedDocumentInput): Promise<R
   if (input.classification.kind === PAGES_DATA) {
     return input.passthrough(PAGES_DATA);
   }
-  judgeHeaderRulesAhead(manifest, url, request.headers);
+  judgeHeaderRulesAhead(edge, manifest, url, request.headers);
   const seen = rewriteSeen(input);
   // The shell the request is served — or the record it is the current generation of — is read
   // while the middleware runs, so the two costs overlap: the middleware most often leaves the route
