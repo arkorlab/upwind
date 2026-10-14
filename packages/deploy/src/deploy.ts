@@ -28,7 +28,12 @@ import { scanPreloadLinks } from '@stayingupwind/host/preloads';
 import { blobObjectKey, kvManifestKey, r2ManifestKey } from '@stayingupwind/host/storage';
 
 import { cacheEntriesOf, seededGenerationAt, seedEntriesOf, seedScopeOf } from './cache-seed.ts';
-import { type ShellPlacement, shellPlacementsOf, unimplementedBackend } from './delivery.ts';
+import {
+  reservedPolicyRefusal,
+  type ShellPlacement,
+  shellPlacementsOf,
+  unimplementedBackend,
+} from './delivery.ts';
 import { deploymentFingerprintOf } from './fingerprint.ts';
 import { assembleManifest, oversizedManifest } from './manifest.ts';
 import { edgePointerOf } from './pointer.ts';
@@ -103,7 +108,11 @@ export interface DeployTarget {
 }
 
 /** Why a deployment was refused: a code to branch on, beside the message that says why. */
-export type DeployRefusalCode = 'backend_unsupported' | 'bundle_invalid' | 'cache_scope_conflict';
+export type DeployRefusalCode =
+  | 'backend_unsupported'
+  | 'bundle_invalid'
+  | 'cache_scope_conflict'
+  | 'policy_reserved';
 
 export class DeployRefusalError extends Error {
   readonly code: DeployRefusalCode;
@@ -505,6 +514,10 @@ export async function publishDeployment(
     throw new DeployRefusalError(`the edge reads nothing from ${unimplemented}`, {
       code: 'backend_unsupported',
     });
+  }
+  const reserved = reservedPolicyRefusal(input.policy);
+  if (reserved !== undefined) {
+    throw new DeployRefusalError(reserved, { code: 'policy_reserved' });
   }
   const manifest = await manifestOf(staged);
   await requireBlobs(target, staged.blobs, manifest);
