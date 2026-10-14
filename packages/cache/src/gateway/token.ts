@@ -6,7 +6,11 @@ export interface TokenKeys {
   readonly CACHE_TOKEN_KEY_PREVIOUS?: string | undefined;
 }
 
-const BEARER_PREFIX = 'Bearer ';
+/**
+ * The scheme a token is presented under, as HTTP names one (RFC 9110, section 11): in any case,
+ * and one or more spaces before the token.
+ */
+const BEARER = /^bearer +/iu;
 const MIN_KEY_LENGTH = 32;
 /** Tokens one isolate remembers having verified; the one used longest ago is let go first. */
 const MAX_VERIFIED_TOKENS = 1024;
@@ -84,7 +88,8 @@ export type TokenCheck = (request: Request, scopeId: string, keys: TokenKeys) =>
 export function tokenCheckOf(naming: CacheNaming): TokenCheck {
   return async (request, scopeId, keys) => {
     const header = request.headers.get('authorization') ?? '';
-    const token = header.startsWith(BEARER_PREFIX) ? header.slice(BEARER_PREFIX.length) : '';
+    const scheme = BEARER.exec(header);
+    const token = scheme === null ? '' : header.slice(scheme[0].length);
     const secret = keys.CACHE_TOKEN_KEY?.trim();
     const previousKey = keys.CACHE_TOKEN_KEY_PREVIOUS?.trim();
     const claimed = request.headers.get(CACHE_SCOPE_HEADER);
