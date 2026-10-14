@@ -4,6 +4,7 @@ import type { ContinuationHandle } from '@stayingupwind/host/delivery';
 import type { ContinuationFailureKind } from '../reports.ts';
 import type { ShellLoadResult } from '../strategies/shell-loader.ts';
 import type { DocumentInput } from './document.ts';
+import { sendReport } from './observer.ts';
 
 /**
  * The resume as the document handler holds it: observed from the moment it starts, and what
@@ -79,7 +80,7 @@ export function fallbackToApp(
   // each, since a storage outage fails every document (`RouteReports`).
   const sent = edge.validated
     ? undefined
-    : edge.runtime.reports?.report({
+    : sendReport(edge.runtime.reports, {
         projectId: edge.projectId,
         manifestId: edge.manifestId,
         pathname: entry.pathname,

@@ -1,6 +1,7 @@
 import type { EdgeHost } from '../edge-host.ts';
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeMetric } from '../observability/metrics.ts';
+import type { RouteReport, RouteReports } from '../reports.ts';
 
 /**
  * What the host is told of an answer (`EdgeHost.observer`), told so that the telling can never
@@ -49,4 +50,25 @@ export function observeTransformed(host: Pick<EdgeHost, 'observer'>): void {
   observe(host, 'imageTransformed', (observer) => {
     observer.imageTransformed();
   });
+}
+
+/**
+ * A route's report, handed to the host (`RouteReports.report`) as the observer is told: the host's
+ * code, in a `try` of its own, so a report that throws can neither fail the answer nor change it —
+ * the whole document a missing shell is answered with, a resume let go. What it answers is the
+ * delivery, kept alive behind the response by the caller; `undefined` where nothing is sent.
+ */
+export function sendReport(
+  reports: RouteReports | undefined,
+  report: RouteReport,
+): Promise<void> | undefined {
+  try {
+    return reports?.report(report);
+  } catch (error) {
+    logWarn('the host reports threw', {
+      kind: report.kind,
+      detail: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
 }
