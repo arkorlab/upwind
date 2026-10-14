@@ -6,7 +6,7 @@ import {
   CACHE_TOKEN_BINDING,
   DEPLOYMENT_ID_BINDING,
   RESPONSE_CACHE_TTL_BINDING,
-  RESPONSE_CACHE_TTL_SECONDS,
+  RESPONSE_CACHE_TTL_MS,
   RUNTIME_BINDING,
 } from '@stayingupwind/host/bindings';
 
@@ -100,7 +100,7 @@ export function functionBindings(input: {
       { name: RUNTIME_BINDING, value: RUNTIME_NAME, secret: false },
       ...cache.text,
       { name: CACHE_TOKEN_BINDING, value: input.cache.token, secret: true },
-      { name: RESPONSE_CACHE_TTL_BINDING, value: RESPONSE_CACHE_TTL_SECONDS, secret: false },
+      { name: RESPONSE_CACHE_TTL_BINDING, value: RESPONSE_CACHE_TTL_MS, secret: false },
     ],
     services: cache.services,
   };
