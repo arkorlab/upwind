@@ -331,10 +331,14 @@ function dropUnusedEntries(input: RetentionInput): boolean {
       revision,
       entry.entry_id,
     );
-    input.history.append(
-      { sql, revision, now },
-      { ...entryStateEvent(sql, entry.entry_id), kind: 'entry.retired' },
-    );
+    // One retirement, one event: an entry whose value expired was announced retired as its record
+    // was withdrawn (`retireExpiredData`), and one that never published is announced now.
+    if (entry.publication !== 'retired') {
+      input.history.append(
+        { sql, revision, now },
+        { ...entryStateEvent(sql, entry.entry_id), kind: 'entry.retired' },
+      );
+    }
     sql.exec(`DELETE FROM entry_tags WHERE entry_id = ?`, entry.entry_id);
     // Not its writers' marks: a write delayed past its entry's reclamation must still find them
     // (`writtenAfter`), and they age out on their own (`forgetWriterMarks`).
