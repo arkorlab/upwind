@@ -198,6 +198,9 @@ const STATEMENTS: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS attempts_by_entry ON attempts (entry_id, started_at)`,
   `CREATE INDEX IF NOT EXISTS attempts_leased
     ON attempts (lease_expires_at) WHERE status IN ('leased', 'uploading')`,
+  // By when each ended: what retention ages out of a scope's history (`ageOutHistory`), which keeps
+  // the attempts that ended for as long as the history is kept, and may hold millions of them.
+  `CREATE INDEX IF NOT EXISTS attempts_by_finished_at ON attempts (finished_at)`,
   `CREATE TABLE IF NOT EXISTS attempt_artifacts (
     attempt_id TEXT NOT NULL,
     sha256 TEXT NOT NULL,
