@@ -72,7 +72,8 @@ export interface GatewayOptions {
    * placed and has more to lose. Inheriting the authority's transport here would send the read to
    * the authority carrying the read gateway's URL — which it would answer, from wherever it is
    * placed, correctly and far too late. So this is left out only together with `readGatewayUrl`,
-   * where reads go to the authority because that is genuinely where they go.
+   * where reads go to the authority because that is genuinely where they go; a `readGatewayUrl`
+   * given without it is refused.
    */
   readonly readFetchImpl?: FetchLike | undefined;
 }
@@ -143,6 +144,9 @@ export class Gateway {
   readonly #artifacts: ArtifactCopies;
 
   constructor(options: GatewayOptions) {
+    if (options.readGatewayUrl !== undefined && options.readFetchImpl === undefined) {
+      throw new Error('a read gateway URL needs a transport of its own (`readFetchImpl`)');
+    }
     this.#base = `${options.gatewayUrl.replace(/\/$/u, '')}${gatewayScopePath(options.scopeId)}`;
     this.#readBase = `${(options.readGatewayUrl ?? options.gatewayUrl).replace(/\/$/u, '')}${gatewayScopePath(options.scopeId)}`;
     this.#token = options.token;
