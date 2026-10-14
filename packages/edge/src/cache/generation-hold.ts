@@ -187,7 +187,9 @@ export function readServedAgain(
  * read now, its absence held again if KV still has none: an absence has no freshness of its own to
  * be judged by later, as a record does, and one judged as held for good would hand the member's
  * parts to the Function in an isolate asked for none of its documents however long ago its record
- * was made.
+ * was made. It is held again before the read goes out, as `heldGeneration` holds it, so that the
+ * parts arriving while the read is out answer as held rather than each reading the entry: one read
+ * per hold. No read is shared between requests, which each wait on their own.
  */
 export async function generationAsHeld(
   edge: EdgeContext,
@@ -202,8 +204,12 @@ export async function generationAsHeld(
       return { kind: 'generation', pack: held.pack, source: 'memory', lookupMs: 0 };
     }
     const absentAt = heldAbsence(edge, key, recordKey, options);
-    if (absentAt !== undefined && edge.runtime.now() - absentAt < settings.holdMs) {
-      return { kind: 'none', lookupMs: 0 };
+    if (absentAt !== undefined) {
+      const now = edge.runtime.now();
+      if (now - absentAt < settings.holdMs) {
+        return { kind: 'none', lookupMs: 0 };
+      }
+      edge.runtime.memory.absentRecords.set(recordKey, now);
     }
   }
   return readGeneration(edge, key, settings, options);
