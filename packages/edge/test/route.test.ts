@@ -31,6 +31,11 @@ function credentialedHost(): EdgeHost {
   return { ...standaloneHost(env), credentials: { cookies: [HOST_SESSION], headers: [] } };
 }
 
+/** The standalone host, keeping the `cookie` header whole: no cookie reaches the application. */
+function cookielessHost(): EdgeHost {
+  return { ...standaloneHost(env), credentials: { cookies: [], headers: ['Cookie'] } };
+}
+
 /** A navigation of a visitor who holds the host's cookie beside one of the application's. */
 function withHostSession(path: string): IncomingRequest {
   return navigation(path, { headers: { cookie: `${HOST_SESSION}=signed-in; theme=dark` } });
@@ -143,6 +148,31 @@ describe('the routing a host composes', () => {
         dynamicRoutes: [{ sourceRegex: SLUG, route: '/[slug]', missing: ON_HOST_SESSION }],
       },
       { host: credentialedHost() },
+    );
+
+    expect(response.headers.get('x-arkor-edge')).toMatch(/^shell;/u);
+  });
+
+  /**
+   * What a page's prerender is not served under (`bypassFor`) is judged on the same headers: Next.js
+   * is never handed the host's cookie, so a condition on it never holds, and the page is served.
+   */
+  it('serves a page whose prerender is passed over only for a host credential', async () => {
+    const { response } = await routed(
+      withHostSession('/'),
+      { bypassFor: ON_HOST_SESSION },
+      { host: credentialedHost() },
+    );
+
+    expect(response.headers.get('x-arkor-edge')).toMatch(/^shell;/u);
+  });
+
+  /** So for a host that keeps the `cookie` header whole: no cookie the visitor sends is Next.js's. */
+  it('serves a page whose prerender is passed over for a cookie the host keeps the header of', async () => {
+    const { response } = await routed(
+      navigation('/', { headers: { cookie: 'theme=dark' } }),
+      { bypassFor: [{ type: 'cookie', key: 'theme' }] },
+      { host: cookielessHost() },
     );
 
     expect(response.headers.get('x-arkor-edge')).toMatch(/^shell;/u);

@@ -117,7 +117,7 @@ type Condition = NonNullable<Conditioned['has']>[number];
  * the header whole can: where the host names cookies, or names the header itself. Every other
  * condition reads the same value either way.
  */
-function readsCredentials(condition: Condition, credentials: HostCredentials): boolean {
+export function readsCredentials(condition: Condition, credentials: HostCredentials): boolean {
   if (condition.type !== 'cookie' && condition.type !== 'header') {
     return false;
   }

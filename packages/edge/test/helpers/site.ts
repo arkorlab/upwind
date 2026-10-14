@@ -76,6 +76,8 @@ export interface SiteOptions {
   readonly segments?: Readonly<Record<string, string>> | undefined;
   /** The rules of `next.config` `headers()`, in Next.js's order; none, absent. */
   readonly headerRules?: readonly HeaderRule[] | undefined;
+  /** What the page's prerender is not served under, as Next.js recorded it; nothing, absent. */
+  readonly bypassFor?: RouteEntry['bypassFor'];
 }
 
 export interface Site {
@@ -143,6 +145,7 @@ export async function seedSite(options: SiteOptions): Promise<Site> {
     headers: { 'content-type': 'text/html; charset=utf-8', vary: 'RSC' },
     prerenderId: pathname,
     ...(options.segments !== undefined && { segments: await segmentEntries(options.segments) }),
+    ...(options.bypassFor !== undefined && { bypassFor: [...options.bypassFor] }),
   };
   const manifest = buildProjectManifest({
     projectId: PROJECT_ID,

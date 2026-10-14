@@ -16,7 +16,11 @@ import type { EdgeHost } from './edge-host.ts';
 import type { EdgeRuntime } from './edge-runtime.ts';
 import { answerAsset } from './handlers/asset-answer.ts';
 import { routeHostedDocument } from './handlers/hosted-document.ts';
-import type { MiddlewareOutcome, MiddlewareTiming } from './handlers/middleware.ts';
+import {
+  type MiddlewareOutcome,
+  type MiddlewareTiming,
+  readsCredentials,
+} from './handlers/middleware.ts';
 import {
   handlePassthrough,
   type PassthroughInput,
@@ -208,25 +212,52 @@ function passthroughFor(
 
 /** A rule of the application's routing, as far as its conditions go. */
 type Conditioned = Pick<MiddlewareMatcher, 'has' | 'missing'>;
+type Condition = NonNullable<Conditioned['has']>[number];
 
-/** Whether any of `rules` has a condition, which is what reads a request's headers. */
-function conditioned(rules: readonly Conditioned[] | undefined): boolean {
-  return rules?.some((rule) => rule.has !== undefined || rule.missing !== undefined) === true;
+/** What `routingReadsCredentials` found for a manifest, and for which credentials. */
+const manifestReaders = new WeakMap<
+  ProjectManifest,
+  { readonly credentials: HostCredentials; readonly reads: boolean }
+>();
+
+/**
+ * Whether a condition a request is judged by as it came can read otherwise without the host's
+ * credentials (`readsCredentials`): one of a redirect or a rewrite ahead of the routes
+ * (`reservedRoutes`), of a dynamic route (`dynamicRoutes`), or one a route, or a class's members,
+ * are not served a prerender under (`bypassFor`). Asked once for a manifest, which is held for as
+ * long as it is.
+ */
+function routingReadsCredentials(manifest: ProjectManifest, credentials: HostCredentials): boolean {
+  const known = manifestReaders.get(manifest);
+  if (known?.credentials === credentials) {
+    return known.reads;
+  }
+  const reads = (conditions: readonly Condition[] | undefined): boolean =>
+    conditions?.some((condition) => readsCredentials(condition, credentials)) === true;
+  const ruleReads = (rule: Conditioned): boolean => reads(rule.has) || reads(rule.missing);
+  const reserved = manifest.reservedRoutes ?? [];
+  const dynamic = manifest.dynamicRoutes ?? [];
+  const found =
+    reserved.some((rule) => ruleReads(rule)) ||
+    dynamic.some((route) => ruleReads(route) || reads(route.members?.bypassFor)) ||
+    Object.values(manifest.routes).some((entry) => reads(entry.bypassFor));
+  manifestReaders.set(manifest, { credentials, reads: found });
+  return found;
 }
 
 /**
- * The headers a request is classified on (`classifyRequest`). The rules of the build it judges — a
- * redirect or a rewrite ahead of the routes (`reservedRoutes`), a dynamic route (`dynamicRoutes`)
- * — are judged without the host's own credentials (`withoutHostCredentials`), as the middleware's
- * matchers are (`middlewareMatches`): the application's routing is never handed them, so a
- * `missing` that names one holds for every request, and a `has` that names one for none. Only a
- * rule with conditions reads the headers, and most have none, and a host that keeps no credentials
- * has none to take off: the headers are copied only where both hold.
+ * The headers a request is classified on (`classifyRequest`), and its route's conditions are judged
+ * on where no middleware runs (`requestAsLeft`): the class of a member served from its record, what
+ * a route is not served a prerender under. The application's conditions among them are judged
+ * without the host's own credentials (`withoutHostCredentials`), as the middleware's matchers are
+ * (`routedHeaders`): the application's routing is never handed them, so a `missing` that names one
+ * holds for every request, and a `has` that names one for none. The headers are copied only where
+ * one of those conditions can read otherwise without them (`routingReadsCredentials`) — not for
+ * any condition at all, since Next.js writes one on `rsc` into every build with a deployment id —
+ * and never for a host that keeps none.
  *
  * The rest of the classification reads the copy too. What it reads there is the browser's or
  * Next.js's own, which no host keeps as a credential; one it did keep never reaches Next.js either.
- * So does what is judged of the request as it came once it is classified — the class of a member
- * served from its record, a route's own conditions — where no middleware runs (`requestAsLeft`).
  */
 function headersToClassify(
   manifest: ProjectManifest,
@@ -234,7 +265,7 @@ function headersToClassify(
   credentials: HostCredentials,
 ): Headers {
   const kept = credentials.cookies.length > 0 || credentials.headers.length > 0;
-  return kept && (conditioned(manifest.reservedRoutes) || conditioned(manifest.dynamicRoutes))
+  return kept && routingReadsCredentials(manifest, credentials)
     ? withoutHostCredentials(new Headers(headers), credentials)
     : headers;
 }
