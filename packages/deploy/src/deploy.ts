@@ -161,6 +161,11 @@ export interface StagedDeployment {
 
 /** Entries per call: within `MAX_SEED_BATCH`, and as many as a failed call has to send again. */
 const SEED_BATCH = 100;
+const KIB = 1024;
+const MIB = KIB * KIB;
+const MAX_KV_VALUE_MIB = 25;
+/** The largest value Workers KV holds under one key. */
+const MAX_KV_VALUE_BYTES = MAX_KV_VALUE_MIB * MIB;
 
 function isoOf(ms: number): string {
   // eslint-disable-next-line unicorn/prefer-temporal -- Temporal is not available in the Workers runtime.
@@ -395,6 +400,27 @@ async function placeShell(
 }
 
 /**
+ * Why the policy's shell backend cannot hold what the manifest places, or `undefined` where it can:
+ * under `kv`, an artifact past the largest value KV holds (`MAX_KV_VALUE_BYTES`), whose write would
+ * fail once the manifest and the shells before it were written. Judged on the sizes the manifest
+ * names, before anything is. Under `r2` the artifact staging stored is the placement, whatever its
+ * size.
+ */
+function unplaceable(
+  backend: ShellBackendId,
+  placements: readonly ShellPlacement[],
+): string | undefined {
+  if (backend !== 'kv') {
+    return undefined;
+  }
+  const units = placements.flatMap((shell) => [shell, ...shell.renderings]);
+  const past = units.find((unit) => unit.byteLength > MAX_KV_VALUE_BYTES);
+  return past === undefined
+    ? undefined
+    : `artifact ${past.sha256} is ${past.byteLength} bytes, past the ${MAX_KV_VALUE_BYTES} a KV shell backend holds, so a policy that reads shells from the bucket`;
+}
+
+/**
  * What a publication adds to what was staged. The site and the Functions a pointer names are the
  * staged manifest's own, so that a pointer can never name an origin its manifest was not built for —
  * which the edge would answer by passing every request through.
@@ -520,6 +546,11 @@ export async function publishDeployment(
     throw new DeployRefusalError(reserved, { code: 'policy_reserved' });
   }
   const manifest = await manifestOf(staged);
+  const placements = shellPlacementsOf(manifest);
+  const oversized = unplaceable(input.policy.shell.backend, placements);
+  if (oversized !== undefined) {
+    throw new DeployRefusalError(oversized, { code: 'backend_unsupported' });
+  }
   await requireBlobs(target, staged.blobs, manifest);
   const stored: BlobRef = {
     sha256: staged.manifestId,
@@ -529,7 +560,7 @@ export async function publishDeployment(
     contentType: 'application/json',
   });
   await readBack((key) => target.bucket.get(key), r2ManifestKey(staged.manifestId), stored);
-  for (const shell of shellPlacementsOf(manifest)) {
+  for (const shell of placements) {
     await placeShell(target, input.policy.shell.backend, shell);
   }
   await target.edgeState.put(kvManifestKey(staged.manifestId), staged.serialized);
