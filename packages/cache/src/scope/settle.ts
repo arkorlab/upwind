@@ -27,6 +27,7 @@ import {
   ControlTagProjectionError,
   type ControlTagWork,
   projectTags,
+  tagProjectionDueAt,
   tagProjectionPending,
 } from './tag-projection.ts';
 
@@ -78,6 +79,12 @@ export interface SettleOutcome {
    * and the alarm comes back at once (`settleRetryMs`).
    */
   readonly continued: boolean;
+  /**
+   * How long what is owed waits yet, where all of it waits for a moment: a retired scope's second
+   * listing of its control tags, which waits out KV's consistency window after the first. The alarm
+   * comes back then (`settleRetryMs`), not every second until.
+   */
+  readonly waitMs?: number;
   /** Only an owned private mark failure rejects that caller after its retry alarm is armed. */
   readonly controlTagsFailed?: boolean;
 }
@@ -106,10 +113,11 @@ export function retryDelayMs(failures: number): number {
 /**
  * When the alarm comes back for what a run left: at once for a rewrite the run cut at its slice
  * while making progress — a record that keeps failing does not hold the rest back — and otherwise
- * after `retryDelayMs` of the runs in a row that failed.
+ * after `retryDelayMs` of the runs in a row that failed, or once what is owed comes due, where it
+ * waits for a moment (`waitMs`).
  */
 export function settleRetryMs(outcome: SettleOutcome, failures: number): number {
-  return outcome.continued ? 0 : retryDelayMs(failures);
+  return outcome.continued ? 0 : Math.max(retryDelayMs(failures), outcome.waitMs ?? 0);
 }
 
 function chunks<T>(items: readonly T[], size: number): T[][] {
@@ -509,6 +517,18 @@ function workRemains(deps: SettleDeps): boolean {
   return deps.history.owes(sql) || anyRecordBehind(sql) || tagProjectionPending(sql);
 }
 
+/**
+ * How long what a run that failed nowhere left owed waits yet, where all of it waits for a moment
+ * (`SettleOutcome.waitMs`): none where the history owes anything, or a record is behind.
+ */
+function waitOf(deps: SettleDeps): { readonly waitMs?: number } {
+  const { sql } = deps;
+  if (deps.history.owes(sql) || anyRecordBehind(sql)) return {};
+  const now = deps.now();
+  const dueAt = tagProjectionDueAt(sql, now);
+  return dueAt === undefined ? {} : { waitMs: dueAt - now };
+}
+
 /** How many settle runs in a row have failed (`countSettleFailures`). */
 const META_SETTLE_FAILURES = 'settle_failures';
 
@@ -646,12 +666,15 @@ export async function settlePending(
     failure(deps, 'delivery records', projection),
     ...continuation.map((outcome) => failure(deps, 'continuation alarm', outcome)),
   ];
+  const failed = rejected.includes(true) || projectionFailed;
+  const pending = workRemains(deps);
   return {
-    pending: workRemains(deps),
-    failed: rejected.includes(true) || projectionFailed,
+    pending,
+    failed,
     continued:
       projection.status === 'fulfilled' && projection.value.cut && projection.value.written > 0,
     ...(tags.status === 'rejected' &&
       tags.reason instanceof ControlTagProjectionError && { controlTagsFailed: true }),
+    ...(pending && !failed && waitOf(deps)),
   };
 }

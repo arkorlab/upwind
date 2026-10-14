@@ -17,6 +17,7 @@ import {
   finishControlTagProjection,
   finishRetiredControlTagPage,
   latestTagRevision,
+  retiredControlTagListingAt,
   retiredControlTagScan,
   tagsDelta,
   toDeltaEntry,
@@ -292,6 +293,19 @@ export async function projectTags(
   });
 
   if (retired) await deleteRetiredControlTags(deps);
+}
+
+/**
+ * When the tag records' work comes due, where all it owes is a retired scope's second listing of its
+ * control tags (`retiredControlTagListingAt`): `undefined` where anything else is owed, or that
+ * listing is due already.
+ */
+export function tagProjectionDueAt(sql: SqlStorage, now: number): number | undefined {
+  if (readScope(sql)?.status !== 'retired' || controlFenceSweepPending(sql)) return undefined;
+  if (latestTagRevision(sql) > Number(readMeta(sql, META_RETIRED_TAG_REVISION) ?? '0')) {
+    return undefined;
+  }
+  return retiredControlTagListingAt(sql, now);
 }
 
 export function tagProjectionPending(sql: SqlStorage): boolean {

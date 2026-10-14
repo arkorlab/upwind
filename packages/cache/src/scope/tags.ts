@@ -212,7 +212,8 @@ export function finishControlTagProjection(
   if (deleted > 0) writeMeta(sql, META_CONTROL_TAG_PENDING_COUNT, String(count - 1));
 }
 
-export function controlTagsPending(sql: SqlStorage, retired: boolean): boolean {
+/** Whether a private mark waits in the outbox to be projected. */
+function controlMarksQueued(sql: SqlStorage): boolean {
   return (
     sql
       .exec(
@@ -220,11 +221,32 @@ export function controlTagsPending(sql: SqlStorage, retired: boolean): boolean {
         META_CONTROL_TAG_PREFIX,
         META_CONTROL_TAG_END,
       )
-      .toArray().length > 0 ||
+      .toArray().length > 0
+  );
+}
+
+export function controlTagsPending(sql: SqlStorage, retired: boolean): boolean {
+  return (
+    controlMarksQueued(sql) ||
     (retired &&
       readMeta(sql, META_CONTROL_TAGS_SEEN) !== undefined &&
       readMeta(sql, META_RETIRED_CONTROL_TAGS_DELETED) === undefined)
   );
+}
+
+/**
+ * When a retired scope's second listing of its control tags is due, where it is all those tags owe
+ * and waits out KV's consistency window after the first (`finishRetiredControlTagPage`); `undefined`
+ * where a mark waits to be projected, or the listing is due already.
+ */
+export function retiredControlTagListingAt(sql: SqlStorage, now: number): number | undefined {
+  const repeatAt = readMeta(sql, META_RETIRED_CONTROL_TAG_REPEAT_AT);
+  if (repeatAt === undefined || now >= Number(repeatAt) || controlMarksQueued(sql)) {
+    return undefined;
+  }
+  return readMeta(sql, META_RETIRED_CONTROL_TAGS_DELETED) === undefined
+    ? Number(repeatAt)
+    : undefined;
 }
 
 /** Retirement lists KV after the transient admission history has already been reclaimed. */
