@@ -49,14 +49,15 @@ export interface PrefetchEnv {
   readonly ARTIFACTS: R2Bucket;
 }
 
-function empty(status: number): Response {
-  return new Response(null, { status, headers: { 'cache-control': 'no-store' } });
+function empty(status: number, headers: Readonly<Record<string, string>> = {}): Response {
+  return new Response(null, { status, headers: { 'cache-control': 'no-store', ...headers } });
 }
 
 export default {
   async fetch(request: Request, env: PrefetchEnv): Promise<Response> {
     if (request.method !== 'GET' && request.method !== 'HEAD') {
-      return empty(HTTP_METHOD_NOT_ALLOWED);
+      // Named with the methods this Worker does answer, as a 405 is (RFC 9110, section 15.5.6).
+      return empty(HTTP_METHOD_NOT_ALLOWED, { allow: 'GET, HEAD' });
     }
     const { pathname } = new URL(request.url);
     if (!pathname.startsWith(PREFETCH_BLOB_PATH)) {
