@@ -6,6 +6,7 @@ import type {
 } from '@stayingupwind/host/delivery';
 
 import { logWarn } from '../observability/logger.ts';
+import type { EdgeMetric } from '../observability/metrics.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { badGatewayResponse, keptByNobody } from './responses.ts';
 
@@ -33,6 +34,42 @@ function assetOutcomeKind(admitted: boolean, kept: AssetKeepOutcome | undefined)
     return 'not-admitted';
   }
   return kept === undefined || kept === 'kept' ? 'admitted' : `uncached-${kept}`;
+}
+
+/** What an asset's point says of the answer, past what every asset's says alike. */
+interface AssetAnswered {
+  readonly outcomeKind: string;
+  readonly originCacheHeader: string;
+  readonly ttfbInternalMs: number;
+  readonly assetHit: number;
+  readonly subrequests: number;
+}
+
+function assetMetric(input: AssetInput, answered: AssetAnswered): EdgeMetric {
+  const { edge } = input;
+  return {
+    projectId: edge.projectId,
+    kind: 'asset',
+    pathname: input.clientUrl.pathname,
+    shellStrategy: '',
+    shellSource: '',
+    outcomeKind: answered.outcomeKind,
+    colo: edge.colo ?? '',
+    originCacheHeader: answered.originCacheHeader,
+    encoding: '',
+    manifestId: edge.manifestId,
+    policyId: edge.policy.id,
+    ttfbInternalMs: answered.ttfbInternalMs,
+    shellLookupMs: 0,
+    originFirstByteMs: 0,
+    originTotalMs: 0,
+    shellBytes: 0,
+    suffixBytes: 0,
+    recovery: 0,
+    retry: 0,
+    assetHit: answered.assetHit,
+    subrequests: answered.subrequests,
+  };
 }
 
 /**
@@ -67,6 +104,18 @@ export async function handleAsset(input: AssetInput): Promise<AssetOutcome> {
       pathname: input.clientUrl.pathname,
       detail: error instanceof Error ? error.message : String(error),
     });
+    // Counted as an answer is: an outage the host is told nothing of is one it cannot see.
+    input.edge.host.observer.metric(
+      assetMetric(input, {
+        outcomeKind: 'upstream-error',
+        originCacheHeader: '',
+        ttfbInternalMs: input.edge.runtime.now() - startedAt,
+        assetHit: 0,
+        // The request the strategy sent upstream, which is what failed — as a passthrough that
+        // could not reach the application counts its own.
+        subrequests: 1,
+      }),
+    );
     return {
       response: badGatewayResponse('asset-upstream-error'),
       admitted: false,
@@ -76,31 +125,17 @@ export async function handleAsset(input: AssetInput): Promise<AssetOutcome> {
   const firstByteMs = input.edge.runtime.now() - startedAt;
   const { response } = result;
   const report = (kept: AssetKeepOutcome | undefined): void => {
-    input.edge.host.observer.metric({
-      projectId: input.edge.projectId,
-      kind: 'asset',
-      pathname: input.clientUrl.pathname,
-      shellStrategy: '',
-      shellSource: '',
-      outcomeKind: assetOutcomeKind(result.admitted, kept),
-      colo: input.edge.colo ?? '',
-      originCacheHeader: response.headers.get('x-vercel-cache') ?? '',
-      encoding: '',
-      manifestId: input.edge.manifestId,
-      policyId: input.edge.policy.id,
-      // A time to first byte again: on a miss the strategy answers on the origin's headers and
-      // streams the body behind them, and on a hit this is the Cache API read.
-      ttfbInternalMs: firstByteMs,
-      shellLookupMs: 0,
-      originFirstByteMs: 0,
-      originTotalMs: 0,
-      shellBytes: 0,
-      suffixBytes: 0,
-      recovery: 0,
-      retry: 0,
-      assetHit: result.hit ? 1 : 0,
-      subrequests: result.subrequests,
-    });
+    input.edge.host.observer.metric(
+      assetMetric(input, {
+        outcomeKind: assetOutcomeKind(result.admitted, kept),
+        originCacheHeader: response.headers.get('x-vercel-cache') ?? '',
+        // A time to first byte again: on a miss the strategy answers on the origin's headers and
+        // streams the body behind them, and on a hit this is the Cache API read.
+        ttfbInternalMs: firstByteMs,
+        assetHit: result.hit ? 1 : 0,
+        subrequests: result.subrequests,
+      }),
+    );
   };
   // A copy kept behind the response is the one thing this cannot report yet, and the reason an
   // asset went unstored is the only place that shows — the header committed `admit=1` long before.
