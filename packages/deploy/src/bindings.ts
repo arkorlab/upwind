@@ -9,6 +9,7 @@ import {
   RESPONSE_CACHE_TTL_BINDING,
   RESPONSE_CACHE_TTL_MS,
   RUNTIME_BINDING,
+  RUNTIME_NAME,
 } from '@stayingupwind/host/bindings';
 
 /**
@@ -16,8 +17,6 @@ import {
  * own environment: its deployment's id, the runtime it is in, the way to its runtime cache, and the
  * way to the blobs its build left out of it.
  */
-
-const RUNTIME_NAME = 'workerd';
 
 /** A variable a Function is given: plain text, or a secret. */
 export interface TextBinding {
