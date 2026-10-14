@@ -246,9 +246,20 @@ export const attemptRoutes = new Hono<GatewayEnv>()
   // Not `zValidator`: it parses whatever arrives before anything has measured it.
   .post('/attempts', async (c) => {
     const request = await readRequest(c, startAttemptRequestSchema, ENTRY_BODY_BYTES);
-    return request instanceof Response
-      ? request
-      : answerScope(c, await c.get('scope').startAttempt(request, c.get('now')));
+    if (request instanceof Response) {
+      return request;
+    }
+    const outcome = await c.get('scope').startAttempt(request, c.get('now'));
+    if (isRefusal(outcome)) {
+      return answerScope(c, outcome);
+    }
+    // The record of a later generation than the one the request judged, where the scope handed it
+    // back: the Worker answers from it where KV is behind it.
+    const { recordBytes, ...response } = outcome;
+    return answerScope(
+      c,
+      recordBytes === undefined ? response : { ...response, record: toBase64(recordBytes) },
+    );
   })
   .post('/attempts/:attemptId/heartbeat', async (c) => {
     const request = await readRequest(c, heartbeatRequestSchema, ENTRY_BODY_BYTES);
