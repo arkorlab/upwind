@@ -221,11 +221,21 @@ function readsOf(runtime: EdgeRuntime, key: string): KeyReads | undefined {
 }
 
 /**
- * How many reads of `key` this isolate has out: never more than `MAX_READS_OUT_PER_KEY`, however
- * many of them never settle.
+ * How many reads of `key` this isolate keeps: those out, and those waiting on their read ahead
+ * (`refreshPointer`). Never more than `MAX_READS_OUT_PER_KEY`, however many of them never settle.
  */
 export function pointerReadsOut(runtime: EdgeRuntime, key: string): number {
-  return readsOf(runtime, key)?.out.size ?? 0;
+  const reads = readsOf(runtime, key);
+  if (reads === undefined) {
+    return 0;
+  }
+  let kept = reads.out.size;
+  for (const ticket of reads.warming.keys()) {
+    if (!reads.out.has(ticket)) {
+      kept += 1;
+    }
+  }
+  return kept;
 }
 
 /** Whether a read of the key sent after `ticket` is still out. */
@@ -494,8 +504,15 @@ async function refreshPointer<P extends EdgePointer>(
   // Judged against the pointer held as it lands, not the one the request was served: an older
   // refresh adopted meanwhile — the protection taken off — makes the newer, which puts it back, a
   // safety too. One that lands before such an adoption is judged again by it (`adoptWarmingSafety`).
-  if (answered.read.kind === 'found' && !takesEffectAtOnce(at, answered.read)) {
-    readsOf(runtime, key)?.warming.set(refresh.ticket, answered);
+  // A read no longer out — given up on (`MAX_READS_OUT_PER_KEY`), or forgotten with the list — is
+  // never adopted: it reads nothing ahead, and is kept nowhere while it would.
+  const reads = readsOf(runtime, key);
+  if (
+    reads?.out.has(refresh.ticket) === true &&
+    answered.read.kind === 'found' &&
+    !takesEffectAtOnce(at, answered.read)
+  ) {
+    reads.warming.set(refresh.ticket, answered);
     await readAhead(at, answered.read.value);
   }
   adopt(at, answered, refresh.ticket);
