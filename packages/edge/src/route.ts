@@ -1,6 +1,7 @@
 import type { AppRuntime, ProjectManifest } from '@stayingupwind/core/manifest';
 import { MIDDLEWARE_DONE_HEADER } from '@stayingupwind/core/paas';
 import {
+  budgetPatterns,
   classifyRequest,
   type ForwardingContext,
   PatternBudgetExceededError,
@@ -355,6 +356,10 @@ function edgeContextFor(
  * what the middleware decided itself (`routeHostedDocument`, `serveAfterMiddleware`).
  */
 export async function routeRequest(input: RoutingInput): Promise<Response> {
+  // Every test of an application's routing pattern this isolate makes is bounded from here on, by
+  // whatever host routes it: the edge runs every application's patterns, against values their
+  // visitors chose. Asked of every request, as it costs one assignment, before any is routed.
+  budgetPatterns();
   try {
     return await routeWithinBudget(input);
   } catch (error) {

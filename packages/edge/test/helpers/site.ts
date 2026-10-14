@@ -4,6 +4,7 @@ import {
   type AppRuntime,
   buildProjectManifest,
   computeManifestId,
+  type DynamicRoute,
   type ProjectManifest,
   type RouteEntry,
   serializeManifest,
@@ -64,6 +65,8 @@ export interface SiteOptions {
   readonly files?: Readonly<Record<string, string>> | undefined;
   /** The build's `next/image` configuration; none, absent. */
   readonly images?: ImagesConfig | undefined;
+  /** The build's dynamic routes, in Next.js's order; none, absent. */
+  readonly dynamicRoutes?: readonly DynamicRoute[] | undefined;
 }
 
 export interface Site {
@@ -121,6 +124,7 @@ export async function seedSite(options: SiteOptions): Promise<Site> {
     app: APP,
     staticFiles: await fileEntries(options.files ?? {}),
     images: options.images,
+    ...(options.dynamicRoutes !== undefined && { dynamicRoutes: [...options.dynamicRoutes] }),
     crawlersStreamed: true,
   });
   const manifestId = await computeManifestId(manifest);

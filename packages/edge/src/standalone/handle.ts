@@ -1,5 +1,3 @@
-import { budgetPatterns } from '@stayingupwind/core/request';
-
 import { notFoundResponse, serviceUnavailableResponse } from '../handlers/responses.ts';
 import type { IncomingRequest } from '../request-context.ts';
 import { serveFromPointer } from '../route.ts';
@@ -18,9 +16,6 @@ export async function handleStandalone(
   ctx: ExecutionContext,
   runtime = standaloneRuntime(env),
 ): Promise<Response> {
-  // Every test of an application's routing pattern is bounded, as wherever the edge runs: one past
-  // what a test is allowed hands the request to the application's Function (`budgetPatterns`).
-  budgetPatterns();
   const url = new URL(request.url);
   const pointerStarted = runtime.now();
   const pointer = await standalonePointer(env, runtime, ctx);
