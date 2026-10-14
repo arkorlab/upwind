@@ -130,9 +130,10 @@ describe('a standalone cache', () => {
     await expect(
       control.seedScope({ ...seed, scope: { ...seed.scope, scopeId } }),
     ).resolves.toMatchObject({ kind: 'seeded' });
-    await expect(control.issueToken({ scopeId })).resolves.toMatchObject({
-      token: expect.stringContaining(`.${scopeId}.`),
-    });
+
+    const { token } = await control.issueToken({ scopeId });
+
+    expect(token).toContain(`.${scopeId}.`);
     await expect(exports.CacheSignals.scopeSignals(scopeId, null)).resolves.toMatchObject({
       revision: 0,
     });
