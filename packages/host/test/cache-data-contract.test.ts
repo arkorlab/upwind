@@ -7,6 +7,7 @@ import {
   dataSetRequestSchema,
   MAX_DATA_HANDLER_LENGTH,
   MAX_DATA_KEY_LENGTH,
+  tagsGetResponseSchema,
 } from '../src/cache/gateway-contract.ts';
 
 /** An entry's metadata: a `use cache` entry's under the handler that made it, a fetch entry's under none. */
@@ -113,5 +114,34 @@ describe("a data entry's handler", () => {
       }).success,
     ).toBe(false);
     expect(dataGetRequestSchema.safeParse(request).success).toBe(false);
+  });
+});
+
+/** A tag's record as the gateway answers a tag read or a delta with it. */
+function tagRecord(value: string) {
+  return {
+    tagId: `tag_${value}`,
+    kind: 'next-explicit',
+    value,
+    revision: 1,
+    staleAt: 1,
+    hardExpireAt: null,
+    meaning: 'immediate',
+  };
+}
+
+/** A tag read's answer holding `count` records. */
+function tagsAnswer(count: number) {
+  return { tags: Array.from({ length: count }, (_, index) => tagRecord(`tag-${index}`)) };
+}
+
+describe("a tag read's answer", () => {
+  it('holds a record for each tag a read may name', () => {
+    expect(tagsGetResponseSchema.safeParse(tagsAnswer(MAX_TAGS_PER_CALL)).success).toBe(true);
+  });
+
+  /** A record for each tag the read named at the most, which no read names more of. */
+  it('holds no more records than a read may name tags', () => {
+    expect(tagsGetResponseSchema.safeParse(tagsAnswer(MAX_TAGS_PER_CALL + 1)).success).toBe(false);
   });
 });

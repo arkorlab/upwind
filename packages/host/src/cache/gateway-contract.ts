@@ -504,7 +504,10 @@ export type TagsDeltaResponse = z.infer<typeof tagsDeltaResponseSchema>;
 export const tagsGetRequestSchema = z.object({
   tags: z.array(tagValueSchema).max(MAX_TAGS_PER_CALL),
 });
-export const tagsGetResponseSchema = z.object({ tags: z.array(tagDeltaEntrySchema) });
+/** At most a record for each tag the read named, so no more than a read may name. */
+export const tagsGetResponseSchema = z.object({
+  tags: z.array(tagDeltaEntrySchema).max(MAX_TAGS_PER_CALL),
+});
 export type TagsGetResponse = z.infer<typeof tagsGetResponseSchema>;
 
 /** `POST /invalidations` */
