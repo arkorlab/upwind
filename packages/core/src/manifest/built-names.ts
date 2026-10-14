@@ -35,6 +35,28 @@ export function builtNameOf(path: string): string | undefined {
   }
 }
 
+/** The base an escape writes a byte in. */
+const HEX = 16;
+
+/**
+ * What `builtSegment` escaped back in a segment of a page's name: a delimiter (`%2F` for `/`), or an
+ * escape that stood in the value as it is (`%252F` for `%2F`).
+ */
+const BUILT_ESCAPE = /%25(2f|23|3f|5c)|%(?:2f|23|3f|5c)/giu;
+
+/**
+ * The value a segment of a page's name stands for, `builtSegment` read back: an escaped delimiter is
+ * the delimiter, and an escaped escape the escape as it stood.
+ */
+export function segmentValueOf(segment: string): string {
+  return segment.replaceAll(BUILT_ESCAPE, (found, escape?: string) => {
+    // The delimiter's escape is the match itself: `%2F`, whose code is the two digits after `%`.
+    return escape === undefined
+      ? String.fromCodePoint(Number.parseInt(found.slice(1), HEX))
+      : `%${escape}`;
+  });
+}
+
 /**
  * What a URL reads as its own in a path that a name may hold as it is: a `%`, which would start an
  * escape, a `#` or a `?`, which would end the path, a `\`, which it reads as a `/`, and a control
@@ -51,17 +73,29 @@ const NAME_SYNTAX = /%(?!(?:25)?(?:2f|23|3f|5c))|[\p{Cc} #?\\]/giu;
 
 /**
  * Whether no path a request asks by names `name`: one a URL resolves away a segment of (`.` or `..`),
- * one whose first segment is empty (`//…`), which a URL written relative to the site reads as naming
- * another host and Next.js redirects, one that is no absolute path, and one that is no well-formed
- * text, whose lone surrogate a URL takes for a replacement character.
+ * one with an empty segment (`//`), which the router redirects to the path without it — and which,
+ * first, a URL written relative to the site reads as naming another host — one that is no absolute
+ * path, and one that is no well-formed text, whose lone surrogate a URL takes for a replacement
+ * character.
  */
 function unaddressable(name: string): boolean {
   return (
     !name.isWellFormed() ||
     !name.startsWith('/') ||
-    name.startsWith('//') ||
+    name.includes('//') ||
     name.split('/').some((segment) => segment === '.' || segment === '..')
   );
+}
+
+/**
+ * Every byte of `segment` escaped: a spelling of it no name holds as it is, which a request may ask
+ * by where another name is the spelling a request would ask by otherwise (`routeRequestPathOf`,
+ * `fileRequestPathOf`) — the edge finds a name as spelled before it decodes one.
+ */
+export function escapedBytesOf(segment: string): string {
+  return [...new TextEncoder().encode(segment)]
+    .map((byte) => `%${byte.toString(HEX).toUpperCase().padStart(2, '0')}`)
+    .join('');
 }
 
 /**

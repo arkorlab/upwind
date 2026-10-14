@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { builtNameOf, escapedPathOf, requestPathOf } from '../src/manifest/built-names.ts';
+import { fileRequestPathOf, staticFileKey } from '../src/manifest/manifest.ts';
 
 /**
  * The path a request asks for a page by (`requestPathOf`), and for a file by (`escapedPathOf`): each
@@ -124,5 +125,39 @@ describe('the path a request asks for a file by', () => {
     expect(escapedPathOf('/a/../b.txt')).toBeUndefined();
     expect(escapedPathOf('//other.example/x.txt')).toBeUndefined();
     expect(escapedPathOf('/a\u{DC00}.txt')).toBeUndefined();
+  });
+});
+
+describe('the path a request asks for a shipped file by', () => {
+  const FILE = {
+    sha256: 'a'.repeat(64),
+    byteLength: 1,
+    contentType: 'text/plain',
+    immutable: false,
+  };
+
+  /** Files named `names`, as a manifest ships them. */
+  function shipping(names: readonly string[]) {
+    return { staticFiles: Object.fromEntries(names.map((name) => [name, FILE])) };
+  }
+
+  /**
+   * The edge finds a file as spelled before it decodes one: where another file is named as a
+   * request would spell this one, it is asked with every byte escaped.
+   */
+  it('asks for a file another is named as the spelling of, with every byte escaped', () => {
+    const manifest = shipping(['/a%2F.txt', '/a%252F.txt', '/a b', '/a%20b']);
+
+    for (const name of ['/a%2F.txt', '/a%252F.txt', '/a b', '/a%20b']) {
+      const path = asked(fileRequestPathOf(manifest, name));
+
+      expect(staticFileKey(manifest, path)).toBe(name);
+    }
+
+    expect(asked(fileRequestPathOf(manifest, '/a%20b'))).toBe('/a%2520b');
+  });
+
+  it('names no path for a file no request reaches', () => {
+    expect(fileRequestPathOf(shipping(['//x.txt']), '//x.txt')).toBeUndefined();
   });
 });

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { builtNameOf } from '../src/manifest/built-names.ts';
-import { routeRequestPathOf } from '../src/manifest/page-keys.ts';
+import { pageKeyOf, routeRequestPathOf } from '../src/manifest/page-keys.ts';
 
 /**
  * The path a request asks for a route by (`routeRequestPathOf`), as the edge finds the route: a
@@ -58,5 +58,25 @@ describe('the path a request asks for a route by', () => {
 
     expect(routeRequestPathOf(manifest, '/docs/..')).toBeUndefined();
     expect(routeRequestPathOf(manifest, '//other.example')).toBeUndefined();
+  });
+
+  /**
+   * The edge finds a route as spelled before it decodes one: where another is named as a request
+   * would spell this one, it is asked with every byte escaped, a spelling no name holds as it is.
+   */
+  it('asks for a route another is named as the spelling of, with every byte escaped', () => {
+    const percent = manifestOf(['/docs/100%', '/docs/100%25']);
+    const accented = manifestOf(['/docs/é', '/docs/%C3%A9']);
+    const spelledOut = asked(routeRequestPathOf(percent, '/docs/100%'));
+    const accentedOut = asked(routeRequestPathOf(accented, '/docs/é'));
+
+    expect(asked(routeRequestPathOf(percent, '/docs/100%25'))).toBe('/docs/100%2525');
+    expect(pageKeyOf(percent.routes, spelledOut, percent)).toBe('/docs/100%');
+    expect(pageKeyOf(accented.routes, accentedOut, accented)).toBe('/docs/é');
+  });
+
+  /** The router redirects a path with an empty segment to the one without it. */
+  it('names no path for a member with an empty segment', () => {
+    expect(routeRequestPathOf(manifestOf(['/docs/a//b']), '/docs/a//b')).toBeUndefined();
   });
 });

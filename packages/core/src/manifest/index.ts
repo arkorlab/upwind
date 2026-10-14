@@ -21,6 +21,7 @@ export {
   computeManifestId,
   DEFAULT_ASSET_POLICY,
   DEFAULT_CONTINUATION_CONFIG,
+  fileRequestPathOf,
   findRouteEntry,
   findStaticFile,
   MAX_MANIFEST_BYTES,

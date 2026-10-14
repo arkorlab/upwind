@@ -4,6 +4,7 @@ import type { RouterReferences } from '../bundle/carried.ts';
 import type { DeploymentFingerprint } from '../deployment/fingerprint.ts';
 import type { ImagesConfig } from '../images/config.ts';
 import { compareCodeUnits } from '../util/bytes.ts';
+import { escapedBytesOf, escapedPathOf } from './built-names.ts';
 import { pageKeyOf } from './page-keys.ts';
 import { namesPagesDataPrefix, pagesDataPrefixOf } from './pages-data-prefix.ts';
 import {
@@ -343,6 +344,12 @@ export function withoutAssetPrefix(
     : undefined;
 }
 
+/** What of a manifest finds a file the build shipped (`staticFileKey`). */
+type FileLookup = Pick<
+  ProjectManifest,
+  'staticFiles' | 'staticFileLocales' | 'staticFileAssetPrefix' | 'staticFileTrailingSlash'
+>;
+
 /**
  * The pathname the manifest ships a file under, for a pathname a request names: as spelled or
  * decoded (`keyOf`), by the slash the router finds it by too (`slashedFileKey`), and in an
@@ -356,7 +363,7 @@ export function withoutAssetPrefix(
  * `/en/assets/_next/static/…`, and Next.js takes the default locale off before it matches the
  * prefix's rewrite.
  */
-export function staticFileKey(manifest: ProjectManifest, pathname: string): string | undefined {
+export function staticFileKey(manifest: FileLookup, pathname: string): string | undefined {
   const { staticFiles, staticFileLocales, staticFileAssetPrefix } = manifest;
   if (staticFiles === undefined) {
     return undefined;
@@ -383,6 +390,35 @@ export function staticFileKey(manifest: ProjectManifest, pathname: string): stri
   return unprefixed === undefined ? undefined : keyOf(staticFiles, unprefixed);
 }
 
+/** Only ever used to read out of a URL the path a request asking by `asked` holds. */
+const REQUEST_ORIGIN = 'https://request.invalid';
+
+/**
+ * The path a request asks for the file `key` of `manifest` by, at `spelling` — its own name, or a
+ * spelling the edge finds it by besides, behind a default locale or under the asset prefix: the
+ * spelling escaped as a request names a file (`escapedPathOf`), or — where another file is named as
+ * that spells it, which the edge finds as spelled first (`/a%252F.txt` beside `/a%2F.txt`, `/a%20b`
+ * beside `/a b`) — with every byte of it escaped (`escapedBytesOf`). `undefined` where neither finds
+ * the file: no request reaches it at that spelling.
+ */
+export function fileRequestPathOf(
+  manifest: FileLookup,
+  spelling: string,
+  key = spelling,
+): string | undefined {
+  const readable = escapedPathOf(spelling);
+  if (readable === undefined) {
+    return undefined;
+  }
+  const whole = spelling
+    .split('/')
+    .map((segment) => escapedBytesOf(segment))
+    .join('/');
+  return [readable, whole].find(
+    (asked) => staticFileKey(manifest, new URL(asked, REQUEST_ORIGIN).pathname) === key,
+  );
+}
+
 /**
  * Whether a pathname's last segment names no file: nothing in it Next.js reads as an extension. A
  * dynamic segment's own brackets and dots (`[...slug]`) say nothing of the member it stands for.
@@ -394,7 +430,7 @@ export function namesNoFile(pathname: string): boolean {
 
 /** The file a pathname names as spelled or decoded (`keyOf`), or by the slash (`slashedFileKey`). */
 function namedFileKey(
-  manifest: ProjectManifest,
+  manifest: FileLookup,
   staticFiles: Record<string, StaticFileEntry>,
   pathname: string,
 ): string | undefined {
@@ -409,7 +445,7 @@ function namedFileKey(
  * with an extension has no such spelling: the redirect takes the slash off it.
  */
 function slashedFileKey(
-  manifest: ProjectManifest,
+  manifest: FileLookup,
   staticFiles: Record<string, StaticFileEntry>,
   pathname: string,
 ): string | undefined {

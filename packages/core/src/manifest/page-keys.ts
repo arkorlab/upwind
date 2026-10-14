@@ -1,6 +1,12 @@
 import { compiledRules, patternOf } from '../request/compiled-patterns.ts';
 import { testWithin } from '../request/pattern-budget.ts';
-import { builtNameOf, escapedPathOf, requestPathOf } from './built-names.ts';
+import {
+  builtNameOf,
+  escapedBytesOf,
+  escapedPathOf,
+  requestPathOf,
+  segmentValueOf,
+} from './built-names.ts';
 import type { DynamicRoute, ProjectManifest } from './schema.ts';
 
 /** What of a manifest tells a page of its own from a member of a dynamic route. */
@@ -112,9 +118,12 @@ const REQUEST_ORIGIN = 'https://request.invalid';
  * for (`pageKeyOf`): its name read as a member's, escaped as a request names one (`requestPathOf`),
  * or as a page of its own's, escaped whole (`escapedPathOf`) — whichever the edge reads back as
  * `key`. A page of its own's name is its path as it is: a `%2F` in it is a `%` and a `2F`, and asked
- * for as a member's escaped `/`, it is another page.
+ * for as a member's escaped `/`, it is another page. Where another route is named as one of those
+ * spells it (`/docs/100%25` beside `/docs/100%`), the edge finds that route as spelled first, and
+ * the name is asked with every byte of it escaped, a spelling no name holds as it is, read either
+ * way.
  *
- * `undefined` where neither is: no request reaches the route. A member a page of its own shadows
+ * `undefined` where none is: no request reaches the route. A member a page of its own shadows
  * (`/docs/a%2Fb` beside the page `/docs/a/b`) is never served — Next.js, and the edge, find the page
  * first, for every path that names the member — and a name no path names reaches nothing at all.
  */
@@ -122,7 +131,18 @@ export function routeRequestPathOf(
   manifest: PagesOfTheirOwn & { readonly routes: Readonly<Record<string, unknown>> },
   key: string,
 ): string | undefined {
-  return [requestPathOf(key), escapedPathOf(key)].find((asked) => {
+  const member = requestPathOf(key);
+  if (member === undefined) {
+    return undefined;
+  }
+  const segments = key.split('/');
+  const spellings = [
+    member,
+    escapedPathOf(key),
+    segments.map((segment) => escapedBytesOf(segmentValueOf(segment))).join('/'),
+    segments.map((segment) => escapedBytesOf(segment)).join('/'),
+  ];
+  return spellings.find((asked) => {
     return (
       asked !== undefined &&
       pageKeyOf(manifest.routes, new URL(asked, REQUEST_ORIGIN).pathname, manifest) === key
