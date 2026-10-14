@@ -17,6 +17,8 @@ import {
 } from '@stayingupwind/core/cache';
 import * as z from '@stayingupwind/core/schema';
 
+import { SIGNABLE_SCOPE_ID } from './token.ts';
+
 /**
  * The cache's own model, as every Worker and any index of its history see it.
  *
@@ -42,7 +44,8 @@ export type CacheScopeStatus = z.infer<typeof cacheScopeStatusSchema>;
 
 /** The boundary of authorization, keys, storage and invalidation: one deployment, for now. */
 export const cacheScopeSchema = z.object({
-  scopeId: z.string().min(1),
+  /** Signed into the token that opens the scope, so it carries neither of a token's separators. */
+  scopeId: z.string().min(1).regex(SIGNABLE_SCOPE_ID, 'a scope id may carry neither . nor |'),
   organizationId: z.string().min(1),
   projectId: z.string().min(1),
   environmentId: cacheEnvironmentSchema,

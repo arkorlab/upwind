@@ -1,5 +1,7 @@
+import { KEY_SCHEMA_VERSION } from '@stayingupwind/core/cache';
 import { describe, expect, it } from 'vitest';
 
+import { cacheScopeSchema, ENTITY_SCHEMA_VERSION, scopeSeedSchema } from '../src/cache/index.ts';
 import { parseCacheToken, signCacheToken, verifyCacheToken } from '../src/cache/token.ts';
 
 const SECRET = 'cache-token-key-for-tests-32-chars!!';
@@ -114,5 +116,36 @@ describe('cache tokens', () => {
 
   it('cannot be minted for a scope id that carries the separator', async () => {
     await expect(signCacheToken(SECRET, 'a.b', NAMING)).rejects.toThrow(/separator/u);
+  });
+});
+
+describe('a scope', () => {
+  const scope = {
+    scopeId: SCOPE,
+    organizationId: 'org',
+    projectId: 'prj',
+    environmentId: 'production',
+    deploymentId: SCOPE,
+    keySchemaVersion: KEY_SCHEMA_VERSION,
+    buildId: 'build',
+  } as const;
+
+  it('is seeded under an id a token can be signed for', async () => {
+    expect(scopeSeedSchema.safeParse(scope).success).toBe(true);
+    await expect(signCacheToken(SECRET, scope.scopeId, NAMING)).resolves.toMatch(/^v1\./u);
+  });
+
+  /** Refused where the scope is made, rather than once it is and its token cannot be signed. */
+  it.each(['a.b', 'b|v1|c'])('is not seeded under %j, which no token can be signed for', (id) => {
+    expect(scopeSeedSchema.safeParse({ ...scope, scopeId: id }).success).toBe(false);
+    expect(
+      cacheScopeSchema.safeParse({
+        ...scope,
+        scopeId: id,
+        status: 'active',
+        seededAt: 1,
+        schemaVersion: ENTITY_SCHEMA_VERSION,
+      }).success,
+    ).toBe(false);
   });
 });

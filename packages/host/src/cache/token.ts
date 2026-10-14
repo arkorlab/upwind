@@ -21,6 +21,11 @@ const TOKEN_VERSION = 'v1';
 const SEPARATOR = '.';
 /** What joins the fields a token signs (`message`). */
 const FIELD_SEPARATOR = '|';
+/**
+ * A scope id a token can be signed for: one that carries neither separator. A scope's schema holds
+ * its id to it (`cacheScopeSchema`), so a scope no token could open is refused where it is made.
+ */
+export const SIGNABLE_SCOPE_ID = /^[^.|]+$/u;
 const HMAC = { name: 'HMAC', hash: 'SHA-256' } as const;
 const PARTS = 3;
 
