@@ -650,6 +650,7 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
     rendering,
     read: encoded,
     layering,
+    bodiless: head,
   });
   const totalTimeoutMs = Math.min(
     manifest.continuation.totalTimeoutMs,

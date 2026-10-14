@@ -64,6 +64,8 @@ export interface DeliveryInput {
   readonly rendering: EncodedShellRef | undefined;
   readonly read: ShellLoadResult | undefined;
   readonly layering: Layering;
+  /** A `HEAD`: answered with no body, for which no rendering is read. */
+  readonly bodiless: boolean;
 }
 
 /** How the document goes out, once the shell and whatever rendering there was have been read. */
@@ -72,7 +74,11 @@ export function deliveryFor(input: DeliveryInput): ShellDelivery {
   const head = renderingWire(input.entry, input.rendering, input.read);
   const common = { source: shell.read.source, lookupMs: input.lookupMs, encoding };
   if (head === undefined) {
-    const outbound = encoding === IDENTITY_ENCODING ? 'none' : 'live';
+    // A `HEAD` reads no rendering and sends no bytes, and says of itself what its `GET` sends: the
+    // rendering the manifest names, where there is one, not the live encoding that stands in for
+    // one only when it cannot be read. Its wire is never sent.
+    const stored = input.bodiless && input.rendering !== undefined;
+    const outbound = encoding === IDENTITY_ENCODING || stored ? 'none' : 'live';
     return { ...common, wire: identityWire(shell.read.bytes), outbound, variesByAgent: false };
   }
   if (input.layering === 'off' || head.encoding !== 'br') {
