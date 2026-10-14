@@ -121,9 +121,13 @@ interface RecordBodies {
 }
 
 function recordBodies(outputs: readonly OutputSnapshot[]): RecordBodies {
+  const postponed = artifactWithRole(outputs, ROLE_POSTPONED);
   return {
     primary: artifactWithRole(outputs, ROLE_HTML) ?? artifactWithRole(outputs, ROLE_ROUTE_BODY),
-    postponed: artifactWithRole(outputs, ROLE_POSTPONED),
+    // An empty state resumes nothing, as Next.js reads an empty one. A record says there is none
+    // with no digest and no length; the digest of no bytes beside no length is one its reader
+    // refuses as corrupt (`decodeGenerationPack`).
+    postponed: postponed?.byteLength === 0 ? undefined : postponed,
   };
 }
 
