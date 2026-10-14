@@ -12,6 +12,10 @@ seeded, but its manifest is not yet where the edge reads one, so a refusal leave
 it. Then it is published (`publishDeployment`). `deployBundle` does both. The pointer it returns is
 the caller's to write where its edge looks.
 
+Both run a deployment in one process, in as many calls out as the build is large. A host that
+deploys from a Worker, which caps the calls each invocation makes, uses the pure modules instead
+(`./shells`, `./cache-seed`, `./manifest`, `./delivery`), spread over invocations of its own.
+
 The published package is TypeScript sources: `exports` names `.ts` files, and there is no build
 step. It runs as a Worker or under Node.
 
