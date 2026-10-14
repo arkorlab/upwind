@@ -26,6 +26,7 @@ import {
 import { serviceUnavailableResponse } from './handlers/responses.ts';
 import { handleStaticFile } from './handlers/static-file.ts';
 import { hostedFirst } from './hosted-first.ts';
+import { logWarn } from './observability/logger.ts';
 import { getManifest, getPolicy, type PolicyLookup } from './preview/manifest.ts';
 import { EDGE_MODE } from './preview/pointer.ts';
 import { notDeployed, type PreviewState, stateFromPointer } from './preview/state.ts';
@@ -107,19 +108,39 @@ interface PassthroughObservation {
   readonly finish: (response?: Response) => void;
 }
 
+/**
+ * Tell the host's observer of a passthrough what came of it, so that the telling never touches the
+ * answer: the observer is the host's own code, and what it throws is logged and goes no further.
+ */
+function tellObserver(tell: () => void): void {
+  try {
+    tell();
+  } catch (error) {
+    logWarn('the host observer threw', {
+      told: 'passthrough',
+      detail: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 /** The answer to an observed passthrough, its observer told as it comes, or that none came. */
 async function finishObserved(
   pending: Promise<Response>,
   finish: PassthroughObservation['finish'],
 ): Promise<Response> {
+  let response: Response;
   try {
-    const response = await pending;
-    finish(response);
-    return response;
+    response = await pending;
   } catch (error) {
-    finish();
+    tellObserver(() => {
+      finish();
+    });
     throw error;
   }
+  tellObserver(() => {
+    finish(response);
+  });
+  return response;
 }
 
 /**
