@@ -370,6 +370,16 @@ export function tagsDelta(
   );
 }
 
+/** How many of the invalidations past a reader's revision a recent delta reads, newest first. */
+const RECENT_NEWEST = 256;
+
+interface RecentQuery {
+  readonly since: number;
+  readonly limit: number;
+  readonly revision: number;
+  readonly from: number;
+}
+
 /**
  * The invalidations of tags past `since` that took effect from `from` on, each as its tag stood by
  * it, oldest first and the newest `limit` at the most, `truncated` where more were: what a reader
@@ -379,16 +389,43 @@ export function tagsDelta(
  *
  * Each invalidation, not each tag's latest: a tag's row keeps the deadlines of the last that named
  * it, and one invalidated at once and then with a window would read as the window alone, though a
- * record from before both is past its deadline, as the authority's own condemnation keeps it. Read
- * through when each took effect (`invalidations_by_stale_at`), not by revision: a scope keeps every
- * invalidation it ever recorded, an edge asks every moment, and a walk down the revisions in search
- * of the window's few would read them all wherever there are fewer than `limit`.
+ * record from before both is past its deadline, as the authority's own condemnation keeps it.
+ *
+ * Read first down the revisions past `since`, a few hundred at the most (`RECENT_NEWEST`): an edge
+ * asks every moment, and one that heard of the scope lately has few to read, where its window may
+ * hold thousands on a busy scope. Those answer it where they are all there are past `since`, or
+ * where they fill an answer. Otherwise the window is read through when each took effect
+ * (`recentWindow`): a scope keeps every invalidation it ever recorded, and a walk down the
+ * revisions in search of a quiet window's few would read them all.
  */
-function recentDelta(
-  sql: SqlStorage,
-  input: { since: number; limit: number; revision: number; from: number },
-): TagsDeltaResponse {
-  const rows = sql
+function recentDelta(sql: SqlStorage, input: RecentQuery): TagsDeltaResponse {
+  const newest = sql
+    .exec<TagRow>(
+      `SELECT t.tag_id AS tag_id, t.kind AS kind, t.value AS value, i.revision AS revision,
+              i.stale_at AS stale_at, i.hard_expire_at AS hard_expire_at, i.meaning AS meaning
+       FROM invalidations AS i INDEXED BY invalidations_by_revision
+       JOIN tags AS t ON t.tag_id = i.target_id
+       WHERE i.target_kind = 'tag' AND i.revision > ?
+       ORDER BY i.revision DESC LIMIT ?`,
+      input.since,
+      RECENT_NEWEST,
+    )
+    .toArray();
+  const recent = newest.filter((row) => (row.stale_at ?? 0) >= input.from);
+  const rows =
+    newest.length < RECENT_NEWEST || recent.length > input.limit
+      ? recent
+      : recentWindow(sql, input);
+  return delta(sql, {
+    revision: input.revision,
+    truncated: rows.length > input.limit,
+    rows: rows.slice(0, input.limit).toReversed(),
+  });
+}
+
+/** The invalidations past `since` that took effect from `from` on, newest first (`recentDelta`). */
+function recentWindow(sql: SqlStorage, input: RecentQuery): TagRow[] {
+  return sql
     .exec<TagRow>(
       `SELECT t.tag_id AS tag_id, t.kind AS kind, t.value AS value, i.revision AS revision,
               i.stale_at AS stale_at, i.hard_expire_at AS hard_expire_at, i.meaning AS meaning
@@ -401,11 +438,6 @@ function recentDelta(
       input.limit + 1,
     )
     .toArray();
-  return delta(sql, {
-    revision: input.revision,
-    truncated: rows.length > input.limit,
-    rows: rows.slice(0, input.limit).toReversed(),
-  });
 }
 
 export function latestTagRevision(sql: SqlStorage): number {

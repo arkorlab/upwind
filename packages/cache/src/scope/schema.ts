@@ -177,9 +177,11 @@ const STATEMENTS: readonly string[] = [
   // By when each took effect: what a data write made before some of them asks (`dataCondemnation`).
   `CREATE INDEX IF NOT EXISTS invalidations_by_target_stale
     ON invalidations (target_kind, target_id, stale_at)`,
-  // And across every target: what an edge is told moved recently (`recentDelta`). A scope keeps
-  // every invalidation it ever recorded, and the window holds few of them.
+  // And across every target: what an edge is told moved recently (`recentDelta`), down the
+  // revisions past the one it names, and through when each took effect where its window is quiet.
+  // A scope keeps every invalidation it ever recorded.
   `CREATE INDEX IF NOT EXISTS invalidations_by_stale_at ON invalidations (stale_at)`,
+  `CREATE INDEX IF NOT EXISTS invalidations_by_revision ON invalidations (revision)`,
   `CREATE TABLE IF NOT EXISTS attempts (
     attempt_id TEXT PRIMARY KEY,
     entry_id TEXT NOT NULL,
