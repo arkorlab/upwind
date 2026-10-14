@@ -367,11 +367,16 @@ export async function routeHostedDocument(input: HostedDocumentInput): Promise<R
   const middlewareStarted = edge.runtime.now();
   const middleware = await runMiddleware(edge, request);
   const middlewareMs = edge.runtime.now() - middlewareStarted;
+  const answered = {
+    pathname: url.pathname,
+    middlewareMs: middleware.middlewareMs,
+    dispatches: dispatchedFor(middleware),
+  };
   if (middleware.kind === 'responded') {
     if (preload !== undefined) {
       abandon(edge, preload);
     }
-    return middlewareResponse(edge, middleware.response);
+    return middlewareResponse(edge, middleware.response, answered);
   }
   if (middleware.kind === 'failed' || middleware.kind === 'external-rewrite') {
     if (preload !== undefined) {
@@ -380,7 +385,7 @@ export async function routeHostedDocument(input: HostedDocumentInput): Promise<R
     // A failed middleware's time goes with the request it was given up for, as a file's does.
     return middleware.kind === 'failed'
       ? input.passthrough(middlewareFailedReason(middleware.cause), middleware)
-      : followExternalRewrite(edge, request, middleware);
+      : followExternalRewrite(edge, request, middleware, answered);
   }
   // What the document reports it waited on includes the middleware from here on.
   const timed = { ...edge, timings: { ...edge.timings, middlewareMs } };

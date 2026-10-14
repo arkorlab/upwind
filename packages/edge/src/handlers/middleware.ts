@@ -18,6 +18,7 @@ import type { DispatchApp } from '../edge-runtime.ts';
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
+import { observeMetric } from './observer.ts';
 import {
   badGatewayResponse,
   keptByNobody,
@@ -319,6 +320,51 @@ async function runMiddlewareIn(
 
 type ExternalRewrite = Extract<MiddlewareResult, { kind: 'external-rewrite' }>;
 
+/** What it took the middleware to give an answer of its own: its run, and the dispatches it made. */
+export interface MiddlewareAnswered {
+  /** What the request named, which the answer is counted under. */
+  readonly pathname: string;
+  readonly middlewareMs: number | undefined;
+  readonly dispatches: number;
+}
+
+/**
+ * The point of an answer the middleware gave itself — a redirect, a whole response, an origin it
+ * rewrote to — counted as a passthrough is, under the reason `x-arkor-edge` gives it: the request
+ * and what it spent go to the host whoever answered it.
+ */
+function recordMiddlewareAnswer(
+  edge: EdgeContext,
+  reason: string,
+  answered: MiddlewareAnswered & { readonly fetched?: { readonly ms: number } | undefined },
+): void {
+  observeMetric(edge.host, {
+    projectId: edge.projectId,
+    kind: 'passthrough',
+    pathname: answered.pathname,
+    shellStrategy: '',
+    shellSource: '',
+    outcomeKind: reason,
+    colo: edge.colo ?? '',
+    originCacheHeader: '',
+    manifestId: edge.manifestId,
+    policyId: edge.policy.id,
+    encoding: '',
+    middlewareMs: answered.middlewareMs,
+    ttfbInternalMs: 0,
+    shellLookupMs: 0,
+    originFirstByteMs: answered.fetched?.ms ?? 0,
+    originTotalMs: 0,
+    shellBytes: 0,
+    suffixBytes: 0,
+    recovery: 0,
+    retry: 0,
+    assetHit: 0,
+    // The middleware's dispatches, and the fetch of the origin it rewrote to where it named one.
+    subrequests: answered.dispatches + (answered.fetched === undefined ? 0 : 1),
+  });
+}
+
 /**
  * A rewrite to another origin, followed from here: the middleware has run once, and running it
  * again in the application's Worker would repeat whatever it did on the way. The request goes out
@@ -332,6 +378,7 @@ export async function followExternalRewrite(
   edge: EdgeContext,
   request: Request,
   rewrite: ExternalRewrite,
+  answered: MiddlewareAnswered,
 ): Promise<Response> {
   // Already without the host's own cookies: `runMiddleware` strips them from what
   // `readMiddlewareResponse` rebuilds `requestHeaders` out of, which matters most here — this
@@ -343,6 +390,7 @@ export async function followExternalRewrite(
     headers.delete(name);
   }
   let upstream: Response;
+  const startedAt = edge.runtime.now();
   try {
     // No deadline of the edge's own. Next.js gives a rewrite it proxies the application's
     // `experimental.proxyTimeout`, thirty seconds unless the application raised it, and the bundle
@@ -361,8 +409,11 @@ export async function followExternalRewrite(
     // A name that does not resolve, a refused connection, a handshake that failed: the target of
     // the application's rewrite is unreachable, which is not this Worker failing. Left to
     // propagate it would end the request as an uncaught exception.
+    const fetched = { ms: edge.runtime.now() - startedAt };
+    recordMiddlewareAnswer(edge, 'external-rewrite-unavailable', { ...answered, fetched });
     return badGatewayResponse('external-rewrite-unavailable');
   }
+  const fetched = { ms: edge.runtime.now() - startedAt };
   // As a Worker's answer is taken (`handlePassthrough`): cookies scoped to the host the client
   // used, and nothing of the edge's protocol, nor what a proxy may not replay, carried over.
   const responseHeaders = rewritePassthroughResponseHeaders(upstream.headers, edge.forwarding);
@@ -373,15 +424,21 @@ export async function followExternalRewrite(
   }
   responseHeaders.set(EDGE_DEBUG_HEADER, 'passthrough;reason=external-rewrite');
   applyCspReporting(responseHeaders, edge.cspReportingPath);
-  return new Response(upstream.body, {
+  const answer = new Response(upstream.body, {
     status: upstream.status,
     statusText: upstream.statusText,
     headers: responseHeaders,
   });
+  recordMiddlewareAnswer(edge, 'external-rewrite', { ...answered, fetched });
+  return answer;
 }
 
 /** A redirect or a whole response the middleware produced, handed to the client as such. */
-export function middlewareResponse(edge: EdgeContext, response: Response): Response {
+export function middlewareResponse(
+  edge: EdgeContext,
+  response: Response,
+  answered: MiddlewareAnswered,
+): Response {
   const headers = rewritePassthroughResponseHeaders(response.headers, edge.forwarding);
   privateCacheControl(headers);
   if (edge.privateDelivery) {
@@ -389,9 +446,11 @@ export function middlewareResponse(edge: EdgeContext, response: Response): Respo
   }
   headers.set(EDGE_DEBUG_HEADER, 'passthrough;reason=middleware');
   applyCspReporting(headers, edge.cspReportingPath);
-  return new Response(response.body, {
+  const answer = new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
     headers,
   });
+  recordMiddlewareAnswer(edge, 'middleware', answered);
+  return answer;
 }
