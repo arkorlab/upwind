@@ -16,18 +16,25 @@ import { invokeNodeHandler, type Run } from '../node-bridge.ts';
 import { type CapturedRender, renderCaptured } from './capture.ts';
 import { nowMs } from './clock.ts';
 import { asRegeneration } from './context.ts';
-import { forgetRecord, forgetRecordBefore, publishedRecordOf, rememberRecord } from './current.ts';
+import {
+  type CurrentGeneration,
+  forgetRecord,
+  forgetRecordBefore,
+  publishedRecordOf,
+  rememberRecord,
+} from './current.ts';
 import {
   type AttemptOutcome,
   type AttemptReason,
+  type AttemptRequest,
   CacheHostError,
   type CommitArtifact,
   type CommitOutput,
   type CommitRequest,
-  type CurrentSummary,
   type ServedObservation,
   type UploadedArtifact,
 } from './host.ts';
+import { answerable, laterCarried, turnedAway } from './later.ts';
 import {
   abandon,
   elapsedSince,
@@ -42,13 +49,11 @@ import {
   answeringAtOnce,
   answeringUntilSettled,
   answeringWhenSuperseded,
-  answeringWhileBusy,
   givingBack,
   lettingGo,
   publishingKeyOf,
 } from './publishing.ts';
 import type { CacheRuntime } from './runtime.ts';
-import { servable } from './servable.ts';
 import { refusedTags } from './tag-bounds.ts';
 import { uploaderFor } from './uploads.ts';
 
@@ -159,12 +164,23 @@ export type RegenerationOutcome =
       readonly publishing?: CapturedRender | undefined;
       /** That render's publish, where there is one: never rejects (`Publishing.published`). */
       readonly published?: Promise<unknown> | undefined;
+      /**
+       * A later generation than the one judged that the host holds, from the record its answer
+       * carried (`laterCarried`), where no render of this isolate's answers: the visitor is answered
+       * with it as with any record read.
+       */
+      readonly current?: CurrentGeneration | undefined;
     }
   /**
    * The host holds a later generation than the one judged, which may be served (`supersededBy`);
-   * with the render of it this isolate published, where it is the one (`answeringWhenSuperseded`).
+   * with the render of it this isolate published, where it is the one (`answeringWhenSuperseded`),
+   * or else the generation itself, where the host's answer carried its record (`laterCarried`).
    */
-  | { readonly kind: 'superseded'; readonly publishing?: CapturedRender | undefined }
+  | {
+      readonly kind: 'superseded';
+      readonly publishing?: CapturedRender | undefined;
+      readonly current?: CurrentGeneration | undefined;
+    }
   | { readonly kind: 'skipped'; readonly render: CapturedRender | undefined }
   | { readonly kind: 'refused'; readonly reason: string }
   | {
@@ -525,6 +541,20 @@ async function publish(
 }
 
 /**
+ * What the host is asked for a lease of the entry with: what the edge served, where it said, and the
+ * generation the request judged (`replaces`), for a host to hand back the record of a later one it
+ * holds (`AttemptOutcome.record`).
+ */
+function attemptRequestOf(target: RegenerationTarget): AttemptRequest {
+  return {
+    entry: target.descriptor,
+    reason: target.reason,
+    ...(target.observation !== undefined && { observation: target.observation }),
+    ...(target.replaces !== undefined && { replaces: target.replaces }),
+  };
+}
+
+/**
  * Take the lease and render the entry — or say why there is nothing to publish — and hand the
  * uploads and the commit to the runtime. Never throws. It answers once the render is made: what
  * follows is round trips to the host that change nothing the render says, and whoever answers from
@@ -559,11 +589,7 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   input.waitUntil(synced);
   let lease: AttemptOutcome;
   try {
-    lease = await runtime.host.startAttempt({
-      entry: target.descriptor,
-      reason: target.reason,
-      ...(target.observation !== undefined && { observation: target.observation }),
-    });
+    lease = await runtime.host.startAttempt(attemptRequestOf(target));
   } catch (error) {
     const reason =
       error instanceof CacheHostError ? `${error.code}: ${error.message}` : detail(error);
@@ -580,17 +606,7 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
     return pulled;
   };
   if (lease.kind === 'busy') {
-    return answeringWhileBusy(
-      runtime,
-      {
-        reason: target.reason,
-        entryId,
-        holder: lease.attemptId,
-        holderUntil: lease.leaseExpiresAt,
-        current: lease.current,
-      },
-      pullAfresh,
-    );
+    return turnedAway(runtime, target, lease, { entryId, pull: pullAfresh });
   }
   // A render this isolate still keeps of the entry let go of its lease, as this one could not have
   // been taken otherwise: its commit is refused, or it has landed and its answer is on its way. It
@@ -612,7 +628,9 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
     // another request of this isolate learned while this one waited for the lease stays held.
     forgetRecordBefore(runtime, lease.entryId, lease.current?.seq ?? Infinity);
     const ours = await answeringWhenSuperseded(runtime, candidates, lease.current, pullAfresh);
-    return ours === undefined ? { kind: 'superseded' } : { kind: 'superseded', publishing: ours };
+    return ours === undefined
+      ? { kind: 'superseded', current: await laterCarried(runtime, key, target, lease) }
+      : { kind: 'superseded', publishing: ours };
   }
   // It answers nothing more: what the host holds is not a later generation that stands.
   runtime.publishing.delete(key);
@@ -674,17 +692,4 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
     : publishing;
   input.waitUntil(published);
   return { kind: 'accepted', render: captured, published };
-}
-
-/**
- * Whether a visitor may be answered with the generation a lease says stands (`servable`): one whose
- * status the host did not say is not taken to be, so that a regeneration is never given up for a
- * generation that answers no visitor — a redirect that says not where to, say.
- */
-function answerable(current: CurrentSummary | null | undefined): boolean {
-  if (current?.status === undefined) {
-    return false;
-  }
-  const location = current.location ?? undefined;
-  return servable(current.status, location === undefined ? {} : { location });
 }

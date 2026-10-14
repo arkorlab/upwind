@@ -348,9 +348,14 @@ async function answerFromJob(
       return withOutcome(answered, 'publishing');
     }
   }
+  // A later generation the host holds, whose record its answer carried and this isolate now holds
+  // (`RegenerationOutcome.current`): the usual path answers with it, as with any record read.
+  if (laterOf(outcome) !== undefined) {
+    return undefined;
+  }
   // `busy`, and `superseded` — a later generation than the one judged is the host's, which this
-  // isolate's read is behind — are answered alike: with a render of the visitor's own, kept by no
-  // one.
+  // isolate's read is behind — are answered alike otherwise: with a render of the visitor's own,
+  // kept by no one.
   const own = await renderForVisitor(job.input, job.target, want);
   const said = outcome.kind === 'accepted' ? 'unservable' : outcome.kind;
   return own === undefined ? undefined : withOutcome(own, said);
@@ -582,14 +587,15 @@ async function renderSpeculative(
  */
 async function answerMiss(
   job: Job,
-  onMiss: GenerationSource['onMiss'],
+  source: GenerationSource,
   want: Want,
   once: boolean,
 ): Promise<Response | undefined> {
+  const { onMiss } = source;
   if (onMiss === 'render' && once) {
     const outcome = await runJob(job, 'miss', null);
     holdFirstPublish(outcome);
-    return answerFromJob(job, outcome, want);
+    return (await answerFromLater(job, outcome, source, want)) ?? answerFromJob(job, outcome, want);
   }
   if (onMiss === 'behind' && once) {
     scheduleJob(job, 'miss', null);
@@ -628,7 +634,7 @@ export async function serveFromGeneration(
   // left is a render of the request as it came — the build's path, for an entry with no record.
   const once = !sameEntry(input.regenerated, descriptor);
   if (lookup.kind === 'none') {
-    return answerMiss(job, source.onMiss, want, once);
+    return answerMiss(job, source, want, once);
   }
   if (lookup.kind !== 'generation') {
     return undefined;
@@ -644,7 +650,9 @@ export async function serveFromGeneration(
   }
   if (validity === 'expired') {
     const outcome = await runJob(job, 'expired', pack.header.generationId);
-    const regenerated = await answerFromJob(job, outcome, want);
+    const regenerated =
+      (await answerFromLater(job, outcome, source, want)) ??
+      (await answerFromJob(job, outcome, want));
     return regenerated ?? renderRequest(job, source.url);
   }
   const answer = await answerFromGeneration(job, lookup.current, source, want);
@@ -713,4 +721,28 @@ async function answerFromGeneration(
     headers: pack.header.headers,
     cache: validity === 'stale' ? 'STALE' : 'HIT',
   });
+}
+
+/**
+ * The later generation the host holds that a regeneration came back with, from the record the
+ * host's answer for the lease carried (`RegenerationOutcome.current`).
+ */
+function laterOf(outcome: RegenerationOutcome): CurrentGeneration | undefined {
+  return outcome.kind === 'busy' || outcome.kind === 'superseded' ? outcome.current : undefined;
+}
+
+/**
+ * The visitor's answer from a regeneration that came back with a later generation the host holds
+ * (`laterOf`), as from any record read; `undefined` where it came back with none, and a render of
+ * the request where that generation leads to no output of its own.
+ */
+async function answerFromLater(
+  job: Job,
+  outcome: RegenerationOutcome,
+  source: GenerationSource,
+  want: Want,
+): Promise<Response | undefined> {
+  const later = laterOf(outcome);
+  const answered = later && (await answerFromGeneration(job, later, source, want));
+  return later && (answered ? withOutcome(answered, outcome.kind) : renderRequest(job, source.url));
 }
