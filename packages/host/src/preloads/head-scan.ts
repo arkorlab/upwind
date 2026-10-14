@@ -357,53 +357,16 @@ function endOfComment(html: string, from: number): number {
     ? plain + COMMENT_CLOSE.length
     : bang + COMMENT_CLOSE_BANG.length;
 }
-/** Where a mark the script tokenizer changes state on sits, and where to look on from. */
-interface ScriptMark {
-  readonly kind: 'comment-open' | 'comment-close' | 'nested-open' | 'end-tag';
-  readonly at: number;
-  readonly next: number;
-}
-function markAt(kind: ScriptMark['kind'], at: number, next: number): ScriptMark | undefined {
-  return at === -1 ? undefined : { kind, at, next };
-}
-/** The next thing in script data that moves the tokenizer between its states, or nothing left. */
-function nextScriptMark(html: string, from: number): ScriptMark | undefined {
-  const open = html.indexOf(COMMENT_OPEN, from);
-  const close = html.indexOf(COMMENT_CLOSE, from);
-  const nested = indexOfScriptTag(html, false, from);
-  const end = indexOfScriptTag(html, true, from);
-  const past = SCRIPT_NAME.length + TAG_START.length;
-  let found: ScriptMark | undefined;
-  for (const mark of [
-    markAt('comment-open', open, open + COMMENT_OPEN.length),
-    markAt('comment-close', close, close + COMMENT_CLOSE.length),
-    markAt('nested-open', nested, nested + past),
-    markAt('end-tag', end, end + past + 1),
-  ]) {
-    found = mark !== undefined && (found === undefined || mark.at < found.at) ? mark : found;
-  }
-  return found;
-}
-/** Where `<script` or `</script` sits, folded the way a tokenizer folds a tag name, or `-1`. */
-function indexOfScriptTag(html: string, closing: boolean, from: number): number {
-  let at = from;
-  while (at < html.length) {
-    const start = html.indexOf(TAG_START, at);
-    if (start === -1) {
-      return -1;
-    }
-    at = start + TAG_START.length;
-    if ((html[at] === '/') !== closing) {
-      continue;
-    }
-    // `consumeTagName` folds it, so `<SCRIPT>` opens the double escape a browser opens for it.
-    const found = consumeTagName(html, closing ? at + 1 : at);
-    if (found?.name === SCRIPT_NAME) {
-      return start;
-    }
-  }
-  return -1;
-}
+/**
+ * The marks script data changes state on, in the order they are written: a comment's opening and
+ * close, and `script` opening or ending a tag — the whole name, folded only where it is ASCII, as a
+ * tokenizer folds it, so `<SCRIPT>` opens the double escape a browser opens for it.
+ *
+ * One search, carried on from each mark to the next, so a script is read once however many marks it
+ * holds. Looking for every kind afresh at each mark would read the rest of the window once a mark —
+ * quadratic, in a script of nested `<script` markers, which the window has room for thousands of.
+ */
+const SCRIPT_MARK = /<!--|-->|<\/?[Ss][Cc][Rr][Ii][Pp][Tt](?=[\t\n\f\r />])/u;
 /**
  * Where a `<script>` ends, which is not always at the first `</script>` written in it.
  *
@@ -421,35 +384,22 @@ function indexOfScriptTag(html: string, closing: boolean, from: number): number 
 function endOfScript(html: string, from: number): number {
   let escaped = false;
   let doubleEscaped = false;
-  let at = from;
-  while (at < html.length) {
-    const mark = nextScriptMark(html, at);
-    if (mark === undefined) {
-      return -1;
-    }
-    at = mark.next;
-    switch (mark.kind) {
-      case 'comment-open': {
-        escaped = true;
-        break;
-      }
-      case 'comment-close': {
-        escaped = false;
-        doubleEscaped = false;
-        break;
-      }
-      case 'nested-open': {
-        doubleEscaped = escaped;
-        break;
-      }
-      case 'end-tag': {
-        if (doubleEscaped) {
-          doubleEscaped = false;
-          break;
-        }
-        const end = readAttributes(html, mark.next);
-        return end.closed ? end.next : -1;
-      }
+  const marks = new RegExp(SCRIPT_MARK, 'gu');
+  marks.lastIndex = from;
+  for (let mark = marks.exec(html); mark !== null; mark = marks.exec(html)) {
+    const [written] = mark;
+    if (written === COMMENT_OPEN) {
+      escaped = true;
+    } else if (written === COMMENT_CLOSE) {
+      escaped = false;
+      doubleEscaped = false;
+    } else if (written[TAG_START.length] !== '/') {
+      doubleEscaped = escaped;
+    } else if (doubleEscaped) {
+      doubleEscaped = false;
+    } else {
+      const end = readAttributes(html, marks.lastIndex);
+      return end.closed ? end.next : -1;
     }
   }
   return -1;
