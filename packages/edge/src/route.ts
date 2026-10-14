@@ -24,7 +24,6 @@ import {
   passthroughReason,
 } from './handlers/passthrough.ts';
 import { serviceUnavailableResponse } from './handlers/responses.ts';
-import { handleStaticFile } from './handlers/static-file.ts';
 import { hostedFirst } from './hosted-first.ts';
 import { logWarn } from './observability/logger.ts';
 import { getManifest, getPolicy, type PolicyLookup } from './preview/manifest.ts';
@@ -209,9 +208,14 @@ function passthroughFor(
 function servedAtEdge(classification: RequestClass): boolean {
   switch (classification.kind) {
     case 'document':
-    case ASSET_CLASS:
-    case STATIC_FILE_CLASS: {
+    case ASSET_CLASS: {
       return true;
+    }
+    case STATIC_FILE_CLASS: {
+      // Never classified here: a file the build shipped is answered before the pointer's mode is
+      // looked at (`hostedFirst`), by the same reading of the request (`classifyStaticFile`), and
+      // a request with no Workers or no manifest leaves before it is classified.
+      return false;
     }
     case 'passthrough': {
       // The middleware may still rewrite it onto a route the build prerendered.
@@ -435,21 +439,13 @@ async function routeWithinBudget(input: RoutingInput): Promise<Response> {
   if (!servedAtEdge(classification)) {
     return passthrough(passthroughReason(classification));
   }
-  const resolved = resolvePolicy(edgeStrategyRegistry, state.policy);
-  const edge = edgeContextFor(input, state.manifest, forwarding);
-  if (classification.kind === STATIC_FILE_CLASS) {
-    return handleStaticFile({
-      request,
-      pathname: classification.pathname,
-      file: classification.file,
-      edge,
-    });
-  }
   // The asset path fetches the file and answers with it: a `HEAD` of one is the origin's, as it was
   // before `HEAD` was classified with `GET`.
   if (classification.kind === ASSET_CLASS && request.method === 'HEAD') {
     return passthrough('head');
   }
+  const resolved = resolvePolicy(edgeStrategyRegistry, state.policy);
+  const edge = edgeContextFor(input, state.manifest, forwarding);
   if (classification.kind === ASSET_CLASS) {
     const answered = await answerAsset({
       request,
