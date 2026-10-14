@@ -61,10 +61,16 @@ const SELF_CLOSING = '/';
 /**
  * Where the markup stops being HTML.
  *
- * Nothing inside one of these is a resource an HTML head asks for — an SVG `<link>` is an SVG
- * element — so the walk reads them the way it reads a template: through, and promoting nothing.
- * What it is inside one for is knowing where the element ends, and that a `<![CDATA[` written
- * there is a declaration it cannot read either way.
+ * A head holds neither, so the walk only meets one inside a template, where it promotes nothing
+ * anyway. What it cannot do there is read on the way a parser does. In SVG and MathML a `<style>`
+ * or a `<title>` holds markup rather than text, unless an integration point above it makes it
+ * HTML again; `<![CDATA[` opens a section; and `</svg>` or `</math>` leaves the element only where
+ * nothing HTML is open beneath it, and a `</math>` never leaves an `<svg>`. All of that turns on
+ * the stack of open elements, which is a tree builder's, not a walk's.
+ *
+ * So the walk does not try to say where the foreign element ends. The template around it is what
+ * ends it for certain — its end tag pops everything opened inside — and until then the walk ends
+ * at whatever it would read otherwise than a parser, rather than guess which reading holds.
  */
 const FOREIGN_ROOTS: ReadonlySet<string> = new Set(['math', 'svg']);
 /** What can follow a `<` and still not be text: a declaration, a processing instruction, an end tag. */
@@ -95,10 +101,11 @@ const PUBLIC_AND_SYSTEM = 2;
  * that ends at the first `>`. Telling the two apart takes the stack of open elements and their
  * namespaces, which is a tree builder; this is a walk that counts how deep it is.
  *
- * So the walk ends here instead of guessing, because both guesses are wrong somewhere: a section
- * read as a comment hands it markup a browser never sees, and a comment read as a section steps
- * over markup a browser does — including the `<body>` that would have ended the head. What ending
- * costs is the hints a head might still have named after its SVG, which no shell writes.
+ * So wherever the walk may be in foreign content, it ends here instead of guessing, because both
+ * guesses are wrong somewhere: a section read as a comment hands it markup a browser never sees,
+ * and a comment read as a section steps over markup a browser does — including the `<body>` that
+ * would have ended the head. What ending costs is the hints a head might still have named after
+ * its SVG, which no shell writes.
  */
 const CDATA_OPEN = '<![CDATA[';
 const LINK_NAME = 'link';
@@ -465,7 +472,10 @@ export interface HeadScan {
   readonly links: Map<string, string>[];
   /** How many inert templates the walk is inside. Nothing written in one is loaded. */
   inert: number;
-  /** How many foreign elements the walk is inside, where `<![CDATA[` may be a section. */
+  /**
+   * How many templates deep the walk was when it went into SVG or MathML, or `0` while it is in
+   * neither: from there until that template closes, it may be in foreign content.
+   */
   foreign: number;
   /** The first `<base href>`, which is the one a parser resolves the markup's URLs against. */
   base: string | undefined;
@@ -575,29 +585,39 @@ function endOfIdentifier(html: string, from: number): number {
   return ends === -1 ? -1 : ends + 1;
 }
 /**
- * An end tag: where it leaves the walk, and what it closes on the way.
+ * An end tag: where it leaves the walk.
  *
- * Only a foreign element the walk went into is closed by one. A stray `</svg>` closes nothing for
- * a parser either, and taking it for an exit would step out of a template it was written inside —
- * making the markup after it live when a browser leaves it inert.
+ * None takes it out of a foreign element: whether `</svg>` or `</math>` closes one is the stack's
+ * to say (`FOREIGN_ROOTS`), and an exit taken where a parser takes none — a `</math>` inside an
+ * `<svg>` — reads what follows as HTML that a browser still reads as SVG.
  */
 function stepOverEndTag(tag: OpenTag, scan: HeadScan): number {
-  if (FOREIGN_ROOTS.has(tag.name) && scan.foreign > 0) {
-    scan.foreign -= 1;
-    // A `</template>` written inside the element takes a count no `<template>` added — a parser
-    // ignores that end tag, having no template open to close. Letting the exit take the count
-    // again would leave it below zero, and a walk that is never back at zero is a head that
-    // never ends: every link the body names would be read as the head's.
-    scan.inert = Math.max(scan.inert - 1, 0);
-  }
   return CLOSES_THE_HEAD.has(tag.name) && scan.inert === 0 ? -1 : tag.next;
 }
 
-/** `<svg/>` opens nothing: a foreign element is the one place a `/` ends a tag on its own. */
+/**
+ * A template's tag, one deeper into inert markup or one back out.
+ *
+ * Its end tag pops everything opened inside it, so foreign content the walk went into there ends
+ * with it.
+ */
+function stepOverTemplate(tag: OpenTag, scan: HeadScan): number {
+  scan.inert = Math.max(scan.inert + (tag.closing ? -1 : 1), 0);
+  if (scan.inert < scan.foreign) {
+    scan.foreign = 0;
+  }
+  return tag.next;
+}
+
+/**
+ * Note the depth the walk goes into foreign content at, the outermost if it nests.
+ *
+ * `<svg/>` opens nothing: a foreign element is the one place a `/` ends a tag on its own.
+ */
 function stepIntoForeign(tag: OpenTag, scan: HeadScan): number {
-  const opened = tag.selfClosing ? 0 : 1;
-  scan.foreign += opened;
-  scan.inert += opened;
+  if (!tag.selfClosing && scan.foreign === 0) {
+    scan.foreign = scan.inert;
+  }
   return tag.next;
 }
 
@@ -653,8 +673,7 @@ function stepOverTag(html: string, start: number, scan: HeadScan): number {
     return stepOverDeclaration(html, start, scan);
   }
   if (tag.name === TEMPLATE_NAME) {
-    scan.inert = Math.max(scan.inert + (tag.closing ? -1 : 1), 0);
-    return tag.next;
+    return stepOverTemplate(tag, scan);
   }
   if (tag.closing) {
     return stepOverEndTag(tag, scan);
@@ -668,7 +687,9 @@ function stepOverTag(html: string, start: number, scan: HeadScan): number {
     return stepIntoForeign(tag, scan);
   }
   if (OPAQUE_ELEMENTS.has(tag.name)) {
-    return endOfRawText(html, tag.name, tag.next);
+    // Text to HTML, and markup in SVG or MathML unless an integration point is above it, which the
+    // walk cannot see: read either way, it may step over a template's end tag or read one in.
+    return scan.foreign > 0 ? -1 : endOfRawText(html, tag.name, tag.next);
   }
   if (scan.inert > 0) {
     // A template holds markup a head could not: reading it is not being in the body.
