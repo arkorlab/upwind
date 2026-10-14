@@ -109,12 +109,34 @@ export type AssembledManifest =
       /** The rules the manifest publishes for the edge to route by (`dynamicRouting`). */
       readonly routing: ReturnType<typeof dynamicRouting>;
     }
-  /** Too large to publish (`oversizedManifest`), and why. */
+  /** Not to publish — too large (`oversizedManifest`), or fingerprinted as another bundle — and why. */
   | { readonly kind: 'refused'; readonly reason: string };
+
+/**
+ * Why a fingerprint is not this bundle's, or `undefined` for one that is. The edge holds every
+ * request of the deployment to the one it names — a `dpl` its documents ask with, the build id its
+ * continuations carry — so another bundle's would turn this one's own requests away, or take
+ * another build's for them.
+ */
+function foreignFingerprint(
+  bundle: DeploymentBundle,
+  fingerprint: DeploymentFingerprint,
+): string | undefined {
+  if (fingerprint.dplId !== bundle.deploymentId) {
+    return `the fingerprint names deployment ${fingerprint.dplId ?? '(none)'}, not ${bundle.deploymentId}`;
+  }
+  return fingerprint.buildId === undefined || fingerprint.buildId === bundle.buildId
+    ? undefined
+    : `the fingerprint names build ${fingerprint.buildId}, not ${bundle.buildId}`;
+}
 
 /** Assemble the manifest from the build: one entry per edge-servable prerender. */
 export async function assembleManifest(input: AssembleManifestInput): Promise<AssembledManifest> {
   const { bundle } = input;
+  const foreign = foreignFingerprint(bundle, input.fingerprint);
+  if (foreign !== undefined) {
+    return { kind: 'refused', reason: foreign };
+  }
   const prerenders = edgeServablePrerenders(bundle, { complete: true });
   // The scope is the deployment; the same derivation the seed used names each entry.
   const cached = input.runtimeCache !== false;
