@@ -2,6 +2,7 @@ import type { AppRuntime, ProjectManifest } from '@stayingupwind/core/manifest';
 import {
   type CspNonceMode,
   DEFAULT_DELIVERY_POLICY,
+  DEFAULT_RUNTIME_CACHE_SETTINGS,
   type DeliveryPolicy,
   type EdgePointer,
 } from '@stayingupwind/host/delivery';
@@ -66,7 +67,10 @@ export interface PreviewState {
  * project that chose passthrough did so because its `/_next/static/` is not the same for everyone,
  * and one momentary KV failure would otherwise put a single visitor's copy in every cache
  * downstream as `immutable`, for a year, where reading the policy again cannot reach it.
- * Passthrough stores nothing.
+ * Passthrough stores nothing. Nor does the stand-in serve from the runtime cache's records
+ * (`generations`), which the default turns on: a project may have turned them off, and records read
+ * under it would be held, copied into the data center and regenerated under settings nobody chose.
+ * The build's shell answers instead.
  */
 function policyOf(lookup: PolicyLookup, pointer: EdgePointer): DeliveryPolicy {
   if (lookup.kind === 'found') {
@@ -81,6 +85,7 @@ function policyOf(lookup: PolicyLookup, pointer: EdgePointer): DeliveryPolicy {
   return {
     ...DEFAULT_DELIVERY_POLICY,
     assets: { ...DEFAULT_DELIVERY_POLICY.assets, backend: 'passthrough' },
+    runtimeCache: { ...DEFAULT_RUNTIME_CACHE_SETTINGS, generations: 'off' },
   };
 }
 
