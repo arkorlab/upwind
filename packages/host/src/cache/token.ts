@@ -27,6 +27,13 @@ const FIELD_SEPARATOR = '|';
  */
 export const SIGNABLE_SCOPE_ID = /^[^.|]+$/u;
 const HMAC = { name: 'HMAC', hash: 'SHA-256' } as const;
+/**
+ * What HMAC-SHA-256 signs to: every signature a token carries is this many bytes, and one of any
+ * other length could never verify. Judged by the bytes rather than by the base64 they are written
+ * in, which is 43 characters as `signCacheToken` writes it, since the codec reads other spellings
+ * of the same bytes, padded among them, and a token so written verifies.
+ */
+const SIGNATURE_BYTES = 32;
 const PARTS = 3;
 
 function keyMaterial(text: string): Uint8Array<ArrayBuffer> {
@@ -97,7 +104,8 @@ export function parseCacheToken(token: string): ParsedCacheToken | undefined {
   } catch {
     return undefined;
   }
-  return signature.byteLength === 0 ? undefined : { scopeId, signature };
+  // Refused here, and so before a key is imported or a signature computed to compare it with.
+  return signature.byteLength === SIGNATURE_BYTES ? { scopeId, signature } : undefined;
 }
 
 export interface VerifyCacheTokenInput {

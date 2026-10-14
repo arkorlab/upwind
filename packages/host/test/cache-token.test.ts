@@ -1,5 +1,6 @@
 import { KEY_SCHEMA_VERSION } from '@stayingupwind/core/cache';
-import { describe, expect, it } from 'vitest';
+import { toBase64Url } from '@stayingupwind/core/util';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { cacheScopeSchema, ENTITY_SCHEMA_VERSION, scopeSeedSchema } from '../src/cache/index.ts';
 import { parseCacheToken, signCacheToken, verifyCacheToken } from '../src/cache/token.ts';
@@ -11,6 +12,10 @@ const PARTS = 3;
 const NAMING = { tokenLabel: 'test-cache-token' };
 
 describe('cache tokens', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('name their scope and verify for it under the key that signed them', async () => {
     const token = await signCacheToken(SECRET, SCOPE, NAMING);
 
@@ -112,6 +117,27 @@ describe('cache tokens', () => {
     await expect(
       verifyCacheToken({ token, scopeId: SCOPE, secret: SECRET, naming: NAMING }),
     ).resolves.toBe(false);
+  });
+
+  /** An HMAC-SHA-256 is 32 bytes: a signature of any other length is refused before any is made. */
+  it.each([31, 33, 1024])('do not parse a signature of %i bytes', async (length) => {
+    const token = ['v1', SCOPE, toBase64Url(new Uint8Array(length))].join('.');
+    const importKey = vi.spyOn(crypto.subtle, 'importKey');
+
+    expect(parseCacheToken(token)).toBeUndefined();
+    await expect(
+      verifyCacheToken({ token, scopeId: SCOPE, secret: SECRET, naming: NAMING }),
+    ).resolves.toBe(false);
+    expect(importKey).not.toHaveBeenCalled();
+  });
+
+  /** Another spelling of the same 32 bytes, as the codec reads one, is the same signature. */
+  it('still verify with the signature spelled padded', async () => {
+    const token = await signCacheToken(SECRET, SCOPE, NAMING);
+
+    await expect(
+      verifyCacheToken({ token: `${token}=`, scopeId: SCOPE, secret: SECRET, naming: NAMING }),
+    ).resolves.toBe(true);
   });
 
   it('cannot be minted for a scope id that carries the separator', async () => {
