@@ -22,10 +22,22 @@ const SEPARATOR = '.';
 /** What joins the fields a token signs (`message`). */
 const FIELD_SEPARATOR = '|';
 /**
- * A scope id a token can be signed for: one that carries neither separator. A scope's schema holds
- * its id to it (`cacheScopeSchema`), so a scope no token could open is refused where it is made.
+ * A scope id a token can be signed for, and presented with: a bearer token's characters (RFC 6750,
+ * `b64token`: ASCII letters and digits, `-`, `.`, `_`, `~`, `+` and `/`, then any `=`), but `.`,
+ * which separates the token's parts, and `=`, padding a scope id has no use for. A token is a bearer
+ * an `Authorization` header carries: a scope named with anything else, a space, a comma or a quote
+ * among them, would be given a token a strict reader of the header could refuse. A scope's schema
+ * holds its id to this (`cacheScopeSchema`), and `signCacheToken` signs no other, so a scope no
+ * token could open is refused where it is made. `\w` is ASCII's letters, digits and `_`, as no `i`
+ * flag widens it.
  */
-export const SIGNABLE_SCOPE_ID = /^[^.|]+$/u;
+export const SIGNABLE_SCOPE_ID = /^[\w+/~-]+$/u;
+
+/** Whether a token can be signed for `scopeId` (`SIGNABLE_SCOPE_ID`). */
+export function isSignableScopeId(scopeId: string): boolean {
+  return SIGNABLE_SCOPE_ID.test(scopeId);
+}
+
 const HMAC = { name: 'HMAC', hash: 'SHA-256' } as const;
 /**
  * What HMAC-SHA-256 signs to: every signature a token carries is this many bytes, and one of any
@@ -72,6 +84,11 @@ export async function signCacheToken(
   const signed = message(scopeId, naming);
   if (signed === undefined) {
     throw new Error(`neither a token label nor a scope id may carry ${FIELD_SEPARATOR}`);
+  }
+  if (!isSignableScopeId(scopeId)) {
+    throw new Error(
+      'a scope id is ASCII letters, digits, -, _, ~, + and /, as the bearer token it is signed into',
+    );
   }
   const key = await importKey(secret, 'sign');
   const signature = await crypto.subtle.sign(HMAC, key, signed);

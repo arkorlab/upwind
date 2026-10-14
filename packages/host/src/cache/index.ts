@@ -156,6 +156,7 @@ export {
 } from './gateway-contract.ts';
 export {
   type CacheNaming,
+  isSignableScopeId,
   type ParsedCacheToken,
   parseCacheToken,
   signCacheToken,

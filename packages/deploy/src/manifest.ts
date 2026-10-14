@@ -127,7 +127,10 @@ export type AssembledManifest =
       /** The rules the manifest publishes for the edge to route by (`dynamicRouting`). */
       readonly routing: ReturnType<typeof dynamicRouting>;
     }
-  /** Not to publish — too large (`oversizedManifest`), or fingerprinted as another bundle — and why. */
+  /**
+   * Not to publish — too large (`oversizedManifest`), fingerprinted as another bundle, or naming
+   * another deployment's Functions — and why.
+   */
   | { readonly kind: 'refused'; readonly reason: string };
 
 /**
@@ -148,10 +151,24 @@ function foreignFingerprint(
     : `the fingerprint names build ${fingerprint.buildId}, not ${bundle.buildId}`;
 }
 
+/**
+ * Why the Functions a manifest would name are not those of the deployment it is assembled for, or
+ * `undefined` for ones that are. The edge sends the deployment's requests to them, and tells them
+ * where its scope stands under the id they carry (`AppRuntime.deploymentId`): the deployment the
+ * routes' entries were seeded under (`deploymentId`). Another deployment's would answer this one's
+ * requests, told of a scope this one's entries are not in.
+ */
+function foreignFunctions(input: AssembleManifestInput): string | undefined {
+  const { app, deploymentId } = input;
+  return app.deploymentId === deploymentId
+    ? undefined
+    : `the Functions handed in are ${app.deploymentId}'s, not ${deploymentId}'s`;
+}
+
 /** Assemble the manifest from the build: one entry per edge-servable prerender. */
 export async function assembleManifest(input: AssembleManifestInput): Promise<AssembledManifest> {
   const { bundle } = input;
-  const foreign = foreignFingerprint(bundle, input.fingerprint);
+  const foreign = foreignFingerprint(bundle, input.fingerprint) ?? foreignFunctions(input);
   if (foreign !== undefined) {
     return { kind: 'refused', reason: foreign };
   }

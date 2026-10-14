@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  builtinDeliveryPolicies,
   builtinDeliveryPolicy,
   DEFAULT_DELIVERY_POLICY,
   DEFAULT_RUNTIME_CACHE_SETTINGS,
@@ -194,6 +195,38 @@ describe('the policy an application is served under', () => {
     });
     expect(deliveryPolicySchema.parse(retired)).toStrictEqual(retired);
     expect(builtinDeliveryPolicy('site-default')).toBeUndefined();
+  });
+});
+
+/** Whether `value`, and every object it holds, is frozen. */
+function isFrozenThrough(value: unknown): boolean {
+  return (
+    typeof value !== 'object' ||
+    value === null ||
+    (Object.isFrozen(value) && Object.values(value).every((held) => isFrozenThrough(held)))
+  );
+}
+
+describe('the built-in policies', () => {
+  /**
+   * Each is one object handed to every caller, and the retired ones share with the default what
+   * they did not change: a change made to one would be every other caller's policy after it.
+   */
+  it('are frozen through, nested parts and all', () => {
+    expect(builtinDeliveryPolicies().map((policy) => isFrozenThrough(policy))).toStrictEqual([
+      true,
+      true,
+      true,
+    ]);
+    expect(isFrozenThrough(builtinDeliveryPolicy('paas-v4') ?? {})).toBe(true);
+  });
+
+  it('are changed by no caller for the next', () => {
+    expect(() => {
+      // @ts-expect-error -- a built-in policy's parts are read-only, as the object is frozen.
+      DEFAULT_DELIVERY_POLICY.shell.backend = 'r2';
+    }).toThrow(TypeError);
+    expect(builtinDeliveryPolicy(DEFAULT_DELIVERY_POLICY.id)?.shell.backend).toBe('kv');
   });
 });
 

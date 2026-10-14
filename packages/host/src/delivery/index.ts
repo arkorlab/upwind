@@ -5,6 +5,7 @@ export {
   assetBackendIdSchema,
   builtinDeliveryPolicies,
   builtinDeliveryPolicy,
+  type BuiltinDeliveryPolicy,
   type CspNonceMode,
   cspNonceModeSchema,
   DEFAULT_DELIVERY_POLICY,
