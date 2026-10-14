@@ -373,9 +373,22 @@ async function readBucket(
       : await bucket.get(blobKey(file.sha256), {
           range: { offset: range.start, length: range.end - range.start + 1 },
         });
-  return object === null
-    ? undefined
-    : { body: object.body as ReadableStream<Uint8Array>, source: 'r2' };
+  if (object === null) {
+    return undefined;
+  }
+  // The object is the file only at the size the manifest gives it, which the answer goes out under
+  // with the file's tag and lifetime: one of another size — an upload cut short, a key written over
+  // — is not served as it, as the blob Worker's answer of another length is not taken either.
+  if (object.size !== file.byteLength) {
+    releaseStream(object.body, 'static file of another size');
+    logWarn('static file in storage is not the size the manifest gives it', {
+      sha256: file.sha256,
+      size: object.size,
+      byteLength: file.byteLength,
+    });
+    return undefined;
+  }
+  return { body: object.body as ReadableStream<Uint8Array>, source: 'r2' };
 }
 
 /**
