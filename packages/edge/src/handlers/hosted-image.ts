@@ -1,4 +1,5 @@
 import { type ImagesConfig, parseImageRequest } from '@stayingupwind/core/images';
+import { headerRulesFor } from '@stayingupwind/core/manifest';
 import { PatternBudgetExceededError } from '@stayingupwind/core/request';
 
 import { type HostedGateInput, serveAfterMiddleware } from './hosted-gate.ts';
@@ -67,11 +68,11 @@ function routeWithinBudget(input: HostedImageInput): Promise<Response> {
       }
       return handleImage({
         request,
-        url,
         edge,
         manifest,
         config,
         params: parsed.params,
+        configured: headerRulesFor(manifest, url, input.request.headers),
         middleware,
         middlewareDispatches: dispatches,
       });

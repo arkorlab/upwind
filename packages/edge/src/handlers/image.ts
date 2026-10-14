@@ -10,7 +10,7 @@ import {
   SVG,
   upstreamMaxAge,
 } from '@stayingupwind/core/images';
-import { headerRulesFor, type ProjectManifest } from '@stayingupwind/core/manifest';
+import type { ConfiguredHeaders, ProjectManifest } from '@stayingupwind/core/manifest';
 import { EDGE_DEBUG_HEADER, NO_STORE_CACHE_CONTROL } from '@stayingupwind/core/request';
 import {
   type BoundedBody,
@@ -53,12 +53,18 @@ import { mergeScopedMiddlewareHeaders, removeSharedCacheOverrides } from './resp
  */
 
 export interface ImageInput {
+  /** The request as the middleware left it, when it ran: what the format and a validator are. */
   readonly request: Request;
-  readonly url: URL;
   readonly edge: EdgeContext;
   readonly manifest: ProjectManifest;
   readonly config: ImagesConfig;
   readonly params: ImageRequestParams;
+  /**
+   * What `next.config`'s header rules set on the path, selected on the request as it reached the
+   * edge: the router runs them before the middleware, so neither a header it took away nor one it
+   * added is what chose them.
+   */
+  readonly configured: ConfiguredHeaders;
   /** What the application's middleware set, when the edge ran it and it let the request on. */
   readonly middleware: MiddlewareContinue | undefined;
   /** The dispatches the middleware took before the image was served, which its metric counts. */
@@ -352,7 +358,7 @@ function debugHeader(input: ImageInput, src: string): string {
  */
 function clientHeaders(input: ImageInput, headers: Headers, src: string): Headers {
   const out = new Headers(headers);
-  const configured = headerRulesFor(input.manifest, input.url, input.request.headers);
+  const { configured } = input;
   for (const [name, value] of Object.entries(configured.headers)) {
     setConfiguredUnder(out, name, value, input.edge.forwarding);
   }
