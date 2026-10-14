@@ -2,7 +2,8 @@ import { resolveRoutes, type ResolveRoutesResult } from '@next/routing';
 import { CACHE_OUTCOME_HEADER } from '@stayingupwind/core/paas';
 import { releaseStream } from '@stayingupwind/core/util';
 
-import { afterBody, outcomeOn } from './generations.ts';
+import { afterBody } from './after-body.ts';
+import { outcomeOn } from './generations.ts';
 import { middlewareInvoker, type MiddlewareTrace } from './middleware-invoke.ts';
 import { settleRewrittenPath } from './rewritten-path.ts';
 import {

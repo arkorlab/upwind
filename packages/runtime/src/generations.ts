@@ -1,5 +1,3 @@
-import { AsyncLocalStorage } from 'node:async_hooks';
-
 import { pagesDataPathnameUnder, queryDependent } from '@stayingupwind/core/bundle';
 import {
   type DecodedGenerationPack,
@@ -19,6 +17,7 @@ import {
   type RegenerateMode,
 } from '@stayingupwind/core/paas';
 
+import { afterBody } from './after-body.ts';
 import {
   answerFromRender,
   answerWith,
@@ -222,57 +221,6 @@ export async function handleDetached(input: RoutedInput, store: Store): Promise<
   });
 }
 
-/**
- * Once the response is done with, do this, once: the visitor's bytes come first. Done with is sent
- * in full, or given up by the client. A client cancels prefetches as a matter of course — every
- * one a navigation overtakes — and a regeneration begun only once the body had been read to its
- * end was never begun behind one that was cancelled: an entry only ever prefetched stayed stale,
- * or expired, and each expired prefetch paid for a render of its own every time.
- */
-export function afterBody(response: Response, then: () => void): Response {
-  const { body } = response;
-  if (body === null) {
-    then();
-    return response;
-  }
-  // Run in the request's context, whoever reads the body: the runtime writing the response out
-  // reads it from outside the request, and a regeneration begun from that read ran outside it too
-  // — under workerd its generation was stamped with the wall clock rather than the request's.
-  const later = AsyncLocalStorage.bind(then);
-  let done = false;
-  const once = (): void => {
-    if (!done) {
-      done = true;
-      later();
-    }
-  };
-  const reader = body.getReader();
-  const through = new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      let read: ReadableStreamReadResult<Uint8Array>;
-      try {
-        read = await reader.read();
-      } catch (error) {
-        // A body that fails part way has still been sent all it will be: the entry is as stale as
-        // it was, and its regeneration no less due.
-        once();
-        throw error;
-      }
-      if (read.done) {
-        controller.close();
-        once();
-        return;
-      }
-      controller.enqueue(read.value);
-    },
-    cancel(reason) {
-      once();
-      return reader.cancel(reason);
-    },
-  });
-  return new Response(through, response);
-}
-
 /** `background`: the resume the edge asked for is answered, and the entry regenerated behind it. */
 export async function withBackgroundRegeneration(
   input: RoutedInput,
@@ -348,9 +296,14 @@ async function answerFromJob(
       return withOutcome(answered, 'publishing');
     }
   }
+  // A later generation the host holds, whose record its answer carried and this isolate now holds
+  // (`RegenerationOutcome.current`): the usual path answers with it, as with any record read.
+  if (laterOf(outcome) !== undefined) {
+    return undefined;
+  }
   // `busy`, and `superseded` — a later generation than the one judged is the host's, which this
-  // isolate's read is behind — are answered alike: with a render of the visitor's own, kept by no
-  // one.
+  // isolate's read is behind — are answered alike otherwise: with a render of the visitor's own,
+  // kept by no one.
   const own = await renderForVisitor(job.input, job.target, want);
   const said = outcome.kind === 'accepted' ? 'unservable' : outcome.kind;
   return own === undefined ? undefined : withOutcome(own, said);
@@ -582,14 +535,18 @@ async function renderSpeculative(
  */
 async function answerMiss(
   job: Job,
-  onMiss: GenerationSource['onMiss'],
+  source: GenerationSource,
   want: Want,
   once: boolean,
 ): Promise<Response | undefined> {
+  const { onMiss } = source;
   if (onMiss === 'render' && once) {
     const outcome = await runJob(job, 'miss', null);
     holdFirstPublish(outcome);
-    return answerFromJob(job, outcome, want);
+    const later = laterOf(outcome);
+    return later === undefined
+      ? answerFromJob(job, outcome, want)
+      : answerFromLater(job, { kind: outcome.kind, generation: later }, source, want);
   }
   if (onMiss === 'behind' && once) {
     scheduleJob(job, 'miss', null);
@@ -628,7 +585,7 @@ export async function serveFromGeneration(
   // left is a render of the request as it came — the build's path, for an entry with no record.
   const once = !sameEntry(input.regenerated, descriptor);
   if (lookup.kind === 'none') {
-    return answerMiss(job, source.onMiss, want, once);
+    return answerMiss(job, source, want, once);
   }
   if (lookup.kind !== 'generation') {
     return undefined;
@@ -644,8 +601,11 @@ export async function serveFromGeneration(
   }
   if (validity === 'expired') {
     const outcome = await runJob(job, 'expired', pack.header.generationId);
-    const regenerated = await answerFromJob(job, outcome, want);
-    return regenerated ?? renderRequest(job, source.url);
+    const later = laterOf(outcome);
+    if (later !== undefined) {
+      return answerFromLater(job, { kind: outcome.kind, generation: later }, source, want);
+    }
+    return (await answerFromJob(job, outcome, want)) ?? renderRequest(job, source.url);
   }
   const answer = await answerFromGeneration(job, lookup.current, source, want);
   // A stale one is regenerated once the answer has gone out in full, as it is behind a resume the
@@ -713,4 +673,27 @@ async function answerFromGeneration(
     headers: pack.header.headers,
     cache: validity === 'stale' ? 'STALE' : 'HIT',
   });
+}
+
+/**
+ * The later generation the host holds that a regeneration came back with, from the record the
+ * host's answer for the lease carried (`RegenerationOutcome.current`).
+ */
+function laterOf(outcome: RegenerationOutcome): CurrentGeneration | undefined {
+  return outcome.kind === 'busy' || outcome.kind === 'superseded' ? outcome.current : undefined;
+}
+
+/**
+ * The visitor's answer from a later generation the host holds that a regeneration came back with
+ * (`laterOf`), as from any record read (`answerFromGeneration`): `undefined` where it leads to no
+ * output of its own, which leaves the build's to answer.
+ */
+async function answerFromLater(
+  job: Job,
+  later: { readonly kind: RegenerationOutcome['kind']; readonly generation: CurrentGeneration },
+  source: GenerationSource,
+  want: Want,
+): Promise<Response | undefined> {
+  const answered = await answerFromGeneration(job, later.generation, source, want);
+  return answered && withOutcome(answered, later.kind);
 }

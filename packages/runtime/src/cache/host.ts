@@ -172,6 +172,12 @@ export interface AttemptRequest {
   readonly entry: EntryDescriptor;
   readonly reason: AttemptReason;
   readonly observation?: ServedObservation | undefined;
+  /**
+   * The generation the runtime judged the entry by, `null` where it found none; absent where no
+   * judgement asked for the regeneration. A host that holds a later one may hand its record back
+   * with the answer (`AttemptOutcome.record`).
+   */
+  readonly replaces?: string | null | undefined;
 }
 
 /**
@@ -209,10 +215,19 @@ export type AttemptOutcome =
        * say. A runtime that judged an earlier one gives the lease back (`regenerate`).
        */
       readonly current?: CurrentSummary | null | undefined;
+      /**
+       * The delivery record of the generation `current` names, where the host holds one later than
+       * the one the request judged (`AttemptRequest.replaces`) and hands it back: what the request
+       * is answered with where this isolate holds nothing of that generation, rather than a render
+       * of its own. Absent from a host that does not.
+       */
+      readonly record?: Uint8Array | undefined;
     }
   | {
       readonly kind: 'busy';
       readonly current?: CurrentSummary | null | undefined;
+      /** The record of the generation `current` names, as for a lease handed out. */
+      readonly record?: Uint8Array | undefined;
       /**
        * The attempt that holds the lease, where the host says: what tells this isolate's own
        * publish of the entry, still out, from an attempt that took the entry after its lease lapsed
