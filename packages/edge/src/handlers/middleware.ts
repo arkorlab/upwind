@@ -301,7 +301,16 @@ async function runMiddlewareIn(
   // rewrite named. Stripping it once at the source is the only way every one of them is covered,
   // including the next one somebody adds. A copy, because a `Request`'s own headers are immutable.
   const client = withoutHostCredentials(new Headers(request.headers), edge.host.credentials);
-  const result = readMiddlewareResponse(response, new URL(request.url), client);
+  let result: MiddlewareResult;
+  try {
+    result = readMiddlewareResponse(response, new URL(request.url), client);
+  } catch (error) {
+    // An answer that says in the middleware's own headers what no request can be — a rewrite to no
+    // URL at all, an override naming no header — is the middleware failing as surely as a throw:
+    // answered as one, the application's Worker asked next, rather than ending the request.
+    releaseStream(response.body, 'middleware');
+    return { kind: 'failed', cause: 'threw', reason: describe(error), middlewareMs };
+  }
   if (result.kind !== 'responded') {
     releaseStream(response.body, 'middleware');
   }
