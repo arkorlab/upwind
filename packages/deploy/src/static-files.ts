@@ -103,6 +103,10 @@ function underMovedPrefix(
     return;
   }
   const own = new Map(bundle.staticFiles.map((file) => [file.pathname, file]));
+  // The prefix this deployment loads its own files from as well, onto another base path: `next
+  // build` rewrites a request under it to the file under this build's base path before it looks
+  // for one at the path itself (`beforeFiles`), so a file this build ships at the name answers none.
+  const ownPrefix = staticFileAssetPrefixOf(bundle)?.assetPrefix === movedFrom;
   const prefix = `${previous.config.basePath}${NEXT_STATIC_PREFIX}`;
   for (const file of previous.staticFiles) {
     if (!file.pathname.startsWith(prefix)) {
@@ -111,7 +115,7 @@ function underMovedPrefix(
     const rest = file.pathname.slice(previous.config.basePath.length);
     const key = `${movedFrom}${rest}`;
     const filed = files[key];
-    if (filed !== undefined) {
+    if (filed !== undefined && !ownPrefix) {
       // The prefix before is this deployment's base path: the name is this build's own file, and
       // a shared one takes the bytes the documents before were built with beside its own.
       if (filed.deploymentId === undefined && filed.previous === undefined) {
