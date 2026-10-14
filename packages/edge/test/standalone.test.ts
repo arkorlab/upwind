@@ -270,6 +270,31 @@ describe('a standalone edge', () => {
     }
   });
 
+  /** Nor to one spelled fully qualified, which is the same host (upwind#176, upwind#179). */
+  it('follows no redirect to a hostname it is routed, spelled fully qualified', async () => {
+    const { pointer } = await seedSite({ document: pprDocument(), images: IMAGES });
+    const site = { ...env, POINTER: JSON.stringify(pointer) };
+    const fetched: string[] = [];
+    const looped = encodeURIComponent(`https://cdn.${SITE}/moved.png`);
+    const back = `https://${ALIAS}./_next/image?url=${looped}&w=64&q=75`;
+    const runtime = standaloneRuntime(site, {
+      memory: createEdgeMemory(() => Date.now()),
+      fetchImpl: (request): Promise<Response> => {
+        fetched.push(new Request(request).url);
+        return Promise.resolve(new Response(null, { status: 302, headers: { location: back } }));
+      },
+    });
+
+    const { response } = await serve(
+      site,
+      imageRequest(`https://cdn.${SITE}/moved.png`, SITE),
+      runtime,
+    );
+
+    expect(response.status).toBe(400);
+    expect(fetched).toStrictEqual([`https://cdn.${SITE}/moved.png`]);
+  });
+
   it('keeps what it caches under names of its own, and binds a Function by a name a binding holds', () => {
     const { names } = standaloneHost(env);
 

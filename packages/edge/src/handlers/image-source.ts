@@ -374,10 +374,20 @@ async function fetchBlob(
 }
 
 /**
+ * A name as DNS compares it, as the host's domains are judged (`isUnderAnyDomain`): in lower case,
+ * and without the root's dot that a fully qualified spelling ends in, which a URL's hostname keeps
+ * (`https://example.com./` is `example.com.`).
+ */
+function spelledAlike(name: string): string {
+  return name.toLowerCase().replace(/\.$/u, '');
+}
+
+/**
  * A redirect the optimizer will not follow: off the web, to a local address the configuration
  * does not allow (as Next.js judges each hop), or back into the edge's host — every name under a
  * domain it answers on (`ownDomains`), each hostname it answers on (`ownHostnames`), and the
- * hostname this request came in on, which a site's own domain routes here as well.
+ * hostname this request came in on, which a site's own domain routes here as well. Each however it
+ * is spelled: a fully qualified name is the host it names.
  */
 function redirectRefused(target: URL, edge: EdgeContext, config: ImagesConfig): boolean {
   if (target.protocol !== 'http:' && target.protocol !== 'https:') {
@@ -386,11 +396,11 @@ function redirectRefused(target: URL, edge: EdgeContext, config: ImagesConfig): 
   if (!allowedImageDestination(config, target)) {
     return true;
   }
-  const { hostname } = target;
+  const hostname = spelledAlike(target.hostname);
   return (
     isUnderAnyDomain(hostname, edge.host.ownDomains) ||
-    edge.host.ownHostnames?.includes(hostname) === true ||
-    hostname === edge.forwarding.previewHost
+    edge.host.ownHostnames?.some((own) => spelledAlike(own) === hostname) === true ||
+    hostname === spelledAlike(edge.forwarding.previewHost)
   );
 }
 
