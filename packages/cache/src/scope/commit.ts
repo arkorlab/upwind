@@ -555,27 +555,28 @@ function applyCommit(input: TxInput, plan: CommitPlan): CommitOutcome | Refusal 
   // reads were made afresh against it, and so against nothing recorded of its tag before it. One
   // with a window the view held last of its tag still condemns it, as any after the lease does: its
   // reads may have been answered stale under it.
-  const query = { entryId: entry.entry_id, tagIds, held };
+  //
+  // The lease's revision says when the render was allowed to start; the request's says what the
+  // renderer's view of the tags was synced to, which a hold window leaves behind by up to its
+  // length. An invalidation between the two is one a data-cache read may have been judged against
+  // without knowing of it, as one after the lease is, and is weighed as that one is. One with a
+  // window has the generation published condemned rather than refused: the render may well be
+  // sound, and only the next one of it can say. An immediate one refuses it: published, it would be
+  // expired on arrival, its hard deadline the invalidation's, in the place of the generation before
+  // it, which the invalidation may not have reached.
   const invalidations = condemningInvalidations(sql, {
-    ...query,
-    afterRevision: attempt.dependency_revision,
+    entryId: entry.entry_id,
+    tagIds,
+    held,
+    afterRevision: behind,
   });
   if (invalidations.some((row) => row.meaning === 'immediate')) {
     return refuseStale(input, attempt, entry, invalidations);
   }
-  // The lease's revision says when the render was allowed to start; the request's says what the
-  // renderer's view of the tags was synced to, which a hold window leaves behind by up to its
-  // length. An invalidation between the two is one a data-cache read may have been judged against
-  // without knowing of it, so the generation is published condemned rather than refused: the
-  // render may well be sound, and only the next one of it can say.
-  const observed =
-    behind === attempt.dependency_revision
-      ? invalidations
-      : condemningInvalidations(sql, { ...query, afterRevision: behind });
   return publish(input, plan, {
     attempt,
     entry,
     outputs,
-    condemned: condemnationOf(observed),
+    condemned: condemnationOf(invalidations),
   });
 }
