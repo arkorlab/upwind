@@ -90,6 +90,10 @@ const STATEMENTS: readonly string[] = [
     committed_at INTEGER NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS generations_by_entry ON generations (entry_id, seq)`,
+  // The pruned by when they were pruned: what retention ages out of a scope's history
+  // (`deletePrunedBefore`), which keeps a pruned generation's metadata for as long as the history
+  // is kept, and may hold millions of them.
+  `CREATE INDEX IF NOT EXISTS generations_pruned ON generations (pruned_at) WHERE storage = 'pruned'`,
   // The latest write of each writer an entry has had (`data.ts`): a writer's write that arrives
   // after one it handed over later is not published. Kept for an hour (`WRITER_MARK_WINDOW_MS`),
   // and swept by retention past that — not with the entry, whose id a write recreates.
