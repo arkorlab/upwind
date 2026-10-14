@@ -24,7 +24,11 @@ export const passthroughAssetStrategy: AssetDeliveryStrategy<EdgeContext, 'passt
     headers.set('cache-control', NO_STORE_CACHE_CONTROL);
     headers.set(EDGE_DEBUG_HEADER, assetDebug(ctx, 'passthrough', 'admit=0;reason=strategy'));
     applyCspReporting(headers, ctx.cspReportingPath);
-    const response = new Response(originResponse.body, { status: originResponse.status, headers });
+    const response = new Response(originResponse.body, {
+      status: originResponse.status,
+      statusText: originResponse.statusText,
+      headers,
+    });
     return { response, admitted: false, hit: false, subrequests: dispatchesOf(originResponse) };
   },
 };
