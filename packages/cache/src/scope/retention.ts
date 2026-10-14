@@ -218,16 +218,25 @@ function pruneEverything(input: RetentionInput, deletable: string[]): boolean {
   return present.length === PRUNE_BATCH;
 }
 
-/** Uploads of attempts that ended without publishing them, or whose attempt has aged out. */
+/**
+ * Uploads of attempts that ended without publishing them, or whose attempt has aged out. Read by
+ * when each was uploaded (`attempt_artifacts_by_age`), as far as the same grace: an upload is
+ * recorded while its attempt holds its lease, so one whose attempt ended before the grace began was
+ * uploaded before it too, and one whose attempt has aged out long before. What is read is the old
+ * uploads, not the many an hour of renders leaves behind.
+ */
 function dropOrphanedUploads(input: RetentionInput, deletable: string[]): boolean {
+  const before = input.now - UPLOAD_GRACE_MS;
   const rows = input.sql
     .exec<AttemptArtifactRow>(
       `SELECT aa.* FROM attempt_artifacts aa
        LEFT JOIN attempts a ON a.attempt_id = aa.attempt_id
-       WHERE a.attempt_id IS NULL
-          OR (a.status NOT IN ('leased', 'uploading') AND a.finished_at < ?)
+       WHERE aa.uploaded_at < ?
+         AND (a.attempt_id IS NULL
+           OR (a.status NOT IN ('leased', 'uploading') AND a.finished_at < ?))
        LIMIT ?`,
-      input.now - UPLOAD_GRACE_MS,
+      before,
+      before,
       PRUNE_BATCH,
     )
     .toArray();

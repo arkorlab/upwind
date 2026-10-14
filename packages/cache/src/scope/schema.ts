@@ -90,6 +90,10 @@ const STATEMENTS: readonly string[] = [
     committed_at INTEGER NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS generations_by_entry ON generations (entry_id, seq)`,
+  // The pruned by when they were pruned: what retention ages out of a scope's history
+  // (`deletePrunedBefore`), which keeps a pruned generation's metadata for as long as the history
+  // is kept, and may hold millions of them.
+  `CREATE INDEX IF NOT EXISTS generations_pruned ON generations (pruned_at) WHERE storage = 'pruned'`,
   // The latest write of each writer an entry has had (`data.ts`): a writer's write that arrives
   // after one it handed over later is not published. Kept for an hour (`WRITER_MARK_WINDOW_MS`),
   // and swept by retention past that — not with the entry, whose id a write recreates.
@@ -225,6 +229,10 @@ const STATEMENTS: readonly string[] = [
   )`,
   `CREATE INDEX IF NOT EXISTS attempt_artifacts_by_storage_ref
     ON attempt_artifacts (storage_ref)`,
+  // By when each was uploaded: what retention lets go of once its attempt is over
+  // (`dropOrphanedUploads`), read among the old uploads alone, not the many an hour of renders
+  // leaves behind.
+  `CREATE INDEX IF NOT EXISTS attempt_artifacts_by_age ON attempt_artifacts (uploaded_at)`,
   `CREATE INDEX IF NOT EXISTS artifacts_by_storage_ref ON artifacts (storage_ref)`,
   `CREATE TABLE IF NOT EXISTS quota_windows (
     window_start INTEGER PRIMARY KEY,

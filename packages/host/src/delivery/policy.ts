@@ -191,6 +191,25 @@ export function runtimeCacheOf(policy: DeliveryPolicy): Readonly<RuntimeCacheSet
   return policy.runtimeCache ?? DEFAULT_RUNTIME_CACHE_SETTINGS;
 }
 
+/**
+ * A built-in policy as every caller is handed it: the one object, frozen through. The retired
+ * policies share whatever they did not change with the default, so a change one caller made to
+ * any part of one would be every other's policy after it, under more than one id.
+ */
+export type BuiltinDeliveryPolicy = {
+  readonly [K in keyof DeliveryPolicy]: Readonly<DeliveryPolicy[K]>;
+};
+
+/** `value`, and every object it holds, frozen: once, as the module is evaluated. */
+function frozenThrough<T extends Readonly<Record<string, unknown>>>(value: T): T {
+  for (const held of Object.values(value)) {
+    if (typeof held === 'object' && held !== null && !Object.isFrozen(held)) {
+      frozenThrough(held as Readonly<Record<string, unknown>>);
+    }
+  }
+  return Object.freeze(value);
+}
+
 const ONE_YEAR_SECONDS = 31_536_000;
 const MINUTES_PER_HOUR = 60;
 const SECONDS_PER_MINUTE = 60;
@@ -213,7 +232,7 @@ const DEFAULT_CONTINUATION_TIMEOUT_MS = 300_000;
  * of a host's own already holds is not gone live under, but an earlier built-in, which whatever
  * deploys chooses instead.
  */
-export const DEFAULT_DELIVERY_POLICY: DeliveryPolicy = {
+export const DEFAULT_DELIVERY_POLICY: BuiltinDeliveryPolicy = frozenThrough({
   id: 'paas-v5',
   shell: { backend: 'kv', memoryLru: true, cacheApiLayer: true },
   assets: {
@@ -228,7 +247,7 @@ export const DEFAULT_DELIVERY_POLICY: DeliveryPolicy = {
     generations: 'on',
     cacheApiMaxAgeMs: DEFAULT_CACHE_API_MAX_AGE_MS,
   },
-};
+} satisfies DeliveryPolicy);
 
 /**
  * The built-in policies before this one, as they were. A pointer written under one names it
@@ -237,9 +256,9 @@ export const DEFAULT_DELIVERY_POLICY: DeliveryPolicy = {
  * no deployment stored a document for — a project that has only ever passed through — reads it
  * here, rather than a stand-in for a policy nobody could read.
  */
-const RETIRED_DELIVERY_POLICIES: readonly DeliveryPolicy[] = [
+const RETIRED_DELIVERY_POLICIES: readonly BuiltinDeliveryPolicy[] = [
   // The default it replaced, whose middleware had a second.
-  {
+  frozenThrough({
     ...DEFAULT_DELIVERY_POLICY,
     id: 'paas-v4',
     middleware: {
@@ -247,9 +266,9 @@ const RETIRED_DELIVERY_POLICIES: readonly DeliveryPolicy[] = [
       subRequests: DEFAULT_MIDDLEWARE_SUBREQUESTS,
       timeoutMs: RETIRED_MIDDLEWARE_TIMEOUT_MS,
     },
-  },
+  }),
   // Before the data center's copies of records.
-  {
+  frozenThrough({
     ...DEFAULT_DELIVERY_POLICY,
     id: 'paas-v3',
     middleware: {
@@ -258,14 +277,14 @@ const RETIRED_DELIVERY_POLICIES: readonly DeliveryPolicy[] = [
       timeoutMs: RETIRED_MIDDLEWARE_TIMEOUT_MS,
     },
     runtimeCache: { ...DEFAULT_RUNTIME_CACHE_SETTINGS, generations: 'on' },
-  },
+  }),
 ];
 
 /**
  * The built-in policy an id names: the default, or one retired, which pointers written under it
  * still name. `undefined` for any other id — a host's own policy's, or none.
  */
-export function builtinDeliveryPolicy(id: string): DeliveryPolicy | undefined {
+export function builtinDeliveryPolicy(id: string): BuiltinDeliveryPolicy | undefined {
   if (id === DEFAULT_DELIVERY_POLICY.id) {
     return DEFAULT_DELIVERY_POLICY;
   }
@@ -273,7 +292,7 @@ export function builtinDeliveryPolicy(id: string): DeliveryPolicy | undefined {
 }
 
 /** Every built-in policy, newest first: the default, then the retired ones. */
-export function builtinDeliveryPolicies(): readonly DeliveryPolicy[] {
+export function builtinDeliveryPolicies(): readonly BuiltinDeliveryPolicy[] {
   return [DEFAULT_DELIVERY_POLICY, ...RETIRED_DELIVERY_POLICIES];
 }
 

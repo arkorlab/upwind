@@ -50,8 +50,11 @@ export type CacheScopeStatus = z.infer<typeof cacheScopeStatusSchema>;
 
 /** The boundary of authorization, keys, storage and invalidation: one deployment, for now. */
 export const cacheScopeSchema = z.object({
-  /** Signed into the token that opens the scope, so it carries neither of a token's separators. */
-  scopeId: z.string().min(1).regex(SIGNABLE_SCOPE_ID, 'a scope id may carry neither . nor |'),
+  /** Signed into the token that opens the scope: a bearer token's characters, but `.` and `=`. */
+  scopeId: z
+    .string()
+    .min(1)
+    .regex(SIGNABLE_SCOPE_ID, 'a scope id is ASCII letters, digits, -, _, ~, + and /'),
   organizationId: z.string().min(1),
   projectId: z.string().min(1),
   environmentId: cacheEnvironmentSchema,

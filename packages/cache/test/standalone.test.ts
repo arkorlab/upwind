@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 
 import { scopeStub } from '../src/scope/stub.ts';
 import { STANDALONE_AUTHORITY } from '../src/standalone/host.ts';
-import { CacheControl } from '../src/standalone/worker.ts';
+import { CacheControl, CacheSignals } from '../src/standalone/worker.ts';
 
 const SCOPE_ID = createId(DEPLOYMENT_ID_PREFIX);
 
@@ -83,15 +83,60 @@ describe('a standalone cache', () => {
       const scopeId = `${createId(DEPLOYMENT_ID_PREFIX)}${joint}b`;
       const seed = seedInput(createId(DEPLOYMENT_ID_PREFIX));
 
+      // `:` is none of a bearer token's characters, so the scope's own schema refuses it first;
+      // `/` is one, and the keys' rule (`isScopeId`) refuses it.
       await expect(
         control.seedScope({ ...seed, scope: { ...seed.scope, scopeId } }),
-      ).rejects.toThrow(/neither : nor \//u);
+      ).rejects.toThrow(/ASCII letters, digits/u);
       await expect(control.issueToken({ scopeId })).rejects.toThrow(/neither : nor \//u);
       await expect(
         scopeStub(env, scopeId).seedEntries({ scopeId, batchIndex: 0, entries: [] }, 0),
       ).resolves.toMatchObject({ kind: 'refused', code: 'not_found' });
     },
   );
+
+  /**
+   * A scope's token carries its id, and is presented as a bearer in an `Authorization` header,
+   * which holds no control character, nothing a byte cannot and, in a bearer token, no space and
+   * none of `,`, `"` or `\` (RFC 6750): a scope named with one could be seeded and never opened, or
+   * opened only where no reader of the header is strict. Nor `=`, a token's padding. None is seeded,
+   * signed a token, or answered about.
+   */
+  it.each(['\n', ' ', '\t', '\0', '日', ',', '"', '\\', '='])(
+    'seeds no scope whose id holds %j, and signs it no token',
+    async (held) => {
+      const control = new CacheControl(createExecutionContext(), env);
+      // Asked of an instance, as `control` is, not over `exports`: an RPC call's promise is
+      // callable, so `rejects` calls it and awaits that call instead, and the refusal of the call
+      // itself is left unhandled.
+      const signals = new CacheSignals(createExecutionContext(), env);
+      const scopeId = `${createId(DEPLOYMENT_ID_PREFIX)}${held}b`;
+      const seed = seedInput(createId(DEPLOYMENT_ID_PREFIX));
+
+      await expect(
+        control.seedScope({ ...seed, scope: { ...seed.scope, scopeId } }),
+      ).rejects.toThrow(/ASCII letters, digits/u);
+      await expect(control.issueToken({ scopeId })).rejects.toThrow(/ASCII letters, digits/u);
+      await expect(signals.scopeSignals(scopeId, null)).rejects.toThrow(/no such scope/u);
+    },
+  );
+
+  /** A bearer token's other characters, which neither a token nor the keys separate with. */
+  it('seeds a scope whose id holds -, _, ~ and +, signs it a token, and answers about it', async () => {
+    const control = new CacheControl(createExecutionContext(), env);
+    const scopeId = `${createId(DEPLOYMENT_ID_PREFIX)}-_~+`;
+    const seed = seedInput(createId(DEPLOYMENT_ID_PREFIX));
+
+    await expect(
+      control.seedScope({ ...seed, scope: { ...seed.scope, scopeId } }),
+    ).resolves.toMatchObject({ kind: 'seeded' });
+    await expect(control.issueToken({ scopeId })).resolves.toMatchObject({
+      token: expect.stringContaining(`.${scopeId}.`),
+    });
+    await expect(exports.CacheSignals.scopeSignals(scopeId, null)).resolves.toMatchObject({
+      revision: 0,
+    });
+  });
 
   /**
    * An edge is answered about no scope id past 256 characters: one longer is neither seeded nor
