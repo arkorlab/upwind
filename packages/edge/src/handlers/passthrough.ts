@@ -24,6 +24,7 @@ import { logWarn } from '../observability/logger.ts';
 import { stripEdgeHeaders } from '../request-context.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
+import { observeMetric } from './observer.ts';
 import {
   badGatewayResponse,
   keptByNobody,
@@ -205,7 +206,7 @@ function reportPassthrough(
     return;
   }
   const elapsed = input.runtime.now() - startedAt;
-  input.host.observer.metric({
+  observeMetric(input.host, {
     projectId: metrics.projectId,
     kind: 'passthrough',
     pathname: metrics.pathname,

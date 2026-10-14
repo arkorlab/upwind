@@ -7,6 +7,7 @@ import {
   type DynamicRoute,
   type ProjectManifest,
   type RouteEntry,
+  type RouteSegment,
   serializeManifest,
   type StaticFileEntry,
 } from '@stayingupwind/core/manifest';
@@ -67,6 +68,8 @@ export interface SiteOptions {
   readonly images?: ImagesConfig | undefined;
   /** The build's dynamic routes, in Next.js's order; none, absent. */
   readonly dynamicRoutes?: readonly DynamicRoute[] | undefined;
+  /** The page's prefetch segments, by the path the router names each with, each stored in KV. */
+  readonly segments?: Readonly<Record<string, string>> | undefined;
 }
 
 export interface Site {
@@ -93,6 +96,26 @@ async function fileEntries(
   return entries;
 }
 
+async function segmentEntries(
+  segments: Readonly<Record<string, string>>,
+): Promise<Record<string, RouteSegment>> {
+  const entries: Record<string, RouteSegment> = {};
+  for (const [segmentPath, text] of Object.entries(segments)) {
+    const bytes = encodeUtf8(text);
+    const sha256 = await sha256Hex(bytes);
+    await env.EDGE_STATE.put(kvArtifactKey(sha256), bytes);
+    entries[segmentPath] = {
+      artifact: {
+        sha256,
+        byteLength: bytes.byteLength,
+        contentType: 'text/x-component',
+        encoding: 'identity',
+      },
+    };
+  }
+  return entries;
+}
+
 /**
  * A deployment as whatever deploys to a standalone edge leaves it: its manifest, its shell and the
  * default policy in `EDGE_STATE`, its files in the bucket, and the pointer that names them, which the
@@ -113,6 +136,7 @@ export async function seedSite(options: SiteOptions): Promise<Site> {
     },
     headers: { 'content-type': 'text/html; charset=utf-8', vary: 'RSC' },
     prerenderId: pathname,
+    ...(options.segments !== undefined && { segments: await segmentEntries(options.segments) }),
   };
   const manifest = buildProjectManifest({
     projectId: PROJECT_ID,

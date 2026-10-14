@@ -5,6 +5,7 @@ import { routeSuspectKey } from '../memory/caches.ts';
 import type { ContinuationFailureKind, MismatchKind, RouteReport } from '../reports.ts';
 import { encodingMarker, type ShellDelivery } from './document-headers.ts';
 import type { DocumentInput } from './document.ts';
+import { observeMetric } from './observer.ts';
 import type { Dispatched } from './upstream.ts';
 
 /** What a document's splice outcome means for the project: the reports made and the metric written. */
@@ -165,7 +166,7 @@ export async function reportOutcome(report: OutcomeReport): Promise<void> {
   const { outcome } = report;
   const work = collectReports(report);
   const record = report.input.generation ?? report.input.recordRead;
-  edge.host.observer.metric({
+  observeMetric(edge.host, {
     projectId: edge.projectId,
     kind: 'document',
     pathname: entry.pathname,

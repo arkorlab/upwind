@@ -50,6 +50,7 @@ import {
 import { decodesLayeredBrotli } from './layered-clients.ts';
 import { onTheWayOut } from './live-compression.ts';
 import type { MiddlewareOutcome, MiddlewareSkipped, MiddlewareTiming } from './middleware.ts';
+import { observeServed } from './observer.ts';
 import { dispatchedSoFar } from './upstream.ts';
 
 /** What a hosted application's middleware decided for this request, when the edge ran it. */
@@ -621,7 +622,7 @@ function isCompleteDocument(input: DocumentInput): boolean {
  */
 function servedFromRecord(edge: EdgeContext, generation: ServedGeneration | undefined): void {
   if (generation?.readBytes !== undefined) {
-    edge.host.observer.recordServed(generation.readBytes);
+    observeServed(edge.host, generation.readBytes);
   }
   generation?.onServed?.();
 }

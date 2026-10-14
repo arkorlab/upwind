@@ -8,6 +8,7 @@ import type {
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeMetric } from '../observability/metrics.ts';
 import type { EdgeContext } from '../strategies/context.ts';
+import { observeMetric } from './observer.ts';
 import { badGatewayResponse, keptByNobody } from './responses.ts';
 
 export interface AssetInput {
@@ -105,7 +106,8 @@ export async function handleAsset(input: AssetInput): Promise<AssetOutcome> {
       detail: error instanceof Error ? error.message : String(error),
     });
     // Counted as an answer is: an outage the host is told nothing of is one it cannot see.
-    input.edge.host.observer.metric(
+    observeMetric(
+      input.edge.host,
       assetMetric(input, {
         outcomeKind: 'upstream-error',
         originCacheHeader: '',
@@ -125,7 +127,8 @@ export async function handleAsset(input: AssetInput): Promise<AssetOutcome> {
   const firstByteMs = input.edge.runtime.now() - startedAt;
   const { response } = result;
   const report = (kept: AssetKeepOutcome | undefined): void => {
-    input.edge.host.observer.metric(
+    observeMetric(
+      input.edge.host,
       assetMetric(input, {
         outcomeKind: assetOutcomeKind(result.admitted, kept),
         originCacheHeader: response.headers.get('x-vercel-cache') ?? '',

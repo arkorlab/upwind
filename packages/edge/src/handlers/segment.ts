@@ -20,6 +20,7 @@ import type { EdgeContext } from '../strategies/context.ts';
 import { loadShell } from '../strategies/shell-loader.ts';
 import { setConfigured } from './configured-headers.ts';
 import { ACCEPT_ENCODING_HEADER, IDENTITY_ENCODING, varyOn } from './document-headers.ts';
+import { observeMetric } from './observer.ts';
 import {
   mergeScopedMiddlewareHeaders,
   removeSharedCacheOverrides,
@@ -318,7 +319,7 @@ interface SegmentDelivery {
 function recordDelivery(input: SegmentInput, delivered: SegmentDelivery): void {
   const { source, rendering, lookupMs, bytes } = delivered;
   const { edge } = input;
-  edge.host.observer.metric({
+  observeMetric(edge.host, {
     projectId: edge.projectId,
     kind: input.kind,
     pathname: input.pathname,

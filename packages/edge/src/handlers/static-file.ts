@@ -21,6 +21,7 @@ import { validatorMatches } from '../strategies/asset-upstream.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { setConfigured } from './configured-headers.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
+import { observeMetric } from './observer.ts';
 import {
   mergeScopedMiddlewareHeaders,
   removeSharedCacheOverrides,
@@ -595,7 +596,7 @@ function recordDelivery(
   const { edge } = input;
   const reads = abandoned.filter((read) => read !== undefined);
   if (reads.length === 0) {
-    edge.host.observer.metric(metric);
+    observeMetric(edge.host, metric);
     return;
   }
   // A read let go of made requests of its own, which it can say only once it has come to
@@ -610,7 +611,7 @@ async function recordWithAbandoned(
 ): Promise<void> {
   const requests = await Promise.all(abandoned.map(async (read) => requestsOf(read)));
   const spent = requests.reduce((sum, count) => sum + count, 0);
-  input.edge.host.observer.metric({ ...metric, subrequests: metric.subrequests + spent });
+  observeMetric(input.edge.host, { ...metric, subrequests: metric.subrequests + spent });
 }
 
 function deliveryMetric(

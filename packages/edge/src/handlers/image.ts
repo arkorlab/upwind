@@ -21,6 +21,7 @@ import {
   withDeadline,
 } from '@stayingupwind/core/util';
 
+import type { TransformImage } from '../edge-runtime.ts';
 import { logWarn } from '../observability/logger.ts';
 import { validatorMatches } from '../strategies/asset-upstream.ts';
 import type { EdgeContext } from '../strategies/context.ts';
@@ -36,6 +37,7 @@ import {
   type SourceError,
   sourceLimit,
 } from './image-source.ts';
+import { observeMetric, observeTransformed } from './observer.ts';
 import {
   keptByNobody,
   mergeScopedMiddlewareHeaders,
@@ -309,8 +311,9 @@ async function optimize(input: ImageInput, imageSource: ImageSource): Promise<Op
   if (transform === undefined || judged.verdict.kind === 'bypass') {
     return { kind: 'ok', image: asItIs(judged, maxAge) };
   }
+  let result: Awaited<ReturnType<TransformImage>>;
   try {
-    const result = await withDeadline(
+    result = await withDeadline(
       transform(judged.body, {
         width: params.width,
         format: outputImageType(params.mimeType, judged.verdict.upstreamType),
@@ -319,20 +322,6 @@ async function optimize(input: ImageInput, imageSource: ImageSource): Promise<Op
       IMAGE_BUDGET_MS,
       'image transformation',
     );
-    // The service answered: the transformation is the host's to know of (`EdgeObserver`).
-    edge.host.observer.imageTransformed();
-    return {
-      kind: 'ok',
-      image: {
-        contentType: result.contentType,
-        body: result.body,
-        via: 'images',
-        maxAge,
-        etag: undefined,
-        requests: judged.source.requests + 1,
-        fallback: false,
-      },
-    };
   } catch (error) {
     logWarn('image transformation failed', { href: params.href, detail: errorDetail(error) });
     const spent = judged.source.requests + 1;
@@ -351,6 +340,21 @@ async function optimize(input: ImageInput, imageSource: ImageSource): Promise<Op
       image: { ...asItIs(again, config.minimumCacheTTL), requests: spent + again.source.requests },
     };
   }
+  // The service answered: the transformation is the host's to know of (`EdgeObserver`). Told past
+  // the `try` that judges the service, so an observer that throws is never taken for it failing.
+  observeTransformed(edge.host);
+  return {
+    kind: 'ok',
+    image: {
+      contentType: result.contentType,
+      body: result.body,
+      via: 'images',
+      maxAge,
+      etag: undefined,
+      requests: judged.source.requests + 1,
+      fallback: false,
+    },
+  };
 }
 
 function debugHeader(input: ImageAnswerInput, src: string): string {
@@ -453,7 +457,7 @@ interface Outcome {
 
 function record(input: ImageAnswerInput, { src, startedAt, bytes, subrequests }: Outcome): void {
   const { edge } = input;
-  edge.host.observer.metric({
+  observeMetric(edge.host, {
     projectId: edge.projectId,
     kind: 'asset',
     pathname: input.config.path,
