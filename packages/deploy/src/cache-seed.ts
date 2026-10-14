@@ -1,4 +1,8 @@
-import { cacheablePrerenders, type DeploymentBundle } from '@stayingupwind/core/bundle';
+import {
+  cacheablePrerenders,
+  type DeploymentBundle,
+  type Prerender,
+} from '@stayingupwind/core/bundle';
 import { KEY_SCHEMA_VERSION } from '@stayingupwind/core/cache';
 import { bundleGeneratedAtMs, type SeedContext, seedRouteFor } from '@stayingupwind/host/bundle';
 import type { CacheEnvironment, SeedEntryInput, SeedScopeInput } from '@stayingupwind/host/cache';
@@ -48,13 +52,22 @@ export function seededGenerationAt(bundle: DeploymentBundle, now: number): numbe
   return Math.min(bundleGeneratedAtMs(bundle), now);
 }
 
-/** One batch of the build's generations: what the bundle says of each prerender named, as an entry. */
+/** The prerenders the cache holds a generation of, by id: what each batch of a seeding is read from. */
+export function cacheEntriesOf(bundle: DeploymentBundle): ReadonlyMap<string, Prerender> {
+  return new Map(cacheablePrerenders(bundle).map((prerender) => [prerender.id, prerender]));
+}
+
+/**
+ * One batch of the build's generations: what the bundle says of each prerender named, as an entry.
+ * A seeding of many batches in one process hands each of them the one index it made
+ * (`cacheEntriesOf`), rather than have every batch classify the whole bundle again.
+ */
 export async function seedEntriesOf(
   bundle: DeploymentBundle,
   prerenderIds: readonly string[],
   context: SeedContext,
+  byId: ReadonlyMap<string, Prerender> = cacheEntriesOf(bundle),
 ): Promise<SeedEntryInput[]> {
-  const byId = new Map(cacheablePrerenders(bundle).map((prerender) => [prerender.id, prerender]));
   const entries: SeedEntryInput[] = [];
   for (const id of prerenderIds) {
     const prerender = byId.get(id);

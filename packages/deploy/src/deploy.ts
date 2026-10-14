@@ -27,7 +27,7 @@ import type {
 import { scanPreloadLinks } from '@stayingupwind/host/preloads';
 import { blobObjectKey, kvManifestKey, r2ManifestKey } from '@stayingupwind/host/storage';
 
-import { cacheEntryIdsOf, seededGenerationAt, seedEntriesOf, seedScopeOf } from './cache-seed.ts';
+import { cacheEntriesOf, seededGenerationAt, seedEntriesOf, seedScopeOf } from './cache-seed.ts';
 import { type ShellPlacement, shellPlacementsOf, unimplementedBackend } from './delivery.ts';
 import { deploymentFingerprintOf } from './fingerprint.ts';
 import { assembleManifest, oversizedManifest } from './manifest.ts';
@@ -268,11 +268,13 @@ async function seedCache(cache: DeployCache, input: StageInput): Promise<string>
   if (seeded.kind === 'conflict') {
     throw new DeployRefusalError(seeded.reason, { code: 'cache_scope_conflict' });
   }
-  const ids = cacheEntryIdsOf(bundle);
+  // Classified once for every batch: a bundle of many prerenders is many batches.
+  const byId = cacheEntriesOf(bundle);
+  const ids = [...byId.keys()];
   const context = { scopeId, generatedAt: seededGenerationAt(bundle, input.now()) };
   for (let batchIndex = 0; batchIndex * SEED_BATCH < ids.length; batchIndex += 1) {
     const batch = ids.slice(batchIndex * SEED_BATCH, (batchIndex + 1) * SEED_BATCH);
-    const entries = await seedEntriesOf(bundle, batch, context);
+    const entries = await seedEntriesOf(bundle, batch, context, byId);
     await cache.seedEntries({ scopeId, batchIndex, entries });
   }
   return seeded.token;
