@@ -11,7 +11,10 @@
  * record be served again, so nothing is forgotten sooner for want of room until folding can make no
  * more. A scope that names too many tags is folded into its floor, which condemns at least what they
  * did; an isolate that holds too much folds the scopes that still list tags, oldest first, and
- * forgets the oldest only once every scope is folded and it still holds too much.
+ * forgets the oldest only once every scope is folded and it still holds too much. A scope forgotten
+ * so is told of (`forgotten`), so that what told the isolate of it is taken in again: an answer of
+ * the authority's that says nothing moved past what the isolate knew would take in no window
+ * (`cache/scope-signal.ts`).
  */
 
 /** A scope's at-once invalidations, as `condemnationOf` reads them, and the ones with a window. */
@@ -134,13 +137,23 @@ export interface TagBound {
 export class InvalidationMemory {
   readonly #now: () => number;
   readonly #maxBytes: number;
+  readonly #forgotten: ((scopeId: string) => void) | undefined;
   /** In the order their latest invalidations were taken in, oldest first. */
   readonly #scopes = new Map<string, Kept>();
   #bytes = 0;
 
-  constructor(now: () => number, maxBytes: number = MAX_BYTES) {
+  /**
+   * `forgotten` is told of each scope whose invalidations are forgotten for want of room while they
+   * are still kept; not of one past its keeping, nor of one folded, which condemns at least as much.
+   */
+  constructor(
+    now: () => number,
+    maxBytes: number = MAX_BYTES,
+    forgotten?: (scopeId: string) => void,
+  ) {
     this.#now = now;
     this.#maxBytes = maxBytes;
+    this.#forgotten = forgotten;
   }
 
   #drop(scopeId: string): void {
@@ -177,6 +190,7 @@ export class InvalidationMemory {
         return;
       }
       this.#drop(scopeId);
+      this.#forgotten?.(scopeId);
     }
   }
 

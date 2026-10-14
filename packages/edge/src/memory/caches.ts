@@ -245,6 +245,7 @@ export interface EdgeMemoryOptions {
 
 export function createEdgeMemory(now: () => number, options: EdgeMemoryOptions = {}): EdgeMemory {
   const budget = new IsolateBudget(ISOLATE_BUDGET_BYTES, MAX_ENTRY_BYTES);
+  const scopes = new TtlCache<string, KnownScope>(SCOPES_TTL_MS, SCOPES_MAX_ENTRIES, now);
   return {
     budget,
     pointers: new TtlCache(POINTER_TTL_MS, POINTER_MAX_ENTRIES, now, {
@@ -261,8 +262,13 @@ export function createEdgeMemory(now: () => number, options: EdgeMemoryOptions =
     generations: new SharedByteLru(budget),
     regenerations: new TtlCache(REGENERATION_MEMORY_TTL_MS, REGENERATION_MAX_ENTRIES, now),
     absentRecords: new TtlCache(REGENERATION_MEMORY_TTL_MS, ABSENT_RECORD_MAX_ENTRIES, now),
-    invalidations: new InvalidationMemory(now),
-    scopes: new TtlCache(SCOPES_TTL_MS, SCOPES_MAX_ENTRIES, now),
+    // A scope whose invalidations were forgotten for want of room is no longer known to stand where
+    // it was found, so the next answer about it is taken in whole (`takeIn`, in
+    // `cache/scope-signal.ts`).
+    invalidations: new InvalidationMemory(now, undefined, (scopeId) => {
+      scopes.delete(scopeId);
+    }),
+    scopes,
     claimedElsewhere: new TtlCache(CLAIM_MS, SCOPES_MAX_ENTRIES, now),
     kvAnswered: new TtlCache(KV_ANSWER_HELD_MS, KV_ANSWERED_MAX_ENTRIES, now),
     memberEntries: new TtlCache(MEMBER_ENTRY_TTL_MS, MEMBER_ENTRY_MAX_ENTRIES, now, {

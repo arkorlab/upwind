@@ -31,6 +31,11 @@ import { createEdgeMemory } from '../src/memory/caches.ts';
  */
 
 const SECOND = 1000;
+/**
+ * How many scopes, each with every tag invalidated, fill what an isolate holds of invalidations (a
+ * MiB, at 64 bytes a scope): one more forgets the oldest.
+ */
+const SCOPES_FILLING_MEMORY = 16_384;
 
 function scopeOfItsOwn(): string {
   return `dpl_${crypto.randomUUID().replaceAll('-', '')}`;
@@ -580,6 +585,43 @@ describe('what the authority says moved in a scope', () => {
     expect(during).toBe('stale');
     expect(condemnationOf(runtime.memory, recordOf(scopeId, 'feed', 5))).toBe('expired');
     expect(answered.asked()).toBe(1);
+  });
+
+  /**
+   * An isolate short of room forgets the oldest scope's invalidations, a window's among them
+   * (`InvalidationMemory`), and with them where the scope stands: the authority's next answer, the
+   * same as the one it forgot, is taken in whole, and what the window reached is not served again.
+   * Still short of room, the isolate folds what it took in into a floor, which condemns it at once.
+   */
+  it('condemns again what a window an isolate short of room forgot reached', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(1_790_000_000_000);
+    const scopeId = scopeOfItsOwn();
+    const cache = `signals-${crypto.randomUUID()}`;
+    const answered = authority(() => {
+      return {
+        revision: 7,
+        invalidatedAt: Date.now(),
+        tags: [tagged('feed', 7, null)],
+        truncated: false,
+        announced: true,
+      };
+    });
+    const runtime = runtimeOf();
+    const behind: Promise<unknown>[] = [];
+    await look(runtime, hostOf(cache, answered.source), scopeId, behind);
+    await Promise.all(behind);
+    for (let other = 0; other < SCOPES_FILLING_MEMORY; other += 1) {
+      runtime.memory.invalidations.take(`dpl_other${String(other)}`, undefined, 1);
+    }
+    const forgotten = runtime.memory.invalidations.of(scopeId);
+
+    vi.setSystemTime(1_790_000_000_000 + SECOND);
+    await look(runtime, hostOf(cache, answered.source), scopeId);
+
+    expect(forgotten).toBeUndefined();
+    expect(condemnationOf(runtime.memory, recordOf(scopeId, 'feed', 5))).toBe('expired');
+    expect(condemnationOf(runtime.memory, recordOf(scopeId, 'feed', 7))).toBeUndefined();
   });
 
   it('lets go of a record held that a window reached, so it is read again rather than held', async () => {
