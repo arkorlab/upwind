@@ -94,6 +94,29 @@ describe('a standalone cache', () => {
   );
 
   /**
+   * A scope's token carries its id, and is presented as a bearer in an `Authorization` header,
+   * which holds no control character, nothing a byte cannot and, in a bearer token, no space: a
+   * scope named with one could be seeded and never opened. None is seeded, signed a token, or
+   * answered about.
+   */
+  it.each(['\n', ' ', '\t', '\0', '日'])(
+    'seeds no scope whose id holds %j, and signs it no token',
+    async (held) => {
+      const control = new CacheControl(createExecutionContext(), env);
+      const scopeId = `${createId(DEPLOYMENT_ID_PREFIX)}${held}b`;
+      const seed = seedInput(createId(DEPLOYMENT_ID_PREFIX));
+
+      await expect(
+        control.seedScope({ ...seed, scope: { ...seed.scope, scopeId } }),
+      ).rejects.toThrow(/visible ASCII/u);
+      await expect(control.issueToken({ scopeId })).rejects.toThrow(/visible ASCII/u);
+      await expect(exports.CacheSignals.scopeSignals(scopeId, null)).rejects.toThrow(
+        /no such scope/u,
+      );
+    },
+  );
+
+  /**
    * An edge is answered about no scope id past 256 characters: one longer is neither seeded nor
    * signed a token, rather than seeded and never answered where it stands.
    */
