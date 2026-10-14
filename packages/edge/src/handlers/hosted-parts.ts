@@ -13,6 +13,7 @@ import {
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   RSC_HEADER,
 } from '@stayingupwind/core/request';
+import { releaseStream } from '@stayingupwind/core/util';
 import {
   type ResolvedPolicy,
   runtimeCacheOf,
@@ -327,10 +328,16 @@ async function answerPart(input: PartInput, part: PartAnswer): Promise<Response>
   // loadShell retains the existing memory / Cache API race and hash verification. No authority read.
   const strategy: ShellDeliveryStrategy<EdgeContext> = {
     id: 'r2',
-    async getShell(_ref, ctx) {
+    async getShell(ref, ctx) {
       const began = ctx.runtime.now();
       const object = await ctx.env.ARTIFACTS.get(storageRef);
       if (object === null) return;
+      // Read only at the length the record gives the part: an object of another size would be
+      // refused once hashed, and one of any size would be held whole first. Its size comes with it.
+      if (object.size !== ref.byteLength) {
+        releaseStream(object.body, 'router part of another length');
+        throw new Error(`the part is stored at ${object.size} bytes, not ${ref.byteLength}`);
+      }
       return {
         bytes: new Uint8Array(await object.arrayBuffer()),
         source: 'r2',
