@@ -1,5 +1,9 @@
+/** The longest id a scope is named by: what a deploy issues, and nothing longer. */
+const MAX_SCOPE_ID_LENGTH = 256;
+
 /**
- * Whether an id can name a scope: one that no key of another scope's could hold.
+ * Whether an id can name a scope: one that no key of another scope's could hold, and no longer
+ * than every entrypoint takes one (`MAX_SCOPE_ID_LENGTH`).
  *
  * What the cache keeps of a scope is keyed by its id joined to what follows it, with `:` in KV
  * (`gen:<scope>:<entry>`) and `/` in the bucket (`cache/<scope>/`). An id that carries either
@@ -9,5 +13,10 @@
  * a scope by its deployment's id, which carries neither.
  */
 export function isScopeId(scopeId: string): boolean {
-  return scopeId !== '' && !scopeId.includes(':') && !scopeId.includes('/');
+  return (
+    scopeId !== '' &&
+    scopeId.length <= MAX_SCOPE_ID_LENGTH &&
+    !scopeId.includes(':') &&
+    !scopeId.includes('/')
+  );
 }

@@ -92,4 +92,26 @@ describe('a standalone cache', () => {
       ).resolves.toMatchObject({ kind: 'refused', code: 'not_found' });
     },
   );
+
+  /**
+   * An edge is answered about no scope id past 256 characters: one longer is neither seeded nor
+   * signed a token, rather than seeded and never answered where it stands.
+   */
+  it('seeds a scope id as long as an edge is answered about, and none longer', async () => {
+    const control = new CacheControl(createExecutionContext(), env);
+    const longest = createId(DEPLOYMENT_ID_PREFIX).padEnd(256, 'x');
+    const longer = `${longest}x`;
+    const seed = seedInput(createId(DEPLOYMENT_ID_PREFIX));
+
+    await expect(
+      control.seedScope({ ...seed, scope: { ...seed.scope, scopeId: longest } }),
+    ).resolves.toMatchObject({ kind: 'seeded' });
+    await expect(exports.CacheSignals.scopeSignals(longest, null)).resolves.toMatchObject({
+      revision: 0,
+    });
+    await expect(
+      control.seedScope({ ...seed, scope: { ...seed.scope, scopeId: longer } }),
+    ).rejects.toThrow(/at most 256/u);
+    await expect(control.issueToken({ scopeId: longer })).rejects.toThrow(/at most 256/u);
+  });
 });

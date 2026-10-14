@@ -35,12 +35,12 @@ import { scopeStub } from '../scope/stub.ts';
 
 /**
  * The token a scope's Workers present to the gateways, signed with the key only this Worker holds,
- * under the host's label (`AuthorityHost.naming`). None for an id another scope's keys could hold
- * (`isScopeId`), which no scope is seeded under either.
+ * under the host's label (`AuthorityHost.naming`). None for an id another scope's keys could hold,
+ * or longer than an edge may ask about (`isScopeId`), which no scope is seeded under either.
  */
 export function scopeToken(env: CacheVars, scopeId: string, naming: CacheNaming): Promise<string> {
   if (!isScopeId(scopeId)) {
-    throw new Error('a scope id may carry neither : nor /, which its storage keys are joined with');
+    throw new Error('a scope id is at most 256 characters, and carries neither : nor /');
   }
   const key = parseVars(env).CACHE_TOKEN_KEY;
   if (key === undefined) {

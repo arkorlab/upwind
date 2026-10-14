@@ -8,10 +8,8 @@ import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { AuthorityHost } from '../authority-host.ts';
 import type { CacheBindings } from '../bindings.ts';
 import { scopeRetired } from '../gateway/retirement.ts';
+import { isScopeId } from '../scope-id.ts';
 import { scopeStub } from '../scope/stub.ts';
-
-/** A scope id as the authority's objects are named by: what a deploy issued, and nothing longer. */
-const MAX_SCOPE_ID_LENGTH = 256;
 
 /**
  * The authority as an edge in front of a host's Functions asks it over a service binding: where a
@@ -32,7 +30,8 @@ const MAX_SCOPE_ID_LENGTH = 256;
 export function cacheSignals(authority: AuthorityHost): CacheSignalsClass {
   return class extends WorkerEntrypoint<CacheBindings> implements CacheSignals {
     async scopeSignals(scopeId: string, since: number | null): Promise<ScopeSignals> {
-      if (scopeId === '' || scopeId.length > MAX_SCOPE_ID_LENGTH) {
+      // An id no scope is seeded under (`isScopeId`): the same bound the seed is held to.
+      if (!isScopeId(scopeId)) {
         throw new Error('no such scope');
       }
       const after = since !== null && Number.isSafeInteger(since) && since > 0 ? since : 0;
