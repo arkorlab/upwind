@@ -56,6 +56,9 @@ interface Progress {
 /** The same, however the request ended or before it has, by what `fetchUpstream` handed back. */
 const UNDER_WAY = new WeakMap<Promise<Response>, Progress>();
 
+/** How far a split deployment's request had got where the Worker it was sent on to failed. */
+const FAILED = new WeakMap<Error, Dispatched>();
+
 /**
  * Where the answer of a split deployment came from (`fetchUpstream`); `undefined` for any other
  * answer — a deployment that was not split records nothing, and pays nothing to.
@@ -175,6 +178,20 @@ export function dispatchesSoFar(answer: Promise<Response>): number {
 }
 
 /**
+ * The dispatches a request that failed had taken, by what it failed with, for a caller that has
+ * the error and not the request (`fetchUpstream`), counted as `dispatchesOf` counts an answer's:
+ * two where the Worker first asked named another, and the one it was sent on to failed or named
+ * another again (`MisroutedError`).
+ */
+export function dispatchesOfFailure(error: unknown): number {
+  if (!(error instanceof Error)) {
+    return 1;
+  }
+  const dispatched = error instanceof MisroutedError ? error.dispatched : FAILED.get(error);
+  return dispatched?.redispatched === true ? 2 : 1;
+}
+
+/**
  * A request to a deployment split across app Workers: to the Worker `progress.fn` names — the
  * first, for a name the deployment does not run — and on to the one that Worker names, once, where
  * it answers that the route is another's (`MISDIRECTED_STATUS`). The second Worker answers from
@@ -211,7 +228,16 @@ async function dispatchSplit(
   }
   const dispatched: Dispatched = { fn: owner, asked, redispatched: true };
   progress.dispatched = dispatched;
-  const answered = await dispatch(script, again);
+  let answered: Response;
+  try {
+    answered = await dispatch(script, again);
+  } catch (error) {
+    // Said of the error too, for a caller that has it and not the request (`dispatchesOfFailure`).
+    if (error instanceof Error) {
+      FAILED.set(error, dispatched);
+    }
+    throw error;
+  }
   const named = misdirectedTo(answered);
   if (named !== undefined) {
     misrouted(answered, `${owner} named ${named} after ${asked} named it`, dispatched);

@@ -10,6 +10,7 @@ import type { EdgeMetric } from '../observability/metrics.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { observeMetric } from './observer.ts';
 import { badGatewayResponse, keptByNobody } from './responses.ts';
+import { dispatchesOfFailure } from './upstream.ts';
 
 export interface AssetInput {
   readonly request: Request;
@@ -113,9 +114,10 @@ export async function handleAsset(input: AssetInput): Promise<AssetOutcome> {
         originCacheHeader: '',
         ttfbInternalMs: input.edge.runtime.now() - startedAt,
         assetHit: 0,
-        // The request the strategy sent upstream, which is what failed — as a passthrough that
-        // could not reach the application counts its own.
-        subrequests: 1,
+        // The requests the strategy sent upstream before it failed: one, and the one after it where
+        // the Worker first asked named another — as a passthrough that could not reach the
+        // application counts its own.
+        subrequests: dispatchesOfFailure(error),
       }),
     );
     return {
