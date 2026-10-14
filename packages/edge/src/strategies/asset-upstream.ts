@@ -281,14 +281,21 @@ function listedTags(header: string): ReadonlySet<string> | undefined {
   return tags;
 }
 
-/** Whether the request's `If-None-Match` names the entity tag the response would carry. */
+/**
+ * Whether the request's `If-None-Match` names the entity tag the response would carry, or asks with
+ * `*` whether there is a representation at all, which an answer about to be sent is, tagged or not
+ * (RFC 9110 §13.1.2).
+ */
 export function validatorMatches(request: Request, etag: string | null): boolean {
   const ifNoneMatch = request.headers.get('if-none-match');
-  if (etag === null || ifNoneMatch === null) {
+  if (ifNoneMatch === null) {
     return false;
   }
   const candidates = listedTags(ifNoneMatch);
-  return candidates !== undefined && (candidates.has(opaqueTag(etag)) || candidates.has('*'));
+  if (candidates === undefined) {
+    return false;
+  }
+  return candidates.has('*') || (etag !== null && candidates.has(opaqueTag(etag)));
 }
 
 /**
