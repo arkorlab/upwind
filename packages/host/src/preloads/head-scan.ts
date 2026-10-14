@@ -390,6 +390,9 @@ function endOfScript(html: string, from: number): number {
     const [written] = mark;
     if (written === COMMENT_OPEN) {
       escaped = true;
+      // Its dashes are a close's first two as well: past them the tokenizer is where `--` leaves
+      // it, so the `>` of `<!-->` or `<!--->` ends the escape it has just begun.
+      marks.lastIndex = mark.index + COMMENT_OPEN.indexOf(COMMENT_DASH);
     } else if (written === COMMENT_CLOSE) {
       escaped = false;
       doubleEscaped = false;
