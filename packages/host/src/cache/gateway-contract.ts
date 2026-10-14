@@ -129,6 +129,11 @@ export const startAttemptRequestSchema = z.object({
   producer: generationProducerSchema.optional(),
   /** What the edge served when it asked: recorded as an observation, never as state. */
   observation: observationInputSchema.optional(),
+  /**
+   * The generation the requester judged the entry by, `null` for none: where the entry's current
+   * generation is a later one that stands, the answer carries its delivery record (`record`).
+   */
+  replaces: z.string().min(1).nullable().optional(),
 });
 export type StartAttemptRequest = z.infer<typeof startAttemptRequestSchema>;
 
@@ -156,6 +161,12 @@ export const startAttemptResponseSchema = z.discriminatedUnion('kind', [
     dependencyRevision: z.number().int().nonnegative(),
     leaseExpiresAt: z.number().int(),
     current: currentGenerationSummarySchema.nullable(),
+    /**
+     * The delivery record of the generation `current` names, base64, where the request named an
+     * earlier one it judged (`replaces`) and this one stands: what the Function answers with rather
+     * than a render of its own, where it holds nothing of it yet.
+     */
+    record: z.string().optional(),
   }),
   z.object({
     kind: z.literal('busy'),
@@ -163,6 +174,8 @@ export const startAttemptResponseSchema = z.discriminatedUnion('kind', [
     attemptId: z.string().min(1),
     leaseExpiresAt: z.number().int(),
     current: currentGenerationSummarySchema.nullable(),
+    /** The record of the generation `current` names, as for a lease handed out. */
+    record: z.string().optional(),
   }),
 ]);
 export type StartAttemptResponse = z.infer<typeof startAttemptResponseSchema>;

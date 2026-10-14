@@ -366,10 +366,14 @@ class GatewayHost implements CacheHost {
       // The gateway records what produced a generation; for the runtime that is always an attempt.
       producer: { kind: 'attempt', reason: request.reason },
       ...(request.observation !== undefined && { observation: request.observation }),
+      ...(request.replaces !== undefined && { replaces: request.replaces }),
     });
     if (answer.kind === 'leased') {
       this.#remember(answer.attemptId, { entryId: answer.entryId, seq: answer.current?.seq ?? 0 });
     }
+    // The record of a later generation than the one judged, where the gateway handed it back: the
+    // runtime answers from it, checking it as it checks any record.
+    const record = publishedRecord(answer.record)?.bytes;
     return answer.kind === 'leased'
       ? {
           kind: 'leased',
@@ -378,12 +382,14 @@ class GatewayHost implements CacheHost {
           fencingToken: answer.fencingToken,
           leaseExpiresAt: answer.leaseExpiresAt,
           current: currentOf(answer.current),
+          ...(record !== undefined && { record }),
         }
       : {
           kind: 'busy',
           current: currentOf(answer.current),
           attemptId: answer.attemptId,
           leaseExpiresAt: answer.leaseExpiresAt,
+          ...(record !== undefined && { record }),
         };
   }
 

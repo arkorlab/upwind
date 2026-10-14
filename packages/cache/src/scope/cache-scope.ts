@@ -20,7 +20,6 @@ import {
   type SeedScopeInput,
   type SeedScopeResult,
   type StartAttemptRequest,
-  type StartAttemptResponse,
   type TagsDeltaResponse,
 } from '@stayingupwind/host/cache';
 import { DurableObject } from 'cloudflare:workers';
@@ -38,7 +37,7 @@ import {
   planStartAttempt,
   type UploadedArtifact,
 } from './attempts.ts';
-import { wantedRecords, withWrittenRecord } from './commit-record.ts';
+import { wantedRecords, withCurrentRecord, withWrittenRecord } from './commit-record.ts';
 import { type CommitOutcome, planCommit } from './commit.ts';
 import {
   dataUploadExpired,
@@ -482,15 +481,16 @@ export class CacheScope extends DurableObject<CacheBindings> {
 
   // ---- regeneration ----------------------------------------------------------------------------
 
+  /** Take an entry's lease, answered with the record of a later generation (`withCurrentRecord`). */
   async startAttempt(
     request: StartAttemptRequest,
     now: number,
-  ): Promise<StartAttemptResponse | Refusal> {
+  ): ReturnType<typeof withCurrentRecord> {
     const result = await this.#mutate(now, (tx) => planStartAttempt(tx, request), AT_ONCE);
     if (result.kind === 'leased') {
       await this.#armOrLog(result.leaseExpiresAt + LEASE_SWEEP_GRACE_MS);
     }
-    return result;
+    return withCurrentRecord(result, request.replaces, this.#deps());
   }
 
   heartbeat(

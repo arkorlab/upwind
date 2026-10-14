@@ -1,9 +1,11 @@
 import { routeEntryKindSchema } from '@stayingupwind/core/cache';
+import type { StartAttemptResponse } from '@stayingupwind/host/cache';
 
 import type { CommitOutcome } from './commit.ts';
 import { findEntry } from './entries.ts';
 import { findGeneration } from './generations.ts';
 import { generationRecordBytes, type RecordDeps, recordBytesOf } from './records.ts';
+import type { EntryRow, GenerationRow } from './rows.ts';
 import type { WantedRecords, WrittenRecord } from './settle.ts';
 import { isRefusal, type Refusal } from './state.ts';
 
@@ -76,28 +78,108 @@ async function standingRecord(
   const revision = standingRevision(deps, entryId, generationId);
   const entry = findEntry(deps.sql, entryId);
   const generation = findGeneration(deps.sql, generationId);
-  if (
-    revision === undefined ||
-    entry === undefined ||
-    generation === undefined ||
-    // A data entry's record is a value, not a pack: none is handed back, and a pack's header is
-    // laid out for a route entry alone.
-    !routeEntryKindSchema.safeParse(entry.kind).success
-  ) {
+  if (revision === undefined || entry === undefined || generation === undefined) {
     return undefined;
   }
-  let bytes: Uint8Array;
+  const bytes = await builtRecord(deps, entry, generation);
+  return bytes !== undefined && standingRevision(deps, entryId, generationId) === revision
+    ? bytes
+    : undefined;
+}
+
+/**
+ * `generation`'s delivery record as `entry`'s, built as a settle builds it, where it could travel
+ * back at all (`recordBytesOf`, before anything is read); none otherwise, and none where its bytes
+ * cannot be read.
+ */
+async function builtRecord(
+  deps: StandingDeps,
+  entry: EntryRow,
+  generation: GenerationRow,
+): Promise<Uint8Array | undefined> {
+  // A data entry's record is a value, not a pack: none is handed back, and a pack's header is laid
+  // out for a route entry alone.
+  if (!routeEntryKindSchema.safeParse(entry.kind).success) {
+    return undefined;
+  }
   try {
-    // Measured and built alike behind the catch: the commit has published by now, and what cannot
-    // be laid out is answered without a record.
+    // Measured and built alike behind the catch: what cannot be laid out is answered without a
+    // record.
     if (recordBytesOf(deps.scopeId, entry, generation) > MAX_RETURNED_RECORD_BYTES) {
       return undefined;
     }
-    bytes = await generationRecordBytes(deps, entry, generation);
+    return await generationRecordBytes(deps, entry, generation);
   } catch {
     return undefined;
   }
-  return standingRevision(deps, entryId, generationId) === revision ? bytes : undefined;
+}
+
+/**
+ * The entry's record revision where generation `generationId` is its current one and it is not
+ * retired, whether or not KV has that record yet; none otherwise.
+ */
+function currentRevision(
+  deps: StandingDeps,
+  entryId: string,
+  generationId: string,
+): number | undefined {
+  const entry = findEntry(deps.sql, entryId);
+  return entry === undefined ||
+    entry.publication === 'retired' ||
+    entry.current_generation_id !== generationId
+    ? undefined
+    : entry.record_revision;
+}
+
+/**
+ * The delivery record of generation `generationId` as the entry's current one, built as a settle
+ * builds it whether or not KV has it yet — the request it is for read KV behind it — and only where
+ * the same generation still stands at the same revision once it is built.
+ */
+async function currentRecord(
+  deps: StandingDeps,
+  entryId: string,
+  generationId: string,
+): Promise<Uint8Array | undefined> {
+  const revision = currentRevision(deps, entryId, generationId);
+  const entry = findEntry(deps.sql, entryId);
+  const generation = findGeneration(deps.sql, generationId);
+  if (revision === undefined || entry === undefined || generation === undefined) {
+    return undefined;
+  }
+  const bytes = await builtRecord(deps, entry, generation);
+  return bytes !== undefined && currentRevision(deps, entryId, generationId) === revision
+    ? bytes
+    : undefined;
+}
+
+/** An answer for a lease as the scope gives it to the gateway, with the record it carries. */
+export type StartAttemptOutcome = StartAttemptResponse & {
+  /** The current generation's record, where the request judged an earlier one (`withCurrentRecord`). */
+  readonly recordBytes?: Uint8Array | undefined;
+};
+
+/**
+ * An answer for a lease, handed out or not, with the delivery record of the entry's current
+ * generation (`recordBytes`) where the request named an earlier one it judged (`replaces`) and the
+ * current one stands, condemned by no invalidation: a Function that read KV behind it answers its
+ * request from that record rather than with a render of its own, which no other request is
+ * answered with. None where the request named no generation, or the one it judged is the current.
+ */
+export async function withCurrentRecord(
+  answer: StartAttemptResponse | Refusal,
+  replaces: string | null | undefined,
+  deps: StandingDeps,
+): Promise<StartAttemptOutcome | Refusal> {
+  if (replaces === undefined || isRefusal(answer)) {
+    return answer;
+  }
+  const { current } = answer;
+  if (current === null || current.generationId === replaces || current.condemned !== null) {
+    return answer;
+  }
+  const recordBytes = await currentRecord(deps, answer.entryId, current.generationId);
+  return recordBytes === undefined ? answer : { ...answer, recordBytes };
 }
 
 /**
