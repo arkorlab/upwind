@@ -1,4 +1,4 @@
-import type { ProjectManifest } from '@stayingupwind/core/manifest';
+import type { AppRuntime, ProjectManifest } from '@stayingupwind/core/manifest';
 import type { EdgePointer } from '@stayingupwind/host/delivery';
 
 import type { EdgeBindings } from '../bindings.ts';
@@ -614,14 +614,45 @@ export function createPointerReader<P extends EdgePointer, T>(
 }
 
 /**
- * A manifest is only served when it was proved against the origin the pointer names; otherwise the
- * shell could belong to a different deployment altogether, so the request is proxied instead.
+ * The deployment a manifest was built for. A manifest read under its digest skips the schema
+ * (`vouchedManifest`), and one written before every manifest named its Functions names none.
+ */
+function builtFor(manifest: { readonly app?: AppRuntime | undefined }): string | undefined {
+  return manifest.app?.deploymentId;
+}
+
+/**
+ * Why the manifest a pointer names is no manifest to serve from, if it is not: one proved against
+ * another origin than the pointer names (`origin-mismatch`), or another deployment's than the one
+ * the pointer sends requests to — another project's, or built for other Workers
+ * (`deployment-mismatch`). Served from, its shells would be resumed, and its routes and files
+ * answered, for an application it is not. Judged on what was read, and nothing more.
+ */
+function manifestMismatch(pointer: EdgePointer, manifest: ProjectManifest): string | undefined {
+  if (manifest.origin.host !== pointer.originHost) {
+    return 'origin-mismatch';
+  }
+  if (
+    manifest.projectId !== pointer.projectId ||
+    (pointer.app !== undefined && builtFor(manifest) !== pointer.app.deploymentId)
+  ) {
+    return 'deployment-mismatch';
+  }
+  return undefined;
+}
+
+/**
+ * A manifest is only served when it is the one the pointer's own deployment was proved with
+ * (`manifestMismatch`); otherwise the shell could belong to a different deployment altogether, so
+ * the request is proxied instead.
  */
 export function usableManifest(
   pointer: EdgePointer,
   manifest: ProjectManifest | undefined,
 ): ProjectManifest | undefined {
-  return manifest?.origin.host === pointer.originHost ? manifest : undefined;
+  return manifest !== undefined && manifestMismatch(pointer, manifest) === undefined
+    ? manifest
+    : undefined;
 }
 
 export function pointerPassthroughReason(
@@ -643,9 +674,7 @@ export function pointerPassthroughReason(
       return 'no-manifest';
     }
     case 'found': {
-      return stored.value.origin.host === pointer.originHost
-        ? (pointer.reason ?? EDGE_MODE)
-        : 'origin-mismatch';
+      return manifestMismatch(pointer, stored.value) ?? pointer.reason ?? EDGE_MODE;
     }
   }
 }
