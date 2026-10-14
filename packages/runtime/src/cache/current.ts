@@ -378,6 +378,28 @@ function judged(runtime: CacheRuntime, pack: DecodedGenerationPack, now: number)
 }
 
 /**
+ * The record a host handed back with its answer for a lease (`AttemptOutcome.record`), as the
+ * generation it named current there (`carried.generationId`): held as what this isolate knows of
+ * the entry (`rememberRecord`) and judged as a record read is. `undefined` where none came back,
+ * where the bytes are not that generation's record, or where what this isolate knows of it keeps it
+ * from being served as it stands: it may not be served, or is not fresh by then.
+ */
+export async function carriedGeneration(
+  runtime: CacheRuntime,
+  entryId: string,
+  carried: { readonly record: Uint8Array | undefined; readonly generationId: string },
+  now: number,
+): Promise<CurrentGeneration | undefined> {
+  const pack = await publishedRecordOf(carried.record, entryId, carried.generationId);
+  if (pack === undefined || !servableRecord(pack)) {
+    return undefined;
+  }
+  const held = rememberRecord(runtime, entryId, pack);
+  const validity = judged(runtime, held, now);
+  return SEVERITY[validity] > SEVERITY.fresh ? undefined : { entryId, pack: held, validity };
+}
+
+/**
  * The later of `newer` — what the host keeps nearer than its read — and what this isolate came to
  * hold of the entry while it was asked for, a record another request's commit or read left, where
  * either is later than generation `than` and one a visitor may be answered with (`servable`): a
