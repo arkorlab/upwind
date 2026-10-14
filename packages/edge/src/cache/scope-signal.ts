@@ -1,7 +1,7 @@
 import { tagKindOf } from '@stayingupwind/core/cache';
 import { SCOPE_REVISION_HEADER, scopeRevisionValue } from '@stayingupwind/core/paas';
 import { readBoundedBody, releaseStream } from '@stayingupwind/core/util';
-import type { ScopeSignals } from '@stayingupwind/host/cache';
+import { MAX_SIGNALS_BYTES, type ScopeSignals } from '@stayingupwind/host/cache';
 
 import type { EdgeHost, ScopeSignalSource } from '../edge-host.ts';
 import type { EdgeRuntime } from '../edge-runtime.ts';
@@ -67,10 +67,11 @@ const POLLED_FRESH_MS = 2000;
 const KEEP_WITHIN_MS = 1000;
 /** How long a look at the copy waits on the Cache API, its body included. */
 const READ_MS = 50;
-const KIB = 1024;
-const MAX_COPY_KIB = 64;
-/** The largest copy read: 64 invalidations and where the scope stands, with room to spare. */
-const MAX_COPY_BYTES = MAX_COPY_KIB * KIB;
+/**
+ * The largest copy read: as long as any answer of the authority's can be (`MAX_SIGNALS_BYTES`). One
+ * read as too long is no copy, and an isolate that is not the one asking learns nothing of the scope.
+ */
+const MAX_COPY_BYTES = MAX_SIGNALS_BYTES;
 /** A question to the authority out longer than this is taken for lost, and another asked. */
 const ASK_LIFETIME_MS = 10_000;
 /**

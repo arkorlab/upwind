@@ -1,6 +1,14 @@
-import { type DecodedGenerationPack, kvGenerationKey } from '@stayingupwind/core/cache';
+import {
+  type DecodedGenerationPack,
+  kvGenerationKey,
+  MAX_TAG_LENGTH,
+} from '@stayingupwind/core/cache';
 import { parseScopeRevision, SCOPE_REVISION_HEADER } from '@stayingupwind/core/paas';
-import type { ScopeSignals, TagDeltaEntry } from '@stayingupwind/host/cache';
+import {
+  MAX_RECENT_INVALIDATIONS,
+  type ScopeSignals,
+  type TagDeltaEntry,
+} from '@stayingupwind/host/cache';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { condemnationOf } from '../src/cache/condemned.ts';
@@ -215,6 +223,38 @@ describe('where a scope stands, as the edge comes to know it', () => {
 
     expect(answered.asked()).toBe(2);
     expect(next.memory.invalidations.of(scopeId)?.tags.get('posts')).toBe(9);
+  });
+
+  /**
+   * As many invalidations as the authority tells of, of tags as long as a tag may be in the
+   * characters JSON writes longest: well past 64 KiB as the data center keeps it, and taken in from
+   * that copy by an isolate that does not ask, as any other answer is.
+   */
+  it('is taken in from the copy however long an answer of the authority’s is', async () => {
+    const scopeId = scopeOfItsOwn();
+    const cache = `signals-${crypto.randomUUID()}`;
+    const tags = Array.from({ length: MAX_RECENT_INVALIDATIONS }, (_, index) => {
+      const name = String(index).padStart(3, '0');
+      const value = `${name}${'\0'.repeat(MAX_TAG_LENGTH - name.length)}`;
+      return { ...tagged(value, index + 1, Date.now() - SECOND), tagId: `tag_${name}` };
+    });
+    const signals: ScopeSignals = {
+      revision: MAX_RECENT_INVALIDATIONS,
+      invalidatedAt: Date.now(),
+      tags,
+      truncated: false,
+      announced: true,
+    };
+    const answered = authority(() => signals);
+    const behind: Promise<unknown>[] = [];
+    await look(runtimeOf(), hostOf(cache, answered.source), scopeId, behind);
+    await Promise.all(behind);
+    const other = runtimeOf();
+    await look(other, hostOf(cache, answered.source), scopeId);
+
+    expect(new TextEncoder().encode(JSON.stringify(signals)).byteLength).toBeGreaterThan(65_536);
+    expect(other.memory.scopes.get(scopeId)?.revision).toBe(MAX_RECENT_INVALIDATIONS);
+    expect(answered.asked()).toBe(1);
   });
 
   it('is not waited for by the request that asks', async () => {
