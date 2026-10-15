@@ -84,6 +84,21 @@ describe('a file found by decoding a path', () => {
 
     expect(staticFileKey(based, '/base/x%2Epng')).toBe('/base/x.png');
   });
+
+  /**
+   * A path made here out of the one the request spelled — the asset prefix put back as the base
+   * path, as Next.js's rewrite of it does — writes the base path as the configuration does, past
+   * ASCII included: the prefix was asked of the request's own path.
+   */
+  it('is the file under the asset prefix, a base path past ASCII and an escaped name', () => {
+    const chunk = '/文書/_next/static/chunks/[slug]-a1.js';
+    const manifest = {
+      ...shipping([chunk], { basePath: '/文書' }),
+      staticFileAssetPrefix: { basePath: '/文書', assetPrefix: '/assets' },
+    };
+
+    expect(staticFileKey(manifest, '/assets/_next/static/chunks/%5Bslug%5D-a1.js')).toBe(chunk);
+  });
 });
 
 describe('the prefix a path writes', () => {

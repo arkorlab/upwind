@@ -1,4 +1,4 @@
-import { standsForClass } from '@stayingupwind/core/bundle';
+import { spelledPrefixOf, standsForClass } from '@stayingupwind/core/bundle';
 import { builtNameOf, type SpelledPrefix, spellsPrefixOf } from '@stayingupwind/core/manifest';
 
 import { redirects } from './rewritten-path.ts';
@@ -19,22 +19,19 @@ const HEX = 16;
 const UPPERCASE_ESCAPE = /%[0-9A-F]{2}/gu;
 
 /** Each store's router's prefix (`routerPrefix`). */
-const routerPrefixes = new WeakMap<Store, SpelledPrefix>();
+const routerPrefixes = new WeakMap<Store, SpelledPrefix | undefined>();
 
 /**
- * What the store's router reads of a path as it is written (`spellsPrefixOf`): the base path, and
- * in an application with `i18n`, its locales. A spelling that writes either escaped is no spelling
- * of a name behind it: Next.js finds no base path in front of `/b%61se/about`.
+ * What the store's router reads of a path as it is written (`spellsPrefixOf`), as a deploy writes
+ * it into the manifest (`spelledPrefixOf`): the base path, and in an application with `i18n`, every
+ * locale it routes, its domains' as well. A spelling that writes either escaped is no spelling of a
+ * name behind it: Next.js finds no base path in front of `/b%61se/about`.
  */
-function routerPrefix(store: Store): SpelledPrefix {
-  let prefix = routerPrefixes.get(store);
-  if (prefix === undefined) {
-    const { basePath, i18n } = store.manifest.config;
-    const locales = (i18n?.locales ?? []).filter((locale) => locale !== '');
-    prefix = locales.length === 0 ? { basePath } : { basePath, locales };
-    routerPrefixes.set(store, prefix);
+function routerPrefix(store: Store): SpelledPrefix | undefined {
+  if (!routerPrefixes.has(store)) {
+    routerPrefixes.set(store, spelledPrefixOf(store.manifest));
   }
-  return prefix;
+  return routerPrefixes.get(store);
 }
 
 /** Each store's pages of their own (`ownPages`). */
