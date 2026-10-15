@@ -1,16 +1,26 @@
 import { resolveRoutes } from '@next/routing';
 import type { Prerender } from '@stayingupwind/core/bundle';
+import { IMPLICIT_TAG_PREFIX } from '@stayingupwind/core/cache';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { InvalidatedTags, RequestWrites, withRequestContext } from '../src/cache/context.ts';
+import { invalidateNow } from '../src/cache/handlers.ts';
 import { regenerate } from '../src/cache/regenerate.ts';
 import { platformRevalidate } from '../src/cache/revalidate.ts';
 import type { CacheRuntime } from '../src/cache/runtime.ts';
 import { nodeHandlerOf } from '../src/entries.ts';
+import { escapedNameOf } from '../src/name-spellings.ts';
+import { elsewhere } from '../src/placement.ts';
+import { pathnamesFor } from '../src/routing.ts';
 import { getStore, routerPathnames, type Store } from '../src/store.ts';
 
 vi.mock(import('../src/entries.ts'), () => ({ nodeHandlerOf: vi.fn() }));
 vi.mock(import('../src/cache/regenerate.ts'), () => ({ regenerate: vi.fn() }));
+vi.mock(import('../src/cache/handlers.ts'), async (importOriginal) => ({
+  ...(await importOriginal()),
+  invalidateNow: vi.fn(),
+}));
+vi.mock(import('../src/placement.ts'), () => ({ elsewhere: vi.fn() }));
 vi.mock(import('../src/node-bridge.ts'), () => ({ invokeNodeHandler: vi.fn() }));
 vi.mock(import('../src/store.ts'), async (importOriginal) => {
   return {
@@ -57,15 +67,20 @@ function deployment(routes: readonly Route[]): Store {
 }
 
 /** Concrete output, and the two source routes that can answer it, shaped as the adapter emits. */
-function seededDeployment(closed: boolean, trailingSlash: boolean, localized: boolean): Store {
+function seededDeployment(
+  closed: boolean,
+  trailingSlash: boolean,
+  localized: boolean,
+  seed = 'seed',
+): Store {
   const basePath = localized ? '/base' : '';
   const prefix = localized ? '/base/en' : '';
   const catchAll = `${basePath}/[...rest]`;
   const specific = `${basePath}/[id]`;
   const page: Prerender = {
-    id: `${prefix}/seed`,
+    id: `${prefix}/${seed}`,
     route: catchAll,
-    pathname: `${prefix}/seed`,
+    pathname: `${prefix}/${seed}`,
     parentOutputId: catchAll,
     groupId: 1,
     parentFallbackMode: closed ? false : 'fallback.html',
@@ -85,6 +100,10 @@ function seededDeployment(closed: boolean, trailingSlash: boolean, localized: bo
     parentOutputId: catchAll,
     groupId: 3,
   };
+  const dynamicRoutes = [
+    { sourceRegex: `^${prefix}/([^/]+?)(?:/)?$`, destination: specific },
+    { sourceRegex: `^${prefix}/(.+?)(?:/)?$`, destination: catchAll },
+  ];
   const manifest = {
     buildId: 'build',
     config: {
@@ -101,10 +120,20 @@ function seededDeployment(closed: boolean, trailingSlash: boolean, localized: bo
     }),
     prerenders: [page, specificShell, ...(closed ? [] : [catchAllShell])],
     staticFiles: [],
+    routing: {
+      beforeMiddleware: [],
+      middlewareMatchers: [],
+      beforeFiles: [],
+      afterFiles: [],
+      dynamicRoutes,
+      onMatch: [],
+      fallback: [],
+    },
   } as unknown as Store['manifest'];
   return {
     manifest,
     ...routerPathnames(manifest),
+    staticFiles: new Map(),
     prerendersByPathname: new Map(manifest.prerenders.map((one) => [one.pathname, one])),
     shellsByRoute: new Map([
       [
@@ -122,10 +151,7 @@ function seededDeployment(closed: boolean, trailingSlash: boolean, localized: bo
         },
       ],
     ]),
-    dynamicRoutes: [
-      { sourceRegex: `^${prefix}/([^/]+?)(?:/)?$`, destination: specific },
-      { sourceRegex: `^${prefix}/(.+?)(?:/)?$`, destination: catchAll },
-    ],
+    dynamicRoutes,
   } as unknown as Store;
 }
 
@@ -142,7 +168,7 @@ async function routedPage(store: Store, pathname: string): Promise<string | unde
     }),
     buildId: store.manifest.buildId,
     basePath: config.basePath,
-    pathnames: store.pathnames,
+    pathnames: pathnamesFor(store, new URL(pathname, 'https://app.test')),
     routes: {
       beforeMiddleware: [],
       middlewareMatchers: [],
@@ -166,9 +192,9 @@ async function routedPage(store: Store, pathname: string): Promise<string | unde
   return result.resolvedPathname;
 }
 
-function revalidate(store: Store, urlPath: string): Promise<void> {
+function revalidate(store: Store, urlPath: string, remote = false): Promise<void> {
   vi.mocked(getStore).mockReturnValue(store);
-  vi.mocked(nodeHandlerOf).mockResolvedValue(() => Promise.resolve());
+  vi.mocked(nodeHandlerOf).mockResolvedValue(remote ? undefined : () => Promise.resolve());
   vi.mocked(regenerate).mockResolvedValue({
     kind: 'accepted',
     render: {
@@ -231,11 +257,80 @@ describe('manual revalidation route precedence', () => {
       expect(vi.mocked(regenerate).mock.calls[0]?.[0].target.descriptor).toStrictEqual({
         kind: 'pages',
         route: expected,
-        pathname: closed ? concrete : path,
+        pathname: concrete,
       });
       expect(vi.mocked(regenerate).mock.calls[0]?.[0].target.allowHeader).toStrictEqual(
         closed ? ['x-example'] : undefined,
       );
+      expect(vi.mocked(regenerate).mock.calls[0]?.[0].target.dataPathname).toBe(
+        `${sourcePrefix}/_next/data/build/${localized ? 'en/' : ''}seed.json`,
+      );
+    },
+  );
+
+  it.each([false, true])(
+    'invalidates the canonical concrete path in another Function, localized=%s',
+    async (localized) => {
+      const seeded = seededDeployment(true, true, localized);
+      const store = {
+        ...seeded,
+        manifest: {
+          ...seeded.manifest,
+          entrypoints: seeded.manifest.entrypoints.map((entry) => {
+            return {
+              ...entry,
+              kind: 'app-page' as const,
+            };
+          }),
+        },
+      };
+      vi.mocked(elsewhere).mockReturnValue('app-other');
+      const canonical = `${localized ? '/base/en' : ''}/seed`;
+
+      await revalidate(store, `${canonical}/`, true);
+
+      expect(invalidateNow).toHaveBeenCalledWith(expect.anything(), [
+        `${IMPLICIT_TAG_PREFIX}${canonical}`,
+      ]);
+      expect(regenerate).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { seed: 'seed', asked: '/s%65ed/', canonical: '/seed', closed: true, route: '/[...rest]' },
+    {
+      seed: 'hello world',
+      asked: '/hello%20world/',
+      canonical: '/hello world',
+      closed: true,
+      route: '/[...rest]',
+    },
+    {
+      seed: 'hello world',
+      asked: '/hello%20world/',
+      canonical: '/hello%20world',
+      closed: false,
+      route: '/[id]',
+    },
+    { seed: 'a/b', asked: '/a%2Fb/', canonical: '/a%2Fb', closed: true, route: '/[id]' },
+  ])(
+    'revalidates the router-selected page for $asked with closed=$closed',
+    async ({ seed, asked, canonical, closed, route }) => {
+      const store = seededDeployment(closed, true, false, seed);
+      const selected = await routedPage(store, asked);
+      const name =
+        selected === undefined ? undefined : (escapedNameOf(store, selected) ?? selected);
+      const named = name === undefined ? undefined : (store.slashSpellings.get(name) ?? name);
+      const routed = named === undefined ? undefined : store.prerendersByPathname.get(named)?.route;
+
+      expect(routed ?? selected).toBe(route);
+
+      await revalidate(store, asked);
+
+      const target = vi.mocked(regenerate).mock.calls[0]?.[0].target;
+
+      expect(target?.descriptor).toStrictEqual({ kind: 'pages', route, pathname: canonical });
+      expect(target?.dataPathname).toBe(`/_next/data/build${canonical}.json`);
     },
   );
 

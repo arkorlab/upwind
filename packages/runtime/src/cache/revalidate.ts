@@ -1,8 +1,13 @@
 import { pagesDataPathnameUnder } from '@stayingupwind/core/bundle';
-import { IMPLICIT_TAG_PREFIX, type RouteEntryDescriptor } from '@stayingupwind/core/cache';
+import {
+  IMPLICIT_TAG_PREFIX,
+  normalizeRoutePathname,
+  type RouteEntryDescriptor,
+} from '@stayingupwind/core/cache';
 
 import { nodeHandlerOf } from '../entries.ts';
 import { descriptorFor } from '../generations.ts';
+import { escapedNameOf } from '../name-spellings.ts';
 import { elsewhere } from '../placement.ts';
 import { routingParameters } from '../route-parameters.ts';
 import { completedShell, findShell, getStore, type Store } from '../store.ts';
@@ -91,17 +96,13 @@ function orderedRoutes(store: Store): readonly string[] {
  * requests read, and the one Next.js 16.4 revalidates for it.
  */
 function routeOf(store: Store, pathname: string): RouteEntryDescriptor | undefined {
-  const name =
-    pathname.length > 1 && pathname.endsWith('/')
-      ? (store.slashSpellings.get(pathname) ?? pathname)
-      : pathname;
-  const named = store.prerendersByPathname.get(name);
+  const named = store.prerendersByPathname.get(pathname);
   // The router resolves a closed route's concrete page by name before its dynamic routes. Open
   // fallback seeds are not in pathnames: one of those must still yield to a more specific route.
   if (named !== undefined && store.pathnames.includes(pathname)) {
-    const shell = findShell(store, named.route, name);
+    const shell = findShell(store, named.route, pathname);
     if (shell?.id === named.id) {
-      return descriptorFor(store, named.route, completedShell(shell, name));
+      return descriptorFor(store, named.route, completedShell(shell, pathname));
     }
   }
   for (const route of orderedRoutes(store)) {
@@ -118,8 +119,14 @@ export async function platformRevalidate(input: RevalidateInput): Promise<void> 
   if (context?.runtime === undefined) {
     return;
   }
-  const pathname = input.urlPath.split('?', 1)[0] ?? input.urlPath;
   const store = getStore();
+  const asked = input.urlPath.split('?', 1)[0] ?? input.urlPath;
+  const name = escapedNameOf(store, asked) ?? asked;
+  // Use the same built name and trailing-slash normalization as routing and the entry's key.
+  // This is the concrete request path, distinct from the class a blocking shell completes to.
+  const pathname = normalizeRoutePathname(
+    name.length > 1 && name.endsWith('/') ? (store.slashSpellings.get(name) ?? name) : name,
+  );
   const descriptor = routeOf(store, pathname);
   if (descriptor === undefined) {
     throw new Error(`revalidate: no page answers ${pathname}`);
