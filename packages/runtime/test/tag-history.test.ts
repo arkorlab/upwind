@@ -8,6 +8,16 @@ const T0 = 1_800_000_000_000;
 const SECOND = 1000;
 const HARD = { revision: 4, staleAt: T0 + SECOND, hardExpireAt: T0 + SECOND };
 const SOFT = { revision: 6, staleAt: T0 + 3 * SECOND, hardExpireAt: T0 + 303 * SECOND };
+const READS = [
+  {
+    source: 'delta',
+    read: (tags: TagState, host: TagHost) => tags.sync(host, T0, { force: true }),
+  },
+  {
+    source: 'regional',
+    read: (tags: TagState, host: TagHost) => tags.syncLocal(host, ['article'], T0),
+  },
+];
 
 function hostFor(tags: readonly TagInvalidation[]): TagHost {
   return {
@@ -36,16 +46,7 @@ describe('tag invalidation history', () => {
     expect(tags.validityOf(['article'], T0 + 4 * SECOND, T0 + 4 * SECOND)).toBe('fresh');
   });
 
-  it.each([
-    {
-      source: 'delta',
-      read: (tags: TagState, host: TagHost) => tags.sync(host, T0, { force: true }),
-    },
-    {
-      source: 'regional',
-      read: (tags: TagState, host: TagHost) => tags.syncLocal(host, ['article'], T0),
-    },
-  ])('brings earlier deadlines to a cold isolate through $source', async ({ read }) => {
+  it.each(READS)('brings earlier deadlines to a cold isolate through $source', async ({ read }) => {
     const tags = new TagState({ holdMs: SECOND });
     const host = hostFor([{ value: 'article', ...SOFT, history: [HARD, SOFT] }]);
     await read(tags, host);
@@ -55,6 +56,28 @@ describe('tag invalidation history', () => {
     expect(tags.validityOf(['article'], T0, T0 + 4 * SECOND, HARD.revision)).toBe('stale');
     expect(tags.validityOf(['article'], T0, T0 + 4 * SECOND, SOFT.revision)).toBe('fresh');
   });
+
+  it.each(READS)(
+    'does not infer a new invalidation’s revision from equal historical timestamps through $source',
+    async ({ read }) => {
+      const tags = new TagState({ holdMs: SECOND });
+      // A distinct updateTag can run in the same millisecond as HARD and have the same deadline.
+      const current = {
+        value: 'article',
+        staleAt: HARD.staleAt,
+        hardExpireAt: HARD.hardExpireAt,
+        history: [HARD],
+      };
+      const host: TagHost = {
+        getTags: () => Promise.resolve({ tags: [current] }),
+        tagsDelta: () =>
+          Promise.resolve({ tags: [current], revision: SOFT.revision, truncated: false }),
+      };
+      await read(tags, host);
+
+      expect(tags.validityOf(['article'], T0, T0 + 4 * SECOND, HARD.revision)).toBe('expired');
+    },
+  );
 
   it('retains the deadlines of its own confirmed invalidations', () => {
     const tags = new TagState({ holdMs: SECOND });
@@ -66,6 +89,60 @@ describe('tag invalidation history', () => {
     expect(tags.validityOf(['article'], T0, T0 + 4 * SECOND)).toBe('expired');
     expect(tags.validityOf(['article'], T0, T0 + 4 * SECOND, HARD.revision)).toBe('stale');
     expect(tags.validityOf(['article'], T0, T0 + 4 * SECOND, SOFT.revision)).toBe('fresh');
+  });
+
+  it('learns earlier deadlines from an invalidation reply and retains them apart from the synced view', async () => {
+    const tags = new TagState({ holdMs: SECOND });
+    const call = tags.applyLocal(['article'], SOFT);
+    tags.answerLocal(
+      call,
+      {
+        revision: SOFT.revision,
+        invalidations: [{ value: 'article', ...SOFT, history: [HARD, SOFT] }],
+      },
+      SOFT.staleAt,
+    );
+
+    expect(tags.validityOf(['article'], T0, T0 + 4 * SECOND)).toBe('expired');
+    expect(tags.validityOf(['article'], T0 + 2 * SECOND, T0 + 4 * SECOND)).toBe('stale');
+    expect(tags.validityOf(['article'], T0, T0 + 4 * SECOND, HARD.revision)).toBe('stale');
+    expect(tags.validityOf(['article'], T0, T0 + 4 * SECOND, SOFT.revision)).toBe('fresh');
+
+    const others = Array.from({ length: 4096 }, (_, index) => {
+      return {
+        value: `other-${index}`,
+        ...SOFT,
+      };
+    });
+    await tags.sync(hostFor(others), T0, { force: true });
+
+    expect(tags.validityOf(['article'], T0, T0 + 4 * SECOND)).toBe('expired');
+    expect(tags.validityOf(['article'], T0, T0 + 4 * SECOND, HARD.revision)).toBe('stale');
+    expect(tags.callsOut).toBe(0);
+  });
+
+  it('keeps revised reply history when the current invalidation is known at no revision', () => {
+    const tags = new TagState({ holdMs: SECOND });
+    const call = tags.applyLocal(['article'], SOFT);
+    tags.answerLocal(
+      call,
+      {
+        invalidations: [
+          {
+            value: 'article',
+            staleAt: SOFT.staleAt,
+            hardExpireAt: SOFT.hardExpireAt,
+            history: [HARD],
+          },
+        ],
+      },
+      SOFT.staleAt,
+    );
+
+    expect(tags.knownRevisionOf('article')).toBe(HARD.revision);
+    expect(tags.validityOf(['article'], T0, T0 + 4 * SECOND)).toBe('expired');
+    expect(tags.validityOf(['article'], T0, T0 + 4 * SECOND, HARD.revision)).toBe('stale');
+    expect(tags.callsOut).toBe(0);
   });
 
   it('merges overlapping revisions that arrive newest first', async () => {

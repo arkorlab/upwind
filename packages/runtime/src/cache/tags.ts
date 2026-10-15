@@ -86,7 +86,7 @@ const MAX_TAGS_HELD = 4096;
  *
  * So the marks this Function made are held apart from the ones it was told, and only what it made
  * itself can push them out: an application would have to invalidate this many distinct tags in one
- * isolate, by when the oldest are long since in the records. Read together (`#markOf`), the
+ * isolate, by when the oldest are long since in the records. Read together (`#staleAtOf`), the
  * stronger of the two wins.
  */
 const MAX_APPLIED_MARKS = 4096;
@@ -323,21 +323,24 @@ export class TagState {
   }
 
   /**
-   * What this isolate knows of a tag: what it was told, and what it did itself, the strongest of
-   * them. The second is kept apart because it is the only one no read brings back — see
+   * The latest timestamp this isolate knows of a tag: what it was told, and what it did itself.
+   * The second is kept apart because it is the only one no read brings back — see
    * `MAX_APPLIED_MARKS`.
    */
-  #markOf(value: string): TagMark | undefined {
+  #staleAtOf(value: string): number {
     const applied = this.#applied.get(value);
     const told = this.#tags.get(value);
-    return strongest([
+    const marks = [
       told?.history?.at(-1),
       told?.unknown?.at(-1),
       applied?.history?.at(-1),
       applied?.unanswered?.marks.at(-1),
       applied?.overflow?.marks.at(-1),
       applied?.unrevised?.at(-1),
-    ]);
+    ];
+    let latest = 0;
+    for (const mark of marks) latest = Math.max(latest, mark?.staleAt ?? 0);
+    return latest;
   }
 
   /**
@@ -557,18 +560,33 @@ export class TagState {
    * What the host answered `call` with for the tag, at the revision of the scope it recorded it at
    * (`answered`): the call is out no more, and the marks of the others still out stay, known at no
    * revision. An answer that says no revision is one the invalidation is known at none by for good
-   * (`settleLocal`).
+   * (`settleLocal`). Earlier deadlines returned by the host stay with the applied knowledge, so
+   * this isolate need not have synced the tag before invalidating it.
    */
-  confirmLocal(value: string, answered: TagMark, call: LocalInvalidation): void {
+  confirmLocal(
+    value: string,
+    answered: TagMark,
+    call: LocalInvalidation,
+    returned?: readonly TagHistoryMark[],
+  ): void {
+    const held = this.#applied.get(value);
+    let history = held?.history;
+    let revision = held?.answeredRevision ?? 0;
+    if (returned !== undefined) {
+      for (const mark of returned) {
+        history = withTagHistory(history, mark);
+        revision = Math.max(revision, mark.revision);
+      }
+    }
     if (answered.revision === undefined) {
+      this.#applied.set(value, { ...held, history, answeredRevision: revision });
       this.settleLocal(call, [value], answered);
       return;
     }
-    const held = this.#applied.get(value);
     this.#applied.set(value, {
       ...held,
-      answeredRevision: Math.max(held?.answeredRevision ?? answered.revision, answered.revision),
-      history: withTagHistory(held?.history, { ...answered, revision: answered.revision }),
+      answeredRevision: Math.max(revision, answered.revision),
+      history: withTagHistory(history, { ...answered, revision: answered.revision }),
       unanswered: without(held?.unanswered, call),
       overflow: overflowWithout(held?.overflow, call),
     });
@@ -608,6 +626,7 @@ export class TagState {
                 ),
         },
         call,
+        invalidation.history,
       );
     }
     this.settleLocal(
@@ -685,21 +704,10 @@ export class TagState {
   staleAtOf(tags: readonly string[]): number {
     let latest = 0;
     for (const tag of tags) {
-      latest = Math.max(latest, this.#markOf(tag)?.staleAt ?? 0);
+      latest = Math.max(latest, this.#staleAtOf(tag));
     }
     return latest;
   }
-}
-
-/**
- * The mark with the latest timestamp, for metadata such as `staleAtOf`; ties use the earlier
- * deadline. Entry validity is judged against every retained deadline in `historyValidity`.
- */
-function stronger(a: TagMark, b: TagMark): TagMark {
-  if (a.staleAt !== b.staleAt) {
-    return a.staleAt > b.staleAt ? a : b;
-  }
-  return { staleAt: a.staleAt, hardExpireAt: earliest(a.hardExpireAt, b.hardExpireAt) };
 }
 
 /**
@@ -848,17 +856,6 @@ function historyValidity(
   return validity;
 }
 
-/** The strongest of `marks` (`stronger`), or none where there are none. */
-function strongest(marks: readonly (TagMark | undefined)[]): TagMark | undefined {
-  let found: TagMark | undefined;
-  for (const mark of marks) {
-    if (mark !== undefined) {
-      found = found === undefined ? mark : stronger(found, mark);
-    }
-  }
-  return found;
-}
-
 /** The worse of two answers of what a tag says of an entry. */
 function worst(a: Validity, b: Validity): Validity {
   if (a === 'expired' || b === 'expired') {
@@ -873,13 +870,6 @@ function markValidity(mark: TagMark | undefined, timestamp: number, now: number)
     return 'fresh';
   }
   return mark.hardExpireAt !== null && mark.hardExpireAt <= now ? 'expired' : 'stale';
-}
-
-function earliest(a: number | null, b: number | null): number | null {
-  if (a === null) {
-    return b;
-  }
-  return b === null ? a : Math.min(a, b);
 }
 
 /** The worse of what the tags say and what the record itself carries. */

@@ -129,7 +129,7 @@ describe('use cache value stream ownership', () => {
     expect(cancelled).toHaveBeenCalledExactlyOnceWith(expect.any(String));
     expect(setData).not.toHaveBeenCalled();
     expect(behind).toStrictEqual([]);
-    await expect(handler.get(KEY, [])).resolves.toBeUndefined();
+    await expect(context.run(() => handler.get(KEY, []))).resolves.toBeUndefined();
   });
 
   it('does not wait for the render copy to consume a dynamic value', async () => {
@@ -171,8 +171,8 @@ describe('use cache value stream ownership', () => {
       expect.objectContaining({ key: KEY, valueBase64: btoa(VALUE) }),
     );
 
-    const first = await handler.get(KEY, []);
-    const second = await handler.get(KEY, []);
+    const first = await context.run(() => handler.get(KEY, []));
+    const second = await context.run(() => handler.get(KEY, []));
 
     await expect(new Response(first?.value).text()).resolves.toBe(VALUE);
     await expect(new Response(second?.value).text()).resolves.toBe(VALUE);
