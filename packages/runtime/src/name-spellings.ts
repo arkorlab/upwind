@@ -244,7 +244,8 @@ export function namesWithSpellings(store: Store): string[] {
     spelled.add(name);
     // A file or a page of its own is found decoded whole, a member by its built name (`spells`).
     const decodedWhole = isFile(store, name) || isOwnPage(store, name);
-    for (const spelling of spellingsOf(name, decodedWhole)) {
+    const spellings = spellingsOf(name, decodedWhole, routerPrefix(store));
+    for (const spelling of spellings) {
       offered.add(spelling);
     }
   }
@@ -269,9 +270,16 @@ export function namesWithSpellings(store: Store): string[] {
  * escapes data — `!`, `'`, `(`, `)` and `*` as well, which `encodeURIComponent` leaves be
  * (`/docs/rock%27n` for `/docs/rock'n`) — each in uppercase hex and in lowercase: those that are
  * other spellings of it. An escape of a character no encoder escapes (`%65` for `e`), or hex of
- * mixed case, is none of these; a destination written so is offered as it is written.
+ * mixed case, is none of these; a destination written so is offered as it is written. Nor is one
+ * that writes the base path otherwise than the router reads it (`routerPrefix`): a base path past
+ * ASCII in small letters (`/%e6%96%87…` for `/文書`) is no spelling of a name under it, and the
+ * router, handed none, answers it 404, as Next.js does.
  */
-function spellingsOf(name: string, decodedWhole: boolean): string[] {
+function spellingsOf(
+  name: string,
+  decodedWhole: boolean,
+  prefix: SpelledPrefix | undefined,
+): string[] {
   let asUrl: string;
   let segments: string[];
   try {
@@ -293,9 +301,13 @@ function spellingsOf(name: string, decodedWhole: boolean): string[] {
   for (const spelling of encoded) {
     spellings.add(spelling.replaceAll(UPPERCASE_ESCAPE, (escape) => escape.toLowerCase()));
   }
-  return [...spellings].filter(
-    (spelling) => spelling !== name && spells(spelling, name, decodedWhole),
-  );
+  return [...spellings].filter((spelling) => {
+    return (
+      spelling !== name &&
+      spells(spelling, name, decodedWhole) &&
+      spellsPrefixOf(prefix, spelling, name)
+    );
+  });
 }
 
 /**
