@@ -1,7 +1,7 @@
 import type { Validity } from '@stayingupwind/core/cache';
 import { withDeadline } from '@stayingupwind/core/util';
 
-import { readNewerData } from './data.ts';
+import { type LaterData, readNewerData } from './data.ts';
 import type { HeldValue } from './held-writes.ts';
 import type { DataReadRequest } from './host.ts';
 import type { CacheRuntime, DataMemo } from './runtime.ts';
@@ -78,10 +78,11 @@ const MAX_LATER_ASKS = 2;
  * one stands no worse — asked only of a value the read found stale or expired: a host whose reads
  * are cached answers with the value a later write replaced for as long as its cache keeps it, and
  * each isolate that judged it so would compute again what another has written. A later value that
- * stands no better than stale is taken, and one past it asked for (`MAX_LATER_ASKS`). Where
- * something overtook a later value while it was read — a write of the key this isolate began, or a
- * read that found one later still — none is answered with: what the isolate holds of the key now
- * is, judged afresh, and a miss where it holds none (`undefined`).
+ * stands no better than stale is taken, and one past it asked for (`MAX_LATER_ASKS`); the one taken
+ * last is kept only once nothing more is asked, and only where nothing overtook it since it was
+ * read — a write of the key this isolate began, or a read that found one later still. Where
+ * something did, none is answered with: what the isolate holds of the key now is, judged afresh,
+ * and a miss where it holds none (`undefined`).
  */
 export async function laterIfAny(
   runtime: CacheRuntime,
@@ -90,15 +91,16 @@ export async function laterIfAny(
   weighing: Weighing,
 ): Promise<Judged | undefined> {
   let judged = read;
+  let taken: LaterData | undefined;
   for (let asked = 0; asked < MAX_LATER_ASKS; asked += 1) {
     const { held, validity } = judged;
     if (SEVERITY[validity] === SEVERITY.fresh || held.revision === undefined) {
-      return judged;
+      break;
     }
     const later = await readNewerData(runtime, request, held.revision);
     const value = later === undefined ? undefined : heldIn(later.memo);
     if (later === undefined || value === undefined) {
-      return judged;
+      break;
     }
     let again: Validity;
     try {
@@ -106,15 +108,16 @@ export async function laterIfAny(
     } catch {
       // The later value could not be judged, or not in time: the one held is answered as it would
       // have been.
-      return judged;
+      break;
     }
     if (SEVERITY[again] > SEVERITY[validity]) {
-      return judged;
+      break;
     }
-    if (!later.keep()) {
-      return heldNow(weighing);
-    }
+    taken = later;
     judged = { held: value, validity: again };
   }
-  return judged;
+  if (taken === undefined) {
+    return judged;
+  }
+  return taken.keep() ? judged : heldNow(weighing);
 }
