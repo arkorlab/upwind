@@ -63,7 +63,7 @@ export interface PatternCost {
  * characters, a cubic one against 80, a quartic one against 25 — a user agent, past those, is left
  * to the application's Function — and a linear one against tens or hundreds of thousands.
  */
-const BUDGET = 524_288;
+export const BUDGET = 524_288;
 /**
  * A step: a character a repetition takes and gives back, measured at about a nanosecond and a half
  * on V8 (`a+b`, tried anywhere in a run of `a`).
@@ -624,8 +624,13 @@ function costOf(alternatives: Alternatives, reading: Reading): PatternCost | und
 }
 
 /** The steps a test of this cost takes against a value `length` long. */
-function stepsAt(cost: PatternCost, length: number): number {
-  return cost.terms.reduce((sum, steps, power) => sum + steps * length ** power, 0);
+export function stepsAt(cost: PatternCost, length: number): number {
+  // Horner's rule: one multiply and add per term, with no powers to work out on each test.
+  let steps = 0;
+  for (let power = cost.terms.length - 1; power >= 0; power -= 1) {
+    steps = steps * length + (cost.terms[power] ?? 0);
+  }
+  return steps;
 }
 
 /** The longest value a test of this cost is allowed against (`BUDGET`); none where `-1`. */
