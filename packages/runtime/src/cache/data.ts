@@ -121,6 +121,8 @@ export interface LaterData {
    * is then not to be answered with either.
    */
   readonly keep: () => boolean;
+  /** Whether no write of the key has begun since it was asked for: what `keep` asks first. */
+  readonly standing: () => boolean;
 }
 
 /**
@@ -130,12 +132,15 @@ export interface LaterData {
  * without any. Never rejects, and remembers nothing until the caller takes it (`keep`): a host whose
  * reads are cached answers with the value a later write replaced for as long as its cache keeps it,
  * and a read that judged that value stale or expired would compute again what another isolate has
- * already written — where the later one stands no worse.
+ * already written — where the later one stands no worse. A probe (`probing`) — a value asked for
+ * past one already taken — raises the key's floor only once it is kept: one that cannot be read
+ * whole, or is not taken, leaves the one taken before it to be kept.
  */
 export async function readNewerData(
   runtime: CacheRuntime,
   request: DataReadRequest,
   than: number,
+  probing = false,
 ): Promise<LaterData | undefined> {
   const { host } = runtime;
   if (host.getNewerData === undefined) {
@@ -153,8 +158,8 @@ export async function readNewerData(
     }
     // The key's order is learned before the bytes are read, whether or not they turn out usable or
     // the value is taken, as a read's is (`readData`): a read answered from before it is not
-    // remembered as the key's value.
-    if (current()) {
+    // remembered as the key's value. A probe's is learned only once it is kept.
+    if (!probing && current()) {
       state.revision = Math.max(state.revision, answer.dependencyRevision);
     }
     const memo = await withBytes(runtime, answer);
@@ -175,6 +180,7 @@ export async function readNewerData(
   const found = memo;
   return {
     memo: found,
+    standing: current,
     keep: () => {
       if (!current() || found.response.dependencyRevision < state.revision) {
         return false;

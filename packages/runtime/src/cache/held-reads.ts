@@ -65,24 +65,26 @@ async function heldNow(weighing: Weighing): Promise<Judged | undefined> {
   }
 }
 
-/**
- * How many later values a read asks the host for at most: the nearest it keeps, and, where that one
- * stands no better than stale, the next past it. A host may keep a value near — a copy beside its
- * reads — that was written before an invalidation the read already knows of, and a later one only
- * further off; asked past the near one, it answers with that.
- */
-const MAX_LATER_ASKS = 2;
+/** A later value read and judged, and how to keep it (`readNewerData`). */
+interface Candidate {
+  readonly later: LaterData;
+  readonly judged: Judged;
+}
 
 /**
  * The value read, or a later one the host keeps nearer than its read (`readNewerData`) where that
  * one stands no worse — asked only of a value the read found stale or expired: a host whose reads
  * are cached answers with the value a later write replaced for as long as its cache keeps it, and
- * each isolate that judged it so would compute again what another has written. A later value that
- * stands no better than stale is taken, and one past it asked for (`MAX_LATER_ASKS`); the one taken
- * last is kept only once nothing more is asked, and only where nothing overtook it since it was
- * read — a write of the key this isolate began, or a read that found one later still. Where
- * something did, none is answered with: what the isolate holds of the key now is, judged afresh,
- * and a miss where it holds none (`undefined`).
+ * each isolate that judged it so would compute again what another has written.
+ *
+ * A host can answer with the nearest value it keeps first — a copy beside its reads — that was
+ * written before an invalidation the read already knows of, while a later one stands further off.
+ * So where the later value stands no better than stale, one past it is asked for too, once, as a
+ * probe that moves nothing of the key until it is kept: where it cannot be read whole or judged in
+ * time, or stands worse than the first, the first is kept as it would have been. Where something
+ * overtook the value kept — a write of the key this isolate began since the first was asked for, or
+ * a read that found one later still — none is answered with: what the isolate holds of the key now
+ * is, judged afresh, and a miss where it holds none (`undefined`).
  */
 export async function laterIfAny(
   runtime: CacheRuntime,
@@ -90,17 +92,15 @@ export async function laterIfAny(
   read: Judged,
   weighing: Weighing,
 ): Promise<Judged | undefined> {
-  let judged = read;
-  let taken: LaterData | undefined;
-  for (let asked = 0; asked < MAX_LATER_ASKS; asked += 1) {
-    const { held, validity } = judged;
+  const laterThan = async (from: Judged, probing: boolean): Promise<Candidate | undefined> => {
+    const { held, validity } = from;
     if (SEVERITY[validity] === SEVERITY.fresh || held.revision === undefined) {
-      break;
+      return undefined;
     }
-    const later = await readNewerData(runtime, request, held.revision);
+    const later = await readNewerData(runtime, request, held.revision, probing);
     const value = later === undefined ? undefined : heldIn(later.memo);
     if (later === undefined || value === undefined) {
-      break;
+      return undefined;
     }
     let again: Validity;
     try {
@@ -108,16 +108,19 @@ export async function laterIfAny(
     } catch {
       // The later value could not be judged, or not in time: the one held is answered as it would
       // have been.
-      break;
+      return undefined;
     }
-    if (SEVERITY[again] > SEVERITY[validity]) {
-      break;
-    }
-    taken = later;
-    judged = { held: value, validity: again };
+    return SEVERITY[again] > SEVERITY[validity]
+      ? undefined
+      : { later, judged: { held: value, validity: again } };
+  };
+  const first = await laterThan(read, false);
+  if (first === undefined) {
+    return read;
   }
-  if (taken === undefined) {
-    return judged;
+  const kept = (await laterThan(first.judged, true)) ?? first;
+  if (!first.later.standing()) {
+    return heldNow(weighing);
   }
-  return taken.keep() ? judged : heldNow(weighing);
+  return kept.later.keep() ? kept.judged : heldNow(weighing);
 }
