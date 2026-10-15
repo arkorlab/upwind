@@ -1,5 +1,5 @@
 import { standsForClass } from '@stayingupwind/core/bundle';
-import { builtNameOf } from '@stayingupwind/core/manifest';
+import { builtNameOf, type SpelledPrefix, spellsPrefixOf } from '@stayingupwind/core/manifest';
 
 import { redirects } from './rewritten-path.ts';
 import { type Store, unlocalizedRouteOf } from './store.ts';
@@ -17,6 +17,25 @@ const SUB_DELIMITERS = /[!'()*]/gu;
 const HEX = 16;
 /** An escape as the encoders write one: its hex in uppercase. */
 const UPPERCASE_ESCAPE = /%[0-9A-F]{2}/gu;
+
+/** Each store's router's prefix (`routerPrefix`). */
+const routerPrefixes = new WeakMap<Store, SpelledPrefix>();
+
+/**
+ * What the store's router reads of a path as it is written (`spellsPrefixOf`): the base path, and
+ * in an application with `i18n`, its locales. A spelling that writes either escaped is no spelling
+ * of a name behind it: Next.js finds no base path in front of `/b%61se/about`.
+ */
+function routerPrefix(store: Store): SpelledPrefix {
+  let prefix = routerPrefixes.get(store);
+  if (prefix === undefined) {
+    const { basePath, i18n } = store.manifest.config;
+    const locales = (i18n?.locales ?? []).filter((locale) => locale !== '');
+    prefix = locales.length === 0 ? { basePath } : { basePath, locales };
+    routerPrefixes.set(store, prefix);
+  }
+  return prefix;
+}
 
 /** Each store's pages of their own (`ownPages`). */
 const ownPagesOf = new WeakMap<Store, ReadonlySet<string>>();
@@ -96,12 +115,20 @@ function foundFirst(
  * readings differ, the order is Next.js's: a page of its own as spelled and then decoded whole
  * (`foundFirst`), ahead of a member as spelled or by its built name (`builtNameOf`), each segment
  * decoded with an escaped slash kept inside it. Decoded whole for a member, `/docs/a%2Fb` was
- * looked up as the member `/docs/a/b` of another route.
+ * looked up as the member `/docs/a/b` of another route. A name found by decoding is the pathname's
+ * only where it writes the base path and the locale in front of the name as the router reads them,
+ * as written (`routerPrefix`).
  */
 export function prerenderedName(store: Store, pathname: string): string {
   if (!pathname.includes('%')) {
     return pathname;
   }
+  const name = decodedPrerenderName(store, pathname);
+  return name === pathname || spellsPrefixOf(routerPrefix(store), pathname, name) ? name : pathname;
+}
+
+/** The name `prerenderedName` finds a pathname with an escape in it under, its prefix unasked. */
+function decodedPrerenderName(store: Store, pathname: string): string {
   const prerenders = store.prerendersByPathname;
   const built = builtNameOf(pathname);
   const decoded = decodedOnce(pathname);
@@ -127,12 +154,23 @@ export function prerenderedName(store: Store, pathname: string): string {
  * member as spelled or by its built name (`builtNameOf`), an escaped slash inside its segment —
  * `/docs/a%2fb` is `/docs/a%2Fb`, the member `a/b`; `/docs/c%2Fd` no member of a route at
  * `/docs/c/d`; and `/docs/a%2Fb` the page `/docs/a/b` where that is a page of its own, though the
- * member `/docs/a%2Fb` is named so too. `undefined` where the spelling names itself, or nothing.
+ * member `/docs/a%2Fb` is named so too. A name found so is the spelling's only where it writes the
+ * base path and the locale in front of the name as the router reads them, as written
+ * (`routerPrefix`): Next.js finds no base path in front of `/b%61se/about`, and answers it 404.
+ * `undefined` where the spelling names itself, or nothing.
  */
 export function escapedNameOf(store: Store, pathname: string): string | undefined {
   if (!pathname.includes('%')) {
     return undefined;
   }
+  const name = decodedNameOf(store, pathname);
+  return name === undefined || spellsPrefixOf(routerPrefix(store), pathname, name)
+    ? name
+    : undefined;
+}
+
+/** The name `escapedNameOf` finds a pathname with an escape in it under, its prefix unasked. */
+function decodedNameOf(store: Store, pathname: string): string | undefined {
   const has = (name: string): boolean => store.pathnames.includes(name);
   const built = builtNameOf(pathname);
   const decoded = decodedOnce(pathname);
