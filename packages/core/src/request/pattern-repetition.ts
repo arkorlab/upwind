@@ -7,6 +7,7 @@ import {
   type Quantifier,
   quantifierAt,
 } from './pattern-syntax.ts';
+import type { PatternNode } from './pattern-tree.ts';
 
 /**
  * A repeated group whose repetitions a delimiter splits (`delimitedRepetition`): the one shape of
@@ -90,8 +91,36 @@ export function delimitedRepetition(fragment: string): boolean {
   const contents = groupContents(fragment, 0);
   return (
     contents !== undefined &&
-    (leadingDelimited(fragment, contents) || trailingDelimited(fragment, contents))
+    (leadingDelimited(fragment, contents) || trailingDelimiterOf(fragment, contents) !== undefined)
   );
+}
+
+/**
+ * Whether `node`, straight after `previous` in a sequence, is a repetition that takes no more than
+ * one segment from each place `previous` stops: `previous` repeats a group each of whose
+ * repetitions ends with a delimiter, and neither can consume the delimiter (`delimitedRepetition`).
+ *
+ * However it is quantified, such a group stops only where it began or just past a delimiter, and
+ * from each of those places a repetition that cannot consume the delimiter stops at the next one,
+ * or at the value's end: what it takes from one place is never what it takes from another. Read
+ * narrowly, as the group is: a repetition of one atom, which takes as much as the value holds.
+ */
+export function takesOneSegment(
+  previous: PatternNode | undefined,
+  node: PatternNode,
+): node is Extract<PatternNode, { kind: 'atom' }> {
+  if (
+    previous?.kind !== 'group' ||
+    previous.quantifier?.repeats !== true ||
+    node.kind !== 'atom' ||
+    node.quantifier?.max !== Infinity
+  ) {
+    return false;
+  }
+  const contents = groupContents(previous.fragment, 0);
+  const delimiter =
+    contents === undefined ? undefined : trailingDelimiterOf(previous.fragment, contents);
+  return delimiter?.every((character) => !node.atom.matches(character)) === true;
 }
 
 function leadingDelimited(fragment: string, contents: number): boolean {
@@ -120,13 +149,13 @@ function leadingDelimited(fragment: string, contents: number): boolean {
   return true;
 }
 
-function trailingDelimited(fragment: string, contents: number): boolean {
+function trailingDelimiterOf(fragment: string, contents: number): readonly string[] | undefined {
   const units: { start: number; atom: Atom; quantifier: Quantifier | undefined }[] = [];
   let index = contents;
   while (index < fragment.length) {
     const atom = atomAt(fragment, index);
     if (atom === undefined) {
-      return false;
+      return undefined;
     }
     const quantifier = quantifierAt(fragment, atom.end);
     units.push({ start: index, atom, quantifier });
@@ -137,16 +166,16 @@ function trailingDelimited(fragment: string, contents: number): boolean {
   const variants = delimiter === undefined ? undefined : caseVariants(delimiter.char);
   // The delimiter is the group's last unit, and it is not quantified itself.
   if (variants === undefined || last?.quantifier !== undefined) {
-    return false;
+    return undefined;
   }
   // Before it, as Next.js writes it: one part that repeats and cannot consume the delimiter, and
   // nothing else quantified. Read that narrowly, as the plain units above are: an optional part,
   // which Next.js does not write here, is left to the rule every other repetition is held to.
   const quantified = units.slice(0, -1).filter((unit) => unit.quantifier !== undefined);
   const [part] = quantified;
-  return (
-    quantified.length === 1 &&
+  return quantified.length === 1 &&
     part?.quantifier?.repeats === true &&
     variants.every((variant) => !part.atom.matches(variant))
-  );
+    ? variants
+    : undefined;
 }
