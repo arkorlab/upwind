@@ -1,4 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { Writable } from 'node:stream';
+
+import { releaseStream } from '@stayingupwind/core/util';
 
 import { isRegeneration, type RequestContext, requestContext } from './cache/context.ts';
 import { invokeEdgeHandler } from './edge-invoke.ts';
@@ -131,11 +134,16 @@ function edgeRequestOf(context: RequestContext, active: IncomingMessage): Reques
 
 /**
  * An answer of the edge runtime, copied into the Node.js response a render was already using: its
- * headers, set over what the response had as a Node.js render's would be, and its body whole —
- * a not-found page is small. A rendered page keeps the 404 being answered; a redirect or a failure
+ * headers, set over what the response had as a Node.js render's would be, and its body as it is
+ * rendered. A not-found can include a layout's slow Suspense boundary: its first bytes must not
+ * wait for the rest. A rendered page keeps the 404 being answered; a redirect or a failure
  * keeps the status that says so, as the not-found of a document that matched no route does.
  */
-async function copyInto(answer: Response, response: ServerResponse): Promise<void> {
+async function copyInto(
+  answer: Response,
+  request: IncomingMessage,
+  response: ServerResponse,
+): Promise<void> {
   if (answer.status !== HTTP_OK) {
     response.statusCode = answer.status;
   }
@@ -148,7 +156,15 @@ async function copyInto(answer: Response, response: ServerResponse): Promise<voi
   if (cookies.length > 0) {
     response.setHeader('set-cookie', cookies);
   }
-  response.end(new Uint8Array(await answer.arrayBuffer()));
+  if (request.method === 'HEAD' || answer.body === null) {
+    response.end();
+    releaseStream(answer.body);
+    return;
+  }
+  // The Node writable applies backpressure and a client disconnect cancels the source. Leave an
+  // upstream failure to the bridge: before headers it can still send a 500; afterwards it breaks
+  // the response. Aborting the writable here would destroy even the not-yet-sent response.
+  await answer.body.pipeTo(Writable.toWeb(response), { preventAbort: true });
 }
 
 /**
@@ -192,7 +208,7 @@ async function renderedAppNotFound(
     requestMeta,
     waitUntil: context.waitUntil,
   });
-  await copyInto(answer, response);
+  await copyInto(answer, request, response);
   return true;
 }
 
