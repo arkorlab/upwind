@@ -105,11 +105,17 @@ interface Gate {
 const gates = new WeakMap<RegExp, Gate | null>();
 
 /**
- * What a test of `value` costs if it cannot pass the pattern's literal gate (`literalGate`), with
- * the scan that disproves the literal included. `Infinity` where the value holds the literal, or
- * the cost cannot be bounded.
+ * What a test of `value` costs if it cannot pass the pattern's literal gate (`literalGate`). The
+ * scans are reserved and charged before they run, even if the value holds the literal or the
+ * regex cannot be afforded afterwards. Without a request store their cost is included in the
+ * returned bound instead. `Infinity` where the value holds the literal or the cost is unbounded.
  */
-function stepsShortOfLiteral(pattern: RegExp, value: string, lineFree: boolean): number {
+function stepsShortOfLiteral(
+  pattern: RegExp,
+  value: string,
+  lineFree: boolean,
+  current: PatternBudget | undefined,
+): number {
   let gate = gates.get(pattern);
   if (gate === undefined) {
     // Read once for the literal and for a value with no line terminator, whose cost is the one asked
@@ -121,29 +127,37 @@ function stepsShortOfLiteral(pattern: RegExp, value: string, lineFree: boolean):
   if (gate === null) {
     return Infinity;
   }
-  const held = pattern.flags.includes('i') ? value.toLowerCase() : value;
+  const ignoresCase = pattern.flags.includes('i');
+  // Finding the missing literal, and folding the value where needed, are linear work too. A caller
+  // may catch a refusal and try another candidate; scans already done must still spend its budget.
+  const scan = value.length * (ignoresCase ? 2 : 1);
+  if (scan + 1 > (current?.remaining ?? BUDGET - Math.max(1, value.length))) {
+    return Infinity;
+  }
+  if (current !== undefined) {
+    current.remaining -= scan;
+  }
+  const held = ignoresCase ? value.toLowerCase() : value;
   if (held.includes(gate.literal)) {
     return Infinity;
   }
-  // Finding the missing literal, and folding the value where needed, are linear work too. Without
-  // this charge an anchored literal could afford hundreds of thousands of full-value scans.
-  const scan = value.length * (pattern.flags.includes('i') ? 2 : 1);
+  const unscopedScan = current === undefined ? scan : 0;
   if (lineFree) {
-    return gate.lineFree === null ? Infinity : scan + stepsAt(gate.lineFree, value.length);
+    return gate.lineFree === null ? Infinity : unscopedScan + stepsAt(gate.lineFree, value.length);
   }
   if (gate.any === undefined) {
     gate.any = literalGate(pattern.source, pattern.flags, false)?.cost ?? null;
   }
-  return gate.any === null ? Infinity : scan + stepsAt(gate.any, value.length);
+  return gate.any === null ? Infinity : unscopedScan + stepsAt(gate.any, value.length);
 }
 
 /**
  * Throw `PatternBudgetExceededError` where tests are bounded (`budgetPatterns`) and the pattern's cost
  * against `value` is past what a test or the current request has left — the whole pattern's, or,
  * for a value that does not hold its literal gate, what comes before the gate (`literalGate`). A
- * test that fits is charged to the current request before it runs, including the scan for line
- * terminators; without a store only that test is bounded. Ordinary affordable tests never need to
- * read or search for their literal gate.
+ * regex that fits is charged to the current request before it runs. Guard scans are charged before
+ * they run even where the regex is later refused; without a store only that test is bounded.
+ * Ordinary affordable tests never need to read or search for their literal gate.
  */
 export function assertAffordable(pattern: RegExp, value: string): void {
   if (!budget.on) {
@@ -152,24 +166,29 @@ export function assertAffordable(pattern: RegExp, value: string): void {
   const current = budget.current?.();
   const remaining = current?.remaining ?? BUDGET;
   // Even an anchored, constant-cost non-match scans the value here to decide what `.` can take.
-  // Reserve that work once, before doing it; the regex itself costs at least one attempt.
-  const available = remaining - value.length;
+  // Reserve that work once, before doing it; even an empty value takes one guard attempt, and the
+  // regex itself costs at least one more.
+  const guard = Math.max(1, value.length);
+  const available = remaining - guard;
   if (available < 1) {
     throw new PatternBudgetExceededError({ source: pattern.source, valueLength: value.length });
+  }
+  if (current !== undefined) {
+    current.remaining -= guard;
   }
   const lineFree = !LINE_TERMINATOR.test(value);
   const cost = costFor(pattern, lineFree);
   let steps = cost === null ? Infinity : stepsAt(cost, value.length);
   if (steps > available) {
-    steps = stepsShortOfLiteral(pattern, value, lineFree);
+    steps = stepsShortOfLiteral(pattern, value, lineFree, current);
   }
   // Even a zero-length value requires the engine to attempt the pattern once.
   steps = Math.max(1, steps);
-  if (steps > available) {
+  if (steps > (current?.remaining ?? available)) {
     throw new PatternBudgetExceededError({ source: pattern.source, valueLength: value.length });
   }
   if (current !== undefined) {
-    current.remaining -= value.length + steps;
+    current.remaining -= steps;
   }
 }
 

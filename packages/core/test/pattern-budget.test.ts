@@ -1,5 +1,6 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { matcherHolds } from '../src/paas/payload-matcher.ts';
 import { anyConditionHolds } from '../src/request/conditions.ts';
 import {
   budgetPatterns,
@@ -120,7 +121,7 @@ describe('a request allowance for routing patterns', () => {
 
   it('charges an attempt against an empty value and refuses it after exhaustion', () => {
     current = createPatternBudget();
-    current.remaining = 3;
+    current.remaining = 5;
     const pattern = compiled('^$');
 
     expect(testWithin(pattern, '')).toBe(true);
@@ -141,6 +142,61 @@ describe('a request allowance for routing patterns', () => {
 
     expect(() => testWithin(pattern, value)).toThrow(PatternBudgetExceededError);
     expect(test).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['^a+a+!$', 'a'.repeat(4096)],
+    ['^gatea+a+!$', `gate${'a'.repeat(4096)}`],
+  ])(
+    'charges guard scans when %s is refused, including one that finds its literal',
+    (source, value) => {
+      current = createPatternBudget();
+      const initial = current.remaining;
+      const pattern = compiled(source, 'i');
+      const test = vi.spyOn(pattern, 'test');
+
+      expect(() => testWithin(pattern, value)).toThrow(PatternBudgetExceededError);
+      expect(test).not.toHaveBeenCalled();
+      expect(current.remaining).toBe(initial - value.length * 3);
+    },
+  );
+
+  it('does not scan a literal when the guards have too little allowance left', () => {
+    current = createPatternBudget();
+    const value = 'a'.repeat(4096);
+    current.remaining = value.length + 1;
+    const pattern = compiled('^a+a+!$', 'i');
+
+    expect(() => testWithin(pattern, value)).toThrow(PatternBudgetExceededError);
+    expect(current.remaining).toBe(1);
+    expect(() => testWithin(pattern, value)).toThrow(PatternBudgetExceededError);
+    expect(current.remaining).toBe(1);
+  });
+
+  it('charges guard attempts for refused patterns against an empty value', () => {
+    current = createPatternBudget();
+    current.remaining = 3;
+    const pattern = compiled(String.raw`(a)\1`);
+
+    expect(() => testWithin(pattern, '')).toThrow(PatternBudgetExceededError);
+    expect(current.remaining).toBe(2);
+    expect(() => testWithin(pattern, '')).toThrow(PatternBudgetExceededError);
+    expect(current.remaining).toBe(1);
+    expect(() => testWithin(pattern, '')).toThrow(PatternBudgetExceededError);
+    expect(current.remaining).toBe(1);
+  });
+
+  it('bounds guards across refused payload split candidates that the matcher catches', () => {
+    current = createPatternBudget();
+    const initial = current.remaining;
+    const payload = String.raw`(\.json|\.rsc|\.segments\/.+\.segment\.rsc)?[\/#\?]?$`;
+    const pattern = compiled(`^/(a+a+)!${payload}`, 'i');
+    const path = `/${'a'.repeat(20_000)}${'.segments/child'.repeat(16)}.segment.rsc`;
+
+    expect(() => matcherHolds(pattern, path)).toThrow(PatternBudgetExceededError);
+    expect(current.remaining).toBeLessThan(path.length * 3);
+    expect(current.remaining).toBeGreaterThanOrEqual(0);
+    expect(current.remaining).toBeLessThan(initial);
   });
 
   it('reads the cost for a value with line terminators separately', () => {
