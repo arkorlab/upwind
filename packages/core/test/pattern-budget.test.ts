@@ -22,6 +22,14 @@ const QUADRATIC = '^a+a+!$';
 const VALUE = 'a'.repeat(700);
 /** Next.js 16.4's matcher for `/rewritten/:path*`, whose missing literal bounds the work. */
 const MATCHER = String.raw`^(?:\/(_next\/data\/[^/]{1,}))?\/rewritten(?:\/((?:[^\/#\?]+?)(?:\/(?:[^\/#\?]+?))*))?(\.json|\.rsc|\.segments\/.+\.segment\.rsc)?[\/#\?]?$`;
+/**
+ * The redirects Next.js 16.4 writes for `trailingSlash: true`, as its adapter compiles them: one for
+ * a file's path asked with a slash, and one for any other path asked without.
+ */
+const TRAILING_SLASH_REDIRECTS = [
+  String.raw`^(?:\/((?!\.well-known(?:\/.*)?)(?:[^/]+\/)*[^/]+\.\w+))\/$`,
+  String.raw`^(?:\/((?!\.well-known(?:\/.*)?)(?:[^/]+\/)*[^/\.]+))$`,
+];
 
 describe('a request allowance for routing patterns', () => {
   let current: PatternBudget | undefined;
@@ -205,5 +213,24 @@ describe('a request allowance for routing patterns', () => {
 
     expect(testWithin(pattern, 'a'.repeat(4096))).toBe(true);
     expect(() => testWithin(pattern, `${'a'.repeat(4096)}\n`)).toThrow(PatternBudgetExceededError);
+  });
+
+  /**
+   * A request is asked both ahead of the file it names, and both again among the header rules,
+   * since each redirect carries the `Location` it answers with. Read as cubic, the one for a file's
+   * path took nearly all of a request's allowance at 63 characters, asked twice: a build's own
+   * client middleware manifest went to the application's Function, which has none to serve.
+   */
+  it('affords a file’s path the redirects of `trailingSlash: true`, twice over', () => {
+    current = createPatternBudget();
+    const redirects = TRAILING_SLASH_REDIRECTS.map((source) => compiled(source, 'i'));
+    const path = `/_next/static/${'a'.repeat(200)}/_clientMiddlewareManifest.js`;
+
+    // Ahead of the file, and among the header rules.
+    const asked = [...redirects, ...redirects].map((redirect) => testWithin(redirect, path));
+
+    expect(asked).toStrictEqual([false, false, false, false]);
+    // With most of the allowance left for the rest of the request's rules.
+    expect(current.remaining).toBeGreaterThan(createPatternBudget().remaining / 2);
   });
 });
