@@ -360,7 +360,7 @@ function sequenceCost(
     // where it neither ends its context, which is read for less, nor stands in a lookbehind, which
     // is matched from its end backwards.
     const once =
-      takesOneSegment(nodes[index - 1], node) &&
+      takesOneSegment(nodes[index - 1], node, reading.flags) &&
       follow.context.kind !== 'lookbehind' &&
       !endsItsContext(node, follow, reading);
     let cost: Cost | undefined;

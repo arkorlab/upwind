@@ -104,12 +104,19 @@ export function delimitedRepetition(fragment: string): boolean {
  * from each of those places a repetition that cannot consume the delimiter stops at the next one,
  * or at the value's end: what it takes from one place is never what it takes from another. Read
  * narrowly, as the group is: a repetition of one atom, which takes as much as the value holds.
+ *
+ * Not under `u` (`flags`), which every pattern the edge runs is compiled without. There a pattern
+ * reads a surrogate pair as one character: a class that names an astral character takes whole the
+ * pair a group's repetitions end with, where this reads only the pair's halves. And it reads
+ * escapes this takes for the characters they spell (`\p{P}`, `\u{2F}`).
  */
 export function takesOneSegment(
   previous: PatternNode | undefined,
   node: PatternNode,
+  flags: string,
 ): node is Extract<PatternNode, { kind: 'atom' }> {
   if (
+    flags.includes('u') ||
     previous?.kind !== 'group' ||
     previous.quantifier?.repeats !== true ||
     node.kind !== 'atom' ||
