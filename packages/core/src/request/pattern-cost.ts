@@ -1,4 +1,4 @@
-import { caseVariants, delimitedRepetition } from './pattern-repetition.ts';
+import { caseVariants, delimitedRepetition, takesOneSegment } from './pattern-repetition.ts';
 import type { Atom } from './pattern-syntax.ts';
 import {
   type Alternatives,
@@ -42,11 +42,21 @@ import {
  *   value's end: once reached, the match succeeds. Only for a value with no line terminator, all
  *   of whose characters `.` takes.
  *
+ * And one shape revisits only what it has not taken yet: a repetition just after a group each of
+ * whose repetitions ends with a delimiter that neither can consume (`takesOneSegment`), as in
+ * `(?:[^/]+\/)*[^/]+`. The group stops only where it began or just past a delimiter, and from each
+ * of those places the repetition takes no more than the value holds before its next delimiter: what
+ * it scans from all of them together is the value once over, and what follows it is reached as many
+ * times, not `n` times for each place the group stops (`segmentScan`).
+ *
  * Next.js's routes and matchers are linear in this count: their parameters are forced by the slash
  * after them, their catch-alls by the end, and their matchers end in `.*` with only optional parts
- * after it. Each part of the pattern adds what it does each time it is reached, in steps measured on
- * V8 (`REPEATED_STEPS` and the rest), so that a long pattern costs what its length does; a choice
- * between alternatives, of an optional part or of a count multiplies what follows instead.
+ * after it. The two redirects of `trailingSlash: true` take their last segment after a group of
+ * segments, as above: the one for a path that names no file is linear, and the one for a file's,
+ * whose name's extension is a repetition after a repetition, quadratic. Each part of the pattern
+ * adds what it does each time it is reached, in steps measured on V8 (`REPEATED_STEPS` and the
+ * rest), so that a long pattern costs what its length does; a choice between alternatives, of an
+ * optional part or of a count multiplies what follows instead.
  */
 
 /** A pattern's cost as an upper bound in steps, a polynomial in its value's length `n`. */
@@ -345,8 +355,18 @@ function sequenceCost(
   let current = entry;
   let factor = 1;
   for (const [index, node] of nodes.entries()) {
-    const cost =
-      current < MAX_DEGREE ? nodeCost(node, current, follows[index] ?? after, reading) : undefined;
+    const follow = follows[index] ?? after;
+    // A repetition straight after a group of segments takes each segment once (`segmentScan`),
+    // where it neither ends its context, which is read for less, nor stands in a lookbehind, which
+    // is matched from its end backwards.
+    const once =
+      takesOneSegment(nodes[index - 1], node, reading.flags) &&
+      follow.context.kind !== 'lookbehind' &&
+      !endsItsContext(node, follow, reading);
+    let cost: Cost | undefined;
+    if (current < MAX_DEGREE) {
+      cost = once ? segmentScan(current) : nodeCost(node, current, follow, reading);
+    }
     if (cost === undefined) {
       return undefined;
     }
@@ -356,6 +376,21 @@ function sequenceCost(
     factor = Math.min(factor * cost.factor, MAX_WAYS);
   }
   return { exit: current, factor, terms };
+}
+
+/**
+ * What a repetition that takes one segment from each place the group before it stops costs
+ * (`takesOneSegment`): those stretches do not overlap, so what it scans from all of them is the
+ * value once over for each time the group is reached — `entry`, which already counts the group's
+ * stops — and what follows it is reached once for each character of that, and no more often.
+ *
+ * `(?:[^/]+\/)*[^/]+` is the last segment of a path in the redirects Next.js writes for
+ * `trailingSlash: true`, asked of every request ahead of every route and every shipped file. Read
+ * as a repetition from each of the group's stops, the redirect for a file's path was cubic, and a
+ * path of a few dozen characters spent most of what a request is allowed.
+ */
+function segmentScan(entry: number): Cost {
+  return { exit: entry, factor: 1, terms: term(entry, REPEATED_STEPS) };
 }
 
 /**
