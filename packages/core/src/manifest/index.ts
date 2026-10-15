@@ -69,9 +69,11 @@ export {
   projectManifestSchema,
   READ_MANIFEST_SCHEMA_VERSIONS,
   type ReservedRoute,
+  type SpelledPrefix,
   type StaticFileAssetPrefix,
   type StaticFileEntry,
   staticFileEntrySchema,
   type StaticFileLocales,
 } from './schema.ts';
+export { spellsPrefixOf } from './spelled-prefix.ts';
 export { fromStoredManifest } from './stored.ts';

@@ -27,10 +27,12 @@ import {
   type RouteEntry,
   type ProjectManifest,
   projectManifestSchema,
+  type SpelledPrefix,
   type StaticFileAssetPrefix,
   type StaticFileEntry,
   type StaticFileLocales,
 } from './schema.ts';
+import { spellsPrefixOf } from './spelled-prefix.ts';
 import { fromStoredManifest, toStoredManifest } from './stored.ts';
 
 const DEFAULT_FIRST_BYTE_TIMEOUT_MS = 15_000;
@@ -66,6 +68,8 @@ export interface BuildProjectManifestInput {
   readonly exactFunctions?: Readonly<Record<string, string>> | undefined;
   /** The pages of their own a dynamic route's pattern also matches (`filesystemPagesSchema`). */
   readonly filesystemPages?: readonly string[] | undefined;
+  /** What the router reads of a path as written: the base path, and the locales behind it. */
+  readonly spelledPrefix?: SpelledPrefix | undefined;
   readonly headerRules?: readonly HeaderRule[] | undefined;
   /** How the deployment's Functions fill a header's `$` references, as its bundle says. */
   readonly routerReferences?: RouterReferences | undefined;
@@ -101,13 +105,17 @@ function listed(pathnames: readonly string[]): Record<string, true> {
   return Object.fromEntries(pathnames.map((pathname) => [pathname, true]));
 }
 
-/** The pathnames the edge looks a page up among, each listed by its name. */
+/**
+ * The pathnames the edge looks a page up among, each listed by its name, and what of a path the
+ * router reads as written in front of them.
+ */
 function pathnameFields(
   input: BuildProjectManifestInput,
-): Pick<ProjectManifest, 'exactPathnames' | 'filesystemPages'> {
+): Pick<ProjectManifest, 'exactPathnames' | 'filesystemPages' | 'spelledPrefix'> {
   return {
     ...(input.exactPathnames !== undefined && { exactPathnames: listed(input.exactPathnames) }),
     ...(input.filesystemPages !== undefined && { filesystemPages: listed(input.filesystemPages) }),
+    ...(input.spelledPrefix !== undefined && { spelledPrefix: input.spelledPrefix }),
   };
 }
 
@@ -295,10 +303,17 @@ export function staticFileStatus(pathname: string, basePath = ''): number {
 /**
  * The key a record of files holds a pathname under: as the request spelled it, and then decoded
  * whole, as Next.js's filesystem check looks a file up both ways (`getItem`,
- * `server/lib/router-utils/filesystem.ts`). A pathname with nothing to decode costs the one lookup
- * it always did. A page Next.js built is looked up as Next.js finds it (`pageKeyOf`).
+ * `server/lib/router-utils/filesystem.ts`) — decoded, where the path writes the base path and a
+ * locale in front of the file as the router reads them, as written (`spellsPrefixOf`): the check
+ * finds no file under the base path for `/b%61se/logo.png`. A pathname with nothing to decode costs
+ * the one lookup it always did. A page Next.js built is looked up as Next.js finds it
+ * (`pageKeyOf`).
  */
-function keyOf(record: Readonly<Record<string, unknown>>, pathname: string): string | undefined {
+function keyOf(
+  record: Readonly<Record<string, unknown>>,
+  pathname: string,
+  prefix: SpelledPrefix | undefined,
+): string | undefined {
   if (Object.hasOwn(record, pathname)) {
     return pathname;
   }
@@ -311,7 +326,9 @@ function keyOf(record: Readonly<Record<string, unknown>>, pathname: string): str
   } catch {
     return undefined;
   }
-  return Object.hasOwn(record, decoded) ? decoded : undefined;
+  return Object.hasOwn(record, decoded) && spellsPrefixOf(prefix, pathname, decoded)
+    ? decoded
+    : undefined;
 }
 
 /**
@@ -354,7 +371,11 @@ export function withoutAssetPrefix(
 /** What of a manifest finds a file the build shipped (`staticFileKey`). */
 type FileLookup = Pick<
   ProjectManifest,
-  'staticFiles' | 'staticFileLocales' | 'staticFileAssetPrefix' | 'staticFileTrailingSlash'
+  | 'staticFiles'
+  | 'staticFileLocales'
+  | 'staticFileAssetPrefix'
+  | 'staticFileTrailingSlash'
+  | 'spelledPrefix'
 >;
 
 /**
@@ -375,14 +396,19 @@ export function staticFileKey(manifest: FileLookup, pathname: string): string | 
   if (staticFiles === undefined) {
     return undefined;
   }
-  const named = namedFileKey(manifest, staticFiles, pathname);
+  // The prefix the router reads as written is asked of the path the request spelled; a path made
+  // of it here — a default locale taken out, the asset prefix put back as the base path — writes
+  // it as the configuration does, as the rewrite Next.js makes of it does.
+  const named = namedFileKey(manifest, staticFiles, pathname, manifest.spelledPrefix);
   if (named !== undefined) {
     return named;
   }
   const unlocalized =
     staticFileLocales === undefined ? undefined : withoutDefaultLocale(staticFileLocales, pathname);
   const localized =
-    unlocalized === undefined ? undefined : namedFileKey(manifest, staticFiles, unlocalized);
+    unlocalized === undefined
+      ? undefined
+      : namedFileKey(manifest, staticFiles, unlocalized, undefined);
   if (localized !== undefined) {
     return localized;
   }
@@ -394,7 +420,7 @@ export function staticFileKey(manifest: FileLookup, pathname: string): string | 
     (unlocalized === undefined
       ? undefined
       : withoutAssetPrefix(staticFileAssetPrefix, unlocalized));
-  return unprefixed === undefined ? undefined : keyOf(staticFiles, unprefixed);
+  return unprefixed === undefined ? undefined : keyOf(staticFiles, unprefixed, undefined);
 }
 
 /**
@@ -517,13 +543,19 @@ export function namesNoFile(pathname: string): boolean {
   return last !== '' && !last.replaceAll(/\[[^[\]]*\]/gu, '').includes('.');
 }
 
-/** The file a pathname names as spelled or decoded (`keyOf`), or by the slash (`slashedFileKey`). */
+/**
+ * The file a pathname names as spelled or decoded (`keyOf`), or by the slash (`slashedFileKey`):
+ * decoded, where it writes `prefix` as the router reads it.
+ */
 function namedFileKey(
   manifest: FileLookup,
   staticFiles: Record<string, StaticFileEntry>,
   pathname: string,
+  prefix: SpelledPrefix | undefined,
 ): string | undefined {
-  return keyOf(staticFiles, pathname) ?? slashedFileKey(manifest, staticFiles, pathname);
+  return (
+    keyOf(staticFiles, pathname, prefix) ?? slashedFileKey(manifest, staticFiles, pathname, prefix)
+  );
 }
 
 /**
@@ -537,6 +569,7 @@ function slashedFileKey(
   manifest: FileLookup,
   staticFiles: Record<string, StaticFileEntry>,
   pathname: string,
+  prefix: SpelledPrefix | undefined,
 ): string | undefined {
   if (manifest.staticFileTrailingSlash !== true || pathname.length < 2 || !pathname.endsWith('/')) {
     return undefined;
@@ -544,7 +577,7 @@ function slashedFileKey(
   // Judged on the file's own name, which the runtime makes the alias of: a request may escape the
   // dot that makes a name a file's (`/manual%2Etxt/`), and the file it decodes to takes no slash.
   // Nor does one whose name has a bracket in it, which the runtime reads as a template's.
-  const key = keyOf(staticFiles, pathname.slice(0, -1));
+  const key = keyOf(staticFiles, pathname.slice(0, -1), prefix);
   return key !== undefined && namesNoFile(key) && !key.includes('[') ? key : undefined;
 }
 
