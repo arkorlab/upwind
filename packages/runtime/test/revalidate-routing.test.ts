@@ -16,10 +16,10 @@ import { getStore, routerPathnames, type Store } from '../src/store.ts';
 
 vi.mock(import('../src/entries.ts'), () => ({ nodeHandlerOf: vi.fn() }));
 vi.mock(import('../src/cache/regenerate.ts'), () => ({ regenerate: vi.fn() }));
-vi.mock(import('../src/cache/handlers.ts'), async (importOriginal) => ({
-  ...(await importOriginal()),
-  invalidateNow: vi.fn(),
-}));
+vi.mock(import('../src/cache/handlers.ts'), async (importOriginal) => {
+  const original = await importOriginal();
+  return { ...original, invalidateNow: vi.fn() };
+});
 vi.mock(import('../src/placement.ts'), () => ({ elsewhere: vi.fn() }));
 vi.mock(import('../src/node-bridge.ts'), () => ({ invokeNodeHandler: vi.fn() }));
 vi.mock(import('../src/store.ts'), async (importOriginal) => {
