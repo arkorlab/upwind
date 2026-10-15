@@ -126,6 +126,22 @@ describe('the path a request asks for a route by', () => {
     expect(routeRequestPathOf(manifest, '/docs/a%2Fb')).toBeUndefined();
   });
 
+  /**
+   * Behind a default locale, a file is served for the route's name (`withoutDefaultLocale`) at
+   * every spelling that keeps the locale as it is. One that escapes the locale (`/%65n/a%20b`) names
+   * no page either: Next.js's router finds a locale in the path as spelled (`normalizeLocalePath`),
+   * and puts the default one in front of a path that names none, `/en/%65n/a%20b`.
+   */
+  it('names no path for a route behind a default locale that a file is found ahead of', () => {
+    const manifest = {
+      ...manifestOf(['/en/a b']),
+      staticFiles: { '/a b': FILE },
+      staticFileLocales: { basePath: '', locales: ['en'] },
+    };
+
+    expect(routeRequestPathOf(manifest, '/en/a b')).toBeUndefined();
+  });
+
   /** A build kept from the deployment before that answers only its own `dpl` is no file of this one. */
   it('asks for a route at a kept file’s name where that file answers only its own deployment', () => {
     const kept = { ...FILE, deploymentId: 'dpl_before', dplOnly: true as const };
