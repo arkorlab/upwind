@@ -6,6 +6,7 @@ import type {
   InvalidationState,
   OutputCompute,
   OutputResponse,
+  TagHistoryMark,
 } from '@stayingupwind/core/cache';
 import type { ScopeRevision } from '@stayingupwind/core/paas';
 
@@ -416,6 +417,8 @@ export interface TagInvalidation {
    * (`TagMark.revision`).
    */
   readonly revision?: number | undefined;
+  /** Earlier deadlines that still apply to older values, bounded by the host. */
+  readonly history?: readonly TagHistoryMark[] | undefined;
 }
 
 export interface TagInvalidations {
