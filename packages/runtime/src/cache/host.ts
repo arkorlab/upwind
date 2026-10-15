@@ -6,6 +6,7 @@ import type {
   InvalidationState,
   OutputCompute,
   OutputResponse,
+  TagHistoryMark,
 } from '@stayingupwind/core/cache';
 import type { ScopeRevision } from '@stayingupwind/core/paas';
 
@@ -413,9 +414,12 @@ export interface TagInvalidation {
   /**
    * The revision of the scope the host recorded the invalidation at, where it says: what tells a
    * view that held the invalidation from one that did not, whatever the clocks say
-   * (`TagMark.revision`).
+   * (`TagMark.revision`). Hosts should supply this alongside history: equal timestamps and
+   * deadlines can belong to distinct invalidations, so they do not identify a current revision.
    */
   readonly revision?: number | undefined;
+  /** Earlier deadlines that still apply to older values, bounded by the host. */
+  readonly history?: readonly TagHistoryMark[] | undefined;
 }
 
 export interface TagInvalidations {

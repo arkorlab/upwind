@@ -6,6 +6,7 @@ import {
   publishedD1BindingCount,
   publishedFunctionEnv,
 } from '@stayingupwind/core/paas';
+import { releaseStream } from '@stayingupwind/core/util';
 
 import { readWithin } from './body.ts';
 import { nowMs } from './clock.ts';
@@ -615,15 +616,14 @@ async function setUseCache(
   const written = Promise.withResolvers<unknown>();
   try {
     const entry = await pendingEntry;
-    // As Next.js's own handler does: the wrapper serves one branch while the other is stored, and
-    // an entry that expires at once is dynamic, never served from a store.
-    const [served, stored] = entry.value.tee();
-    entry.value = served;
+    // Next.js keeps its own render copy: this stream belongs to the handler alone. An entry that
+    // expires at once is dynamic, never served from a store. Its cancellation must not wait for
+    // another branch held by the wrapper to finish, or requests joining this write cannot proceed.
     if (entry.expire === 0) {
-      await stored.cancel();
+      releaseStream(entry.value, 'dynamic use cache value is not stored');
       return;
     }
-    const bytes = await readWithin(stored, MAX_VALUE_BYTES);
+    const bytes = await readWithin(entry.value, MAX_VALUE_BYTES);
     if (bytes === undefined) {
       runtime.log('use cache value not stored: too large', { key: cacheKey });
       return;
