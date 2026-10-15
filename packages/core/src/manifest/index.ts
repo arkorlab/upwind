@@ -12,6 +12,8 @@ export {
   type MemberOfClass,
   memberRouteFor,
   pathIsReserved,
+  type RequestHeaderRules,
+  requestHeaderRulesFor,
   validationPathnameFor,
   withTrailingSlash,
 } from './dynamic.ts';
