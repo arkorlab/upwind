@@ -303,11 +303,12 @@ export function nextWriteOrder(): WriteOrder {
 }
 
 /**
- * Fence the reads of a key a write of it was handed over for (`keepWrite`): from then on a read of
- * the key here answers with what the write carries, though it may go out only once the write of
- * the key before it has. Every read of the key under way then answers too late to be remembered,
- * as it does once a write goes out (`startWrite`), and a later value one of them weighs gives way
- * (`LaterData.standing`).
+ * What a write of a key does to the reads of it as it goes out (`writeData`), done as it is handed
+ * over (`keepWrite`), since it may go out only once the write of the key before it has: from then
+ * on a read of the key here answers with what it carries. Every read of the key under way answers
+ * too late to be remembered, a later value one of them weighs gives way (`LaterData.standing`), and
+ * what was remembered of the key is forgotten, so a read that does not answer from the write — a
+ * regeneration's — asks the host.
  */
 export function fenceHandedOver(
   runtime: CacheRuntime,
@@ -315,6 +316,7 @@ export function fenceHandedOver(
 ): void {
   const key = keyOf({ key: input.key, kind: input.entry.kind, handler: input.entry.handler });
   fenceReads(stateFor(runtime, key));
+  runtime.dataMemo.delete(key);
 }
 
 /**
