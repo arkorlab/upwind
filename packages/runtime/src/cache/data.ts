@@ -303,6 +303,21 @@ export function nextWriteOrder(): WriteOrder {
 }
 
 /**
+ * Fence the reads of a key a write of it was handed over for (`keepWrite`): from then on a read of
+ * the key here answers with what the write carries, though it may go out only once the write of
+ * the key before it has. Every read of the key under way then answers too late to be remembered,
+ * as it does once a write goes out (`startWrite`), and a later value one of them weighs gives way
+ * (`LaterData.standing`).
+ */
+export function fenceHandedOver(
+  runtime: CacheRuntime,
+  input: { readonly key: string; readonly entry: DataEntryMetadata },
+): void {
+  const key = keyOf({ key: input.key, kind: input.entry.kind, handler: input.entry.handler });
+  fenceReads(stateFor(runtime, key));
+}
+
+/**
  * Write a value under its key, as the host's next revision of the entry, its call to the host in
  * the request's `turn`: behind the work (`callsBehind`), or ahead of it, for a write the render
  * waits on (`callsWaitedOn`).
