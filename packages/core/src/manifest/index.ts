@@ -1,4 +1,4 @@
-export { builtNameOf } from './built-names.ts';
+export { builtNameOf, escapedPathOf, requestPathOf } from './built-names.ts';
 export { completedPathname, keyedParameters, memberEntryPathname } from './completion.ts';
 export {
   type ConfiguredHeaders,
@@ -21,6 +21,7 @@ export {
   computeManifestId,
   DEFAULT_ASSET_POLICY,
   DEFAULT_CONTINUATION_CONFIG,
+  fileRequestPathOf,
   findRouteEntry,
   findStaticFile,
   MAX_MANIFEST_BYTES,
@@ -28,6 +29,7 @@ export {
   staticFileKey,
   staticFileStatus,
   parseProjectManifest,
+  routeRequestPathOf,
   serializeManifest,
 } from './manifest.ts';
 export { functionFor, functionScript } from './functions.ts';
