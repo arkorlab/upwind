@@ -1,8 +1,13 @@
 import { pagesDataPathnameUnder } from '@stayingupwind/core/bundle';
-import { IMPLICIT_TAG_PREFIX, type RouteEntryDescriptor } from '@stayingupwind/core/cache';
+import {
+  IMPLICIT_TAG_PREFIX,
+  normalizeRoutePathname,
+  type RouteEntryDescriptor,
+} from '@stayingupwind/core/cache';
 
 import { nodeHandlerOf } from '../entries.ts';
 import { descriptorFor } from '../generations.ts';
+import { escapedNameOf } from '../name-spellings.ts';
 import { elsewhere } from '../placement.ts';
 import { routingParameters } from '../route-parameters.ts';
 import { completedShell, findShell, getStore, type Store } from '../store.ts';
@@ -37,6 +42,53 @@ function pathTags(pathname: string): string[] {
   return tags;
 }
 
+/** The precedence of a route segment in Next.js's route tree (`sorted-routes.ts`). */
+const OPTIONAL_CATCH_ALL_RANK = 3;
+
+/** A literal segment sorts before a parameter, a catch-all and an optional catch-all. */
+function segmentKind(segment: string): number {
+  if (!segment.startsWith('[') || !segment.endsWith(']')) return 0;
+  if (segment.startsWith('[[...') && segment.endsWith(']]')) return OPTIONAL_CATCH_ALL_RANK;
+  return segment.startsWith('[...') ? 2 : 1;
+}
+
+/**
+ * Next.js walks literal children before dynamic, catch-all and optional catch-all children, at
+ * each level. Counting literals over the whole route would put `/[id]/edit` before `/blog/[...all]`,
+ * though `/blog/edit` belongs to the latter. A route itself precedes any of its children.
+ */
+function compareRoutes(left: readonly string[], right: readonly string[]): number {
+  // eslint-disable-next-line unicorn/prefer-iterator-zip -- Iterator.zip is not in this runtime's ES2024 library.
+  for (let index = 0; index < Math.min(left.length, right.length); index++) {
+    const a = left[index] ?? '';
+    const b = right[index] ?? '';
+    const kind = segmentKind(a) - segmentKind(b);
+    if (kind !== 0) return kind;
+    if (a !== b && segmentKind(a) === 0) return a < b ? -1 : 1;
+  }
+  return left.length - right.length;
+}
+
+/**
+ * The manifest's shells are concrete prerenders first, then templates, not route precedence.
+ * Prepare that precedence only for the first manual revalidation of an immutable deployment;
+ * ordinary renders pay nothing for it and later calls reuse it.
+ */
+const routesByStore = new WeakMap<Store, readonly string[]>();
+
+/** The deployment's source routes in precedence order, reused by later manual revalidations. */
+function orderedRoutes(store: Store): readonly string[] {
+  let routes = routesByStore.get(store);
+  if (routes === undefined) {
+    routes = [...store.shellsByRoute.keys()]
+      .map((route) => ({ route, segments: route.split('/') }))
+      .toSorted((a, b) => compareRoutes(a.segments, b.segments))
+      .map(({ route }) => route);
+    routesByStore.set(store, routes);
+  }
+  return routes;
+}
+
 /**
  * The route whose shell answers a pathname, and the entry it is kept under; `undefined` when none
  * does. A member of a route that blocks is kept under the shell it completes to, where the build
@@ -44,7 +96,16 @@ function pathTags(pathname: string): string[] {
  * requests read, and the one Next.js 16.4 revalidates for it.
  */
 function routeOf(store: Store, pathname: string): RouteEntryDescriptor | undefined {
-  for (const route of store.shellsByRoute.keys()) {
+  const named = store.prerendersByPathname.get(pathname);
+  // The router resolves a closed route's concrete page by name before its dynamic routes. Open
+  // fallback seeds are not in pathnames: one of those must still yield to a more specific route.
+  if (named !== undefined && store.pathnames.includes(pathname)) {
+    const shell = findShell(store, named.route, pathname);
+    if (shell?.id === named.id) {
+      return descriptorFor(store, named.route, completedShell(shell, pathname));
+    }
+  }
+  for (const route of orderedRoutes(store)) {
     const shell = findShell(store, route, pathname);
     if (shell !== undefined) {
       return descriptorFor(store, route, completedShell(shell, pathname));
@@ -58,8 +119,14 @@ export async function platformRevalidate(input: RevalidateInput): Promise<void> 
   if (context?.runtime === undefined) {
     return;
   }
-  const pathname = input.urlPath.split('?', 1)[0] ?? input.urlPath;
   const store = getStore();
+  const asked = input.urlPath.split('?', 1)[0] ?? input.urlPath;
+  const name = escapedNameOf(store, asked) ?? asked;
+  // Use the same built name and trailing-slash normalization as routing and the entry's key.
+  // This is the concrete request path, distinct from the class a blocking shell completes to.
+  const pathname = normalizeRoutePathname(
+    name.length > 1 && name.endsWith('/') ? (store.slashSpellings.get(name) ?? name) : name,
+  );
   const descriptor = routeOf(store, pathname);
   if (descriptor === undefined) {
     throw new Error(`revalidate: no page answers ${pathname}`);
@@ -90,7 +157,7 @@ export async function platformRevalidate(input: RevalidateInput): Promise<void> 
     target: {
       descriptor,
       reason: 'manual',
-      allowHeader: findShell(store, descriptor.route, pathname)?.allowHeader,
+      allowHeader: findShell(store, descriptor.route, descriptor.pathname)?.allowHeader,
       dataPathname:
         descriptor.kind === 'pages'
           ? pagesDataPathnameUnder(store.manifest.buildId, store.manifest.config.basePath, pathname)
