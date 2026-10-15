@@ -128,6 +128,21 @@ describe('a request allowance for routing patterns', () => {
     expect(() => testWithin(pattern, '')).toThrow(PatternBudgetExceededError);
   });
 
+  it('bounds repeated guard scans even when each anchored non-match has constant cost', () => {
+    current = createPatternBudget();
+    const pattern = compiled('^b$');
+    const value = 'a'.repeat(65_536);
+
+    expect(Array.from({ length: 7 }, () => testWithin(pattern, value))).toStrictEqual(
+      Array.from({ length: 7 }, () => false),
+    );
+
+    const test = vi.spyOn(pattern, 'test');
+
+    expect(() => testWithin(pattern, value)).toThrow(PatternBudgetExceededError);
+    expect(test).not.toHaveBeenCalled();
+  });
+
   it('reads the cost for a value with line terminators separately', () => {
     current = createPatternBudget();
     const pattern = compiled('^(?:a+.*)$');

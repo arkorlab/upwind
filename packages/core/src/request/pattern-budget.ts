@@ -141,8 +141,9 @@ function stepsShortOfLiteral(pattern: RegExp, value: string, lineFree: boolean):
  * Throw `PatternBudgetExceededError` where tests are bounded (`budgetPatterns`) and the pattern's cost
  * against `value` is past what a test or the current request has left — the whole pattern's, or,
  * for a value that does not hold its literal gate, what comes before the gate (`literalGate`). A
- * test that fits is charged to the current request before it runs; without a store only that test
- * is bounded. Ordinary affordable tests never need to read or search for their literal gate.
+ * test that fits is charged to the current request before it runs, including the scan for line
+ * terminators; without a store only that test is bounded. Ordinary affordable tests never need to
+ * read or search for their literal gate.
  */
 export function assertAffordable(pattern: RegExp, value: string): void {
   if (!budget.on) {
@@ -150,22 +151,25 @@ export function assertAffordable(pattern: RegExp, value: string): void {
   }
   const current = budget.current?.();
   const remaining = current?.remaining ?? BUDGET;
-  if (remaining <= 0) {
+  // Even an anchored, constant-cost non-match scans the value here to decide what `.` can take.
+  // Reserve that work once, before doing it; the regex itself costs at least one attempt.
+  const available = remaining - value.length;
+  if (available < 1) {
     throw new PatternBudgetExceededError({ source: pattern.source, valueLength: value.length });
   }
   const lineFree = !LINE_TERMINATOR.test(value);
   const cost = costFor(pattern, lineFree);
   let steps = cost === null ? Infinity : stepsAt(cost, value.length);
-  if (steps > remaining) {
+  if (steps > available) {
     steps = stepsShortOfLiteral(pattern, value, lineFree);
   }
   // Even a zero-length value requires the engine to attempt the pattern once.
   steps = Math.max(1, steps);
-  if (steps > remaining) {
+  if (steps > available) {
     throw new PatternBudgetExceededError({ source: pattern.source, valueLength: value.length });
   }
   if (current !== undefined) {
-    current.remaining -= steps;
+    current.remaining -= value.length + steps;
   }
 }
 
