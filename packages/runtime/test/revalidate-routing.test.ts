@@ -1,3 +1,4 @@
+import { resolveRoutes } from '@next/routing';
 import type { Prerender } from '@stayingupwind/core/bundle';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -6,7 +7,7 @@ import { regenerate } from '../src/cache/regenerate.ts';
 import { platformRevalidate } from '../src/cache/revalidate.ts';
 import type { CacheRuntime } from '../src/cache/runtime.ts';
 import { nodeHandlerOf } from '../src/entries.ts';
-import { getStore, type Store } from '../src/store.ts';
+import { getStore, routerPathnames, type Store } from '../src/store.ts';
 
 vi.mock(import('../src/entries.ts'), () => ({ nodeHandlerOf: vi.fn() }));
 vi.mock(import('../src/cache/regenerate.ts'), () => ({ regenerate: vi.fn() }));
@@ -50,7 +51,119 @@ function deployment(routes: readonly Route[]): Store {
     },
     shellsByRoute: new Map(shells),
     prerendersByPathname: new Map(),
+    pathnames: routes.map(({ route }) => route),
+    slashSpellings: new Map(),
   } as unknown as Store;
+}
+
+/** Concrete output, and the two source routes that can answer it, shaped as the adapter emits. */
+function seededDeployment(closed: boolean, trailingSlash: boolean, localized: boolean): Store {
+  const basePath = localized ? '/base' : '';
+  const prefix = localized ? '/base/en' : '';
+  const catchAll = `${basePath}/[...rest]`;
+  const specific = `${basePath}/[id]`;
+  const page: Prerender = {
+    id: `${prefix}/seed`,
+    route: catchAll,
+    pathname: `${prefix}/seed`,
+    parentOutputId: catchAll,
+    groupId: 1,
+    parentFallbackMode: closed ? false : 'fallback.html',
+    allowHeader: ['x-example'],
+  };
+  const specificShell: Prerender = {
+    id: specific,
+    route: specific,
+    pathname: `${prefix}/[id]`,
+    parentOutputId: specific,
+    groupId: 2,
+  };
+  const catchAllShell: Prerender = {
+    id: catchAll,
+    route: catchAll,
+    pathname: `${prefix}/[...rest]`,
+    parentOutputId: catchAll,
+    groupId: 3,
+  };
+  const manifest = {
+    buildId: 'build',
+    config: {
+      basePath,
+      trailingSlash,
+      i18n: localized ? { defaultLocale: 'en', locales: ['en'] } : null,
+    },
+    entrypoints: [catchAll, specific].map((route) => {
+      return {
+        id: route,
+        pathname: route,
+        kind: 'pages',
+      };
+    }),
+    prerenders: [page, specificShell, ...(closed ? [] : [catchAllShell])],
+    staticFiles: [],
+  } as unknown as Store['manifest'];
+  return {
+    manifest,
+    ...routerPathnames(manifest),
+    prerendersByPathname: new Map(manifest.prerenders.map((one) => [one.pathname, one])),
+    shellsByRoute: new Map([
+      [
+        catchAll,
+        {
+          pages: new Map([[page.pathname, page]]),
+          patterns: closed ? [] : [{ pattern: /^\/.+$/u, prerender: catchAllShell }],
+        },
+      ],
+      [
+        specific,
+        {
+          pages: new Map(),
+          patterns: [{ pattern: /^\/(?:base\/en\/)?[^/]+\/?$/u, prerender: specificShell }],
+        },
+      ],
+    ]),
+    dynamicRoutes: [
+      { sourceRegex: `^${prefix}/([^/]+?)(?:/)?$`, destination: specific },
+      { sourceRegex: `^${prefix}/(.+?)(?:/)?$`, destination: catchAll },
+    ],
+  } as unknown as Store;
+}
+
+/** What the installed Next.js router resolves, using this deployment's actual named pathnames. */
+async function routedPage(store: Store, pathname: string): Promise<string | undefined> {
+  const { config } = store.manifest;
+  const result = await resolveRoutes({
+    url: new URL(pathname, 'https://app.test'),
+    headers: new Headers(),
+    requestBody: new ReadableStream({
+      start(controller) {
+        controller.close();
+      },
+    }),
+    buildId: store.manifest.buildId,
+    basePath: config.basePath,
+    pathnames: store.pathnames,
+    routes: {
+      beforeMiddleware: [],
+      middlewareMatchers: [],
+      beforeFiles: [],
+      afterFiles: [],
+      dynamicRoutes: store.dynamicRoutes.map(({ sourceRegex, destination }) => {
+        return {
+          sourceRegex,
+          ...(destination !== undefined && { destination }),
+        };
+      }),
+      onMatch: [],
+      fallback: [],
+    },
+    ...(config.i18n !== null &&
+      config.i18n !== undefined && {
+        i18n: { defaultLocale: config.i18n.defaultLocale, locales: config.i18n.locales },
+      }),
+    invokeMiddleware: () => Promise.resolve({}),
+  });
+  return result.resolvedPathname;
 }
 
 function revalidate(store: Store, urlPath: string): Promise<void> {
@@ -90,6 +203,41 @@ function revalidate(store: Store, urlPath: string): Promise<void> {
 
 describe('manual revalidation route precedence', () => {
   afterEach(() => vi.clearAllMocks());
+
+  it.each(
+    [false, true].flatMap((closed) => {
+      return [false, true].flatMap((trailingSlash) =>
+        [false, true].map((localized) => ({ closed, trailingSlash, localized })),
+      );
+    }),
+  )(
+    'matches real routing for a seed with closed=$closed, trailingSlash=$trailingSlash, localized=$localized',
+    async ({ closed, trailingSlash, localized }) => {
+      const store = seededDeployment(closed, trailingSlash, localized);
+      const prefix = localized ? '/base/en' : '';
+      const sourcePrefix = localized ? '/base' : '';
+      const concrete = `${prefix}/seed`;
+      const path = `${concrete}${trailingSlash ? '/' : ''}`;
+      const selected = await routedPage(store, path);
+      const named =
+        selected === undefined ? undefined : (store.slashSpellings.get(selected) ?? selected);
+      const routed = named === undefined ? undefined : store.prerendersByPathname.get(named)?.route;
+      const expected = `${sourcePrefix}/${closed ? '[...rest]' : '[id]'}`;
+
+      expect(routed ?? selected).toBe(expected);
+
+      await revalidate(store, path);
+
+      expect(vi.mocked(regenerate).mock.calls[0]?.[0].target.descriptor).toStrictEqual({
+        kind: 'pages',
+        route: expected,
+        pathname: closed ? concrete : path,
+      });
+      expect(vi.mocked(regenerate).mock.calls[0]?.[0].target.allowHeader).toStrictEqual(
+        closed ? ['x-example'] : undefined,
+      );
+    },
+  );
 
   it('regenerates an unbuilt specific page ahead of the catch-all whose seed was emitted first', async () => {
     const store = deployment([

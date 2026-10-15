@@ -40,6 +40,7 @@ function pathTags(pathname: string): string[] {
 /** The precedence of a route segment in Next.js's route tree (`sorted-routes.ts`). */
 const OPTIONAL_CATCH_ALL_RANK = 3;
 
+/** A literal segment sorts before a parameter, a catch-all and an optional catch-all. */
 function segmentKind(segment: string): number {
   if (!segment.startsWith('[') || !segment.endsWith(']')) return 0;
   if (segment.startsWith('[[...') && segment.endsWith(']]')) return OPTIONAL_CATCH_ALL_RANK;
@@ -70,6 +71,7 @@ function compareRoutes(left: readonly string[], right: readonly string[]): numbe
  */
 const routesByStore = new WeakMap<Store, readonly string[]>();
 
+/** The deployment's source routes in precedence order, reused by later manual revalidations. */
 function orderedRoutes(store: Store): readonly string[] {
   let routes = routesByStore.get(store);
   if (routes === undefined) {
@@ -89,6 +91,19 @@ function orderedRoutes(store: Store): readonly string[] {
  * requests read, and the one Next.js 16.4 revalidates for it.
  */
 function routeOf(store: Store, pathname: string): RouteEntryDescriptor | undefined {
+  const name =
+    pathname.length > 1 && pathname.endsWith('/')
+      ? (store.slashSpellings.get(pathname) ?? pathname)
+      : pathname;
+  const named = store.prerendersByPathname.get(name);
+  // The router resolves a closed route's concrete page by name before its dynamic routes. Open
+  // fallback seeds are not in pathnames: one of those must still yield to a more specific route.
+  if (named !== undefined && store.pathnames.includes(pathname)) {
+    const shell = findShell(store, named.route, name);
+    if (shell?.id === named.id) {
+      return descriptorFor(store, named.route, completedShell(shell, name));
+    }
+  }
   for (const route of orderedRoutes(store)) {
     const shell = findShell(store, route, pathname);
     if (shell !== undefined) {
@@ -135,7 +150,7 @@ export async function platformRevalidate(input: RevalidateInput): Promise<void> 
     target: {
       descriptor,
       reason: 'manual',
-      allowHeader: findShell(store, descriptor.route, pathname)?.allowHeader,
+      allowHeader: findShell(store, descriptor.route, descriptor.pathname)?.allowHeader,
       dataPathname:
         descriptor.kind === 'pages'
           ? pagesDataPathnameUnder(store.manifest.buildId, store.manifest.config.basePath, pathname)
