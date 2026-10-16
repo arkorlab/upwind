@@ -300,6 +300,43 @@ export function recordBytesOf(scopeId: string, entry: EntryRow, generation: Gene
   );
 }
 
+const PACK_MEMORY_COPIES = 3;
+const INLINE_DATA_MEMORY_COPIES = 12;
+const DATA_METADATA_MEMORY_COPIES = 6;
+
+/**
+ * Reserve memory before reading any blobs. A pack needs its source buffers, a hashing/native
+ * copy and its encoded record; inline data also makes base64 and JSON strings (potentially UTF-16).
+ * A referenced data value is never read into memory by projection.
+ */
+export function projectionMemoryOf(
+  scopeId: string,
+  entry: EntryRow,
+  generation: GenerationRow,
+): number {
+  if (!entry.kind.startsWith('data:')) {
+    return PACK_MEMORY_COPIES * recordBytesOf(scopeId, entry, generation);
+  }
+  const artifact = generationOutputs(generation)[0]?.artifacts[0];
+  if (artifact === undefined) {
+    throw new Error(`data generation ${generation.generation_id} has no value`);
+  }
+  const inline = artifact.byteLength <= MAX_INLINE_DATA_VALUE_BYTES;
+  const value: DataRecord['value'] = inline
+    ? { kind: 'inline', base64: '' }
+    : {
+        kind: 'ref',
+        artifactId: artifact.artifactId,
+        storageRef: artifact.storageRef,
+        byteLength: artifact.byteLength,
+      };
+  return (
+    (inline ? INLINE_DATA_MEMORY_COPIES * artifact.byteLength : 0) +
+    DATA_METADATA_MEMORY_COPIES *
+      JSON.stringify(dataRecordOf(scopeId, entry, generation, value)).length
+  );
+}
+
 /**
  * Why no delivery record of this generation could ever be written, if none could.
  *
@@ -369,6 +406,26 @@ function dataMetadata(entry: EntryRow, generation: GenerationRow): DataEntryMeta
   });
 }
 
+function dataRecordOf(
+  scopeId: string,
+  entry: EntryRow,
+  generation: GenerationRow,
+  value: DataRecord['value'],
+): DataRecord {
+  const condemned = condemnedOf(generation);
+  return {
+    schemaVersion: DATA_RECORD_SCHEMA_VERSION,
+    scopeId,
+    entryId: entry.entry_id,
+    generationId: generation.generation_id,
+    revision: entry.record_revision,
+    dependencyRevision: generation.dependency_revision,
+    entry: dataMetadata(entry, generation),
+    value,
+    ...(condemned !== null && { invalidation: condemned }),
+  };
+}
+
 /** The data-cache record: a small value travels inside it, a large one by reference. */
 export async function dataRecordJson(
   deps: RecordDeps,
@@ -388,17 +445,5 @@ export async function dataRecordJson(
           storageRef: artifact.storageRef,
           byteLength: artifact.byteLength,
         };
-  const condemned = condemnedOf(generation);
-  const record: DataRecord = {
-    schemaVersion: DATA_RECORD_SCHEMA_VERSION,
-    scopeId: deps.scopeId,
-    entryId: entry.entry_id,
-    generationId: generation.generation_id,
-    revision: entry.record_revision,
-    dependencyRevision: generation.dependency_revision,
-    entry: dataMetadata(entry, generation),
-    value,
-    ...(condemned !== null && { invalidation: condemned }),
-  };
-  return JSON.stringify(record);
+  return JSON.stringify(dataRecordOf(deps.scopeId, entry, generation, value));
 }

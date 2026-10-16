@@ -13,8 +13,8 @@ import {
 import { findGeneration } from './generations.ts';
 import type { ScopeHistory } from './history.ts';
 import { type BlobStore, type KvSink, writeKey } from './io.ts';
-import { dataRecordJson, generationRecordBytes } from './records.ts';
-import type { EntryRow } from './rows.ts';
+import { dataRecordJson, generationRecordBytes, projectionMemoryOf } from './records.ts';
+import type { EntryRow, GenerationRow } from './rows.ts';
 import {
   commitRevision,
   deleteMeta,
@@ -45,6 +45,9 @@ import {
 
 const PROJECTION_BATCH = 50;
 const PROJECTION_CONCURRENCY = 8;
+const MIB = 1024 * 1024;
+/** Leave room in the 128 MiB isolate for scope state, other requests and a returned commit record. */
+const PROJECTION_MEMORY_BYTES = 48 * MIB;
 const META_SCOPE_MARKER = 'scope_marker_written';
 const DATA_KIND_PREFIX = 'data:';
 
@@ -120,14 +123,6 @@ export function settleRetryMs(outcome: SettleOutcome, failures: number): number 
   return outcome.continued ? 0 : Math.max(retryDelayMs(failures), outcome.waitMs ?? 0);
 }
 
-function chunks<T>(items: readonly T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let index = 0; index < items.length; index += size) {
-    out.push(items.slice(index, index + size));
-  }
-  return out;
-}
-
 /**
  * A generation's delivery record a run wrote, and the record revision it was written for: what a
  * commit hands back only while the entry's record still stands at that revision
@@ -159,6 +154,46 @@ interface Writing {
   readonly wanted?: WantedRecords | undefined;
 }
 
+interface ProjectingEntry {
+  readonly entry: EntryRow;
+  readonly current: GenerationRow | undefined;
+}
+
+/**
+ * Bound both entries and their expected live bytes before starting any blob read. A single large
+ * record can exceed the working budget, so it runs alone; small records keep their parallelism.
+ */
+function projectionChunk(
+  deps: SettleDeps,
+  entries: readonly EntryRow[],
+  offset: number,
+  writing: Writing,
+): readonly ProjectingEntry[] {
+  const chunk: ProjectingEntry[] = [];
+  let reserved = 0;
+  for (const entry of entries.slice(offset, offset + PROJECTION_CONCURRENCY)) {
+    let bytes = 0;
+    const current =
+      writing.retired || entry.publication === 'retired' || entry.current_generation_id === null
+        ? undefined
+        : findGeneration(deps.sql, entry.current_generation_id);
+    if (current !== undefined) {
+      try {
+        bytes = projectionMemoryOf(deps.scopeId, entry, current);
+      } catch {
+        // A malformed record is still tried, and its failure logged, without losing the page.
+        bytes = PROJECTION_MEMORY_BYTES;
+      }
+    }
+    if (chunk.length > 0 && reserved + bytes > PROJECTION_MEMORY_BYTES) {
+      break;
+    }
+    chunk.push({ entry, current });
+    reserved += bytes;
+  }
+  return chunk;
+}
+
 /**
  * Write the entry's delivery record as it stands, or delete it (`Writing`): the bytes of a
  * generation's record written, where the change wants them, and nothing otherwise. A record a change
@@ -168,7 +203,7 @@ interface Writing {
  */
 async function projectEntry(
   deps: SettleDeps,
-  entry: EntryRow,
+  { entry, current }: ProjectingEntry,
   writing: Writing,
 ): Promise<Uint8Array | undefined> {
   const { retired, wanted } = writing;
@@ -176,10 +211,6 @@ async function projectEntry(
   const key = data
     ? kvDataKey(deps.scopeId, entry.cache_key_digest)
     : kvGenerationKey(deps.scopeId, entry.entry_id);
-  const current =
-    entry.current_generation_id === null
-      ? undefined
-      : findGeneration(deps.sql, entry.current_generation_id);
   if (retired || current === undefined || entry.publication === 'retired') {
     await writeKey(() => deps.kv.delete(key));
     return undefined;
@@ -207,7 +238,7 @@ type WrittenRecords = Map<string, WrittenRecord>;
 
 async function projectChunk(
   deps: SettleDeps,
-  chunk: readonly EntryRow[],
+  chunk: readonly ProjectingEntry[],
   writing: Writing,
   out: { readonly projected: ProjectedEntry[]; readonly records: WrittenRecords },
 ): Promise<number> {
@@ -216,7 +247,7 @@ async function projectChunk(
   );
   let failed = 0;
   for (const [index, outcome] of outcomes.entries()) {
-    const entry = chunk[index];
+    const entry = chunk[index]?.entry;
     if (entry === undefined) {
       continue;
     }
@@ -359,7 +390,8 @@ async function projectPage(
   const out = { projected: [] as ProjectedEntry[], records: new Map() as WrittenRecords };
   let failed = 0;
   let reached = 0;
-  for (const chunk of chunks(entries, PROJECTION_CONCURRENCY)) {
+  while (reached < entries.length) {
+    const chunk = projectionChunk(deps, entries, reached, writing);
     failed += await projectChunk(deps, chunk, writing, out);
     reached += chunk.length;
     if (stop()) {
