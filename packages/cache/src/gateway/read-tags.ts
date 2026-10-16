@@ -34,7 +34,8 @@ export async function readTagRecords(
         }),
       );
     }
-    for (const records of await Promise.all(batches)) {
+    const results = await Promise.all(batches);
+    for (const records of results) {
       for (const value of records.values()) {
         if (value !== null) tags.push(tagDeltaEntrySchema.parse(value));
       }

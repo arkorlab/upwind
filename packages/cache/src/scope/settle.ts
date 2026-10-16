@@ -172,7 +172,8 @@ function projectionChunk(
 ): readonly ProjectingEntry[] {
   const chunk: ProjectingEntry[] = [];
   let reserved = 0;
-  for (const entry of entries.slice(offset, offset + PROJECTION_CONCURRENCY)) {
+  const candidates = entries.slice(offset, offset + PROJECTION_CONCURRENCY);
+  for (const entry of candidates) {
     let bytes = 0;
     const current =
       writing.retired || entry.publication === 'retired' || entry.current_generation_id === null
