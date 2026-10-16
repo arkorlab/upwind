@@ -97,13 +97,14 @@ export function floorJudgements(): string[] {
   const problems: string[] = [];
   for (const [version, floor] of expected) {
     const held = securityFloorOf(version);
+    const old = isBeforeSecurityFloor(version);
     if (
-      isBeforeSecurityFloor(version) !== (floor !== undefined) ||
+      old !== (floor !== undefined) ||
       held?.version !== floor?.version ||
       held?.canary !== floor?.canary
     ) {
       problems.push(
-        `securityFloorOf("${version}") is ${described(held)}, and has to be ${described(floor)}`,
+        `securityFloorOf("${version}") is ${described(held)} and isBeforeSecurityFloor ${String(old)}; they have to be ${described(floor)} and ${String(floor !== undefined)}`,
       );
     }
   }
