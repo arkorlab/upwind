@@ -51,7 +51,7 @@ export interface ChunkMaps {
 
 /**
  * What in a map is set aside: what names its file rather than the code it maps, as the comments are,
- * and the sources' own text, which the Function's map is written without (`sourcemapOutput`).
+ * and the sources' own text, which is stored separately from a Function's compact map.
  */
 const MAP_NAMING_KEYS: ReadonlySet<string> = new Set([
   'debug_id',

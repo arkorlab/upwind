@@ -41,7 +41,8 @@
     "@oxc-project/types": "catalog:",
     "@types/node": "catalog:",
     "next": "catalog:",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   },
   "peerDependencies": {
     "next": ">=16.2.0 <17"
