@@ -490,7 +490,9 @@ interface Refresh {
  * The read behind a request answered with an expired pointer: what KV names now, read ahead
  * (`readAhead`) and then adopted; and, for a live request, what it found, reported — how old the
  * pointer served was, and whether KV now names another. KV's own time is reported, not the read
- * ahead's.
+ * ahead's. The observer is told in a `try` of its own, as a cold read's is (`loadObserved`): what
+ * it throws, or rejects with, is logged, and the work kept behind the request (`HoldRefresh`) ends
+ * all the same.
  */
 async function refreshPointer<P extends EdgePointer>(
   at: KeyRead<P> & PointerReads,
@@ -522,13 +524,20 @@ async function refreshPointer<P extends EdgePointer>(
   ) {
     return;
   }
-  await kind.observer.stale(observer, {
-    key,
-    served: served as HeldPointer<P>,
-    fresh: answered.read.kind === 'found' ? answered.read.value : null,
-    ageMs: startedAt - served.readAt,
-    kvMs: answered.readAt - startedAt,
-  });
+  try {
+    await kind.observer.stale(observer, {
+      key,
+      served: served as HeldPointer<P>,
+      fresh: answered.read.kind === 'found' ? answered.read.value : null,
+      ageMs: startedAt - served.readAt,
+      kvMs: answered.readAt - startedAt,
+    });
+  } catch (error) {
+    logWarn('the host observer threw', {
+      told: 'stale',
+      detail: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 /**
