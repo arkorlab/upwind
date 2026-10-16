@@ -91,6 +91,8 @@ export interface BuildProjectManifestInput {
   readonly gates?: RouteGates | undefined;
   /** The pathnames Next.js resolves exactly that are of a gated route, each with that route. */
   readonly gatedPathnames?: Readonly<Record<string, string>> | undefined;
+  /** Where the router reads a Pages Router data URL as the page it names, beside gates. */
+  readonly gatedDataPrefix?: string | undefined;
   readonly cache?: ManifestCache | undefined;
 }
 
@@ -207,41 +209,66 @@ function pagesDataFields(
   };
 }
 
+/** The routes the manifest finds a request of by its exact pathname, and by a dynamic route. */
+function gatedBy(input: BuildProjectManifestInput): {
+  readonly exact: readonly string[];
+  readonly dynamic: readonly string[];
+} {
+  return {
+    exact: Object.values(input.gatedPathnames ?? {}),
+    dynamic: (input.dynamicRoutes ?? []).flatMap((route) =>
+      route.gated === undefined ? [] : [route.gated],
+    ),
+  };
+}
+
 /**
- * What is wrong with what the manifest says of gates, if anything: a route a pathname or a dynamic
- * route is said to be of (`gatedPathnames`, `DynamicRoute.gated`) that `gates` declares no gate
- * for, or a `gates` that declares none. The edge would find such a request a route and no gate to
- * ask of it, so a manifest like that is refused where it is built, as one naming an unreachable
- * Function is.
+ * What is wrong with what the manifest says of gates, if anything: a `gates` that declares none; a
+ * route a pathname or a dynamic route is said to be of (`gatedPathnames`, `DynamicRoute.gated`)
+ * that `gates` declares no gate for, whose requests the edge would find a route and no gate to ask
+ * of; and a declared gate nothing finds a request of the route by — a route's own pathname, or for a
+ * class of them, a dynamic route — whose every request the edge would serve as one with no gate.
+ * A manifest like that is refused where it is built, as one naming an unreachable Function is.
  */
 function ungatedRoutes(input: BuildProjectManifestInput): string | undefined {
   const { gates } = input;
   if (gates !== undefined && Object.keys(gates).length === 0) {
     return 'gates declares no gate; a manifest that declares none leaves it out';
   }
-  const said = [
-    ...Object.values(input.gatedPathnames ?? {}),
-    ...(input.dynamicRoutes ?? []).flatMap((route) =>
-      route.gated === undefined ? [] : [route.gated],
-    ),
-  ];
+  const { exact, dynamic } = gatedBy(input);
   const ungated = [
-    ...new Set(said.filter((route) => gates === undefined || !Object.hasOwn(gates, route))),
+    ...new Set(
+      [...exact, ...dynamic].filter((route) => gates === undefined || !Object.hasOwn(gates, route)),
+    ),
   ].toSorted(compareCodeUnits);
-  return ungated.length === 0
+  if (ungated.length > 0) {
+    return `routes are said to be gated that gates declares no gate for: ${ungated.join(', ')}`;
+  }
+  // A route's own name in brackets (`/[slug]`) is a class of pathnames, found by its dynamic route.
+  const unfound = Object.keys(gates ?? {}).filter((route) =>
+    route.includes('[') ? !dynamic.includes(route) : !exact.includes(route),
+  );
+  return unfound.length === 0
     ? undefined
-    : `routes are said to be gated that gates declares no gate for: ${ungated.join(', ')}`;
+    : `gates declares ${unfound.toSorted(compareCodeUnits).join(', ')}, which no pathname or dynamic route of the manifest finds a request of (gatedPathnames, DynamicRoute.gated): each would be served with no gate asked`;
 }
 
-/** The gates, and the pathnames found to be of a gated route beside them, where there are gates. */
+/**
+ * The gates, and beside them what finds a request of a gated route: the pathnames found to be of
+ * one, and where the router reads a data URL as its page. Nothing where there are no gates.
+ */
 function gateFields(
   input: BuildProjectManifestInput,
-): Pick<ProjectManifest, 'gates' | 'gatedPathnames'> {
-  const { gates, gatedPathnames } = input;
+): Pick<ProjectManifest, 'gates' | 'gatedPathnames' | 'gatedDataPrefix'> {
+  const { gates, gatedPathnames, gatedDataPrefix } = input;
   if (gates === undefined) {
     return {};
   }
-  return { gates, ...(gatedPathnames !== undefined && { gatedPathnames }) };
+  return {
+    gates,
+    ...(gatedPathnames !== undefined && { gatedPathnames }),
+    ...(gatedDataPrefix !== undefined && { gatedDataPrefix }),
+  };
 }
 
 /** Assemble a manifest from a build's routes; validates the result against the schema. */

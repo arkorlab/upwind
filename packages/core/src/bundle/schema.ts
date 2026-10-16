@@ -15,6 +15,7 @@ import {
   DURABLE_OBJECT_BUNDLE_VERSION,
   DURABLE_OBJECT_SPLIT_BUNDLE_VERSION,
 } from './durable-objects.ts';
+import { rewritesOnto } from './gate-routes.ts';
 
 export {
   type RouteHas,
@@ -624,10 +625,11 @@ function splitIssues(bundle: DeploymentBundle): string[] {
 /**
  * What of a bundle's gates no host could ask: a `gates` that declares none; a route the build ships
  * as a file, which is answered from storage before any route is looked for; a route the build does
- * not have, a misspelling among them; and any gate of a build with `i18n`, whose dynamic routes the
- * edge leaves to its Function unread, and so could not tell a request of a gated route from another.
- * Each would be a route served to every visitor with no gate asked, which declaring a gate says must
- * not happen: the build is refused rather than served so.
+ * not have, a misspelling among them; any gate of a build with `i18n`, whose dynamic routes the edge
+ * leaves to its Function unread, and so could not tell a request of a gated route from another; and
+ * a route a rewrite of `next.config` may send a request to (`rewritesOnto`), which is served at its
+ * destination with no gate asked. Each would be a route served to some visitor with no gate asked,
+ * which declaring a gate says must not happen: the build is refused rather than served so.
  */
 function gateIssues(bundle: DeploymentBundle): string[] {
   const { gates } = bundle;
@@ -654,7 +656,7 @@ function gateIssues(bundle: DeploymentBundle): string[] {
       issues.push(`gates names ${route}, which is no route of this build`);
     }
   }
-  return issues;
+  return [...issues, ...rewritesOnto(bundle, routes)];
 }
 
 /**

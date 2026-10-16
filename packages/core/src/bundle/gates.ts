@@ -2,6 +2,7 @@ import type { DynamicRoute } from '../manifest/schema.ts';
 import type { Issue } from '../schema/index.ts';
 import { type RouteGates, routeGatesSchema } from './carried.ts';
 import type { DynamicRouting } from './functions.ts';
+import { routeOfPathname } from './gate-routes.ts';
 import type { DeploymentBundle } from './schema.ts';
 import { routerSpellings } from './spelling.ts';
 
@@ -67,19 +68,6 @@ export function declaredRouteGates(raw: string | undefined): RouteGates | undefi
 }
 
 /**
- * The route of the build a page a dynamic route lands on is (`pageRoutes`): an entrypoint's own
- * pathname, or the route of the prerender the page is — a run of fallback shells lands a request on
- * a page for each of its prefixes (`/en/[slug]`), all of one route (`/[locale]/[slug]`).
- */
-function routeOfPage(bundle: DeploymentBundle): (page: string) => string | undefined {
-  const routes = new Set(bundle.entrypoints.map((entry) => entry.pathname));
-  const prerendered = new Map(
-    bundle.prerenders.map((prerender) => [prerender.pathname, prerender.route]),
-  );
-  return (page) => (routes.has(page) ? page : prerendered.get(page));
-}
-
-/**
  * The routing tables with each dynamic route that lands on a gated route's page, or answers its
  * data, naming that route (`DynamicRoute.gated`): `pages` are the page each of the tables' dynamic
  * routes lands on or answers the data of, in their order (`pageRoutes`). A bundle that declares no
@@ -94,7 +82,8 @@ export function withGates(
   if (gates === undefined || tables.dynamicRoutes === undefined) {
     return tables;
   }
-  const routeOf = routeOfPage(bundle);
+  // The route each lands on, its data's included, however the build named the page it lands on.
+  const routeOf = routeOfPathname(bundle);
   const dynamicRoutes = tables.dynamicRoutes.map((route, at): DynamicRoute => {
     const page = pages[at];
     const gated = page === undefined ? undefined : routeOf(page);
@@ -105,9 +94,10 @@ export function withGates(
 
 /**
  * The pathnames Next.js resolves exactly that are of a gated route, each with that route: the
- * route's own, and every one the build prerendered of it — a member, a shell, a page's payload —
- * under each spelling the router finds one by (`routerSpellings`). `undefined` for a bundle that
- * declares no gate.
+ * route's own, every one the build prerendered of it — a member, a shell, a page's payload — and,
+ * for a Pages Router page, the name its props are asked for by (`routeOfPathname`), under each
+ * spelling the router finds one by (`routerSpellings`). `undefined` for a bundle that declares no
+ * gate.
  */
 export function gatedPathnamesOf(bundle: DeploymentBundle): Record<string, string> | undefined {
   const { gates } = bundle;
@@ -115,19 +105,31 @@ export function gatedPathnamesOf(bundle: DeploymentBundle): Record<string, strin
     return undefined;
   }
   const gated: Record<string, string> = {};
-  const add = (pathname: string, route: string): void => {
-    if (!Object.hasOwn(gates, route)) {
+  const add = (pathname: string, route: string | undefined): void => {
+    if (route === undefined || !Object.hasOwn(gates, route)) {
       return;
     }
     for (const spelling of routerSpellings(bundle, pathname)) {
       gated[spelling] = route;
     }
   };
+  const routeOf = routeOfPathname(bundle);
   for (const entry of bundle.entrypoints) {
-    add(entry.pathname, entry.pathname);
+    add(entry.pathname, routeOf(entry.pathname));
   }
   for (const prerender of bundle.prerenders) {
     add(prerender.pathname, prerender.route);
   }
   return gated;
+}
+
+/**
+ * Where the deployment's router reads a Pages Router data URL as the page it names, for a bundle
+ * that declares a gate and whose router does so (`shouldNormalizeNextData`): the edge then finds the
+ * gate of the page such a URL names, as the router routes it (`ProjectManifest.gatedDataPrefix`).
+ */
+export function gatedDataPrefixOf(bundle: DeploymentBundle): string | undefined {
+  return bundle.gates !== undefined && bundle.routing.shouldNormalizeNextData
+    ? `${bundle.config.basePath}/_next/data/${bundle.buildId}`
+    : undefined;
 }

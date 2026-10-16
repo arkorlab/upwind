@@ -53,7 +53,12 @@ export {
 } from './carried.ts';
 export { DEPLOYMENT_ID_PREFIX, deploymentIdSchema } from './deployment-id.ts';
 export { PRIMARY_FUNCTION } from './function-name.ts';
-export { declaredRouteGates, gatedPathnamesOf, ROUTE_GATES_ENV } from './gates.ts';
+export {
+  declaredRouteGates,
+  gatedDataPrefixOf,
+  gatedPathnamesOf,
+  ROUTE_GATES_ENV,
+} from './gates.ts';
 export { type ManifestHead, manifestHead } from './head.ts';
 export { type PackedPrerenders, packPrerenders, unpackPrerenders } from './packed-prerenders.ts';
 export {

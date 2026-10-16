@@ -599,6 +599,14 @@ export const projectManifestSchema = z.object({
    * never without it.
    */
   gatedPathnames: z.record(z.string().startsWith('/'), z.string().startsWith('/')).optional(),
+  /**
+   * Where the deployment's router reads a Pages Router data URL as the page it names
+   * (`shouldNormalizeNextData`): `<basePath>/_next/data/<buildId>`. A request under it that names no
+   * data route of its own is routed as that page by the dynamic routes, App Router routes among
+   * them, so it is asked of that page's gate (`gateFor`). Beside `gates`, where the build has such
+   * a router; absent from any other manifest.
+   */
+  gatedDataPrefix: z.string().startsWith('/').optional(),
   /** The runtime cache the routes' entries live in. */
   cache: manifestCacheSchema.optional(),
 });
