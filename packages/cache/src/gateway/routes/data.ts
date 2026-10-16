@@ -29,13 +29,14 @@ import {
   readRequest,
   refuseMismatch,
 } from '../body.ts';
-import { dataReadBytes, readDataRecord } from '../read-data.ts';
+import { dataGetResponseOf, dataReadBytes, readDataRecord } from '../read-data.ts';
 import { fail, ok } from '../respond.ts';
 
 /**
  * The data caches. A value is stored by content before the authority records it, so the record
  * only ever names bytes that exist; a read is answered from KV without the authority, from the
- * record the authority wrote — its storage key stripped, the value inline or by reference.
+ * record the authority wrote — its storage key stripped, the value inline or by reference. A read
+ * of the value the key holds now (`/data/current`) is answered by the authority itself.
  */
 
 const OCTET_STREAM = 'application/octet-stream';
@@ -196,7 +197,35 @@ async function getValue(c: GatewayContext): Promise<Response> {
   return ok(c, record);
 }
 
+/**
+ * The value the key holds now, as the authority holds it rather than as KV last answered with it:
+ * what a Function asks where the value it read was stale or expired, and its data center held none
+ * later (`getNewerData`). A data center reads KV through a cache of its own for half a minute, so a
+ * value another data center wrote meanwhile is read nowhere else but here, and each data center
+ * would compute it again. Answered as a read of KV is, and metered as one.
+ */
+async function getCurrentValue(c: GatewayContext): Promise<Response> {
+  const request = await readRequest(c, dataGetRequestSchema, ENTRY_BODY_BYTES);
+  if (request instanceof Response) {
+    return request;
+  }
+  const [record, retired] = await Promise.all([
+    c.get('scope').currentData(request),
+    retiredScope(c),
+  ]);
+  if (retired) {
+    return refuseRetired(c);
+  }
+  if (record === undefined) {
+    return fail(c, 'not_found', 'no value for the key');
+  }
+  const answer = dataGetResponseOf(record);
+  c.get('host').meter.read(c.get('scopeId'), dataReadBytes(answer));
+  return ok(c, answer);
+}
+
 export const dataRoutes = new Hono<GatewayEnv>()
   // Not `zValidator`: it parses whatever arrives before anything has measured it.
   .put('/data', (c) => setValue(c))
-  .post('/data/get', (c) => getValue(c));
+  .post('/data/get', (c) => getValue(c))
+  .post('/data/current', (c) => getCurrentValue(c));

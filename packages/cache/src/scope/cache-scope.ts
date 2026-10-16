@@ -2,6 +2,7 @@ import {
   type ApplyResourceChangeInput,
   type ApplyResourceChangeResult,
   type CommitRequest,
+  type DataGetRequest,
   type FailRequest,
   type FailResponse,
   type FinishResourceWarmJobInput,
@@ -59,6 +60,7 @@ import {
   type ArtifactLocation,
   locateArtifact,
   readArtifactLocation,
+  readCurrentData,
   readEntry,
   readGeneration,
   readHead,
@@ -596,6 +598,11 @@ export class CacheScope extends DurableObject<CacheBindings> {
 
   readHead(): ReadHeadResult {
     return this.#tables ? readHead(this.#sql, this.#history) : NOT_RECORDED;
+  }
+
+  /** The data-cache value the key holds now, read from the scope rather than from KV. */
+  currentData(request: DataGetRequest): ReturnType<typeof readCurrentData> {
+    return this.#tables ? readCurrentData(this.#deps(), request) : Promise.resolve(undefined);
   }
 
   readEntry(entryId: string, now: number): ReadEntryResult {

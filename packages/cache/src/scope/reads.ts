@@ -1,4 +1,5 @@
 import type {
+  DataGetRequest,
   ReadArtifactLocationResult,
   ReadEntryResult,
   ReadGenerationResult,
@@ -7,9 +8,10 @@ import type {
 } from '@stayingupwind/host/cache';
 
 import { findArtifact } from './artifacts.ts';
-import { findEntry } from './entries.ts';
+import { findEntry, identifyEntry } from './entries.ts';
 import { findGeneration } from './generations.ts';
 import type { ScopeHistory } from './history.ts';
+import { type DataRecord, dataRecordFor, type RecordDeps } from './records.ts';
 import { type ArtifactRow, toEntry, toEntryState, toPublicGeneration, toScope } from './rows.ts';
 import { readScope } from './state.ts';
 
@@ -33,6 +35,34 @@ export function resolveEntry(sql: SqlStorage, scopeId: string, entryId: string):
     current: current === undefined ? null : toPublicGeneration(scopeId, current),
     revision,
   };
+}
+
+/**
+ * The data-cache value a key holds now, as the record the projection writes to KV would hold it
+ * (`dataRecordFor`): read from the scope itself, where a read of KV can answer for half a minute with
+ * what a data center read there before a later write (`RECORD_CACHE_TTL_SECONDS`). `undefined` for
+ * no value — none written, or one withdrawn, whose record the projection deletes.
+ */
+export async function readCurrentData(
+  deps: RecordDeps & { readonly sql: SqlStorage },
+  request: DataGetRequest,
+): Promise<DataRecord | undefined> {
+  const { sql, scopeId } = deps;
+  const { entryId } = await identifyEntry(scopeId, {
+    kind: request.kind,
+    key: request.key,
+    ...(request.handler !== undefined && { handler: request.handler }),
+  });
+  const entry = findEntry(sql, entryId);
+  if (
+    entry?.kind !== request.kind ||
+    entry.publication === 'retired' ||
+    entry.current_generation_id === null
+  ) {
+    return undefined;
+  }
+  const current = findGeneration(sql, entry.current_generation_id);
+  return current === undefined ? undefined : dataRecordFor(deps, entry, current);
 }
 
 export function readHead(sql: SqlStorage, history: ScopeHistory): ReadHeadResult {

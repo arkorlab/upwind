@@ -121,14 +121,22 @@ function copyOf(request: DataSetRequest, written: DataSetResponse): KeptCopy | u
   if (request.valueBase64.length > MAX_DATA_COPY_BYTES) {
     return undefined;
   }
-  const copy: DataGetResponse = {
+  return keptOf({
     entryId: written.entryId,
     generationId: written.generationId,
     dependencyRevision: written.revision,
     entry: request.entry,
     value: { kind: 'inline', base64: request.valueBase64 },
     ...(written.invalidation !== undefined && { invalidation: written.invalidation }),
-  };
+  });
+}
+
+/**
+ * `copy` as it is kept, for no longer than until the authority withdraws its value, or `undefined`
+ * where it is not to be kept: its record longer than a copy is read back whole, or its value one
+ * the authority would have withdrawn within the second.
+ */
+function keptOf(copy: DataGetResponse): KeptCopy | undefined {
   const withdrawal = withdrawalOf(copy);
   const maxAge =
     withdrawal === undefined
@@ -255,6 +263,16 @@ export class DataCopies {
       ...(request.entry.handler !== undefined && { handler: request.entry.handler }),
     };
     await within(this.#write(descriptor, copyOf(request, written)), DATA_COPY_WRITE_MS);
+  }
+
+  /**
+   * Keep the value the authority holds now, which a read found later than KV's answer
+   * (`currentData`), as the data center's copy: the isolates after the one that asked find it here
+   * rather than each asking the authority again. As the copy of a write is (`keep`): one not to be
+   * kept lets go of the copy the key had, an earlier value's, and nothing rejects.
+   */
+  async keepCurrent(request: DataGetRequest, current: DataGetResponse): Promise<void> {
+    await within(this.#write(request, keptOf(current)), DATA_COPY_WRITE_MS);
   }
 
   /**

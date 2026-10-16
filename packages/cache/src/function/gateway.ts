@@ -395,6 +395,32 @@ export class Gateway {
     );
   }
 
+  /**
+   * The value the key holds now, asked of the authority itself rather than of KV (`/data/current`);
+   * `undefined` for none, and for an authority from before it answered the route. Given up past
+   * `AUTHORITY_READ_DEADLINE_MS`, however near a read gateway is: this read always crosses to the
+   * authority.
+   */
+  currentData(request: DataGetRequest): Promise<DataGetResponse | undefined> {
+    return readWithin(
+      'current data read',
+      AUTHORITY_READ_DEADLINE_MS,
+      async (signal): Promise<DataGetResponse | undefined> => {
+        const response = await this.#send('/data/current', {
+          method: 'POST',
+          headers: this.#headers({ 'content-type': JSON_TYPE }),
+          body: JSON.stringify(request),
+          signal,
+        });
+        if (response.status === HTTP_NOT_FOUND) {
+          await response.body?.cancel();
+          return undefined;
+        }
+        return this.#result(response, dataGetResponseSchema);
+      },
+    );
+  }
+
   setData(request: DataSetRequest): Promise<DataSetResponse> {
     return this.#json('PUT', '/data', request, dataSetResponseSchema);
   }

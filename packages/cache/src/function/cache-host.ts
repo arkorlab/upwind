@@ -481,10 +481,29 @@ class GatewayHost implements CacheHost {
     return answer ?? (await this.#copies?.find(request));
   }
 
-  /** The data center's copy of a value this Function wrote, where it is later than `than`. */
+  /**
+   * A value of the key later than `than`: the data center's copy of one written here or kept by an
+   * isolate before, or, where it holds none later, the value the authority holds now
+   * (`currentData`), kept as the data center's copy behind the answer for the isolates after this
+   * one. Asked only of a value the runtime read stale or expired, whose wait it bounds: KV answers
+   * here with what it read for half a minute, so a value another data center has written since is
+   * read nowhere here but from the authority, and each isolate here would compute it again — and
+   * differently. An answer that comes after the runtime stopped waiting is kept all the same.
+   */
   async getNewerData(request: DataReadRequest, than: number): Promise<DataRead | undefined> {
     const copy = await this.#copies?.find(request);
-    return copy !== undefined && copy.dependencyRevision > than ? copy : undefined;
+    if (copy !== undefined && copy.dependencyRevision > than) {
+      return copy;
+    }
+    const current = await this.#gateway.currentData(request);
+    if (current === undefined || current.dependencyRevision <= than) {
+      return undefined;
+    }
+    const copies = this.#copies;
+    if (copies !== undefined) {
+      behindResponse(copies.keepCurrent(request, current));
+    }
+    return current;
   }
 
   /** The write, once the authority has taken it, kept in the data center as well. */
