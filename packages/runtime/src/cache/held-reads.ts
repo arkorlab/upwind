@@ -97,7 +97,8 @@ export async function laterIfAny(
     if (SEVERITY[validity] === SEVERITY.fresh || held.revision === undefined) {
       return undefined;
     }
-    const later = await readNewerData(runtime, request, held.revision, probing);
+    const expired = validity === 'expired';
+    const later = await readNewerData(runtime, request, held.revision, { probing, expired });
     const value = later === undefined ? undefined : heldIn(later.memo);
     if (later === undefined || value === undefined) {
       return undefined;

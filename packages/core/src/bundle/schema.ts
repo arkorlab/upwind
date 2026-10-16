@@ -331,6 +331,8 @@ export const sourceMapSchema = z.object({
   /** What a stack frame names: a served pathname, or a module inside the Function. */
   name: z.string().min(1),
   blob: blobRefSchema,
+  /** Original source text, indexed by this map's sources, kept privately beside the map. */
+  sources: blobRefSchema.optional(),
 });
 export type SourceMapRef = z.infer<typeof sourceMapSchema>;
 
@@ -767,6 +769,7 @@ function forEachBlob(bundle: DeploymentBundle, visit: (ref: BlobRef) => void): v
   if (bundle.sourceMaps !== undefined) {
     for (const map of bundle.sourceMaps) {
       add(map.blob);
+      add(map.sources);
     }
   }
   const functions = [
