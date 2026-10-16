@@ -74,6 +74,12 @@ export {
 } from './pages-data.ts';
 export { queryDependent } from './query.ts';
 export {
+  namesSpelledBy,
+  type RouterNamed,
+  type RouterNames,
+  routerPathnames,
+} from './router-names.ts';
+export {
   type PrefetchSegment,
   prefetchSegments,
   type RoutePagesData,
@@ -81,7 +87,12 @@ export {
   type RoutePayload,
   routePayloads,
 } from './segments.ts';
-export { placeholderSegments, routePathnameOf, standsForClass } from './spelling.ts';
+export {
+  placeholderSegments,
+  resolvedByName,
+  routePathnameOf,
+  standsForClass,
+} from './spelling.ts';
 export {
   cacheablePrerenders,
   completePrerenders,

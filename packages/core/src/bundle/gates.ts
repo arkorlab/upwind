@@ -2,7 +2,7 @@ import type { DynamicRoute } from '../manifest/schema.ts';
 import type { Issue } from '../schema/index.ts';
 import { type RouteGates, routeGatesSchema } from './carried.ts';
 import type { DynamicRouting } from './functions.ts';
-import { dynamicLandings, routeOfPathname } from './gate-routes.ts';
+import { routeOfPathname, servedRoutesOf } from './gate-routes.ts';
 import type { DeploymentBundle } from './schema.ts';
 import { routerSpellings } from './spelling.ts';
 
@@ -96,9 +96,11 @@ export function withGates(
  * The pathnames Next.js resolves exactly that are of a gated route, each with that route: the
  * route's own, every one the build prerendered of it — a member, a shell, a page's payload — and,
  * for a Pages Router page, the name its props are asked for by (`routeOfPathname`), under each
- * spelling the router finds one by (`routerSpellings`). A member is of the gated route a dynamic
- * route ahead of its own lands it on (`dynamicLandings`), as the runtime serves it, the member's
- * own route's otherwise. `undefined` for a bundle that declares no gate.
+ * spelling the router finds one by (`routerSpellings`). A prerender is of the gated route among
+ * those it may be served as (`servedRoutesOf`) — its own; a page of its own its name also spells,
+ * which the runtime serves in its place; and, where the router does not find it by name, each a
+ * dynamic route may land it on — of which a bundle the schema takes has one at most
+ * (`gateIssues`). `undefined` for a bundle that declares no gate.
  */
 export function gatedPathnamesOf(bundle: DeploymentBundle): Record<string, string> | undefined {
   const { gates } = bundle;
@@ -118,11 +120,12 @@ export function gatedPathnamesOf(bundle: DeploymentBundle): Record<string, strin
   for (const entry of bundle.entrypoints) {
     add(entry.pathname, routeOf(entry.pathname));
   }
-  const landingsOf = dynamicLandings(bundle);
-  const isGated = (route: string | undefined): route is string =>
-    route !== undefined && Object.hasOwn(gates, route);
+  const servedRoutes = servedRoutesOf(bundle);
   for (const prerender of bundle.prerenders) {
-    add(prerender.pathname, landingsOf(prerender.pathname).find(isGated) ?? prerender.route);
+    add(
+      prerender.pathname,
+      servedRoutes(prerender).find((route) => Object.hasOwn(gates, route)),
+    );
   }
   return gated;
 }

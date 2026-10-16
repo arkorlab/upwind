@@ -605,6 +605,10 @@ middleware, or a route a rewrite of `next.config` may send a request to — each
 request would be served with no gate asked. The edge runs a middleware itself only for the requests
 it serves as documents; one it hands on runs the middleware in the Function, where a rewrite onto a
 gated route reaches that route with no gate asked, so no build with a middleware declares a gate.
+Nor may two gated routes serve one prerendered page: its own, and a class ahead of it that the
+router reaches it by or a page of its own its name also spells (`/docs/a%2Fb` and `/docs/a/b`), or
+two classes a request's conditions (`has`, `missing`) choose between — the edge asks one gate
+before it serves anything.
 
 A rewrite reaches a route where the path it writes may be one of the route's, or of its data, read
 as the router reads it — escapes decoded, dot segments resolved, a `#` kept in the path, and a

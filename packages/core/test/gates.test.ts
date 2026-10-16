@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import type { ArtifactRef } from '../src/artifact/artifact.ts';
 import { declaredRouteGates, gatedPathnamesOf, ROUTE_GATES_ENV } from '../src/bundle/gates.ts';
-import { type DeploymentBundle, deploymentBundleSchema, type Route } from '../src/bundle/schema.ts';
+import {
+  type DeploymentBundle,
+  deploymentBundleSchema,
+  type Prerender,
+  type Route,
+} from '../src/bundle/schema.ts';
 import { dynamicRouting } from '../src/bundle/serving.ts';
 import { gateFor } from '../src/manifest/gates.ts';
 import { type BuildProjectManifestInput, buildProjectManifest } from '../src/manifest/manifest.ts';
@@ -146,6 +151,11 @@ function rerouted(
   return { ...bundle, routing: { ...bundle.routing, [phase]: rules } };
 }
 
+/** A prerender of `/posts/new`, a page of its own beside the gated class. */
+function ofNewPost(id: string, pathname: string): Prerender {
+  return { id, pathname, route: '/posts/new', parentOutputId: 'new', groupId: 3 };
+}
+
 /** A rewrite of `/latest` to `destination`. */
 function latest(destination: string): Route {
   return { source: '/latest', sourceRegex: '^/latest(?:/)?$', destination };
@@ -220,6 +230,42 @@ function classesOf(gates: Record<string, string>): DeploymentBundle {
     },
   });
 }
+
+/** The same build with the authors' class asked only of a request with a cookie. */
+function conditionedOf(gates: Record<string, string>): DeploymentBundle {
+  const bundle = classesOf(gates);
+  const dynamicRoutes = bundle.routing.dynamicRoutes.map((route) => {
+    return route === AUTHOR_ENTRY
+      ? { ...route, has: [{ type: 'cookie' as const, key: 'b' }] }
+      : route;
+  });
+  return { ...bundle, routing: { ...bundle.routing, dynamicRoutes } };
+}
+
+const DOCS = '/docs/[slug]';
+const DOCS_ENTRY = {
+  source: DOCS,
+  sourceRegex: '^/docs/(?<nxtPslug>[^/]+?)(?:/)?$',
+  destination: '/docs/[slug]?nxtPslug=$nxtPslug',
+};
+
+/**
+ * A build of a class of docs, with a member whose value holds a slash (`/docs/a%2Fb`) prerendered,
+ * and a page of its own at the path that member's name also spells decoded (`/docs/a/b`).
+ */
+function docsOf(gates: Record<string, string>): DeploymentBundle {
+  return bundleOf({
+    gates,
+    entrypoints: [
+      { id: DOCS, kind: 'app-page', pathname: DOCS },
+      { id: '/docs/a/b', kind: 'app-page', pathname: '/docs/a/b' },
+    ],
+    prerenders: [
+      { id: 'ab', pathname: '/docs/a%2Fb', route: DOCS, parentOutputId: 'ab', groupId: 1 },
+    ],
+    routing: { ...bundleOf().routing, dynamicRoutes: [DOCS_ENTRY] },
+  });
+}
 const POST_GATE = { route: POST, name: 'checker' };
 
 describe('the gates a build declares in its environment', () => {
@@ -278,6 +324,29 @@ describe('the gates a bundle carries', () => {
       expect.stringMatching(/^a build with a middleware may declare no gate/u),
     ]);
   });
+
+  /**
+   * A prerendered pathname two gated routes may be served as — its own, which the edge serves what
+   * it kept of, and a class ahead of it; or two the router chooses between by what a request
+   * carries — leaves the edge no one gate to ask before it serves the pathname.
+   */
+  it.each([
+    [
+      'its own and a class ahead of it',
+      classesOf({ [POST]: 'posts', [ALL]: 'pages' }),
+      /^gates names \/\[\.\.\.all\] and \/posts\/\[slug\], either of which \/posts\/demo may be served as/u,
+    ],
+    [
+      'two a request’s conditions choose between',
+      conditionedOf({ [AUTHOR]: 'authors', [ALL]: 'pages' }),
+      /^gates names \/authors\/\[slug\] and \/\[\.\.\.all\], either of which \/authors\/demo may be served as/u,
+    ],
+  ])(
+    'refuses a gate of each of two routes a prerendered pathname may be served as: %s',
+    (_, bundle, said) => {
+      expect(refusals(bundle)).toStrictEqual([expect.stringMatching(said)]);
+    },
+  );
 
   /** Next.js has a router read a data URL as the page it names only for a build with a middleware. */
   it('refuses any gate of a build whose router reads a data URL as the page it names', () => {
@@ -477,20 +546,46 @@ describe('the gates a build’s rewrites may reach', () => {
 
   /** A dynamic route with conditions may be passed over, and the one after it reached. */
   it('reads a dynamic route with conditions as one the router may pass over', () => {
-    const bundle = classesOf({ [ALL]: 'checker' });
-    // The authors' class, asked only of a request with a cookie.
-    const dynamicRoutes = bundle.routing.dynamicRoutes.map((route) => {
-      return route === AUTHOR_ENTRY
-        ? { ...route, has: [{ type: 'cookie' as const, key: 'b' }] }
-        : route;
-    });
-    const conditioned = { ...bundle, routing: { ...bundle.routing, dynamicRoutes } };
-    const rewritten = rerouted(conditioned, 'afterFiles', [latest('/authors/demo')]);
+    const rewritten = rerouted(conditionedOf({ [ALL]: 'checker' }), 'afterFiles', [
+      latest('/authors/demo'),
+    ]);
 
     expect(refusals(rewritten)).toStrictEqual([
       expect.stringMatching(/^gates names \/\[\.\.\.all\], which the rewrite of /u),
     ]);
   });
+
+  /**
+   * The router is handed more names than the build's own (`routerPathnames`): each page's spelling
+   * behind the trailing slash an application keeps its pages behind, and the escaped spellings of a
+   * page of its own (`namesSpelledBy`). A dynamic route whose destination is one of them lands a
+   * path on the page it spells, ahead of the catch-all after it.
+   */
+  it.each([
+    ['behind a trailing slash', '/private', '/private/', true],
+    ['escaped', '/sticks & stones', '/sticks%20%26%20stones', false],
+  ])(
+    'refuses a gate of a page a dynamic route lands a rewrite on, spelled %s',
+    (_, page, destination, trailingSlash) => {
+      const bundle = classesOf({ [page]: 'checker' });
+      const door = { source: '/door', sourceRegex: '^/door(?:/)?$', destination };
+      const landing = {
+        ...bundle,
+        config: { ...bundle.config, trailingSlash },
+        entrypoints: [
+          ...bundle.entrypoints,
+          { id: page, kind: 'app-page' as const, pathname: page },
+        ],
+        routing: { ...bundle.routing, dynamicRoutes: [door, ...bundle.routing.dynamicRoutes] },
+      };
+
+      const rewritten = rerouted(landing, 'afterFiles', [latest('/door')]);
+
+      expect(refusals(rewritten)).toStrictEqual([
+        expect.stringContaining(`gates names ${page}, which the rewrite of /latest to /door`),
+      ]);
+    },
+  );
 
   /**
    * A whole segment of the request's path, and whole segments of it, are never `.` or `..`: the
@@ -715,7 +810,6 @@ describe('what a manifest carries to find a request’s gate by', () => {
     });
   });
 
-  /** The props of a page rendered for each request are asked for at a route of their own. */
   /**
    * The runtime reaches a member through its dynamic routes, the first that holds of it winning: a
    * member of the catch-all under the posts is served by the posts' class ahead of it, and asked of
@@ -730,6 +824,54 @@ describe('what a manifest carries to find a request’s gate by', () => {
     expect(gateOf(caught, '/authors/demo')).toBeUndefined();
   });
 
+  /**
+   * A page of its own the router finds by its name, which it serves in place of any class that also
+   * holds of it: no other route's gate is asked of it — nor of its payload, which no class lands.
+   */
+  it('names no page of its own the gated route of a class that also holds of it', () => {
+    const bundle = bundleOf({
+      gates: GATES,
+      prerenders: [
+        ...bundleOf().prerenders,
+        ofNewPost('new', '/posts/new'),
+        ofNewPost('new.rsc', '/posts/new.rsc'),
+      ],
+    });
+
+    expect(gatedPathnamesOf(bundle)).not.toHaveProperty(['/posts/new']);
+    expect(gatedPathnamesOf(bundle)).not.toHaveProperty(['/posts/new.rsc']);
+    expect(gateOf(manifestOf(bundle), '/posts/new')).toBeUndefined();
+  });
+
+  /**
+   * Of the routes a prerendered pathname may be served as — its own, and each the router lands it
+   * on as a request's conditions choose — the one that is gated is asked of it, whichever serves it.
+   */
+  it('names a prerendered pathname the one gated route of those it may be served as', () => {
+    expect(gatedPathnamesOf(conditionedOf({ [ALL]: 'checker' }))).toMatchObject({
+      '/authors/demo': ALL,
+      '/posts/demo': ALL,
+    });
+  });
+
+  /**
+   * A member whose name escapes a slash (`/docs/a%2Fb`, of the value `a/b`) is served by the runtime
+   * as the page of its own the name also spells decoded (`/docs/a/b`), as Next.js serves it: that
+   * page's gate is asked of it. A build that gates both, which no one gate asked could hold to, is
+   * refused.
+   */
+  it('names a member the gated route of a page of its own its name also spells', () => {
+    const bundle = docsOf({ '/docs/a/b': 'checker' });
+    const manifest = manifestOf(bundle, { routes: [routeEntry('/docs/a%2Fb')] });
+
+    expect(gatedPathnamesOf(bundle)).toMatchObject({ '/docs/a%2Fb': '/docs/a/b' });
+    expect(gateOf(manifest, '/docs/a%2Fb')).toStrictEqual({ route: '/docs/a/b', name: 'checker' });
+    expect(refusals(docsOf({ [DOCS]: 'checker', '/docs/a/b': 'checker' }))).toStrictEqual([
+      expect.stringContaining('either of which /docs/a%2Fb may be served as'),
+    ]);
+  });
+
+  /** The props of a page rendered for each request are asked for at a route of their own. */
   it('names the route a Pages Router page’s props are asked for by of the page', () => {
     const account = `/_next/data/${BUILD}/account.json`;
     const bundle = bundleOf({

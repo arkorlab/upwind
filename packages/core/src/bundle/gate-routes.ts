@@ -3,6 +3,7 @@ import { decodedPath, requestSpelling } from '../manifest/pages-data-prefix.ts';
 import { compiledRules, type CompiledRule, patternOf } from '../request/compiled-patterns.ts';
 import { pageOfDataPathname, pagesDataPathnameUnder } from './pages-data.ts';
 import { type CaptureKind, referencesOf } from './rewrite-captures.ts';
+import { namesSpelledBy, type RouterNamed, routerPathnames } from './router-names.ts';
 
 /**
  * Which route of a build a pathname is of, and where a rule of `next.config` may send a request:
@@ -12,14 +13,17 @@ import { type CaptureKind, referencesOf } from './rewrite-captures.ts';
  * Written on the bundle's shape rather than its type, as the bundle's own schema reads it.
  */
 
-/** What of a build names its routes: each entrypoint, each prerender, each file it ships. */
-export interface BuildNames {
+/**
+ * What of a build names its routes: each entrypoint, each prerender, each file it ships — and what
+ * its router resolves exactly (`routerPathnames`).
+ */
+export interface BuildNames extends RouterNamed {
   readonly buildId: string;
-  readonly config: { readonly basePath: string };
   readonly entrypoints: readonly { readonly pathname: string; readonly kind: string }[];
-  readonly prerenders: readonly { readonly pathname: string; readonly route: string }[];
-  readonly staticFiles: readonly { readonly pathname: string }[];
 }
+
+/** A prerender, as far as which route it is of and whether the router resolves it by name. */
+type NamedPrerender = BuildNames['prerenders'][number];
 
 /** A rule of the build's routing, as far as where it sends a request. */
 interface Rerouting {
@@ -117,47 +121,153 @@ export function routeOfPathname(build: BuildNames): (pathname: string) => string
   };
 }
 
-/** Whether a dynamic route's pattern holds of a path: one that does not compile may, for all it says. */
-function holds(compiled: CompiledRule<Landing>, pathname: string): boolean {
+/** What a build's router resolves by name, and the route it serves each name as. */
+interface RouterReading {
+  /** The names it is handed as they are (`routerPathnames`), as the runtime hands them. */
+  readonly names: ReadonlySet<string>;
+  /** The route a name is of, a spelling behind a trailing slash read as the page without it. */
+  readonly routeOfName: (name: string) => string;
+}
+
+function routerReadingOf(build: BuildNames): RouterReading {
+  const routeOf = routeOfPathname(build);
+  const { pathnames, slashSpellings } = routerPathnames(build);
+  return {
+    names: new Set(pathnames),
+    routeOfName: (name) => {
+      const page = slashSpellings.get(name) ?? name;
+      return routeOf(page) ?? page;
+    },
+  };
+}
+
+/**
+ * The names the router may resolve `path` as and serve it under: `path` itself where it is one, and
+ * each name it may be a spelling of (`namesSpelledBy`) — which the runtime hands the router as well,
+ * by what the request spells, and serves the path as where it reads it back so.
+ */
+function namesReadOf(reading: RouterReading, path: string): string[] {
+  const spelled = namesSpelledBy(path, reading.names);
+  return reading.names.has(path) ? [path, ...spelled] : spelled;
+}
+
+/** A destination's reference to what a pattern captured, by its place or its name. */
+const CAPTURE_REFERENCE = /\$(?<reference>\d+|[A-Za-z_]\w*)/gu;
+const CAPTURE_PLACE = /^\d+$/u;
+
+/** What `match` captured under a reference's place or name: none for one it captured nothing at. */
+function capturedOf(match: RegExpExecArray, reference: string): string | undefined {
+  if (CAPTURE_PLACE.test(reference)) {
+    const place = Number(reference);
+    return place < match.length ? (match[place] ?? '') : undefined;
+  }
+  const { groups } = match;
+  return groups !== undefined && Object.hasOwn(groups, reference)
+    ? (groups[reference] ?? '')
+    : undefined;
+}
+
+/**
+ * The path a dynamic route's destination names for `match`, with what the pattern captured put in
+ * (`replaceDestination`, in `@next/routing`): a reference to nothing the pattern captured is left
+ * as it is written. The request's own path where the route names no destination.
+ */
+function destinationOf(rule: Landing, match: RegExpExecArray): string {
+  const destination = rule.destination?.split('?', 1)[0];
+  if (destination === undefined) {
+    return match.input;
+  }
+  return destination.replaceAll(
+    CAPTURE_REFERENCE,
+    (written: string, reference: string) => capturedOf(match, reference) ?? written,
+  );
+}
+
+/** What a dynamic route's pattern makes of a path: none where it does not hold, nor compile. */
+function matchOf(compiled: CompiledRule<Landing>, pathname: string): RegExpExecArray | null {
   try {
-    return patternOf(compiled).test(pathname);
+    return patternOf(compiled).exec(pathname);
   } catch {
-    return true;
+    return null;
   }
 }
 
 /**
- * The routes a build's router may land a path on through its dynamic routes, in their order: each
- * whose pattern holds of the path without regard to case, as the runtime matches them, up to the
- * first that asks nothing more of a request (`has`, `missing`) — a request one of those passes over
- * goes on to the next. `undefined` among them for one whose destination names no route of the
- * build. None where no pattern holds.
+ * The routes a build's router may land a path on through its dynamic routes, in their order, as
+ * `@next/routing` lands one: each whose pattern holds of the path without regard to case, as the
+ * runtime matches them, and whose destination, the path's values put in, is a name the router
+ * resolves — one that is not, it passes over — up to the first that asks nothing more of a request
+ * (`has`, `missing`) and lands on a name it is always handed (`routerPathnames`): a request one of
+ * the others passes over goes on to the next. A destination that may be a spelling of a name
+ * (`namesSpelledBy`) may land the path, as each name it may be read as, and may be passed over,
+ * as the request has it. None where no route lands it.
  *
  * Which of these the router takes is what serves a member the build prerendered: the runtime finds
  * a page of its own, a file, and a few prerenders by their names (`resolvedByName`), and every other
- * member through the dynamic routes, the first that holds of it winning — a class ahead of the
+ * member through the dynamic routes, the first that lands it winning — a class ahead of the
  * member's own among them.
  */
-export function dynamicLandings(
-  build: BuildLandings,
-): (pathname: string) => (string | undefined)[] {
-  const routeOf = routeOfPathname(build);
+export function dynamicLandings(build: BuildLandings): (pathname: string) => string[] {
+  const reading = routerReadingOf(build);
   const routes = compiledRules(build.routing.dynamicRoutes, 'i');
   return (pathname) => {
-    const landed: (string | undefined)[] = [];
+    const landed: string[] = [];
     for (const compiled of routes) {
-      if (!holds(compiled, pathname)) {
+      const match = matchOf(compiled, pathname);
+      const destination = match === null ? undefined : destinationOf(compiled.rule, match);
+      if (destination === undefined) {
         continue;
       }
-      const { rule } = compiled;
-      const landing = rule.destination?.split('?', 1)[0];
-      landed.push(landing === undefined ? undefined : routeOf(landing));
-      if (rule.has === undefined && rule.missing === undefined) {
+      landed.push(...namesReadOf(reading, destination).map((name) => reading.routeOfName(name)));
+      const { has, missing } = compiled.rule;
+      if (has === undefined && missing === undefined && reading.names.has(destination)) {
         break;
       }
     }
     return landed;
   };
+}
+
+/**
+ * The routes a prerendered pathname may be served as: its own, which the edge serves what the build
+ * kept of; the route of each name the router may read the pathname as instead (`namesSpelledBy`) —
+ * a page of its own it also spells, which the runtime serves ahead of a member (`escapedNameOf`);
+ * and, where the router does not find the pathname by name — a page of its own, a file, a
+ * prerender it resolves by name, any of which it serves in place of a class that also holds of it,
+ * as the runtime's `landedRoute` does — each route it may land it on through its dynamic routes
+ * (`dynamicLandings`), which what a request carries chooses among.
+ */
+export function servedRoutesOf(build: BuildLandings): (prerender: NamedPrerender) => string[] {
+  const reading = routerReadingOf(build);
+  const landingsOf = dynamicLandings(build);
+  return (prerender) => {
+    const { pathname } = prerender;
+    const read = namesSpelledBy(pathname, reading.names).map((name) => reading.routeOfName(name));
+    const landed = reading.names.has(pathname) ? [] : landingsOf(pathname);
+    return [...new Set([prerender.route, ...read, ...landed])];
+  };
+}
+
+/**
+ * Each prerendered pathname two gated routes may be served as (`servedRoutesOf`): its own, which the
+ * edge serves what it kept of, and one a dynamic route lands it on or a page of its own its name
+ * also spells — or two the router chooses between by what a request carries (`has`, `missing`). The edge asks one gate before anything is
+ * served, and asked of one route's, the other's would be passed: such a build is refused
+ * (`gateIssues`, in `schema.ts`).
+ */
+export function gatedEitherWay(
+  build: BuildLandings,
+  gates: Readonly<Record<string, string>>,
+): string[] {
+  const servedRoutes = servedRoutesOf(build);
+  return build.prerenders.flatMap((prerender) => {
+    const gated = servedRoutes(prerender).filter((route) => Object.hasOwn(gates, route));
+    return gated.length < 2
+      ? []
+      : [
+          `gates names ${gated.join(' and ')}, either of which ${prerender.pathname} may be served as: no one gate can be asked of it before it is served`,
+        ];
+  });
 }
 
 /**
@@ -193,7 +303,7 @@ interface Reader {
    */
   readonly servesItself: (name: string) => boolean;
   /** The routes the router may land a path on through its dynamic routes (`dynamicLandings`). */
-  readonly landingsOf: (pathname: string) => (string | undefined)[];
+  readonly landingsOf: (pathname: string) => string[];
 }
 
 /**
@@ -403,7 +513,7 @@ function mayReach(
   }
   const asSet = requestSpelling(path);
   const landed = reader.landingsOf(asSet);
-  if (landed.length > 0 && !landed.includes(undefined)) {
+  if (landed.length > 0) {
     return landed.includes(route.route);
   }
   const spelled = fold(asSet);
