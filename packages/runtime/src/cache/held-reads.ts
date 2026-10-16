@@ -1,7 +1,7 @@
 import type { Validity } from '@stayingupwind/core/cache';
 import { withDeadline } from '@stayingupwind/core/util';
 
-import { readNewerData } from './data.ts';
+import { type LaterData, readNewerData } from './data.ts';
 import type { HeldValue } from './held-writes.ts';
 import type { DataReadRequest } from './host.ts';
 import type { CacheRuntime, DataMemo } from './runtime.ts';
@@ -65,14 +65,26 @@ async function heldNow(weighing: Weighing): Promise<Judged | undefined> {
   }
 }
 
+/** A later value read and judged, and how to keep it (`readNewerData`). */
+interface Candidate {
+  readonly later: LaterData;
+  readonly judged: Judged;
+}
+
 /**
  * The value read, or a later one the host keeps nearer than its read (`readNewerData`) where that
  * one stands no worse — asked only of a value the read found stale or expired: a host whose reads
  * are cached answers with the value a later write replaced for as long as its cache keeps it, and
- * each isolate that judged it so would compute again what another has written. Where something
- * overtook the later value while it was read — a write of the key this isolate began, or a read
- * that found one later still — neither is answered with: what the isolate holds of the key now is,
- * judged afresh, and a miss where it holds none (`undefined`).
+ * each isolate that judged it so would compute again what another has written.
+ *
+ * A host can answer with the nearest value it keeps first — a copy beside its reads — that was
+ * written before an invalidation the read already knows of, while a later one stands further off.
+ * So where the later value stands no better than stale, one past it is asked for too, once, as a
+ * probe that moves nothing of the key until it is kept: where it cannot be read whole or judged in
+ * time, or stands worse than the first, the first is kept as it would have been. Where something
+ * overtook the value kept — a write of the key this isolate began since the first was asked for, or
+ * a read that found one later still — none is answered with: what the isolate holds of the key now
+ * is, judged afresh, and a miss where it holds none (`undefined`).
  */
 export async function laterIfAny(
   runtime: CacheRuntime,
@@ -80,25 +92,35 @@ export async function laterIfAny(
   read: Judged,
   weighing: Weighing,
 ): Promise<Judged | undefined> {
-  const { held, validity } = read;
-  if (SEVERITY[validity] === SEVERITY.fresh || held.revision === undefined) {
+  const laterThan = async (from: Judged, probing: boolean): Promise<Candidate | undefined> => {
+    const { held, validity } = from;
+    if (SEVERITY[validity] === SEVERITY.fresh || held.revision === undefined) {
+      return undefined;
+    }
+    const later = await readNewerData(runtime, request, held.revision, probing);
+    const value = later === undefined ? undefined : heldIn(later.memo);
+    if (later === undefined || value === undefined) {
+      return undefined;
+    }
+    let again: Validity;
+    try {
+      again = await judgedInTime(weighing, value);
+    } catch {
+      // The later value could not be judged, or not in time: the one held is answered as it would
+      // have been.
+      return undefined;
+    }
+    return SEVERITY[again] > SEVERITY[validity]
+      ? undefined
+      : { later, judged: { held: value, validity: again } };
+  };
+  const first = await laterThan(read, false);
+  if (first === undefined) {
     return read;
   }
-  const later = await readNewerData(runtime, request, held.revision);
-  const value = later === undefined ? undefined : heldIn(later.memo);
-  if (later === undefined || value === undefined) {
-    return read;
+  const kept = (await laterThan(first.judged, true)) ?? first;
+  if (!first.later.standing()) {
+    return heldNow(weighing);
   }
-  let again: Validity;
-  try {
-    again = await judgedInTime(weighing, value);
-  } catch {
-    // The later value could not be judged, or not in time: the one read is answered as it would
-    // have been.
-    return read;
-  }
-  if (SEVERITY[again] > SEVERITY[validity]) {
-    return read;
-  }
-  return later.keep() ? { held: value, validity: again } : heldNow(weighing);
+  return kept.later.keep() ? kept.judged : heldNow(weighing);
 }
