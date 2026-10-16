@@ -427,7 +427,7 @@ export async function handlePassthrough(input: PassthroughInput): Promise<Respon
   }
   // Read before the header goes with every other the edge's protocol reserves, below.
   takeResponseInvalidation(input, originResponse);
-  const response = forwardedResponse(originResponse, input.forwarding);
+  const response = forwardedResponse(originResponse, input.forwarding, input.request.method);
   const headers = response.headers;
   if (input.middleware !== undefined) {
     // After the Worker's own, which may repeat the middleware's cookies as Next.js writes them back

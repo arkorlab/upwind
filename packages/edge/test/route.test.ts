@@ -1,5 +1,7 @@
+import type { ProjectManifest } from '@stayingupwind/core/manifest';
 import { EDGE_BYPASS_COOKIE } from '@stayingupwind/core/request';
 import type { HostCredentials } from '@stayingupwind/host/credentials';
+import { DEFAULT_DELIVERY_POLICY } from '@stayingupwind/host/delivery';
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { describe, expect, expectTypeOf, it } from 'vitest';
@@ -116,6 +118,76 @@ async function routed(
 /** What an observer is told, which a test does not look at. */
 function unheeded(): void {
   // The test reads what the Function received, and what the observer read.
+}
+
+/** Where the application's middleware runs, beside its Function (`headThroughMiddleware`). */
+const MIDDLEWARE_SCRIPT = 'site-middleware';
+
+/** An answer to `HEAD` as it arrives: no body, and the length of what a `GET` is answered with. */
+function sizedHead(): Response {
+  return new Response(null, { headers: { 'content-length': '12', 'content-type': 'text/plain' } });
+}
+
+/** A middleware that lets the request through. */
+function middlewareNext(): Response {
+  return new Response(null, { headers: { 'x-middleware-next': '1' } });
+}
+
+/** A middleware that rewrites the request to another origin. */
+function rewriteAway(): Response {
+  return new Response(null, { headers: { 'x-middleware-rewrite': 'https://elsewhere.example/' } });
+}
+
+/**
+ * A `HEAD` of `path` routed by a host of its own, to a deployment whose middleware matches every
+ * path and answers as `middleware` does. Its Function, and any origin the middleware rewrites to,
+ * answer as an answer to `HEAD` arrives (`sizedHead`).
+ */
+async function headThroughMiddleware(path: string, middleware: () => Response): Promise<Response> {
+  const site = await seedSite({ document: pprDocument() });
+  const manifest: ProjectManifest = {
+    ...site.manifest,
+    middleware: { matchers: [{ sourceRegex: '^/.*$' }] },
+  };
+  const runtime = standaloneRuntime(env, {
+    memory: createEdgeMemory(() => Date.now()),
+    dispatchApp: (scriptName: string): Promise<Response> =>
+      Promise.resolve(scriptName === MIDDLEWARE_SCRIPT ? middleware() : sizedHead()),
+    fetchImpl: (): Promise<Response> => Promise.resolve(sizedHead()),
+  });
+  const request = navigation(path, { method: 'HEAD' });
+  const ctx = createExecutionContext();
+  const response = await serveFromPointer(
+    {
+      request,
+      url: new URL(request.url),
+      env,
+      ctx,
+      runtime,
+      host: standaloneHost(env),
+      pointer: {
+        ...site.pointer,
+        app: {
+          deploymentId: 'dpl_site',
+          scriptName: 'site-app',
+          middlewareScriptName: MIDDLEWARE_SCRIPT,
+        },
+      },
+      pointerMs: 0,
+      privateDelivery: false,
+      cspReportingPath: undefined,
+    },
+    {
+      manifestLookup: Promise.resolve({ kind: 'found', value: manifest }),
+      policyLookup: Promise.resolve({
+        kind: 'found',
+        source: 'exact',
+        policy: DEFAULT_DELIVERY_POLICY,
+      }),
+    },
+  );
+  await waitOnExecutionContext(ctx);
+  return response;
 }
 
 describe('the routing a host composes', () => {
@@ -386,5 +458,24 @@ describe('the routing a host composes', () => {
 
     expect(response.headers.get('x-arkor-edge')).toBe('passthrough;reason=bypass-cookie');
     expect(body).toBe('from the Function');
+  });
+
+  /**
+   * An answer to `HEAD` reaches the client with the `Content-Length` it came with, the length of
+   * what a `GET` is answered with, whoever answered: the Function, the middleware itself, or the
+   * origin the middleware rewrote to (Codex, upwind#179).
+   */
+  it.each([
+    ['the Function', middlewareNext, 'passthrough;reason=route-not-proved'],
+    ['the middleware', sizedHead, 'passthrough;reason=middleware'],
+    ['the origin the middleware rewrote to', rewriteAway, 'passthrough;reason=external-rewrite'],
+  ])('keeps the length of an answer to HEAD from %s', async (_, middleware, edge) => {
+    const response = await headThroughMiddleware('/api/hello', middleware);
+
+    expect({
+      status: response.status,
+      length: response.headers.get('content-length'),
+      edge: response.headers.get('x-arkor-edge'),
+    }).toStrictEqual({ status: 200, length: '12', edge });
   });
 });

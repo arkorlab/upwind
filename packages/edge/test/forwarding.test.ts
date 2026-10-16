@@ -85,7 +85,7 @@ describe('forwarded native transport', () => {
     });
     upstream.headers.append('set-cookie', 'one=1; Domain=.example.test; Path=/');
     upstream.headers.append('set-cookie', 'two=2; Path=/other');
-    const answer = forwardedResponse(upstream, CONTEXT);
+    const answer = forwardedResponse(upstream, CONTEXT, 'GET');
 
     expect({
       status: answer.status,
@@ -130,7 +130,7 @@ describe('forwarded native transport', () => {
       webSocket: socket,
       headers: { 'sec-websocket-protocol': 'echo', 'x-arkor-private': 'hidden' },
     });
-    const answer = forwardedResponse(upstream, CONTEXT);
+    const answer = forwardedResponse(upstream, CONTEXT, 'GET');
 
     expect({
       status: answer.status,
@@ -155,7 +155,7 @@ describe('forwarded native transport', () => {
     });
     upstream.headers.append('connection', 'x-also');
     upstream.headers.set('x-also', 'more of it');
-    const answer = forwardedResponse(upstream, CONTEXT);
+    const answer = forwardedResponse(upstream, CONTEXT, 'GET');
 
     expect({
       internal: answer.headers.get('x-internal'),
@@ -163,5 +163,22 @@ describe('forwarded native transport', () => {
       connection: answer.headers.get('connection'),
       allowed: answer.headers.get('allowed'),
     }).toStrictEqual({ internal: null, also: null, connection: null, allowed: 'kept' });
+  });
+
+  /**
+   * An answer to `HEAD` keeps its `Content-Length`, the length of what a `GET` is answered with: it
+   * has no body to stream on, which is what the length is taken off for — an answer to `GET` loses
+   * it, for the runtime to frame its body by what it streams (Codex, upwind#179).
+   */
+  it('keeps the length of an answer to HEAD, and takes it off a body it streams on', async () => {
+    const sized = { 'content-length': '12', 'content-type': 'text/plain' };
+    const head = forwardedResponse(new Response(null, { headers: sized }), CONTEXT, 'HEAD');
+    const get = forwardedResponse(new Response('twelve bytes', { headers: sized }), CONTEXT, 'GET');
+
+    expect({
+      head: head.headers.get('content-length'),
+      get: get.headers.get('content-length'),
+    }).toStrictEqual({ head: '12', get: null });
+    await expect(get.text()).resolves.toBe('twelve bytes');
   });
 });

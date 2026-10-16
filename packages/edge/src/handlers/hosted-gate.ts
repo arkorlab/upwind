@@ -183,7 +183,7 @@ async function actOnMiddleware(
   switch (middleware.kind) {
     case 'responded': {
       gate.abandon?.();
-      return middlewareResponse(edge, middleware.response, itself);
+      return middlewareResponse(edge, request, middleware.response, itself);
     }
     case 'failed': {
       gate.abandon?.();

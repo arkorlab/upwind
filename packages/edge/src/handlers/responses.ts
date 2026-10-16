@@ -69,6 +69,7 @@ function isBarePrivate(part: string): boolean {
 
 const SET_COOKIE_HEADER = 'set-cookie';
 const CONNECTION_HEADER = 'connection';
+const CONTENT_LENGTH_HEADER = 'content-length';
 
 /**
  * The headers an answer's `Connection` names: the one hop's as much as `Connection` is, so a proxy
@@ -88,15 +89,25 @@ function nominatedBy(headers: Headers): ReadonlySet<string> | undefined {
  * Copy a forwarded answer with its native transport, including a WebSocket handshake. Filtering
  * the copy's headers avoids constructing another Headers and copying every allowed header twice.
  * Read names from the original: deleting from the iterator's own Headers would skip entries.
+ *
+ * `method` is that of the request answered. An answer to `HEAD` keeps its `Content-Length`, which
+ * the denylist takes off a body the edge streams on, for the runtime to frame by what it streams:
+ * such an answer has none, and the length is that of the answer a `GET` would get (RFC 9110
+ * §9.3.2), which the runtime hands the client as given.
  */
-export function forwardedResponse(response: Response, scope: PassthroughResponseContext): Response {
+export function forwardedResponse(
+  response: Response,
+  scope: PassthroughResponseContext,
+  method: string,
+): Response {
   const answer = new Response(response.body, response);
   const headers = answer.headers;
   const nominated = nominatedBy(response.headers);
+  const kept = method === 'HEAD' ? CONTENT_LENGTH_HEADER : undefined;
   headers.delete(SET_COOKIE_HEADER);
   for (const [name, value] of response.headers) {
     if (
-      PASSTHROUGH_RESPONSE_HEADER_DENYLIST.includes(name) ||
+      (name !== kept && PASSTHROUGH_RESPONSE_HEADER_DENYLIST.includes(name)) ||
       name.startsWith(PLATFORM_HEADER_PREFIX) ||
       nominated?.has(name) === true
     ) {

@@ -385,7 +385,7 @@ export async function routeHostedDocument(input: HostedDocumentInput): Promise<R
     if (preload !== undefined) {
       abandon(edge, preload);
     }
-    return middlewareResponse(edge, middleware.response, answered);
+    return middlewareResponse(edge, request, middleware.response, answered);
   }
   if (middleware.kind === 'failed' || middleware.kind === 'external-rewrite') {
     if (preload !== undefined) {

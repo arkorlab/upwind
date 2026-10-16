@@ -513,7 +513,7 @@ export async function followExternalRewrite(
   const fetched = { ms: edge.runtime.now() - startedAt };
   // As a Worker's answer is taken (`handlePassthrough`): cookies scoped to the host the client
   // used, and nothing of the edge's protocol, nor what a proxy may not replay, carried over.
-  const answer = forwardedResponse(upstream, edge.forwarding);
+  const answer = forwardedResponse(upstream, edge.forwarding, request.method);
   const responseHeaders = answer.headers;
   mergeScopedMiddlewareHeaders(responseHeaders, rewrite.responseHeaders, edge.forwarding);
   privateCacheControl(responseHeaders);
@@ -526,13 +526,17 @@ export async function followExternalRewrite(
   return answer;
 }
 
-/** A redirect or a whole response the middleware produced, handed to the client as such. */
+/**
+ * A redirect or a whole response the middleware produced for `request`, handed to the client as
+ * such.
+ */
 export function middlewareResponse(
   edge: EdgeContext,
+  request: Request,
   response: Response,
   answered: MiddlewareAnswered,
 ): Response {
-  const answer = forwardedResponse(response, edge.forwarding);
+  const answer = forwardedResponse(response, edge.forwarding, request.method);
   const headers = answer.headers;
   privateCacheControl(headers);
   if (edge.privateDelivery) {
