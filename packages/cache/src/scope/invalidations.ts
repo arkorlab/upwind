@@ -1,4 +1,4 @@
-import { tagIdFor } from '@stayingupwind/core/cache';
+import { tagIdFor, type TagHistoryMark } from '@stayingupwind/core/cache';
 import { createId } from '@stayingupwind/core/util';
 import {
   INVALIDATION_ID_PREFIX,
@@ -8,6 +8,7 @@ import {
 
 import {
   controlFencesFit,
+  controlFenceTag,
   queueControlFence,
   reclaimControlFenceCapacity,
 } from './control-fences.ts';
@@ -23,6 +24,7 @@ import {
   tagKindFor,
   type TagRef,
   tagsFit,
+  toDeltaEntry,
 } from './tags.ts';
 import { type Apply, record, type TxInput } from './tx.ts';
 
@@ -183,6 +185,23 @@ function captureControlTags(input: TxInput, plan: InvalidatePlan): void {
   if (plan.control) input.controlTagIds?.push(...plan.targets.map((target) => target.ref.tagId));
 }
 
+/** The reply must carry the same older deadlines as a regional read, without another host call. */
+function replyHistory(
+  sql: SqlStorage,
+  tagId: string,
+  current: Pick<TagHistoryMark, 'staleAt' | 'hardExpireAt'>,
+): TagHistoryMark[] | undefined {
+  const tag = findTag(sql, tagId);
+  if (tag !== undefined) return toDeltaEntry(tag, sql).history;
+  const fence = controlFenceTag(sql, tagId);
+  if (
+    fence === undefined ||
+    (fence.staleAt === current.staleAt && fence.hardExpireAt === current.hardExpireAt)
+  )
+    return undefined;
+  return [{ revision: fence.revision, staleAt: fence.staleAt, hardExpireAt: fence.hardExpireAt }];
+}
+
 function applyTarget(
   input: TxInput,
   target: InvalidatePlan['targets'][number],
@@ -289,6 +308,7 @@ function applyInvalidate(input: TxInput, plan: InvalidatePlan): InvalidateRespon
       entryIds: entryIdsFor(target, indices, affected, compact),
       events,
     });
+    const history = replyHistory(sql, target.ref.tagId, deadlines);
     invalidations.push({
       invalidationId: target.invalidationId,
       tagId: target.ref.tagId,
@@ -296,6 +316,7 @@ function applyInvalidate(input: TxInput, plan: InvalidatePlan): InvalidateRespon
       staleAt: deadlines.staleAt,
       hardExpireAt: deadlines.hardExpireAt,
       meaning: deadlines.meaning,
+      ...(history !== undefined && { history }),
     });
   }
   condemnCurrent(
