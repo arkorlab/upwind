@@ -11,6 +11,12 @@ export interface ResumeRequestInput {
   readonly signal: AbortSignal;
 }
 
+/** Request parses the final URL; a second URL object ahead of it would parse it twice. */
+function forwardedUrl(request: Request, ctx: ForwardingContext): string {
+  const url = new URL(request.url);
+  return `https://${ctx.previewHost}${url.pathname}${url.search}`;
+}
+
 /**
  * Build the resume GET for a route of a hosted application: the client's own path and query, so
  * that a class's shell (`/en/[orgSlug]`) resumes for the member the client asked for (`/en/acme`)
@@ -21,11 +27,7 @@ export function buildResumeRequest(
   input: ResumeRequestInput,
   credentials: HostCredentials,
 ): Request {
-  const clientUrl = new URL(input.clientRequest.url);
-  const originUrl = new URL(
-    `https://${input.ctx.previewHost}${clientUrl.pathname}${clientUrl.search}`,
-  );
-  return new Request(originUrl.href, {
+  return new Request(forwardedUrl(input.clientRequest, input.ctx), {
     headers: withoutHostCredentials(
       sanitizeContinuationHeaders(input.clientRequest.headers, input.ctx),
       credentials,
@@ -46,22 +48,22 @@ export function buildPassthroughRequest(
   ctx: ForwardingContext,
   credentials: HostCredentials,
 ): Request {
-  const clientUrl = new URL(clientRequest.url);
-  const originUrl = new URL(`https://${ctx.previewHost}${clientUrl.pathname}${clientUrl.search}`);
-  const hasBody = clientRequest.method !== 'GET' && clientRequest.method !== 'HEAD';
+  const headers = sanitizePassthroughHeaders(clientRequest.headers, ctx);
+  // Fetch establishes a native WebSocket from this header. Other hop-by-hop headers stay out,
+  // and continuation requests never carry it: only the client's own passthrough can upgrade.
+  if (clientRequest.headers.get('upgrade')?.toLowerCase() === 'websocket') {
+    headers.set('upgrade', 'websocket');
+  }
   const init: RequestInit & { duplex?: 'half' } = {
     method: clientRequest.method,
-    headers: withoutHostCredentials(
-      sanitizePassthroughHeaders(clientRequest.headers, ctx),
-      credentials,
-    ),
+    headers: withoutHostCredentials(headers, credentials),
     redirect: 'manual',
     signal: clientRequest.signal,
   };
-  if (hasBody) {
+  if (clientRequest.method !== 'GET' && clientRequest.method !== 'HEAD') {
     init.body = clientRequest.body;
     // Streaming request bodies require half-duplex mode in Fetch.
     init.duplex = 'half';
   }
-  return new Request(originUrl.href, init);
+  return new Request(forwardedUrl(clientRequest, ctx), init);
 }

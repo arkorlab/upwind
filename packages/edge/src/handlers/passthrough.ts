@@ -13,7 +13,6 @@ import {
   type ForwardingContext,
   NEXT_ROUTER_PREFETCH_HEADER,
   type RequestClass,
-  rewritePassthroughResponseHeaders,
 } from '@stayingupwind/core/request';
 
 import { takeInvalidation } from '../cache/condemned.ts';
@@ -27,6 +26,7 @@ import { applyCspReporting } from './csp-reporting-headers.ts';
 import { observeMetric } from './observer.ts';
 import {
   badGatewayResponse,
+  forwardedResponse,
   keptByNobody,
   mergeScopedMiddlewareHeaders,
   privateCacheControl,
@@ -427,7 +427,8 @@ export async function handlePassthrough(input: PassthroughInput): Promise<Respon
   }
   // Read before the header goes with every other the edge's protocol reserves, below.
   takeResponseInvalidation(input, originResponse);
-  const headers = rewritePassthroughResponseHeaders(originResponse.headers, input.forwarding);
+  const response = forwardedResponse(originResponse, input.forwarding);
+  const headers = response.headers;
   if (input.middleware !== undefined) {
     // After the Worker's own, which may repeat the middleware's cookies as Next.js writes them back
     // (`splice/cookies.ts`): a browser keeps the last of a cookie set twice, and the middleware's
@@ -450,11 +451,6 @@ export async function handlePassthrough(input: PassthroughInput): Promise<Respon
     headers.set(EDGE_VALIDATED_HEADER, '1');
   }
   applyCspReporting(headers, input.app === undefined ? undefined : input.cspReportingPath);
-  const response = new Response(originResponse.body, {
-    status: originResponse.status,
-    statusText: originResponse.statusText,
-    headers,
-  });
   // After the response exists, so nothing the client waits for is behind it.
   reportPassthrough(input, input.reason, startedAt, dispatchedOf(originResponse));
   return response;

@@ -2,6 +2,7 @@ import { mergeMiddlewareResponseHeaders } from '@stayingupwind/core/paas';
 import {
   EDGE_DEBUG_HEADER,
   NO_STORE_CACHE_CONTROL,
+  PASSTHROUGH_RESPONSE_HEADER_DENYLIST,
   type PassthroughResponseContext,
   PLATFORM_HEADER_PREFIX,
   rewriteSetCookieForPreview,
@@ -67,6 +68,28 @@ function isBarePrivate(part: string): boolean {
 }
 
 const SET_COOKIE_HEADER = 'set-cookie';
+
+/**
+ * Copy a forwarded answer with its native transport, including a WebSocket handshake. Filtering
+ * the copy's headers avoids constructing another Headers and copying every allowed header twice.
+ * Read names from the original: deleting from the iterator's own Headers would skip entries.
+ */
+export function forwardedResponse(response: Response, scope: PassthroughResponseContext): Response {
+  const answer = new Response(response.body, response);
+  const headers = answer.headers;
+  headers.delete(SET_COOKIE_HEADER);
+  for (const [name, value] of response.headers) {
+    if (
+      PASSTHROUGH_RESPONSE_HEADER_DENYLIST.includes(name) ||
+      name.startsWith(PLATFORM_HEADER_PREFIX)
+    ) {
+      headers.delete(name);
+    } else if (name === SET_COOKIE_HEADER) {
+      headers.append(name, rewriteSetCookieForPreview(value, scope));
+    }
+  }
+  return answer;
+}
 
 /**
  * Merge what a middleware answered with into a response, its cookies scoped as a Function's are

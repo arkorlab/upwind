@@ -13,11 +13,7 @@ import {
   PLATFORM_REQUEST_HEADERS,
   readMiddlewareResponse,
 } from '@stayingupwind/core/paas';
-import {
-  EDGE_DEBUG_HEADER,
-  rewritePassthroughResponseHeaders,
-  sanitizePassthroughHeaders,
-} from '@stayingupwind/core/request';
+import { EDGE_DEBUG_HEADER, sanitizePassthroughHeaders } from '@stayingupwind/core/request';
 import { isDeadlineError, releaseStream, withDeadline } from '@stayingupwind/core/util';
 import { type HostCredentials, withoutHostCredentials } from '@stayingupwind/host/credentials';
 
@@ -28,6 +24,7 @@ import { applyCspReporting } from './csp-reporting-headers.ts';
 import { observeMetric } from './observer.ts';
 import {
   badGatewayResponse,
+  forwardedResponse,
   keptByNobody,
   mergeScopedMiddlewareHeaders,
   privateCacheControl,
@@ -516,7 +513,8 @@ export async function followExternalRewrite(
   const fetched = { ms: edge.runtime.now() - startedAt };
   // As a Worker's answer is taken (`handlePassthrough`): cookies scoped to the host the client
   // used, and nothing of the edge's protocol, nor what a proxy may not replay, carried over.
-  const responseHeaders = rewritePassthroughResponseHeaders(upstream.headers, edge.forwarding);
+  const answer = forwardedResponse(upstream, edge.forwarding);
+  const responseHeaders = answer.headers;
   mergeScopedMiddlewareHeaders(responseHeaders, rewrite.responseHeaders, edge.forwarding);
   privateCacheControl(responseHeaders);
   if (edge.privateDelivery) {
@@ -524,11 +522,6 @@ export async function followExternalRewrite(
   }
   responseHeaders.set(EDGE_DEBUG_HEADER, 'passthrough;reason=external-rewrite');
   applyCspReporting(responseHeaders, edge.cspReportingPath);
-  const answer = new Response(upstream.body, {
-    status: upstream.status,
-    statusText: upstream.statusText,
-    headers: responseHeaders,
-  });
   recordMiddlewareAnswer(edge, 'external-rewrite', { ...answered, fetched });
   return answer;
 }
@@ -539,18 +532,14 @@ export function middlewareResponse(
   response: Response,
   answered: MiddlewareAnswered,
 ): Response {
-  const headers = rewritePassthroughResponseHeaders(response.headers, edge.forwarding);
+  const answer = forwardedResponse(response, edge.forwarding);
+  const headers = answer.headers;
   privateCacheControl(headers);
   if (edge.privateDelivery) {
     keptByNobody(headers);
   }
   headers.set(EDGE_DEBUG_HEADER, 'passthrough;reason=middleware');
   applyCspReporting(headers, edge.cspReportingPath);
-  const answer = new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
   recordMiddlewareAnswer(edge, 'middleware', answered);
   return answer;
 }
