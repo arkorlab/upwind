@@ -131,6 +131,11 @@ export function observationOf(input: ObservedInput): Observed | undefined {
       if (body === null) {
         return null;
       }
+      // A body read from already, its reader let go of since, splits into what is left of it: a
+      // copy of a part, which the observer would take for the whole.
+      if (input.request.bodyUsed) {
+        throw new Error('the body was read from before a copy of it was asked for');
+      }
       // `tee()` is typed as the runtime declares the body, which is `any` either side of it.
       const [forwarded, copy] = body.tee() as [
         ReadableStream<Uint8Array>,

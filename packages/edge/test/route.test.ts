@@ -7,6 +7,7 @@ import { env } from 'cloudflare:workers';
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import type { EdgeHost } from '../src/edge-host.ts';
+import { observationOf } from '../src/handlers/passthrough-observer.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
 import type { IncomingRequest } from '../src/request-context.ts';
 import {
@@ -299,6 +300,53 @@ describe('the routing a host composes', () => {
 
     expect(received).toStrictEqual(['the visitor’s form']);
     expect(later[0]).toThrow(/while the observer is asked/u);
+  });
+
+  /**
+   * A body read from before it was copied, its reader let go of since, would split into what is
+   * left of it: no copy of it is handed out, where it would be taken for the whole (Codex). Nothing
+   * the edge routes is read from before its observer is asked, so this asks the observation alone.
+   */
+  it('hands out no copy of a body read from before it was asked for', async () => {
+    const parts = ['the visitor', '’s form'].map((part) => new TextEncoder().encode(part));
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const next = parts.shift();
+        if (next === undefined) {
+          controller.close();
+        } else {
+          controller.enqueue(next);
+        }
+      },
+    });
+    const posted = navigation('/api/hello', {
+      method: 'POST',
+      body,
+      duplex: 'half',
+    } as RequestInit);
+    const reader = posted.body?.getReader();
+    await reader?.read();
+    reader?.releaseLock();
+    const refusals: unknown[] = [];
+
+    const observed = observationOf({
+      request: posted,
+      url: new URL(posted.url),
+      // Shown to the observer, which reads nothing of it here.
+      state: {} as Parameters<typeof observationOf>[0]['state'],
+      observePassthrough: (_request, _url, _state, copyBody) => {
+        try {
+          copyBody();
+        } catch (error) {
+          refusals.push(error);
+        }
+        return { finish: unheeded };
+      },
+    });
+
+    expect(refusals).toHaveLength(1);
+    expect(String(refusals[0])).toMatch(/read from before a copy of it was asked for/u);
+    expect(observed?.forwarded).toBeUndefined();
   });
 
   /** One that reads its copy reads the whole body, and the Function is handed the whole of it. */
