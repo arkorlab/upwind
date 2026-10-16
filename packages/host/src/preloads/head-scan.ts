@@ -75,22 +75,6 @@ const SELF_CLOSING = '/';
 const FOREIGN_ROOTS: ReadonlySet<string> = new Set(['math', 'svg']);
 /** What can follow a `<` and still not be text: a declaration, a processing instruction, an end tag. */
 const MARKUP_DECLARATION: ReadonlySet<string> = new Set(['!', '/', '?']);
-const DOCTYPE_OPEN = '<!doctype';
-/**
- * A doctype that names a public or system identifier, read over what follows the word `doctype`.
- *
- * The keyword has to stand where a tokenizer looks for it — the whole word, after the name, with
- * a quote behind it — because anywhere else it is a character of a malformed doctype, and a
- * malformed doctype still ends at its first `>`. A name of `systemfoo` declares nothing; nor does
- * a `public` that is the name itself, one written past the name, or one with anything but a quote
- * after it. Reading any of them as an identifier steps over the `>` that ended the declaration,
- * and over the markup behind it.
- */
-const DOCTYPE_IDENTIFIER =
-  /^[\t\n\f\r ]*[^\t\n\f\r ]+[\t\n\f\r ]+(?:public|system)(?=[\t\n\f\r ]*["'])/u;
-/** The keyword that lets a doctype name two identifiers rather than one, and how many that is. */
-const DOCTYPE_PUBLIC = 'public';
-const PUBLIC_AND_SYSTEM = 2;
 /**
  * A CDATA section, which the spec spells in capitals and ends at `]]>` rather than at a `>`.
  *
@@ -531,70 +515,15 @@ function stepOverDeclaration(html: string, start: number, scan: HeadScan): numbe
   if (!MARKUP_DECLARATION.has(html[start + TAG_START.length] ?? '')) {
     return scan.inert > 0 ? start + TAG_START.length : -1;
   }
-  if (asciiLower(html.slice(start, start + DOCTYPE_OPEN.length)) === DOCTYPE_OPEN) {
-    return endOfDoctype(html, start);
-  }
   if (scan.foreign > 0 && html.startsWith(CDATA_OPEN, start)) {
     return -1;
   }
-  // Everything else a `<!` or `<?` opens is a bogus comment, which ends at the first `>` whatever
-  // is in front of it.
+  // Everything else a `<!` or `<?` opens ends at its first `>`, whatever is in front of it: a bogus
+  // comment, and a doctype as well. Every state a doctype passes through ends it at a `>`, a quoted
+  // identifier's included — the tokenizer calls that one abrupt and emits the doctype there — so a
+  // `>` an identifier seems to quote is the end of the declaration, and what follows is markup.
   const ends = html.indexOf(TAG_END, start);
   return ends === -1 ? -1 : ends + TAG_END.length;
-}
-/**
- * Where a doctype ends, which is not always at its first `>`.
- *
- * A legacy doctype carries a quoted public or system identifier, and a `>` inside one of those is
- * part of the identifier: ending there would hand the rest of the doctype to the walk as markup,
- * and a doctype is a place a `<link>` can be written as text.
- *
- * Only one that names an identifier, though, and only for as many identifiers as it may name: one
- * after `SYSTEM`, two after `PUBLIC`. A quote anywhere else is an ordinary character of a doctype
- * the tokenizer has already given up on, which still ends at its first `>` — and reading it as an
- * identifier would step over that `>` and whatever followed, the `<body>` that ends the head
- * included.
- */
-function endOfDoctype(html: string, start: number): number {
-  const plain = html.indexOf(TAG_END, start);
-  if (plain === -1) {
-    return -1;
-  }
-  const from = start + DOCTYPE_OPEN.length;
-  const named = DOCTYPE_IDENTIFIER.exec(asciiLower(html.slice(from, plain)));
-  if (named === null) {
-    return plain + TAG_END.length;
-  }
-  let at = from + named[0].length;
-  const identifiers = named[0].endsWith(DOCTYPE_PUBLIC) ? PUBLIC_AND_SYSTEM : 1;
-  for (let read = 0; read < identifiers; read += 1) {
-    const ends = endOfIdentifier(html, at);
-    if (ends === -1) {
-      return -1;
-    }
-    at = ends;
-  }
-  const ends = html.indexOf(TAG_END, at);
-  return ends === -1 ? -1 : ends + TAG_END.length;
-}
-/**
- * Where a quoted identifier ends, or where a doctype carries on without the one it could have had.
- *
- * A quote opens an identifier only where a tokenizer is looking for one: right after the keyword,
- * and again where a system identifier may follow a public one. Anything else in either place puts
- * it in the bogus state, where a quote is a character like another and the first `>` still ends
- * the declaration — so this hands back the position it was given and lets that `>` be found.
- * `-1` is an identifier nothing closes, which runs to the end of the document as it does for a
- * tokenizer.
- */
-function endOfIdentifier(html: string, from: number): number {
-  const at = skipSpaces(html, from);
-  const quote = html[at];
-  if (quote !== DOUBLE_QUOTE && quote !== SINGLE_QUOTE) {
-    return at;
-  }
-  const ends = html.indexOf(quote, at + 1);
-  return ends === -1 ? -1 : ends + 1;
 }
 /**
  * An end tag: where it leaves the walk.
