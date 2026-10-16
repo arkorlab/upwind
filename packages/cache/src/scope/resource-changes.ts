@@ -121,13 +121,27 @@ function eligibleEntries(
   });
 }
 
+/**
+ * The tag a newer change of a resource takes the place of, where it names another: the entries
+ * still tagged with it show the resource as it was, and are condemned and warmed with those of the
+ * tag the change names. Read here, under the lock every head is written under, the head is the one
+ * the transaction that follows finds.
+ */
+function replacedTags(sql: SqlStorage, request: ApplyResourceChangeInput): string[] {
+  const head = headOf(sql, request.resourceId);
+  return head !== undefined && head.version < request.version && head.tag !== request.tag
+    ? [head.tag]
+    : [];
+}
+
 export async function planApplyResourceChange(
   input: TxInput,
   request: ApplyResourceChangeInput,
 ): Promise<Apply<ApplyResourceChangeResult | Refusal>> {
+  const tags = [request.tag, ...replacedTags(input.sql, request)];
   const [invalidate, tagId] = await Promise.all([
     planInvalidate(input, {
-      tags: [{ kind: 'next-explicit', value: request.tag }],
+      tags: tags.map((value) => ({ kind: 'next-explicit' as const, value })),
       expire: NEXT_ONE_YEAR_SECONDS,
       cause: { source: 'platform', api: 'resourceChange', requestId: request.eventId },
     }),
