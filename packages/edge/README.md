@@ -39,6 +39,7 @@ step. Its suites run inside workerd (`@cloudflare/vitest-plugin`).
 | `./standalone`, `./standalone/worker`              | The edge on its own, serving one site, and the Worker a host deploys it as                                                               |
 | `./blob-worker`                                    | The Worker the edge reads a deployment's blobs and manifests through, by content                                                         |
 | `./route`                                          | A request whose site is known, from the reads its pointer names to the answer                                                            |
+| `./pattern-budget`                                 | The one allowance every routing test of a request spends, kept across its awaits, for a host that routes beside the edge                 |
 | `./edge-host`, `./edge-runtime`, `./bindings`      | What a host hands the edge, what reaches a Function for it, and what it reads of its environment                                         |
 | `./preview/{pointer,manifest,state,storage}`       | The pointer and the manifest as the edge reads them, and what it knows of a site for a request                                           |
 | `./memory/caches`                                  | What an isolate keeps between requests, and the budget it keeps it within                                                                |
