@@ -170,7 +170,9 @@ export function staticFilesOf(
   for (const served of edgeServedRewrites(bundle)) {
     const entry = staticFileEntry(served.file, bundle.config.basePath);
     // Keep the destination's status explicit: the edge otherwise infers 404/500 from the alias.
-    files[served.pathname] = { ...entry, status: entry.status ?? HTTP_OK };
+    // And never immutable, whatever the file it names is: the name is the rewrite's, not a hash of
+    // the bytes, and a later deployment's rewrite may answer it with others.
+    files[served.pathname] = { ...entry, immutable: false, status: entry.status ?? HTTP_OK };
   }
   if (previous === undefined) {
     return files;
