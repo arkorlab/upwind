@@ -16,6 +16,7 @@ import { createLogger, detailOf } from '../../logger.ts';
 import { dataUploadKey } from '../../scope/data-uploads.ts';
 import type { WriteOrder } from '../../scope/data.ts';
 import { isRefusal } from '../../scope/state.ts';
+import { serverTiming, Timing } from '../../scope/timing.ts';
 import {
   answerScope,
   type GatewayContext,
@@ -132,24 +133,32 @@ async function readSetRequest(c: GatewayContext, maxBytes: number): Promise<SetR
 }
 
 async function setValue(c: GatewayContext): Promise<Response> {
+  // How long each part of the write takes, here and in the scope's object: said on its answer
+  // (`Server-Timing`), so that where a write's time goes can be read where it is made.
+  const timing = new Timing();
   // The one change that waits for the marker: it stores its bytes before the authority answers,
   // and what it stored for a scope retention has erased nothing would ever sweep, should the
   // removal after the refusal fail.
-  if (await retiredScope(c)) {
+  const retired = await retiredScope(c);
+  timing.lap('retired');
+  if (retired) {
     return refuseRetired(c);
   }
   const request = await readSetRequest(c, c.get('vars').MAX_ARTIFACT_BYTES);
   if (request instanceof Response) {
     return request;
   }
+  timing.lap('read');
   const { bytes } = request;
   const sha256 = await sha256Hex(bytes);
+  timing.lap('hash');
   // A request may delete only its own upload. Content deduplication is decided atomically by
   // the authority, so a rejected writer can never remove another generation's bytes.
   const storageRef = dataUploadKey(c.get('scopeId'), sha256, c.get('now'));
   await c.env.ARTIFACTS.put(storageRef, bytes as BufferSource, {
     httpMetadata: { contentType: OCTET_STREAM },
   });
+  timing.lap('upload');
   // An RPC failure can lose an already committed reply. Leave uncertain uploads for the
   // authority's orphan sweep, which checks references before deleting them.
   const outcome = await c.get('scope').setData(
@@ -161,6 +170,7 @@ async function setValue(c: GatewayContext): Promise<Response> {
     },
     c.get('now'),
   );
+  timing.lap('scope');
   if (isRefusal(outcome) || outcome.retainedStorageRef !== storageRef) {
     // Adoption is complete. Removing this request's unused upload must not delay its response.
     c.executionCtx.waitUntil(removeUnusedUpload(c, storageRef));
@@ -169,7 +179,10 @@ async function setValue(c: GatewayContext): Promise<Response> {
   if (outcome.metered !== undefined) {
     c.get('host').meter.write(c.get('scopeId'), outcome.metered);
   }
-  // Storage references and what was metered are internal to this gateway and the authority.
+  const parts = [serverTiming(timing.parts), serverTiming(outcome.timing ?? [], 'scope-')];
+  c.header('server-timing', parts.filter((part) => part !== '').join(', '));
+  // Storage references, what was metered and how long the parts took are internal to this
+  // gateway and the authority: the timing goes on the answer's header, not in its body.
   return ok(c, {
     entryId: outcome.entryId,
     generationId: outcome.generationId,

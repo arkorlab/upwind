@@ -40,6 +40,7 @@ import {
 } from './rows.ts';
 import { isRefusal, type Refusal, refuse, requireActiveScope } from './state.ts';
 import { replaceEntryTags, type TagRef, tagRefsFor } from './tags.ts';
+import type { TimedPart } from './timing.ts';
 import { type Apply, record, type TxInput } from './tx.ts';
 
 /**
@@ -96,6 +97,8 @@ export interface DataSetOutcome {
   readonly retainedStorageRef?: string | undefined;
   /** Internal only: the write a new value made, for the gateway to meter (`metering.ts`). */
   readonly metered?: IsrWrite | undefined;
+  /** Internal only: how long the scope's object took over each part of the write (`Timing`). */
+  readonly timing?: readonly TimedPart[] | undefined;
 }
 
 interface DataPlan {
