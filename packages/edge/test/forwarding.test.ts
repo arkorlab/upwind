@@ -117,4 +117,26 @@ describe('forwarded native transport', () => {
     expect((await reader.read()).value).toBe('last');
     expect((await reader.read()).done).toBe(true);
   });
+
+  /**
+   * A WebSocket's handshake is copied with its socket, the one the client is handed: a copy of the
+   * answer that lost it would have no handshake to give (cubic, upwind#179).
+   */
+  it('keeps the socket of a WebSocket handshake it copies', () => {
+    const socket = new WebSocketPair()[0];
+    const upstream = new Response(null, {
+      // eslint-disable-next-line unicorn/no-invalid-response-options -- a Worker answers a handshake 101, with the socket
+      status: 101,
+      webSocket: socket,
+      headers: { 'sec-websocket-protocol': 'echo', 'x-arkor-private': 'hidden' },
+    });
+    const answer = forwardedResponse(upstream, CONTEXT);
+
+    expect({
+      status: answer.status,
+      kept: answer.webSocket === socket,
+      protocol: answer.headers.get('sec-websocket-protocol'),
+      internal: answer.headers.get('x-arkor-private'),
+    }).toStrictEqual({ status: 101, kept: true, protocol: 'echo', internal: null });
+  });
 });
