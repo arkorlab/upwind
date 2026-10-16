@@ -22,7 +22,7 @@ catalog:
   # IDs are on, which a bundler does not compose through until they are one list (`flattened`).
   '@jridgewell/sourcemap-codec': 1.6.0
   '@jridgewell/trace-mapping': 0.3.31
-  '@next/routing': 16.4.0
+  '@next/routing': 16.4.2
   # The AST Rolldown's `this.parse` hands a plugin: the version Rolldown itself depends on.
   '@oxc-project/types': 0.153.0
   '@types/node': 24.19.2
@@ -55,7 +55,7 @@ catalog:
   # July, and a compatibility date a Function is built against (`FUNCTION_COMPATIBILITY_DATE` in
   # `@stayingupwind/adapter`) is newer than that — a local run must not be the older runtime.
   miniflare: 5.20261006.1-alpha
-  next: 16.4.0
+  next: 16.4.2
   oxfmt: 0.72.0
   rolldown: 1.2.13
   wrangler: 4.147.0

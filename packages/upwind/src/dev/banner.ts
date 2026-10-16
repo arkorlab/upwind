@@ -1,8 +1,4 @@
-import {
-  isBeforeSecurityFloor,
-  SECURITY_FLOOR,
-  SECURITY_RELEASE_URL,
-} from '@stayingupwind/core/next';
+import { SECURITY_RELEASE_URL, securityFloorOf } from '@stayingupwind/core/next';
 import { UPWIND_INTERNAL_PREFIX } from '@stayingupwind/core/paas';
 
 import { type DevSession, readyInMs } from './session.ts';
@@ -40,10 +36,10 @@ export function printReady(session: DevSession): void {
  * The version this run is on, when it is older than the newest release that carried security fixes.
  *
  * `SECURITY_FLOOR` is `@stayingupwind/core/next`'s, which is what the adapter warns against once a
- * build is written as well: one claim about one Next.js release, declared once. What a development
- * run adds to it is what only a development run has — `next dev` serves the MCP endpoint a page the
- * developer visits can read a project out of, and it optimizes `/_next/image` itself, where a
- * deployment answers that path without Next.js in it. Both of those are this process.
+ * build is written as well: one claim about one Next.js release, declared once, with the first
+ * canary carrying the same fixes beside it for a canary numbered past it. What a development
+ * run adds to it is what only a development run has — `next dev` optimizes `/_next/image` itself,
+ * where a deployment answers that path without Next.js in it, and that is this process.
  *
  * In this run's own words rather than the banner's, because it is a warning and not a line of the
  * banner: `upwind: …` on `console.warn`, as every other warning of this CLI is. Said rather than
@@ -51,10 +47,11 @@ export function printReady(session: DevSession): void {
  * own still has to be runnable. A version that cannot be read is not judged at all.
  */
 function printSecurityNotice(nextVersion: string | undefined): void {
-  if (nextVersion === undefined || !isBeforeSecurityFloor(nextVersion)) {
+  const floor = nextVersion === undefined ? undefined : securityFloorOf(nextVersion);
+  if (floor === undefined) {
     return;
   }
   console.warn(
-    `upwind: Next.js ${nextVersion} is older than ${SECURITY_FLOOR}, the newest release with security fixes in it that upwind knows of, and a development run is the one that serves the MCP endpoint and optimizes images itself — ${SECURITY_RELEASE_URL}`,
+    `upwind: Next.js ${nextVersion} is older than ${floor.version}, the first ${floor.canary ? 'canary' : 'release'} with the newest security fixes that upwind knows of, and a development run is the one that optimizes images itself — ${SECURITY_RELEASE_URL}`,
   );
 }

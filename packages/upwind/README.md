@@ -55,7 +55,7 @@ arrangement below as well, where the prefix is reserved inside Next.js's own rou
   - Local:     http://localhost:3000
   - Internal:  http://localhost:3000/__upwind
 
-  ✓ Next.js 16.4.0 ready in 1127ms
+  ✓ Next.js 16.4.2 ready in 1127ms
 ```
 
 A deployment has an edge in front of it, and the platform's own paths are the edge's to serve. Under
@@ -94,9 +94,11 @@ there.
 The banner says one more thing when it has to: a project whose Next.js is older than the newest
 release carrying security fixes is told so, right under the version line. `upwind` and
 `@stayingupwind/adapter` name the same floor, and the adapter says it again once a build is written.
-It is worth saying in both places, because a development run serves the MCP endpoint and optimizes
-`/_next/image` itself, where a deployment answers that path without Next.js in it. Nothing is
-refused — the run is yours, and a project held to an older Next.js still has to be runnable.
+It is worth saying in both places, because the two are exposed to different things: a deployment's
+Function carries the project's own Next.js, the React Server Components transport it vendors
+included, and a development run also optimizes `/_next/image` itself, where a deployment answers
+that path without Next.js in it. Nothing is refused — the run is yours, and a project held to an
+older Next.js still has to be runnable.
 
 Everything is resolved from the project, not from this package: the Next.js that runs an application
 is the copy the application itself depends on, and so is the adapter below.
@@ -116,7 +118,7 @@ is not working.
 $ curl -s localhost:3000/__upwind
 {
   "upwind": "0.4.0",
-  "next": "16.4.0",
+  "next": "16.4.2",
   "ready": true,
   "address": "http://localhost:3000",
   "prefix": "/__upwind",
