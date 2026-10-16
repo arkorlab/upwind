@@ -2,12 +2,18 @@ import { EDGE_BYPASS_COOKIE } from '@stayingupwind/core/request';
 import type { HostCredentials } from '@stayingupwind/host/credentials';
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import type { EdgeHost } from '../src/edge-host.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
 import type { IncomingRequest } from '../src/request-context.ts';
-import { type CopyRequestBody, type PointerRequest, serveFromPointer } from '../src/route.ts';
+import {
+  type CopyRequestBody,
+  type ObservePassthrough,
+  type PassthroughObservation,
+  type PointerRequest,
+  serveFromPointer,
+} from '../src/route.ts';
 import { standaloneHost, standaloneRuntime } from '../src/standalone/index.ts';
 import { navigation, pprDocument, seedSite, type SiteOptions } from './helpers/site.ts';
 
@@ -27,6 +33,18 @@ const HOST_SESSION = 'host_session';
 const ON_HOST_SESSION = [{ type: 'cookie' as const, key: HOST_SESSION }];
 /** Any member of a class at the site's root, as Next.js compiles `/[slug]`. */
 const SLUG = '^/(?<slug>[^/]+?)(?:/)?$';
+
+/** What reaches a request's or a response's body, or locks it. */
+type BodyAccess =
+  | 'arrayBuffer'
+  | 'blob'
+  | 'body'
+  | 'bodyUsed'
+  | 'bytes'
+  | 'clone'
+  | 'formData'
+  | 'json'
+  | 'text';
 
 /** The standalone host, keeping `HOST_SESSION` as its own (`HostCredentials`). */
 function credentialedHost(): EdgeHost {
@@ -229,6 +247,24 @@ describe('the routing a host composes', () => {
 
     expect(received).toStrictEqual(['the visitor’s form']);
     await expect(Promise.all(copies)).resolves.toStrictEqual(['the visitor’s form']);
+  });
+
+  /**
+   * What an observer is handed are views, by type and at no cost in front of the answer (cubic,
+   * upwind#179): the request without its body, which is the forwarding's — read by the observer, it
+   * would leave the request nothing to forward — and the answer to read, whose body and headers are
+   * the client's.
+   */
+  it('shows an observer the request without its body, and the answer only to read', () => {
+    type Shown = Parameters<ObservePassthrough>[0];
+    type Told = NonNullable<Parameters<PassthroughObservation['finish']>[0]>;
+
+    expectTypeOf<Extract<keyof Shown, BodyAccess>>().toBeNever();
+    expectTypeOf<Extract<keyof Told, BodyAccess | 'webSocket'>>().toBeNever();
+    expectTypeOf<Extract<keyof Told['headers'], 'append' | 'delete' | 'set'>>().toBeNever();
+    expectTypeOf<Shown>().toHaveProperty('cf');
+    expectTypeOf<Told>().toHaveProperty('ok');
+    expectTypeOf<Told['headers']>().toHaveProperty('get');
   });
 
   /**

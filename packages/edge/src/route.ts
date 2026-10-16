@@ -100,13 +100,16 @@ export interface RoutingInput {
    * What the host observes of a request the edge hands on, where it observes it: a copy of the
    * body (`copyBody`), and a word once the answer is in (`PassthroughObservation`). Asked of every
    * passthrough, so it answers `undefined` at once for one it leaves alone; absent, none is
-   * observed. The request's own body is the one forwarded, and is never the observer's to read.
+   * observed. The request's own body is the one forwarded, and is never the observer's to read: it
+   * is shown the request without it (`ObservedRequest`), and the answer to read (`ObservedResponse`).
    */
   readonly observePassthrough?: ObservePassthrough | undefined;
 }
 
 export type {
   CopyRequestBody,
+  ObservedRequest,
+  ObservedResponse,
   ObservePassthrough,
   PassthroughObservation,
 } from './handlers/passthrough-observer.ts';

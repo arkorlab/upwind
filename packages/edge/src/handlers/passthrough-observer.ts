@@ -17,6 +17,33 @@ export type ObservedState = Omit<PreviewState, 'policy'> & {
 };
 
 /**
+ * What a passthrough's observer is shown of the request: all of it but its body, which is the
+ * forwarding's — read here, it would leave the request nothing to forward. A copy is the observer's
+ * one way to the body (`CopyRequestBody`).
+ *
+ * A view by type alone: the observer is handed the request itself, so that observing a passthrough
+ * adds nothing in front of its answer. An incoming request's headers are immutable already.
+ */
+export type ObservedRequest = Omit<
+  IncomingRequest,
+  'arrayBuffer' | 'blob' | 'body' | 'bodyUsed' | 'bytes' | 'clone' | 'formData' | 'json' | 'text'
+>;
+
+/**
+ * What a passthrough's observer is told of the answer: how it went, and its headers to read. Its
+ * body and its headers are the client's — a body read here, or a header changed, would change what
+ * the client is handed. A view by type alone, for the reason the request's is (`ObservedRequest`).
+ */
+export interface ObservedResponse {
+  readonly status: number;
+  readonly ok: boolean;
+  readonly headers: Pick<
+    Headers,
+    'entries' | 'get' | 'getSetCookie' | 'has' | 'keys' | 'values' | typeof Symbol.iterator
+  >;
+}
+
+/**
  * A copy of the request's body for the host's observer of a passthrough to read, `null` for a
  * request with none: the body is split as it is first asked for, the edge keeping the branch it
  * forwards (`PassthroughInput.observedBody`), and asked again, it hands out the same copy. Whatever
@@ -29,11 +56,11 @@ export type ObservedState = Omit<PreviewState, 'policy'> & {
 export type CopyRequestBody = () => ReadableStream<Uint8Array> | null;
 
 /**
- * A host's view of one passthrough: what it is told once the answer is in — the answer itself, or
- * nothing where forwarding failed.
+ * A host's view of one passthrough: what it is told once the answer is in — the answer, to read
+ * (`ObservedResponse`), or nothing where forwarding failed.
  */
 export interface PassthroughObservation {
-  readonly finish: (response?: Response) => void;
+  readonly finish: (response?: ObservedResponse) => void;
 }
 
 /**
@@ -41,7 +68,7 @@ export interface PassthroughObservation {
  * passthrough, so it answers `undefined` at once for one it leaves alone.
  */
 export type ObservePassthrough = (
-  request: IncomingRequest,
+  request: ObservedRequest,
   url: URL,
   state: ObservedState,
   copyBody: CopyRequestBody,

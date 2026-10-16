@@ -6,7 +6,7 @@ import type { AssetOutcome } from './handlers/asset.ts';
 
 export type IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 
-export function coloOf(request: IncomingRequest): string | undefined {
+export function coloOf(request: Pick<IncomingRequest, 'cf'>): string | undefined {
   return request.cf?.colo;
 }
 
@@ -15,7 +15,7 @@ export function coloOf(request: IncomingRequest): string | undefined {
  * as always present — it is the Enterprise shape — while a zone without the product has no such
  * field at all, so it is read as the optional thing it is.
  */
-export function verifiedBotOf(request: IncomingRequest): boolean {
+export function verifiedBotOf(request: Pick<IncomingRequest, 'cf'>): boolean {
   const cf = request.cf as { botManagement?: { verifiedBot?: boolean } } | undefined;
   return cf?.botManagement?.verifiedBot === true;
 }
