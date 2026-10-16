@@ -15,6 +15,7 @@ import {
   middlewareFailedReason,
   middlewareMatches,
   type MiddlewareOutcome,
+  type MiddlewareContinued,
   middlewareResponse,
   type MiddlewareTiming,
   routedHeaders,
@@ -44,8 +45,11 @@ export interface DeferredHostedGateInput extends HostedGateInput<StaticFileConte
   readonly policyReady: () => EdgeContext | Promise<EdgeContext>;
 }
 
-/** What the middleware decided where it let the request on, and how long deciding it took. */
-export type TimedContinue = MiddlewareContinue & Partial<MiddlewareTiming>;
+/**
+ * What the middleware decided where it let the request on — the status it gave a rewrite with it
+ * (`rewriteStatus`) — and how long deciding it took.
+ */
+export type TimedContinue = MiddlewareContinued & Partial<MiddlewareTiming>;
 
 export interface HostedGate {
   /** The complete context once a matching middleware required the selected policy. */

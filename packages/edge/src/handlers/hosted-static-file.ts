@@ -5,6 +5,8 @@ import {
   type StaticFileEntry,
   staticFileKey,
 } from '@stayingupwind/core/manifest';
+import { NULL_BODY_STATUSES } from '@stayingupwind/core/request';
+import { releaseStream } from '@stayingupwind/core/util';
 
 import type { StaticFileContext } from '../strategies/context.ts';
 import {
@@ -46,9 +48,33 @@ interface ServedFile {
   readonly replaced?: EarlyFileRead | undefined;
 }
 
+const HTTP_OK = 200;
+
+/**
+ * A shipped file's answer under the status the middleware gave its rewrite (`rewriteStatus`), as
+ * Next.js answers it: its router puts the status on the response before the file server sends the
+ * file (`res.statusCode = middlewareRes.status`, in `resolve-routes.js`), and the file server sets
+ * one of its own only for a range, a request it answers 304 and an error (`send`). So only an
+ * answer of 200 takes it, its body let go of where the status carries none.
+ */
+function underRewriteStatus(response: Response, status: number): Response {
+  if (response.status !== HTTP_OK) {
+    return response;
+  }
+  if (NULL_BODY_STATUSES.has(status)) {
+    releaseStream(response.body, 'rewrite status: no body');
+    return new Response(null, { status, headers: response.headers });
+  }
+  return new Response(response.body, { status, headers: response.headers });
+}
+
+async function answeredUnder(answered: Promise<Response>, status: number): Promise<Response> {
+  return underRewriteStatus(await answered, status);
+}
+
 /**
  * A shipped file of a hosted application, served from storage under the headers `next.config`
- * gives its path and what the middleware set.
+ * gives its path and what the middleware set, and under the status it gave its rewrite.
  */
 function serveFile(
   input: HostedFileInput,
@@ -63,7 +89,7 @@ function serveFile(
     middleware === undefined
       ? input.request
       : new Request(input.request, { headers: middleware.requestHeaders });
-  return handleStaticFile(
+  const answered = handleStaticFile(
     {
       request,
       pathname: served.pathname,
@@ -83,6 +109,9 @@ function serveFile(
     served.early,
     served.replaced,
   );
+  // A file the middleware gave no status keeps the answer as it comes, with nothing added before it.
+  const status = middleware?.rewriteStatus;
+  return status === undefined ? answered : answeredUnder(answered, status);
 }
 
 /**
