@@ -38,7 +38,7 @@ import {
 import { deploymentFingerprintOf } from './fingerprint.ts';
 import { assembleManifest, oversizedManifest, routedPages } from './manifest.ts';
 import { edgePointerOf } from './pointer.ts';
-import { DOCUMENT_KIND, shellsOf } from './shells.ts';
+import { DOCUMENT_KIND, type ShellToEncode, shellsOf } from './shells.ts';
 
 /**
  * A deployment made from its build in one process, as two calls — `stageDeployment`, which imports
@@ -178,6 +178,9 @@ const MAX_KV_VALUE_MIB = 25;
 const MAX_KV_VALUE_BYTES = MAX_KV_VALUE_MIB * MIB;
 /** The most of a key's metadata Workers KV keeps, as JSON. */
 const MAX_KV_METADATA_BYTES = KIB;
+const MAX_BUCKET_METADATA_KIB = 8;
+/** The most of an object's custom metadata the bucket keeps, its keys and values together. */
+const MAX_BUCKET_METADATA_BYTES = MAX_BUCKET_METADATA_KIB * KIB;
 
 function isoOf(ms: number): string {
   // eslint-disable-next-line unicorn/prefer-temporal -- Temporal is not available in the Workers runtime.
@@ -241,6 +244,37 @@ async function stageBlobs(target: DeployTarget, bundle: DeploymentBundle): Promi
   return [...checked.values()];
 }
 
+/** How much of the bucket's allowance for an object's custom metadata `metadata` takes, in bytes. */
+function bucketMetadataBytes(metadata: Readonly<Record<string, string>>): number {
+  let bytes = 0;
+  for (const [key, value] of Object.entries(metadata)) {
+    bytes += encodeUtf8(key).byteLength + encodeUtf8(value).byteLength;
+  }
+  return bytes;
+}
+
+/**
+ * What an artifact is stored in the bucket with: what it is, where and when it was captured, and
+ * the route it was first captured from — provenance, which nothing reads to serve it, and left out
+ * where that route's pathname would take the metadata past what the bucket keeps of it
+ * (`MAX_BUCKET_METADATA_BYTES`) and fail the write.
+ */
+function bucketMetadataOf(
+  shell: ShellToEncode,
+  input: StageInput,
+): Readonly<Record<string, string>> {
+  const described = { kind: shell.kind, byteLength: String(shell.byteLength) };
+  const captured = {
+    sourceOriginHost: input.originHost,
+    deploymentId: input.bundle.deploymentId,
+    capturedAt: isoOf(input.now()),
+  };
+  const traced = { ...described, sourcePath: shell.sourcePath, ...captured };
+  return bucketMetadataBytes(traced) > MAX_BUCKET_METADATA_BYTES
+    ? { ...described, ...captured }
+    : traced;
+}
+
 /**
  * The build's shells, prefetch segments, whole payloads and Pages Router props, kept where the edge
  * reads an artifact from (`artifacts/<sha256>`), and the hints each document's head names, by its
@@ -259,14 +293,7 @@ async function importShells(
     // As what it is: a segment or a payload is an RSC payload, and a page's props are JSON.
     await target.bucket.put(r2ArtifactKey(shell.sha256), bytes, {
       contentType: shell.contentType,
-      customMetadata: {
-        kind: shell.kind,
-        byteLength: String(shell.byteLength),
-        sourcePath: shell.sourcePath,
-        sourceOriginHost: input.originHost,
-        deploymentId: input.bundle.deploymentId,
-        capturedAt: isoOf(input.now()),
-      },
+      customMetadata: bucketMetadataOf(shell, input),
     });
     // Only a document has a head to read hints from: a segment or a payload is an RSC payload, and
     // a page's props are JSON.
