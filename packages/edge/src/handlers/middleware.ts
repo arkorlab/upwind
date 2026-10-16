@@ -445,6 +445,23 @@ function recordMiddlewareAnswer(
 }
 
 /**
+ * What a rewrite to an origin that could not be reached is answered with: a 502 under the headers
+ * the middleware set, its cookies scoped as on any answer to the rewrite, as Next.js's router keeps
+ * them on its answer whatever became of the request it proxied. Kept by nobody.
+ */
+function unreachableRewrite(edge: EdgeContext, rewrite: ExternalRewrite): Response {
+  const own = badGatewayResponse('external-rewrite-unavailable');
+  const headers = new Headers();
+  mergeScopedMiddlewareHeaders(headers, rewrite.responseHeaders, edge.forwarding);
+  for (const [name, value] of own.headers) {
+    headers.set(name, value);
+  }
+  keptByNobody(headers);
+  applyCspReporting(headers, edge.cspReportingPath);
+  return new Response(own.body, { status: own.status, headers });
+}
+
+/**
  * A rewrite to another origin, followed from here: the middleware has run once, and running it
  * again in the application's Worker would repeat whatever it did on the way. The request goes out
  * as the middleware left it, without three things: the host's credentials (`EdgeHost.credentials`,
@@ -490,7 +507,7 @@ export async function followExternalRewrite(
     // propagate it would end the request as an uncaught exception.
     const fetched = { ms: edge.runtime.now() - startedAt };
     recordMiddlewareAnswer(edge, 'external-rewrite-unavailable', { ...answered, fetched });
-    return badGatewayResponse('external-rewrite-unavailable');
+    return unreachableRewrite(edge, rewrite);
   }
   const fetched = { ms: edge.runtime.now() - startedAt };
   // As a Worker's answer is taken (`handlePassthrough`): cookies scoped to the host the client
