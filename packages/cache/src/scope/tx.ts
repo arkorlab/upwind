@@ -31,6 +31,25 @@ export interface TxInput {
 export type Apply<T> = () => T;
 
 /**
+ * `each` of `items`, `size` at a time, answered in their order: what a plan derives or asks ahead of
+ * its transaction for each of the things a request names. A request may name thousands, and a plan
+ * that began a digest or a read of storage for each at once would hold every one of them out
+ * together; a chunk begins once the one before it has answered.
+ */
+export async function inChunks<T, U>(
+  items: readonly T[],
+  size: number,
+  each: (item: T) => Promise<U>,
+): Promise<U[]> {
+  const answers: U[] = [];
+  for (let offset = 0; offset < items.length; offset += size) {
+    const chunk = items.slice(offset, offset + size);
+    answers.push(...(await Promise.all(chunk.map(async (item) => each(item)))));
+  }
+  return answers;
+}
+
+/**
  * One state of an entity per revision: the last, which is the one the transaction leaves.
  *
  * A transaction can say the same thing twice — starting an attempt ends the lease before it and

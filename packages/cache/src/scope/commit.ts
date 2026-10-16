@@ -42,7 +42,7 @@ import {
   viewHeld,
   weighInvalidations,
 } from './tags.ts';
-import { type Apply, record, type TxInput } from './tx.ts';
+import { type Apply, inChunks, record, type TxInput } from './tx.ts';
 
 /**
  * Publishing a regeneration. The commit is refused if the lease was lost (a newer fencing token,
@@ -52,6 +52,12 @@ import { type Apply, record, type TxInput } from './tx.ts';
  */
 
 const OUTPUT_ID_PREFIX = 'out';
+/**
+ * How many of a commit's uploads its plan asks storage about at once. A commit may name thousands
+ * of artifacts, and a Worker has six calls waiting for an answer at the most: one past them waits
+ * in the runtime's own queue, held all the same.
+ */
+const UPLOAD_CHECKS_AT_ONCE = 6;
 
 interface CommitPlan {
   readonly attemptId: string;
@@ -165,13 +171,11 @@ async function missingUploads(
     }
   }
   const missing = new Set<string>();
-  await Promise.all(
-    [...keys].map(async (key) => {
-      if (!(await blobs.exists(key))) {
-        missing.add(key);
-      }
-    }),
-  );
+  await inChunks([...keys], UPLOAD_CHECKS_AT_ONCE, async (key) => {
+    if (!(await blobs.exists(key))) {
+      missing.add(key);
+    }
+  });
   return missing;
 }
 
