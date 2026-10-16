@@ -501,9 +501,9 @@ with known vulnerabilities in them — and this adapter says so rather than refu
 against a Next.js older than `SECURITY_FLOOR` (`@stayingupwind/core/next`, the newest release
 carrying security fixes that this release of upwind knows of) ends with a warning naming it, and
 `upwind dev` says the same thing under its own version line. What answers a request is the Next.js
-the project installed, and the fixes that matter to a deployment are inside Next.js's own code —
-`use cache` keying, its draft-mode fills, the ownership checks a route template makes of a prerender
-it is about to treat as its own — so none of them is something a rewrite here could supply. A
+the project installed, and the fixes that matter to a deployment are inside Next.js's own code — the
+React Server Components transport it vendors, which reads back what a `use cache` function returned
+and what a Server Action is sent — so none of them is something a rewrite here could supply. A
 project that has to stay on 16.2 keeps a deployment that works and is told what it is;
 `check-patches.ts` holds the floor to being inside the range, and nothing can tell either of them
 that a newer security release exists. A static export is warned for nothing: it carries no Next.js

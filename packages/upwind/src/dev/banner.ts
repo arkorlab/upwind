@@ -41,9 +41,8 @@ export function printReady(session: DevSession): void {
  *
  * `SECURITY_FLOOR` is `@stayingupwind/core/next`'s, which is what the adapter warns against once a
  * build is written as well: one claim about one Next.js release, declared once. What a development
- * run adds to it is what only a development run has — `next dev` serves the MCP endpoint a page the
- * developer visits can read a project out of, and it optimizes `/_next/image` itself, where a
- * deployment answers that path without Next.js in it. Both of those are this process.
+ * run adds to it is what only a development run has — `next dev` optimizes `/_next/image` itself,
+ * where a deployment answers that path without Next.js in it, and that is this process.
  *
  * In this run's own words rather than the banner's, because it is a warning and not a line of the
  * banner: `upwind: …` on `console.warn`, as every other warning of this CLI is. Said rather than
@@ -55,6 +54,6 @@ function printSecurityNotice(nextVersion: string | undefined): void {
     return;
   }
   console.warn(
-    `upwind: Next.js ${nextVersion} is older than ${SECURITY_FLOOR}, the newest release with security fixes in it that upwind knows of, and a development run is the one that serves the MCP endpoint and optimizes images itself — ${SECURITY_RELEASE_URL}`,
+    `upwind: Next.js ${nextVersion} is older than ${SECURITY_FLOOR}, the newest release with security fixes in it that upwind knows of, and a development run is the one that optimizes images itself — ${SECURITY_RELEASE_URL}`,
   );
 }

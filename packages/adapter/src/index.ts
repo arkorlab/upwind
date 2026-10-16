@@ -482,7 +482,7 @@ function reportWhatTravels(
   }
   if (!exported && isBeforeSecurityFloor(nextVersion)) {
     console.warn(
-      `@stayingupwind/adapter: Next.js ${nextVersion} is older than ${SECURITY_FLOOR}, the newest Next.js release with security fixes in it that this adapter knows of. What answers a request is the Next.js this project installed: its \`use cache\` keying, its draft-mode fills and the ownership checks a route template makes of a prerender all travel into the Function, and nothing here stands in for them. Upgrade and build again — ${SECURITY_RELEASE_URL}`,
+      `@stayingupwind/adapter: Next.js ${nextVersion} is older than ${SECURITY_FLOOR}, the newest Next.js release with security fixes in it that this adapter knows of. What answers a request is the Next.js this project installed: the React Server Components transport it vendors, which reads back what a \`use cache\` function returned and what a Server Action is sent, travels into the Function, and nothing here stands in for it. Upgrade and build again — ${SECURITY_RELEASE_URL}`,
     );
   }
 }
