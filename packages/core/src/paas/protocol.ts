@@ -7,6 +7,12 @@
 export const MIDDLEWARE_ONLY_HEADER = 'x-arkor-middleware';
 /** The edge already ran the middleware; the runtime must not run it again. */
 export const MIDDLEWARE_DONE_HEADER = 'x-arkor-middleware-done';
+/**
+ * The status the middleware the edge ran (`MIDDLEWARE_DONE_HEADER`) gave its rewrite, where it gave
+ * one other than 200: the route it rewrote to is answered under it, as one is whose middleware the
+ * runtime ran itself (`withRewriteStatus`), and the middleware is not run again to learn it.
+ */
+export const MIDDLEWARE_REWRITE_STATUS_HEADER = 'x-arkor-middleware-rewrite-status';
 /** Resume this prerender: render only what its postponed state left out. */
 export const RESUME_PRERENDER_HEADER = 'x-arkor-prerender';
 /** The same, escaped where a header cannot carry it as it is (`pathHeaders`). */
@@ -66,6 +72,7 @@ export const SCOPE_REVISION_HEADER = 'x-arkor-scope-revision';
 export const PLATFORM_REQUEST_HEADERS: readonly string[] = [
   MIDDLEWARE_ONLY_HEADER,
   MIDDLEWARE_DONE_HEADER,
+  MIDDLEWARE_REWRITE_STATUS_HEADER,
   RESUME_PRERENDER_HEADER,
   RESUME_PRERENDER_ESCAPED_HEADER,
   ORIGINAL_URL_HEADER,
