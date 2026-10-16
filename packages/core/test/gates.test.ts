@@ -12,6 +12,7 @@ import { dynamicRouting } from '../src/bundle/serving.ts';
 import { gateFor } from '../src/manifest/gates.ts';
 import { type BuildProjectManifestInput, buildProjectManifest } from '../src/manifest/manifest.ts';
 import type { DynamicRoute, ProjectManifest, RouteEntry } from '../src/manifest/schema.ts';
+import { EDGE_BYPASS_COOKIE } from '../src/request/constants.ts';
 import { createId } from '../src/util/index.ts';
 
 /**
@@ -291,6 +292,31 @@ function authorsAsked(gates: Record<string, string>): number {
   }
 }
 
+/**
+ * A build with `/private` gated and `rule` rewriting — and an image optimizer at Next.js's own path,
+ * unless it has `none`.
+ */
+function optimizedBy(rule: Route, optimizer: 'none' | 'own' = 'own'): DeploymentBundle {
+  const bundle = bundleOf({ gates: { '/private': 'checker' } });
+  const config = optimizer === 'none' ? bundle.config : { ...bundle.config, images: IMAGES };
+  return rerouted({ ...bundle, config }, 'afterFiles', [rule]);
+}
+
+/** A rewrite of `/thumb/…`, what follows the prefix captured. */
+function thumbnail(destination: string): Route {
+  return {
+    source: '/thumb/:path*',
+    sourceRegex: String.raw`^\/thumb(?:\/((?:[^\/]+?)(?:\/(?:[^\/]+?))*))?(?:\/)?$`,
+    destination,
+  };
+}
+
+/** A rewrite of `/old` to a page of its own no gate is declared for, asked only on `conditions`. */
+function conditionedRewrite(conditions: Pick<Route, 'has' | 'missing'>): DeploymentBundle {
+  const rule = { source: '/old', sourceRegex: '^/old(?:/)?$', destination: '/posts/new' };
+  return rerouted(bundleOf({ gates: GATES }), 'beforeFiles', [{ ...rule, ...conditions }]);
+}
+
 /** What the schema says of a bundle's rewrites, of all it says is wrong with the bundle. */
 function rewriteRefusals(bundle: DeploymentBundle): string[] {
   return refusals(bundle).filter((said) => said.includes(', which the rewrite of '));
@@ -361,6 +387,58 @@ describe('the gates a bundle carries', () => {
     const [refusal] = refusals(bundleOf({ gates }));
 
     expect(refusal).toMatch(said);
+  });
+
+  /**
+   * The edge judges the rules a request's gate is found by on the request as it came, and the
+   * deployment's router on the request as the edge hands it on: a rule that asks for what the edge
+   * takes off or writes itself there would be judged otherwise by each.
+   */
+  it.each([
+    [
+      'a forwarding header',
+      { has: [{ type: 'header' as const, key: 'x-forwarded-for', value: '1' }] },
+    ],
+    [
+      'a header of the platform in front',
+      { has: [{ type: 'header' as const, key: 'CF-IPCountry' }] },
+    ],
+    ['the host header', { missing: [{ type: 'header' as const, key: 'host' }] }],
+    ['the via header', { missing: [{ type: 'header' as const, key: 'via' }] }],
+    ['the edge’s own cookie', { has: [{ type: 'cookie' as const, key: EDGE_BYPASS_COOKIE }] }],
+  ])('refuses one of a build with a rule that asks for %s', (_, conditions) => {
+    expect(refusals(conditionedRewrite(conditions))).toStrictEqual([
+      expect.stringMatching(/^a build that declares a gate may judge no route on what its router/u),
+    ]);
+  });
+
+  /** A dynamic route a request's gate is found by is held to the same. */
+  it('refuses one of a build with a dynamic route that asks for a header the edge writes', () => {
+    const asked = {
+      ...AUTHOR_ENTRY,
+      missing: [{ type: 'header' as const, key: 'x-forwarded-proto' }],
+    };
+    const bundle = bundleOf({
+      gates: GATES,
+      routing: { ...bundleOf().routing, dynamicRoutes: [POST_ENTRY, asked] },
+    });
+
+    expect(refusals(bundle)).toStrictEqual([
+      expect.stringContaining(`the rule of ${AUTHOR} asks for the x-forwarded-proto header`),
+    ]);
+  });
+
+  /**
+   * What the router is handed as the visitor sent it is judged alike — and `x-nextjs-data`, which
+   * the edge judges as the router does: Next.js conditions its own redirects on it.
+   */
+  it.each([
+    ['a header of the application’s own', { has: [{ type: 'header' as const, key: 'x-mode' }] }],
+    ['x-nextjs-data', { missing: [{ type: 'header' as const, key: 'x-nextjs-data' }] }],
+    ['a cookie', { has: [{ type: 'cookie' as const, key: 'theme', value: 'dark' }] }],
+    ['the host', { has: [{ type: 'host' as const, value: 'app.example' }] }],
+  ])('takes one of a build with a rule that asks for %s', (_, conditions) => {
+    expect(refusals(conditionedRewrite(conditions))).toStrictEqual([]);
   });
 
   /**
@@ -672,6 +750,40 @@ describe('the gates a build’s rewrites may reach', () => {
       expect.stringMatching(/^gates names \/\[\.\.\.all\], which the rewrite of /u),
     ]);
   });
+
+  /**
+   * A rewrite to the image optimizer has it fetch its source within the deployment's Function, which
+   * knows no gate: a gated route's answer it may fetch is refused — a source it names, one a request
+   * names where it names none, one it puts in what its rule captured.
+   */
+  it.each([
+    ['a gated page it names', '/_next/image?url=/private&w=64&q=75'],
+    ['a gated page named escaped', '/_next/image?url=%2Fprivate&w=64&q=75'],
+    ['whatever source a request names', '/_next/image'],
+    ['what its rule captured', '/_next/image?url=/$1&w=64&q=75'],
+    ['a gated page, the optimizer’s path written behind a slash', '/_next/image/?url=/private'],
+  ])('refuses a gate a rewrite has the image optimizer fetch: %s', (_, destination) => {
+    const bundle = optimizedBy(thumbnail(destination));
+
+    expect(refusals(bundle)).toStrictEqual([
+      `gates names /private, which the rewrite of /thumb/:path* to ${destination} may have the image optimizer fetch as its source, with no gate asked`,
+    ]);
+  });
+
+  /** One the optimizer fetches from another origin, or that no gated route serves, is taken. */
+  it.each([
+    ['a file it names', '/_next/image?url=/robots.txt&w=64&q=75', 'own'],
+    ['a page no gate is declared for', '/_next/image?url=/posts/new&w=64&q=75', 'own'],
+    ['an image of another origin', '/_next/image?url=https://img.example/a.png&w=64', 'own'],
+    ['a gated page, where the build has no optimizer', '/_next/image?url=/private', 'none'],
+  ] as const)(
+    'takes a gate where a rewrite has the image optimizer fetch %s',
+    (_, path, optimizer) => {
+      const bundle = optimizedBy(thumbnail(path), optimizer);
+
+      expect(refusals(bundle)).toStrictEqual([]);
+    },
+  );
 
   /**
    * The router is handed more names than the build's own (`routerPathnames`): each page's spelling
@@ -1040,6 +1152,28 @@ describe('what a manifest carries to find a request’s gate by', () => {
 describe('the gate a request is asked of', () => {
   const manifest = manifestOf(bundleOf({ gates: GATES }), {
     reservedRoutes: [{ sourceRegex: '^/posts/claimed$', beforeFiles: true }],
+  });
+
+  /**
+   * No client says a request is for a page's props: the router routes a page's own request with no
+   * `x-nextjs-data`, whatever the client sent, and a rule that asks for it claims none of them.
+   */
+  it('is the gated page’s, where a client says it asks for props a rule rewrites', () => {
+    const rule = {
+      source: '/private',
+      sourceRegex: '^/private(?:/)?$',
+      destination: '/posts/new',
+      has: [{ type: 'header' as const, key: 'x-nextjs-data' }],
+    };
+    const gated = manifestOf(
+      rerouted(bundleOf({ gates: { '/private': 'checker' } }), 'beforeFiles', [rule]),
+    );
+    const asked = new Headers({ 'x-nextjs-data': '1' });
+
+    expect(gateFor(gated, new URL('/private', 'https://app.example'), asked)).toStrictEqual({
+      route: '/private',
+      name: 'checker',
+    });
   });
 
   it.each([

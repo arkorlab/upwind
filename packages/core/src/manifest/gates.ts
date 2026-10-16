@@ -1,5 +1,5 @@
 import { isPagesDataRequestPath, pageOfPagesData } from '../bundle/pages-data.ts';
-import { dataRequestHeaders } from '../request/headers.ts';
+import { routerDataHeaders } from '../request/headers.ts';
 import {
   isReserved,
   nextNamespacePattern,
@@ -157,16 +157,19 @@ function routerRules(manifest: ProjectManifest): readonly ReservedRoute[] {
 }
 
 /**
- * The gated route that serves a request (above), or `undefined` for none. A request at a Pages
- * Router data URL is judged with the `x-nextjs-data` Next.js puts on one itself, as the edge judges
- * one (`dataRequestHeaders`). A trailing slash is admitted to a dynamic route whatever the
- * application keeps its pages behind, as `functionFor` admits it: a redirect that would take it off
- * is a rule ahead of the filesystem, asked first.
+ * The gated route that serves a request (above), or `undefined` for none. A request is judged with
+ * the `x-nextjs-data` the deployment's router judges it with (`routerDataHeaders`): at a Pages
+ * Router data URL the one Next.js puts on it itself, as the edge judges one; and at any other none,
+ * whatever the client sent — a rule that held for the client's own would claim no request the
+ * router routes, and the gated page it seemed to claim was served with no gate asked. The edge
+ * hands such a request on, as it does any that carries the header (`classifyRequest`). A trailing
+ * slash is admitted to a dynamic route whatever the application keeps its pages behind, as
+ * `functionFor` admits it: a redirect that would take it off is a rule ahead of the filesystem,
+ * asked first.
  */
 function gatedRouteOf(manifest: ProjectManifest, url: URL, headers: Headers): string | undefined {
-  const routed = isPagesDataRequestPath(basePathOf(manifest), url.pathname)
-    ? dataRequestHeaders(headers)
-    : headers;
+  const dataRequest = isPagesDataRequestPath(basePathOf(manifest), url.pathname);
+  const routed = routerDataHeaders(headers, dataRequest);
   if (isReserved(manifest, url, routed, true)) {
     return undefined;
   }

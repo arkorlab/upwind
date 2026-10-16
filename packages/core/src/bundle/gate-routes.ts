@@ -575,6 +575,76 @@ function readerOf(build: BuildLandings): Reader {
   };
 }
 
+/** The query parameter an image optimizer request names its source by. */
+const SOURCE_PARAMETER = 'url';
+
+/**
+ * The source an optimizer request a rewrite sends names, as the rewrite writes it: the last `url`
+ * of the query it writes, which the router sets on the URL in place of the visitor's own
+ * (`applyDestination`, which reads the query as far as a second `?`). `undefined` where the source
+ * is the request's to say: a rewrite that writes no `url` leaves the visitor's, and one that puts
+ * in what its rule captured (`$1`, `$path`) writes what the request holds.
+ */
+function sourceWrittenBy(destination: string): string | undefined {
+  const query = destination.split('?', 2)[1];
+  const source =
+    query === undefined ? undefined : new URLSearchParams(query).getAll(SOURCE_PARAMETER).at(-1);
+  return source === undefined || source.includes('$') ? undefined : source;
+}
+
+/**
+ * Whether an optimizer request for `source` may fetch a gated route's answer: a path of the
+ * application's own (`/…`, and not `//…`, which the optimizer refuses), which the deployment's
+ * Function routes in full and fetches with no gate asked, read as a rewrite's path written whole is
+ * (`reachOf`). A URL of another origin is fetched there, through its gates; a source a request may
+ * name (`undefined`) may be any.
+ */
+function sourceReachOf(reader: Reader, source: string | undefined): (route: GatedName) => boolean {
+  if (source === undefined) {
+    return () => true;
+  }
+  if (!source.startsWith('/') || source.startsWith('//')) {
+    return () => false;
+  }
+  const [path = ''] = source.split(/[?#]/u, 1);
+  return reachOf(reader, { path, references: [] });
+}
+
+/**
+ * Whether a path a rewrite writes may be the image optimizer's own (`isOptimizerPath`): as the
+ * router reads one written whole (`readingsOf`), or as far as what the rewrite's rule captured.
+ */
+function mayBeOptimizer(build: BuildNames, destination: Destination): boolean {
+  const optimizer = build.config.images?.path;
+  if (optimizer === undefined) {
+    return false;
+  }
+  return destination.references.length > 0
+    ? mayReachCaptured(destination, optimizer, AS_WRITTEN)
+    : readingsOf(destination.path).some((reading) => isOptimizerPath(build, reading));
+}
+
+/**
+ * What of the gated routes `named` a rewrite to the image optimizer may have it fetch as a source,
+ * by the path the rewrite writes and its destination whole: the request the edge hands on is the
+ * rewrite's, which a rule claims and no gate is asked of, and the Function's optimizer routes its
+ * source within (`serveImageSource`, in the runtime), where no gate is known — a gated route's
+ * answer optimized there is kept for every visitor.
+ */
+function optimizerSources(
+  build: BuildNames,
+  reader: Reader,
+  named: readonly GatedName[],
+): (written: Destination, destination: string) => string[] {
+  return (written, destination) => {
+    if (!mayBeOptimizer(build, written)) {
+      return [];
+    }
+    const fetches = sourceReachOf(reader, sourceWrittenBy(destination));
+    return [...new Set(named.filter((name) => fetches(name)).map((name) => name.route))];
+  };
+}
+
 /**
  * What of a build's gates a rewrite of `next.config` may take a request to. A request a rewrite
  * claims — in any phase of the routing, the fallback's among them — is served as its destination is,
@@ -583,7 +653,8 @@ function readerOf(build: BuildLandings): Reader {
  * naming the rewrite. A rewrite that puts in what its source captured may reach any route a path
  * written as far as the capture could be — what nothing rules out counts as reached. One that sends
  * the request to another origin reaches no route of this one; a redirect, none at all, as the
- * visitor then asks for what it names, of that route's gate.
+ * visitor then asks for what it names, of that route's gate. One that sends the request to the
+ * image optimizer reaches what the optimizer may fetch as its source (`optimizerSources`).
  */
 export function rewritesOnto(build: BuildRerouting, gated: readonly string[]): string[] {
   const { routing } = build;
@@ -597,6 +668,7 @@ export function rewritesOnto(build: BuildRerouting, gated: readonly string[]): s
   const named = gated.flatMap((route) =>
     namesOf(build, route).map((name) => ({ route, named: name })),
   );
+  const sourcesOf = optimizerSources(build, reader, named);
   const issues: string[] = [];
   for (const rule of rules) {
     const destination = rewritesTo(rule);
@@ -605,11 +677,18 @@ export function rewritesOnto(build: BuildRerouting, gated: readonly string[]): s
     }
     // All the router sets on the URL's path: what comes before a `?`, a `#` among it.
     const [path = ''] = destination.split('?', 1);
-    const reaches = reachOf(reader, { path, references: referencesOf(path, rule.sourceRegex) });
+    const written = { path, references: referencesOf(path, rule.sourceRegex) };
+    const reaches = reachOf(reader, written);
     const reached = new Set(named.filter((name) => reaches(name)).map((name) => name.route));
+    const rewrite = `the rewrite of ${rule.source ?? rule.sourceRegex} to ${destination}`;
     for (const route of reached) {
       issues.push(
-        `gates names ${route}, which the rewrite of ${rule.source ?? rule.sourceRegex} to ${destination} may send a request to, served there with no gate asked`,
+        `gates names ${route}, which ${rewrite} may send a request to, served there with no gate asked`,
+      );
+    }
+    for (const route of sourcesOf(written, destination)) {
+      issues.push(
+        `gates names ${route}, which ${rewrite} may have the image optimizer fetch as its source, with no gate asked`,
       );
     }
   }

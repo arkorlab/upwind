@@ -15,6 +15,7 @@ import {
   DURABLE_OBJECT_BUNDLE_VERSION,
   DURABLE_OBJECT_SPLIT_BUNDLE_VERSION,
 } from './durable-objects.ts';
+import { judgedApart } from './gate-conditions.ts';
 import { gatedEitherWay, isOptimizerPath, rewritesOnto } from './gate-routes.ts';
 
 export {
@@ -642,8 +643,10 @@ function hasMiddleware(bundle: DeploymentBundle): boolean {
  * from another; any gate of a build with a middleware, whose rewrites no build can know, and which
  * runs in the Function for every request the edge hands on rather than serves itself — or whose
  * router reads a data URL as the page it names, which Next.js writes for such a build alone; a
- * route a rewrite of `next.config` may send a request to (`rewritesOnto`), which is served at its
- * destination with no gate asked; and a prerendered pathname that may be served as a gated route
+ * route a rewrite of `next.config` may send a request to, or have the image optimizer fetch as its
+ * source (`rewritesOnto`), which is served there with no gate asked; a rule a gate is found by that
+ * asks for what the deployment's router is not handed as the visitor sent it (`judgedApart`), which
+ * the edge would judge otherwise; and a prerendered pathname that may be served as a gated route
  * or as another (`gatedEitherWay`), of which the one gate asked would answer for a route it is not
  * the gate of. Each would be a route served to some visitor with no gate asked, or answered by a
  * gate that is not its own, which declaring a gate says must not happen: the build is refused
@@ -677,7 +680,7 @@ function gateIssues(bundle: DeploymentBundle): string[] {
   }
   const entrypoints = new Set(bundle.entrypoints.map((entry) => entry.pathname));
   const files = new Set(bundle.staticFiles.map((file) => file.pathname));
-  issues.push(...gatedEitherWay(bundle, gates));
+  issues.push(...judgedApart(bundle), ...gatedEitherWay(bundle, gates));
   for (const route of routes) {
     if (files.has(route)) {
       issues.push(`gates names ${route}, which the build ships as a file, served before any gate`);
