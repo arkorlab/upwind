@@ -622,14 +622,25 @@ function splitIssues(bundle: DeploymentBundle): string[] {
   return issues;
 }
 
+/** Whether the build has a middleware: its matchers, in either place, or a Function of its own. */
+function hasMiddleware(bundle: DeploymentBundle): boolean {
+  return (
+    bundle.middleware !== undefined ||
+    bundle.functions.middleware !== undefined ||
+    bundle.routing.middlewareMatchers.length > 0
+  );
+}
+
 /**
  * What of a bundle's gates no host could ask: a `gates` that declares none; a route the build ships
  * as a file, which is answered from storage before any route is looked for; a route the build does
  * not have, a misspelling among them; any gate of a build with `i18n`, whose dynamic routes the edge
- * leaves to its Function unread, and so could not tell a request of a gated route from another; and
- * a route a rewrite of `next.config` may send a request to (`rewritesOnto`), which is served at its
- * destination with no gate asked. Each would be a route served to some visitor with no gate asked,
- * which declaring a gate says must not happen: the build is refused rather than served so.
+ * leaves to its Function unread, and so could not tell a request of a gated route from another; any
+ * gate of a build with a middleware, whose rewrites no build can know, and which runs in the
+ * Function for every request the edge hands on rather than serves itself; and a route a rewrite of
+ * `next.config` may send a request to (`rewritesOnto`), which is served at its destination with no
+ * gate asked. Each would be a route served to some visitor with no gate asked, which declaring a
+ * gate says must not happen: the build is refused rather than served so.
  */
 function gateIssues(bundle: DeploymentBundle): string[] {
   const { gates } = bundle;
@@ -645,6 +656,11 @@ function gateIssues(bundle: DeploymentBundle): string[] {
   if (i18n !== undefined && i18n !== null) {
     issues.push(
       'a build with i18n may declare no gate: the edge leaves its dynamic routes to its Function',
+    );
+  }
+  if (hasMiddleware(bundle)) {
+    issues.push(
+      'a build with a middleware may declare no gate: the edge runs the middleware itself only for the requests it serves as documents, and one it hands on runs it in the Function, where a rewrite onto a gated route reaches that route with no gate asked',
     );
   }
   const entrypoints = new Set(bundle.entrypoints.map((entry) => entry.pathname));

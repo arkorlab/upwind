@@ -66,7 +66,7 @@ the bundle at all, so no consumer can come to depend on it by accident.
 | `config.cacheHandler`, `cacheHandlers` (as `required-server-files.json` records them)                                                            | —                                                                                                                                    | each module bundled into the Function, not a static export's, and loaded by the `cache-handlers` patch; the build warns (`cache-handlers.ts`, and below)                                                      |
 | `outputs.staticFiles[]`: `pathname`, `filePath`, `immutableHash`                                                                                 | `staticFiles[]` (`pathname`, `blob`, `immutable`); the one named `/index` is offered under `/` too                                   | edge and control (served from storage); runtime (the small ones the Function carries)                                                                                                                         |
 | `public/` (from `projectDir`)                                                                                                                    | `staticFiles[]`, URL-encoded pathnames under the `basePath`                                                                          | as above; not walked for a static export, whose `out/` already holds it                                                                                                                                       |
-| `UPWIND_ROUTE_GATES` in the build's environment: a JSON object of each route, as an entrypoint's `pathname`, to its gate's name                  | `gates`; a route the build does not have, a file, a rewrite's possible target, or a build with `i18n` is refused                     | the host (carried to the manifest, beside the pathnames and dynamic routes of each gated route); edge (asks the route's gate before it serves a request of it)                                                |
+| `UPWIND_ROUTE_GATES` in the build's environment: a JSON object of each route, as an entrypoint's `pathname`, to its gate's name                  | `gates`; a route the build does not have, a file, a rewrite's possible target, or a build with `i18n` or a middleware is refused     | the host (carried to the manifest, beside the pathnames and dynamic routes of each gated route); edge (asks the route's gate before it serves a request of it)                                                |
 
 Both routers are built the same way. What the Pages Router adds is `_next/data`: `next build`
 emits a data output per page whose props come from `getServerSideProps` (an entrypoint of its
@@ -600,20 +600,26 @@ build is made as it would be without the variable. The adapter carries the gates
 `gates`, and leaves them out of the Functions' own manifest, which nothing in a Function reads.
 
 Any other value that is not such an object fails the build, and so does one that names a route the
-build does not have, one the build ships as a file, any route of a build with `i18n`, or a route a
-rewrite of `next.config` may send a request to — each is a route some request would be served with
-no gate asked. A rewrite reaches a route where the path it writes may be one of the route's, or of
-its data, read as the router reads it — escapes decoded, dot segments resolved, a `#` kept in the
-path, and a dynamic route's segments in any case: one that puts in what its source captured may
-reach whatever a path written as far as the capture could be, so `/:path*` to `/$1` reaches every
-route, while one to `/api/deliver/$1` reaches none under `/posts`. A redirect, or a rewrite to
-another origin (`http://` or `https://`), reaches none of the routes.
+build does not have, one the build ships as a file, any route of a build with `i18n` or with a
+middleware, or a route a rewrite of `next.config` may send a request to — each is a route some
+request would be served with no gate asked. The edge runs a middleware itself only for the requests
+it serves as documents; one it hands on runs the middleware in the Function, where a rewrite onto a
+gated route reaches that route with no gate asked, so no build with a middleware declares a gate.
+
+A rewrite reaches a route where the path it writes may be one of the route's, or of its data, read
+as the router reads it — escapes decoded, dot segments resolved, a `#` kept in the path, and a
+dynamic route's segments in any case: one that puts in what its source captured may reach whatever a
+path written as far as the capture could be, so `/:path*` to `/$1` reaches every route, while one to
+`/api/deliver/$1` reaches none under `/posts`. A redirect, or a rewrite to another origin
+(`http://` or `https://`), reaches none of the routes.
 
 The host binds a gate under each name, and its edge asks the route's gate about every `GET` and
 `HEAD` of the route — a document, a router's request for its payload, a prefetch, a Pages Router
 page's props — before it serves the request anything. An answer that says `x-upwind-gate: pass` has
 the request served as though there were no gate; any other is the answer, kept nowhere. A gate that
-cannot be reached is a `503`, never what was kept of the route. A request the application's
-middleware rewrites onto a gated route is asked of that route's gate as the middleware left it,
-before it is served there. A request of any other method goes to the Function, as it does without
-a gate.
+cannot be reached is a `503`, never what was kept of the route. A request of any other method goes
+to the Function, as it does without a gate. Nor is a gated route an image the optimizer may take:
+`/_next/image` answers a source of one `400`, as it answers a source that is no image, before
+anything is fetched or kept — what it optimizes is kept for every visitor, and a gated route's
+every answer is its gate's. An image of a gated route is marked `unoptimized`, so that the browser
+asks for it at its route, of its gate.

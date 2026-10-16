@@ -91,8 +91,12 @@ export interface BuildProjectManifestInput {
   readonly gates?: RouteGates | undefined;
   /** The pathnames Next.js resolves exactly that are of a gated route, each with that route. */
   readonly gatedPathnames?: Readonly<Record<string, string>> | undefined;
-  /** Where the router reads a Pages Router data URL as the page it names, beside gates. */
-  readonly gatedDataPrefix?: string | undefined;
+  /**
+   * The base path and the build id under which the router reads a Pages Router data URL as the page
+   * it names, beside gates: the manifest names where (`gatedDataPrefix`, `gatedDataBasePath`) from
+   * these.
+   */
+  readonly gatedDataUnder?: { readonly basePath: string; readonly buildId: string } | undefined;
   readonly cache?: ManifestCache | undefined;
 }
 
@@ -224,9 +228,11 @@ function gatedBy(input: BuildProjectManifestInput): {
 
 /**
  * What is wrong with what the manifest says of gates, if anything: a `gates` that declares none; a
- * route a pathname or a dynamic route is said to be of (`gatedPathnames`, `DynamicRoute.gated`)
- * that `gates` declares no gate for, whose requests the edge would find a route and no gate to ask
- * of; and a declared gate nothing finds a request of the route by — a route's own pathname, or for a
+ * gate beside a middleware, whose rewrites the Function runs for every request the edge hands on,
+ * onto a gated route among them, with no gate asked (`gateIssues` refuses the bundle so); a route a
+ * pathname or a dynamic route is said to be of (`gatedPathnames`, `DynamicRoute.gated`) that
+ * `gates` declares no gate for, whose requests the edge would find a route and no gate to ask of;
+ * and a declared gate nothing finds a request of the route by — a route's own pathname, or for a
  * class of them, a dynamic route — whose every request the edge would serve as one with no gate.
  * A manifest like that is refused where it is built, as one naming an unreachable Function is.
  */
@@ -234,6 +240,9 @@ function ungatedRoutes(input: BuildProjectManifestInput): string | undefined {
   const { gates } = input;
   if (gates !== undefined && Object.keys(gates).length === 0) {
     return 'gates declares no gate; a manifest that declares none leaves it out';
+  }
+  if (gates !== undefined && input.middleware !== undefined) {
+    return 'gates declares a gate beside a middleware, whose rewrites reach a gated route with no gate asked';
   }
   const { exact, dynamic } = gatedBy(input);
   const ungated = [
@@ -254,20 +263,34 @@ function ungatedRoutes(input: BuildProjectManifestInput): string | undefined {
 }
 
 /**
+ * Where the router reads a data URL as its page: `<basePath>/_next/data/<buildId>`, as the router
+ * compares a request's path with it, and the base path beside it, which is not taken apart from it
+ * again — a build id may hold `/_next/data/` itself.
+ */
+function gatedDataFields(
+  under: NonNullable<BuildProjectManifestInput['gatedDataUnder']>,
+): Pick<ProjectManifest, 'gatedDataBasePath' | 'gatedDataPrefix'> {
+  return {
+    gatedDataPrefix: `${under.basePath}/_next/data/${under.buildId}`,
+    ...(under.basePath !== '' && { gatedDataBasePath: under.basePath }),
+  };
+}
+
+/**
  * The gates, and beside them what finds a request of a gated route: the pathnames found to be of
  * one, and where the router reads a data URL as its page. Nothing where there are no gates.
  */
 function gateFields(
   input: BuildProjectManifestInput,
-): Pick<ProjectManifest, 'gates' | 'gatedPathnames' | 'gatedDataPrefix'> {
-  const { gates, gatedPathnames, gatedDataPrefix } = input;
+): Pick<ProjectManifest, 'gates' | 'gatedPathnames' | 'gatedDataPrefix' | 'gatedDataBasePath'> {
+  const { gates, gatedPathnames, gatedDataUnder } = input;
   if (gates === undefined) {
     return {};
   }
   return {
     gates,
     ...(gatedPathnames !== undefined && { gatedPathnames }),
-    ...(gatedDataPrefix !== undefined && { gatedDataPrefix }),
+    ...(gatedDataUnder !== undefined && gatedDataFields(gatedDataUnder)),
   };
 }
 

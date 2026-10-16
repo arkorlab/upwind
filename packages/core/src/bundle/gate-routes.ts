@@ -41,38 +41,44 @@ export interface BuildRerouting extends BuildNames {
 /** What follows a page's name in the name of its data: its payload, its prefetch segments. */
 const PAYLOAD_SUFFIX = '.rsc';
 const SEGMENTS_DIRECTORY = '.segments';
+const SEGMENTS_MARK = `${SEGMENTS_DIRECTORY}/`;
 /** A destination's reference to what its source captured, the whole of what follows the page. */
 const TRAILING_REFERENCE = /^\$\w+$/u;
 
-/** `path` with what follows a page's name for its data taken off: its payload's, its segments'. */
-function withoutDataSuffix(path: string): string {
-  const segments = path.indexOf(`${SEGMENTS_DIRECTORY}/`);
-  if (segments !== -1) {
-    return path.slice(0, segments);
+/**
+ * Each page `path` may be the data of, longest first: the path with its payload's suffix taken off
+ * (`.rsc`), and the path as far as each `.segments/` in it — a page's prefetch segments follow its
+ * name so, and a route may name a segment of its own `….segments` as well
+ * (`/reports.segments/[slug]`), which only the routes the build has tell apart.
+ */
+function dataPagesOf(path: string): string[] {
+  const pages = path.endsWith(PAYLOAD_SUFFIX) ? [path.slice(0, -PAYLOAD_SUFFIX.length)] : [];
+  for (let at = path.indexOf(SEGMENTS_MARK); at !== -1; at = path.indexOf(SEGMENTS_MARK, at + 1)) {
+    pages.push(path.slice(0, at));
   }
-  return path.endsWith(PAYLOAD_SUFFIX) ? path.slice(0, -PAYLOAD_SUFFIX.length) : path;
+  return pages.toSorted((one, other) => other.length - one.length);
 }
 
 /**
- * The page a dynamic route of a 16.3 build lands on for the page's data, by what its destination
- * writes after the page's name: its payload (`/items/[id].rsc`, `/items/[id]$rscSuffix`), or its
- * prefetch segments (`/items/[id].segments/items/$d$id$segment`).
+ * The pages a dynamic route of a 16.3 build may land on for a page's data, longest first, by what
+ * its destination writes after the page's name: its payload (`/items/[id].rsc`,
+ * `/items/[id]$rscSuffix`), or its prefetch segments (`/items/[id].segments/items/$d$id$segment`).
  */
-function pageOfLanding(landing: string): string {
+function pagesOfLanding(landing: string): string[] {
   const reference = landing.lastIndexOf('$');
-  const unsuffixed =
-    reference > 0 && TRAILING_REFERENCE.test(landing.slice(reference))
-      ? landing.slice(0, reference)
-      : landing;
-  return withoutDataSuffix(unsuffixed);
+  if (reference > 0 && TRAILING_REFERENCE.test(landing.slice(reference))) {
+    const unsuffixed = landing.slice(0, reference);
+    return [unsuffixed, ...dataPagesOf(unsuffixed)];
+  }
+  return dataPagesOf(landing);
 }
 
 /**
  * The route each pathname of a build is of: an entrypoint's own, a prerender's route — a run of
  * fallback shells (`/en/[slug]`) is of one route (`/[locale]/[slug]`) — and the page a Pages
  * Router page's data names, whose props are that page's (`pageOfDataPathname`). A destination a
- * dynamic route of a 16.3 build lands on for a page's data is the page's (`pageOfLanding`).
- * `undefined` for a pathname of no route.
+ * dynamic route of a 16.3 build lands on for a page's data is the page's: the longest the build has
+ * of the pages it may be (`pagesOfLanding`). `undefined` for a pathname of no route.
  */
 export function routeOfPathname(build: BuildNames): (pathname: string) => string | undefined {
   const routes = new Set(build.entrypoints.map((entry) => entry.pathname));
@@ -82,11 +88,16 @@ export function routeOfPathname(build: BuildNames): (pathname: string) => string
   const routeOf = (pathname: string): string | undefined =>
     prerendered.get(pathname) ?? (routes.has(pathname) ? pathname : undefined);
   return (pathname) => {
-    const page = pageOfDataPathname(build.buildId, build.config.basePath, pathname);
-    if (page !== undefined) {
-      return routeOf(page) ?? routeOf(pathname);
+    const propsOf = pageOfDataPathname(build.buildId, build.config.basePath, pathname);
+    if (propsOf !== undefined) {
+      return routeOf(propsOf) ?? routeOf(pathname);
     }
-    return routeOf(pathname) ?? routeOf(pageOfLanding(pathname));
+    return (
+      routeOf(pathname) ??
+      pagesOfLanding(pathname)
+        .map((page) => routeOf(page))
+        .find((route) => route !== undefined)
+    );
   };
 }
 
@@ -265,11 +276,11 @@ function mayBegin(written: string, route: string, fold: Fold): boolean {
  * for it by is `named` — the page's own, or the name of its data. A path the rewrite writes whole is
  * read as the router reads it (`readingsOf`): it reaches the route where any reading is a page of
  * the route; and otherwise none where a reading is a page of its own or a file, which the router
- * serves in place of any dynamic route; and otherwise where it may be one of `named`'s, its data's
- * suffix taken off, and compared without regard to case where a dynamic route finds `named`'s
- * requests. One the rewrite puts a capture in may be anything from there on: only a segment written
- * ahead of the capture that `named` cannot have, however it is read (`writtenReadingsOf`), rules it
- * out.
+ * serves in place of any dynamic route; and otherwise where it may be one of `named`'s, as it is or
+ * as the data of any page it may be (`dataPagesOf`), and compared without regard to case where a
+ * dynamic route finds `named`'s requests. One the rewrite puts a capture in may be anything from
+ * there on: only a segment written ahead of the capture that `named` cannot have, however it is
+ * read (`writtenReadingsOf`), rules it out.
  */
 function mayReach(
   reader: Reader,
@@ -290,7 +301,7 @@ function mayReach(
     return false;
   }
   const spelled = fold(requestSpelling(path));
-  return mayBeWhole(withoutDataSuffix(spelled), route.named, fold);
+  return [spelled, ...dataPagesOf(spelled)].some((page) => mayBeWhole(page, route.named, fold));
 }
 
 /**

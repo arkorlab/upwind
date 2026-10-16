@@ -43,7 +43,6 @@ interface Named {
   readonly gated: string | undefined;
 }
 
-const DATA_PREFIX = '/_next/data/';
 const DATA_SUFFIX = '.json';
 const INDEX = 'index';
 /** The root's page as a data URL names it. */
@@ -89,13 +88,17 @@ function namesOwnFile(manifest: ProjectManifest, pathname: string): boolean {
   );
 }
 
-/** What the router resolves a pathname to by name: a page, of whichever route, or a file. */
+/**
+ * What the router resolves a pathname to by name: a page, of whichever route, a file, or the image
+ * optimizer's own path, which it answers itself ahead of every dynamic route (`routerPathnames`).
+ */
 function namedOf(manifest: ProjectManifest, pathname: string): Named | undefined {
   const key = exactKeyOf(manifest, pathname);
   if (key !== undefined) {
     return { gated: gatedOf(manifest, key) };
   }
-  return namesOwnFile(manifest, pathname) ? { gated: undefined } : undefined;
+  const optimizer = manifest.images?.path === pathname;
+  return optimizer || namesOwnFile(manifest, pathname) ? { gated: undefined } : undefined;
 }
 
 /**
@@ -136,7 +139,7 @@ function routerRules(manifest: ProjectManifest): readonly ReservedRoute[] {
   return rules;
 }
 
-/** A data URL as the router reads it: the page it names, and the data name it looks the page up by. */
+/** A data URL as the router reads it: the page it names, and the data name it looks it up by. */
 interface DataPage {
   readonly page: URL;
   readonly data: string;
@@ -144,16 +147,17 @@ interface DataPage {
 
 /**
  * A request under `gatedDataPrefix` as the router reads it (`normalizeNextDataUrl` and
- * `denormalizeNextDataUrl`, in `@next/routing`): the page it names — `.json` taken off where it ends
- * so, though the router reads one that does not as well, and `index` the base path's root — and the
- * data name of that page, which the router looks a name up by.
+ * `denormalizeNextDataUrl`, in `@next/routing`): the page it names under the base path named
+ * beside the prefix (`gatedDataBasePath`) — `.json` taken off where it ends so, though the router
+ * reads one that does not as well, and `index` the base path's root — and the data name of that
+ * page, which the router looks a name up by.
  */
 function dataPageOf(manifest: ProjectManifest, url: URL): DataPage | undefined {
   const prefix = manifest.gatedDataPrefix;
   if (prefix === undefined || !url.pathname.startsWith(`${prefix}/`)) {
     return undefined;
   }
-  const basePath = prefix.slice(0, prefix.lastIndexOf(DATA_PREFIX));
+  const basePath = manifest.gatedDataBasePath ?? '';
   const named = url.pathname.slice(prefix.length + 1);
   const name = named.endsWith(DATA_SUFFIX) ? named.slice(0, -DATA_SUFFIX.length) : named;
   const page = new URL(url.href);

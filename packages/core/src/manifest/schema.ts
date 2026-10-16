@@ -607,6 +607,12 @@ export const projectManifestSchema = z.object({
    * a router; absent from any other manifest.
    */
   gatedDataPrefix: z.string().startsWith('/').optional(),
+  /**
+   * The base path `gatedDataPrefix` is under, as the build wrote it, which the page a data URL
+   * names is under. The prefix is not taken apart for it: a build id may hold `/_next/data/`
+   * itself. Present beside a prefix under a base path, absent for none.
+   */
+  gatedDataBasePath: z.string().startsWith('/').optional(),
   /** The runtime cache the routes' entries live in. */
   cache: manifestCacheSchema.optional(),
 });

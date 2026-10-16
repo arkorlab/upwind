@@ -92,6 +92,14 @@ describe('where the router lands a request a gate is asked of', () => {
     await expect(landing(store, '/_next/data/b/posts/abc')).resolves.toBe(POST);
   });
 
+  it('lands a data URL on its page under a build id that holds `/_next/data/` itself', async () => {
+    const store = deployment({ normalized: true, buildId: 'release/_next/data/v1' });
+
+    await expect(landing(store, '/_next/data/release/_next/data/v1/posts/abc.json')).resolves.toBe(
+      POST,
+    );
+  });
+
   /** It compares the request's path, which a URL escapes, with the build id as written. */
   it('routes a data URL under a build id a URL escapes as the path it is', async () => {
     const store = deployment({ normalized: true, buildId: 'release 1' });
@@ -115,6 +123,11 @@ describe('where the router lands a request a gate is asked of', () => {
     });
 
     await expect(landing(store, '/alias')).resolves.toBe('/private/area');
+  });
+
+  it('routes a path in Next.js’s namespace that names nothing to the class it matches', async () => {
+    await expect(landing(deployment(), '/_next/missing.js')).resolves.toBe(ALL);
+    await expect(landing(deployment(), '/_next/static/chunks/missing.js')).resolves.toBe(ALL);
   });
 
   it('routes a path in Next.js’s namespace under a base path to the class it matches', async () => {

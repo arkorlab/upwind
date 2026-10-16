@@ -55,7 +55,7 @@ export { DEPLOYMENT_ID_PREFIX, deploymentIdSchema } from './deployment-id.ts';
 export { PRIMARY_FUNCTION } from './function-name.ts';
 export {
   declaredRouteGates,
-  gatedDataPrefixOf,
+  gatedDataUnderOf,
   gatedPathnamesOf,
   ROUTE_GATES_ENV,
 } from './gates.ts';

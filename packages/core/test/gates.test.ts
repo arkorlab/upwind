@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { ArtifactRef } from '../src/artifact/artifact.ts';
 import {
   declaredRouteGates,
-  gatedDataPrefixOf,
+  gatedDataUnderOf,
   gatedPathnamesOf,
   ROUTE_GATES_ENV,
 } from '../src/bundle/gates.ts';
@@ -49,7 +49,39 @@ const NEWS_ENTRY = {
   destination: '/news/[slug]?nxtPslug=$nxtPslug',
 };
 const FILE = { sha256: 'a'.repeat(64), byteLength: 1, contentType: 'text/plain' };
+/** A route a segment of whose name ends as a page's prefetch segments do. */
+const REPORT = '/reports.segments/[slug]';
+const REPORT_ENTRY = {
+  source: REPORT,
+  sourceRegex: String.raw`^/reports\.segments/(?<nxtPslug>[^/]+?)(\.rsc|\.segments/.+\.segment\.rsc|)(?:/)?$`,
+  destination: '/reports.segments/[slug]$2?nxtPslug=$nxtPslug',
+};
+/** An image optimizer at Next.js's own path. */
+const IMAGES = {
+  path: '/_next/image',
+  basePath: '',
+  sizes: [64],
+  formats: [],
+  minimumCacheTTL: 60,
+  maximumRedirects: 3,
+  maximumResponseBody: 50_000_000,
+  remotePatterns: [],
+  domains: [],
+  localPatterns: [],
+  dangerouslyAllowLocalIP: false,
+  dangerouslyAllowSVG: false,
+  contentSecurityPolicy: '',
+  contentDispositionType: 'inline' as const,
+};
 const ARTIFACT: ArtifactRef = { ...FILE, contentType: 'text/html', encoding: 'identity' };
+
+/** A Function of the build's own, as its code is carried. */
+const FUNCTION = {
+  mainModule: 'index.mjs',
+  modules: [],
+  compatibilityDate: '2026-09-15',
+  compatibilityFlags: [],
+};
 
 /** A build of a few pages, two of them dynamic, with `gates` declared as given. */
 function bundleOf(extra: Partial<DeploymentBundle> = {}): DeploymentBundle {
@@ -105,14 +137,7 @@ function bundleOf(extra: Partial<DeploymentBundle> = {}): DeploymentBundle {
       },
     ],
     staticFiles: [{ pathname: '/robots.txt', blob: FILE, immutable: false }],
-    functions: {
-      app: {
-        mainModule: 'index.mjs',
-        modules: [],
-        compatibilityDate: '2026-09-15',
-        compatibilityFlags: [],
-      },
-    },
+    functions: { app: FUNCTION },
     ...extra,
   };
 }
@@ -149,7 +174,7 @@ function manifestOf(
     ...dynamicRouting(bundle, routeKeys),
     gates: bundle.gates,
     gatedPathnames: gatedPathnamesOf(bundle),
-    gatedDataPrefix: gatedDataPrefixOf(bundle),
+    gatedDataUnder: gatedDataUnderOf(bundle),
     ...extra,
   });
 }
@@ -204,6 +229,23 @@ describe('the gates a bundle carries', () => {
     const [refusal] = refusals(bundleOf({ gates }));
 
     expect(refusal).toMatch(said);
+  });
+
+  /**
+   * The edge runs a middleware itself only for the requests it serves as documents; one it hands
+   * on runs it in the Function, where a rewrite onto a gated route reaches it with no gate asked.
+   */
+  it.each([
+    ['its matchers', { middleware: { matchers: [{ sourceRegex: '^/.*$' }] } }],
+    ['its own Function', { functions: { ...bundleOf().functions, middleware: FUNCTION } }],
+    [
+      'its matchers among the routing',
+      { routing: { ...bundleOf().routing, middlewareMatchers: [{ sourceRegex: '^/.*$' }] } },
+    ],
+  ])('refuses any gate of a build with a middleware, by %s', (_, extra) => {
+    expect(refusals(bundleOf({ gates: GATES, ...extra }))).toStrictEqual([
+      expect.stringMatching(/^a build with a middleware may declare no gate/u),
+    ]);
   });
 
   /** The edge leaves such a build's dynamic routes to its Function, unread. */
@@ -385,6 +427,29 @@ describe('the gates a build’s rewrites may reach', () => {
       expect.stringMatching(/^gates names \/\[\.\.\.all\], which the rewrite of /u),
     ]);
   });
+
+  /** A route may name a segment of its own as a page's prefetch segments are named: its members. */
+  it('refuses a gate of a route a segment of whose name ends as prefetch segments do', () => {
+    const bundle = rerouted(
+      bundleOf({
+        gates: { [REPORT]: 'checker' },
+        entrypoints: [
+          ...bundleOf().entrypoints,
+          { id: REPORT, kind: 'app-page', pathname: REPORT },
+        ],
+        routing: {
+          ...bundleOf().routing,
+          dynamicRoutes: [...bundleOf().routing.dynamicRoutes, REPORT_ENTRY],
+        },
+      }),
+      'afterFiles',
+      [{ source: '/latest', sourceRegex: '^/latest$', destination: '/reports.segments/demo' }],
+    );
+
+    expect(refusals(bundle)).toStrictEqual([
+      expect.stringMatching(/^gates names \/reports\.segments\/\[slug\], which the rewrite of /u),
+    ]);
+  });
 });
 
 describe('what a manifest carries to find a request’s gate by', () => {
@@ -432,6 +497,60 @@ describe('what a manifest carries to find a request’s gate by', () => {
     ).toStrictEqual(POST_GATE);
   });
 
+  /** The same of a route a segment of whose name ends as a page's prefetch segments do. */
+  it('names the gated route on those data routes of a route named as prefetch segments are', () => {
+    const bundle = bundleOf({
+      gates: { [REPORT]: 'checker' },
+      entrypoints: [...bundleOf().entrypoints, { id: REPORT, kind: 'app-page', pathname: REPORT }],
+      routing: {
+        ...bundleOf().routing,
+        dynamicRoutes: [
+          {
+            source: REPORT,
+            sourceRegex: String.raw`^/reports\.segments/(?<nxtPslug>[^/]+?)\.segments/reports\.segments/\$d\$slug(?<segment>/__PAGE__\.segment\.rsc|\.segment\.rsc)(?:/)?$`,
+            destination:
+              '/reports.segments/[slug].segments/reports.segments/$d$slug$segment?nxtPslug=$nxtPslug',
+          },
+          {
+            source: `${REPORT}.rsc`,
+            sourceRegex: String.raw`^/reports\.segments/(?<nxtPslug>[^/]+?)(?<rscSuffix>\.rsc|\.segments/.+\.segment\.rsc)(?:/)?$`,
+            destination: '/reports.segments/[slug]$rscSuffix?nxtPslug=$nxtPslug',
+          },
+          {
+            source: REPORT,
+            sourceRegex: String.raw`^/reports\.segments/(?<nxtPslug>[^/]+?)(?:/)?$`,
+            destination: '/reports.segments/[slug]?nxtPslug=$nxtPslug',
+          },
+        ],
+      },
+    });
+    const routes = dynamicRouting(bundle, new Set()).dynamicRoutes ?? [];
+
+    expect(routes.map((route: DynamicRoute) => route.gated)).toStrictEqual([
+      REPORT,
+      REPORT,
+      REPORT,
+    ]);
+    expect(gateOf(manifestOf(bundle), '/reports.segments/first.rsc')).toStrictEqual({
+      route: REPORT,
+      name: 'checker',
+    });
+  });
+
+  /** The prefix is not taken apart for the base path: a build id may hold `/_next/data/` itself. */
+  it('names the base path beside where the router reads a data URL as its page', () => {
+    const bundle = bundleOf({
+      gates: GATES,
+      config: { ...bundleOf().config, basePath: '/docs' },
+      routing: { ...bundleOf().routing, shouldNormalizeNextData: true },
+    });
+
+    expect(manifestOf(bundle)).toMatchObject({
+      gatedDataPrefix: `/docs/_next/data/${BUILD}`,
+      gatedDataBasePath: '/docs',
+    });
+  });
+
   it('names the pathnames Next.js resolves exactly that are of a gated route', () => {
     expect(gatedPathnamesOf(bundleOf({ gates: GATES }))).toStrictEqual({
       [POST]: POST,
@@ -463,7 +582,15 @@ describe('what a manifest carries to find a request’s gate by', () => {
 
     expect(routes.some((route) => 'gated' in route)).toBe(false);
     expect(gatedPathnamesOf(bundleOf())).toBeUndefined();
-    expect(gatedDataPrefixOf(bundleOf())).toBeUndefined();
+    expect(gatedDataUnderOf(bundleOf())).toBeUndefined();
+  });
+
+  /** As a bundle with both is (`gateIssues`): its rewrites reach a gated route with no gate asked. */
+  it('is refused where it declares a gate beside a middleware', () => {
+    const middleware = { matchers: [{ sourceRegex: '^/.*$' }] };
+    const built = (): ProjectManifest => manifestOf(bundleOf({ gates: GATES }), { middleware });
+
+    expect(built).toThrow(/gate beside a middleware/u);
   });
 
   /** The edge would find such a request a route and no gate to ask of it. */
@@ -574,6 +701,34 @@ describe('the gate a request is asked of', () => {
     const based = manifestOf(bundle, { spelledPrefix: { basePath: '/docs' } });
 
     expect(gateOf(based, '/docs/_next/missing.js')).toStrictEqual({ route: docs, name: 'checker' });
+  });
+
+  /**
+   * The router routes a path in Next.js's namespace at the root that names nothing of the build as
+   * it does any other: a catch-all serves it, and its gate is asked. The image optimizer's own path
+   * is a name the router answers itself, ahead of every dynamic route.
+   */
+  it('is a catch-all’s for a path in Next.js’s namespace it matches, but the optimizer’s', () => {
+    const all = '/[...all]';
+    const bundle = bundleOf({
+      gates: { [all]: 'checker' },
+      entrypoints: [{ id: all, kind: 'app-page', pathname: all }],
+      prerenders: [],
+      routing: {
+        ...bundleOf().routing,
+        dynamicRoutes: [
+          {
+            source: all,
+            sourceRegex: '^/(?<nxtPall>.+?)(?:/)?$',
+            destination: '/[...all]?nxtPall=$nxtPall',
+          },
+        ],
+      },
+    });
+    const caught = manifestOf(bundle, { images: IMAGES });
+
+    expect(gateOf(caught, '/_next/missing.js')).toStrictEqual({ route: all, name: 'checker' });
+    expect(gateOf(caught, '/_next/image')).toBeUndefined();
   });
 
   /**
@@ -775,6 +930,15 @@ describe('the gate a request for a page’s props is asked of', () => {
     });
 
     expect(gateOf(normalized, `/_next/data/${BUILD}/posts/abc.json`)).toStrictEqual(POST_GATE);
+  });
+
+  /** A build id may hold `/_next/data/` itself, which says nothing of where the base path ends. */
+  it('is a class’s for a name under a build id that holds `/_next/data/` itself', () => {
+    const nested = manifestOf({ ...pagesBundle(true), buildId: 'release/_next/data/v1' });
+
+    expect(gateOf(nested, '/_next/data/release/_next/data/v1/posts/abc.json')).toStrictEqual(
+      POST_GATE,
+    );
   });
 
   /** The router reads such a name as its page whether or not it ends in `.json`. */
