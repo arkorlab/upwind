@@ -194,8 +194,14 @@ function invalidateOnce(
   }
   const call = whileOut(out, asked, invalidateLogged(runtime, effectiveTags, durations));
   out.set(asked, call);
-  // Not a regeneration's: its response served what was there before, as for its writes
-  // (`PlatformFetchCache.set`).
+  // Kept going past the response, as a write is (`PlatformFetchCache.set`): one the host has not
+  // answered by the time the response is (`INVALIDATIONS_RECORDED_WITHIN_MS`) is still recorded.
+  try {
+    context.waitUntil(call);
+  } catch {
+    // A host whose invocation has ended takes nothing more on; the call goes on as far as it can.
+  }
+  // Not a regeneration's: its response served what was there before, as for its writes.
   if (!isRegeneration()) {
     context.invalidated.hold(call);
   }
