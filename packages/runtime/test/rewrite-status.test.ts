@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AppModule, NodeHandler, WebHandler } from '../src/app-module.ts';
 import { handleRequest } from '../src/handle.ts';
+import { invokeNodeHandler } from '../src/node-bridge.ts';
 import { getStore, type Store } from '../src/store.ts';
 
 /**
@@ -154,6 +155,32 @@ describe('a middleware rewrite with a status of its own, which the edge ran', ()
       expect(response.status).toBe(200);
     },
   );
+
+  it('leaves the status a render gave itself', async () => {
+    vi.mocked(invokeNodeHandler).mockResolvedValueOnce(new Response('failed', { status: 500 }));
+    const { app } = rewritingWith(200);
+    const request = fromTheEdge({
+      [MIDDLEWARE_DONE_HEADER]: '1',
+      [MIDDLEWARE_REWRITE_STATUS_HEADER]: '404',
+    });
+
+    const response = await handle(app, request);
+
+    expect(response.status).toBe(500);
+  });
+
+  it("leaves a route handler's answer of its own status that status", async () => {
+    vi.mocked(invokeNodeHandler).mockResolvedValueOnce(new Response('made', { status: 201 }));
+    const { app } = rewritingWith(200, ROUTE_HANDLER);
+    const request = fromTheEdge(
+      { [MIDDLEWARE_DONE_HEADER]: '1', [MIDDLEWARE_REWRITE_STATUS_HEADER]: '404' },
+      ROUTE_HANDLER,
+    );
+
+    const response = await handle(app, request);
+
+    expect(response.status).toBe(201);
+  });
 
   /**
    * A route handler's `Response` is sent as it is, its status over whatever the router put on the
