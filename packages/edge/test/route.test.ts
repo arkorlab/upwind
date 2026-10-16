@@ -188,6 +188,29 @@ describe('the routing a host composes', () => {
     expect(received).toStrictEqual(['the visitor’s form']);
   });
 
+  /**
+   * A copy is taken while the observer is asked: one asked for afterwards, as the body is forwarded,
+   * is refused, and the request reaches the Function whole.
+   */
+  it('refuses a copy of the body asked for once the observer has answered', async () => {
+    const posted = navigation('/api/hello', { method: 'POST', body: 'the visitor’s form' });
+    const later: (() => unknown)[] = [];
+
+    const { received } = await routed(
+      posted,
+      {},
+      {
+        observePassthrough: (_request, _url, _state, copyBody) => {
+          later.push(copyBody);
+          return { finish: unheeded };
+        },
+      },
+    );
+
+    expect(received).toStrictEqual(['the visitor’s form']);
+    expect(later[0]).toThrow(/while the observer is asked/u);
+  });
+
   /** One that reads its copy reads the whole body, and the Function is handed the whole of it. */
   it('hands an observer a copy of the body beside the one it forwards', async () => {
     const posted = navigation('/api/hello', { method: 'POST', body: 'the visitor’s form' });

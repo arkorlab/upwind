@@ -21,6 +21,10 @@ export type ObservedState = Omit<PreviewState, 'policy'> & {
  * request with none: the body is split as it is first asked for, the edge keeping the branch it
  * forwards (`PassthroughInput.observedBody`), and asked again, it hands out the same copy. Whatever
  * the observer does with its copy, or throws once it holds it, the request is forwarded whole.
+ *
+ * It is asked while the observer is, and throws after: by then the body is the forwarding's. A copy
+ * taken is read, or let go of — one left unread holds the body for its branch as the other is
+ * forwarded.
  */
 export type CopyRequestBody = () => ReadableStream<Uint8Array> | null;
 
@@ -86,8 +90,15 @@ export function observationOf(input: ObservedInput): Observed | undefined {
   if (observe === undefined) {
     return undefined;
   }
-  const split: { forwarded?: ReadableStream<Uint8Array>; copy?: ReadableStream<Uint8Array> } = {};
+  const split: {
+    forwarded?: ReadableStream<Uint8Array>;
+    copy?: ReadableStream<Uint8Array>;
+    asked: boolean;
+  } = { asked: true };
   const copyBody: CopyRequestBody = () => {
+    if (!split.asked) {
+      throw new Error('a copy of the body is taken while the observer is asked, not after');
+    }
     if (split.copy === undefined) {
       const { body } = input.request;
       if (body === null) {
@@ -104,6 +115,7 @@ export function observationOf(input: ObservedInput): Observed | undefined {
     return split.copy;
   };
   const observed = askObserver(() => observe(input.request, input.url, input.state, copyBody));
+  split.asked = false;
   if (observed === undefined) {
     releaseStream(split.copy, 'the passthrough was not observed');
     return split.forwarded === undefined
