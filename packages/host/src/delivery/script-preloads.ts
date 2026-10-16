@@ -1,15 +1,22 @@
 /**
- * The destinations Fetch calls script-like. A module preload of one is fetched as a script, and a
- * policy that governs scripts governs it.
+ * The values of `as` a module preload is fetched as no script under: those it is fetched as
+ * something else under (`json`, `style`, `text`), and the other keywords of the attribute, the
+ * preload destinations a module preload is not fetched under at all (HTML Standard, `as`).
  */
-const SCRIPT_LIKE_DESTINATIONS: readonly string[] = [
-  'audioworklet',
-  'paintworklet',
-  'script',
-  'serviceworker',
-  'sharedworker',
-  'worker',
+const NOT_SCRIPT_MODULE_PRELOADS: readonly string[] = [
+  'json',
+  'style',
+  'text',
+  'fetch',
+  'font',
+  'image',
+  'track',
 ];
+
+/** What leaves a module preload under `NOT_SCRIPT_MODULE_PRELOADS` out of a selector. */
+function notScriptModulePreload(): string {
+  return NOT_SCRIPT_MODULE_PRELOADS.map((as) => `:not([as="${as}" i])`).join('');
+}
 
 /**
  * The links a browser fetches a script for, which `script-src` governs as it does a `<script>`.
@@ -21,18 +28,14 @@ const SCRIPT_LIKE_DESTINATIONS: readonly string[] = [
  * with `'strict-dynamic'` does, `'self'` and hosts no longer counting — refuses the preload and
  * reports it on every page view.
  *
- * A module preload is a script where its `as` is: one with none is read as `"script"`, and the
- * script-like destinations are scripts. So is one whose `as` is empty, `as` or `as=""`: the empty
- * string is no destination, now or ever, and an `as` that names none is read as missing. It may
- * name `json`, `style` or `text` as well, which are not, so those — and anything the HTML Standard
- * adds beside them — are left as they came, with every other link: a nonce is never put where it
- * would trust what no script directive meant to.
+ * A module preload is a script unless its `as` names one of `NOT_SCRIPT_MODULE_PRELOADS`. The
+ * attribute has no default: a missing value, an empty one (`as`, `as=""`) and one that names none
+ * of its keywords (`as="bogus"`, `as=" script "`) are read alike, as `"script"`, and the script-like
+ * destinations are scripts too. Those named are left as they came, with every other link: a nonce
+ * is never put where it would trust what no script directive meant to. A keyword the HTML Standard
+ * adds is stamped until it joins them, as a browser that predates it fetches it: as a script.
  */
 export const SCRIPT_PRELOAD_LINKS: readonly string[] = [
   'link[rel~="preload" i][as="script" i]',
-  'link[rel~="modulepreload" i]:not([as])',
-  'link[rel~="modulepreload" i][as=""]',
-  ...SCRIPT_LIKE_DESTINATIONS.map(
-    (destination) => `link[rel~="modulepreload" i][as="${destination}" i]`,
-  ),
+  `link[rel~="modulepreload" i]${notScriptModulePreload()}`,
 ];
