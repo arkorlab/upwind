@@ -9,6 +9,7 @@ import {
   findStaticFile,
   isReserved,
   type ProjectManifest,
+  staticFileBuildWithoutDpl,
   type StaticFileEntry,
 } from '@stayingupwind/core/manifest';
 import { MIDDLEWARE_DONE_HEADER, ORIGINAL_URL_HEADER } from '@stayingupwind/core/paas';
@@ -219,6 +220,18 @@ function localRequest(edge: EdgeContext, href: string): Request {
   });
 }
 
+/**
+ * The file the build shipped where a middleware rewrite lands a source, as a request rewritten to
+ * it is served (`shippedFileAt`, in `hosted-static-file.ts`): the build a request naming no
+ * deployment is answered with. `undefined` where the rewrite names no file.
+ */
+function shippedSourceAt(manifest: ProjectManifest, url: URL): StaticFileEntry | undefined {
+  const entry = findStaticFile(manifest, url.pathname);
+  return entry === undefined
+    ? undefined
+    : staticFileBuildWithoutDpl(entry, manifest.deployment.dplId);
+}
+
 /** A source's request as the middleware left it, with the Worker told the middleware ran. */
 function rewrittenRequest(original: Request, middleware: MiddlewareContinue): Request {
   const headers = new Headers(middleware.requestHeaders);
@@ -323,14 +336,16 @@ async function readBlob(
  * its say on the file's own path, as it has on a request for the file. A rule of `next.config`
  * that claims the path before the filesystem makes the Worker's answer the source. The
  * middleware, when its matchers cover the path, sees it as an anonymous visitor asks for it: what
- * it lets through is the file; a path it rewrites to is asked of the Worker, which is told the
- * middleware ran; what it answers itself is the source only if it is one, as under Next.js, and
- * a redirect to a login page is not. A middleware whose own Worker failed is asked of the
- * application's (`decideMiddleware`), which carries none of `_next/static` and could not answer
- * for the file itself. When the edge still cannot say what the middleware decided — both failed,
- * or it rewrote to another origin — the Worker is asked for the file's path and runs the
- * middleware itself, as it does for a document. The middleware and all that follows it, a retry
- * of a failed one included, share the budget a source fetched from the application has.
+ * it lets through is the file; a path it rewrites to is the file shipped there, from storage as a
+ * request rewritten to it is served — the Worker carries none of `_next/static` — and any other
+ * path is asked of the Worker, which is told the middleware ran; what it answers itself is the
+ * source only if it is one, as under Next.js, and a redirect to a login page is not. A middleware
+ * whose own Worker failed is asked of the application's (`decideMiddleware`), which carries none
+ * of `_next/static` and could not answer for the file itself. When the edge still cannot say what
+ * the middleware decided — both failed, or it rewrote to another origin — the Worker is asked for
+ * the file's path and runs the middleware itself, as it does for a document. The middleware and
+ * all that follows it, a retry of a failed one included, share the budget a source fetched from
+ * the application has.
  */
 async function fetchBlob(
   local: LocalContext,
@@ -352,12 +367,16 @@ async function fetchBlob(
       return readBlob(edge, config, source.file, dispatches);
     }
     case 'continue': {
-      return outcome.rewritten
+      if (!outcome.rewritten) {
+        return readBlob(edge, config, source.file, dispatches);
+      }
+      const shipped = shippedSourceAt(local.manifest, outcome.url);
+      return shipped === undefined
         ? fetchLocal(local, rewrittenRequest(request, outcome), {
             earlier: dispatches,
             budgetMs: left(),
           })
-        : readBlob(edge, config, source.file, dispatches);
+        : readBlob(edge, config, shipped, dispatches);
     }
     case 'responded': {
       if (!outcome.response.ok) {
