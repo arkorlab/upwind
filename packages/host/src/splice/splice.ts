@@ -110,7 +110,7 @@ function headerNamesOf(headers: Headers): string {
 }
 
 /**
- * The opening of a body this is about to give up on, as text.
+ * The opening of a body this is about to give up on, as text, read through `reader`.
  *
  * Read rather than simply released, and then released: a status alone does not say why a
  * deployment answers 500 on every one of its routes, and an error page usually says something.
@@ -124,13 +124,12 @@ function headerNamesOf(headers: Headers): string {
  * the caller to let the upstream go as a stall anywhere else is let go of.
  */
 async function openingOf(
-  body: ReadableStream<Uint8Array> | null,
+  reader: ReadableStreamDefaultReader<Uint8Array> | undefined,
   withinMs: number,
 ): Promise<string | undefined> {
-  if (body === null) {
+  if (reader === undefined) {
     return undefined;
   }
-  const reader = body.getReader();
   try {
     if (withinMs <= 0) {
       throw new TimeoutError(HEAD_PHASE);
@@ -209,7 +208,10 @@ class SplicePump {
   #suffixStarted = false;
   #controller: ReadableStreamDefaultController<Uint8Array> | undefined;
   #demand: PromiseWithResolvers<undefined> | undefined;
-  /** The origin's body as the drain reads it, for a client that leaves to let go of at once. */
+  /**
+   * The origin's body as the drain, or the opening of a refused answer, reads it, for a client that
+   * leaves to let go of at once.
+   */
   #reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 
   constructor(options: SpliceOptions) {
@@ -293,7 +295,7 @@ class SplicePump {
     if (!isHtmlResponse(response) || response.body === null) {
       let body: string | undefined;
       try {
-        body = await openingOf(response.body, this.#remainingMs());
+        body = await this.#openingOf(response.body);
       } catch {
         // Out of time on the way: the upstream is let go of as a stall anywhere else is, and the
         // reason is told without the opening it never sent.
@@ -355,6 +357,20 @@ class SplicePump {
       }
       return undefined;
     }
+  }
+
+  /**
+   * The opening of a refused answer (`openingOf`), read through a reader kept as the drain's is: a
+   * client that leaves while the read is out lets the origin go then (`cancel`), not when it says
+   * more or the budget runs out. A client gone before the answer came has none of it read.
+   */
+  async #openingOf(body: ReadableStream<Uint8Array> | null): Promise<string | undefined> {
+    if (this.#cancelled) {
+      releaseStream(body, CANCEL_REASON);
+      return undefined;
+    }
+    this.#reader = body?.getReader();
+    return openingOf(this.#reader, this.#remainingMs());
   }
 
   /**
