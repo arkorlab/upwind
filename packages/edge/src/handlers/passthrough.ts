@@ -163,6 +163,10 @@ export interface PassthroughInput {
    */
   readonly function?: string | undefined;
   readonly manifest?: ProjectManifest | undefined;
+  /** Take a mutation's invalidations when its routing manifest is still being read. */
+  readonly observeInvalidation?:
+    | ((invalidated: { readonly value: string; readonly bound: string | null }) => void)
+    | undefined;
   readonly reason: string;
   /** The request carried a validation header the edge accepted, so the candidate answered it. */
   readonly validated?: boolean | undefined;
@@ -341,8 +345,28 @@ async function answeredAgain(
   }
 }
 
+/** Keep a mutation's next navigation from seeing a generation older than its invalidation. */
+function takeResponseInvalidation(input: PassthroughInput, response: Response): void {
+  const value = response.headers.get(INVALIDATED_TAGS_HEADER);
+  if (value === null) {
+    return;
+  }
+  // A deployment's cache scope is its deployment id, as `fetchUpstream` already tells the
+  // Function (`withScopeRevision`). A cold manifest must not let an Action's next navigation
+  // serve an older generation while its lookup is still out. Prefer the manifest's scope where
+  // it is known, and let the deferred observer take it there too once that lookup lands.
+  const scopeId = input.manifest?.cache?.scopeId ?? input.app?.deploymentId;
+  const invalidated = { value, bound: response.headers.get(INVALIDATED_REVISION_HEADER) };
+  if (scopeId !== undefined) {
+    takeInvalidation(input.runtime.memory, scopeId, invalidated);
+  }
+  if (input.manifest === undefined) {
+    input.observeInvalidation?.(invalidated);
+  }
+}
+
 /** Transparent proxy to the deployment's Worker: any method, streamed body, rewritten cookies. */
-// eslint-disable-next-line sonarjs/cognitive-complexity -- Inject the native tee at this existing construction; keep ordinary forwarding and promise paths intact.
+
 export async function handlePassthrough(input: PassthroughInput): Promise<Response> {
   const client = new Request(input.request, {
     headers: stripEdgeHeaders(input.request.headers),
@@ -399,12 +423,7 @@ export async function handlePassthrough(input: PassthroughInput): Promise<Respon
     return badGatewayResponse('app-unreachable');
   }
   // Read before the header goes with every other the edge's protocol reserves, below.
-  const invalidated = originResponse.headers.get(INVALIDATED_TAGS_HEADER);
-  const scope = input.manifest?.cache;
-  if (invalidated !== null && scope !== undefined) {
-    const bound = originResponse.headers.get(INVALIDATED_REVISION_HEADER);
-    takeInvalidation(input.runtime.memory, scope.scopeId, { value: invalidated, bound });
-  }
+  takeResponseInvalidation(input, originResponse);
   const headers = rewritePassthroughResponseHeaders(originResponse.headers, input.forwarding);
   if (input.middleware !== undefined) {
     // After the Worker's own, which may repeat the middleware's cookies as Next.js writes them back

@@ -123,8 +123,12 @@ export function condemnationOf(
 /** `condemnationOf`, for `decideGeneration`. */
 export function condemnedIn(
   memory: EdgeMemory,
+  deploymentId?: string,
 ): (pack: DecodedGenerationPack) => 'expired' | 'stale' | undefined {
-  return (pack) => condemnationOf(memory, pack);
+  return (pack) => {
+    transferInvalidations(memory, deploymentId, pack.header.scopeId);
+    return condemnationOf(memory, pack);
+  };
 }
 
 /**
@@ -157,8 +161,28 @@ export function takeInvalidation(
  * tags with a window. Neither is held: a record held is served past its hold however long ago it
  * was read, and what tells the edge not to serve it is forgotten an hour on.
  */
-export function isInvalidated(memory: EdgeMemory, pack: DecodedGenerationPack): boolean {
+export function isInvalidated(
+  memory: EdgeMemory,
+  pack: DecodedGenerationPack,
+  deploymentId?: string,
+): boolean {
+  transferInvalidations(memory, deploymentId, pack.header.scopeId);
   return condemnationOf(memory, pack) !== undefined;
+}
+
+/** Bind a cold Action's provisional invalidations as soon as a request learns its cache scope. */
+export function transferInvalidations(
+  memory: EdgeMemory,
+  deploymentId: string | undefined,
+  scopeId: string,
+): void {
+  const moved =
+    deploymentId === undefined ? 'none' : memory.invalidations.move(deploymentId, scopeId);
+  if (moved === 'unbounded') {
+    forgetHeld(memory, scopeId, () => true);
+  } else if (moved === 'bounded') {
+    letGoOfInvalidated(memory, scopeId);
+  }
 }
 
 /**
@@ -167,9 +191,17 @@ export function isInvalidated(memory: EdgeMemory, pack: DecodedGenerationPack): 
  * read (`generation-loader.ts`), and the window's bound is not kept as long.
  */
 export function letGoOfInvalidated(memory: EdgeMemory, scopeId: string): void {
+  forgetHeld(memory, scopeId, (pack) => isInvalidated(memory, pack));
+}
+
+function forgetHeld(
+  memory: EdgeMemory,
+  scopeId: string,
+  touches: (pack: DecodedGenerationPack) => boolean,
+): void {
   const held = [...memory.generations.values()]
     .map(({ pack }) => pack)
-    .filter((pack) => pack.header.scopeId === scopeId && isInvalidated(memory, pack));
+    .filter((pack) => pack.header.scopeId === scopeId && touches(pack));
   for (const pack of held) {
     memory.generations.delete(kvGenerationKey(pack.header.scopeId, pack.header.entryId));
   }

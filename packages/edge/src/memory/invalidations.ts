@@ -65,6 +65,8 @@ interface Kept {
   readonly bytes: number;
   /** When its latest invalidation was taken in. */
   readonly at: number;
+  /** A legacy response named no revision, so a transfer must drop held records conservatively. */
+  readonly unbounded: boolean;
 }
 
 /** What the tags of a bound charge, besides their scope's own. */
@@ -126,6 +128,10 @@ function boundEach(
     merged.set(tag, latest(revision, merged.get(tag)));
   }
   return merged;
+}
+
+function entriesOf(bounds: ReadonlyMap<string, number>): TagBound[] {
+  return [...bounds].map(([tag, revision]) => ({ tag, revision }));
 }
 
 /** A tag, and the revision of the invalidation that bounds it. */
@@ -214,16 +220,26 @@ export class InvalidationMemory {
   }
 
   /** Keep `after` as the scope's, folded past the bound, and make room for it. */
-  #keep(scopeId: string, after: ScopeInvalidations): void {
+  #keep(scopeId: string, after: ScopeInvalidations, at?: number, unbounded = false): void {
     const kept: Kept = {
       invalidations:
         after.tags.size + after.stale.size > MAX_TAGS_PER_SCOPE ? folded(after) : after,
       bytes: 0,
-      at: this.#now(),
+      at: at ?? this.#now(),
+      unbounded: unbounded || this.#kept(scopeId)?.unbounded === true,
     };
     const sized: Kept = { ...kept, bytes: bytesOf(kept.invalidations) };
     this.#drop(scopeId);
-    this.#scopes.set(scopeId, sized);
+    if (at === undefined) {
+      this.#scopes.set(scopeId, sized);
+    } else {
+      // A transfer keeps its original age. Insert it before newer scopes so room is still made
+      // oldest first; ordinary invalidations append in constant time as before.
+      const newer = [...this.#scopes].filter(([, entry]) => entry.at > at);
+      for (const [id] of newer) this.#scopes.delete(id);
+      this.#scopes.set(scopeId, sized);
+      for (const [id, entry] of newer) this.#scopes.set(id, entry);
+    }
     this.#bytes += sized.bytes;
     this.#fit();
   }
@@ -231,6 +247,24 @@ export class InvalidationMemory {
   /** What the scope's at-once invalidations condemn, while they are kept. */
   of(scopeId: string): ScopeInvalidations | undefined {
     return this.#kept(scopeId)?.invalidations;
+  }
+
+  /** Move provisional bounds to the manifest's scope, without renewing their lifetime. */
+  move(from: string, to: string): 'none' | 'bounded' | 'unbounded' {
+    if (from === to) return 'none';
+    const source = this.#kept(from);
+    if (source === undefined) return 'none';
+    const destination = this.#kept(to);
+    const into = this.#before(to);
+    const every = source.invalidations.every;
+    const after: ScopeInvalidations = {
+      tags: boundEach(into.tags, entriesOf(source.invalidations.tags)),
+      stale: boundEach(into.stale, entriesOf(source.invalidations.stale)),
+      every: every === undefined ? into.every : latest(every, into.every),
+    };
+    this.#drop(from);
+    this.#keep(to, after, Math.max(source.at, destination?.at ?? source.at), source.unbounded);
+    return source.unbounded ? 'unbounded' : 'bounded';
   }
 
   /**
@@ -250,7 +284,12 @@ export class InvalidationMemory {
    */
   take(scopeId: string, tags: readonly string[] | undefined, revision: number | undefined): void {
     const before = this.#before(scopeId);
-    this.#keep(scopeId, revision === undefined ? before : bound(before, tags, revision));
+    this.#keep(
+      scopeId,
+      revision === undefined ? before : bound(before, tags, revision),
+      undefined,
+      revision === undefined,
+    );
   }
 
   /**

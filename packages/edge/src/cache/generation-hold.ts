@@ -3,6 +3,7 @@ import type { RuntimeCacheSettings } from '@stayingupwind/host/delivery';
 
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeContext } from '../strategies/context.ts';
+import { transferInvalidations } from './condemned.ts';
 import {
   type GenerationKey,
   type GenerationLoad,
@@ -116,6 +117,7 @@ export function heldGeneration(
   settings: RuntimeCacheSettings,
   options: LoadOptions = {},
 ): GenerationLoad | undefined {
+  transferInvalidations(edge.runtime.memory, edge.app?.deploymentId, key.scopeId);
   if (settings.holdMs === 0) {
     return undefined;
   }

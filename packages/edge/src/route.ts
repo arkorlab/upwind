@@ -21,6 +21,7 @@ import { type HostCredentials, withoutHostCredentials } from '@stayingupwind/hos
 import { resolvePolicy } from '@stayingupwind/host/delivery';
 
 import type { EdgeBindings } from './bindings.ts';
+import { transferInvalidations } from './cache/condemned.ts';
 import { lookAtScope } from './cache/scope-signal.ts';
 import type { EdgeHost } from './edge-host.ts';
 import type { EdgeRuntime } from './edge-runtime.ts';
@@ -100,7 +101,7 @@ export interface RoutingInput {
     | ((
         request: IncomingRequest,
         url: URL,
-        state: PreviewState,
+        state: Omit<PreviewState, 'policy'> & { readonly policy: StaticFileContext['policy'] },
       ) => PassthroughObservation | undefined)
     | undefined;
 }
@@ -125,7 +126,7 @@ async function afterDeferredPolicy<T>(
  * cache: beside the reads the request makes, and waited for by none of them — what it brings is in
  * force once it lands, for this request where that is before it is judged, and for the next.
  */
-function lookAtScopeOf(input: RoutingInput): void {
+function lookAtScopeOf(input: ManifestRoutingInput): void {
   const scope = input.state.manifest?.cache;
   if (scope === undefined || input.state.app === undefined) {
     return;
@@ -191,12 +192,13 @@ interface Counted {
 }
 
 function passthroughFor(
-  input: RoutingInput,
+  input: ManifestRoutingInput,
   reason: string,
   middleware?: MiddlewareOutcome & Partial<MiddlewareTiming>,
   { route, waited }: Counted = {},
 ): Promise<Response> {
   const { servedAgain } = input;
+  const manifestReady = 'manifestReady' in input ? input.manifestReady : undefined;
   const passthrough: PassthroughInput = {
     request: input.request,
     forwarding: forwardingFor(input.request, input.host.sharedDomain, input.url.hostname),
@@ -207,6 +209,25 @@ function passthroughFor(
     // For the tables that say which app Worker the route is in, where the build split them; a
     // validation probe names its own.
     manifest: input.state.manifest,
+    ...(manifestReady !== undefined && {
+      observeInvalidation: (): void => {
+        input.ctx.waitUntil(
+          (async () => {
+            const manifest = await manifestReady;
+            if (
+              manifest?.cache !== undefined &&
+              manifest.cache.scopeId !== input.state.app?.deploymentId
+            ) {
+              transferInvalidations(
+                input.runtime.memory,
+                input.state.app?.deploymentId,
+                manifest.cache.scopeId,
+              );
+            }
+          })(),
+        );
+      },
+    }),
     function: input.state.function,
     reason,
     validated: input.state.validated,
@@ -372,14 +393,15 @@ function withoutCredentials(headers: Headers, credentials: HostCredentials): Hea
  * copied for that alone (`classificationReadsCredentials`): Next.js is never handed it either.
  */
 function headersToClassify(
-  manifest: ProjectManifest,
+  manifest: ProjectManifest | undefined,
   headers: Headers,
   credentials: HostCredentials,
 ): Headers {
   const kept = credentials.cookies.length > 0 || credentials.headers.length > 0;
   const copied =
     kept &&
-    (classificationReadsCredentials(credentials) || routingReadsCredentials(manifest, credentials));
+    (classificationReadsCredentials(credentials) ||
+      (manifest !== undefined && routingReadsCredentials(manifest, credentials)));
   return copied ? withoutCredentials(headers, credentials) : headers;
 }
 
@@ -496,7 +518,7 @@ async function routeWithBudget(input: ManifestRoutingInput): Promise<Response> {
     return await routeWithinBudget(input);
   } catch (error) {
     if (error instanceof PatternBudgetExceededError) {
-      return afterPolicy(input, (ready) => passthroughFor(ready, PATTERN_BUDGET));
+      return passthroughFor(input, PATTERN_BUDGET);
     }
     throw error;
   }
@@ -506,7 +528,7 @@ function routeWithinBudget(input: ManifestRoutingInput): Promise<Response> {
   const { request, url, state } = input;
   const forwarding = forwardingFor(request, input.host.sharedDomain, url.hostname);
   const passthrough = (reason: string, middleware?: MiddlewareOutcome): Promise<Response> =>
-    afterPolicy(input, (ready) => passthroughFor(ready, reason, middleware));
+    passthroughFor(input, reason, middleware);
   // A probe names the Worker it is for, and is that Worker's to answer whatever the path would be
   // served from otherwise — a catch-all's shell, say, answered here and resumed in a Worker the
   // probe did not name. Only a signed validation sets this.
@@ -538,16 +560,36 @@ function routeWithinBudget(input: ManifestRoutingInput): Promise<Response> {
   if (notDeployed(state)) {
     return Promise.resolve(serviceUnavailableResponse('not-deployed'));
   }
-  return afterPolicy(input, (ready) => routeWithPolicy(ready, forwarding));
+  // The core classifier decides which non-read requests are Actions and which are other methods;
+  // neither can use a manifest's files or pages. A single Function may reach here before its
+  // manifest, and a split deployment has already read its tables to choose the right Function.
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    const classification = classifyRequest({
+      method: request.method,
+      url,
+      headers: headersToClassify(undefined, request.headers, input.host.credentials),
+      manifest: undefined,
+      deployment: undefined,
+    });
+    return passthrough(passthroughReason(classification));
+  }
+  return routeWithManifest(input, forwarding);
 }
 
-/** The request did not name a shipped file: its policy settings now govern its answer. */
-async function routeWithPolicy(
-  input: RoutingInput,
+/** Read the policy only once the request is known to need an edge strategy. */
+function routeWithManifest(
+  input: ManifestRoutingInput,
   forwarding: ForwardingContext,
 ): Promise<Response> {
   const { request, url, state } = input;
   const passthrough = (reason: string): Promise<Response> => passthroughFor(input, reason);
+  if (state.manifest?.cache !== undefined) {
+    transferInvalidations(
+      input.runtime.memory,
+      state.app?.deploymentId,
+      state.manifest.cache.scopeId,
+    );
+  }
   // Files and optimized images read no generation records, so their storage reads never compete
   // with a scope poll that only document deliveries need.
   lookAtScopeOf(input);
@@ -574,8 +616,24 @@ async function routeWithPolicy(
   if (classification.kind === ASSET_CLASS && request.method === 'HEAD') {
     return passthrough('head');
   }
+  const manifest = state.manifest;
+  return afterPolicy(input, (ready) =>
+    routeClassified(ready, manifest, forwarding, { classification, headers: classifiedHeaders }),
+  );
+}
+
+/** The request needs an edge strategy, and its policy settings now govern its answer. */
+async function routeClassified(
+  input: RoutingInput,
+  manifest: ProjectManifest,
+  forwarding: ForwardingContext,
+  classified: { readonly classification: RequestClass; readonly headers: Headers },
+): Promise<Response> {
+  const { request, url, state } = input;
+  const { classification, headers: classifiedHeaders } = classified;
+  const passthrough = (reason: string): Promise<Response> => passthroughFor(input, reason);
   const resolved = resolvePolicy(edgeStrategyRegistry, state.policy);
-  const edge = edgeContextFor(input, state.manifest, forwarding);
+  const edge = edgeContextFor(input, manifest, forwarding);
   if (classification.kind === ASSET_CLASS) {
     const answered = await answerAsset({
       request,
@@ -590,7 +648,7 @@ async function routeWithPolicy(
     request,
     url,
     edge,
-    manifest: state.manifest,
+    manifest,
     resolved,
     classification,
     classifiedHeaders,

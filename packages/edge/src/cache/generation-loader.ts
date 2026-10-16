@@ -11,7 +11,7 @@ import { recoveryScriptCspSource } from '@stayingupwind/host/splice';
 import { LONGEST_COPY_AGE_MS } from '../memory/invalidations.ts';
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeContext } from '../strategies/context.ts';
-import { isInvalidated } from './condemned.ts';
+import { isInvalidated, transferInvalidations } from './condemned.ts';
 import {
   type CopyStamps,
   dropCopyIf,
@@ -302,7 +302,7 @@ async function adoptDecoded(
   const readAt = edge.runtime.now();
   // There is a record, condemned or not: an absence held of it no longer stands.
   edge.runtime.memory.absentRecords.delete(read.recordKey);
-  if (isInvalidated(edge.runtime.memory, pack)) {
+  if (isInvalidated(edge.runtime.memory, pack, edge.app?.deploymentId)) {
     // Answered, not held: a record held is served past its hold however long ago it was read, and an
     // invalidation reached this one (`isInvalidated`) — a read that set out before it was taken in,
     // or one KV or the copy answered from before it. Nothing is put in place, so `read.adopted`
@@ -386,6 +386,7 @@ function forgetSeen(edge: EdgeContext, read: Read, seen: number, absent: boolean
  * where the invalidation reached one.
  */
 function absenceHoldable(edge: EdgeContext, read: Read): boolean {
+  transferInvalidations(edge.runtime.memory, edge.app?.deploymentId, read.key.scopeId);
   const heldFrom = edge.runtime.memory.invalidations.absencesHeldFrom(read.key.scopeId);
   return heldFrom === undefined || read.startedAt >= heldFrom;
 }
@@ -495,7 +496,8 @@ interface CopiedRead extends BesideRead {
  * them is out.
  */
 async function keepLatest(edge: EdgeContext, read: BesideRead, record: Verified): Promise<void> {
-  const untouched = (): boolean => !isInvalidated(edge.runtime.memory, record.pack);
+  const untouched = (): boolean =>
+    !isInvalidated(edge.runtime.memory, record.pack, edge.app?.deploymentId);
   if (heldLater(edge, read.recordKey, record.revision) === undefined && untouched()) {
     await keepCopyAhead(edge, read.recordKey, record, {
       maxAgeMs: read.maxAgeMs,

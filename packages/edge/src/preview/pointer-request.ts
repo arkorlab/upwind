@@ -8,13 +8,16 @@ import type { IncomingRequest } from '../request-context.ts';
 import type { RoutingInput } from '../route.ts';
 import type { StaticFileContext } from '../strategies/context.ts';
 import { getManifest, getPolicy, type PolicyLookup } from './manifest.ts';
+import { usableManifest } from './pointer.ts';
 import { manifestStateFromPointer, policyFromPointer, type PreviewState } from './state.ts';
 import { heldBehind, type Lookup, MISSING } from './storage.ts';
 
-/** A pointer's manifest has arrived; a shipped file may need no policy settings at all. */
+/** Routing that can answer before the lookups its response does not need. */
 export interface DeferredRoutingInput extends Omit<RoutingInput, 'state'> {
   readonly state: Omit<PreviewState, 'policy'> & { readonly policy: StaticFileContext['policy'] };
   readonly policyReady: () => Promise<RoutingInput>;
+  /** The remaining read, for an invalidation of a host's scope other than its deployment id. */
+  readonly manifestReady?: Promise<ProjectManifest | undefined>;
 }
 
 export type ManifestRoutingInput = RoutingInput | DeferredRoutingInput;
@@ -83,7 +86,24 @@ export async function servePointerRequest(
   })();
   // A shipped file can leave before this read lands; let it fill memory for later requests.
   ctx.waitUntil(answeredPolicy);
-  const stored = await manifestLookup;
+  // A non-read request cannot be answered from a shipped file, image or page. One Worker needs
+  // no routing tables to receive it, and runs the application's middleware itself. Keep the read
+  // for its response's cache invalidations without putting it before dispatch or the first byte.
+  const independent =
+    request.method !== 'GET' &&
+    request.method !== 'HEAD' &&
+    pointer.app !== undefined &&
+    pointer.app.functions === undefined;
+  const manifestReady = independent
+    ? (async () => {
+        const stored = await manifestLookup;
+        return usableManifest(pointer, stored.kind === 'found' ? stored.value : undefined);
+      })()
+    : undefined;
+  if (manifestReady !== undefined) {
+    ctx.waitUntil(manifestReady);
+  }
+  const stored = independent ? MISSING : await manifestLookup;
   const manifestMs = runtime.now() - manifestStarted;
   const state = {
     ...manifestStateFromPointer({
@@ -113,6 +133,7 @@ export async function servePointerRequest(
   };
   const routing: DeferredRoutingInput = {
     ...initial,
+    ...(manifestReady !== undefined && { manifestReady }),
     policyReady: () => {
       ready ??= (async () => {
         const { lookup, completedAt } = await answeredPolicy;

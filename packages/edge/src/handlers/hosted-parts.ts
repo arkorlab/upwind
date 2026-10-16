@@ -134,7 +134,7 @@ async function partGeneration(
   const decision = decideGeneration(
     load,
     input.edge.runtime.now(),
-    condemnedIn(input.edge.runtime.memory),
+    condemnedIn(input.edge.runtime.memory, input.edge.app?.deploymentId),
   );
   if (decision.kind === 'build') {
     return { kind: upgradesMember(settings, entry, pathname) ? 'function' : 'build' };

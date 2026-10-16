@@ -236,7 +236,7 @@ function serveMember(
   const decision = decideGeneration(
     member.load,
     decided.now,
-    condemnedIn(input.edge.runtime.memory),
+    condemnedIn(input.edge.runtime.memory, input.edge.app?.deploymentId),
   );
   switch (decision.kind) {
     case 'serve': {
@@ -335,7 +335,11 @@ export async function serveCachedDocument(input: CachedDocumentInput): Promise<R
     abandonShell(edge, read);
     return member.response;
   }
-  const decision = decideGeneration(load, decided.now, condemnedIn(edge.runtime.memory));
+  const decision = decideGeneration(
+    load,
+    decided.now,
+    condemnedIn(edge.runtime.memory, edge.app?.deploymentId),
+  );
   if (decision.kind !== 'build') {
     abandonShell(edge, read);
   }
