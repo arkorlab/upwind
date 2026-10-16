@@ -1,0 +1,40 @@
+name: Benchmark
+
+# The runner is hosted by GitHub on Azure, separately from both measured platforms.
+# Its region is not guaranteed. Response PoPs and the actual runner image accompany the samples.
+on:
+  schedule:
+    - cron: '43 */6 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: benchmark-measurement
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  measure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.21.0
+      # No dependency install, build or platform credential participates in measurement.
+      - name: Measure the two deployments
+        run: node tools/benchmark/src/main.ts --github "$RUNNER_TEMP/benchmark-attempt/attempt.json"
+      - name: Keep the raw measurement
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: benchmark-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/benchmark-attempt/attempt.json
+          if-no-files-found: warn
+          retention-days: 90

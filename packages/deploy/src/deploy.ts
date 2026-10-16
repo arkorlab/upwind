@@ -36,7 +36,12 @@ import {
   unimplementedBackend,
 } from './delivery.ts';
 import { deploymentFingerprintOf } from './fingerprint.ts';
-import { assembleManifest, oversizedManifest, routedPages } from './manifest.ts';
+import {
+  assembleManifest,
+  oversizedManifest,
+  routedPages,
+  unreachableFunctions,
+} from './manifest.ts';
 import { edgePointerOf } from './pointer.ts';
 import { DOCUMENT_KIND, type ShellToEncode, shellsOf } from './shells.ts';
 
@@ -359,6 +364,12 @@ export async function stageDeployment(
       { code: 'bundle_invalid' },
     );
   }
+  // Nor may they leave out one a split build places routes in, which the assembly would refuse once
+  // the blobs, the shells and the cache's entries were written.
+  const unreachable = unreachableFunctions(input);
+  if (unreachable !== undefined) {
+    throw new DeployRefusalError(unreachable, { code: 'bundle_invalid' });
+  }
   // A build outside the adapter's range gets nothing of what a host serves (`NextSupport`), and
   // is refused here, before anything is written; one with limited support is deployed as any is.
   if (!nextVersionSupported(bundle.nextVersion)) {
@@ -421,8 +432,10 @@ async function storedAs(
 
 /**
  * What an artifact is placed in KV with: what it is, and the route it was first captured from —
- * provenance, which nothing reads to serve it, and left out where that route's pathname would take
- * the metadata past what KV keeps of it (`MAX_KV_METADATA_BYTES`) and fail the write.
+ * none of which anything reads to serve it, the edge reading the value alone. Where that route's
+ * pathname would take the metadata past what KV keeps of it (`MAX_KV_METADATA_BYTES`) and fail the
+ * write, the route is left out; and where the content type, which a bundle bounds no more than a
+ * pathname, still would, so is that. What is left, a digest, a length and an encoding, always fits.
  */
 function kvMetadataOf(
   unit: Pick<ShellPlacement, 'byteLength' | 'contentType' | 'sha256'> & {
@@ -431,10 +444,11 @@ function kvMetadataOf(
   sourcePath: string,
 ): Readonly<Record<string, unknown>> {
   const { contentType, byteLength, sha256, encoding } = unit;
-  const traced = { contentType, byteLength, sha256, sourcePath, encoding };
-  return encodeUtf8(JSON.stringify(traced)).byteLength > MAX_KV_METADATA_BYTES
-    ? { contentType, byteLength, sha256, encoding }
-    : traced;
+  const kept = [
+    { contentType, byteLength, sha256, sourcePath, encoding },
+    { contentType, byteLength, sha256, encoding },
+  ].find((metadata) => encodeUtf8(JSON.stringify(metadata)).byteLength <= MAX_KV_METADATA_BYTES);
+  return kept ?? { byteLength, sha256, encoding };
 }
 
 /**

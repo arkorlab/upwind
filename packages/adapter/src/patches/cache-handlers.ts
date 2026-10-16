@@ -15,6 +15,11 @@ import { type Patch, Rewrite } from './types.ts';
  * asks: it registers no handler for a kind whose path is empty, and makes the incremental cache
  * without one. Rewritten either way, so that a release that moved either import fails every build
  * the same, rather than only the one that configures a handler.
+ *
+ * Every name in either import is the minifier's, and a minified name may hold a `$`, which `\w`
+ * does not match: 16.3.0's pages runtimes call `dynamicImportEsmDefault` `t$`, where 16.3.1's, the
+ * same code otherwise, call it `tN`. A name is read as `[\w$]+`, then, as the other patches read
+ * one; what each import is held to is still its shape, found once.
  */
 
 const NAME = 'cache-handlers';
@@ -25,12 +30,13 @@ const TARGET =
 /** Each of `cacheHandlers`, imported from under the project's output directory. */
 const HANDLERS_IMPORT =
   // eslint-disable-next-line sonarjs/super-linear-regex -- run once per build over a file of Next.js's, never over anything a request carries
-  /(?<interop>\w+)\(await \w+\(\w+\(`\$\{\w+\}\/\$\{this\.distDir\}`,(?<value>\w+)\)\)\)/gu;
+  /(?<interop>[\w$]+)\(await [\w$]+\([\w$]+\(`\$\{[\w$]+\}\/\$\{this\.distDir\}`,(?<value>[\w$]+)\)\)\)/gu;
 /** The `cacheHandler`, imported from under the output directory. */
+const HANDLER_IMPORT =
+  // eslint-disable-next-line sonarjs/super-linear-regex -- as above
+  /(?<interop>[\w$]+)\(await [\w$]+\([\w$]+\(this\.distDir,(?<value>[\w$]+)\)\)\)/gu;
 // eslint-disable-next-line sonarjs/super-linear-regex -- as above
-const HANDLER_IMPORT = /(?<interop>\w+)\(await \w+\(\w+\(this\.distDir,(?<value>\w+)\)\)\)/gu;
-// eslint-disable-next-line sonarjs/super-linear-regex -- as above
-const LEFTOVERS = [/\$\{this\.distDir\}`,\w+\)/u, /\w+\(this\.distDir,\w+\)\)\)/u];
+const LEFTOVERS = [/\$\{this\.distDir\}`,[\w$]+\)/u, /[\w$]+\(this\.distDir,[\w$]+\)\)\)/u];
 
 /** `text` for an `expand` template: a `$` of its own stands for itself rather than for a group. */
 function templated(text: string): string {

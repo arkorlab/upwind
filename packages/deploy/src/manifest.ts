@@ -129,8 +129,8 @@ export type AssembledManifest =
       readonly routing: ReturnType<typeof dynamicRouting>;
     }
   /**
-   * Not to publish — too large (`oversizedManifest`), fingerprinted as another bundle, or naming
-   * another deployment's Functions — and why.
+   * Not to publish — too large (`oversizedManifest`), fingerprinted as another bundle, naming
+   * another deployment's Functions, or leaving out one the build places routes in — and why.
    */
   | { readonly kind: 'refused'; readonly reason: string };
 
@@ -166,12 +166,34 @@ function foreignFunctions(input: AssembleManifestInput): string | undefined {
     : `the Functions handed in are ${app.deploymentId}'s, not ${deploymentId}'s`;
 }
 
+/**
+ * Why the Functions handed in leave out one the build places routes in (`placedRoutes`), or
+ * `undefined` where they name each. The edge reaches a Function only by the name `app.functions`
+ * gives it, whether the manifest sends a request there or the first Function answers that the route
+ * is that one's (`MISDIRECTED_STATUS`): a route placed in a Function they leave out is answered by
+ * none. A manifest naming such a Function is refused where it is built (`buildProjectManifest`),
+ * and refused here before that, as an answer rather than an error.
+ */
+export function unreachableFunctions(
+  input: Pick<AssembleManifestInput, 'app' | 'bundle'>,
+): string | undefined {
+  const reachable = input.app.functions ?? {};
+  const placed = new Set(placedRoutes(input.bundle.entrypoints).values());
+  const unreachable = [...placed].filter((name) => !Object.hasOwn(reachable, name));
+  return unreachable.length === 0
+    ? undefined
+    : `the build places routes in ${unreachable.join(', ')}, which the Functions handed in give no name to reach by (app.functions)`;
+}
+
 /** Assemble the manifest from the build: one entry per edge-servable prerender. */
 export async function assembleManifest(input: AssembleManifestInput): Promise<AssembledManifest> {
   const { bundle } = input;
-  const foreign = foreignFingerprint(bundle, input.fingerprint) ?? foreignFunctions(input);
-  if (foreign !== undefined) {
-    return { kind: 'refused', reason: foreign };
+  const refusal =
+    foreignFingerprint(bundle, input.fingerprint) ??
+    foreignFunctions(input) ??
+    unreachableFunctions(input);
+  if (refusal !== undefined) {
+    return { kind: 'refused', reason: refusal };
   }
   // The scope is the deployment; the same derivation the seed used names each entry.
   const cached = input.runtimeCache !== false;

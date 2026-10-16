@@ -1,0 +1,78 @@
+name: Publish benchmark
+
+# A separate trusted workflow records cancellations, timeouts and missing artifacts as failures.
+# Manual measurements remain downloadable evidence and do not replace scheduled observations.
+on:
+  workflow_run:
+    workflows: [Benchmark]
+    types: [completed]
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: benchmark-publication
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  publish:
+    if: >-
+      github.repository == 'arkorlab/upwind' &&
+      github.event.workflow_run.head_repository.full_name == 'arkorlab/upwind' &&
+      (github.event.workflow_run.path == '.github/workflows/benchmark.yaml' ||
+       github.event.workflow_run.path == '.github/workflows/benchmark.yaml@main' ||
+       github.event.workflow_run.path == '.github/workflows/benchmark.yaml@refs/heads/main') &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.event == 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      # The finalizer always executes the trusted default branch, never artifact code.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.21.0
+      - name: Download this attempt's data
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: benchmark-attempt-${{ github.event.workflow_run.run_attempt }}
+          path: ${{ runner.temp }}/benchmark-attempt
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+      - name: Publish the next observation
+        env:
+          FEED_DIRECTORY: ${{ runner.temp }}/benchmark-feed
+        run: |
+          set -euo pipefail
+          initialize=''
+          if git ls-remote --exit-code origin refs/heads/benchmark-results > "$RUNNER_TEMP/benchmark-ref"; then
+            git fetch --depth=1 origin refs/heads/benchmark-results
+            git worktree add --detach "$FEED_DIRECTORY" FETCH_HEAD
+          else
+            status=$?
+            if [ "$status" -ne 2 ]; then
+              exit "$status"
+            fi
+            git worktree add --detach "$FEED_DIRECTORY" HEAD
+            git -C "$FEED_DIRECTORY" switch --orphan benchmark-results
+            initialize='--initialize'
+          fi
+          if [ -n "$initialize" ]; then
+            node tools/benchmark/src/publish.ts "$RUNNER_TEMP/benchmark-attempt/attempt.json" "$FEED_DIRECTORY" --initialize
+          else
+            node tools/benchmark/src/publish.ts "$RUNNER_TEMP/benchmark-attempt/attempt.json" "$FEED_DIRECTORY"
+          fi
+          git -C "$FEED_DIRECTORY" add --all
+          if git -C "$FEED_DIRECTORY" diff --cached --quiet; then
+            exit 0
+          fi
+          git -C "$FEED_DIRECTORY" -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'data: record scheduled benchmark attempt'
+          git -C "$FEED_DIRECTORY" push origin HEAD:refs/heads/benchmark-results

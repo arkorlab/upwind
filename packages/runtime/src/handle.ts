@@ -45,7 +45,7 @@ import {
   sourceRequest,
   sourceResponse,
 } from './image-fallback.ts';
-import { hasBody, isRscRequest, wantsBlockingMetadata } from './incoming.ts';
+import { edgeRewriteStatusOf, hasBody, isRscRequest, wantsBlockingMetadata } from './incoming.ts';
 import { isRead, methodNotAllowed, readsOnly } from './methods.ts';
 import { answerMiddlewareOnly, MIDDLEWARE_ENTRY_ID } from './middleware-invoke.ts';
 import { type Resolved, servePagesData, serveRouteHandler, serveRsc } from './outputs.ts';
@@ -79,6 +79,7 @@ import {
   HTTP_NOT_FOUND,
   HTTP_OK,
   initUrlOf,
+  INVALIDATIONS_RECORDED_WITHIN_MS,
   invokeEntry,
   resume,
   type RoutedInput,
@@ -342,7 +343,8 @@ async function routeAndServe(
     landed: landedRoute(store, routed.resolvedPathname, routed.invocationTarget),
     asked: askedOf(request, input.initURL, url, trace.rewrite),
     headers: routed.resolvedHeaders,
-    status: trace.status,
+    // The status the middleware gave its rewrite, whichever ran it: the edge names it where it did.
+    status: trace.status ?? edgeRewriteStatusOf(request.headers),
     changes: () => requestChanges(requestHeaders, trace.requestHeaders),
   });
 }
@@ -556,6 +558,9 @@ export async function handleRequest(handled: HandleInput): Promise<Response> {
       await catchUpWithScope(handled.cache, handled.request, handled.waitUntil);
     }
     const response = withoutPlacementHeaders(await routeRequest(input));
+    // Not answered before the host has recorded what the request invalidated — its headers neither:
+    // whoever made it moves on once they come (`InvalidatedTags`).
+    await context.invalidated.recorded(INVALIDATIONS_RECORDED_WITHIN_MS);
     const answered = withoutBody(
       handled.request,
       withInvalidatedTags(response, context.invalidated),
