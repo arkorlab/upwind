@@ -139,4 +139,29 @@ describe('forwarded native transport', () => {
       internal: answer.headers.get('x-arkor-private'),
     }).toStrictEqual({ status: 101, kept: true, protocol: 'echo', internal: null });
   });
+
+  /**
+   * A header the answer's `Connection` names was the one hop's, as `Connection` was, and goes with
+   * it (RFC 9110 §7.6.1): named in any case, among options that name no header, which throw nothing
+   * (Codex, upwind#179).
+   */
+  it('drops the headers its Connection names with it', () => {
+    const upstream = new Response('answer', {
+      headers: {
+        connection: 'X-Internal, , not a name, close',
+        'x-internal': 'service-hop metadata',
+        allowed: 'kept',
+      },
+    });
+    upstream.headers.append('connection', 'x-also');
+    upstream.headers.set('x-also', 'more of it');
+    const answer = forwardedResponse(upstream, CONTEXT);
+
+    expect({
+      internal: answer.headers.get('x-internal'),
+      also: answer.headers.get('x-also'),
+      connection: answer.headers.get('connection'),
+      allowed: answer.headers.get('allowed'),
+    }).toStrictEqual({ internal: null, also: null, connection: null, allowed: 'kept' });
+  });
 });

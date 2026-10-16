@@ -68,6 +68,21 @@ function isBarePrivate(part: string): boolean {
 }
 
 const SET_COOKIE_HEADER = 'set-cookie';
+const CONNECTION_HEADER = 'connection';
+
+/**
+ * The headers an answer's `Connection` names: the one hop's as much as `Connection` is, so a proxy
+ * removes them with it (RFC 9110 §7.6.1), as a response stored whole loses them
+ * (`filterStoredResponseHeaders`). Matched against the answer's own names, never handed to
+ * `Headers` as names, so an option that is no header's name removes nothing and throws nothing.
+ * `undefined` for an answer without one, which is most.
+ */
+function nominatedBy(headers: Headers): ReadonlySet<string> | undefined {
+  const connection = headers.get(CONNECTION_HEADER);
+  return connection === null
+    ? undefined
+    : new Set(connection.split(',').map((option) => option.trim().toLowerCase()));
+}
 
 /**
  * Copy a forwarded answer with its native transport, including a WebSocket handshake. Filtering
@@ -77,11 +92,13 @@ const SET_COOKIE_HEADER = 'set-cookie';
 export function forwardedResponse(response: Response, scope: PassthroughResponseContext): Response {
   const answer = new Response(response.body, response);
   const headers = answer.headers;
+  const nominated = nominatedBy(response.headers);
   headers.delete(SET_COOKIE_HEADER);
   for (const [name, value] of response.headers) {
     if (
       PASSTHROUGH_RESPONSE_HEADER_DENYLIST.includes(name) ||
-      name.startsWith(PLATFORM_HEADER_PREFIX)
+      name.startsWith(PLATFORM_HEADER_PREFIX) ||
+      nominated?.has(name) === true
     ) {
       headers.delete(name);
     } else if (name === SET_COOKIE_HEADER) {
