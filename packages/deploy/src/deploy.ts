@@ -36,7 +36,12 @@ import {
   unimplementedBackend,
 } from './delivery.ts';
 import { deploymentFingerprintOf } from './fingerprint.ts';
-import { assembleManifest, oversizedManifest, routedPages } from './manifest.ts';
+import {
+  assembleManifest,
+  oversizedManifest,
+  routedPages,
+  unreachableFunctions,
+} from './manifest.ts';
 import { edgePointerOf } from './pointer.ts';
 import { DOCUMENT_KIND, type ShellToEncode, shellsOf } from './shells.ts';
 
@@ -358,6 +363,12 @@ export async function stageDeployment(
       `the Functions handed in are ${input.app.deploymentId}'s, not ${bundle.deploymentId}'s`,
       { code: 'bundle_invalid' },
     );
+  }
+  // Nor may they leave out one a split build places routes in, which the assembly would refuse once
+  // the blobs, the shells and the cache's entries were written.
+  const unreachable = unreachableFunctions(input);
+  if (unreachable !== undefined) {
+    throw new DeployRefusalError(unreachable, { code: 'bundle_invalid' });
   }
   // A build outside the adapter's range gets nothing of what a host serves (`NextSupport`), and
   // is refused here, before anything is written; one with limited support is deployed as any is.
