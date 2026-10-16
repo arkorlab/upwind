@@ -1,5 +1,5 @@
-import { standsForClass } from '@stayingupwind/core/bundle';
-import { builtNameOf } from '@stayingupwind/core/manifest';
+import { spelledPrefixOf, standsForClass } from '@stayingupwind/core/bundle';
+import { builtNameOf, type SpelledPrefix, spellsPrefixOf } from '@stayingupwind/core/manifest';
 
 import { redirects } from './rewritten-path.ts';
 import { type Store, unlocalizedRouteOf } from './store.ts';
@@ -17,6 +17,22 @@ const SUB_DELIMITERS = /[!'()*]/gu;
 const HEX = 16;
 /** An escape as the encoders write one: its hex in uppercase. */
 const UPPERCASE_ESCAPE = /%[0-9A-F]{2}/gu;
+
+/** Each store's router's prefix (`routerPrefix`). */
+const routerPrefixes = new WeakMap<Store, SpelledPrefix | undefined>();
+
+/**
+ * What the store's router reads of a path as it is written (`spellsPrefixOf`), as a deploy writes
+ * it into the manifest (`spelledPrefixOf`): the base path, and in an application with `i18n`, every
+ * locale it routes, its domains' as well. A spelling that writes either escaped is no spelling of a
+ * name behind it: Next.js finds no base path in front of `/b%61se/about`.
+ */
+function routerPrefix(store: Store): SpelledPrefix | undefined {
+  if (!routerPrefixes.has(store)) {
+    routerPrefixes.set(store, spelledPrefixOf(store.manifest));
+  }
+  return routerPrefixes.get(store);
+}
 
 /** Each store's pages of their own (`ownPages`). */
 const ownPagesOf = new WeakMap<Store, ReadonlySet<string>>();
@@ -96,12 +112,20 @@ function foundFirst(
  * readings differ, the order is Next.js's: a page of its own as spelled and then decoded whole
  * (`foundFirst`), ahead of a member as spelled or by its built name (`builtNameOf`), each segment
  * decoded with an escaped slash kept inside it. Decoded whole for a member, `/docs/a%2Fb` was
- * looked up as the member `/docs/a/b` of another route.
+ * looked up as the member `/docs/a/b` of another route. A name found by decoding is the pathname's
+ * only where it writes the base path and the locale in front of the name as the router reads them,
+ * as written (`routerPrefix`).
  */
 export function prerenderedName(store: Store, pathname: string): string {
   if (!pathname.includes('%')) {
     return pathname;
   }
+  const name = decodedPrerenderName(store, pathname);
+  return name === pathname || spellsPrefixOf(routerPrefix(store), pathname, name) ? name : pathname;
+}
+
+/** The name `prerenderedName` finds a pathname with an escape in it under, its prefix unasked. */
+function decodedPrerenderName(store: Store, pathname: string): string {
   const prerenders = store.prerendersByPathname;
   const built = builtNameOf(pathname);
   const decoded = decodedOnce(pathname);
@@ -127,12 +151,23 @@ export function prerenderedName(store: Store, pathname: string): string {
  * member as spelled or by its built name (`builtNameOf`), an escaped slash inside its segment —
  * `/docs/a%2fb` is `/docs/a%2Fb`, the member `a/b`; `/docs/c%2Fd` no member of a route at
  * `/docs/c/d`; and `/docs/a%2Fb` the page `/docs/a/b` where that is a page of its own, though the
- * member `/docs/a%2Fb` is named so too. `undefined` where the spelling names itself, or nothing.
+ * member `/docs/a%2Fb` is named so too. A name found so is the spelling's only where it writes the
+ * base path and the locale in front of the name as the router reads them, as written
+ * (`routerPrefix`): Next.js finds no base path in front of `/b%61se/about`, and answers it 404.
+ * `undefined` where the spelling names itself, or nothing.
  */
 export function escapedNameOf(store: Store, pathname: string): string | undefined {
   if (!pathname.includes('%')) {
     return undefined;
   }
+  const name = decodedNameOf(store, pathname);
+  return name === undefined || spellsPrefixOf(routerPrefix(store), pathname, name)
+    ? name
+    : undefined;
+}
+
+/** The name `escapedNameOf` finds a pathname with an escape in it under, its prefix unasked. */
+function decodedNameOf(store: Store, pathname: string): string | undefined {
   const has = (name: string): boolean => store.pathnames.includes(name);
   const built = builtNameOf(pathname);
   const decoded = decodedOnce(pathname);
@@ -209,7 +244,8 @@ export function namesWithSpellings(store: Store): string[] {
     spelled.add(name);
     // A file or a page of its own is found decoded whole, a member by its built name (`spells`).
     const decodedWhole = isFile(store, name) || isOwnPage(store, name);
-    for (const spelling of spellingsOf(name, decodedWhole)) {
+    const spellings = spellingsOf(name, decodedWhole, routerPrefix(store));
+    for (const spelling of spellings) {
       offered.add(spelling);
     }
   }
@@ -234,9 +270,16 @@ export function namesWithSpellings(store: Store): string[] {
  * escapes data — `!`, `'`, `(`, `)` and `*` as well, which `encodeURIComponent` leaves be
  * (`/docs/rock%27n` for `/docs/rock'n`) — each in uppercase hex and in lowercase: those that are
  * other spellings of it. An escape of a character no encoder escapes (`%65` for `e`), or hex of
- * mixed case, is none of these; a destination written so is offered as it is written.
+ * mixed case, is none of these; a destination written so is offered as it is written. Nor is one
+ * that writes the base path otherwise than the router reads it (`routerPrefix`): a base path past
+ * ASCII in small letters (`/%e6%96%87…` for `/文書`) is no spelling of a name under it, and the
+ * router, handed none, answers it 404, as Next.js does.
  */
-function spellingsOf(name: string, decodedWhole: boolean): string[] {
+function spellingsOf(
+  name: string,
+  decodedWhole: boolean,
+  prefix: SpelledPrefix | undefined,
+): string[] {
   let asUrl: string;
   let segments: string[];
   try {
@@ -258,9 +301,13 @@ function spellingsOf(name: string, decodedWhole: boolean): string[] {
   for (const spelling of encoded) {
     spellings.add(spelling.replaceAll(UPPERCASE_ESCAPE, (escape) => escape.toLowerCase()));
   }
-  return [...spellings].filter(
-    (spelling) => spelling !== name && spells(spelling, name, decodedWhole),
-  );
+  return [...spellings].filter((spelling) => {
+    return (
+      spelling !== name &&
+      spells(spelling, name, decodedWhole) &&
+      spellsPrefixOf(prefix, spelling, name)
+    );
+  });
 }
 
 /**

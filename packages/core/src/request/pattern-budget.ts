@@ -1,4 +1,4 @@
-import { literalGate, longestAffordable, patternCost } from './pattern-cost.ts';
+import { BUDGET, literalGate, patternCost, type PatternCost, stepsAt } from './pattern-cost.ts';
 
 /**
  * Where a test of a routing pattern is held to what it may cost (`patternCost`): run where the value
@@ -11,8 +11,8 @@ const LINE_TERMINATOR = /[\n\r\u{2028}\u{2029}]/u;
 
 /**
  * A test the edge did not run: its pattern's cost against the value is past what a test is allowed
- * (`BUDGET`, in `pattern-cost.ts`), or not one this can bound. Not a non-match: the caller hands the request to the
- * application's Function, which routes it itself.
+ * (`BUDGET`, in `pattern-cost.ts`), exceeds what this request has left, or is not one this can bound.
+ * Not a non-match: the caller hands the request to the application's Function, which routes it itself.
  */
 export class PatternBudgetExceededError extends Error {
   readonly source: string;
@@ -32,7 +32,17 @@ export class PatternBudgetExceededError extends Error {
   }
 }
 
-const budget = { on: false };
+/** The steps one request has left for all of its routing pattern tests together. */
+export interface PatternBudget {
+  remaining: number;
+}
+
+/** A new request's allowance; creating one does not enable bounds in an application's Function. */
+export function createPatternBudget(): PatternBudget {
+  return { remaining: BUDGET };
+}
+
+const budget: { on: boolean; current?: () => PatternBudget | undefined } = { on: false };
 
 /**
  * Bound every test of a routing pattern from here on (`testWithin`, `execWithin`): what the edge
@@ -43,90 +53,142 @@ const budget = { on: false };
  * one application, its own Function among them, tests that application's patterns as Next.js does,
  * with nothing to hand a request it would not test to.
  *
- * Asked once per isolate, and for good: the bound is the isolate's, not a caller's. So an isolate
- * that asks is one that routes for an edge and nothing else. Where a test is past the bound, every
- * function here throws (`PatternBudgetExceededError`) for its caller to hand the request on — and
- * the runtime asks the same functions for an answer, with no Function behind it to hand anything to.
+ * Asked once per isolate, and for good: an isolate that asks is one that routes for an edge and
+ * nothing else. A host can supply the getter of its request-local store (`current`), so all tests
+ * made for one request share its allowance (`createPatternBudget`) even across asynchronous work.
+ * The host owns that store; core depends on no particular runtime's asynchronous context API. A
+ * later call with no getter leaves the installed one in place. Outside a store, only each test is
+ * bounded, as before. Where either bound is exceeded, every function here throws
+ * (`PatternBudgetExceededError`) for its caller to hand the request to the application's Function.
  */
-export function budgetPatterns(): void {
+export function budgetPatterns(current?: () => PatternBudget | undefined): void {
   budget.on = true;
-}
-
-/** The longest values each pattern is allowed against, worked out the first time it is tested. */
-interface Allowed {
-  lineFree?: number;
-  any?: number;
-}
-
-const allowed = new WeakMap<RegExp, Allowed>();
-
-function allowedFor(pattern: RegExp, value: string): number {
-  let lengths = allowed.get(pattern);
-  if (lengths === undefined) {
-    lengths = {};
-    allowed.set(pattern, lengths);
+  if (current !== undefined) {
+    budget.current = current;
   }
-  const lineFree = !LINE_TERMINATOR.test(value);
+}
+
+/** Each pattern's cost, read once for each kind of value; `null` where it cannot be bounded. */
+interface Costs {
+  lineFree?: PatternCost | null;
+  any?: PatternCost | null;
+}
+
+const costs = new WeakMap<RegExp, Costs>();
+
+function costFor(pattern: RegExp, lineFree: boolean): PatternCost | null {
+  let known = costs.get(pattern);
+  if (known === undefined) {
+    known = {};
+    costs.set(pattern, known);
+  }
   if (lineFree) {
-    lengths.lineFree ??= longestAffordable(patternCost(pattern.source, pattern.flags, true));
-    return lengths.lineFree;
+    if (known.lineFree === undefined) {
+      known.lineFree = patternCost(pattern.source, pattern.flags, true) ?? null;
+    }
+    return known.lineFree;
   }
-  lengths.any ??= longestAffordable(patternCost(pattern.source, pattern.flags, false));
-  return lengths.any;
+  if (known.any === undefined) {
+    known.any = patternCost(pattern.source, pattern.flags, false) ?? null;
+  }
+  return known.any;
 }
 
-/** A pattern's literal gate (`literalGate`), and the longest values it allows a test against. */
+/** A pattern's literal gate (`literalGate`), and what a test that cannot reach it costs. */
 interface Gate {
   readonly literal: string;
-  readonly lineFree: number;
-  any?: number;
+  readonly lineFree: PatternCost | null;
+  any?: PatternCost | null;
 }
 
 /** Each pattern's gate, or `null` for one with none, worked out the first time it is needed. */
 const gates = new WeakMap<RegExp, Gate | null>();
 
 /**
- * Whether a test of `value` is within what a test is allowed for not reaching past the pattern's
- * literal gate: the value does not hold the literal, and the pattern cut after it allows a value of
- * its length (`literalGate`).
+ * What a test of `value` costs if it cannot pass the pattern's literal gate (`literalGate`). The
+ * scans are reserved and charged before they run, even if the value holds the literal or the
+ * regex cannot be afforded afterwards. Without a request store their cost is included in the
+ * returned bound instead. `Infinity` where the value holds the literal or the cost is unbounded.
  */
-function affordableShortOfLiteral(pattern: RegExp, value: string): boolean {
+function stepsShortOfLiteral(
+  pattern: RegExp,
+  value: string,
+  lineFree: boolean,
+  current: PatternBudget | undefined,
+): number {
   let gate = gates.get(pattern);
   if (gate === undefined) {
     // Read once for the literal and for a value with no line terminator, whose cost is the one asked
     // for nearly always; the other is read the first time a value needs it.
     const read = literalGate(pattern.source, pattern.flags, true);
-    gate =
-      read === undefined ? null : { literal: read.literal, lineFree: longestAffordable(read.cost) };
+    gate = read === undefined ? null : { literal: read.literal, lineFree: read.cost ?? null };
     gates.set(pattern, gate);
   }
   if (gate === null) {
-    return false;
+    return Infinity;
   }
-  const held = pattern.flags.includes('i') ? value.toLowerCase() : value;
+  const ignoresCase = pattern.flags.includes('i');
+  // Finding the missing literal, and folding the value where needed, are linear work too. A caller
+  // may catch a refusal and try another candidate; scans already done must still spend its budget.
+  const scan = value.length * (ignoresCase ? 2 : 1);
+  if (scan + 1 > (current?.remaining ?? BUDGET - Math.max(1, value.length))) {
+    return Infinity;
+  }
+  if (current !== undefined) {
+    current.remaining -= scan;
+  }
+  const held = ignoresCase ? value.toLowerCase() : value;
   if (held.includes(gate.literal)) {
-    return false;
+    return Infinity;
   }
-  const lineFree = !LINE_TERMINATOR.test(value);
+  const unscopedScan = current === undefined ? scan : 0;
   if (lineFree) {
-    return value.length <= gate.lineFree;
+    return gate.lineFree === null ? Infinity : unscopedScan + stepsAt(gate.lineFree, value.length);
   }
-  gate.any ??= longestAffordable(literalGate(pattern.source, pattern.flags, false)?.cost);
-  return value.length <= gate.any;
+  if (gate.any === undefined) {
+    gate.any = literalGate(pattern.source, pattern.flags, false)?.cost ?? null;
+  }
+  return gate.any === null ? Infinity : unscopedScan + stepsAt(gate.any, value.length);
 }
 
 /**
  * Throw `PatternBudgetExceededError` where tests are bounded (`budgetPatterns`) and the pattern's cost
- * against `value` is past what a test is allowed — the whole pattern's, or, for a value that does not
- * hold its literal gate, what comes before the gate (`literalGate`); nothing otherwise.
+ * against `value` is past what a test or the current request has left — the whole pattern's, or,
+ * for a value that does not hold its literal gate, what comes before the gate (`literalGate`). A
+ * regex that fits is charged to the current request before it runs. Guard scans are charged before
+ * they run even where the regex is later refused; without a store only that test is bounded.
+ * Ordinary affordable tests never need to read or search for their literal gate.
  */
 export function assertAffordable(pattern: RegExp, value: string): void {
-  if (
-    budget.on &&
-    value.length > allowedFor(pattern, value) &&
-    !affordableShortOfLiteral(pattern, value)
-  ) {
+  if (!budget.on) {
+    return;
+  }
+  const current = budget.current?.();
+  const remaining = current?.remaining ?? BUDGET;
+  // Even an anchored, constant-cost non-match scans the value here to decide what `.` can take.
+  // Reserve that work once, before doing it; even an empty value takes one guard attempt, and the
+  // regex itself costs at least one more.
+  const guard = Math.max(1, value.length);
+  const available = remaining - guard;
+  if (available < 1) {
     throw new PatternBudgetExceededError({ source: pattern.source, valueLength: value.length });
+  }
+  if (current !== undefined) {
+    current.remaining -= guard;
+  }
+  const lineFree = !LINE_TERMINATOR.test(value);
+  const cost = costFor(pattern, lineFree);
+  let steps = cost === null ? Infinity : stepsAt(cost, value.length);
+  if (steps > available) {
+    steps = stepsShortOfLiteral(pattern, value, lineFree, current);
+  }
+  // Even a zero-length value requires the engine to attempt the pattern once.
+  steps = Math.max(1, steps);
+  if (steps > (current?.remaining ?? available)) {
+    throw new PatternBudgetExceededError({ source: pattern.source, valueLength: value.length });
+  }
+  if (current !== undefined) {
+    current.remaining -= steps;
   }
 }
 

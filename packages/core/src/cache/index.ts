@@ -56,6 +56,7 @@ export {
   verifyGenerationPack,
 } from './pack.ts';
 export { generationResponseHeaders } from './response-headers.ts';
+export { MAX_TAG_HISTORY, type TagHistoryMark, withTagHistory } from './tag-history.ts';
 export {
   type ArtifactEncoding,
   artifactEncodingSchema,

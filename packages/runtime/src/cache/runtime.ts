@@ -84,6 +84,12 @@ export interface Publishing {
   /** The revision of the tag view its reads were judged against, which its commit claims. */
   readonly observedTagRevision: number;
   /**
+   * How many marks of tags that view had let go of as the render began (`TagState.losses`): a mark
+   * of one of the render's tags let go of since is one the view can say nothing of any more
+   * (`TagLosses.lostSince`).
+   */
+  readonly observedLosses: number;
+  /**
    * What the render's view held of each of its tags, closed as the render ended: what its commit
    * says of each (`HeldTags.revisionOf`), and what it answers by while the commit is out.
    */

@@ -7,6 +7,7 @@ import {
   headerValuesSchema,
   invalidationStateSchema,
   MAX_TAG_LENGTH,
+  MAX_TAG_HISTORY,
   MAX_TAGS_PER_CALL,
   MAX_TAGS_PER_ENTRY,
   outputComputeSchema,
@@ -522,6 +523,12 @@ export const dataGetResponseSchema = z.object({
 export type DataGetResponse = z.infer<typeof dataGetResponseSchema>;
 
 /** `GET /tags/delta?since=<revision>` */
+const tagHistoryMarkSchema = z.object({
+  revision: z.number().int().positive(),
+  staleAt: z.number().int(),
+  hardExpireAt: z.number().int().nullable(),
+});
+
 export const tagDeltaEntrySchema = z.object({
   tagId: z.string().min(1),
   kind: tagKindSchema,
@@ -531,6 +538,8 @@ export const tagDeltaEntrySchema = z.object({
   staleAt: z.number().int(),
   hardExpireAt: z.number().int().nullable(),
   meaning: invalidationMeaningSchema,
+  /** Bounded earlier deadlines that still apply to older values. Absent on older hosts. */
+  history: z.array(tagHistoryMarkSchema).max(MAX_TAG_HISTORY).optional(),
 });
 export type TagDeltaEntry = z.infer<typeof tagDeltaEntrySchema>;
 
@@ -606,6 +615,8 @@ const invalidationResultSchema = z.object({
   staleAt: z.number().int(),
   hardExpireAt: z.number().int().nullable(),
   meaning: invalidationMeaningSchema,
+  /** Earlier deadlines the invalidating isolate may never have synced. */
+  history: z.array(tagHistoryMarkSchema).max(MAX_TAG_HISTORY).optional(),
 });
 
 export const invalidateResponseSchema = z.object({
