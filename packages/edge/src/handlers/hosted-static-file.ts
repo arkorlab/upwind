@@ -63,7 +63,10 @@ function underRewriteStatus(response: Response, status: number): Response {
   }
   if (NULL_BODY_STATUSES.has(status)) {
     releaseStream(response.body, 'rewrite status: no body');
-    return new Response(null, { status, headers: response.headers });
+    // Nor the length of one: the file's would frame a body the answer never sends.
+    const headers = new Headers(response.headers);
+    headers.delete('content-length');
+    return new Response(null, { status, headers });
   }
   return new Response(response.body, { status, headers: response.headers });
 }

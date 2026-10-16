@@ -414,7 +414,9 @@ export async function routeHostedDocument(input: HostedDocumentInput): Promise<R
  * A rewrite the middleware gave a status of its own (`rewriteStatus`) is handed on before either:
  * the edge composes nothing under a status of the middleware's, and the Function, told the status
  * beside the middleware's run (`MIDDLEWARE_REWRITE_STATUS_HEADER`), answers under it as Next.js does,
- * without running the middleware again.
+ * without running the middleware again. One onto a shipped file is answered from storage under the
+ * status, as any shipped file a rewrite lands on is (`unprovedRoute`): the Function carries only the
+ * small ones.
  */
 async function serveAfterItsMiddleware(
   input: HostedDocumentInput,
@@ -425,7 +427,15 @@ async function serveAfterItsMiddleware(
     if (preload !== undefined) {
       abandon(input.edge, preload);
     }
-    return input.passthrough(REWRITE_STATUS, middleware);
+    const file = middleware.rewritten
+      ? serveHostedFile(
+          { ...input, configured: input.headerRules?.response },
+          middleware.url,
+          middleware,
+          dispatchedFor(middleware),
+        )
+      : undefined;
+    return file ?? input.passthrough(REWRITE_STATUS, middleware);
   }
   try {
     return await serveHostedDocument(input, middleware, preload);
