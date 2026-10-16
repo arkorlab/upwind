@@ -134,7 +134,7 @@ export const en = {
         'What a deployment’s Function contains: the routing tables, middleware, prerenders and cache used to serve your app.',
       core: 'The vocabulary the others speak — the bundle’s shape, the cache’s terms, and the protocol between an edge and a Function.',
       sdk: 'An application’s own D1, KV and R2, read the same way locally and in a deployment, with nothing to configure.',
-      auth: 'Better Auth with nothing to configure: the config beside your app is mounted for you and handed the project’s own database. In development, while it has no OAuth credentials and no signing key, upwind answers as the provider itself and no request leaves your machine.',
+      auth: 'Better Auth with nothing to configure: the config beside your app is mounted for you and handed the project’s own database. In development, while you have configured neither OAuth credentials nor a signing key, upwind answers as the provider itself and no request leaves your machine.',
       create: '`pnpm create upwind`, and the application it writes.',
     },
     npmLabel: 'npm',
