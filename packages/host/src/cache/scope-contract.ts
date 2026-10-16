@@ -24,6 +24,7 @@ import {
 } from './entities.ts';
 import {
   invalidateRequestSchema as invalidateRequestEntity,
+  responseHeadersSchema,
   responseStatusSchema,
 } from './gateway-contract.ts';
 
@@ -139,7 +140,11 @@ const seedGenerationSchema = z.object({
   policy: toZod(cachePolicySchema),
   /** A prerender's, which its bundle holds to the same statuses as a commit's is held to. */
   status: toZod(responseStatusSchema),
-  headers: z.record(z.string(), z.string()),
+  /**
+   * A prerender's, filtered as a commit's are (`generationResponseHeaders`), and held to the names
+   * and values a commit's are held to, which its bundle holds a prerender's to as well.
+   */
+  headers: toZod(responseHeadersSchema),
   tags: z.array(seedTagSchema),
   outputs: z.array(seedOutputSchema).min(1).max(MAX_SEED_OUTPUTS),
   dependencyCoverage: dependencyCoverageSchema,
