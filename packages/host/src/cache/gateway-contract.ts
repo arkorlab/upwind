@@ -491,7 +491,10 @@ export const dataSetResponseSchema = z.object({
 export type DataSetResponse = z.infer<typeof dataSetResponseSchema>;
 
 /**
- * `POST /data/get` (the key is a body, never a path: it is Next.js's, and may be long).
+ * `POST /data/get` (the key is a body, never a path: it is Next.js's, and may be long), answered
+ * from KV; and `POST /data/current`, the same question answered by the authority itself, with the
+ * value the key holds now — what a read of KV may not have for half a minute in a data center that
+ * read the key before.
  *
  * Held to the bounds a write is: no value is ever stored under a longer key or handler, so a read
  * of one has nothing to find, and is refused as a write of it is. A runtime's cache handler takes a
