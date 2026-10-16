@@ -4,6 +4,7 @@ import {
   foldedHeadersFor,
   headerRulesFor,
   type ProjectManifest,
+  type RequestHeaderRules,
   type RouteEntry,
   type RouteSegment,
 } from '@stayingupwind/core/manifest';
@@ -39,6 +40,7 @@ import { handleSegment, type RouterPart } from './segment.ts';
 
 /** What a hosted request of the client's router brings to answering it. */
 export interface PartInput {
+  readonly headerRules?: RequestHeaderRules | undefined;
   readonly request: Request<unknown, IncomingRequestCfProperties>;
   readonly url: URL;
   readonly edge: EdgeContext;
@@ -175,15 +177,19 @@ interface Answer {
 const NOTHING_RECORDED: Readonly<Record<string, string>> = {};
 
 function configuredHeadersForPart(input: PartInput, answered: Answer): ConfiguredHeaders {
-  const configured = headerRulesFor(
-    input.manifest,
-    input.url,
-    routedHeaders(
-      input.edge,
-      input.manifest.headerRules,
-      answered.kind === 'data' ? dataRequestHeaders(input.request.headers) : input.request.headers,
-    ),
-  );
+  const configured =
+    input.headerRules?.response ??
+    headerRulesFor(
+      input.manifest,
+      input.url,
+      routedHeaders(
+        input.edge,
+        input.manifest.headerRules,
+        answered.kind === 'data'
+          ? dataRequestHeaders(input.request.headers)
+          : input.request.headers,
+      ),
+    );
   if (
     answered.kind === 'data' ||
     (input.manifest.foldedHeaderRules === undefined &&

@@ -2,7 +2,6 @@ import type { AppRuntime, MiddlewareMatcher, ProjectManifest } from '@stayingupw
 import { MIDDLEWARE_DONE_HEADER } from '@stayingupwind/core/paas';
 import {
   BYPASS_COOKIE_NAMES,
-  budgetPatterns,
   classifyRequest,
   DEPLOYMENT_ID_REQUEST_HEADER,
   EDGE_BYPASS_COOKIE,
@@ -19,7 +18,7 @@ import {
   SKEW_PROTECTION_COOKIE,
 } from '@stayingupwind/core/request';
 import { type HostCredentials, withoutHostCredentials } from '@stayingupwind/host/credentials';
-import { type EdgePointer, resolvePolicy } from '@stayingupwind/host/delivery';
+import { resolvePolicy } from '@stayingupwind/host/delivery';
 
 import type { EdgeBindings } from './bindings.ts';
 import { lookAtScope } from './cache/scope-signal.ts';
@@ -42,13 +41,22 @@ import {
 import { serviceUnavailableResponse } from './handlers/responses.ts';
 import { hostedFirst } from './hosted-first.ts';
 import { logWarn } from './observability/logger.ts';
-import { getManifest, getPolicy, type PolicyLookup } from './preview/manifest.ts';
+import { withPatternBudget } from './pattern-budget.ts';
+import {
+  type DeferredRoutingInput,
+  type ManifestRoutingInput,
+  type PointerReads,
+  type PointerRequest,
+  servePointerRequest,
+} from './preview/pointer-request.ts';
 import { EDGE_MODE } from './preview/pointer.ts';
-import { notDeployed, type PreviewState, stateFromPointer } from './preview/state.ts';
-import { heldBehind, type Lookup, MISSING } from './preview/storage.ts';
+import { notDeployed, type PreviewState } from './preview/state.ts';
+import { heldBehind } from './preview/storage.ts';
 import { coloOf, forwardingFor, type IncomingRequest } from './request-context.ts';
-import type { EdgeContext, RequestTimings } from './strategies/context.ts';
+import type { EdgeContext, RequestTimings, StaticFileContext } from './strategies/context.ts';
 import { edgeStrategyRegistry } from './strategies/registry.ts';
+
+export { type PointerReads, type PointerRequest, startReads } from './preview/pointer-request.ts';
 
 /**
  * A request whose project is known, from the reads its pointer names to the answer: what is left to
@@ -95,6 +103,21 @@ export interface RoutingInput {
         state: PreviewState,
       ) => PassthroughObservation | undefined)
     | undefined;
+}
+
+/** Keep hosts that already supply a full state on their synchronous routing path. */
+function afterPolicy<T>(
+  input: ManifestRoutingInput,
+  serve: (ready: RoutingInput) => Promise<T>,
+): Promise<T> {
+  return 'policyReady' in input ? afterDeferredPolicy(input, serve) : serve(input);
+}
+
+async function afterDeferredPolicy<T>(
+  input: DeferredRoutingInput,
+  serve: (ready: RoutingInput) => Promise<T>,
+): Promise<T> {
+  return serve(await input.policyReady());
 }
 
 /**
@@ -407,92 +430,9 @@ function servedAtEdge(classification: RequestClass): boolean {
   }
 }
 
-/** The policy and the manifest a pointer names, read side by side (`startReads`). */
-export interface PointerReads {
-  readonly policyLookup: Promise<PolicyLookup>;
-  readonly manifestLookup: Promise<Lookup<ProjectManifest>>;
-}
-
-/** The policy and the manifest the pointer names, read together; neither rejects. */
-export function startReads(input: {
-  readonly env: EdgeBindings;
-  readonly ctx: ExecutionContext;
-  readonly runtime: EdgeRuntime;
-  readonly pointer: EdgePointer;
-}): PointerReads {
-  const { env, ctx, runtime, pointer } = input;
-  return {
-    policyLookup: getPolicy(env, runtime, pointer.policyId, heldBehind(ctx)),
-    manifestLookup:
-      pointer.manifestId === undefined
-        ? Promise.resolve(MISSING)
-        : getManifest(env, runtime, pointer.manifestId, {
-            namedSince: pointer.updatedAt,
-            keep: heldBehind(ctx),
-          }),
-  };
-}
-
-/** A request the host has read the pointer for and let through, with what it decided of it. */
-export interface PointerRequest {
-  readonly request: IncomingRequest;
-  readonly url: URL;
-  readonly env: EdgeBindings;
-  readonly ctx: ExecutionContext;
-  readonly runtime: EdgeRuntime;
-  readonly host: EdgeHost;
-  readonly pointer: EdgePointer;
-  /** How long the pointer's lookup took (`RequestTimings`). */
-  readonly pointerMs: number;
-  /** What the host says of the project: its responses are for the visitor let through alone. */
-  readonly privateDelivery: boolean;
-  /** The host's CSP collector path for the deployment, where it has one (`EdgeContext`). */
-  readonly cspReportingPath: string | undefined;
-  readonly servedAgain?: RoutingInput['servedAgain'];
-  readonly observePassthrough?: RoutingInput['observePassthrough'];
-}
-
-/**
- * Live traffic: the two KV reads the pointer names, the manifest and the policy, overlap, so a
- * cold isolate pays one round trip for the pair rather than two in series. `reads` are the pair
- * where the host started them already, beside a wait of its own (`startReads`).
- */
-export async function serveFromPointer(
-  input: PointerRequest,
-  reads?: PointerReads,
-): Promise<Response> {
-  const { request, url, env, ctx, runtime, host, pointer } = input;
-  const manifestStarted = runtime.now();
-  const { policyLookup, manifestLookup } = reads ?? startReads(input);
-  const stored = await manifestLookup;
-  const lookup = await policyLookup;
-  // Read side by side, and waited on together: `man` is the wait for both, which the policy's own
-  // can lengthen — a named policy with no document reads the stand-in's pointer and document after.
-  // Reads the host started beside a wait of its own are timed from here: what this request waited
-  // on them.
-  const manifestMs = runtime.now() - manifestStarted;
-  const state = stateFromPointer({
-    runtime,
-    pointer,
-    stored,
-    lookup,
-    pathname: url.pathname,
-    privateDelivery: input.privateDelivery,
-    cspReportingPath: input.cspReportingPath,
-  });
-  const timings = { pointerMs: input.pointerMs, manifestMs, middlewareMs: undefined };
-  return routeRequest({
-    request,
-    url,
-    env,
-    ctx,
-    runtime,
-    host,
-    state,
-    timings,
-    servedAgain: input.servedAgain,
-    observePassthrough: input.observePassthrough,
-  });
+/** Serve the pointer's manifest as soon as the answer's required reads have arrived. */
+export function serveFromPointer(input: PointerRequest, reads?: PointerReads): Promise<Response> {
+  return servePointerRequest(input, routeRequest, reads);
 }
 
 /** Everything a handler may touch, once the manifest is known. */
@@ -500,7 +440,17 @@ function edgeContextFor(
   input: RoutingInput,
   manifest: ProjectManifest,
   forwarding: ForwardingContext,
-): EdgeContext {
+): EdgeContext;
+function edgeContextFor(
+  input: ManifestRoutingInput,
+  manifest: ProjectManifest,
+  forwarding: ForwardingContext,
+): StaticFileContext;
+function edgeContextFor(
+  input: ManifestRoutingInput,
+  manifest: ProjectManifest,
+  forwarding: ForwardingContext,
+): StaticFileContext {
   const { request, env, ctx, runtime, host, state, servedAgain } = input;
   return {
     env,
@@ -537,39 +487,46 @@ function edgeContextFor(
  * Before its middleware ran: a part of the routing the edge does after it hands the request on with
  * what the middleware decided itself (`routeHostedDocument`, `serveAfterMiddleware`).
  */
-export async function routeRequest(input: RoutingInput): Promise<Response> {
-  // Every test of an application's routing pattern this isolate makes is bounded from here on, by
-  // whatever host routes it: the edge runs every application's patterns, against values their
-  // visitors chose. Asked of every request, as it costs one assignment, before any is routed.
-  budgetPatterns();
+export function routeRequest(input: ManifestRoutingInput): Promise<Response> {
+  return withPatternBudget(() => routeWithBudget(input));
+}
+
+async function routeWithBudget(input: ManifestRoutingInput): Promise<Response> {
   try {
     return await routeWithinBudget(input);
   } catch (error) {
     if (error instanceof PatternBudgetExceededError) {
-      return passthroughFor(input, PATTERN_BUDGET);
+      return afterPolicy(input, (ready) => passthroughFor(ready, PATTERN_BUDGET));
     }
     throw error;
   }
 }
 
-async function routeWithinBudget(input: RoutingInput): Promise<Response> {
+function routeWithinBudget(input: ManifestRoutingInput): Promise<Response> {
   const { request, url, state } = input;
   const forwarding = forwardingFor(request, input.host.sharedDomain, url.hostname);
-  const passthrough = (reason: string): Promise<Response> => passthroughFor(input, reason);
+  const passthrough = (reason: string, middleware?: MiddlewareOutcome): Promise<Response> =>
+    afterPolicy(input, (ready) => passthroughFor(ready, reason, middleware));
   // A probe names the Worker it is for, and is that Worker's to answer whatever the path would be
   // served from otherwise — a catch-all's shell, say, answered here and resumed in a Worker the
   // probe did not name. Only a signed validation sets this.
   if (state.function !== undefined) {
     return passthrough(FUNCTION_PROBE);
   }
-  lookAtScopeOf(input);
   const hosted = hostedFirst({
     request,
     url,
     app: state.app,
     manifest: state.manifest,
     edge: (manifest) => edgeContextFor(input, manifest, forwarding),
-    passthrough: (reason, middleware) => passthroughFor(input, reason, middleware),
+    policyReady: (manifest) => {
+      return 'policyReady' in input
+        ? afterDeferredPolicy(input, (ready) =>
+            Promise.resolve(edgeContextFor(ready, manifest, forwarding)),
+          )
+        : edgeContextFor(input, manifest, forwarding);
+    },
+    passthrough,
   });
   if (hosted !== undefined) {
     return hosted;
@@ -579,8 +536,21 @@ async function routeWithinBudget(input: RoutingInput): Promise<Response> {
   // sending it there would arrive straight back here and go round again. The same whichever
   // hostname it came in on.
   if (notDeployed(state)) {
-    return serviceUnavailableResponse('not-deployed');
+    return Promise.resolve(serviceUnavailableResponse('not-deployed'));
   }
+  return afterPolicy(input, (ready) => routeWithPolicy(ready, forwarding));
+}
+
+/** The request did not name a shipped file: its policy settings now govern its answer. */
+async function routeWithPolicy(
+  input: RoutingInput,
+  forwarding: ForwardingContext,
+): Promise<Response> {
+  const { request, url, state } = input;
+  const passthrough = (reason: string): Promise<Response> => passthroughFor(input, reason);
+  // Files and optimized images read no generation records, so their storage reads never compete
+  // with a scope poll that only document deliveries need.
+  lookAtScopeOf(input);
   if (state.mode !== EDGE_MODE || state.manifest === undefined) {
     return passthrough(state.passthroughReason);
   }

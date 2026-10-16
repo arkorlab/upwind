@@ -18,7 +18,7 @@ import { logWarn } from '../observability/logger.ts';
 import type { EdgeMetric } from '../observability/metrics.ts';
 import { asksBlobWorker, type BlobRange, readShippedFile } from '../preview/blobs.ts';
 import { validatorMatches } from '../strategies/asset-upstream.ts';
-import type { EdgeContext } from '../strategies/context.ts';
+import type { StaticFileContext } from '../strategies/context.ts';
 import { setConfigured } from './configured-headers.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
 import { observeMetric } from './observer.ts';
@@ -45,7 +45,7 @@ export interface StaticFileInput {
   readonly request: Request;
   readonly pathname: string;
   readonly file: StaticFileEntry;
-  readonly edge: EdgeContext;
+  readonly edge: StaticFileContext;
   /** What the application's middleware set, when the edge ran it for this file and it let the request on. */
   readonly middleware?: Extract<MiddlewareResult, { kind: 'continue' }> | undefined;
   /** The dispatches the middleware took before the file was served, which its metric counts. */
@@ -427,7 +427,7 @@ async function readBucket(
  * way: the cache that keeps a file is the blob Worker's.
  */
 async function readFile(
-  edge: EdgeContext,
+  edge: StaticFileContext,
   file: StaticFileEntry,
   range: BlobRange | undefined,
 ): Promise<FileRead> {
@@ -450,7 +450,7 @@ export interface StoredStream {
 
 /** A shipped file's bytes, for something the edge derives from the file rather than serves as it is. */
 export async function readStaticFileStream(
-  edge: EdgeContext,
+  edge: StaticFileContext,
   file: StaticFileEntry,
 ): Promise<StoredStream> {
   const read = await readFile(edge, file, undefined);

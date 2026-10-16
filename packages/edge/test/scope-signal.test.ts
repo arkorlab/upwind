@@ -532,6 +532,97 @@ describe('where a scope stands, as the edge comes to know it', () => {
     expect(later.memory.scopes.get(scopeId)?.revision).toBe(5);
   });
 
+  it('shares a question across request runtimes that serve the same isolate memory', async () => {
+    // The Cache API has no compare-and-set: every concurrent claim may find nothing. The
+    // isolate's own single flight must hold even where the data center's claim cannot help.
+    const copies = {
+      match: () => Promise.resolve(),
+      put: () => Promise.resolve(),
+    };
+    vi.spyOn(caches, 'open').mockResolvedValue(copies as unknown as Cache);
+    const scopeId = scopeOfItsOwn();
+    const gate = Promise.withResolvers<true>();
+    const answered = authority(() => ({ ...UNMOVED, revision: 5 }), gate.promise);
+    const host = hostOf(`signals-${crypto.randomUUID()}`, answered.source);
+    const isolate = runtimeOf();
+    const behind: Promise<unknown>[] = [];
+
+    try {
+      await Promise.all(
+        Array.from({ length: 8 }, () => look({ ...isolate }, host, scopeId, behind)),
+      );
+      await vi.waitFor(() => {
+        expect(answered.asked()).toBe(1);
+      });
+
+      // Every request returned while the authority still had no answer, whose I/O remains
+      // owned by the request that asked and is kept alive by that request's waitUntil.
+      expect(isolate.memory.scopes.get(scopeId)).toBeUndefined();
+      expect(behind).toHaveLength(1);
+    } finally {
+      gate.resolve(true);
+      await Promise.all(behind);
+    }
+
+    expect(isolate.memory.scopes.get(scopeId)?.revision).toBe(5);
+  });
+
+  it('keeps questions for different scopes or authorities separate in shared memory', async () => {
+    const copies = {
+      match: () => Promise.resolve(),
+      put: () => Promise.resolve(),
+    };
+    vi.spyOn(caches, 'open').mockResolvedValue(copies as unknown as Cache);
+    const scopeId = scopeOfItsOwn();
+    const gate = Promise.withResolvers<true>();
+    const first = authority(() => UNMOVED, gate.promise);
+    const other = authority(() => UNMOVED, gate.promise);
+    const isolate = runtimeOf();
+    const cache = `signals-${crypto.randomUUID()}`;
+    const behind: Promise<unknown>[] = [];
+
+    try {
+      await Promise.all([
+        look({ ...isolate }, hostOf(cache, first.source), scopeId, behind),
+        look({ ...isolate }, hostOf(cache, first.source), scopeOfItsOwn(), behind),
+        look({ ...isolate }, hostOf(cache, other.source), scopeId, behind),
+      ]);
+      await vi.waitFor(() => {
+        expect(first.asked()).toBe(2);
+        expect(other.asked()).toBe(1);
+      });
+    } finally {
+      gate.resolve(true);
+      await Promise.all(behind);
+    }
+  });
+
+  it('retries a failed question from the next request runtime sharing its memory', async () => {
+    const scopeId = scopeOfItsOwn();
+    const cache = `signals-${crypto.randomUUID()}`;
+    const read = vi
+      .fn<ScopeSignalSource['scopeSignals']>()
+      .mockRejectedValueOnce(new Error('authority unavailable'))
+      .mockResolvedValue({ ...UNMOVED, revision: 5 });
+    const source: ScopeSignalSource = {
+      scopeSignals: read,
+      cacheTagOf: (id) => `test-signal-${id}`,
+    };
+    const host = hostOf(cache, source);
+    const isolate = runtimeOf();
+    const failed: Promise<unknown>[] = [];
+
+    await look({ ...isolate }, host, scopeId, failed);
+    await Promise.all(failed);
+    await purge(cache, scopeId);
+    const retried: Promise<unknown>[] = [];
+    await look({ ...isolate }, host, scopeId, retried);
+    await Promise.all(retried);
+
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(isolate.memory.scopes.get(scopeId)?.revision).toBe(5);
+  });
+
   it('is asked again once a question claimed has gone unanswered past its claim', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(1_790_000_000_000);

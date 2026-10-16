@@ -4,6 +4,7 @@ import {
   isReserved,
   matchDynamicRoute,
   type ProjectManifest,
+  type RequestHeaderRules,
   type RouteEntry,
 } from '@stayingupwind/core/manifest';
 import { PatternBudgetExceededError, type RequestClass } from '@stayingupwind/core/request';
@@ -40,6 +41,8 @@ import {
 import { PATTERN_BUDGET, type PassthroughWait, passthroughReason } from './passthrough.ts';
 
 export interface HostedDocumentInput {
+  /** Header rules already selected on the original request, before middleware could change it. */
+  readonly headerRules?: RequestHeaderRules | undefined;
   readonly request: Request<unknown, IncomingRequestCfProperties>;
   readonly url: URL;
   readonly edge: EdgeContext;
@@ -359,7 +362,7 @@ export async function routeHostedDocument(input: HostedDocumentInput): Promise<R
   if (input.classification.kind === PAGES_DATA) {
     return input.passthrough(PAGES_DATA);
   }
-  judgeHeaderRulesAhead(edge, manifest, url, request.headers);
+  const headerRules = judgeHeaderRulesAhead(edge, manifest, url, request.headers);
   const seen = rewriteSeen(input);
   // The shell the request is served — or the record it is the current generation of — is read
   // while the middleware runs, so the two costs overlap: the middleware most often leaves the route
@@ -395,7 +398,7 @@ export async function routeHostedDocument(input: HostedDocumentInput): Promise<R
   }
   // What the document reports it waited on includes the middleware from here on.
   const timed = { ...edge, timings: { ...edge.timings, middlewareMs } };
-  return serveAfterItsMiddleware({ ...input, edge: timed }, middleware, preload);
+  return serveAfterItsMiddleware({ ...input, edge: timed, headerRules }, middleware, preload);
 }
 
 /**
@@ -433,7 +436,12 @@ function unprovedRoute(
   // A rewrite that lands on a shipped file — a download behind a friendlier path — is served
   // from storage as that file, whatever its size; the Worker carries only the small ones.
   if (middleware.kind === 'continue' && middleware.rewritten) {
-    const file = serveHostedFile(input, middleware.url, middleware, dispatchedFor(middleware));
+    const file = serveHostedFile(
+      { ...input, configured: input.headerRules?.response },
+      middleware.url,
+      middleware,
+      dispatchedFor(middleware),
+    );
     if (file !== undefined) {
       return file;
     }
@@ -463,6 +471,7 @@ function composeHostedDocument(
     return composePagesData(input, entry);
   }
   const document = {
+    headerRules: input.headerRules,
     request: input.request,
     entry,
     manifest: input.manifest,

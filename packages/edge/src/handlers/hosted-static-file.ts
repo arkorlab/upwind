@@ -1,12 +1,17 @@
 import {
+  type ConfiguredHeaders,
   type ProjectManifest,
   staticFileBuildWithoutDpl,
   type StaticFileEntry,
   staticFileKey,
 } from '@stayingupwind/core/manifest';
 
-import type { EdgeContext } from '../strategies/context.ts';
-import { type HostedGateInput, serveAfterMiddleware, type TimedContinue } from './hosted-gate.ts';
+import type { StaticFileContext } from '../strategies/context.ts';
+import {
+  type DeferredHostedGateInput,
+  serveAfterMiddleware,
+  type TimedContinue,
+} from './hosted-gate.ts';
 import { headerRulesAsRouted } from './middleware.ts';
 import {
   abandonFileRead,
@@ -15,7 +20,7 @@ import {
   startFileRead,
 } from './static-file.ts';
 
-export interface HostedStaticFileInput extends HostedGateInput {
+export interface HostedStaticFileInput extends DeferredHostedGateInput {
   /** The file as classified: the build of it the request's own `dpl` names. */
   readonly file: StaticFileEntry;
 }
@@ -24,14 +29,17 @@ interface HostedFileInput {
   readonly request: Request;
   /** The original URL, before the middleware rewrites it. */
   readonly url: URL;
-  readonly edge: EdgeContext;
+  readonly edge: StaticFileContext;
   readonly manifest: ProjectManifest;
+  /** Rules already selected for the original request before its middleware ran. */
+  readonly configured?: ConfiguredHeaders | undefined;
 }
 
 /** A file to answer with, under the pathname it is shipped under. */
 interface ServedFile {
   readonly pathname: string;
   readonly file: StaticFileEntry;
+  readonly configured?: ConfiguredHeaders | undefined;
   /** Its read, started beside the middleware, when this is the file it was started for. */
   readonly early?: EarlyFileRead | undefined;
   /** The read started for the file a middleware rewrite moved the request from, let go of. */
@@ -67,7 +75,10 @@ function serveFile(
       // Judged on the request as it reached the edge, less the host's credentials, as the document
       // path judges them: the router runs these rules before the middleware, so neither a path it
       // rewrote nor a header it took away — or added — is what Next.js selected them with.
-      configured: headerRulesAsRouted(input.edge, input.manifest, input.url, input.request.headers),
+      configured:
+        served.configured ??
+        input.configured ??
+        headerRulesAsRouted(input.edge, input.manifest, input.url, input.request.headers),
     },
     served.early,
     served.replaced,
@@ -116,29 +127,36 @@ export function serveHostedFile(
  */
 export function routeHostedStaticFile(input: HostedStaticFileInput): Promise<Response> {
   const { url, manifest } = input;
+  let servedInput: HostedFileInput = input;
   let early: EarlyFileRead | undefined;
-  const classified = (): ServedFile => ({ pathname: url.pathname, file: input.file, early });
+  function classified(configured: ConfiguredHeaders): ServedFile {
+    return { pathname: url.pathname, file: input.file, early, configured };
+  }
   const letGo = (): void => {
     abandonFileRead(early);
     early = undefined;
   };
   return serveAfterMiddleware(input, {
+    ready: (edge) => {
+      servedInput = { ...input, edge };
+    },
     start: () => {
       early = startFileRead({
         request: input.request,
         pathname: url.pathname,
         file: input.file,
-        edge: input.edge,
+        edge: servedInput.edge,
       });
     },
     abandon: letGo,
-    serve: (middleware, dispatches) => serveFile(input, classified(), middleware, dispatches),
-    rewritten: (middleware, dispatches) => {
+    serve: (middleware, dispatches, configured) =>
+      serveFile(servedInput, classified(configured), middleware, dispatches),
+    rewritten: (middleware, dispatches, configured) => {
       const kept =
         middleware.url.pathname === url.pathname ||
         staticFileKey(manifest, middleware.url.pathname) === staticFileKey(manifest, url.pathname);
       if (kept) {
-        return serveFile(input, classified(), middleware, dispatches);
+        return serveFile(servedInput, classified(configured), middleware, dispatches);
       }
       // The read of the file asked for is let go, and counted among the requests of the file
       // served instead. A rewrite to a path the Worker answers is a passthrough, which counts the
@@ -148,7 +166,7 @@ export function routeHostedStaticFile(input: HostedStaticFileInput): Promise<Res
       const target = shippedFileAt(manifest, middleware.url);
       return target === undefined
         ? undefined
-        : serveFile(input, { ...target, replaced }, middleware, dispatches);
+        : serveFile(servedInput, { ...target, replaced, configured }, middleware, dispatches);
     },
   });
 }

@@ -3,6 +3,8 @@ import {
   headerRulesFor,
   type MiddlewareMatcher,
   type ProjectManifest,
+  type RequestHeaderRules,
+  requestHeaderRulesFor,
 } from '@stayingupwind/core/manifest';
 import {
   MIDDLEWARE_ONLY_HEADER,
@@ -160,7 +162,7 @@ function rulesReadCredentials(
  * writes one on `rsc` into every build with a deployment id.
  */
 export function routedHeaders(
-  edge: EdgeContext,
+  edge: Pick<EdgeContext, 'host'>,
   rules: readonly Conditioned[] | undefined,
   headers: Headers,
 ): Headers {
@@ -175,7 +177,7 @@ export function routedHeaders(
  * middleware is handed (`runMiddleware`, `routedHeaders`).
  */
 export function middlewareMatches(
-  edge: EdgeContext,
+  edge: Pick<EdgeContext, 'host' | 'app'>,
   manifest: ProjectManifest,
   url: URL,
   headers: Headers,
@@ -195,7 +197,7 @@ export function middlewareMatches(
  * judges them: on the request as it came, without the host's credentials (`routedHeaders`).
  */
 export function headerRulesAsRouted(
-  edge: EdgeContext,
+  edge: Pick<EdgeContext, 'host'>,
   manifest: ProjectManifest,
   url: URL,
   headers: Headers,
@@ -210,16 +212,16 @@ export function headerRulesAsRouted(
  * on after the middleware has run goes as the middleware left it: the Worker, told the middleware
  * ran, would judge them on headers it may have changed. So one whose pattern costs more against
  * this request than the edge runs (`budgetPatterns`) throws here instead, while the request can
- * still go to the Worker whole, middleware and all. What the rules come to is worked out again
- * where it is used, on the same headers; this asks only that it can be.
+ * still go to the Worker whole, middleware and all. Keep the result for delivery: testing again
+ * after the middleware would spend the request's routing allowance twice, and could fail then.
  */
 export function judgeHeaderRulesAhead(
-  edge: EdgeContext,
+  edge: Pick<EdgeContext, 'host'>,
   manifest: ProjectManifest,
   url: URL,
   headers: Headers,
-): void {
-  headerRulesAsRouted(edge, manifest, url, headers);
+): RequestHeaderRules {
+  return requestHeaderRulesFor(manifest, url, routedHeaders(edge, manifest.headerRules, headers));
 }
 
 /**

@@ -75,9 +75,10 @@ function refused(
   input: HostedImageInput,
   middleware?: MiddlewareOutcome & Partial<MiddlewareTiming>,
   dispatches = 0,
+  configured = rulesForRefusal(input),
 ): Promise<Response> {
   const continued = middleware?.kind === 'continue' ? middleware : undefined;
-  const answer = answering(input, continued, dispatches, rulesForRefusal(input));
+  const answer = answering(input, continued, dispatches, configured);
   const error = { status: HTTP_BAD_REQUEST, message: NOT_ALLOWED, requests: 0 };
   return Promise.resolve(refuseImage(answer, error, PATTERN_BUDGET));
 }
@@ -106,12 +107,9 @@ export async function routeHostedImage(input: HostedImageInput): Promise<Respons
 function optimized(
   input: HostedImageInput,
   target: URL,
-  middleware: TimedContinue | undefined,
-  dispatches: number,
+  answer: ImageAnswerInput,
 ): Promise<Response> {
-  const { url, manifest, config } = input;
-  const configured = headerRulesAsRouted(input.edge, manifest, url, input.request.headers);
-  const answer = answering(input, middleware, dispatches, configured);
+  const { manifest, config } = input;
   const parsed = parseImageRequest(
     target.searchParams,
     answer.request.headers.get('accept'),
@@ -127,16 +125,18 @@ function optimized(
 function routeWithinBudget(input: HostedImageInput): Promise<Response> {
   const { request, manifest } = input;
   return serveAfterMiddleware(input, {
-    overBudget: (middleware, dispatches) => refused(input, middleware, dispatches),
-    serve: (middleware, dispatches) => optimized(input, input.url, middleware, dispatches),
+    overBudget: (middleware, dispatches, configured) =>
+      refused(input, middleware, dispatches, configured),
+    serve: (middleware, dispatches, configured) =>
+      optimized(input, input.url, answering(input, middleware, dispatches, configured)),
     // A rewrite that stays on the optimizer's path — another source, width or quality — is the
     // optimizer's to answer, as Next.js's router hands it the rewritten parameters: no Worker of
     // the application has one. A rewrite anywhere else is the Worker's.
-    rewritten: (middleware, dispatches) => {
+    rewritten: (middleware, dispatches, configured) => {
       const still = classifyImageRequest({ method: request.method, url: middleware.url, manifest });
       return still === undefined
         ? undefined
-        : optimized(input, middleware.url, middleware, dispatches);
+        : optimized(input, middleware.url, answering(input, middleware, dispatches, configured));
     },
   });
 }

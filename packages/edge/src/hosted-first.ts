@@ -5,7 +5,7 @@ import { classifyStaticFile } from '@stayingupwind/core/request';
 import { routeHostedImage } from './handlers/hosted-image.ts';
 import { routeHostedStaticFile } from './handlers/hosted-static-file.ts';
 import type { MiddlewareOutcome } from './handlers/middleware.ts';
-import type { EdgeContext } from './strategies/context.ts';
+import type { EdgeContext, StaticFileContext } from './strategies/context.ts';
 
 /**
  * What a hosted application is answered before the pointer's mode is looked at.
@@ -23,7 +23,9 @@ export interface HostedFirstInput {
   readonly app: AppRuntime | undefined;
   readonly manifest: ProjectManifest | undefined;
   /** The context a handler runs under, built only when one is going to. */
-  readonly edge: (manifest: ProjectManifest) => EdgeContext;
+  readonly edge: (manifest: ProjectManifest) => StaticFileContext;
+  /** Read the settings only for an image or matching middleware. */
+  readonly policyReady: (manifest: ProjectManifest) => EdgeContext | Promise<EdgeContext>;
   readonly passthrough: (reason: string, middleware?: MiddlewareOutcome) => Promise<Response>;
 }
 
@@ -45,6 +47,7 @@ export function hostedFirst(input: HostedFirstInput): Promise<Response> | undefi
       request,
       url,
       edge: input.edge(manifest),
+      policyReady: () => input.policyReady(manifest),
       manifest,
       file: file.file,
       passthrough: input.passthrough,
@@ -52,14 +55,25 @@ export function hostedFirst(input: HostedFirstInput): Promise<Response> | undefi
   }
   const image = classifyImageRequest({ method: request.method, url, manifest });
   if (image !== undefined) {
-    return routeHostedImage({
-      request,
-      url,
-      edge: input.edge(manifest),
-      manifest,
-      config: image.images,
-      passthrough: input.passthrough,
-    });
+    const serve = (edge: EdgeContext): Promise<Response> => {
+      return routeHostedImage({
+        request,
+        url,
+        edge,
+        manifest,
+        config: image.images,
+        passthrough: input.passthrough,
+      });
+    };
+    const edge = input.policyReady(manifest);
+    return edge instanceof Promise ? imageAfterPolicy(edge, serve) : serve(edge);
   }
   return undefined;
+}
+
+async function imageAfterPolicy(
+  edge: Promise<EdgeContext>,
+  serve: (ready: EdgeContext) => Promise<Response>,
+): Promise<Response> {
+  return serve(await edge);
 }

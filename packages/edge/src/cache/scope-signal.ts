@@ -104,8 +104,14 @@ interface Asking {
   readonly mark: symbol;
 }
 
-/** The questions each isolate has out, by scope: one at a time per scope. */
-const asking = new WeakMap<EdgeRuntime, Map<string, Asking>>();
+/**
+ * The questions each isolate has out, by authority and scope. A runtime may be made for every
+ * request; the memory it serves from is what lasts across requests in the same isolate.
+ */
+const asking = new WeakMap<
+  EdgeRuntime['memory'],
+  WeakMap<ScopeSignalSource, Map<string, Asking>>
+>();
 
 function errorDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -381,13 +387,16 @@ async function ask(
  * (`claimQuestion`), until its claim lapses. Never rejects.
  */
 function askAuthority(look: ScopeLook, source: ScopeSignalSource, scopeId: string): Promise<void> {
-  const { claimedElsewhere } = look.runtime.memory;
+  const { memory } = look.runtime;
+  const { claimedElsewhere } = memory;
   const lapses = claimedElsewhere.get(scopeId);
   if (lapses !== undefined && Date.now() < lapses) {
     return Promise.resolve();
   }
-  const out = asking.get(look.runtime) ?? new Map<string, Asking>();
-  asking.set(look.runtime, out);
+  const bySource = asking.get(memory) ?? new WeakMap<ScopeSignalSource, Map<string, Asking>>();
+  asking.set(memory, bySource);
+  const out = bySource.get(source) ?? new Map<string, Asking>();
+  bySource.set(source, out);
   const joined = out.get(scopeId);
   const since = performance.now();
   if (joined !== undefined && since - joined.since < ASK_LIFETIME_MS) {

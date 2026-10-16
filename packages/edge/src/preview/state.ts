@@ -72,7 +72,7 @@ export interface PreviewState {
  * under it would be held, copied into the data center and regenerated under settings nobody chose.
  * The build's shell answers instead.
  */
-function policyOf(lookup: PolicyLookup, pointer: EdgePointer): DeliveryPolicy {
+export function policyFromPointer(lookup: PolicyLookup, pointer: EdgePointer): DeliveryPolicy {
   if (lookup.kind === 'found') {
     if (lookup.source === 'exact') {
       return lookup.policy;
@@ -111,7 +111,17 @@ export interface PointerStateInput {
 }
 
 export function stateFromPointer(input: PointerStateInput): PreviewState {
-  const { runtime, pointer, stored, lookup, pathname, privateDelivery } = input;
+  return {
+    ...manifestStateFromPointer(input),
+    policy: policyFromPointer(input.lookup, input.pointer),
+  };
+}
+
+/** What the manifest and pointer say without waiting on the separate policy read. */
+export function manifestStateFromPointer(
+  input: Omit<PointerStateInput, 'lookup'>,
+): Omit<PreviewState, 'policy'> {
+  const { runtime, pointer, stored, pathname, privateDelivery } = input;
   const manifest = usableManifest(pointer, stored.kind === 'found' ? stored.value : undefined);
   const suspect = isSuspect(runtime, pointer, pathname);
   return {
@@ -120,7 +130,6 @@ export function stateFromPointer(input: PointerStateInput): PreviewState {
     manifestId: pointer.manifestId ?? '',
     manifest,
     app: pointer.app,
-    policy: policyOf(lookup, pointer),
     cspNonce: pointer.cspNonce ?? false,
     cspNonceMode: pointer.cspNonce === true ? (pointer.cspNonceMode ?? 'enforce') : 'enforce',
     cspStrictDynamic: pointer.cspNonce === true && pointer.cspStrictDynamic === true,

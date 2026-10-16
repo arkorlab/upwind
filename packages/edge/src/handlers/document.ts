@@ -4,6 +4,7 @@ import {
   documentHeaderRulesFor,
   foldedHeadersFor,
   type ProjectManifest,
+  type RequestHeaderRules,
   type RouteEntry,
 } from '@stayingupwind/core/manifest';
 import { MIDDLEWARE_SET_COOKIE_HEADER, type MiddlewareResult } from '@stayingupwind/core/paas';
@@ -89,6 +90,8 @@ interface ServedGeneration {
 }
 
 export interface DocumentInput {
+  /** Header rules selected before middleware ran; absent where no ahead evaluation was needed. */
+  readonly headerRules?: RequestHeaderRules | undefined;
   /** The request as it reached the Worker, `cf` metadata included. */
   readonly request: Request<unknown, IncomingRequestCfProperties>;
   readonly entry: RouteEntry;
@@ -637,8 +640,13 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
   // Middleware replaces this policy when it supplies one; no later decoration changes sandbox
   // flags. Decide before dispatching a resume, which cannot serve a whole document.
   const recorded = recordedHeaders(input);
-  const routed = routedHeaders(input.edge, manifest.headerRules, input.request.headers);
-  const rules = documentHeaderRulesFor(manifest, new URL(input.request.url), routed);
+  const rules =
+    input.headerRules?.document ??
+    documentHeaderRulesFor(
+      manifest,
+      new URL(input.request.url),
+      routedHeaders(input.edge, manifest.headerRules, input.request.headers),
+    );
   const headers = replayedDocumentHeaders(recorded, rules);
   const delegated = delegateSandboxedDocument(input, complete, headers);
   if (delegated !== undefined) {

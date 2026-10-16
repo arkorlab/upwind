@@ -20,8 +20,8 @@ export interface RequestTimings {
   readonly pointerMs: number | undefined;
   /**
    * The manifest's lookup and the policy's, read side by side and waited on together
-   * (`serveFromPointer`): the policy's can lengthen it — a named policy with no document reads the
-   * stand-in's pointer and document after — so it is the wait for both, not the manifest's alone.
+   * (`serveFromPointer`) where settings are needed: the policy's can lengthen it. A shipped file
+   * with no matching middleware waits only for the manifest.
    */
   readonly manifestMs: number | undefined;
   readonly middlewareMs: number | undefined;
@@ -89,3 +89,11 @@ export interface EdgeContext {
    */
   readonly whenGone?: (() => Promise<Response | undefined>) | undefined;
 }
+
+/**
+ * A shipped file needs the policy's selected name for its account, but none of its settings.
+ * Its middleware, if any, receives a full context only after that policy has been read.
+ */
+export type StaticFileContext = Omit<EdgeContext, 'policy'> & {
+  readonly policy: Pick<DeliveryPolicy, 'id'>;
+};

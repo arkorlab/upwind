@@ -29,6 +29,7 @@
     "./memory/caches": "./src/memory/caches.ts",
     "./observability/logger": "./src/observability/logger.ts",
     "./observability/metrics": "./src/observability/metrics.ts",
+    "./pattern-budget": "./src/pattern-budget.ts",
     "./preview/manifest": "./src/preview/manifest.ts",
     "./preview/pointer": "./src/preview/pointer.ts",
     "./preview/state": "./src/preview/state.ts",

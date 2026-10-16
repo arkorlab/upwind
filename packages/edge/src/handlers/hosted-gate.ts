@@ -1,12 +1,16 @@
-import { isReserved, type ProjectManifest } from '@stayingupwind/core/manifest';
+import {
+  type ConfiguredHeaders,
+  isReserved,
+  type ProjectManifest,
+} from '@stayingupwind/core/manifest';
 import type { MiddlewareResult } from '@stayingupwind/core/paas';
 import { PatternBudgetExceededError } from '@stayingupwind/core/request';
 
-import type { EdgeContext } from '../strategies/context.ts';
+import type { EdgeContext, StaticFileContext } from '../strategies/context.ts';
 import {
   decideMiddleware,
   followExternalRewrite,
-  judgeHeaderRulesAhead,
+  headerRulesAsRouted,
   type MiddlewareDecision,
   middlewareFailedReason,
   middlewareMatches,
@@ -19,10 +23,10 @@ import { PATTERN_BUDGET } from './passthrough.ts';
 
 export type MiddlewareContinue = Extract<MiddlewareResult, { kind: 'continue' }>;
 
-export interface HostedGateInput {
+export interface HostedGateInput<Context extends StaticFileContext = EdgeContext> {
   readonly request: Request;
   readonly url: URL;
-  readonly edge: EdgeContext;
+  readonly edge: Context;
   readonly manifest: ProjectManifest;
   /**
    * Proxy the request to the application's Worker, with what the middleware decided if it ran —
@@ -34,16 +38,28 @@ export interface HostedGateInput {
   ) => Promise<Response>;
 }
 
+/** A shipped file whose policy has not had to be waited on yet. */
+export interface DeferredHostedGateInput extends HostedGateInput<StaticFileContext> {
+  /** The full policy is needed only when matching middleware is about to run. */
+  readonly policyReady: () => EdgeContext | Promise<EdgeContext>;
+}
+
 /** What the middleware decided where it let the request on, and how long deciding it took. */
 export type TimedContinue = MiddlewareContinue & Partial<MiddlewareTiming>;
 
 export interface HostedGate {
+  /** The complete context once a matching middleware required the selected policy. */
+  readonly ready?: (edge: EdgeContext) => void;
   /**
    * Answer the request as it stands, with what the middleware set when it ran and how long it took
    * (`middlewareMs`), and the dispatches it took to decide (`decideMiddleware`: none, one, or two
    * after a retry): what the answer's metric reports of the middleware.
    */
-  readonly serve: (middleware: TimedContinue | undefined, dispatches: number) => Promise<Response>;
+  readonly serve: (
+    middleware: TimedContinue | undefined,
+    dispatches: number,
+    configured: ConfiguredHeaders,
+  ) => Promise<Response>;
   /**
    * Answer a request the middleware rewrote elsewhere, when the edge can; `undefined` hands it to
    * the Worker. Absent, every rewrite is the Worker's.
@@ -51,6 +67,7 @@ export interface HostedGate {
   readonly rewritten?: (
     middleware: TimedContinue,
     dispatches: number,
+    configured: ConfiguredHeaders,
   ) => Promise<Response> | undefined;
   /**
    * Start what the answer will need while the middleware decides whether there is to be one — a
@@ -67,8 +84,9 @@ export interface HostedGate {
    * refuses instead, since no Worker of the application optimizes one.
    */
   readonly overBudget?: (
-    middleware: MiddlewareOutcome & Partial<MiddlewareTiming>,
+    middleware: (MiddlewareOutcome & Partial<MiddlewareTiming>) | undefined,
     dispatches: number,
+    configured: ConfiguredHeaders,
   ) => Promise<Response>;
 }
 
@@ -87,7 +105,7 @@ export interface HostedGate {
  * acted on here.
  */
 export async function serveAfterMiddleware(
-  input: HostedGateInput,
+  input: HostedGateInput | DeferredHostedGateInput,
   gate: HostedGate,
 ): Promise<Response> {
   const { request, url, edge, manifest } = input;
@@ -98,14 +116,28 @@ export async function serveAfterMiddleware(
   }
   // Ahead of the middleware, and of whatever serving the file costs — a read of storage, a source
   // fetched and transformed — with the middleware or without it.
-  judgeHeaderRulesAhead(edge, manifest, url, request.headers);
-  if (edge.validated || !middlewareMatches(edge, manifest, url, request.headers)) {
-    return gate.serve(undefined, 0);
+  const configured = headerRulesAsRouted(edge, manifest, url, request.headers);
+  let matches: boolean;
+  try {
+    matches = !edge.validated && middlewareMatches(edge, manifest, url, request.headers);
+  } catch (error) {
+    if (!(error instanceof PatternBudgetExceededError)) {
+      throw error;
+    }
+    // The rules were already selected, but the matcher spent what remained. An image refusal
+    // keeps those headers without asking the same rules to fit the allowance a second time.
+    return gate.overBudget?.(undefined, 0, configured) ?? input.passthrough(PATTERN_BUDGET);
   }
+  if (!matches) {
+    return gate.serve(undefined, 0, configured);
+  }
+  const ready = 'policyReady' in input ? await input.policyReady() : input.edge;
+  const resolved = { ...input, edge: ready };
+  gate.ready?.(ready);
   gate.start?.();
   let decided: MiddlewareDecision;
   try {
-    decided = await decideMiddleware(edge, request);
+    decided = await decideMiddleware(ready, request);
   } catch (error) {
     // An answer of the middleware's that cannot be read — a rewrite to no URL at all — answers
     // nothing here: what was started for the answer is let go, as wherever no answer takes it.
@@ -114,7 +146,7 @@ export async function serveAfterMiddleware(
   }
   const { outcome: middleware, dispatches } = decided;
   try {
-    return await actOnMiddleware(input, gate, { middleware, dispatches });
+    return await actOnMiddleware(resolved, gate, { middleware, dispatches, configured });
   } catch (error) {
     if (!(error instanceof PatternBudgetExceededError)) {
       throw error;
@@ -124,7 +156,8 @@ export async function serveAfterMiddleware(
     // does not run again — or refused, where the Function cannot answer either.
     gate.abandon?.();
     return (
-      gate.overBudget?.(middleware, dispatches) ?? input.passthrough(PATTERN_BUDGET, middleware)
+      gate.overBudget?.(middleware, dispatches, configured) ??
+      input.passthrough(PATTERN_BUDGET, middleware)
     );
   }
 }
@@ -136,10 +169,11 @@ async function actOnMiddleware(
   decided: {
     readonly middleware: MiddlewareOutcome & Partial<MiddlewareTiming>;
     readonly dispatches: number;
+    readonly configured: ConfiguredHeaders;
   },
 ): Promise<Response> {
   const { edge, request } = input;
-  const { middleware, dispatches } = decided;
+  const { middleware, dispatches, configured } = decided;
   // What the middleware took, for an answer it gives itself.
   const itself = {
     pathname: input.url.pathname,
@@ -160,13 +194,13 @@ async function actOnMiddleware(
       return followExternalRewrite(edge, request, middleware, itself);
     }
     case 'skipped': {
-      return gate.serve(undefined, dispatches);
+      return gate.serve(undefined, dispatches, configured);
     }
     case 'continue': {
       if (!middleware.rewritten) {
-        return gate.serve(middleware, dispatches);
+        return gate.serve(middleware, dispatches, configured);
       }
-      const answered = gate.rewritten?.(middleware, dispatches);
+      const answered = gate.rewritten?.(middleware, dispatches, configured);
       if (answered !== undefined) {
         return answered;
       }

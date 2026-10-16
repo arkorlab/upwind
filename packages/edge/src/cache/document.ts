@@ -316,6 +316,7 @@ export async function serveCachedDocument(input: CachedDocumentInput): Promise<R
     now: edge.runtime.now(),
     recordMs,
     document: {
+      headerRules: input.headerRules,
       request: input.request,
       entry: input.entry,
       manifest: input.manifest,

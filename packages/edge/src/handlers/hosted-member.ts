@@ -4,6 +4,7 @@ import {
   type MemberOfClass,
   memberRouteFor,
   type ProjectManifest,
+  type RequestHeaderRules,
 } from '@stayingupwind/core/manifest';
 import { type RequestClass, wantsBlockingMetadata } from '@stayingupwind/core/request';
 import { type ResolvedPolicy, runtimeCacheOf } from '@stayingupwind/host/delivery';
@@ -34,6 +35,7 @@ const RSC_PAYLOAD = 'rsc-payload';
 
 /** What a document request of a hosted application brings to serving a member of such a class. */
 export interface MemberInput {
+  readonly headerRules?: RequestHeaderRules | undefined;
   readonly request: Request<unknown, IncomingRequestCfProperties>;
   readonly url: URL;
   readonly edge: EdgeContext;
@@ -161,6 +163,7 @@ async function serveOwnRecord(
     );
   }
   return serveCachedDocument({
+    headerRules: input.headerRules,
     request: input.request,
     entry: ownRecordEntry(member, loaded.key.entryId),
     manifest: input.manifest,
