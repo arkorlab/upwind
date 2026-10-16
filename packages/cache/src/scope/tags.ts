@@ -5,8 +5,6 @@ import {
   type TagKind,
   tagKindOf,
   tagKindSchema,
-  type TagHistoryMark,
-  withTagHistory,
 } from '@stayingupwind/core/cache';
 import {
   type CommitRequest,
@@ -17,9 +15,10 @@ import {
   type TagsDeltaResponse,
 } from '@stayingupwind/host/cache';
 
-import { controlFenceInvalidations, controlFenceTag } from './control-fences.ts';
+import { controlFenceInvalidations } from './control-fences.ts';
 import type { InvalidationRow, TagRow } from './rows.ts';
 import { deleteMeta, readMeta, writeMeta } from './state.ts';
+import { readTagHistory, recordTagHistory } from './tag-history.ts';
 
 /**
  * Tags, exact and case-sensitive, and what the last invalidation of each did. `entry_tags` names
@@ -41,7 +40,6 @@ import { deleteMeta, readMeta, writeMeta } from './state.ts';
  * each invalidation that names a new tag, and at the quota those are exactly what it refuses.
  */
 const META_TAG_COUNT = 'tag_count';
-const META_TAG_HISTORY_PREFIX = 'tag_history:';
 const META_CONTROL_TAG_PREFIX = 'control_tag_projection:';
 const META_CONTROL_TAG_END = 'control_tag_projection;';
 const META_CONTROL_TAGS_SEEN = 'control_tags_seen';
@@ -291,18 +289,15 @@ export function markTagInvalidated(sql: SqlStorage, write: InvalidationWrite): v
     // Counted before the row goes in: a scope that never kept the count would count it twice.
     writeMeta(sql, META_TAG_COUNT, String(heldTags(sql) + 1));
   }
-  const prior =
-    readTagHistory(sql, write.ref.tagId) ?? initialTagHistory(sql, write.ref.tagId, previous);
-  writeMeta(
+  recordTagHistory(
     sql,
-    META_TAG_HISTORY_PREFIX + write.ref.tagId,
-    JSON.stringify(
-      withTagHistory(prior, {
-        revision: write.revision,
-        staleAt: write.staleAt,
-        hardExpireAt: write.hardExpireAt,
-      }),
-    ),
+    write.ref.tagId,
+    {
+      revision: write.revision,
+      staleAt: write.staleAt,
+      hardExpireAt: write.hardExpireAt,
+    },
+    previous,
   );
   sql.exec(
     `INSERT INTO tags (tag_id, kind, value, revision, stale_at, hard_expire_at, meaning)
@@ -320,46 +315,6 @@ export function markTagInvalidated(sql: SqlStorage, write: InvalidationWrite): v
     write.hardExpireAt,
     write.meaning,
   );
-}
-
-function readTagHistory(sql: SqlStorage, tagId: string): TagHistoryMark[] | undefined {
-  const value = readMeta(sql, META_TAG_HISTORY_PREFIX + tagId);
-  return value === undefined ? undefined : (JSON.parse(value) as TagHistoryMark[]);
-}
-
-type RecordedTagDeadline = Pick<InvalidationRow, 'revision' | 'stale_at' | 'hard_expire_at'>;
-
-/**
- * Upgrade one old tag only when it is next mutated. Its indexed ledger is never walked by a
- * document read or a regional tag read. A private fence may precede a tag's permanent row.
- */
-function initialTagHistory(
-  sql: SqlStorage,
-  tagId: string,
-  previous: TagRow | undefined,
-): TagHistoryMark[] {
-  let history: TagHistoryMark[] = [];
-  if (previous !== undefined) {
-    const recorded = sql.exec<RecordedTagDeadline>(
-      `SELECT revision, stale_at, hard_expire_at FROM invalidations
-       WHERE target_kind = 'tag' AND target_id = ? ORDER BY revision`,
-      tagId,
-    );
-    for (const row of recorded)
-      history = withTagHistory(history, {
-        revision: row.revision,
-        staleAt: row.stale_at,
-        hardExpireAt: row.hard_expire_at,
-      });
-    if (previous.stale_at !== null)
-      history = withTagHistory(history, {
-        revision: previous.revision,
-        staleAt: previous.stale_at,
-        hardExpireAt: previous.hard_expire_at,
-      });
-  }
-  const fence = controlFenceTag(sql, tagId);
-  return fence === undefined ? history : withTagHistory(history, fence);
 }
 
 export function toDeltaEntry(row: TagRow, sql?: SqlStorage): TagDeltaEntry {
