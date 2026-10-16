@@ -17,7 +17,13 @@ import {
 
 import { entryStateEvent } from './attempts.ts';
 import { planInvalidate } from './invalidations.ts';
-import { type EntryRow, type GenerationRow, generationHeaders, toGeneration } from './rows.ts';
+import {
+  type EntryRow,
+  type GenerationRow,
+  generationHeaders,
+  type TagRow,
+  toGeneration,
+} from './rows.ts';
 import { isRefusal, readScope, type Refusal, refuse, requireActiveScope } from './state.ts';
 import { findTag } from './tags.ts';
 import { type Apply, record, type TxInput } from './tx.ts';
@@ -268,59 +274,107 @@ function notYetQueued(
   return entryIds.filter((entryId) => !covered.has(entryId));
 }
 
-/** Seeding may have committed after the first delivery of this event to an already-active scope. */
-function reconcile(
-  input: TxInput,
-  request: ApplyResourceChangeInput,
-  head: ResourceHeadRow,
-  tagId: string,
-): ApplyResourceChangeResult {
-  const { sql, now, revision } = input;
-  const tag = findTag(sql, tagId);
-  const outdated = sql
+/**
+ * Every tag the head's change invalidated: the one asked about, and those recorded at the revision
+ * the change committed at, which no other change commits at. Those are the tag it names and any it
+ * took the place of (`replacedTags`), whose entries seeded since show the resource as it was too.
+ */
+function headTagIds(sql: SqlStorage, head: ResourceHeadRow, tagId: string): string[] {
+  const tagIds = [tagId];
+  const recorded = sql.exec<{ target_id: string }>(
+    `SELECT target_id FROM invalidations WHERE revision = ? AND target_kind = 'tag'`,
+    head.tag_revision,
+  );
+  for (const row of recorded) {
+    if (!tagIds.includes(row.target_id)) tagIds.push(row.target_id);
+  }
+  return tagIds;
+}
+
+/** The tag's entries whose current generation is older than the head's change, or seeded since. */
+function outdatedUnder(sql: SqlStorage, tagId: string, tagRevision: number): GenerationRow[] {
+  return sql
     .exec<GenerationRow>(
       `SELECT g.* FROM entry_tags et JOIN entries e ON e.entry_id = et.entry_id
        JOIN generations g ON g.generation_id = e.current_generation_id
        WHERE et.tag_id = ? AND (g.dependency_revision < ?
          OR (g.source = 'build' AND g.published_revision > ?))`,
       tagId,
-      head.tag_revision,
-      head.tag_revision,
+      tagRevision,
+      tagRevision,
     )
     .toArray();
-  const affectedEntryIds: string[] = [];
-  if (tag?.stale_at !== null && tag?.stale_at !== undefined) {
-    for (const generation of outdated) {
-      const condemnedRevision =
-        generation.condemned === null
-          ? 0
-          : (toGeneration(input.scopeId, generation).condemned?.revision ?? 0);
-      if (condemnedRevision >= head.tag_revision) continue;
-      sql.exec(
-        `UPDATE generations SET condemned = json_object(
-           'revision', MAX(COALESCE(json_extract(condemned, '$.revision'), 0), ?),
-           'staleAt', MIN(COALESCE(json_extract(condemned, '$.staleAt'), ?), ?),
-           'hardExpireAt', MIN(COALESCE(json_extract(condemned, '$.hardExpireAt'), ?), ?)
-         ) WHERE generation_id = ?`,
-        tag.revision,
-        tag.stale_at,
-        tag.stale_at,
-        tag.hard_expire_at,
-        tag.hard_expire_at,
-        generation.generation_id,
-      );
-      sql.exec(
-        `UPDATE entries SET revision = ?, record_revision = ?,
-         regeneration = CASE regeneration WHEN 'idle' THEN 'queued' ELSE regeneration END,
-         updated_at = ? WHERE entry_id = ?`,
-        revision,
-        revision,
-        now,
-        generation.entry_id,
-      );
-      affectedEntryIds.push(generation.entry_id);
-    }
+}
+
+/** Condemn, as the tag stands, the outdated generations the head's change has not condemned. */
+function condemnOutdated(
+  input: TxInput,
+  under: {
+    readonly tag: TagRow | undefined;
+    readonly outdated: readonly GenerationRow[];
+    readonly tagRevision: number;
+  },
+  affected: Set<string>,
+): void {
+  const { sql, now, revision } = input;
+  const { tag, outdated, tagRevision } = under;
+  if (tag?.stale_at === null || tag?.stale_at === undefined) return;
+  for (const generation of outdated) {
+    const condemnedRevision =
+      generation.condemned === null
+        ? 0
+        : (toGeneration(input.scopeId, generation).condemned?.revision ?? 0);
+    if (condemnedRevision >= tagRevision) continue;
+    sql.exec(
+      `UPDATE generations SET condemned = json_object(
+         'revision', MAX(COALESCE(json_extract(condemned, '$.revision'), 0), ?),
+         'staleAt', MIN(COALESCE(json_extract(condemned, '$.staleAt'), ?), ?),
+         'hardExpireAt', MIN(COALESCE(json_extract(condemned, '$.hardExpireAt'), ?), ?)
+       ) WHERE generation_id = ?`,
+      tag.revision,
+      tag.stale_at,
+      tag.stale_at,
+      tag.hard_expire_at,
+      tag.hard_expire_at,
+      generation.generation_id,
+    );
+    sql.exec(
+      `UPDATE entries SET revision = ?, record_revision = ?,
+       regeneration = CASE regeneration WHEN 'idle' THEN 'queued' ELSE regeneration END,
+       updated_at = ? WHERE entry_id = ?`,
+      revision,
+      revision,
+      now,
+      generation.entry_id,
+    );
+    affected.add(generation.entry_id);
   }
+}
+
+/**
+ * Seeding may have committed after the first delivery of this event to an already-active scope,
+ * under any tag the head's change invalidated. Each tag's outdated entries are read after those of
+ * the tags before it were condemned, so an entry under two is condemned and counted once.
+ */
+function reconcile(
+  input: TxInput,
+  request: ApplyResourceChangeInput,
+  head: ResourceHeadRow,
+  tagId: string,
+): ApplyResourceChangeResult {
+  const { sql } = input;
+  const affected = new Set<string>();
+  const outdatedEntryIds = new Set<string>();
+  for (const id of headTagIds(sql, head, tagId)) {
+    const outdated = outdatedUnder(sql, id, head.tag_revision);
+    for (const generation of outdated) outdatedEntryIds.add(generation.entry_id);
+    condemnOutdated(
+      input,
+      { tag: findTag(sql, id), outdated, tagRevision: head.tag_revision },
+      affected,
+    );
+  }
+  const affectedEntryIds = [...affected];
   if (affectedEntryIds.length > 0) {
     record(
       input,
@@ -329,7 +383,7 @@ function reconcile(
   }
   const queuedJobs = queueEligible(input, request, {
     requiredRevision: head.tag_revision,
-    affectedEntryIds: outdated.map((generation) => generation.entry_id),
+    affectedEntryIds: [...outdatedEntryIds],
     onlyNew: true,
   });
   return { kind: 'already-applied', revision: head.tag_revision, affectedEntryIds, queuedJobs };
