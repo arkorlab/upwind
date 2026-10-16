@@ -103,6 +103,12 @@ const HTTP_PAYLOAD_TOO_LARGE = 413;
  */
 const MAX_AGE_HEADER = 'x-arkor-image-max-age';
 /**
+ * Kept on the entry of a source served in place of a transformation the service failed to make
+ * (`Optimized.serviceFailed`), so that a hit, as the answer that stored it, is not one a browser
+ * keeps for as long as a build-hashed file's own.
+ */
+const SERVICE_FAILED_HEADER = 'x-arkor-image-service-failed';
+/**
  * A result the middleware had a say on is what one visitor was allowed; a shared cache must not
  * hand it to the next. The visitor's own cache may keep it, revalidated.
  */
@@ -129,6 +135,13 @@ interface Optimized {
    * lifetime alone, however content-addressed, so a request after it asks the service again.
    */
   readonly fallback: boolean;
+  /**
+   * The service was asked and failed: the source stands in for a transformation a later request
+   * may be given, so even a build-hashed file's is not kept by the browser for that file's own ten
+   * years (`isStatic`), but for the source's own lifetime. Not so where there is no service to ask,
+   * whose answer the source always is.
+   */
+  readonly serviceFailed?: boolean | undefined;
 }
 
 function errorDetail(error: unknown): string {
@@ -337,10 +350,8 @@ async function optimize(input: ImageInput, imageSource: ImageSource): Promise<Op
     if (again.kind === 'error') {
       return { kind: 'error', error: { ...again.error, requests: spent + again.error.requests } };
     }
-    return {
-      kind: 'ok',
-      image: { ...asItIs(again, config.minimumCacheTTL), requests: spent + again.source.requests },
-    };
+    const standIn = { ...asItIs(again, config.minimumCacheTTL), serviceFailed: true };
+    return { kind: 'ok', image: { ...standIn, requests: spent + again.source.requests } };
   }
   // The service answered: the transformation is the host's to know of (`EdgeObserver`). Told past
   // the `try` that judges the service, so an observer that throws is never taken for it failing.
@@ -535,7 +546,7 @@ function fromCache(input: ImageInput, cached: Response, startedAt: number): Resp
   const headers = imageResponseHeaders({
     href: input.params.href,
     contentType: cached.headers.get('content-type') ?? 'application/octet-stream',
-    isStatic: input.params.isStatic,
+    isStatic: input.params.isStatic && !cached.headers.has(SERVICE_FAILED_HEADER),
     maxAge: Number(cached.headers.get(MAX_AGE_HEADER) ?? input.config.minimumCacheTTL),
     etag: cached.headers.get('etag') ?? undefined,
     config: input.config,
@@ -611,7 +622,7 @@ export async function handleImage(input: ImageInput): Promise<Response> {
     return imageResponseHeaders({
       href: params.href,
       contentType: image.contentType,
-      isStatic: params.isStatic,
+      isStatic: params.isStatic && image.serviceFailed !== true,
       maxAge: image.maxAge,
       etag,
       config: input.config,
@@ -644,6 +655,7 @@ export async function handleImage(input: ImageInput): Promise<Response> {
       [CONTENT_LENGTH_HEADER]: String(bytes.byteLength),
       etag,
       [MAX_AGE_HEADER]: String(image.maxAge),
+      ...(image.serviceFailed === true && { [SERVICE_FAILED_HEADER]: '1' }),
       // A shipped file's result is content-addressed, so the entry outlives its client lifetime —
       // unless the source stood in for a transformation, which would then outlive it too.
       [CACHE_CONTROL_HEADER]: `public, max-age=${isContentAddressed(source) && !image.fallback ? ONE_YEAR_SECONDS : image.maxAge}`,
