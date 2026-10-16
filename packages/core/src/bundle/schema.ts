@@ -3,7 +3,12 @@ import { cronsSchema } from '../cron/schema.ts';
 import { checkedImagesConfigSchema } from '../images/build.ts';
 import { runnableSourceRegexSchema, unsafeRoutePatternReason } from '../request/pattern-safety.ts';
 import * as z from '../schema/index.ts';
-import { routeHasSchema, routerReferencesSchema, splitFunctionNameSchema } from './carried.ts';
+import {
+  routeGatesSchema,
+  routeHasSchema,
+  routerReferencesSchema,
+  splitFunctionNameSchema,
+} from './carried.ts';
 import { deploymentIdSchema } from './deployment-id.ts';
 import {
   durableObjectDeclarationsSchema,
@@ -471,6 +476,18 @@ const bundleSchema = z.object({
    * this field existed.
    */
   crons: cronsSchema.optional(),
+  /**
+   * The routes the build declares a gate for, each with the name of its gate (`ROUTE_GATES_ENV`):
+   * the edge asks the gate a host binds under that name about each request of the route before it
+   * serves the request anything. Absent for a build that declares none, which is every build made
+   * before this field existed.
+   *
+   * No version of its own, though a reader that knew nothing of it would drop it and publish the
+   * deployment with no gate asked: what keeps such a reader from a build that declares one is the
+   * order a host rolls out in, as for the manifest that carries it on (`ProjectManifest.gates`) —
+   * the host before the adapter its builds declare gates with.
+   */
+  gates: routeGatesSchema.optional(),
   /** Host registrations; their code is carried separately from the Next.js Functions. */
   durableObjects: durableObjectDeclarationsSchema.optional(),
   middleware: z.object({ matchers: z.array(routeSchema) }).optional(),
@@ -605,6 +622,42 @@ function splitIssues(bundle: DeploymentBundle): string[] {
 }
 
 /**
+ * What of a bundle's gates no host could ask: a `gates` that declares none; a route the build ships
+ * as a file, which is answered from storage before any route is looked for; a route the build does
+ * not have, a misspelling among them; and any gate of a build with `i18n`, whose dynamic routes the
+ * edge leaves to its Function unread, and so could not tell a request of a gated route from another.
+ * Each would be a route served to every visitor with no gate asked, which declaring a gate says must
+ * not happen: the build is refused rather than served so.
+ */
+function gateIssues(bundle: DeploymentBundle): string[] {
+  const { gates } = bundle;
+  if (gates === undefined) {
+    return [];
+  }
+  const routes = Object.keys(gates);
+  if (routes.length === 0) {
+    return ['gates declares no gate; a bundle that declares none leaves it out'];
+  }
+  const issues: string[] = [];
+  const { i18n } = bundle.config;
+  if (i18n !== undefined && i18n !== null) {
+    issues.push(
+      'a build with i18n may declare no gate: the edge leaves its dynamic routes to its Function',
+    );
+  }
+  const entrypoints = new Set(bundle.entrypoints.map((entry) => entry.pathname));
+  const files = new Set(bundle.staticFiles.map((file) => file.pathname));
+  for (const route of routes) {
+    if (files.has(route)) {
+      issues.push(`gates names ${route}, which the build ships as a file, served before any gate`);
+    } else if (!entrypoints.has(route)) {
+      issues.push(`gates names ${route}, which is no route of this build`);
+    }
+  }
+  return issues;
+}
+
+/**
  * Every occurrence is checked before collection can collapse references with the same digest, and
  * the tables the edge walks per request are held to what a request can afford.
  */
@@ -630,6 +683,11 @@ export const deploymentBundleSchema = bundleSchema
   .superRefine((bundle, ctx) => {
     for (const message of splitIssues(bundle)) {
       ctx.addIssue({ code: 'custom', message });
+    }
+  })
+  .superRefine((bundle, ctx) => {
+    for (const message of gateIssues(bundle)) {
+      ctx.addIssue({ code: 'custom', message, path: ['gates'] });
     }
   })
   .superRefine((bundle, ctx) => {

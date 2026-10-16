@@ -66,6 +66,7 @@ the bundle at all, so no consumer can come to depend on it by accident.
 | `config.cacheHandler`, `cacheHandlers` (as `required-server-files.json` records them)                                                            | —                                                                                                                                    | each module bundled into the Function, not a static export's, and loaded by the `cache-handlers` patch; the build warns (`cache-handlers.ts`, and below)                                                      |
 | `outputs.staticFiles[]`: `pathname`, `filePath`, `immutableHash`                                                                                 | `staticFiles[]` (`pathname`, `blob`, `immutable`); the one named `/index` is offered under `/` too                                   | edge and control (served from storage); runtime (the small ones the Function carries)                                                                                                                         |
 | `public/` (from `projectDir`)                                                                                                                    | `staticFiles[]`, URL-encoded pathnames under the `basePath`                                                                          | as above; not walked for a static export, whose `out/` already holds it                                                                                                                                       |
+| `UPWIND_ROUTE_GATES` in the build's environment: a JSON object of each route, as an entrypoint's `pathname`, to its gate's name                  | `gates`; a route the build does not have, one it ships as a file, or a build with `i18n` is refused                                  | the host (carried to the manifest, beside the pathnames and dynamic routes of each gated route); edge (asks the route's gate before it serves a request of it)                                                |
 
 Both routers are built the same way. What the Pages Router adds is `_next/data`: `next build`
 emits a data output per page whose props come from `getServerSideProps` (an entrypoint of its
@@ -587,3 +588,21 @@ request path, and no instance is created during bundling or namespace publicatio
 registration, bundled source and its dependency paths. The CLI uses this to start the same class
 modules in its local runtime. The adapter's default export also reads downloaded declarations from
 `UPWIND_DURABLE_OBJECTS`, which is the local build input rather than a storage registration command.
+
+## Route gates
+
+A build declares, in `UPWIND_ROUTE_GATES`, a gate for each of the routes whose every answer is to be
+decided by a service of the host's at the time it is asked rather than by anything kept: a JSON
+object of each route, as Next.js names it (`/posts/[slug]`), to the name of its gate (a lowercase
+letter, then lowercase letters, digits and hyphens). The adapter carries it into the bundle as
+`gates`, and leaves it out of the Functions' own manifest, which nothing in a Function reads. A
+value that is not such an object fails the build, and so does one that names a route the build does
+not have, one the build ships as a file, or any route of a build with `i18n`: each is a route that
+would be served with no gate asked.
+
+The host binds a gate under each name, and its edge asks the route's gate about every `GET` and
+`HEAD` of the route — a document, a router's request for its payload, a prefetch — before it serves
+the request anything. An answer that says `x-upwind-gate: pass` has the request served as though
+there were no gate; any other is the answer, kept nowhere. A gate that cannot be reached is a `503`,
+never what was kept of the route. A request of any other method goes to the Function, as it does
+without a gate.
