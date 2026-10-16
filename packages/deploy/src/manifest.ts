@@ -10,6 +10,7 @@ import {
   routePagesData,
   routePayloads,
   type ServableOptions,
+  spelledPrefixOf,
   staticFileAssetPrefixOf,
   staticFileLocalesOf,
 } from '@stayingupwind/core/bundle';
@@ -221,6 +222,8 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
   const staticFiles = staticFilesOf(bundle, input.previous);
   const staticFileLocales = staticFileLocalesOf(bundle);
   const staticFileAssetPrefix = staticFileAssetPrefixOf(bundle);
+  // What the router reads of a path as written, which no page or file is found by decoding.
+  const spelledPrefix = spelledPrefixOf(bundle);
   const routing = dynamicRouting(bundle, routeKeys);
   const manifest = buildProjectManifest({
     projectId: input.projectId,
@@ -249,6 +252,7 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
     crawlersStreamed: nextSupportOf(bundle.nextVersion) === 'full',
     ...(staticFileLocales !== undefined && { staticFileLocales }),
     ...(staticFileAssetPrefix !== undefined && { staticFileAssetPrefix }),
+    ...(spelledPrefix !== undefined && { spelledPrefix }),
     // Where a route holds a Pages Router page's props, what a client asks for them under.
     ...(context.pagesData.size > 0 && {
       pagesDataUnder: { basePath: bundle.config.basePath, buildId: bundle.buildId },

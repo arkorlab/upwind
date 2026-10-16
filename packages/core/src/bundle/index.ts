@@ -91,6 +91,7 @@ export {
   type ServedRewrite,
   shellHeaders,
 } from './serving.ts';
+export { spelledPrefixOf } from './spelled-prefix.ts';
 export {
   staticFileAssetPrefixOf,
   staticFileLocalesOf,

@@ -1,4 +1,4 @@
-export { builtNameOf } from './built-names.ts';
+export { builtNameOf, escapedPathOf, requestPathOf } from './built-names.ts';
 export { completedPathname, keyedParameters, memberEntryPathname } from './completion.ts';
 export {
   type ConfiguredHeaders,
@@ -12,6 +12,8 @@ export {
   type MemberOfClass,
   memberRouteFor,
   pathIsReserved,
+  type RequestHeaderRules,
+  requestHeaderRulesFor,
   validationPathnameFor,
   withTrailingSlash,
 } from './dynamic.ts';
@@ -21,6 +23,7 @@ export {
   computeManifestId,
   DEFAULT_ASSET_POLICY,
   DEFAULT_CONTINUATION_CONFIG,
+  fileRequestPathOf,
   findRouteEntry,
   findStaticFile,
   MAX_MANIFEST_BYTES,
@@ -28,6 +31,7 @@ export {
   staticFileKey,
   staticFileStatus,
   parseProjectManifest,
+  routeRequestPathOf,
   serializeManifest,
 } from './manifest.ts';
 export { functionFor, functionScript } from './functions.ts';
@@ -65,9 +69,11 @@ export {
   projectManifestSchema,
   READ_MANIFEST_SCHEMA_VERSIONS,
   type ReservedRoute,
+  type SpelledPrefix,
   type StaticFileAssetPrefix,
   type StaticFileEntry,
   staticFileEntrySchema,
   type StaticFileLocales,
 } from './schema.ts';
+export { spellsPrefixOf } from './spelled-prefix.ts';
 export { fromStoredManifest } from './stored.ts';
