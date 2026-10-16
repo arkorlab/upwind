@@ -5,6 +5,8 @@ import {
   type TagKind,
   tagKindOf,
   tagKindSchema,
+  type TagHistoryMark,
+  withTagHistory,
 } from '@stayingupwind/core/cache';
 import {
   type CommitRequest,
@@ -15,7 +17,7 @@ import {
   type TagsDeltaResponse,
 } from '@stayingupwind/host/cache';
 
-import { controlFenceInvalidations } from './control-fences.ts';
+import { controlFenceInvalidations, controlFenceTag } from './control-fences.ts';
 import type { InvalidationRow, TagRow } from './rows.ts';
 import { deleteMeta, readMeta, writeMeta } from './state.ts';
 
@@ -24,8 +26,9 @@ import { deleteMeta, readMeta, writeMeta } from './state.ts';
  * the tags of each entry's *current* generation — the set an invalidation fans out over — and is
  * replaced whole whenever the current generation changes.
  *
- * A tag has a row from its first invalidation on, and keeps it for good: the row is what the delta
- * sends and the tag's record in KV is written from. A tag no invalidation has named needs none —
+ * A tag has a row from its first invalidation on, and keeps it for good: the delta and regional KV
+ * record pair it with bounded earlier deadlines, so a later SWR cannot reopen an expired value.
+ * A tag no invalidation has named needs none —
  * an invalidation fans out over `entry_tags`, and condemns a commit by the invalidations recorded —
  * so a generation's tags add no row. Only `markTagInvalidated` adds one, under the scope's quota.
  * Private control fanout keeps absent tags out of this permanent set and the historical ledger:
@@ -38,6 +41,7 @@ import { deleteMeta, readMeta, writeMeta } from './state.ts';
  * each invalidation that names a new tag, and at the quota those are exactly what it refuses.
  */
 const META_TAG_COUNT = 'tag_count';
+const META_TAG_HISTORY_PREFIX = 'tag_history:';
 const META_CONTROL_TAG_PREFIX = 'control_tag_projection:';
 const META_CONTROL_TAG_END = 'control_tag_projection;';
 const META_CONTROL_TAGS_SEEN = 'control_tags_seen';
@@ -282,10 +286,24 @@ export function finishRetiredControlTagPage(
 
 /** Record the permanent tag mark: what the delta and its regional KV projection read. */
 export function markTagInvalidated(sql: SqlStorage, write: InvalidationWrite): void {
-  if (findTag(sql, write.ref.tagId) === undefined) {
+  const previous = findTag(sql, write.ref.tagId);
+  if (previous === undefined) {
     // Counted before the row goes in: a scope that never kept the count would count it twice.
     writeMeta(sql, META_TAG_COUNT, String(heldTags(sql) + 1));
   }
+  const prior =
+    readTagHistory(sql, write.ref.tagId) ?? initialTagHistory(sql, write.ref.tagId, previous);
+  writeMeta(
+    sql,
+    META_TAG_HISTORY_PREFIX + write.ref.tagId,
+    JSON.stringify(
+      withTagHistory(prior, {
+        revision: write.revision,
+        staleAt: write.staleAt,
+        hardExpireAt: write.hardExpireAt,
+      }),
+    ),
+  );
   sql.exec(
     `INSERT INTO tags (tag_id, kind, value, revision, stale_at, hard_expire_at, meaning)
      VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -304,7 +322,48 @@ export function markTagInvalidated(sql: SqlStorage, write: InvalidationWrite): v
   );
 }
 
-export function toDeltaEntry(row: TagRow): TagDeltaEntry {
+function readTagHistory(sql: SqlStorage, tagId: string): TagHistoryMark[] | undefined {
+  const value = readMeta(sql, META_TAG_HISTORY_PREFIX + tagId);
+  return value === undefined ? undefined : (JSON.parse(value) as TagHistoryMark[]);
+}
+
+type RecordedTagDeadline = Pick<InvalidationRow, 'revision' | 'stale_at' | 'hard_expire_at'>;
+
+/**
+ * Upgrade one old tag only when it is next mutated. Its indexed ledger is never walked by a
+ * document read or a regional tag read. A private fence may precede a tag's permanent row.
+ */
+function initialTagHistory(
+  sql: SqlStorage,
+  tagId: string,
+  previous: TagRow | undefined,
+): TagHistoryMark[] {
+  let history: TagHistoryMark[] = [];
+  if (previous !== undefined) {
+    const recorded = sql.exec<RecordedTagDeadline>(
+      `SELECT revision, stale_at, hard_expire_at FROM invalidations
+       WHERE target_kind = 'tag' AND target_id = ? ORDER BY revision`,
+      tagId,
+    );
+    for (const row of recorded)
+      history = withTagHistory(history, {
+        revision: row.revision,
+        staleAt: row.stale_at,
+        hardExpireAt: row.hard_expire_at,
+      });
+    if (previous.stale_at !== null)
+      history = withTagHistory(history, {
+        revision: previous.revision,
+        staleAt: previous.stale_at,
+        hardExpireAt: previous.hard_expire_at,
+      });
+  }
+  const fence = controlFenceTag(sql, tagId);
+  return fence === undefined ? history : withTagHistory(history, fence);
+}
+
+export function toDeltaEntry(row: TagRow, sql?: SqlStorage): TagDeltaEntry {
+  const history = sql === undefined ? undefined : readTagHistory(sql, row.tag_id);
   return {
     tagId: row.tag_id,
     kind: tagKindSchema.parse(row.kind),
@@ -313,6 +372,7 @@ export function toDeltaEntry(row: TagRow): TagDeltaEntry {
     staleAt: row.stale_at ?? 0,
     hardExpireAt: row.hard_expire_at,
     meaning: invalidationMeaningSchema.parse(row.meaning ?? 'swr'),
+    ...(history !== undefined && history.length > 1 && { history }),
   };
 }
 
@@ -340,13 +400,14 @@ function delta(
     readonly revision: number;
     readonly truncated: boolean;
     readonly rows: readonly TagRow[];
+    readonly historical?: boolean;
   },
 ): TagsDeltaResponse {
   return {
     revision: page.revision,
     floor: 0,
     truncated: page.truncated,
-    tags: page.rows.map((row) => toDeltaEntry(row)),
+    tags: page.rows.map((row) => toDeltaEntry(row, page.historical === true ? undefined : sql)),
     latest: latestInvalidation(sql),
   };
 }
@@ -443,6 +504,7 @@ function recentDelta(sql: SqlStorage, input: RecentQuery): TagsDeltaResponse {
     revision: input.revision,
     truncated: rows.length > input.limit,
     rows: rows.slice(0, input.limit).toReversed(),
+    historical: true,
   });
 }
 

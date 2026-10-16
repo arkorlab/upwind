@@ -105,7 +105,9 @@ async function projectChangedTags(
   );
   const tags = [...new Set(change.tags)].flatMap((tagId) => {
     const row = change.controlTags.has(tagId) ? undefined : findTag(deps.sql, tagId);
-    return typeof row?.stale_at === 'number' && row.revision > cursor ? [toDeltaEntry(row)] : [];
+    return typeof row?.stale_at === 'number' && row.revision > cursor
+      ? [toDeltaEntry(row, deps.sql)]
+      : [];
   });
 
   for (const batch of chunks(tags)) {
@@ -176,7 +178,7 @@ async function projectExactTag(
   // Promotion and coalescing both use the newest exact mark as this write starts.
   const tag =
     held !== undefined && (pending === undefined || held.revision > pending.revision)
-      ? toDeltaEntry(held)
+      ? toDeltaEntry(held, deps.sql)
       : pending;
 
   if (tag === undefined) return;
