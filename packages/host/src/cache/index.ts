@@ -87,6 +87,8 @@ export {
   commitRequestSchema,
   type CommitResponse,
   commitResponseSchema,
+  type CurrentDataRequest,
+  currentDataRequestSchema,
   type CurrentGenerationSummary,
   currentGenerationSummarySchema,
   type DataEntryMetadata,

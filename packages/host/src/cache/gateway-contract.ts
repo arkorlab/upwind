@@ -509,6 +509,16 @@ export const dataGetRequestSchema = z
   .refine(namesItsHandler, HANDLER_OF_KIND);
 export type DataGetRequest = z.infer<typeof dataGetRequestSchema>;
 
+/**
+ * `POST /data/current`: what `POST /data/get` asks, and the revision of the value the asker holds,
+ * where it holds one (`than`). Only a value later than that is answered: where the key holds none,
+ * the authority answers as for a key that holds nothing (404), reading nothing of the value.
+ */
+export const currentDataRequestSchema = dataGetRequestSchema.extend({
+  than: z.number().int().nonnegative().optional(),
+});
+export type CurrentDataRequest = z.infer<typeof currentDataRequestSchema>;
+
 const dataValueSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('inline'), base64: z.string() }),
   z.object({ kind: z.literal('ref'), artifactId: z.string().min(1) }),
