@@ -244,7 +244,8 @@ export const invalidationRecordSchema = z.object({
   staleAt: z.number().int(),
   hardExpireAt: z.number().int().nullable(),
   meaning: invalidationMeaningSchema,
-  expireSeconds: z.number().int().nonnegative().nullable(),
+  /** The window the invalidation was asked for (`invalidateRequestSchema`), whole seconds or not. */
+  expireSeconds: z.number().nonnegative().nullable(),
   cause: invalidationCauseSchema,
   recordedAt: z.number().int(),
   schemaVersion: z.literal(ENTITY_SCHEMA_VERSION),

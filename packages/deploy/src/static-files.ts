@@ -132,6 +132,26 @@ function underMovedPrefix(
 }
 
 /**
+ * This build's files, as the manifest serves them — but none it ships under its own asset prefix's
+ * `_next`, a `public/` file there. `next build` rewrites a request under that prefix to this build's
+ * `_next` before it looks for a file at the path (`beforeFiles`), so such a file answers no request;
+ * filed under its own name, it would be found ahead of the file the request is rewritten to, which
+ * the edge finds by taking the prefix off (`staticFileKey`). The same on a first deployment as on
+ * any other.
+ */
+function ownFiles(bundle: DeploymentBundle): Record<string, StaticFileEntry> {
+  const prefix = staticFileAssetPrefixOf(bundle);
+  const rewritten = prefix === undefined ? undefined : `${prefix.assetPrefix}/_next/`;
+  const files: Record<string, StaticFileEntry> = {};
+  for (const file of bundle.staticFiles) {
+    if (rewritten === undefined || !file.pathname.startsWith(rewritten)) {
+      files[file.pathname] = staticFileEntry(file, bundle.config.basePath);
+    }
+  }
+  return files;
+}
+
+/**
  * The files the manifest serves: this build's, and under `_next/static` those of the deployment
  * served just before. A document of that deployment still open in a browser asks for the
  * scripts it was built with, by their own paths and its own `dpl`; its Workers are kept for a
@@ -145,15 +165,14 @@ export function staticFilesOf(
   bundle: DeploymentBundle,
   previous: DeploymentBundle | undefined,
 ): Record<string, StaticFileEntry> {
-  const files: Record<string, StaticFileEntry> = {};
-  for (const file of bundle.staticFiles) {
-    files[file.pathname] = staticFileEntry(file, bundle.config.basePath);
-  }
+  const files = ownFiles(bundle);
   // A rewrite to a file the Worker does not carry, served here under the path it is asked for.
   for (const served of edgeServedRewrites(bundle)) {
     const entry = staticFileEntry(served.file, bundle.config.basePath);
     // Keep the destination's status explicit: the edge otherwise infers 404/500 from the alias.
-    files[served.pathname] = { ...entry, status: entry.status ?? HTTP_OK };
+    // And never immutable, whatever the file it names is: the name is the rewrite's, not a hash of
+    // the bytes, and a later deployment's rewrite may answer it with others.
+    files[served.pathname] = { ...entry, immutable: false, status: entry.status ?? HTTP_OK };
   }
   if (previous === undefined) {
     return files;

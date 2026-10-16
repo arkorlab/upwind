@@ -8,6 +8,7 @@ import {
   type CommitRequest,
   type CommitResponse,
   commitResponseSchema,
+  type CurrentDataRequest,
   type DataGetRequest,
   type DataGetResponse,
   dataGetResponseSchema,
@@ -386,6 +387,33 @@ export class Gateway {
           },
           true,
         );
+        if (response.status === HTTP_NOT_FOUND) {
+          await response.body?.cancel();
+          return undefined;
+        }
+        return this.#result(response, dataGetResponseSchema);
+      },
+    );
+  }
+
+  /**
+   * The value the key holds now, asked of the authority itself rather than of KV (`/data/current`);
+   * `undefined` for none, for none later than `than` where it is given, and for an authority from
+   * before it answered the route. An authority from before `than` answers with the value whatever
+   * its revision. Given up past `AUTHORITY_READ_DEADLINE_MS`, however near a read gateway is: this
+   * read always crosses to the authority.
+   */
+  currentData(request: CurrentDataRequest): Promise<DataGetResponse | undefined> {
+    return readWithin(
+      'current data read',
+      AUTHORITY_READ_DEADLINE_MS,
+      async (signal): Promise<DataGetResponse | undefined> => {
+        const response = await this.#send('/data/current', {
+          method: 'POST',
+          headers: this.#headers({ 'content-type': JSON_TYPE }),
+          body: JSON.stringify(request),
+          signal,
+        });
         if (response.status === HTTP_NOT_FOUND) {
           await response.body?.cancel();
           return undefined;

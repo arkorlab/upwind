@@ -1,7 +1,7 @@
 import { cacheKeyDigestOf, kvDataKey } from '@stayingupwind/core/cache';
 import { type DataGetRequest, type DataGetResponse } from '@stayingupwind/host/cache';
 
-import { dataRecordSchema } from '../scope/records.ts';
+import { type DataRecord, dataRecordSchema } from '../scope/records.ts';
 
 /** The same projection, read locally by either gateway; no authority call is needed. */
 const RECORD_CACHE_TTL_SECONDS = 30;
@@ -17,10 +17,11 @@ export async function readDataRecord(
     cacheTtl: RECORD_CACHE_TTL_SECONDS,
   });
   const record = dataRecordSchema.safeParse(stored);
-  if (!record.success) {
-    return undefined;
-  }
-  const { data } = record;
+  return record.success ? dataGetResponseOf(record.data) : undefined;
+}
+
+/** What a read of the data cache is answered with of a record: its storage key stays here. */
+export function dataGetResponseOf(data: DataRecord): DataGetResponse {
   return {
     entryId: data.entryId,
     generationId: data.generationId,

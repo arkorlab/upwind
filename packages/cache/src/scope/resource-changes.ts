@@ -18,7 +18,7 @@ import {
 import { entryStateEvent } from './attempts.ts';
 import { planInvalidate } from './invalidations.ts';
 import { type EntryRow, type GenerationRow, generationHeaders, toGeneration } from './rows.ts';
-import { isRefusal, readScope, type Refusal, requireActiveScope } from './state.ts';
+import { isRefusal, readScope, type Refusal, refuse, requireActiveScope } from './state.ts';
 import { findTag } from './tags.ts';
 import { type Apply, record, type TxInput } from './tx.ts';
 
@@ -65,6 +65,17 @@ function headOf(sql: SqlStorage, resourceId: string): ResourceHeadRow | undefine
   return sql
     .exec<ResourceHeadRow>(`SELECT * FROM resource_heads WHERE resource_id = ?`, resourceId)
     .toArray()[0];
+}
+
+/**
+ * Whether the scope may keep a head for one resource more. A head is kept for good, to order its
+ * resource's changes, and a host may name resources without end: the scope keeps as many as it may
+ * keep tags, each resource's changes moving a tag of its own.
+ */
+function resourceHeadsFit(sql: SqlStorage, limit: number): boolean {
+  return (
+    sql.exec<{ count: number }>(`SELECT COUNT(*) AS count FROM resource_heads`).one().count < limit
+  );
 }
 
 function pendingCount(sql: SqlStorage, resourceId: string): number {
@@ -137,6 +148,10 @@ export async function planApplyResourceChange(
         affectedEntryIds: [],
         queuedJobs: pendingCount(sql, request.resourceId),
       };
+    }
+    // Before anything is written: a refusal leaves the transaction committed.
+    if (previous === undefined && !resourceHeadsFit(sql, input.limits.tagsPerScope)) {
+      return refuse('quota_exceeded', 'the scope keeps as many resources as it may');
     }
     const result = invalidate();
     if (isRefusal(result)) return result;

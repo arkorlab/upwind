@@ -101,7 +101,8 @@ export interface CacheHost {
    * A value of the key written later than the one at `than` (its `dependencyRevision`), where the
    * host keeps one nearer than `getData` reaches, or nothing: what `readNewerRecord` is to a
    * record. Asked only of a value the runtime found stale or expired — a miss is `getData`'s to
-   * answer from the same. Optional.
+   * answer from the same — and asked again past the one it answers where that one stands no better
+   * than stale, once: a host can answer with the nearest it keeps first. Optional.
    */
   getNewerData?(request: DataReadRequest, than: number): Promise<DataRead | undefined>;
 

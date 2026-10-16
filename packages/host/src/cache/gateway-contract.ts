@@ -491,7 +491,10 @@ export const dataSetResponseSchema = z.object({
 export type DataSetResponse = z.infer<typeof dataSetResponseSchema>;
 
 /**
- * `POST /data/get` (the key is a body, never a path: it is Next.js's, and may be long).
+ * `POST /data/get` (the key is a body, never a path: it is Next.js's, and may be long), answered
+ * from KV; and `POST /data/current`, the same question answered by the authority itself, with the
+ * value the key holds now — what a read of KV may not have for half a minute in a data center that
+ * read the key before.
  *
  * Held to the bounds a write is: no value is ever stored under a longer key or handler, so a read
  * of one has nothing to find, and is refused as a write of it is. A runtime's cache handler takes a
@@ -505,6 +508,16 @@ export const dataGetRequestSchema = z
   })
   .refine(namesItsHandler, HANDLER_OF_KIND);
 export type DataGetRequest = z.infer<typeof dataGetRequestSchema>;
+
+/**
+ * `POST /data/current`: what `POST /data/get` asks, and the revision of the value the asker holds,
+ * where it holds one (`than`). Only a value later than that is answered: where the key holds none,
+ * the authority answers as for a key that holds nothing (404), reading nothing of the value.
+ */
+export const currentDataRequestSchema = dataGetRequestSchema.extend({
+  than: z.number().int().nonnegative().optional(),
+});
+export type CurrentDataRequest = z.infer<typeof currentDataRequestSchema>;
 
 const dataValueSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('inline'), base64: z.string() }),
@@ -596,8 +609,12 @@ const invalidateTagSchema = z.object({
 
 export const invalidateRequestSchema = z.object({
   tags: z.array(invalidateTagSchema).min(1).max(MAX_TAGS_PER_CALL),
-  /** Seconds the stale content may still be served; absent or zero means at once. */
-  expire: z.number().int().nonnegative().optional(),
+  /**
+   * Seconds the stale content may still be served; absent or zero means at once. Whole or not, as
+   * a `cacheLife` profile gives them and Next.js takes them: the authority keeps the deadline to
+   * the millisecond.
+   */
+  expire: z.number().nonnegative().optional(),
   cause: invalidationCauseSchema,
   /**
    * More requests of the same invalidation follow — one with more tags than a request carries, sent

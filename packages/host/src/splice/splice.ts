@@ -60,6 +60,7 @@ const HEAD_PHASE: Phase = 'head';
 
 const OK_STATUS = 200;
 const TIMEOUT_ABORT_REASON = 'continuation timeout';
+const CANCEL_REASON = 'client cancelled';
 
 class TimeoutError extends Error {
   readonly phase: Phase;
@@ -392,6 +393,13 @@ class SplicePump {
         // budget is taken again afterwards: otherwise a slow client would buy the origin a second
         // full timeout and one iteration could run to twice the deadline.
         await this.#awaitDemand(this.#budgetMs());
+        // A client that has gone takes nothing more, and its outcome is settled (`cancel`). Reading
+        // on would pull the rest of the continuation from an origin the abort may reach late or
+        // not at all — a body already buffered, say — so the origin is let go of here.
+        if (this.#cancelled) {
+          releaseStream(reader, CANCEL_REASON);
+          return false;
+        }
         const { done, value } = await withTimeout(reader.read(), this.#budgetMs(), this.#phase);
         if (done) {
           return true;
@@ -473,7 +481,7 @@ class SplicePump {
   cancel(): void {
     this.#cancelled = true;
     this.signalDemand();
-    this.#options.abortUpstream('client cancelled');
+    this.#options.abortUpstream(CANCEL_REASON);
     this.#settle({ kind: 'client-cancelled', forwarded: this.#forwarded });
   }
 

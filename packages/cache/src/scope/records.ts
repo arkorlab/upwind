@@ -80,7 +80,7 @@ export const dataRecordSchema = z.object({
   value: dataValueSchema,
   invalidation: toZod(invalidationStateSchema).optional(),
 });
-type DataRecord = z.infer<typeof dataRecordSchema>;
+export type DataRecord = z.infer<typeof dataRecordSchema>;
 
 export interface RecordDeps {
   readonly blobs: BlobStore;
@@ -426,12 +426,42 @@ function dataRecordOf(
   };
 }
 
-/** The data-cache record: a small value travels inside it, a large one by reference. */
+/**
+ * The data-cache record with its value by reference, whatever its size: nothing read from storage,
+ * the bytes the reader's to read as a large value's are.
+ */
+export function dataRecordByReference(
+  scopeId: string,
+  entry: EntryRow,
+  generation: GenerationRow,
+): DataRecord {
+  const artifact = generationOutputs(generation)[0]?.artifacts[0];
+  if (artifact === undefined) {
+    throw new Error(`data generation ${generation.generation_id} has no value`);
+  }
+  return dataRecordOf(scopeId, entry, generation, {
+    kind: 'ref',
+    artifactId: artifact.artifactId,
+    storageRef: artifact.storageRef,
+    byteLength: artifact.byteLength,
+  });
+}
+
+/** The data-cache record as KV holds it (`dataRecordFor`), serialized. */
 export async function dataRecordJson(
   deps: RecordDeps,
   entry: EntryRow,
   generation: GenerationRow,
 ): Promise<string> {
+  return JSON.stringify(await dataRecordFor(deps, entry, generation));
+}
+
+/** The data-cache record: a small value travels inside it, a large one by reference. */
+export async function dataRecordFor(
+  deps: RecordDeps,
+  entry: EntryRow,
+  generation: GenerationRow,
+): Promise<DataRecord> {
   const artifact = generationOutputs(generation)[0]?.artifacts[0];
   if (artifact === undefined) {
     throw new Error(`data generation ${generation.generation_id} has no value`);
@@ -445,5 +475,5 @@ export async function dataRecordJson(
           storageRef: artifact.storageRef,
           byteLength: artifact.byteLength,
         };
-  return JSON.stringify(dataRecordOf(deps.scopeId, entry, generation, value));
+  return dataRecordOf(deps.scopeId, entry, generation, value);
 }
