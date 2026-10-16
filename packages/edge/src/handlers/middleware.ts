@@ -303,7 +303,8 @@ export function dispatchedFor(outcome: MiddlewareOutcome): number {
  * unless the caller's own fetch was bounded, as an image's source is: then both runs have until
  * `by` (`runtime.now()`), the first cut short there whatever the policy's timeout, and the second
  * not sent once it has passed.
- * Only a Worker that cannot be reached at all is not asked, since the second would not be either.
+ * Only a Worker that cannot be reached at all is not asked, since the second would not be either,
+ * nor one for a client that left: the first run went with it, and nobody waits for a second.
  */
 export async function decideMiddleware(
   edge: EdgeContext,
@@ -318,6 +319,7 @@ export async function decideMiddleware(
     scriptName === undefined ||
     first.kind !== 'failed' ||
     first.cause === 'unreachable' ||
+    request.signal.aborted ||
     (left !== undefined && left <= 0)
   ) {
     return { outcome: first, dispatches };
@@ -349,9 +351,11 @@ async function runMiddlewareIn(
   }
   // A middleware past its budget is cancelled, not left running: the request goes on to the
   // application's Worker, which runs the middleware itself, and two of them at once would do
-  // twice whatever the first was in the middle of.
+  // twice whatever the first was in the middle of. So is one whose client left, as the requests
+  // that follow it are (`requestInit`, in `passthrough.ts`): nobody waits for what it decides.
   const controller = new AbortController();
-  const forwarded = middlewareRequest(edge, request, controller.signal);
+  const signal = AbortSignal.any([controller.signal, request.signal]);
+  const forwarded = middlewareRequest(edge, request, signal);
   const { budget } = target;
   let response: Response;
   const startedAt = edge.runtime.now();
