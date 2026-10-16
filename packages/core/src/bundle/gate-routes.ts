@@ -320,6 +320,11 @@ interface Reader {
   readonly servesItself: (name: string) => boolean;
   /** The routes the router may land a path on through its dynamic routes (`dynamicLandings`). */
   readonly landingsOf: (pathname: string) => string[];
+  /**
+   * The image optimizer's own path, which the router resolves as the optimizer's by that spelling
+   * alone (`routerPathnames`): with a trailing slash it is a path like any other.
+   */
+  readonly optimizer: string | undefined;
 }
 
 /**
@@ -515,18 +520,29 @@ interface GatedName {
  * one of `named`'s, as it is or as the data of any page it may be (`dataPagesOf`), and compared
  * without regard to case where a dynamic route finds `named`'s requests. One the rewrite puts a
  * capture in is read by what each capture may hold (`mayReachCaptured`).
+ *
+ * The image optimizer's own path is the optimizer's where the router resolves the names it is
+ * handed before its dynamic routes (`namesFirst`): a request as it comes, and one a rule ahead of
+ * the filesystem rewrites. After the filesystem, `@next/routing` asks its dynamic routes of what a
+ * rewrite sends first (`checkDynamicRoutes`), and a class that holds of the optimizer's path — a
+ * catch-all — serves it as one of its own.
  */
-function reachOf(reader: Reader, destination: Destination): (route: GatedName) => boolean {
+function reachOf(
+  reader: Reader,
+  destination: Destination,
+  namesFirst: boolean,
+): (route: GatedName) => boolean {
   const { path } = destination;
   if (destination.references.length > 0) {
     return (route) => mayReachCaptured(destination, route.named, foldFor(route.named));
   }
   const readings = readingsOf(path);
   const routes = new Set(readings.map((reading) => reader.routeOf(reading)));
-  if (readings.some((reading) => reader.servesItself(reading))) {
+  const asSet = requestSpelling(path);
+  const optimized = namesFirst && reader.optimizer === asSet;
+  if (optimized || readings.some((reading) => reader.servesItself(reading))) {
     return (route) => routes.has(route.route);
   }
-  const asSet = requestSpelling(path);
   const landed = reader.landingsOf(asSet);
   return (route) => {
     if (routes.has(route.route)) {
@@ -572,6 +588,7 @@ function readerOf(build: BuildLandings): Reader {
     routeOf: routeOfPathname(build),
     servesItself: (name) => own.has(name),
     landingsOf: dynamicLandings(build),
+    optimizer: build.config.images?.path,
   };
 }
 
@@ -607,7 +624,8 @@ function sourceReachOf(reader: Reader, source: string | undefined): (route: Gate
     return () => false;
   }
   const [path = ''] = source.split(/[?#]/u, 1);
-  return reachOf(reader, { path, references: [] });
+  // A request of the optimizer's own, routed as it comes: the names the router is handed first.
+  return reachOf(reader, { path, references: [] }, true);
 }
 
 /**
@@ -658,11 +676,13 @@ function optimizerSources(
  */
 export function rewritesOnto(build: BuildRerouting, gated: readonly string[]): string[] {
   const { routing } = build;
+  // Ahead of the filesystem, the router resolves the names it is handed before its dynamic routes;
+  // after it, the dynamic routes first (`reachOf`).
+  const ahead = [...routing.beforeMiddleware, ...routing.beforeFiles];
+  const after = [...routing.afterFiles, ...routing.fallback];
   const rules = [
-    ...routing.beforeMiddleware,
-    ...routing.beforeFiles,
-    ...routing.afterFiles,
-    ...routing.fallback,
+    ...ahead.map((rule) => ({ rule, namesFirst: true })),
+    ...after.map((rule) => ({ rule, namesFirst: false })),
   ];
   const reader = readerOf(build);
   const named = gated.flatMap((route) =>
@@ -670,7 +690,7 @@ export function rewritesOnto(build: BuildRerouting, gated: readonly string[]): s
   );
   const sourcesOf = optimizerSources(build, reader, named);
   const issues: string[] = [];
-  for (const rule of rules) {
+  for (const { rule, namesFirst } of rules) {
     const destination = rewritesTo(rule);
     if (destination === undefined) {
       continue;
@@ -678,7 +698,7 @@ export function rewritesOnto(build: BuildRerouting, gated: readonly string[]): s
     // All the router sets on the URL's path: what comes before a `?`, a `#` among it.
     const [path = ''] = destination.split('?', 1);
     const written = { path, references: referencesOf(path, rule.sourceRegex) };
-    const reaches = reachOf(reader, written);
+    const reaches = reachOf(reader, written, namesFirst);
     const reached = new Set(named.filter((name) => reaches(name)).map((name) => name.route));
     const rewrite = `the rewrite of ${rule.source ?? rule.sourceRegex} to ${destination}`;
     for (const route of reached) {

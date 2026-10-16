@@ -786,6 +786,38 @@ describe('the gates a build’s rewrites may reach', () => {
   );
 
   /**
+   * The router resolves the optimizer's own path as the optimizer's where it resolves the names it
+   * is handed before its dynamic routes — a request as it comes, one a rule ahead of the filesystem
+   * rewrites — and asks its dynamic routes first of what a rule after the filesystem rewrites: a
+   * catch-all serves the optimizer's path there, and its path behind a trailing slash everywhere.
+   */
+  it.each([
+    ['ahead of the filesystem', 'beforeFiles', '/_next/image?url=https://img.example/a.png', []],
+    ['ahead of the filesystem, of a file', 'beforeFiles', '/_next/image?url=/robots.txt', []],
+    ['after the filesystem', 'afterFiles', '/_next/image?url=https://img.example/a.png', [ALL]],
+    [
+      'behind a trailing slash',
+      'beforeFiles',
+      '/_next/image/?url=https://img.example/a.png',
+      [ALL],
+    ],
+  ] as const)(
+    'reads a rewrite to the optimizer %s as the router lands it',
+    (_, phase, destination, reached: readonly string[]) => {
+      const bundle = classesOf({ [ALL]: 'checker' }, [AUTHOR_DEMO]);
+      const optimized = { ...bundle, config: { ...bundle.config, images: IMAGES } };
+      const rule = { source: '/thumb', sourceRegex: '^/thumb(?:/)?$', destination };
+      const rewrite = `the rewrite of /thumb to ${destination}`;
+      const said = reached.map(
+        (route) =>
+          `gates names ${route}, which ${rewrite} may send a request to, served there with no gate asked`,
+      );
+
+      expect(rewriteRefusals(rerouted(optimized, phase, [rule]))).toStrictEqual(said);
+    },
+  );
+
+  /**
    * The router is handed more names than the build's own (`routerPathnames`): each page's spelling
    * behind the trailing slash an application keeps its pages behind, and the escaped spellings of a
    * page of its own (`namesSpelledBy`). A dynamic route whose destination is one of them lands a
@@ -1417,6 +1449,17 @@ describe('the gate a request for a page’s props is asked of', () => {
     ],
   ])('is none where a rule ahead of the filesystem %s', (_, reservedRoutes) => {
     expect(gateOf(withProps({ reservedRoutes }), today)).toBeUndefined();
+  });
+
+  /**
+   * The optimizer's own path is the optimizer's ahead of everything, a page's props named so among
+   * them: the edge answers it before it asks any rule or route, and no page's gate of it.
+   */
+  it('is none where the optimizer’s own path is the name of a page’s props', () => {
+    const optimized = withProps({ images: { ...IMAGES, path: today } });
+
+    expect(gateOf(optimized, today)).toBeUndefined();
+    expect(gateOf(optimized, `${today}/`)).toBeUndefined();
   });
 
   /** An App Router page has no props: a request at that name is no request of the page's. */

@@ -16,8 +16,10 @@ import type { ProjectManifest, ReservedRoute } from './schema.ts';
  *
  * The route is found as the edge finds what it serves a request from — the same tables in the same
  * order (`entryFor`, `pagesDataRequest`) — and, past what the edge serves, as the deployment's
- * router routes the request on: a redirect or a rewrite of `next.config` ahead of the filesystem
- * first, which takes the request elsewhere; then a page's props the edge holds; then the page
+ * router routes the request on: the image optimizer's own path ahead of everything, which the edge
+ * answers before it asks any rule or route (`hostedFirst`); a redirect or a rewrite of
+ * `next.config` ahead of the filesystem, which takes the request elsewhere; then a page's props the
+ * edge holds; then the page
  * Next.js resolves exactly, a shell's route ahead of a page with none, whichever route either is of
  * (`gatedPathnames`), or a file the build ships; then, unless a rule claims the request ahead of
  * them, the dynamic routes in their own order, matched without regard to case as the router matches
@@ -102,15 +104,8 @@ function namesOptimizer(manifest: ProjectManifest, pathname: string): boolean {
   );
 }
 
-/**
- * What a pathname is answered as by name: the image optimizer's own path first, which is answered
- * ahead of every route, a page of that name among them (`namesOptimizer`); then a page, of
- * whichever route, or a file.
- */
+/** What a pathname is answered as by name: a page, of whichever route, or a file. */
 function namedOf(manifest: ProjectManifest, pathname: string): Named | undefined {
-  if (namesOptimizer(manifest, pathname)) {
-    return { gated: undefined };
-  }
   const key = exactKeyOf(manifest, pathname);
   if (key !== undefined) {
     return { gated: gatedOf(manifest, key) };
@@ -168,6 +163,12 @@ function routerRules(manifest: ProjectManifest): readonly ReservedRoute[] {
  * asked first.
  */
 function gatedRouteOf(manifest: ProjectManifest, url: URL, headers: Headers): string | undefined {
+  // The optimizer's own path, by either spelling of one trailing slash, is the optimizer's ahead of
+  // everything: the edge answers it before it asks any rule or route (`hostedFirst`), a page's
+  // props named so among them (`namesOptimizer`).
+  if (namesOptimizer(manifest, url.pathname)) {
+    return undefined;
+  }
   const dataRequest = isPagesDataRequestPath(basePathOf(manifest), url.pathname);
   const routed = routerDataHeaders(headers, dataRequest);
   if (isReserved(manifest, url, routed, true)) {
