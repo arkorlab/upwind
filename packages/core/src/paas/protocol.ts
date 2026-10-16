@@ -12,9 +12,10 @@ export const MIDDLEWARE_DONE_HEADER = 'x-arkor-middleware-done';
  * one other than 200: the route it rewrote to is answered under it, as one is whose middleware the
  * runtime ran itself (`withRewriteStatus`), and the middleware is not run again to learn it.
  *
- * Read on a request the runtime routes whole. A resume continues a document whose status went out
- * with the shell the edge served, and a regeneration is asked for a route the edge serves from a
- * shell or a record, so an edge with such a status to answer under hands the request over whole.
+ * The runtime reads this header only when it routes a request whole. A resume continues a document
+ * whose status went out with the shell the edge served, and a regeneration is asked for a route the
+ * edge serves from a shell or a record, so an edge with such a status to answer under hands the
+ * request over whole.
  */
 export const MIDDLEWARE_REWRITE_STATUS_HEADER = 'x-arkor-middleware-rewrite-status';
 /** Resume this prerender: render only what its postponed state left out. */
