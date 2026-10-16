@@ -1,4 +1,6 @@
 import {
+  MIDDLEWARE_DONE_HEADER,
+  MIDDLEWARE_REWRITE_STATUS_HEADER,
   ORIGINAL_URL_HEADER,
   PLATFORM_REQUEST_HEADERS,
   SERVED_GENERATION_HEADER,
@@ -28,6 +30,24 @@ export function stripPlatformHeaders(headers: Headers): Headers {
     out.delete(name);
   }
   return out;
+}
+
+/** A status a rewrite takes from its middleware: one a response can be made with, other than 200. */
+const REWRITE_STATUS = /^(?:20[1-9]|2[1-9]\d|[345]\d{2})$/u;
+
+/**
+ * The status the middleware the edge ran gave its rewrite (`MIDDLEWARE_REWRITE_STATUS_HEADER`), for
+ * the route it rewrote to to be answered under, where the edge ran the middleware
+ * (`MIDDLEWARE_DONE_HEADER`) and the status is one a rewrite takes: none for anything else, which
+ * leaves the route its own. The edge strips the platform's headers off what a client sends, so only
+ * the edge names one.
+ */
+export function edgeRewriteStatusOf(headers: Headers): number | undefined {
+  if (headers.get(MIDDLEWARE_DONE_HEADER) !== '1') {
+    return undefined;
+  }
+  const value = headers.get(MIDDLEWARE_REWRITE_STATUS_HEADER);
+  return value !== null && REWRITE_STATUS.test(value) ? Number(value) : undefined;
 }
 
 /** The URL the client asked for: the edge names it when it rewrote the request, else it is this one. */

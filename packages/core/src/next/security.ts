@@ -8,8 +8,9 @@
  */
 
 /**
- * The newest Next.js release carrying security fixes that this release of upwind knows of: 16.3.8,
- * Next.js's September 2026 security release.
+ * The newest Next.js release carrying security fixes that this release of upwind knows of: 16.4.1,
+ * Next.js's security update of 2026-10-14, which is the only release of those fixes — none was made
+ * for 16.3 or 16.2.
  *
  * Not a bound of the range the adapter supports (`SUPPORTED_NEXT_RANGE`, `@stayingupwind/adapter`'s
  * `patches/versions.ts`), and not a version anything here refuses. That range's floor is where the
@@ -19,38 +20,59 @@
  * what a build and a development run do about it is say so.
  *
  * What a deployment is told to go and get is in Next.js's own code, which travels into a Function
- * whole: `use cache` keying, its draft-mode fills, and the ownership checks a route template makes
- * of a prerender it is about to treat as its own. A development run has two of its own that only it
- * is exposed to: the development server's MCP endpoint, and the image optimizer, which `upwind dev`
- * hands a request that a deployment answers itself.
+ * whole: the React Server Components transport Next.js vendors, which reads back what a `use cache`
+ * function returned and what is sent to a Server Action. A development run has one of its own that
+ * only it is exposed to: the image optimizer, which `upwind dev` hands a request that a deployment
+ * answers itself.
  *
  * **This moves with every Next.js release that carries security fixes**, and that is the one thing
  * here nobody is told. `packages/adapter/scripts/check-patches.ts` holds it to being inside the
  * adapter's range, which catches a floor no build could be judged against; no check anywhere knows
  * that a newer release exists.
  */
-export const SECURITY_FLOOR = '16.3.8';
+export const SECURITY_FLOOR = '16.4.1';
 
 /**
  * Where the release above is written up, for a warning to send a reader to. It names the release
  * `SECURITY_FLOOR` is, so it moves when that moves: a floor raised past the advisory it points at
  * would send a reader to the fixes they already have.
  */
-export const SECURITY_RELEASE_URL = 'https://nextjs.org/blog/september-2026-security-release';
+export const SECURITY_RELEASE_URL =
+  'https://nextjs.org/blog/nextjs-security-update-october-14-2026';
 
 /**
- * `major.minor.patch`, and nothing a prerelease or build suffix adds to it.
+ * The first canary carrying the fixes `SECURITY_FLOOR` carries: 16.5.0-canary.14, the first built
+ * with the React that has them (react/react#37846, taken in by vercel/next.js#100215).
+ *
+ * A canary is numbered as the minor it leads to, so 16.5.0-canary.0 to .13 are numbered past
+ * `SECURITY_FLOOR` and are still not past its fixes: published from 2026-10-06 to 2026-10-15, the
+ * last three of them after 16.4.1 itself, they carry the React from before them. A canary of this
+ * one's minor is held to this rather than to the floor; a canary of an earlier minor is judged by
+ * the release it is numbered as, which is under the floor; and one of a later minor is cut after
+ * this one, so after the fixes as well.
+ *
+ * Moves with `SECURITY_FLOOR`, to the first canary that carries the next release's fixes.
+ */
+export const SECURITY_CANARY_FLOOR = '16.5.0-canary.14';
+
+/**
+ * `major.minor.patch`, and nothing a prerelease or build suffix adds to it — but a canary's own
+ * number, which is the one suffix a floor is ever kept for (`SECURITY_CANARY_FLOOR`).
  *
  * Anchored at both ends, with the suffix having to begin the way a suffix does. Reading the leading
- * numbers and stopping would make `16.3.8nonsense` a release and warn about it, and a version this
+ * numbers and stopping would make `16.3.0nonsense` a release and warn about it, and a version this
  * cannot read is one it has to say nothing about rather than guess at.
  */
-const RELEASE = /^(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)(?:[-+].*)?$/u;
+const RELEASE = /^(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)(?<suffix>[-+].*)?$/u;
+/** A canary's suffix, `-canary.N`, with a build suffix after it where one is given. */
+const CANARY = /^-canary\.(?<number>\d+)(?:\+.*)?$/u;
 
 interface Release {
   readonly major: number;
   readonly minor: number;
   readonly patch: number;
+  /** The `N` of a `-canary.N`, for a canary; nothing for a release or another prerelease. */
+  readonly canary?: number;
 }
 
 function releaseOf(version: string): Release | undefined {
@@ -58,10 +80,12 @@ function releaseOf(version: string): Release | undefined {
   if (groups === undefined) {
     return undefined;
   }
+  const canary = CANARY.exec(groups['suffix'] ?? '')?.groups?.['number'];
   return {
     major: Number(groups['major']),
     minor: Number(groups['minor']),
     patch: Number(groups['patch']),
+    ...(canary !== undefined && { canary: Number(canary) }),
   };
 }
 
@@ -69,18 +93,38 @@ function order(a: Release, b: Release): number {
   return a.major - b.major || a.minor - b.minor || a.patch - b.patch;
 }
 
+/** The release or canary a version is held to and falls short of: what a warning names. */
+export interface SecurityFloor {
+  readonly version: string;
+  /** Whether it is `SECURITY_CANARY_FLOOR`, which is the first canary with the fixes. */
+  readonly canary: boolean;
+}
+
 /**
- * Whether `version` is before `SECURITY_FLOOR`.
+ * The floor `version` falls short of, where it falls short of one.
  *
- * A prerelease is judged by the release it is numbered as, since that is the version it is about to
- * be: `16.4.0-canary.N` is past the floor and nothing is said about it. A version this cannot read
- * is not called old either — a warning nobody can act on is worse than no warning at all.
+ * A canary of `SECURITY_CANARY_FLOOR`'s release is held to that canary. Any other prerelease is
+ * judged by the release it is numbered as, since that is the version it is about to be:
+ * `16.4.0-canary.N` is under the floor, and an `rc` of 16.5.0 comes after its canaries. A version
+ * this cannot read is not called old either — a warning nobody can act on is worse than no warning
+ * at all.
  */
-export function isBeforeSecurityFloor(version: string): boolean {
+export function securityFloorOf(version: string): SecurityFloor | undefined {
   const asked = releaseOf(version);
   const floor = releaseOf(SECURITY_FLOOR);
-  if (asked === undefined || floor === undefined) {
-    return false;
+  const canaryFloor = releaseOf(SECURITY_CANARY_FLOOR);
+  if (asked === undefined || floor === undefined || canaryFloor?.canary === undefined) {
+    return undefined;
   }
-  return order(asked, floor) < 0;
+  if (asked.canary !== undefined && order(asked, canaryFloor) === 0) {
+    return asked.canary < canaryFloor.canary
+      ? { version: SECURITY_CANARY_FLOOR, canary: true }
+      : undefined;
+  }
+  return order(asked, floor) < 0 ? { version: SECURITY_FLOOR, canary: false } : undefined;
+}
+
+/** Whether `version` falls short of the security floor it is held to (`securityFloorOf`). */
+export function isBeforeSecurityFloor(version: string): boolean {
+  return securityFloorOf(version) !== undefined;
 }
