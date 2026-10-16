@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import type { EdgeHost } from '../src/edge-host.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
 import type { IncomingRequest } from '../src/request-context.ts';
-import { type PointerRequest, serveFromPointer } from '../src/route.ts';
+import { type CopyRequestBody, type PointerRequest, serveFromPointer } from '../src/route.ts';
 import { standaloneHost, standaloneRuntime } from '../src/standalone/index.ts';
 import { navigation, pprDocument, seedSite, type SiteOptions } from './helpers/site.ts';
 
@@ -51,19 +51,29 @@ function withHostSession(path: string): IncomingRequest {
   return navigation(path, { headers: { cookie: `${HOST_SESSION}=signed-in; theme=dark` } });
 }
 
-/** `request` routed by a host of its own, the site seeded as `site` says, its Function answering. */
+/**
+ * `request` routed by a host of its own, the site seeded as `site` says, its Function answering:
+ * what it was asked for, and the body each request it was asked carried.
+ */
 async function routed(
   request: IncomingRequest,
   site: Omit<SiteOptions, 'document'>,
   composed: Partial<Pick<PointerRequest, 'host' | 'observePassthrough'>> = {},
-): Promise<{ readonly response: Response; readonly body: string; readonly asked: string[] }> {
+): Promise<{
+  readonly response: Response;
+  readonly body: string;
+  readonly asked: string[];
+  readonly received: string[];
+}> {
   const { pointer } = await seedSite({ document: pprDocument(), ...site });
   const asked: string[] = [];
+  const received: string[] = [];
   const runtime = standaloneRuntime(env, {
     memory: createEdgeMemory(() => Date.now()),
-    dispatchApp: (_scriptName: string, dispatched: Request): Promise<Response> => {
+    dispatchApp: async (_scriptName: string, dispatched: Request): Promise<Response> => {
       asked.push(new URL(dispatched.url).pathname);
-      return Promise.resolve(new Response('from the Function'));
+      received.push(await dispatched.text());
+      return new Response('from the Function');
     },
   });
   const ctx = createExecutionContext();
@@ -82,7 +92,12 @@ async function routed(
   });
   const body = await response.text();
   await waitOnExecutionContext(ctx);
-  return { response, body, asked };
+  return { response, body, asked, received };
+}
+
+/** What an observer is told, which a test does not look at. */
+function unheeded(): void {
+  // The test reads what the Function received, and what the observer read.
 }
 
 describe('the routing a host composes', () => {
@@ -106,7 +121,6 @@ describe('the routing a host composes', () => {
     const throwing = {
       observePassthrough: () => {
         return {
-          body: undefined,
           finish: (): void => {
             throw new Error('the observer broke');
           },
@@ -136,6 +150,62 @@ describe('the routing a host composes', () => {
     expect(response.status).toBe(200);
     expect(body).toBe('from the Function');
     expect(asked).toStrictEqual(['/api/hello']);
+  });
+
+  /**
+   * And one that throws once it holds a copy of the body: the edge kept the branch it forwards, so
+   * the request reaches the Function whole (Codex). So does one that holds a copy and observes
+   * nothing, its copy let go of.
+   */
+  it.each([
+    [
+      'throws once it holds a copy of the body',
+      (copyBody: CopyRequestBody): never => {
+        copyBody();
+        throw new Error('the observer broke');
+      },
+    ],
+    [
+      'holds a copy of the body and observes nothing',
+      (copyBody: CopyRequestBody): undefined => {
+        copyBody();
+      },
+    ],
+  ])('forwards the whole body of a passthrough whose observer %s', async (_, observe) => {
+    const posted = navigation('/api/hello', { method: 'POST', body: 'the visitor’s form' });
+
+    const { response, received } = await routed(
+      posted,
+      {},
+      {
+        observePassthrough: (_request, _url, _state, copyBody) => {
+          observe(copyBody);
+        },
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(received).toStrictEqual(['the visitor’s form']);
+  });
+
+  /** One that reads its copy reads the whole body, and the Function is handed the whole of it. */
+  it('hands an observer a copy of the body beside the one it forwards', async () => {
+    const posted = navigation('/api/hello', { method: 'POST', body: 'the visitor’s form' });
+    const copies: Promise<string>[] = [];
+
+    const { received } = await routed(
+      posted,
+      {},
+      {
+        observePassthrough: (_request, _url, _state, copyBody) => {
+          copies.push(new Response(copyBody()).text());
+          return { finish: unheeded };
+        },
+      },
+    );
+
+    expect(received).toStrictEqual(['the visitor’s form']);
+    await expect(Promise.all(copies)).resolves.toStrictEqual(['the visitor’s form']);
   });
 
   /**

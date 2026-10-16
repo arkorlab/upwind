@@ -147,7 +147,10 @@ export function passthroughMetrics(
 
 export interface PassthroughInput {
   readonly request: Request;
-  /** A native forwarding tee branch, only for a POST whose copy is collected separately. */
+  /**
+   * The branch of the body the edge forwards, where the host's observer asked for a copy of it
+   * (`CopyRequestBody`): the request's own body is the other branch's source, and read no more.
+   */
   readonly observedBody?: ReadableStream<Uint8Array> | undefined;
   readonly forwarding: ForwardingContext;
   readonly runtime: EdgeRuntime;

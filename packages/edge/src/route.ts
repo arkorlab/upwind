@@ -33,6 +33,11 @@ import {
   readsCredentials,
 } from './handlers/middleware.ts';
 import {
+  finishObserved,
+  type ObservePassthrough,
+  observationOf,
+} from './handlers/passthrough-observer.ts';
+import {
   handlePassthrough,
   type PassthroughInput,
   type PassthroughWait,
@@ -41,7 +46,6 @@ import {
 } from './handlers/passthrough.ts';
 import { serviceUnavailableResponse } from './handlers/responses.ts';
 import { hostedFirst } from './hosted-first.ts';
-import { logWarn } from './observability/logger.ts';
 import { withPatternBudget } from './pattern-budget.ts';
 import {
   type DeferredRoutingInput,
@@ -94,17 +98,18 @@ export interface RoutingInput {
     | undefined;
   /**
    * What the host observes of a request the edge hands on, where it observes it: a copy of the
-   * body, and a word once the answer is in (`PassthroughObservation`). Asked of every passthrough,
-   * so it answers `undefined` at once for one it leaves alone; absent, none is observed.
+   * body (`copyBody`), and a word once the answer is in (`PassthroughObservation`). Asked of every
+   * passthrough, so it answers `undefined` at once for one it leaves alone; absent, none is
+   * observed. The request's own body is the one forwarded, and is never the observer's to read.
    */
-  readonly observePassthrough?:
-    | ((
-        request: IncomingRequest,
-        url: URL,
-        state: Omit<PreviewState, 'policy'> & { readonly policy: StaticFileContext['policy'] },
-      ) => PassthroughObservation | undefined)
-    | undefined;
+  readonly observePassthrough?: ObservePassthrough | undefined;
 }
+
+export type {
+  CopyRequestBody,
+  ObservePassthrough,
+  PassthroughObservation,
+} from './handlers/passthrough-observer.ts';
 
 /** Keep hosts that already supply a full state on their synchronous routing path. */
 function afterPolicy<T>(
@@ -135,64 +140,6 @@ function lookAtScopeOf(input: ManifestRoutingInput): void {
   // requests out (`heldBehind`); the look itself only has to end.
   const look = { runtime: input.runtime, host: input.host, waitUntil: heldBehind(input.ctx) };
   input.ctx.waitUntil(lookAtScope(look, scope.scopeId));
-}
-
-/**
- * A host's view of one passthrough: the copy of the request's body it reads, a branch of the body
- * forwarded beside it (`PassthroughInput.observedBody`), and what it is told once the answer is in —
- * the answer itself, or nothing where forwarding failed.
- */
-interface PassthroughObservation {
-  readonly body: ReadableStream<Uint8Array> | undefined;
-  readonly finish: (response?: Response) => void;
-}
-
-/**
- * Tell the host's observer of a passthrough what came of it, so that the telling never touches the
- * answer: the observer is the host's own code, and what it throws is logged and goes no further.
- */
-function tellObserver(tell: () => void): void {
-  try {
-    tell();
-  } catch (error) {
-    logWarn('the host observer threw', {
-      told: 'passthrough',
-      detail: error instanceof Error ? error.message : String(error),
-    });
-  }
-}
-
-/**
- * The host's observation of a passthrough, where it makes one. Asked as the observer is told
- * (`tellObserver`): one that throws before it returns observes nothing, and the request is handed
- * on as one it left alone.
- */
-function observationOf(input: ManifestRoutingInput): PassthroughObservation | undefined {
-  let observed: PassthroughObservation | undefined;
-  tellObserver(() => {
-    observed = input.observePassthrough?.(input.request, input.url, input.state);
-  });
-  return observed;
-}
-
-/** The answer to an observed passthrough, its observer told as it comes, or that none came. */
-async function finishObserved(
-  pending: Promise<Response>,
-  finish: PassthroughObservation['finish'],
-): Promise<Response> {
-  let response: Response;
-  try {
-    response = await pending;
-  } catch (error) {
-    tellObserver(() => {
-      finish();
-    });
-    throw error;
-  }
-  tellObserver(() => {
-    finish(response);
-  });
-  return response;
 }
 
 /**
@@ -275,10 +222,8 @@ function passthroughFor(
   if (observed === undefined) {
     return handlePassthrough(passthrough);
   }
-  return finishObserved(
-    handlePassthrough({ ...passthrough, observedBody: observed.body }),
-    observed.finish,
-  );
+  const forwarding = handlePassthrough({ ...passthrough, observedBody: observed.forwarded });
+  return observed.finish === undefined ? forwarding : finishObserved(forwarding, observed.finish);
 }
 
 /** A rule of the application's routing, as far as its conditions go. */
