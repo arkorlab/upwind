@@ -15,6 +15,7 @@ import {
   type CommitOutput as GatewayCommitOutput,
   type CommitRequest as GatewayCommitRequest,
   type CurrentGenerationSummary,
+  type DataGetResponse,
   type DataSetRequest,
   type InvalidateResponse as GatewayInvalidateResponse,
 } from '@stayingupwind/host/cache';
@@ -255,6 +256,37 @@ interface Copies {
   readonly beacon: ScopeBeacon | undefined;
 }
 
+/** The value the authority holds now (`currentData`), where it is later than `than`. */
+async function currentLaterThan(
+  gateway: Gateway,
+  request: DataReadRequest,
+  than: number,
+): Promise<DataGetResponse | undefined> {
+  const current = await gateway.currentData(request);
+  return current !== undefined && current.dependencyRevision > than ? current : undefined;
+}
+
+/**
+ * Keep the later value the authority answers (`currentData`) as the data center's copy once it
+ * comes; nothing where it brings none or fails, which the runtime is told of through what
+ * `getNewerData` answers.
+ */
+async function keptOnceAnswered(
+  copies: DataCopies,
+  request: DataReadRequest,
+  answer: Promise<DataGetResponse | undefined>,
+): Promise<void> {
+  let current: DataGetResponse | undefined;
+  try {
+    current = await answer;
+  } catch {
+    return;
+  }
+  if (current !== undefined) {
+    await copies.keepCurrent(request, current);
+  }
+}
+
 /**
  * The gateway behind the interface the runtime asks through, and the data center's copies of the
  * values this Function wrote and of the records its commits wrote (`Copies`).
@@ -488,22 +520,23 @@ class GatewayHost implements CacheHost {
    * one. Asked only of a value the runtime read stale or expired, whose wait it bounds: KV answers
    * here with what it read for half a minute, so a value another data center has written since is
    * read nowhere here but from the authority, and each isolate here would compute it again — and
-   * differently. An answer that comes after the runtime stopped waiting is kept all the same.
+   * differently. An answer that comes after the runtime stopped waiting is kept all the same. A
+   * copy the runtime then finds no better than stale — written here before an invalidation it knows
+   * of — it asks past (`laterIfAny`), and the authority answers that.
    */
   async getNewerData(request: DataReadRequest, than: number): Promise<DataRead | undefined> {
     const copy = await this.#copies?.find(request);
     if (copy !== undefined && copy.dependencyRevision > than) {
       return copy;
     }
-    const current = await this.#gateway.currentData(request);
-    if (current === undefined || current.dependencyRevision <= than) {
-      return undefined;
-    }
+    const later = currentLaterThan(this.#gateway, request, than);
     const copies = this.#copies;
     if (copies !== undefined) {
-      behindResponse(copies.keepCurrent(request, current));
+      // Kept going from the moment it is asked, not from its answer: the runtime waits for that
+      // only so long, and the response it is under can end first.
+      behindResponse(keptOnceAnswered(copies, request, later));
     }
-    return current;
+    return later;
   }
 
   /** The write, once the authority has taken it, kept in the data center as well. */
