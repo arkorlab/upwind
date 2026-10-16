@@ -162,6 +162,19 @@ function tellObserver(tell: () => void): void {
   }
 }
 
+/**
+ * The host's observation of a passthrough, where it makes one. Asked as the observer is told
+ * (`tellObserver`): one that throws before it returns observes nothing, and the request is handed
+ * on as one it left alone.
+ */
+function observationOf(input: ManifestRoutingInput): PassthroughObservation | undefined {
+  let observed: PassthroughObservation | undefined;
+  tellObserver(() => {
+    observed = input.observePassthrough?.(input.request, input.url, input.state);
+  });
+  return observed;
+}
+
 /** The answer to an observed passthrough, its observer told as it comes, or that none came. */
 async function finishObserved(
   pending: Promise<Response>,
@@ -258,7 +271,7 @@ function passthroughFor(
   };
   // Only a request the host observes pays for the observer; any other keeps the forwarding's own
   // promise.
-  const observed = input.observePassthrough?.(input.request, input.url, input.state);
+  const observed = observationOf(input);
   if (observed === undefined) {
     return handlePassthrough(passthrough);
   }

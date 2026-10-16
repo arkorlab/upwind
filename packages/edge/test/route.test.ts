@@ -121,6 +121,24 @@ describe('the routing a host composes', () => {
   });
 
   /**
+   * And one that throws setting out to observe: it observes nothing, and the request is handed on
+   * as one it left alone (Codex, upwind#179).
+   */
+  it('answers a passthrough whose observer throws before observing as the Function answered it', async () => {
+    const throwing = {
+      observePassthrough: (): never => {
+        throw new Error('the observer broke');
+      },
+    };
+
+    const { response, body, asked } = await routed(navigation('/api/hello'), {}, throwing);
+
+    expect(response.status).toBe(200);
+    expect(body).toBe('from the Function');
+    expect(asked).toStrictEqual(['/api/hello']);
+  });
+
+  /**
    * The application's rules are judged as its own routing judges them, on a request that never
    * holds the host's credentials: a `missing` that names one holds for every visitor, so a rule
    * ahead of the filesystem claims the page from one who carries it, and the Function answers as
