@@ -434,6 +434,12 @@ const staticFileAssetPrefixSchema = z.object({
 });
 export type StaticFileAssetPrefix = z.infer<typeof staticFileAssetPrefixSchema>;
 
+const spelledPrefixSchema = z.object({
+  basePath: z.string(),
+  locales: z.array(z.string().min(1)).min(1).optional(),
+});
+export type SpelledPrefix = z.infer<typeof spelledPrefixSchema>;
+
 const manifestFields = {
   projectId: z.string().min(1),
   runId: z.string().min(1),
@@ -539,6 +545,16 @@ export const projectManifestSchema = z.object({
    * published, whose reader leaves that spelling to the Function.
    */
   staticFileTrailingSlash: z.literal(true).optional(),
+  /**
+   * What Next.js's router reads of a request's path as it is written, before it decodes anything:
+   * the base path, and in an application with `i18n`, the locale behind it — every one of its
+   * locales (`spellsPrefixOf`). A page or a file a reading that decodes the path finds is the
+   * request's only where the path writes these as the router reads them: `/b%61se/about` names
+   * nothing under the base path `/base`, nor `/%65n/about` the page `/en/about`. Present for a
+   * build with a base path or `i18n`, absent for any other; a manifest from before it was published
+   * is read as it was, every path decoded whole.
+   */
+  spelledPrefix: spelledPrefixSchema.optional(),
   /**
    * Where a Pages Router page's props are asked for: `<basePath>/_next/data/<buildId>`, the build's
    * own, as a request's URL spells it (`pagesDataPrefixOf`) — what a request's pathname is compared

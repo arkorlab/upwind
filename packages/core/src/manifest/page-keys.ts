@@ -2,9 +2,13 @@ import { compiledRules, patternOf } from '../request/compiled-patterns.ts';
 import { testWithin } from '../request/pattern-budget.ts';
 import { builtNameOf } from './built-names.ts';
 import type { DynamicRoute, ProjectManifest } from './schema.ts';
+import { spellsPrefixOf } from './spelled-prefix.ts';
 
-/** What of a manifest tells a page of its own from a member of a dynamic route. */
-type PagesOfTheirOwn = Pick<ProjectManifest, 'dynamicRoutes' | 'filesystemPages'>;
+/**
+ * What of a manifest tells a page of its own from a member of a dynamic route, and what its router
+ * reads of a path as written.
+ */
+type PagesOfTheirOwn = Pick<ProjectManifest, 'dynamicRoutes' | 'filesystemPages' | 'spelledPrefix'>;
 
 /**
  * Finding a page Next.js built by the path a request asks for it by, as Next.js finds it: in the
@@ -67,6 +71,11 @@ function isOwnPage(manifest: PagesOfTheirOwn, key: string): boolean {
  *
  * A manifest from before the pages of their own were listed is read as it was then, as spelled and
  * then decoded whole: it is a build whose Functions find a page so.
+ *
+ * Whichever reading finds it, a page found by decoding the path is the request's only where the
+ * path writes the base path and the locale in front of the page as the router reads them, as
+ * written (`spellsPrefixOf`): the router finds no locale in front of `/%65n/about`, and no page
+ * `/en/about` for it.
  */
 export function pageKeyOf(
   record: Readonly<Record<string, unknown>>,
@@ -76,6 +85,20 @@ export function pageKeyOf(
   if (!pathname.includes('%')) {
     return Object.hasOwn(record, pathname) ? pathname : undefined;
   }
+  const key = decodedPageKey(record, pathname, manifest);
+  return key === undefined ||
+    key === pathname ||
+    spellsPrefixOf(manifest.spelledPrefix, pathname, key)
+    ? key
+    : undefined;
+}
+
+/** The key `pageKeyOf` finds a pathname with an escape in it under, before the prefix is asked. */
+function decodedPageKey(
+  record: Readonly<Record<string, unknown>>,
+  pathname: string,
+  manifest: PagesOfTheirOwn,
+): string | undefined {
   const decoded = decodedWhole(pathname);
   if (manifest.filesystemPages === undefined) {
     return memberKey(record, pathname, decoded);

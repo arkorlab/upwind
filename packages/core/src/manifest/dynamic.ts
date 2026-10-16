@@ -415,6 +415,30 @@ export interface ConfiguredHeaders {
   readonly conditioned: boolean;
 }
 
+/** One judgement of a request's header rules, retained for whichever answer is served. */
+export interface RequestHeaderRules {
+  readonly response: ConfiguredHeaders;
+  readonly document: ConfiguredHeaders;
+}
+
+// eslint-disable-next-line max-params -- mirroring avoids an intermediate map or a second interpolation per rule
+function applyHeaderSet(
+  out: Record<string, string>,
+  set: Readonly<Record<string, string>>,
+  match: RegExpExecArray,
+  references: RouterReferences | undefined,
+  mirrored?: Record<string, string>,
+): void {
+  for (const [name, value] of Object.entries(set)) {
+    const key = interpolateHeader(name, match, references).toLowerCase();
+    const interpolated = interpolateHeader(value, match, references);
+    out[key] = interpolated;
+    if (mirrored !== undefined) {
+      mirrored[key] = interpolated;
+    }
+  }
+}
+
 function configuredHeaders(
   manifest: ProjectManifest,
   url: URL,
@@ -434,10 +458,7 @@ function configuredHeaders(
     }
     conditioned ||= rule.has !== undefined || rule.missing !== undefined;
     const set = forDocument ? (rule.documentHeaders ?? rule.headers) : rule.headers;
-    for (const [name, value] of Object.entries(set)) {
-      out[interpolateHeader(name, match, manifest.routerReferences).toLowerCase()] =
-        interpolateHeader(value, match, manifest.routerReferences);
-    }
+    applyHeaderSet(out, set, match, manifest.routerReferences);
   }
   return { headers: out, conditioned };
 }
@@ -453,6 +474,43 @@ export function headerRulesFor(
   headers: Headers,
 ): ConfiguredHeaders {
   return configuredHeaders(manifest, url, headers, false);
+}
+
+/**
+ * Both forms of a request's configured headers, with every rule and condition tested once. The
+ * edge judges them before middleware can change the request, then retains these results for a
+ * document or another response without spending its routing allowance on the same rules again.
+ * Later matched rules win independently in each form; a document takes `documentHeaders` in place
+ * of a rule's ordinary headers wherever the rule supplies them.
+ */
+export function requestHeaderRulesFor(
+  manifest: ProjectManifest,
+  url: URL,
+  headers: Headers,
+): RequestHeaderRules {
+  const response: Record<string, string> = {};
+  const document: Record<string, string> = {};
+  let conditioned = false;
+  if (manifest.headerRules !== undefined) {
+    for (const compiled of compiledRules(manifest.headerRules, 'i')) {
+      const { rule } = compiled;
+      const match = patternMatch(compiled, url.pathname);
+      if (match === null || !conditionsHold(rule, url, headers)) {
+        continue;
+      }
+      conditioned ||= rule.has !== undefined || rule.missing !== undefined;
+      if (rule.documentHeaders === undefined) {
+        applyHeaderSet(response, rule.headers, match, manifest.routerReferences, document);
+      } else {
+        applyHeaderSet(response, rule.headers, match, manifest.routerReferences);
+        applyHeaderSet(document, rule.documentHeaders, match, manifest.routerReferences);
+      }
+    }
+  }
+  return {
+    response: { headers: response, conditioned },
+    document: { headers: document, conditioned },
+  };
 }
 
 /**

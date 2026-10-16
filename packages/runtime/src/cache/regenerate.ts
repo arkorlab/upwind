@@ -644,7 +644,8 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   const stopHeartbeat = heartbeat(input, lease);
   // What the render's reads were judged against, of each tag they were judged under (`HeldTags`).
   const held = new HeldTags();
-  let observedTagRevision: number;
+  // The view the render's reads are judged against: its revision, and the marks it had let go of.
+  let observed: { readonly tagRevision: number; readonly losses: number };
   let viewed: boolean;
   let captured: CapturedRender | undefined;
   try {
@@ -652,7 +653,7 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
       code: 'tags_not_synced',
       message: 'the tags were not synced',
     });
-    observedTagRevision = runtime.tags.revision;
+    observed = { tagRevision: runtime.tags.revision, losses: runtime.tags.losses.count };
     captured = await renderStatic(input, lease.attemptId, held);
     // What the render read is all read: work it left behind its answer reads in its context still.
     held.close();
@@ -680,7 +681,7 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
   const publishing = publish(
     input,
     lease,
-    { render: captured, observedTagRevision, held, began },
+    { render: captured, observedTagRevision: observed.tagRevision, held, began },
     stopHeartbeat,
   );
   // Kept to answer for the entry only where its own pull answered. One that did not was rendered
@@ -693,7 +694,8 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
           render: { ...captured, headers: generationHeadersOf(target, captured) },
           attemptId: lease.attemptId,
           tags: [...tagValuesOf(target, captured)],
-          observedTagRevision,
+          observedTagRevision: observed.tagRevision,
+          observedLosses: observed.losses,
           held,
           observedAt: askedAt,
           published: publishing,

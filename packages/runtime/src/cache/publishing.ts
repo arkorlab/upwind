@@ -97,15 +97,39 @@ function heldThroughView(publishing: Publishing): boolean {
 }
 
 /**
+ * Whether the isolate's view holds the whole of what it was told of each of the render's tags
+ * (`TagState.holdsWhole`), and has let go of no mark of one since the render began
+ * (`TagLosses.lostSince`): then an invalidation of one of them since the pull the render read
+ * against is a mark the view holds — the delta brings each one past where the view stood, a read is
+ * told of one past it too, and the isolate's own are in force here — and `unmarkedSince` weighs it.
+ * One the view let go of a mark of is one it can say nothing of since, at whatever revision it
+ * stands: a mark of the isolate's own, or one told at no revision, is known at none.
+ */
+function wholeInView(runtime: CacheRuntime, publishing: Publishing): boolean {
+  return publishing.tags.every((tag) => {
+    return (
+      runtime.tags.holdsWhole(tag) && !runtime.tags.losses.lostSince(tag, publishing.observedLosses)
+    );
+  });
+}
+
+/**
  * Whether nothing says the render missed an invalidation while its commit is out: it held each of
- * its tags through the view it read against (`heldThroughView`), the scope's delta has brought
- * nothing since the pull the render read against (`observedTagRevision`), and no mark on a tag of
- * the render says so (`unmarkedSince`) — which is what the second cannot see.
+ * its tags through the view it read against (`heldThroughView`), the view holds the whole of what it
+ * was told of each of them (`wholeInView`), and no mark on a tag of the render says so
+ * (`unmarkedSince`).
+ *
+ * Not whether the view has moved past the render's revision: the scope's revision moves for other
+ * tags too, and for every lease and commit of its entries — the publish's own lease among them,
+ * asked for beside the pull the render read against, and recorded after it where that pull answered
+ * first. Taken for a miss, a move left the render answering no one from the isolate's next pull —
+ * any regeneration's — until its commit was in, and a request of the isolate meanwhile was answered
+ * with a page of its own, which no request after the commit is answered with.
  */
 function unmovedSince(runtime: CacheRuntime, publishing: Publishing): boolean {
   return (
     heldThroughView(publishing) &&
-    runtime.tags.revision <= publishing.observedTagRevision &&
+    wholeInView(runtime, publishing) &&
     unmarkedSince(runtime, publishing)
   );
 }
