@@ -99,11 +99,7 @@ describe('a private source archive', () => {
       parseSourceArchiveIndex(new Uint8Array(MAX_SOURCE_ARCHIVE_INDEX_BYTES + 1), 0, 0),
     ).toBeUndefined();
     expect(
-      parseSourceArchiveIndex(
-        oversizedRange,
-        1,
-        MAX_SOURCE_CONTENT_BYTES + 1,
-      ),
+      parseSourceArchiveIndex(oversizedRange, 1, MAX_SOURCE_CONTENT_BYTES + 1),
     ).toBeUndefined();
   });
 });
