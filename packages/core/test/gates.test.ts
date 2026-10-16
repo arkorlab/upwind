@@ -146,6 +146,11 @@ function rerouted(
   return { ...bundle, routing: { ...bundle.routing, [phase]: rules } };
 }
 
+/** A rewrite of `/latest` to `destination`. */
+function latest(destination: string): Route {
+  return { source: '/latest', sourceRegex: '^/latest(?:/)?$', destination };
+}
+
 /** What the schema says is wrong with a bundle, by message. */
 function refusals(bundle: DeploymentBundle): string[] {
   const parsed = deploymentBundleSchema.safeParse(bundle);
@@ -183,6 +188,38 @@ function gateOf(manifest: ProjectManifest, path: string) {
 }
 
 const GATES = { [POST]: 'checker' };
+const ALL = '/[...all]';
+
+/**
+ * A build of a class of posts and a class of authors ahead of a catch-all, in Next.js's order, with
+ * a member of the authors and one of the catch-all prerendered — the catch-all's under the posts.
+ */
+function classesOf(gates: Record<string, string>): DeploymentBundle {
+  return bundleOf({
+    gates,
+    entrypoints: [
+      { id: POST, kind: 'app-page', pathname: POST },
+      { id: AUTHOR, kind: 'app-page', pathname: AUTHOR },
+      { id: ALL, kind: 'app-page', pathname: ALL },
+    ],
+    prerenders: [
+      { id: 'author', pathname: '/authors/demo', route: AUTHOR, parentOutputId: 'a', groupId: 1 },
+      { id: 'caught', pathname: '/posts/demo', route: ALL, parentOutputId: 'c', groupId: 2 },
+    ],
+    routing: {
+      ...bundleOf().routing,
+      dynamicRoutes: [
+        POST_ENTRY,
+        AUTHOR_ENTRY,
+        {
+          source: ALL,
+          sourceRegex: '^/(?<nxtPall>.+?)(?:/)?$',
+          destination: '/[...all]?nxtPall=$nxtPall',
+        },
+      ],
+    },
+  });
+}
 const POST_GATE = { route: POST, name: 'checker' };
 
 describe('the gates a build declares in its environment', () => {
@@ -419,6 +456,43 @@ describe('the gates a build’s rewrites may reach', () => {
   });
 
   /**
+   * The router reaches a member the build prerendered through its dynamic routes, the first that
+   * holds of it winning: a rewrite to a member of the authors lands on the authors' class, and
+   * reaches no gated catch-all behind it — while one to the catch-all's member under the posts lands
+   * on the posts' class ahead of the catch-all, and reaches that.
+   */
+  it('reads a rewrite to a member as the dynamic route the router lands it on', () => {
+    const author = rerouted(classesOf({ [ALL]: 'checker' }), 'afterFiles', [
+      latest('/authors/demo'),
+    ]);
+    const caught = rerouted(classesOf({ [POST]: 'checker' }), 'afterFiles', [
+      latest('/posts/demo'),
+    ]);
+
+    expect(refusals(author)).toStrictEqual([]);
+    expect(refusals(caught)).toStrictEqual([
+      expect.stringMatching(/^gates names \/posts\/\[slug\], which the rewrite of /u),
+    ]);
+  });
+
+  /** A dynamic route with conditions may be passed over, and the one after it reached. */
+  it('reads a dynamic route with conditions as one the router may pass over', () => {
+    const bundle = classesOf({ [ALL]: 'checker' });
+    // The authors' class, asked only of a request with a cookie.
+    const dynamicRoutes = bundle.routing.dynamicRoutes.map((route) => {
+      return route === AUTHOR_ENTRY
+        ? { ...route, has: [{ type: 'cookie' as const, key: 'b' }] }
+        : route;
+    });
+    const conditioned = { ...bundle, routing: { ...bundle.routing, dynamicRoutes } };
+    const rewritten = rerouted(conditioned, 'afterFiles', [latest('/authors/demo')]);
+
+    expect(refusals(rewritten)).toStrictEqual([
+      expect.stringMatching(/^gates names \/\[\.\.\.all\], which the rewrite of /u),
+    ]);
+  });
+
+  /**
    * A whole segment of the request's path, and whole segments of it, are never `.` or `..`: the
    * router matches a rule against the URL's path, its dot segments resolved. So a rewrite that puts
    * them under a path of its own reaches no route outside it — as a delivery of the application's
@@ -642,6 +716,20 @@ describe('what a manifest carries to find a request’s gate by', () => {
   });
 
   /** The props of a page rendered for each request are asked for at a route of their own. */
+  /**
+   * The runtime reaches a member through its dynamic routes, the first that holds of it winning: a
+   * member of the catch-all under the posts is served by the posts' class ahead of it, and asked of
+   * that class's gate.
+   */
+  it('names a member the gated route a dynamic route ahead of its own lands it on', () => {
+    const bundle = classesOf({ [POST]: 'checker' });
+    const caught = manifestOf(classesOf({ [ALL]: 'checker' }));
+
+    expect(gatedPathnamesOf(bundle)).toMatchObject({ '/posts/demo': POST });
+    expect(gateOf(manifestOf(bundle), '/posts/demo')).toStrictEqual(POST_GATE);
+    expect(gateOf(caught, '/authors/demo')).toBeUndefined();
+  });
+
   it('names the route a Pages Router page’s props are asked for by of the page', () => {
     const account = `/_next/data/${BUILD}/account.json`;
     const bundle = bundleOf({
@@ -812,6 +900,19 @@ describe('the gate a request is asked of', () => {
     expect(gateOf(caught, '/_next/image')).toBeUndefined();
     // As `next/image` asks for it where the application keeps its pages behind the slash.
     expect(gateOf(caught, '/_next/image/')).toBeUndefined();
+  });
+
+  /**
+   * An optimizer at a path of its own choosing is answered there ahead of every route, a page of
+   * that name among them: the router serves its own path the optimizer's, whatever else is named so.
+   */
+  it('is none at the optimizer’s own path, where a gated page is named so as well', () => {
+    const gated = manifestOf(bundleOf({ gates: { '/private': 'checker' } }), {
+      images: { ...IMAGES, path: '/private' },
+    });
+
+    expect(gateOf(gated, '/private')).toBeUndefined();
+    expect(gateOf(gated, '/private/')).toBeUndefined();
   });
 
   /**

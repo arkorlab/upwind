@@ -1,5 +1,6 @@
 import { builtNameOf } from '../manifest/built-names.ts';
 import { decodedPath, requestSpelling } from '../manifest/pages-data-prefix.ts';
+import { compiledRules, type CompiledRule, patternOf } from '../request/compiled-patterns.ts';
 import { pageOfDataPathname, pagesDataPathnameUnder } from './pages-data.ts';
 import { type CaptureKind, referencesOf } from './rewrite-captures.ts';
 
@@ -29,13 +30,27 @@ interface Rerouting {
   readonly headers?: Readonly<Record<string, string>> | undefined;
 }
 
+/** A dynamic route of the build, as far as where it lands a request and what it asks of one. */
+interface Landing {
+  readonly sourceRegex: string;
+  readonly destination?: string | undefined;
+  readonly has?: readonly unknown[] | undefined;
+  readonly missing?: readonly unknown[] | undefined;
+}
+
+/** A build's names, and its dynamic routes in their order. */
+export interface BuildLandings extends BuildNames {
+  readonly routing: { readonly dynamicRoutes: readonly Landing[] };
+}
+
 /** A build's routing, as far as its rules send a request elsewhere. */
-export interface BuildRerouting extends BuildNames {
+export interface BuildRerouting extends BuildLandings {
   readonly routing: {
     readonly beforeMiddleware: readonly Rerouting[];
     readonly beforeFiles: readonly Rerouting[];
     readonly afterFiles: readonly Rerouting[];
     readonly fallback: readonly Rerouting[];
+    readonly dynamicRoutes: readonly Landing[];
   };
 }
 
@@ -102,6 +117,49 @@ export function routeOfPathname(build: BuildNames): (pathname: string) => string
   };
 }
 
+/** Whether a dynamic route's pattern holds of a path: one that does not compile may, for all it says. */
+function holds(compiled: CompiledRule<Landing>, pathname: string): boolean {
+  try {
+    return patternOf(compiled).test(pathname);
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * The routes a build's router may land a path on through its dynamic routes, in their order: each
+ * whose pattern holds of the path without regard to case, as the runtime matches them, up to the
+ * first that asks nothing more of a request (`has`, `missing`) — a request one of those passes over
+ * goes on to the next. `undefined` among them for one whose destination names no route of the
+ * build. None where no pattern holds.
+ *
+ * Which of these the router takes is what serves a member the build prerendered: the runtime finds
+ * a page of its own, a file, and a few prerenders by their names (`resolvedByName`), and every other
+ * member through the dynamic routes, the first that holds of it winning — a class ahead of the
+ * member's own among them.
+ */
+export function dynamicLandings(
+  build: BuildLandings,
+): (pathname: string) => (string | undefined)[] {
+  const routeOf = routeOfPathname(build);
+  const routes = compiledRules(build.routing.dynamicRoutes, 'i');
+  return (pathname) => {
+    const landed: (string | undefined)[] = [];
+    for (const compiled of routes) {
+      if (!holds(compiled, pathname)) {
+        continue;
+      }
+      const { rule } = compiled;
+      const landing = rule.destination?.split('?', 1)[0];
+      landed.push(landing === undefined ? undefined : routeOf(landing));
+      if (rule.has === undefined && rule.missing === undefined) {
+        break;
+      }
+    }
+    return landed;
+  };
+}
+
 /**
  * A segment of a route's name that takes one segment of a path, its value in brackets — and, in
  * the name of a page's data, what follows the value (`[slug].json`); one that takes the rest.
@@ -134,6 +192,8 @@ interface Reader {
    * route that also matches it (`landedRoute`, in the runtime).
    */
   readonly servesItself: (name: string) => boolean;
+  /** The routes the router may land a path on through its dynamic routes (`dynamicLandings`). */
+  readonly landingsOf: (pathname: string) => (string | undefined)[];
 }
 
 /**
@@ -316,10 +376,13 @@ function mayReachCaptured(destination: Destination, named: string, fold: Fold): 
  * asks for it by is `named` — the page's own, or the name of its data. A path the rewrite writes
  * whole is read as the router reads it (`readingsOf`): it reaches the route where any reading is a
  * page of the route; and otherwise none where a reading is a page of its own or a file, which the
- * router serves in place of any dynamic route; and otherwise where it may be one of `named`'s, as it
- * is or as the data of any page it may be (`dataPagesOf`), and compared without regard to case
- * where a dynamic route finds `named`'s requests. One the rewrite puts a capture in is read by what
- * each capture may hold (`mayReachCaptured`).
+ * router serves in place of any dynamic route; and otherwise where a dynamic route the router may
+ * land the path on, the first that holds of it, lands on the route (`dynamicLandings`) — a member
+ * of another route the build prerendered is no name the router serves by — or, where none holds of
+ * it, where it may be one of `named`'s, as it is or as the data of any page it may be
+ * (`dataPagesOf`), and compared without regard to case where a dynamic route finds `named`'s
+ * requests. One the rewrite puts a capture in is read by what each capture may hold
+ * (`mayReachCaptured`).
  */
 function mayReach(
   reader: Reader,
@@ -338,7 +401,12 @@ function mayReach(
   if (readings.some((reading) => reader.servesItself(reading))) {
     return false;
   }
-  const spelled = fold(requestSpelling(path));
+  const asSet = requestSpelling(path);
+  const landed = reader.landingsOf(asSet);
+  if (landed.length > 0 && !landed.includes(undefined)) {
+    return landed.includes(route.route);
+  }
+  const spelled = fold(asSet);
   return [spelled, ...dataPagesOf(spelled)].some((page) => mayBeWhole(page, route.named, fold));
 }
 
@@ -356,7 +424,7 @@ function namesOf(build: BuildNames, route: string): string[] {
 }
 
 /** What the router serves by its own name ahead of any dynamic route: a page of its own, a file. */
-function readerOf(build: BuildNames): Reader {
+function readerOf(build: BuildLandings): Reader {
   const own = new Set(build.staticFiles.map((file) => file.pathname));
   for (const { pathname } of build.entrypoints) {
     // A route's own name in brackets is a class, which a dynamic route finds the members of.
@@ -364,7 +432,11 @@ function readerOf(build: BuildNames): Reader {
       own.add(pathname);
     }
   }
-  return { routeOf: routeOfPathname(build), servesItself: (name) => own.has(name) };
+  return {
+    routeOf: routeOfPathname(build),
+    servesItself: (name) => own.has(name),
+    landingsOf: dynamicLandings(build),
+  };
 }
 
 /**

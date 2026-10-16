@@ -23,9 +23,16 @@ interface Rewrite {
   readonly has?: readonly { readonly type: 'query' | 'header'; readonly key: string }[];
 }
 
+/** A page the build prerendered, of the route it is a member of. */
+interface Prerendered {
+  readonly pathname: string;
+  readonly route: string;
+}
+
 interface Deployment {
   readonly basePath?: string;
   readonly afterFiles?: readonly Rewrite[];
+  readonly prerenders?: readonly Prerendered[];
 }
 
 /** A deployment of a class of posts, a catch-all, and two pages of their own, under `basePath`. */
@@ -57,13 +64,22 @@ function deployment(options: Deployment = {}): Store {
       shouldNormalizeNextData: false,
     },
     entrypoints: pathnames.map((pathname) => ({ id: pathname, kind: 'app-page', pathname })),
-    prerenders: [],
+    prerenders: (options.prerenders ?? []).map((prerender) => {
+      return {
+        ...prerender,
+        id: prerender.pathname,
+        parentOutputId: prerender.pathname,
+        groupId: 1,
+      };
+    }),
     staticFiles: [],
   };
   return {
     manifest,
     prerendersById: new Map(),
-    prerendersByPathname: new Map(),
+    prerendersByPathname: new Map(
+      manifest.prerenders.map((prerender) => [prerender.pathname, prerender]),
+    ),
     shellsByRoute: new Map(),
     staticFiles: new Map(),
     ...routerPathnames(manifest as never),
@@ -89,6 +105,17 @@ async function landing(store: Store, path: string): Promise<string | undefined> 
 }
 
 describe('where the router lands a request a gate is asked of', () => {
+  /**
+   * A member the build prerendered is no name the router resolves, but for the few it does
+   * (`resolvedByName`): it is reached through the dynamic routes, the first that holds of it
+   * winning, a class ahead of the member's own among them.
+   */
+  it('lands a member the build prerendered on the first dynamic route that holds of it', async () => {
+    const store = deployment({ prerenders: [{ pathname: '/posts/demo', route: ALL }] });
+
+    await expect(landing(store, '/posts/demo')).resolves.toBe(POST);
+  });
+
   it('matches a class without regard to case', async () => {
     await expect(landing(deployment(), '/POSTS/abc')).resolves.toBe(POST);
   });

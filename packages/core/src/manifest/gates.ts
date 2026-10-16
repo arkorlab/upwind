@@ -103,16 +103,19 @@ function namesOptimizer(manifest: ProjectManifest, pathname: string): boolean {
 }
 
 /**
- * What the router resolves a pathname to by name: a page, of whichever route, a file, or the image
- * optimizer's own path, which is answered ahead of every dynamic route (`namesOptimizer`).
+ * What a pathname is answered as by name: the image optimizer's own path first, which is answered
+ * ahead of every route, a page of that name among them (`namesOptimizer`); then a page, of
+ * whichever route, or a file.
  */
 function namedOf(manifest: ProjectManifest, pathname: string): Named | undefined {
+  if (namesOptimizer(manifest, pathname)) {
+    return { gated: undefined };
+  }
   const key = exactKeyOf(manifest, pathname);
   if (key !== undefined) {
     return { gated: gatedOf(manifest, key) };
   }
-  const answeredAhead = namesOptimizer(manifest, pathname) || namesOwnFile(manifest, pathname);
-  return answeredAhead ? { gated: undefined } : undefined;
+  return namesOwnFile(manifest, pathname) ? { gated: undefined } : undefined;
 }
 
 /**

@@ -2,7 +2,7 @@ import type { DynamicRoute } from '../manifest/schema.ts';
 import type { Issue } from '../schema/index.ts';
 import { type RouteGates, routeGatesSchema } from './carried.ts';
 import type { DynamicRouting } from './functions.ts';
-import { routeOfPathname } from './gate-routes.ts';
+import { dynamicLandings, routeOfPathname } from './gate-routes.ts';
 import type { DeploymentBundle } from './schema.ts';
 import { routerSpellings } from './spelling.ts';
 
@@ -96,8 +96,9 @@ export function withGates(
  * The pathnames Next.js resolves exactly that are of a gated route, each with that route: the
  * route's own, every one the build prerendered of it — a member, a shell, a page's payload — and,
  * for a Pages Router page, the name its props are asked for by (`routeOfPathname`), under each
- * spelling the router finds one by (`routerSpellings`). `undefined` for a bundle that declares no
- * gate.
+ * spelling the router finds one by (`routerSpellings`). A member is of the gated route a dynamic
+ * route ahead of its own lands it on (`dynamicLandings`), as the runtime serves it, the member's
+ * own route's otherwise. `undefined` for a bundle that declares no gate.
  */
 export function gatedPathnamesOf(bundle: DeploymentBundle): Record<string, string> | undefined {
   const { gates } = bundle;
@@ -117,8 +118,11 @@ export function gatedPathnamesOf(bundle: DeploymentBundle): Record<string, strin
   for (const entry of bundle.entrypoints) {
     add(entry.pathname, routeOf(entry.pathname));
   }
+  const landingsOf = dynamicLandings(bundle);
+  const isGated = (route: string | undefined): route is string =>
+    route !== undefined && Object.hasOwn(gates, route);
   for (const prerender of bundle.prerenders) {
-    add(prerender.pathname, prerender.route);
+    add(prerender.pathname, landingsOf(prerender.pathname).find(isGated) ?? prerender.route);
   }
   return gated;
 }
