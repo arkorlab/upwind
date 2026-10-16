@@ -35,7 +35,7 @@ import {
   type TagRef,
   tagRefsFor,
 } from './tags.ts';
-import { type Apply, record, type TxInput } from './tx.ts';
+import { type Apply, inChunks, record, type TxInput } from './tx.ts';
 
 /**
  * What a deploy does to a scope: creates it once, seeds each entry's build generation
@@ -44,6 +44,12 @@ import { type Apply, record, type TxInput } from './tx.ts';
  */
 
 const OUTPUT_ID_PREFIX = 'out';
+/**
+ * How many entries of a batch are planned at once. A batch may hold two hundred, each naming up to
+ * a thousand artifacts and a thousand tags, and each id a digest: planned all at once, every digest
+ * of the batch would be out together, before the first entry reached the transaction.
+ */
+const SEED_PLANS_AT_ONCE = 8;
 
 export function applySeedScope(input: TxInput, seed: SeedScopeInput): SeedScopeResult {
   const { sql, now, revision, history } = input;
@@ -137,23 +143,21 @@ export async function planSeedEntries(
   input: TxInput,
   batch: SeedEntriesInput,
 ): Promise<Apply<SeedEntriesResult | Refusal>> {
-  const plans = await Promise.all(
-    batch.entries.map(async (entry) => {
-      // Judged before a tag of it is named: an entry that may not carry its tags keeps none.
-      const tagsRefused = tagsRefusal(entry.generation.tags);
-      const [identity, tagRefs, artifactIds] = await Promise.all([
-        identifyEntry(input.scopeId, entry.descriptor, entry.allowQuery),
-        tagsRefused === undefined ? tagRefsFor(input.scopeId, entry.generation.tags) : [],
-        artifactIdsFor(
-          input.scopeId,
-          entry.generation.outputs.flatMap((output) =>
-            output.artifacts.map((artifact) => artifact.sha256),
-          ),
+  const plans = await inChunks(batch.entries, SEED_PLANS_AT_ONCE, async (entry) => {
+    // Judged before a tag of it is named: an entry that may not carry its tags keeps none.
+    const tagsRefused = tagsRefusal(entry.generation.tags);
+    const [identity, tagRefs, artifactIds] = await Promise.all([
+      identifyEntry(input.scopeId, entry.descriptor, entry.allowQuery),
+      tagsRefused === undefined ? tagRefsFor(input.scopeId, entry.generation.tags) : [],
+      artifactIdsFor(
+        input.scopeId,
+        entry.generation.outputs.flatMap((output) =>
+          output.artifacts.map((artifact) => artifact.sha256),
         ),
-      ]);
-      return { entry, identity, tagRefs, outputs: seedOutputs(entry, artifactIds), tagsRefused };
-    }),
-  );
+      ),
+    ]);
+    return { entry, identity, tagRefs, outputs: seedOutputs(entry, artifactIds), tagsRefused };
+  });
   return () => applySeedEntries(input, plans);
 }
 

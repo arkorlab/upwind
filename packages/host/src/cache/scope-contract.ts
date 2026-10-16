@@ -22,7 +22,11 @@ import {
   dependencyCoverageSchema as dependencyCoverageEntity,
   publicCacheGenerationSchema as publicCacheGenerationEntity,
 } from './entities.ts';
-import { invalidateRequestSchema as invalidateRequestEntity } from './gateway-contract.ts';
+import {
+  invalidateRequestSchema as invalidateRequestEntity,
+  responseHeadersSchema,
+  responseStatusSchema,
+} from './gateway-contract.ts';
 
 /**
  * The entities and the request this contract carries, which `entities.ts` and `gateway-contract.ts`
@@ -134,8 +138,13 @@ const seedGenerationSchema = z.object({
   cacheTimestamp: z.number().int().nullable(),
   producedAt: z.number().int().nullable(),
   policy: toZod(cachePolicySchema),
-  status: z.number().int(),
-  headers: z.record(z.string(), z.string()),
+  /** A prerender's, which its bundle holds to the same statuses as a commit's is held to. */
+  status: toZod(responseStatusSchema),
+  /**
+   * A prerender's, filtered as a commit's are (`generationResponseHeaders`), and held to the names
+   * and values a commit's are held to, which its bundle holds a prerender's to as well.
+   */
+  headers: toZod(responseHeadersSchema),
   tags: z.array(seedTagSchema),
   outputs: z.array(seedOutputSchema).min(1).max(MAX_SEED_OUTPUTS),
   dependencyCoverage: dependencyCoverageSchema,
@@ -203,6 +212,12 @@ export const applyResourceChangeInputSchema = z.object({
   resourceId: z.string().min(1),
   eventId: z.string().min(1),
   version: z.number().int().positive(),
+  /**
+   * The tag the resource's entries carry, expected to stay the same from one version to the next.
+   * A change that names another invalidates the tag it replaces as well as its own, and is
+   * reconciled under both; a tag replaced before that is not followed again: its entries were
+   * condemned when it was replaced, and are regenerated as they are next asked for, but not warmed.
+   */
   tag: toZod(generationTagSchema.shape.value),
   /** Only the trusted deployment's known public routes are rendered without a visitor. */
   allowedRoutes: z.array(z.string().startsWith('/')).optional(),

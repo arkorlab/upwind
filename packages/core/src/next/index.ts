@@ -1,4 +1,11 @@
-export { isBeforeSecurityFloor, SECURITY_FLOOR, SECURITY_RELEASE_URL } from './security.ts';
+export {
+  isBeforeSecurityFloor,
+  SECURITY_CANARY_FLOOR,
+  SECURITY_FLOOR,
+  SECURITY_RELEASE_URL,
+  type SecurityFloor,
+  securityFloorOf,
+} from './security.ts';
 export {
   isResourceCacheBridgeSource,
   resourceCacheBridge,

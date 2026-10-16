@@ -40,13 +40,9 @@ import {
 } from './attempts.ts';
 import { wantedRecords, withCurrentRecord, withWrittenRecord } from './commit-record.ts';
 import { type CommitOutcome, planCommit } from './commit.ts';
-import {
-  dataUploadExpired,
-  type DataUploadPage,
-  dataUploadStartedAt,
-  listDataUploads,
-} from './data-uploads.ts';
-import { type DataSetInput, type DataSetOutcome, planSetData } from './data.ts';
+import { adoptDataUpload } from './data-adopt.ts';
+import { type DataUploadPage, listDataUploads } from './data-uploads.ts';
+import type { DataSetInput, DataSetOutcome } from './data.ts';
 import {
   type HistoryFactory,
   type HistoryFields,
@@ -91,7 +87,6 @@ import {
   settleRetryMs,
   countSettleFailures,
   type SettleRun,
-  type WantedRecords,
 } from './settle.ts';
 import {
   isRefusal,
@@ -102,6 +97,7 @@ import {
   requireActiveScope,
 } from './state.ts';
 import { tagsDelta } from './tags.ts';
+import { timedDeps, Timing } from './timing.ts';
 import type { Apply, TxInput } from './tx.ts';
 
 /**
@@ -229,7 +225,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
     now: number,
     plan: (input: TxInput) => Apply<T> | Promise<Apply<T>>,
     answers: { readonly atOnce?: boolean } & ({ readonly empty: T } | { readonly seed: T }),
-    wanted?: WantedRecords,
+    { wanted, timing }: Pick<OwnRecords, 'wanted' | 'timing'> = {},
   ): Promise<T> {
     const result = await this.#mutations.run(async () => {
       const committed = await commitMutation(
@@ -251,10 +247,12 @@ export class CacheScope extends DurableObject<CacheBindings> {
       this.#tables = committed.tables;
       return committed;
     });
+    timing?.lap('commit');
     if (result.own === undefined) return result.value;
-    const run = this.#settle(result.own === null ? null : { ...result.own, wanted });
+    const run = this.#settle(result.own === null ? null : { ...result.own, wanted, timing });
     if (answers.atOnce === true) run.answerNow();
     await run.answered;
+    timing?.lap('settle');
     // Armed before the answer, not after it: what the run still does once the change is answered —
     // what the host's history owes for it — is owed to this alarm, or to an earlier one, should the
     // object be reset before the run is over. Erasure may have come between: what is gone is not
@@ -263,6 +261,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
       const at = now + RETENTION_INTERVAL_MS;
       await (answers.atOnce === true ? this.#armOrLog(at) : this.#armAlarm(at));
     }
+    timing?.lap('alarm');
     return result.value;
   }
 
@@ -293,6 +292,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
     this.#waiting += 1;
     const run = chainSettle(this.#settling, this.#log, async (answered) => {
       this.#waiting -= 1;
+      from?.timing?.lap('settle-wait');
       // Awaited on its own: as the argument of `ended?.(…)`, the run would not happen at all for a
       // caller with no `ended`.
       const outcome = await this.#runSettle(answered, from);
@@ -312,7 +312,9 @@ export class CacheScope extends DurableObject<CacheBindings> {
     }
     let outcome: SettleOutcome;
     try {
-      outcome = await settlePending(this.#deps(), answered, from);
+      const { timing } = from ?? {};
+      const deps = timing === undefined ? this.#deps() : timedDeps(this.#deps(), timing);
+      outcome = await settlePending(deps, answered, from);
     } catch (error) {
       this.#log.error('settle failed', { detail: detailOf(error) });
       outcome = { pending: true, failed: true, continued: false };
@@ -520,7 +522,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
     };
     const entryOf = (): string | undefined => findAttempt(this.#sql, attemptId)?.entry_id;
     const wanted = wantedRecords(entryOf);
-    const committed = this.#mutate(now, plan, REFUSED, wanted);
+    const committed = this.#mutate(now, plan, REFUSED, { wanted });
     return withWrittenRecord(committed, wanted.records, entryOf, this.#deps());
   }
 
@@ -531,23 +533,11 @@ export class CacheScope extends DurableObject<CacheBindings> {
   // ---- data cache and invalidation ------------------------------------------------------------
 
   async setData(input: DataSetInput, now: number): Promise<DataSetOutcome | Refusal> {
-    const adopt = async (tx: TxInput): Promise<Apply<DataSetOutcome | Refusal>> => {
-      const scope = requireActiveScope(this.#sql);
-      if (isRefusal(scope)) return () => scope;
-      const startedAt = dataUploadStartedAt(this.#scopeId, input.value.storageRef);
-      const authorityNow = this.#vars.ARKOR_TEST_HOOKS ? now : Date.now();
-      if (startedAt !== undefined && dataUploadExpired(this.#sql, startedAt, authorityNow)) {
-        return () => refuse('lease_expired', 'the data upload expired before adoption');
-      }
-      // A key that carries no upload clock (`dataUploadStartedAt`) is checked for existence under
-      // the same mutex as GC, through the store every other read of storage goes through; current
-      // uploads use the timestamp fence without another R2 read.
-      if (startedAt === undefined && !(await this.#blobs().exists(input.value.storageRef))) {
-        return () => refuse('artifact_missing', 'the data upload is no longer present');
-      }
-      return planSetData(tx, input);
-    };
-    const outcome = await this.#mutate(now, adopt, REFUSED);
+    const timing = new Timing();
+    const deps = { sql: this.#sql, scopeId: this.#scopeId, blobs: () => this.#blobs() };
+    const authorityNow = () => (this.#vars.ARKOR_TEST_HOOKS ? now : Date.now());
+    const adopt = (tx: TxInput) => adoptDataUpload({ ...deps, now: authorityNow }, tx, input);
+    const outcome = await this.#mutate(now, adopt, REFUSED, { timing });
     const needsCleanup =
       !isRefusal(outcome) ||
       (outcome.code === 'quota_exceeded' && (readScope(this.#sql)?.body_bytes ?? 0) > 0);
@@ -557,7 +547,8 @@ export class CacheScope extends DurableObject<CacheBindings> {
       // schedule cleanup even when an already-full scope cannot accept this write.
       await this.#armAlarm(now + RETENTION_INTERVAL_MS);
     }
-    return outcome;
+    timing.lap('cleanup');
+    return isRefusal(outcome) ? outcome : { ...outcome, timing: timing.parts };
   }
 
   /** Only the private control entrypoint selects absent-tag fanout; the gateway uses the default. */

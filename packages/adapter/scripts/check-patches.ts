@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
-import { isBeforeSecurityFloor, SECURITY_FLOOR } from '@stayingupwind/core/next';
+import { SECURITY_CANARY_FLOOR, SECURITY_FLOOR } from '@stayingupwind/core/next';
 
 import {
   FIXTURE_COVERAGE,
@@ -15,6 +15,7 @@ import {
 import { type Copy, type Patch, PATCHES, type PatchContext } from '../src/patches/index.ts';
 import { SUPPORTED_NEXT_RANGE } from '../src/patches/versions.ts';
 import { copyOf, missedRuntimes } from './copies.ts';
+import { canaryOf, floorJudgements } from './floor-judgements.ts';
 
 /**
  * Holds `SUPPORTED_NEXT_RANGE` to its word.
@@ -457,45 +458,18 @@ async function checkDeclarations(): Promise<string[]> {
       `SECURITY_FLOOR is ${SECURITY_FLOOR}, which ${SUPPORTED_NEXT_RANGE} does not admit; a floor outside the range is one no build can be judged against`,
     );
   }
-  problems.push(...floorJudgements());
-  return problems;
-}
-
-/**
- * What `isBeforeSecurityFloor` has to answer, whatever the floor is.
- *
- * The warnings it decides are the only thing that tells a build or a development run that its
- * Next.js is missing fixes, and a comparison that quietly stopped working would take them both out
- * at once while every check here still passed. So the edges it is written for are asked here, where
- * CI already runs: the floor itself and a prerelease of it, something under it, something over it,
- * and the two kinds of string that are not a release at all.
- *
- * Phrased against `SECURITY_FLOOR` rather than against literal versions, so moving the floor does
- * not come with a table of expectations to move with it.
- */
-function floorJudgements(): string[] {
-  const expected: readonly [version: string, old: boolean][] = [
-    // A version is not older than itself, and a prerelease is judged by the release it is numbered
-    // as — a canary of the floor is not a build without the fixes.
-    [SECURITY_FLOOR, false],
-    [`${SECURITY_FLOOR}-canary.1`, false],
-    ['0.0.0', true],
-    ['999.0.0', false],
-    // Not a release, and so nothing to warn about. The numbers have to be *under* the floor for the
-    // first of these to mean anything: a pattern that read the leading numbers and stopped would
-    // call it old, where the same suffix on the floor itself comes out equal either way and pins
-    // nothing. The second matches no pattern at all, and is here for the path it takes.
-    ['0.0.0garbage', false],
-    ['not a version', false],
-  ];
-  const problems: string[] = [];
-  for (const [version, old] of expected) {
-    if (isBeforeSecurityFloor(version) !== old) {
-      problems.push(
-        `isBeforeSecurityFloor("${version}") is ${String(!old)} against a floor of ${SECURITY_FLOOR}, and has to be ${String(old)}`,
-      );
-    }
+  const canary = canaryOf(SECURITY_CANARY_FLOOR);
+  if (
+    canary === undefined ||
+    floor === undefined ||
+    compare(canary.release, floor) <= 0 ||
+    !satisfies(canary.release, comparatorsOf(SUPPORTED_NEXT_RANGE))
+  ) {
+    problems.push(
+      `SECURITY_CANARY_FLOOR is ${SECURITY_CANARY_FLOOR}; it has to be a canary (x.y.z-canary.N) of a release inside ${SUPPORTED_NEXT_RANGE} and past SECURITY_FLOOR, the one kind of version it is there to judge`,
+    );
   }
+  problems.push(...floorJudgements());
   return problems;
 }
 

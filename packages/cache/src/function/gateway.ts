@@ -1,6 +1,6 @@
 import { sha256Hex } from '@stayingupwind/core/artifact';
 import { TEST_CLOCK_HEADER } from '@stayingupwind/core/paas';
-import { isDeadlineError, toBase64, withDeadline } from '@stayingupwind/core/util';
+import { isDeadlineError, releaseStream, toBase64, withDeadline } from '@stayingupwind/core/util';
 import {
   ARTIFACT_ENCODING_HEADER,
   ARTIFACT_ROLE_HEADER,
@@ -108,6 +108,91 @@ const AUTHORITY_READ_DEADLINE_MS = 1000;
  * output it could not read rather than holding its render open for as long as the request lasts.
  */
 const ARTIFACT_READ_DEADLINE_MS = 10_000;
+const KIB = 1024;
+const MIB = KIB * KIB;
+/**
+ * How many bytes of artifacts one isolate reads from the authority at once, in MiB. An artifact is
+ * read whole before it is answered with — the runtime takes bytes, not a stream — and one render may
+ * miss several large data values or outputs together: 25 MiB each by default, five of which would
+ * all but fill a Function's 128 MB. Past this a read waits, once the authority has said how long
+ * its answer is, for those before it to be read; one read alone is never held, however long.
+ */
+const AUTHORITY_READ_MIB = 32;
+const AUTHORITY_READ_BYTES = AUTHORITY_READ_MIB * MIB;
+const DIGITS = /^\d+$/u;
+
+/**
+ * How long the authority says its answer is (`content-length`), which it always says. An answer
+ * that does not say is taken to be as long as a read may take.
+ */
+function projectedLength(response: Response): number {
+  const length = response.headers.get('content-length');
+  return length !== null && DIGITS.test(length) ? Number(length) : AUTHORITY_READ_BYTES;
+}
+
+/**
+ * The bytes of the authority's answers an isolate reads at once (`AUTHORITY_READ_BYTES`), and the
+ * reads waiting for room, in the order they asked. A read takes as many bytes as its answer says it
+ * holds, the whole budget at the most, so one alone always has room; one that has none, or that
+ * comes while another waits, waits for bytes given back, or until its signal aborts.
+ */
+class ReadBudget {
+  readonly #limit: number;
+  #taken = 0;
+  readonly #waiting: { readonly bytes: number; readonly grant: () => void }[] = [];
+
+  constructor(limit: number) {
+    this.#limit = limit;
+  }
+
+  /** Room for whoever waits first, for as long as there is room for them. */
+  #admit(): void {
+    let next = this.#waiting[0];
+    while (next !== undefined && this.#taken + next.bytes <= this.#limit) {
+      this.#waiting.shift();
+      this.#taken += next.bytes;
+      next.grant();
+      next = this.#waiting[0];
+    }
+  }
+
+  /** Room for `bytes`, once there is room for them: the bytes taken, to be given back (`give`). */
+  async take(bytes: number, signal: AbortSignal): Promise<number> {
+    const wanted = Math.min(bytes, this.#limit);
+    if (this.#waiting.length === 0 && this.#taken + wanted <= this.#limit) {
+      this.#taken += wanted;
+      return wanted;
+    }
+    signal.throwIfAborted();
+    const granted = Promise.withResolvers<number>();
+    const place = {
+      bytes: wanted,
+      grant: () => {
+        granted.resolve(wanted);
+      },
+    };
+    const leave = (): void => {
+      const at = this.#waiting.indexOf(place);
+      // Given room just as the signal aborted: the read gives it back once it fails.
+      if (at === -1) return;
+      this.#waiting.splice(at, 1);
+      granted.reject(signal.reason);
+      this.#admit();
+    };
+    this.#waiting.push(place);
+    signal.addEventListener('abort', leave, { once: true });
+    try {
+      return await granted.promise;
+    } finally {
+      signal.removeEventListener('abort', leave);
+    }
+  }
+
+  give(bytes: number): void {
+    this.#taken -= bytes;
+    this.#admit();
+  }
+}
 
 /**
  * `read`, given up once it has taken `deadlineMs`, and the request under it with it: it rejects
@@ -151,6 +236,8 @@ export class Gateway {
   /** How long a read waits: on a read gateway beside the render, or on the authority itself. */
   readonly #readDeadlineMs: number;
   readonly #artifacts: ArtifactCopies;
+  /** What this isolate reads of artifacts from the authority at once: one gateway an isolate. */
+  readonly #reading = new ReadBudget(AUTHORITY_READ_BYTES);
 
   constructor(options: GatewayOptions) {
     if (options.readGatewayUrl !== undefined && options.readFetchImpl === undefined) {
@@ -248,10 +335,11 @@ export class Gateway {
     signal?: AbortSignal,
   ): Promise<Uint8Array | undefined> {
     return readWithin('artifact read', ARTIFACT_READ_DEADLINE_MS, async (deadline) => {
+      const asked = signal === undefined ? deadline : AbortSignal.any([signal, deadline]);
       const response = await this.#send(`/artifacts/${artifactId}`, {
         method: 'GET',
         headers: this.#headers(),
-        signal: signal === undefined ? deadline : AbortSignal.any([signal, deadline]),
+        signal: asked,
       });
       if (response.status === HTTP_NOT_FOUND) {
         await response.body?.cancel();
@@ -260,8 +348,27 @@ export class Gateway {
       if (!response.ok) {
         await this.#throwFailure(response);
       }
-      return new Uint8Array(await response.arrayBuffer());
+      return this.#readWhole(response, asked);
     });
+  }
+
+  /**
+   * The answer's bytes, read whole once the isolate has room for them (`ReadBudget`). One given up
+   * while it waits for room lets go of its body unread.
+   */
+  async #readWhole(response: Response, signal: AbortSignal): Promise<Uint8Array> {
+    let taken: number;
+    try {
+      taken = await this.#reading.take(projectedLength(response), signal);
+    } catch (error) {
+      releaseStream(response.body, 'an artifact read given up before its body');
+      throw error;
+    }
+    try {
+      return new Uint8Array(await response.arrayBuffer());
+    } finally {
+      this.#reading.give(taken);
+    }
   }
 
   startAttempt(request: StartAttemptRequest): Promise<StartAttemptResponse> {

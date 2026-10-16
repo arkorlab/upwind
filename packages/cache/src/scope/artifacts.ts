@@ -1,6 +1,7 @@
 import { artifactIdFor } from '@stayingupwind/core/cache';
 
 import type { ArtifactRow } from './rows.ts';
+import { inChunks } from './tx.ts';
 
 /**
  * The bytes behind generations, by content. A row counts the outputs that refer to a blob, so
@@ -16,17 +17,21 @@ export interface ArtifactReference {
   readonly owned: boolean;
 }
 
+/**
+ * How many ids of blobs a plan derives at once. A commit, or an entry of a build's batch, may name a
+ * thousand artifacts or more, and each id is a digest.
+ */
+const ARTIFACT_IDS_AT_ONCE = 128;
+
 /** Ids for the blobs a commit names, derived ahead of its transaction. */
 export async function artifactIdsFor(
   scopeId: string,
   shas: Iterable<string>,
 ): Promise<Map<string, string>> {
   const ids = new Map<string, string>();
-  await Promise.all(
-    [...new Set(shas)].map(async (sha256) => {
-      ids.set(sha256, await artifactIdFor(scopeId, sha256));
-    }),
-  );
+  await inChunks([...new Set(shas)], ARTIFACT_IDS_AT_ONCE, async (sha256) => {
+    ids.set(sha256, await artifactIdFor(scopeId, sha256));
+  });
   return ids;
 }
 

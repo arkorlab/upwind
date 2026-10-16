@@ -30,6 +30,7 @@ import {
   tagProjectionDueAt,
   tagProjectionPending,
 } from './tag-projection.ts';
+import type { Timing } from './timing.ts';
 
 /**
  * What happens after a commit, until it has happened. Two things are owed once a transaction
@@ -299,6 +300,8 @@ export interface OwnRecords {
    * published it (`CacheScope.commit`).
    */
   readonly wanted?: WantedRecords | undefined;
+  /** Where the run says how long its parts took (`Timing`): a data write's, which its answer says. */
+  readonly timing?: Timing | undefined;
 }
 
 /** What the change that has just committed at `revision` left behind (`OwnRecords`). */

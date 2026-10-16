@@ -10,11 +10,7 @@ import {
   ONE_PASS_BUNDLE_VERSION,
   travelsWithFunction,
 } from '@stayingupwind/core/bundle';
-import {
-  isBeforeSecurityFloor,
-  SECURITY_FLOOR,
-  SECURITY_RELEASE_URL,
-} from '@stayingupwind/core/next';
+import { SECURITY_RELEASE_URL, securityFloorOf } from '@stayingupwind/core/next';
 import { UPWIND_LOCAL_RESOURCES_ENV } from '@stayingupwind/core/paas';
 import type { AdapterOutput, NextAdapter } from 'next';
 
@@ -455,8 +451,9 @@ function dependencyRecord(
  * classification wherever there is one to compare it with, there is no classification here to
  * compare it with.
  *
- * And a Next.js older than the newest release that carried security fixes (`SECURITY_FLOOR`,
- * `@stayingupwind/core/next`) is said here rather than refused, because the range this adapter
+ * And a Next.js older than the newest release that carried security fixes (`SECURITY_FLOOR`, or
+ * `SECURITY_CANARY_FLOOR` for a canary numbered past it; `@stayingupwind/core/next`) is said here
+ * rather than refused, because the range this adapter
  * supports is a claim about what its rewrites still find and not a judgement about advisories. A
  * static export is the one build this says nothing to: it carries no Next.js server code for a fix
  * inside Next.js to be missing from.
@@ -480,9 +477,10 @@ function reportWhatTravels(
       `@stayingupwind/adapter: Next.js ${nextVersion} does not classify its prerenders, which Next.js 16.3 is the first to do. This deployment's ${String(bundle.prerenders.length)} prerenders are read as their outputs describe them instead; \`/_next/static/immutable/*\` is off, since 16.2 does not offer it.`,
     );
   }
-  if (!exported && isBeforeSecurityFloor(nextVersion)) {
+  const floor = exported ? undefined : securityFloorOf(nextVersion);
+  if (floor !== undefined) {
     console.warn(
-      `@stayingupwind/adapter: Next.js ${nextVersion} is older than ${SECURITY_FLOOR}, the newest Next.js release with security fixes in it that this adapter knows of. What answers a request is the Next.js this project installed: its \`use cache\` keying, its draft-mode fills and the ownership checks a route template makes of a prerender all travel into the Function, and nothing here stands in for them. Upgrade and build again — ${SECURITY_RELEASE_URL}`,
+      `@stayingupwind/adapter: Next.js ${nextVersion} is older than ${floor.version}, the first ${floor.canary ? 'canary' : 'release'} with the newest Next.js security fixes that this adapter knows of. What answers a request is the Next.js this project installed: the React Server Components transport it vendors, which reads back what a \`use cache\` function returned and what is sent to a Server Action, travels into the Function, and nothing here stands in for it. Upgrade and build again — ${SECURITY_RELEASE_URL}`,
     );
   }
 }
