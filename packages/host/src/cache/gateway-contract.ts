@@ -615,6 +615,8 @@ const invalidationResultSchema = z.object({
   staleAt: z.number().int(),
   hardExpireAt: z.number().int().nullable(),
   meaning: invalidationMeaningSchema,
+  /** Earlier deadlines the invalidating isolate may never have synced. */
+  history: z.array(tagHistoryMarkSchema).max(MAX_TAG_HISTORY).optional(),
 });
 
 export const invalidateResponseSchema = z.object({
