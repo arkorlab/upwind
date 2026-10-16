@@ -79,6 +79,7 @@ import {
   HTTP_NOT_FOUND,
   HTTP_OK,
   initUrlOf,
+  INVALIDATIONS_RECORDED_WITHIN_MS,
   invokeEntry,
   resume,
   type RoutedInput,
@@ -556,6 +557,9 @@ export async function handleRequest(handled: HandleInput): Promise<Response> {
       await catchUpWithScope(handled.cache, handled.request, handled.waitUntil);
     }
     const response = withoutPlacementHeaders(await routeRequest(input));
+    // Not answered before the host has recorded what the request invalidated — its headers neither:
+    // whoever made it moves on once they come (`InvalidatedTags`).
+    await context.invalidated.recorded(INVALIDATIONS_RECORDED_WITHIN_MS);
     const answered = withoutBody(
       handled.request,
       withInvalidatedTags(response, context.invalidated),

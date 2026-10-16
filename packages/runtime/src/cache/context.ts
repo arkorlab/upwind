@@ -23,35 +23,28 @@ export interface RequestContext {
   readonly run: Run;
   /**
    * The tags the request invalidated at once — `updateTag`, `revalidateTag` with no window — told
-   * on its response to the edge, which may hold what carries them (`INVALIDATED_TAGS_HEADER`).
+   * on its response to the edge, which may hold what carries them (`INVALIDATED_TAGS_HEADER`); and
+   * every invalidation it asked the host for, which its response is not answered before
+   * (`InvalidatedTags.recorded`).
    */
   readonly invalidated: InvalidatedTags;
-  /**
-   * The cache writes and invalidations the request handed over behind its response, which its body
-   * ends after.
-   */
+  /** The cache writes the request handed over behind its response, which its body ends after. */
   readonly writes: RequestWrites;
 }
 
 /**
- * The cache writes a request handed over behind its response (`keepWrite`, in `handlers.ts`), and
- * the invalidations it asked for (`invalidateOnce`): the response's body does not end before they
- * have landed, for no longer than a bound (`withWritesLanded`, in `serve.ts`). A request made once
- * the response was read whole then finds what this one wrote, and what it invalidated, at the host,
- * in whatever isolate it lands — what lands within the bound, that is — where before it could find
- * nothing until the write had gone out behind the response. The first byte waits for none of them:
- * only the last does.
+ * Calls a request has out, each let go once it has settled, whichever way: what a moment of its
+ * response waits for (`settled`).
  */
-export class RequestWrites {
+class HeldCalls {
   readonly #out = new Set<Promise<unknown>>();
-  readonly #ended = Promise.withResolvers<undefined>();
 
-  /** Let go of `write` once it has settled, whichever way. */
-  async #letGo(write: Promise<unknown>): Promise<void> {
+  /** Let go of `call` once it has settled, whichever way. */
+  async #letGo(call: Promise<unknown>): Promise<void> {
     try {
-      await write;
+      await call;
     } finally {
-      this.#out.delete(write);
+      this.#out.delete(call);
     }
   }
 
@@ -61,26 +54,25 @@ export class RequestWrites {
     }
   }
 
-  /** Whether a write handed over is still out. */
+  /** Whether a call held is still out. */
   get pending(): boolean {
     return this.#out.size > 0;
   }
 
-  /** Hold `write` against the end of the response. Whatever it settles as, it is let go then. */
-  add(write: Promise<unknown>): void {
-    this.#out.add(write);
-    void this.#letGo(write).catch(() => {
-      // A write that failed is let go as one that landed: its failure is its caller's to report.
+  /** Hold `call` until it settles. Whatever it settles as, it is let go then. */
+  add(call: Promise<unknown>): void {
+    this.#out.add(call);
+    void this.#letGo(call).catch(() => {
+      // A call that failed is let go as one that settled: its failure is its caller's to report.
     });
   }
 
   /**
-   * Once every write handed over has settled — those handed over while the others were waited for
-   * among them — or `ms` have gone by, whichever comes first.
+   * Once every call held has settled — those held while the others were waited for among them —
+   * or `ms` have gone by, whichever comes first.
    */
-  async landed(ms: number): Promise<void> {
+  async settled(ms: number): Promise<void> {
     if (this.#out.size === 0) {
-      this.#ended.resolve(undefined);
       return;
     }
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -93,6 +85,40 @@ export class RequestWrites {
       ]);
     } finally {
       if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+}
+
+/**
+ * The cache writes a request handed over behind its response (`keepWrite`, in `handlers.ts`): the
+ * response's body does not end before they have landed, for no longer than a bound
+ * (`withWritesLanded`, in `serve.ts`). A request made once the response was read whole then finds
+ * what this one wrote at the host, in whatever isolate it lands — a write that lands within the
+ * bound, that is — where before it could find nothing until the write had gone out behind the
+ * response. The first byte waits for none of them: only the last does.
+ */
+export class RequestWrites {
+  readonly #writes = new HeldCalls();
+  readonly #ended = Promise.withResolvers<undefined>();
+
+  /** Whether a write handed over is still out. */
+  get pending(): boolean {
+    return this.#writes.pending;
+  }
+
+  /** Hold `write` against the end of the response. Whatever it settles as, it is let go then. */
+  add(write: Promise<unknown>): void {
+    this.#writes.add(write);
+  }
+
+  /**
+   * Once every write handed over has settled — those handed over while the others were waited for
+   * among them — or `ms` have gone by, whichever comes first.
+   */
+  async landed(ms: number): Promise<void> {
+    try {
+      await this.#writes.settled(ms);
+    } finally {
       this.#ended.resolve(undefined);
     }
   }
@@ -114,10 +140,18 @@ export class RequestWrites {
  * them rather than one each: a request's invalidations are made back to back, so nothing is written
  * between them that a single bound would wrong. No revision once one invalidation came without one:
  * from a host that keeps none, nothing bounds them.
+ *
+ * And every invalidation the request asked the host for (`invalidateOnce`, in `handlers.ts`), held
+ * against its response, which is not answered — not its first byte either — before the host has
+ * recorded them, for no longer than a bound (`handleRequest`). Whoever made the request moves on
+ * once its headers come, and Next.js runs a route handler's revalidations behind them: a request
+ * made then was answered, here or in any other isolate, before the host had recorded the
+ * invalidation, and what it fetched meanwhile was written as made before it.
  */
 export class InvalidatedTags {
   #revision: number | undefined;
   #bounded = true;
+  readonly #calls = new HeldCalls();
   readonly tags = new Set<string>();
 
   /** Record `tags`, invalidated at once at `revision` where the host gave one. */
@@ -135,6 +169,24 @@ export class InvalidatedTags {
   /** The latest revision they were recorded at, where every one of them came with one. */
   get revision(): number | undefined {
     return this.#bounded ? this.#revision : undefined;
+  }
+
+  /** Hold `call`, an invalidation the request asked the host for, against its response. */
+  hold(call: Promise<unknown>): void {
+    this.#calls.add(call);
+  }
+
+  /** Whether an invalidation the request asked for is still out. */
+  get pending(): boolean {
+    return this.#calls.pending;
+  }
+
+  /**
+   * Once the host has answered every invalidation held — those asked for while the others were
+   * waited for among them — or `ms` have gone by, whichever comes first.
+   */
+  recorded(ms: number): Promise<void> {
+    return this.#calls.settled(ms);
   }
 }
 

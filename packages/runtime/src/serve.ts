@@ -338,10 +338,19 @@ export function withoutBody(request: Request, response: Response): Response {
 }
 
 /**
+ * How long a response waits, before it is answered at all, for the host to record the
+ * invalidations its request asked for (`InvalidatedTags.recorded`): past this it is answered all
+ * the same, and they go on in `waitUntil` as they did.
+ */
+export const INVALIDATIONS_RECORDED_WITHIN_MS = 2000;
+
+/**
  * `response`, telling the edge the tags the request invalidated at once
  * (`INVALIDATED_TAGS_HEADER`): those invalidated before its headers were written, which for a
  * Server Action that answers with the page it changed is every one — Next.js applies what the
- * action invalidated before it renders. Never what the application said under that name, which is
+ * action invalidated before it renders — and for a route handler, whose revalidations Next.js runs
+ * behind its response, every one the host recorded while its headers waited
+ * (`INVALIDATIONS_RECORDED_WITHIN_MS`). Never what the application said under that name, which is
  * the platform's to say.
  */
 export function withInvalidatedTags(response: Response, invalidated: InvalidatedTags): Response {
@@ -370,17 +379,16 @@ export function withInvalidatedTags(response: Response, invalidated: Invalidated
 }
 
 /**
- * How long the end of a response waits for the cache writes and invalidations its request handed
- * over behind it (`RequestWrites`): past this its body ends all the same, and they go on in
- * `waitUntil` as they did. Shorter than a write waits for the one of its key ahead of it
- * (`WRITE_PATIENCE_MS`).
+ * How long the end of a response waits for the cache writes its request handed over behind it
+ * (`RequestWrites`): past this its body ends all the same, and the writes go on in `waitUntil` as
+ * they did. Shorter than a write waits for the one of its key ahead of it (`WRITE_PATIENCE_MS`).
  */
 export const WRITES_LAND_WITHIN_MS = 2000;
 
 /**
- * `response`, ending only once the cache writes and invalidations its request handed over have
- * landed (`RequestWrites`), or `WRITES_LAND_WITHIN_MS` have gone by. The bytes pass as they come:
- * the first byte is not held, the end is. A response without a body ends with its headers, so those
+ * `response`, ending only once the cache writes its request handed over have landed
+ * (`RequestWrites`), or `WRITES_LAND_WITHIN_MS` have gone by. The bytes pass as they come: the
+ * first byte is not held, the end is. A response without a body ends with its headers, so those
  * wait instead — a redirect, or a `204`, that the request wrote behind — where any write is out.
  *
  * A body of a stated length ends at its last byte for whoever reads it, whatever its stream does

@@ -157,12 +157,13 @@ const invalidationsOut = new WeakMap<RequestContext, Map<string, Promise<void>>>
  * elsewhere as it was before the call: until the host records another invalidation of its tags, or
  * the entries expire.
  *
- * The end of the request's response waits for the call (`RequestWrites`), as it waits for a write
- * the request handed over; the first byte does not. Next.js runs a route handler's revalidations
- * behind its response (`pendingWaitUntil`, in `app-route/module.ts`), and a request made once that
- * response was read whole was answered — here or in any other isolate — before the host had
- * recorded the invalidation, and what it fetched meanwhile was written as made before it: the host
- * condemned it by that invalidation, and the next read fetched it again.
+ * The request's response is not answered before the host has recorded the call — not its first
+ * byte either, for no longer than `INVALIDATIONS_RECORDED_WITHIN_MS` (`InvalidatedTags`). Next.js
+ * runs a route handler's revalidations behind its response (`pendingWaitUntil`, in
+ * `app-route/module.ts`), and whoever made the request moves on once its headers come: a request
+ * made then was answered — here or in any other isolate — before the host had recorded the
+ * invalidation, and what it fetched meanwhile was written as made before it, which the host
+ * condemned by that invalidation and the next read fetched again.
  */
 function invalidateOnce(
   runtime: CacheRuntime,
@@ -196,7 +197,7 @@ function invalidateOnce(
   // Not a regeneration's: its response served what was there before, as for its writes
   // (`PlatformFetchCache.set`).
   if (!isRegeneration()) {
-    context.writes.add(call);
+    context.invalidated.hold(call);
   }
   return call;
 }
