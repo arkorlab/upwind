@@ -408,6 +408,15 @@ export interface MiddlewareAnswered {
   readonly dispatches: number;
 }
 
+/** The same for a rewrite to another origin, and what its answer carries besides that origin's. */
+export interface RewriteAnswered extends MiddlewareAnswered {
+  /**
+   * The headers the rules of `next.config` set on the request, chosen on it as it came, before the
+   * middleware ran (`judgeHeaderRulesAhead`, `headerRulesAsRouted`).
+   */
+  readonly configured: ConfiguredHeaders;
+}
+
 /**
  * The point of an answer the middleware gave itself — a redirect, a whole response, an origin it
  * rewrote to — counted as a passthrough is, under the reason `x-arkor-edge` gives it: the request
@@ -446,14 +455,45 @@ function recordMiddlewareAnswer(
 }
 
 /**
- * What a rewrite to an origin that could not be reached is answered with: a 502 under the headers
- * the middleware set, its cookies scoped as on any answer to the rewrite, as Next.js's router keeps
- * them on its answer whatever became of the request it proxied. Kept by nobody.
+ * What routing lays on its answer to a rewrite it proxies: the headers the rules of `next.config`
+ * set, then the middleware's — both collected before the proxy (`resolve-routes.ts`) — over the
+ * answer's own, as the runtime lays them (`withRoutingHeaders`). Each is merged as the middleware's
+ * are on any answer the edge hands on (`mergeScopedMiddlewareHeaders`): not the body's type,
+ * encoding, framing or caching, and a cookie added beside the answer's, scoped to the host. A
+ * rule's name that no header can have is left off (`setConfigured`).
  */
-function unreachableRewrite(edge: EdgeContext, rewrite: ExternalRewrite): Response {
+function layRouted(
+  edge: EdgeContext,
+  headers: Headers,
+  rewrite: ExternalRewrite,
+  configured: ConfiguredHeaders,
+): void {
+  const rules = new Headers();
+  for (const [name, value] of Object.entries(configured.headers)) {
+    try {
+      rules.append(name, value);
+    } catch {
+      // Not a header, on this request: left off.
+    }
+  }
+  mergeScopedMiddlewareHeaders(headers, rules, edge.forwarding);
+  mergeScopedMiddlewareHeaders(headers, rewrite.responseHeaders, edge.forwarding);
+}
+
+/**
+ * What a rewrite to an origin that could not be reached is answered with: a 502 under the headers
+ * the rules and the middleware set, their cookies scoped as on any answer to the rewrite, as
+ * Next.js's router keeps them on its answer whatever became of the request it proxied. Kept by
+ * nobody.
+ */
+function unreachableRewrite(
+  edge: EdgeContext,
+  rewrite: ExternalRewrite,
+  configured: ConfiguredHeaders,
+): Response {
   const own = badGatewayResponse('external-rewrite-unavailable');
   const headers = new Headers();
-  mergeScopedMiddlewareHeaders(headers, rewrite.responseHeaders, edge.forwarding);
+  layRouted(edge, headers, rewrite, configured);
   for (const [name, value] of own.headers) {
     headers.set(name, value);
   }
@@ -468,14 +508,14 @@ function unreachableRewrite(edge: EdgeContext, rewrite: ExternalRewrite): Respon
  * as the middleware left it, without three things: the host's credentials (`EdgeHost.credentials`,
  * its cookies and headers), which `runMiddleware` took off before the middleware's answer rebuilt
  * the request; the edge's own request headers (`PLATFORM_REQUEST_HEADERS`), taken off here; and the
- * site's hostname. What comes back carries the headers the middleware set — as the runtime answers
- * the same rewrite.
+ * site's hostname. What comes back carries the headers the rules of `next.config` and the
+ * middleware set (`layRouted`) — as the runtime answers the same rewrite.
  */
 export async function followExternalRewrite(
   edge: EdgeContext,
   request: Request,
   rewrite: ExternalRewrite,
-  answered: MiddlewareAnswered,
+  answered: RewriteAnswered,
 ): Promise<Response> {
   // Already without the host's own cookies: `runMiddleware` strips them from what
   // `readMiddlewareResponse` rebuilds `requestHeaders` out of, which matters most here — this
@@ -508,14 +548,14 @@ export async function followExternalRewrite(
     // propagate it would end the request as an uncaught exception.
     const fetched = { ms: edge.runtime.now() - startedAt };
     recordMiddlewareAnswer(edge, 'external-rewrite-unavailable', { ...answered, fetched });
-    return unreachableRewrite(edge, rewrite);
+    return unreachableRewrite(edge, rewrite, answered.configured);
   }
   const fetched = { ms: edge.runtime.now() - startedAt };
   // As a Worker's answer is taken (`handlePassthrough`): cookies scoped to the host the client
   // used, and nothing of the edge's protocol, nor what a proxy may not replay, carried over.
   const answer = forwardedResponse(upstream, edge.forwarding, request.method);
   const responseHeaders = answer.headers;
-  mergeScopedMiddlewareHeaders(responseHeaders, rewrite.responseHeaders, edge.forwarding);
+  layRouted(edge, responseHeaders, rewrite, answered.configured);
   privateCacheControl(responseHeaders);
   if (edge.privateDelivery) {
     keptByNobody(responseHeaders);

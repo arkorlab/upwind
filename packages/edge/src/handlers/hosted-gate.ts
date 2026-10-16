@@ -191,7 +191,7 @@ async function actOnMiddleware(
     }
     case 'external-rewrite': {
       gate.abandon?.();
-      return followExternalRewrite(edge, request, middleware, itself);
+      return followExternalRewrite(edge, request, middleware, { ...itself, configured });
     }
     case 'skipped': {
       return gate.serve(undefined, dispatches, configured);
