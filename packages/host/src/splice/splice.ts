@@ -209,6 +209,8 @@ class SplicePump {
   #suffixStarted = false;
   #controller: ReadableStreamDefaultController<Uint8Array> | undefined;
   #demand: PromiseWithResolvers<undefined> | undefined;
+  /** The origin's body as the drain reads it, for a client that leaves to let go of at once. */
+  #reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 
   constructor(options: SpliceOptions) {
     this.#options = options;
@@ -386,6 +388,7 @@ class SplicePump {
    * socket may never be acknowledged, so nothing the client is waiting for may wait on it.
    */
   async #drain(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<boolean> {
+    this.#reader = reader;
     try {
       for (;;) {
         // Do not read faster than the client drains, or a slow client would buffer the whole
@@ -401,6 +404,11 @@ class SplicePump {
           return false;
         }
         const { done, value } = await withTimeout(reader.read(), this.#budgetMs(), this.#phase);
+        // A client that left while the read was out let the origin go then (`cancel`), which ended
+        // the read: nothing it brought, nor its end, is the client's.
+        if (this.#left()) {
+          return false;
+        }
         if (done) {
           return true;
         }
@@ -411,10 +419,22 @@ class SplicePump {
         }
       }
     } catch (error) {
+      // Nor is a read that failed as the client's leaving let the origin go.
+      if (this.#left()) {
+        return false;
+      }
       this.#handleReadError(error);
       releaseStream(reader, 'splice error');
       return false;
     }
+  }
+
+  /**
+   * Whether the client has gone. Asked through a method rather than the field after an await,
+   * across which `cancel` may have run: the field reads as it did before the await to the checker.
+   */
+  #left(): boolean {
+    return this.#cancelled;
   }
 
   /** Resolve once the consumer asks for more, or immediately while the queue has room. */
@@ -481,6 +501,9 @@ class SplicePump {
   cancel(): void {
     this.#cancelled = true;
     this.signalDemand();
+    // A read out on the origin would hold it until the origin answers or the budget runs out, where
+    // the abort is acknowledged late or not at all: the origin is let go of here, the read with it.
+    releaseStream(this.#reader, CANCEL_REASON);
     this.#options.abortUpstream(CANCEL_REASON);
     this.#settle({ kind: 'client-cancelled', forwarded: this.#forwarded });
   }
