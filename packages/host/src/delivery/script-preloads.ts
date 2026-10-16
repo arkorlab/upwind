@@ -22,13 +22,16 @@ const SCRIPT_LIKE_DESTINATIONS: readonly string[] = [
  * reports it on every page view.
  *
  * A module preload is a script where its `as` is: one with none is read as `"script"`, and the
- * script-like destinations are scripts. It may name `json`, `style` or `text` as well, which are
- * not, so those — and anything the HTML Standard adds beside them — are left as they came, with
- * every other link: a nonce is never put where it would trust what no script directive meant to.
+ * script-like destinations are scripts. So is one whose `as` is empty, `as` or `as=""`: the empty
+ * string is no destination, now or ever, and an `as` that names none is read as missing. It may
+ * name `json`, `style` or `text` as well, which are not, so those — and anything the HTML Standard
+ * adds beside them — are left as they came, with every other link: a nonce is never put where it
+ * would trust what no script directive meant to.
  */
 export const SCRIPT_PRELOAD_LINKS: readonly string[] = [
   'link[rel~="preload" i][as="script" i]',
   'link[rel~="modulepreload" i]:not([as])',
+  'link[rel~="modulepreload" i][as=""]',
   ...SCRIPT_LIKE_DESTINATIONS.map(
     (destination) => `link[rel~="modulepreload" i][as="${destination}" i]`,
   ),
