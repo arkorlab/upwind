@@ -26,17 +26,21 @@ export interface RequestContext {
    * on its response to the edge, which may hold what carries them (`INVALIDATED_TAGS_HEADER`).
    */
   readonly invalidated: InvalidatedTags;
-  /** The cache writes the request handed over behind its response, which its body ends after. */
+  /**
+   * The cache writes and invalidations the request handed over behind its response, which its body
+   * ends after.
+   */
   readonly writes: RequestWrites;
 }
 
 /**
- * The cache writes a request handed over behind its response (`keepWrite`, in `handlers.ts`): the
- * response's body does not end before they have landed, for no longer than a bound
- * (`withWritesLanded`, in `serve.ts`). A request made once the response was read whole then finds
- * what this one wrote at the host, in whatever isolate it lands — a write that lands within the
- * bound, that is — where before it could find nothing until the write had gone out behind the
- * response. The first byte waits for none of them: only the last does.
+ * The cache writes a request handed over behind its response (`keepWrite`, in `handlers.ts`), and
+ * the invalidations it asked for (`invalidateOnce`): the response's body does not end before they
+ * have landed, for no longer than a bound (`withWritesLanded`, in `serve.ts`). A request made once
+ * the response was read whole then finds what this one wrote, and what it invalidated, at the host,
+ * in whatever isolate it lands — what lands within the bound, that is — where before it could find
+ * nothing until the write had gone out behind the response. The first byte waits for none of them:
+ * only the last does.
  */
 export class RequestWrites {
   readonly #out = new Set<Promise<unknown>>();

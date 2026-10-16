@@ -370,16 +370,17 @@ export function withInvalidatedTags(response: Response, invalidated: Invalidated
 }
 
 /**
- * How long the end of a response waits for the cache writes its request handed over behind it
- * (`RequestWrites`): past this its body ends all the same, and the writes go on in `waitUntil` as
- * they did. Shorter than a write waits for the one of its key ahead of it (`WRITE_PATIENCE_MS`).
+ * How long the end of a response waits for the cache writes and invalidations its request handed
+ * over behind it (`RequestWrites`): past this its body ends all the same, and they go on in
+ * `waitUntil` as they did. Shorter than a write waits for the one of its key ahead of it
+ * (`WRITE_PATIENCE_MS`).
  */
 export const WRITES_LAND_WITHIN_MS = 2000;
 
 /**
- * `response`, ending only once the cache writes its request handed over have landed
- * (`RequestWrites`), or `WRITES_LAND_WITHIN_MS` have gone by. The bytes pass as they come: the
- * first byte is not held, the end is. A response without a body ends with its headers, so those
+ * `response`, ending only once the cache writes and invalidations its request handed over have
+ * landed (`RequestWrites`), or `WRITES_LAND_WITHIN_MS` have gone by. The bytes pass as they come:
+ * the first byte is not held, the end is. A response without a body ends with its headers, so those
  * wait instead — a redirect, or a `204`, that the request wrote behind — where any write is out.
  *
  * A body of a stated length ends at its last byte for whoever reads it, whatever its stream does
