@@ -61,8 +61,11 @@ describe('the warm jobs one call leases', () => {
   });
 });
 
-/** One entry of a batch, its build's generation made of `outputs` and carrying `tags`. */
-function batchOf(outputs: readonly unknown[], tags: readonly unknown[] = []) {
+/**
+ * One entry of a batch, its build's generation made of `outputs`, carrying `tags` and answered with
+ * `status`.
+ */
+function batchOf(outputs: readonly unknown[], tags: readonly unknown[] = [], status = 200) {
   const unknown = { kind: 'unknown' };
   return {
     scopeId: 'dpl_scope',
@@ -81,7 +84,7 @@ function batchOf(outputs: readonly unknown[], tags: readonly unknown[] = []) {
             clientStale: unknown,
             source: 'build-output',
           },
-          status: 200,
+          status,
           headers: {},
           tags,
           outputs,
@@ -152,4 +155,20 @@ describe('a seed batch', () => {
     expect(seedEntriesInputSchema.safeParse(batchOf([output], empty)).success).toBe(false);
     expect(seedEntriesInputSchema.safeParse(batchOf([output], kindless)).success).toBe(false);
   });
+
+  it.each([200, 307, 404, 599])(
+    'holds an entry seeded with status %i, which a response may be made with',
+    (status) => {
+      expect(seedEntriesInputSchema.safeParse(batchOf([output], [], status)).success).toBe(true);
+    },
+  );
+
+  /** Seeded, it would be its entry's current generation, which no host could answer with. */
+  it.each([0, 101, 199, 600, 999])(
+    'holds no entry seeded with status %i, which no response may be made with',
+    (status) => {
+      expect(() => new Response(null, { status })).toThrow(RangeError);
+      expect(seedEntriesInputSchema.safeParse(batchOf([output], [], status)).success).toBe(false);
+    },
+  );
 });

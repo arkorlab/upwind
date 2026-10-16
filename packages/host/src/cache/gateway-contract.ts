@@ -277,13 +277,18 @@ export const commitDependencySchema = z.object({
 });
 export type CommitDependency = z.infer<typeof commitDependencySchema>;
 
-/**
- * The statuses a `Response` may be made with, which a bundle's prerender is held to as well. A
- * generation is answered with its status, so one committed past these is one no host could ever
- * answer with: it would stand as the entry's current generation and serve nothing.
- */
 const LOWEST_RESPONSE_STATUS = 200;
 const HIGHEST_RESPONSE_STATUS = 599;
+/**
+ * The statuses a `Response` may be made with, which a bundle's prerender is held to as well. A
+ * generation is answered with its status, so one committed, or seeded, past these is one no host
+ * could ever answer with: it would stand as the entry's current generation and serve nothing.
+ */
+export const responseStatusSchema = z
+  .number()
+  .int()
+  .min(LOWEST_RESPONSE_STATUS)
+  .max(HIGHEST_RESPONSE_STATUS);
 
 /**
  * A header a response can be made with, as a bundle's prerender is held to as well: a name that is
@@ -297,7 +302,7 @@ export const commitGenerationSchema = z.object({
   cacheTimestamp: z.number().int(),
   producedAt: z.number().int(),
   policy: cachePolicySchema,
-  status: z.number().int().min(LOWEST_RESPONSE_STATUS).max(HIGHEST_RESPONSE_STATUS),
+  status: responseStatusSchema,
   /** The headers the generation is answered with, already filtered (`generationResponseHeaders`). */
   headers: z.record(
     z.string().regex(RESPONSE_HEADER_NAME, 'must be a header name'),

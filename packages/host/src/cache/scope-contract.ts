@@ -22,7 +22,10 @@ import {
   dependencyCoverageSchema as dependencyCoverageEntity,
   publicCacheGenerationSchema as publicCacheGenerationEntity,
 } from './entities.ts';
-import { invalidateRequestSchema as invalidateRequestEntity } from './gateway-contract.ts';
+import {
+  invalidateRequestSchema as invalidateRequestEntity,
+  responseStatusSchema,
+} from './gateway-contract.ts';
 
 /**
  * The entities and the request this contract carries, which `entities.ts` and `gateway-contract.ts`
@@ -134,7 +137,8 @@ const seedGenerationSchema = z.object({
   cacheTimestamp: z.number().int().nullable(),
   producedAt: z.number().int().nullable(),
   policy: toZod(cachePolicySchema),
-  status: z.number().int(),
+  /** A prerender's, which its bundle holds to the same statuses as a commit's is held to. */
+  status: toZod(responseStatusSchema),
   headers: z.record(z.string(), z.string()),
   tags: z.array(seedTagSchema),
   outputs: z.array(seedOutputSchema).min(1).max(MAX_SEED_OUTPUTS),
