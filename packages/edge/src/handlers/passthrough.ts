@@ -3,6 +3,7 @@ import {
   INVALIDATED_REVISION_HEADER,
   INVALIDATED_TAGS_HEADER,
   MIDDLEWARE_DONE_HEADER,
+  MIDDLEWARE_REWRITE_STATUS_HEADER,
   MIDDLEWARE_SET_COOKIE_HEADER,
   type MiddlewareResult,
   ORIGINAL_URL_HEADER,
@@ -183,7 +184,9 @@ export interface PassthroughInput {
    * What the application's middleware decided, when the edge ran it and then found nothing to
    * serve itself: the request goes on as the middleware left it, and the runtime is told so.
    */
-  readonly middleware?: MiddlewareContinue | undefined;
+  readonly middleware?:
+    | (MiddlewareContinue & { readonly rewriteStatus?: number | undefined })
+    | undefined;
   /** What the edge tells the runtime beside the request, set after the forwarding headers. */
   readonly headers?: Readonly<Record<string, string>> | undefined;
   /**
@@ -279,9 +282,14 @@ function afterMiddleware(client: Request, middleware: MiddlewareContinue): Reque
 function markMiddlewareDone(
   request: Request,
   client: Request,
-  middleware: MiddlewareContinue,
+  middleware: MiddlewareContinue & { readonly rewriteStatus?: number | undefined },
 ): void {
   request.headers.set(MIDDLEWARE_DONE_HEADER, '1');
+  // The status the middleware gave its rewrite, which the runtime answers the route under as one it
+  // ran the middleware for itself.
+  if (middleware.rewriteStatus !== undefined) {
+    request.headers.set(MIDDLEWARE_REWRITE_STATUS_HEADER, String(middleware.rewriteStatus));
+  }
   if (middleware.rewritten) {
     request.headers.set(ORIGINAL_URL_HEADER, client.url);
   }

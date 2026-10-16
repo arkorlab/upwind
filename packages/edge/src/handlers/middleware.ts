@@ -62,9 +62,26 @@ export type MiddlewareFailure =
   | 'threw';
 
 export type MiddlewareOutcome =
-  | MiddlewareResult
+  | Exclude<MiddlewareResult, { readonly kind: 'continue' }>
+  | MiddlewareContinued
   | MiddlewareSkipped
   | { readonly kind: 'failed'; readonly cause: MiddlewareFailure; readonly reason: string };
+
+/** The request goes on as the middleware left it (`MiddlewareResult`). */
+export interface MiddlewareContinued extends Extract<
+  MiddlewareResult,
+  { readonly kind: 'continue' }
+> {
+  /**
+   * The status the middleware gave a rewrite on the request's own origin, where it gave one other
+   * than 200: `NextResponse.rewrite(url, { status: 404 })`. Next.js's router puts the middleware's
+   * status on the response before the route it rewrote to renders, and a route that sets none of
+   * its own answers under it (`res.statusCode = middlewareRes.status`, in
+   * `server/lib/router-utils/resolve-routes.ts`). A Function told the middleware ran is told this
+   * beside it (`MIDDLEWARE_REWRITE_STATUS_HEADER`), and answers under it without running it again.
+   */
+  readonly rewriteStatus?: number | undefined;
+}
 
 /**
  * How long the middleware took, whatever it came to — `undefined` where it was not run at all.
@@ -100,9 +117,24 @@ export function middlewareFailedReason(cause: MiddlewareFailure): string {
   return `middleware-failed;cause=${cause}`;
 }
 const MAX_REASON_LENGTH = 200;
+const REWRITE_HEADER = 'x-middleware-rewrite';
+const HTTP_OK = 200;
 
 function describe(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).slice(0, MAX_REASON_LENGTH);
+}
+
+/**
+ * What the middleware decided, with the status it gave a rewrite where that is not 200
+ * (`rewriteStatus`): any rewrite on the request's own origin, its path changed or not, as
+ * `@next/routing` reads one.
+ */
+function decided(result: MiddlewareResult, response: Response): MiddlewareOutcome {
+  return result.kind === 'continue' &&
+    response.status !== HTTP_OK &&
+    response.headers.has(REWRITE_HEADER)
+    ? { ...result, rewriteStatus: response.status }
+    : result;
 }
 
 /** A rule of the application's routing, as far as its conditions go. */
@@ -395,7 +427,7 @@ async function runMiddlewareIn(
   if (result.kind !== 'responded') {
     releaseStream(response.body, 'middleware');
   }
-  return { ...result, middlewareMs };
+  return { ...decided(result, response), middlewareMs };
 }
 
 type ExternalRewrite = Extract<MiddlewareResult, { kind: 'external-rewrite' }>;

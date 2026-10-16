@@ -73,6 +73,8 @@ const SEGMENT_PREFETCH = 'segment-prefetch';
 const RSC_PAYLOAD = 'rsc-payload';
 /** The class of a Pages Router client's request for a page's props, and the reason one stays. */
 const PAGES_DATA = 'pages-data';
+/** Why a request whose middleware gave its rewrite a status of its own goes to the Function. */
+const REWRITE_STATUS = 'rewrite-status';
 const ROUTER_CLASSES: ReadonlySet<string> = new Set([PAGES_DATA, RSC_PAYLOAD, SEGMENT_PREFETCH]);
 
 /** A request of the client's router for what the build wrote beside a page, rather than a document. */
@@ -408,12 +410,23 @@ export async function routeHostedDocument(input: HostedDocumentInput): Promise<R
  * `serveHostedDocument`, once the middleware ran — or, where a pattern of the application's would
  * cost more against the request as the middleware left it than the edge runs (`budgetPatterns`),
  * the request handed on with what the middleware decided, which the Function does not run again.
+ *
+ * A rewrite the middleware gave a status of its own (`rewriteStatus`) is handed on before either:
+ * the edge composes nothing under a status of the middleware's, and the Function, told the status
+ * beside the middleware's run (`MIDDLEWARE_REWRITE_STATUS_HEADER`), answers under it as Next.js does,
+ * without running the middleware again.
  */
 async function serveAfterItsMiddleware(
   input: HostedDocumentInput,
   middleware: MiddlewareOutcome,
   preload: Preload | undefined,
 ): Promise<Response> {
+  if (middleware.kind === 'continue' && middleware.rewriteStatus !== undefined) {
+    if (preload !== undefined) {
+      abandon(input.edge, preload);
+    }
+    return input.passthrough(REWRITE_STATUS, middleware);
+  }
   try {
     return await serveHostedDocument(input, middleware, preload);
   } catch (error) {
