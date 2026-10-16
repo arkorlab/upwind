@@ -122,17 +122,3 @@ export function gatedPathnamesOf(bundle: DeploymentBundle): Record<string, strin
   }
   return gated;
 }
-
-/**
- * The base path and the build id under which the deployment's router reads a Pages Router data URL
- * as the page it names, for a bundle that declares a gate and whose router does so
- * (`shouldNormalizeNextData`): the edge then finds the gate of the page such a URL names, as the
- * router routes it (`ProjectManifest.gatedDataPrefix`, `gatedDataBasePath`).
- */
-export function gatedDataUnderOf(
-  bundle: DeploymentBundle,
-): { readonly basePath: string; readonly buildId: string } | undefined {
-  return bundle.gates !== undefined && bundle.routing.shouldNormalizeNextData
-    ? { basePath: bundle.config.basePath, buildId: bundle.buildId }
-    : undefined;
-}

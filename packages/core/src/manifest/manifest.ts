@@ -91,12 +91,6 @@ export interface BuildProjectManifestInput {
   readonly gates?: RouteGates | undefined;
   /** The pathnames Next.js resolves exactly that are of a gated route, each with that route. */
   readonly gatedPathnames?: Readonly<Record<string, string>> | undefined;
-  /**
-   * The base path and the build id under which the router reads a Pages Router data URL as the page
-   * it names, beside gates: the manifest names where (`gatedDataPrefix`, `gatedDataBasePath`) from
-   * these.
-   */
-  readonly gatedDataUnder?: { readonly basePath: string; readonly buildId: string } | undefined;
   readonly cache?: ManifestCache | undefined;
 }
 
@@ -262,36 +256,15 @@ function ungatedRoutes(input: BuildProjectManifestInput): string | undefined {
     : `gates declares ${unfound.toSorted(compareCodeUnits).join(', ')}, which no pathname or dynamic route of the manifest finds a request of (gatedPathnames, DynamicRoute.gated): each would be served with no gate asked`;
 }
 
-/**
- * Where the router reads a data URL as its page: `<basePath>/_next/data/<buildId>`, as the router
- * compares a request's path with it, and the base path beside it, which is not taken apart from it
- * again — a build id may hold `/_next/data/` itself.
- */
-function gatedDataFields(
-  under: NonNullable<BuildProjectManifestInput['gatedDataUnder']>,
-): Pick<ProjectManifest, 'gatedDataBasePath' | 'gatedDataPrefix'> {
-  return {
-    gatedDataPrefix: `${under.basePath}/_next/data/${under.buildId}`,
-    ...(under.basePath !== '' && { gatedDataBasePath: under.basePath }),
-  };
-}
-
-/**
- * The gates, and beside them what finds a request of a gated route: the pathnames found to be of
- * one, and where the router reads a data URL as its page. Nothing where there are no gates.
- */
+/** The gates, and the pathnames found to be of a gated route beside them, where there are gates. */
 function gateFields(
   input: BuildProjectManifestInput,
-): Pick<ProjectManifest, 'gates' | 'gatedPathnames' | 'gatedDataPrefix' | 'gatedDataBasePath'> {
-  const { gates, gatedPathnames, gatedDataUnder } = input;
+): Pick<ProjectManifest, 'gates' | 'gatedPathnames'> {
+  const { gates, gatedPathnames } = input;
   if (gates === undefined) {
     return {};
   }
-  return {
-    gates,
-    ...(gatedPathnames !== undefined && { gatedPathnames }),
-    ...(gatedDataUnder !== undefined && gatedDataFields(gatedDataUnder)),
-  };
+  return { gates, ...(gatedPathnames !== undefined && { gatedPathnames }) };
 }
 
 /** Assemble a manifest from a build's routes; validates the result against the schema. */

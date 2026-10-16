@@ -1,6 +1,7 @@
 import { builtNameOf } from '../manifest/built-names.ts';
 import { decodedPath, requestSpelling } from '../manifest/pages-data-prefix.ts';
 import { pageOfDataPathname, pagesDataPathnameUnder } from './pages-data.ts';
+import { type CaptureKind, referencesOf } from './rewrite-captures.ts';
 
 /**
  * Which route of a build a pathname is of, and where a rule of `next.config` may send a request:
@@ -110,8 +111,8 @@ const CATCH_ALL = /^\[{1,2}\.{3}/u;
 const OPTIONAL_CATCH_ALL = /^\[{2}\.{3}.+\]{2}$/u;
 /** Another origin's URL, which the router hands to that origin (`isExternalDestination`). */
 const EXTERNAL = /^https?:\/\//u;
-/** Where a rewrite's destination puts in what its source captured. */
-const REFERENCE = /[$:]\w/u;
+/** A segment that climbs a level once the router resolves it: `..`, either dot escaped or not. */
+const CLIMB = /^(?:\.|%2e){2}$/iu;
 const REDIRECT_HEADERS: ReadonlySet<string> = new Set(['location', 'refresh']);
 const LOWEST_REDIRECT = 300;
 const HIGHEST_REDIRECT = 399;
@@ -271,27 +272,64 @@ function mayBegin(written: string, route: string, fold: Fold): boolean {
   return true;
 }
 
+/** The path a rewrite writes, and each reference it makes to what its rule captured. */
+interface Destination {
+  readonly path: string;
+  readonly references: readonly { readonly at: number; readonly kind: CaptureKind }[];
+}
+
+/** `written` with its last `levels` whole segments climbed out of, the one it ends in among them. */
+function climbedOutOf(written: string, levels: number): string {
+  if (levels === 0) {
+    return written;
+  }
+  const whole = written.split('/').slice(1, -1);
+  const kept = whole.slice(0, Math.max(0, whole.length - levels));
+  return ['', ...kept, ''].join('/');
+}
+
 /**
- * Whether a request a rewrite sends to `path` may be served as `route`, whose name a request asks
- * for it by is `named` — the page's own, or the name of its data. A path the rewrite writes whole is
- * read as the router reads it (`readingsOf`): it reaches the route where any reading is a page of
- * the route; and otherwise none where a reading is a page of its own or a file, which the router
- * serves in place of any dynamic route; and otherwise where it may be one of `named`'s, as it is or
- * as the data of any page it may be (`dataPagesOf`), and compared without regard to case where a
- * dynamic route finds `named`'s requests. One the rewrite puts a capture in may be anything from
- * there on: only a segment written ahead of the capture that `named` cannot have, however it is
- * read (`writtenReadingsOf`), rules it out.
+ * Whether a path a rewrite puts what its rule captured in may be one of `named`'s. A value of any
+ * kind (`any`) may be any path at all. Otherwise each part of a segment it puts in may climb a
+ * level, and so may each `..` it writes after the first, which the router resolves once the values
+ * are in: the path written ahead of the first, less as many segments, is all that rules a route
+ * out, however it is read (`writtenReadingsOf`) — anything may follow it.
+ */
+function mayReachCaptured(destination: Destination, named: string, fold: Fold): boolean {
+  const { path, references } = destination;
+  if (references.some((reference) => reference.kind === 'any')) {
+    return true;
+  }
+  const first = references[0]?.at ?? path.length;
+  const climbs =
+    references.filter((reference) => reference.kind === 'part').length +
+    path
+      .slice(first)
+      .split('/')
+      .filter((segment) => CLIMB.test(segment)).length;
+  const readings = writtenReadingsOf(path.slice(0, first));
+  return readings.some((written) => mayBegin(climbedOutOf(written, climbs), named, fold));
+}
+
+/**
+ * Whether a request a rewrite sends to `destination` may be served as `route`, whose name a request
+ * asks for it by is `named` — the page's own, or the name of its data. A path the rewrite writes
+ * whole is read as the router reads it (`readingsOf`): it reaches the route where any reading is a
+ * page of the route; and otherwise none where a reading is a page of its own or a file, which the
+ * router serves in place of any dynamic route; and otherwise where it may be one of `named`'s, as it
+ * is or as the data of any page it may be (`dataPagesOf`), and compared without regard to case
+ * where a dynamic route finds `named`'s requests. One the rewrite puts a capture in is read by what
+ * each capture may hold (`mayReachCaptured`).
  */
 function mayReach(
   reader: Reader,
-  path: string,
+  destination: Destination,
   route: { readonly route: string; readonly named: string },
 ): boolean {
   const fold = route.named.includes('[') ? ANY_CASE : AS_WRITTEN;
-  const reference = REFERENCE.exec(path);
-  if (reference !== null) {
-    const readings = writtenReadingsOf(path.slice(0, reference.index));
-    return readings.some((written) => mayBegin(written, route.named, fold));
+  const { path } = destination;
+  if (destination.references.length > 0) {
+    return mayReachCaptured(destination, route.named, fold);
   }
   const readings = readingsOf(path);
   if (readings.some((reading) => reader.routeOf(reading) === route.route)) {
@@ -359,8 +397,9 @@ export function rewritesOnto(build: BuildRerouting, gated: readonly string[]): s
     }
     // All the router sets on the URL's path: what comes before a `?`, a `#` among it.
     const [path = ''] = destination.split('?', 1);
+    const written = { path, references: referencesOf(path, rule.sourceRegex) };
     const reached = new Set(
-      named.filter((name) => mayReach(reader, path, name)).map((name) => name.route),
+      named.filter((name) => mayReach(reader, written, name)).map((name) => name.route),
     );
     for (const route of reached) {
       issues.push(

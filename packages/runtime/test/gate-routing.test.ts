@@ -16,12 +16,16 @@ vi.mock(import('../src/node-bridge.ts'), () => ({ invokeNodeHandler: vi.fn() }))
 const POST = '/posts/[slug]';
 const ALL = '/[...all]';
 
+/** A rewrite of `next.config`, as Next.js compiles one. */
+interface Rewrite {
+  readonly sourceRegex: string;
+  readonly destination: string;
+  readonly has?: readonly { readonly type: 'query' | 'header'; readonly key: string }[];
+}
+
 interface Deployment {
-  readonly buildId?: string;
   readonly basePath?: string;
-  /** Whether the router reads a Pages Router data URL as the page it names. */
-  readonly normalized?: boolean;
-  readonly afterFiles?: readonly { sourceRegex: string; destination: string }[];
+  readonly afterFiles?: readonly Rewrite[];
 }
 
 /** A deployment of a class of posts, a catch-all, and two pages of their own, under `basePath`. */
@@ -29,7 +33,7 @@ function deployment(options: Deployment = {}): Store {
   const base = options.basePath ?? '';
   const pathnames = [POST, ALL, '/private', '/private/area'].map((name) => `${base}${name}`);
   const manifest = {
-    buildId: options.buildId ?? 'b',
+    buildId: 'b',
     config: { basePath: base },
     routing: {
       beforeMiddleware: [],
@@ -50,7 +54,7 @@ function deployment(options: Deployment = {}): Store {
       ],
       onMatch: [],
       fallback: [],
-      shouldNormalizeNextData: options.normalized ?? false,
+      shouldNormalizeNextData: false,
     },
     entrypoints: pathnames.map((pathname) => ({ id: pathname, kind: 'app-page', pathname })),
     prerenders: [],
@@ -85,34 +89,6 @@ async function landing(store: Store, path: string): Promise<string | undefined> 
 }
 
 describe('where the router lands a request a gate is asked of', () => {
-  it('lands a data URL on the page it names, whether or not it ends in `.json`', async () => {
-    const store = deployment({ normalized: true });
-
-    await expect(landing(store, '/_next/data/b/posts/abc.json')).resolves.toBe(POST);
-    await expect(landing(store, '/_next/data/b/posts/abc')).resolves.toBe(POST);
-  });
-
-  it('lands a data URL on its page under a build id that holds `/_next/data/` itself', async () => {
-    const store = deployment({ normalized: true, buildId: 'release/_next/data/v1' });
-
-    await expect(landing(store, '/_next/data/release/_next/data/v1/posts/abc.json')).resolves.toBe(
-      POST,
-    );
-  });
-
-  /** It compares the request's path, which a URL escapes, with the build id as written. */
-  it('routes a data URL under a build id a URL escapes as the path it is', async () => {
-    const store = deployment({ normalized: true, buildId: 'release 1' });
-
-    await expect(landing(store, '/_next/data/release%201/posts/abc.json')).resolves.toBe(ALL);
-  });
-
-  it('lands a data URL on a page of its own it names, in place of the class it matched', async () => {
-    const store = deployment({ normalized: true });
-
-    await expect(landing(store, '/_next/data/b/private.json')).resolves.toBe('/private');
-  });
-
   it('matches a class without regard to case', async () => {
     await expect(landing(deployment(), '/POSTS/abc')).resolves.toBe(POST);
   });
@@ -123,6 +99,33 @@ describe('where the router lands a request a gate is asked of', () => {
     });
 
     await expect(landing(store, '/alias')).resolves.toBe('/private/area');
+  });
+
+  /**
+   * What a rewrite puts in the path is resolved with it: a value of the query may hold `/` and `..`,
+   * and part of a segment may be `..` — while a whole segment of the request's path never is, the
+   * path's dot segments resolved before any rule is matched against it.
+   */
+  it('resolves the dot segments a rewrite puts in, whatever it writes ahead of them', async () => {
+    const store = deployment({
+      afterFiles: [
+        {
+          sourceRegex: String.raw`^\/alias(?:\/)?$`,
+          has: [{ type: 'query', key: 'target' }],
+          destination: '/public/$target',
+        },
+        {
+          sourceRegex: String.raw`^\/img(?:\/([^\/]+?))\.png(?:\/)?$`,
+          destination: '/public/$1/private',
+        },
+        { sourceRegex: String.raw`^\/p(?:\/([^\/]+?))(?:\/)?$`, destination: '/public/$1/area' },
+      ],
+    });
+
+    await expect(landing(store, '/alias?target=../private')).resolves.toBe('/private');
+    await expect(landing(store, '/img/...png')).resolves.toBe('/private');
+    // The request's own `..` is resolved before the rule is asked: `/p/..` is `/`.
+    await expect(landing(store, '/p/%2e%2e')).resolves.toBeUndefined();
   });
 
   it('routes a path in Next.js’s namespace that names nothing to the class it matches', async () => {

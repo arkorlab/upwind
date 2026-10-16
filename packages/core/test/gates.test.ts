@@ -1,12 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ArtifactRef } from '../src/artifact/artifact.ts';
-import {
-  declaredRouteGates,
-  gatedDataUnderOf,
-  gatedPathnamesOf,
-  ROUTE_GATES_ENV,
-} from '../src/bundle/gates.ts';
+import { declaredRouteGates, gatedPathnamesOf, ROUTE_GATES_ENV } from '../src/bundle/gates.ts';
 import { type DeploymentBundle, deploymentBundleSchema, type Route } from '../src/bundle/schema.ts';
 import { dynamicRouting } from '../src/bundle/serving.ts';
 import { gateFor } from '../src/manifest/gates.ts';
@@ -174,7 +169,6 @@ function manifestOf(
     ...dynamicRouting(bundle, routeKeys),
     gates: bundle.gates,
     gatedPathnames: gatedPathnamesOf(bundle),
-    gatedDataUnder: gatedDataUnderOf(bundle),
     ...extra,
   });
 }
@@ -248,6 +242,18 @@ describe('the gates a bundle carries', () => {
     ]);
   });
 
+  /** Next.js has a router read a data URL as the page it names only for a build with a middleware. */
+  it('refuses any gate of a build whose router reads a data URL as the page it names', () => {
+    const bundle = bundleOf({
+      gates: GATES,
+      routing: { ...bundleOf().routing, shouldNormalizeNextData: true },
+    });
+
+    expect(refusals(bundle)).toStrictEqual([
+      expect.stringMatching(/^a build whose router reads a Pages Router data URL/u),
+    ]);
+  });
+
   /** The edge leaves such a build's dynamic routes to its Function, unread. */
   it('refuses any gate of a build with i18n', () => {
     const bundle = bundleOf({ gates: GATES });
@@ -317,7 +323,11 @@ describe('the gates a build’s rewrites may reach', () => {
   it.each([
     [
       'another route, as a delivery of the application’s own is',
-      { source: '/authors/:slug', sourceRegex: '^/authors/(.+)$', destination: '/api/deliver/$1' },
+      {
+        source: '/authors/:slug',
+        sourceRegex: String.raw`^\/authors(?:\/([^\/]+?))(?:\/)?$`,
+        destination: '/api/deliver/$1',
+      },
     ],
     [
       'a page of its own the gated route’s pattern also matches',
@@ -343,6 +353,92 @@ describe('the gates a build’s rewrites may reach', () => {
     ],
   ])('takes a gate no rewrite can reach, with one to %s', (_, rule) => {
     const bundle = rerouted(bundleOf({ gates: GATES }), 'beforeFiles', [rule]);
+
+    expect(refusals(bundle)).toStrictEqual([]);
+  });
+
+  /**
+   * A value a rewrite puts in the path may climb out of what it writes ahead of it: one a `has`
+   * condition captured — from the query, a header, a cookie — may hold `/` and `..`, and reach any
+   * route; part of a segment may be `..`, and climb a level; and so does a `..` written after it.
+   */
+  it.each([
+    [
+      'a value of the query',
+      {
+        source: '/alias',
+        sourceRegex: String.raw`^\/alias(?:\/)?$`,
+        has: [{ type: 'query' as const, key: 'target' }],
+        destination: '/public/$target',
+      },
+    ],
+    [
+      'a value of a header',
+      {
+        source: '/alias',
+        sourceRegex: String.raw`^\/alias(?:\/)?$`,
+        has: [{ type: 'header' as const, key: 'x-target' }],
+        destination: '/public/$xtarget',
+      },
+    ],
+    [
+      'part of a segment',
+      {
+        source: '/img/:name.png',
+        sourceRegex: String.raw`^\/img(?:\/([^\/]+?))\.png(?:\/)?$`,
+        destination: '/public/$1/private',
+      },
+    ],
+    [
+      'a segment a climb is written after',
+      {
+        source: '/up/:slug',
+        sourceRegex: String.raw`^\/up(?:\/([^\/]+?))(?:\/)?$`,
+        destination: '/public/$1/../../private',
+      },
+    ],
+  ])('refuses a gate a rewrite reaches by what %s may hold', (_, rule) => {
+    const gates = { '/private': 'checker' };
+    const bundle = rerouted(bundleOf({ gates }), 'beforeFiles', [rule]);
+
+    expect(refusals(bundle)).toStrictEqual([
+      expect.stringMatching(/^gates names \/private, which the rewrite of /u),
+    ]);
+  });
+
+  /** What a pattern of the application's own captures (`:id(\d+)`) is read as anything at all. */
+  it('refuses a gate where a rewrite puts in what a pattern of its own captured', () => {
+    const rule = {
+      source: String.raw`/n/:id(\d+)`,
+      sourceRegex: String.raw`^\/n(?:\/(\d+))(?:\/)?$`,
+      destination: '/public/$1',
+    };
+    const bundle = rerouted(bundleOf({ gates: { '/private': 'checker' } }), 'beforeFiles', [rule]);
+
+    expect(refusals(bundle)).toStrictEqual([expect.stringMatching(/^gates names \/private/u)]);
+  });
+
+  /**
+   * A whole segment of the request's path, and whole segments of it, are never `.` or `..`: the
+   * router matches a rule against the URL's path, its dot segments resolved. So a rewrite that puts
+   * them under a path of its own reaches no route outside it — as a delivery of the application's
+   * own does, a route's params under its key, whatever else a request must or must not carry.
+   */
+  it('takes a gate no rewrite can reach, with deliveries of a route’s params under a key', () => {
+    const gates = { ...GATES, '/private': 'checker' };
+    const bundle = rerouted(bundleOf({ gates }), 'beforeFiles', [
+      {
+        source: '/reports/:team/:rest+',
+        sourceRegex: String.raw`^\/reports(?:\/([^\/]+?))(?:\/((?:[^\/]+?)(?:\/(?:[^\/]+?))*))(?:\/)?$`,
+        destination: '/api/deliver/cmVwb3J0cw/$1/$2',
+        missing: [{ type: 'header' as const, key: 'x-direct', value: 'k' }],
+      },
+      {
+        source: '/files/:path*',
+        sourceRegex: String.raw`^\/files(?:\/((?:[^\/]+?)(?:\/(?:[^\/]+?))*))?(?:\/)?$`,
+        destination: '/api/deliver/ZmlsZXM/$1',
+      },
+    ]);
 
     expect(refusals(bundle)).toStrictEqual([]);
   });
@@ -537,20 +633,6 @@ describe('what a manifest carries to find a request’s gate by', () => {
     });
   });
 
-  /** The prefix is not taken apart for the base path: a build id may hold `/_next/data/` itself. */
-  it('names the base path beside where the router reads a data URL as its page', () => {
-    const bundle = bundleOf({
-      gates: GATES,
-      config: { ...bundleOf().config, basePath: '/docs' },
-      routing: { ...bundleOf().routing, shouldNormalizeNextData: true },
-    });
-
-    expect(manifestOf(bundle)).toMatchObject({
-      gatedDataPrefix: `/docs/_next/data/${BUILD}`,
-      gatedDataBasePath: '/docs',
-    });
-  });
-
   it('names the pathnames Next.js resolves exactly that are of a gated route', () => {
     expect(gatedPathnamesOf(bundleOf({ gates: GATES }))).toStrictEqual({
       [POST]: POST,
@@ -582,7 +664,6 @@ describe('what a manifest carries to find a request’s gate by', () => {
 
     expect(routes.some((route) => 'gated' in route)).toBe(false);
     expect(gatedPathnamesOf(bundleOf())).toBeUndefined();
-    expect(gatedDataUnderOf(bundleOf())).toBeUndefined();
   });
 
   /** As a bundle with both is (`gateIssues`): its rewrites reach a gated route with no gate asked. */
@@ -729,6 +810,8 @@ describe('the gate a request is asked of', () => {
 
     expect(gateOf(caught, '/_next/missing.js')).toStrictEqual({ route: all, name: 'checker' });
     expect(gateOf(caught, '/_next/image')).toBeUndefined();
+    // As `next/image` asks for it where the application keeps its pages behind the slash.
+    expect(gateOf(caught, '/_next/image/')).toBeUndefined();
   });
 
   /**
@@ -794,7 +877,7 @@ describe('the gate a request is asked of', () => {
 
 describe('the gate a request for a page’s props is asked of', () => {
   /** A build of Pages Router news beside the App Router pages, the news and `/private` gated. */
-  function pagesBundle(normalized = false): DeploymentBundle {
+  function pagesBundle(): DeploymentBundle {
     const bundle = bundleOf();
     return bundleOf({
       gates: { [NEWS]: 'checker', [POST]: 'checker', '/private': 'checker' },
@@ -812,7 +895,6 @@ describe('the gate a request for a page’s props is asked of', () => {
       routing: {
         ...bundle.routing,
         dynamicRoutes: [NEWS_DATA_ENTRY, POST_ENTRY, AUTHOR_ENTRY, NEWS_ENTRY],
-        shouldNormalizeNextData: normalized,
       },
     });
   }
@@ -860,103 +942,5 @@ describe('the gate a request for a page’s props is asked of', () => {
   /** An App Router page has no props: a request at that name is no request of the page's. */
   it('is none at the name an App Router page’s props would have', () => {
     expect(gateOf(withProps(), `/_next/data/${BUILD}/private.json`)).toBeUndefined();
-  });
-
-  /**
-   * Where the router reads such a name as the page it names, a member of a class is routed as one
-   * by the class's dynamic route — an App Router page's among them — and is that class's to gate.
-   */
-  it('is a class’s for a name the router reads as one of its members', () => {
-    const normalized = manifestOf(pagesBundle(true));
-    const plain = manifestOf(pagesBundle());
-
-    expect(gateOf(normalized, `/_next/data/${BUILD}/posts/abc.json`)).toStrictEqual(POST_GATE);
-    expect(gateOf(plain, `/_next/data/${BUILD}/posts/abc.json`)).toBeUndefined();
-    expect(gateOf(normalized, '/_next/data/other/posts/abc.json')).toBeUndefined();
-  });
-
-  /**
-   * The router serves a page of its own such a name is in place of the class it resolves the name
-   * to (`landedRoute`, in the runtime): the page's gate is asked, and a class's never is for a page
-   * of its own with none.
-   */
-  it('is a page of its own’s for a name the router reads as that page', () => {
-    const normalized = manifestOf(pagesBundle(true));
-
-    expect(gateOf(normalized, `/_next/data/${BUILD}/private.json`)).toStrictEqual({
-      route: '/private',
-      name: 'checker',
-    });
-    expect(gateOf(normalized, `/_next/data/${BUILD}/posts/new.json`)).toBeUndefined();
-  });
-
-  /** The router matches its dynamic routes on the page alone, never on the name itself. */
-  it('is the class’s the router reads the page as, whatever class matches the name itself', () => {
-    const all = '/[...all]';
-    const bundle = pagesBundle(true);
-    const caught = manifestOf({
-      ...bundle,
-      entrypoints: [...bundle.entrypoints, { id: all, kind: 'app-page', pathname: all }],
-      routing: {
-        ...bundle.routing,
-        dynamicRoutes: [
-          ...bundle.routing.dynamicRoutes,
-          {
-            source: all,
-            sourceRegex: '^/(?<nxtPall>.+?)(?:/)?$',
-            destination: '/[...all]?nxtPall=$nxtPall',
-          },
-        ],
-      },
-    });
-
-    expect(gateOf(caught, `/_next/data/${BUILD}/posts/abc.json`)).toStrictEqual(POST_GATE);
-  });
-
-  /**
-   * Nor is a rule taken to claim it: the router reads its rules on the page, and leaves out for a
-   * data URL the redirects `next build` writes itself — the slash it puts on a page — which the
-   * manifest does not tell from the application's own.
-   */
-  it.each([
-    [
-      'the slash `next build` puts on a page',
-      String.raw`^(?:\/((?!\.well-known(?:\/.*)?)(?:[^/]+\/)*[^/\.]+))$`,
-    ],
-    ['a request for props, by the name itself', '^/_next/data/.*$'],
-  ])('is a class’s for such a name whatever rule meets %s', (_, sourceRegex) => {
-    const normalized = manifestOf(pagesBundle(true), {
-      reservedRoutes: [{ sourceRegex, beforeFiles: true }],
-    });
-
-    expect(gateOf(normalized, `/_next/data/${BUILD}/posts/abc.json`)).toStrictEqual(POST_GATE);
-  });
-
-  /** A build id may hold `/_next/data/` itself, which says nothing of where the base path ends. */
-  it('is a class’s for a name under a build id that holds `/_next/data/` itself', () => {
-    const nested = manifestOf({ ...pagesBundle(true), buildId: 'release/_next/data/v1' });
-
-    expect(gateOf(nested, '/_next/data/release/_next/data/v1/posts/abc.json')).toStrictEqual(
-      POST_GATE,
-    );
-  });
-
-  /** The router reads such a name as its page whether or not it ends in `.json`. */
-  it('is a class’s for a name the router reads as one of its members without `.json`', () => {
-    const normalized = manifestOf(pagesBundle(true));
-
-    expect(gateOf(normalized, `/_next/data/${BUILD}/posts/abc`)).toStrictEqual(POST_GATE);
-  });
-
-  /**
-   * The router compares a request's path, which a URL escapes, with the build id as written: under
-   * a build id a URL escapes, it reads no name as a page, and routes one as the path it is.
-   */
-  it('is none for a name under a build id a URL escapes, which the router reads as no page', () => {
-    const spaced = manifestOf({ ...pagesBundle(true), buildId: 'release 1' });
-
-    expect(spaced.gatedDataPrefix).toBe('/_next/data/release 1');
-    expect(gateOf(spaced, '/_next/data/release%201/posts/abc.json')).toBeUndefined();
-    expect(gateOf(spaced, '/posts/abc')).toStrictEqual(POST_GATE);
   });
 });

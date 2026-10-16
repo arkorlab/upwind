@@ -639,9 +639,10 @@ function hasMiddleware(bundle: DeploymentBundle): boolean {
  * not have, a misspelling among them; any gate of a build with `i18n`, whose dynamic routes the edge
  * leaves to its Function unread, and so could not tell a request of a gated route from another; any
  * gate of a build with a middleware, whose rewrites no build can know, and which runs in the
- * Function for every request the edge hands on rather than serves itself; and a route a rewrite of
- * `next.config` may send a request to (`rewritesOnto`), which is served at its destination with no
- * gate asked. Each would be a route served to some visitor with no gate asked, which declaring a
+ * Function for every request the edge hands on rather than serves itself — or whose router reads a
+ * data URL as the page it names, which Next.js writes for such a build alone; and a route a rewrite
+ * of `next.config` may send a request to (`rewritesOnto`), which is served at its destination with
+ * no gate asked. Each would be a route served to some visitor with no gate asked, which declaring a
  * gate says must not happen: the build is refused rather than served so.
  */
 function gateIssues(bundle: DeploymentBundle): string[] {
@@ -663,6 +664,11 @@ function gateIssues(bundle: DeploymentBundle): string[] {
   if (hasMiddleware(bundle)) {
     issues.push(
       'a build with a middleware may declare no gate: the edge runs the middleware itself only for the requests it serves as documents, and one it hands on runs it in the Function, where a rewrite onto a gated route reaches that route with no gate asked',
+    );
+  }
+  if (bundle.routing.shouldNormalizeNextData) {
+    issues.push(
+      'a build whose router reads a Pages Router data URL as the page it names (shouldNormalizeNextData) may declare no gate: Next.js has it do so only for a build with a middleware',
     );
   }
   const entrypoints = new Set(bundle.entrypoints.map((entry) => entry.pathname));

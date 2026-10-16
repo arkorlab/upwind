@@ -608,10 +608,14 @@ gated route reaches that route with no gate asked, so no build with a middleware
 
 A rewrite reaches a route where the path it writes may be one of the route's, or of its data, read
 as the router reads it — escapes decoded, dot segments resolved, a `#` kept in the path, and a
-dynamic route's segments in any case: one that puts in what its source captured may reach whatever a
-path written as far as the capture could be, so `/:path*` to `/$1` reaches every route, while one to
-`/api/deliver/$1` reaches none under `/posts`. A redirect, or a rewrite to another origin
-(`http://` or `https://`), reaches none of the routes.
+dynamic route's segments in any case. One that puts in what its source captured may reach whatever
+a path written as far as the capture could be: so `/:path*` to `/$1` reaches every route, while one
+to `/api/deliver/$1` reaches none under `/posts`. A whole segment of the request's path, or whole
+segments of it (`:slug`, `:path+`), are never `.` or `..`, but part of a segment (`:name.png`) may
+be, and climb a level, as may a `..` written after a capture; and a value a `has` condition
+captured from the query, a header or a cookie, or one a pattern of the application's own captured
+(`:id(\d+)`), may hold `/` and `..`, and so reaches every route. A redirect, or a rewrite to another
+origin (`http://` or `https://`), reaches none of the routes.
 
 The host binds a gate under each name, and its edge asks the route's gate about every `GET` and
 `HEAD` of the route — a document, a router's request for its payload, a prefetch, a Pages Router

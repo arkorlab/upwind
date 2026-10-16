@@ -21,8 +21,9 @@ import type { ProjectManifest, ReservedRoute } from './schema.ts';
  * Next.js resolves exactly, a shell's route ahead of a page with none, whichever route either is of
  * (`gatedPathnames`), or a file the build ships; then, unless a rule claims the request ahead of
  * them, the dynamic routes in their own order, matched without regard to case as the router matches
- * them, each that lands on a gated route naming it (`DynamicRoute.gated`). A Pages Router data URL
- * the router reads as the page it names (`gatedDataPrefix`) is routed as that page.
+ * them, each that lands on a gated route naming it (`DynamicRoute.gated`). No router of a build that
+ * declares a gate reads a Pages Router data URL as the page it names: Next.js has one do so only
+ * for a build with a middleware (`shouldNormalizeNextData`), which declares none (`gateIssues`).
  *
  * `undefined` for a request a route with no gate serves, and for one nothing the manifest names
  * serves. Nothing the edge holds of a gated route answers either: the routes the edge serves from
@@ -43,10 +44,6 @@ interface Named {
   readonly gated: string | undefined;
 }
 
-const DATA_SUFFIX = '.json';
-const INDEX = 'index';
-/** The root's page as a data URL names it. */
-const INDEX_PAGE = `/${INDEX}`;
 const NO_RULES: readonly ReservedRoute[] = [];
 
 /** The gated route a pathname Next.js resolves exactly is of, by its key; none for another's. */
@@ -88,17 +85,34 @@ function namesOwnFile(manifest: ProjectManifest, pathname: string): boolean {
   );
 }
 
+/** A path without the one slash it may end in, the root's aside. */
+function withoutTrailingSlash(pathname: string): string {
+  return pathname.length > 1 && pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
+}
+
+/**
+ * Whether a pathname is the image optimizer's, by either spelling of one trailing slash, as the
+ * edge answers it ahead of every route (`classifyImageRequest`): `next/image` asks for
+ * `/_next/image/` where the application keeps its pages behind the slash.
+ */
+function namesOptimizer(manifest: ProjectManifest, pathname: string): boolean {
+  const { images } = manifest;
+  return (
+    images !== undefined && withoutTrailingSlash(pathname) === withoutTrailingSlash(images.path)
+  );
+}
+
 /**
  * What the router resolves a pathname to by name: a page, of whichever route, a file, or the image
- * optimizer's own path, which it answers itself ahead of every dynamic route (`routerPathnames`).
+ * optimizer's own path, which is answered ahead of every dynamic route (`namesOptimizer`).
  */
 function namedOf(manifest: ProjectManifest, pathname: string): Named | undefined {
   const key = exactKeyOf(manifest, pathname);
   if (key !== undefined) {
     return { gated: gatedOf(manifest, key) };
   }
-  const optimizer = manifest.images?.path === pathname;
-  return optimizer || namesOwnFile(manifest, pathname) ? { gated: undefined } : undefined;
+  const answeredAhead = namesOptimizer(manifest, pathname) || namesOwnFile(manifest, pathname);
+  return answeredAhead ? { gated: undefined } : undefined;
 }
 
 /**
@@ -139,75 +153,6 @@ function routerRules(manifest: ProjectManifest): readonly ReservedRoute[] {
   return rules;
 }
 
-/** A data URL as the router reads it: the page it names, and the data name it looks it up by. */
-interface DataPage {
-  readonly page: URL;
-  readonly data: string;
-}
-
-/**
- * A request under `gatedDataPrefix` as the router reads it (`normalizeNextDataUrl` and
- * `denormalizeNextDataUrl`, in `@next/routing`): the page it names under the base path named
- * beside the prefix (`gatedDataBasePath`) — `.json` taken off where it ends so, though the router
- * reads one that does not as well, and `index` the base path's root — and the data name of that
- * page, which the router looks a name up by.
- */
-function dataPageOf(manifest: ProjectManifest, url: URL): DataPage | undefined {
-  const prefix = manifest.gatedDataPrefix;
-  if (prefix === undefined || !url.pathname.startsWith(`${prefix}/`)) {
-    return undefined;
-  }
-  const basePath = manifest.gatedDataBasePath ?? '';
-  const named = url.pathname.slice(prefix.length + 1);
-  const name = named.endsWith(DATA_SUFFIX) ? named.slice(0, -DATA_SUFFIX.length) : named;
-  const page = new URL(url.href);
-  page.pathname = name === INDEX ? basePath || '/' : `${basePath}/${name}`;
-  if (page.pathname.startsWith(`${prefix}/`)) {
-    return { page, data: page.pathname };
-  }
-  const under =
-    basePath !== '' && page.pathname.startsWith(basePath)
-      ? page.pathname.slice(basePath.length)
-      : page.pathname;
-  const spelled = under === '' || under === '/' ? INDEX_PAGE : under;
-  return { page, data: `${prefix}${spelled}${DATA_SUFFIX}` };
-}
-
-/**
- * Of a page a data URL names, what the router serves in place of the dynamic route it resolves the
- * page to (`landedRoute`, in the runtime): a page of its own a dynamic route's pattern matches
- * (`filesystemPages`), or a file of the build — and a page of a gated route, whatever it is, whose
- * gate is asked whether or not a dynamic route resolves it.
- */
-function landedOf(manifest: ProjectManifest, pathname: string): Named | undefined {
-  const key = exactKeyOf(manifest, pathname);
-  const gated = key === undefined ? undefined : gatedOf(manifest, key);
-  if (gated !== undefined) {
-    return { gated };
-  }
-  const pages = manifest.filesystemPages;
-  const own = key !== undefined && pages !== undefined && Object.hasOwn(pages, key);
-  return own || namesOwnFile(manifest, pathname) ? { gated: undefined } : undefined;
-}
-
-/**
- * The gated route that serves a request at a data URL the router reads as a page (`dataPageOf`):
- * a name the data URL is, then the page as the router lands on it (`landedOf`), then a dynamic
- * route of the page. No rule is taken to claim it: the router reads its rules on the page, and
- * leaves out the redirects `next build` writes itself for a request at a data URL, which the
- * manifest does not tell from the application's — a gate is asked rather than none.
- */
-function normalizedRouteOf(
-  manifest: ProjectManifest,
-  data: DataPage,
-  headers: Headers,
-): string | undefined {
-  const named = namedOf(manifest, data.data) ?? landedOf(manifest, data.page.pathname);
-  return named === undefined
-    ? routedDynamicRouteFor(manifest, data.page, headers)?.gated
-    : named.gated;
-}
-
 /**
  * The gated route that serves a request (above), or `undefined` for none. A request at a Pages
  * Router data URL is judged with the `x-nextjs-data` Next.js puts on one itself, as the edge judges
@@ -219,17 +164,12 @@ function gatedRouteOf(manifest: ProjectManifest, url: URL, headers: Headers): st
   const routed = isPagesDataRequestPath(basePathOf(manifest), url.pathname)
     ? dataRequestHeaders(headers)
     : headers;
-  const reserved = isReserved(manifest, url, routed, true);
-  const props = reserved ? undefined : propsPageOf(manifest, url);
+  if (isReserved(manifest, url, routed, true)) {
+    return undefined;
+  }
+  const props = propsPageOf(manifest, url);
   if (props !== undefined) {
     return gatedOf(manifest, props);
-  }
-  const data = dataPageOf(manifest, url);
-  if (data !== undefined) {
-    return normalizedRouteOf(manifest, data, routed);
-  }
-  if (reserved) {
-    return undefined;
   }
   const named = namedOf(manifest, url.pathname);
   if (named !== undefined) {
