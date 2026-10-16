@@ -277,15 +277,28 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # The same checks CI runs, in the order CI runs them. A tag on the default branch was green
-      # there, but "was green" is not "is green on this tree", and a release is the one place worth
-      # paying for the difference.
+      # Every check CI runs that judges this tree, in the order CI runs them. A tag on the default
+      # branch was green there, but "was green" is not "is green on this tree", and a release is the
+      # one place worth paying for the difference.
+      #
+      # `pnpm audit` is CI's one job that is not here, and the exception is the point rather than an
+      # omission. It judges the registry's advisory feed at the moment it is asked, not the tree — it
+      # is the only answer in CI that changes while the tree does not — so as a release gate it can
+      # stop a release over something that is not in the release, including an advisory against a
+      # linter, and with nothing to do but wait on somebody else's fix. A release that has to go out
+      # is often a release that has to go out *now*. What travels to a reader is the production
+      # closure, which this release attaches as an SBOM for exactly this kind of question, and
+      # `main` is audited on every pull request that reaches it.
       #
       # `build` first, and this is not a tidying: `@stayingupwind/sdk` and `@stayingupwind/auth` are
       # read through the `dist` they are built into, which no checkout contains, and `auth` imports
       # `@stayingupwind/sdk/db`. A runner that type-checks before building resolves that to
       # declarations that do not exist and fails the release here — past the environment's approval,
-      # with a credential on its way, and nothing published.
+      # with nothing published. The 0.4.0 release found that the hard way.
+      #
+      # CI grows checks, and this list has twice been the last to hear about it. When a step that
+      # judges the tree is added to `ci.yaml`, it belongs here too: a release that runs less than a
+      # pull request does is a release that can publish what a pull request would have stopped.
       - run: pnpm build
       - run: pnpm typecheck
       - run: pnpm lint
@@ -297,14 +310,20 @@ jobs:
       # without a rewrite it needs, and the adapter's own build says nothing about it. Cheap, and here
       # rather than only in CI: a tag can be pushed before that run finishes, or after it is cancelled.
       - run: pnpm check:patches
-      # CI runs these two and the release did not, which made a release the less-checked of the two.
-      # The deploy-mode hooks against a host that is not one — no credential, no network — and the
-      # Durable Object namespaces, their SQLite storage and their source isolation without a build.
+      # The deploy-mode hooks against a host that is not one — no credential, no network — the
+      # Durable Object namespaces, their SQLite storage and their source isolation without a build,
+      # and the inference contract with its local capability isolation, without a remote AI call.
       - run: pnpm check:deploy-tests
       - run: pnpm check:durable-objects
+      - run: pnpm check:ai
       # And here for `check:patches`'s reason: a `create-upwind` released with last version's agent
       # rules writes every new project an uncommitted change, which nothing downstream would catch.
       - run: pnpm check:agent-rules
+      # Without `--format github`, which annotates a line of a diff there is none of here.
+      - run: pnpm check:vocabulary
+      # Every suite, under the one runner `ci.yaml` gives a job of its own. A release has no reason
+      # to split them across two machines, and every reason not to publish what a suite would fail.
+      - run: pnpm test
 
       # Made here, and before the publish, for two reasons. The install above populated pnpm's store,
       # which is what lets a licence and an author resolve rather than coming out `NOASSERTION`; and a

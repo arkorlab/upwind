@@ -40,14 +40,17 @@ upwind/
 ├── tools/
 │   ├── next-matrix/   # builds those fixtures with each Next.js and checks what came out
 │   ├── deploy-tests/  # deploys Next.js's own deploy-mode applications to a host for its suite to run
-│   └── vocabulary/    # holds the packages that serve and deploy a deployment to words any host uses
+│   ├── vocabulary/    # holds the packages that serve and deploy a deployment to words any host uses
+│   └── benchmark/     # measures one public Next.js application on two hosts, from a third
 └── .github/
-    ├── workflows/ci.yaml            # every check, on every pull request
-    ├── workflows/next-matrix.yaml   # the supported Next.js range, checked against Next.js itself
-    ├── workflows/deploy-tests.yaml  # that suite against a real host, which needs a credential
-    ├── workflows/release.yaml       # where a release enters; npm's trusted publisher names this file
-    ├── workflows/publish.yaml       # what a release does
-    └── release-signers.asc          # the keys a release tag may be signed with
+    ├── workflows/ci.yaml                # every check, on every pull request
+    ├── workflows/next-matrix.yaml       # the supported Next.js range, checked against Next.js itself
+    ├── workflows/deploy-tests.yaml      # that suite against a real host, which needs a credential
+    ├── workflows/benchmark.yaml         # those measurements, on a schedule
+    ├── workflows/benchmark-publish.yaml # and what records them, apart from what takes them
+    ├── workflows/release.yaml           # where a release enters; npm's trusted publisher names this file
+    ├── workflows/publish.yaml           # what a release does
+    └── release-signers.asc              # the keys a release tag may be signed with
 ```
 
 The seven packages under `packages/` are what a release publishes, and all of them move together.
