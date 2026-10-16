@@ -45,9 +45,10 @@ import {
 
 const PROJECTION_BATCH = 50;
 const PROJECTION_CONCURRENCY = 8;
-const MIB = 1024 * 1024;
+const KIB = 1024;
+const PROJECTION_MEMORY_MIB = 48;
 /** Leave room in the 128 MiB isolate for scope state, other requests and a returned commit record. */
-const PROJECTION_MEMORY_BYTES = 48 * MIB;
+const PROJECTION_MEMORY_BYTES = PROJECTION_MEMORY_MIB * KIB * KIB;
 const META_SCOPE_MARKER = 'scope_marker_written';
 const DATA_KIND_PREFIX = 'data:';
 
