@@ -99,8 +99,8 @@ export function withGates(
  * spelling the router finds one by (`routerSpellings`). A prerender is of the gated route among
  * those it may be served as (`servedRoutesOf`) — its own; a page of its own its name also spells,
  * which the runtime serves in its place; and, where the router does not find it by name, each a
- * dynamic route may land it on — of which a bundle the schema takes has one at most
- * (`gateIssues`). `undefined` for a bundle that declares no gate.
+ * dynamic route may land it on — which a bundle the schema takes has only as the one route it may
+ * be served as (`gateIssues`). `undefined` for a bundle that declares no gate.
  */
 export function gatedPathnamesOf(bundle: DeploymentBundle): Record<string, string> | undefined {
   const { gates } = bundle;

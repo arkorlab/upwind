@@ -15,7 +15,7 @@ import {
   DURABLE_OBJECT_BUNDLE_VERSION,
   DURABLE_OBJECT_SPLIT_BUNDLE_VERSION,
 } from './durable-objects.ts';
-import { gatedEitherWay, rewritesOnto } from './gate-routes.ts';
+import { gatedEitherWay, isOptimizerPath, rewritesOnto } from './gate-routes.ts';
 
 export {
   type RouteHas,
@@ -635,17 +635,19 @@ function hasMiddleware(bundle: DeploymentBundle): boolean {
 
 /**
  * What of a bundle's gates no host could ask: a `gates` that declares none; a route the build ships
- * as a file, which is answered from storage before any route is looked for; a route the build does
- * not have, a misspelling among them; any gate of a build with `i18n`, whose dynamic routes the edge
- * leaves to its Function unread, and so could not tell a request of a gated route from another; any
- * gate of a build with a middleware, whose rewrites no build can know, and which runs in the
- * Function for every request the edge hands on rather than serves itself — or whose router reads a
- * data URL as the page it names, which Next.js writes for such a build alone; a route a rewrite of
- * `next.config` may send a request to (`rewritesOnto`), which is served at its destination with no
- * gate asked; and a prerendered pathname two gated routes may be served as (`gatedEitherWay`),
- * whose one gate asked would pass the other's. Each would be a route served to some visitor with
- * no gate asked, which declaring a gate says must not happen: the build is refused rather than
- * served so.
+ * as a file, which is answered from storage before any route is looked for, or the image
+ * optimizer's own path, which is answered as the optimizer's before any route is; a route the
+ * build does not have, a misspelling among them; any gate of a build with `i18n`, whose dynamic
+ * routes the edge leaves to its Function unread, and so could not tell a request of a gated route
+ * from another; any gate of a build with a middleware, whose rewrites no build can know, and which
+ * runs in the Function for every request the edge hands on rather than serves itself — or whose
+ * router reads a data URL as the page it names, which Next.js writes for such a build alone; a
+ * route a rewrite of `next.config` may send a request to (`rewritesOnto`), which is served at its
+ * destination with no gate asked; and a prerendered pathname that may be served as a gated route
+ * or as another (`gatedEitherWay`), of which the one gate asked would answer for a route it is not
+ * the gate of. Each would be a route served to some visitor with no gate asked, or answered by a
+ * gate that is not its own, which declaring a gate says must not happen: the build is refused
+ * rather than served so.
  */
 function gateIssues(bundle: DeploymentBundle): string[] {
   const { gates } = bundle;
@@ -679,6 +681,10 @@ function gateIssues(bundle: DeploymentBundle): string[] {
   for (const route of routes) {
     if (files.has(route)) {
       issues.push(`gates names ${route}, which the build ships as a file, served before any gate`);
+    } else if (isOptimizerPath(bundle, route)) {
+      issues.push(
+        `gates names ${route}, the image optimizer's path, answered as the optimizer's before any gate`,
+      );
     } else if (!entrypoints.has(route)) {
       issues.push(`gates names ${route}, which is no route of this build`);
     }

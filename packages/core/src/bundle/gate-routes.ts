@@ -249,11 +249,15 @@ export function servedRoutesOf(build: BuildLandings): (prerender: NamedPrerender
 }
 
 /**
- * Each prerendered pathname two gated routes may be served as (`servedRoutesOf`): its own, which the
- * edge serves what it kept of, and one a dynamic route lands it on or a page of its own its name
- * also spells — or two the router chooses between by what a request carries (`has`, `missing`). The edge asks one gate before anything is
- * served, and asked of one route's, the other's would be passed: such a build is refused
- * (`gateIssues`, in `schema.ts`).
+ * Each prerendered pathname that may be served as more than one route, one of them gated
+ * (`servedRoutesOf`): its own, which the edge serves what it kept of, and one a dynamic route
+ * lands it on or a page of its own its name also spells — or two the router chooses between by
+ * what a request carries (`has`, `missing`). The edge asks a pathname of one route's gate before
+ * it serves anything, and the route that serves the request is not its to choose: the gate asked
+ * would answer for another route — one it is no gate of, or one that has none — and a request it
+ * passed could be served as a gated route whose gate was never asked. Two routes behind gates of
+ * one name are two all the same: a gate is told which route a request is of (`RouteGate.route`).
+ * Such a build is refused (`gateIssues`, in `schema.ts`).
  */
 export function gatedEitherWay(
   build: BuildLandings,
@@ -261,13 +265,25 @@ export function gatedEitherWay(
 ): string[] {
   const servedRoutes = servedRoutesOf(build);
   return build.prerenders.flatMap((prerender) => {
-    const gated = servedRoutes(prerender).filter((route) => Object.hasOwn(gates, route));
-    return gated.length < 2
+    const routes = servedRoutes(prerender);
+    const gated = routes.filter((route) => Object.hasOwn(gates, route));
+    return routes.length < 2 || gated.length === 0
       ? []
       : [
-          `gates names ${gated.join(' and ')}, either of which ${prerender.pathname} may be served as: no one gate can be asked of it before it is served`,
+          `gates names ${gated.join(' and ')}, and ${prerender.pathname} may be served as ${routes.join(' or ')}: the edge asks one route's gate of it before it is served, which would answer for a route it is not the gate of`,
         ];
   });
+}
+
+/**
+ * Whether `route` is the image optimizer's own path, by either spelling of one trailing slash: the
+ * edge answers that path as the optimizer's ahead of every route (`namesOptimizer`, in the
+ * manifest's `gates.ts`), and so does the router (`routerPathnames`) — a gate declared for the
+ * route of that name is never asked.
+ */
+export function isOptimizerPath(build: BuildNames, route: string): boolean {
+  const optimizer = build.config.images?.path;
+  return optimizer !== undefined && withoutTrailingSlash(route) === withoutTrailingSlash(optimizer);
 }
 
 /**
@@ -481,43 +497,53 @@ function mayReachCaptured(destination: Destination, named: string, fold: Fold): 
   return readings.some((written) => mayBegin(climbedOutOf(written, climbs), named, fold));
 }
 
+/** A gated route, and a name a request asks for it by: the page's own, or the name of its data. */
+interface GatedName {
+  readonly route: string;
+  readonly named: string;
+}
+
 /**
- * Whether a request a rewrite sends to `destination` may be served as `route`, whose name a request
- * asks for it by is `named` — the page's own, or the name of its data. A path the rewrite writes
- * whole is read as the router reads it (`readingsOf`): it reaches the route where any reading is a
- * page of the route; and otherwise none where a reading is a page of its own or a file, which the
- * router serves in place of any dynamic route; and otherwise where a dynamic route the router may
- * land the path on, the first that holds of it, lands on the route (`dynamicLandings`) — a member
- * of another route the build prerendered is no name the router serves by — or, where none holds of
- * it, where it may be one of `named`'s, as it is or as the data of any page it may be
- * (`dataPagesOf`), and compared without regard to case where a dynamic route finds `named`'s
- * requests. One the rewrite puts a capture in is read by what each capture may hold
- * (`mayReachCaptured`).
+ * Whether a request a rewrite sends to `destination` may be served as a gated route, whose name a
+ * request asks for it by is `named` — the page's own, or the name of its data: read once for the
+ * destination, and asked of each gated route. A path the rewrite writes whole is read as the router
+ * reads it (`readingsOf`): it reaches the route where any reading is a page of the route; and
+ * otherwise none where a reading is a page of its own or a file, which the router serves in place
+ * of any dynamic route; and otherwise where a dynamic route the router may land the path on, the
+ * first that holds of it, lands on the route (`dynamicLandings`) — a member of another route the
+ * build prerendered is no name the router serves by — or, where none holds of it, where it may be
+ * one of `named`'s, as it is or as the data of any page it may be (`dataPagesOf`), and compared
+ * without regard to case where a dynamic route finds `named`'s requests. One the rewrite puts a
+ * capture in is read by what each capture may hold (`mayReachCaptured`).
  */
-function mayReach(
-  reader: Reader,
-  destination: Destination,
-  route: { readonly route: string; readonly named: string },
-): boolean {
-  const fold = route.named.includes('[') ? ANY_CASE : AS_WRITTEN;
+function reachOf(reader: Reader, destination: Destination): (route: GatedName) => boolean {
   const { path } = destination;
   if (destination.references.length > 0) {
-    return mayReachCaptured(destination, route.named, fold);
+    return (route) => mayReachCaptured(destination, route.named, foldFor(route.named));
   }
   const readings = readingsOf(path);
-  if (readings.some((reading) => reader.routeOf(reading) === route.route)) {
-    return true;
-  }
+  const routes = new Set(readings.map((reading) => reader.routeOf(reading)));
   if (readings.some((reading) => reader.servesItself(reading))) {
-    return false;
+    return (route) => routes.has(route.route);
   }
   const asSet = requestSpelling(path);
   const landed = reader.landingsOf(asSet);
-  if (landed.length > 0) {
-    return landed.includes(route.route);
-  }
-  const spelled = fold(asSet);
-  return [spelled, ...dataPagesOf(spelled)].some((page) => mayBeWhole(page, route.named, fold));
+  return (route) => {
+    if (routes.has(route.route)) {
+      return true;
+    }
+    if (landed.length > 0) {
+      return landed.includes(route.route);
+    }
+    const fold = foldFor(route.named);
+    const spelled = fold(asSet);
+    return [spelled, ...dataPagesOf(spelled)].some((page) => mayBeWhole(page, route.named, fold));
+  };
+}
+
+/** How a path is compared with `named`: in any case where a dynamic route finds its requests. */
+function foldFor(named: string): Fold {
+  return named.includes('[') ? ANY_CASE : AS_WRITTEN;
 }
 
 /**
@@ -579,10 +605,8 @@ export function rewritesOnto(build: BuildRerouting, gated: readonly string[]): s
     }
     // All the router sets on the URL's path: what comes before a `?`, a `#` among it.
     const [path = ''] = destination.split('?', 1);
-    const written = { path, references: referencesOf(path, rule.sourceRegex) };
-    const reached = new Set(
-      named.filter((name) => mayReach(reader, written, name)).map((name) => name.route),
-    );
+    const reaches = reachOf(reader, { path, references: referencesOf(path, rule.sourceRegex) });
+    const reached = new Set(named.filter((name) => reaches(name)).map((name) => name.route));
     for (const route of reached) {
       issues.push(
         `gates names ${route}, which the rewrite of ${rule.source ?? rule.sourceRegex} to ${destination} may send a request to, served there with no gate asked`,

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { ArtifactRef } from '../src/artifact/artifact.ts';
 import { declaredRouteGates, gatedPathnamesOf, ROUTE_GATES_ENV } from '../src/bundle/gates.ts';
@@ -200,11 +200,39 @@ function gateOf(manifest: ProjectManifest, path: string) {
 const GATES = { [POST]: 'checker' };
 const ALL = '/[...all]';
 
+/** A member of the authors' class, prerendered. */
+const AUTHOR_DEMO: Prerender = {
+  id: 'author',
+  pathname: '/authors/demo',
+  route: AUTHOR,
+  parentOutputId: 'a',
+  groupId: 1,
+};
+/** A member of the catch-all, prerendered under the posts, whose class is ahead of the catch-all. */
+const CAUGHT_DEMO: Prerender = {
+  id: 'caught',
+  pathname: '/posts/demo',
+  route: ALL,
+  parentOutputId: 'c',
+  groupId: 2,
+};
+/** A member of the posts' class, prerendered. */
+const POST_DEMO: Prerender = {
+  id: 'post',
+  pathname: '/posts/first',
+  route: POST,
+  parentOutputId: 'p',
+  groupId: 3,
+};
+
 /**
  * A build of a class of posts and a class of authors ahead of a catch-all, in Next.js's order, with
- * a member of the authors and one of the catch-all prerendered — the catch-all's under the posts.
+ * `prerendered` — by default, a member of the authors and one of the catch-all under the posts.
  */
-function classesOf(gates: Record<string, string>): DeploymentBundle {
+function classesOf(
+  gates: Record<string, string>,
+  prerendered: readonly Prerender[] = [AUTHOR_DEMO, CAUGHT_DEMO],
+): DeploymentBundle {
   return bundleOf({
     gates,
     entrypoints: [
@@ -212,10 +240,7 @@ function classesOf(gates: Record<string, string>): DeploymentBundle {
       { id: AUTHOR, kind: 'app-page', pathname: AUTHOR },
       { id: ALL, kind: 'app-page', pathname: ALL },
     ],
-    prerenders: [
-      { id: 'author', pathname: '/authors/demo', route: AUTHOR, parentOutputId: 'a', groupId: 1 },
-      { id: 'caught', pathname: '/posts/demo', route: ALL, parentOutputId: 'c', groupId: 2 },
-    ],
+    prerenders: [...prerendered],
     routing: {
       ...bundleOf().routing,
       dynamicRoutes: [
@@ -232,14 +257,43 @@ function classesOf(gates: Record<string, string>): DeploymentBundle {
 }
 
 /** The same build with the authors' class asked only of a request with a cookie. */
-function conditionedOf(gates: Record<string, string>): DeploymentBundle {
-  const bundle = classesOf(gates);
+function conditionedOf(
+  gates: Record<string, string>,
+  prerendered?: readonly Prerender[],
+): DeploymentBundle {
+  const bundle = classesOf(gates, prerendered);
   const dynamicRoutes = bundle.routing.dynamicRoutes.map((route) => {
     return route === AUTHOR_ENTRY
       ? { ...route, has: [{ type: 'cookie' as const, key: 'b' }] }
       : route;
   });
   return { ...bundle, routing: { ...bundle.routing, dynamicRoutes } };
+}
+
+/** Whether `pattern` is the authors' class's, read back as written: compiled, a `/` is escaped. */
+function isAuthors(pattern: RegExp): boolean {
+  return pattern.source.replaceAll(String.raw`\/`, '/') === AUTHOR_ENTRY.sourceRegex;
+}
+
+/**
+ * How often the authors' class's pattern is asked of a path as the schema reads a build that gates
+ * `gates`, with a rewrite to a path no name or class holds of: every ask of every pattern watched.
+ */
+function authorsAsked(gates: Record<string, string>): number {
+  const bundle = rerouted(bundleOf({ gates }), 'afterFiles', [latest('/elsewhere/x')]);
+  const exec = vi.spyOn(RegExp.prototype, 'exec');
+  try {
+    refusals(bundle);
+    return exec.mock.contexts.filter((pattern) => pattern instanceof RegExp && isAuthors(pattern))
+      .length;
+  } finally {
+    exec.mockRestore();
+  }
+}
+
+/** What the schema says of a bundle's rewrites, of all it says is wrong with the bundle. */
+function rewriteRefusals(bundle: DeploymentBundle): string[] {
+  return refusals(bundle).filter((said) => said.includes(', which the rewrite of '));
 }
 
 const DOCS = '/docs/[slug]';
@@ -251,7 +305,7 @@ const DOCS_ENTRY = {
 
 /**
  * A build of a class of docs, with a member whose value holds a slash (`/docs/a%2Fb`) prerendered,
- * and a page of its own at the path that member's name also spells decoded (`/docs/a/b`).
+ * a page of its own at the path that member's name also spells decoded (`/docs/a/b`), and another.
  */
 function docsOf(gates: Record<string, string>): DeploymentBundle {
   return bundleOf({
@@ -259,6 +313,7 @@ function docsOf(gates: Record<string, string>): DeploymentBundle {
     entrypoints: [
       { id: DOCS, kind: 'app-page', pathname: DOCS },
       { id: '/docs/a/b', kind: 'app-page', pathname: '/docs/a/b' },
+      { id: '/private', kind: 'app-page', pathname: '/private' },
     ],
     prerenders: [
       { id: 'ab', pathname: '/docs/a%2Fb', route: DOCS, parentOutputId: 'ab', groupId: 1 },
@@ -309,6 +364,22 @@ describe('the gates a bundle carries', () => {
   });
 
   /**
+   * The image optimizer's own path is answered as the optimizer's ahead of every route, a page of
+   * that name among them, by either spelling of one trailing slash: a gate of that page would never
+   * be asked.
+   */
+  it.each([
+    ['as the page is named', '/private'],
+    ['behind a trailing slash', '/private/'],
+  ])('refuses one of a page at the image optimizer’s own path, spelled %s', (_, path) => {
+    const config = { ...bundleOf().config, images: { ...IMAGES, path } };
+
+    expect(refusals(bundleOf({ gates: { '/private': 'checker' }, config }))).toStrictEqual([
+      expect.stringMatching(/^gates names \/private, the image optimizer's path/u),
+    ]);
+  });
+
+  /**
    * The edge runs a middleware itself only for the requests it serves as documents; one it hands
    * on runs it in the Function, where a rewrite onto a gated route reaches it with no gate asked.
    */
@@ -326,27 +397,63 @@ describe('the gates a bundle carries', () => {
   });
 
   /**
-   * A prerendered pathname two gated routes may be served as — its own, which the edge serves what
-   * it kept of, and a class ahead of it; or two the router chooses between by what a request
-   * carries — leaves the edge no one gate to ask before it serves the pathname.
+   * A prerendered pathname that may be served as more than one route, one of them gated — its own,
+   * which the edge serves what it kept of, and a class ahead of it that the router lands it on; two
+   * the router chooses between by what a request carries; its own and a page of its own its name
+   * also spells — leaves the edge no one gate to ask before it serves the pathname: the gate asked
+   * would answer for the other route, gated or not.
    */
   it.each([
-    [
-      'its own and a class ahead of it',
-      classesOf({ [POST]: 'posts', [ALL]: 'pages' }),
-      /^gates names \/\[\.\.\.all\] and \/posts\/\[slug\], either of which \/posts\/demo may be served as/u,
-    ],
-    [
-      'two a request’s conditions choose between',
-      conditionedOf({ [AUTHOR]: 'authors', [ALL]: 'pages' }),
-      /^gates names \/authors\/\[slug\] and \/\[\.\.\.all\], either of which \/authors\/demo may be served as/u,
-    ],
+    ['both gated', { [POST]: 'posts', [ALL]: 'pages' }],
+    ['the class gated', { [POST]: 'posts' }],
+    ['its own gated', { [ALL]: 'pages' }],
   ])(
-    'refuses a gate of each of two routes a prerendered pathname may be served as: %s',
-    (_, bundle, said) => {
-      expect(refusals(bundle)).toStrictEqual([expect.stringMatching(said)]);
+    'refuses a gate where a prerendered pathname may be served as its own or a class ahead of it, %s',
+    (_, gates) => {
+      expect(refusals(classesOf(gates, [CAUGHT_DEMO]))).toStrictEqual([
+        expect.stringMatching(
+          /^gates names .*, and \/posts\/demo may be served as \/\[\.\.\.all\] or \/posts\/\[slug\]: /u,
+        ),
+      ]);
     },
   );
+
+  it.each([
+    ['both gated', { [AUTHOR]: 'authors', [ALL]: 'pages' }],
+    ['the one passed over gated', { [AUTHOR]: 'authors' }],
+    ['the one after it gated', { [ALL]: 'pages' }],
+  ])(
+    'refuses a gate where a request’s conditions choose a prerendered pathname’s route, %s',
+    (_, gates) => {
+      expect(refusals(conditionedOf(gates, [AUTHOR_DEMO]))).toStrictEqual([
+        expect.stringMatching(
+          /^gates names .*, and \/authors\/demo may be served as \/authors\/\[slug\] or \/\[\.\.\.all\]: /u,
+        ),
+      ]);
+    },
+  );
+
+  it.each([
+    ['the page of its own gated', { '/docs/a/b': 'checker' }],
+    ['its own route gated', { [DOCS]: 'checker' }],
+    ['both gated', { [DOCS]: 'checker', '/docs/a/b': 'checker' }],
+  ])('refuses a gate where a member’s name also spells a page of its own, %s', (_, gates) => {
+    expect(refusals(docsOf(gates))).toStrictEqual([
+      expect.stringMatching(
+        /^gates names .*, and \/docs\/a%2Fb may be served as \/docs\/\[slug\] or \/docs\/a\/b: /u,
+      ),
+    ]);
+  });
+
+  /**
+   * Where every route it may be served as is ungated, or it may be served as one route only, there is
+   * nothing to choose between: a gated class's member and a catch-all's member it is ahead of, the
+   * catch-all ungated, are taken.
+   */
+  it('takes a gate where each prerendered pathname may be served as one route, or none gated', () => {
+    expect(refusals(classesOf({ [POST]: 'posts' }, [AUTHOR_DEMO, POST_DEMO]))).toStrictEqual([]);
+    expect(refusals(conditionedOf({ [POST]: 'posts' }, [AUTHOR_DEMO]))).toStrictEqual([]);
+  });
 
   /** Next.js has a router read a data URL as the page it names only for a build with a middleware. */
   it('refuses any gate of a build whose router reads a data URL as the page it names', () => {
@@ -538,10 +645,21 @@ describe('the gates a build’s rewrites may reach', () => {
       latest('/posts/demo'),
     ]);
 
-    expect(refusals(author)).toStrictEqual([]);
-    expect(refusals(caught)).toStrictEqual([
+    expect(rewriteRefusals(author)).toStrictEqual([]);
+    expect(rewriteRefusals(caught)).toStrictEqual([
       expect.stringMatching(/^gates names \/posts\/\[slug\], which the rewrite of /u),
     ]);
+  });
+
+  /**
+   * Where a rewrite lands is read once for the rewrite, and every gated route held to it: the dynamic
+   * routes are asked of its destination once, however many routes the build gates.
+   */
+  it('asks the dynamic routes where a rewrite lands once, however many routes are gated', () => {
+    const many = { [POST]: 'checker', [AUTHOR]: 'checker', '/private': 'checker', '/': 'checker' };
+
+    expect(authorsAsked(GATES)).toBeGreaterThan(0);
+    expect(authorsAsked(many)).toBe(authorsAsked(GATES));
   });
 
   /** A dynamic route with conditions may be passed over, and the one after it reached. */
@@ -550,7 +668,7 @@ describe('the gates a build’s rewrites may reach', () => {
       latest('/authors/demo'),
     ]);
 
-    expect(refusals(rewritten)).toStrictEqual([
+    expect(rewriteRefusals(rewritten)).toStrictEqual([
       expect.stringMatching(/^gates names \/\[\.\.\.all\], which the rewrite of /u),
     ]);
   });
@@ -812,15 +930,16 @@ describe('what a manifest carries to find a request’s gate by', () => {
 
   /**
    * The runtime reaches a member through its dynamic routes, the first that holds of it winning: a
-   * member of the catch-all under the posts is served by the posts' class ahead of it, and asked of
-   * that class's gate.
+   * member of the posts is the posts' gate's, and one of the authors is asked of no gate, though the
+   * gated catch-all behind the authors' class also holds of it.
    */
-  it('names a member the gated route a dynamic route ahead of its own lands it on', () => {
-    const bundle = classesOf({ [POST]: 'checker' });
-    const caught = manifestOf(classesOf({ [ALL]: 'checker' }));
+  it('names a member the gated route the dynamic route that lands it is of', () => {
+    const posts = classesOf({ [POST]: 'checker' }, [AUTHOR_DEMO, POST_DEMO]);
+    const caught = manifestOf(classesOf({ [ALL]: 'checker' }, [AUTHOR_DEMO]));
 
-    expect(gatedPathnamesOf(bundle)).toMatchObject({ '/posts/demo': POST });
-    expect(gateOf(manifestOf(bundle), '/posts/demo')).toStrictEqual(POST_GATE);
+    expect(gatedPathnamesOf(posts)).toMatchObject({ '/posts/first': POST });
+    expect(gatedPathnamesOf(posts)).not.toHaveProperty(['/authors/demo']);
+    expect(gateOf(manifestOf(posts), '/posts/first')).toStrictEqual(POST_GATE);
     expect(gateOf(caught, '/authors/demo')).toBeUndefined();
   });
 
@@ -844,31 +963,15 @@ describe('what a manifest carries to find a request’s gate by', () => {
   });
 
   /**
-   * Of the routes a prerendered pathname may be served as — its own, and each the router lands it
-   * on as a request's conditions choose — the one that is gated is asked of it, whichever serves it.
-   */
-  it('names a prerendered pathname the one gated route of those it may be served as', () => {
-    expect(gatedPathnamesOf(conditionedOf({ [ALL]: 'checker' }))).toMatchObject({
-      '/authors/demo': ALL,
-      '/posts/demo': ALL,
-    });
-  });
-
-  /**
    * A member whose name escapes a slash (`/docs/a%2Fb`, of the value `a/b`) is served by the runtime
-   * as the page of its own the name also spells decoded (`/docs/a/b`), as Next.js serves it: that
-   * page's gate is asked of it. A build that gates both, which no one gate asked could hold to, is
-   * refused.
+   * as the page of its own the name also spells decoded (`/docs/a/b`), as Next.js serves it: where
+   * neither is gated, nothing names it; a build that gates either is refused (`gatedEitherWay`).
    */
-  it('names a member the gated route of a page of its own its name also spells', () => {
-    const bundle = docsOf({ '/docs/a/b': 'checker' });
-    const manifest = manifestOf(bundle, { routes: [routeEntry('/docs/a%2Fb')] });
+  it('names no member whose name also spells a page of its own, where neither is gated', () => {
+    const bundle = docsOf({ '/private': 'checker' });
 
-    expect(gatedPathnamesOf(bundle)).toMatchObject({ '/docs/a%2Fb': '/docs/a/b' });
-    expect(gateOf(manifest, '/docs/a%2Fb')).toStrictEqual({ route: '/docs/a/b', name: 'checker' });
-    expect(refusals(docsOf({ [DOCS]: 'checker', '/docs/a/b': 'checker' }))).toStrictEqual([
-      expect.stringContaining('either of which /docs/a%2Fb may be served as'),
-    ]);
+    expect(refusals(bundle)).toStrictEqual([]);
+    expect(gatedPathnamesOf(bundle)).not.toHaveProperty(['/docs/a%2Fb']);
   });
 
   /** The props of a page rendered for each request are asked for at a route of their own. */

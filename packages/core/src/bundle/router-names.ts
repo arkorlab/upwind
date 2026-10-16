@@ -31,15 +31,15 @@ export interface RouterNames {
   readonly slashSpellings: ReadonlyMap<string, string>;
 }
 
-const LAST_SEGMENT_NAMES_NO_FILE = /\/[^./]+$/u;
-
 /**
  * Whether Next.js spells `pathname` with a trailing slash under `trailingSlash`: a path whose last
  * segment names no file, which its redirect gives the slash. A template is never asked for by
  * name with one: a dynamic route's matcher takes the slash itself.
  */
 function takesTrailingSlash(pathname: string): boolean {
-  return LAST_SEGMENT_NAMES_NO_FILE.test(pathname) && !pathname.includes('[');
+  // The last segment, where it names no file: written in place, as a pattern of the module's own
+  // costs every Function that carries the module a statement of its own.
+  return /\/[^./]+$/u.test(pathname) && !pathname.includes('[');
 }
 
 /**

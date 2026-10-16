@@ -214,13 +214,12 @@ function readBundleFile(name: string): Uint8Array<ArrayBuffer> {
  * What the router resolves exactly, read once for the runtime and for the checks a bundle's gates
  * are held to, which follow the router to where it lands a request (`routerPathnames`, in
  * `@stayingupwind/core/bundle`): the pages, the shipped files, the prerenders it resolves by name,
- * their spellings behind a trailing slash, and the optimizer's own path.
+ * their spellings behind a trailing slash, and the optimizer's own path. That function itself,
+ * typed by the manifest a store is made from and the store it goes into: no call of its own.
  */
-export function routerPathnames(
+export const routerPathnames: (
   manifest: Pick<RuntimeManifest, 'config' | 'entrypoints' | 'prerenders' | 'staticFiles'>,
-): Pick<Store, 'pathnames' | 'slashSpellings'> {
-  return namedExactly(manifest);
-}
+) => Pick<Store, 'pathnames' | 'slashSpellings'> = namedExactly;
 
 /**
  * The dynamic routes as the router is handed them: the build's, with an API route of an
@@ -400,7 +399,7 @@ export function getStore(): Store {
       documentPrerenders(manifest.prerenders, manifest.entrypoints),
     ),
     staticFiles,
-    ...routerPathnames(manifest),
+    ...namedExactly(manifest),
     dynamicRoutes: routerDynamicRoutes(manifest),
     renderedPages: renderedPages(manifest),
     readBlob(sha256) {
