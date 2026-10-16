@@ -32,7 +32,9 @@ import { cacheStorage, type FunctionCacheNaming, turnsOfRequest, within } from '
  * write with. One the authority would have withdrawn by now, past its `expire` or its invalidation's
  * hard expiry, is none. Two writes of one key in one data center can land their copies out of
  * order, so the older one is read until KV has the newer — as KV's own answer in a data center
- * behind the authority's is.
+ * behind the authority's is. The authority's answer to a read, which can come well after it was
+ * asked (`keepCurrent`), is not kept over the copy of a later value: each copy says its value's
+ * revision (`REVISION_HEADER`).
  *
  * Kept under a key derived with the scope's token, which a write to the authority needs as well:
  * the cache key is the application's to choose, and a key made from it alone would be one anything
@@ -66,6 +68,8 @@ const DATA_COPY_READ_MS = 100;
  * costs either no more than this; the copy is then the next write's to keep.
  */
 const DATA_COPY_WRITE_MS = 1000;
+/** The header a copy says its value's revision in, read without the copy itself (`keptRevision`). */
+const REVISION_HEADER = 'x-data-revision';
 
 function warn(message: string, detail: unknown): void {
   // The Function's own log, as the runtime writes its own: nothing else sees what its cache did.
@@ -104,10 +108,11 @@ function withdrawnBy(copy: DataGetResponse, at: number): boolean {
   return withdrawal !== undefined && withdrawal <= at;
 }
 
-/** A copy as it is kept: its record, and the seconds the data center keeps it for. */
+/** A copy as it is kept: its record, the seconds the data center keeps it for, and its revision. */
 interface KeptCopy {
   readonly body: Uint8Array<ArrayBuffer>;
   readonly maxAge: number;
+  readonly revision: number;
 }
 
 /**
@@ -146,7 +151,19 @@ function keptOf(copy: DataGetResponse): KeptCopy | undefined {
     return undefined;
   }
   const body = new TextEncoder().encode(JSON.stringify(copy));
-  return body.byteLength > MAX_DATA_COPY_BYTES ? undefined : { body, maxAge };
+  return body.byteLength > MAX_DATA_COPY_BYTES
+    ? undefined
+    : { body, maxAge, revision: copy.dependencyRevision };
+}
+
+/**
+ * The revision of the copy the key holds, as its header says, the copy itself unread: `-1` where
+ * the key holds none, and `NaN` for one kept before copies said — neither later than any value.
+ */
+async function keptRevision(cache: Cache, key: string): Promise<number> {
+  const kept = await cache.match(key);
+  releaseStream(kept?.body, 'a data copy asked for its revision');
+  return Number(kept?.headers.get(REVISION_HEADER) ?? -1);
 }
 
 /** Let go of what a lookup given up on answers with, once it does. */
@@ -189,9 +206,14 @@ export class DataCopies {
    * Put the copy — or, given none, let go of the one the key had — in one of the request's turns,
    * as an artifact's copy is written (`COPY_WRITES_AT_ONCE`): given back once the Cache API has
    * answered, however long the write waited for it. A put the Cache API refuses lets go of the
-   * key's copy as well, which is an earlier value's.
+   * key's copy as well, which is an earlier value's. Given the revision of the value at hand
+   * (`revision`), the copy of a later value the key holds is left as it is.
    */
-  async #write(descriptor: DataGetRequest, copy: KeptCopy | undefined): Promise<true | undefined> {
+  async #write(
+    descriptor: DataGetRequest,
+    copy: KeptCopy | undefined,
+    revision?: number,
+  ): Promise<true | undefined> {
     const turns = turnsOfRequest()?.writes;
     try {
       if (turns !== undefined && !(await turns.take(DATA_COPY_WRITE_MS))) {
@@ -200,6 +222,9 @@ export class DataCopies {
       try {
         const key = await this.#keyOf(descriptor);
         const cache = await this.#storage.open(this.#naming.copyCache);
+        if (revision !== undefined && (await keptRevision(cache, key)) > revision) {
+          return true;
+        }
         if (copy === undefined) {
           await cache.delete(key);
           return true;
@@ -207,6 +232,7 @@ export class DataCopies {
         const headers = {
           'content-type': 'application/json',
           'cache-control': `max-age=${copy.maxAge}`,
+          [REVISION_HEADER]: String(copy.revision),
         };
         try {
           await cache.put(key, new Response(copy.body, { headers }));
@@ -269,10 +295,16 @@ export class DataCopies {
    * Keep the value the authority holds now, which a read found later than KV's answer
    * (`currentData`), as the data center's copy: the isolates after the one that asked find it here
    * rather than each asking the authority again. As the copy of a write is (`keep`): one not to be
-   * kept lets go of the copy the key had, an earlier value's, and nothing rejects.
+   * kept lets go of the copy the key had, an earlier value's, and nothing rejects. Not over the copy
+   * of a later value, though: the answer can come well after it was asked — past the runtime's
+   * wait, or behind the request's other writes — and a write of the key here can have kept one
+   * meanwhile.
    */
   async keepCurrent(request: DataGetRequest, current: DataGetResponse): Promise<void> {
-    await within(this.#write(request, keptOf(current)), DATA_COPY_WRITE_MS);
+    await within(
+      this.#write(request, keptOf(current), current.dependencyRevision),
+      DATA_COPY_WRITE_MS,
+    );
   }
 
   /**
