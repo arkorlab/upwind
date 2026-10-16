@@ -37,6 +37,7 @@ import {
   type SourceError,
   sourceLimit,
 } from './image-source.ts';
+import { transformWithin } from './image-transform.ts';
 import { observeMetric, observeTransformed } from './observer.ts';
 import {
   keptByNobody,
@@ -328,15 +329,12 @@ async function optimize(input: ImageInput, imageSource: ImageSource): Promise<Op
   }
   let result: Awaited<ReturnType<TransformImage>>;
   try {
-    result = await withDeadline(
-      transform(judged.body, {
-        width: params.width,
-        format: outputImageType(params.mimeType, judged.verdict.upstreamType),
-        quality: params.quality,
-      }),
-      IMAGE_BUDGET_MS,
-      'image transformation',
-    );
+    const request = {
+      width: params.width,
+      format: outputImageType(params.mimeType, judged.verdict.upstreamType),
+      quality: params.quality,
+    };
+    result = await transformWithin(transform, judged.body, request, IMAGE_BUDGET_MS);
   } catch (error) {
     logWarn('image transformation failed', { href: params.href, detail: errorDetail(error) });
     const spent = judged.source.requests + 1;
