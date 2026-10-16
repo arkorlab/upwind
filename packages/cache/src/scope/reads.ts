@@ -1,5 +1,5 @@
 import type {
-  DataGetRequest,
+  CurrentDataRequest,
   ReadArtifactLocationResult,
   ReadEntryResult,
   ReadGenerationResult,
@@ -63,13 +63,14 @@ const isolateReads: MemoryBudget = { limit: CURRENT_DATA_MEMORY_MIB * KIB * KIB,
  * The data-cache value a key holds now, as the record the projection writes to KV would hold it
  * (`dataRecordFor`): read from the scope itself, where a read of KV can answer for half a minute with
  * what a data center read there before a later write (`RECORD_CACHE_TTL_SECONDS`). `undefined` for
- * no value — none written, or one withdrawn, whose record the projection deletes. Past what the
- * isolate's reads may hold at once (`budget`), the value is answered by reference instead, read from
- * storage by the Function as a large value's is, and not here.
+ * no value — none written, or one withdrawn, whose record the projection deletes — and for none
+ * later than the one the asker holds (`than`), whose value is then not read. Past what the isolate's
+ * reads may hold at once (`budget`), the value is answered by reference instead, read from storage
+ * by the Function as a large value's is, and not here.
  */
 export async function readCurrentData(
   deps: RecordDeps & { readonly sql: SqlStorage },
-  request: DataGetRequest,
+  request: CurrentDataRequest,
   budget: MemoryBudget = isolateReads,
 ): Promise<DataRecord | undefined> {
   const { sql, scopeId } = deps;
@@ -87,7 +88,10 @@ export async function readCurrentData(
     return undefined;
   }
   const current = findGeneration(sql, entry.current_generation_id);
-  if (current === undefined) {
+  if (
+    current === undefined ||
+    (request.than !== undefined && current.dependency_revision <= request.than)
+  ) {
     return undefined;
   }
   const memory = projectionMemoryOf(scopeId, entry, current);

@@ -2,6 +2,7 @@ import { sha256Hex } from '@stayingupwind/core/artifact';
 import { MAX_TAG_LENGTH, MAX_TAGS_PER_ENTRY } from '@stayingupwind/core/cache';
 import { fromBase64 } from '@stayingupwind/core/util';
 import {
+  currentDataRequestSchema,
   type DataEntryMetadata,
   dataGetRequestSchema,
   dataSetRequestSchema,
@@ -202,10 +203,11 @@ async function getValue(c: GatewayContext): Promise<Response> {
  * what a Function asks where the value it read was stale or expired, and its data center held none
  * later (`getNewerData`). A data center reads KV through a cache of its own for half a minute, so a
  * value another data center wrote meanwhile is read nowhere else but here, and each data center
- * would compute it again. Answered as a read of KV is, and metered as one.
+ * would compute it again. Answered as a read of KV is, and metered as one; with none where the key
+ * holds nothing later than the value the Function read (`than`), whose value is then not read.
  */
 async function getCurrentValue(c: GatewayContext): Promise<Response> {
-  const request = await readRequest(c, dataGetRequestSchema, ENTRY_BODY_BYTES);
+  const request = await readRequest(c, currentDataRequestSchema, ENTRY_BODY_BYTES);
   if (request instanceof Response) {
     return request;
   }

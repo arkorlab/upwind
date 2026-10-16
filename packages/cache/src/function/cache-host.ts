@@ -256,13 +256,17 @@ interface Copies {
   readonly beacon: ScopeBeacon | undefined;
 }
 
-/** The value the authority holds now (`currentData`), where it is later than `than`. */
+/**
+ * The value the authority holds now (`currentData`), where it is later than `than`: asked past it,
+ * so the authority reads nothing of a value that is not, and checked here against an authority from
+ * before it was asked so.
+ */
 async function currentLaterThan(
   gateway: Gateway,
   request: DataReadRequest,
   than: number,
 ): Promise<DataGetResponse | undefined> {
-  const current = await gateway.currentData(request);
+  const current = await gateway.currentData({ ...request, than });
   return current !== undefined && current.dependencyRevision > than ? current : undefined;
 }
 

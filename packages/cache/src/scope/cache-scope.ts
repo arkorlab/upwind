@@ -2,7 +2,7 @@ import {
   type ApplyResourceChangeInput,
   type ApplyResourceChangeResult,
   type CommitRequest,
-  type DataGetRequest,
+  type CurrentDataRequest,
   type FailRequest,
   type FailResponse,
   type FinishResourceWarmJobInput,
@@ -601,7 +601,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
   }
 
   /** The data-cache value the key holds now, read from the scope rather than from KV. */
-  currentData(request: DataGetRequest): ReturnType<typeof readCurrentData> {
+  currentData(request: CurrentDataRequest): ReturnType<typeof readCurrentData> {
     return this.#tables ? readCurrentData(this.#deps(), request) : Promise.resolve(undefined);
   }
 
