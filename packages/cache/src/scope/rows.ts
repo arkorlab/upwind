@@ -276,7 +276,7 @@ export function toPublicGeneration(scopeId: string, row: GenerationRow): PublicC
 }
 
 /** The headers the generation is answered with, as recorded (`generationResponseHeaders`). */
-export function generationHeaders(row: GenerationRow): Record<string, string> {
+export function generationHeaders(row: Pick<GenerationRow, 'headers'>): Record<string, string> {
   return parseJson(headersSchema, row.headers);
 }
 

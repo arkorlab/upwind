@@ -35,6 +35,12 @@ const MILLISECONDS_PER_SECOND = 1000;
 const HTTP_OK = 200;
 const MAX_RETRY_EXPONENT = 9;
 const PRIVATE_CACHE_CONTROL = /\b(?:private|no-store)\b/iu;
+/**
+ * How many warm jobs one statement queues. A change may reach every entry its scope holds, and its
+ * jobs are queued in its own transaction, beside its invalidation: a page a statement, as that
+ * invalidation's history is written, rather than a statement for each route.
+ */
+const WARM_JOB_PAGE = 500;
 
 interface ResourceHeadRow extends Record<string, SqlStorageValue> {
   resource_id: string;
@@ -88,16 +94,21 @@ function pendingCount(sql: SqlStorage, resourceId: string): number {
     .one().count;
 }
 
-/** No browser identity is invented for a route that is not in the trusted bundle's allowlist. */
+/**
+ * No browser identity is invented for a route that is not in the trusted bundle's allowlist. Each
+ * entry is judged by its current generation's headers, read beside it in the one query, rather
+ * than by another read of that generation for each.
+ */
 function eligibleEntries(
   sql: SqlStorage,
   affectedEntryIds: readonly string[],
   allowedRoutes: readonly string[],
-): EntryRow[] {
+): string[] {
   if (allowedRoutes.length === 0 || affectedEntryIds.length === 0) return [];
   const entries = sql
-    .exec<EntryRow>(
-      `SELECT e.* FROM entries e JOIN generations g ON g.generation_id = e.current_generation_id
+    .exec<Pick<GenerationRow, 'entry_id' | 'headers'>>(
+      `SELECT e.entry_id, g.headers FROM entries e
+       JOIN generations g ON g.generation_id = e.current_generation_id
        WHERE e.entry_id IN (SELECT value FROM json_each(?))
          AND e.route IN (SELECT value FROM json_each(?))
          AND e.kind IN ('app-page', 'pages', 'app-route')
@@ -107,18 +118,17 @@ function eligibleEntries(
       JSON.stringify(allowedRoutes),
     )
     .toArray();
-  return entries.filter((entry) => {
-    const generation = currentGeneration(sql, entry.entry_id);
-    if (generation === undefined) return false;
-    const headers = generationHeaders(generation);
-    return Object.entries(headers).every(([name, value]) => {
-      const normalized = name.toLowerCase();
-      return (
-        normalized !== 'set-cookie' &&
-        (normalized !== 'cache-control' || !PRIVATE_CACHE_CONTROL.test(value))
-      );
-    });
-  });
+  return entries
+    .filter((entry) => {
+      return Object.entries(generationHeaders(entry)).every(([name, value]) => {
+        const normalized = name.toLowerCase();
+        return (
+          normalized !== 'set-cookie' &&
+          (normalized !== 'cache-control' || !PRIVATE_CACHE_CONTROL.test(value))
+        );
+      });
+    })
+    .map((entry) => entry.entry_id);
 }
 
 /**
@@ -211,43 +221,51 @@ function queueEligible(
 ): number {
   const { sql, now } = input;
   const eligible = eligibleEntries(sql, queue.affectedEntryIds, request.allowedRoutes ?? []);
-  let queued = 0;
-  for (const entry of eligible) {
-    if (
-      queue.onlyNew === true &&
-      sql
-        .exec(
-          `SELECT 1 FROM resource_warm_jobs WHERE resource_id = ? AND entry_id = ? AND version >= ?`,
-          request.resourceId,
-          entry.entry_id,
-          request.version,
-        )
-        .toArray().length > 0
-    ) {
-      continue;
-    }
+  const queued = queue.onlyNew === true ? notYetQueued(sql, request, eligible) : eligible;
+  for (let offset = 0; offset < queued.length; offset += WARM_JOB_PAGE) {
+    const page = queued
+      .slice(offset, offset + WARM_JOB_PAGE)
+      .map((entryId) => [createId('rwj'), entryId]);
     sql.exec(
       `INSERT INTO resource_warm_jobs (job_id, resource_id, entry_id, event_id, version,
          required_revision, status, attempt_count, retry_at, lease_token, lease_expires_at,
          detail, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, NULL, NULL, NULL, ?)
+       SELECT json_extract(value, '$[0]'), ?, json_extract(value, '$[1]'), ?, ?, ?, 'pending', 0,
+         ?, NULL, NULL, NULL, ?
+       FROM json_each(?) WHERE true
        ON CONFLICT (resource_id, entry_id) DO UPDATE SET
          event_id = excluded.event_id, version = excluded.version,
          required_revision = excluded.required_revision, status = 'pending', attempt_count = 0,
          retry_at = excluded.retry_at, lease_token = NULL, lease_expires_at = NULL,
          detail = NULL, updated_at = excluded.updated_at`,
-      createId('rwj'),
       request.resourceId,
-      entry.entry_id,
       request.eventId,
       request.version,
       queue.requiredRevision,
       now,
       now,
+      JSON.stringify(page),
     );
-    queued += 1;
   }
-  return queued;
+  return queued.length;
+}
+
+/** The entries a job of this change, or of a later one, does not already cover. */
+function notYetQueued(
+  sql: SqlStorage,
+  request: ApplyResourceChangeInput,
+  entryIds: readonly string[],
+): string[] {
+  const rows = sql.exec<{ entry_id: string }>(
+    `SELECT entry_id FROM resource_warm_jobs WHERE resource_id = ? AND version >= ?`,
+    request.resourceId,
+    request.version,
+  );
+  const covered = new Set<string>();
+  for (const row of rows) {
+    covered.add(row.entry_id);
+  }
+  return entryIds.filter((entryId) => !covered.has(entryId));
 }
 
 /** Seeding may have committed after the first delivery of this event to an already-active scope. */
