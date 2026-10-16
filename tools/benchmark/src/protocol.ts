@@ -65,7 +65,7 @@ export interface ScenarioRun {
 
 export interface Run {
   readonly protocol: number;
-  readonly vantage: 'github';
+  readonly vantage: 'github' | 'local';
   readonly location: null;
   readonly startedAt: string;
   readonly finishedAt: string;

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { type Measurement, parseMeasurement, SCHEMA_VERSION, sourceFromEnv } from './contract.ts';
 import { errorText, PROTOCOL, type Run, TARGETS } from './protocol.ts';
 import { measureRun } from './run.ts';
-import { nowIso } from './time.ts';
+import { notBefore, nowIso } from './time.ts';
 
 async function main(): Promise<void> {
   const [mode, output] = process.argv.slice(2);
@@ -28,16 +28,8 @@ async function main(): Promise<void> {
   let measurement: Measurement;
   let attemptedRun: Run | undefined;
   try {
-    const run = await measureRun();
+    const run = await measureRun('github');
     attemptedRun = run;
-    const empty = run.scenarios.some((scenario) => {
-      return scenario.pairs.every(
-        (pair) => pair.vercel.headersMs === null || pair.arkor.headersMs === null,
-      );
-    });
-    if (empty) {
-      throw new Error('a scenario had no pair both sides answered within its budget');
-    }
     measurement = parseMeasurement({
       ...base,
       startedAt: run.startedAt,
@@ -49,7 +41,7 @@ async function main(): Promise<void> {
     measurement = parseMeasurement({
       ...base,
       startedAt,
-      finishedAt: nowIso(),
+      finishedAt: notBefore(startedAt, nowIso()),
       status: 'failure',
       error: errorText(error),
       ...(attemptedRun !== undefined && { run: attemptedRun }),

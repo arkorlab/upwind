@@ -15,6 +15,7 @@ function headerOf(headers: IncomingHttpHeaders, name: string): string | undefine
 export function markersOf(headers: IncomingHttpHeaders): Record<string, string> {
   const edge = headerOf(headers, 'x-arkor-edge');
   const id = headerOf(headers, 'x-vercel-id');
+  const popEnd = id?.indexOf('::') ?? -1;
   const ray = headerOf(headers, 'cf-ray');
   const edgeFields = new Set(['cache', 'cont', 'reason', 'src']);
   const summary = edge
@@ -22,7 +23,7 @@ export function markersOf(headers: IncomingHttpHeaders): Record<string, string> 
     .filter((part, index) => index === 0 || edgeFields.has(part.slice(0, part.indexOf('='))));
   const markers: Record<string, string | undefined> = {
     vercelCache: headerOf(headers, 'x-vercel-cache'),
-    vercelPop: id?.split('::', 1)[0],
+    vercelPop: popEnd > 0 ? id?.slice(0, popEnd) : undefined,
     arkorEdge: summary?.join(';'),
     colo: ray?.includes('-') === true ? ray.slice(ray.lastIndexOf('-') + 1) : undefined,
     encoding: headerOf(headers, 'content-encoding'),

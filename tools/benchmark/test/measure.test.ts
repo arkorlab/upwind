@@ -134,4 +134,11 @@ describe('node HTTPS timing', () => {
     });
     expect(markersOf({ 'cf-mitigated': 'a'.repeat(300) })['mitigated']).toHaveLength(200);
   });
+
+  it.each(['request-id-without-a-pop', '::request-id', ''])(
+    'omits a malformed Vercel location instead of publishing its request id: %s',
+    (id) => {
+      expect(markersOf({ 'x-vercel-id': id })).not.toHaveProperty('vercelPop');
+    },
+  );
 });

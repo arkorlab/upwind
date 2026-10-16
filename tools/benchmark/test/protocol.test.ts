@@ -8,6 +8,8 @@ describe('paired measurement protocol', () => {
     const plan = planOf(SETTINGS);
 
     expect(plan.filter((step) => step.warmup)).toHaveLength(40);
+    expect(plan.filter((step) => step.warmup && step.side === 'vercel')).toHaveLength(20);
+    expect(plan.filter((step) => step.warmup && step.side === 'arkor')).toHaveLength(20);
     expect(plan.filter((step) => !step.warmup)).toHaveLength(60);
     expect(plan.slice(40, 44)).toStrictEqual([
       { side: 'vercel', warmup: false },

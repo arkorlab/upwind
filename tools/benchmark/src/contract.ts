@@ -1,4 +1,4 @@
-import { boundedText, PROTOCOL, type Run, SETTINGS, TARGETS } from './protocol.ts';
+import { boundedText, type Pair, PROTOCOL, type Run, SETTINGS, TARGETS } from './protocol.ts';
 import { parseIso } from './time.ts';
 
 export const SCHEMA_VERSION = 1;
@@ -13,7 +13,7 @@ const MAX_STATUS = 599;
 export interface Source {
   readonly repository: typeof REPOSITORY;
   readonly workflow: typeof WORKFLOW;
-  readonly ref: 'refs/heads/main';
+  readonly ref: string;
   readonly sha: string;
   readonly runUrl: string;
   readonly runner: {
@@ -94,6 +94,14 @@ function iso(value: unknown): string {
   return parseIso(read);
 }
 
+function interval(value: Record<string, unknown>, ordered = true): void {
+  const startedAt = iso(value['startedAt']);
+  const finishedAt = iso(value['finishedAt']);
+  if (ordered && finishedAt < startedAt) {
+    throw new Error('measurement finished before it started');
+  }
+}
+
 function identity(value: Record<string, unknown>): void {
   if (!/^\d+$/u.test(text(value['runId']))) {
     throw new Error('invalid workflow run id');
@@ -106,7 +114,7 @@ function sourceOf(value: unknown, runId: string): Source {
   if (
     read['repository'] !== REPOSITORY ||
     read['workflow'] !== WORKFLOW ||
-    read['ref'] !== 'refs/heads/main' ||
+    !/^refs\/(?:heads|tags)\/.+$/u.test(text(read['ref'])) ||
     read['runUrl'] !== `https://github.com/${REPOSITORY}/actions/runs/${runId}` ||
     !/^[a-f\d]{40}$/u.test(text(read['sha']))
   ) {
@@ -121,8 +129,7 @@ function sourceOf(value: unknown, runId: string): Source {
 
 function base(value: Record<string, unknown>): void {
   identity(value);
-  iso(value['startedAt']);
-  iso(value['finishedAt']);
+  interval(value);
   sourceOf(value['source'], String(value['runId']));
   integer(value['protocol'], 1);
   const targets = object(value['targets']);
@@ -179,7 +186,31 @@ function sample(value: unknown): void {
   }
 }
 
-function runOf(value: unknown): Run {
+function scenarioOf(value: unknown, index: number): void {
+  const part = object(value);
+  if (
+    part['scenario'] !== (index === 0 ? 'new-connection' : 'reused-connection') ||
+    typeof part['truncated'] !== 'boolean' ||
+    !Array.isArray(part['pairs']) ||
+    part['pairs'].length > SETTINGS.pairs
+  ) {
+    throw new Error('invalid measurement scenario');
+  }
+  const pairs = part['pairs'];
+  if (!part['truncated'] && pairs.length !== SETTINGS.pairs) {
+    throw new Error('complete scenario must contain all planned pairs');
+  }
+  for (const [pairIndex, pair] of pairs.entries()) {
+    const paired = object(pair);
+    if (paired['first'] !== (pairIndex % 2 === 0 ? 'vercel' : 'arkor')) {
+      throw new Error('invalid alternating pair order');
+    }
+    sample(paired['vercel']);
+    sample(paired['arkor']);
+  }
+}
+
+function runOf(value: unknown, ordered = true): Run {
   const read = object(value);
   if (
     read['protocol'] !== PROTOCOL ||
@@ -190,33 +221,19 @@ function runOf(value: unknown): Run {
   ) {
     throw new Error('unexpected measurement configuration');
   }
-  iso(read['startedAt']);
-  iso(read['finishedAt']);
+  interval(read, ordered);
   const scenarios = read['scenarios'];
   if (!Array.isArray(scenarios) || scenarios.length !== 2) {
     throw new Error('expected both connection scenarios');
   }
   for (const [index, scenario] of scenarios.entries()) {
-    const part = object(scenario);
-    if (
-      part['scenario'] !== (index === 0 ? 'new-connection' : 'reused-connection') ||
-      typeof part['truncated'] !== 'boolean' ||
-      !Array.isArray(part['pairs']) ||
-      part['pairs'].length > SETTINGS.pairs
-    ) {
-      throw new Error('invalid measurement scenario');
-    }
-    const pairs = part['pairs'];
-    for (const [pairIndex, pair] of pairs.entries()) {
-      const paired = object(pair);
-      if (paired['first'] !== (pairIndex % 2 === 0 ? 'vercel' : 'arkor')) {
-        throw new Error('invalid alternating pair order');
-      }
-      sample(paired['vercel']);
-      sample(paired['arkor']);
-    }
+    scenarioOf(scenario, index);
   }
   return read as unknown as Run;
+}
+
+function answeredBoth(pair: Pair): boolean {
+  return pair.vercel.headersMs !== null && pair.arkor.headersMs !== null;
 }
 
 export function parseMeasurement(value: unknown): Measurement {
@@ -236,10 +253,18 @@ export function parseMeasurement(value: unknown): Measurement {
     if (run.startedAt !== read['startedAt'] || run.finishedAt !== read['finishedAt']) {
       throw new Error('measurement timestamps disagree');
     }
+    const empty = run.scenarios.some((scenario) => {
+      const answered = scenario.pairs.some((pair) => answeredBoth(pair));
+      return !answered;
+    });
+    if (empty) {
+      throw new Error('a scenario had no pair both sides answered within its budget');
+    }
   } else if (read['status'] === 'failure') {
     text(read['error']);
     if (read['run'] !== undefined) {
-      runOf(read['run']);
+      // Preserve observed raw wall times as evidence even when the clock caused the failure.
+      runOf(read['run'], false);
     }
   } else {
     throw new Error('unknown measurement outcome');
@@ -267,6 +292,9 @@ export function parseIndex(value: unknown): Index {
   for (const valueOfAttempt of attempts) {
     const attempt = object(valueOfAttempt);
     base(attempt);
+    if (object(attempt['source'])['ref'] !== 'refs/heads/main') {
+      throw new Error('canonical feed only accepts main branch provenance');
+    }
     const current = integer(attempt['sequence'], last + 1, sequence);
     const id = `${String(attempt['runId'])}-${String(attempt['runAttempt'])}`;
     if (ids.has(id)) {

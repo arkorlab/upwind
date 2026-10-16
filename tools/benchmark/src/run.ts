@@ -18,6 +18,7 @@ import {
 import { nowIso } from './time.ts';
 
 const REUSED: Scenario = 'reused-connection';
+const CLOCK: Clock = { now: () => performance.now(), sleep: setTimeout };
 
 export interface Clock {
   readonly now: () => number;
@@ -45,10 +46,12 @@ export async function runScenario(
   return { scenario, truncated: samples.length < plan.length, pairs: pairsOf(plan, samples) };
 }
 
-export async function measureRun(): Promise<Run> {
+export async function measureRun(
+  vantage: Run['vantage'] = 'local',
+  clock: Clock = CLOCK,
+): Promise<Run> {
   const startedAt = nowIso();
   const scenarios: ScenarioRun[] = [];
-  const clock: Clock = { now: () => performance.now(), sleep: setTimeout };
   const names: Scenario[] = ['new-connection', REUSED];
   for (const scenario of names) {
     const agents = {
@@ -70,7 +73,7 @@ export async function measureRun(): Promise<Run> {
   }
   return {
     protocol: PROTOCOL,
-    vantage: 'github',
+    vantage,
     location: null,
     startedAt,
     finishedAt: nowIso(),

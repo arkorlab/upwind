@@ -13,6 +13,9 @@ Node **24.21.0**, with no dependency install, platform credential or build:
 node tools/benchmark/src/main.ts > measurement.json
 ```
 
+This command labels its output `vantage: "local"`. The Actions invocation explicitly selects
+`"github"`, and only completed scheduled main-branch attempts can enter the public feed.
+
 The [Benchmark workflow](../../.github/workflows/benchmark.yaml) runs on `ubuntu-24.04` every six
 hours, at 00:43, 06:43, 12:43 and 18:43 UTC, and can also be dispatched manually. A scheduled run
 can be delayed or dropped by GitHub. Public repositories' schedules can be disabled after sixty
@@ -50,9 +53,12 @@ do not deploy or modify the targets, and no platform-specific request option cha
 
 ## Public results
 
-Every attempt uploads `benchmark-attempt-<runAttempt>` as an Actions artifact for ninety days.
+The workflow attempts to upload `benchmark-attempt-<runAttempt>` as an Actions artifact for ninety
+days when the measurement file exists. Missing artifacts are recorded by the completion finalizer.
 Where a measurement fails after making samples, its attempted raw run stays in that artifact.
-Manual dispatches produce artifacts only and never alter the scheduled series.
+Manual dispatches, including branches and tags other than `main`, produce artifacts only and never
+alter the scheduled series. Their artifacts retain the actual ref; canonical feed entries always
+come from `refs/heads/main`.
 
 The separate [Publish benchmark workflow](../../.github/workflows/benchmark-publish.yaml) runs
 after completion, including cancellation or timeout. It executes code from trusted `main`, checks
@@ -78,6 +84,10 @@ runs and at most 3,000 failures since the oldest retained success, or the latest
 before any success. The publication counter never resets when records are pruned. Reprocessing
 an already retained workflow attempt leaves its record and counter unchanged. Corrupt existing
 feed data causes publication to fail rather than resetting that counter.
+
+A backwards local wall-clock interval cannot be published as a successful run. Its failure
+envelope keeps ordered timestamps while the downloadable raw run preserves the observed wall
+times; per-request durations use the monotonic performance clock.
 
 Readers should validate the schema, exact targets and protocol; retain their previous valid
 snapshot on a read failure; and use publication sequence rather than runner clocks to import new

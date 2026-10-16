@@ -14,3 +14,8 @@ export function parseIso(value: string): string {
   }
   return value;
 }
+
+/** Keep failure envelopes ordered even when the local wall clock steps backwards. */
+export function notBefore(startedAt: string, finishedAt: string): string {
+  return finishedAt < startedAt ? startedAt : finishedAt;
+}

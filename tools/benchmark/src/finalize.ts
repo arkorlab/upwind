@@ -71,6 +71,7 @@ export function finalizeAttempt(event: unknown, artifact: unknown): Measurement 
       if (
         read.runId !== expected.runId ||
         read.runAttempt !== expected.runAttempt ||
+        read.source.ref !== expected.source.ref ||
         read.source.sha !== expected.source.sha ||
         read.source.runUrl !== expected.source.runUrl
       ) {

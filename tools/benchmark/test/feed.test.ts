@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { type Index, parseIndex, parseMeasurement } from '../src/contract.ts';
+import { type Index, parseIndex, parseMeasurement, sourceFromEnv } from '../src/contract.ts';
 import { appendAttempt } from '../src/feed.ts';
 import { finalizeAttempt } from '../src/finalize.ts';
-import { AT, completed, failure, success } from './helpers.ts';
+import { AT, completed, failure, SHA, success } from './helpers.ts';
 
 describe('public benchmark feed', () => {
   it('numbers publications, keeps reruns separate, and makes delivery idempotent', () => {
@@ -53,6 +53,13 @@ describe('public benchmark feed', () => {
     expect(() =>
       parseIndex({ ...index, attempts: [...index.attempts, ...index.attempts] }),
     ).toThrow('expected a bounded integer');
+    expect(() => {
+      return parseIndex({
+        ...index,
+        sequence: 2,
+        attempts: [index.attempts[0], { ...index.attempts[0], sequence: 2 }],
+      });
+    }).toThrow('duplicate published workflow attempt');
     expect(() => {
       parseIndex({ ...index, attempts: [{ ...index.attempts[0], result: '../other.json' }] });
     }).toThrow('invalid immutable result path');
@@ -109,6 +116,57 @@ describe('public benchmark feed', () => {
     expect(parseIndex(historical)).toStrictEqual(historical);
   });
 
+  it('refuses a successful run without answered pairs or with an incomplete untruncated scenario', () => {
+    const measured = success();
+    const noPairs = {
+      ...measured,
+      run: {
+        ...measured.run,
+        scenarios: measured.run.scenarios.map((scenario) => ({ ...scenario, pairs: [] })),
+      },
+    };
+
+    expect(() => parseMeasurement(noPairs)).toThrow(
+      'a scenario had no pair both sides answered within its budget',
+    );
+
+    const incomplete = {
+      ...measured,
+      run: {
+        ...measured.run,
+        scenarios: measured.run.scenarios.map((scenario) => ({ ...scenario, truncated: false })),
+      },
+    };
+
+    expect(() => parseMeasurement(incomplete)).toThrow(
+      'complete scenario must contain all planned pairs',
+    );
+  });
+
+  it('refuses backwards successful intervals while keeping raw evidence in a failure', () => {
+    const measured = success();
+    const earlier = '2026-10-15T23:59:59.000Z';
+
+    expect(() => parseMeasurement({ ...measured, finishedAt: earlier })).toThrow(
+      'measurement finished before it started',
+    );
+    expect(() => {
+      return parseMeasurement({
+        ...measured,
+        run: { ...measured.run, finishedAt: earlier },
+      });
+    }).toThrow('measurement finished before it started');
+
+    const failed = {
+      ...measured,
+      status: 'failure',
+      error: 'wall clock stepped backwards',
+      run: { ...measured.run, finishedAt: earlier },
+    };
+
+    expect(parseMeasurement(failed)).toStrictEqual(failed);
+  });
+
   it('keeps failed raw samples in the artifact without copying them into the index', () => {
     const measurement = failure();
 
@@ -122,6 +180,28 @@ describe('public benchmark feed', () => {
 });
 
 describe('trusted completion finalizer', () => {
+  it.each(['refs/heads/topic', 'refs/tags/v1.0.0'])(
+    'allows a manual measurement artifact from %s without publishing it',
+    (ref) => {
+      const measured = success();
+      const source = sourceFromEnv({
+        GITHUB_REPOSITORY: 'arkorlab/upwind',
+        GITHUB_RUN_ID: measured.runId,
+        GITHUB_REF: ref,
+        GITHUB_SHA: SHA,
+      });
+      const artifact = { ...measured, source };
+
+      expect(source.ref).toBe(ref);
+      expect(parseMeasurement(artifact)).toStrictEqual(artifact);
+      expect(finalizeAttempt(completed({ event: 'workflow_dispatch' }), artifact)).toBeNull();
+      expect(finalizeAttempt(completed(), artifact)?.status).toBe('failure');
+      expect(() => parseIndex(appendAttempt(undefined, artifact, AT))).toThrow(
+        'canonical feed only accepts main branch provenance',
+      );
+    },
+  );
+
   it.each([
     '.github/workflows/benchmark.yaml',
     '.github/workflows/benchmark.yaml@main',
