@@ -284,9 +284,12 @@ function applyInvalidate(input: TxInput, plan: InvalidatePlan): InvalidateRespon
   }
   const { request } = plan;
   const immediate = request.expire === undefined || request.expire === 0;
+  // A window of a fraction of a second ends on the nearest whole millisecond, as every deadline is
+  // kept, and one past `now` at the least, so it is never none.
+  const windowMs = Math.max(1, Math.round((request.expire ?? 0) * MILLISECONDS_PER_SECOND));
   const deadlines = {
     staleAt: now,
-    hardExpireAt: immediate ? now : now + (request.expire ?? 0) * MILLISECONDS_PER_SECOND,
+    hardExpireAt: immediate ? now : now + windowMs,
     meaning: immediate ? ('immediate' as const) : ('swr' as const),
   };
   const events: EventInput[] = [];
