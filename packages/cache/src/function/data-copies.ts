@@ -299,6 +299,15 @@ export class DataCopies {
    * of a later value, though: the answer can come well after it was asked — past the runtime's
    * wait, or behind the request's other writes — and a write of the key here can have kept one
    * meanwhile.
+   *
+   * The check and the put are two calls to a Cache API that has no compare-and-set: a later copy
+   * put between them, by another request or another isolate of the data center, is taken back all
+   * the same, as one write's copy landing after a later write's is. Serializing them within this
+   * isolate would leave that race across the others, and hold the copies of other requests' writes,
+   * which the ends of their responses wait for, behind this one. What it leaves is narrow — the
+   * check's round trip, not the authority's — and mends itself: a copy no better than stale is
+   * asked past by the next read that finds it (`laterIfAny`), and the authority's answer to that
+   * replaces it.
    */
   async keepCurrent(request: DataGetRequest, current: DataGetResponse): Promise<void> {
     await within(
