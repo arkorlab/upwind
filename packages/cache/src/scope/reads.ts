@@ -11,7 +11,13 @@ import { findArtifact } from './artifacts.ts';
 import { findEntry, identifyEntry } from './entries.ts';
 import { findGeneration } from './generations.ts';
 import type { ScopeHistory } from './history.ts';
-import { type DataRecord, dataRecordFor, type RecordDeps } from './records.ts';
+import {
+  type DataRecord,
+  dataRecordByReference,
+  dataRecordFor,
+  projectionMemoryOf,
+  type RecordDeps,
+} from './records.ts';
 import { type ArtifactRow, toEntry, toEntryState, toPublicGeneration, toScope } from './rows.ts';
 import { readScope } from './state.ts';
 
@@ -37,15 +43,34 @@ export function resolveEntry(sql: SqlStorage, scopeId: string, entryId: string):
   };
 }
 
+/** What the reads of an isolate hold in memory at once, as `projectionMemoryOf` reckons a record's. */
+export interface MemoryBudget {
+  readonly limit: number;
+  reserved: number;
+}
+
+const KIB = 1024;
+const CURRENT_DATA_MEMORY_MIB = 16;
+/**
+ * What the current-data reads of this isolate may hold at once. A Durable Object's isolate has
+ * 128 MiB for every object it holds, the projection's runs among them (48 MiB at once, `settle.ts`),
+ * and a burst of these reads after an invalidation would otherwise hold each value it reads inline
+ * several times over, all at the same time.
+ */
+const isolateReads: MemoryBudget = { limit: CURRENT_DATA_MEMORY_MIB * KIB * KIB, reserved: 0 };
+
 /**
  * The data-cache value a key holds now, as the record the projection writes to KV would hold it
  * (`dataRecordFor`): read from the scope itself, where a read of KV can answer for half a minute with
  * what a data center read there before a later write (`RECORD_CACHE_TTL_SECONDS`). `undefined` for
- * no value — none written, or one withdrawn, whose record the projection deletes.
+ * no value — none written, or one withdrawn, whose record the projection deletes. Past what the
+ * isolate's reads may hold at once (`budget`), the value is answered by reference instead, read from
+ * storage by the Function as a large value's is, and not here.
  */
 export async function readCurrentData(
   deps: RecordDeps & { readonly sql: SqlStorage },
   request: DataGetRequest,
+  budget: MemoryBudget = isolateReads,
 ): Promise<DataRecord | undefined> {
   const { sql, scopeId } = deps;
   const { entryId } = await identifyEntry(scopeId, {
@@ -62,7 +87,19 @@ export async function readCurrentData(
     return undefined;
   }
   const current = findGeneration(sql, entry.current_generation_id);
-  return current === undefined ? undefined : dataRecordFor(deps, entry, current);
+  if (current === undefined) {
+    return undefined;
+  }
+  const memory = projectionMemoryOf(scopeId, entry, current);
+  if (budget.reserved + memory > budget.limit) {
+    return dataRecordByReference(scopeId, entry, current);
+  }
+  budget.reserved += memory;
+  try {
+    return await dataRecordFor(deps, entry, current);
+  } finally {
+    budget.reserved -= memory;
+  }
 }
 
 export function readHead(sql: SqlStorage, history: ScopeHistory): ReadHeadResult {

@@ -426,6 +426,27 @@ function dataRecordOf(
   };
 }
 
+/**
+ * The data-cache record with its value by reference, whatever its size: nothing read from storage,
+ * the bytes the reader's to read as a large value's are.
+ */
+export function dataRecordByReference(
+  scopeId: string,
+  entry: EntryRow,
+  generation: GenerationRow,
+): DataRecord {
+  const artifact = generationOutputs(generation)[0]?.artifacts[0];
+  if (artifact === undefined) {
+    throw new Error(`data generation ${generation.generation_id} has no value`);
+  }
+  return dataRecordOf(scopeId, entry, generation, {
+    kind: 'ref',
+    artifactId: artifact.artifactId,
+    storageRef: artifact.storageRef,
+    byteLength: artifact.byteLength,
+  });
+}
+
 /** The data-cache record as KV holds it (`dataRecordFor`), serialized. */
 export async function dataRecordJson(
   deps: RecordDeps,
