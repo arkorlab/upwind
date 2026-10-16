@@ -1,6 +1,6 @@
 import type { InvalidationState } from '@stayingupwind/core/cache';
 
-import { nextWriteOrder, type WriteOrder, writeData } from './data.ts';
+import { fenceHandedOver, nextWriteOrder, type WriteOrder, writeData } from './data.ts';
 import type { DataEntryMetadata } from './host.ts';
 import type { CacheRuntime } from './runtime.ts';
 import type { Turn } from './turns.ts';
@@ -319,6 +319,10 @@ export function keepWrite(
   }
   writes.byKey.set(key, write);
   writes.held += bytes.byteLength;
+  // What a read of the key here answers with from now on: the key's reads are fenced, and what was
+  // remembered of it forgotten, as it is handed over, and not only once it goes out, which may wait
+  // for the one before.
+  fenceHandedOver(runtime, { key, entry });
   write.settled = send(runtime, writes, key, write);
   trimWrites(runtime, writes);
   return write.settled;
