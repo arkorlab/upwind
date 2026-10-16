@@ -1,10 +1,12 @@
 import { MAX_TAG_LENGTH, MAX_TAGS_PER_CALL, MAX_TAGS_PER_ENTRY } from '@stayingupwind/core/cache';
 import { describe, expect, it } from 'vitest';
 
+import { ENTITY_SCHEMA_VERSION, invalidationRecordSchema } from '../src/cache/entities.ts';
 import {
   dataGetRequestSchema,
   dataGetResponseSchema,
   dataSetRequestSchema,
+  invalidateRequestSchema,
   MAX_DATA_HANDLER_LENGTH,
   MAX_DATA_KEY_LENGTH,
   tagDeltaEntrySchema,
@@ -157,5 +159,39 @@ describe("a tag's record in a delta or a tag read", () => {
     expect(tagsGetResponseSchema.safeParse({ tags: [tagRecord(`${longest}t`)] }).success).toBe(
       false,
     );
+  });
+});
+
+const REVALIDATED = { source: 'app-worker', api: 'revalidateTag' } as const;
+
+/** An invalidation of one tag, stale for `expire` seconds. */
+function invalidationOf(expire: number) {
+  return { tags: [{ value: 'posts' }], expire, cause: REVALIDATED };
+}
+
+describe("an invalidation's window", () => {
+  /** A `cacheLife` profile's `expire`, which Next.js takes in seconds, whole or not. */
+  it('is any number of seconds a profile can give, and none below zero', () => {
+    expect(invalidateRequestSchema.safeParse(invalidationOf(1.5)).success).toBe(true);
+    expect(invalidateRequestSchema.safeParse(invalidationOf(0.0001)).success).toBe(true);
+    expect(invalidateRequestSchema.safeParse(invalidationOf(-0.5)).success).toBe(false);
+  });
+
+  it('is recorded as it was asked for', () => {
+    const recorded = {
+      invalidationId: 'inv_1',
+      scopeId: 'dpl_1',
+      revision: 2,
+      target: { kind: 'tag', id: 'tag_1', value: 'posts' },
+      staleAt: 1000,
+      hardExpireAt: 2500,
+      meaning: 'swr',
+      expireSeconds: 1.5,
+      cause: REVALIDATED,
+      recordedAt: 1000,
+      schemaVersion: ENTITY_SCHEMA_VERSION,
+    };
+
+    expect(invalidationRecordSchema.safeParse(recorded).success).toBe(true);
   });
 });

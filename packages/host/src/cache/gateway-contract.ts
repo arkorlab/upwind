@@ -596,8 +596,12 @@ const invalidateTagSchema = z.object({
 
 export const invalidateRequestSchema = z.object({
   tags: z.array(invalidateTagSchema).min(1).max(MAX_TAGS_PER_CALL),
-  /** Seconds the stale content may still be served; absent or zero means at once. */
-  expire: z.number().int().nonnegative().optional(),
+  /**
+   * Seconds the stale content may still be served; absent or zero means at once. Whole or not, as
+   * a `cacheLife` profile gives them and Next.js takes them: the authority keeps the deadline to
+   * the millisecond.
+   */
+  expire: z.number().nonnegative().optional(),
   cause: invalidationCauseSchema,
   /**
    * More requests of the same invalidation follow — one with more tags than a request carries, sent
