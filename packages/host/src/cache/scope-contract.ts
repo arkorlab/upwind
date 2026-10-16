@@ -212,6 +212,12 @@ export const applyResourceChangeInputSchema = z.object({
   resourceId: z.string().min(1),
   eventId: z.string().min(1),
   version: z.number().int().positive(),
+  /**
+   * The tag the resource's entries carry, expected to stay the same from one version to the next.
+   * A change that names another invalidates the tag it replaces as well as its own, and is
+   * reconciled under both; a tag replaced before that is not followed again: its entries were
+   * condemned when it was replaced, and are regenerated as they are next asked for, but not warmed.
+   */
   tag: toZod(generationTagSchema.shape.value),
   /** Only the trusted deployment's known public routes are rendered without a visitor. */
   allowedRoutes: z.array(z.string().startsWith('/')).optional(),
