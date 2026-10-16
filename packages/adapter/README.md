@@ -505,10 +505,12 @@ and `upwind dev` says the same thing under its own version line. What answers a 
 Next.js the project installed, and the fixes that matter to a deployment are inside Next.js's own
 code — the React Server Components transport it vendors, which reads back what a `use cache`
 function returned and what is sent to a Server Action — so none of them is something a rewrite here
-could supply. A project that has to stay on 16.2 keeps a deployment that works and is told what it
-is; `check-patches.ts` holds the floor to being inside the range, and nothing can tell either of
-them that a newer security release exists. A static export is warned for nothing: it carries no
-Next.js server code.
+could supply. A development run is exposed to one more, which is why `upwind dev` says it too: it
+optimizes `/_next/image` itself, where a deployment answers that path without Next.js in it. A
+project that has to stay on 16.2 keeps a deployment that works and is told what it is;
+`check-patches.ts` holds the floor to being inside the range, and nothing can tell either of them
+that a newer security release exists. A static export is warned for nothing: it carries no Next.js
+server code.
 
 ### What a build before 16.3 does not carry
 
