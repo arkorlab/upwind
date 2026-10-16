@@ -249,6 +249,21 @@ describe('the gates a build’s rewrites may reach', () => {
       'beforeFiles' as const,
       { source: '/s/:rest*', sourceRegex: '^/s/(.*)$', destination: '/posts/first.segments/$1' },
     ],
+    [
+      'a member written in another case, as the router matches a class without regard to it',
+      'beforeFiles' as const,
+      { source: '/up/:slug', sourceRegex: '^/up/([^/]+?)$', destination: '/POSTS/$1' },
+    ],
+    [
+      'a member written whole in another case',
+      'afterFiles' as const,
+      { source: '/first', sourceRegex: '^/first$', destination: '/Posts/first' },
+    ],
+    [
+      'a fragment, which the router keeps in the path it rewrites to',
+      'beforeFiles' as const,
+      { source: '/top', sourceRegex: '^/top$', destination: '/posts/new#top' },
+    ],
   ])('refuses a gate of a route a rewrite reaches by %s', (_, phase, rule) => {
     const bundle = rerouted(bundleOf({ gates: GATES }), phase, [rule]);
 
@@ -265,6 +280,10 @@ describe('the gates a build’s rewrites may reach', () => {
     [
       'a page of its own the gated route’s pattern also matches',
       { source: '/write', sourceRegex: '^/write$', destination: '/posts/new' },
+    ],
+    [
+      'a page of its own written escaped, which the router finds decoded whole',
+      { source: '/compose', sourceRegex: '^/compose$', destination: '/posts%2Fnew' },
     ],
     [
       'another origin',
@@ -305,6 +324,65 @@ describe('the gates a build’s rewrites may reach', () => {
 
     expect(refusals(bundle)).toStrictEqual([
       expect.stringMatching(/gates names \/news\/\[slug\]/u),
+    ]);
+  });
+
+  /**
+   * The router sets a destination on the URL as its path, and finds a page of its own by that path
+   * decoded whole: an escaped slash, or a dot segment, writes the page as surely as its name does.
+   */
+  it.each([
+    ['an escaped slash', '/private%2Farea'],
+    ['an escaped slash ahead of a capture', '/private%2F$1'],
+    ['a dot segment', '/elsewhere/../private/area'],
+    ['an escape a capture completes', '/private%2$1'],
+  ])('refuses a gate of a page a rewrite writes with %s', (_, destination) => {
+    const area = '/private/area';
+    const bundle = rerouted(
+      bundleOf({
+        gates: { [area]: 'checker' },
+        entrypoints: [...bundleOf().entrypoints, { id: area, kind: 'app-page', pathname: area }],
+      }),
+      'afterFiles',
+      [{ source: '/alias/:p', sourceRegex: '^/alias/([^/]+?)$', destination }],
+    );
+
+    expect(refusals(bundle)).toStrictEqual([
+      expect.stringMatching(/^gates names \/private\/area, which the rewrite of /u),
+    ]);
+  });
+
+  /** The router hands another origin only a URL that begins `http://` or `https://`, as written. */
+  it('refuses a gate a rewrite reaches by a destination it reads as a path of this origin', () => {
+    const all = '/[...all]';
+    const bundle = rerouted(
+      bundleOf({
+        gates: { [all]: 'checker' },
+        entrypoints: [{ id: all, kind: 'app-page', pathname: all }],
+        prerenders: [],
+        routing: {
+          ...bundleOf().routing,
+          dynamicRoutes: [
+            {
+              source: all,
+              sourceRegex: '^/(?<nxtPall>.+?)(?:/)?$',
+              destination: '/[...all]?nxtPall=$nxtPall',
+            },
+          ],
+        },
+      }),
+      'beforeFiles',
+      [
+        {
+          source: '/shout/:p*',
+          sourceRegex: '^/shout(?:/(.*))?$',
+          destination: 'HTTPS://blog.example/$1',
+        },
+      ],
+    );
+
+    expect(refusals(bundle)).toStrictEqual([
+      expect.stringMatching(/^gates names \/\[\.\.\.all\], which the rewrite of /u),
     ]);
   });
 });
@@ -431,6 +509,8 @@ describe('the gate a request is asked of', () => {
     ['the payload the build wrote beside it', '/posts/demo.rsc'],
     ['the route itself, as written', '/posts/[slug]'],
     ['a member behind a trailing slash', '/posts/abc/'],
+    ['a member in another case, as the router matches a class without regard to it', '/POSTS/abc'],
+    ['a member’s payload in another case', '/Posts/abc.RSC'],
   ])('is the route’s for %s', (_, path) => {
     expect(gateOf(manifest, path)).toStrictEqual(POST_GATE);
   });
@@ -449,6 +529,51 @@ describe('the gate a request is asked of', () => {
     const ungated = manifestOf(bundleOf());
 
     expect(gateOf(ungated, '/posts/abc')).toBeUndefined();
+  });
+
+  /**
+   * The router finds a file the build ships by its name, ahead of every dynamic route that matches
+   * it too. A file kept from the deployment before is no name of this deployment's router, which
+   * routes the path as any other.
+   */
+  it('is none for a file the build ships where a gated class’s pattern matches it as well', () => {
+    const file = { ...FILE, immutable: false };
+    const bundle = bundleOf({ gates: GATES });
+    const shipped = manifestOf(bundle, { staticFiles: { '/posts/logo.png': file } });
+    const kept = manifestOf(bundle, {
+      staticFiles: { '/posts/logo.png': { ...file, deploymentId: 'dpl_before', dplOnly: true } },
+    });
+
+    expect(gateOf(shipped, '/posts/logo.png')).toBeUndefined();
+    expect(gateOf(kept, '/posts/logo.png')).toStrictEqual(POST_GATE);
+  });
+
+  /**
+   * The edge keeps its dynamic routes out of Next.js's namespace under a base path, so as not to
+   * hand out a class's shell there; the router routes such a path as any other.
+   */
+  it('is a class’s for a path in Next.js’s namespace under a base path it matches', () => {
+    const docs = '/docs/[...slug]';
+    const bundle = bundleOf({
+      gates: { [docs]: 'checker' },
+      config: { ...bundleOf().config, basePath: '/docs' },
+      entrypoints: [{ id: docs, kind: 'app-page', pathname: docs }],
+      prerenders: [],
+      staticFiles: [],
+      routing: {
+        ...bundleOf().routing,
+        dynamicRoutes: [
+          {
+            source: docs,
+            sourceRegex: '^/docs/(?<nxtPslug>.+?)(?:/)?$',
+            destination: '/docs/[...slug]?nxtPslug=$nxtPslug',
+          },
+        ],
+      },
+    });
+    const based = manifestOf(bundle, { spelledPrefix: { basePath: '/docs' } });
+
+    expect(gateOf(based, '/docs/_next/missing.js')).toStrictEqual({ route: docs, name: 'checker' });
   });
 
   /**
@@ -593,5 +718,81 @@ describe('the gate a request for a page’s props is asked of', () => {
     expect(gateOf(normalized, `/_next/data/${BUILD}/posts/abc.json`)).toStrictEqual(POST_GATE);
     expect(gateOf(plain, `/_next/data/${BUILD}/posts/abc.json`)).toBeUndefined();
     expect(gateOf(normalized, '/_next/data/other/posts/abc.json')).toBeUndefined();
+  });
+
+  /**
+   * The router serves a page of its own such a name is in place of the class it resolves the name
+   * to (`landedRoute`, in the runtime): the page's gate is asked, and a class's never is for a page
+   * of its own with none.
+   */
+  it('is a page of its own’s for a name the router reads as that page', () => {
+    const normalized = manifestOf(pagesBundle(true));
+
+    expect(gateOf(normalized, `/_next/data/${BUILD}/private.json`)).toStrictEqual({
+      route: '/private',
+      name: 'checker',
+    });
+    expect(gateOf(normalized, `/_next/data/${BUILD}/posts/new.json`)).toBeUndefined();
+  });
+
+  /** The router matches its dynamic routes on the page alone, never on the name itself. */
+  it('is the class’s the router reads the page as, whatever class matches the name itself', () => {
+    const all = '/[...all]';
+    const bundle = pagesBundle(true);
+    const caught = manifestOf({
+      ...bundle,
+      entrypoints: [...bundle.entrypoints, { id: all, kind: 'app-page', pathname: all }],
+      routing: {
+        ...bundle.routing,
+        dynamicRoutes: [
+          ...bundle.routing.dynamicRoutes,
+          {
+            source: all,
+            sourceRegex: '^/(?<nxtPall>.+?)(?:/)?$',
+            destination: '/[...all]?nxtPall=$nxtPall',
+          },
+        ],
+      },
+    });
+
+    expect(gateOf(caught, `/_next/data/${BUILD}/posts/abc.json`)).toStrictEqual(POST_GATE);
+  });
+
+  /**
+   * Nor is a rule taken to claim it: the router reads its rules on the page, and leaves out for a
+   * data URL the redirects `next build` writes itself — the slash it puts on a page — which the
+   * manifest does not tell from the application's own.
+   */
+  it.each([
+    [
+      'the slash `next build` puts on a page',
+      String.raw`^(?:\/((?!\.well-known(?:\/.*)?)(?:[^/]+\/)*[^/\.]+))$`,
+    ],
+    ['a request for props, by the name itself', '^/_next/data/.*$'],
+  ])('is a class’s for such a name whatever rule meets %s', (_, sourceRegex) => {
+    const normalized = manifestOf(pagesBundle(true), {
+      reservedRoutes: [{ sourceRegex, beforeFiles: true }],
+    });
+
+    expect(gateOf(normalized, `/_next/data/${BUILD}/posts/abc.json`)).toStrictEqual(POST_GATE);
+  });
+
+  /** The router reads such a name as its page whether or not it ends in `.json`. */
+  it('is a class’s for a name the router reads as one of its members without `.json`', () => {
+    const normalized = manifestOf(pagesBundle(true));
+
+    expect(gateOf(normalized, `/_next/data/${BUILD}/posts/abc`)).toStrictEqual(POST_GATE);
+  });
+
+  /**
+   * The router compares a request's path, which a URL escapes, with the build id as written: under
+   * a build id a URL escapes, it reads no name as a page, and routes one as the path it is.
+   */
+  it('is none for a name under a build id a URL escapes, which the router reads as no page', () => {
+    const spaced = manifestOf({ ...pagesBundle(true), buildId: 'release 1' });
+
+    expect(spaced.gatedDataPrefix).toBe('/_next/data/release 1');
+    expect(gateOf(spaced, '/_next/data/release%201/posts/abc.json')).toBeUndefined();
+    expect(gateOf(spaced, '/posts/abc')).toStrictEqual(POST_GATE);
   });
 });

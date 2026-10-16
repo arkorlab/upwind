@@ -603,9 +603,11 @@ Any other value that is not such an object fails the build, and so does one that
 build does not have, one the build ships as a file, any route of a build with `i18n`, or a route a
 rewrite of `next.config` may send a request to — each is a route some request would be served with
 no gate asked. A rewrite reaches a route where the path it writes may be one of the route's, or of
-its data: one that puts in what its source captured may reach whatever a path written as far as the
-capture could be, so `/:path*` to `/$1` reaches every route, while one to `/api/deliver/$1` reaches
-none under `/posts`. A redirect, or a rewrite to another origin, reaches none of the routes.
+its data, read as the router reads it — escapes decoded, dot segments resolved, a `#` kept in the
+path, and a dynamic route's segments in any case: one that puts in what its source captured may
+reach whatever a path written as far as the capture could be, so `/:path*` to `/$1` reaches every
+route, while one to `/api/deliver/$1` reaches none under `/posts`. A redirect, or a rewrite to
+another origin (`http://` or `https://`), reaches none of the routes.
 
 The host binds a gate under each name, and its edge asks the route's gate about every `GET` and
 `HEAD` of the route — a document, a router's request for its payload, a prefetch, a Pages Router

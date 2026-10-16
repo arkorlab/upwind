@@ -1,3 +1,5 @@
+import { builtNameOf } from '../manifest/built-names.ts';
+import { decodedPath, requestSpelling } from '../manifest/pages-data-prefix.ts';
 import { pageOfDataPathname, pagesDataPathnameUnder } from './pages-data.ts';
 
 /**
@@ -95,13 +97,32 @@ export function routeOfPathname(build: BuildNames): (pathname: string) => string
 const PARAMETER = /^\[[^\]]+\](?<after>.*)$/u;
 const CATCH_ALL = /^\[{1,2}\.{3}/u;
 const OPTIONAL_CATCH_ALL = /^\[{2}\.{3}.+\]{2}$/u;
-/** Another origin's URL, which that origin answers. */
-const EXTERNAL = /^[a-z][\d+.a-z-]*:/iu;
+/** Another origin's URL, which the router hands to that origin (`isExternalDestination`). */
+const EXTERNAL = /^https?:\/\//u;
 /** Where a rewrite's destination puts in what its source captured. */
 const REFERENCE = /[$:]\w/u;
 const REDIRECT_HEADERS: ReadonlySet<string> = new Set(['location', 'refresh']);
 const LOWEST_REDIRECT = 300;
 const HIGHEST_REDIRECT = 399;
+
+/**
+ * How a path is compared with a route's name: as written, as the router finds a name; or in any
+ * case, as it matches a dynamic route's pattern — the runtime leaves `@next/routing`'s
+ * `caseSensitive` unset, so `/POSTS/a` is a member of `/posts/[slug]`.
+ */
+type Fold = (text: string) => string;
+const AS_WRITTEN: Fold = (text) => text;
+const ANY_CASE: Fold = (text) => text.toLowerCase();
+
+/** What a build tells the router's own names by: the route of each, and what it serves itself. */
+interface Reader {
+  readonly routeOf: (pathname: string) => string | undefined;
+  /**
+   * Whether the router serves a name itself — a page of its own, a file — in place of any dynamic
+   * route that also matches it (`landedRoute`, in the runtime).
+   */
+  readonly servesItself: (name: string) => boolean;
+}
 
 /**
  * Where a rule sends the request it matches on the application's own origin: the destination of a
@@ -122,11 +143,43 @@ function rewritesTo(rule: Rerouting): string | undefined {
 
 /** `segment` decoded, as the router finds a page by its name decoded too; as it is, where not. */
 function decoded(segment: string): string {
-  try {
-    return decodeURIComponent(segment);
-  } catch {
-    return segment;
-  }
+  return decodedPath(segment) ?? segment;
+}
+
+/** A path without the slash it may end in, the root's aside. */
+function withoutTrailingSlash(path: string): string {
+  return path.length > 1 && path.endsWith('/') ? path.slice(0, -1) : path;
+}
+
+/**
+ * The names the router may find a path a rewrite writes whole by (`escapedNameOf`, in the runtime):
+ * the path as it sets it on the URL (`applyDestination` — its dot segments resolved, what a URL
+ * escapes escaped), the same decoded whole, as it finds a page of its own or a file, and by the name
+ * Next.js builds a member under (`builtNameOf`); each with and without a trailing slash, which it
+ * finds a page of its own or a file without as well.
+ */
+function readingsOf(path: string): string[] {
+  const spelled = requestSpelling(path);
+  const readings = [spelled, decodedPath(spelled), builtNameOf(spelled)];
+  return [
+    ...new Set(
+      readings.flatMap((reading) =>
+        reading === undefined ? [] : [reading, withoutTrailingSlash(reading)],
+      ),
+    ),
+  ];
+}
+
+/**
+ * What a path a rewrite writes as far as a capture may be read as: as written, as the URL has it,
+ * and that decoded — as far as its first escape, where what follows does not decode until a capture
+ * completes it (`/private%2` and a `F`).
+ */
+function writtenReadingsOf(written: string): string[] {
+  const spelled = requestSpelling(written);
+  const escape = spelled.indexOf('%');
+  const whole = escape === -1 ? spelled : (decodedPath(spelled) ?? spelled.slice(0, escape));
+  return [...new Set([spelled, whole, written])];
 }
 
 /** A route's segments, none for the root's. */
@@ -138,28 +191,32 @@ function templateOf(route: string): string[] {
  * Whether a whole segment of a path may be `named`: a parameter as any value — in the name of a
  * page's data, one that ends as the name does (`[slug].json`) — and a static segment as itself,
  * decoded or not; or, ahead of what a rewrite captures (`open`), followed by its data's suffix
- * (`posts.segments`).
+ * (`posts.segments`). Compared as `fold` has them.
  */
-function fitsWhole(segment: string, named: string, open: boolean): boolean {
+function fitsWhole(segment: string, named: string, open: boolean, fold: Fold): boolean {
   const after = PARAMETER.exec(named)?.groups?.['after'];
   if (after !== undefined) {
-    return segment.endsWith(after);
+    return fold(segment).endsWith(fold(after));
   }
+  const name = fold(named);
+  const spelled = fold(segment);
   return (
-    segment === named || decoded(segment) === named || (open && segment.startsWith(`${named}.`))
+    spelled === name || fold(decoded(segment)) === name || (open && spelled.startsWith(`${name}.`))
   );
 }
 
 /** Whether the start of a segment, the rest of it a capture's, may begin `named`. */
-function begins(segment: string, named: string): boolean {
-  return PARAMETER.test(named) || named.startsWith(segment) || segment.startsWith(`${named}.`);
+function begins(segment: string, named: string, fold: Fold): boolean {
+  const name = fold(named);
+  const spelled = fold(segment);
+  return PARAMETER.test(named) || name.startsWith(spelled) || spelled.startsWith(`${name}.`);
 }
 
 /**
  * Whether a path a rewrite writes whole may be one of `route`'s: segment by segment, a static one
  * as itself, a parameter as any value, a catch-all as the rest.
  */
-function mayBeWhole(path: string, route: string): boolean {
+function mayBeWhole(path: string, route: string, fold: Fold): boolean {
   const segments = path.split('/').slice(1);
   const asked = segments.at(-1) === '' ? segments.slice(0, -1) : segments;
   const named = templateOf(route);
@@ -171,7 +228,7 @@ function mayBeWhole(path: string, route: string): boolean {
     if (CATCH_ALL.test(template)) {
       return true;
     }
-    if (!fitsWhole(segment, template, false)) {
+    if (!fitsWhole(segment, template, false, fold)) {
       return false;
     }
   }
@@ -184,19 +241,19 @@ function mayBeWhole(path: string, route: string): boolean {
  * one of `route`'s. Past the route's last segment, it may be only where it ends there, or in a
  * page's prefetch segments, after their directory. Ambiguous counts as may.
  */
-function mayBegin(written: string, route: string): boolean {
+function mayBegin(written: string, route: string, fold: Fold): boolean {
   const asked = written.split('/').slice(1);
   const named = templateOf(route);
   for (const [at, segment] of asked.entries()) {
     const last = at === asked.length - 1;
     const template = named[at];
     if (template === undefined) {
-      return (last && segment === '') || (asked[at - 1] ?? '').endsWith(SEGMENTS_DIRECTORY);
+      return (last && segment === '') || fold(asked[at - 1] ?? '').endsWith(SEGMENTS_DIRECTORY);
     }
     if (CATCH_ALL.test(template)) {
       return true;
     }
-    if (!(last ? begins(segment, template) : fitsWhole(segment, template, true))) {
+    if (!(last ? begins(segment, template, fold) : fitsWhole(segment, template, true, fold))) {
       return false;
     }
   }
@@ -206,26 +263,34 @@ function mayBegin(written: string, route: string): boolean {
 /**
  * Whether a request a rewrite sends to `path` may be served as `route`, whose name a request asks
  * for it by is `named` — the page's own, or the name of its data. A path the rewrite writes whole is
- * the page or file the build named it by where it names one, as Next.js looks the filesystem up
- * first; and otherwise `route`'s where it may be one of `named`'s, its data's suffix taken off. One
- * the rewrite puts a capture in may be anything from there on: only a segment written ahead of the
- * capture that `named` cannot have rules it out.
+ * read as the router reads it (`readingsOf`): it reaches the route where any reading is a page of
+ * the route; and otherwise none where a reading is a page of its own or a file, which the router
+ * serves in place of any dynamic route; and otherwise where it may be one of `named`'s, its data's
+ * suffix taken off, and compared without regard to case where a dynamic route finds `named`'s
+ * requests. One the rewrite puts a capture in may be anything from there on: only a segment written
+ * ahead of the capture that `named` cannot have, however it is read (`writtenReadingsOf`), rules it
+ * out.
  */
 function mayReach(
-  build: BuildNames,
-  routeOf: (pathname: string) => string | undefined,
+  reader: Reader,
   path: string,
   route: { readonly route: string; readonly named: string },
 ): boolean {
+  const fold = route.named.includes('[') ? ANY_CASE : AS_WRITTEN;
   const reference = REFERENCE.exec(path);
   if (reference !== null) {
-    return mayBegin(path.slice(0, reference.index), route.named);
+    const readings = writtenReadingsOf(path.slice(0, reference.index));
+    return readings.some((written) => mayBegin(written, route.named, fold));
   }
-  const page = routeOf(path) ?? routeOf(path.replace(/(?<=.)\/$/u, ''));
-  if (page !== undefined || build.staticFiles.some((file) => file.pathname === path)) {
-    return page === route.route;
+  const readings = readingsOf(path);
+  if (readings.some((reading) => reader.routeOf(reading) === route.route)) {
+    return true;
   }
-  return mayBeWhole(withoutDataSuffix(path), route.named);
+  if (readings.some((reading) => reader.servesItself(reading))) {
+    return false;
+  }
+  const spelled = fold(requestSpelling(path));
+  return mayBeWhole(withoutDataSuffix(spelled), route.named, fold);
 }
 
 /**
@@ -239,6 +304,18 @@ function namesOf(build: BuildNames, route: string): string[] {
   return pages
     ? [route, pagesDataPathnameUnder(build.buildId, build.config.basePath, route)]
     : [route];
+}
+
+/** What the router serves by its own name ahead of any dynamic route: a page of its own, a file. */
+function readerOf(build: BuildNames): Reader {
+  const own = new Set(build.staticFiles.map((file) => file.pathname));
+  for (const { pathname } of build.entrypoints) {
+    // A route's own name in brackets is a class, which a dynamic route finds the members of.
+    if (!pathname.includes('[')) {
+      own.add(pathname);
+    }
+  }
+  return { routeOf: routeOfPathname(build), servesItself: (name) => own.has(name) };
 }
 
 /**
@@ -259,19 +336,20 @@ export function rewritesOnto(build: BuildRerouting, gated: readonly string[]): s
     ...routing.afterFiles,
     ...routing.fallback,
   ];
-  const routeOf = routeOfPathname(build);
+  const reader = readerOf(build);
   const named = gated.flatMap((route) =>
     namesOf(build, route).map((name) => ({ route, named: name })),
   );
   const issues: string[] = [];
   for (const rule of rules) {
     const destination = rewritesTo(rule);
-    const path = destination?.split(/[#?]/u, 1)[0];
-    if (destination === undefined || path === undefined) {
+    if (destination === undefined) {
       continue;
     }
+    // All the router sets on the URL's path: what comes before a `?`, a `#` among it.
+    const [path = ''] = destination.split('?', 1);
     const reached = new Set(
-      named.filter((name) => mayReach(build, routeOf, path, name)).map((name) => name.route),
+      named.filter((name) => mayReach(reader, path, name)).map((name) => name.route),
     );
     for (const route of reached) {
       issues.push(
