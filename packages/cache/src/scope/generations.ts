@@ -155,11 +155,15 @@ export function prunableGenerations(
     .toArray();
 }
 
-/** Every generation whose bytes are present: what a retired scope's retention prunes. */
+/**
+ * Every generation whose bytes are present: what a retired scope's retention prunes, oldest first
+ * (`generations_formers`). None of a retired scope's is published (`retireGenerations`).
+ */
 export function presentGenerations(sql: SqlStorage, limit: number): GenerationRow[] {
   return sql
     .exec<GenerationRow>(
-      `SELECT * FROM generations WHERE storage = 'present' ORDER BY committed_at LIMIT ?`,
+      `SELECT * FROM generations WHERE storage = 'present' AND publication <> 'published'
+       ORDER BY committed_at, generation_id LIMIT ?`,
       limit,
     )
     .toArray();

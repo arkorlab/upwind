@@ -94,6 +94,10 @@ const STATEMENTS: readonly string[] = [
   // (`deletePrunedBefore`), which keeps a pruned generation's metadata for as long as the history
   // is kept, and may hold millions of them.
   `CREATE INDEX IF NOT EXISTS generations_pruned ON generations (pruned_at) WHERE storage = 'pruned'`,
+  // The former generations whose bytes are present, in the order retention lets them go: oldest
+  // first, a batch at a time, each batch taking up where the last left off as the pruned leave it.
+  `CREATE INDEX IF NOT EXISTS generations_formers
+    ON generations (committed_at, generation_id) WHERE storage = 'present' AND publication <> 'published'`,
   // The latest write of each writer an entry has had (`data.ts`): a writer's write that arrives
   // after one it handed over later is not published. Kept for an hour (`WRITER_MARK_WINDOW_MS`),
   // and swept by retention past that — not with the entry, whose id a write recreates.
