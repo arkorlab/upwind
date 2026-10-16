@@ -491,18 +491,17 @@ interface CopiedRead extends BesideRead {
  * invalidation that reaches it (`isInvalidated`, `condemned.ts`): a copy is never made of a record
  * the isolate already knows to be behind, or invalidated — at once, or with a window, which leaves
  * it to the Function — that other isolates would serve, for as long as the copy's life, however
- * soon KV shows what replaced it. It is judged when the copy is kept, after the read, and again
- * after each wait of the keeping (`keepCopyAhead`): what invalidates it may arrive while any of
- * them is out.
+ * soon KV shows what replaced it. Both are judged when the copy is kept, after the read, and again
+ * after each wait of the keeping (`keepCopyAhead`): what invalidates the record may arrive while
+ * any of them is out, and so may a later record, another request's read put in place.
  */
 async function keepLatest(edge: EdgeContext, read: BesideRead, record: Verified): Promise<void> {
   const untouched = (): boolean =>
     !isInvalidated(edge.runtime.memory, record.pack, edge.app?.deploymentId);
-  if (heldLater(edge, read.recordKey, record.revision) === undefined && untouched()) {
-    await keepCopyAhead(edge, read.recordKey, record, {
-      maxAgeMs: read.maxAgeMs,
-      wanted: untouched,
-    });
+  const latest = (): boolean => heldLater(edge, read.recordKey, record.revision) === undefined;
+  const wanted = (): boolean => latest() && untouched();
+  if (wanted()) {
+    await keepCopyAhead(edge, read.recordKey, record, { maxAgeMs: read.maxAgeMs, wanted });
   }
 }
 
