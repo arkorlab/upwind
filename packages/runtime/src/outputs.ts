@@ -8,7 +8,7 @@ import {
 import { MIDDLEWARE_PREFETCH_HEADER } from '@stayingupwind/core/request';
 
 import { notFound, rscFromBuild } from './documents.ts';
-import { entryFor } from './entries.ts';
+import { deferredEntryFor, entryFor } from './entries.ts';
 import { type GenerationSource, serveFromGeneration, speculative } from './generations.ts';
 import { notFoundData } from './pages-not-found.ts';
 import { rscRepresentation } from './representations.ts';
@@ -297,7 +297,7 @@ export async function serveRsc(
   store: Store,
   asked: Resolved,
 ): Promise<Response> {
-  const rendered = await renderedBy(input, store, asked);
+  const rendered = await renderedBy(input, store, asked, deferredEntryFor);
   if (rendered === undefined) {
     return notFound(input, store, new URL(input.request.url));
   }
