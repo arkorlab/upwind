@@ -175,18 +175,31 @@ describe('a page of the delta', () => {
   });
 
   /**
-   * One with more to follow stands at the last revision whose tags it holds, no later than the
-   * latest invalidation it reports. The last stands at the scope's revision, which a write moves as
-   * an invalidation does, and so past the latest once anything was written after it.
+   * One with more to follow stands at the last revision whose tags it holds: one that stood past
+   * them, or held none, would have its reader stand past invalidations it never heard of, however
+   * it stood to the latest it reports (Codex). The last page stands at the scope's
+   * revision, which a write moves as an invalidation does, and so past its tags.
    */
-  it('stands no later than the latest invalidation it reports while more follow', () => {
-    const past = { ...deltaPage(1), revision: 7, latest: { revision: 6, invalidatedAt: 1 } };
+  it('stands at the last revision whose tags it holds while more follow', () => {
+    const tags = [
+      { ...tagRecord('a'), revision: 3 },
+      { ...tagRecord('b'), revision: 5 },
+    ];
+    const page = {
+      revision: 5,
+      floor: 0,
+      truncated: true,
+      tags,
+      latest: { revision: 9, invalidatedAt: 1 },
+    };
 
-    expect(tagsDeltaResponseSchema.safeParse(past).success).toBe(false);
-    expect(tagsDeltaResponseSchema.safeParse({ ...past, revision: 6 }).success).toBe(true);
-    expect(tagsDeltaResponseSchema.safeParse({ ...past, truncated: false }).success).toBe(true);
-    // An authority that says not where the scope's tags stand is taken at its word.
-    expect(tagsDeltaResponseSchema.safeParse({ ...deltaPage(1), revision: 7 }).success).toBe(true);
+    expect(tagsDeltaResponseSchema.safeParse(page).success).toBe(true);
+    expect(tagsDeltaResponseSchema.safeParse({ ...page, revision: 9 }).success).toBe(false);
+    expect(tagsDeltaResponseSchema.safeParse({ ...page, revision: 4 }).success).toBe(false);
+    expect(tagsDeltaResponseSchema.safeParse({ ...page, tags: [] }).success).toBe(false);
+    expect(
+      tagsDeltaResponseSchema.safeParse({ ...page, revision: 9, truncated: false }).success,
+    ).toBe(true);
   });
 });
 
