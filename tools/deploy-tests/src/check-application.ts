@@ -115,6 +115,24 @@ writeFileSync(
 );
 `;
 
+const LIFECYCLE_SCRIPT = String.raw`
+import { readFileSync, writeFileSync } from 'node:fs';
+
+const stage = process.argv[2];
+const before = stage === 'prebuild' ? '' : readFileSync('lifecycle.txt', 'utf8');
+const expected = {
+  prebuild: '',
+  build: 'prebuild\n',
+  'post-build': 'prebuild\nbuild\n',
+  postbuild: 'prebuild\nbuild\npost-build\n',
+};
+if (before !== expected[stage]) throw new Error('incorrect lifecycle order: ' + stage);
+writeFileSync('lifecycle.txt', before + stage + '\n');
+console.log(stage + ' saw ARKOR_API_TOKEN: ' + (process.env.ARKOR_API_TOKEN === undefined ? 'no' : 'YES'));
+console.log(stage + ' saw ARKOR_API_TOKEN_FILE: ' + (process.env.ARKOR_API_TOKEN_FILE === undefined ? 'no' : 'YES'));
+if (process.env.CHECK_FAIL_LIFECYCLE === stage) process.exit(7);
+`;
+
 /**
  * Its `build` is shaped like the one the suite's harness writes (`… && pnpm post-build`), and its
  * `post-build` is its own — which is the case that must not be dropped.
@@ -123,15 +141,20 @@ const MANIFEST = {
   name: 'deploy-tests-check-application',
   private: true,
   scripts: {
-    build: 'node build.mjs && pnpm post-build',
+    prebuild: 'node lifecycle.mjs prebuild',
+    build: 'node lifecycle.mjs build && node build.mjs && pnpm post-build',
     'post-build':
-      "node -e \"console.log('the fixture post-build ran; it saw ARKOR_API_TOKEN: ' + (process.env.ARKOR_API_TOKEN === undefined ? 'no' : 'YES'))\"",
+      "node lifecycle.mjs post-build && node -e \"console.log('the fixture post-build ran; it saw ARKOR_API_TOKEN: ' + (process.env.ARKOR_API_TOKEN === undefined ? 'no' : 'YES'))\"",
+    postbuild: 'node lifecycle.mjs postbuild',
   },
 };
 
 export function writeApplication(appDir: string): void {
   mkdirSync(path.join(appDir, 'node_modules'), { recursive: true });
   writeFileSync(path.join(appDir, 'build.mjs'), BUILD_SCRIPT);
+  writeFileSync(path.join(appDir, 'lifecycle.mjs'), LIFECYCLE_SCRIPT);
+  // The hook's choice is explicit, rather than dependent on the fixture's own pnpm settings.
+  writeFileSync(path.join(appDir, 'pnpm-workspace.yaml'), 'enablePrePostScripts: false\n');
   // Its own value, for `@next/env` to read and the deployment's environment to be replaced with.
   writeFileSync(path.join(appDir, '.env'), 'OWN=yes\n');
   writeFileSync(path.join(appDir, 'package.json'), `${JSON.stringify(MANIFEST, null, 2)}\n`);

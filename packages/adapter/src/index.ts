@@ -22,6 +22,7 @@ import {
   reportSplit,
 } from './app-functions.ts';
 import { BlobStore } from './blobs.ts';
+import { assertBuildPaths } from './build-paths.ts';
 import { bundleConfig } from './bundle-config.ts';
 import { cacheHandlersModule } from './cache-handlers.ts';
 import {
@@ -42,7 +43,6 @@ import {
   tracedChunks,
   tracedWasm,
 } from './collect.ts';
-import { refuseOutputOutsideProject } from './dependencies.ts';
 import { reserveUpwindPrefix } from './dev-prefix.ts';
 import { durableObjectParts } from './durable-objects.ts';
 import type { EdgeEntry } from './edge.ts';
@@ -192,7 +192,7 @@ async function emptyOutDir(projectDir: string): Promise<string> {
 async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Promise<void> {
   const exported = isStaticExport(ctx.config);
   if (!exported) {
-    refuseOutputOutsideProject(ctx.projectDir, ctx.distDir);
+    assertBuildPaths(ctx.projectDir, ctx.distDir, path.join(ctx.projectDir, OUT_DIR_NAME));
   }
   // Read before anything is written: a cron this platform cannot run fails the build here, where
   // the message is about the file the author wrote, rather than at the upload or never.

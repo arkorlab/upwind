@@ -32,6 +32,14 @@ The adapter uses the stable [Next.js Adapter API](https://nextjs.org/docs/app/ap
 the record of what it reads from that API, what it makes of it, and where it reaches past the
 API into Next.js's own output. The tests under `test/` hold each row to its word.
 
+`distDir` may be outside the project, as in a workspace's `../../dist/apps/web/.next` or
+`../.next`. The physical files stay there for the bundler. The Function carries their manifests and
+data under `.upwind-build/`, and its lazy route entries and Turbopack roots resolve to that same
+mount. In-project outputs retain their own names. Nothing copies an ancestor directory into the
+bundle or adds a request-time file lookup. The external mount's name is reserved in the project;
+an output that is the project or its ancestor, overlaps `.arkor/`, or supplies data through a
+symlink escaping its output is refused before deployment.
+
 ## What the adapter reads
 
 From `onBuildComplete`'s context, and where each thing ends up. "Recorded" means the field is
