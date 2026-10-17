@@ -547,6 +547,20 @@ export const dataGetResponseSchema = z.object({
 });
 export type DataGetResponse = z.infer<typeof dataGetResponseSchema>;
 
+/**
+ * Whether a data read's answer is of the namespace the read asked in: the kind of value, and the
+ * handler a `use cache` value was kept under, both of which name the value as its key does. Its
+ * reader keeps the answer as the value of the key it asked for, so one of another handler's, or a
+ * fetch's, from a gateway malformed or of another version, would be served as this handler's. The
+ * shape cannot say so, as it does not know what was asked; whatever reads a value asks this of it.
+ */
+export function answersTheRead(
+  read: Pick<DataGetRequest, 'kind' | 'handler'>,
+  answer: { readonly entry: Pick<DataEntryMetadata, 'kind' | 'handler'> },
+): boolean {
+  return answer.entry.kind === read.kind && answer.entry.handler === read.handler;
+}
+
 /** `GET /tags/delta?since=<revision>` */
 const tagHistoryMarkSchema = z.object({
   revision: z.number().int().positive(),

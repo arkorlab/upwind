@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { ENTITY_SCHEMA_VERSION, invalidationRecordSchema } from '../src/cache/entities.ts';
 import {
+  answersTheRead,
   answersTheTags,
   dataGetRequestSchema,
   dataGetResponseSchema,
@@ -121,6 +122,23 @@ describe("a data entry's handler", () => {
       }).success,
     ).toBe(false);
     expect(dataGetRequestSchema.safeParse(request).success).toBe(false);
+  });
+});
+
+describe("a data read's answer", () => {
+  const useCache = { entry: entry('data:use-cache', 1) };
+  const fetched = { entry: entry('data:fetch', 1) };
+
+  it('is taken where it is of the namespace the read asked in', () => {
+    expect(answersTheRead({ kind: 'data:use-cache', handler: 'default' }, useCache)).toBe(true);
+    expect(answersTheRead({ kind: 'data:fetch' }, fetched)).toBe(true);
+  });
+
+  /** Kept as the value of the key the read asked for, it would be served as that one (Codex). */
+  it("is refused where it is of another handler's, or of the other kind", () => {
+    expect(answersTheRead({ kind: 'data:use-cache', handler: 'remote' }, useCache)).toBe(false);
+    expect(answersTheRead({ kind: 'data:fetch' }, useCache)).toBe(false);
+    expect(answersTheRead({ kind: 'data:use-cache', handler: 'default' }, fetched)).toBe(false);
   });
 });
 
