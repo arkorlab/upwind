@@ -547,6 +547,20 @@ export const dataGetResponseSchema = z.object({
 });
 export type DataGetResponse = z.infer<typeof dataGetResponseSchema>;
 
+/**
+ * Whether a data read's answer is of the namespace the read asked in: the kind of value, and the
+ * handler a `use cache` value was kept under, both of which name the value as its key does. Its
+ * reader keeps the answer as the value of the key it asked for, so one of another handler's, or a
+ * fetch's, from a gateway malformed or of another version, would be served as this handler's. The
+ * shape cannot say so, as it does not know what was asked; whatever reads a value asks this of it.
+ */
+export function answersTheRead(
+  read: Pick<DataGetRequest, 'kind' | 'handler'>,
+  answer: { readonly entry: Pick<DataEntryMetadata, 'kind' | 'handler'> },
+): boolean {
+  return answer.entry.kind === read.kind && answer.entry.handler === read.handler;
+}
+
 /** `GET /tags/delta?since=<revision>` */
 const tagHistoryMarkSchema = z.object({
   revision: z.number().int().positive(),
@@ -648,6 +662,21 @@ export const tagsGetResponseSchema = z.object({
   tags: z.array(tagDeltaEntrySchema).max(MAX_TAGS_PER_CALL),
 });
 export type TagsGetResponse = z.infer<typeof tagsGetResponseSchema>;
+
+/**
+ * Whether a tag read's answer speaks of the tags it asked about alone. Its reader takes each record
+ * for the tag the record names, and every tag it asked about as read: a record of a tag it did not
+ * ask about, from a gateway malformed or of another version, would be taken in for that tag, and
+ * the tag it stood in place of held as invalidated by nothing. The shape cannot say so, as it does
+ * not know what was asked; whatever reads tags asks this of each answer.
+ */
+export function answersTheTags(
+  asked: readonly string[],
+  answer: { readonly tags: readonly Pick<TagDeltaEntry, 'value'>[] },
+): boolean {
+  const named = new Set(asked);
+  return answer.tags.every((tag) => named.has(tag.value));
+}
 
 /** `POST /invalidations` */
 const invalidateTagSchema = z.object({
