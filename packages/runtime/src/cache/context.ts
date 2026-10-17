@@ -268,7 +268,15 @@ export function requestContext(): RequestContext | undefined {
   return contexts.getStore();
 }
 
-const regenerations = new AsyncLocalStorage<true>();
+/**
+ * One run of a regeneration's render (`asRegeneration`), each its own: what the writes its render
+ * hands over are told apart by from any other render's (`keepWrite`, `heldOut`).
+ */
+export interface Regeneration {
+  readonly kind: 'regeneration';
+}
+
+const regenerations = new AsyncLocalStorage<Regeneration>();
 
 /**
  * Run a render as a regeneration of its entry: the data-cache reads made inside it miss an entry
@@ -276,10 +284,15 @@ const regenerations = new AsyncLocalStorage<true>();
  * serve while Next.js fetches it again behind.
  */
 export function asRegeneration<T>(work: () => Promise<T>): Promise<T> {
-  return regenerations.run(true, work);
+  return regenerations.run({ kind: 'regeneration' }, work);
 }
 
 /** Whether the render reading the cache is a regeneration (`asRegeneration`). */
 export function isRegeneration(): boolean {
-  return regenerations.getStore() === true;
+  return regenerations.getStore() !== undefined;
+}
+
+/** The regeneration whose render is reading or writing the cache, where it is one. */
+export function currentRegeneration(): Regeneration | undefined {
+  return regenerations.getStore();
 }
