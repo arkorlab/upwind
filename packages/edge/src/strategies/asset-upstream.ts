@@ -357,18 +357,24 @@ const YEARS_PER_CENTURY = 100;
 const MOST_YEARS_AHEAD = 50;
 
 /**
- * A year as an HTTP-date writes it: four digits, or the RFC 850 form's two, read as the year that
- * ends in them no more than fifty years ahead of this one (RFC 9110 §5.6.7).
+ * A year as an HTTP-date writes it: four digits, or the RFC 850 form's two, read in this century
+ * unless the date would then be more than fifty years ahead of now, and in the last otherwise (RFC
+ * 9110 §5.6.7). The whole date and time say so, not the year alone: fifty years on from this year,
+ * a date is read back once it is past this moment then.
  */
-function fullYear(digits: string): number {
+function fullYear(digits: string, month: number, day: number, seconds: number): number {
   const year = Number(digits);
   if (digits.length !== 2) {
     return year;
   }
   // eslint-disable-next-line unicorn/prefer-temporal -- Temporal is not available in the Workers runtime.
-  const thisYear = new Date().getUTCFullYear();
+  const latest = new Date();
+  const thisYear = latest.getUTCFullYear();
+  latest.setUTCFullYear(thisYear + MOST_YEARS_AHEAD);
   const read = thisYear - (thisYear % YEARS_PER_CENTURY) + year;
-  return read > thisYear + MOST_YEARS_AHEAD ? read - YEARS_PER_CENTURY : read;
+  // eslint-disable-next-line unicorn/prefer-temporal -- Temporal is not available in the Workers runtime.
+  const instant = Date.UTC(read, month, day) + seconds * MS_PER_SECOND;
+  return instant > latest.getTime() ? read - YEARS_PER_CENTURY : read;
 }
 
 /** The seconds into its day `HH:MM:SS` names, where it is a time of day: `23:59:60` included. */
@@ -390,15 +396,16 @@ function instantOf(
   fields: Readonly<Record<string, string | undefined>>,
   weekdays: readonly string[],
 ): number | undefined {
-  const year = fullYear(fields['year'] ?? '');
   const month = MONTHS.indexOf(fields['month'] ?? '');
   const day = Number(fields['day']);
   const seconds = secondsOfDay(fields['time'] ?? '');
+  if (month === -1 || seconds === undefined) {
+    return undefined;
+  }
+  const year = fullYear(fields['year'] ?? '', month, day, seconds);
   // eslint-disable-next-line unicorn/prefer-temporal -- Temporal is not available in the Workers runtime.
   const date = new Date(Date.UTC(year, month, day));
   const named =
-    month !== -1 &&
-    seconds !== undefined &&
     date.getUTCFullYear() === year &&
     date.getUTCMonth() === month &&
     date.getUTCDate() === day &&
