@@ -40,6 +40,12 @@ bundle or adds a request-time file lookup. The external mount's name is reserved
 an output that is the project or its ancestor, overlaps `.arkor/`, or supplies data through a
 symlink escaping its output is refused before deployment.
 
+The Pages API template keeps its route module private in Next.js 16.4.2. For external outputs
+alone, the adapter rewrites that runtime's constructor to use the mount before any manifest is
+read; ordinary outputs skip this rewrite and its record. The build refuses an unknown constructor
+shape or a Pages API bundle that never applied it. The installed-version checker validates the
+conditional patch with an external-output context, and the matrix serves a real Pages API route.
+
 ## What the adapter reads
 
 From `onBuildComplete`'s context, and where each thing ends up. "Recorded" means the field is

@@ -34,6 +34,7 @@ import type { KeptMaps } from './kept-maps.ts';
 import { bundleLinkedExternals, type LinkedExternals } from './linked-externals.ts';
 import type { TextModule } from './manifests.ts';
 import { type PageRuntimeRequire, withPageRuntimeAsReact } from './page-runtime-react.ts';
+import { auditExternalPagesApiDist } from './patches/external-pages-api-dist.ts';
 import {
   type AppliedPatch,
   OG_FONT_FILE,
@@ -405,6 +406,12 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
         }),
   ]);
   const appFile = app.outFile;
+  auditExternalPagesApiDist(
+    input.projectDir,
+    input.patch.distDir,
+    input.entries,
+    app.trace.patches,
+  );
   // What the chunks import from `.next/node_modules`, named only once the app bundle has run.
   const linked = await bundleLinkedExternals({
     distDir: input.patch.distDir,

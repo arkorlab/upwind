@@ -76,7 +76,7 @@ export const FIXTURE_COVERAGE = {
   // beside the project. Unlike the other fixtures, this also exercises the Function in workerd.
   'next-external-output': {
     buildDirectory: '../.next/',
-    expected: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
+    expected: [TURBOPACK_RUNTIME, TURBOPACK_ROOT, 'external-pages-api-dist'],
     chunks: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
   },
   // Every patch an application reaches without the Workflow SDK: this fixture exists to be the one

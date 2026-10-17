@@ -1,5 +1,6 @@
 import { cacheHandlersPatch } from './cache-handlers.ts';
 import { cacheSignalTimersPatch } from './cache-signal-timers.ts';
+import { externalPagesApiDistPatch } from './external-pages-api-dist.ts';
 import { fastImmediatesPatch } from './fast-immediates.ts';
 import { fetchCacheWaitUntilPatch } from './fetch-cache-wait-until.ts';
 import { graphManifestsPatch } from './graph-manifests.ts';
@@ -32,6 +33,7 @@ export type { Copy, Patch, PatchContext } from './types.ts';
 
 /** Every rewrite of Next.js's output the Function build applies. */
 export const PATCHES: readonly Patch[] = [
+  externalPagesApiDistPatch,
   turbopackRuntimePatch,
   turbopackRootPatch,
   wasmLoaderPatch,
