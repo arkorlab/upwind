@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { ENTITY_SCHEMA_VERSION, invalidationRecordSchema } from '../src/cache/entities.ts';
 import {
+  answersTheTags,
   dataGetRequestSchema,
   dataGetResponseSchema,
   dataSetRequestSchema,
@@ -149,6 +150,22 @@ describe("a tag read's answer", () => {
   /** A record for each tag the read named at the most, which no read names more of. */
   it('holds no more records than a read may name tags', () => {
     expect(tagsGetResponseSchema.safeParse(tagsAnswer(MAX_TAGS_PER_CALL + 1)).success).toBe(false);
+  });
+
+  /** Of some of the tags asked about, or none: a tag with no record was never invalidated. */
+  it('is taken where it speaks of the tags asked about', () => {
+    expect(answersTheTags(['a', 'b'], { tags: [tagRecord('b')] })).toBe(true);
+    expect(answersTheTags(['a', 'b'], { tags: [] })).toBe(true);
+  });
+
+  /**
+   * Its reader takes a record for the tag the record names, and every tag it asked about as read:
+   * one of a tag not asked about would leave the one asked about held as invalidated by nothing
+   * (Codex).
+   */
+  it('is refused where it speaks of a tag not asked about', () => {
+    expect(answersTheTags(['a'], { tags: [tagRecord('b')] })).toBe(false);
+    expect(answersTheTags(['a'], { tags: [tagRecord('a'), tagRecord('A')] })).toBe(false);
   });
 });
 

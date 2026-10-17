@@ -649,6 +649,21 @@ export const tagsGetResponseSchema = z.object({
 });
 export type TagsGetResponse = z.infer<typeof tagsGetResponseSchema>;
 
+/**
+ * Whether a tag read's answer speaks of the tags it asked about alone. Its reader takes each record
+ * for the tag the record names, and every tag it asked about as read: a record of a tag it did not
+ * ask about, from a gateway malformed or of another version, would be taken in for that tag, and
+ * the tag it stood in place of held as invalidated by nothing. The shape cannot say so, as it does
+ * not know what was asked; whatever reads tags asks this of each answer.
+ */
+export function answersTheTags(
+  asked: readonly string[],
+  answer: { readonly tags: readonly Pick<TagDeltaEntry, 'value'>[] },
+): boolean {
+  const named = new Set(asked);
+  return answer.tags.every((tag) => named.has(tag.value));
+}
+
 /** `POST /invalidations` */
 const invalidateTagSchema = z.object({
   value: tagValueSchema,

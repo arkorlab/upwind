@@ -71,6 +71,7 @@ export {
   storageStateSchema,
 } from './entities.ts';
 export {
+  answersTheTags,
   ARTIFACT_ENCODING_HEADER,
   ARTIFACT_ROLE_HEADER,
   ARTIFACT_SHA256_HEADER,
