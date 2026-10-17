@@ -1,4 +1,5 @@
 import type { HeaderRule, ProjectManifest } from '@stayingupwind/core/manifest';
+import { PLATFORM_HEADER_PREFIX } from '@stayingupwind/core/request';
 import { DEFAULT_DELIVERY_POLICY } from '@stayingupwind/host/delivery';
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
@@ -27,15 +28,23 @@ interface Answering {
   readonly middleware: () => Response;
   /** The rules of `next.config` `headers()`; none, absent. */
   readonly headerRules?: readonly HeaderRule[] | undefined;
-  /** What an origin the middleware rewrites to answers; absent, a body of its own and nothing else. */
-  readonly origin?: (() => Response) | undefined;
+  /**
+   * What an origin the middleware rewrites to answers the request it is sent; absent, a body of its
+   * own and nothing else.
+   */
+  readonly origin?: ((request: Request) => Response) | undefined;
 }
 
 /**
  * A `GET` of `path` routed by a host of its own, to a deployment whose middleware matches every path
  * and answers as `answering` says. Its Function answers anything handed to it with a body of its own.
+ * `init` is the visitor's, as a navigation's.
  */
-async function throughMiddleware(path: string, answering: Answering): Promise<Response> {
+async function throughMiddleware(
+  path: string,
+  answering: Answering,
+  init: RequestInit = {},
+): Promise<Response> {
   const site = await seedSite({
     document: pprDocument(),
     files: { [FILE]: 'User-agent: *' },
@@ -55,9 +64,9 @@ async function throughMiddleware(path: string, answering: Answering): Promise<Re
           : new Response('from the Function'),
       );
     },
-    fetchImpl: (): Promise<Response> => Promise.resolve(origin()),
+    fetchImpl: (request: Request): Promise<Response> => Promise.resolve(origin(request)),
   });
-  const request = navigation(path);
+  const request = navigation(path, init);
   const ctx = createExecutionContext();
   const response = await serveFromPointer(
     {
@@ -242,4 +251,66 @@ describe('an answer the middleware gives', () => {
       }).toStrictEqual({ edge: 'passthrough;reason=external-rewrite', type });
     },
   );
+
+  /**
+   * Another origin is sent what Next.js's proxy sends it: the request its middleware was handed, as
+   * the middleware left it, under `x-forwarded-host` naming the host the client asked on whatever
+   * the middleware made of it (`proxyRequest`). The middleware is handed the edge's forwarding
+   * headers — the client's address as the edge observed it, not one a client wrote — and none of a
+   * client's `x-forwarded-*` or `cf-*`, so the origin is sent none either; nor the edge's own
+   * headers, nor one that belongs to a single connection (Codex, upwind#179).
+   */
+  it('sends another origin the request its middleware was handed, as the middleware left it', async () => {
+    const sent: Request[] = [];
+    await throughMiddleware(
+      '/',
+      {
+        middleware: () => {
+          return new Response(null, {
+            headers: {
+              'x-middleware-rewrite': 'https://elsewhere.example/feed',
+              'x-forwarded-host': 'middleware.example',
+            },
+          });
+        },
+        origin: (request) => {
+          sent.push(request);
+          return new Response('from the origin');
+        },
+      },
+      {
+        headers: {
+          'accept-language': 'ja',
+          'cf-connecting-ip': '203.0.113.7',
+          'cf-ray': 'written-by-the-client',
+          'x-forwarded-for': '198.51.100.66',
+          'x-forwarded-proto': 'http',
+          'x-arkor-ip-country': 'XX',
+          'proxy-authorization': 'Basic c2VjcmV0',
+          te: 'trailers',
+        },
+      },
+    );
+    const headers = sent[0]?.headers ?? new Headers();
+
+    expect({
+      language: headers.get('accept-language'),
+      forwardedFor: headers.get('x-forwarded-for'),
+      forwardedHost: headers.get('x-forwarded-host'),
+      forwardedProto: headers.get('x-forwarded-proto'),
+      cloudflare: [...headers.keys()].filter((name) => name.startsWith('cf-')),
+      edge: [...headers.keys()].filter((name) => name.startsWith(PLATFORM_HEADER_PREFIX)),
+      proxyAuthorization: headers.get('proxy-authorization'),
+      te: headers.get('te'),
+    }).toStrictEqual({
+      language: 'ja',
+      forwardedFor: '203.0.113.7',
+      forwardedHost: 'site.example',
+      forwardedProto: 'https',
+      cloudflare: [],
+      edge: [],
+      proxyAuthorization: null,
+      te: null,
+    });
+  });
 });

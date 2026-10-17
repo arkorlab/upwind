@@ -16,6 +16,7 @@ import {
 } from '@stayingupwind/core/paas';
 import {
   EDGE_DEBUG_HEADER,
+  HOP_BY_HOP_HEADERS,
   PASSTHROUGH_RESPONSE_HEADER_DENYLIST,
   PLATFORM_HEADER_PREFIX,
   sanitizePassthroughHeaders,
@@ -127,6 +128,7 @@ const MAX_REASON_LENGTH = 200;
 const REWRITE_HEADER = 'x-middleware-rewrite';
 const SET_COOKIE_HEADER = 'set-cookie';
 const CONTENT_TYPE_HEADER = 'content-type';
+const FORWARDED_HOST_HEADER = 'x-forwarded-host';
 const HTTP_OK = 200;
 /**
  * What of the middleware protocol a middleware's own answer may still carry, which Next.js's router
@@ -162,6 +164,26 @@ function decided(result: MiddlewareResult, response: Response): MiddlewareOutcom
     response.status !== HTTP_OK &&
     response.headers.has(REWRITE_HEADER)
     ? { ...result, rewriteStatus: response.status }
+    : result;
+}
+
+/**
+ * The middleware's answer, read against the client's own headers (`runMiddlewareIn`) — but a
+ * rewrite to another origin, which nothing forwards again, against the headers the middleware was
+ * handed (`middlewareRequest`). Next.js's proxy sends another origin the request its middleware was
+ * handed, as the middleware left it (`proxyRequest`, in `server/lib/router-utils/proxy-request.ts`):
+ * so the origin is sent the forwarding headers the middleware saw — the edge's own, never a client's
+ * `x-forwarded-*` or `cf-*` — and no more of the client's request than the middleware was handed.
+ */
+function readAnswer(
+  response: Response,
+  url: URL,
+  client: Headers,
+  handed: Headers,
+): MiddlewareResult {
+  const result = readMiddlewareResponse(response, url, client);
+  return result.kind === 'external-rewrite'
+    ? readMiddlewareResponse(response, url, handed)
     : result;
 }
 
@@ -434,17 +456,19 @@ async function runMiddlewareIn(
   }
   const middlewareMs = edge.runtime.now() - startedAt;
   // Read against the client's own headers, not the forwarded ones: what comes out is a client
-  // request as the middleware left it, and whatever forwards it next builds its own headers.
+  // request as the middleware left it, and whatever forwards it next builds its own headers — all
+  // but a rewrite to another origin, which goes out as it is read (`readAnswer`).
   //
   // Without the host's own cookies, and here rather than in each of the places that forward what
   // comes out. `requestHeaders` is rebuilt from what is passed in, and half a dozen callers hand it
-  // on — to the application's Worker, to an image source, to an origin the application's own
-  // rewrite named. Stripping it once at the source is the only way every one of them is covered,
-  // including the next one somebody adds. A copy, because a `Request`'s own headers are immutable.
+  // on — to the application's Worker, to an image source; the headers an origin the application's
+  // own rewrite named is sent never had them (`middlewareRequest`). Stripping it once at the source
+  // is the only way every one of them is covered, including the next one somebody adds. A copy,
+  // because a `Request`'s own headers are immutable.
   const client = withoutHostCredentials(new Headers(request.headers), edge.host.credentials);
   let result: MiddlewareResult;
   try {
-    result = readMiddlewareResponse(response, new URL(request.url), client);
+    result = readAnswer(response, new URL(request.url), client, forwarded.headers);
   } catch (error) {
     // An answer that says in the middleware's own headers what no request can be — a rewrite to no
     // URL at all, an override naming no header — is the middleware failing as surely as a throw:
@@ -587,13 +611,29 @@ function unreachableRewrite(
 }
 
 /**
+ * What of a request is never another origin's: the edge's own headers (`PLATFORM_HEADER_PREFIX`, the
+ * runtime's `PLATFORM_REQUEST_HEADERS` among them), what belongs to one connection alone
+ * (`HOP_BY_HOP_HEADERS`), and the site's hostname, which the target's URL replaces.
+ */
+function notForAnotherOrigin(name: string): boolean {
+  return (
+    name === 'host' ||
+    HOP_BY_HOP_HEADERS.includes(name) ||
+    PLATFORM_REQUEST_HEADERS.includes(name) ||
+    name.startsWith(PLATFORM_HEADER_PREFIX)
+  );
+}
+
+/**
  * A rewrite to another origin, followed from here: the middleware has run once, and running it
  * again in the application's Worker would repeat whatever it did on the way. The request goes out
- * as the middleware left it, without three things: the host's credentials (`EdgeHost.credentials`,
- * its cookies and headers), which `runMiddleware` took off before the middleware's answer rebuilt
- * the request; the edge's own request headers (`PLATFORM_REQUEST_HEADERS`), taken off here; and the
- * site's hostname. What comes back carries the headers the rules of `next.config` and the
- * middleware set (`layRouted`) — as the runtime answers the same rewrite.
+ * as Next.js's proxy sends one: the request the middleware was handed, as the middleware left it
+ * (`readAnswer`) — so without the host's credentials (`EdgeHost.credentials`, its cookies and
+ * headers), which never reached the middleware, and with the edge's forwarding headers rather than
+ * a client's — under `x-forwarded-host` naming the host the client asked on, whatever the middleware
+ * made of it, and without what is never another origin's (`notForAnotherOrigin`). What comes back
+ * carries the headers the rules of `next.config` and the middleware set (`layRouted`) — as the
+ * runtime answers the same rewrite.
  */
 export async function followExternalRewrite(
   edge: EdgeContext,
@@ -601,15 +641,16 @@ export async function followExternalRewrite(
   rewrite: ExternalRewrite,
   answered: MiddlewareAnswered,
 ): Promise<Response> {
-  // Already without the host's own cookies: `runMiddleware` strips them from what
-  // `readMiddlewareResponse` rebuilds `requestHeaders` out of, which matters most here — this
-  // request goes to an origin the *application* named, further from us than its own Worker rather
-  // than nearer.
-  const headers = new Headers(rewrite.requestHeaders);
-  headers.delete('host');
-  for (const name of PLATFORM_REQUEST_HEADERS) {
-    headers.delete(name);
+  // What the middleware was handed, which matters most here: this request goes to an origin the
+  // *application* named, further from us than its own Worker rather than nearer.
+  const headers = new Headers();
+  for (const [name, value] of rewrite.requestHeaders) {
+    if (!notForAnotherOrigin(name)) {
+      headers.append(name, value);
+    }
   }
+  // As Next.js's proxy names it, over whatever the request carried (`proxyRequest`).
+  headers.set(FORWARDED_HOST_HEADER, edge.forwarding.previewHost);
   let upstream: Response;
   const startedAt = edge.runtime.now();
   try {
