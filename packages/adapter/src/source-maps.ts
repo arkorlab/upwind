@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { encodedMap, FlattenMap, type SectionedSourceMapInput } from '@jridgewell/trace-mapping';
 import type { SourceMapRef } from '@stayingupwind/core/bundle';
+import { encodeSourceArchive } from '@stayingupwind/core/source-archive';
 import type { Plugin } from 'rolldown';
 
 import type { BlobStore } from './blobs.ts';
@@ -89,15 +90,13 @@ export function mapFileOf(code: string, id: string): string | undefined {
  * `hidden`: a separate file, and no `sourceMappingURL` comment in the output — nothing inside a
  * Worker could load one, and a comment naming a file that is not there only ever misleads.
  *
- * `sourcemapExcludeSources` leaves the sources out. A map that carried them would carry the whole
- * application a second time, and what a stack needs is the name of a file and a line in it, not
- * the line's text. A build with no maps asked for pays none of it.
+ * Source contents survive composition until `storeSourceMap` extracts them into a private
+ * archive. The stored map itself stays compact, and a build asking for no maps pays none of it.
  */
 export function sourcemapOutput(carry: boolean): {
   readonly sourcemap: 'hidden' | false;
-  readonly sourcemapExcludeSources?: true;
 } {
-  return carry ? { sourcemap: 'hidden', sourcemapExcludeSources: true } : { sourcemap: false };
+  return { sourcemap: carry ? 'hidden' : false };
 }
 
 /**
@@ -248,11 +247,8 @@ async function mapNamedBy(file: string, pathname: string): Promise<string | unde
 }
 
 /**
- * A browser map as it is carried: flattened (`flattened`), and without its sources.
- *
- * Without `sourcesContent` for the reason a Function's map is built without it
- * (`sourcemapOutput`): a stack needs a file and a line in it, and the sources are the whole
- * application a second time. A file that is not a map is not carried.
+ * A browser map flattened before its contents are extracted by `storeSourceMap`.
+ * A file that is not a map is not carried.
  */
 async function carriedClientMap(file: string): Promise<string | undefined> {
   const text = await readText(file);
@@ -260,9 +256,38 @@ async function carriedClientMap(file: string): Promise<string | undefined> {
   if (map === undefined || typeof map['mappings'] !== 'string') {
     return undefined;
   }
-  return JSON.stringify(
+  return JSON.stringify(map);
+}
+
+/**
+ * Keep source text separately from the map read to place a stack. Both are private blobs, never
+ * static files or Function modules, and the archive's index follows the final map's sources.
+ */
+export async function storeSourceMap(
+  blobs: BlobStore,
+  text: string,
+  mapFile: string,
+): Promise<Pick<SourceMapRef, 'blob' | 'sources'>> {
+  const map = parsedMap(text, mapFile);
+  if (map === undefined) return { blob: await blobs.putText(text, MAP_CONTENT_TYPE) };
+  const contents = map['sourcesContent'];
+  const sourceContents: readonly unknown[] | undefined = Array.isArray(contents)
+    ? contents
+    : undefined;
+  const sources = map['sources'];
+  const archive =
+    sourceContents !== undefined && Array.isArray(sources)
+      ? encodeSourceArchive(sources.map((_, at) => sourceContents[at]))
+      : undefined;
+  const compact = JSON.stringify(
     Object.fromEntries(Object.entries(map).filter(([key]) => key !== 'sourcesContent')),
   );
+  return {
+    blob: await blobs.putText(compact, MAP_CONTENT_TYPE),
+    ...(archive !== undefined && {
+      sources: await blobs.put(archive, 'application/octet-stream'),
+    }),
+  };
 }
 
 /** The map file of a built browser chunk: what the hook left it where it saw it, else what it names. */
@@ -306,7 +331,7 @@ export async function linkClientMaps(
       linked.push({
         kind: 'client',
         name: file.pathname,
-        blob: await blobs.putText(text, MAP_CONTENT_TYPE),
+        ...(await storeSourceMap(blobs, text, mapFile ?? file.filePath)),
       });
     }
   }
@@ -316,7 +341,7 @@ export async function linkClientMaps(
 /** A Function's map kept to the project's own files, or nothing — and a word — when it cannot be. */
 async function keptToProject(mapFile: string, project: ProjectBounds): Promise<string | undefined> {
   try {
-    return projectOnly(await readFile(mapFile, 'utf8'), mapFile, project);
+    return projectOnly(await readFile(mapFile, 'utf8'), mapFile, project, true);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     console.warn(
@@ -374,10 +399,7 @@ export async function functionSourceMaps(
       maps.push({
         kind: 'function',
         name: `${kind}/${module}`,
-        blob:
-          kept === undefined
-            ? await blobs.putFile(mapFile, MAP_CONTENT_TYPE)
-            : await blobs.putText(kept, MAP_CONTENT_TYPE),
+        ...(await storeSourceMap(blobs, kept ?? (await readFile(mapFile, 'utf8')), mapFile)),
       });
     }
   }

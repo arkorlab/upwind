@@ -48,14 +48,17 @@ upwind/
 ├── tools/
 │   ├── next-matrix/   # builds those fixtures with each Next.js and checks what came out
 │   ├── deploy-tests/  # deploys Next.js's own deploy-mode applications to a host for its suite to run
-│   └── vocabulary/    # holds the packages that serve and deploy a deployment to words any host uses
+│   ├── vocabulary/    # holds the packages that serve and deploy a deployment to words any host uses
+│   └── benchmark/     # measures one public Next.js application on two hosts, from a third
 └── .github/
-    ├── workflows/ci.yaml            # every check, on every pull request
-    ├── workflows/next-matrix.yaml   # the supported Next.js range, checked against Next.js itself
-    ├── workflows/deploy-tests.yaml  # that suite against a real host, which needs a credential
-    ├── workflows/release.yaml       # where a release enters; npm's trusted publisher names this file
-    ├── workflows/publish.yaml       # what a release does
-    └── release-signers.asc          # the keys a release tag may be signed with
+    ├── workflows/ci.yaml                # every check, on every pull request
+    ├── workflows/next-matrix.yaml       # the supported Next.js range, checked against Next.js itself
+    ├── workflows/deploy-tests.yaml      # that suite against a real host, which needs a credential
+    ├── workflows/benchmark.yaml         # those measurements, on a schedule
+    ├── workflows/benchmark-publish.yaml # and what records them, apart from what takes them
+    ├── workflows/release.yaml           # where a release enters; npm's trusted publisher names this file
+    ├── workflows/publish.yaml           # what a release does
+    └── release-signers.asc              # the keys a release tag may be signed with
 ```
 
 The packages under `packages/` are what a release publishes, and all of them move together — all
@@ -161,9 +164,9 @@ git push origin v0.4.0
 ```
 
 Pushing the tag is the whole of a release, for every release that publishes no new name. `verify`
-refuses a tag whose packages include one npm has never heard of, unless the run was asked for a
-credential that could publish it — which is a refusal and not a half-made release, and a tag push
-cannot do the asking. The steps below are what to do when that is the release you are making.
+refuses a tag whose packages include one npm has never heard of, because there is no credential here
+that could publish it — which is a refusal and not a half-made release. The steps below are what to
+do when that is the release you are making.
 
 Everything else is in [`publish.yaml`](.github/workflows/publish.yaml). A release refuses a tag that
 is not signed by a key in [`release-signers.asc`](.github/release-signers.asc), that does not stand
@@ -175,8 +178,34 @@ a provenance attestation it reads back off the registry afterwards.
 not hold a trusted publisher for a name that does not exist yet, and publishing such a name by hand
 would leave a version no provenance covers — which the release after it fails over. The answer, four
 times now, has been a temporary `bootstrap` input carrying a token for that one release and removed
-again afterwards. `@stayingupwind/auth` is the name it is in the workflow for today, and the whole of
-such a release is:
+again afterwards. **It is not in the workflow today**, because every package has a trusted publisher
+of its own again; `@stayingupwind/auth` was the fourth and last to need it, at `0.4.0`.
+
+**Step 0 is therefore to put it back, and to put all of it back.** It is five pieces across two
+files, and restoring the interface alone leaves a workflow that either refuses every release or
+reaches npm with no credential — so take the commit rather than the list. Retiring it is kept to a
+commit of its own for this, carrying nothing else to undo:
+
+```bash
+git log -S bootstrap -- .github/workflows/publish.yaml   # the retiring commit is the newest
+git revert <that commit>
+```
+
+**And merge that before anything else happens.** A dispatch runs the workflow as the branch it is
+dispatched from has it, and a local `uses:` resolves from the same commit as its caller, not from
+your working tree — so a restoration that is only local leaves the dispatch in step 3 with no
+`bootstrap` input to pass. The bump and the restoration can travel in the same pull request; what
+cannot happen is tagging before both are on `main`.
+
+What the commit holds, so you can tell whether you have it all: the `bootstrap` input and the
+`npm-token` secret on [`publish.yaml`](.github/workflows/publish.yaml)'s `workflow_call`; the same
+input on [`release.yaml`](.github/workflows/release.yaml)'s `workflow_dispatch`, passed through to
+the job it calls, with that job mapping `npm-token: ${{ secrets.NPM_TOKEN }}`, since a reusable
+workflow gets only the secrets its caller names; `if: ${{ !inputs.bootstrap }}` on `verify`'s
+first-publish probe, **without which the dispatch below is refused unconditionally**; the step beside
+it that asks whether a credential was passed at all; and the step in `publish` that writes the token
+to `~/.npmrc`, **without which the release reaches npm with nothing to publish the new name with**.
+Then:
 
 1. **A token, as small as npm will cut one.** Granular, **Packages and scopes → Read and write**,
    limited to the `@stayingupwind` scope, shortest expiry. **Organizations** is not publishing
@@ -196,22 +225,38 @@ such a release is:
    this one needs none of the above:
 
    ```bash
-   npm trust github @stayingupwind/auth \
+   # The name this release published for the first time — not the last one's.
+   npm trust github @stayingupwind/NEW-PACKAGE \
      --file release.yaml --repository arkorlab/upwind \
      --environment release --allow-publish
    ```
 
    npm 11.15 or later, and it asks for an OTP. `--file` is the **caller's** filename, because npm
-   validates the OIDC token's `workflow_ref` and not `job_workflow_ref`.
+   validates the OIDC token's `workflow_ref` and not `job_workflow_ref`. Naming a package that
+   already has a publisher is caught: npm answers `409 Conflict`, saying a configuration a token
+   could also match exists, and the way past it is
+   `npm trust list @stayingupwind/NEW-PACKAGE` for the id, then
+   `npm trust revoke --id <id> @stayingupwind/NEW-PACKAGE`. **Name the package in both**: with none
+   given, npm reads one out of the nearest `package.json`, which at this repository's root is
+   `upwind` — so a recovery run from here would list, and then revoke, the CLI's own publisher. Not
+   running this step at all is what nothing catches.
+
+   **And it expires.** npm gives a new configuration **two days to be validated by a successful
+   publish**, after which it "can no longer be used or edited" — and this one is made _after_ the
+   release that would have validated it, so its two days start with nothing to spend them on. If the
+   next release of this package is further off than that, treat the grant as gone: revoke it and make
+   it again immediately before that release, which is then the publish that validates it. Checking
+   costs an OTP and is worth one.
 
 6. `gh secret delete NPM_TOKEN` and revoke the token. Then two follow-ups: take the `bootstrap`
    input back out, and — now that the name is on npm — give it its row in `PACKAGES` and move this
    project's own pin to the release that is out.
 
-Step 5 is the one with no check behind it. By the next release the name exists, so `verify`'s probe
-is satisfied and a publish with no trusted publisher behind it fails partway instead — `npm trust
-list` needs an OTP, so nothing in CI can read whether the grant is there. It is a step to finish in
-the same sitting as the release, not one to leave for later.
+Step 5 is the one with no check behind it, and the expiry above is why that matters beyond
+forgetting. By the next release the name exists, so `verify`'s probe is satisfied and a publish with
+no trusted publisher — never made, or made and expired — fails partway instead. `npm trust list`
+needs an OTP, so nothing in CI can read whether the grant is there, which leaves the last question
+before any release that touches a recently added package a person's to ask.
 
 The last thing it does is draft a GitHub Release for the tag. Notes written; the tarballs npm is
 serving attached, each checked against the digest npm published beside it; and a bill of materials

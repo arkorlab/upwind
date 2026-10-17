@@ -629,6 +629,8 @@ export interface AdapterOptions {
    * `'project'` is the same, with each Function's map kept to the files the project wrote
    * (`projectOnly`): a frame inside a package, or inside the build's own output, reads as built,
    * and the map is a fraction of the size. A browser map describes one chunk and is kept whole.
+   * Available original source text travels in a bounded private archive beside each compact map;
+   * a host can read a code excerpt without loading every source or adding text to its map cache.
    */
   readonly sourceMaps?: SourceMapsOption;
   /**
