@@ -66,23 +66,49 @@ export function clientHolds(
 }
 
 /**
+ * Whether an `If-Range` names the answer a range of it would be cut from (RFC 9110 §13.1.5): the
+ * entity tag the answer carries, compared strongly — a weak tag does not say which bytes a client
+ * holds, so it resumes nothing, even one spelled the same as the tag the answer carries — or, as a
+ * date, the `Last-Modified` it carries, which a rule or the middleware gave it, storage keeping no
+ * date of the file's own. That date alone: `send` resumes on any date no earlier (`isRangeFresh`),
+ * but one the answer never gave says no more of which bytes a client holds than a weak tag does.
+ */
+function namesTheAnswer(
+  condition: string,
+  tag: string,
+  lastModified: () => string | null,
+): boolean {
+  if (condition === tag) {
+    return !tag.startsWith('W/');
+  }
+  // A date is never quoted, and anything quoted is an entity tag: another's.
+  const askedMs = condition.includes('"') ? undefined : httpDateMs(condition);
+  if (askedMs === undefined) {
+    return false;
+  }
+  const modified = lastModified();
+  return modified !== null && httpDateMs(modified) === askedMs;
+}
+
+/**
  * The single byte range asked for, when one was and the entity is the one it was asked of: an
- * `If-Range` naming another entity tag turns the request into one for the whole file. `undefined`
- * for no usable range; `null` for one that no byte of the file satisfies.
+ * `If-Range` naming another entity — another tag, or a date other than the answer's `Last-Modified`
+ * — turns the request into one for the whole file (`namesTheAnswer`). `undefined` for no usable
+ * range; `null` for one that no byte of the file satisfies. `lastModified` is asked only where an
+ * `If-Range` date is there to judge it by.
  */
 export function requestedRange(
   request: Request,
   tag: string,
+  lastModified: () => string | null,
   length: number,
 ): BlobRange | null | undefined {
   const range = request.headers.get('range');
   if (range === null || request.method !== 'GET') {
     return undefined;
   }
-  // Strong comparison (RFC 9110 §13.1.5): a weak tag does not say which bytes a client holds, so
-  // it resumes nothing, even one spelled the same as the tag the answer carries.
   const condition = request.headers.get('if-range');
-  if (condition !== null && (condition !== tag || tag.startsWith('W/'))) {
+  if (condition !== null && !namesTheAnswer(condition, tag, lastModified)) {
     return undefined;
   }
   const groups = SINGLE_BYTE_RANGE.exec(range.trim())?.groups;

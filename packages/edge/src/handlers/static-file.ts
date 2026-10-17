@@ -273,10 +273,27 @@ function storageFailure(input: StaticFileInput, reason: string): Response {
   return new Response(own.body, { status: own.status, headers });
 }
 
-/** The range asked of the file (`requestedRange`), where it answers as itself; none otherwise. */
+/**
+ * The `Last-Modified` of the answer the file would be given: one a rule or the middleware gave it,
+ * storage keeping no date of the file's own. Built only where a date is there to judge it by.
+ */
+function lastModifiedOf(input: StaticFileInput): string | null {
+  return fileHeaders(input, 'manifest').get('last-modified');
+}
+
+/**
+ * The range asked of the file (`requestedRange`), where it answers as itself; none otherwise. An
+ * `If-Range` is judged against the answer the file would be given, as a precondition is
+ * (`preconditionFailed`): the entity tag it carries, or its `Last-Modified`.
+ */
 function rangeAsked(input: StaticFileInput): BlobRange | null | undefined {
   return answersAsItself(input)
-    ? requestedRange(input.request, entityTagOf(input), input.file.byteLength)
+    ? requestedRange(
+        input.request,
+        entityTagOf(input),
+        () => lastModifiedOf(input),
+        input.file.byteLength,
+      )
     : undefined;
 }
 
@@ -298,9 +315,7 @@ function rangeNotSatisfiable(headers: Headers, file: StaticFileEntry): Response 
 function unmodified(input: StaticFileInput): boolean {
   return (
     answersAsItself(input) &&
-    clientHolds(input.request, entityTagOf(input), () =>
-      fileHeaders(input, 'manifest').get('last-modified'),
-    )
+    clientHolds(input.request, entityTagOf(input), () => lastModifiedOf(input))
   );
 }
 
@@ -313,9 +328,7 @@ function unmodified(input: StaticFileInput): boolean {
 function preconditionFailed(input: StaticFileInput): boolean {
   return (
     answersAsItself(input) &&
-    preconditionFails(input.request, entityTagOf(input), () =>
-      fileHeaders(input, 'manifest').get('last-modified'),
-    )
+    preconditionFails(input.request, entityTagOf(input), () => lastModifiedOf(input))
   );
 }
 

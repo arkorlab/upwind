@@ -161,6 +161,45 @@ describe('a shipped file asked under a precondition', () => {
     expect([tagged.response.status, tagged.body]).toStrictEqual([200, 'dated']);
   });
 
+  /**
+   * A client resuming a download by date is given the range where the date is the `Last-Modified`
+   * the answer carries — a rule's here, storage keeping no date of its own — in whichever form it
+   * writes it, as RFC 9110 has an origin judge an `If-Range` date (§13.1.5) and as Next.js's file
+   * server resumes on it too (`isRangeFresh`, in `send`). Any other date, one that is no date, or a
+   * file no rule dates, is answered whole (Codex, upwind#179).
+   */
+  it('resumes a range on an If-Range naming the Last-Modified the answer carries', async () => {
+    const { pointer } = await shipping(
+      { '/dated.txt': 'dated file', '/undated.txt': 'undated file' },
+      [{ sourceRegex: String.raw`^/dated\.txt$`, headers: { 'last-modified': LAST_MODIFIED } }],
+    );
+    const ask = (path: string, ifRange: string) =>
+      serve(pointer, path, { headers: { range: 'bytes=0-4', 'if-range': ifRange } });
+
+    const resumed = [
+      await ask('/dated.txt', LAST_MODIFIED),
+      await ask('/dated.txt', 'Tue Nov 15 12:45:26 1994'),
+    ];
+    const whole = [
+      await ask('/dated.txt', DAY_BEFORE),
+      await ask('/dated.txt', DAY_AFTER),
+      await ask('/dated.txt', 'yesterday'),
+      await ask('/undated.txt', LAST_MODIFIED),
+    ];
+
+    for (const { response, body } of resumed) {
+      expect([response.status, body]).toStrictEqual([206, 'dated']);
+      expect(response.headers.get('content-range')).toBe('bytes 0-4/10');
+    }
+
+    expect(whole.map(({ response, body }) => [response.status, body])).toStrictEqual([
+      [200, 'dated file'],
+      [200, 'dated file'],
+      [200, 'dated file'],
+      [200, 'undated file'],
+    ]);
+  });
+
   /** An error document answers a request for something else, which judges no precondition (§13.2.1). */
   it('answers an error document whole, whatever If-Match the request carries', async () => {
     const { pointer } = await shipping({ '/404': '<p>not found</p>' });
