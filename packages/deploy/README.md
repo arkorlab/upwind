@@ -16,6 +16,12 @@ Both run a deployment in one process, in as many calls out as the build is large
 deploys from a Worker, which caps the calls each invocation makes, uses the pure modules instead
 (`./shells`, `./cache-seed`, `./manifest`, `./delivery`), spread over invocations of its own.
 
+Like staging, `assembleManifest` refuses a build whose Next.js is outside the versions deployed, so
+a host on the pure modules has that check by default. A host that judged the version itself when a
+deployment came in, and assembles one it already holds or serves again, passes
+`nextVersionJudged: true`: the range moves with the adapter's, and a deployment admitted under an
+earlier range is then assembled as it was.
+
 The published package is TypeScript sources: `exports` names `.ts` files, and there is no build
 step. It runs as a Worker or under Node.
 
