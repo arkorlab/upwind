@@ -60,7 +60,7 @@ catalog:
   rolldown: 1.2.13
   wrangler: 4.147.0
   typescript: 6.0.3
-  typescript-eslint: 8.71.1
+  typescript-eslint: 8.71.2
   # The suites of the packages that have them, run by one root runner (`vitest.config.ts`), and the
   # lint rules they are held to beside the rest.
   vitest: 5.0.3
