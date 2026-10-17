@@ -58,7 +58,7 @@ catalog:
   next: 16.4.2
   oxfmt: 0.72.0
   rolldown: 1.2.13
-  wrangler: 4.147.0
+  wrangler: 4.151.0
   typescript: 6.0.3
   typescript-eslint: 8.71.1
   # The suites of the packages that have them, run by one root runner (`vitest.config.ts`), and the
