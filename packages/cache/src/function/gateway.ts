@@ -2,6 +2,8 @@ import { sha256Hex } from '@stayingupwind/core/artifact';
 import { TEST_CLOCK_HEADER } from '@stayingupwind/core/paas';
 import { isDeadlineError, releaseStream, toBase64, withDeadline } from '@stayingupwind/core/util';
 import {
+  answersTheRead,
+  answersTheTags,
   ARTIFACT_ENCODING_HEADER,
   ARTIFACT_ROLE_HEADER,
   CACHE_SCOPE_HEADER,
@@ -123,13 +125,14 @@ const KIB = 1024;
 const MIB = KIB * KIB;
 /**
  * How many bytes of artifacts one isolate reads at once, in MiB (`ReadBudget`): the authority's
- * answers and its data center's copies alike, and the delivery records the gateways answer. An
- * artifact is read whole before it is answered with — the runtime takes bytes, not a stream — and
- * one render may miss several large data values or outputs together: 25 MiB each by default, five
- * of which would all but fill a Function's 128 MB. A record may be as long, and the runtime reads
- * many at once. A value too large for the isolate to hold is read whole from its copy every time it
- * is read. Past this a read waits, once its answer or the copy has said how long what it reads is,
- * for those before it to be read; one read alone is never held, however long.
+ * answers and its data center's copies alike, the delivery records the gateways answer and the data
+ * center's copies of them, and its copies of the values written. An artifact is read whole before
+ * it is answered with — the runtime takes bytes, not a stream — and one render may miss several
+ * large data values or outputs together: 25 MiB each by default, five of which would all but fill a
+ * Function's 128 MB. A record may be as long, and the runtime reads many at once. A value too large
+ * for the isolate to hold is read whole from its copy every time it is read. Past this a read
+ * waits, once its answer or the copy has said how long what it reads is, for those before it to be
+ * read; one read alone is never held, however long.
  */
 const AUTHORITY_READ_MIB = 32;
 const AUTHORITY_READ_BYTES = AUTHORITY_READ_MIB * MIB;
@@ -193,7 +196,8 @@ export class Gateway {
   readonly #artifacts: ArtifactCopies;
   /**
    * What this isolate reads of artifacts at once, from the authority and from its data center's
-   * copies, and of delivery records: one gateway an isolate.
+   * copies, of delivery records, from the gateways and from its data center's copies, and of its
+   * data center's copies of values (`reading`): one gateway an isolate.
    */
   readonly #reading = new ReadBudget(AUTHORITY_READ_BYTES);
 
@@ -240,6 +244,21 @@ export class Gateway {
       throw this.#refusal(response, body);
     }
     return schema.parse(body.result);
+  }
+
+  /**
+   * A data read's answer, refused where it is of another namespace than the read asked in
+   * (`answersTheRead`): kept as the value of the key asked for, it would be served as that one.
+   */
+  async #valueOf(response: Response, request: DataGetRequest): Promise<DataGetResponse> {
+    const answer = await this.#result(response, dataGetResponseSchema);
+    if (!answersTheRead(request, answer)) {
+      throw new CacheHostError('the data read was answered with a value of another namespace', {
+        code: 'internal',
+        status: response.status,
+      });
+    }
+    return answer;
   }
 
   /**
@@ -335,6 +354,14 @@ export class Gateway {
     } finally {
       release();
     }
+  }
+
+  /**
+   * The isolate's room for what it reads whole, for the data center's copies of records and of
+   * values to be read in as well (`RecordCopies`, `DataCopies`).
+   */
+  get reading(): ReadBudget {
+    return this.#reading;
   }
 
   startAttempt(request: StartAttemptRequest): Promise<StartAttemptResponse> {
@@ -473,7 +500,7 @@ export class Gateway {
           await response.body?.cancel();
           return undefined;
         }
-        return this.#result(response, dataGetResponseSchema);
+        return this.#valueOf(response, request);
       },
     );
   }
@@ -500,7 +527,7 @@ export class Gateway {
           await response.body?.cancel();
           return undefined;
         }
-        return this.#result(response, dataGetResponseSchema);
+        return this.#valueOf(response, request);
       },
     );
   }
@@ -525,7 +552,14 @@ export class Gateway {
         },
         true,
       );
-      return this.#result(response, tagsGetResponseSchema);
+      const answer = await this.#result(response, tagsGetResponseSchema);
+      if (!answersTheTags(tags, answer)) {
+        throw new CacheHostError('the tag read was answered of a tag it did not ask about', {
+          code: 'internal',
+          status: response.status,
+        });
+      }
+      return answer;
     });
   }
 

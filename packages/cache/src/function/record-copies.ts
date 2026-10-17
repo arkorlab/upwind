@@ -2,6 +2,7 @@ import { sha256HexOfText } from '@stayingupwind/core/artifact';
 import { readBoundedBody, releaseStream } from '@stayingupwind/core/util';
 
 import { cacheStorage, type FunctionCacheNaming, turnsOfRequest, within } from './artifacts.ts';
+import type { ReadBudget } from './read-budget.ts';
 
 /**
  * The data center's copy of each delivery record this Function's commits wrote, read where KV is
@@ -26,6 +27,12 @@ import { cacheStorage, type FunctionCacheNaming, turnsOfRequest, within } from '
  * Kept under a key derived with the scope's token, as the data copies are: anything that opens the
  * copies' cache could otherwise plant a record under an entry's id. What a copy holds is checked as
  * any record is before it is served (`recordPackOf`).
+ *
+ * A copy is read whole, as a record the gateway answers is, and every request KV is behind on reads
+ * one: an isolate reads no more of them at once than it has room for, in the room it reads records
+ * and artifacts in (`ReadBudget`). A copy takes its room once its lookup has answered, before its
+ * body is read, and gives it back once the body is read or given up; one that has no room within
+ * its read's time is not read, and the request goes on as it would with no copy.
  */
 
 /**
@@ -39,10 +46,14 @@ const MAX_RECORD_COPY_MIB = 4;
 /**
  * The largest copy kept: what the authority hands a commit back at the most. A copy is read whole,
  * and what the Cache API holds under the key could have been put there by anything that opens the
- * copies' cache, so a body past this is not read on.
+ * copies' cache, so a body past this is not read on. It is the room a copy that does not say its
+ * length is read in.
  */
 const MAX_RECORD_COPY_BYTES = MAX_RECORD_COPY_MIB * MIB;
-/** How long a read waits on the copy, its lookup and its body together: a render costs more. */
+/**
+ * How long a read waits on the copy, its lookup, its room and its body together: a render costs
+ * more.
+ */
 const RECORD_COPY_READ_MS = 100;
 /**
  * How long a write waits, its turn included, for the Cache API to take the copy. It is behind the
@@ -85,6 +96,14 @@ function countOf(response: Response, name: string): number | undefined {
   return Number.isSafeInteger(count) ? count : undefined;
 }
 
+/**
+ * What is left of the time of a read begun at `startedAt` (`RECORD_COPY_READ_MS`): one time for the
+ * lookup, the wait for room and the body together, so what each took is the next's no longer.
+ */
+function leftOf(startedAt: number): number {
+  return RECORD_COPY_READ_MS - (Date.now() - startedAt);
+}
+
 /** The sequence a copy says it holds; `undefined` for one that says none, or none that reads. */
 function seqOf(response: Response): number | undefined {
   return countOf(response, SEQ_HEADER);
@@ -123,24 +142,44 @@ async function releaseLate(lookup: Promise<Response | undefined>): Promise<void>
   releaseStream(late?.body, 'a record copy that came too late');
 }
 
+/** The scope whose copies these are, and the token that opens it. */
+interface CopiesScope {
+  readonly scopeId: string;
+  readonly token: string;
+}
+
 /** The data center's Cache API, under the copies' cache and a key of this scope's own. */
 export class RecordCopies {
-  /** The copies of this scope, where the Worker has a Cache API: none under Node.js. */
-  static of(naming: FunctionCacheNaming, scopeId: string, token: string): RecordCopies | undefined {
+  /**
+   * The copies of this scope, where the Worker has a Cache API: none under Node.js. Read in
+   * `budget`, the isolate's room for what it reads whole.
+   */
+  static of(
+    naming: FunctionCacheNaming,
+    scope: CopiesScope,
+    budget: ReadBudget,
+  ): RecordCopies | undefined {
     const storage = cacheStorage();
-    return storage === undefined ? undefined : new RecordCopies(storage, naming, scopeId, token);
+    return storage === undefined ? undefined : new RecordCopies(storage, naming, scope, budget);
   }
 
   readonly #storage: CacheStorage;
   readonly #naming: FunctionCacheNaming;
   readonly #scopeId: string;
   readonly #token: string;
+  readonly #budget: ReadBudget;
 
-  constructor(storage: CacheStorage, naming: FunctionCacheNaming, scopeId: string, token: string) {
+  constructor(
+    storage: CacheStorage,
+    naming: FunctionCacheNaming,
+    scope: CopiesScope,
+    budget: ReadBudget,
+  ) {
     this.#storage = storage;
     this.#naming = naming;
-    this.#scopeId = scopeId;
-    this.#token = token;
+    this.#scopeId = scope.scopeId;
+    this.#token = scope.token;
+    this.#budget = budget;
   }
 
   async #keyOf(entryId: string): Promise<string> {
@@ -228,6 +267,40 @@ export class RecordCopies {
   }
 
   /**
+   * The copy's body, read in room of its own once the isolate has it (`takeWithin`): as long as the
+   * copy says it is, or, where it says nothing, the largest copy kept. `undefined` where no room
+   * came within what is left of the read's time, or for a body longer than its room; the room goes
+   * back once the body is read or given up. Rejects where the body stalls or fails.
+   */
+  async #bodyOf(found: Response, startedAt: number): Promise<Uint8Array | undefined> {
+    const length = countOf(found, 'content-length') ?? MAX_RECORD_COPY_BYTES;
+    if (length > MAX_RECORD_COPY_BYTES) {
+      releaseStream(found.body, 'a record copy longer than any kept');
+      return undefined;
+    }
+    const room = await this.#budget.takeWithin(length, leftOf(startedAt));
+    if (room === undefined) {
+      releaseStream(found.body, 'a record copy with no room in time');
+      return undefined;
+    }
+    try {
+      const left = leftOf(startedAt);
+      const body = await readBoundedBody(found.body, {
+        limit: length,
+        stallMs: left,
+        budgetMs: left,
+      });
+      if (body.kind === 'over-limit') {
+        releaseStream(body.body, 'a record copy longer than its room');
+        return undefined;
+      }
+      return body.bytes;
+    } finally {
+      this.#budget.give(room);
+    }
+  }
+
+  /**
    * Keep the record a commit wrote, of generation `of.seq` at record revision `of.revision`, as the
    * data center's copy of the entry's, unless the copy is of a later record already. One too large
    * to be read back whole is not kept, and lets go of a copy of an earlier generation. Never
@@ -269,23 +342,11 @@ export class RecordCopies {
         return undefined;
       }
       const seq = seqOf(found);
-      // One budget for the lookup and the body together: what the lookup took is the body's no
-      // longer.
-      const left = RECORD_COPY_READ_MS - (Date.now() - startedAt);
-      if (seq === undefined || seq <= than || left <= 0) {
+      if (seq === undefined || seq <= than || leftOf(startedAt) <= 0) {
         releaseStream(found.body, 'a record copy no later than the one read');
         return undefined;
       }
-      const body = await readBoundedBody(found.body, {
-        limit: MAX_RECORD_COPY_BYTES,
-        stallMs: left,
-        budgetMs: left,
-      });
-      if (body.kind === 'over-limit') {
-        releaseStream(body.body, 'a record copy longer than any kept');
-        return undefined;
-      }
-      return body.bytes;
+      return await this.#bodyOf(found, startedAt);
     } catch (error) {
       warn('record copy read failed', error);
       return undefined;
