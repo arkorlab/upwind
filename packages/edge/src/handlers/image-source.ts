@@ -15,6 +15,7 @@ import {
 import {
   MIDDLEWARE_DONE_HEADER,
   MIDDLEWARE_REWRITE_STATUS_HEADER,
+  MIDDLEWARE_SET_COOKIE_HEADER,
   ORIGINAL_URL_HEADER,
 } from '@stayingupwind/core/paas';
 import { NULL_BODY_STATUSES, REDIRECT_STATUSES } from '@stayingupwind/core/request';
@@ -255,7 +256,9 @@ function sourceUnder(status: number | undefined): boolean {
 /**
  * A source's request as the middleware left it, with the Worker told the middleware ran — and the
  * status it gave its rewrite, which the Worker answers the route under as one it ran the middleware
- * for itself (`MIDDLEWARE_REWRITE_STATUS_HEADER`).
+ * for itself (`MIDDLEWARE_REWRITE_STATUS_HEADER`), and the cookies it set, which the route reads as
+ * the client's own: Next.js's router puts them on the request for the route a middleware rewrote
+ * to (`resolve-routes.js`), and a passthrough hands them on so too (`markMiddlewareDone`).
  */
 function rewrittenRequest(original: Request, middleware: MiddlewareContinued): Request {
   const headers = new Headers(middleware.requestHeaders);
@@ -263,6 +266,9 @@ function rewrittenRequest(original: Request, middleware: MiddlewareContinued): R
   headers.set(ORIGINAL_URL_HEADER, original.url);
   if (middleware.rewriteStatus !== undefined) {
     headers.set(MIDDLEWARE_REWRITE_STATUS_HEADER, String(middleware.rewriteStatus));
+  }
+  if (middleware.setCookie !== undefined) {
+    headers.set(MIDDLEWARE_SET_COOKIE_HEADER, middleware.setCookie);
   }
   return new Request(middleware.url.href, { headers, redirect: 'manual' });
 }
