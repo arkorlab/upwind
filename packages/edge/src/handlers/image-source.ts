@@ -18,8 +18,13 @@ import {
   MIDDLEWARE_SET_COOKIE_HEADER,
   ORIGINAL_URL_HEADER,
 } from '@stayingupwind/core/paas';
-import { NULL_BODY_STATUSES, REDIRECT_STATUSES } from '@stayingupwind/core/request';
+import {
+  NULL_BODY_STATUSES,
+  REDIRECT_STATUSES,
+  sanitizePassthroughHeaders,
+} from '@stayingupwind/core/request';
 import { isDeadlineError, limitBody, releaseStream, withDeadline } from '@stayingupwind/core/util';
+import { withoutHostCredentials } from '@stayingupwind/host/credentials';
 import { isUnderAnyDomain } from '@stayingupwind/host/domains';
 
 import { logWarn } from '../observability/logger.ts';
@@ -260,8 +265,24 @@ function sourceUnder(status: number | undefined): boolean {
  * the client's own: Next.js's router puts them on the request for the route a middleware rewrote
  * to (`resolve-routes.js`), and a passthrough hands them on so too (`markMiddlewareDone`).
  */
-function rewrittenRequest(original: Request, middleware: MiddlewareContinued): Request {
-  const headers = new Headers(middleware.requestHeaders);
+function rewrittenRequest(
+  edge: EdgeContext,
+  original: Request,
+  middleware: MiddlewareContinued,
+): Request {
+  // Without what no application is handed, as a passthrough's request goes without it
+  // (`buildPassthroughRequest`): the edge's own headers, which tell the Worker what to do, whether
+  // the middleware named one among the request's or answered with one, the middleware protocol's,
+  // and the host's credentials. Under the forwarding headers `localRequest` sends: the client's
+  // address and country are no source's.
+  const headers = withoutHostCredentials(
+    sanitizePassthroughHeaders(middleware.requestHeaders, {
+      ...edge.forwarding,
+      clientIp: undefined,
+      clientCountry: undefined,
+    }),
+    edge.host.credentials,
+  );
   headers.set(MIDDLEWARE_DONE_HEADER, '1');
   headers.set(ORIGINAL_URL_HEADER, original.url);
   if (middleware.rewriteStatus !== undefined) {
@@ -405,7 +426,7 @@ async function fetchBlob(
         ? shippedSourceAt(local.manifest, outcome.url)
         : source.file;
       if (shipped === undefined) {
-        return fetchLocal(local, rewrittenRequest(request, outcome), {
+        return fetchLocal(local, rewrittenRequest(edge, request, outcome), {
           earlier: dispatches,
           budgetMs: left(),
         });
