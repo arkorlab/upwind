@@ -24,14 +24,16 @@ const FIELD_SEPARATOR = '|';
 /**
  * A scope id a token can be signed for, and presented with: a bearer token's characters (RFC 6750,
  * `b64token`: ASCII letters and digits, `-`, `.`, `_`, `~`, `+` and `/`, then any `=`), but `.`,
- * which separates the token's parts, and `=`, padding a scope id has no use for. A token is a bearer
- * an `Authorization` header carries: a scope named with anything else, a space, a comma or a quote
- * among them, would be given a token a strict reader of the header could refuse. A scope's schema
- * holds its id to this (`cacheScopeSchema`), and `signCacheToken` signs no other, so a scope no
- * token could open is refused where it is made. `\w` is ASCII's letters, digits and `_`, as no `i`
- * flag widens it.
+ * which separates the token's parts, `=`, padding a scope id has no use for, and `/`. A token is a
+ * bearer an `Authorization` header carries: a scope named with anything else, a space, a comma or a
+ * quote among them, would be given a token a strict reader of the header could refuse. And a
+ * scope's storage is kept under its id and a `/` (`r2CachePrefix`): a scope `a/b` would have its
+ * artifacts kept under `a`'s, and erased with them. A scope's schema holds its id to this
+ * (`cacheScopeSchema`), and `signCacheToken` signs no other, so a scope no token could open, or no
+ * storage keep apart from another, is refused where it is made. `\w` is ASCII's letters, digits and
+ * `_`, as no `i` flag widens it.
  */
-export const SIGNABLE_SCOPE_ID = /^[\w+/~-]+$/u;
+export const SIGNABLE_SCOPE_ID = /^[\w+~-]+$/u;
 
 /** Whether a token can be signed for `scopeId` (`SIGNABLE_SCOPE_ID`). */
 export function isSignableScopeId(scopeId: string): boolean {
@@ -87,7 +89,7 @@ export async function signCacheToken(
   }
   if (!isSignableScopeId(scopeId)) {
     throw new Error(
-      'a scope id is ASCII letters, digits, -, _, ~, + and /, as the bearer token it is signed into',
+      'a scope id is ASCII letters, digits, -, _, ~ and +, as its token and its storage take it',
     );
   }
   const key = await importKey(secret, 'sign');
