@@ -17,6 +17,7 @@ import {
   type FixtureCoverage,
   type FixtureName,
 } from './coverage.ts';
+import { externalOutputHolds } from './external-output.ts';
 
 /**
  * Builds real applications with real Next.js versions, and holds each build to what the adapter
@@ -261,6 +262,7 @@ async function workflowHolds(
 
 /** What each fixture has to show, by name — every name `coverage.ts` has, and no other. */
 const HOLDS: Readonly<Record<FixtureName, Holds>> = {
+  'next-external-output': externalOutputHolds,
   'next-minimal': minimalHolds,
   'next-edge': edgeHolds,
   'next-workflow': workflowHolds,
@@ -370,7 +372,10 @@ function explain(error: unknown): string[] {
  * That second set is the half no published package can show, and so the half `check-patches.ts` cannot
  * check: a patch that says it reaches `build-output` is held to it here and nowhere else.
  */
-function patchesApplied(dependencies: Dependencies): {
+function patchesApplied(
+  dependencies: Dependencies,
+  buildDirectory = BUILD_DIR,
+): {
   applied: Set<string>;
   inChunks: Set<string>;
 } {
@@ -378,7 +383,7 @@ function patchesApplied(dependencies: Dependencies): {
   const inChunks = new Set<string>();
   const record = ({ patch, file }: AppliedPatch): void => {
     applied.add(patch);
-    if (file.startsWith(BUILD_DIR)) {
+    if (file.startsWith(buildDirectory)) {
       inChunks.add(patch);
     }
   };
@@ -424,7 +429,7 @@ async function checkOutput(fixture: Fixture, app: string): Promise<string[]> {
     return [`bundle.json does not parse: ${first?.path.join('.') ?? ''} ${first?.message ?? ''}`];
   }
   const dependencies = (await readJson(path.join(out, 'dependencies.json'))) as Dependencies;
-  const { applied, inChunks } = patchesApplied(dependencies);
+  const { applied, inChunks } = patchesApplied(dependencies, fixture.buildDirectory);
   const problems = [
     ...fixture.expected.flatMap((patch) => firedOnce(patch, applied, 'applied to nothing')),
     // A patch that fired on Next.js's own file and on nothing this build wrote has lost the half of

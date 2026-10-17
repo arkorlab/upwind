@@ -51,6 +51,8 @@ const PACKAGE_PATCHES = [
 export type Expected = string | readonly string[];
 
 export interface FixtureCoverage {
+  /** The physical output in dependency records; omitted for the usual `.next/`. */
+  readonly buildDirectory?: string;
   /** Every patch a build of this fixture has to apply, in one Function or the other. */
   readonly expected: readonly Expected[];
   /**
@@ -70,6 +72,13 @@ export function namesIn(expected: readonly Expected[]): string[] {
 }
 
 export const FIXTURE_COVERAGE = {
+  // A real HTTP request through the bundled route and client-reference manifest, from an output
+  // beside the project. Unlike the other fixtures, this also exercises the Function in workerd.
+  'next-external-output': {
+    buildDirectory: '../.next/',
+    expected: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
+    chunks: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
+  },
   // Every patch an application reaches without the Workflow SDK: this fixture exists to be the one
   // build that reaches all of them. The SDK's own patch is `next-workflow`'s, below.
   'next-minimal': {

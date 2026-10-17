@@ -1,9 +1,15 @@
 # `@upwind-tools/next-matrix`
 
-Builds `fixtures/next-minimal`, `fixtures/next-edge` and `fixtures/next-workflow` with each Next.js
+Builds `fixtures/next-minimal`, `fixtures/next-edge`, `fixtures/next-workflow` and
+`fixtures/next-external-output` with each Next.js
 it is given, and holds each build to what the adapter promises: the bundle parses against
 `deploymentBundleSchema`, every patch the fixture was written to reach appears in
 `.arkor/dependencies.json`, and the outputs that fixture exists to produce are there.
+
+The external-output fixture also starts the built Function in Miniflare and requests its dynamic
+App Router page. Its client component requires the carried client-reference manifest, so this
+checks the lazy entry, bundled code and VFS mount together. Pull-request CI runs this one fixture
+with the installed Next.js version; the full version matrix remains separate.
 
 ```console
 $ pnpm --filter @stayingupwind/adapter build     # the matrix builds against dist, as a user would
