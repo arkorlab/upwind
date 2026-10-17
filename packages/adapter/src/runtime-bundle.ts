@@ -1,5 +1,3 @@
-import { fileURLToPath } from 'node:url';
-
 import { type OutputChunk, rolldown } from 'rolldown';
 
 import { jsLiteral } from './codegen.ts';
@@ -7,18 +5,9 @@ import { generatedModulesPlugin } from './generated-modules.ts';
 import { manglerGetsWrong } from './mangle-packages.ts';
 import { GLOBAL_OBJECT, globalObjectPlugin, THROWING_GLOBALS } from './throwing-globals.ts';
 
-/** The renderer-free entry for standalone middleware, and the full runtime for every other kind. */
-export function runtimeEntry(kind: string): string {
-  return fileURLToPath(
-    kind === 'middleware'
-      ? import.meta.resolve('@stayingupwind/runtime/middleware-function')
-      : import.meta.resolve('@stayingupwind/runtime/function'),
-  );
-}
-
 /** What the runtime module of one Function is bundled from, and as. */
 export interface RuntimeBundleInput {
-  /** The runtime entry selected for this Function's kind (`runtimeEntry`). */
+  /** The runtime's own entry (`@stayingupwind/runtime/function`). */
   readonly entry: string;
   readonly outFile: string;
   /** The module's name in the Function, which `__filename` says. */

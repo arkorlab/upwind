@@ -11,6 +11,9 @@ import {
 } from '@stayingupwind/core/paas';
 import { releaseStream } from '@stayingupwind/core/util';
 
+import { nowMs } from './cache/clock.ts';
+import { requestContextFor } from './cache/context.ts';
+import { catchUpWithScope } from './cache/pulls.ts';
 import {
   crawlerWantsWholePage,
   documentFromBuild,
@@ -28,7 +31,6 @@ import {
   serveFromGeneration,
   withBackgroundRegeneration,
 } from './generations.ts';
-import { handleRequestWith } from './handle-context.ts';
 import {
   applyRequestChanges,
   decodeHandOff,
@@ -45,9 +47,15 @@ import {
 } from './image-fallback.ts';
 import { edgeRewriteStatusOf, hasBody, isRscRequest, wantsBlockingMetadata } from './incoming.ts';
 import { isRead, methodNotAllowed, readsOnly } from './methods.ts';
-import { answerMiddlewareOnly, MIDDLEWARE_ENTRY_ID } from './middleware.ts';
+import { answerMiddlewareOnly, MIDDLEWARE_ENTRY_ID } from './middleware-invoke.ts';
 import { type Resolved, servePagesData, serveRouteHandler, serveRsc } from './outputs.ts';
-import { misdirected, misdirectedAhead, misdirectedTo, ownerOfResolved } from './placement.ts';
+import {
+  misdirected,
+  misdirectedAhead,
+  misdirectedTo,
+  ownerOfResolved,
+  withoutPlacementHeaders,
+} from './placement.ts';
 import { DEFAULT_PROXY_BODY_LIMIT, splitBody } from './request-body.ts';
 import { routingOf, untraced, withRoutingOf } from './resolve-request.ts';
 import { settleRewrittenPath } from './rewritten-path.ts';
@@ -70,9 +78,14 @@ import {
   type HandleInput,
   HTTP_NOT_FOUND,
   HTTP_OK,
+  initUrlOf,
+  INVALIDATIONS_RECORDED_WITHIN_MS,
   invokeEntry,
   resume,
   type RoutedInput,
+  withInvalidatedTags,
+  withoutBody,
+  withWritesLanded,
 } from './serve.ts';
 import { completedShell, entrypointKindOf, findShell, getStore, type Store } from './store.ts';
 import { unrouted } from './unrouted.ts';
@@ -529,6 +542,30 @@ async function routeRequest(input: RoutedInput): Promise<Response> {
   return handleFull(input, store);
 }
 
-export function handleRequest(handled: HandleInput): Promise<Response> {
-  return handleRequestWith(handled, routeRequest);
+export async function handleRequest(handled: HandleInput): Promise<Response> {
+  const context = requestContextFor({
+    tables: { app: handled.app, edge: handled.edge },
+    runtime: handled.cache,
+    request: handled.request,
+    startedAt: handled.clock ?? nowMs(),
+    waitUntil: handled.waitUntil,
+    clock: handled.clock,
+    invalidated: handled.invalidated,
+  });
+  const input: RoutedInput = { ...handled, initURL: initUrlOf(handled.request), run: context.run };
+  return context.run(async () => {
+    if (handled.cache !== undefined) {
+      await catchUpWithScope(handled.cache, handled.request, handled.waitUntil);
+    }
+    const response = withoutPlacementHeaders(await routeRequest(input));
+    // Not answered before the host has recorded what the request invalidated — its headers neither:
+    // whoever made it moves on once they come (`InvalidatedTags`).
+    await context.invalidated.recorded(INVALIDATIONS_RECORDED_WITHIN_MS);
+    const answered = withoutBody(
+      handled.request,
+      withInvalidatedTags(response, context.invalidated),
+    );
+    // Without a cache there is nothing to write, and nothing to wait for.
+    return handled.cache === undefined ? answered : withWritesLanded(answered, context.writes);
+  });
 }

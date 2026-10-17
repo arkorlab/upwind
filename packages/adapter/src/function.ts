@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   type FunctionModule,
@@ -39,7 +40,7 @@ import {
   type PatchContext,
   FUNCTION_BANNER,
 } from './patches/index.ts';
-import { bundleRuntimeModule, runtimeEntry } from './runtime-bundle.ts';
+import { bundleRuntimeModule } from './runtime-bundle.ts';
 import {
   carriesMaps,
   codeModules,
@@ -178,6 +179,10 @@ function appEntrySource(entries: readonly EntryModule[]): string {
   ].join('\n');
 }
 
+function runtimeEntry(): string {
+  return fileURLToPath(import.meta.resolve('@stayingupwind/runtime/function'));
+}
+
 /**
  * The app Function's code: Next.js's CommonJS output, bundled by Rolldown into one CommonJS module
  * with the patches applied as each file is loaded. Rolldown's output is 5% smaller than esbuild's
@@ -280,7 +285,7 @@ async function writeAppBundle(
 async function bundleRuntime(input: BuildFunctionInput, workDir: string): Promise<string> {
   const outFile = path.join(workDir, `${nameOf(input)}-${RUNTIME_MODULE}`);
   await bundleRuntimeModule({
-    entry: runtimeEntry(input.kind),
+    entry: runtimeEntry(),
     outFile,
     moduleName: RUNTIME_MODULE,
     kind: input.kind,
