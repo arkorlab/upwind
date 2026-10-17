@@ -83,8 +83,9 @@ describe('a standalone cache', () => {
       const scopeId = `${createId(DEPLOYMENT_ID_PREFIX)}${joint}b`;
       const seed = seedInput(createId(DEPLOYMENT_ID_PREFIX));
 
-      // `:` is none of a bearer token's characters, so the scope's own schema refuses it first;
-      // `/` is one, and the keys' rule (`isScopeId`) refuses it.
+      // The scope's own schema refuses either before its token is signed: `:` is none of a bearer
+      // token's characters, and `/` is left out of them for the keys' sake. Asked for a token
+      // alone, the keys' rule (`isScopeId`) refuses either.
       await expect(
         control.seedScope({ ...seed, scope: { ...seed.scope, scopeId } }),
       ).rejects.toThrow(/ASCII letters, digits/u);
