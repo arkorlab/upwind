@@ -155,8 +155,10 @@ const recovery: { source: string | undefined } = { source: undefined };
  * route's (`allowRecoveryScript`): the edge replays the headers of the generation it serves and
  * appends that script to a document whose resume fails, and a policy restricting inline scripts
  * would block it. Widened here, once per read of the record, rather than on every request that
- * serves it. Only a record with a policy comes here; any other — nearly every one — goes on as it
- * was read, without waiting on anything.
+ * serves it. Only a record a resume completes, with a policy, comes here; any other — nearly every
+ * one — goes on as it was read, without waiting on anything. One complete in itself has no resume
+ * to fail and no script behind it, and keeps the policy its render set, as a route the deployment
+ * run records complete does.
  */
 async function withRecoveryPermitted(pack: DecodedGenerationPack): Promise<DecodedGenerationPack> {
   recovery.source ??= await recoveryScriptCspSource();
@@ -275,9 +277,9 @@ function heldLater(
 
 /**
  * Hold a decoded record: checked for what its origin has to prove, its policy widened for the
- * recovery script, and set in this isolate's memory in place of whatever was there — unless what
- * is there is later, which is weighed after the last wait here, so that another request's record
- * held meanwhile counts.
+ * recovery script where a resume completes it, and set in this isolate's memory in place of
+ * whatever was there — unless what is there is later, which is weighed after the last wait here,
+ * so that another request's record held meanwhile counts.
  */
 async function adoptDecoded(
   edge: EdgeContext,
@@ -291,7 +293,7 @@ async function adoptDecoded(
     return { kind: 'unusable', reason: 'corrupt' };
   }
   const pack =
-    decoded.pack.header.headers[CSP_HEADER] === undefined
+    decoded.pack.header.headers[CSP_HEADER] === undefined || decoded.pack.postponed === undefined
       ? decoded.pack
       : await withRecoveryPermitted(decoded.pack);
   const { revision } = pack.header;

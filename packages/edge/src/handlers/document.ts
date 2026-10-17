@@ -538,8 +538,9 @@ function foldsHeaderRules(manifest: ProjectManifest): boolean {
  * The headers recorded with what is served: the generation's own when the runtime cache answers,
  * since a regeneration may answer with headers the build's did not, and the route's as the
  * manifest recorded them otherwise. Both were read with the bytes they go out with; neither is
- * read again. A generation's policy permits the recovery script as the route's does, from the
- * read that brought the record in (`generation-loader.ts`).
+ * read again. A generation a resume completes has its policy permit the recovery script as the
+ * route's does, from the read that brought the record in (`generation-loader.ts`); one complete in
+ * itself keeps the policy its render set.
  *
  * A generation's record holds only what its render set; the rules of `next.config` are added over
  * it. The edge judges them on each request when the manifest carries them. A build whose routing
