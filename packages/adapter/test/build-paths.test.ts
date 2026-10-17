@@ -266,10 +266,17 @@ describe('build output paths in the Function', () => {
     expect(require).toHaveBeenCalledTimes(1);
   });
 
-  it('preserves asynchronous entry initialization failures', async () => {
+  it('retries an asynchronous entry initialization failure and shares the successful retry', async () => {
     const failure = new Error('entry initialization failed');
-    const require = vi.fn<() => Promise<never>>().mockRejectedValue(failure);
-    const module: { exports: { entries?: Record<string, () => Promise<never>> } } = { exports: {} };
+    const loaded = { routeModule: { distDir: '../.next' } };
+    const pending = Promise.withResolvers<typeof loaded>();
+    const require = vi
+      .fn<() => Promise<typeof loaded>>()
+      .mockRejectedValueOnce(failure)
+      .mockReturnValue(pending.promise);
+    const module: { exports: { entries?: Record<string, () => Promise<typeof loaded>> } } = {
+      exports: {},
+    };
     const source = appEntrySource(
       [{ id: '/one', filePath: path.join(dist, 'server', 'one.js') }],
       buildPaths(project, dist),
@@ -277,8 +284,23 @@ describe('build output paths in the Function', () => {
     // eslint-disable-next-line sonarjs/code-eval -- evaluate generated code with a rejecting fake loader, not application code.
     runInNewContext(source, { module, require });
 
-    await expect(module.exports.entries?.['/one']?.()).rejects.toBe(failure);
-    await expect(module.exports.entries?.['/one']?.()).rejects.toBe(failure);
+    const first = module.exports.entries?.['/one']?.();
+    const concurrentFailure = module.exports.entries?.['/one']?.();
+
+    expect(first).toBe(concurrentFailure);
+    await expect(first).rejects.toBe(failure);
     expect(require).toHaveBeenCalledTimes(1);
+
+    const retry = module.exports.entries?.['/one']?.();
+    const concurrentRetry = module.exports.entries?.['/one']?.();
+
+    expect(retry).toBe(concurrentRetry);
+    expect(require).toHaveBeenCalledTimes(2);
+
+    pending.resolve(loaded);
+
+    await expect(retry).resolves.toBe(loaded);
+    expect(loaded.routeModule.distDir).toBe('.upwind-build');
+    expect(module.exports.entries?.['/one']?.()).toBe(retry);
   });
 });
