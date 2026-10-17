@@ -11,6 +11,7 @@ import {
 } from '../auth.ts';
 import { ENTRY_BODY_BYTES, readRequest } from '../body.ts';
 import { meterRead } from '../read-data.ts';
+import { dropRecordAnswer, readRecordAnswer, recordResponse } from '../record-answer.ts';
 import { fail, HTTP, ok } from '../respond.ts';
 
 /**
@@ -19,36 +20,24 @@ import { fail, HTTP, ok } from '../respond.ts';
  * the authority, which alone knows where an artifact of this scope is.
  */
 
-/** The regional cache the edge reads with; a record changes at most this long after it is written. */
-const RECORD_CACHE_TTL_SECONDS = 30;
 const OCTET_STREAM = 'application/octet-stream';
 
 async function currentRecord(c: GatewayContext): Promise<Response> {
   const entryId = c.req.param('entryId') ?? '';
   const key = kvGenerationKey(c.get('scopeId'), entryId);
-  const [bytes, retired] = await Promise.all([
-    c.env.CACHE_STATE.get(key, {
-      type: 'arrayBuffer',
-      cacheTtl: RECORD_CACHE_TTL_SECONDS,
-    }),
+  const [record, retired] = await Promise.all([
+    readRecordAnswer(c.env.CACHE_STATE, key),
     retiredScope(c),
   ]);
   if (retired) {
+    dropRecordAnswer(record);
     return refuseRetired(c);
   }
-  if (bytes === null) {
+  if (record === undefined) {
     return fail(c, 'not_found', 'no delivery record for the entry');
   }
-  meterRead(c.get('host'), c.get('scopeId'), bytes.byteLength);
-  return new Response(bytes, {
-    status: HTTP.OK,
-    headers: {
-      'content-type': OCTET_STREAM,
-      // Said as an artifact's length is: what a Function reads the record whole in room for.
-      'content-length': String(bytes.byteLength),
-      'cache-control': 'private, no-store',
-    },
-  });
+  meterRead(c.get('host'), c.get('scopeId'), record.byteLength);
+  return recordResponse(record);
 }
 
 async function artifactBytes(c: GatewayContext): Promise<Response> {

@@ -10,6 +10,7 @@ import type { AuthorityHost } from './authority-host.ts';
 import { ENTRY_BODY_BYTES, readRequest, TAGS_BODY_BYTES } from './gateway/body.ts';
 import { dataReadBytes, meterRead, readDataRecord } from './gateway/read-data.ts';
 import { readTagRecords } from './gateway/read-tags.ts';
+import { dropRecordAnswer, readRecordAnswer, recordResponse } from './gateway/record-answer.ts';
 import { fail, ok } from './gateway/respond.ts';
 import { scopeRetired } from './gateway/retirement.ts';
 import { tokenCheckOf, type TokenKeys } from './gateway/token.ts';
@@ -25,7 +26,6 @@ interface ReadEnv {
 }
 
 const SCOPE_PREFIX = `/${GATEWAY_API_VERSION}/scopes/:scope`;
-const RECORD_CACHE_TTL_SECONDS = 30;
 
 /** The token check every read is behind, under what the host decided (`AuthorityHost`). */
 function readAuthOf(host: AuthorityHost): MiddlewareHandler<ReadEnv> {
@@ -84,28 +84,19 @@ export function createReadGateway(host: AuthorityHost): Hono<ReadEnv> {
       .get(`${SCOPE_PREFIX}/entries/:entryId/record`, async (c) => {
         const scopeId = c.get('scopeId');
         const key = kvGenerationKey(scopeId, c.req.param('entryId'));
-        const [bytes, retired] = await Promise.all([
-          c.env.CACHE_STATE.get(key, {
-            type: 'arrayBuffer',
-            cacheTtl: RECORD_CACHE_TTL_SECONDS,
-          }),
+        const [record, retired] = await Promise.all([
+          readRecordAnswer(c.env.CACHE_STATE, key),
           scopeRetired(c.env.CACHE_STATE, scopeId),
         ]);
         if (retired) {
+          dropRecordAnswer(record);
           return fail(c, 'scope_retired', 'the scope is retired');
         }
-        if (bytes === null) {
+        if (record === undefined) {
           return fail(c, 'not_found', 'no delivery record for the entry');
         }
-        meterRead(host, scopeId, bytes.byteLength);
-        return new Response(bytes, {
-          headers: {
-            'content-type': 'application/octet-stream',
-            // What a Function reads the record whole in room for, as the authority's gateway says.
-            'content-length': String(bytes.byteLength),
-            'cache-control': 'private, no-store',
-          },
-        });
+        meterRead(host, scopeId, record.byteLength);
+        return recordResponse(record);
       })
   );
 }
