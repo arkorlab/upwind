@@ -162,13 +162,12 @@ describe('a shipped file asked under a precondition', () => {
   });
 
   /**
-   * A client resuming a download by date is given the range where the date is the `Last-Modified`
-   * the answer carries — a rule's here, storage keeping no date of its own — in whichever form it
-   * writes it, as RFC 9110 has an origin judge an `If-Range` date (§13.1.5) and as Next.js's file
-   * server resumes on it too (`isRangeFresh`, in `send`). Any other date, one that is no date, or a
-   * file no rule dates, is answered whole (Codex, upwind#179).
+   * A client resuming a download by date is sent the whole file, whatever the date: an `If-Range`
+   * date names the answer only as a strong validator (RFC 9110 §13.1.5, §8.8.2.2), and the
+   * `Last-Modified` a rule gives a shipped file is none — the same rule would date the next
+   * deployment's bytes the same (Codex).
    */
-  it('resumes a range on an If-Range naming the Last-Modified the answer carries', async () => {
+  it('answers the whole file to an If-Range naming a date, even the Last-Modified it carries', async () => {
     const { pointer } = await shipping(
       { '/dated.txt': 'dated file', '/undated.txt': 'undated file' },
       [{ sourceRegex: String.raw`^/dated\.txt$`, headers: { 'last-modified': LAST_MODIFIED } }],
@@ -176,23 +175,14 @@ describe('a shipped file asked under a precondition', () => {
     const ask = (path: string, ifRange: string) =>
       serve(pointer, path, { headers: { range: 'bytes=0-4', 'if-range': ifRange } });
 
-    const resumed = [
+    const answers = [
       await ask('/dated.txt', LAST_MODIFIED),
       await ask('/dated.txt', 'Tue Nov 15 12:45:26 1994'),
-    ];
-    const whole = [
-      await ask('/dated.txt', DAY_BEFORE),
       await ask('/dated.txt', DAY_AFTER),
-      await ask('/dated.txt', 'yesterday'),
       await ask('/undated.txt', LAST_MODIFIED),
     ];
 
-    for (const { response, body } of resumed) {
-      expect([response.status, body]).toStrictEqual([206, 'dated']);
-      expect(response.headers.get('content-range')).toBe('bytes 0-4/10');
-    }
-
-    expect(whole.map(({ response, body }) => [response.status, body])).toStrictEqual([
+    expect(answers.map(({ response, body }) => [response.status, body])).toStrictEqual([
       [200, 'dated file'],
       [200, 'dated file'],
       [200, 'dated file'],

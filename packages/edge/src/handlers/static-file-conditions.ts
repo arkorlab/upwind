@@ -68,39 +68,27 @@ export function clientHolds(
 /**
  * Whether an `If-Range` names the answer a range of it would be cut from (RFC 9110 §13.1.5): the
  * entity tag the answer carries, compared strongly — a weak tag does not say which bytes a client
- * holds, so it resumes nothing, even one spelled the same as the tag the answer carries — or, as a
- * date, the `Last-Modified` it carries, which a rule or the middleware gave it, storage keeping no
- * date of the file's own. That date alone: `send` resumes on any date no earlier (`isRangeFresh`),
- * but one the answer never gave says no more of which bytes a client holds than a weak tag does.
+ * holds, so it resumes nothing, even one spelled the same as the tag the answer carries. A date
+ * resumes nothing either: it names the answer only as a strong validator (§8.8.2.2), and no date a
+ * shipped file's answer carries is one. Storage keeps no date of the file's own, and a
+ * `Last-Modified` a rule or the middleware sets does not say the bytes could not change within its
+ * second — the same one, set again over the next deployment's file, would cut a range from other
+ * bytes than the client holds. `send` resumes on a date (`isRangeFresh`); a client asking by date
+ * is sent the whole file here, as it was before it asked.
  */
-function namesTheAnswer(
-  condition: string,
-  tag: string,
-  lastModified: () => string | null,
-): boolean {
-  if (condition === tag) {
-    return !tag.startsWith('W/');
-  }
-  // A date is never quoted, and anything quoted is an entity tag: another's.
-  const askedMs = condition.includes('"') ? undefined : httpDateMs(condition);
-  if (askedMs === undefined) {
-    return false;
-  }
-  const modified = lastModified();
-  return modified !== null && httpDateMs(modified) === askedMs;
+function namesTheAnswer(condition: string, tag: string): boolean {
+  return condition === tag && !tag.startsWith('W/');
 }
 
 /**
  * The single byte range asked for, when one was and the entity is the one it was asked of: an
- * `If-Range` naming another entity — another tag, or a date other than the answer's `Last-Modified`
- * — turns the request into one for the whole file (`namesTheAnswer`). `undefined` for no usable
- * range; `null` for one that no byte of the file satisfies. `lastModified` is asked only where an
- * `If-Range` date is there to judge it by.
+ * `If-Range` naming another entity — another tag, or a date (`namesTheAnswer`) — turns the request
+ * into one for the whole file. `undefined` for no usable range; `null` for one that no byte of the
+ * file satisfies.
  */
 export function requestedRange(
   request: Request,
   tag: string,
-  lastModified: () => string | null,
   length: number,
 ): BlobRange | null | undefined {
   const range = request.headers.get('range');
@@ -108,7 +96,7 @@ export function requestedRange(
     return undefined;
   }
   const condition = request.headers.get('if-range');
-  if (condition !== null && !namesTheAnswer(condition, tag, lastModified)) {
+  if (condition !== null && !namesTheAnswer(condition, tag)) {
     return undefined;
   }
   const groups = SINGLE_BYTE_RANGE.exec(range.trim())?.groups;

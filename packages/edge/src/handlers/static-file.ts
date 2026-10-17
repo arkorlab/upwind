@@ -275,7 +275,8 @@ function storageFailure(input: StaticFileInput, reason: string): Response {
 
 /**
  * The `Last-Modified` of the answer the file would be given: one a rule or the middleware gave it,
- * storage keeping no date of the file's own. Built only where a date is there to judge it by.
+ * storage keeping no date of the file's own. Built only where a date is there to judge it by: an
+ * `If-Modified-Since` or an `If-Unmodified-Since`.
  */
 function lastModifiedOf(input: StaticFileInput): string | null {
   return fileHeaders(input, 'manifest').get('last-modified');
@@ -283,17 +284,12 @@ function lastModifiedOf(input: StaticFileInput): string | null {
 
 /**
  * The range asked of the file (`requestedRange`), where it answers as itself; none otherwise. An
- * `If-Range` is judged against the answer the file would be given, as a precondition is
- * (`preconditionFailed`): the entity tag it carries, or its `Last-Modified`.
+ * `If-Range` is judged against the entity tag the answer the file would be given carries, as a
+ * precondition is (`preconditionFailed`).
  */
 function rangeAsked(input: StaticFileInput): BlobRange | null | undefined {
   return answersAsItself(input)
-    ? requestedRange(
-        input.request,
-        entityTagOf(input),
-        () => lastModifiedOf(input),
-        input.file.byteLength,
-      )
+    ? requestedRange(input.request, entityTagOf(input), input.file.byteLength)
     : undefined;
 }
 
