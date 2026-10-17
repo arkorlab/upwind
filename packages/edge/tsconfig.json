@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2024"],
+    "types": ["@cloudflare/workers-types", "@cloudflare/vitest-plugin/types"],
+    "allowImportingTsExtensions": true
+  },
+  "include": ["src/**/*", "test/**/*", "types/**/*.d.ts", "vitest.config.mts"]
+}

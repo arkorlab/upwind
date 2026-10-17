@@ -1,0 +1,169 @@
+import type { AssetRejection } from '@stayingupwind/core/assets';
+import type {
+  AssetDeliveryStrategy,
+  AssetHandleResult,
+  AssetKeepOutcome,
+} from '@stayingupwind/host/delivery';
+
+import { logWarn } from '../observability/logger.ts';
+import type { EdgeMetric } from '../observability/metrics.ts';
+import type { EdgeContext } from '../strategies/context.ts';
+import { observeMetric } from './observer.ts';
+import { badGatewayResponse, keptByNobody } from './responses.ts';
+import { dispatchesOfFailure } from './upstream.ts';
+
+export interface AssetInput {
+  readonly request: Request;
+  readonly clientUrl: URL;
+  readonly strategy: AssetDeliveryStrategy<EdgeContext>;
+  readonly edge: EdgeContext;
+}
+
+/** An answer the strategy admitted, handed on as it is: its point is written here. */
+interface AdmittedAsset {
+  readonly response: Response;
+  readonly admitted: true;
+}
+
+/**
+ * An answer the strategy refused, or could not give: the caller may have a better one to give. Its
+ * point is the caller's to write where this is the answer the client is handed, and to count in the
+ * point of the request sent in its place where it is not (`answerAsset`): a point each would count
+ * two requests where the client made one.
+ */
+interface RefusedAsset {
+  readonly response: Response;
+  readonly admitted: false;
+  /** Why it was refused, when it was: none where the strategy failed. */
+  readonly rejection: AssetRejection | undefined;
+  readonly point: EdgeMetric;
+}
+
+export type AssetOutcome = AdmittedAsset | RefusedAsset;
+
+/**
+ * What the metric says happened. An asset the edge streamed but could not keep is `admitted` on
+ * the wire and never in a cache, so the reason it was not kept is named here or nowhere.
+ */
+function assetOutcomeKind(admitted: boolean, kept: AssetKeepOutcome | undefined): string {
+  if (!admitted) {
+    return 'not-admitted';
+  }
+  return kept === undefined || kept === 'kept' ? 'admitted' : `uncached-${kept}`;
+}
+
+/** What an asset's point says of the answer, past what every asset's says alike. */
+interface AssetAnswered {
+  readonly outcomeKind: string;
+  readonly originCacheHeader: string;
+  readonly ttfbInternalMs: number;
+  readonly assetHit: number;
+  readonly subrequests: number;
+}
+
+function assetMetric(input: AssetInput, answered: AssetAnswered): EdgeMetric {
+  const { edge } = input;
+  return {
+    projectId: edge.projectId,
+    kind: 'asset',
+    pathname: input.clientUrl.pathname,
+    shellStrategy: '',
+    shellSource: '',
+    outcomeKind: answered.outcomeKind,
+    colo: edge.colo ?? '',
+    originCacheHeader: answered.originCacheHeader,
+    encoding: '',
+    manifestId: edge.manifestId,
+    policyId: edge.policy.id,
+    ttfbInternalMs: answered.ttfbInternalMs,
+    shellLookupMs: 0,
+    originFirstByteMs: 0,
+    originTotalMs: 0,
+    shellBytes: 0,
+    suffixBytes: 0,
+    recovery: 0,
+    retry: 0,
+    assetHit: answered.assetHit,
+    subrequests: answered.subrequests,
+  };
+}
+
+/**
+ * The answer as a project whose delivery is private gives it (`privateDelivery`): kept by nobody,
+ * the browser or a cache between, either of which could hand the asset back without the host
+ * being asked — to a visitor it no longer lets through, or to one it never did. A copy with
+ * headers of its own, so the entry the edge keeps behind it is the asset's as the strategy made it.
+ */
+function privateCopy(response: Response): Response {
+  const headers = new Headers(response.headers);
+  keptByNobody(headers);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+/** Serve an immutable-asset candidate through the policy's asset strategy. */
+export async function handleAsset(input: AssetInput): Promise<AssetOutcome> {
+  const startedAt = input.edge.runtime.now();
+  const originUrl = new URL(
+    `https://${input.edge.forwarding.previewHost}${input.clientUrl.pathname}${input.clientUrl.search}`,
+  );
+  let result: AssetHandleResult;
+  try {
+    result = await input.strategy.handle(input.request, originUrl, input.edge);
+  } catch (error) {
+    // The same controlled answer the document and passthrough paths give. Letting this out would
+    // end the request as an unhandled Worker exception instead.
+    logWarn('asset upstream fetch failed', {
+      pathname: input.clientUrl.pathname,
+      detail: error instanceof Error ? error.message : String(error),
+    });
+    return {
+      response: badGatewayResponse('asset-upstream-error'),
+      admitted: false,
+      rejection: undefined,
+      // Counted as an answer is: an outage the host is told nothing of is one it cannot see.
+      point: assetMetric(input, {
+        outcomeKind: 'upstream-error',
+        originCacheHeader: '',
+        ttfbInternalMs: input.edge.runtime.now() - startedAt,
+        assetHit: 0,
+        // The requests the strategy sent upstream before it failed: one, and the one after it where
+        // the Worker first asked named another — as a passthrough that could not reach the
+        // application counts its own.
+        subrequests: dispatchesOfFailure(error),
+      }),
+    };
+  }
+  const firstByteMs = input.edge.runtime.now() - startedAt;
+  const { response } = result;
+  const pointOf = (kept: AssetKeepOutcome | undefined): EdgeMetric =>
+    assetMetric(input, {
+      outcomeKind: assetOutcomeKind(result.admitted, kept),
+      originCacheHeader: response.headers.get('x-vercel-cache') ?? '',
+      // A time to first byte again: on a miss the strategy answers on the origin's headers and
+      // streams the body behind them, and on a hit this is the Cache API read.
+      ttfbInternalMs: firstByteMs,
+      assetHit: result.hit ? 1 : 0,
+      subrequests: result.subrequests,
+    });
+  const answer = input.edge.privateDelivery ? privateCopy(response) : response;
+  if (!result.admitted) {
+    const point = pointOf(undefined);
+    return { response: answer, admitted: false, rejection: result.rejection, point };
+  }
+  // A copy kept behind the response is the one thing this cannot report yet, and the reason an
+  // asset went unstored is the only place that shows — the header committed `admit=1` long before.
+  if (result.kept === undefined) {
+    observeMetric(input.edge.host, pointOf(undefined));
+  } else {
+    input.edge.ctx.waitUntil(
+      (async (): Promise<void> => {
+        observeMetric(input.edge.host, pointOf(await result.kept));
+      })(),
+    );
+  }
+  return { response: answer, admitted: true };
+}
