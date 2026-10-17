@@ -7,6 +7,7 @@ import {
   dataGetResponseSchema,
   dataSetRequestSchema,
   invalidateRequestSchema,
+  invalidateResponseSchema,
   MAX_DATA_HANDLER_LENGTH,
   MAX_DATA_KEY_LENGTH,
   tagDeltaEntrySchema,
@@ -193,5 +194,41 @@ describe("an invalidation's window", () => {
     };
 
     expect(invalidationRecordSchema.safeParse(recorded).success).toBe(true);
+  });
+});
+
+/** What an invalidation of a tag came to, as the authority answers it. */
+function invalidationResult(value: string) {
+  return {
+    invalidationId: `inv_${value}`,
+    tagId: `tag_${value}`,
+    value,
+    staleAt: 1,
+    hardExpireAt: null,
+    meaning: 'immediate',
+  };
+}
+
+/** An invalidation's answer holding `count` results: the authority's holds one for each tag. */
+function invalidationAnswer(count: number) {
+  return {
+    revision: 1,
+    invalidations: Array.from({ length: count }, (_, index) => invalidationResult(`tag-${index}`)),
+    affectedEntryIds: [],
+  };
+}
+
+describe("an invalidation's answer", () => {
+  it('holds a result for each tag an invalidation may name', () => {
+    expect(invalidateResponseSchema.safeParse(invalidationAnswer(MAX_TAGS_PER_CALL)).success).toBe(
+      true,
+    );
+  });
+
+  /** A result for each tag the invalidation named at the most, which none names more of. */
+  it('holds no more results than an invalidation may name tags', () => {
+    expect(
+      invalidateResponseSchema.safeParse(invalidationAnswer(MAX_TAGS_PER_CALL + 1)).success,
+    ).toBe(false);
   });
 });

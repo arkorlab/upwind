@@ -35,13 +35,17 @@ import {
  * The HTTP contract between an application's Worker and the cache gateway.
  *
  * Every route lives under `/v1/scopes/<scopeId>/` and carries the scope's token as a bearer; the
- * gateway answers `{ ok: true, result }` or `{ ok: false, error }`. The runtime's cache handlers and
- * the gateway import these same schemas, so what one sends is what the other reads.
+ * gateway answers `{ ok: true, result }` or `{ ok: false, error }`. The Function's cache host
+ * (`@stayingupwind/cache`, `function/`) and the gateway import these same schemas, so what one sends
+ * is what the other reads. The runtime imports none of them: it hands its writes to the cache host
+ * (`CacheHost`), whose own shapes leave out what only the host can say of a write, and the host
+ * fills that in before it sends one: how each artifact was stored (`encoding`), and what a
+ * generation depends on (`dependencies`, `dependencyCoverage`).
  *
  * Written with core's validator (`@stayingupwind/core/schema`) rather than zod, as `entities.ts` is:
- * the runtime checks every answer against these, and builds them as its module is evaluated, before
- * an application's first answer. What composes them into zod schemas of its own takes them through
- * `toZod`.
+ * the cache host checks every answer against these, and builds them as its module is evaluated,
+ * before an application's first answer. What composes them into zod schemas of its own takes them
+ * through `toZod`.
  */
 
 export const GATEWAY_API_VERSION = 'v1';
@@ -646,7 +650,8 @@ const invalidationResultSchema = z.object({
 
 export const invalidateResponseSchema = z.object({
   revision: z.number().int().positive(),
-  invalidations: z.array(invalidationResultSchema),
+  /** A result for each tag the invalidation named, so no more than an invalidation may name. */
+  invalidations: z.array(invalidationResultSchema).max(MAX_TAGS_PER_CALL),
   affectedEntryIds: z.array(z.string().min(1)),
 });
 export type InvalidateResponse = z.infer<typeof invalidateResponseSchema>;
