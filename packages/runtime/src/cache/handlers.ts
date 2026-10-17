@@ -545,19 +545,19 @@ async function getUseCache(
     { held, validity: await judge(held) },
     weighing,
   );
-  if (judged === undefined) {
-    return undefined;
-  }
+  if (judged === undefined) return undefined;
   const { entry } = judged.held;
   const { validity } = judged;
+  const ageMs = nowMs() - entry.timestamp;
   // A regeneration must rebuild from fresh data even when Next's request store permits SWR.
   if (
     validity === 'expired' ||
-    (validity === 'stale' && (isRegeneration() || isPrimaryResourceRead()))
+    (validity === 'stale' && (isRegeneration() || isPrimaryResourceRead())) ||
+    (ageMs > entry.revalidate * MS_PER_SECOND && isRegeneration())
   ) {
     return undefined;
   }
-  if (revalidatedBehind(validity, nowMs() - entry.timestamp, entry.revalidate, entry.expire)) {
+  if (revalidatedBehind(validity, ageMs, entry.revalidate, entry.expire)) {
     holdForUseCacheRevalidation(runtime, request, judged, weighing);
   }
   return {
