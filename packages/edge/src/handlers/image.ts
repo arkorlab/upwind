@@ -83,6 +83,11 @@ export interface ImageAnswerInput {
 export interface ImageInput extends ImageAnswerInput {
   readonly manifest: ProjectManifest;
   readonly params: ImageRequestParams;
+  /**
+   * The deployment the request names (`dpl`), where it names one: a build of a source kept from the
+   * deployment before for its own requests alone is the source of no other (`resolveImageSource`).
+   */
+  readonly dpl: string | undefined;
 }
 
 /** Longest a request waits on the Cache API before optimizing instead. */
@@ -543,7 +548,7 @@ export function refuseImage(input: ImageAnswerInput, error: SourceError, reason:
 export async function handleImage(input: ImageInput): Promise<Response> {
   const { edge, params } = input;
   const startedAt = edge.runtime.now();
-  const source = resolveImageSource(edge, input.manifest, params);
+  const source = resolveImageSource(edge, input.manifest, params, input.dpl);
   const key = await cacheKey(
     edge.host.names.imageKeyOrigin,
     input.config,

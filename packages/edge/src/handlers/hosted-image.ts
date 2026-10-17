@@ -4,7 +4,7 @@ import {
   parseImageRequest,
 } from '@stayingupwind/core/images';
 import type { ConfiguredHeaders } from '@stayingupwind/core/manifest';
-import { PatternBudgetExceededError } from '@stayingupwind/core/request';
+import { DEPLOYMENT_ID_QUERY, PatternBudgetExceededError } from '@stayingupwind/core/request';
 
 import { type HostedGateInput, serveAfterMiddleware, type TimedContinue } from './hosted-gate.ts';
 import { handleImage, type ImageAnswerInput, refuseImage } from './image.ts';
@@ -119,7 +119,22 @@ function optimized(
     const error = { status: HTTP_BAD_REQUEST, message: parsed.errorMessage, requests: 0 };
     return Promise.resolve(refuseImage(answer, error, 'image-invalid'));
   }
-  return handleImage({ ...answer, manifest, params: parsed.params });
+  return handleImage({
+    ...answer,
+    manifest,
+    params: parsed.params,
+    dpl: namedDeployment(input.url),
+  });
+}
+
+/**
+ * The deployment the client's request names, where it names one alone (`dpl`): Next.js's loader
+ * writes the document's own onto the optimizer's URL, and a URL the middleware rewrote the request
+ * to is not the document's.
+ */
+function namedDeployment(url: URL): string | undefined {
+  const named = url.searchParams.getAll(DEPLOYMENT_ID_QUERY);
+  return named.length === 1 ? named[0] : undefined;
 }
 
 function routeWithinBudget(input: HostedImageInput): Promise<Response> {

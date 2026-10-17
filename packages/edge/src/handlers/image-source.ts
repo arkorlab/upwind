@@ -138,15 +138,36 @@ function blobGate(edge: EdgeContext, manifest: ProjectManifest, href: string): B
   return 'none';
 }
 
+/**
+ * The file the build shipped at a source's path, as the deployment the optimizer's request names
+ * (`dpl`) is answered with it — Next.js's loader puts the document's own on the optimizer's URL. A
+ * build kept from the deployment before that answers only its own deployment's `dpl` (`dplOnly`)
+ * is no file of a request naming another, or none: its path is this deployment's, and its routing
+ * answers it, as it answers a request for the path (`staticFileBuildWithoutDpl`). Any other build
+ * is the source whichever deployment the request names.
+ */
+function shippedSource(
+  manifest: ProjectManifest,
+  pathname: string,
+  dpl: string | undefined,
+): StaticFileEntry | undefined {
+  const entry = findStaticFile(manifest, pathname);
+  if (entry === undefined || dpl === entry.deploymentId) {
+    return entry;
+  }
+  return staticFileBuildWithoutDpl(entry, manifest.deployment.dplId);
+}
+
 export function resolveImageSource(
   edge: EdgeContext,
   manifest: ProjectManifest,
   params: ImageRequestParams,
+  dpl: string | undefined,
 ): ImageSource {
   if (params.isAbsolute) {
     return { kind: 'remote', href: params.href };
   }
-  const file = findStaticFile(manifest, localPathname(params.href));
+  const file = shippedSource(manifest, localPathname(params.href), dpl);
   if (file === undefined) {
     return { kind: 'local', href: params.href };
   }
