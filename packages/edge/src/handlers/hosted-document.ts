@@ -424,6 +424,9 @@ async function serveAfterItsMiddleware(
   preload: Preload | undefined,
 ): Promise<Response> {
   if (middleware.kind === 'continue' && middleware.rewriteStatus !== undefined) {
+    // Not remembered as a rewrite onto no route the edge serves (`rememberRewrite`): a middleware
+    // may give a status to some visitors of a path and let others through, and the read ahead it
+    // abandons here, behind the answer, is the one a visitor it lets through would otherwise wait on.
     if (preload !== undefined) {
       abandon(input.edge, preload);
     }
