@@ -15,17 +15,16 @@
  * build that takes long, a storage read that does not answer say, holds its room while it runs.
  *
  * A record a run keeps past the chunk that built it — the one a commit is answered with — holds its
- * bytes as long as it is kept, and is charged to that run until it lets it go (`retain`), renewed
- * as a building chunk's claim is. A kept record goes only as its run goes on, and a run waiting for
- * room goes on only once its chunk is let in, which only the first in line is. So what runs keep
- * counts against what is let in beside a chunk building, which gives its room back whatever is kept,
- * but a chunk that would build alone is let in beside what runs not waiting for room keep, and not
- * beside what waiting runs keep, its own run's among them: counted, those would hold the first in
- * line back for good, and with it every run behind. Nor can what a chunk alone does wait for hold it
- * for good: the runs that keep it go on without room, and let it go as their changes are answered —
- * or come to wait, which leaves it out, or are reset, and it lapses. Nothing builds meanwhile, so
- * nothing is kept anew, and once it is gone the chunk has room, as a claim takes the whole budget at
- * the most.
+ * bytes as long as it is kept, and is charged until the run lets it go (`retain`), renewed as a
+ * building chunk's claim is. Every record kept counts against every chunk let in, beside a chunk
+ * building or alone: nothing that holds bytes is left out of the budget. Nor does that hold a run
+ * for good, as no run waits with a record kept: a run lets go of what it keeps before it waits for
+ * room (`withProjectionMemory`), and keeps nothing as it waits, a record being kept only by a chunk
+ * that builds. What the first in line waits for is held by chunks building, which end, and by
+ * records of runs that are not waiting, which go on without room and let them go as their changes
+ * are answered, or wait again and let them go first, or are reset, and the records lapse. Nothing is
+ * let in before the first in line, so once the chunks building have ended nothing is kept anew, and
+ * once what they left has gone it has room, as a claim takes the whole budget at the most.
  */
 
 const KIB = 1024;
@@ -39,16 +38,11 @@ const RENEW_MS = 1000;
 /** How long a claim lasts without its object renewing it: past it, that object is gone. */
 const CLAIM_LAPSE_MS = 5000;
 
-/**
- * A claim on the isolate's room: the bytes, what holds them, the run it is for, and until when it
- * holds unrenewed.
- */
+/** A claim on the isolate's room: the bytes, what holds them, and until when it holds unrenewed. */
 interface Claim {
   readonly bytes: number;
   /** A chunk waiting for room, one building its records, or a record a run keeps past its chunk. */
   kind: 'waiting' | 'building' | 'kept';
-  /** The settle run's token, compared and nothing else: it tells whose kept records are whose. */
-  readonly run: symbol;
   until: number;
 }
 
@@ -90,8 +84,7 @@ function hold(claim: Claim): () => void {
 
 /**
  * Whether `claim` may begin at `now`: it is the first that waits, and there is room for it beside
- * the chunks building and the records kept — where none is building, beside the records of the runs
- * not waiting for room alone. What has lapsed is let go of first.
+ * the chunks building and the records kept. What has lapsed is let go of first.
  */
 function admits(claim: Claim, now: number): boolean {
   for (let index = claims.length - 1; index >= 0; index -= 1) {
@@ -99,37 +92,29 @@ function admits(claim: Claim, now: number): boolean {
       claims.splice(index, 1);
     }
   }
-  if (claims.find((other) => other.kind === 'waiting') !== claim) {
-    return false;
-  }
   let building = 0;
-  const waiting = new Set<symbol>();
-  for (const other of claims) {
-    building += other.kind === 'building' ? other.bytes : 0;
-    if (other.kind === 'waiting') {
-      waiting.add(other.run);
-    }
-  }
   let kept = 0;
   for (const other of claims) {
-    if (other.kind === 'kept' && (building > 0 || !waiting.has(other.run))) {
-      kept += other.bytes;
-    }
+    building += other.kind === 'building' ? other.bytes : 0;
+    kept += other.kind === 'kept' ? other.bytes : 0;
   }
-  return building + kept + claim.bytes <= PROJECTION_MEMORY_BYTES;
+  return (
+    claims.find((other) => other.kind === 'waiting') === claim &&
+    building + kept + claim.bytes <= PROJECTION_MEMORY_BYTES
+  );
 }
 
 /**
  * `build`, once the isolate has room for the `bytes` it reckons it holds, given back as it ends. A
  * chunk that builds no record — a withdrawal's — holds nothing, and waits for nothing; one whose
  * reckoning is no number at all is taken to hold the whole budget, as a record it cannot reckon is.
- * `run` is the settle run the chunk is for, which the records it keeps are charged to (`retain`):
- * none named, the chunk is a run of its own, which keeps nothing.
+ * A chunk not let in at once has its run let go of what it keeps (`beforeWait`) before it waits,
+ * once, and asks again at once: what the run kept may have been all that stood in its way.
  */
 export async function withProjectionMemory<T>(
   bytes: number,
   build: () => Promise<T>,
-  run = Symbol('run'),
+  beforeWait?: () => void,
 ): Promise<T> {
   if (bytes === 0) {
     return build();
@@ -139,19 +124,19 @@ export async function withProjectionMemory<T>(
       ? Math.min(bytes, PROJECTION_MEMORY_BYTES)
       : PROJECTION_MEMORY_BYTES,
     kind: 'waiting',
-    run,
     until: 0,
   };
   let release: (() => void) | undefined;
   try {
-    for (;;) {
-      renew(claim);
-      if (admits(claim, Date.now())) {
-        break;
+    renew(claim);
+    if (!admits(claim, Date.now())) {
+      beforeWait?.();
+      while (!admits(claim, Date.now())) {
+        await new Promise((resolve) => {
+          setTimeout(resolve, ASK_AGAIN_MS);
+        });
+        renew(claim);
       }
-      await new Promise((resolve) => {
-        setTimeout(resolve, ASK_AGAIN_MS);
-      });
     }
     claim.kind = 'building';
     release = hold(claim);
@@ -163,11 +148,12 @@ export async function withProjectionMemory<T>(
 }
 
 /**
- * Charge the `bytes` of a record `run` keeps past the chunk that built it — one its change is
+ * Charge the `bytes` of a record a run keeps past the chunk that built it — one its change is
  * answered with — to the isolate's room, until the function returned lets them go: as the record
- * is handed off, or on any other way out of the run. Taken while the chunk that built the record
- * still holds its own room, so that its bytes are never uncounted between the two.
+ * is handed off, as the run waits for room, or on any other way out of the run. Taken while the
+ * chunk that built the record still holds its own room, so that its bytes are never uncounted
+ * between the two.
  */
-export function retain(bytes: number, run: symbol): () => void {
-  return hold({ bytes, kind: 'kept', run, until: 0 });
+export function retain(bytes: number): () => void {
+  return hold({ bytes, kind: 'kept', until: 0 });
 }

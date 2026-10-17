@@ -7,7 +7,7 @@ import { findGeneration } from './generations.ts';
 import { retain } from './projection-memory.ts';
 import { generationRecordBytes, type RecordDeps, recordBytesOf } from './records.ts';
 import type { EntryRow, GenerationRow } from './rows.ts';
-import type { WantedRecords, WrittenRecord } from './settle.ts';
+import { dropRecordBytes, type WantedRecords, type WrittenRecord } from './settle.ts';
 import { isRefusal, type Refusal } from './state.ts';
 
 const KIB = 1024;
@@ -34,27 +34,32 @@ export interface CommitRecords extends WantedRecords {
  * broad invalidation say, holds none of theirs past its write. The entry is named once the commit
  * has published (`entryOf`). A record it wants outlives the chunk that built it, until the commit
  * is answered with it: its bytes are charged to the isolate's room as it is wanted, while that
- * chunk still holds its own, and until the commit lets them go (`release`) — charged to the
- * commit's own run (`WantedRecords.run`), the one settle run that writes what it wants.
+ * chunk still holds its own, and until the commit lets them go (`release`) — or until the run lets
+ * them go before it waits for room (`letGo`), and the commit is answered without its record, as
+ * one too large to travel back is (`withWrittenRecord`).
  */
 export function wantedRecords(entryOf: () => string | undefined): CommitRecords {
   const kept: (() => void)[] = [];
-  const run = Symbol('commit');
+  const records = new Map<string, WrittenRecord>();
+  const release = (): void => {
+    for (const letGo of kept.splice(0)) {
+      letGo();
+    }
+  };
   return {
     wants: (entryId, bytes) => {
       if (bytes > MAX_RETURNED_RECORD_BYTES || entryId !== entryOf()) {
         return false;
       }
-      kept.push(retain(bytes, run));
+      kept.push(retain(bytes));
       return true;
     },
-    records: new Map(),
-    run,
-    release: () => {
-      for (const letGo of kept.splice(0)) {
-        letGo();
-      }
+    records,
+    letGo: () => {
+      release();
+      dropRecordBytes(records);
     },
+    release,
   };
 }
 
@@ -216,8 +221,10 @@ export async function withCurrentRecord(
  * one the commit's own settle wrote, while the entry's record still stands at the revision it was
  * written for, whichever generation it holds — a change that committed once it was written, a path
  * invalidated say, has another one written or on its way — or else the one standing for the
- * generation it published where another run wrote it (`standingRecord`). The entry is named once
- * the commit has published (`entryOf`): no other answer needs it.
+ * generation it published where another run wrote it (`standingRecord`). One its own settle wrote
+ * and let go of before it waited for room (`WantedRecords.letGo`) is not built again: while it
+ * stands, the answer says where it stands alone (`recordRevision`). The entry is named once the
+ * commit has published (`entryOf`): no other answer needs it.
  */
 export async function withWrittenRecord(
   committed: Promise<CommitOutcome | Refusal>,

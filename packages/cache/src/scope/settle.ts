@@ -112,11 +112,19 @@ export async function finishSettle(
 /**
  * A generation's delivery record a run wrote, and the record revision it was written for: what a
  * commit hands back only while the entry's record still stands at that revision
- * (`commit-record.ts`).
+ * (`commit-record.ts`). Its bytes are gone where the run let go of them before it waited for room
+ * (`WantedRecords.letGo`), and the commit is answered without them.
  */
 export interface WrittenRecord {
-  readonly bytes: Uint8Array;
+  readonly bytes?: Uint8Array | undefined;
   readonly revision: number;
+}
+
+/** Keep of `records` the revisions they were written for, and let their bytes go. */
+export function dropRecordBytes(records: Map<string, WrittenRecord>): void {
+  for (const [entryId, { revision }] of records) {
+    records.set(entryId, { revision });
+  }
 }
 
 /**
@@ -130,10 +138,11 @@ export interface WantedRecords {
   readonly wants: (entryId: string, bytes: number) => boolean;
   readonly records: Map<string, WrittenRecord>;
   /**
-   * The run's token in the isolate's room, which its chunks wait under and what it keeps is charged
-   * to: what a run keeps never holds its own next chunk back (`projection-memory.ts`).
+   * Let go of what the change keeps as its run is about to wait for room: the charge, and the bytes
+   * (`dropRecordBytes`), so that no record waits with a run (`projection-memory.ts`). The run goes
+   * on wanting what is written after, which is kept as before.
    */
-  readonly run: symbol;
+  readonly letGo: () => void;
 }
 
 /**
@@ -394,6 +403,12 @@ async function projectPage(
   stop: () => boolean,
 ): Promise<PageOutcome> {
   const out = { projected: [] as ProjectedEntry[], records: new Map() as WrittenRecords };
+  // What the change keeps goes before the run waits for room: of this page, held here until it is
+  // acknowledged, and of the pages before it.
+  const beforeWait = (): void => {
+    dropRecordBytes(out.records);
+    writing.wanted?.letGo();
+  };
   let failed = 0;
   let reached = 0;
   while (reached < entries.length) {
@@ -401,7 +416,7 @@ async function projectPage(
     failed += await withProjectionMemory(
       chunk.bytes,
       () => projectChunk(deps, chunk.entries, writing, out),
-      writing.wanted?.run,
+      beforeWait,
     );
     reached += chunk.entries.length;
     if (stop()) {
