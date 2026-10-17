@@ -6,7 +6,14 @@ import { controlFenceSweepPending } from './control-fences.ts';
 import { dataUploadScanPending, type DataUploadPage, queueDataUploads } from './data-uploads.ts';
 import type { ScopeHistory } from './history.ts';
 import type { BlobStore } from './io.ts';
-import { applyRetention, forgetDeletions, scopeErasable } from './retention.ts';
+import type { ScopeQueue } from './mutations.ts';
+import {
+  applyRetention,
+  forgetDeletions,
+  letGoOfWithdrawn,
+  retiredWithdrawing,
+  scopeErasable,
+} from './retention.ts';
 import { deleteMeta, readMeta, writeMeta } from './state.ts';
 
 export interface TickOptions {
@@ -98,6 +105,26 @@ export async function runRetention(
     forgetDeletions(run.sql, plan.deletable);
     if (plan.more) writeMeta(run.sql, META_RETENTION_BACKLOG, '1');
     return scopeErasable({ sql: run.sql, limits: run.limits, now });
+  });
+}
+
+/**
+ * Let go of the entries whose value a run retired as the settles after it withdraw them
+ * (`letGoOfWithdrawn`), under the lock a change takes: asked after each settle an alarm runs, for as
+ * long as any of them waits. A run that came back for them instead would come before most were
+ * withdrawn, and runs that each did would come one after another for as long as values expired.
+ */
+export async function letGoOfRetired(
+  run: Pick<RetentionRun, 'sql' | 'transaction'>,
+  lock: ScopeQueue,
+): Promise<void> {
+  if (!retiredWithdrawing(run.sql)) {
+    return;
+  }
+  await lock.run(() => {
+    run.transaction(() => {
+      letGoOfWithdrawn(run.sql);
+    });
   });
 }
 

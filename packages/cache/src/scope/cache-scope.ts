@@ -69,6 +69,7 @@ import {
 } from './resource-changes.ts';
 import {
   eraseScopeStorage,
+  letGoOfRetired,
   nextRetentionAt,
   retentionDue,
   runRetention,
@@ -655,6 +656,8 @@ export class CacheScope extends DurableObject<CacheBindings> {
       });
       return;
     }
+    // What the settle withdrew of the values a run retired goes now (`letGoOfRetired`).
+    await letGoOfRetired(this.#deps(), this.#mutations);
     await this.#rearm(now);
   }
 
