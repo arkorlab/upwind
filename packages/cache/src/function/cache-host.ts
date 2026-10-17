@@ -638,7 +638,7 @@ function createCacheHost(
   return {
     host: new GatewayHost(gateway, {
       data: DataCopies.of(naming, scopeId, token),
-      records: RecordCopies.of(naming, scopeId, token),
+      records: RecordCopies.of(naming, { scopeId, token }, gateway.reading),
       beacon:
         options.scopeBeacon === true
           ? ScopeBeacon.of(naming, { scopeId, token }, () => gateway.tagRevision())

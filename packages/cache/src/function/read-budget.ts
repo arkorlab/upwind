@@ -1,9 +1,10 @@
 /**
  * The room an isolate has for the artifacts it reads whole: the authority's answers, and its data
- * center's copies of them (`artifacts.ts`); and for the delivery records it reads (`gateway.ts`). An
- * artifact is read whole before it is answered with — the runtime takes bytes, not a stream — and
- * the reads of every request the isolate serves would otherwise all be read at once, however many
- * there were and however long.
+ * center's copies of them (`artifacts.ts`); and for the delivery records it reads, from the gateways
+ * and from its data center's copies of them (`gateway.ts`, `record-copies.ts`). An artifact is read
+ * whole before it is answered with — the runtime takes bytes, not a stream — and the reads of every
+ * request the isolate serves would otherwise all be read at once, however many there were and
+ * however long.
  */
 
 /**
