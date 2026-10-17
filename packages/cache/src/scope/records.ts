@@ -305,6 +305,14 @@ const INLINE_DATA_MEMORY_COPIES = 12;
 const DATA_METADATA_MEMORY_COPIES = 6;
 
 /**
+ * The memory a pack of `recordBytes` holds as it is built: its source buffers, a hashing/native copy
+ * and its encoded record.
+ */
+export function packMemoryOf(recordBytes: number): number {
+  return PACK_MEMORY_COPIES * recordBytes;
+}
+
+/**
  * Reserve memory before reading any blobs. A pack needs its source buffers, a hashing/native
  * copy and its encoded record; inline data also makes base64 and JSON strings (potentially UTF-16).
  * A referenced data value is never read into memory by projection.
@@ -315,7 +323,7 @@ export function projectionMemoryOf(
   generation: GenerationRow,
 ): number {
   if (!entry.kind.startsWith('data:')) {
-    return PACK_MEMORY_COPIES * recordBytesOf(scopeId, entry, generation);
+    return packMemoryOf(recordBytesOf(scopeId, entry, generation));
   }
   const artifact = generationOutputs(generation)[0]?.artifacts[0];
   if (artifact === undefined) {

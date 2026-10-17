@@ -4,8 +4,8 @@ import type { StartAttemptResponse } from '@stayingupwind/host/cache';
 import type { CommitOutcome } from './commit.ts';
 import { findEntry } from './entries.ts';
 import { findGeneration } from './generations.ts';
-import { retain } from './projection-memory.ts';
-import { generationRecordBytes, type RecordDeps, recordBytesOf } from './records.ts';
+import { retain, withProjectionMemoryAtOnce } from './projection-memory.ts';
+import { generationRecordBytes, packMemoryOf, type RecordDeps, recordBytesOf } from './records.ts';
 import type { EntryRow, GenerationRow } from './rows.ts';
 import { dropRecordBytes, type WantedRecords, type WrittenRecord } from './settle.ts';
 import { isRefusal, type Refusal } from './state.ts';
@@ -99,8 +99,8 @@ function standingRevision(
  * another run's projection reached first finds no record of its own (`written`). Built again from
  * the generation, outside the scope's queue: only where it could travel back at all
  * (`recordBytesOf`, before anything is read), and only where the same record still stands
- * once it is built. None otherwise, and none where its bytes cannot be read: the commit is then
- * answered without a record.
+ * once it is built. None otherwise, none where its bytes cannot be read, and none where the isolate
+ * has no room to build it at once (`builtRecord`): the commit is then answered without a record.
  */
 async function standingRecord(
   deps: StandingDeps,
@@ -123,6 +123,13 @@ async function standingRecord(
  * `generation`'s delivery record as `entry`'s, built as a settle builds it, where it could travel
  * back at all (`recordBytesOf`, before anything is read); none otherwise, and none where its bytes
  * cannot be read.
+ *
+ * Built in the isolate's room for records, as a settle's chunk is (`projection-memory.ts`), and only
+ * where there is room for it at once: the answers it is built for — a lease's, which a request may
+ * wait on before its first byte — wait for none, and go without it where there is none, as they go
+ * without one too large to travel back. Built outside that room, the answers for leases of a page
+ * KV is behind, busy or not, would each hold a record of up to 4 MiB beside the settle runs' and
+ * one another's, past what the isolate has.
  */
 async function builtRecord(
   deps: StandingDeps,
@@ -137,10 +144,13 @@ async function builtRecord(
   try {
     // Measured and built alike behind the catch: what cannot be laid out is answered without a
     // record.
-    if (recordBytesOf(deps.scopeId, entry, generation) > MAX_RETURNED_RECORD_BYTES) {
+    const bytes = recordBytesOf(deps.scopeId, entry, generation);
+    if (bytes > MAX_RETURNED_RECORD_BYTES) {
       return undefined;
     }
-    return await generationRecordBytes(deps, entry, generation);
+    return await withProjectionMemoryAtOnce(packMemoryOf(bytes), () =>
+      generationRecordBytes(deps, entry, generation),
+    );
   } catch {
     return undefined;
   }
@@ -196,7 +206,9 @@ export type StartAttemptOutcome = StartAttemptResponse & {
  * generation (`recordBytes`) where the request named an earlier one it judged (`replaces`) and the
  * current one stands, condemned by no invalidation: a Function that read KV behind it answers its
  * request from that record rather than with a render of its own, which no other request is
- * answered with. None where the request named no generation, or the one it judged is the current.
+ * answered with. None where the request named no generation, or the one it judged is the current;
+ * none either where the isolate has no room to build it at once (`builtRecord`), and the request
+ * is answered as for a record too large to travel back.
  */
 export async function withCurrentRecord(
   answer: StartAttemptResponse | Refusal,

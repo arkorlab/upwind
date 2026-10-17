@@ -4,6 +4,7 @@ import {
   PROJECTION_MEMORY_BYTES,
   retain,
   withProjectionMemory,
+  withProjectionMemoryAtOnce,
 } from '../src/scope/projection-memory.ts';
 
 /** How long a claim lasts without its object renewing it (`CLAIM_LAPSE_MS`). */
@@ -298,6 +299,85 @@ describe('the memory an isolate builds records in', () => {
       'one builds',
       'other builds',
     ]);
+  });
+
+  /**
+   * What an answer builds waits for no room: it is built where there is room for it at once, beside
+   * a chunk building, and not at all where there is none. Its room is held while it builds.
+   */
+  it('builds what an answer asks for only where there is room at once, and holds it as it builds', async () => {
+    vi.useFakeTimers();
+    const built: string[] = [];
+    const held = Promise.withResolvers<undefined>();
+    const building = withProjectionMemory(PROJECTION_MEMORY_BYTES - 2, async () => {
+      built.push('building');
+      await held.promise;
+    });
+
+    const beside = await withProjectionMemoryAtOnce(1, () => {
+      built.push('beside');
+      return Promise.resolve('record');
+    });
+    const tooMuch = await withProjectionMemoryAtOnce(3, () => {
+      built.push('too much');
+      return Promise.resolve('record');
+    });
+    held.resolve(undefined);
+    await building;
+    const answered = Promise.withResolvers<undefined>();
+    const answering = withProjectionMemoryAtOnce(PROJECTION_MEMORY_BYTES, async () => {
+      built.push('answering');
+      await answered.promise;
+    });
+    const chunk = withProjectionMemory(1, () => {
+      built.push('chunk');
+      return Promise.resolve();
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    const whileAnswering = [...built];
+    answered.resolve(undefined);
+    await vi.advanceTimersByTimeAsync(1000);
+    await Promise.all([answering, chunk]);
+
+    expect([beside, tooMuch]).toStrictEqual(['record', undefined]);
+    expect(whileAnswering).toStrictEqual(['building', 'beside', 'answering']);
+    expect(built).toStrictEqual(['building', 'beside', 'answering', 'chunk']);
+  });
+
+  /**
+   * Nor is it let in ahead of a chunk that waits for room, though there is room for it beside the
+   * chunks building: a chunk let in at once is the first in line. Turned away, it leaves nothing
+   * in the line, and the next chunk with room is let in at once.
+   */
+  it('lets nothing an answer asks for in ahead of a chunk that waits, and leaves nothing in line', async () => {
+    vi.useFakeTimers();
+    const built: string[] = [];
+    const held = Promise.withResolvers<undefined>();
+    const building = withProjectionMemory(PROJECTION_MEMORY_BYTES - 2, async () => {
+      built.push('building');
+      await held.promise;
+    });
+    const waiting = withProjectionMemory(3, () => {
+      built.push('waiting');
+      return Promise.resolve();
+    });
+
+    const answer = await withProjectionMemoryAtOnce(1, () => {
+      built.push('answer');
+      return Promise.resolve('record');
+    });
+    held.resolve(undefined);
+    await vi.advanceTimersByTimeAsync(1000);
+    await Promise.all([building, waiting]);
+    const next = withProjectionMemory(1, () => {
+      built.push('next');
+      return Promise.resolve();
+    });
+    const atOnce = [...built];
+    await next;
+
+    expect(answer).toBeUndefined();
+    expect(atOnce).toStrictEqual(['building', 'waiting', 'next']);
   });
 
   /**
