@@ -31,8 +31,9 @@ export async function renderedBy(
   input: RoutedInput,
   store: Store,
   resolved: Resolved,
+  lookup: typeof entryFor = entryFor,
 ): Promise<{ readonly entry: Entry; readonly resolved: Resolved } | undefined> {
-  const own = await entryFor(input, resolved.route);
+  const own = await lookup(input, resolved.route);
   if (own !== undefined) {
     return { entry: own, resolved };
   }
@@ -45,7 +46,7 @@ export async function renderedBy(
   if (route === undefined) {
     return undefined;
   }
-  const entry = await entryFor(input, route);
+  const entry = await lookup(input, route);
   return entry === undefined ? undefined : { entry, resolved: { ...resolved, route } };
 }
 
