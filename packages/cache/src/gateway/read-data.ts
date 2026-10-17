@@ -1,6 +1,8 @@
 import { cacheKeyDigestOf, kvDataKey } from '@stayingupwind/core/cache';
 import { type DataGetRequest, type DataGetResponse } from '@stayingupwind/host/cache';
 
+import type { AuthorityHost } from '../authority-host.ts';
+import { createLogger, detailOf } from '../logger.ts';
 import { type DataRecord, dataRecordSchema } from '../scope/records.ts';
 
 /** The same projection, read locally by either gateway; no authority call is needed. */
@@ -57,4 +59,21 @@ function base64ByteLength(base64: string): number {
  */
 export function dataReadBytes(record: DataGetResponse): number {
   return record.value.kind === 'inline' ? base64ByteLength(record.value.base64) : 0;
+}
+
+const logger = createLogger({ component: 'gateway' });
+
+/**
+ * Tell the host's meter of a read the cache's storage answered (`CacheMeter.read`), at either
+ * gateway, as its answer goes out. The read is answered whatever the meter does: a meter that
+ * throws loses the read's line, which the gateway's log says instead. Answered as a failure, the
+ * read would be a miss whose value or output its render makes again itself: an outage of the meter
+ * would be one of the cache.
+ */
+export function meterRead(host: AuthorityHost, scopeId: string, bytes: number): void {
+  try {
+    host.meter.read(scopeId, bytes);
+  } catch (error) {
+    logger.error('read not metered', { scopeId, bytes, detail: detailOf(error) });
+  }
 }

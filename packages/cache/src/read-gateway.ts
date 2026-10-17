@@ -8,7 +8,7 @@ import { Hono, type MiddlewareHandler } from 'hono';
 
 import type { AuthorityHost } from './authority-host.ts';
 import { ENTRY_BODY_BYTES, readRequest, TAGS_BODY_BYTES } from './gateway/body.ts';
-import { dataReadBytes, readDataRecord } from './gateway/read-data.ts';
+import { dataReadBytes, meterRead, readDataRecord } from './gateway/read-data.ts';
 import { readTagRecords } from './gateway/read-tags.ts';
 import { fail, ok } from './gateway/respond.ts';
 import { scopeRetired } from './gateway/retirement.ts';
@@ -70,7 +70,7 @@ export function createReadGateway(host: AuthorityHost): Hono<ReadEnv> {
         if (record === undefined) {
           return fail(c, 'not_found', 'no record for the key');
         }
-        host.meter.read(scopeId, dataReadBytes(record));
+        meterRead(host, scopeId, dataReadBytes(record));
         return ok(c, record);
       })
       // A tag read opens nothing, so the marker guards nothing there, and the render judging a value
@@ -97,7 +97,7 @@ export function createReadGateway(host: AuthorityHost): Hono<ReadEnv> {
         if (bytes === null) {
           return fail(c, 'not_found', 'no delivery record for the entry');
         }
-        host.meter.read(scopeId, bytes.byteLength);
+        meterRead(host, scopeId, bytes.byteLength);
         return new Response(bytes, {
           headers: {
             'content-type': 'application/octet-stream',

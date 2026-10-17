@@ -152,6 +152,27 @@ function ownFiles(bundle: DeploymentBundle): Record<string, StaticFileEntry> {
 }
 
 /**
+ * This build's entry for a name under its own asset prefix's `_next`: the file under its base path
+ * the name lands on, which `next build` rewrites a request under the prefix to before it looks for
+ * one at the path itself (`beforeFiles`). The base path before may be that prefix, and a name the
+ * deployment before built there is then this build's to answer, as a name both builds have is.
+ * `undefined` for a name under no such prefix, or where this build ships nothing it lands on.
+ */
+function landingEntry(
+  bundle: DeploymentBundle,
+  own: ReadonlyMap<string, BundledStaticFile>,
+  pathname: string,
+): StaticFileEntry | undefined {
+  const prefix = staticFileAssetPrefixOf(bundle);
+  const under = prefix === undefined ? undefined : `${prefix.assetPrefix}/_next/`;
+  if (under === undefined || !pathname.startsWith(under)) {
+    return undefined;
+  }
+  const mine = own.get(`${bundle.config.basePath}/_next/${pathname.slice(under.length)}`);
+  return mine === undefined ? undefined : staticFileEntry(mine, bundle.config.basePath);
+}
+
+/**
  * The files the manifest serves: this build's, and under `_next/static` those of the deployment
  * served just before. A document of that deployment still open in a browser asks for the
  * scripts it was built with, by their own paths and its own `dpl`; its Workers are kept for a
@@ -159,7 +180,9 @@ function ownFiles(bundle: DeploymentBundle): Record<string, StaticFileEntry> {
  * from further back, since the previous build's files, not its manifest, are what is carried.
  * A name both builds have is one entry: the same bytes when the name is a content hash, and
  * else this build's bytes with the previous build's beside them, for the deployment that asks
- * for those. A `public/` file that disappeared is gone: that is what removing it means.
+ * for those — a name under this build's asset prefix among them, which this build has where it
+ * ships the file the name lands on (`landingEntry`). A `public/` file that disappeared is gone:
+ * that is what removing it means.
  */
 export function staticFilesOf(
   bundle: DeploymentBundle,
@@ -179,19 +202,16 @@ export function staticFilesOf(
   }
   // Named under the basePath, as Next.js names everything of a build.
   const prefix = `${previous.config.basePath}${NEXT_STATIC_PREFIX}`;
+  const own = new Map(bundle.staticFiles.map((file) => [file.pathname, file]));
   for (const file of previous.staticFiles) {
     if (!file.pathname.startsWith(prefix)) {
       continue;
     }
-    const current = files[file.pathname];
-    if (current === undefined) {
-      files[file.pathname] = keptEntry(file, bundle, previous);
-    } else if (!current.immutable) {
-      files[file.pathname] = {
-        ...current,
-        previous: { ...staticFileBytes(file), deploymentId: previous.deploymentId },
-      };
-    }
+    const current = files[file.pathname] ?? landingEntry(bundle, own, file.pathname);
+    files[file.pathname] =
+      current === undefined
+        ? keptEntry(file, bundle, previous)
+        : sharedEntry(current, file, previous);
   }
   underMovedPrefix(files, bundle, previous);
   return files;

@@ -8,6 +8,9 @@ import {
   withDeadline,
 } from '@stayingupwind/core/util';
 
+import { putCopy } from './copy-body.ts';
+import { ArtifactRoom, type ReadBudget } from './read-budget.ts';
+
 /**
  * The artifacts a deployment's Worker has read, kept where its next read of one finds them without
  * crossing to the authority.
@@ -32,6 +35,13 @@ import {
  * held, so each read of it is answered by the copy, hashed again in full, or by the authority where
  * the copy is missing or slower than its budget. A copy that turns up after it was given up on is
  * not written over, so a slow one costs its reads the authority's round trip but not a rewrite.
+ *
+ * A copy and the authority's answer are each read whole, and an isolate reads no more of them at
+ * once than it has room for, its requests together (`ReadBudget`). A copy kept saying how long it
+ * is takes its room once its lookup has answered, before its body is read, and holds it until its
+ * bytes are held to their id or it is given up; the authority's answer asked beside it is read in
+ * the same room rather than behind it (`ArtifactRoom`). A copy kept before copies said their length
+ * is read as it always was, until it ages out.
  *
  * Retirement needs nothing of either. A deployment's scope is retired once its Workers have been
  * taken down, and what an isolate holds goes with the isolate. The copies are keyed under the
@@ -92,6 +102,7 @@ const HELD_BYTES = HELD_MIB * MIB;
 const HELD_ENTRY_SHARE = 4;
 const HELD_ENTRY_BYTES = HELD_BYTES / HELD_ENTRY_SHARE;
 const UTF16_BYTES = 2;
+const DIGITS = /^\d+$/u;
 /**
  * The largest artifact the authority keeps (`MAX_ARTIFACT_BYTES`, 25 MiB): no copy of one runs
  * longer. A copy's body is read whole before it is held to its id, and the application's own code
@@ -127,36 +138,18 @@ const COPY_LOOKUPS_AT_ONCE = 2;
  * otherwise queue behind — or, stalled, hold up for good.
  */
 const COPY_WRITES_AT_ONCE = 1;
-/**
- * How much of a copy is handed to the Cache API at a time. A copy's body is the bytes the read
- * answered with, read in slices of them (`sliced`): `new Response` given the bytes themselves
- * takes a copy of them, and a render that misses several large data values at once would hold each
- * of them twice while their copies are written — three of 25 MiB is past a Function's 128 MB.
- */
-const COPY_SLICE_KIB = 64;
-const COPY_SLICE_BYTES = COPY_SLICE_KIB * KIB;
-
-/** The bytes as a body read from them, a slice at a time, rather than from a copy of them. */
-function sliced(bytes: Uint8Array): ReadableStream<Uint8Array> {
-  let offset = 0;
-  return new ReadableStream<Uint8Array>({
-    pull(controller) {
-      if (offset >= bytes.byteLength) {
-        controller.close();
-        return;
-      }
-      const end = Math.min(offset + COPY_SLICE_BYTES, bytes.byteLength);
-      controller.enqueue(bytes.subarray(offset, end));
-      offset = end;
-    },
-  });
-}
-
 /** Where the runtime puts each request's context for libraries written for Vercel to find. */
 const REQUEST_CONTEXT = Symbol.for('@vercel/request-context');
 
-/** The authority's answer for one artifact: its bytes, or `undefined` for none. A refusal rejects. */
-type AuthorityRead = (artifactId: string, signal?: AbortSignal) => Promise<Uint8Array | undefined>;
+/**
+ * The authority's answer for one artifact: its bytes, or `undefined` for none. A refusal rejects.
+ * Read in `room` where it is asked beside the artifact's copy, and in room of its own otherwise.
+ */
+type AuthorityRead = (
+  artifactId: string,
+  signal?: AbortSignal,
+  room?: ArtifactRoom,
+) => Promise<Uint8Array | undefined>;
 
 /**
  * What one read came to: the bytes, none, the refusal the authority answered with, or — the copy's
@@ -177,10 +170,15 @@ interface Copies {
   readonly name: string;
 }
 
-/** Where the authority's bytes are copied, once the copy's own read is known to have missed. */
-interface CopyTarget {
+/** Where one artifact's copy is read: the copies, its key, and the room its two reads share. */
+interface CopyAt {
   readonly copies: Copies;
   readonly key: string;
+  readonly room: ArtifactRoom;
+}
+
+/** Where the authority's bytes are copied, once the copy's own read is known to have missed. */
+interface CopyTarget extends CopyAt {
   readonly missed: Promise<boolean>;
 }
 
@@ -237,32 +235,6 @@ async function lookUpCopy(copies: Copies, key: string): Promise<Response | undef
   }
 }
 
-/** What the copies' cache holds under the key: its bytes, none, or more than any artifact runs. */
-async function matchCopy(
-  copies: Copies,
-  key: string,
-): Promise<Uint8Array | 'oversized' | undefined> {
-  const hit = await lookUpCopy(copies, key);
-  if (hit === undefined) {
-    return undefined;
-  }
-  // Said up front where it was stored with a length, and counted where it was not.
-  if (Number(hit.headers.get('content-length')) > MAX_COPY_BYTES) {
-    releaseStream(hit.body, 'a copy longer than any artifact');
-    return 'oversized';
-  }
-  const body = await readBoundedBody(hit.body, {
-    limit: MAX_COPY_BYTES,
-    stallMs: COPY_READ_LIMIT_MS,
-    budgetMs: COPY_READ_LIMIT_MS,
-  });
-  if (body.kind === 'over-limit') {
-    releaseStream(body.body, 'a copy longer than any artifact');
-    return 'oversized';
-  }
-  return body.bytes;
-}
-
 /**
  * Keep the authority's bytes as the data center's copy, unless the copy's own read found one. Only
  * ever behind the response, and a failure is only logged: the authority answers without it. Bytes
@@ -285,7 +257,7 @@ async function keepCopy(target: CopyTarget, bytes: Uint8Array): Promise<void> {
     }
     try {
       const cache = await target.copies.storage.open(target.copies.name);
-      await cache.put(target.key, new Response(sliced(bytes), { headers: COPY_HEADERS }));
+      await putCopy(cache, target.key, bytes, COPY_HEADERS);
     } finally {
       turns?.give();
     }
@@ -438,25 +410,92 @@ type CopyCheck =
   | { readonly kind: 'missing' }
   | { readonly kind: 'other' };
 
+/** Whether bytes are the artifact the copy is read for. */
+type Names = (bytes: Uint8Array) => Promise<boolean>;
+
+/**
+ * How long a copy says it is (`content-length`): one kept since copies say theirs (`putCopy`). One
+ * kept before says nothing, and is read as it always was, in no room, until it ages out.
+ */
+function statedLength(hit: Response): number | undefined {
+  const length = hit.headers.get('content-length');
+  return length !== null && DIGITS.test(length) ? Number(length) : undefined;
+}
+
+/**
+ * The room a copy that says its length is read in (`ArtifactRoom`), once the isolate has it: what
+ * gives it back. A copy given up while it waits lets go of its body unread.
+ */
+async function roomFor(
+  at: CopyAt,
+  length: number,
+  hit: Response,
+  signal: AbortSignal,
+): Promise<() => void> {
+  try {
+    return await at.room.hold(length, signal);
+  } catch (error) {
+    releaseStream(hit.body, 'a copy given up before its body');
+    throw error;
+  }
+}
+
+/**
+ * What the copies' cache holds under the key, held to its id. A copy that says how long it is is
+ * read in its room, taken once its lookup has answered and before its body is read, and given back
+ * once the bytes are held to their id, or the copy given up (`roomFor`). One given up meanwhile is
+ * not hashed for nothing.
+ */
+async function heldCopy(at: CopyAt, names: Names, signal: AbortSignal): Promise<CopyCheck> {
+  const hit = await lookUpCopy(at.copies, at.key);
+  if (hit === undefined) {
+    return { kind: 'missing' };
+  }
+  const length = statedLength(hit);
+  // Said up front where it was stored with a length, and counted where it was not.
+  if (length !== undefined && length > MAX_COPY_BYTES) {
+    releaseStream(hit.body, 'a copy longer than any artifact');
+    return { kind: 'other' };
+  }
+  const release = length === undefined ? undefined : await roomFor(at, length, hit, signal);
+  try {
+    const body = await readBoundedBody(hit.body, {
+      limit: MAX_COPY_BYTES,
+      stallMs: COPY_READ_LIMIT_MS,
+      budgetMs: COPY_READ_LIMIT_MS,
+    });
+    if (body.kind === 'over-limit') {
+      releaseStream(body.body, 'a copy longer than any artifact');
+      return { kind: 'other' };
+    }
+    signal.throwIfAborted();
+    return (await names(body.bytes)) ? { kind: 'named', bytes: body.bytes } : { kind: 'other' };
+  } finally {
+    release?.();
+  }
+}
+
 /**
  * The copy read and held to its id together, so that the budget a read gives the copy covers both:
  * a large copy can take tens of milliseconds to hash once its body is in. Held to its id, as the
  * application's own code can write into the same cache, and a copy that does not hash would
- * otherwise stand in the way of the authority's bytes until it aged out. Rejects where the Cache
- * API does.
+ * otherwise stand in the way of the authority's bytes until it aged out. Given up past
+ * `COPY_READ_LIMIT_MS`, and its wait for room with it. Rejects where the Cache API does.
  */
-async function checkedCopy(
-  match: Promise<Uint8Array | 'oversized' | undefined>,
-  names: (bytes: Uint8Array) => Promise<boolean>,
-): Promise<CopyCheck> {
-  const bytes = await match;
-  if (bytes === undefined) {
-    return { kind: 'missing' };
+async function checkedCopy(at: CopyAt, names: Names): Promise<CopyCheck> {
+  const given = new AbortController();
+  try {
+    return await withDeadline(
+      heldCopy(at, names, given.signal),
+      COPY_READ_LIMIT_MS,
+      'artifact copy read',
+    );
+  } catch (error) {
+    if (isDeadlineError(error)) {
+      given.abort(error);
+    }
+    throw error;
   }
-  if (bytes === 'oversized') {
-    return { kind: 'other' };
-  }
-  return (await names(bytes)) ? { kind: 'named', bytes } : { kind: 'other' };
 }
 
 /** Once `promise` has settled, whichever way: what work kept behind a response is handed as. */
@@ -576,15 +615,23 @@ export class ArtifactCopies {
   readonly #scopeId: string;
   readonly #fromAuthority: AuthorityRead;
   readonly #naming: FunctionCacheNaming;
+  /** What the isolate reads of artifacts at once: copies and the authority's answers alike. */
+  readonly #budget: ReadBudget;
   /** Least recently read first to go, and nothing else: no bytes held here ever go stale. */
   readonly #held = new ByteLru<string, Uint8Array>(HELD_BYTES);
   /** This isolate's copies (`#copiesIn`): the same `caches` every read, under the host's name. */
   #copies: Copies | undefined;
 
-  constructor(scopeId: string, fromAuthority: AuthorityRead, naming: FunctionCacheNaming) {
+  constructor(
+    scopeId: string,
+    fromAuthority: AuthorityRead,
+    naming: FunctionCacheNaming,
+    budget: ReadBudget,
+  ) {
     this.#scopeId = scopeId;
     this.#fromAuthority = fromAuthority;
     this.#naming = naming;
+    this.#budget = budget;
   }
 
   #copiesIn(storage: CacheStorage): Copies {
@@ -594,13 +641,15 @@ export class ArtifactCopies {
 
   async #throughCopy(copies: Copies, artifactId: string): Promise<Outcome> {
     const key = copyUrl(this.#naming, this.#scopeId, artifactId);
-    const copy = this.#copyOf(copies, key, artifactId);
+    // One room for the copy's read and the authority's beside it: the same bytes (`ArtifactRoom`).
+    const at = { copies, key, room: new ArtifactRoom(this.#budget) };
+    const copy = this.#copyOf(at, artifactId);
     const early = await withinHeadStart(copy);
     if (early === 'out') {
       const asked = new AbortController();
       const authority = this.#fromAuthorityKept(
         artifactId,
-        { copies, key, missed: missed(copy) },
+        { ...at, missed: missed(copy) },
         asked.signal,
       );
       const outcome = await firstWithBytes(copy, authority);
@@ -614,7 +663,7 @@ export class ArtifactCopies {
     }
     return early.kind === 'bytes'
       ? early
-      : this.#fromAuthorityKept(artifactId, { copies, key, missed: Promise.resolve(true) });
+      : this.#fromAuthorityKept(artifactId, { ...at, missed: Promise.resolve(true) });
   }
 
   /**
@@ -625,11 +674,8 @@ export class ArtifactCopies {
    * log is the application's own runtime log, where a warning its owner can do nothing about on
    * every such read would be noise.
    */
-  async #copyOf(copies: Copies, key: string, artifactId: string): Promise<Outcome> {
-    const checked = checkedCopy(
-      withDeadline(matchCopy(copies, key), COPY_READ_LIMIT_MS, 'artifact copy read'),
-      async (bytes) => this.#names(artifactId, bytes),
-    );
+  async #copyOf(at: CopyAt, artifactId: string): Promise<Outcome> {
+    const checked = checkedCopy(at, async (bytes) => this.#names(artifactId, bytes));
     try {
       const copy = await withDeadline(checked, COPY_READ_BUDGET_MS, 'artifact copy read');
       if (copy.kind === 'missing') {
@@ -672,7 +718,7 @@ export class ArtifactCopies {
   ): Promise<Outcome> {
     let bytes: Uint8Array | undefined;
     try {
-      bytes = await this.#fromAuthority(artifactId, signal);
+      bytes = await this.#fromAuthority(artifactId, signal, copy?.room);
     } catch (error) {
       return { kind: 'failed', error };
     }

@@ -231,7 +231,8 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
   // recovery script permitted: the rule's has to permit it as well. Widened here, beside the
   // route's own, so that the serving path does no more than it did — and beside the rule's own
   // headers rather than over them: a file or an image the same rule matches carries no recovery
-  // script, and keeps the policy the application set.
+  // script, nor does a document the edge serves complete, and each keeps the policy the
+  // application set.
   const forDocuments = (rule: HeaderRule): HeaderRule => {
     const widened = allowRecoveryScript(rule.headers, context.recoverySource);
     const changed = Object.entries(rule.headers).some(([name, value]) => widened[name] !== value);

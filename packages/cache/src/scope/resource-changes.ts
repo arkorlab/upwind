@@ -140,11 +140,12 @@ function eligibleEntries(
 /**
  * The tag a newer change of a resource takes the place of, where it names another: the entries
  * still tagged with it show the resource as it was, and are condemned and warmed with those of the
- * tag the change names. Read here, under the lock every head is written under, the head is the one
- * the transaction that follows finds.
+ * tag the change names.
  */
-function replacedTags(sql: SqlStorage, request: ApplyResourceChangeInput): string[] {
-  const head = headOf(sql, request.resourceId);
+function replacedTags(
+  head: ResourceHeadRow | undefined,
+  request: ApplyResourceChangeInput,
+): string[] {
   return head !== undefined && head.version < request.version && head.tag !== request.tag
     ? [head.tag]
     : [];
@@ -154,14 +155,19 @@ export async function planApplyResourceChange(
   input: TxInput,
   request: ApplyResourceChangeInput,
 ): Promise<Apply<ApplyResourceChangeResult | Refusal>> {
-  const tags = [request.tag, ...replacedTags(input.sql, request)];
+  // Read here, under the lock every head is written under, the head is the one the transaction
+  // that follows finds.
+  const head = headOf(input.sql, request.resourceId);
+  const tags = [request.tag, ...replacedTags(head, request)];
   const [invalidate, tagId] = await Promise.all([
     planInvalidate(input, {
       tags: tags.map((value) => ({ kind: 'next-explicit' as const, value })),
       expire: NEXT_ONE_YEAR_SECONDS,
       cause: { source: 'platform', api: 'resourceChange', requestId: request.eventId },
     }),
-    tagIdFor(input.scopeId, 'next-explicit', request.tag),
+    // What a reconciliation takes up is the change the head keeps (`reconcile`): the tag that
+    // change named, whatever tag the delivery names.
+    tagIdFor(input.scopeId, 'next-explicit', head?.tag ?? request.tag),
   ]);
   return () => {
     const { sql, now } = input;
@@ -275,11 +281,11 @@ function notYetQueued(
 }
 
 /**
- * Every tag the head's change invalidated: the one asked about, and those recorded at the revision
- * the change committed at, which no other change commits at. Those are the tag it names and any it
- * took the place of (`replacedTags`), whose entries seeded since show the resource as it was too.
- * Retention folds none of the invalidations at a head's revision (`invalidation-fold.ts`): they are
- * here however long ago the change was.
+ * Every tag the head's change invalidated: the one it named (`tagId`), and those recorded at the
+ * revision the change committed at, which no other change commits at. Those are the tag it names
+ * and any it took the place of (`replacedTags`), whose entries seeded since show the resource as it
+ * was too. Retention folds none of the invalidations at a head's revision (`invalidation-fold.ts`):
+ * they are here however long ago the change was.
  */
 function headTagIds(sql: SqlStorage, head: ResourceHeadRow, tagId: string): string[] {
   const tagIds = [tagId];
@@ -356,7 +362,9 @@ function condemnOutdated(
 /**
  * Seeding may have committed after the first delivery of this event to an already-active scope,
  * under any tag the head's change invalidated. Each tag's outdated entries are read after those of
- * the tags before it were condemned, so an entry under two is condemned and counted once.
+ * the tags before it were condemned, so an entry under two is condemned and counted once. A
+ * delivery of the head's version that names another tag is reconciled as the head's change all the
+ * same, and takes up nothing of the tag it names, which that change did not invalidate.
  */
 function reconcile(
   input: TxInput,
