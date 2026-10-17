@@ -159,6 +159,7 @@ export {
 export {
   type CacheNaming,
   isSignableScopeId,
+  MAX_SCOPE_ID_LENGTH,
   type ParsedCacheToken,
   parseCacheToken,
   signCacheToken,

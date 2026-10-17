@@ -17,7 +17,7 @@ import {
 } from '@stayingupwind/core/cache';
 import * as z from '@stayingupwind/core/schema';
 
-import { SIGNABLE_SCOPE_ID } from './token.ts';
+import { MAX_SCOPE_ID_LENGTH, SIGNABLE_SCOPE_ID } from './token.ts';
 
 /**
  * The cache's own model, as every Worker and any index of its history see it.
@@ -50,11 +50,16 @@ export type CacheScopeStatus = z.infer<typeof cacheScopeStatusSchema>;
 
 /** The boundary of authorization, keys, storage and invalidation: one deployment, for now. */
 export const cacheScopeSchema = z.object({
-  /** Signed into the token that opens the scope: a bearer token's characters, but `.` and `=`. */
+  /**
+   * Signed into the token that opens the scope, and the first part of every key its storage is
+   * kept under: a bearer token's characters, but `.`, `=` and `/` (`SIGNABLE_SCOPE_ID`), and no
+   * longer than the authority answers about (`MAX_SCOPE_ID_LENGTH`).
+   */
   scopeId: z
     .string()
     .min(1)
-    .regex(SIGNABLE_SCOPE_ID, 'a scope id is ASCII letters, digits, -, _, ~, + and /'),
+    .max(MAX_SCOPE_ID_LENGTH, `a scope id is at most ${MAX_SCOPE_ID_LENGTH} characters`)
+    .regex(SIGNABLE_SCOPE_ID, 'a scope id is ASCII letters, digits, -, _, ~ and +'),
   organizationId: z.string().min(1),
   projectId: z.string().min(1),
   environmentId: cacheEnvironmentSchema,
