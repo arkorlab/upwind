@@ -6,6 +6,7 @@ import { filterShellResponseHeaders, rendersInline } from '../request/headers.ts
 import { isInternalPage, nextNamespaceRoutes } from './base-path.ts';
 import { filesystemPagesOf } from './filesystem-pages.ts';
 import { type DynamicRouting, withFunctions } from './functions.ts';
+import { withGates } from './gates.ts';
 import { memberRoutesOf } from './member-routes.ts';
 import { pageRoutes } from './page-routes.ts';
 import { queryDependent } from './query.ts';
@@ -679,9 +680,10 @@ export function edgeServedRewrites(bundle: DeploymentBundle): ServedRewrite[] {
 /**
  * What the edge needs to pick a dynamic route's class the way Next.js picks the route; for a
  * bundle whose routes are split across app Functions, which Function each route it picks is in;
- * and, where the application keeps its pages behind a trailing slash, that it does, since a member
- * of a class is asked for with the slash too. Where it has `trailingSlash` at all, that a shipped
- * file is found by the slash as well: the router finds one so with the redirect or without it
+ * for one that declares gates, which gated route each lands on (`withGates`); and, where the
+ * application keeps its pages behind a trailing slash, that it does, since a member of a class is
+ * asked for with the slash too. Where it has `trailingSlash` at all, that a shipped file is found
+ * by the slash as well: the router finds one so with the redirect or without it
  * (`routerSpellings`), and `skipTrailingSlashRedirect` leaves only the pages at the build's spelling.
  */
 export function dynamicRouting(
@@ -777,13 +779,11 @@ export function dynamicRouting(
     [...pathnames, ...fileSpellings].filter((pathname) => !routeKeys.has(pathname)),
   );
   const filesystemPages = filesystemPagesOf(bundle, dynamicRoutes);
+  // The page each dynamic route lands on, or answers the data of, in their order.
+  const landings = pages.map((page) => page.template ?? page.dataOf);
+  const tables = { dynamicRoutes, reservedRoutes, exactPathnames: [...exact], filesystemPages };
   return {
-    ...withFunctions(
-      bundle,
-      routeKeys,
-      { dynamicRoutes, reservedRoutes, exactPathnames: [...exact], filesystemPages },
-      pages.map((page) => page.template ?? page.dataOf),
-    ),
+    ...withGates(bundle, withFunctions(bundle, routeKeys, tables, landings), landings),
     ...spelled,
   };
 }
