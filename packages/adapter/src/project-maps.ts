@@ -57,6 +57,7 @@ interface RawMap {
   readonly file?: string;
   readonly sourceRoot?: string;
   readonly sources: readonly (string | null)[];
+  readonly sourcesContent?: readonly unknown[];
   readonly names?: readonly string[];
   readonly mappings: string;
 }
@@ -143,10 +144,15 @@ function reindexed(
 /**
  * The map in `text`, written at `mapFile`, with only the mappings into the project's own files.
  *
- * `sourcesContent` is not carried (a Function's map is built without it, `sourcemapOutput`), and
- * neither is an `ignoreList`, whose indices would name other sources once these are renumbered.
+ * `carryContents` keeps the matching contents until they are extracted to a separate private
+ * archive. An `ignoreList` is omitted: its indices would name other sources once renumbered.
  */
-export function projectOnly(text: string, mapFile: string, bounds: ProjectBounds): string {
+export function projectOnly(
+  text: string,
+  mapFile: string,
+  bounds: ProjectBounds,
+  carryContents = false,
+): string {
   const map = JSON.parse(text) as RawMap;
   const base = path.dirname(mapFile);
   const kept = map.sources.map((source) => {
@@ -191,6 +197,10 @@ export function projectOnly(text: string, mapFile: string, bounds: ProjectBounds
     ...(map.file !== undefined && { file: map.file }),
     ...(map.sourceRoot !== undefined && { sourceRoot: map.sourceRoot }),
     sources,
+    ...(carryContents &&
+      Array.isArray(map.sourcesContent) && {
+        sourcesContent: [...sourceIndex.keys()].map((at) => map.sourcesContent?.[at] ?? null),
+      }),
     names,
     mappings: encode(mappings),
   });
