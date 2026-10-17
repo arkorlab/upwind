@@ -69,6 +69,12 @@ jobs:
       - run: pnpm build
       # Every suite, under one runner (`vitest.config.ts`), beside `check` rather than after it.
       - run: pnpm test
+      # One real Next.js build plus an HTTP request through the emitted Function. The remaining
+      # fixtures and Next.js releases stay in the scheduled matrix workflow.
+      - name: External output integration
+        run: |
+          matrix_next_version="$(node -p 'require("./packages/adapter/node_modules/next/package.json").version')"
+          pnpm check:matrix --fixture next-external-output --versions "$matrix_next_version"
 
   audit:
     runs-on: ubuntu-latest

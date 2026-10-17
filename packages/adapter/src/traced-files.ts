@@ -1,5 +1,7 @@
 import path from 'node:path';
 
+import { beneath, buildPaths, type BuildPaths } from './build-paths.ts';
+
 /**
  * The files an application reads through `node:fs` while it serves a request, as the build traced
  * them: `fs.readFileSync(path.join(process.cwd(), 'data.json'))` in a page, `package.json` in a
@@ -44,34 +46,28 @@ const PACKAGES_DIR = 'node_modules';
 /** Where Turbopack writes a file a server module refers to by URL, beneath the build output. */
 const SERVER_ASSETS_DIR = path.join('server', 'assets');
 
-/** `file` beneath `dir`, as a relative path; `undefined` when it is not beneath it. */
-function beneath(dir: string, file: string): string | undefined {
-  const relative = path.relative(dir, file);
-  return relative === '' ||
-    relative === '..' ||
-    relative.startsWith(`..${path.sep}`) ||
-    path.isAbsolute(relative)
-    ? undefined
-    : relative;
-}
-
-function nameOf(projectDir: string, distDir: string, filePath: string): string | undefined {
+function nameOf(
+  projectDir: string,
+  distDir: string,
+  filePath: string,
+  paths: BuildPaths,
+): string | undefined {
+  const built = beneath(distDir, filePath);
+  if (built !== undefined) {
+    const asset = beneath(SERVER_ASSETS_DIR, built);
+    if (asset === undefined || asset === '') return undefined;
+    paths.assertDataFile(filePath);
+    return paths.moduleName(filePath);
+  }
   const relative = beneath(projectDir, filePath);
-  if (relative === undefined) {
+  if (relative === undefined || relative === '') {
     return undefined;
   }
   const segments = relative.split(path.sep);
-  const built = beneath(distDir, filePath);
-  if (built !== undefined) {
-    // Of what the build wrote, only a copy of a file a server module refers to by URL, and that one
-    // whatever it is called: it is read as data — a `.js` read as a template is still bytes — and it
-    // travels as data, never as code the bundler would have to follow.
-    return beneath(SERVER_ASSETS_DIR, built) === undefined ? undefined : segments.join('/');
-  }
   if (segments.includes(PACKAGES_DIR) || NOT_DATA.has(path.extname(relative).toLowerCase())) {
     return undefined;
   }
-  return segments.join('/');
+  return paths.moduleName(filePath);
 }
 
 /** The data files the outputs on the Node.js runtime read, once each, in a stable order. */
@@ -80,13 +76,14 @@ export function tracedFiles(
   projectDir: string,
   distDir: string,
 ): TracedFile[] {
+  const paths = buildPaths(projectDir, distDir);
   const files = new Map<string, TracedFile>();
   for (const output of outputs) {
     if (output.runtime === 'edge') {
       continue;
     }
     for (const filePath of Object.values(output.assets)) {
-      const name = nameOf(projectDir, distDir, filePath);
+      const name = nameOf(projectDir, distDir, filePath, paths);
       if (name !== undefined && !files.has(name)) {
         files.set(name, { name, filePath });
       }
@@ -96,26 +93,20 @@ export function tracedFiles(
 }
 
 /**
- * The module a file inside the project travels as: its path there, with `/` between segments,
- * which is where it is found under `/bundle`. `undefined` for a file outside the project.
- */
-export function projectModuleName(projectDir: string, filePath: string): string | undefined {
-  return beneath(projectDir, filePath)?.split(path.sep).join('/');
-}
-
-/**
- * The files the edge runtime's entries fetch as `blob:` assets (`EdgeEntry.inlineAssets`), as the
- * modules they travel as: under the build's output, where no other file of the application is
- * shipped from, and read by nothing but the fetch that asks for them (`edgeEntrySource`).
+ * The files the edge runtime fetches as `blob:` assets, under the same VFS names its generated
+ * entry uses. An external build output uses the reserved mount rather than a parent path.
  */
 export function inlineAssetFiles(
   entries: readonly { readonly inlineAssets: readonly { filePath: string }[] }[],
   projectDir: string,
+  distDir: string,
 ): TracedFile[] {
+  const paths = buildPaths(projectDir, distDir);
   const files = new Map<string, TracedFile>();
   for (const entry of entries) {
     for (const { filePath } of entry.inlineAssets) {
-      const name = projectModuleName(projectDir, filePath);
+      paths.assertDataFile(filePath);
+      const name = paths.moduleName(filePath);
       if (name !== undefined && !files.has(name)) {
         files.set(name, { name, filePath });
       }
