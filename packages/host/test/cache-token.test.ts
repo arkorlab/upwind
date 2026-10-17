@@ -3,7 +3,12 @@ import { toBase64Url } from '@stayingupwind/core/util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { cacheScopeSchema, ENTITY_SCHEMA_VERSION, scopeSeedSchema } from '../src/cache/index.ts';
-import { parseCacheToken, signCacheToken, verifyCacheToken } from '../src/cache/token.ts';
+import {
+  MAX_SCOPE_ID_LENGTH,
+  parseCacheToken,
+  signCacheToken,
+  verifyCacheToken,
+} from '../src/cache/token.ts';
 
 const SECRET = 'cache-token-key-for-tests-32-chars!!';
 const SCOPE = 'dpl_4Fixture2Minima1AppXy';
@@ -207,6 +212,17 @@ describe('a scope', () => {
     expect(scopeSeedSchema.safeParse(scope).success).toBe(true);
     expect(scopeSeedSchema.safeParse({ ...scope, scopeId: TOKENED }).success).toBe(true);
     await expect(signCacheToken(SECRET, scope.scopeId, NAMING)).resolves.toMatch(/^v1\./u);
+  });
+
+  /**
+   * As long an id as the authority answers about, and none longer: refused where the scope is made,
+   * rather than seeded and never answered about.
+   */
+  it('is seeded under an id as long as the authority answers about, and none longer', () => {
+    const longest = 'a'.repeat(MAX_SCOPE_ID_LENGTH);
+
+    expect(scopeSeedSchema.safeParse({ ...scope, scopeId: longest }).success).toBe(true);
+    expect(scopeSeedSchema.safeParse({ ...scope, scopeId: `${longest}a` }).success).toBe(false);
   });
 
   /** Refused where the scope is made, rather than once it is and its token cannot be signed. */

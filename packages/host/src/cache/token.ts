@@ -35,6 +35,12 @@ const FIELD_SEPARATOR = '|';
  */
 export const SIGNABLE_SCOPE_ID = /^[\w+~-]+$/u;
 
+/**
+ * The longest id a scope is named by: what a deploy issues, and nothing longer. The authority answers
+ * about no scope named past it (`isScopeId`, `@stayingupwind/cache`), so a scope's schema refuses one.
+ */
+export const MAX_SCOPE_ID_LENGTH = 256;
+
 /** Whether a token can be signed for `scopeId` (`SIGNABLE_SCOPE_ID`). */
 export function isSignableScopeId(scopeId: string): boolean {
   return SIGNABLE_SCOPE_ID.test(scopeId);
