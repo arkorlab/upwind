@@ -517,15 +517,16 @@ function recordMiddlewareAnswer(
 
 /**
  * What routing lays on its answer to a rewrite it proxies: the headers the rules of `next.config`
- * set, then the middleware's — both collected before the proxy (`resolve-routes.ts`) — over the
- * answer's own, as the runtime lays them (`withRoutingHeaders`). Each is merged as the middleware's
- * are on any answer the edge hands on (`mergeScopedMiddlewareHeaders`): not the body's type,
- * encoding, framing or caching, and a cookie added beside the answer's, scoped to the host. A
- * rule's name that no header can have is left off (`setConfigured`).
+ * set, then the middleware's over them — both collected before the proxy (`resolve-routes.ts`) —
+ * under the answer's own, as Next.js answers: its router puts what it collected on the response
+ * before it proxies (`router-server.js`), and the proxy writes each of the target's own headers over
+ * it (`res.setHeader`, in httpxy). So a name the answer carries is the answer's, and routing's
+ * stands only where the answer names none. Routing's are merged as the middleware's are on any
+ * answer the edge hands on (`mergeScopedMiddlewareHeaders`): not the body's type, encoding, framing
+ * or caching. A cookie is its own: routing's go out beside the answer's, scoped to the host, as on
+ * every answer the edge hands on. A rule's name that no header can have is left off.
  *
- * The body's type is the answer's where it names one, as Next.js answers: its router puts what it
- * collected on the response before it proxies (`router-server.js`), and the proxy writes the
- * target's own headers over it (`res.setHeader`, in httpxy). Where the answer names none, routing's
+ * The body's type is the answer's where it names one; where the answer names none, routing's
  * stands — the middleware's, else a rule's.
  */
 function layRouted(
@@ -542,8 +543,20 @@ function layRouted(
       // Not a header, on this request: left off.
     }
   }
-  mergeScopedMiddlewareHeaders(headers, rules, edge.forwarding);
-  mergeScopedMiddlewareHeaders(headers, rewrite.responseHeaders, edge.forwarding);
+  // What routing collected before the proxy: the rules', and the middleware's over them.
+  const routed = new Headers();
+  mergeScopedMiddlewareHeaders(routed, rules, edge.forwarding);
+  mergeScopedMiddlewareHeaders(routed, rewrite.responseHeaders, edge.forwarding);
+  for (const cookie of routed.getSetCookie()) {
+    headers.append(SET_COOKIE_HEADER, cookie);
+  }
+  // Each name once: a name `routed` repeats (none but `set-cookie` can) is taken once.
+  const names = new Set(routed.keys());
+  for (const name of names) {
+    if (name !== SET_COOKIE_HEADER && !headers.has(name)) {
+      headers.set(name, routed.get(name) ?? '');
+    }
+  }
   const routedType =
     rewrite.responseHeaders.get(CONTENT_TYPE_HEADER) ?? rules.get(CONTENT_TYPE_HEADER);
   if (routedType !== null && !headers.has(CONTENT_TYPE_HEADER)) {
