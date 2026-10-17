@@ -5,6 +5,7 @@ import {
 } from '@stayingupwind/core/assets';
 import {
   EDGE_DEBUG_HEADER,
+  HOP_BY_HOP_HEADERS,
   NO_STORE_CACHE_CONTROL,
   PLATFORM_HEADER_PREFIX,
 } from '@stayingupwind/core/request';
@@ -12,7 +13,7 @@ import { releaseStream } from '@stayingupwind/core/util';
 import type { AssetKeepOutcome } from '@stayingupwind/host/delivery';
 
 import { applyCspReporting } from '../handlers/csp-reporting-headers.ts';
-import { removeSharedCacheOverrides } from '../handlers/responses.ts';
+import { nominatedBy, removeSharedCacheOverrides } from '../handlers/responses.ts';
 import type { EdgeContext } from './context.ts';
 
 /** Request headers forwarded for asset fetches: no cookies, no conditionals, no ranges. */
@@ -112,13 +113,19 @@ export interface ShapedAsset {
  * (`PLATFORM_HEADER_PREFIX`): what a runtime tells the edge on an answer, of invalidations, of
  * routing, of its caches, is for no client to read and for no copy the edge keeps to carry, as an
  * answer the edge proxies is rid of them (`forwardedResponse`). The edge sets its own account of
- * the answer (`EDGE_DEBUG_HEADER`) after.
+ * the answer (`EDGE_DEBUG_HEADER`) after. So, too, what the answer says of its own hop: the
+ * hop-by-hop headers, and the ones its `Connection` names (`nominatedBy`).
  */
 export function assetHeaders(originHeaders: Headers): Headers {
   const headers = new Headers(originHeaders);
+  const nominated = nominatedBy(originHeaders);
   // Names read from the origin's: deleting from the headers being iterated would skip entries.
   for (const [name] of originHeaders) {
-    if (name.startsWith(PLATFORM_HEADER_PREFIX)) {
+    if (
+      name.startsWith(PLATFORM_HEADER_PREFIX) ||
+      HOP_BY_HOP_HEADERS.includes(name) ||
+      nominated?.has(name) === true
+    ) {
       headers.delete(name);
     }
   }
