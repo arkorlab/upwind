@@ -9,6 +9,7 @@ import {
   type PackedPrerenders,
   placeholderSegments,
   type Prerender,
+  queryDependent,
   type Route,
   standsForClass,
   type StaticFile,
@@ -610,6 +611,36 @@ export function completedShell(shell: Prerender, pathname: string): string {
   }
   const keyedBy = keyedParameters(shell.route, shell.pathname, shell.allowQuery);
   return keyedBy === undefined ? pathname : completedPathname(shell.route, keyedBy, pathname);
+}
+
+/**
+ * A built PPR fallback whose output varies on unresolved root parameters needs an entry completed
+ * with those values. All other built shells keep their existing entry and manual-revalidation
+ * behavior. An unrelated query key cannot be represented by any pathname and remains excluded.
+ */
+export function queryCompletedShell(shell: Prerender, pathname: string): string | undefined {
+  if (
+    shell.body === undefined ||
+    (shell.allowQuery?.length ?? 0) === 0 ||
+    shell.renderingMode !== 'PARTIALLY_STATIC' ||
+    shell.route.includes('[...') ||
+    !queryDependent(shell, shell.route, shell.pathname)
+  ) {
+    return undefined;
+  }
+  const keyedBy = keyedParameters(shell.route, shell.pathname, shell.allowQuery);
+  // All parameters named is also undefined: the concrete member already identifies every key.
+  const completed =
+    keyedBy === undefined ? pathname : completedPathname(shell.route, keyedBy, pathname);
+  return queryDependent(shell, shell.route, completed) ? undefined : completed;
+}
+
+/** The generation a shell answers from: its built entry, or the entry its member completes to. */
+export function generationPathname(shell: Prerender, pathname: string): string {
+  return (
+    queryCompletedShell(shell, pathname) ??
+    (shell.body === undefined ? completedShell(shell, pathname) : shell.pathname)
+  );
 }
 
 /** The kind of code a route runs: an App Router page or handler, a Pages Router page or API. */

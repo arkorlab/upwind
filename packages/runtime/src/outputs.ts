@@ -21,7 +21,7 @@ import {
   staticResponse,
   withCacheState,
 } from './serve.ts';
-import { completedShell, findShell, type Store } from './store.ts';
+import { findShell, generationPathname, type Store } from './store.ts';
 import { renderedBy } from './with-body.ts';
 
 /**
@@ -272,10 +272,10 @@ function rscSource(
   };
   let pathname = resolved.pathname;
   if (shell !== undefined && !blocking) {
-    pathname = unbuilt ? completedShell(shell, resolved.pathname) : shell.pathname;
+    pathname = generationPathname(shell, resolved.pathname);
   }
   let onMiss: GenerationSource['onMiss'] = 'build';
-  if (blocking) {
+  if (blocking || (shell?.body !== undefined && pathname !== shell.pathname)) {
     onMiss = 'render';
   } else if (unbuilt && speculative(want)) {
     onMiss = 'behind';

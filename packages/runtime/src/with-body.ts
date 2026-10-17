@@ -11,7 +11,13 @@ import { descriptorFor } from './generations.ts';
 import { invokeNodeHandler } from './node-bridge.ts';
 import type { Resolved } from './outputs.ts';
 import { baseRequestMeta, invokeEntry, type RoutedInput } from './serve.ts';
-import { completedShell, entrypointKindOf, findShell, type Store } from './store.ts';
+import {
+  completedShell,
+  entrypointKindOf,
+  findShell,
+  queryCompletedShell,
+  type Store,
+} from './store.ts';
 
 /**
  * A request that carries a body to a route — a server action, a form's post, an upload — which
@@ -82,10 +88,11 @@ async function answeredFrom(
   if (shell.body === undefined) {
     return generationOf(completedShell(shell, pathname));
   }
-  if (shell.pathname === pathname) {
+  const bodyClassKey = queryCompletedShell(shell, pathname) ?? shell.pathname;
+  if (bodyClassKey === pathname) {
     return generationOf(pathname);
   }
-  const [own, ofClass] = await Promise.all([generationOf(pathname), generationOf(shell.pathname)]);
+  const [own, ofClass] = await Promise.all([generationOf(pathname), generationOf(bodyClassKey)]);
   return own ?? ofClass;
 }
 

@@ -87,7 +87,14 @@ import {
   withoutBody,
   withWritesLanded,
 } from './serve.ts';
-import { completedShell, entrypointKindOf, findShell, getStore, type Store } from './store.ts';
+import {
+  completedShell,
+  entrypointKindOf,
+  findShell,
+  generationPathname,
+  getStore,
+  type Store,
+} from './store.ts';
 import { unrouted } from './unrouted.ts';
 import { renderedBy, serveWithBody } from './with-body.ts';
 
@@ -172,7 +179,8 @@ async function serveDocument(input: RoutedInput, store: Store, asked: Resolved):
   const crawled =
     shell !== undefined && crawlerWantsWholePage(store, shell, resolved, input.request);
   if (shell !== undefined && entry.kind === 'node') {
-    const built = shell.body !== undefined && !crawled;
+    const pathname = generationPathname(shell, resolved.pathname);
+    const built = shell.body !== undefined && !crawled && pathname === shell.pathname;
     const current = await serveFromGeneration(
       input,
       store,
@@ -182,7 +190,7 @@ async function serveDocument(input: RoutedInput, store: Store, asked: Resolved):
         // that blocks is kept under the shell it completes to, where the build keys the route's
         // entries on some of its parameters (`completedShell`), and under its own pathname else.
         route: shell.route,
-        pathname: built ? shell.pathname : completedShell(shell, resolved.pathname),
+        pathname: crawled ? completedShell(shell, resolved.pathname) : pathname,
         url: resolved.url,
         representation: 'html',
         onMiss: built ? 'build' : 'render',
