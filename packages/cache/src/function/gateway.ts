@@ -2,6 +2,7 @@ import { sha256Hex } from '@stayingupwind/core/artifact';
 import { TEST_CLOCK_HEADER } from '@stayingupwind/core/paas';
 import { isDeadlineError, releaseStream, toBase64, withDeadline } from '@stayingupwind/core/util';
 import {
+  answersTheRead,
   answersTheTags,
   ARTIFACT_ENCODING_HEADER,
   ARTIFACT_ROLE_HEADER,
@@ -246,6 +247,21 @@ export class Gateway {
   }
 
   /**
+   * A data read's answer, refused where it is of another namespace than the read asked in
+   * (`answersTheRead`): kept as the value of the key asked for, it would be served as that one.
+   */
+  async #valueOf(response: Response, request: DataGetRequest): Promise<DataGetResponse> {
+    const answer = await this.#result(response, dataGetResponseSchema);
+    if (!answersTheRead(request, answer)) {
+      throw new CacheHostError('the data read was answered with a value of another namespace', {
+        code: 'internal',
+        status: response.status,
+      });
+    }
+    return answer;
+  }
+
+  /**
    * A response already known to have failed, as the error it stands for. Read separately from
    * `#result` for the calls whose success is bytes rather than an envelope: there is no result
    * schema to hand such a call, and passing an unrelated one only to reach this path made the
@@ -484,7 +500,7 @@ export class Gateway {
           await response.body?.cancel();
           return undefined;
         }
-        return this.#result(response, dataGetResponseSchema);
+        return this.#valueOf(response, request);
       },
     );
   }
@@ -511,7 +527,7 @@ export class Gateway {
           await response.body?.cancel();
           return undefined;
         }
-        return this.#result(response, dataGetResponseSchema);
+        return this.#valueOf(response, request);
       },
     );
   }
