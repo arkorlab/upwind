@@ -63,7 +63,7 @@ catalog:
   typescript-eslint: 8.71.1
   # The suites of the packages that have them, run by one root runner (`vitest.config.ts`), and the
   # lint rules they are held to beside the rest.
-  vitest: 5.0.3
+  vitest: 5.0.5
   '@vitest/eslint-plugin': 1.6.27
 
 # Only these dependencies may run install scripts.
