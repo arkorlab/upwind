@@ -213,6 +213,7 @@ describe('time-based use cache refresh', () => {
         KEY,
         Promise.resolve({
           ...entry,
+          tags: [...entry.tags],
           value: new Blob(['C']).stream(),
         }),
       );

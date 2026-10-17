@@ -537,7 +537,7 @@ async function getUseCache(
       now,
     });
   };
-  const request = { key: cacheKey, kind: USE_CACHE, handler: kind };
+  const request = { key: cacheKey, kind: USE_CACHE, handler: kind } as const;
   const weighing = { judge, reread: () => useCacheHeld(runtime, kind, cacheKey) };
   const judged = await laterIfAny(
     runtime,
