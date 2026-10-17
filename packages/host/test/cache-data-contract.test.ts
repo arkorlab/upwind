@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 
 import { ENTITY_SCHEMA_VERSION, invalidationRecordSchema } from '../src/cache/entities.ts';
 import {
+  answersTheRead,
+  answersTheTags,
   dataGetRequestSchema,
   dataGetResponseSchema,
   dataSetRequestSchema,
@@ -123,6 +125,23 @@ describe("a data entry's handler", () => {
   });
 });
 
+describe("a data read's answer", () => {
+  const useCache = { entry: entry('data:use-cache', 1) };
+  const fetched = { entry: entry('data:fetch', 1) };
+
+  it('is taken where it is of the namespace the read asked in', () => {
+    expect(answersTheRead({ kind: 'data:use-cache', handler: 'default' }, useCache)).toBe(true);
+    expect(answersTheRead({ kind: 'data:fetch' }, fetched)).toBe(true);
+  });
+
+  /** Kept as the value of the key the read asked for, it would be served as that one (Codex). */
+  it("is refused where it is of another handler's, or of the other kind", () => {
+    expect(answersTheRead({ kind: 'data:use-cache', handler: 'remote' }, useCache)).toBe(false);
+    expect(answersTheRead({ kind: 'data:fetch' }, useCache)).toBe(false);
+    expect(answersTheRead({ kind: 'data:use-cache', handler: 'default' }, fetched)).toBe(false);
+  });
+});
+
 /** A tag's record as the gateway answers a tag read or a delta with it. */
 function tagRecord(value: string) {
   return {
@@ -149,6 +168,22 @@ describe("a tag read's answer", () => {
   /** A record for each tag the read named at the most, which no read names more of. */
   it('holds no more records than a read may name tags', () => {
     expect(tagsGetResponseSchema.safeParse(tagsAnswer(MAX_TAGS_PER_CALL + 1)).success).toBe(false);
+  });
+
+  /** Of some of the tags asked about, or none: a tag with no record was never invalidated. */
+  it('is taken where it speaks of the tags asked about', () => {
+    expect(answersTheTags(['a', 'b'], { tags: [tagRecord('b')] })).toBe(true);
+    expect(answersTheTags(['a', 'b'], { tags: [] })).toBe(true);
+  });
+
+  /**
+   * Its reader takes a record for the tag the record names, and every tag it asked about as read:
+   * one of a tag not asked about would leave the one asked about held as invalidated by nothing
+   * (Codex).
+   */
+  it('is refused where it speaks of a tag not asked about', () => {
+    expect(answersTheTags(['a'], { tags: [tagRecord('b')] })).toBe(false);
+    expect(answersTheTags(['a'], { tags: [tagRecord('a'), tagRecord('A')] })).toBe(false);
   });
 });
 

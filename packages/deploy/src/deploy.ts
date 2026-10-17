@@ -260,24 +260,24 @@ function bucketMetadataBytes(metadata: Readonly<Record<string, string>>): number
 
 /**
  * What an artifact is stored in the bucket with: what it is, where and when it was captured, and
- * the route it was first captured from — provenance, which nothing reads to serve it, and left out
- * where that route's pathname would take the metadata past what the bucket keeps of it
- * (`MAX_BUCKET_METADATA_BYTES`) and fail the write.
+ * the route it was first captured from — provenance, which nothing reads to serve it. Where that
+ * route's pathname would take the metadata past what the bucket keeps of it
+ * (`MAX_BUCKET_METADATA_BYTES`) and fail the write, the route is left out; and where the origin's
+ * host, which the input bounds no more than a bundle does a pathname, still would, so is that. What
+ * is left, a kind, a length, a deployment id and a time, always fits.
  */
 function bucketMetadataOf(
   shell: ShellToEncode,
   input: StageInput,
 ): Readonly<Record<string, string>> {
   const described = { kind: shell.kind, byteLength: String(shell.byteLength) };
-  const captured = {
-    sourceOriginHost: input.originHost,
-    deploymentId: input.bundle.deploymentId,
-    capturedAt: isoOf(input.now()),
-  };
-  const traced = { ...described, sourcePath: shell.sourcePath, ...captured };
-  return bucketMetadataBytes(traced) > MAX_BUCKET_METADATA_BYTES
-    ? { ...described, ...captured }
-    : traced;
+  const captured = { deploymentId: input.bundle.deploymentId, capturedAt: isoOf(input.now()) };
+  const origin = { sourceOriginHost: input.originHost };
+  const kept = [
+    { ...described, sourcePath: shell.sourcePath, ...origin, ...captured },
+    { ...described, ...origin, ...captured },
+  ].find((metadata) => bucketMetadataBytes(metadata) <= MAX_BUCKET_METADATA_BYTES);
+  return kept ?? { ...described, ...captured };
 }
 
 /**
