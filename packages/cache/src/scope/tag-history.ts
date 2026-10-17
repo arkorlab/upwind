@@ -67,7 +67,8 @@ function tailMark(sql: SqlStorage, tagId: string, through: number): TagHistoryMa
  * Upgrade old metadata only on mutation, with bounded reads as well as bounded retained state.
  * Small ledgers remain exact. Overflow retains the newest fifteen rows and a conservative old
  * tail: its deadline lower bound may expire an old value early, but never reopens an expired one.
- * A tag's fold stands for the rows retention folded (`foldedMark`).
+ * A tag's fold stands for the rows retention folded (`foldedMark`), though the fold stores the
+ * tag's history before it folds any (`keepTagHistory`), and this is never asked of such a tag.
  */
 function legacyHistory(sql: SqlStorage, tagId: string): TagHistoryMark[] {
   const newest = sql
@@ -88,20 +89,47 @@ function legacyHistory(sql: SqlStorage, tagId: string): TagHistoryMark[] {
   return history;
 }
 
+/**
+ * The history a mutation that finds none stored upgrades a tag to: its rows in the ledger, the
+ * mark its row keeps, and a fence of it.
+ */
+function upgradedHistory(
+  sql: SqlStorage,
+  tagId: string,
+  previous: TagRow | undefined,
+): TagHistoryMark[] {
+  let history = previous === undefined ? [] : legacyHistory(sql, tagId);
+  if (previous !== undefined && previous.stale_at !== null) {
+    history = withTagHistory(history, toMark({ ...previous, stale_at: previous.stale_at }));
+  }
+  const fence = controlFenceTag(sql, tagId);
+  return fence === undefined ? history : withTagHistory(history, fence);
+}
+
 export function recordTagHistory(
   sql: SqlStorage,
   tagId: string,
   mark: TagHistoryMark,
   previous: TagRow | undefined,
 ): void {
-  let history = readTagHistory(sql, tagId);
-  if (history === undefined) {
-    history = previous === undefined ? [] : legacyHistory(sql, tagId);
-    if (previous !== undefined && previous.stale_at !== null) {
-      history = withTagHistory(history, toMark({ ...previous, stale_at: previous.stale_at }));
-    }
-    const fence = controlFenceTag(sql, tagId);
-    if (fence !== undefined) history = withTagHistory(history, fence);
-  }
+  const history = readTagHistory(sql, tagId) ?? upgradedHistory(sql, tagId, previous);
   writeMeta(sql, META_TAG_HISTORY_PREFIX + tagId, JSON.stringify(withTagHistory(history, mark)));
+}
+
+/**
+ * Store a tag's history where none is stored yet, as its next invalidation would upgrade it from
+ * its rows (`legacyHistory`): what retention's fold does before it folds any of them
+ * (`invalidation-fold.ts`), which the upgrade reads. A tag invalidated since histories were kept
+ * has one already, and nothing is written. Nor for a tag the scope keeps no row of: its upgrade
+ * reads nothing of the ledger, and takes in a fence of it made since, which a history stored now
+ * would leave out.
+ */
+export function keepTagHistory(sql: SqlStorage, tagId: string, tag: TagRow | undefined): void {
+  if (tag !== undefined && readTagHistory(sql, tagId) === undefined) {
+    writeMeta(
+      sql,
+      META_TAG_HISTORY_PREFIX + tagId,
+      JSON.stringify(upgradedHistory(sql, tagId, tag)),
+    );
+  }
 }

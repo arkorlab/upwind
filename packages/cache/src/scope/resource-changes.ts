@@ -278,6 +278,8 @@ function notYetQueued(
  * Every tag the head's change invalidated: the one asked about, and those recorded at the revision
  * the change committed at, which no other change commits at. Those are the tag it names and any it
  * took the place of (`replacedTags`), whose entries seeded since show the resource as it was too.
+ * Retention folds none of the invalidations at a head's revision (`invalidation-fold.ts`): they are
+ * here however long ago the change was.
  */
 function headTagIds(sql: SqlStorage, head: ResourceHeadRow, tagId: string): string[] {
   const tagIds = [tagId];

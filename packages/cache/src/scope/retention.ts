@@ -10,6 +10,7 @@ import {
   prunableGenerations,
 } from './generations.ts';
 import type { ScopeHistory } from './history.ts';
+import { foldInvalidations } from './invalidation-fold.ts';
 import { pruneQuotaWindows } from './quotas.ts';
 import {
   type AttemptArtifactRow,
@@ -23,9 +24,10 @@ import { commitRevision, readRevision, readScope } from './state.ts';
  * What is kept, and for how long. A generation that is no longer current loses its bytes after a
  * time or when enough newer ones exist — except the one a rollback would go back to — and keeps its
  * metadata for the history window, marked `pruned`. An upload that no generation took is dropped
- * once its attempt is well over. A retired scope loses every body at once and everything else once
- * its history has aged out. Blobs go only when nothing refers to them; the build's own blobs are
- * never this Worker's to delete.
+ * once its attempt is well over. An invalidation is kept for the history window, past which it is
+ * folded with its tag's others into the one row the tag keeps of them (`invalidation-fold.ts`). A
+ * retired scope loses every body at once and everything else once its history has aged out. Blobs
+ * go only when nothing refers to them; the build's own blobs are never this Worker's to delete.
  *
  * Both windows are the history's, for a scope that records it or recorded it once and has stopped,
  * whose history is read back up to the stop. One whose history is not kept (`ScopeHistory.keeps`)
@@ -387,6 +389,7 @@ export function applyRetention(input: RetentionInput): RetentionPlan {
       retireExpiredData(input),
       pruneFormerGenerations(input, windows, deletable),
       dropUnusedEntries(input),
+      foldInvalidations(input),
     );
     forgetWriterMarks(input);
   }
