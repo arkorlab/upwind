@@ -53,9 +53,9 @@ const KIB = 1024;
 const CURRENT_DATA_MEMORY_MIB = 16;
 /**
  * What the current-data reads of this isolate may hold at once. A Durable Object's isolate has
- * 128 MiB for every object it holds, the projection's runs among them (48 MiB at once, `settle.ts`),
- * and a burst of these reads after an invalidation would otherwise hold each value it reads inline
- * several times over, all at the same time.
+ * 128 MiB for every object it holds, the projection's runs among them (48 MiB at once,
+ * `projection-memory.ts`), and a burst of these reads after an invalidation would otherwise hold
+ * each value it reads inline several times over, all at the same time.
  */
 const isolateReads: MemoryBudget = { limit: CURRENT_DATA_MEMORY_MIB * KIB * KIB, reserved: 0 };
 

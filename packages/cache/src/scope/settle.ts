@@ -13,6 +13,7 @@ import {
 import { findGeneration } from './generations.ts';
 import type { ScopeHistory } from './history.ts';
 import { type BlobStore, type KvSink, writeKey } from './io.ts';
+import { PROJECTION_MEMORY_BYTES, withProjectionMemory } from './projection-memory.ts';
 import { dataRecordJson, generationRecordBytes, projectionMemoryOf } from './records.ts';
 import type { EntryRow, GenerationRow } from './rows.ts';
 import {
@@ -46,10 +47,6 @@ import type { Timing } from './timing.ts';
 
 const PROJECTION_BATCH = 50;
 const PROJECTION_CONCURRENCY = 8;
-const KIB = 1024;
-const PROJECTION_MEMORY_MIB = 48;
-/** Leave room in the 128 MiB isolate for scope state, other requests and a returned commit record. */
-const PROJECTION_MEMORY_BYTES = PROJECTION_MEMORY_MIB * KIB * KIB;
 const META_SCOPE_MARKER = 'scope_marker_written';
 const DATA_KIND_PREFIX = 'data:';
 
@@ -161,16 +158,23 @@ interface ProjectingEntry {
   readonly current: GenerationRow | undefined;
 }
 
+/** A chunk of a page, and the bytes its records are reckoned to hold as they are built. */
+interface ProjectionChunk {
+  readonly entries: readonly ProjectingEntry[];
+  readonly bytes: number;
+}
+
 /**
  * Bound both entries and their expected live bytes before starting any blob read. A single large
- * record can exceed the working budget, so it runs alone; small records keep their parallelism.
+ * record can exceed the working budget, so it runs alone; small records keep their parallelism. The
+ * bytes are taken from the isolate's budget before the chunk begins (`withProjectionMemory`).
  */
 function projectionChunk(
   deps: SettleDeps,
   entries: readonly EntryRow[],
   offset: number,
   writing: Writing,
-): readonly ProjectingEntry[] {
+): ProjectionChunk {
   const chunk: ProjectingEntry[] = [];
   let reserved = 0;
   const candidates = entries.slice(offset, offset + PROJECTION_CONCURRENCY);
@@ -194,7 +198,7 @@ function projectionChunk(
     chunk.push({ entry, current });
     reserved += bytes;
   }
-  return chunk;
+  return { entries: chunk, bytes: reserved };
 }
 
 /**
@@ -397,8 +401,10 @@ async function projectPage(
   let reached = 0;
   while (reached < entries.length) {
     const chunk = projectionChunk(deps, entries, reached, writing);
-    failed += await projectChunk(deps, chunk, writing, out);
-    reached += chunk.length;
+    failed += await withProjectionMemory(chunk.bytes, () =>
+      projectChunk(deps, chunk.entries, writing, out),
+    );
+    reached += chunk.entries.length;
     if (stop()) {
       break;
     }
