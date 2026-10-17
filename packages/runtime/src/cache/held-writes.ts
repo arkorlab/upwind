@@ -1,5 +1,6 @@
 import type { InvalidationState } from '@stayingupwind/core/cache';
 
+import { currentRegeneration, type Regeneration } from './context.ts';
 import { fenceHandedOver, nextWriteOrder, type WriteOrder, writeData } from './data.ts';
 import type { DataEntryMetadata } from './host.ts';
 import type { CacheRuntime } from './runtime.ts';
@@ -85,6 +86,8 @@ interface HeldWrite {
   readonly entry: DataEntryMetadata;
   bytes: Uint8Array | undefined;
   readonly handedAt: number;
+  /** The regeneration whose render handed it over, where one did (`currentRegeneration`). */
+  readonly regeneration: Regeneration | undefined;
   readonly order: WriteOrder;
   readonly after: Promise<void> | undefined;
   sent: boolean;
@@ -213,9 +216,24 @@ function trimWrites(runtime: CacheRuntime, writes: HeldWrites): void {
   }
 }
 
-/** What the key's write still out in this isolate carries, if there is one. */
+/**
+ * What the key's write still out in this isolate carries, if there is one — to a regeneration's
+ * read, only where that regeneration's own render handed it over.
+ *
+ * A regeneration renders what the host will keep, and what the host says of a write — an
+ * invalidation it holds against it, fenced by the moment its fetch began — reaches this isolate
+ * only with the write's answer: so another render's write still out is not served to it, and it
+ * asks the host. Its own is what its render already served: Next.js computes a value past its
+ * `revalidate` again in front of a regeneration and writes it, and the render's next read of the
+ * key, answered with what the host kept instead, was past its `revalidate` still, so Next.js
+ * computed it a second time — one page rendering two values of a key it fetched twice.
+ */
 export function heldOut(writes: HeldWrites | undefined, key: string): HeldValue | undefined {
   const write = writes === undefined ? undefined : writeOut(writes, key);
+  const regeneration = currentRegeneration();
+  if (regeneration !== undefined && write?.regeneration !== regeneration) {
+    return undefined;
+  }
   return write?.bytes === undefined ? undefined : { entry: write.entry, bytes: write.bytes };
 }
 
@@ -307,6 +325,7 @@ export function keepWrite(
     entry,
     bytes,
     handedAt: performance.now(),
+    regeneration: currentRegeneration(),
     order: nextWriteOrder(),
     after,
     sent: false,
