@@ -1,4 +1,8 @@
-import { invalidateRequestSchema, tagsGetRequestSchema } from '@stayingupwind/host/cache';
+import {
+  invalidateRequestSchema,
+  MAX_DELTA_PAGE_TAGS,
+  tagsGetRequestSchema,
+} from '@stayingupwind/host/cache';
 import { Hono } from 'hono';
 
 import { announceBehind, announceMoved } from '../../announce.ts';
@@ -11,7 +15,6 @@ import { ok } from '../respond.ts';
 /** Invalidations, and the delta a Worker syncs its view of the tags with. */
 
 const DEFAULT_DELTA_LIMIT = 500;
-const MAX_DELTA_LIMIT = 1000;
 
 function nonNegativeInt(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
@@ -37,9 +40,10 @@ export const tagRoutes = new Hono<GatewayEnv>()
   })
   .get('/tags/delta', async (c) => {
     const since = nonNegativeInt(c.req.query('since'), 0);
+    // No more than a page may hold (`MAX_DELTA_PAGE_TAGS`), which its reader holds it to.
     const limit = Math.min(
       nonNegativeInt(c.req.query('limit'), DEFAULT_DELTA_LIMIT),
-      MAX_DELTA_LIMIT,
+      MAX_DELTA_PAGE_TAGS,
     );
     const [delta, retired] = await Promise.all([
       c.get('scope').tagsDelta(since, Math.max(limit, 1)),
