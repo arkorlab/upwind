@@ -51,8 +51,9 @@ const MILLISECONDS_PER_HOUR = 3_600_000;
 /** How long a finished attempt's uploads are kept, for a commit that is still in flight. */
 const UPLOAD_GRACE_MS = MILLISECONDS_PER_HOUR;
 /**
- * Set by a run that retired expired data, while their entries wait for their withdrawal from KV,
- * which the settle after the run writes a slice at a time (`letGoOfWithdrawn`).
+ * Set by a run that retired expired data, while their entries wait to be let go of: for their
+ * withdrawal from KV, which the settle after the run writes a slice at a time, or past a batch that
+ * came back full (`letGoOfWithdrawn`).
  */
 const META_RETIRED_WITHDRAWING = 'retired_withdrawing';
 /** An entry with no value now, and no render holding a lease on it, as an SQL condition. */
@@ -356,10 +357,14 @@ export function retiredWithdrawing(sql: SqlStorage): boolean {
  * run has withdrawn them: asked after each slice of it, not left to the next run an interval on.
  * The run after this one can come before most of them are out, and each would hold its place in
  * the scope's count until then, which a scope at its limit spends refusing new keys. Says nothing
- * and commits no revision, as a run lets go of them (`dropUnusedEntries`). Done with once none of
- * them still waits for its withdrawal, or the scope is retired.
+ * and commits no revision, as a run lets go of them (`dropUnusedEntries`). Done with once its batch
+ * did not come back full and none of them still waits for its withdrawal, or the scope is retired.
+ *
+ * Whether the batch came back full: a settle can withdraw more of them at once than one batch takes,
+ * the rest of a batch whose withdrawal failed with a later run's, and those past it are left to a
+ * run that comes soon (`letGoOfRetired`), as a run's own full batch leaves its rest.
  */
-export function letGoOfWithdrawn(sql: SqlStorage): void {
+export function letGoOfWithdrawn(sql: SqlStorage): boolean {
   const scope = readScope(sql);
   if (scope !== undefined && scope.status !== 'retired') {
     const entries = sql
@@ -371,6 +376,9 @@ export function letGoOfWithdrawn(sql: SqlStorage): void {
     if (entries.length > 0) {
       letGoOf(sql, entries);
     }
+    if (entries.length === PRUNE_BATCH) {
+      return true;
+    }
     const waiting = sql
       .exec(
         `SELECT 1 FROM entries WHERE kv_revision < record_revision
@@ -378,10 +386,11 @@ export function letGoOfWithdrawn(sql: SqlStorage): void {
       )
       .toArray();
     if (waiting.length > 0) {
-      return;
+      return false;
     }
   }
   deleteMeta(sql, META_RETIRED_WITHDRAWING);
+  return false;
 }
 
 /** Keep historical attempts/generations, but release entries that can no longer serve a value. */

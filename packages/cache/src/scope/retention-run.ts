@@ -23,7 +23,10 @@ export interface TickOptions {
 
 /** When the scope's retention last ran, by the clock it was handed. */
 const META_LAST_RETENTION = 'last_retention_at';
-/** Set by a run that let go of a full batch and found no failure: more is left (`more`). */
+/**
+ * Set by a run that let go of a full batch and found no failure, or by a letting go of withdrawn
+ * entries whose batch came back full (`letGoOfRetired`): more is left (`more`).
+ */
 const META_RETENTION_BACKLOG = 'retention_backlog';
 /** How soon a run comes back for what one before it left. */
 const SOON_MS = 1000;
@@ -113,6 +116,8 @@ export async function runRetention(
  * (`letGoOfWithdrawn`), under the lock a change takes: asked after each settle an alarm runs, for as
  * long as any of them waits. A run that came back for them instead would come before most were
  * withdrawn, and runs that each did would come one after another for as long as values expired.
+ * A batch that came back full leaves the rest to a run that comes soon, as a run's own does: the
+ * next alarm may otherwise be an interval away.
  */
 export async function letGoOfRetired(
   run: Pick<RetentionRun, 'sql' | 'transaction'>,
@@ -123,7 +128,9 @@ export async function letGoOfRetired(
   }
   await lock.run(() => {
     run.transaction(() => {
-      letGoOfWithdrawn(run.sql);
+      if (letGoOfWithdrawn(run.sql)) {
+        writeMeta(run.sql, META_RETENTION_BACKLOG, '1');
+      }
     });
   });
 }
