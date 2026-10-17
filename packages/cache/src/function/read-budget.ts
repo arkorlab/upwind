@@ -1,10 +1,10 @@
 /**
  * The room an isolate has for the artifacts it reads whole: the authority's answers, and its data
- * center's copies of them (`artifacts.ts`); and for the delivery records it reads, from the gateways
- * and from its data center's copies of them (`gateway.ts`, `record-copies.ts`). An artifact is read
- * whole before it is answered with — the runtime takes bytes, not a stream — and the reads of every
- * request the isolate serves would otherwise all be read at once, however many there were and
- * however long.
+ * center's copies of them (`artifacts.ts`); for the delivery records it reads, from the gateways and
+ * from its data center's copies of them (`gateway.ts`, `record-copies.ts`); and for its data
+ * center's copies of the values it wrote (`data-copies.ts`). An artifact is read whole before it is
+ * answered with — the runtime takes bytes, not a stream — and the reads of every request the
+ * isolate serves would otherwise all be read at once, however many there were and however long.
  */
 
 /**
@@ -75,6 +75,30 @@ export class ReadBudget {
       return await granted.promise;
     } finally {
       signal.removeEventListener('abort', leave);
+    }
+  }
+
+  /**
+   * Room for `bytes`, taken at once where there is room, and otherwise waited for no longer than
+   * `ms`: the bytes taken, to be given back (`give`), or `undefined` where none came in time — and
+   * the place in line given up with it. For a read that has a deadline of its own to keep: a copy
+   * read ahead of a response's first byte, which waits no longer for its room than for its body.
+   */
+  async takeWithin(bytes: number, ms: number): Promise<number | undefined> {
+    const now = this.takeAtOnce(bytes);
+    if (now !== undefined) {
+      return now;
+    }
+    const given = new AbortController();
+    const timer = setTimeout(() => {
+      given.abort();
+    }, ms);
+    try {
+      return await this.take(bytes, given.signal);
+    } catch {
+      return undefined;
+    } finally {
+      clearTimeout(timer);
     }
   }
 

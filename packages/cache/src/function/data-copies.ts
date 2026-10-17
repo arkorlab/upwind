@@ -11,6 +11,7 @@ import {
 import { requestClock } from '@stayingupwind/runtime/cache-host';
 
 import { cacheStorage, type FunctionCacheNaming, turnsOfRequest, within } from './artifacts.ts';
+import type { ReadBudget } from './read-budget.ts';
 
 /**
  * The data center's copy of each value this Function wrote to the data cache, read where KV has
@@ -39,6 +40,12 @@ import { cacheStorage, type FunctionCacheNaming, turnsOfRequest, within } from '
  * Kept under a key derived with the scope's token, which a write to the authority needs as well:
  * the cache key is the application's to choose, and a key made from it alone would be one anything
  * that opens the copies' cache could plant a value under.
+ *
+ * A copy is read whole, and every read KV answers with none reads one: an isolate reads no more of
+ * them at once than it has room for, in the room it reads records and artifacts in (`ReadBudget`).
+ * A copy takes its room once its lookup has answered, before its body is read, and gives it back
+ * once the body is read or given up; one that has no room within its read's time is not read, and
+ * the read goes on as it would with no copy.
  */
 
 const SECONDS_PER_MINUTE = 60;
@@ -54,12 +61,13 @@ const MIB = KIB * KIB;
  * The largest copy, as it is kept: the value, in the base64 it travels in, and the record around
  * it. A value whose copy runs longer is left to the authority and KV, as one never copied is.
  * The copy is read whole, and what the Cache API holds under the key could have been put there by
- * anything that opens the copies' cache, so a body past this is not read on.
+ * anything that opens the copies' cache, so a body past this is not read on. It is the room a copy
+ * that does not say its length is read in.
  */
 const MAX_DATA_COPY_BYTES = MIB;
 /**
- * How long a read waits on the copy, its lookup and its body together, past a KV read that found
- * none: a render costs more.
+ * How long a read waits on the copy, its lookup, its room and its body together, past a KV read
+ * that found none: a render costs more.
  */
 const DATA_COPY_READ_MS = 100;
 /**
@@ -81,6 +89,28 @@ function warn(message: string, detail: unknown): void {
       detail: detail instanceof Error ? detail.message : String(detail),
     }),
   );
+}
+
+/**
+ * What is left of the time of a read begun at `startedAt` (`DATA_COPY_READ_MS`): one time for the
+ * lookup, the wait for room and the body together, so what each took is the next's no longer. The
+ * wall clock, not the request's: it moves with the read's I/O.
+ */
+function leftOf(startedAt: number): number {
+  return DATA_COPY_READ_MS - (Date.now() - startedAt);
+}
+
+/**
+ * How long a copy says it is (`content-length`), which a copy kept here says; `undefined` for one
+ * that says nothing that reads.
+ */
+function statedLength(response: Response): number | undefined {
+  const length = response.headers.get('content-length');
+  if (length === null || !/^\d+$/u.test(length)) {
+    return undefined;
+  }
+  const bytes = Number(length);
+  return Number.isSafeInteger(bytes) ? bytes : undefined;
 }
 
 /** The request's clock, where a test configuration hands it one; the wall clock otherwise. */
@@ -172,24 +202,44 @@ async function releaseLate(lookup: Promise<Response | undefined>): Promise<void>
   releaseStream(late?.body, 'a data copy that came too late');
 }
 
+/** The scope whose copies these are, and the token that opens it. */
+interface CopiesScope {
+  readonly scopeId: string;
+  readonly token: string;
+}
+
 /** The data center's Cache API, under the copies' cache and a key of this scope's own. */
 export class DataCopies {
-  /** The copies of this scope, where the Worker has a Cache API: none under Node.js. */
-  static of(naming: FunctionCacheNaming, scopeId: string, token: string): DataCopies | undefined {
+  /**
+   * The copies of this scope, where the Worker has a Cache API: none under Node.js. Read in
+   * `budget`, the isolate's room for what it reads whole.
+   */
+  static of(
+    naming: FunctionCacheNaming,
+    scope: CopiesScope,
+    budget: ReadBudget,
+  ): DataCopies | undefined {
     const storage = cacheStorage();
-    return storage === undefined ? undefined : new DataCopies(storage, naming, scopeId, token);
+    return storage === undefined ? undefined : new DataCopies(storage, naming, scope, budget);
   }
 
   readonly #storage: CacheStorage;
   readonly #naming: FunctionCacheNaming;
   readonly #scopeId: string;
   readonly #token: string;
+  readonly #budget: ReadBudget;
 
-  constructor(storage: CacheStorage, naming: FunctionCacheNaming, scopeId: string, token: string) {
+  constructor(
+    storage: CacheStorage,
+    naming: FunctionCacheNaming,
+    scope: CopiesScope,
+    budget: ReadBudget,
+  ) {
     this.#storage = storage;
     this.#naming = naming;
-    this.#scopeId = scopeId;
-    this.#token = token;
+    this.#scopeId = scope.scopeId;
+    this.#token = scope.token;
+    this.#budget = budget;
   }
 
   async #keyOf(request: DataGetRequest): Promise<string> {
@@ -271,6 +321,40 @@ export class DataCopies {
   }
 
   /**
+   * The copy's body, read in room of its own once the isolate has it (`takeWithin`): as long as the
+   * copy says it is, or, where it says nothing, the largest copy kept. `undefined` where no room
+   * came within what is left of the read's time, or for a body longer than its room; the room goes
+   * back once the body is read or given up. Rejects where the body stalls or fails.
+   */
+  async #bodyOf(found: Response, startedAt: number): Promise<Uint8Array | undefined> {
+    const length = statedLength(found) ?? MAX_DATA_COPY_BYTES;
+    if (length > MAX_DATA_COPY_BYTES) {
+      releaseStream(found.body, 'a data copy longer than any kept');
+      return undefined;
+    }
+    const room = await this.#budget.takeWithin(length, leftOf(startedAt));
+    if (room === undefined) {
+      releaseStream(found.body, 'a data copy with no room in time');
+      return undefined;
+    }
+    try {
+      const left = leftOf(startedAt);
+      const body = await readBoundedBody(found.body, {
+        limit: length,
+        stallMs: left,
+        budgetMs: left,
+      });
+      if (body.kind === 'over-limit') {
+        releaseStream(body.body, 'a data copy longer than its room');
+        return undefined;
+      }
+      return body.bytes;
+    } finally {
+      this.#budget.give(room);
+    }
+  }
+
+  /**
    * Keep the value the authority took as the data center's copy (`copyOf`). One that is not to be
    * kept — too large, or withdrawn already — lets go of the copy the key had instead, and so does a
    * put the Cache API refuses: that copy is an earlier value's, which a read KV answers with none
@@ -341,25 +425,15 @@ export class DataCopies {
         });
         return undefined;
       }
-      // One budget for the lookup and the body together: what the lookup took is the body's no
-      // longer. The clock has moved since, the lookup being I/O.
-      const left = DATA_COPY_READ_MS - (Date.now() - startedAt);
-      if (left <= 0) {
+      if (leftOf(startedAt) <= 0) {
         releaseStream(found.body, 'a data copy found too late to read');
         return undefined;
       }
-      const body = await readBoundedBody(found.body, {
-        limit: MAX_DATA_COPY_BYTES,
-        stallMs: left,
-        budgetMs: left,
-      });
-      if (body.kind === 'over-limit') {
-        releaseStream(body.body, 'a data copy longer than any kept');
+      const bytes = await this.#bodyOf(found, startedAt);
+      if (bytes === undefined) {
         return undefined;
       }
-      const parsed = dataGetResponseSchema.safeParse(
-        JSON.parse(new TextDecoder().decode(body.bytes)),
-      );
+      const parsed = dataGetResponseSchema.safeParse(JSON.parse(new TextDecoder().decode(bytes)));
       return parsed.success && !withdrawnBy(parsed.data, now()) ? parsed.data : undefined;
     } catch (error) {
       warn('data copy read failed', error);

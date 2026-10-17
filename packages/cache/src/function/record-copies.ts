@@ -267,30 +267,7 @@ export class RecordCopies {
   }
 
   /**
-   * Room in the isolate's budget for a copy `bytes` long: taken at once where there is room, and
-   * otherwise waited for no longer than `ms`. The bytes taken, to be given back, or `undefined`
-   * where none came in time — and the copy's place in line given up with it.
-   */
-  async #roomFor(bytes: number, ms: number): Promise<number | undefined> {
-    const now = this.#budget.takeAtOnce(bytes);
-    if (now !== undefined) {
-      return now;
-    }
-    const given = new AbortController();
-    const timer = setTimeout(() => {
-      given.abort();
-    }, ms);
-    try {
-      return await this.#budget.take(bytes, given.signal);
-    } catch {
-      return undefined;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  /**
-   * The copy's body, read in room of its own once the isolate has it (`#roomFor`): as long as the
+   * The copy's body, read in room of its own once the isolate has it (`takeWithin`): as long as the
    * copy says it is, or, where it says nothing, the largest copy kept. `undefined` where no room
    * came within what is left of the read's time, or for a body longer than its room; the room goes
    * back once the body is read or given up. Rejects where the body stalls or fails.
@@ -301,7 +278,7 @@ export class RecordCopies {
       releaseStream(found.body, 'a record copy longer than any kept');
       return undefined;
     }
-    const room = await this.#roomFor(length, leftOf(startedAt));
+    const room = await this.#budget.takeWithin(length, leftOf(startedAt));
     if (room === undefined) {
       releaseStream(found.body, 'a record copy with no room in time');
       return undefined;
