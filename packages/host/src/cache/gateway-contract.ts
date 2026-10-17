@@ -646,7 +646,8 @@ const invalidationResultSchema = z.object({
 
 export const invalidateResponseSchema = z.object({
   revision: z.number().int().positive(),
-  invalidations: z.array(invalidationResultSchema),
+  /** A result for each tag the invalidation named, so no more than an invalidation may name. */
+  invalidations: z.array(invalidationResultSchema).max(MAX_TAGS_PER_CALL),
   affectedEntryIds: z.array(z.string().min(1)),
 });
 export type InvalidateResponse = z.infer<typeof invalidateResponseSchema>;
