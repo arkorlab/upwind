@@ -35,6 +35,7 @@ import {
   forwardedResponse,
   keptByNobody,
   mergeScopedMiddlewareHeaders,
+  nominatedBy,
   privateCacheControl,
 } from './responses.ts';
 
@@ -613,7 +614,8 @@ function unreachableRewrite(
 /**
  * What of a request is never another origin's: the edge's own headers (`PLATFORM_HEADER_PREFIX`, the
  * runtime's `PLATFORM_REQUEST_HEADERS` among them), what belongs to one connection alone
- * (`HOP_BY_HOP_HEADERS`), and the site's hostname, which the target's URL replaces.
+ * (`HOP_BY_HOP_HEADERS`, and whatever the request's `Connection` names, `nominatedBy`), and the
+ * site's hostname, which the target's URL replaces.
  */
 function notForAnotherOrigin(name: string): boolean {
   return (
@@ -644,8 +646,9 @@ export async function followExternalRewrite(
   // What the middleware was handed, which matters most here: this request goes to an origin the
   // *application* named, further from us than its own Worker rather than nearer.
   const headers = new Headers();
+  const nominated = nominatedBy(rewrite.requestHeaders);
   for (const [name, value] of rewrite.requestHeaders) {
-    if (!notForAnotherOrigin(name)) {
+    if (!notForAnotherOrigin(name) && nominated?.has(name) !== true) {
       headers.append(name, value);
     }
   }

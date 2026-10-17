@@ -74,13 +74,13 @@ const CONNECTION_HEADER = 'connection';
 const CONTENT_LENGTH_HEADER = 'content-length';
 
 /**
- * The headers an answer's `Connection` names: the one hop's as much as `Connection` is, so a proxy
+ * The headers a message's `Connection` names: the one hop's as much as `Connection` is, so a proxy
  * removes them with it (RFC 9110 §7.6.1), as a response stored whole loses them
- * (`filterStoredResponseHeaders`). Matched against the answer's own names, never handed to
+ * (`filterStoredResponseHeaders`). Matched against the message's own names, never handed to
  * `Headers` as names, so an option that is no header's name removes nothing and throws nothing.
- * `undefined` for an answer without one, which is most.
+ * `undefined` for a message without one, which is most.
  */
-function nominatedBy(headers: Headers): ReadonlySet<string> | undefined {
+export function nominatedBy(headers: Headers): ReadonlySet<string> | undefined {
   const connection = headers.get(CONNECTION_HEADER);
   return connection === null
     ? undefined

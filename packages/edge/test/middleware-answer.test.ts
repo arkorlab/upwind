@@ -313,4 +313,33 @@ describe('an answer the middleware gives', () => {
       te: null,
     });
   });
+
+  /** What a request's `Connection` names is its one hop's, and goes with it (RFC 9110 §7.6.1). */
+  it('sends another origin none of what the request’s Connection names', async () => {
+    const sent: Request[] = [];
+    await throughMiddleware('/', {
+      middleware: () => {
+        return new Response(null, {
+          headers: {
+            'x-middleware-rewrite': 'https://elsewhere.example/feed',
+            'x-middleware-override-headers': 'connection,x-internal,accept-language',
+            'x-middleware-request-connection': 'X-Internal',
+            'x-middleware-request-x-internal': 'secret',
+            'x-middleware-request-accept-language': 'ja',
+          },
+        });
+      },
+      origin: (request) => {
+        sent.push(request);
+        return new Response('from the origin');
+      },
+    });
+    const headers = sent[0]?.headers ?? new Headers();
+
+    expect({
+      internal: headers.get('x-internal'),
+      connection: headers.get('connection'),
+      language: headers.get('accept-language'),
+    }).toStrictEqual({ internal: null, connection: null, language: 'ja' });
+  });
 });
