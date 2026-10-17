@@ -9,7 +9,11 @@ import type { IsrWrite } from './scope/metering.ts';
 interface CacheMeter {
   /** A read the cache's storage answered: a record, a value, an artifact. */
   read(scopeId: string, bytes: number): void;
-  /** A write the authority made: a generation it published, or a value it took. */
+  /**
+   * A write the authority made: a generation it published, or a value it took. Told once the write
+   * has committed: a call that throws loses the write's line, which the gateway logs instead, and
+   * the write is answered as made all the same.
+   */
   write(scopeId: string, write: IsrWrite): void;
 }
 

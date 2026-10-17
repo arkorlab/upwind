@@ -5,7 +5,9 @@ import type { Context, MiddlewareHandler } from 'hono';
 import type { AuthorityHost } from '../authority-host.ts';
 import type { CacheBindings } from '../bindings.ts';
 import { parseVars, type Vars } from '../env.ts';
+import { createLogger, detailOf } from '../logger.ts';
 import type { CacheScope } from '../scope/cache-scope.ts';
+import type { IsrWrite } from '../scope/metering.ts';
 import { isRefusal } from '../scope/state.ts';
 import { scopeStub } from '../scope/stub.ts';
 import { answer, fail } from './respond.ts';
@@ -62,6 +64,28 @@ export async function answerScope(c: GatewayContext, result: unknown): Promise<R
 
 export function refuseRetired(c: GatewayContext): Response {
   return fail(c, 'scope_retired', 'the scope is retired');
+}
+
+const logger = createLogger({ component: 'gateway' });
+
+/**
+ * Tell the host's meter of a write the authority made (`CacheMeter.write`), as its answer goes out.
+ * The write has committed by then, and is answered as made whatever the meter does: a meter that
+ * throws loses the write's line, which the gateway's log says instead. Answered as a failure, the
+ * write is one its caller gives up on or makes again, and made again it is answered for what the
+ * first made, with nothing to meter (`metering.ts`).
+ */
+export function meterWrite(c: GatewayContext, write: IsrWrite): void {
+  try {
+    c.get('host').meter.write(c.get('scopeId'), write);
+  } catch (error) {
+    logger.error('write not metered', {
+      scopeId: c.get('scopeId'),
+      bytes: write.bytes,
+      recorded: write.recorded,
+      detail: detailOf(error),
+    });
+  }
 }
 
 /**
