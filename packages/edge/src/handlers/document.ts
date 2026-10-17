@@ -44,6 +44,8 @@ import {
 import { reportOutcome } from './document-report.ts';
 import {
   fallbackToApp,
+  followClient,
+  releaseUpstream,
   settle,
   shellFailure,
   unsettle,
@@ -675,6 +677,8 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
           headers: toldBesideResume(input, generation),
         });
   const upstream = handle === undefined ? undefined : settle(handle.response);
+  // The resume goes with a client that leaves before a splice holds it (`followClient`).
+  const clientLeft = followClient(input.request.signal, handle);
   servedFromRecord(edge, generation);
   const shell = await shellLookup;
   if (shell.kind !== 'ok') {
@@ -721,6 +725,21 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
       delivery,
       complete,
       body: head ? null : wireBody(delivery.wire),
+    });
+  }
+  if (clientLeft()) {
+    // The resume went with the client: nothing is spliced for nobody, and what became of the
+    // document is the client's cancel, not a resume that failed, which the route's reports count.
+    edge.ctx.waitUntil(releaseUpstream(upstream));
+    const outcome: SpliceOutcome = { kind: 'client-cancelled', forwarded: 0 };
+    const dispatched = dispatchedSoFar(handle.response);
+    edge.ctx.waitUntil(reportOutcome({ input, outcome, ...read, subrequests: 1, dispatched }));
+    return composeDocument(input, {
+      headers,
+      recorded: [recorded, rules.headers],
+      delivery,
+      complete: false,
+      body: null,
     });
   }
   const splice = createSplice({

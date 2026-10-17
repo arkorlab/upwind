@@ -29,7 +29,7 @@ export async function settle(promise: Promise<Response>): Promise<Upstream> {
 }
 
 /** Let go of a response nobody is going to read. */
-async function releaseUpstream(upstream: Promise<Upstream>): Promise<void> {
+export async function releaseUpstream(upstream: Promise<Upstream>): Promise<void> {
   const result = await upstream;
   if (result.ok) {
     releaseStream(result.response.body, 'resume abandoned');
@@ -43,6 +43,37 @@ export async function unsettle(settled: Promise<Upstream>): Promise<Response> {
     throw result.error instanceof Error ? result.error : new Error(String(result.error));
   }
   return result.response;
+}
+
+/** Why a resume is let go of when its client leaves before a splice holds it. */
+const CLIENT_LEFT = 'client left';
+
+/**
+ * Let the resume go with a client that leaves before a splice holds it. The splice lets it go with
+ * the client from then on, as the client cancels what it reads; until then nothing would, and the
+ * application's Worker would render on for nobody while the shell was read, then until the
+ * continuation's deadline. The returned call stops following the client, once a splice is about to
+ * hold the resume, and says whether the client left by then, taking the resume with it.
+ */
+export function followClient(
+  signal: AbortSignal,
+  handle: ContinuationHandle | undefined,
+): () => boolean {
+  if (handle === undefined) {
+    return () => false;
+  }
+  const leave = (): void => {
+    handle.abort(CLIENT_LEFT);
+  };
+  if (signal.aborted) {
+    leave();
+  } else {
+    signal.addEventListener('abort', leave, { once: true });
+  }
+  return () => {
+    signal.removeEventListener('abort', leave);
+    return signal.aborted;
+  };
 }
 
 export interface ShellFailure {
