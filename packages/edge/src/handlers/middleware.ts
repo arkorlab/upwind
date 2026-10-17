@@ -8,6 +8,7 @@ import {
 } from '@stayingupwind/core/manifest';
 import {
   MIDDLEWARE_ONLY_HEADER,
+  MIDDLEWARE_SET_COOKIE_HEADER,
   middlewareApplies,
   type MiddlewareResult,
   PLATFORM_REQUEST_HEADERS,
@@ -126,6 +127,25 @@ const MAX_REASON_LENGTH = 200;
 const REWRITE_HEADER = 'x-middleware-rewrite';
 const SET_COOKIE_HEADER = 'set-cookie';
 const HTTP_OK = 200;
+/**
+ * What of the middleware protocol a middleware's own answer may still carry, which Next.js's router
+ * reads off it and hands no client (`resolve-routes.js`): the copy of its cookies `NextResponse`
+ * writes beside each it sets, for the render a `next()` would have led to; the request headers it
+ * overrode; the markers of what it decided. Core's own list (`PROTOCOL_HEADERS`, which
+ * `readMiddlewareResponse` takes off an answer that lets the request on), less the length, which
+ * `forwardedResponse` judges by the method. Not every name under the prefix: Next.js hands a client
+ * `x-middleware-cache`, which its own router reads.
+ */
+const MIDDLEWARE_PROTOCOL_HEADERS: ReadonlySet<string> = new Set([
+  MIDDLEWARE_SET_COOKIE_HEADER,
+  REWRITE_HEADER,
+  'x-middleware-next',
+  'x-middleware-override-headers',
+  'x-middleware-redirect',
+  'x-middleware-refresh',
+]);
+/** A request header the middleware overrode, one each (`x-middleware-request-<name>`). */
+const MIDDLEWARE_REQUEST_HEADER_PREFIX = 'x-middleware-request-';
 
 function describe(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).slice(0, MAX_REASON_LENGTH);
@@ -639,9 +659,22 @@ function layConfiguredUnder(
   }
 }
 
+/** Take what is the middleware protocol's off its own answer (`MIDDLEWARE_PROTOCOL_HEADERS`). */
+function withoutMiddlewareProtocol(headers: Headers): void {
+  // The names chosen first: deleting from the iterator's own Headers would skip entries.
+  const protocol = [...headers.keys()].filter(
+    (name) =>
+      MIDDLEWARE_PROTOCOL_HEADERS.has(name) || name.startsWith(MIDDLEWARE_REQUEST_HEADER_PREFIX),
+  );
+  for (const name of protocol) {
+    headers.delete(name);
+  }
+}
+
 /**
  * A redirect or a whole response the middleware produced for `request`, handed to the client as
- * such, under the headers the rules of `next.config` set (`layConfiguredUnder`).
+ * such: without what of it is the middleware protocol's, under the headers the rules of
+ * `next.config` set (`layConfiguredUnder`).
  */
 export function middlewareResponse(
   edge: EdgeContext,
@@ -651,6 +684,7 @@ export function middlewareResponse(
 ): Response {
   const answer = forwardedResponse(response, edge.forwarding, request.method);
   const headers = answer.headers;
+  withoutMiddlewareProtocol(headers);
   layConfiguredUnder(edge, headers, answered.configured);
   privateCacheControl(headers);
   if (edge.privateDelivery) {

@@ -161,4 +161,43 @@ describe('an answer the middleware gives', () => {
       });
     },
   );
+
+  /**
+   * What of the middleware protocol its own answer still carries — the copy of a cookie
+   * `NextResponse` writes beside each it sets, the request headers it overrode, the markers of what
+   * it decided — Next.js's router reads off and hands no client (Codex, upwind#179). A header under
+   * the same prefix that is not the protocol's stays: Next.js's own client router reads
+   * `x-middleware-cache` off an answer.
+   */
+  it('hands the client none of the middleware protocol its own answer carries', async () => {
+    const response = await throughMiddleware('/', {
+      middleware: () => {
+        return new Response(null, {
+          status: 307,
+          headers: {
+            location: 'https://site.example/login',
+            'set-cookie': 'mw=1; Path=/',
+            'x-middleware-set-cookie': 'mw=1; Path=/',
+            'x-middleware-override-headers': 'x-user',
+            'x-middleware-request-x-user': 'someone',
+            'x-middleware-next': '1',
+            'x-middleware-refresh': '1',
+            'x-middleware-cache': 'no-cache',
+          },
+        });
+      },
+    });
+
+    expect({
+      status: response.status,
+      location: response.headers.get('location'),
+      cookies: response.headers.getSetCookie(),
+      prefixed: [...response.headers.keys()].filter((name) => name.startsWith('x-middleware-')),
+    }).toStrictEqual({
+      status: 307,
+      location: 'https://site.example/login',
+      cookies: ['mw=1; Path=/'],
+      prefixed: ['x-middleware-cache'],
+    });
+  });
 });
