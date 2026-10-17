@@ -218,11 +218,15 @@ function accepted(
 
 /**
  * The request the application sees for a source of its own: a bare GET at its own host, as
- * Next.js's optimizer makes one.
+ * Next.js's optimizer makes one — at that host however the source spells its path. Resolved as a
+ * URL, a path a parser reads as opening with two slashes names a host of its own
+ * (`/\other.example/a.png`, or a tab between the slashes), and Next.js's router takes no host from
+ * a path. So the request is the path and query the source resolves to, which the file is looked up
+ * by (`localPathname`), at the host, as every request the edge forwards is (`forwardedUrl`).
  */
 function localRequest(edge: EdgeContext, href: string): Request {
-  const url = new URL(href, `https://${edge.forwarding.previewHost}`);
-  return new Request(url.href, {
+  const { pathname, search } = new URL(href, LOCAL_BASE);
+  return new Request(`https://${edge.forwarding.previewHost}${pathname}${search}`, {
     headers: {
       'x-forwarded-host': edge.forwarding.previewHost,
       'x-forwarded-proto': 'https',
