@@ -1,3 +1,5 @@
+import { dnsSpelling } from '../domains/index.ts';
+
 /**
  * Where a deployment's objects are kept: the pointer, the manifests and the policies in the edge's
  * KV namespace, and the bundle, its blobs and each manifest's durable copy in the bucket. What
@@ -8,12 +10,14 @@
  * The pointer a hostname is served by, under the full hostname: that is what a request arrives
  * with, so the edge resolves a hostname with one read.
  *
- * Spelled as DNS compares a name, which a key is not: in lower case, and without the root's dot
- * that a fully qualified spelling ends in. A pointer written for `Example.com` is then the one a
- * request for `example.com.` finds, whichever of the two spellings either side was handed.
+ * Spelled as DNS compares a name, which a key is not (`dnsSpelling`): in ASCII, in lower case, and
+ * without the root's dot that a fully qualified spelling ends in. A pointer written for
+ * `Example.com` is then the one a request for `example.com.` finds, and one written for
+ * `münich.example` the one a request for `xn--mnich-kva.example` finds, whichever of the spellings
+ * either side was handed. A name in ASCII is keyed as it always was.
  */
 export function kvHostPointerKey(hostname: string): string {
-  return `host:${hostname.toLowerCase().replace(/\.$/u, '')}`;
+  return `host:${dnsSpelling(hostname)}`;
 }
 
 /** A manifest, by its id: the digest of its bytes, so what is under a key never changes. */
