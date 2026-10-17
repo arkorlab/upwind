@@ -75,17 +75,15 @@ import {
   type TickOptions,
 } from './retention-run.ts';
 import { applyRetire, applySeedScope, planSeedEntries, type RetireOutcome } from './seed.ts';
+import { countSettleFailures, retryDelayMs, settleRetryMs } from './settle-retry.ts';
 import {
   chainSettle,
   finishSettle,
   type OwnRecords,
   requireScopeMarker,
-  retryDelayMs,
   type SettleDeps,
   type SettleOutcome,
   settlePending,
-  settleRetryMs,
-  countSettleFailures,
   type SettleRun,
 } from './settle.ts';
 import {
@@ -136,6 +134,8 @@ const UNKNOWN = { empty: { kind: 'unknown' } } as const;
  * of its own either, and is answered as it commits (`AT_ONCE`).
  */
 const SEED = { seed: { kind: 'conflict', reason: 'the scope is retired' }, atOnce: true } as const;
+/** What a change hands its own run (`#mutate`): the records it wants and carries, and its timing. */
+type OwnRun = Pick<OwnRecords, 'wanted' | 'carried'> & Pick<SettleDeps, 'timing'>;
 
 export class CacheScope extends DurableObject<CacheBindings> {
   /** The history a host keeps of each scope, made as each object is (`ScopeHistory`): none here. */
@@ -225,7 +225,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
     now: number,
     plan: (input: TxInput) => Apply<T> | Promise<Apply<T>>,
     answers: { readonly atOnce?: boolean } & ({ readonly empty: T } | { readonly seed: T }),
-    { wanted, timing, carried }: Pick<OwnRecords, 'wanted' | 'carried'> & Pick<SettleDeps, 'timing'> = {},
+    { wanted, timing, carried }: OwnRun = {},
   ): Promise<T> {
     const result = await this.#mutations.run(async () => {
       const committed = await commitMutation(
