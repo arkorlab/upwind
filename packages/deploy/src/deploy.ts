@@ -24,7 +24,6 @@ import type {
   EdgePointer,
   ShellBackendId,
 } from '@stayingupwind/host/delivery';
-import { nextVersionSupported, SUPPORTED_NEXT_RANGE } from '@stayingupwind/host/next-support';
 import { scanPreloadLinks } from '@stayingupwind/host/preloads';
 import { blobObjectKey, kvManifestKey, r2ManifestKey } from '@stayingupwind/host/storage';
 
@@ -41,6 +40,7 @@ import {
   oversizedManifest,
   routedPages,
   unreachableFunctions,
+  unsupportedNext,
 } from './manifest.ts';
 import { edgePointerOf } from './pointer.ts';
 import { DOCUMENT_KIND, type ShellToEncode, shellsOf } from './shells.ts';
@@ -370,14 +370,13 @@ export async function stageDeployment(
   if (unreachable !== undefined) {
     throw new DeployRefusalError(unreachable, { code: 'bundle_invalid' });
   }
-  // A build outside the adapter's range gets nothing of what a host serves (`NextSupport`), and
-  // is refused here, before anything is written; one with limited support is deployed as any is.
-  if (!nextVersionSupported(bundle.nextVersion)) {
-    const { min, max } = SUPPORTED_NEXT_RANGE;
-    throw new DeployRefusalError(
-      `next ${bundle.nextVersion} is outside the versions deployed (>=${min.join('.')} <${max.join('.')})`,
-      { code: 'bundle_invalid' },
-    );
+  // A build outside the adapter's range gets nothing of what a host serves (`NextSupport`), and is
+  // refused here, before anything is written, rather than by the assembly once everything is; one
+  // with limited support is deployed as any is. The assembly is not told the version was judged
+  // (`nextVersionJudged`): that is for a deployment a host already holds, and this one is new.
+  const unsupported = unsupportedNext(input);
+  if (unsupported !== undefined) {
+    throw new DeployRefusalError(unsupported, { code: 'bundle_invalid' });
   }
   const fingerprint = await deploymentFingerprintOf(bundle, input.json, isoOf(input.now()));
   const blobs = await stageBlobs(target, bundle);

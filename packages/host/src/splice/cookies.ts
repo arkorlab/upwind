@@ -11,16 +11,17 @@ import { compareCodeUnits } from '@stayingupwind/core/util';
  * (`server/async-storage/request-store.ts`, `mergeMiddlewareCookies`) — so a resume can answer with
  * the very cookie the shell went out with. Repeating it sets nothing the client does not have.
  *
- * Two are the same cookie when a browser would store the same thing: the name and value as written,
- * the attributes in any order and any case, the last of one written twice, and `Expires` left out
- * beside a valid `Max-Age` — which a browser prefers (RFC 6265, section 5.3), and which Next.js
- * recomputes from `Max-Age` each time it sets a cookie again (`normalizeCookie`), a second or more
- * after the middleware did. A resume's cookie may also be the one the shell carried as Next.js
- * writes it back (`echoOf`), which is not always as it was written: that is the render's copy of a
- * cookie the client has, not one it was meant to be given. Only of a cookie the render was handed,
- * though (`handedCookies`): one the middleware wrote on its response alone — a `Set-Cookie` of its
- * own, appended after `cookies.set` — the render never saw, and a resume that sets it as Next.js
- * would write it back sets a cookie of its own, which the client may not have.
+ * Two are the same cookie when a browser would store the same thing: the name and value as written
+ * but for the spaces and tabs about each, the attributes in any order and any case, the last of one
+ * written twice, and `Expires` left out beside a valid `Max-Age` — which a browser prefers
+ * (RFC 6265, section 5.3), and which Next.js recomputes from `Max-Age` each time it sets a cookie
+ * again (`normalizeCookie`), a second or more after the middleware did. A resume's cookie may also
+ * be the one the shell carried as Next.js writes it back (`echoOf`), which is not always as it was
+ * written: that is the render's copy of a cookie the client has, not one it was meant to be given.
+ * Only of a cookie the render was handed, though (`handedCookies`): one the middleware wrote on its
+ * response alone — a `Set-Cookie` of its own, appended after `cookies.set` — the render never saw,
+ * and a resume that sets it as Next.js would write it back sets a cookie of its own, which the
+ * client may not have.
  *
  * And only where the copy is stored as the cookie it copies was. A cookie that names no path of its
  * own is stored under the directory of the path the client asked for (RFC 6265, sections 5.1.4 and
@@ -55,17 +56,48 @@ const KEPT_ATTRIBUTES = new Set([
 const FLAGS = new Set(['httponly', 'partitioned', 'secure']);
 /** What a cookie with no name is reported as: it ends the splice as any other would. */
 const NAMELESS = '(nameless)';
+/** What a browser takes off either end of a cookie's name and value, and of an attribute's. */
+const WHITESPACE: ReadonlySet<string> = new Set([' ', '\t']);
 
 interface Attribute {
   readonly name: string;
   readonly value: string;
 }
 
+/**
+ * `written` less the spaces and tabs at either end, which are all a browser takes off (RFC 6265,
+ * section 5.2): `trim` would take a no-break space as well, which a browser keeps, and read two
+ * cookies it stores apart as one.
+ */
+function trimmed(written: string): string {
+  let start = 0;
+  let end = written.length;
+  while (start < end && WHITESPACE.has(written.charAt(start))) {
+    start += 1;
+  }
+  while (end > start && WHITESPACE.has(written.charAt(end - 1))) {
+    end -= 1;
+  }
+  return written.slice(start, end);
+}
+
 function attributeOf(written: string): Attribute {
   const at = written.indexOf('=');
-  const name = (at === -1 ? written : written.slice(0, at)).trim().toLowerCase();
-  const value = at === -1 ? '' : written.slice(at + 1).trim();
+  const name = trimmed(at === -1 ? written : written.slice(0, at)).toLowerCase();
+  const value = at === -1 ? '' : trimmed(written.slice(at + 1));
   return { name, value: name === PATH ? value : value.toLowerCase() };
+}
+
+/**
+ * A cookie's name and value as a browser stores them: parted at the first `=`, and each trimmed
+ * (RFC 6265, section 5.2), so `a = b` is `a=b`. A pair with no `=` is kept whole, trimmed: browsers
+ * do not agree on what it sets.
+ */
+function pairOf(written: string): string {
+  const at = written.indexOf('=');
+  return at === -1
+    ? trimmed(written)
+    : `${trimmed(written.slice(0, at))}=${trimmed(written.slice(at + 1))}`;
 }
 
 /**
@@ -138,7 +170,7 @@ function storedAs(setCookie: string, defaultPath: string): string {
   const kept = [...attributes]
     .map(([name, value]) => `${name}=${value}`)
     .toSorted(compareCodeUnits);
-  return [pair.trim(), ...kept].join(';');
+  return [pairOf(pair), ...kept].join(';');
 }
 
 /**
