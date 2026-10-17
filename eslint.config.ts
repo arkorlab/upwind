@@ -50,6 +50,8 @@ const RUNTIME_NEUTRAL_FILES = [
   // Read by an edge, by the cache behind it and by whatever deploys to them, each of which may run
   // as a Worker or under Node.
   'packages/host/**/*.ts',
+  // Run by whatever deploys a build, which may be a Worker or a command under Node.
+  'packages/deploy/**/*.ts',
   'packages/sdk/src/**/*.ts',
 ];
 /** The suites, and what they share, wherever a package or a tool keeps them. */
