@@ -1,3 +1,4 @@
+import { nextNamespacePattern } from '../manifest/dynamic.ts';
 import type { ReservedRoute } from '../manifest/schema.ts';
 import type { DeploymentBundle } from './schema.ts';
 
@@ -16,11 +17,6 @@ export function isInternalPage(bundle: DeploymentBundle, pathname: string): bool
   return pathname.startsWith(basePath) && INTERNAL_PAGES.has(pathname.slice(basePath.length));
 }
 
-/** A base path as a pattern matches it: every character as itself. */
-function escaped(basePath: string): string {
-  return basePath.replaceAll(/[$()*+.?[\\\]^{|}]/gu, String.raw`\$&`);
-}
-
 /**
  * Next.js's own namespace under the base path, `<basePath>/_next/`, as the dynamic routes are to be
  * kept out of it: at the root the edge leaves `/_next/` to the Function before it looks for a route
@@ -30,5 +26,5 @@ function escaped(basePath: string): string {
  */
 export function nextNamespaceRoutes(bundle: DeploymentBundle): ReservedRoute[] {
   const { basePath } = bundle.config;
-  return basePath === '' ? [] : [{ sourceRegex: `^${escaped(basePath)}/_next/` }];
+  return basePath === '' ? [] : [{ sourceRegex: nextNamespacePattern(basePath) }];
 }

@@ -1,5 +1,6 @@
 import { artifactRefSchema, sha256HexSchema, shellEncodingsSchema } from '../artifact/artifact.ts';
 import {
+  routeGatesSchema,
   routeHasSchema,
   routerReferencesSchema,
   splitFunctionNameSchema,
@@ -370,6 +371,12 @@ export const dynamicRouteSchema = z.object({
    * where a request of the class goes when nothing ahead of the dynamic routes claims it.
    */
   function: splitFunctionNameSchema.optional(),
+  /**
+   * The route the build declared a gate for (`gates`) that a request this matches lands on, or
+   * asks the data of: the request is that gate's to answer first. Absent on every other dynamic
+   * route, and on every one of a deployment that declares no gate.
+   */
+  gated: z.string().startsWith('/').optional(),
 });
 export type DynamicRoute = z.infer<typeof dynamicRouteSchema>;
 /**
@@ -570,6 +577,28 @@ export const projectManifestSchema = z.object({
    * none.
    */
   pagesDataBasePath: z.string().startsWith('/').optional(),
+  /**
+   * The routes the build declared a gate for, each with the name of its gate (`routeGatesSchema`):
+   * a `GET` or a `HEAD` the edge finds to be of one (`gateFor`) is asked of the gate the host binds
+   * under that name before the edge serves it anything, and is served as though there were no
+   * gate only where the gate says so. Absent for a deployment that declares none — every one from
+   * before the field existed among them — which the edge serves as it always did.
+   *
+   * A reader that does not know the field drops it, and serves each such route as one with no gate.
+   * No schema version turns on it, since none would keep such a reader from that: a manifest it
+   * refused would send every request of the deployment to its Function, gated or not, past the gate
+   * all the same. What keeps an edge that does not know the field from serving a deployment that
+   * declares a gate is the order a host rolls out in: the edge before what publishes such a manifest.
+   */
+  gates: routeGatesSchema.optional(),
+  /**
+   * The pathnames Next.js resolves exactly that are of a gated route — the route's own, and every
+   * one the build prerendered of it — each with that route, under each spelling the router finds
+   * one by (`gatedPathnamesOf`): what the edge finds a gated route of a request whose pathname the
+   * build named by, before it asks the dynamic routes (`DynamicRoute.gated`). Beside `gates`, and
+   * never without it.
+   */
+  gatedPathnames: z.record(z.string().startsWith('/'), z.string().startsWith('/')).optional(),
   /** The runtime cache the routes' entries live in. */
   cache: manifestCacheSchema.optional(),
 });
