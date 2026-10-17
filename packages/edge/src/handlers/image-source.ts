@@ -25,7 +25,7 @@ import {
 } from '@stayingupwind/core/request';
 import { isDeadlineError, limitBody, releaseStream, withDeadline } from '@stayingupwind/core/util';
 import { withoutHostCredentials } from '@stayingupwind/host/credentials';
-import { isUnderAnyDomain } from '@stayingupwind/host/domains';
+import { dnsSpelling, isUnderAnyDomain } from '@stayingupwind/host/domains';
 
 import { logWarn } from '../observability/logger.ts';
 import { asksBlobWorker } from '../preview/blobs.ts';
@@ -455,15 +455,6 @@ async function fetchBlob(
 }
 
 /**
- * A name as DNS compares it, as the host's domains are judged (`isUnderAnyDomain`): in lower case,
- * and without the root's dot that a fully qualified spelling ends in, which a URL's hostname keeps
- * (`https://example.com./` is `example.com.`).
- */
-function spelledAlike(name: string): string {
-  return name.toLowerCase().replace(/\.$/u, '');
-}
-
-/**
  * A redirect the optimizer will not follow: off the web, to a local address the configuration
  * does not allow (as Next.js judges each hop), or back into the edge's host — every name under a
  * domain it answers on (`ownDomains`), each hostname it answers on (`ownHostnames`), and the
@@ -477,11 +468,11 @@ function redirectRefused(target: URL, edge: EdgeContext, config: ImagesConfig): 
   if (!allowedImageDestination(config, target)) {
     return true;
   }
-  const hostname = spelledAlike(target.hostname);
+  const hostname = dnsSpelling(target.hostname);
   return (
     isUnderAnyDomain(hostname, edge.host.ownDomains) ||
-    edge.host.ownHostnames?.some((own) => spelledAlike(own) === hostname) === true ||
-    hostname === spelledAlike(edge.forwarding.previewHost)
+    edge.host.ownHostnames?.some((own) => dnsSpelling(own) === hostname) === true ||
+    hostname === dnsSpelling(edge.forwarding.previewHost)
   );
 }
 
