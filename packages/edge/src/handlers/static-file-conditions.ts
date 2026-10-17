@@ -1,5 +1,10 @@
 import type { BlobRange } from '../preview/blobs.ts';
-import { httpDateMs, listsTag } from '../strategies/asset-upstream.ts';
+import {
+  httpDateMs,
+  listsTag,
+  unmodifiedSince,
+  validatorMatches,
+} from '../strategies/asset-upstream.ts';
 
 /**
  * What a request's preconditions and range make of the answer the edge gives with a shipped file.
@@ -39,6 +44,25 @@ export function preconditionFails(
   const sinceMs = httpDateMs(since);
   const modifiedMs = modified === null ? undefined : httpDateMs(modified);
   return sinceMs !== undefined && modifiedMs !== undefined && modifiedMs > sinceMs;
+}
+
+/**
+ * Whether the client already holds the answer, as Next.js's file server judges it (`isFresh`, in
+ * `send`): its `If-None-Match` names the entity tag the answer carries, compared weakly; or, asked
+ * without one, its `If-Modified-Since` is no earlier than the answer's `Last-Modified` (RFC 9110
+ * §13.1.2, §13.1.3), judged as an immutable asset's is (`unmodifiedSince`). An answer with no
+ * modification date, or a date either side that is no HTTP-date, leaves `If-Modified-Since`
+ * unjudged; `lastModified` is asked only where there is a date to judge it by.
+ */
+export function clientHolds(
+  request: Request,
+  tag: string,
+  lastModified: () => string | null,
+): boolean {
+  if (request.headers.has('if-none-match')) {
+    return validatorMatches(request, tag);
+  }
+  return request.headers.has('if-modified-since') && unmodifiedSince(request, lastModified());
 }
 
 /**

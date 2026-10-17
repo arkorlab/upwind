@@ -452,7 +452,7 @@ export function httpDateMs(value: string): number | undefined {
  * either is no HTTP-date, or the answer names no modification date: the whole answer goes, as to a
  * request that asked nothing.
  */
-function unmodifiedSince(request: Request, lastModified: string | null): boolean {
+export function unmodifiedSince(request: Request, lastModified: string | null): boolean {
   const since = request.headers.get('if-modified-since');
   if (
     since === null ||

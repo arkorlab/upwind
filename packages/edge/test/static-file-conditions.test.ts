@@ -12,14 +12,16 @@ const BODY = 'the shipped manual';
 /** When a rule of `next.config` says the dated file was last modified. */
 const LAST_MODIFIED = 'Tue, 15 Nov 1994 12:45:26 GMT';
 const DAY_BEFORE = 'Mon, 14 Nov 1994 12:45:26 GMT';
+const DAY_AFTER = 'Wed, 16 Nov 1994 12:45:26 GMT';
 
-/** What a standalone edge, its pointer pinned, answers a request with. */
+/** What a standalone edge, its pointer pinned and its files in `bucket`, answers a request with. */
 async function serve(
   pointer: EdgePointer,
   path: string,
   init: RequestInit = {},
+  bucket: R2Bucket = env.ARTIFACTS,
 ): Promise<{ readonly response: Response; readonly body: string }> {
-  const site = { ...env, POINTER: JSON.stringify(pointer) };
+  const site = { ...env, POINTER: JSON.stringify(pointer), ARTIFACTS: bucket };
   const ctx = createExecutionContext();
   const runtime = standaloneRuntime(site, { memory: createEdgeMemory(() => Date.now()) });
   const response = await handleStandalone(navigation(path, init), site, ctx, runtime);
@@ -35,6 +37,17 @@ async function shipping(
 ): Promise<{ readonly pointer: EdgePointer; readonly tagOf: (path: string) => string }> {
   const { manifest, pointer } = await seedSite({ document: pprDocument(), files, headerRules });
   return { pointer, tagOf: (path) => `"${manifest.staticFiles?.[path]?.sha256 ?? ''}"` };
+}
+
+/** The real bucket, writing down the key of every object read from it. */
+function recordingBucket(keys: string[]): R2Bucket {
+  const bucket = {
+    get: (key: string, options?: R2GetOptions) => {
+      keys.push(key);
+      return env.ARTIFACTS.get(key, options);
+    },
+  };
+  return bucket as unknown as R2Bucket;
 }
 
 /**
@@ -103,6 +116,49 @@ describe('a shipped file asked under a precondition', () => {
     expect([unchanged.response.status, unchanged.body]).toStrictEqual([200, 'dated']);
     expect([undated.response.status, undated.body]).toStrictEqual([200, 'undated']);
     expect([matched.response.status, matched.body]).toStrictEqual([200, 'dated']);
+  });
+
+  /**
+   * A client that asks by date, with no `If-None-Match`, already holds a file whose `Last-Modified`
+   * — a rule's here, storage keeping no date of its own — is no later than the date it names: it is
+   * answered 304 from the manifest, as Next.js's file server answers it (`isFresh`), and nothing is
+   * read from storage (greptile and Codex, upwind#179).
+   */
+  it('answers 304 to an If-Modified-Since a Last-Modified the answer carries meets, reading nothing', async () => {
+    const { pointer, tagOf } = await shipping(
+      { '/dated.txt': 'dated', '/undated.txt': 'undated' },
+      [{ sourceRegex: String.raw`^/dated\.txt$`, headers: { 'last-modified': LAST_MODIFIED } }],
+    );
+    const keys: string[] = [];
+    const bucket = recordingBucket(keys);
+    const ask = (path: string, headers: Record<string, string>, method = 'GET') =>
+      serve(pointer, path, { method, headers }, bucket);
+    const fileReads = (): string[] => keys.filter((key) => key.startsWith('blobs/'));
+
+    const held = [
+      await ask('/dated.txt', { 'if-modified-since': LAST_MODIFIED }),
+      await ask('/dated.txt', { 'if-modified-since': DAY_AFTER }),
+      await ask('/dated.txt', { 'if-modified-since': LAST_MODIFIED }, 'HEAD'),
+    ];
+    const readForHeld = fileReads();
+    const changed = await ask('/dated.txt', { 'if-modified-since': DAY_BEFORE });
+    const undated = await ask('/undated.txt', { 'if-modified-since': DAY_AFTER });
+    const tagged = await ask('/dated.txt', {
+      'if-none-match': '"another"',
+      'if-modified-since': LAST_MODIFIED,
+    });
+
+    for (const { response, body } of held) {
+      expect([response.status, body]).toStrictEqual([304, '']);
+      expect(response.headers.get('etag')).toBe(tagOf('/dated.txt'));
+      expect(response.headers.get('last-modified')).toBe(LAST_MODIFIED);
+    }
+
+    expect(readForHeld).toStrictEqual([]);
+    expect([changed.response.status, changed.body]).toStrictEqual([200, 'dated']);
+    expect([undated.response.status, undated.body]).toStrictEqual([200, 'undated']);
+    // A client that names the tags it holds is judged by them alone (RFC 9110 §13.1.3).
+    expect([tagged.response.status, tagged.body]).toStrictEqual([200, 'dated']);
   });
 
   /** An error document answers a request for something else, which judges no precondition (§13.2.1). */

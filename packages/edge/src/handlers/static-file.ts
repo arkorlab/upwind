@@ -18,7 +18,6 @@ import { releaseStream } from '@stayingupwind/core/util';
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeMetric } from '../observability/metrics.ts';
 import { asksBlobWorker, type BlobRange, readShippedFile } from '../preview/blobs.ts';
-import { validatorMatches } from '../strategies/asset-upstream.ts';
 import type { StaticFileContext } from '../strategies/context.ts';
 import { setConfigured } from './configured-headers.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
@@ -29,7 +28,7 @@ import {
   removeSharedCacheOverrides,
   serviceUnavailableResponse,
 } from './responses.ts';
-import { preconditionFails, requestedRange } from './static-file-conditions.ts';
+import { clientHolds, preconditionFails, requestedRange } from './static-file-conditions.ts';
 
 /**
  * A file the build shipped, served from storage without asking anyone.
@@ -291,14 +290,17 @@ function rangeNotSatisfiable(headers: Headers, file: StaticFileEntry): Response 
 }
 
 /**
- * Whether the client already holds the entity: weakly, and against the tag the unconditional
- * answer would carry (RFC 9110 §13.1.2) — the middleware's, when it set one.
+ * Whether the client already holds the entity (`clientHolds`), judged against the answer the file
+ * would be given: weakly against the tag it carries (RFC 9110 §13.1.2) — the middleware's, when it
+ * set one — or, asked by date, against the `Last-Modified` a rule or the middleware gave it, as a
+ * precondition is (`preconditionFailed`).
  */
 function unmodified(input: StaticFileInput): boolean {
   return (
-    input.request.headers.has('if-none-match') &&
     answersAsItself(input) &&
-    validatorMatches(input.request, entityTagOf(input))
+    clientHolds(input.request, entityTagOf(input), () =>
+      fileHeaders(input, 'manifest').get('last-modified'),
+    )
   );
 }
 
