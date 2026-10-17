@@ -4,10 +4,10 @@ import type { StartAttemptResponse } from '@stayingupwind/host/cache';
 import type { CommitOutcome } from './commit.ts';
 import { findEntry } from './entries.ts';
 import { findGeneration } from './generations.ts';
-import { retain } from './projection-memory.ts';
-import { generationRecordBytes, type RecordDeps, recordBytesOf } from './records.ts';
+import { retain, withProjectionMemoryAtOnce } from './projection-memory.ts';
+import { generationRecordBytes, packMemoryOf, type RecordDeps, recordBytesOf } from './records.ts';
 import type { EntryRow, GenerationRow } from './rows.ts';
-import type { WantedRecords, WrittenRecord } from './settle.ts';
+import { dropRecordBytes, type WantedRecords, type WrittenRecord } from './settle.ts';
 import { isRefusal, type Refusal } from './state.ts';
 
 const KIB = 1024;
@@ -34,10 +34,18 @@ export interface CommitRecords extends WantedRecords {
  * broad invalidation say, holds none of theirs past its write. The entry is named once the commit
  * has published (`entryOf`). A record it wants outlives the chunk that built it, until the commit
  * is answered with it: its bytes are charged to the isolate's room as it is wanted, while that
- * chunk still holds its own, and until the commit lets them go (`release`).
+ * chunk still holds its own, and until the commit lets them go (`release`) — or until the run lets
+ * them go before it waits for room (`letGo`), and the commit is answered without its record, as
+ * one too large to travel back is (`withWrittenRecord`).
  */
 export function wantedRecords(entryOf: () => string | undefined): CommitRecords {
   const kept: (() => void)[] = [];
+  const records = new Map<string, WrittenRecord>();
+  const release = (): void => {
+    for (const letGo of kept.splice(0)) {
+      letGo();
+    }
+  };
   return {
     wants: (entryId, bytes) => {
       if (bytes > MAX_RETURNED_RECORD_BYTES || entryId !== entryOf()) {
@@ -46,12 +54,12 @@ export function wantedRecords(entryOf: () => string | undefined): CommitRecords 
       kept.push(retain(bytes));
       return true;
     },
-    records: new Map(),
-    release: () => {
-      for (const letGo of kept.splice(0)) {
-        letGo();
-      }
+    records,
+    letGo: () => {
+      release();
+      dropRecordBytes(records);
     },
+    release,
   };
 }
 
@@ -91,8 +99,8 @@ function standingRevision(
  * another run's projection reached first finds no record of its own (`written`). Built again from
  * the generation, outside the scope's queue: only where it could travel back at all
  * (`recordBytesOf`, before anything is read), and only where the same record still stands
- * once it is built. None otherwise, and none where its bytes cannot be read: the commit is then
- * answered without a record.
+ * once it is built. None otherwise, none where its bytes cannot be read, and none where the isolate
+ * has no room to build it at once (`builtRecord`): the commit is then answered without a record.
  */
 async function standingRecord(
   deps: StandingDeps,
@@ -115,6 +123,13 @@ async function standingRecord(
  * `generation`'s delivery record as `entry`'s, built as a settle builds it, where it could travel
  * back at all (`recordBytesOf`, before anything is read); none otherwise, and none where its bytes
  * cannot be read.
+ *
+ * Built in the isolate's room for records, as a settle's chunk is (`projection-memory.ts`), and only
+ * where there is room for it at once: the answers it is built for — a lease's, which a request may
+ * wait on before its first byte — wait for none, and go without it where there is none, as they go
+ * without one too large to travel back. Built outside that room, the answers for leases of a page
+ * KV is behind, busy or not, would each hold a record of up to 4 MiB beside the settle runs' and
+ * one another's, past what the isolate has.
  */
 async function builtRecord(
   deps: StandingDeps,
@@ -129,10 +144,13 @@ async function builtRecord(
   try {
     // Measured and built alike behind the catch: what cannot be laid out is answered without a
     // record.
-    if (recordBytesOf(deps.scopeId, entry, generation) > MAX_RETURNED_RECORD_BYTES) {
+    const bytes = recordBytesOf(deps.scopeId, entry, generation);
+    if (bytes > MAX_RETURNED_RECORD_BYTES) {
       return undefined;
     }
-    return await generationRecordBytes(deps, entry, generation);
+    return await withProjectionMemoryAtOnce(packMemoryOf(bytes), () =>
+      generationRecordBytes(deps, entry, generation),
+    );
   } catch {
     return undefined;
   }
@@ -188,7 +206,9 @@ export type StartAttemptOutcome = StartAttemptResponse & {
  * generation (`recordBytes`) where the request named an earlier one it judged (`replaces`) and the
  * current one stands, condemned by no invalidation: a Function that read KV behind it answers its
  * request from that record rather than with a render of its own, which no other request is
- * answered with. None where the request named no generation, or the one it judged is the current.
+ * answered with. None where the request named no generation, or the one it judged is the current;
+ * none either where the isolate has no room to build it at once (`builtRecord`), and the request
+ * is answered as for a record too large to travel back.
  */
 export async function withCurrentRecord(
   answer: StartAttemptResponse | Refusal,
@@ -213,8 +233,10 @@ export async function withCurrentRecord(
  * one the commit's own settle wrote, while the entry's record still stands at the revision it was
  * written for, whichever generation it holds — a change that committed once it was written, a path
  * invalidated say, has another one written or on its way — or else the one standing for the
- * generation it published where another run wrote it (`standingRecord`). The entry is named once
- * the commit has published (`entryOf`): no other answer needs it.
+ * generation it published where another run wrote it (`standingRecord`). One its own settle wrote
+ * and let go of before it waited for room (`WantedRecords.letGo`) is not built again: while it
+ * stands, the answer says where it stands alone (`recordRevision`). The entry is named once the
+ * commit has published (`entryOf`): no other answer needs it.
  */
 export async function withWrittenRecord(
   committed: Promise<CommitOutcome | Refusal>,

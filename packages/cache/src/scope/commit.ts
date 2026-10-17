@@ -58,6 +58,12 @@ const OUTPUT_ID_PREFIX = 'out';
  * in the runtime's own queue, held all the same.
  */
 const UPLOAD_CHECKS_AT_ONCE = 6;
+/**
+ * How many ids of the tags a commit depends on its plan derives at once. Nothing bounds how many a
+ * commit names but the body it is read from, a mebibyte (`COMMIT_BODY_BYTES`): some ten thousand,
+ * and each id a digest.
+ */
+const DEPENDENCY_TAG_IDS_AT_ONCE = 128;
 
 interface CommitPlan {
   readonly attemptId: string;
@@ -111,21 +117,21 @@ export async function planCommit(
   };
 }
 
+/** Ids for the tags a commit depends on, each tag's once, derived ahead of its transaction. */
 async function dependencyTagIdsFor(
   scopeId: string,
   dependencies: readonly CommitDependency[],
 ): Promise<Map<string, string>> {
+  const values = new Set<string>();
+  for (const dependency of dependencies) {
+    if (dependency.target.kind === 'tag') {
+      values.add(dependency.target.value);
+    }
+  }
   const ids = new Map<string, string>();
-  await Promise.all(
-    dependencies.map(async (dependency) => {
-      if (dependency.target.kind !== 'tag') {
-        return;
-      }
-
-      const { value } = dependency.target;
-      ids.set(value, await tagIdFor(scopeId, tagKindOf(value), value));
-    }),
-  );
+  await inChunks([...values], DEPENDENCY_TAG_IDS_AT_ONCE, async (value) => {
+    ids.set(value, await tagIdFor(scopeId, tagKindOf(value), value));
+  });
   return ids;
 }
 

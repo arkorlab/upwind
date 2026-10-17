@@ -22,6 +22,7 @@ import {
   answerScope,
   type GatewayContext,
   type GatewayEnv,
+  meterWrite,
   refuseRetired,
   retiredScope,
 } from '../auth.ts';
@@ -190,7 +191,7 @@ async function setValue(c: GatewayContext): Promise<Response> {
   }
   if (isRefusal(outcome)) return answerScope(c, outcome);
   if (outcome.metered !== undefined) {
-    c.get('host').meter.write(c.get('scopeId'), outcome.metered);
+    meterWrite(c, outcome.metered);
   }
   const parts = [serverTiming(timing.parts), serverTiming(outcome.timing ?? [], 'scope-')];
   c.header('server-timing', parts.filter((part) => part !== '').join(', '));

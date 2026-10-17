@@ -19,7 +19,7 @@ import { z } from 'zod';
 
 import type { UploadedArtifact } from '../../scope/attempts.ts';
 import { isRefusal } from '../../scope/state.ts';
-import { answerScope, type GatewayContext, type GatewayEnv } from '../auth.ts';
+import { answerScope, type GatewayContext, type GatewayEnv, meterWrite } from '../auth.ts';
 import { ENTRY_BODY_BYTES, readBody, readRequest } from '../body.ts';
 import { fail, ok } from '../respond.ts';
 
@@ -285,7 +285,7 @@ export const attemptRoutes = new Hono<GatewayEnv>()
     // What the publish wrote is metered here and kept here: the Worker is told what it is told.
     const { metered, recordBytes, ...response } = outcome;
     if (metered !== undefined) {
-      c.get('host').meter.write(c.get('scopeId'), metered);
+      meterWrite(c, metered);
     }
     // The record the commit's settle wrote, where the scope handed it back: the Function keeps it
     // nearer than KV's cache, which goes on answering with the generation it replaced.
