@@ -200,4 +200,46 @@ describe('an answer the middleware gives', () => {
       prefixed: ['x-middleware-cache'],
     });
   });
+
+  /**
+   * Another origin's answer to a rewrite is that origin's body, of the type it names: Next.js's proxy
+   * writes the origin's own headers over what routing set before it proxied. Where the origin names
+   * none, what routing set stands — the middleware's type, else a rule's (cubic, upwind#179).
+   */
+  it.each([
+    ['names its own', { origin: 'text/html', middleware: undefined, type: 'text/html' }],
+    ['names none', { origin: undefined, middleware: undefined, type: 'application/rss+xml' }],
+    [
+      'names none, the middleware naming one',
+      { origin: undefined, middleware: 'text/csv', type: 'text/csv' },
+    ],
+  ] as const)(
+    'answers a rewrite to an origin that %s under the type Next.js gives it',
+    async (_case, { origin, middleware, type }) => {
+      const response = await throughMiddleware('/', {
+        middleware: () => {
+          return new Response(null, {
+            headers: {
+              'x-middleware-rewrite': 'https://elsewhere.example/feed',
+              ...(middleware !== undefined && { 'content-type': middleware }),
+            },
+          });
+        },
+        headerRules: [
+          { sourceRegex: EVERY_PATH, headers: { 'Content-Type': 'application/rss+xml' } },
+        ],
+        // Bytes rather than a string, which would name a type of its own.
+        origin: () => {
+          return new Response(new TextEncoder().encode('<rss/>'), {
+            headers: origin === undefined ? {} : { 'content-type': origin },
+          });
+        },
+      });
+
+      expect({
+        edge: response.headers.get('x-arkor-edge'),
+        type: response.headers.get('content-type'),
+      }).toStrictEqual({ edge: 'passthrough;reason=external-rewrite', type });
+    },
+  );
 });

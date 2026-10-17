@@ -126,6 +126,7 @@ export function middlewareFailedReason(cause: MiddlewareFailure): string {
 const MAX_REASON_LENGTH = 200;
 const REWRITE_HEADER = 'x-middleware-rewrite';
 const SET_COOKIE_HEADER = 'set-cookie';
+const CONTENT_TYPE_HEADER = 'content-type';
 const HTTP_OK = 200;
 /**
  * What of the middleware protocol a middleware's own answer may still carry, which Next.js's router
@@ -521,6 +522,11 @@ function recordMiddlewareAnswer(
  * are on any answer the edge hands on (`mergeScopedMiddlewareHeaders`): not the body's type,
  * encoding, framing or caching, and a cookie added beside the answer's, scoped to the host. A
  * rule's name that no header can have is left off (`setConfigured`).
+ *
+ * The body's type is the answer's where it names one, as Next.js answers: its router puts what it
+ * collected on the response before it proxies (`router-server.js`), and the proxy writes the
+ * target's own headers over it (`res.setHeader`, in httpxy). Where the answer names none, routing's
+ * stands — the middleware's, else a rule's.
  */
 function layRouted(
   edge: EdgeContext,
@@ -538,6 +544,11 @@ function layRouted(
   }
   mergeScopedMiddlewareHeaders(headers, rules, edge.forwarding);
   mergeScopedMiddlewareHeaders(headers, rewrite.responseHeaders, edge.forwarding);
+  const routedType =
+    rewrite.responseHeaders.get(CONTENT_TYPE_HEADER) ?? rules.get(CONTENT_TYPE_HEADER);
+  if (routedType !== null && !headers.has(CONTENT_TYPE_HEADER)) {
+    headers.set(CONTENT_TYPE_HEADER, routedType);
+  }
 }
 
 /**
