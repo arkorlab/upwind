@@ -13,13 +13,19 @@ import {
   PLATFORM_REQUEST_HEADERS,
   readMiddlewareResponse,
 } from '@stayingupwind/core/paas';
-import { EDGE_DEBUG_HEADER, sanitizePassthroughHeaders } from '@stayingupwind/core/request';
+import {
+  EDGE_DEBUG_HEADER,
+  PASSTHROUGH_RESPONSE_HEADER_DENYLIST,
+  PLATFORM_HEADER_PREFIX,
+  sanitizePassthroughHeaders,
+} from '@stayingupwind/core/request';
 import { isDeadlineError, releaseStream, withDeadline } from '@stayingupwind/core/util';
 import { type HostCredentials, withoutHostCredentials } from '@stayingupwind/host/credentials';
 
 import type { DispatchApp } from '../edge-runtime.ts';
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeContext } from '../strategies/context.ts';
+import { setConfigured, setConfiguredUnder } from './configured-headers.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
 import { observeMetric } from './observer.ts';
 import {
@@ -118,6 +124,7 @@ export function middlewareFailedReason(cause: MiddlewareFailure): string {
 }
 const MAX_REASON_LENGTH = 200;
 const REWRITE_HEADER = 'x-middleware-rewrite';
+const SET_COOKIE_HEADER = 'set-cookie';
 const HTTP_OK = 200;
 
 function describe(error: unknown): string {
@@ -432,19 +439,20 @@ async function runMiddlewareIn(
 
 type ExternalRewrite = Extract<MiddlewareResult, { kind: 'external-rewrite' }>;
 
-/** What it took the middleware to give an answer of its own: its run, and the dispatches it made. */
+/**
+ * What it took the middleware to give an answer of its own — its run, and the dispatches it made —
+ * and what that answer carries besides the middleware's own headers.
+ */
 export interface MiddlewareAnswered {
   /** What the request named, which the answer is counted under. */
   readonly pathname: string;
   readonly middlewareMs: number | undefined;
   readonly dispatches: number;
-}
-
-/** The same for a rewrite to another origin, and what its answer carries besides that origin's. */
-export interface RewriteAnswered extends MiddlewareAnswered {
   /**
    * The headers the rules of `next.config` set on the request, chosen on it as it came, before the
-   * middleware ran (`judgeHeaderRulesAhead`, `headerRulesAsRouted`).
+   * middleware ran (`judgeHeaderRulesAhead`, `headerRulesAsRouted`): Next.js's router collects them
+   * ahead of the middleware, and lays them on whatever answers the request instead — a redirect, a
+   * whole response, another origin's answer to a rewrite.
    */
   readonly configured: ConfiguredHeaders;
 }
@@ -547,7 +555,7 @@ export async function followExternalRewrite(
   edge: EdgeContext,
   request: Request,
   rewrite: ExternalRewrite,
-  answered: RewriteAnswered,
+  answered: MiddlewareAnswered,
 ): Promise<Response> {
   // Already without the host's own cookies: `runMiddleware` strips them from what
   // `readMiddlewareResponse` rebuilds `requestHeaders` out of, which matters most here — this
@@ -599,8 +607,41 @@ export async function followExternalRewrite(
 }
 
 /**
+ * The headers the rules of `next.config` set, laid under a redirect or a whole response the
+ * middleware answered with, as Next.js's router lays them: collected ahead of the middleware, each
+ * replaced by one of the middleware's own of the same name (`resolve-routes.js`), and all put on the
+ * response before it redirects or sends the middleware's body (`router-server.js`). A rule's cookie
+ * goes out ahead of the middleware's, as `@next/routing` collects the two for the application's
+ * Worker and as every other answer here carries them — Next.js's own server keeps the middleware's
+ * alone — so of a cookie both set the middleware's is the one that stands; each is scoped as any
+ * is. What the edge takes off every answer it hands on (`forwardedResponse`) is not a rule's to put
+ * back.
+ */
+function layConfiguredUnder(
+  edge: EdgeContext,
+  headers: Headers,
+  configured: ConfiguredHeaders,
+): void {
+  for (const [name, value] of Object.entries(configured.headers)) {
+    if (name === SET_COOKIE_HEADER) {
+      const own = headers.getSetCookie();
+      headers.delete(SET_COOKIE_HEADER);
+      setConfigured(headers, name, value, edge.forwarding);
+      for (const cookie of own) {
+        headers.append(SET_COOKIE_HEADER, cookie);
+      }
+    } else if (
+      !PASSTHROUGH_RESPONSE_HEADER_DENYLIST.includes(name) &&
+      !name.startsWith(PLATFORM_HEADER_PREFIX)
+    ) {
+      setConfiguredUnder(headers, name, value, edge.forwarding);
+    }
+  }
+}
+
+/**
  * A redirect or a whole response the middleware produced for `request`, handed to the client as
- * such.
+ * such, under the headers the rules of `next.config` set (`layConfiguredUnder`).
  */
 export function middlewareResponse(
   edge: EdgeContext,
@@ -610,6 +651,7 @@ export function middlewareResponse(
 ): Response {
   const answer = forwardedResponse(response, edge.forwarding, request.method);
   const headers = answer.headers;
+  layConfiguredUnder(edge, headers, answered.configured);
   privateCacheControl(headers);
   if (edge.privateDelivery) {
     keptByNobody(headers);

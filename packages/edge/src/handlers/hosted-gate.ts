@@ -178,11 +178,12 @@ async function actOnMiddleware(
 ): Promise<Response> {
   const { edge, request } = input;
   const { middleware, dispatches, configured } = decided;
-  // What the middleware took, for an answer it gives itself.
+  // What the middleware took, and what the rules set, for an answer it gives itself.
   const itself = {
     pathname: input.url.pathname,
     middlewareMs: middleware.middlewareMs,
     dispatches,
+    configured,
   };
   switch (middleware.kind) {
     case 'responded': {
@@ -195,7 +196,7 @@ async function actOnMiddleware(
     }
     case 'external-rewrite': {
       gate.abandon?.();
-      return followExternalRewrite(edge, request, middleware, { ...itself, configured });
+      return followExternalRewrite(edge, request, middleware, itself);
     }
     case 'skipped': {
       return gate.serve(undefined, dispatches, configured);
