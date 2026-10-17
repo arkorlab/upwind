@@ -478,6 +478,14 @@ async function build(fixture: Fixture, version: string, keep: boolean): Promise<
     await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
     await run(process.execPath, [await npmCli(), 'install', '--no-audit', '--no-fund'], app);
+    if (fixture.name === 'next-external-output') {
+      // Next.js permits a sibling distDir inside a containing workspace. Declare it after the
+      // isolated install, so npm does not hoist dependencies out of the app nextBin() names.
+      await writeFile(
+        path.join(work, MANIFEST),
+        `${JSON.stringify({ private: true, workspaces: [fixture.name] }, null, 2)}\n`,
+      );
+    }
     // Next.js's own entry under this Node, rather than the launcher npm wrote into `.bin`: that
     // one is a shell script on Unix and a `.cmd` on Windows, and `execFile` runs neither without
     // a shell. The file below is the same JavaScript both of them end up running.
