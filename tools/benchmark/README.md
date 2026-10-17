@@ -1,7 +1,7 @@
 # GitHub Actions benchmark
 
 The same public application, [`web-site`](../../web-site), measured at
-<https://stayingupwind.vercel.app/> and <https://arkorlab-upwind.arkor.app/>. GitHub hosts the
+<https://stayingupwind.vercel.app/> and <https://www.stayingupwind.com/>. GitHub hosts the
 Ubuntu runner on Azure, separately from the two platforms. This is another network vantage, not
 a guarantee that its results represent every visitor. Its geographic region is not guaranteed.
 

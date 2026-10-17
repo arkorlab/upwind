@@ -31,7 +31,12 @@ import { FUNCTION_COMPATIBILITY_DATE, FUNCTION_COMPATIBILITY_FLAGS } from './fun
 import { nodeBuiltinRequires } from './node-requires.ts';
 import { objectWasm } from './object-wasm.ts';
 import { projectOnly } from './project-maps.ts';
-import { carriesMaps, type SourceMapsOption, sourcemapOutput } from './source-maps.ts';
+import {
+  carriesMaps,
+  type SourceMapsOption,
+  sourcemapOutput,
+  storeSourceMap,
+} from './source-maps.ts';
 import { watchBuildSources } from './source-watch.ts';
 import { GLOBAL_OBJECT, globalObjectPlugin, THROWING_GLOBALS } from './throwing-globals.ts';
 import { wasmModuleName } from './wasm.ts';
@@ -331,16 +336,21 @@ export async function buildDurableObjectFunctions(input: {
     if (object.map !== undefined) {
       const source =
         input.sourceMaps === 'project'
-          ? projectOnly(object.map.source, object.map.path, {
-              projectDir: input.projectDir,
-              outDir: input.outDir,
-              distDir: input.distDir ?? path.join(input.projectDir, '.next'),
-            })
+          ? projectOnly(
+              object.map.source,
+              object.map.path,
+              {
+                projectDir: input.projectDir,
+                outDir: input.outDir,
+                distDir: input.distDir ?? path.join(input.projectDir, '.next'),
+              },
+              true,
+            )
           : object.map.source;
       sourceMaps.push({
         kind: 'function',
         name: `${kind}/${OBJECT_MODULE}`,
-        blob: await input.blobs.putText(source, 'application/json'),
+        ...(await storeSourceMap(input.blobs, source, object.map.path)),
       });
     }
     functions[object.declaration.name] = {
