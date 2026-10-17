@@ -15,6 +15,7 @@ import {
 import { releaseStream } from '@stayingupwind/core/util';
 import type { RuntimeCacheSettings } from '@stayingupwind/host/delivery';
 
+import { observeMetric } from '../handlers/observer.ts';
 import {
   handlePassthrough,
   type MiddlewareContinue,
@@ -22,6 +23,7 @@ import {
   type PassthroughWait,
 } from '../handlers/passthrough.ts';
 import { logWarn } from '../observability/logger.ts';
+import type { EdgeMetric } from '../observability/metrics.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 
 /**
@@ -158,7 +160,23 @@ export function foregroundDocument(
   });
 }
 
-async function askDetached(edge: EdgeContext, input: DispatchInput): Promise<void> {
+/**
+ * A regeneration asked behind the response as a request of its own (`triggerDetached`). What it asks
+ * of the application's Workers is spent for the request it was asked behind, and is counted in that
+ * request's point: a point of its own would count a request no client made.
+ */
+export interface DetachedRegeneration {
+  /**
+   * Write the point of the request it was asked behind once the regeneration has been answered or
+   * has failed, with its dispatches among the point's `subrequests` — one, or two where the Worker
+   * first asked named another: behind the response, held as the regeneration is.
+   */
+  readonly record: (point: EdgeMetric) => void;
+}
+
+/** Ask, and say what was asked of the application's Workers: nothing where nothing went out. */
+async function askDetached(edge: EdgeContext, input: DispatchInput): Promise<number> {
+  let asked = 0;
   try {
     const response = await handlePassthrough({
       request: keptPastTheVisitor(input.request),
@@ -170,6 +188,9 @@ async function askDetached(edge: EdgeContext, input: DispatchInput): Promise<voi
       reason: 'regenerate-detached',
       middleware: input.middleware,
       headers: regenerationHeaders(edge, 'detached', input.target),
+      onAsked: (dispatches) => {
+        asked = dispatches;
+      },
     });
     releaseStream(response.body, 'detached regeneration answered');
   } catch (error) {
@@ -178,9 +199,23 @@ async function askDetached(edge: EdgeContext, input: DispatchInput): Promise<voi
       detail: error instanceof Error ? error.message : String(error),
     });
   }
+  return asked;
 }
 
-/** After the response: a request of its own, whose answer nobody reads. */
-export function triggerDetached(edge: EdgeContext, input: DispatchInput): void {
-  edge.ctx.waitUntil(askDetached(edge, input));
+/**
+ * After the response: a request of its own, whose answer nobody reads, counted in the point of the
+ * request it was asked behind (`DetachedRegeneration`).
+ */
+export function triggerDetached(edge: EdgeContext, input: DispatchInput): DetachedRegeneration {
+  const asked = askDetached(edge, input);
+  edge.ctx.waitUntil(asked);
+  return {
+    record: (point) => {
+      edge.ctx.waitUntil(
+        (async (): Promise<void> => {
+          observeMetric(edge.host, { ...point, subrequests: point.subrequests + (await asked) });
+        })(),
+      );
+    },
+  };
 }

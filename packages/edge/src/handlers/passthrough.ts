@@ -17,10 +17,12 @@ import {
 } from '@stayingupwind/core/request';
 
 import { takeInvalidation } from '../cache/condemned.ts';
+import type { DetachedRegeneration } from '../cache/regenerate.ts';
 import type { EdgeHost } from '../edge-host.ts';
 import type { EdgeRuntime } from '../edge-runtime.ts';
 import { buildPassthroughRequest } from '../forwarding.ts';
 import { logWarn } from '../observability/logger.ts';
+import type { EdgeMetric } from '../observability/metrics.ts';
 import { stripEdgeHeaders } from '../request-context.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
@@ -95,6 +97,8 @@ export interface PassthroughMetrics {
   readonly storageReads?: number | undefined;
   /** The dispatches of a resume let go before this (`PassthroughWait`). */
   readonly resumeDispatches?: number | undefined;
+  /** A regeneration asked beside this as a request of its own (`PassthroughWait`). */
+  readonly regeneration?: DetachedRegeneration | undefined;
   readonly projectId: string;
   readonly manifestId: string;
   readonly policyId: string;
@@ -121,6 +125,11 @@ export interface PassthroughWait {
    * then let go (`fallbackToApp`): requests made all the same, none where none went out.
    */
   readonly resumeDispatches?: number | undefined;
+  /**
+   * The regeneration of a stale record asked as a request of its own before the request was handed
+   * on (`triggerDetached`), whose dispatches the point counts: it is written once they are made.
+   */
+  readonly regeneration?: DetachedRegeneration | undefined;
 }
 
 /** What the upstream could not be reached at all is reported as, with the reason kept. */
@@ -197,6 +206,12 @@ export interface PassthroughInput {
   readonly whenGone?: (() => Promise<Response | undefined>) | undefined;
   /** Absent where the request never reached a project, and there is nothing to attribute. */
   readonly metrics?: PassthroughMetrics | undefined;
+  /**
+   * Told what the request asked of the application's Workers, as a point counts it, where it writes
+   * none of its own: a regeneration asked behind another request's answer, whose point counts it
+   * (`triggerDetached`).
+   */
+  readonly onAsked?: ((dispatches: number) => void) | undefined;
 }
 
 /** The router prefetches Next.js's client sends (`next-router-prefetch`), by the number it uses. */
@@ -226,12 +241,15 @@ function reportPassthrough(
   startedAt: number,
   dispatched?: Dispatched,
 ): void {
+  // The Workers asked: the one sent to, and the one it was sent on to where that named another.
+  const asked = dispatched?.redispatched === true ? 2 : 1;
+  input.onAsked?.(asked);
   const { metrics } = input;
   if (metrics === undefined) {
     return;
   }
   const elapsed = input.runtime.now() - startedAt;
-  observeMetric(input.host, {
+  const point: EdgeMetric = {
     projectId: metrics.projectId,
     kind: 'passthrough',
     pathname: metrics.pathname,
@@ -259,11 +277,14 @@ function reportPassthrough(
     assetHit: 0,
     // The Workers asked, and what came before them — reads of storage, a resume let go — as a
     // served document's point counts each.
-    subrequests:
-      (dispatched?.redispatched === true ? 2 : 1) +
-      (metrics.storageReads ?? 0) +
-      (metrics.resumeDispatches ?? 0),
-  });
+    subrequests: asked + (metrics.storageReads ?? 0) + (metrics.resumeDispatches ?? 0),
+  };
+  // And a regeneration asked beside it, once it has made its dispatches.
+  if (metrics.regeneration === undefined) {
+    observeMetric(input.host, point);
+  } else {
+    metrics.regeneration.record(point);
+  }
 }
 
 /** The request as the middleware left it: its URL and its headers. */

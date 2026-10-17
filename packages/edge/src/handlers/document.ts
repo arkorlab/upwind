@@ -19,6 +19,7 @@ import {
 } from '@stayingupwind/host/splice';
 
 import type { ServedValidity } from '../cache/decision.ts';
+import type { DetachedRegeneration } from '../cache/regenerate.ts';
 import { logWarn } from '../observability/logger.ts';
 import { stripEdgeHeaders } from '../request-context.ts';
 import type { EdgeContext } from '../strategies/context.ts';
@@ -80,6 +81,11 @@ interface ServedGeneration {
   readonly member: boolean;
   /** What the resume is told beside the request when the entry is to be regenerated behind it. */
   readonly regeneration: Readonly<Record<string, string>> | undefined;
+  /**
+   * The regeneration asked behind a document complete in itself as a request of its own, there being
+   * no resume to ask beside (`triggerDetached`): the document's point counts its dispatches.
+   */
+  readonly detached?: DetachedRegeneration | undefined;
   /**
    * What serving the record sets off behind the response (`readServedAgain`), called once the
    * document is certain to go out from it, whole or resumed: not for one handed to the application

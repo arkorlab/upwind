@@ -26,11 +26,12 @@ import { decideGeneration, type GenerationDecision } from '../cache/decision.ts'
 import { generationAsHeld, readServedAgain } from '../cache/generation-hold.ts';
 import type { GenerationLoad } from '../cache/generation-loader.ts';
 import { upgradesMember } from '../cache/member.ts';
-import { shouldAsk, triggerDetached } from '../cache/regenerate.ts';
+import { type DetachedRegeneration, shouldAsk, triggerDetached } from '../cache/regenerate.ts';
 import { memberEntryKey } from '../memory/caches.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { generationKeyOf, requestAsLeft } from './hosted-route.ts';
 import { dispatchedFor, type MiddlewareOutcome, routedHeaders } from './middleware.ts';
+import type { PassthroughWait } from './passthrough.ts';
 import { handleSegment, type RouterPart } from './segment.ts';
 
 /**
@@ -50,6 +51,7 @@ export interface PartInput {
     reason: string,
     middleware?: MiddlewareOutcome,
     route?: string,
+    waited?: PassthroughWait,
   ) => Promise<Response>;
 }
 
@@ -171,6 +173,8 @@ interface Answer {
   readonly generation?: Extract<PartGeneration, { kind: 'runtime' }> | undefined;
   readonly strategy?: ShellDeliveryStrategy<EdgeContext> | undefined;
   readonly onUnavailable?: (() => Promise<Response>) | undefined;
+  /** The regeneration the stale record asked for on its own (`refreshPart`). */
+  readonly detached?: DetachedRegeneration | undefined;
 }
 
 /** What a page's props are recorded with: nothing — a Pages Router page records no headers. */
@@ -247,6 +251,7 @@ function answer(input: PartInput, answered: Answer): Promise<Response> {
     onUnavailable: answered.onUnavailable,
     middleware: middleware.kind === 'continue' ? middleware : undefined,
     middlewareDispatches: dispatchedFor(middleware),
+    detached: answered.detached,
     startedAt: answered.startedAt,
   });
 }
@@ -268,22 +273,26 @@ interface PartAnswer {
 
 const PART_ROLES = { segment: 'segment', payload: RSC_ROLE, data: PAGES_DATA } as const;
 
-/** Stale router-only traffic refreshes the same entry, without waiting for its regeneration. */
+/**
+ * Stale router-only traffic refreshes the same entry, without waiting for its regeneration: a
+ * request of its own, which the part's point counts (`DetachedRegeneration`). `undefined` where the
+ * entry was asked for within the cooldown.
+ */
 function refreshPart(
   input: PartInput,
   part: PartAnswer,
   generation: Extract<PartGeneration, { kind: 'runtime' }>,
-): void {
+): DetachedRegeneration | undefined {
   const { pack } = generation;
   const entryId = pack.header.entryId;
-  if (!shouldAsk(input.edge, entryId, runtimeCacheOf(input.edge.policy))) return;
+  if (!shouldAsk(input.edge, entryId, runtimeCacheOf(input.edge.policy))) return undefined;
   // A Pages data URL is not the page's ISR entry pathname. Other requests retain their
   // concrete pathname so the Function can apply its own class/keyed-parameter rules.
   const request =
     part.kind === 'data'
       ? new Request(new URL(pack.header.pathname, input.request.url), input.request)
       : input.request;
-  triggerDetached(input.edge, {
+  return triggerDetached(input.edge, {
     request,
     middleware: part.middleware.kind === 'continue' ? part.middleware : undefined,
     function: part.entry.function,
@@ -298,7 +307,8 @@ function refreshPart(
 
 async function answerPart(input: PartInput, part: PartAnswer): Promise<Response> {
   const { entry, middleware, kind, representationKey, buildPart, startedAt, reason } = part;
-  const fallback = () => input.passthrough(reason, middleware, entry.pathname);
+  const fallback = (waited?: PassthroughWait) =>
+    input.passthrough(reason, middleware, entry.pathname, waited);
   const generation = await partGeneration(input, part);
   if (generation.kind === 'function') return fallback();
   if (generation.kind === 'build') {
@@ -331,8 +341,10 @@ async function answerPart(input: PartInput, part: PartAnswer): Promise<Response>
   });
   const storageRef = artifact?.storageRef;
   if (artifact === undefined || storageRef === undefined) return fallback();
-  if (generation.validity === 'stale') {
-    refreshPart(input, part, generation);
+  const stale = generation.validity === 'stale';
+  // Counted in the part's point, or in the passthrough's where the part cannot be read after all.
+  const detached = stale ? refreshPart(input, part, generation) : undefined;
+  if (stale) {
     readPartAgain(input, generation.pack, generation.member);
   }
   // loadShell retains the existing memory / Cache API race and hash verification. No authority read.
@@ -362,7 +374,8 @@ async function answerPart(input: PartInput, part: PartAnswer): Promise<Response>
     startedAt,
     generation,
     strategy,
-    onUnavailable: fallback,
+    onUnavailable: () => fallback({ regeneration: detached }),
+    detached,
     segment: {
       artifact: {
         sha256: artifact.sha256,

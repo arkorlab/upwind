@@ -2,6 +2,7 @@ import { PRIMARY_FUNCTION } from '@stayingupwind/core/bundle';
 import type { SpliceOutcome } from '@stayingupwind/host/splice';
 
 import { routeSuspectKey } from '../memory/caches.ts';
+import type { EdgeMetric } from '../observability/metrics.ts';
 import type { ContinuationFailureKind, MismatchKind, RouteReport } from '../reports.ts';
 import { encodingMarker, type ShellDelivery } from './document-headers.ts';
 import type { DocumentInput } from './document.ts';
@@ -172,7 +173,7 @@ export async function reportOutcome(report: OutcomeReport): Promise<void> {
   const { outcome } = report;
   const work = collectReports(report);
   const record = report.input.generation ?? report.input.recordRead;
-  observeMetric(edge.host, {
+  const point: EdgeMetric = {
     projectId: edge.projectId,
     kind: 'document',
     pathname: entry.pathname,
@@ -215,6 +216,20 @@ export async function reportOutcome(report: OutcomeReport): Promise<void> {
     // cannot drift apart.
     middlewareMs: edge.timings.middlewareMs,
     recordLookupMs: record?.lookupMs,
-  });
+  };
+  writePoint(report, point);
   await Promise.all(work);
+}
+
+/**
+ * Write the document's point: at once, or, for a document complete in itself that asked for its
+ * regeneration as a request of its own, once that has made its dispatches, which the point counts.
+ */
+function writePoint(report: OutcomeReport, point: EdgeMetric): void {
+  const detached = report.input.generation?.detached;
+  if (detached === undefined) {
+    observeMetric(report.input.edge.host, point);
+  } else {
+    detached.record(point);
+  }
 }

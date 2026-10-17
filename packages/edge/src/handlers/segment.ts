@@ -16,6 +16,8 @@ import {
 import type { ShellDeliveryStrategy } from '@stayingupwind/host/delivery';
 import { brotliWire, gzipWire } from '@stayingupwind/host/splice';
 
+import type { DetachedRegeneration } from '../cache/regenerate.ts';
+import type { EdgeMetric } from '../observability/metrics.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { loadShell, storageReadsOf } from '../strategies/shell-loader.ts';
 import { setConfigured } from './configured-headers.ts';
@@ -78,6 +80,11 @@ export interface SegmentInput {
     | undefined;
   /** A runtime artifact may be reclaimed or temporarily unavailable; its Function can answer. */
   readonly onUnavailable?: (() => Promise<Response>) | undefined;
+  /**
+   * The regeneration a stale record asked for as a request of its own (`triggerDetached`), whose
+   * dispatches the part's point counts.
+   */
+  readonly detached?: DetachedRegeneration | undefined;
 }
 
 /**
@@ -323,7 +330,7 @@ interface SegmentDelivery {
 function recordDelivery(input: SegmentInput, delivered: SegmentDelivery): void {
   const { source, rendering, lookupMs, bytes, reads } = delivered;
   const { edge } = input;
-  observeMetric(edge.host, {
+  const point: EdgeMetric = {
     projectId: edge.projectId,
     kind: input.kind,
     pathname: input.pathname,
@@ -346,7 +353,13 @@ function recordDelivery(input: SegmentInput, delivered: SegmentDelivery): void {
     assetHit: 0,
     // Storage's, and the middleware's before them: every service call the answer made.
     subrequests: reads + (input.middlewareDispatches ?? 0),
-  });
+  };
+  // And the regeneration asked beside it, once that has made its dispatches.
+  if (input.detached === undefined) {
+    observeMetric(edge.host, point);
+  } else {
+    input.detached.record(point);
+  }
 }
 
 /** The stored rendering, then the bytes that close its stream: two chunks, no second buffer. */

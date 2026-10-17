@@ -183,15 +183,17 @@ function serveRecord(
   const wanted = wantedRegeneration(input, decision, target, upgrade);
   const asked =
     wanted !== undefined && shouldAsk(edge, wanted.entryId, settings) ? wanted : undefined;
-  // A document nothing resumes has no request to ask beside: the regeneration is its own.
-  if (asked !== undefined && complete) {
-    triggerDetached(edge, {
-      request: input.request,
-      middleware: middlewareOf(input),
-      target: asked,
-      function: input.entry.function,
-    });
-  }
+  // A document nothing resumes has no request to ask beside: the regeneration is its own, counted
+  // in the document's point.
+  const detached =
+    asked !== undefined && complete
+      ? triggerDetached(edge, {
+          request: input.request,
+          middleware: middlewareOf(input),
+          target: asked,
+          function: input.entry.function,
+        })
+      : undefined;
   return handleDocument({
     ...document,
     generation: {
@@ -205,6 +207,7 @@ function serveRecord(
         asked !== undefined && !complete
           ? regenerationHeaders(edge, 'background', asked)
           : undefined,
+      detached,
       // Served stale with its own regeneration wanted — asked for by this request, or by one before
       // it within the cooldown — the record is read again a second on, for what that regeneration
       // publishes: once the document is certain to go out from it, and not where it is handed to the

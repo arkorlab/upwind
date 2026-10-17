@@ -212,11 +212,10 @@ function passthroughFor(
       colo: coloOf(input.request) ?? '',
       // What the middleware took before this gave up on it, where it is what was given up on.
       ...(middleware?.middlewareMs !== undefined && { middlewareMs: middleware.middlewareMs }),
-      // And a record read for the request that served nothing.
-      ...(waited?.recordLookupMs !== undefined && { recordLookupMs: waited.recordLookupMs }),
-      // And what a document it could not serve took: reads of storage, and a resume let go.
-      ...(waited?.storageReads !== undefined && { storageReads: waited.storageReads }),
-      ...(waited?.resumeDispatches !== undefined && { resumeDispatches: waited.resumeDispatches }),
+      // And what came before it was handed on (`PassthroughWait`): a record read for the request
+      // that served nothing; what a document it could not serve took, reads of storage and a resume
+      // let go; and a regeneration a stale record asked for on its own.
+      ...waited,
     },
   };
   // Only a request the host observes pays for the observer; any other keeps the forwarding's own
