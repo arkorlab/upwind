@@ -1,8 +1,9 @@
 import type { EncodedShellRef, ShellEncoding } from '@stayingupwind/core/artifact';
 import type { DecodedGenerationPack } from '@stayingupwind/core/cache';
 import {
+  type ConfiguredHeaders,
   documentHeaderRulesFor,
-  foldedHeadersFor,
+  headerRulesFor,
   type ProjectManifest,
   type RequestHeaderRules,
   type RouteEntry,
@@ -32,6 +33,8 @@ import {
   ACCEPT_ENCODING_HEADER,
   documentCacheControl,
   documentHeaders,
+  foldedAsSet,
+  foldedHeadersOf,
   IDENTITY_ENCODING,
   type RecordTiming,
   replayedDocumentHeaders,
@@ -518,33 +521,6 @@ function wireBody(wire: WireEncoding): ReadableStream<Uint8Array> {
 }
 
 /**
- * What the folded rules give each route (`foldedHeadersFor`), worked out once per manifest and
- * route in this isolate: the same few rules, judged against the same pathname, on every request.
- */
-type FoldedByRoute = Map<string, Readonly<Record<string, string>>>;
-const foldedByManifest = new WeakMap<ProjectManifest, FoldedByRoute>();
-
-function foldedHeadersOf(
-  manifest: ProjectManifest,
-  pathname: string,
-): Readonly<Record<string, string>> | undefined {
-  if (manifest.foldedHeaderRules === undefined) {
-    return undefined;
-  }
-  let routes = foldedByManifest.get(manifest);
-  if (routes === undefined) {
-    routes = new Map();
-    foldedByManifest.set(manifest, routes);
-  }
-  let folded = routes.get(pathname);
-  if (folded === undefined) {
-    folded = foldedHeadersFor(manifest, pathname) ?? {};
-    routes.set(pathname, folded);
-  }
-  return folded;
-}
-
-/**
  * Whether a manifest from before the folded rules travelled apart (`foldedHeaderRules`) has them
  * only in its routes' headers: a build whose routing the edge does not reproduce — one with `i18n`,
  * or one with a `basePath` from before the edge routed it — publishes no dynamic routes
@@ -570,7 +546,9 @@ function foldsHeaderRules(manifest: ProjectManifest): boolean {
  * rule wins, as everywhere else. On a manifest from before they travelled apart they are only in
  * the route's headers (`foldsHeaderRules`), and the generation's go over those: a regenerated
  * page keeps the policy its build went out with, though a header its build's render set and a
- * regeneration's did not stays with it, and a render's header wins over a rule's.
+ * regeneration's did not stays with it, and a render's header wins over a rule's. Over a
+ * generation complete in itself they go as the application set them (`foldedAsSet`), as the rules
+ * judged on each request do (`documentRules`).
  */
 function recordedHeaders(input: DocumentInput): Readonly<Record<string, string>> {
   const { generation, entry, manifest } = input;
@@ -578,11 +556,33 @@ function recordedHeaders(input: DocumentInput): Readonly<Record<string, string>>
     return entry.headers;
   }
   const own = generation.pack.header.headers;
-  const folded = foldedHeadersOf(manifest, entry.pathname);
+  const judged = isCompleteDocument(input) ? foldedAsSet(manifest) : manifest;
+  const folded = foldedHeadersOf(judged, entry.pathname);
   if (folded !== undefined) {
     return { ...own, ...folded };
   }
   return foldsHeaderRules(manifest) ? { ...entry.headers, ...own } : own;
+}
+
+/**
+ * The rules of `next.config` a document is laid with, judged on the original request as Next.js's
+ * router judges them — without the host's credentials, which never reach it (`routedHeaders`) — or
+ * as they were judged before the middleware ran. A document a resume completes takes each rule's
+ * document form, whose policy permits the recovery script the edge appends where the resume fails
+ * (`documentHeaderRulesFor`). One complete in itself has no such script behind it, and takes the
+ * rules as the application set them, as Next.js sends them.
+ */
+function documentRules(input: DocumentInput): ConfiguredHeaders {
+  const { headerRules, manifest } = input;
+  const complete = isCompleteDocument(input);
+  if (headerRules !== undefined) {
+    return complete ? headerRules.response : headerRules.document;
+  }
+  return (complete ? headerRulesFor : documentHeaderRulesFor)(
+    manifest,
+    new URL(input.request.url),
+    routedHeaders(input.edge, manifest.headerRules, input.request.headers),
+  );
 }
 
 /** A generation without resume state is complete, even when the build's shell was not. */
@@ -641,18 +641,11 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
     generation === undefined
       ? (input.shellRead ?? loadShell(entry.shell, resolved.shell, input.edge))
       : generationShell(generation);
-  // Judge rules on the original request, as Next's router does — without the host's credentials,
-  // which never reach it (`routedHeaders`) — and reuse the prepared headers at composition.
-  // Middleware replaces this policy when it supplies one; no later decoration changes sandbox
-  // flags. Decide before dispatching a resume, which cannot serve a whole document.
+  // Judge rules on the original request (`documentRules`), and reuse the prepared headers at
+  // composition. Middleware replaces this policy when it supplies one; no later decoration changes
+  // sandbox flags. Decide before dispatching a resume, which cannot serve a whole document.
   const recorded = recordedHeaders(input);
-  const rules =
-    input.headerRules?.document ??
-    documentHeaderRulesFor(
-      manifest,
-      new URL(input.request.url),
-      routedHeaders(input.edge, manifest.headerRules, input.request.headers),
-    );
+  const rules = documentRules(input);
   const headers = replayedDocumentHeaders(recorded, rules);
   const delegated = delegateSandboxedDocument(input, complete, headers);
   if (delegated !== undefined) {

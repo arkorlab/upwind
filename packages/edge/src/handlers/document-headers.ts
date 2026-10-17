@@ -1,5 +1,10 @@
 import type { ShellEncoding } from '@stayingupwind/core/artifact';
-import type { ConfiguredHeaders, RouteEntry } from '@stayingupwind/core/manifest';
+import {
+  type ConfiguredHeaders,
+  foldedHeadersFor,
+  type ProjectManifest,
+  type RouteEntry,
+} from '@stayingupwind/core/manifest';
 import type { MiddlewareResult } from '@stayingupwind/core/paas';
 import {
   EDGE_DEBUG_HEADER,
@@ -257,6 +262,57 @@ export interface DocumentHeaderInput {
 export interface DocumentHeaders {
   readonly headers: Headers;
   readonly nonce: string | undefined;
+}
+
+/**
+ * What the folded rules give each route (`foldedHeadersFor`), worked out once per manifest and
+ * route in this isolate: the same few rules, judged against the same pathname, on every request.
+ */
+type FoldedByRoute = Map<string, Readonly<Record<string, string>>>;
+const foldedByManifest = new WeakMap<ProjectManifest, FoldedByRoute>();
+
+export function foldedHeadersOf(
+  manifest: ProjectManifest,
+  pathname: string,
+): Readonly<Record<string, string>> | undefined {
+  if (manifest.foldedHeaderRules === undefined) {
+    return undefined;
+  }
+  let routes = foldedByManifest.get(manifest);
+  if (routes === undefined) {
+    routes = new Map();
+    foldedByManifest.set(manifest, routes);
+  }
+  let folded = routes.get(pathname);
+  if (folded === undefined) {
+    folded = foldedHeadersFor(manifest, pathname) ?? {};
+    routes.set(pathname, folded);
+  }
+  return folded;
+}
+
+const asSetByManifest = new WeakMap<ProjectManifest, ProjectManifest>();
+
+/**
+ * `manifest` with its folded rules as the application set them: each its pattern and its headers,
+ * without the form a deploy lays beside them for a document a resume completes (`documentHeaders`).
+ * What a document complete in itself, which no recovery script follows, is laid with. Made once
+ * per manifest in this isolate.
+ */
+export function foldedAsSet(manifest: ProjectManifest): ProjectManifest {
+  const rules = manifest.foldedHeaderRules;
+  if (rules === undefined) {
+    return manifest;
+  }
+  let asSet = asSetByManifest.get(manifest);
+  if (asSet === undefined) {
+    asSet = {
+      ...manifest,
+      foldedHeaderRules: rules.map(({ sourceRegex, headers }) => ({ sourceRegex, headers })),
+    };
+    asSetByManifest.set(manifest, asSet);
+  }
+  return asSet;
 }
 
 /**
