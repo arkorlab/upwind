@@ -49,6 +49,68 @@ export async function entryFor(tables: EntryTables, id: string): Promise<Entry |
   return handler === undefined ? undefined : { kind: 'node', handler };
 }
 
+interface DeferredNode {
+  handler: NodeHandler | undefined;
+  loading: Promise<NodeHandler> | undefined;
+  readonly invoke: NodeHandler;
+}
+
+/** A generated loader is immutable, and the same loader may be reached by concurrent requests. */
+const DEFERRED_NODES = new WeakMap<AppModule['entries'][string], DeferredNode>();
+
+async function loadDeferred(
+  state: DeferredNode,
+  load: AppModule['entries'][string],
+): Promise<NodeHandler> {
+  // Let the caller assemble a shell before starting the module. This microtask does not
+  // promise that synchronous initialization happens after bytes leave the Worker.
+  await Promise.resolve();
+  try {
+    const module = await load();
+    state.handler = module.handler as NodeHandler;
+    return state.handler;
+  } catch (error) {
+    // A failed load is retried as an eager lookup would retry it; only successful modules stay.
+    state.loading = undefined;
+    throw error;
+  }
+}
+
+function deferredNode(load: AppModule['entries'][string]): NodeHandler {
+  let state = DEFERRED_NODES.get(load);
+  if (state === undefined) {
+    const deferred: DeferredNode = {
+      handler: undefined,
+      loading: undefined,
+      async invoke(request, response, context) {
+        deferred.loading ??= loadDeferred(deferred, load);
+        const handler = await deferred.loading;
+        return admitting('app', handler)(request, response, context);
+      },
+    };
+    DEFERRED_NODES.set(load, deferred);
+    state = deferred;
+  }
+  // Once loaded, return the original handler: warm renders keep no deferred invocation wrapper.
+  return state.handler === undefined ? state.invoke : admitting('app', state.handler);
+}
+
+/**
+ * A page whose Node.js module is loaded only if its handler is invoked. Reading a static output,
+ * a cached generation, or a shell's HEAD needs the route's identity, but none of its renderer.
+ * Middleware, writes, explicit resumes and edge-runtime entries keep their eager lookup.
+ */
+export async function deferredEntryFor(
+  tables: EntryTables,
+  id: string,
+): Promise<Entry | undefined> {
+  if (tables.edge.entries[id] !== undefined) {
+    return entryFor(tables, id);
+  }
+  const load = tables.app.entries[id];
+  return load === undefined ? undefined : { kind: 'node', handler: deferredNode(load) };
+}
+
 /**
  * The Node.js handler for `id`, which alone can resume a shell or render an entry for the cache;
  * `undefined` for a route the deployment does not have, and for one on the edge runtime — whose
