@@ -1,12 +1,6 @@
 import type { Validity } from '@stayingupwind/core/cache';
-import { isPrimaryResourceRead } from '@stayingupwind/core/paas';
-import { withDeadline } from '@stayingupwind/core/util';
 
-import { nowMs } from './clock.ts';
 import { isRegeneration, type RequestContext, requestContext } from './context.ts';
-import { laterIfAny, type Weighing } from './held-reads.ts';
-import type { HeldValue } from './held-writes.ts';
-import type { DataReadRequest } from './host.ts';
 import { settledWithin } from './pulls.ts';
 import type { CacheRuntime } from './runtime.ts';
 
@@ -22,72 +16,6 @@ const REVALIDATION_LIFETIME_MS = 30_000;
  */
 const REVALIDATION_CAP_MS = 300_000;
 const MS_PER_SECOND = 1000;
-
-/**
- * Whether Next.js revalidates a `use cache` value it was answered, `ageMs` old, behind the render:
- * where a tag made it stale, and where its wrapper finds it past its `revalidate`, which it judges
- * once the value has been answered — but not past its `expire`, which the wrapper takes for a miss
- * and computes in front of the render.
- */
-export function revalidatedBehind(
-  validity: Validity,
-  ageMs: number,
-  revalidate: number,
-  expire: number,
-): boolean {
-  return (
-    ageMs <= expire * MS_PER_SECOND && (validity === 'stale' || ageMs > revalidate * MS_PER_SECOND)
-  );
-}
-
-/** A candidate's tag validity and lifetime, both weighed before a background read adopts it. */
-function agedValidity(
-  tagged: Validity,
-  ageMs: number,
-  revalidate: number,
-  expire: number,
-): Validity {
-  if (tagged === 'expired' || ageMs > expire * MS_PER_SECOND) return 'expired';
-  return tagged === 'stale' || ageMs > revalidate * MS_PER_SECOND ? 'stale' : tagged;
-}
-
-/**
- * Keep an answer Next.js revalidates behind unchanged, and find what another isolate wrote after
- * a time-stale answer. Regeneration and primary reads retain their existing paths. The later read
- * keeps the same deadlines and revision/write fences as a tag-stale read.
- */
-export function holdForUseCacheRevalidation(
-  runtime: CacheRuntime,
-  request: DataReadRequest & { readonly handler: string },
-  read: { readonly held: HeldValue; readonly validity: Validity },
-  weighing: Weighing,
-): void {
-  const refresh =
-    read.validity !== 'stale' && !isPrimaryResourceRead() && read.held.revision !== undefined
-      ? {
-          revision: read.held.revision,
-          run: () => {
-            return laterIfAny(
-              runtime,
-              request,
-              { held: read.held, validity: 'stale' },
-              {
-                judge: async (candidate) => {
-                  return agedValidity(
-                    await weighing.judge(candidate),
-                    nowMs() - candidate.entry.timestamp,
-                    candidate.entry.revalidate,
-                    candidate.entry.expire,
-                  );
-                },
-                reread: weighing.reread,
-              },
-            );
-          },
-        }
-      : undefined;
-  holdForRevalidation(runtime, useCacheStore(request.handler), request.key, refresh);
-}
 
 /** The store each `use cache` handler's reads and writes are kept under. */
 export function useCacheStore(kind: string): string {
@@ -123,13 +51,6 @@ interface Hold {
 interface Held {
   readonly holds: Map<RequestContext, Hold>;
   readonly heldBy: WeakSet<RequestContext>;
-  refreshing?: Map<number, Promise<unknown>>;
-}
-
-/** A time-stale read's optional lookup of a value another isolate already wrote. */
-export interface RevalidationRefresh {
-  readonly revision: number;
-  readonly run: () => Promise<unknown>;
 }
 
 /** Each runtime's requests held, by the store and key they are held for. */
@@ -199,12 +120,7 @@ async function lapse(
  * hands what it revalidated to `waitUntil` once it is whole — where a hold, which its writes are
  * not made behind it to settle, would only keep its invocation going for the lifetime.
  */
-export function holdForRevalidation(
-  runtime: CacheRuntime,
-  store: string,
-  key: string,
-  refresh?: RevalidationRefresh,
-): void {
+export function holdForRevalidation(runtime: CacheRuntime, store: string, key: string): void {
   const context = requestContext();
   if (context === undefined || isRegeneration()) {
     return;
@@ -217,69 +133,17 @@ export function holdForRevalidation(
   };
   table.set(id, held);
   held.heldBy.add(context);
-  if (!held.holds.has(context)) {
-    const { promise, resolve } = Promise.withResolvers<unknown>();
-    const hold: Hold = { done: promise, settle: resolve };
-    held.holds.set(context, hold);
-    if (!keep(runtime, context, lapse(table, id, context, hold))) {
-      // No write reaches a request that could not be kept going; settled, its lapse lets its timers go.
-      hold.settle(Promise.resolve());
-      letGo(table, id, context, hold);
-      return;
-    }
+  if (held.holds.has(context)) {
+    return;
   }
-  if (refresh !== undefined) refreshBehind(runtime, context, held, refresh);
-}
-
-/** Start no lookup before the response ends, nor after an unanswered end signal's lifetime. */
-function refreshBehind(
-  runtime: CacheRuntime,
-  context: RequestContext,
-  held: Held,
-  refresh: RevalidationRefresh,
-): void {
-  keep(
-    runtime,
-    context,
-    (async () => {
-      try {
-        await withDeadline(context.writes.ended, REVALIDATION_CAP_MS, 'the stale response end');
-      } catch {
-        return;
-      }
-      await refreshOnce(runtime, held, refresh);
-    })(),
-  );
-}
-
-/** Share only an actual lookup still pending for this key and base revision. */
-function refreshOnce(
-  runtime: CacheRuntime,
-  held: Held,
-  refresh: RevalidationRefresh,
-): Promise<unknown> {
-  const refreshing = held.refreshing ?? new Map<number, Promise<unknown>>();
-  held.refreshing = refreshing;
-  let work = refreshing.get(refresh.revision);
-  if (work === undefined) {
-    const pending = Promise.withResolvers<unknown>();
-    work = pending.promise;
-    refreshing.set(refresh.revision, work);
-    pending.resolve(
-      (async () => {
-        try {
-          await refresh.run();
-        } catch (error) {
-          runtime.log('time-stale cache refresh failed', {
-            detail: error instanceof Error ? error.message : String(error),
-          });
-        } finally {
-          refreshing.delete(refresh.revision);
-        }
-      })(),
-    );
+  const { promise, resolve } = Promise.withResolvers<unknown>();
+  const hold: Hold = { done: promise, settle: resolve };
+  held.holds.set(context, hold);
+  if (!keep(runtime, context, lapse(table, id, context, hold))) {
+    // No write reaches a request that could not be kept going; settled, its lapse lets its timers go.
+    hold.settle(Promise.resolve());
+    letGo(table, id, context, hold);
   }
-  return work;
 }
 
 /**

@@ -118,7 +118,7 @@ function scenario(newer: CacheHost['getNewerData'], kind = 'default', ageMs = 2 
   return { handler, read, request, getData, setData, endResponses };
 }
 
-describe('time-based use cache refresh', () => {
+describe('production use cache lifetime', () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
   });
@@ -217,159 +217,124 @@ describe('time-based use cache refresh', () => {
     },
   );
 
-  it('answers the stale value before starting a lookup and adopts the result after response end', async () => {
-    const pending = Promise.withResolvers<DataRead | undefined>();
-    const newer = vi.fn<NonNullable<CacheHost['getNewerData']>>().mockReturnValue(pending.promise);
-    const { read, request, handler, endResponses } = scenario(newer);
-    const entry = await Promise.race([
-      request().run(() => handler.get(KEY, [])),
-      setImmediate('still waiting' as const),
-    ]);
+  it.each(['default', 'remote'])(
+    'misses an ordinary age-stale %s read without starting a refresh or discarding unrelated fresh data',
+    async (kind) => {
+      const newer = vi
+        .fn<NonNullable<CacheHost['getNewerData']>>()
+        .mockResolvedValue(value('B', 2));
+      const { read, getData, endResponses } = scenario(newer, kind);
 
-    expect(entry).not.toBe('still waiting');
+      await expect(read(FRESH_KEY)).resolves.toBe('fresh');
+      await expect(read()).resolves.toBeUndefined();
+      await expect(read(FRESH_KEY)).resolves.toBe('fresh');
 
-    const body =
-      typeof entry === 'string' || entry === undefined
-        ? entry
-        : await new Response(entry.value).text();
+      await endResponses();
 
-    expect(body).toBe('A');
-    expect(newer).not.toHaveBeenCalled();
+      expect(getData).toHaveBeenCalledTimes(2);
+      expect(newer).not.toHaveBeenCalled();
+      expect(background).toHaveLength(0);
+    },
+  );
 
-    await endResponses();
+  it.each(
+    ['default', 'remote'].flatMap((kind) => {
+      return [
+        { kind, ageMs: 0, expected: 'A' },
+        { kind, ageMs: SECOND, expected: 'A' },
+        { kind, ageMs: SECOND + 1, expected: undefined },
+      ];
+    }),
+  )(
+    'uses the strict $kind revalidate boundary for ordinary reads at age $ageMs',
+    async ({ kind, ageMs, expected }) => {
+      const { read } = scenario(undefined, kind, ageMs);
 
-    expect(newer).toHaveBeenCalledExactlyOnceWith(
-      { key: KEY, kind: 'data:use-cache', handler: 'default' },
-      1,
-    );
+      await expect(read()).resolves.toBe(expected);
+      expect(background).toHaveLength(0);
+    },
+  );
 
-    pending.resolve(value('B', 2));
-    await vi.advanceTimersByTimeAsync(0);
+  it.each(['default', 'remote'])(
+    'misses an ordinary %s read that crosses its revalidate deadline',
+    async (kind) => {
+      const base = performance.now();
+      const clock = vi.spyOn(performance, 'now').mockReturnValue(base);
+      const timestamp = Math.round(performance.timeOrigin + base) - SECOND + 1;
+      const newer = vi.fn<NonNullable<CacheHost['getNewerData']>>().mockResolvedValue(undefined);
+      const { handler, request, getData } = scenario(newer, kind);
+      getData.mockImplementationOnce(() => {
+        clock.mockReturnValue(base + 2);
+        return Promise.resolve(value('A', 1, timestamp, kind));
+      });
 
-    await expect(read()).resolves.toBe('B');
-  });
+      await expect(request('wall').run(() => handler.get(KEY, []))).resolves.toBeUndefined();
+      expect(newer).not.toHaveBeenCalled();
+      expect(background).toHaveLength(0);
+    },
+  );
 
-  it('does not add a lookup or discard the memo for an unrelated fresh key', async () => {
-    const pending = Promise.withResolvers<DataRead | undefined>();
-    const newer = vi.fn<NonNullable<CacheHost['getNewerData']>>().mockReturnValue(pending.promise);
-    const { read, getData, endResponses } = scenario(newer);
+  it.each(['default', 'remote'])(
+    'keeps a tag-stale %s response alive until its background revalidation lands',
+    async (kind) => {
+      const newer = vi.fn<NonNullable<CacheHost['getNewerData']>>().mockResolvedValue(undefined);
+      const { handler, request, read, getData, endResponses } = scenario(newer, kind);
+      getData.mockResolvedValueOnce({
+        ...value('A', 1, NOW - SECOND / 2, kind),
+        invalidation: { staleAt: NOW - 1 },
+      });
+      const context = request();
+      const entry = await context.run(() => handler.get(KEY, []));
 
-    await expect(read(FRESH_KEY)).resolves.toBe('fresh');
-    expect(newer).not.toHaveBeenCalled();
-    await expect(read()).resolves.toBe('A');
-    await expect(read(FRESH_KEY)).resolves.toBe('fresh');
-    expect(getData).toHaveBeenCalledTimes(2);
-    expect(newer).not.toHaveBeenCalled();
+      expect(entry?.revalidate).toBe(-1);
+      await expect(new Response(entry?.value).text()).resolves.toBe('A');
+      expect(background.length).toBeGreaterThan(0);
 
-    await endResponses();
+      const held = (async () => {
+        await Promise.all(background);
+        return true;
+      })();
 
-    expect(newer).toHaveBeenCalledExactlyOnceWith(
-      { key: KEY, kind: 'data:use-cache', handler: 'default' },
-      1,
-    );
+      await expect(Promise.race([held, setImmediate(false)])).resolves.toBe(false);
 
-    pending.resolve(undefined);
-  });
+      const fresh = value('B', 3, NOW, kind).entry;
+      await context.run(() => {
+        return handler.set(
+          KEY,
+          Promise.resolve({ ...fresh, tags: [...fresh.tags], value: new Blob(['B']).stream() }),
+        );
+      });
+      await endResponses();
 
-  it('shares only the pending refresh of a key at the same revision', async () => {
-    const pending = Promise.withResolvers<DataRead | undefined>();
-    const newer = vi.fn<NonNullable<CacheHost['getNewerData']>>().mockReturnValue(pending.promise);
-    const { read, endResponses } = scenario(newer);
+      await expect(held).resolves.toBe(true);
+      await expect(read()).resolves.toBe('B');
+    },
+  );
 
-    await expect(read()).resolves.toBe('A');
-    await expect(read()).resolves.toBe('A');
-    expect(newer).not.toHaveBeenCalled();
+  it.each(['default', 'remote'])(
+    'retains fresh %s data written after an ordinary TTL miss',
+    async (kind) => {
+      const newer = vi.fn<NonNullable<CacheHost['getNewerData']>>().mockResolvedValue(undefined);
+      const { handler, request, read, getData, setData, endResponses } = scenario(newer, kind);
 
-    await endResponses();
+      await expect(read(FRESH_KEY)).resolves.toBe('fresh');
+      await expect(read()).resolves.toBeUndefined();
 
-    expect(newer).toHaveBeenCalledTimes(1);
+      const entry = value('B', 3, NOW, kind).entry;
+      await request().run(() => {
+        return handler.set(
+          KEY,
+          Promise.resolve({ ...entry, tags: [...entry.tags], value: new Blob(['B']).stream() }),
+        );
+      });
+      await endResponses();
+      await Promise.all(background);
 
-    pending.resolve(value('B', 2));
-    await vi.advanceTimersByTimeAsync(0);
-
-    await expect(read()).resolves.toBe('B');
-  });
-
-  it('does not overwrite a newer local write when the background lookup answers late', async () => {
-    const pending = Promise.withResolvers<DataRead | undefined>();
-    const newer = vi.fn<NonNullable<CacheHost['getNewerData']>>().mockReturnValue(pending.promise);
-    const { handler, read, request, endResponses } = scenario(newer);
-
-    await expect(read()).resolves.toBe('A');
-
-    await endResponses();
-
-    const entry = value('C', 3).entry;
-    await request().run(() => {
-      return handler.set(
-        KEY,
-        Promise.resolve({
-          ...entry,
-          tags: [...entry.tags],
-          value: new Blob(['C']).stream(),
-        }),
-      );
-    });
-    await vi.advanceTimersByTimeAsync(0);
-
-    pending.resolve(value('B', 2));
-    await vi.advanceTimersByTimeAsync(0);
-
-    await expect(read()).resolves.toBe('C');
-    expect(newer).toHaveBeenCalledTimes(1);
-  });
-
-  it('releases a timed-out lookup so a later request can refresh the same revision', async () => {
-    const pending = Promise.withResolvers<DataRead | undefined>();
-    const newer = vi
-      .fn<NonNullable<CacheHost['getNewerData']>>()
-      .mockReturnValueOnce(pending.promise)
-      .mockResolvedValue(value('B', 2));
-    const { read, endResponses } = scenario(newer);
-
-    await expect(read()).resolves.toBe('A');
-
-    await endResponses();
-    await vi.advanceTimersByTimeAsync(200);
-
-    await expect(read()).resolves.toBe('A');
-
-    await endResponses();
-
-    await expect(read()).resolves.toBe('B');
-    expect(newer).toHaveBeenCalledTimes(2);
-
-    pending.resolve(undefined);
-  });
-
-  it('ends a cancelled response wait without a lookup or blocking a later response', async () => {
-    const newer = vi.fn<NonNullable<CacheHost['getNewerData']>>().mockResolvedValue(value('B', 2));
-    const { handler, read, request } = scenario(newer);
-    const cancelled = request();
-
-    const entry = await cancelled.run(() => handler.get(KEY, []));
-
-    expect(entry).toBeDefined();
-    expect(newer).not.toHaveBeenCalled();
-
-    const expired = Promise.allSettled(background);
-    await vi.advanceTimersByTimeAsync(300_000);
-
-    await expect(Promise.race([expired, setImmediate('still waiting')])).resolves.not.toBe(
-      'still waiting',
-    );
-
-    await cancelled.writes.landed(0);
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(newer).not.toHaveBeenCalled();
-
-    const later = request();
-    await later.run(() => handler.get(KEY, []));
-    await later.writes.landed(0);
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(newer).toHaveBeenCalledTimes(1);
-    await expect(read()).resolves.toBe('B');
-  });
+      await expect(read()).resolves.toBe('B');
+      await expect(read(FRESH_KEY)).resolves.toBe('fresh');
+      expect(getData).toHaveBeenCalledTimes(2);
+      expect(setData).toHaveBeenCalledTimes(1);
+      expect(newer).not.toHaveBeenCalled();
+    },
+  );
 });
