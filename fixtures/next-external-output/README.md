@@ -6,3 +6,7 @@ The root page awaits `connection()` and renders a client component, so an HTTP r
 the bundled route and its client-reference manifest. `next-matrix` starts the emitted Function in Miniflare
 and checks the rendered server and client markers. It does not start `next start` or serve a
 prerendered page in place of the Function.
+
+A Pages API route is requested in the same Function. Next.js keeps that route's `routeModule`
+private, so checking its HTTP status and body also covers output paths the generated entry cannot
+normalize through a public export.

@@ -57,6 +57,13 @@ export async function externalOutputHolds(
       problems.push('external-output server marker absent');
     if (!body.includes('external-output-client'))
       problems.push('external-output client marker absent');
+    const api = await runtime.dispatchFetch('http://external-output.test/api/pages-api', {
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    if (api.status !== HTTP_OK)
+      problems.push(`external-output Pages API HTTP status: ${String(api.status)}`);
+    if ((await api.text()) !== 'external-output-pages-api')
+      problems.push('external-output Pages API body differs');
     return problems;
   } finally {
     await runtime.dispose();
