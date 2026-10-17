@@ -280,9 +280,14 @@ export function createEdgeMemory(now: () => number, options: EdgeMemoryOptions =
   };
 }
 
-/** Names a member's derived entry id in this isolate's memory. */
+/**
+ * Names a member's derived entry id in this isolate's memory. The scope and the route go by their
+ * lengths: either may hold a colon — a scope id is any string the manifest names, a route any path —
+ * and joined bare, two members of different scopes or routes could share a key, the one read
+ * under the other's id and found missing.
+ */
 export function memberEntryKey(scopeId: string, route: string, pathname: string): string {
-  return `${scopeId}:${route}:${pathname}`;
+  return `${String(scopeId.length)}:${scopeId}:${String(route.length)}:${route}:${pathname}`;
 }
 
 /** The key a document's rewrite is remembered under: the manifest names what the middleware is. */
