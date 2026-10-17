@@ -586,16 +586,37 @@ export type TagRevision = z.infer<typeof tagRevisionSchema>;
  */
 export const MAX_DELTA_PAGE_TAGS = 1000;
 
-export const tagsDeltaResponseSchema = z.object({
-  /** The scope's revision the delta was read at: the next `since`. */
-  revision: z.number().int().nonnegative(),
-  /** The oldest revision still answerable; a `since` below it means a full resync. */
-  floor: z.number().int().nonnegative(),
-  truncated: z.boolean(),
-  tags: z.array(tagDeltaEntrySchema).max(MAX_DELTA_PAGE_TAGS),
-  /** Where the scope's tags stand as the delta was read; absent from an authority that says not. */
-  latest: tagRevisionSchema.optional(),
-});
+/**
+ * Whether a page of the delta stands where its reader may stand. One with more to follow stands at
+ * the last revision whose tags it holds, which is no later than the latest invalidation it reports
+ * (`latest`): the tags past it are the next page's. One that stood past that would bring its reader
+ * to a revision whose invalidations it never heard of, and a render judged against that view would
+ * claim it had judged its reads against them. The last page stands at the scope's revision, which a
+ * write moves as an invalidation does, so it may stand past the latest.
+ */
+function standsWithinLatest(delta: {
+  readonly revision: number;
+  readonly truncated: boolean;
+  readonly latest?: TagRevision | undefined;
+}): boolean {
+  return !delta.truncated || delta.latest === undefined || delta.revision <= delta.latest.revision;
+}
+
+export const tagsDeltaResponseSchema = z
+  .object({
+    /** The scope's revision the delta was read at: the next `since`. */
+    revision: z.number().int().nonnegative(),
+    /** The oldest revision still answerable; a `since` below it means a full resync. */
+    floor: z.number().int().nonnegative(),
+    truncated: z.boolean(),
+    tags: z.array(tagDeltaEntrySchema).max(MAX_DELTA_PAGE_TAGS),
+    /** Where the scope's tags stand as the delta was read; absent from an authority that says not. */
+    latest: tagRevisionSchema.optional(),
+  })
+  .refine(standsWithinLatest, {
+    message: 'a page with more to follow stands no later than the latest invalidation it reports',
+    path: ['revision'],
+  });
 export type TagsDeltaResponse = z.infer<typeof tagsDeltaResponseSchema>;
 
 /**

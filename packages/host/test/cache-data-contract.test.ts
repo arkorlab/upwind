@@ -173,6 +173,21 @@ describe('a page of the delta', () => {
       false,
     );
   });
+
+  /**
+   * One with more to follow stands at the last revision whose tags it holds, no later than the
+   * latest invalidation it reports. The last stands at the scope's revision, which a write moves as
+   * an invalidation does, and so past the latest once anything was written after it.
+   */
+  it('stands no later than the latest invalidation it reports while more follow', () => {
+    const past = { ...deltaPage(1), revision: 7, latest: { revision: 6, invalidatedAt: 1 } };
+
+    expect(tagsDeltaResponseSchema.safeParse(past).success).toBe(false);
+    expect(tagsDeltaResponseSchema.safeParse({ ...past, revision: 6 }).success).toBe(true);
+    expect(tagsDeltaResponseSchema.safeParse({ ...past, truncated: false }).success).toBe(true);
+    // An authority that says not where the scope's tags stand is taken at its word.
+    expect(tagsDeltaResponseSchema.safeParse({ ...deltaPage(1), revision: 7 }).success).toBe(true);
+  });
 });
 
 describe("a tag's record in a delta or a tag read", () => {
