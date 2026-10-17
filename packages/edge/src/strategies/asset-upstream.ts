@@ -3,7 +3,11 @@ import {
   refusalAllowsStorage,
   screenImmutableAsset,
 } from '@stayingupwind/core/assets';
-import { EDGE_DEBUG_HEADER, NO_STORE_CACHE_CONTROL } from '@stayingupwind/core/request';
+import {
+  EDGE_DEBUG_HEADER,
+  NO_STORE_CACHE_CONTROL,
+  PLATFORM_HEADER_PREFIX,
+} from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 import type { AssetKeepOutcome } from '@stayingupwind/host/delivery';
 
@@ -103,9 +107,21 @@ export interface ShapedAsset {
   readonly kept: Promise<AssetKeepOutcome> | undefined;
 }
 
-/** The origin's headers, minus the ones it does not get to decide for the edge. */
-function assetHeaders(originHeaders: Headers): Headers {
+/**
+ * The origin's headers, minus the ones it does not get to decide for the edge — and the edge's own
+ * (`PLATFORM_HEADER_PREFIX`): what a runtime tells the edge on an answer, of invalidations, of
+ * routing, of its caches, is for no client to read and for no copy the edge keeps to carry, as an
+ * answer the edge proxies is rid of them (`forwardedResponse`). The edge sets its own account of
+ * the answer (`EDGE_DEBUG_HEADER`) after.
+ */
+export function assetHeaders(originHeaders: Headers): Headers {
   const headers = new Headers(originHeaders);
+  // Names read from the origin's: deleting from the headers being iterated would skip entries.
+  for (const [name] of originHeaders) {
+    if (name.startsWith(PLATFORM_HEADER_PREFIX)) {
+      headers.delete(name);
+    }
+  }
   // These outrank `Cache-Control` for any cache that reads them, so leaving one in place would let
   // the origin overrule the lifetime its caller decides — including the refusal to store a response
   // admission turned down.

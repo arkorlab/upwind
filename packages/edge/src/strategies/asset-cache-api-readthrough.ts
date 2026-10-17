@@ -13,11 +13,11 @@ import type {
   AssetKeepOutcome,
 } from '@stayingupwind/host/delivery';
 
-import { removeSharedCacheOverrides } from '../handlers/responses.ts';
 import { dispatchesOf, fetchUpstream } from '../handlers/upstream.ts';
 import { logWarn } from '../observability/logger.ts';
 import {
   assetDebug,
+  assetHeaders,
   assetUpstreamRequest,
   notModifiedIfMatches,
   shapeAssetResponse,
@@ -78,10 +78,10 @@ export async function readThrough(
   // the candidate's policy without the candidate being asked at all.
   const cached = ctx.validated ? undefined : await lookupCache(ctx.host.names.assetCache, cacheKey);
   if (cached !== undefined) {
-    const headers = new Headers(cached.headers);
     // Belt and braces on the way out of the cache: an entry an older Worker stored can still
-    // carry the origin's own directives, and they outrank the lifetime set on the next line.
-    removeSharedCacheOverrides(headers);
+    // carry the origin's own directives, which outrank the lifetime set on the next line, and the
+    // edge's own headers (`assetHeaders`).
+    const headers = assetHeaders(cached.headers);
     headers.set('cache-control', storableAssetCacheControl(ctx));
     headers.set(EDGE_DEBUG_HEADER, assetDebug(ctx, strategyId, 'hit=1'));
     const notModified = notModifiedIfMatches(request, headers);
