@@ -18,7 +18,14 @@ import {
   generationOutputs,
   type GenerationRow,
 } from './rows.ts';
-import { commitRevision, readRevision, readScope } from './state.ts';
+import {
+  commitRevision,
+  deleteMeta,
+  readMeta,
+  readRevision,
+  readScope,
+  writeMeta,
+} from './state.ts';
 
 /**
  * What is kept, and for how long. A generation that is no longer current loses its bytes after a
@@ -43,6 +50,18 @@ const PRUNE_BATCH = 200;
 const MILLISECONDS_PER_HOUR = 3_600_000;
 /** How long a finished attempt's uploads are kept, for a commit that is still in flight. */
 const UPLOAD_GRACE_MS = MILLISECONDS_PER_HOUR;
+/**
+ * Set by a run that retired expired data, while their entries wait to be let go of: for their
+ * withdrawal from KV, which the settle after the run writes a slice at a time, or past a batch that
+ * came back full (`letGoOfWithdrawn`).
+ */
+const META_RETIRED_WITHDRAWING = 'retired_withdrawing';
+/** An entry with no value now, and no render holding a lease on it, as an SQL condition. */
+const UNUSED = `e.current_generation_id IS NULL
+  AND NOT EXISTS (SELECT 1 FROM attempts a WHERE a.entry_id = e.entry_id AND a.status IN ('leased', 'uploading'))`;
+/** A retired entry whose record is withdrawn from KV and whose bytes are gone, likewise. */
+const WITHDRAWN = `e.publication = 'retired' AND e.kv_revision >= e.record_revision
+  AND NOT EXISTS (SELECT 1 FROM generations g WHERE g.entry_id = e.entry_id AND g.storage = 'present')`;
 
 export interface RetentionInput {
   readonly sql: SqlStorage;
@@ -313,7 +332,65 @@ function retireExpiredData(input: RetentionInput): boolean {
       { ...entryStateEvent(sql, entry.entry_id), kind: 'entry.retired' },
     );
   }
+  writeMeta(sql, META_RETIRED_WITHDRAWING, '1');
   return entries.length === PRUNE_BATCH;
+}
+
+/** Let go of entries: their tags, their rows and their places in the scope's count. */
+function letGoOf(sql: SqlStorage, entries: readonly EntryRow[]): void {
+  for (const entry of entries) {
+    sql.exec(`DELETE FROM entry_tags WHERE entry_id = ?`, entry.entry_id);
+    // Not its writers' marks: a write delayed past its entry's reclamation must still find them
+    // (`writtenAfter`), and they age out on their own (`forgetWriterMarks`).
+    sql.exec(`DELETE FROM entries WHERE entry_id = ?`, entry.entry_id);
+  }
+  sql.exec(`UPDATE scope SET entry_count = MAX(0, entry_count - ?)`, entries.length);
+}
+
+/** Whether entries whose value a run retired wait to be let go of as they are withdrawn. */
+export function retiredWithdrawing(sql: SqlStorage): boolean {
+  return readMeta(sql, META_RETIRED_WITHDRAWING) !== undefined;
+}
+
+/**
+ * The entries whose value a run retired (`retireExpiredData`), let go of once the settle after the
+ * run has withdrawn them: asked after each slice of it, not left to the next run an interval on.
+ * The run after this one can come before most of them are out, and each would hold its place in
+ * the scope's count until then, which a scope at its limit spends refusing new keys. Says nothing
+ * and commits no revision, as a run lets go of them (`dropUnusedEntries`). Done with once its batch
+ * did not come back full and none of them still waits for its withdrawal, or the scope is retired.
+ *
+ * Whether the batch came back full: a settle can withdraw more of them at once than one batch takes,
+ * the rest of a batch whose withdrawal failed with a later run's, and those past it are left to a
+ * run that comes soon (`letGoOfRetired`), as a run's own full batch leaves its rest.
+ */
+export function letGoOfWithdrawn(sql: SqlStorage): boolean {
+  const scope = readScope(sql);
+  if (scope !== undefined && scope.status !== 'retired') {
+    const entries = sql
+      .exec<EntryRow>(
+        `SELECT * FROM entries e WHERE ${UNUSED} AND ${WITHDRAWN} ORDER BY e.updated_at LIMIT ?`,
+        PRUNE_BATCH,
+      )
+      .toArray();
+    if (entries.length > 0) {
+      letGoOf(sql, entries);
+    }
+    if (entries.length === PRUNE_BATCH) {
+      return true;
+    }
+    const waiting = sql
+      .exec(
+        `SELECT 1 FROM entries WHERE kv_revision < record_revision
+         AND publication = 'retired' AND current_generation_id IS NULL LIMIT 1`,
+      )
+      .toArray();
+    if (waiting.length > 0) {
+      return false;
+    }
+  }
+  deleteMeta(sql, META_RETIRED_WITHDRAWING);
+  return false;
 }
 
 /** Keep historical attempts/generations, but release entries that can no longer serve a value. */
@@ -321,11 +398,8 @@ function dropUnusedEntries(input: RetentionInput): boolean {
   const { sql, now } = input;
   const entries = sql
     .exec<EntryRow>(
-      `SELECT * FROM entries e WHERE e.current_generation_id IS NULL
-       AND NOT EXISTS (SELECT 1 FROM attempts a WHERE a.entry_id = e.entry_id AND a.status IN ('leased', 'uploading'))
-       AND ((e.publication = 'none' AND e.updated_at < ?)
-         OR (e.publication = 'retired' AND e.kv_revision >= e.record_revision
-           AND NOT EXISTS (SELECT 1 FROM generations g WHERE g.entry_id = e.entry_id AND g.storage = 'present')))
+      `SELECT * FROM entries e WHERE ${UNUSED}
+       AND ((e.publication = 'none' AND e.updated_at < ?) OR (${WITHDRAWN}))
      ORDER BY e.updated_at LIMIT ?`,
       now - UPLOAD_GRACE_MS,
       PRUNE_BATCH,
@@ -355,13 +429,7 @@ function dropUnusedEntries(input: RetentionInput): boolean {
       );
     }
   }
-  for (const entry of entries) {
-    sql.exec(`DELETE FROM entry_tags WHERE entry_id = ?`, entry.entry_id);
-    // Not its writers' marks: a write delayed past its entry's reclamation must still find them
-    // (`writtenAfter`), and they age out on their own (`forgetWriterMarks`).
-    sql.exec(`DELETE FROM entries WHERE entry_id = ?`, entry.entry_id);
-  }
-  sql.exec(`UPDATE scope SET entry_count = MAX(0, entry_count - ?)`, entries.length);
+  letGoOf(sql, entries);
   return entries.length === PRUNE_BATCH;
 }
 

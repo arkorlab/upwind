@@ -42,7 +42,12 @@ async function currentRecord(c: GatewayContext): Promise<Response> {
   meterRead(c.get('host'), c.get('scopeId'), bytes.byteLength);
   return new Response(bytes, {
     status: HTTP.OK,
-    headers: { 'content-type': OCTET_STREAM, 'cache-control': 'private, no-store' },
+    headers: {
+      'content-type': OCTET_STREAM,
+      // Said as an artifact's length is: what a Function reads the record whole in room for.
+      'content-length': String(bytes.byteLength),
+      'cache-control': 'private, no-store',
+    },
   });
 }
 

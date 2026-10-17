@@ -109,28 +109,44 @@ const AUTHORITY_READ_DEADLINE_MS = 1000;
  * output it could not read rather than holding its render open for as long as the request lasts.
  */
 const ARTIFACT_READ_DEADLINE_MS = 10_000;
+/**
+ * How long a delivery record read takes at the most, from the request to its last byte: what an
+ * artifact read is given, as a record may be as long as one. Past it the read is called off, its
+ * body with it, and the room it holds goes back whatever its caller handed it. A document stops
+ * waiting for its record long before, and calls nothing off as it does: the runtime keeps the read
+ * going for the requests after it, as long as a request's work may last behind its response, and a
+ * body that stalled with its room taken would hold up every read that does not fit beside it for
+ * that long, or for good where its caller hands no signal.
+ */
+const RECORD_READ_DEADLINE_MS = ARTIFACT_READ_DEADLINE_MS;
 const KIB = 1024;
 const MIB = KIB * KIB;
 /**
  * How many bytes of artifacts one isolate reads at once, in MiB (`ReadBudget`): the authority's
- * answers and its data center's copies alike. An artifact is read whole before it is answered with
- * — the runtime takes bytes, not a stream — and one render may miss several large data values or
- * outputs together: 25 MiB each by default, five of which would all but fill a Function's 128 MB. A
- * value too large for the isolate to hold is read whole from its copy every time it is read. Past
- * this a read waits, once the authority or the copy has said how long the artifact is, for those
- * before it to be read; one read alone is never held, however long.
+ * answers and its data center's copies alike, and the delivery records the gateways answer. An
+ * artifact is read whole before it is answered with — the runtime takes bytes, not a stream — and
+ * one render may miss several large data values or outputs together: 25 MiB each by default, five
+ * of which would all but fill a Function's 128 MB. A record may be as long, and the runtime reads
+ * many at once. A value too large for the isolate to hold is read whole from its copy every time it
+ * is read. Past this a read waits, once its answer or the copy has said how long what it reads is,
+ * for those before it to be read; one read alone is never held, however long.
  */
 const AUTHORITY_READ_MIB = 32;
 const AUTHORITY_READ_BYTES = AUTHORITY_READ_MIB * MIB;
 const DIGITS = /^\d+$/u;
+
+/** How long an answer says it is (`content-length`); `undefined` for one that does not say. */
+function saidLength(response: Response): number | undefined {
+  const length = response.headers.get('content-length');
+  return length !== null && DIGITS.test(length) ? Number(length) : undefined;
+}
 
 /**
  * How long the authority says its answer is (`content-length`), which it always says. An answer
  * that does not say is taken to be as long as a read may take.
  */
 function projectedLength(response: Response): number {
-  const length = response.headers.get('content-length');
-  return length !== null && DIGITS.test(length) ? Number(length) : AUTHORITY_READ_BYTES;
+  return saidLength(response) ?? AUTHORITY_READ_BYTES;
 }
 
 /**
@@ -177,7 +193,7 @@ export class Gateway {
   readonly #artifacts: ArtifactCopies;
   /**
    * What this isolate reads of artifacts at once, from the authority and from its data center's
-   * copies: one gateway an isolate.
+   * copies, and of delivery records: one gateway an isolate.
    */
   readonly #reading = new ReadBudget(AUTHORITY_READ_BYTES);
 
@@ -406,23 +422,32 @@ export class Gateway {
   }
 
   /**
-   * The delivery record of an entry, as the edge reads it; `undefined` when there is none. Called
-   * off, its body and all, once `signal` aborts.
+   * The delivery record of an entry, as the edge reads it; `undefined` when there is none. Given up
+   * past `RECORD_READ_DEADLINE_MS`, and called off once `signal` aborts: either, its body and all.
+   * Read whole in room of its own, as an artifact is (`#readWhole`), where the gateway says how long
+   * it is, which both gateways do; an answer that says nothing, a gateway's from before they said
+   * it, is read as it always was, in no room.
    */
-  async readRecord(entryId: string, signal?: AbortSignal): Promise<Uint8Array | undefined> {
-    const response = await this.#send(
-      `/entries/${entryId}/record`,
-      { method: 'GET', headers: this.#headers(), ...(signal !== undefined && { signal }) },
-      true,
-    );
-    if (response.status === HTTP_NOT_FOUND) {
-      await response.body?.cancel();
-      return undefined;
-    }
-    if (!response.ok) {
-      await this.#throwFailure(response);
-    }
-    return new Uint8Array(await response.arrayBuffer());
+  readRecord(entryId: string, signal?: AbortSignal): Promise<Uint8Array | undefined> {
+    return readWithin('record read', RECORD_READ_DEADLINE_MS, async (deadline) => {
+      const asked = signal === undefined ? deadline : AbortSignal.any([signal, deadline]);
+      const response = await this.#send(
+        `/entries/${entryId}/record`,
+        { method: 'GET', headers: this.#headers(), signal: asked },
+        true,
+      );
+      if (response.status === HTTP_NOT_FOUND) {
+        await response.body?.cancel();
+        return;
+      }
+      if (!response.ok) {
+        await this.#throwFailure(response);
+      }
+      if (saidLength(response) === undefined) {
+        return new Uint8Array(await response.arrayBuffer());
+      }
+      return this.#readWhole(response, asked, new ArtifactRoom(this.#reading));
+    });
   }
 
   /**

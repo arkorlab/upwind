@@ -30,7 +30,11 @@ import {
 import { allowRecoveryScript } from '@stayingupwind/core/request';
 import { encodeUtf8 } from '@stayingupwind/core/util';
 import { EDGE_ISOLATE_BUDGET_BYTES, manifestCharge } from '@stayingupwind/host/delivery';
-import { nextSupportOf } from '@stayingupwind/host/next-support';
+import {
+  nextSupportOf,
+  nextVersionSupported,
+  SUPPORTED_NEXT_RANGE,
+} from '@stayingupwind/host/next-support';
 
 import {
   type ManifestContext,
@@ -114,6 +118,14 @@ export interface AssembleManifestInput {
    * a page it resumes by its entry. Absent, it has one.
    */
   readonly runtimeCache?: boolean | undefined;
+  /**
+   * Whether the host judged the build's Next.js itself, when the deployment came in, and is
+   * assembling one it already holds or serves. Absent, a build outside the versions deployed is
+   * refused (`unsupportedNext`), as staging refuses it. Set, it is assembled whatever the range says
+   * now: the range moves as the adapter's does, and a deployment admitted under the range of its own
+   * day may be one it leaves out by the time it is assembled again.
+   */
+  readonly nextVersionJudged?: boolean | undefined;
 }
 
 export type AssembledManifest =
@@ -130,7 +142,8 @@ export type AssembledManifest =
     }
   /**
    * Not to publish — too large (`oversizedManifest`), fingerprinted as another bundle, naming
-   * another deployment's Functions, or leaving out one the build places routes in — and why.
+   * another deployment's Functions, leaving out one the build places routes in, or built with a
+   * Next.js outside the versions deployed (`unsupportedNext`) — and why.
    */
   | { readonly kind: 'refused'; readonly reason: string };
 
@@ -185,13 +198,36 @@ export function unreachableFunctions(
     : `the build places routes in ${unreachable.join(', ')}, which the Functions handed in give no name to reach by (app.functions)`;
 }
 
-/** Assemble the manifest from the build: one entry per edge-servable prerender. */
+/**
+ * Why the build's Next.js is outside the versions deployed, or `undefined` for one within them, or
+ * for a build the host judged itself (`nextVersionJudged`). A build outside the adapter's range gets
+ * nothing of what a host serves (`NextSupport`); one with limited support is deployed as any is.
+ */
+export function unsupportedNext(
+  input: Pick<AssembleManifestInput, 'bundle' | 'nextVersionJudged'>,
+): string | undefined {
+  const { nextVersion } = input.bundle;
+  if (input.nextVersionJudged === true || nextVersionSupported(nextVersion)) {
+    return undefined;
+  }
+  const { min, max } = SUPPORTED_NEXT_RANGE;
+  return `next ${nextVersion} is outside the versions deployed (>=${min.join('.')} <${max.join('.')})`;
+}
+
+/**
+ * Assemble the manifest from the build: one entry per edge-servable prerender.
+ *
+ * A build of a Next.js outside the versions deployed is refused here as staging refuses it, so a
+ * host that assembles from the pure modules, and never stages, has the same check by default; one
+ * that judged the version itself when the deployment came in says so (`nextVersionJudged`).
+ */
 export async function assembleManifest(input: AssembleManifestInput): Promise<AssembledManifest> {
   const { bundle } = input;
   const refusal =
     foreignFingerprint(bundle, input.fingerprint) ??
     foreignFunctions(input) ??
-    unreachableFunctions(input);
+    unreachableFunctions(input) ??
+    unsupportedNext(input);
   if (refusal !== undefined) {
     return { kind: 'refused', reason: refusal };
   }

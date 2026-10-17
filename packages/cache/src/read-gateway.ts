@@ -101,6 +101,8 @@ export function createReadGateway(host: AuthorityHost): Hono<ReadEnv> {
         return new Response(bytes, {
           headers: {
             'content-type': 'application/octet-stream',
+            // What a Function reads the record whole in room for, as the authority's gateway says.
+            'content-length': String(bytes.byteLength),
             'cache-control': 'private, no-store',
           },
         });
