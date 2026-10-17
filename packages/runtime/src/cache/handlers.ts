@@ -288,13 +288,13 @@ function fetchWrites(runtime: CacheRuntime): HeldWrites {
 
 /**
  * What a read of a fetch key finds in this isolate: the write of it still out, or what the host
- * keeps. A regeneration asks the host whatever is out (`PlatformFetchCache`).
+ * keeps. A regeneration takes only a write its own render handed over, and asks the host whatever
+ * else is out (`heldOut`, `PlatformFetchCache`).
  */
 async function fetchHeld(runtime: CacheRuntime, cacheKey: string): Promise<HeldValue | undefined> {
-  const out =
-    isRegeneration() || isPrimaryResourceRead()
-      ? undefined
-      : heldOut(writesIn(runtime, FETCH_STORE), cacheKey);
+  const out = isPrimaryResourceRead()
+    ? undefined
+    : heldOut(writesIn(runtime, FETCH_STORE), cacheKey);
   return out ?? heldIn(await readData(runtime, { key: cacheKey, kind: DATA_FETCH }));
 }
 
@@ -319,9 +319,10 @@ async function fetchHeld(runtime: CacheRuntime, cacheKey: string): Promise<HeldV
  * replaces, or with nothing. The value is judged against the tags like any other, so an
  * invalidation this isolate has made or learned of since the fetch began still makes it stale.
  *
- * Not for a regeneration, which asks the host. What the host says of the entry — an invalidation it
- * holds against the write, fenced by the moment the fetch began — reaches this isolate only with
- * the write's answer, and a regeneration renders what the host will keep.
+ * Not for a regeneration, which asks the host — but for the writes its own render handed over
+ * (`heldOut`). What the host says of the entry — an invalidation it holds against the write, fenced
+ * by the moment the fetch began — reaches this isolate only with the write's answer, and a
+ * regeneration renders what the host will keep; its own write is what it already rendered.
  */
 export class PlatformFetchCache {
   // Next.js constructs it with its own context (fs, dev, revalidatedTags, …); none of it applies
