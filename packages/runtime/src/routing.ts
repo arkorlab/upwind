@@ -12,10 +12,9 @@ import {
   type Route,
 } from '@stayingupwind/core/bundle';
 import { ORIGINAL_URL_HEADER } from '@stayingupwind/core/paas';
-import { NEXT_DATA_HEADER, NULL_BODY_STATUSES } from '@stayingupwind/core/request';
+import { NULL_BODY_STATUSES } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
-import { stripPlatformHeaders } from './incoming.ts';
 import { escapedNameOf, namesWithSpellings, prerenderedName } from './name-spellings.ts';
 import type { Resolved } from './outputs.ts';
 import {
@@ -27,6 +26,8 @@ import {
 } from './rewritten-path.ts';
 import { routeQuery } from './route-parameters.ts';
 import { HTTP_OK } from './serve.ts';
+
+export { routedHeaders } from './routed-headers.ts';
 import { entrypointKindOf, type Store } from './store.ts';
 
 /**
@@ -116,27 +117,6 @@ function queryString(query: Record<string, string | string[]>): string {
   }
   const text = params.toString();
   return text === '' ? '' : `?${text}`;
-}
-
-/**
- * The client's headers as the middleware and the handler after it are given them: without the
- * platform's own, and with `x-nextjs-data` decided by the path rather than taken from the client.
- *
- * Next.js drops that header from what a client sends (`filterInternalHeaders`) and puts it back
- * itself when the path is a data request (`server/lib/router-utils/resolve-routes.ts`). The edge
- * drops it before a request reaches this Function, and `@next/routing` puts nothing back. It is how a
- * middleware knows it is answering a client navigation's `_next/data` fetch, which it answers with
- * `x-nextjs-redirect` or `x-nextjs-rewrite` for the client's router to follow. Without it a
- * redirect comes back as a `Location` the fetch cannot use and a rewrite comes back unnamed, and
- * the router gives up and loads the whole page.
- */
-export function routedHeaders(request: Request, url: URL, basePath: string): Headers {
-  const headers = stripPlatformHeaders(request.headers);
-  headers.delete(NEXT_DATA_HEADER);
-  if (isPagesDataRequestPath(basePath, url.pathname)) {
-    headers.set(NEXT_DATA_HEADER, '1');
-  }
-  return headers;
 }
 
 /**
