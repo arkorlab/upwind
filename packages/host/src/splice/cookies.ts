@@ -35,6 +35,24 @@ const MAX_AGE = 'max-age';
 const PATH = 'path';
 /** A `Max-Age` a browser takes; any other it ignores, and `Expires` stands (RFC 6265, 5.2.2). */
 const DELTA_SECONDS = /^-?\d+$/u;
+/**
+ * The attributes a browser keeps of a cookie: RFC 6265's, and those browsers have taken on since —
+ * `SameSite`, `Partitioned`, and `Priority`, which some of them keep. Any other a browser ignores
+ * (section 5.2), so a cookie written with one is the cookie written without it.
+ */
+const KEPT_ATTRIBUTES = new Set([
+  'domain',
+  EXPIRES,
+  'httponly',
+  MAX_AGE,
+  'partitioned',
+  PATH,
+  'priority',
+  'samesite',
+  'secure',
+]);
+/** The attributes a browser keeps as there or not, whatever value one is written with (5.2.5). */
+const FLAGS = new Set(['httponly', 'partitioned', 'secure']);
 /** What a cookie with no name is reported as: it ends the splice as any other would. */
 const NAMELESS = '(nameless)';
 
@@ -95,7 +113,8 @@ function storedPathOf(setCookie: string, defaultPath: string): string {
 
 /**
  * A `Set-Cookie` as a browser stores it, under the path it is kept at; two that differ only in how
- * they are written agree.
+ * they are written agree. An attribute a browser does not keep is no part of it, and a flag is kept
+ * as there, whatever value it was written with.
  */
 function storedAs(setCookie: string, defaultPath: string): string {
   const [pair = '', ...written] = setCookie.split(';');
@@ -103,14 +122,14 @@ function storedAs(setCookie: string, defaultPath: string): string {
   for (const each of written) {
     const attribute = attributeOf(each);
     if (
-      attribute.name === '' ||
+      !KEPT_ATTRIBUTES.has(attribute.name) ||
       (attribute.name === MAX_AGE && !DELTA_SECONDS.test(attribute.value))
     ) {
       continue;
     }
     // The last of an attribute written twice is the one a browser keeps.
     attributes.delete(attribute.name);
-    attributes.set(attribute.name, attribute.value);
+    attributes.set(attribute.name, FLAGS.has(attribute.name) ? '' : attribute.value);
   }
   if (attributes.has(MAX_AGE)) {
     attributes.delete(EXPIRES);
