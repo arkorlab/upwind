@@ -21,7 +21,7 @@ import {
   postponedOf,
   staticFileResponse,
 } from './documents.ts';
-import { entryFor, hasEntry } from './entries.ts';
+import { deferredEntryFor, entryFor, hasEntry } from './entries.ts';
 import { failureAnswer } from './error-pages.ts';
 import {
   handleDetached,
@@ -159,7 +159,7 @@ async function handleResume(
  */
 
 async function serveDocument(input: RoutedInput, store: Store, asked: Resolved): Promise<Response> {
-  const rendered = await renderedBy(input, store, asked);
+  const rendered = await renderedBy(input, store, asked, deferredEntryFor);
   if (rendered === undefined) {
     return notFound(input, store, new URL(input.request.url));
   }
