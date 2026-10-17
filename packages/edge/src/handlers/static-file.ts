@@ -9,6 +9,7 @@ import {
   EDGE_VALIDATED_HEADER,
   manifestIdPrefix,
   NO_STORE_CACHE_CONTROL,
+  NULL_BODY_STATUSES,
   RSC_HEADER,
   RSC_VARY,
 } from '@stayingupwind/core/request';
@@ -46,8 +47,16 @@ export interface StaticFileInput {
   readonly pathname: string;
   readonly file: StaticFileEntry;
   readonly edge: StaticFileContext;
-  /** What the application's middleware set, when the edge ran it for this file and it let the request on. */
-  readonly middleware?: Extract<MiddlewareResult, { kind: 'continue' }> | undefined;
+  /**
+   * What the application's middleware set, when the edge ran it for this file and it let the request
+   * on — with the status it gave a rewrite, which an answer of 200 goes out under
+   * (`underRewriteStatus`, in `hosted-static-file.ts`).
+   */
+  readonly middleware?:
+    | (Extract<MiddlewareResult, { kind: 'continue' }> & {
+        readonly rewriteStatus?: number | undefined;
+      })
+    | undefined;
   /** The dispatches the middleware took before the file was served, which its metric counts. */
   readonly middlewareDispatches?: number | undefined;
   /** How long the middleware took, where it ran, which its metric reports. */
@@ -609,7 +618,7 @@ export async function handleStaticFile(
     return storageFailure(input, 'static-file-missing');
   }
   const headers = fileHeaders(input, sourceOf(read));
-  const sentBytes = range === undefined ? input.file.byteLength : range.end - range.start + 1;
+  const sentBytes = range === undefined ? wholeFileSent(input) : range.end - range.start + 1;
   recordDelivery(
     input,
     deliveryMetric(input, { ...read, requests: settled.read.requests }, startedAt, sentBytes),
@@ -621,6 +630,18 @@ export async function handleStaticFile(
     return new Response(read.body, { status: PARTIAL_CONTENT_STATUS, headers });
   }
   return new Response(read.body, { status: statusOf(input), headers });
+}
+
+/**
+ * What the answer with the whole file sends of it: nothing where it goes out under a status the
+ * middleware gave its rewrite that carries no body, its body let go of (`underRewriteStatus`, in
+ * `hosted-static-file.ts`, which puts the status on an answer of 200 only).
+ */
+function wholeFileSent(input: StaticFileInput): number {
+  const status = input.middleware?.rewriteStatus;
+  return status !== undefined && NULL_BODY_STATUSES.has(status) && answersAsItself(input)
+    ? 0
+    : input.file.byteLength;
 }
 
 /**

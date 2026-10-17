@@ -55,7 +55,8 @@ const HTTP_OK = 200;
  * Next.js answers it: its router puts the status on the response before the file server sends the
  * file (`res.statusCode = middlewareRes.status`, in `resolve-routes.js`), and the file server sets
  * one of its own only for a range, a request it answers 304 and an error (`send`). So only an
- * answer of 200 takes it, its body let go of where the status carries none.
+ * answer of 200 takes it, its body let go of where the status carries none — which the file's
+ * metric counts as nothing sent (`wholeFileSent`, in `static-file.ts`).
  */
 function underRewriteStatus(response: Response, status: number): Response {
   if (response.status !== HTTP_OK) {
