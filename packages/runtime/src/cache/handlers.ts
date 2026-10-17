@@ -31,8 +31,10 @@ import type { DataEntryMetadata, InvalidateOutcome } from './host.ts';
 import {
   fetchedAgainBehind,
   holdForRevalidation,
+  holdForUseCacheRevalidation,
   revalidated,
   revalidatedBehind,
+  useCacheStore,
 } from './revalidations.ts';
 import type { CacheRuntime } from './runtime.ts';
 import { callsBehind, callsWaitedOn } from './turns.ts';
@@ -535,11 +537,13 @@ async function getUseCache(
       now,
     });
   };
+  const request = { key: cacheKey, kind: USE_CACHE, handler: kind };
+  const weighing = { judge, reread: () => useCacheHeld(runtime, kind, cacheKey) };
   const judged = await laterIfAny(
     runtime,
-    { key: cacheKey, kind: USE_CACHE, handler: kind },
+    request,
     { held, validity: await judge(held) },
-    { judge, reread: () => useCacheHeld(runtime, kind, cacheKey) },
+    weighing,
   );
   if (judged === undefined) {
     return undefined;
@@ -553,9 +557,8 @@ async function getUseCache(
   ) {
     return undefined;
   }
-  // Aged as the wrapper will age it, once this has answered: after the reads above.
   if (revalidatedBehind(validity, nowMs() - entry.timestamp, entry.revalidate, entry.expire)) {
-    holdForRevalidation(runtime, useCacheStore(kind), cacheKey);
+    holdForUseCacheRevalidation(runtime, request, judged, weighing);
   }
   return {
     value: new Blob([judged.held.bytes as BlobPart]).stream(),
@@ -565,11 +568,6 @@ async function getUseCache(
     expire: entry.expire,
     revalidate: validity === 'stale' ? REVALIDATE_NOW : entry.revalidate,
   };
-}
-
-/** The store a `use cache` handler's writes are kept track of under, apart from the other's. */
-function useCacheStore(kind: string): string {
-  return `use cache:${kind}`;
 }
 
 /**
