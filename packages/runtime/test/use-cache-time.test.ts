@@ -281,7 +281,7 @@ describe('production use cache lifetime', () => {
       const { handler, request, read, getData, endResponses } = scenario(newer, kind);
       getData.mockResolvedValueOnce({
         ...value('A', 1, NOW - SECOND / 2, kind),
-        invalidation: { staleAt: NOW - 1 },
+        invalidation: { revision: 1, staleAt: NOW - 1 },
       });
       const context = request();
       const entry = await context.run(() => handler.get(KEY, []));
