@@ -31,7 +31,7 @@ import {
   tagProjectionDueAt,
   tagProjectionPending,
 } from './tag-projection.ts';
-import type { Timing } from './timing.ts';
+import { timedDeps, type Timing } from './timing.ts';
 
 /**
  * What happens after a commit, until it has happened. Two things are owed once a transaction
@@ -70,6 +70,11 @@ export interface SettleDeps {
    * before the run is over; the object keeps running the rest otherwise.
    */
   readonly continueSoon: () => Promise<void>;
+  /**
+   * Where the run says how long what its change's answer waits on took (`Timing`): a data write's,
+   * which its answer says, whether or not the write committed anything (`settlePending`).
+   */
+  readonly timing?: Timing | undefined;
 }
 
 export interface SettleOutcome {
@@ -304,8 +309,6 @@ export interface OwnRecords {
    * published it (`CacheScope.commit`).
    */
   readonly wanted?: WantedRecords | undefined;
-  /** Where the run says how long its parts took (`Timing`): a data write's, which its answer says. */
-  readonly timing?: Timing | undefined;
 }
 
 /** What the change that has just committed at `revision` left behind (`OwnRecords`). */
@@ -679,26 +682,33 @@ export function chainSettle(
  * waits for it as for any run before its own, unless the history leaves its share to that
  * change's run (`HistoryDeps.othersWaiting`) — or unless it leaves no record of its own, a lease
  * say, and waits for no run at all (`SettleRun.answerNow`).
+ *
+ * Where the run is to say how long its parts took (`SettleDeps.timing`), what it waits on in KV and
+ * in storage is timed as far as its change's answer waits for it: what the history does once the
+ * change is answered is not, since the answer says its timing as it goes, and would hold such a
+ * call only had it ended by then.
  */
 export async function settlePending(
   deps: SettleDeps,
   answered?: () => void,
   from?: OwnRecords | null,
 ): Promise<SettleOutcome> {
+  const waited = deps.timing === undefined ? deps : timedDeps(deps, deps.timing);
   const [projection, marker, tags] = await Promise.allSettled([
-    projectRecords(deps, from),
-    writeScopeMarker(deps),
-    projectTags(deps, from?.controlTags, from?.tags),
+    projectRecords(waited, from),
+    writeScopeMarker(waited),
+    projectTags(waited, from?.controlTags, from?.tags),
   ]);
   const projectionFailed = projection.status === 'fulfilled' && projection.value.failed > 0;
   const shortfall =
     [projection, marker, tags].some((outcome) => outcome.status === 'rejected') || projectionFailed;
   const cut = projection.status === 'fulfilled' && projection.value.cut;
   const continuation = !shortfall && cut ? await Promise.allSettled([deps.continueSoon()]) : [];
-  if (!shortfall && continuation.every((outcome) => outcome.status === 'fulfilled')) {
+  const early = !shortfall && continuation.every((outcome) => outcome.status === 'fulfilled');
+  if (early) {
     answered?.();
   }
-  const [records, delivery] = await deps.history.publish(deps);
+  const [records, delivery] = await deps.history.publish(early ? deps : waited);
   // Every outcome is asked, not the first that answers: an outage fails several of these at once,
   // and the ones `||` would have skipped are the ones nothing else would ever say.
   const rejected = [

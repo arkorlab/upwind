@@ -97,7 +97,7 @@ import {
   requireActiveScope,
 } from './state.ts';
 import { tagsDelta } from './tags.ts';
-import { timedDeps, Timing } from './timing.ts';
+import { Timing } from './timing.ts';
 import type { Apply, TxInput } from './tx.ts';
 
 /**
@@ -225,7 +225,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
     now: number,
     plan: (input: TxInput) => Apply<T> | Promise<Apply<T>>,
     answers: { readonly atOnce?: boolean } & ({ readonly empty: T } | { readonly seed: T }),
-    { wanted, timing }: Pick<OwnRecords, 'wanted' | 'timing'> = {},
+    { wanted, timing }: Pick<OwnRecords, 'wanted'> & Pick<SettleDeps, 'timing'> = {},
   ): Promise<T> {
     const result = await this.#mutations.run(async () => {
       const committed = await commitMutation(
@@ -249,7 +249,8 @@ export class CacheScope extends DurableObject<CacheBindings> {
     });
     timing?.lap('commit');
     if (result.own === undefined) return result.value;
-    const run = this.#settle(result.own === null ? null : { ...result.own, wanted, timing });
+    const own = result.own === null ? null : { ...result.own, wanted };
+    const run = this.#settle(own, undefined, timing);
     if (answers.atOnce === true) run.answerNow();
     await run.answered;
     timing?.lap('settle');
@@ -286,16 +287,21 @@ export class CacheScope extends DurableObject<CacheBindings> {
    * `settlePending`), or not at all where it owes nothing before its answer (`answerNow`). A run
    * that fails before then fails the caller's wait as well. `from` is what a change left behind as
    * it committed (`ownRecordsOf`), whose records its run writes, or `null` when it committed
-   * nothing; the alarm's runs leave it out and write the backlog.
+   * nothing; the alarm's runs leave it out and write the backlog. `timing` is where a change that
+   * says how long its parts took has its run timed, whether it committed anything or not.
    */
-  #settle(from?: OwnRecords | null, ended?: (outcome: SettleOutcome) => void): SettleRun {
+  #settle(
+    from?: OwnRecords | null,
+    ended?: (outcome: SettleOutcome) => void,
+    timing?: Timing,
+  ): SettleRun {
     this.#waiting += 1;
     const run = chainSettle(this.#settling, this.#log, async (answered) => {
       this.#waiting -= 1;
-      from?.timing?.lap('settle-wait');
+      timing?.lap('settle-wait');
       // Awaited on its own: as the argument of `ended?.(…)`, the run would not happen at all for a
       // caller with no `ended`.
-      const outcome = await this.#runSettle(answered, from);
+      const outcome = await this.#runSettle(answered, from, timing);
       ended?.(outcome);
     });
     this.#settling = run.done;
@@ -305,6 +311,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
   async #runSettle(
     answered: () => void,
     from: OwnRecords | null | undefined,
+    timing: Timing | undefined,
   ): Promise<SettleOutcome> {
     if (!this.#tables) {
       // Erased while the run waited its turn: nothing of the scope is left to settle.
@@ -312,9 +319,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
     }
     let outcome: SettleOutcome;
     try {
-      const { timing } = from ?? {};
-      const deps = timing === undefined ? this.#deps() : timedDeps(this.#deps(), timing);
-      outcome = await settlePending(deps, answered, from);
+      outcome = await settlePending({ ...this.#deps(), timing }, answered, from);
     } catch (error) {
       this.#log.error('settle failed', { detail: detailOf(error) });
       outcome = { pending: true, failed: true, continued: false };
