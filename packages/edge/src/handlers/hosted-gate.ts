@@ -76,10 +76,11 @@ export interface HostedGate {
   /**
    * Start what the answer will need while the middleware decides whether there is to be one — a
    * read of storage, which would otherwise wait behind the middleware's whole round trip. Called
-   * only when the middleware runs; `serve` and `rewritten` take what it started or let it go, and
+   * only when the middleware runs, with what the rules of `next.config` set on the path, which the
+   * answer will carry (`configured`); `serve` and `rewritten` take what it started or let it go, and
    * `abandon` lets it go when neither is asked.
    */
-  readonly start?: () => void;
+  readonly start?: (configured: ConfiguredHeaders) => void;
   readonly abandon?: () => void;
   /**
    * What answers where a pattern of the application's costs more against the request, as the
@@ -138,7 +139,7 @@ export async function serveAfterMiddleware(
   const ready = 'policyReady' in input ? await input.policyReady() : input.edge;
   const resolved = { ...input, edge: ready };
   gate.ready?.(ready);
-  gate.start?.();
+  gate.start?.(configured);
   let decided: MiddlewareDecision;
   try {
     decided = await decideMiddleware(ready, request);

@@ -173,12 +173,15 @@ export function routeHostedStaticFile(input: HostedStaticFileInput): Promise<Res
     ready: (edge) => {
       servedInput = { ...input, edge };
     },
-    start: () => {
+    // Under what the rules set on the path, as the answer will be: a precondition a rule's
+    // `Last-Modified` fails is the manifest's to answer, with no read begun beside the middleware.
+    start: (configured) => {
       early = startFileRead({
         request: input.request,
         pathname: url.pathname,
         file: input.file,
         edge: servedInput.edge,
+        configured,
       });
     },
     abandon: letGo,
