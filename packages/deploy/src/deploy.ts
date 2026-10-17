@@ -55,9 +55,9 @@ import { DOCUMENT_KIND, type ShellToEncode, shellsOf } from './shells.ts';
  * caller's to prove, before it writes the pointer that sends requests to the deployment. Every key
  * written is the one the edge and the cache read (`@stayingupwind/host/storage`).
  *
- * Each does as much in its one call as the build is large: a read of every blob, a write of every
- * artifact, a seed of every entry and, under a KV policy, a write and a read-back of every
- * placement. That is for a process that may make as many calls out as it needs — a command under
+ * Each does as much in its one call as the build is large: a read of every blob (of a document's
+ * twice, for its hints before anything is written), a write of every artifact, a seed of every
+ * entry and, under a KV policy, a write and a read-back of every placement. That is for a process that may make as many calls out as it needs — a command under
  * Node, a local runner. A host that deploys from a Worker, whose every invocation has a cap on
  * them, calls neither: it spreads the pure modules they are made of over invocations of its own —
  * `shellsOf` (`./shells`) to import, `cacheEntryIdsOf` and `seedEntriesOf` (`./cache-seed`) to
@@ -281,35 +281,50 @@ function bucketMetadataOf(
 }
 
 /**
- * The build's shells, prefetch segments, whole payloads and Pages Router props, kept where the edge
- * reads an artifact from (`artifacts/<sha256>`), and the hints each document's head names, by its
- * digest.
+ * The build's shells, prefetch segments, whole payloads and Pages Router props of the pages the
+ * manifest routes, as it routes them (`routedPages`): without a runtime cache, none of a page the
+ * build finished, which the manifest leaves to the Function.
  */
-async function importShells(
+function routedShells(target: DeployTarget, input: StageInput): ShellToEncode[] {
+  return shellsOf(input.bundle, routedPages(target.cache !== undefined));
+}
+
+/**
+ * The hints each document's head names, by its digest, read before anything is written: the
+ * manifest they go into is assembled, and refused where it is too large, first. Only a document has
+ * a head to read hints from: a segment or a payload is an RSC payload, and a page's props are JSON.
+ */
+async function preloadsOf(
   target: DeployTarget,
   input: StageInput,
 ): Promise<Record<string, string[]>> {
   const preloads: Record<string, string[]> = {};
-  // Those of the pages the manifest routes, as it routes them (`routedPages`): without a runtime
-  // cache, none of a page the build finished, which the manifest leaves to the Function.
-  const shells = shellsOf(input.bundle, routedPages(target.cache !== undefined));
-  for (const shell of shells) {
+  for (const shell of routedShells(target, input)) {
+    if (shell.kind !== DOCUMENT_KIND) {
+      continue;
+    }
+    const links = scanPreloadLinks(await blobOf(target.blobs, shell));
+    if (links.length > 0) {
+      preloads[shell.sha256] = links;
+    }
+  }
+  return preloads;
+}
+
+/**
+ * The routed shells, kept where the edge reads an artifact from (`artifacts/<sha256>`). A document
+ * is read again here, after its hints were (`preloadsOf`), rather than each held from then on: a
+ * build's documents together may be far larger than the process should hold at once.
+ */
+async function importShells(target: DeployTarget, input: StageInput): Promise<void> {
+  for (const shell of routedShells(target, input)) {
     const bytes = await blobOf(target.blobs, shell);
     // As what it is: a segment or a payload is an RSC payload, and a page's props are JSON.
     await target.bucket.put(r2ArtifactKey(shell.sha256), bytes, {
       contentType: shell.contentType,
       customMetadata: bucketMetadataOf(shell, input),
     });
-    // Only a document has a head to read hints from: a segment or a payload is an RSC payload, and
-    // a page's props are JSON.
-    if (shell.kind === DOCUMENT_KIND) {
-      const links = scanPreloadLinks(bytes);
-      if (links.length > 0) {
-        preloads[shell.sha256] = links;
-      }
-    }
   }
-  return preloads;
 }
 
 /** The deployment's scope, and the build's generation of every entry; the scope's token back. */
@@ -342,10 +357,11 @@ async function seedCache(cache: DeployCache, input: StageInput): Promise<string>
 }
 
 /**
- * Stage a deployment, before anything of it is published: the build's fingerprint taken, its blobs
- * uploaded where they are not yet, its shells imported, its runtime cache seeded, and its manifest
- * assembled from all of it. Nothing the edge reads by a manifest has been written yet, so a refusal
- * here leaves nothing to serve.
+ * Stage a deployment, before anything of it is published: the build's fingerprint taken, its
+ * manifest assembled, and only then its blobs uploaded where they are not yet, its shells imported
+ * and its runtime cache seeded. Nothing the edge reads by a manifest has been written yet, so a
+ * refusal here leaves nothing to serve; and a build refused for its manifest leaves nothing written
+ * at all.
  *
  * No renderings: a host that compresses its shells ahead of a request passes them to
  * `assembleManifest` itself; these leave the edge to send each shell as it was stored.
@@ -364,14 +380,14 @@ export async function stageDeployment(
       { code: 'bundle_invalid' },
     );
   }
-  // Nor may they leave out one a split build places routes in, which the assembly would refuse once
-  // the blobs, the shells and the cache's entries were written.
+  // Nor may they leave out one a split build places routes in, which the assembly would refuse
+  // only once the build's documents were read for their hints.
   const unreachable = unreachableFunctions(input);
   if (unreachable !== undefined) {
     throw new DeployRefusalError(unreachable, { code: 'bundle_invalid' });
   }
   // A build outside the adapter's range gets nothing of what a host serves (`NextSupport`), and is
-  // refused here, before anything is written, rather than by the assembly once everything is; one
+  // refused here, before anything is read, rather than by the assembly once its documents are; one
   // with limited support is deployed as any is. The assembly is not told the version was judged
   // (`nextVersionJudged`): that is for a deployment a host already holds, and this one is new.
   const unsupported = unsupportedNext(input);
@@ -379,9 +395,10 @@ export async function stageDeployment(
     throw new DeployRefusalError(unsupported, { code: 'bundle_invalid' });
   }
   const fingerprint = await deploymentFingerprintOf(bundle, input.json, isoOf(input.now()));
-  const blobs = await stageBlobs(target, bundle);
-  const preloads = await importShells(target, input);
-  const token = target.cache === undefined ? undefined : await seedCache(target.cache, input);
+  // Assembled before anything is written. A manifest too large to publish (`oversizedManifest`) is
+  // the build's, and is refused with no blob copied, no shell imported and no scope seeded on the
+  // cache's authority, which no pointer would ever name. Nothing assembled reads what is written.
+  const preloads = await preloadsOf(target, input);
   const assembled = await assembleManifest({
     bundle,
     previous: input.previous,
@@ -400,6 +417,9 @@ export async function stageDeployment(
   if (assembled.kind === 'refused') {
     throw new DeployRefusalError(assembled.reason, { code: 'bundle_invalid' });
   }
+  const blobs = await stageBlobs(target, bundle);
+  await importShells(target, input);
+  const token = target.cache === undefined ? undefined : await seedCache(target.cache, input);
   const { manifest, manifestId, serialized } = assembled;
   return { manifest, manifestId, serialized, token, blobs };
 }
