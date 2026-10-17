@@ -109,6 +109,16 @@ const AUTHORITY_READ_DEADLINE_MS = 1000;
  * output it could not read rather than holding its render open for as long as the request lasts.
  */
 const ARTIFACT_READ_DEADLINE_MS = 10_000;
+/**
+ * How long a delivery record read takes at the most, from the request to its last byte: what an
+ * artifact read is given, as a record may be as long as one. Past it the read is called off, its
+ * body with it, and the room it holds goes back whatever its caller handed it. A document stops
+ * waiting for its record long before, and calls nothing off as it does: the runtime keeps the read
+ * going for the requests after it, as long as a request's work may last behind its response, and a
+ * body that stalled with its room taken would hold up every read that does not fit beside it for
+ * that long, or for good where its caller hands no signal.
+ */
+const RECORD_READ_DEADLINE_MS = ARTIFACT_READ_DEADLINE_MS;
 const KIB = 1024;
 const MIB = KIB * KIB;
 /**
@@ -412,29 +422,32 @@ export class Gateway {
   }
 
   /**
-   * The delivery record of an entry, as the edge reads it; `undefined` when there is none. Called
-   * off, its body and all, once `signal` aborts. Read whole in room of its own, as an artifact is
-   * (`#readWhole`), where the gateway says how long it is, which both gateways do; an answer that
-   * says nothing, a gateway's from before they said it, is read as it always was, in no room.
+   * The delivery record of an entry, as the edge reads it; `undefined` when there is none. Given up
+   * past `RECORD_READ_DEADLINE_MS`, and called off once `signal` aborts: either, its body and all.
+   * Read whole in room of its own, as an artifact is (`#readWhole`), where the gateway says how long
+   * it is, which both gateways do; an answer that says nothing, a gateway's from before they said
+   * it, is read as it always was, in no room.
    */
-  async readRecord(entryId: string, signal?: AbortSignal): Promise<Uint8Array | undefined> {
-    const response = await this.#send(
-      `/entries/${entryId}/record`,
-      { method: 'GET', headers: this.#headers(), ...(signal !== undefined && { signal }) },
-      true,
-    );
-    if (response.status === HTTP_NOT_FOUND) {
-      await response.body?.cancel();
-      return undefined;
-    }
-    if (!response.ok) {
-      await this.#throwFailure(response);
-    }
-    if (saidLength(response) === undefined) {
-      return new Uint8Array(await response.arrayBuffer());
-    }
-    const room = new ArtifactRoom(this.#reading);
-    return this.#readWhole(response, signal ?? new AbortController().signal, room);
+  readRecord(entryId: string, signal?: AbortSignal): Promise<Uint8Array | undefined> {
+    return readWithin('record read', RECORD_READ_DEADLINE_MS, async (deadline) => {
+      const asked = signal === undefined ? deadline : AbortSignal.any([signal, deadline]);
+      const response = await this.#send(
+        `/entries/${entryId}/record`,
+        { method: 'GET', headers: this.#headers(), signal: asked },
+        true,
+      );
+      if (response.status === HTTP_NOT_FOUND) {
+        await response.body?.cancel();
+        return;
+      }
+      if (!response.ok) {
+        await this.#throwFailure(response);
+      }
+      if (saidLength(response) === undefined) {
+        return new Uint8Array(await response.arrayBuffer());
+      }
+      return this.#readWhole(response, asked, new ArtifactRoom(this.#reading));
+    });
   }
 
   /**
