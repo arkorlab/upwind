@@ -129,6 +129,11 @@ export interface WrittenRecord {
 export interface WantedRecords {
   readonly wants: (entryId: string, bytes: number) => boolean;
   readonly records: Map<string, WrittenRecord>;
+  /**
+   * The run's token in the isolate's room, which its chunks wait under and what it keeps is charged
+   * to: what a run keeps never holds its own next chunk back (`projection-memory.ts`).
+   */
+  readonly run: symbol;
 }
 
 /**
@@ -393,8 +398,10 @@ async function projectPage(
   let reached = 0;
   while (reached < entries.length) {
     const chunk = projectionChunk(deps, entries, reached, writing);
-    failed += await withProjectionMemory(chunk.bytes, () =>
-      projectChunk(deps, chunk.entries, writing, out),
+    failed += await withProjectionMemory(
+      chunk.bytes,
+      () => projectChunk(deps, chunk.entries, writing, out),
+      writing.wanted?.run,
     );
     reached += chunk.entries.length;
     if (stop()) {

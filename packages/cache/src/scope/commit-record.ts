@@ -34,19 +34,22 @@ export interface CommitRecords extends WantedRecords {
  * broad invalidation say, holds none of theirs past its write. The entry is named once the commit
  * has published (`entryOf`). A record it wants outlives the chunk that built it, until the commit
  * is answered with it: its bytes are charged to the isolate's room as it is wanted, while that
- * chunk still holds its own, and until the commit lets them go (`release`).
+ * chunk still holds its own, and until the commit lets them go (`release`) — charged to the
+ * commit's own run (`WantedRecords.run`), the one settle run that writes what it wants.
  */
 export function wantedRecords(entryOf: () => string | undefined): CommitRecords {
   const kept: (() => void)[] = [];
+  const run = Symbol('commit');
   return {
     wants: (entryId, bytes) => {
       if (bytes > MAX_RETURNED_RECORD_BYTES || entryId !== entryOf()) {
         return false;
       }
-      kept.push(retain(bytes));
+      kept.push(retain(bytes, run));
       return true;
     },
     records: new Map(),
+    run,
     release: () => {
       for (const letGo of kept.splice(0)) {
         letGo();

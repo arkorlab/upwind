@@ -142,7 +142,7 @@ describe('the memory an isolate builds records in', () => {
    */
   it('counts a kept record against what is let in beside a chunk, until it is let go', async () => {
     vi.useFakeTimers();
-    const letGo = retain(KEPT_BYTES);
+    const letGo = retain(KEPT_BYTES, Symbol('kept'));
     const built: string[] = [];
     const held = Promise.withResolvers<undefined>();
 
@@ -169,27 +169,151 @@ describe('the memory an isolate builds records in', () => {
   });
 
   /**
-   * What runs keep goes only as those runs go on, and one of them may be the run waiting: a chunk
-   * that would build alone is let in however much is kept, and every run goes on.
+   * Beside a chunk building, which gives its room back whatever is kept, what a run keeps counts
+   * though that run is waiting for room: its own chunk waits for the room it leaves, and builds
+   * alone once the chunk ahead of it is over.
    */
-  it('lets a chunk build alone however much runs keep', async () => {
+  it('counts what a waiting run keeps against what is let in beside a chunk', async () => {
     vi.useFakeTimers();
-    const letGo = retain(PROJECTION_MEMORY_BYTES);
-    let built = false;
+    const run = Symbol('waiting');
+    const letGo = retain(KEPT_BYTES, run);
+    const built: string[] = [];
+    const held = Promise.withResolvers<undefined>();
 
-    await withProjectionMemory(PROJECTION_MEMORY_BYTES, () => {
-      built = true;
-      return Promise.resolve();
-    });
+    const chunks = [
+      withProjectionMemory(PROJECTION_MEMORY_BYTES - KEPT_BYTES, async () => {
+        built.push('building');
+        await held.promise;
+      }),
+      withProjectionMemory(
+        1,
+        () => {
+          built.push('its own');
+          return Promise.resolve();
+        },
+        run,
+      ),
+    ];
+    await vi.advanceTimersByTimeAsync(1000);
+    const whileBuilding = [...built];
+    held.resolve(undefined);
+    await vi.advanceTimersByTimeAsync(1000);
+    await Promise.all(chunks);
     letGo();
 
-    expect(built).toBe(true);
+    expect(whileBuilding).toStrictEqual(['building']);
+    expect(built).toStrictEqual(['building', 'its own']);
   });
 
-  /** A record an object kept when it was reset is renewed no more, and its room lapses with it. */
+  /**
+   * What a run not waiting for room keeps goes as that run goes on, which needs no room: a chunk
+   * that would build alone waits for it where it leaves the chunk no room, as long as it is kept,
+   * and what several runs keep counts together.
+   */
+  it('holds a chunk that would build alone back for what other runs keep, until it goes', async () => {
+    vi.useFakeTimers();
+    const letGoOne = retain(KEPT_BYTES, Symbol('one'));
+    const letGoOther = retain(KEPT_BYTES, Symbol('other'));
+    let built = false;
+
+    const chunk = withProjectionMemory(
+      PROJECTION_MEMORY_BYTES - KEPT_BYTES,
+      () => {
+        built = true;
+        return Promise.resolve();
+      },
+      Symbol('alone'),
+    );
+    await vi.advanceTimersByTimeAsync(1000);
+    const whileBothAreKept = built;
+    letGoOne();
+    await vi.advanceTimersByTimeAsync(1000);
+    const onceOneGoes = built;
+    letGoOther();
+    await vi.advanceTimersByTimeAsync(1000);
+    await chunk;
+
+    expect(whileBothAreKept).toBe(false);
+    expect(onceOneGoes).toBe(true);
+  });
+
+  /**
+   * What a run keeps goes only as that run goes on, which it does only once its next chunk is let
+   * in: that chunk is let in alone however much its own run keeps.
+   */
+  it('lets the chunk of a run build alone however much that run keeps', async () => {
+    vi.useFakeTimers();
+    const run = Symbol('run');
+    const letGo = retain(PROJECTION_MEMORY_BYTES, run);
+    let built = false;
+
+    const chunk = withProjectionMemory(
+      PROJECTION_MEMORY_BYTES,
+      () => {
+        built = true;
+        return Promise.resolve();
+      },
+      run,
+    );
+    await vi.advanceTimersByTimeAsync(1000);
+    const whileKept = built;
+    letGo();
+    await vi.advanceTimersByTimeAsync(1000);
+    await chunk;
+
+    expect(whileKept).toBe(true);
+  });
+
+  /**
+   * Two runs that each keep a record and wait for room, the first in line with no room beside what
+   * the other keeps: counted, the other's record would hold the first back until the other run went
+   * on, and that run waits behind it. Neither holds the other back, and each builds in its turn.
+   */
+  it('lets the first of two runs that each keep a record and wait build, then the other', async () => {
+    vi.useFakeTimers();
+    const built: string[] = [];
+    // A chunk of a third run takes the whole of it, so that both runs wait.
+    const ahead = Promise.withResolvers<undefined>();
+    const first = withProjectionMemory(PROJECTION_MEMORY_BYTES, () => ahead.promise);
+    const runs = { one: Symbol('one'), other: Symbol('other') };
+    const letGoOne = retain(KEPT_BYTES, runs.one);
+    const letGoOther = retain(KEPT_BYTES, runs.other);
+    // Each run lets its record go as it goes on, once its chunk has built.
+    const chunkOf = (name: 'one' | 'other', letGo: () => void): Promise<void> => {
+      return withProjectionMemory(
+        PROJECTION_MEMORY_BYTES,
+        () => {
+          built.push(name);
+          letGo();
+          return Promise.resolve();
+        },
+        runs[name],
+      );
+    };
+
+    const chunks = [chunkOf('one', letGoOne), chunkOf('other', letGoOther)];
+    await vi.advanceTimersByTimeAsync(1000);
+    const whileAheadBuilds = [...built];
+    ahead.resolve(undefined);
+    await vi.advanceTimersByTimeAsync(1000);
+    const onceAheadIsOver = [...built];
+    // Whatever is still kept is let go of, so that every chunk ends either way.
+    letGoOne();
+    letGoOther();
+    await vi.advanceTimersByTimeAsync(1000);
+    await Promise.all([first, ...chunks]);
+
+    expect(whileAheadBuilds).toStrictEqual([]);
+    expect(onceAheadIsOver).toStrictEqual(['one', 'other']);
+  });
+
+  /**
+   * A record an object kept when it was reset is renewed no more, and its room lapses with it: until
+   * then it holds back even a chunk that would build alone, as its run is not waiting for room.
+   */
   it('takes back the room of a record whose object was reset as it kept it', async () => {
     vi.useFakeTimers();
-    retain(PROJECTION_MEMORY_BYTES);
+    retain(PROJECTION_MEMORY_BYTES, Symbol('reset'));
     // Its object reset: the timer that renewed its claim never fires again.
     vi.clearAllTimers();
     const built: string[] = [];
@@ -212,7 +336,7 @@ describe('the memory an isolate builds records in', () => {
     held.resolve(undefined);
     await Promise.all(chunks);
 
-    expect(beforeLapse).toStrictEqual(['building']);
+    expect(beforeLapse).toStrictEqual([]);
     expect(afterLapse).toStrictEqual(['building', 'beside']);
   });
 });
