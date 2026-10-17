@@ -2,7 +2,7 @@
 export const PROTOCOL = 2;
 export const TARGETS = {
   vercel: 'https://stayingupwind.vercel.app/',
-  arkor: 'https://arkorlab-upwind.arkor.app/',
+  arkor: 'https://www.stayingupwind.com/',
 } as const;
 
 export const SETTINGS = {

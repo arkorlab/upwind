@@ -29,6 +29,7 @@
     "./paas": "./src/paas/index.ts",
     "./request": "./src/request/index.ts",
     "./schema": "./src/schema/index.ts",
+    "./source-archive": "./src/source-archive.ts",
     "./util": "./src/util/index.ts"
   },
   "scripts": {
