@@ -477,19 +477,22 @@ async function build(fixture: Fixture, version: string, keep: boolean): Promise<
     manifest.dependencies['next'] = version;
     await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
-    await run(process.execPath, [await npmCli(), 'install', '--no-audit', '--no-fund'], app);
-    if (fixture.name === 'next-external-output') {
-      // Next.js permits a sibling distDir inside a containing workspace. Declare it after the
-      // isolated install, so npm does not hoist dependencies out of the app nextBin() names.
+    const installDir = fixture.name === 'next-external-output' ? work : app;
+    if (installDir === work) {
+      // Both the application and its sibling build output resolve dependencies from this real
+      // npm workspace. Its marker also gives Next.js the boundary for the external distDir.
       await writeFile(
         path.join(work, MANIFEST),
         `${JSON.stringify({ private: true, workspaces: [fixture.name] }, null, 2)}\n`,
       );
     }
+    await run(process.execPath, [await npmCli(), 'install', '--no-audit', '--no-fund'], installDir);
     // Next.js's own entry under this Node, rather than the launcher npm wrote into `.bin`: that
     // one is a shell script on Unix and a `.cmd` on Windows, and `execFile` runs neither without
     // a shell. The file below is the same JavaScript both of them end up running.
-    await run(process.execPath, [nextBin(app), 'build'], app, { NEXT_ADAPTER_PATH: ADAPTER });
+    await run(process.execPath, [nextBin(installDir), 'build'], app, {
+      NEXT_ADAPTER_PATH: ADAPTER,
+    });
     return { fixture: fixture.name, version, problems: await checkOutput(fixture, app) };
   } catch (error) {
     return { fixture: fixture.name, version, problems: explain(error) };
