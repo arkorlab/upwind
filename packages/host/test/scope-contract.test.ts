@@ -4,9 +4,11 @@ import { describe, expect, it } from 'vitest';
 import {
   listResourceWarmJobsResultSchema,
   MAX_RESOURCE_WARM_JOBS,
+  MAX_SEED_BATCH,
   MAX_SEED_OUTPUT_ARTIFACTS,
   MAX_SEED_OUTPUTS,
   seedEntriesInputSchema,
+  seedEntriesResultSchema,
   seedScopeResultSchema,
 } from '../src/cache/scope-contract.ts';
 
@@ -58,6 +60,32 @@ describe('the warm jobs one call leases', () => {
     expect(
       listResourceWarmJobsResultSchema.safeParse(answer(MAX_RESOURCE_WARM_JOBS + 1)).success,
     ).toBe(false);
+  });
+});
+
+/** A seed batch's answer that leaves `count` of its entries unseeded. */
+function refusing(count: number) {
+  return {
+    inserted: 0,
+    skipped: 0,
+    refused: Array.from({ length: count }, (_, index) => {
+      return {
+        descriptor: { kind: 'app-page', route: '/[slug]', pathname: `/${index}` },
+        reason: 'no record of it could be written',
+      };
+    }),
+    revision: 1,
+  };
+}
+
+describe('the entries one seed batch leaves unseeded', () => {
+  it('come to as many as a batch may hold', () => {
+    expect(seedEntriesResultSchema.safeParse(refusing(MAX_SEED_BATCH)).success).toBe(true);
+  });
+
+  /** Each is an entry the batch held, and a batch holds no more than `MAX_SEED_BATCH`. */
+  it('come to no more than a batch may hold', () => {
+    expect(seedEntriesResultSchema.safeParse(refusing(MAX_SEED_BATCH + 1)).success).toBe(false);
   });
 });
 
