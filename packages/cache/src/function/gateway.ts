@@ -2,6 +2,7 @@ import { sha256Hex } from '@stayingupwind/core/artifact';
 import { TEST_CLOCK_HEADER } from '@stayingupwind/core/paas';
 import { isDeadlineError, releaseStream, toBase64, withDeadline } from '@stayingupwind/core/util';
 import {
+  answersTheTags,
   ARTIFACT_ENCODING_HEADER,
   ARTIFACT_ROLE_HEADER,
   CACHE_SCOPE_HEADER,
@@ -535,7 +536,14 @@ export class Gateway {
         },
         true,
       );
-      return this.#result(response, tagsGetResponseSchema);
+      const answer = await this.#result(response, tagsGetResponseSchema);
+      if (!answersTheTags(tags, answer)) {
+        throw new CacheHostError('the tag read was answered of a tag it did not ask about', {
+          code: 'internal',
+          status: response.status,
+        });
+      }
+      return answer;
     });
   }
 
