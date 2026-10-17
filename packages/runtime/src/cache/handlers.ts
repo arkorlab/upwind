@@ -31,9 +31,7 @@ import type { DataEntryMetadata, InvalidateOutcome } from './host.ts';
 import {
   fetchedAgainBehind,
   holdForRevalidation,
-  holdForUseCacheRevalidation,
   revalidated,
-  revalidatedBehind,
   useCacheStore,
 } from './revalidations.ts';
 import type { CacheRuntime } from './runtime.ts';
@@ -549,16 +547,16 @@ async function getUseCache(
   const { entry } = judged.held;
   const { validity } = judged;
   const ageMs = nowMs() - entry.timestamp;
-  // A regeneration must rebuild from fresh data even when Next's request store permits SWR.
+  // Next's built-in default and remote handlers miss strictly after revalidate in production.
   if (
     validity === 'expired' ||
     (validity === 'stale' && (isRegeneration() || isPrimaryResourceRead())) ||
-    (ageMs > entry.revalidate * MS_PER_SECOND && isRegeneration())
+    ageMs > entry.revalidate * MS_PER_SECOND
   ) {
     return undefined;
   }
-  if (revalidatedBehind(validity, ageMs, entry.revalidate, entry.expire)) {
-    holdForUseCacheRevalidation(runtime, request, judged, weighing);
+  if (validity === 'stale' && ageMs <= entry.expire * MS_PER_SECOND) {
+    holdForRevalidation(runtime, useCacheStore(kind), cacheKey);
   }
   return {
     value: new Blob([judged.held.bytes as BlobPart]).stream(),
