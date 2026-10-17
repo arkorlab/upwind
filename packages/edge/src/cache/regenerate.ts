@@ -170,7 +170,7 @@ export interface DetachedRegeneration {
    * Write the point of the request it was asked behind once the regeneration has been answered or
    * has failed, with its dispatches among the point's `subrequests` — one, or two where the Worker
    * first asked named another: behind the response, held as the regeneration is, though no longer
-   * than `DETACHED_ANSWER_WAIT_MS`.
+   * than `DETACHED_ANSWER_WAIT_MS`, with those it has made by then.
    */
   readonly record: (point: EdgeMetric) => void;
 }
@@ -179,23 +179,29 @@ export interface DetachedRegeneration {
  * How long the point of the request a regeneration was asked behind waits for that regeneration's
  * answer. A Worker that never answers would otherwise cost the point of a request answered long
  * before, past the time its context lets work go on behind it: the point is written then with the
- * request that went out counted, one, as the Worker first asked has not said it named another.
+ * requests that have gone out by then counted — the Worker first asked, and the one it named where
+ * it has named another (`dispatchesMade`).
  */
 export const DETACHED_ANSWER_WAIT_MS = 5000;
 
-/** The dispatches a detached regeneration made, as far as its answer within the wait says. */
-async function dispatchesWithin(asked: Promise<number>): Promise<number> {
+/** Wait for a detached regeneration's answer, though no longer than `DETACHED_ANSWER_WAIT_MS`. */
+async function answeredWithin(answered: Promise<void>): Promise<void> {
   try {
-    return await withDeadline(asked, DETACHED_ANSWER_WAIT_MS, 'detached regeneration answer');
+    await withDeadline(answered, DETACHED_ANSWER_WAIT_MS, 'detached regeneration answer');
   } catch {
-    // Still out: the request went out, and nothing has said yet that it was sent on.
-    return 1;
+    // Still out: what it has asked so far is what is counted.
   }
 }
 
-/** Ask, and say what was asked of the application's Workers: nothing where nothing went out. */
-async function askDetached(edge: EdgeContext, input: DispatchInput): Promise<number> {
-  let asked = 0;
+/**
+ * Ask, and hand `asked`, as the request goes out, what reads how much it has asked of the
+ * application's Workers so far.
+ */
+async function askDetached(
+  edge: EdgeContext,
+  input: DispatchInput,
+  asked: (soFar: () => number) => void,
+): Promise<void> {
   try {
     const response = await handlePassthrough({
       request: keptPastTheVisitor(input.request),
@@ -207,9 +213,7 @@ async function askDetached(edge: EdgeContext, input: DispatchInput): Promise<num
       reason: 'regenerate-detached',
       middleware: input.middleware,
       headers: regenerationHeaders(edge, 'detached', input.target),
-      onAsked: (dispatches) => {
-        asked = dispatches;
-      },
+      onAsked: asked,
     });
     releaseStream(response.body, 'detached regeneration answered');
   } catch (error) {
@@ -218,7 +222,6 @@ async function askDetached(edge: EdgeContext, input: DispatchInput): Promise<num
       detail: error instanceof Error ? error.message : String(error),
     });
   }
-  return asked;
 }
 
 /**
@@ -226,13 +229,18 @@ async function askDetached(edge: EdgeContext, input: DispatchInput): Promise<num
  * request it was asked behind (`DetachedRegeneration`).
  */
 export function triggerDetached(edge: EdgeContext, input: DispatchInput): DetachedRegeneration {
-  const asked = askDetached(edge, input);
-  edge.ctx.waitUntil(asked);
+  // Never handed where the request never went out: nothing was asked.
+  let soFar: (() => number) | undefined;
+  const answered = askDetached(edge, input, (reader) => {
+    soFar = reader;
+  });
+  edge.ctx.waitUntil(answered);
   return {
     record: (point) => {
       edge.ctx.waitUntil(
         (async (): Promise<void> => {
-          const dispatches = await dispatchesWithin(asked);
+          await answeredWithin(answered);
+          const dispatches = soFar?.() ?? 0;
           observeMetric(edge.host, { ...point, subrequests: point.subrequests + dispatches });
         })(),
       );

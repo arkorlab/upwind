@@ -38,6 +38,7 @@ import {
   type Dispatched,
   dispatchedOf,
   dispatchedSoFar,
+  dispatchesMade,
   fetchUpstream,
   functionOfRequest,
   MisroutedError,
@@ -215,11 +216,12 @@ export interface PassthroughInput {
   /** Absent where the request never reached a project, and there is nothing to attribute. */
   readonly metrics?: PassthroughMetrics | undefined;
   /**
-   * Told what the request asked of the application's Workers, as a point counts it, where it writes
-   * none of its own: a regeneration asked behind another request's answer, whose point counts it
-   * (`triggerDetached`).
+   * Told, as the request goes out, how to read what it has asked of the application's Workers so
+   * far, as a point counts it (`dispatchesMade`), where it writes none of its own: a regeneration
+   * asked behind another request's answer, whose point counts it however far it has got when that
+   * point is written — answered, or not yet (`triggerDetached`).
    */
-  readonly onAsked?: ((dispatches: number) => void) | undefined;
+  readonly onAsked?: ((soFar: () => number) => void) | undefined;
 }
 
 /** The router prefetches Next.js's client sends (`next-router-prefetch`), by the number it uses. */
@@ -251,7 +253,6 @@ function reportPassthrough(
 ): void {
   // The Workers asked: the one sent to, and the one it was sent on to where that named another.
   const asked = dispatched?.redispatched === true ? 2 : 1;
-  input.onAsked?.(asked);
   const { metrics } = input;
   if (metrics === undefined) {
     return;
@@ -439,6 +440,7 @@ export async function handlePassthrough(input: PassthroughInput): Promise<Respon
   const fn = input.function ?? functionOfRequest(input.app, input.manifest, originRequest);
   const startedAt = input.runtime.now();
   const pending = fetchUpstream(input.runtime, input.app, originRequest, fn);
+  input.onAsked?.(() => dispatchesMade(pending));
   let originResponse: Response;
   try {
     originResponse = await pending;
