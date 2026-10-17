@@ -35,6 +35,10 @@ export type Apply<T> = () => T;
  * its transaction for each of the things a request names. A request may name thousands, and a plan
  * that began a digest or a read of storage for each at once would hold every one of them out
  * together; a chunk begins once the one before it has answered.
+ *
+ * A chunk one of which fails is failed once the rest of it has answered too, with the first failure
+ * in its order. A plan runs under the scope's lock, which its failure lets go of: failed at once, the
+ * calls still out would go on beside the next plan's, past the bound.
  */
 export async function inChunks<T, U>(
   items: readonly T[],
@@ -44,7 +48,13 @@ export async function inChunks<T, U>(
   const answers: U[] = [];
   for (let offset = 0; offset < items.length; offset += size) {
     const chunk = items.slice(offset, offset + size);
-    answers.push(...(await Promise.all(chunk.map(async (item) => each(item)))));
+    const settled = await Promise.allSettled(chunk.map(async (item) => each(item)));
+    for (const answer of settled) {
+      if (answer.status === 'rejected') {
+        throw answer.reason;
+      }
+      answers.push(answer.value);
+    }
   }
   return answers;
 }
