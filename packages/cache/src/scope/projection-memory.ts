@@ -9,23 +9,22 @@
  * woken by the chunk that gives the room back: the runtime refuses to settle one object's promise
  * from another's ("Cannot perform I/O on behalf of a different Durable Object"), and the waiting run
  * would never go on. An object can be reset while its run waits or builds, and the code after its
- * `await` then never runs: a claim nothing has been heard of for long enough lapses, rather than
- * holding the isolate's room for good.
+ * `await` then never runs. So a claim is renewed by its own object for as long as it waits or
+ * builds — as it asks again, and on a timer of its own as it builds — and lapses once nothing has
+ * renewed it for a while: a reset object's claim does not hold the isolate's room for good, and a
+ * build that takes long, a storage read that does not answer say, holds its room while it runs.
  */
 
 const KIB = 1024;
 const PROJECTION_MEMORY_MIB = 48;
 /** Leave room in the 128 MiB isolate for scope state, other requests and a returned commit record. */
 export const PROJECTION_MEMORY_BYTES = PROJECTION_MEMORY_MIB * KIB * KIB;
-/** How often a chunk waiting for room asks again. */
+/** How often a chunk waiting for room asks again, which renews its claim. */
 const ASK_AGAIN_MS = 20;
-/** How long a waiting chunk keeps its place without asking again: past it, its object is gone. */
-const WAITING_LAPSE_MS = 5000;
-/**
- * How long a chunk's room is held without word from it: far past what a chunk's reads and writes
- * take, so that it is taken back from an object reset while it built, and from no other.
- */
-const BUILDING_LAPSE_MS = 60_000;
+/** How often a building chunk's object renews its claim. */
+const RENEW_MS = 1000;
+/** How long a claim lasts without its object renewing it: past it, that object is gone. */
+const CLAIM_LAPSE_MS = 5000;
 
 /** A chunk's claim on the isolate's room: the bytes, whether it builds yet, and until when it holds. */
 interface Claim {
@@ -38,19 +37,26 @@ interface Claim {
 const claims: Claim[] = [];
 
 /**
+ * Renew `claim`, as its own object's work. A claim that lapsed while its object still waits or
+ * builds — its timers held up past the lapse — is counted again, as one made last.
+ */
+function renew(claim: Claim): void {
+  claim.until = Date.now() + CLAIM_LAPSE_MS;
+  if (!claims.includes(claim)) {
+    claims.push(claim);
+  }
+}
+
+/**
  * Whether `claim` may begin at `now`: it is the first that waits, and there is room for it beside
  * the chunks building. A claim takes the whole budget at the most, so one alone always has room.
- * What has lapsed is let go of first; a claim that lapsed while its run still waits is made again,
- * last.
+ * What has lapsed is let go of first.
  */
 function admits(claim: Claim, now: number): boolean {
   for (let index = claims.length - 1; index >= 0; index -= 1) {
     if ((claims[index]?.until ?? now) <= now) {
       claims.splice(index, 1);
     }
-  }
-  if (!claims.includes(claim)) {
-    claims.push(claim);
   }
   let taken = 0;
   for (const other of claims) {
@@ -78,11 +84,11 @@ export async function withProjectionMemory<T>(bytes: number, build: () => Promis
     building: false,
     until: 0,
   };
+  let renewal: ReturnType<typeof setInterval> | undefined;
   try {
     for (;;) {
-      const now = Date.now();
-      claim.until = now + WAITING_LAPSE_MS;
-      if (admits(claim, now)) {
+      renew(claim);
+      if (admits(claim, Date.now())) {
         break;
       }
       await new Promise((resolve) => {
@@ -90,9 +96,16 @@ export async function withProjectionMemory<T>(bytes: number, build: () => Promis
       });
     }
     claim.building = true;
-    claim.until = Date.now() + BUILDING_LAPSE_MS;
+    renew(claim);
+    renewal = setInterval(() => {
+      renew(claim);
+    }, RENEW_MS);
     return await build();
   } finally {
+    // Cleared by the object that set it, as its build ends: a timer is its own object's.
+    if (renewal !== undefined) {
+      clearInterval(renewal);
+    }
     const at = claims.indexOf(claim);
     if (at !== -1) {
       claims.splice(at, 1);
