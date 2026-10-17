@@ -111,6 +111,8 @@ interface DynamicRouteTable {
 }
 
 const dynamicRouteTables = new WeakMap<readonly DynamicRoute[], DynamicRouteTable>();
+/** The same tables with each pattern matched without regard to case (`routedDynamicRouteFor`). */
+const caselessRouteTables = new WeakMap<readonly DynamicRoute[], DynamicRouteTable>();
 
 /**
  * Whether only a pathname that spells a data marker can match the route: proved of its pattern
@@ -127,19 +129,23 @@ function matchesOnlyData(compiled: CompiledRule<DynamicRoute>): boolean {
 /**
  * The routes a pathname is asked of, in Next.js's order: every one, for a pathname that spells a
  * data marker; for any other — every page a visitor navigates to — all but the routes it cannot
- * match, which finds the same first match without asking those.
+ * match, which finds the same first match without asking those. Matched without regard to case
+ * (`caseless`), a pattern holds for a marker spelled in any case, and the pathname is read so.
  */
 function dynamicRoutesFor(
   routes: readonly DynamicRoute[],
   pathname: string,
+  caseless = false,
 ): readonly CompiledRule<DynamicRoute>[] {
-  let table = dynamicRouteTables.get(routes);
+  const tables = caseless ? caselessRouteTables : dynamicRouteTables;
+  let table = tables.get(routes);
   if (table === undefined) {
-    const all = compiledRules(routes);
+    const all = compiledRules(routes, caseless ? 'i' : '');
     table = { all, pages: all.filter((compiled) => !matchesOnlyData(compiled)) };
-    dynamicRouteTables.set(routes, table);
+    tables.set(routes, table);
   }
-  return DATA_ROUTE_MARKERS.some((marker) => pathname.includes(marker)) ? table.all : table.pages;
+  const spelled = caseless ? pathname.toLowerCase() : pathname;
+  return DATA_ROUTE_MARKERS.some((marker) => spelled.includes(marker)) ? table.all : table.pages;
 }
 
 /**
@@ -327,6 +333,29 @@ export function dynamicRouteFor(
 }
 
 /**
+ * The dynamic route the deployment's router resolves a pathname to, as it matches them: the first
+ * whose pattern holds without regard to case — the runtime leaves `@next/routing`'s
+ * `caseSensitive` unset — and whose conditions hold, one trailing slash admitted. Where the edge
+ * hands a class's shell only to the spelling it was built for (`dynamicRouteFor`), the router
+ * resolves `/POSTS/a` to `/posts/[slug]` all the same. No rule of `next.config` is asked here: what
+ * claims the request ahead of the dynamic routes is the reader's to ask. `undefined` for none, and
+ * for a pathname the edge leaves alone (`isCanonicalPathname`).
+ */
+export function routedDynamicRouteFor(
+  manifest: ProjectManifest,
+  url: URL,
+  headers: Headers,
+): DynamicRoute | undefined {
+  if (manifest.dynamicRoutes === undefined || !isCanonicalPathname(url.pathname, true)) {
+    return undefined;
+  }
+  const { pathname } = url;
+  return dynamicRoutesFor(manifest.dynamicRoutes, pathname, true).find(
+    (compiled) => patternMatches(compiled, pathname) && conditionsHold(compiled.rule, url, headers),
+  )?.rule;
+}
+
+/**
  * Whether a redirect or a rewrite from `next.config` claims a pathname before the edge could:
  * before the dynamic routes, or — `beforeFilesOnly` — before the filesystem, which is what a
  * shipped file's path has to clear.
@@ -365,6 +394,20 @@ function assetPrefixLanding(manifest: ProjectManifest, url: URL): URL | undefine
   const landed = new URL(url.href);
   landed.pathname = pathname;
   return landed;
+}
+
+/** A base path as a pattern matches it: every character as itself. */
+function escapedBasePath(basePath: string): string {
+  return basePath.replaceAll(/[$()*+.?[\\\]^{|}]/gu, String.raw`\$&`);
+}
+
+/**
+ * The pattern of Next.js's own namespace under a base path, `<basePath>/_next/`, which the edge
+ * reserves its dynamic routes from (`nextNamespaceRoutes`) and the router does not: a reader that
+ * follows the router rather than the edge tells the reservation apart by it.
+ */
+export function nextNamespacePattern(basePath: string): string {
+  return `^${escapedBasePath(basePath)}/_next/`;
 }
 
 /**

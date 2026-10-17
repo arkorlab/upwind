@@ -1,6 +1,6 @@
 import { canonicalJson, sha256HexOfText } from '../artifact/hash.ts';
 import { MAX_IMMUTABLE_ASSET_BYTES } from '../assets/admission.ts';
-import type { RouterReferences } from '../bundle/carried.ts';
+import type { RouteGates, RouterReferences } from '../bundle/carried.ts';
 import type { DeploymentFingerprint } from '../deployment/fingerprint.ts';
 import type { ImagesConfig } from '../images/config.ts';
 import { compareCodeUnits } from '../util/bytes.ts';
@@ -87,6 +87,10 @@ export interface BuildProjectManifestInput {
    * holds them: the manifest names where (`pagesDataPrefix`, `pagesDataBasePath`) from these.
    */
   readonly pagesDataUnder?: { readonly basePath: string; readonly buildId: string } | undefined;
+  /** The routes the build declared a gate for, each with the name of its gate. */
+  readonly gates?: RouteGates | undefined;
+  /** The pathnames Next.js resolves exactly that are of a gated route, each with that route. */
+  readonly gatedPathnames?: Readonly<Record<string, string>> | undefined;
   readonly cache?: ManifestCache | undefined;
 }
 
@@ -203,6 +207,66 @@ function pagesDataFields(
   };
 }
 
+/** The routes the manifest finds a request of by its exact pathname, and by a dynamic route. */
+function gatedBy(input: BuildProjectManifestInput): {
+  readonly exact: readonly string[];
+  readonly dynamic: readonly string[];
+} {
+  return {
+    exact: Object.values(input.gatedPathnames ?? {}),
+    dynamic: (input.dynamicRoutes ?? []).flatMap((route) =>
+      route.gated === undefined ? [] : [route.gated],
+    ),
+  };
+}
+
+/**
+ * What is wrong with what the manifest says of gates, if anything: a `gates` that declares none; a
+ * gate beside a middleware, whose rewrites the Function runs for every request the edge hands on,
+ * onto a gated route among them, with no gate asked (`gateIssues` refuses the bundle so); a route a
+ * pathname or a dynamic route is said to be of (`gatedPathnames`, `DynamicRoute.gated`) that
+ * `gates` declares no gate for, whose requests the edge would find a route and no gate to ask of;
+ * and a declared gate nothing finds a request of the route by — a route's own pathname, or for a
+ * class of them, a dynamic route — whose every request the edge would serve as one with no gate.
+ * A manifest like that is refused where it is built, as one naming an unreachable Function is.
+ */
+function ungatedRoutes(input: BuildProjectManifestInput): string | undefined {
+  const { gates } = input;
+  if (gates !== undefined && Object.keys(gates).length === 0) {
+    return 'gates declares no gate; a manifest that declares none leaves it out';
+  }
+  if (gates !== undefined && input.middleware !== undefined) {
+    return 'gates declares a gate beside a middleware, whose rewrites reach a gated route with no gate asked';
+  }
+  const { exact, dynamic } = gatedBy(input);
+  const ungated = [
+    ...new Set(
+      [...exact, ...dynamic].filter((route) => gates === undefined || !Object.hasOwn(gates, route)),
+    ),
+  ].toSorted(compareCodeUnits);
+  if (ungated.length > 0) {
+    return `routes are said to be gated that gates declares no gate for: ${ungated.join(', ')}`;
+  }
+  // A route's own name in brackets (`/[slug]`) is a class of pathnames, found by its dynamic route.
+  const unfound = Object.keys(gates ?? {}).filter((route) =>
+    route.includes('[') ? !dynamic.includes(route) : !exact.includes(route),
+  );
+  return unfound.length === 0
+    ? undefined
+    : `gates declares ${unfound.toSorted(compareCodeUnits).join(', ')}, which no pathname or dynamic route of the manifest finds a request of (gatedPathnames, DynamicRoute.gated): each would be served with no gate asked`;
+}
+
+/** The gates, and the pathnames found to be of a gated route beside them, where there are gates. */
+function gateFields(
+  input: BuildProjectManifestInput,
+): Pick<ProjectManifest, 'gates' | 'gatedPathnames'> {
+  const { gates, gatedPathnames } = input;
+  if (gates === undefined) {
+    return {};
+  }
+  return { gates, ...(gatedPathnames !== undefined && { gatedPathnames }) };
+}
+
 /** Assemble a manifest from a build's routes; validates the result against the schema. */
 export function buildProjectManifest(input: BuildProjectManifestInput): ProjectManifest {
   const unreachable = unreachableFunctions(input);
@@ -211,9 +275,9 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
       `routes are placed in ${unreachable.join(', ')}, which the manifest's app gives no name to reach by (app.functions)`,
     );
   }
-  const unaddressed = unaddressedProps(input);
-  if (unaddressed !== undefined) {
-    throw new Error(unaddressed);
+  const refused = unaddressedProps(input) ?? ungatedRoutes(input);
+  if (refused !== undefined) {
+    throw new Error(refused);
   }
   const routes: Record<string, RouteEntry> = {};
   for (const entry of input.routes) {
@@ -244,6 +308,7 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
     ...crawlerFields(input),
     ...staticFileFields(input),
     ...pagesDataFields(input),
+    ...gateFields(input),
     ...(input.cache !== undefined && { cache: input.cache }),
   });
 }
