@@ -206,13 +206,14 @@ export class DataCopies {
    * Put the copy — or, given none, let go of the one the key had — in one of the request's turns,
    * as an artifact's copy is written (`COPY_WRITES_AT_ONCE`): given back once the Cache API has
    * answered, however long the write waited for it. A put the Cache API refuses lets go of the
-   * key's copy as well, which is an earlier value's. Given the revision of the value at hand
-   * (`revision`), the copy of a later value the key holds is left as it is.
+   * key's copy as well, which is an earlier value's. Given `stands`, the copy the key holds is left
+   * as it is where the revision of its value (`keptRevision`) stands against the value at hand: a
+   * later value's, say.
    */
   async #write(
     descriptor: DataGetRequest,
     copy: KeptCopy | undefined,
-    revision?: number,
+    stands?: (kept: number) => boolean,
   ): Promise<true | undefined> {
     const turns = turnsOfRequest()?.writes;
     try {
@@ -222,7 +223,7 @@ export class DataCopies {
       try {
         const key = await this.#keyOf(descriptor);
         const cache = await this.#storage.open(this.#naming.copyCache);
-        if (revision !== undefined && (await keptRevision(cache, key)) > revision) {
+        if (stands?.(await keptRevision(cache, key)) === true) {
           return true;
         }
         if (copy === undefined) {
@@ -275,20 +276,28 @@ export class DataCopies {
    * put the Cache API refuses: that copy is an earlier value's, which a read KV answers with none
    * would be answered with though the authority holds a later one. One whose turn does not come in
    * time leaves it, as a copy not kept would; KV's answer of none it covers lasts no longer than
-   * its `cacheTtl`. Not a write the authority kept a later write of its writer over
-   * (`superseded`): the copy is that later write's to keep. Never rejects — the authority has the
-   * value already, and a copy not kept is only a render more in another isolate.
+   * its `cacheTtl`. Never rejects — the authority has the value already, and a copy not kept is
+   * only a render more in another isolate.
+   *
+   * A write the authority kept a later write of its writer over (`superseded`) keeps no copy: the
+   * copy is that later write's to keep, and is left as it is, as is one of a value later still. The
+   * answer names that write by its revision, and the copy of an earlier value goes: the later
+   * write's own copy may never have been kept — its answer lost, or its turn not come in time — and
+   * a read KV answers with none would be answered with the earlier value. The check and the removal
+   * are two calls, as `keepCurrent`'s check and put are: the later write's copy put between them
+   * goes as well, which costs a render more, and never answers with an earlier value.
    */
   async keep(request: DataSetRequest, written: DataSetResponse): Promise<void> {
-    if (written.superseded === true) {
-      return;
-    }
     const descriptor: DataGetRequest = {
       key: request.key,
       kind: request.entry.kind,
       ...(request.entry.handler !== undefined && { handler: request.entry.handler }),
     };
-    await within(this.#write(descriptor, copyOf(request, written)), DATA_COPY_WRITE_MS);
+    const write =
+      written.superseded === true
+        ? this.#write(descriptor, undefined, (kept) => kept >= written.revision)
+        : this.#write(descriptor, copyOf(request, written));
+    await within(write, DATA_COPY_WRITE_MS);
   }
 
   /**
@@ -311,7 +320,7 @@ export class DataCopies {
    */
   async keepCurrent(request: DataGetRequest, current: DataGetResponse): Promise<void> {
     await within(
-      this.#write(request, keptOf(current), current.dependencyRevision),
+      this.#write(request, keptOf(current), (kept) => kept > current.dependencyRevision),
       DATA_COPY_WRITE_MS,
     );
   }
