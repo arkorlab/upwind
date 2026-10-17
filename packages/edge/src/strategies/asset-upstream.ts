@@ -298,12 +298,70 @@ export function validatorMatches(request: Request, etag: string | null): boolean
   return candidates.has('*') || (etag !== null && candidates.has(opaqueTag(etag)));
 }
 
+/** The shape of IMF-fixdate, the form every sender generates: `Sun, 06 Nov 1994 08:49:37 GMT`. */
+const IMF_FIXDATE = /^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$/u;
+/** The obsolete RFC 850 form's, which a recipient still accepts: `Sunday, 06-Nov-94 08:49:37 GMT`. */
+const RFC_850_DATE = /^[A-Z][a-z]{5,8}, \d{2}-[A-Z][a-z]{2}-\d{2} \d{2}:\d{2}:\d{2} GMT$/u;
+/** The obsolete asctime form's, which names no zone: `Sun Nov  6 08:49:37 1994`. */
+const ASCTIME_DATE = /^[A-Z][a-z]{2} [A-Z][a-z]{2} [ \d]\d \d{2}:\d{2}:\d{2} \d{4}$/u;
+
 /**
- * Answer a conditional request when the validator matches, given the headers the edge is about to
- * send. The caller still owns the body it did not build a response around.
+ * `value` as a date in GMT, where it has the shape of an HTTP-date in one of its three forms (RFC
+ * 9110 §5.6.7), read whole: a list of two dates has none. An asctime date names no zone, and is in
+ * GMT as every HTTP-date is.
+ */
+function inGmt(value: string): string | undefined {
+  if (IMF_FIXDATE.test(value) || RFC_850_DATE.test(value)) {
+    return value;
+  }
+  return ASCTIME_DATE.test(value) ? `${value} GMT` : undefined;
+}
+
+/**
+ * The instant an HTTP-date names; `undefined` for a value that is not one — a month or a time of
+ * day that is none included — which a condition on it is then not judged by.
+ */
+function httpDateMs(value: string): number | undefined {
+  const dated = inGmt(value);
+  // eslint-disable-next-line unicorn/prefer-temporal -- Temporal is not available in the Workers runtime.
+  const parsed = dated === undefined ? NaN : Date.parse(dated);
+  return Number.isNaN(parsed) ? undefined : parsed;
+}
+
+/**
+ * Whether a request that asks by date, with no `If-None-Match`, asks of an answer last modified no
+ * later than the date it names: one the client already holds (RFC 9110 §13.1.3). Not judged where
+ * either is no HTTP-date, or the answer names no modification date: the whole answer goes, as to a
+ * request that asked nothing.
+ */
+function unmodifiedSince(request: Request, lastModified: string | null): boolean {
+  const since = request.headers.get('if-modified-since');
+  if (
+    since === null ||
+    lastModified === null ||
+    request.headers.has('if-none-match') ||
+    (request.method !== 'GET' && request.method !== 'HEAD')
+  ) {
+    return false;
+  }
+  const sinceMs = httpDateMs(since);
+  const modifiedMs = httpDateMs(lastModified);
+  return sinceMs !== undefined && modifiedMs !== undefined && modifiedMs <= sinceMs;
+}
+
+/**
+ * Answer a conditional request the client already holds the answer to, given the headers the edge
+ * is about to send: its `If-None-Match` names the tag, or, asked without one, its
+ * `If-Modified-Since` is no earlier than the `Last-Modified` (`unmodifiedSince`). These are the
+ * conditions a cache judges (RFC 9111 §4.3.2); `If-Match` and `If-Unmodified-Since` are the
+ * origin's, which a cache or intermediary may leave unjudged (RFC 9110 §13.1.1, §13.1.4). The
+ * caller still owns the body it did not build a response around.
  */
 export function notModifiedIfMatches(request: Request, headers: Headers): Response | undefined {
-  if (!validatorMatches(request, headers.get('etag'))) {
+  if (
+    !validatorMatches(request, headers.get('etag')) &&
+    !unmodifiedSince(request, headers.get('last-modified'))
+  ) {
     return undefined;
   }
   const kept = new Headers();
