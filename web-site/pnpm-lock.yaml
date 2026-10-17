@@ -15,17 +15,17 @@ importers:
     dependencies:
       next:
         specifier: ^16.4.2
-        version: 16.4.2(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+        version: 16.4.2(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.1))(react@19.3.1)
       react:
-        specifier: ^19.3.0
-        version: 19.3.0
+        specifier: ^19.3.1
+        version: 19.3.1
       react-dom:
         specifier: ^19.3.0
-        version: 19.3.0(react@19.3.0)
+        version: 19.3.0(react@19.3.1)
     devDependencies:
       '@stayingupwind/adapter':
         specifier: ^0.4.0
-        version: 0.4.0(next@16.4.2(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))
+        version: 0.4.0(next@16.4.2(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.1))(react@19.3.1))
       '@tailwindcss/postcss':
         specifier: ^4.3.3
         version: 4.3.3
@@ -46,7 +46,7 @@ importers:
         version: 7.0.2
       upwind:
         specifier: ^0.4.0
-        version: 0.4.0(@types/node@24.19.1)(next@16.4.2(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))
+        version: 0.4.0(@types/node@24.19.1)(next@16.4.2(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.1))(react@19.3.1))
 
 packages:
 
@@ -1075,8 +1075,8 @@ packages:
     peerDependencies:
       react: ^19.3.0
 
-  react@19.3.0:
-    resolution: {integrity: sha512-E8LUcbtBWt20bbl2YoHfx4ZDBdxVTfOKtCZn9cDSJ4l6/nuoApcpIBcj47t2wZoVX8g2ZHuMHbiShgCR1T5Sog==}
+  react@19.3.1:
+    resolution: {integrity: sha512-QNhWdt7nrgVWWQG58QuGsAR3jv3Hbe4mb4vz7w2csnHavciZJgda1CPNaldF6eVxv90ud3jUXpKlHL69gO38yw==}
     engines: {node: '>=0.10.0'}
 
   rolldown@1.2.13:
@@ -1544,14 +1544,14 @@ snapshots:
 
   '@speed-highlight/core@1.2.24': {}
 
-  '@stayingupwind/adapter@0.4.0(next@16.4.2(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0))':
+  '@stayingupwind/adapter@0.4.0(next@16.4.2(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.1))(react@19.3.1))':
     dependencies:
       '@jridgewell/sourcemap-codec': 1.6.0
       '@jridgewell/trace-mapping': 0.3.31
       '@stayingupwind/core': 0.4.0
       '@stayingupwind/runtime': 0.4.0
       jsonc-parser: 3.3.1
-      next: 16.4.2(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+      next: 16.4.2(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.1))(react@19.3.1)
       rolldown: 1.2.13
 
   '@stayingupwind/core@0.4.0': {}
@@ -1848,16 +1848,16 @@ snapshots:
 
   nanoid@3.3.19: {}
 
-  next@16.4.2(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0):
+  next@16.4.2(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.1))(react@19.3.1):
     dependencies:
       '@next/env': 16.4.2
       '@swc/helpers': 0.5.23
       baseline-browser-mapping: 2.11.26
       caniuse-lite: 1.0.30001812
       postcss: 8.5.23
-      react: 19.3.0
-      react-dom: 19.3.0(react@19.3.0)
-      styled-jsx: 5.1.6(react@19.3.0)
+      react: 19.3.1
+      react-dom: 19.3.0(react@19.3.1)
+      styled-jsx: 5.1.6(react@19.3.1)
     optionalDependencies:
       '@next/swc-darwin-arm64': 16.4.2
       '@next/swc-darwin-x64': 16.4.2
@@ -1891,12 +1891,12 @@ snapshots:
       picocolors: 1.1.1
       source-map-js: 1.2.2
 
-  react-dom@19.3.0(react@19.3.0):
+  react-dom@19.3.0(react@19.3.1):
     dependencies:
-      react: 19.3.0
+      react: 19.3.1
       scheduler: 0.28.0
 
-  react@19.3.0: {}
+  react@19.3.1: {}
 
   rolldown@1.2.13:
     dependencies:
@@ -1958,10 +1958,10 @@ snapshots:
 
   source-map-js@1.2.2: {}
 
-  styled-jsx@5.1.6(react@19.3.0):
+  styled-jsx@5.1.6(react@19.3.1):
     dependencies:
       client-only: 0.0.1
-      react: 19.3.0
+      react: 19.3.1
 
   supports-color@10.2.2: {}
 
@@ -2002,11 +2002,11 @@ snapshots:
     dependencies:
       pathe: 2.0.3
 
-  upwind@0.4.0(@types/node@24.19.1)(next@16.4.2(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)):
+  upwind@0.4.0(@types/node@24.19.1)(next@16.4.2(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.1))(react@19.3.1)):
     dependencies:
       '@stayingupwind/core': 0.4.0
       miniflare: 5.20261006.1-alpha(@types/node@24.19.1)
-      next: 16.4.2(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+      next: 16.4.2(@types/node@24.19.1)(react-dom@19.3.0(react@19.3.1))(react@19.3.1)
       wrangler: 4.147.0(@types/node@24.19.1)
     transitivePeerDependencies:
       - '@cloudflare/workers-types'
