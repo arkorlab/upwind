@@ -10,7 +10,9 @@ import {
   invalidateResponseSchema,
   MAX_DATA_HANDLER_LENGTH,
   MAX_DATA_KEY_LENGTH,
+  MAX_DELTA_PAGE_TAGS,
   tagDeltaEntrySchema,
+  tagsDeltaResponseSchema,
   tagsGetResponseSchema,
 } from '../src/cache/gateway-contract.ts';
 
@@ -147,6 +149,29 @@ describe("a tag read's answer", () => {
   /** A record for each tag the read named at the most, which no read names more of. */
   it('holds no more records than a read may name tags', () => {
     expect(tagsGetResponseSchema.safeParse(tagsAnswer(MAX_TAGS_PER_CALL + 1)).success).toBe(false);
+  });
+});
+
+/** A page of the delta holding `count` records, with more to follow. */
+function deltaPage(count: number) {
+  return { revision: 1, floor: 0, truncated: true, ...tagsAnswer(count) };
+}
+
+describe('a page of the delta', () => {
+  it('holds as many records as a reader may ask a page for', () => {
+    expect(tagsDeltaResponseSchema.safeParse(deltaPage(MAX_DELTA_PAGE_TAGS)).success).toBe(true);
+  });
+
+  /** One revision goes whole, however few were asked for: one invalidation's tags at the most. */
+  it('holds the tags of one invalidation whole', () => {
+    expect(MAX_TAGS_PER_CALL).toBeLessThanOrEqual(MAX_DELTA_PAGE_TAGS);
+  });
+
+  /** The rest of a longer delta is the next page's (`truncated`). */
+  it('holds no more records than a reader may ask a page for', () => {
+    expect(tagsDeltaResponseSchema.safeParse(deltaPage(MAX_DELTA_PAGE_TAGS + 1)).success).toBe(
+      false,
+    );
   });
 });
 

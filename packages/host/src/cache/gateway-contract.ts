@@ -578,13 +578,21 @@ export const tagRevisionSchema = z.object({
 });
 export type TagRevision = z.infer<typeof tagRevisionSchema>;
 
+/**
+ * The most tags a page of the delta holds: the most a reader may ask a page for (`limit`). A page
+ * ends where a revision does, and a revision that holds more tags than the page was asked for is
+ * sent whole; but the tags of one revision are those one invalidation named, `MAX_TAGS_PER_CALL`
+ * at the most, fewer than these. Past them, the rest is the next page's (`truncated`).
+ */
+export const MAX_DELTA_PAGE_TAGS = 1000;
+
 export const tagsDeltaResponseSchema = z.object({
   /** The scope's revision the delta was read at: the next `since`. */
   revision: z.number().int().nonnegative(),
   /** The oldest revision still answerable; a `since` below it means a full resync. */
   floor: z.number().int().nonnegative(),
   truncated: z.boolean(),
-  tags: z.array(tagDeltaEntrySchema),
+  tags: z.array(tagDeltaEntrySchema).max(MAX_DELTA_PAGE_TAGS),
   /** Where the scope's tags stand as the delta was read; absent from an authority that says not. */
   latest: tagRevisionSchema.optional(),
 });
