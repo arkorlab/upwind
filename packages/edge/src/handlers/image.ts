@@ -23,6 +23,7 @@ import {
 
 import type { TransformImage } from '../edge-runtime.ts';
 import { logWarn } from '../observability/logger.ts';
+import type { EdgeMetric } from '../observability/metrics.ts';
 import { validatorMatches } from '../strategies/asset-upstream.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { setConfiguredUnder } from './configured-headers.ts';
@@ -37,7 +38,7 @@ import {
   type SourceError,
   sourceLimit,
 } from './image-source.ts';
-import { transformWithin } from './image-transform.ts';
+import { transformWithin, withinBudget } from './image-transform.ts';
 import { observeMetric, observeTransformed } from './observer.ts';
 import {
   keptByNobody,
@@ -470,9 +471,17 @@ interface Outcome {
   readonly subrequests: number;
 }
 
-function record(input: ImageAnswerInput, { src, startedAt, bytes, subrequests }: Outcome): void {
+function record(input: ImageAnswerInput, outcome: Outcome): void {
+  observeMetric(input.edge.host, pointOf(input, outcome));
+}
+
+/** The answer's point, timed as it is made: written at once, or once a streamed one has ended. */
+function pointOf(
+  input: ImageAnswerInput,
+  { src, startedAt, bytes, subrequests }: Outcome,
+): EdgeMetric {
   const { edge } = input;
-  observeMetric(edge.host, {
+  return {
     projectId: edge.projectId,
     kind: 'asset',
     pathname: input.config.path,
@@ -496,52 +505,7 @@ function record(input: ImageAnswerInput, { src, startedAt, bytes, subrequests }:
     // The image's own, and the middleware's before them: every service call the answer made.
     subrequests: subrequests + (input.middlewareDispatches ?? 0),
     middlewareMs: input.middlewareMs,
-  });
-}
-
-/**
- * The rest of a result too large to hold, streamed on within what its first part left of the budget
- * it was read under: all the reads of the result together, the first part's among them, may wait on
- * it no longer than that — one budget for the whole answer, not one more for its rest. It is the
- * result's time that counts, never the client's — a read is asked for only once the client has
- * taken the last — so a client that takes its time over a large image is not cut off, and a result
- * that stops arriving, or trickles, is let go of rather than holding the response open for as long
- * as the client waits. Only a response on this path pays for it: a timer each read.
- */
-function withinBudget(
-  body: ReadableStream<Uint8Array>,
-  input: ImageInput,
-  spentOnFirstPart: number,
-): ReadableStream<Uint8Array> {
-  const { runtime } = input.edge;
-  const reader = body.getReader();
-  let spent = spentOnFirstPart;
-  return new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      const asked = runtime.now();
-      let read: ReadableStreamReadResult<Uint8Array>;
-      try {
-        // One budget in two places, as for the first part: what is left of it is the stall too.
-        read = await withDeadline(reader.read(), IMAGE_BUDGET_MS - spent, 'image result');
-      } catch (error) {
-        logWarn('image result stopped arriving', {
-          href: input.params.href,
-          detail: errorDetail(error),
-        });
-        // Not awaited: a result that stopped arriving may never acknowledge the cancel either.
-        releaseStream(reader, 'image result stopped arriving');
-        controller.error(error);
-        return;
-      }
-      spent += runtime.now() - asked;
-      if (read.done) {
-        controller.close();
-        return;
-      }
-      controller.enqueue(read.value);
-    },
-    cancel: (reason: unknown) => reader.cancel(reason),
-  });
+  };
 }
 
 function fromCache(input: ImageInput, cached: Response, startedAt: number): Response {
@@ -635,14 +599,21 @@ export async function handleImage(input: ImageInput): Promise<Response> {
     });
   };
   if (bounded.kind === 'over-limit') {
-    // Too large to hold: streamed, unhashed and uncached — and still within the budget.
-    record(input, { src: image.via, startedAt, bytes: 0, subrequests });
+    // Too large to hold: streamed, unhashed and uncached — and still within the budget. Its point
+    // is timed now and written as the stream ends, with what went out of it: none of it for an
+    // answer that carries no body, which lets the stream go unread (`respond`).
+    const point = pointOf(input, { src: image.via, startedAt, bytes: 0, subrequests });
     const headers = clientHeaders(input, headersFor(image.etag), image.via);
-    return respond(
-      input,
-      headers,
-      withinBudget(bounded.body, input, edge.runtime.now() - readFrom),
-    );
+    const streamed = withinBudget(bounded.body, {
+      runtime: edge.runtime,
+      budgetMs: IMAGE_BUDGET_MS,
+      spentOnFirstPart: edge.runtime.now() - readFrom,
+      href: params.href,
+      ended: (sent) => {
+        observeMetric(edge.host, { ...point, suffixBytes: sent });
+      },
+    });
+    return respond(input, headers, streamed);
   }
   const { bytes } = bounded;
   const etag = image.etag ?? `"${await sha256Hex(bytes)}"`;
