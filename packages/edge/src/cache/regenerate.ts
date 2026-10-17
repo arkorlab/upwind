@@ -12,7 +12,7 @@ import {
   type RegenerateMode,
   SERVED_GENERATION_HEADER,
 } from '@stayingupwind/core/paas';
-import { releaseStream } from '@stayingupwind/core/util';
+import { releaseStream, withDeadline } from '@stayingupwind/core/util';
 import type { RuntimeCacheSettings } from '@stayingupwind/host/delivery';
 
 import { observeMetric } from '../handlers/observer.ts';
@@ -169,9 +169,28 @@ export interface DetachedRegeneration {
   /**
    * Write the point of the request it was asked behind once the regeneration has been answered or
    * has failed, with its dispatches among the point's `subrequests` — one, or two where the Worker
-   * first asked named another: behind the response, held as the regeneration is.
+   * first asked named another: behind the response, held as the regeneration is, though no longer
+   * than `DETACHED_ANSWER_WAIT_MS`.
    */
   readonly record: (point: EdgeMetric) => void;
+}
+
+/**
+ * How long the point of the request a regeneration was asked behind waits for that regeneration's
+ * answer. A Worker that never answers would otherwise cost the point of a request answered long
+ * before, past the time its context lets work go on behind it: the point is written then with the
+ * request that went out counted, one, as the Worker first asked has not said it named another.
+ */
+export const DETACHED_ANSWER_WAIT_MS = 5000;
+
+/** The dispatches a detached regeneration made, as far as its answer within the wait says. */
+async function dispatchesWithin(asked: Promise<number>): Promise<number> {
+  try {
+    return await withDeadline(asked, DETACHED_ANSWER_WAIT_MS, 'detached regeneration answer');
+  } catch {
+    // Still out: the request went out, and nothing has said yet that it was sent on.
+    return 1;
+  }
 }
 
 /** Ask, and say what was asked of the application's Workers: nothing where nothing went out. */
@@ -213,7 +232,8 @@ export function triggerDetached(edge: EdgeContext, input: DispatchInput): Detach
     record: (point) => {
       edge.ctx.waitUntil(
         (async (): Promise<void> => {
-          observeMetric(edge.host, { ...point, subrequests: point.subrequests + (await asked) });
+          const dispatches = await dispatchesWithin(asked);
+          observeMetric(edge.host, { ...point, subrequests: point.subrequests + dispatches });
         })(),
       );
     },
