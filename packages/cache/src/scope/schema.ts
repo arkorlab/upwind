@@ -187,9 +187,27 @@ const STATEMENTS: readonly string[] = [
     ON invalidations (target_kind, target_id, stale_at)`,
   // And across every target: what an edge is told moved recently (`recentDelta`), down the
   // revisions past the one it names, and through when each took effect where its window is quiet.
-  // A scope keeps every invalidation it ever recorded.
+  // A scope keeps the invalidations of its history window as they are, and retention folds each
+  // tag's older ones into one row of the tag (`folded_invalidations`, below).
   `CREATE INDEX IF NOT EXISTS invalidations_by_stale_at ON invalidations (stale_at)`,
   `CREATE INDEX IF NOT EXISTS invalidations_by_revision ON invalidations (revision)`,
+  // What each tag's invalidations from before the history window come to, one row a tag
+  // (`folded-invalidations.ts`): made by the statement every object runs as it starts, so a scope
+  // made before it gains it as it is, and only retention's fold writes it (`invalidation-fold.ts`).
+  `CREATE TABLE IF NOT EXISTS folded_invalidations (
+    tag_id TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL,
+    meaning TEXT NOT NULL,
+    latest_immediate_revision INTEGER,
+    earliest_stale_at INTEGER NOT NULL,
+    latest_stale_at INTEGER NOT NULL,
+    earliest_hard_expire_at INTEGER,
+    folded INTEGER NOT NULL
+  )`,
+  // By when the latest of each took effect: what an edge whose window reaches back past the history
+  // window asks of them (`recentFolds`), read as far as that window and no further.
+  `CREATE INDEX IF NOT EXISTS folded_invalidations_by_stale_at
+    ON folded_invalidations (latest_stale_at)`,
   `CREATE TABLE IF NOT EXISTS attempts (
     attempt_id TEXT PRIMARY KEY,
     entry_id TEXT NOT NULL,

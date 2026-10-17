@@ -22,6 +22,7 @@ import {
   publishEntry,
   requireEntry,
 } from './entries.ts';
+import { foldsFrom } from './folded-invalidations.ts';
 import {
   condemnedOf,
   findGeneration,
@@ -74,6 +75,12 @@ export interface DataSetInput {
   readonly value: DataValueUpload;
   /** Where the write stands among its writer's (`writtenAfter`), when its writer says. */
   readonly order?: WriteOrder | undefined;
+  /**
+   * The value's bytes as the gateway stored them, where the value is small (its `CARRIED_VALUE_BYTES`):
+   * what the write's own settle makes the value's record of, rather than read back from storage what
+   * was stored a moment before (`CarriedValue`).
+   */
+  readonly bytes?: Uint8Array | undefined;
 }
 
 export interface DataSetOutcome {
@@ -148,22 +155,27 @@ export async function planSetData(
   };
 }
 
+/**
+ * What the invalidations of a value's tags that took effect at or after it was made leave it with.
+ * Where it was made before the history window, those retention folded are weighed as their tag's
+ * fold (`foldsFrom`).
+ */
 function dataCondemnation(sql: SqlStorage, plan: DataPlan): InvalidationState | null {
-  const privateFences = controlFenceInvalidations(sql, {
-    tagIds: plan.tagRefs.map((ref) => ref.tagId),
-    timestamp: plan.input.entry.timestamp,
-  });
+  const tagIds = plan.tagRefs.map((ref) => ref.tagId);
+  const { timestamp } = plan.input.entry;
+  const privateFences = controlFenceInvalidations(sql, { tagIds, timestamp });
   const invalidations = sql
     .exec<{ revision: number | null; stale_at: number | null; hard_expire_at: number | null }>(
       `SELECT MAX(revision) AS revision, MIN(stale_at) AS stale_at, MIN(hard_expire_at) AS hard_expire_at
       FROM invalidations WHERE target_kind = 'tag' AND target_id IN (SELECT value FROM json_each(?))
         AND stale_at >= ? HAVING COUNT(*) > 0`,
-      JSON.stringify(plan.tagRefs.map((ref) => ref.tagId)),
-      plan.input.entry.timestamp,
+      JSON.stringify(tagIds),
+      timestamp,
     )
     .toArray()[0];
   const all: { revision: number; stale_at: number; hard_expire_at: number | null }[] = [
     ...privateFences,
+    ...foldsFrom(sql, tagIds, timestamp),
   ];
   if (
     invalidations?.revision !== undefined &&

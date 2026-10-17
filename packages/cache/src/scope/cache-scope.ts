@@ -38,9 +38,9 @@ import {
   planStartAttempt,
   type UploadedArtifact,
 } from './attempts.ts';
-import { wantedRecords, withCurrentRecord, withWrittenRecord } from './commit-record.ts';
+import { answerCommit, wantedRecords, withCurrentRecord } from './commit-record.ts';
 import { type CommitOutcome, planCommit } from './commit.ts';
-import { adoptDataUpload } from './data-adopt.ts';
+import { adoptDataUpload, carriedValueOf } from './data-adopt.ts';
 import { type DataUploadPage, listDataUploads } from './data-uploads.ts';
 import type { DataSetInput, DataSetOutcome } from './data.ts';
 import {
@@ -75,17 +75,15 @@ import {
   type TickOptions,
 } from './retention-run.ts';
 import { applyRetire, applySeedScope, planSeedEntries, type RetireOutcome } from './seed.ts';
+import { countSettleFailures, retryDelayMs, settleRetryMs } from './settle-retry.ts';
 import {
   chainSettle,
   finishSettle,
   type OwnRecords,
   requireScopeMarker,
-  retryDelayMs,
   type SettleDeps,
   type SettleOutcome,
   settlePending,
-  settleRetryMs,
-  countSettleFailures,
   type SettleRun,
 } from './settle.ts';
 import {
@@ -97,7 +95,7 @@ import {
   requireActiveScope,
 } from './state.ts';
 import { tagsDelta } from './tags.ts';
-import { timedDeps, Timing } from './timing.ts';
+import { Timing } from './timing.ts';
 import type { Apply, TxInput } from './tx.ts';
 
 /**
@@ -136,6 +134,8 @@ const UNKNOWN = { empty: { kind: 'unknown' } } as const;
  * of its own either, and is answered as it commits (`AT_ONCE`).
  */
 const SEED = { seed: { kind: 'conflict', reason: 'the scope is retired' }, atOnce: true } as const;
+/** What a change hands its own run (`#mutate`): the records it wants and carries, and its timing. */
+type OwnRun = Pick<OwnRecords, 'wanted' | 'carried'> & Pick<SettleDeps, 'timing'>;
 
 export class CacheScope extends DurableObject<CacheBindings> {
   /** The history a host keeps of each scope, made as each object is (`ScopeHistory`): none here. */
@@ -225,7 +225,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
     now: number,
     plan: (input: TxInput) => Apply<T> | Promise<Apply<T>>,
     answers: { readonly atOnce?: boolean } & ({ readonly empty: T } | { readonly seed: T }),
-    { wanted, timing }: Pick<OwnRecords, 'wanted' | 'timing'> = {},
+    { wanted, timing, carried }: OwnRun = {},
   ): Promise<T> {
     const result = await this.#mutations.run(async () => {
       const committed = await commitMutation(
@@ -249,7 +249,8 @@ export class CacheScope extends DurableObject<CacheBindings> {
     });
     timing?.lap('commit');
     if (result.own === undefined) return result.value;
-    const run = this.#settle(result.own === null ? null : { ...result.own, wanted, timing });
+    const own = result.own === null ? null : { ...result.own, wanted, carried };
+    const run = this.#settle(own, undefined, timing);
     if (answers.atOnce === true) run.answerNow();
     await run.answered;
     timing?.lap('settle');
@@ -286,16 +287,21 @@ export class CacheScope extends DurableObject<CacheBindings> {
    * `settlePending`), or not at all where it owes nothing before its answer (`answerNow`). A run
    * that fails before then fails the caller's wait as well. `from` is what a change left behind as
    * it committed (`ownRecordsOf`), whose records its run writes, or `null` when it committed
-   * nothing; the alarm's runs leave it out and write the backlog.
+   * nothing; the alarm's runs leave it out and write the backlog. `timing` is where a change that
+   * says how long its parts took has its run timed, whether it committed anything or not.
    */
-  #settle(from?: OwnRecords | null, ended?: (outcome: SettleOutcome) => void): SettleRun {
+  #settle(
+    from?: OwnRecords | null,
+    ended?: (outcome: SettleOutcome) => void,
+    timing?: Timing,
+  ): SettleRun {
     this.#waiting += 1;
     const run = chainSettle(this.#settling, this.#log, async (answered) => {
       this.#waiting -= 1;
-      from?.timing?.lap('settle-wait');
+      timing?.lap('settle-wait');
       // Awaited on its own: as the argument of `ended?.(…)`, the run would not happen at all for a
       // caller with no `ended`.
-      const outcome = await this.#runSettle(answered, from);
+      const outcome = await this.#runSettle(answered, from, timing);
       ended?.(outcome);
     });
     this.#settling = run.done;
@@ -305,6 +311,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
   async #runSettle(
     answered: () => void,
     from: OwnRecords | null | undefined,
+    timing: Timing | undefined,
   ): Promise<SettleOutcome> {
     if (!this.#tables) {
       // Erased while the run waited its turn: nothing of the scope is left to settle.
@@ -312,9 +319,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
     }
     let outcome: SettleOutcome;
     try {
-      const { timing } = from ?? {};
-      const deps = timing === undefined ? this.#deps() : timedDeps(this.#deps(), timing);
-      outcome = await settlePending(deps, answered, from);
+      outcome = await settlePending({ ...this.#deps(), timing }, answered, from);
     } catch (error) {
       this.#log.error('settle failed', { detail: detailOf(error) });
       outcome = { pending: true, failed: true, continued: false };
@@ -513,7 +518,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
     return this.#mutate(now, (tx) => () => applyRecordArtifact(tx, attemptId, upload), AT_ONCE);
   }
 
-  /** Publish an attempt's generation, answered with the record its settle wrote (`withWrittenRecord`). */
+  /** Publish an attempt's generation, answered with the record its run wrote (`answerCommit`). */
   commit(attemptId: string, request: CommitRequest, now: number): Promise<CommitOutcome | Refusal> {
     // A retired scope's commit is refused before its planning asks storage anything.
     const plan = async (tx: TxInput): Promise<Apply<CommitOutcome | Refusal>> => {
@@ -523,7 +528,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
     const entryOf = (): string | undefined => findAttempt(this.#sql, attemptId)?.entry_id;
     const wanted = wantedRecords(entryOf);
     const committed = this.#mutate(now, plan, REFUSED, { wanted });
-    return withWrittenRecord(committed, wanted.records, entryOf, this.#deps());
+    return answerCommit(committed, wanted, entryOf, this.#deps());
   }
 
   fail(attemptId: string, request: FailRequest, now: number): Promise<FailResponse | Refusal> {
@@ -537,7 +542,8 @@ export class CacheScope extends DurableObject<CacheBindings> {
     const deps = { sql: this.#sql, scopeId: this.#scopeId, blobs: () => this.#blobs() };
     const authorityNow = () => (this.#vars.ARKOR_TEST_HOOKS ? now : Date.now());
     const adopt = (tx: TxInput) => adoptDataUpload({ ...deps, now: authorityNow }, tx, input);
-    const outcome = await this.#mutate(now, adopt, REFUSED, { timing });
+    const carried = carriedValueOf(input);
+    const outcome = await this.#mutate(now, adopt, REFUSED, { timing, carried });
     const needsCleanup =
       !isRefusal(outcome) ||
       (outcome.code === 'quota_exceeded' && (readScope(this.#sql)?.body_bytes ?? 0) > 0);

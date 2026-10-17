@@ -1,7 +1,4 @@
-import { isSignableScopeId } from '@stayingupwind/host/cache';
-
-/** The longest id a scope is named by: what a deploy issues, and nothing longer. */
-const MAX_SCOPE_ID_LENGTH = 256;
+import { isSignableScopeId, MAX_SCOPE_ID_LENGTH } from '@stayingupwind/host/cache';
 
 /**
  * Whether an id can name a scope: one that no key of another scope's could hold, that a token can
@@ -15,9 +12,10 @@ const MAX_SCOPE_ID_LENGTH = 256;
  * a scope by its deployment's id, which carries neither.
  *
  * Its token carries it, as a bearer in an `Authorization` header, so it is made of what a token can
- * be signed for (`isSignableScopeId`): a bearer token's characters but `.` and `=`. `:` is none of
- * them, and `/` is one, so the two rules leave a scope id ASCII letters, digits, `-`, `_`, `~` and
- * `+`. Each separator is refused here all the same, as the keys' own rule.
+ * be signed for (`isSignableScopeId`): a bearer token's characters but `.`, `=` and `/`, which
+ * leaves a scope id ASCII letters, digits, `-`, `_`, `~` and `+`. `:` is none of a bearer token's
+ * characters, and `/` is left out of them for the reason above, so neither passes that rule; each
+ * separator is refused here all the same, as the keys' own rule.
  */
 export function isScopeId(scopeId: string): boolean {
   return (

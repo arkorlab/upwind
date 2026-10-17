@@ -12,7 +12,8 @@ import {
 } from './entries.ts';
 import { findGeneration } from './generations.ts';
 import type { ScopeHistory } from './history.ts';
-import { type BlobStore, type KvSink, writeKey } from './io.ts';
+import { type BlobStore, type CarriedValue, type KvSink, writeKey } from './io.ts';
+import { PROJECTION_MEMORY_BYTES, withProjectionMemory } from './projection-memory.ts';
 import { dataRecordJson, generationRecordBytes, projectionMemoryOf } from './records.ts';
 import type { EntryRow, GenerationRow } from './rows.ts';
 import {
@@ -30,7 +31,7 @@ import {
   tagProjectionDueAt,
   tagProjectionPending,
 } from './tag-projection.ts';
-import type { Timing } from './timing.ts';
+import { timedDeps, type Timing } from './timing.ts';
 
 /**
  * What happens after a commit, until it has happened. Two things are owed once a transaction
@@ -46,10 +47,6 @@ import type { Timing } from './timing.ts';
 
 const PROJECTION_BATCH = 50;
 const PROJECTION_CONCURRENCY = 8;
-const KIB = 1024;
-const PROJECTION_MEMORY_MIB = 48;
-/** Leave room in the 128 MiB isolate for scope state, other requests and a returned commit record. */
-const PROJECTION_MEMORY_BYTES = PROJECTION_MEMORY_MIB * KIB * KIB;
 const META_SCOPE_MARKER = 'scope_marker_written';
 const DATA_KIND_PREFIX = 'data:';
 
@@ -73,6 +70,11 @@ export interface SettleDeps {
    * before the run is over; the object keeps running the rest otherwise.
    */
   readonly continueSoon: () => Promise<void>;
+  /**
+   * Where the run says how long what its change's answer waits on took (`Timing`): a data write's,
+   * which its answer says, whether or not the write committed anything (`settlePending`).
+   */
+  readonly timing?: Timing | undefined;
 }
 
 export interface SettleOutcome {
@@ -107,24 +109,6 @@ export async function finishSettle(
   return outcome;
 }
 
-const MILLISECONDS_PER_SECOND = 1000;
-const MAX_RETRY_SECONDS = 300;
-
-/** A second, doubling with each failure in a row, up to five minutes. */
-export function retryDelayMs(failures: number): number {
-  return Math.min(2 ** failures, MAX_RETRY_SECONDS) * MILLISECONDS_PER_SECOND;
-}
-
-/**
- * When the alarm comes back for what a run left: at once for a rewrite the run cut at its slice
- * while making progress — a record that keeps failing does not hold the rest back — and otherwise
- * after `retryDelayMs` of the runs in a row that failed, or once what is owed comes due, where it
- * waits for a moment (`waitMs`).
- */
-export function settleRetryMs(outcome: SettleOutcome, failures: number): number {
-  return outcome.continued ? 0 : Math.max(retryDelayMs(failures), outcome.waitMs ?? 0);
-}
-
 /**
  * A generation's delivery record a run wrote, and the record revision it was written for: what a
  * commit hands back only while the entry's record still stands at that revision
@@ -139,7 +123,8 @@ export interface WrittenRecord {
  * The generations' delivery records a change's own run hands back, where the change asks for any:
  * those it `wants`, by entry and size, asked as each is written so that no other record's bytes are
  * held past its write — a run rewrites a page of records behind at a time — and kept in `records`
- * once their write is acknowledged.
+ * once their write is acknowledged. Wanting one, the change keeps its bytes past the chunk that
+ * built them, and charges them to the isolate's room as it says so (`commit-record.ts`).
  */
 export interface WantedRecords {
   readonly wants: (entryId: string, bytes: number) => boolean;
@@ -147,13 +132,14 @@ export interface WantedRecords {
 }
 
 /**
- * How a run writes its records: whether the scope is retired, which withdraws every one, and which
- * of the generations' records it writes the change whose run it is wants back
- * (`OwnRecords.wanted`).
+ * How a run writes its records: whether the scope is retired, which withdraws every one, which of
+ * the generations' records it writes the change whose run it is wants back (`OwnRecords.wanted`),
+ * and the bytes of the value that change wrote, which its record is made of (`OwnRecords.carried`).
  */
 interface Writing {
   readonly retired: boolean;
   readonly wanted?: WantedRecords | undefined;
+  readonly carried?: CarriedValue | undefined;
 }
 
 interface ProjectingEntry {
@@ -161,16 +147,23 @@ interface ProjectingEntry {
   readonly current: GenerationRow | undefined;
 }
 
+/** A chunk of a page, and the bytes its records are reckoned to hold as they are built. */
+interface ProjectionChunk {
+  readonly entries: readonly ProjectingEntry[];
+  readonly bytes: number;
+}
+
 /**
  * Bound both entries and their expected live bytes before starting any blob read. A single large
- * record can exceed the working budget, so it runs alone; small records keep their parallelism.
+ * record can exceed the working budget, so it runs alone; small records keep their parallelism. The
+ * bytes are taken from the isolate's budget before the chunk begins (`withProjectionMemory`).
  */
 function projectionChunk(
   deps: SettleDeps,
   entries: readonly EntryRow[],
   offset: number,
   writing: Writing,
-): readonly ProjectingEntry[] {
+): ProjectionChunk {
   const chunk: ProjectingEntry[] = [];
   let reserved = 0;
   const candidates = entries.slice(offset, offset + PROJECTION_CONCURRENCY);
@@ -194,7 +187,7 @@ function projectionChunk(
     chunk.push({ entry, current });
     reserved += bytes;
   }
-  return chunk;
+  return { entries: chunk, bytes: reserved };
 }
 
 /**
@@ -219,7 +212,7 @@ async function projectEntry(
     return undefined;
   }
   if (data) {
-    const json = await dataRecordJson(deps, entry, current);
+    const json = await dataRecordJson(deps, entry, current, writing.carried);
     await writeKey(() => deps.kv.put(key, json));
     return undefined;
   }
@@ -300,8 +293,11 @@ export interface OwnRecords {
    * published it (`CacheScope.commit`).
    */
   readonly wanted?: WantedRecords | undefined;
-  /** Where the run says how long its parts took (`Timing`): a data write's, which its answer says. */
-  readonly timing?: Timing | undefined;
+  /**
+   * The bytes a data write handed over with its value (`DataSetInput.bytes`), which its run makes
+   * the value's record of instead of reading back from storage what the gateway stored just before.
+   */
+  readonly carried?: CarriedValue | undefined;
 }
 
 /** What the change that has just committed at `revision` left behind (`OwnRecords`). */
@@ -397,8 +393,10 @@ async function projectPage(
   let reached = 0;
   while (reached < entries.length) {
     const chunk = projectionChunk(deps, entries, reached, writing);
-    failed += await projectChunk(deps, chunk, writing, out);
-    reached += chunk.length;
+    failed += await withProjectionMemory(chunk.bytes, () =>
+      projectChunk(deps, chunk.entries, writing, out),
+    );
+    reached += chunk.entries.length;
     if (stop()) {
       break;
     }
@@ -436,7 +434,8 @@ async function projectOwn(
   let more = own.first.length === PROJECTION_BATCH;
   for (;;) {
     if (entries.length > 0) {
-      const page = await projectPage(deps, entries, { retired, wanted: own.wanted }, stop);
+      const writing = { retired, wanted: own.wanted, carried: own.carried };
+      const page = await projectPage(deps, entries, writing, stop);
       failed += page.failed;
       written += page.written;
       if (page.reached < entries.length) {
@@ -566,33 +565,6 @@ function waitOf(deps: SettleDeps): { readonly waitMs?: number } {
   return dueAt === undefined ? {} : { waitMs: dueAt - now };
 }
 
-/** How many settle runs in a row have failed (`countSettleFailures`). */
-const META_SETTLE_FAILURES = 'settle_failures';
-
-/**
- * How many settle runs in a row have failed, for the backoff of the alarm that comes back for what
- * a run left owed (`settleRetryMs`): written down as each run ends, forgotten once one owes nothing.
- * A run cut at its slice while making progress is no failure, however many of its records failed.
- * The count is bookkeeping: a failure to write it is logged and let go, and the next run counts again.
- */
-export function countSettleFailures(sql: SqlStorage, log: Logger, outcome: SettleOutcome): number {
-  let failures = 0;
-  try {
-    if (!(outcome.failed || outcome.pending)) {
-      deleteMeta(sql, META_SETTLE_FAILURES);
-      return 0;
-    }
-    failures =
-      outcome.failed && !outcome.continued
-        ? Number(readMeta(sql, META_SETTLE_FAILURES) ?? '0') + 1
-        : 0;
-    writeMeta(sql, META_SETTLE_FAILURES, String(failures));
-  } catch (error) {
-    log.error('settle outcome not recorded', { detail: detailOf(error) });
-  }
-  return failures;
-}
-
 /** A settle run: when its change may be answered, and when it is over. */
 export interface SettleRun {
   readonly answered: Promise<void>;
@@ -673,26 +645,33 @@ export function chainSettle(
  * waits for it as for any run before its own, unless the history leaves its share to that
  * change's run (`HistoryDeps.othersWaiting`) — or unless it leaves no record of its own, a lease
  * say, and waits for no run at all (`SettleRun.answerNow`).
+ *
+ * Where the run is to say how long its parts took (`SettleDeps.timing`), what it waits on in KV and
+ * in storage is timed as far as its change's answer waits for it: what the history does once the
+ * change is answered is not, since the answer says its timing as it goes, and would hold such a
+ * call only had it ended by then.
  */
 export async function settlePending(
   deps: SettleDeps,
   answered?: () => void,
   from?: OwnRecords | null,
 ): Promise<SettleOutcome> {
+  const waited = deps.timing === undefined ? deps : timedDeps(deps, deps.timing);
   const [projection, marker, tags] = await Promise.allSettled([
-    projectRecords(deps, from),
-    writeScopeMarker(deps),
-    projectTags(deps, from?.controlTags, from?.tags),
+    projectRecords(waited, from),
+    writeScopeMarker(waited),
+    projectTags(waited, from?.controlTags, from?.tags),
   ]);
   const projectionFailed = projection.status === 'fulfilled' && projection.value.failed > 0;
   const shortfall =
     [projection, marker, tags].some((outcome) => outcome.status === 'rejected') || projectionFailed;
   const cut = projection.status === 'fulfilled' && projection.value.cut;
   const continuation = !shortfall && cut ? await Promise.allSettled([deps.continueSoon()]) : [];
-  if (!shortfall && continuation.every((outcome) => outcome.status === 'fulfilled')) {
+  const early = !shortfall && continuation.every((outcome) => outcome.status === 'fulfilled');
+  if (early) {
     answered?.();
   }
-  const [records, delivery] = await deps.history.publish(deps);
+  const [records, delivery] = await deps.history.publish(early ? deps : waited);
   // Every outcome is asked, not the first that answers: an outage fails several of these at once,
   // and the ones `||` would have skipped are the ones nothing else would ever say.
   const rejected = [

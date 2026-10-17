@@ -177,9 +177,10 @@ export const seedEntriesResultSchema = z.object({
   skipped: z.number().int().nonnegative(),
   /**
    * Entries no delivery record of could ever be written: left unseeded rather than published and
-   * retried forever, and served as any entry the cache holds no record of is.
+   * retried forever, and served as any entry the cache holds no record of is. No more than a batch
+   * may hold: an answer past it is no answer to the batch.
    */
-  refused: z.array(seedRefusalSchema),
+  refused: z.array(seedRefusalSchema).max(MAX_SEED_BATCH),
   revision: z.number().int().nonnegative(),
 });
 export type SeedEntriesResult = z.infer<typeof seedEntriesResultSchema>;

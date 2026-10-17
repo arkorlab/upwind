@@ -8,6 +8,7 @@ import {
   dataSetRequestSchema,
   MAX_DATA_HANDLER_LENGTH,
   MAX_DATA_KEY_LENGTH,
+  MAX_INLINE_DATA_VALUE_BYTES,
 } from '@stayingupwind/host/cache';
 import { safeParseBounded } from '@stayingupwind/host/util';
 import { Hono } from 'hono';
@@ -49,6 +50,15 @@ const BASE64_GROUP_BYTES = 3;
 const BASE64_GROUP_CHARACTERS = 4;
 /** The rest of a `PUT /data` body: its field names, the kind, the coverage and a few numbers. */
 const OTHER_FIELDS_KIB = 4;
+/**
+ * The largest value whose bytes travel to the scope's object with its write, for the write's settle
+ * to make the value's record of (`DataSetInput.bytes`). The object holds them for as long as the
+ * write is under way — behind the settles queued before its own — and every write a burst sends it
+ * holds its own at once: so they are kept small, and a larger value that still travels inside its
+ * record (`MAX_INLINE_DATA_VALUE_BYTES`) is read back from storage by its settle, as before.
+ */
+const CARRIED_VALUE_KIB = 64;
+const CARRIED_VALUE_BYTES = Math.min(CARRIED_VALUE_KIB * KIB, MAX_INLINE_DATA_VALUE_BYTES);
 const OTHER_FIELDS_BYTES = OTHER_FIELDS_KIB * KIB;
 /**
  * What a `PUT /data` body holds beside its value's base64, at most: the key, the handler's name and
@@ -160,13 +170,16 @@ async function setValue(c: GatewayContext): Promise<Response> {
   });
   timing.lap('upload');
   // An RPC failure can lose an already committed reply. Leave uncertain uploads for the
-  // authority's orphan sweep, which checks references before deleting them.
+  // authority's orphan sweep, which checks references before deleting them. A small value travels
+  // with the write as well (`CARRIED_VALUE_BYTES`): its settle makes the record of these bytes rather
+  // than read back from storage what was stored just above.
   const outcome = await c.get('scope').setData(
     {
       key: request.key,
       entry: request.entry,
       value: { sha256, byteLength: bytes.byteLength, contentType: OCTET_STREAM, storageRef },
       ...(request.order !== undefined && { order: request.order }),
+      ...(bytes.byteLength <= CARRIED_VALUE_BYTES && { bytes }),
     },
     c.get('now'),
   );

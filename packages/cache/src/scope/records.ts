@@ -29,7 +29,7 @@ import { toZod } from '@stayingupwind/host/zod';
 import { z } from 'zod';
 
 import { condemnedOf } from './generations.ts';
-import type { BlobStore } from './io.ts';
+import type { BlobStore, CarriedValue } from './io.ts';
 import {
   type EntryRow,
   generationHeaders,
@@ -447,20 +447,40 @@ export function dataRecordByReference(
   });
 }
 
+/**
+ * A small data value's bytes: those its write handed over, where they are the ones the artifact
+ * names, and what storage holds otherwise, checked against the name (`verifiedBytes`). Not hashed
+ * again: the gateway named them by hashing these very bytes, in the request that stored them.
+ */
+async function inlineBytes(
+  blobs: BlobStore,
+  artifact: RecordArtifact,
+  carried: CarriedValue | undefined,
+): Promise<Uint8Array> {
+  return carried?.sha256 === artifact.sha256 && carried.bytes.byteLength === artifact.byteLength
+    ? carried.bytes
+    : verifiedBytes(blobs, artifact);
+}
+
 /** The data-cache record as KV holds it (`dataRecordFor`), serialized. */
 export async function dataRecordJson(
   deps: RecordDeps,
   entry: EntryRow,
   generation: GenerationRow,
+  carried?: CarriedValue,
 ): Promise<string> {
-  return JSON.stringify(await dataRecordFor(deps, entry, generation));
+  return JSON.stringify(await dataRecordFor(deps, entry, generation, carried));
 }
 
-/** The data-cache record: a small value travels inside it, a large one by reference. */
+/**
+ * The data-cache record: a small value travels inside it, a large one by reference. A small value's
+ * bytes are those `carried` where they are its, and read from storage otherwise.
+ */
 export async function dataRecordFor(
   deps: RecordDeps,
   entry: EntryRow,
   generation: GenerationRow,
+  carried?: CarriedValue,
 ): Promise<DataRecord> {
   const artifact = generationOutputs(generation)[0]?.artifacts[0];
   if (artifact === undefined) {
@@ -468,7 +488,7 @@ export async function dataRecordFor(
   }
   const value: DataRecord['value'] =
     artifact.byteLength <= MAX_INLINE_DATA_VALUE_BYTES
-      ? { kind: 'inline', base64: toBase64(await verifiedBytes(deps.blobs, artifact)) }
+      ? { kind: 'inline', base64: toBase64(await inlineBytes(deps.blobs, artifact, carried)) }
       : {
           kind: 'ref',
           artifactId: artifact.artifactId,

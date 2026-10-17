@@ -4,6 +4,7 @@ import type { StartAttemptResponse } from '@stayingupwind/host/cache';
 import type { CommitOutcome } from './commit.ts';
 import { findEntry } from './entries.ts';
 import { findGeneration } from './generations.ts';
+import { retain } from './projection-memory.ts';
 import { generationRecordBytes, type RecordDeps, recordBytesOf } from './records.ts';
 import type { EntryRow, GenerationRow } from './rows.ts';
 import type { WantedRecords, WrittenRecord } from './settle.ts';
@@ -18,16 +19,39 @@ const MAX_RETURNED_RECORD_MIB = 4;
  */
 const MAX_RETURNED_RECORD_BYTES = MAX_RETURNED_RECORD_MIB * KIB * KIB;
 
+/** What a commit asks its own settle run to hand back, and how it lets go of what it was handed. */
+export interface CommitRecords extends WantedRecords {
+  /**
+   * Give back the room in the isolate's budget the bytes it wanted are charged to (`retain`): once
+   * the commit is answered, or fails, by the object that answers it.
+   */
+  readonly release: () => void;
+}
+
 /**
  * What a commit asks its own settle run to hand back (`WantedRecords`): its entry's record where it
  * could travel back, and no other entry's — a run that rewrites a page of records behind, after a
  * broad invalidation say, holds none of theirs past its write. The entry is named once the commit
- * has published (`entryOf`).
+ * has published (`entryOf`). A record it wants outlives the chunk that built it, until the commit
+ * is answered with it: its bytes are charged to the isolate's room as it is wanted, while that
+ * chunk still holds its own, and until the commit lets them go (`release`).
  */
-export function wantedRecords(entryOf: () => string | undefined): WantedRecords {
+export function wantedRecords(entryOf: () => string | undefined): CommitRecords {
+  const kept: (() => void)[] = [];
   return {
-    wants: (entryId, bytes) => bytes <= MAX_RETURNED_RECORD_BYTES && entryId === entryOf(),
+    wants: (entryId, bytes) => {
+      if (bytes > MAX_RETURNED_RECORD_BYTES || entryId !== entryOf()) {
+        return false;
+      }
+      kept.push(retain(bytes));
+      return true;
+    },
     records: new Map(),
+    release: () => {
+      for (const letGo of kept.splice(0)) {
+        letGo();
+      }
+    },
   };
 }
 
@@ -218,4 +242,21 @@ export async function withWrittenRecord(
   // that are behind it from one another commit handed back meanwhile (`recordRevision`).
   const recordRevision = findEntry(deps.sql, entryId)?.record_revision;
   return recordRevision === undefined ? outcome : { ...outcome, recordRevision };
+}
+
+/**
+ * A commit's answer (`withWrittenRecord`), and what its run handed back let go of as it is given —
+ * answered or failed: the record's room in the isolate's budget goes with it (`CommitRecords`).
+ */
+export async function answerCommit(
+  committed: Promise<CommitOutcome | Refusal>,
+  wanted: CommitRecords,
+  entryOf: () => string | undefined,
+  deps: StandingDeps,
+): Promise<CommitOutcome | Refusal> {
+  try {
+    return await withWrittenRecord(committed, wanted.records, entryOf, deps);
+  } finally {
+    wanted.release();
+  }
 }

@@ -3,7 +3,12 @@ import { toBase64Url } from '@stayingupwind/core/util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { cacheScopeSchema, ENTITY_SCHEMA_VERSION, scopeSeedSchema } from '../src/cache/index.ts';
-import { parseCacheToken, signCacheToken, verifyCacheToken } from '../src/cache/token.ts';
+import {
+  MAX_SCOPE_ID_LENGTH,
+  parseCacheToken,
+  signCacheToken,
+  verifyCacheToken,
+} from '../src/cache/token.ts';
 
 const SECRET = 'cache-token-key-for-tests-32-chars!!';
 const SCOPE = 'dpl_4Fixture2Minima1AppXy';
@@ -17,8 +22,13 @@ const UNCARRIED = ['a b', 'a\tb', 'a\nb', 'a\0b', 'a\u{7F}b', 'café', '日本']
  * `=`, a token's padding, which a scope id has no use for at its end or anywhere else.
  */
 const UNTOKENED = ['a,b', 'a"b', String.raw`a\b`, 'a=b', 'ab='];
-/** Every character a bearer token holds, but `.` and `=`. */
-const TOKENED = 'AZaz09-_~+/';
+/**
+ * Scope ids holding `/`, which a bearer token holds, but which follows a scope's id in every key its
+ * storage is kept under: `a/b`'s would be kept under `a`'s.
+ */
+const NESTED = ['a/b', 'a/', '/a'];
+/** Every character a bearer token holds, but `.`, `=` and `/`. */
+const TOKENED = 'AZaz09-_~+';
 
 describe('cache tokens', () => {
   afterEach(() => {
@@ -164,6 +174,11 @@ describe('cache tokens', () => {
     },
   );
 
+  /** A scope no storage could keep apart from another is given no token to open it with. */
+  it.each(NESTED)('cannot be minted for a scope id that nests under another, as %j', async (id) => {
+    await expect(signCacheToken(SECRET, id, NAMING)).rejects.toThrow(/ASCII letters, digits/u);
+  });
+
   it('can be presented in an Authorization header', async () => {
     const token = await signCacheToken(SECRET, SCOPE, NAMING);
 
@@ -199,8 +214,19 @@ describe('a scope', () => {
     await expect(signCacheToken(SECRET, scope.scopeId, NAMING)).resolves.toMatch(/^v1\./u);
   });
 
+  /**
+   * As long an id as the authority answers about, and none longer: refused where the scope is made,
+   * rather than seeded and never answered about.
+   */
+  it('is seeded under an id as long as the authority answers about, and none longer', () => {
+    const longest = 'a'.repeat(MAX_SCOPE_ID_LENGTH);
+
+    expect(scopeSeedSchema.safeParse({ ...scope, scopeId: longest }).success).toBe(true);
+    expect(scopeSeedSchema.safeParse({ ...scope, scopeId: `${longest}a` }).success).toBe(false);
+  });
+
   /** Refused where the scope is made, rather than once it is and its token cannot be signed. */
-  it.each(['a.b', 'b|v1|c', ...UNCARRIED, ...UNTOKENED])(
+  it.each(['a.b', 'b|v1|c', ...UNCARRIED, ...UNTOKENED, ...NESTED])(
     'is not seeded under %j, which no token can be signed for',
     (id) => {
       expect(scopeSeedSchema.safeParse({ ...scope, scopeId: id }).success).toBe(false);
