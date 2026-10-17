@@ -18,7 +18,8 @@
   "exports": {
     "./bundle-blobs": "./src/bundle-blobs.ts",
     "./cache-host": "./src/cache/host.ts",
-    "./function": "./src/function.ts"
+    "./function": "./src/function.ts",
+    "./middleware-function": "./src/middleware-function.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",
