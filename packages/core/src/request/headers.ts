@@ -35,6 +35,19 @@ function isInternalRequestHeader(name: string): boolean {
   );
 }
 
+/** The header the edge says itself on, on every request it hands on (`baseSanitized`). */
+const VIA_HEADER = 'via';
+
+/**
+ * Whether an application is handed a request's header `name` as the visitor sent it: not one the
+ * edge takes off what it hands on, or writes itself there (`baseSanitized`) — a hop's own, a
+ * forwarding header, the platform's own, its `via`.
+ */
+export function handedOnAsSent(name: string): boolean {
+  const lower = name.toLowerCase();
+  return !isInternalRequestHeader(lower) && lower !== VIA_HEADER;
+}
+
 function baseSanitized(headers: Headers, ctx: ForwardingContext): Headers {
   const out = new Headers();
   for (const [name, value] of headers) {
@@ -109,6 +122,24 @@ export function sanitizePassthroughHeaders(headers: Headers, ctx: ForwardingCont
 export function dataRequestHeaders(headers: Headers): Headers {
   const routed = new Headers(headers);
   routed.set(NEXT_DATA_HEADER, '1');
+  return routed;
+}
+
+/**
+ * Any request's headers as the deployment's routing reads `x-nextjs-data` on them, as the runtime
+ * puts it there before it routes (`routedHeaders`): on a Pages Router data request, set
+ * (`dataRequestHeaders`); on any other, the client's own taken off, as Next.js takes it
+ * (`filterInternalHeaders`). Copied only where that changes them.
+ */
+export function routerDataHeaders(headers: Headers, dataRequest: boolean): Headers {
+  if (dataRequest) {
+    return dataRequestHeaders(headers);
+  }
+  if (!headers.has(NEXT_DATA_HEADER)) {
+    return headers;
+  }
+  const routed = new Headers(headers);
+  routed.delete(NEXT_DATA_HEADER);
   return routed;
 }
 

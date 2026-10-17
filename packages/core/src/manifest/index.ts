@@ -35,6 +35,7 @@ export {
   serializeManifest,
 } from './manifest.ts';
 export { functionFor, functionScript } from './functions.ts';
+export { gateFor, type RouteGate } from './gates.ts';
 export { parsePreloads, serializePreloads } from './preloads.ts';
 export {
   type AppRuntime,

@@ -1,5 +1,6 @@
 import { withTrailingSlash } from '../manifest/dynamic.ts';
 import { namesNoFile } from '../manifest/manifest.ts';
+import { isPagesDataPathname } from './pages-data.ts';
 import type { DeploymentBundle, Prerender } from './schema.ts';
 
 /**
@@ -8,6 +9,9 @@ import type { DeploymentBundle, Prerender } from './schema.ts';
  * them with it: `next build` writes a redirect of `/about` to `/about/`, ahead of everything else,
  * and serves the page at the spelling it redirects to.
  */
+
+/** What of a prerender tells whether it stands for a class, and of which route. */
+type ClassedPrerender = Pick<Prerender, 'pathname' | 'route' | 'routeType' | 'parentFallbackMode'>;
 
 /** A dynamic route's template: the class shell no request names, `[` and all. */
 export function isTemplate(pathname: string): boolean {
@@ -54,9 +58,7 @@ export function placeholderSegments(pathname: string, route: string): boolean[] 
  * is read by its placeholders (`placeholderSegments`), and never by whether its pathname holds a
  * bracket.
  */
-export function standsForClass(
-  prerender: Pick<Prerender, 'pathname' | 'route' | 'routeType' | 'parentFallbackMode'>,
-): boolean {
+export function standsForClass(prerender: ClassedPrerender): boolean {
   if (prerender.routeType === 'shell' || prerender.routeType === 'fallback') {
     return true;
   }
@@ -64,6 +66,48 @@ export function standsForClass(
     return false;
   }
   return placeholderSegments(prerender.pathname, prerender.route).includes(true);
+}
+
+/**
+ * A prerender that stands for a class of its route's URLs (`standsForClass`) and is not the
+ * route's own template: one or more of its parameters resolved, as many segments as the route —
+ * a locale's pathname, which leads with one more, is the route's own under that locale.
+ */
+function narrowerClass(prerender: ClassedPrerender): boolean {
+  return (
+    prerender.pathname !== prerender.route &&
+    prerender.pathname.split('/').length === prerender.route.split('/').length &&
+    standsForClass(prerender)
+  );
+}
+
+/**
+ * Prerenders the router resolves by name, as Next.js's own filesystem check does.
+ *
+ * Three kinds, and no others. A `_next/data` output is the only thing a Pages Router data request
+ * can land on: the matchers `next build` emits for data URLs point at the data pathname itself,
+ * so a build that does not offer it there resolves nothing — the template among them, which
+ * carries no body, is how an unbuilt member of the route is reached. A member of a route built
+ * with `fallback: false` — `dynamicParams = false` in the App Router — is all that route will
+ * ever serve: the matcher `next build` emits for such a route carries the draft-mode cookies as
+ * conditions, so nothing but a draft reaches the route at all, and a member that did not resolve
+ * by its own name would resolve nowhere. And a class narrower than its route (`narrowerClass`):
+ * the shell of a route whose leading parameters the build resolved, `/shop/t1/[item]` of
+ * `/shop/[team]/[item]`, which the build gives a matcher of its own ahead of the route's — with no
+ * conditions where the route's has them, a parameter closed before one left open (16.4's
+ * `unstable_paramMatching`, or `generateStaticParams` beside `dynamicParams = false`). That
+ * matcher's destination is the shell's own name, and an unbuilt member of it is reached by no
+ * other: past it, only the route's closed matcher is left.
+ *
+ * Every other prerender is reached through its route's entrypoint — through the dynamic routes,
+ * the first that holds of it and lands on a name winning.
+ */
+export function resolvedByName(prerender: ClassedPrerender, basePath: string): boolean {
+  return (
+    isPagesDataPathname(basePath, prerender.pathname) ||
+    prerender.parentFallbackMode === false ||
+    narrowerClass(prerender)
+  );
 }
 
 /** A route as `normalizePagePath` spells it in a file's name, both ways where it cannot say. */

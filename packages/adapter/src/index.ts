@@ -49,6 +49,7 @@ import type { EdgeEntry } from './edge.ts';
 import { ensureStaticRoutes } from './ensure-static.ts';
 import { exists } from './fs.ts';
 import { type BuiltFunction, type EntryModule, middlewareManifest } from './function.ts';
+import { declaredGates } from './gates.ts';
 import { composedInstrumentation, writeClientInstrumentation } from './instrumentation.ts';
 import { keepMapsThrough, readKeptMaps } from './kept-maps.ts';
 import { collectManifests } from './manifests.ts';
@@ -197,6 +198,9 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
   // Read before anything is written: a cron this platform cannot run fails the build here, where
   // the message is about the file the author wrote, rather than at the upload or never.
   const projectConfig = await readProjectConfig(ctx.projectDir, options.hostConfigFiles);
+  // So are the gates the environment declares, which a build that cannot read them must not leave
+  // out of what it writes.
+  const gates = declaredGates();
   const outDir = await emptyOutDir(ctx.projectDir);
   const blobs = new BlobStore(outDir);
   await blobs.init();
@@ -353,6 +357,9 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     // The cron jobs the project declared: the host schedules them, and the Function they reach
     // answers the request they make like any other.
     ...(projectConfig.crons.length > 0 && { crons: projectConfig.crons }),
+    // The gates the build declares for its routes, which the host asks before it serves one; left
+    // out of the Function's manifest, as nothing in the Function reads them.
+    ...(gates !== undefined && { gates }),
     // Where the workflow Function takes the SDK's queue, and which SDK it was built with.
     ...workflowParts.bundle,
     projectDir: path.relative(ctx.repoRoot, ctx.projectDir).split(path.sep).join('/'),
