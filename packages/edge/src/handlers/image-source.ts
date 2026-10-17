@@ -12,16 +12,19 @@ import {
   staticFileBuildWithoutDpl,
   type StaticFileEntry,
 } from '@stayingupwind/core/manifest';
-import { MIDDLEWARE_DONE_HEADER, ORIGINAL_URL_HEADER } from '@stayingupwind/core/paas';
-import { REDIRECT_STATUSES } from '@stayingupwind/core/request';
+import {
+  MIDDLEWARE_DONE_HEADER,
+  MIDDLEWARE_REWRITE_STATUS_HEADER,
+  ORIGINAL_URL_HEADER,
+} from '@stayingupwind/core/paas';
+import { NULL_BODY_STATUSES, REDIRECT_STATUSES } from '@stayingupwind/core/request';
 import { isDeadlineError, limitBody, releaseStream, withDeadline } from '@stayingupwind/core/util';
 import { isUnderAnyDomain } from '@stayingupwind/host/domains';
 
 import { logWarn } from '../observability/logger.ts';
 import { asksBlobWorker } from '../preview/blobs.ts';
 import type { EdgeContext } from '../strategies/context.ts';
-import type { MiddlewareContinue } from './hosted-gate.ts';
-import { decideMiddleware, middlewareMatches } from './middleware.ts';
+import { decideMiddleware, type MiddlewareContinued, middlewareMatches } from './middleware.ts';
 import { readStaticFileStream, type StoredStream } from './static-file.ts';
 import { dispatchesOf, dispatchesSoFar, fetchUpstream, functionOfRequest } from './upstream.ts';
 
@@ -87,6 +90,9 @@ const TIMED_OUT = '"url" parameter is valid but upstream response timed out';
 const SOURCE_REFUSED = 'image source refused';
 
 const HTTP_INTERNAL_ERROR = 500;
+/** The statuses Fetch calls ok: the only ones Next.js's optimizer takes a source of its own under. */
+const FIRST_OK_STATUS = 200;
+const LAST_OK_STATUS = 299;
 
 /** A refusal in the status Next.js's `ImageError` would carry: an error status, or 500 for another. */
 function refused(status: number, message: string, requests: number): SourceResult {
@@ -232,11 +238,32 @@ function shippedSourceAt(manifest: ProjectManifest, url: URL): StaticFileEntry |
     : staticFileBuildWithoutDpl(entry, manifest.deployment.dplId);
 }
 
-/** A source's request as the middleware left it, with the Worker told the middleware ran. */
-function rewrittenRequest(original: Request, middleware: MiddlewareContinue): Request {
+/**
+ * Whether a shipped file is a source under the status the middleware gave the rewrite that led to
+ * it (`rewriteStatus`). The file answers under that status, as a request for it is answered
+ * (`underRewriteStatus`, in `hosted-static-file.ts`), and Next.js's optimizer takes a source only
+ * from an answer that is ok and carries a body (`fetchInternalImage`), as `fetchLocal` takes the
+ * Worker's.
+ */
+function sourceUnder(status: number | undefined): boolean {
+  return (
+    status === undefined ||
+    (status >= FIRST_OK_STATUS && status <= LAST_OK_STATUS && !NULL_BODY_STATUSES.has(status))
+  );
+}
+
+/**
+ * A source's request as the middleware left it, with the Worker told the middleware ran — and the
+ * status it gave its rewrite, which the Worker answers the route under as one it ran the middleware
+ * for itself (`MIDDLEWARE_REWRITE_STATUS_HEADER`).
+ */
+function rewrittenRequest(original: Request, middleware: MiddlewareContinued): Request {
   const headers = new Headers(middleware.requestHeaders);
   headers.set(MIDDLEWARE_DONE_HEADER, '1');
   headers.set(ORIGINAL_URL_HEADER, original.url);
+  if (middleware.rewriteStatus !== undefined) {
+    headers.set(MIDDLEWARE_REWRITE_STATUS_HEADER, String(middleware.rewriteStatus));
+  }
   return new Request(middleware.url.href, { headers, redirect: 'manual' });
 }
 
@@ -338,14 +365,15 @@ async function readBlob(
  * middleware, when its matchers cover the path, sees it as an anonymous visitor asks for it: what
  * it lets through is the file; a path it rewrites to is the file shipped there, from storage as a
  * request rewritten to it is served — the Worker carries none of `_next/static` — and any other
- * path is asked of the Worker, which is told the middleware ran; what it answers itself is the
- * source only if it is one, as under Next.js, and a redirect to a login page is not. A middleware
- * whose own Worker failed is asked of the application's (`decideMiddleware`), which carries none
- * of `_next/static` and could not answer for the file itself. When the edge still cannot say what
- * the middleware decided — both failed, or it rewrote to another origin — the Worker is asked for
- * the file's path and runs the middleware itself, as it does for a document. The middleware and
- * all that follows it, a retry of a failed one included, share the budget a source fetched from
- * the application has.
+ * path is asked of the Worker, which is told the middleware ran; a status the middleware gave its
+ * rewrite is the answer's, whether a file's (`sourceUnder`) or the Worker's (`rewrittenRequest`);
+ * what it answers itself is the source only if it is one, as under Next.js, and a redirect to a
+ * login page is not. A middleware whose own Worker failed is asked of the application's
+ * (`decideMiddleware`), which carries none of `_next/static` and could not answer for the file
+ * itself. When the edge still cannot say what the middleware decided — both failed, or it rewrote
+ * to another origin — the Worker is asked for the file's path and runs the middleware itself, as it
+ * does for a document. The middleware and all that follows it, a retry of a failed one included,
+ * share the budget a source fetched from the application has.
  */
 async function fetchBlob(
   local: LocalContext,
@@ -367,16 +395,19 @@ async function fetchBlob(
       return readBlob(edge, config, source.file, dispatches);
     }
     case 'continue': {
-      if (!outcome.rewritten) {
-        return readBlob(edge, config, source.file, dispatches);
+      const shipped = outcome.rewritten
+        ? shippedSourceAt(local.manifest, outcome.url)
+        : source.file;
+      if (shipped === undefined) {
+        return fetchLocal(local, rewrittenRequest(request, outcome), {
+          earlier: dispatches,
+          budgetMs: left(),
+        });
       }
-      const shipped = shippedSourceAt(local.manifest, outcome.url);
-      return shipped === undefined
-        ? fetchLocal(local, rewrittenRequest(request, outcome), {
-            earlier: dispatches,
-            budgetMs: left(),
-          })
-        : readBlob(edge, config, shipped, dispatches);
+      // Refused unread under a status the optimizer takes no source under.
+      return sourceUnder(outcome.rewriteStatus)
+        ? readBlob(edge, config, shipped, dispatches)
+        : refused(HTTP_BAD_REQUEST, INTERNAL_INVALID, dispatches);
     }
     case 'responded': {
       if (!outcome.response.ok) {
