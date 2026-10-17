@@ -198,6 +198,7 @@ const STATEMENTS: readonly string[] = [
     tag_id TEXT PRIMARY KEY,
     revision INTEGER NOT NULL,
     meaning TEXT NOT NULL,
+    latest_immediate_revision INTEGER,
     earliest_stale_at INTEGER NOT NULL,
     latest_stale_at INTEGER NOT NULL,
     earliest_hard_expire_at INTEGER,

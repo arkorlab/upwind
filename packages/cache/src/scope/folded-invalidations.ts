@@ -8,16 +8,17 @@ import { readMeta, writeMeta } from './state.ts';
  * What a scope keeps of the invalidations that took effect before its history window: one row a
  * tag (`folded_invalidations`), which retention folds them into a batch at a time
  * (`invalidation-fold.ts`). It keeps the latest revision among them and what that one meant, the
- * earliest and the latest moment one of them took effect, the earliest hard deadline, and how many
- * there were.
+ * latest revision of one at once (`immediate`) among them, the earliest and the latest moment one of
+ * them took effect, the earliest hard deadline, and how many there were.
  *
  * Whatever asks back past them weighs a tag's fold as one invalidation, which condemns whatever any
  * of them did, and as early: as of the latest revision, reaching every value made before the latest
- * moment, stale from the earliest, expired at the earliest deadline. It may condemn earlier than the
- * invalidations themselves would have, and never takes back what one of them condemned. Whatever
- * asks nothing that far back is answered from the invalidations it always was, and reads nothing
- * more: how far the folds reach is kept beside them, and held in memory once read
- * (`foldedThrough`).
+ * moment, stale from the earliest, expired at the earliest deadline. A render's commit weighs the
+ * latest one at once beside it where that is not the latest (`foldsPast`), so that a render one of
+ * them would refuse is refused as before. It may condemn earlier than the invalidations themselves
+ * would have, and never takes back what one of them condemned. Whatever asks nothing that far back
+ * is answered from the invalidations it always was, and reads nothing more: how far the folds reach
+ * is kept beside them, and held in memory once read (`foldedThrough`).
  */
 
 /** How far a scope's folds reach: the latest revision folded, and the latest moment one took effect. */
@@ -64,6 +65,7 @@ interface FoldRow extends Record<string, SqlStorageValue> {
   tag_id: string;
   revision: number;
   meaning: string;
+  latest_immediate_revision: number | null;
   earliest_stale_at: number;
   latest_stale_at: number;
   earliest_hard_expire_at: number | null;
@@ -93,9 +95,36 @@ function asInvalidation(fold: FoldRow): InvalidationRow {
 }
 
 /**
+ * The latest invalidation at once a fold stands for, weighed as one of its own where a question past
+ * `afterRevision` reaches it and the fold's latest is not that one. Weighed as its latest alone, a
+ * fold whose latest has a window would let a render publish that the one at once refuses, its view
+ * not having held it (`weighInvalidations`); beside it, the render is refused as by its row. It
+ * takes the fold's moments and deadline, so what a render it does not refuse is condemned by is the
+ * fold's alone.
+ */
+function latestImmediateOf(fold: FoldRow, afterRevision: number): InvalidationRow | undefined {
+  const revision = fold.latest_immediate_revision;
+  if (
+    revision === null ||
+    revision <= afterRevision ||
+    (fold.meaning === 'immediate' && revision === fold.revision)
+  ) {
+    return undefined;
+  }
+  return {
+    ...asInvalidation(fold),
+    invalidation_id: `inv_folded_immediate_${fold.tag_id}`,
+    revision,
+    meaning: 'immediate',
+  };
+}
+
+/**
  * The folds of `tagIds` holding an invalidation past `afterRevision`: what a render whose inputs
  * were read at that revision, or a build's output, is weighed against beside the invalidations kept
- * (`weighInvalidations`). None, and nothing read, where no fold reaches past it.
+ * (`weighInvalidations`) — each fold, and the latest invalidation at once it stands for where that is
+ * past `afterRevision` and not the fold's latest (`latestImmediateOf`). None, and nothing read, where
+ * no fold reaches past it.
  */
 export function foldsPast(
   sql: SqlStorage,
@@ -113,7 +142,10 @@ export function foldsPast(
       afterRevision,
     )
     .toArray();
-  return folds.map((fold) => asInvalidation(fold));
+  return folds.flatMap((fold) => {
+    const immediate = latestImmediateOf(fold, afterRevision);
+    return immediate === undefined ? [asInvalidation(fold)] : [asInvalidation(fold), immediate];
+  });
 }
 
 /**

@@ -14,7 +14,9 @@ import { findTag } from './tags.ts';
  * The window is the history window (`retainHistoryMs`), the longest a scope keeps anything for
  * whatever reads it back: what is asked of the invalidations in the course of serving reaches back
  * an hour, an edge's (`RECENT_INVALIDATIONS_MS`) the furthest. What asks further back is answered
- * from each tag's fold (`folded-invalidations.ts`).
+ * from each tag's fold (`folded-invalidations.ts`), which keeps what those answers take of the rows:
+ * the latest revision and what it meant, the latest revision of one at once, the earliest and the
+ * latest moment one took effect, the earliest deadline, and how many there were.
  *
  * Two kinds of what asks further back read the rows themselves, and the fold keeps both from
  * needing what it folds:
@@ -44,6 +46,8 @@ interface FoldInput {
 interface Folded {
   readonly revision: number;
   readonly meaning: string;
+  /** The latest revision among them of one at once (`immediate`); `null` where none was. */
+  readonly latestImmediateRevision: number | null;
   readonly earliestStaleAt: number;
   readonly latestStaleAt: number;
   readonly earliestHardExpireAt: number | null;
@@ -53,17 +57,20 @@ interface Folded {
 /**
  * The latest revision among `rows`, and what it meant: one invalidation names a tag once at its
  * revision, with one meaning. Where rows of one revision should differ, the fold takes the one
- * with a window, which excuses a render less (`weighInvalidations`).
+ * with a window, which excuses a render less (`weighInvalidations`). And the latest revision of one
+ * at once among them, which refuses a render as that one would where the latest has a window.
  */
 function foldOf(rows: readonly InvalidationRow[]): Folded {
   const revision = Math.max(...rows.map((row) => row.revision));
   const latest = rows.filter((row) => row.revision === revision);
+  const immediate = rows.filter((row) => row.meaning === 'immediate').map((row) => row.revision);
   const deadlines = rows.flatMap((row) =>
     row.hard_expire_at === null ? [] : [row.hard_expire_at],
   );
   return {
     revision,
     meaning: latest.every((row) => row.meaning === 'immediate') ? 'immediate' : 'swr',
+    latestImmediateRevision: immediate.length === 0 ? null : Math.max(...immediate),
     earliestStaleAt: Math.min(...rows.map((row) => row.stale_at)),
     latestStaleAt: Math.max(...rows.map((row) => row.stale_at)),
     earliestHardExpireAt: deadlines.length === 0 ? null : Math.min(...deadlines),
@@ -73,14 +80,15 @@ function foldOf(rows: readonly InvalidationRow[]): Folded {
 
 /**
  * Move the tag's row by what a batch folds of it: the latest revision and its meaning — the one with
- * a window where a batch before folded the same revision otherwise — the earliest and latest
- * moments, the earliest deadline of those that had one, and the count.
+ * a window where a batch before folded the same revision otherwise — the latest revision of one at
+ * once, of those that had one, the earliest and latest moments, the earliest deadline of those that
+ * had one, and the count.
  */
 function foldInto(sql: SqlStorage, tagId: string, fold: Folded): void {
   sql.exec(
-    `INSERT INTO folded_invalidations (tag_id, revision, meaning, earliest_stale_at,
-       latest_stale_at, earliest_hard_expire_at, folded)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO folded_invalidations (tag_id, revision, meaning, latest_immediate_revision,
+       earliest_stale_at, latest_stale_at, earliest_hard_expire_at, folded)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (tag_id) DO UPDATE SET
        revision = MAX(revision, excluded.revision),
        meaning = CASE
@@ -88,6 +96,10 @@ function foldInto(sql: SqlStorage, tagId: string, fold: Folded): void {
            OR (excluded.revision = revision AND excluded.meaning = 'swr') THEN excluded.meaning
          ELSE meaning
        END,
+       latest_immediate_revision = MAX(
+         COALESCE(latest_immediate_revision, excluded.latest_immediate_revision),
+         COALESCE(excluded.latest_immediate_revision, latest_immediate_revision)
+       ),
        earliest_stale_at = MIN(earliest_stale_at, excluded.earliest_stale_at),
        latest_stale_at = MAX(latest_stale_at, excluded.latest_stale_at),
        earliest_hard_expire_at = MIN(
@@ -98,6 +110,7 @@ function foldInto(sql: SqlStorage, tagId: string, fold: Folded): void {
     tagId,
     fold.revision,
     fold.meaning,
+    fold.latestImmediateRevision,
     fold.earliestStaleAt,
     fold.latestStaleAt,
     fold.earliestHardExpireAt,

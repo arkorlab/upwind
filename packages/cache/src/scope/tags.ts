@@ -561,8 +561,10 @@ export interface Weighed {
 /**
  * The invalidations recorded after a render read its inputs that name what it depends on. Where it
  * read them before the history window, those retention folded are weighed as their tag's fold, one
- * invalidation that condemns whatever they did (`foldsPast`); its meaning is the latest one's, as
- * what the render's view held of the tag is judged by the latest one it held.
+ * invalidation that condemns whatever they did (`foldsPast`): its meaning is the latest one's, as
+ * what the render's view held of the tag is judged by the latest one it held, and the latest one at
+ * once is weighed beside it where that is not the latest, which refuses a render whose view did not
+ * hold it, as its row would.
  */
 export function weighInvalidations(sql: SqlStorage, query: CondemnationQuery): Weighed {
   const kept = sql
