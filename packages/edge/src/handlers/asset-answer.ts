@@ -5,6 +5,7 @@ import { hasCredentials, unshareable } from '../request-context.ts';
 import { passthroughAssetStrategy } from '../strategies/asset-passthrough.ts';
 import { FORWARDED_ASSET_HEADERS } from '../strategies/asset-upstream.ts';
 import { type AssetInput, handleAsset } from './asset.ts';
+import { observeMetric } from './observer.ts';
 
 /**
  * The longest URL a refusal is remembered for: far longer than any file's, and short enough that a
@@ -28,7 +29,9 @@ function variantOf(request: Request): string {
 
 /**
  * An immutable-asset candidate answered: the asset strategy's answer where it may be handed to this
- * client, or `undefined` where the client's own request is the one to answer with.
+ * client, or the client's own request (`unshared`) where that is the one to answer with — handed what
+ * the strategy sent for the answer it was not given (`subrequests`), for the one point the request
+ * writes to count it.
  *
  * An app can put cookie-aware middleware in front of `/_next/static/`. The asset fetch carries no
  * credentials, so what came back is what an anonymous visitor sees. When the client sent
@@ -44,13 +47,16 @@ function variantOf(request: Request): string {
  * remembered (`rejection`): an upstream that could not be reached refused nothing. An admission
  * forgets the refusal.
  */
-export async function answerAsset(input: AssetInput): Promise<Response | undefined> {
+export async function answerAsset(
+  input: AssetInput,
+  unshared: (subrequests: number) => Promise<Response>,
+): Promise<Response> {
   const { edge, clientUrl } = input;
   // A strategy that keeps nothing never answers a client with credentials: what its fetch got is an
   // anonymous visitor's, which such a client is refused every time (`unshareable`). Its own request
   // goes at once, with no anonymous fetch ahead of it to throw away.
   if (input.strategy === passthroughAssetStrategy && hasCredentials(input.request.headers)) {
-    return undefined;
+    return unshared(0);
   }
   const refused = edge.runtime.memory.refusedAssets;
   const url = `${clientUrl.pathname}${clientUrl.search}`;
@@ -68,7 +74,7 @@ export async function answerAsset(input: AssetInput): Promise<Response | undefin
     hasCredentials(input.request.headers) &&
     refused.get(key) !== undefined
   ) {
-    return undefined;
+    return unshared(0);
   }
   const asset = await handleAsset(input);
   if (asset.admitted) {
@@ -81,10 +87,12 @@ export async function answerAsset(input: AssetInput): Promise<Response | undefin
     refused.set(key, true);
   }
   if (!unshareable(input.request, asset)) {
+    observeMetric(edge.host, asset.point);
     return asset.response;
   }
   // Released, not awaited: a stalled upstream may never acknowledge the cancel, and the client is
-  // waiting on the credentialed request that follows.
+  // waiting on the credentialed request that follows — whose point counts the refused fetch among
+  // its requests, where a point of its own would count a request the client never made.
   releaseStream(asset.response.body, 'asset refused as unshareable');
-  return undefined;
+  return unshared(asset.point.subrequests);
 }

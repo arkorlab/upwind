@@ -97,6 +97,8 @@ export interface PassthroughMetrics {
   readonly storageReads?: number | undefined;
   /** The dispatches of a resume let go before this (`PassthroughWait`). */
   readonly resumeDispatches?: number | undefined;
+  /** The dispatches of an asset's answer the client was not handed (`PassthroughWait`). */
+  readonly assetDispatches?: number | undefined;
   /** A regeneration asked beside this as a request of its own (`PassthroughWait`). */
   readonly regeneration?: DetachedRegeneration | undefined;
   readonly projectId: string;
@@ -125,6 +127,12 @@ export interface PassthroughWait {
    * then let go (`fallbackToApp`): requests made all the same, none where none went out.
    */
   readonly resumeDispatches?: number | undefined;
+  /**
+   * The dispatches the asset strategy sent for an answer the client could not be handed, before its
+   * own request was sent instead (`answerAsset`): requests made all the same, none where none went
+   * out.
+   */
+  readonly assetDispatches?: number | undefined;
   /**
    * The regeneration of a stale record asked as a request of its own before the request was handed
    * on (`triggerDetached`), whose dispatches the point counts: it is written once they are made.
@@ -275,9 +283,13 @@ function reportPassthrough(
     recovery: 0,
     retry: 0,
     assetHit: 0,
-    // The Workers asked, and what came before them — reads of storage, a resume let go — as a
-    // served document's point counts each.
-    subrequests: asked + (metrics.storageReads ?? 0) + (metrics.resumeDispatches ?? 0),
+    // The Workers asked, and what came before them — reads of storage, a resume let go, an asset's
+    // answer the client was not handed — as a served document's point counts each.
+    subrequests:
+      asked +
+      (metrics.storageReads ?? 0) +
+      (metrics.resumeDispatches ?? 0) +
+      (metrics.assetDispatches ?? 0),
   };
   // And a regeneration asked beside it, once it has made its dispatches.
   if (metrics.regeneration === undefined) {

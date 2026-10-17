@@ -591,18 +591,16 @@ async function routeClassified(
 ): Promise<Response> {
   const { request, url, state } = input;
   const { classification, headers: classifiedHeaders } = classified;
-  const passthrough = (reason: string): Promise<Response> => passthroughFor(input, reason);
   const resolved = resolvePolicy(edgeStrategyRegistry, state.policy);
   const edge = edgeContextFor(input, manifest, forwarding);
   if (classification.kind === ASSET_CLASS) {
-    const answered = await answerAsset({
-      request,
-      clientUrl: url,
-      strategy: resolved.assets,
-      edge,
-    });
-    // Or the client's own request, where the strategy's answer is not one to hand it.
-    return answered ?? passthrough('asset-unshareable');
+    // Or the client's own request, where the strategy's answer is not one to hand it, counted with
+    // what the strategy sent for that answer.
+    return answerAsset(
+      { request, clientUrl: url, strategy: resolved.assets, edge },
+      (assetDispatches) =>
+        passthroughFor(input, 'asset-unshareable', undefined, { waited: { assetDispatches } }),
+    );
   }
   return routeHostedDocument({
     request,
