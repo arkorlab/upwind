@@ -10,6 +10,7 @@ import {
   retiredScope,
 } from '../auth.ts';
 import { ENTRY_BODY_BYTES, readRequest } from '../body.ts';
+import { meterRead } from '../read-data.ts';
 import { fail, HTTP, ok } from '../respond.ts';
 
 /**
@@ -38,7 +39,7 @@ async function currentRecord(c: GatewayContext): Promise<Response> {
   if (bytes === null) {
     return fail(c, 'not_found', 'no delivery record for the entry');
   }
-  c.get('host').meter.read(c.get('scopeId'), bytes.byteLength);
+  meterRead(c.get('host'), c.get('scopeId'), bytes.byteLength);
   return new Response(bytes, {
     status: HTTP.OK,
     headers: { 'content-type': OCTET_STREAM, 'cache-control': 'private, no-store' },
@@ -60,7 +61,7 @@ async function artifactBytes(c: GatewayContext): Promise<Response> {
   if (object === null) {
     return fail(c, 'artifact_missing', 'the artifact is not in storage');
   }
-  c.get('host').meter.read(c.get('scopeId'), location.byteLength);
+  meterRead(c.get('host'), c.get('scopeId'), location.byteLength);
   return new Response(object.body, {
     status: HTTP.OK,
     headers: {

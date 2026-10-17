@@ -33,7 +33,7 @@ import {
   readRequest,
   refuseMismatch,
 } from '../body.ts';
-import { dataGetResponseOf, dataReadBytes, readDataRecord } from '../read-data.ts';
+import { dataGetResponseOf, dataReadBytes, meterRead, readDataRecord } from '../read-data.ts';
 import { fail, ok } from '../respond.ts';
 
 /**
@@ -221,7 +221,7 @@ async function getValue(c: GatewayContext): Promise<Response> {
   if (record === undefined) {
     return fail(c, 'not_found', 'no record for the key');
   }
-  c.get('host').meter.read(c.get('scopeId'), dataReadBytes(record));
+  meterRead(c.get('host'), c.get('scopeId'), dataReadBytes(record));
   return ok(c, record);
 }
 
@@ -249,7 +249,7 @@ async function getCurrentValue(c: GatewayContext): Promise<Response> {
     return fail(c, 'not_found', 'no value for the key');
   }
   const answer = dataGetResponseOf(record);
-  c.get('host').meter.read(c.get('scopeId'), dataReadBytes(answer));
+  meterRead(c.get('host'), c.get('scopeId'), dataReadBytes(answer));
   return ok(c, answer);
 }
 
