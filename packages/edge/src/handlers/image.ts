@@ -447,6 +447,10 @@ function notModified(headers: Headers): Response {
   return new Response(null, { status: NOT_MODIFIED_STATUS, headers: kept });
 }
 
+/**
+ * The image as the request asks for it: whole, or without a body — a 304 to a client that holds it
+ * already, the headers alone to a `HEAD` — which its point then counts as nothing sent.
+ */
 function respond(input: ImageAnswerInput, headers: Headers, body: BodyInit | null): Response {
   if (validatorMatches(input.request, headers.get('etag'))) {
     releaseStream(body instanceof ReadableStream ? body : undefined, 'not modified');
@@ -554,8 +558,11 @@ function fromCache(input: ImageInput, cached: Response, startedAt: number): Resp
   if (length !== null) {
     headers.set(CONTENT_LENGTH_HEADER, length);
   }
-  record(input, { src: 'cache', startedAt, bytes: Number(length ?? 0), subrequests: 0 });
-  return respond(input, clientHeaders(input, headers, 'cache'), cached.body);
+  const response = respond(input, clientHeaders(input, headers, 'cache'), cached.body);
+  // Counted as the answer went: none of the image where it carries no body, a `HEAD`'s or a 304's.
+  const sent = response.body === null ? 0 : Number(length ?? 0);
+  record(input, { src: 'cache', startedAt, bytes: sent, subrequests: 0 });
+  return response;
 }
 
 /**
@@ -662,6 +669,8 @@ export async function handleImage(input: ImageInput): Promise<Response> {
       storeCache(edge.host.names.imageCache, key, new Response(bytes, { headers: entry })),
     );
   }
-  record(input, { src: image.via, startedAt, bytes: bytes.byteLength, subrequests });
-  return respond(input, clientHeaders(input, headers, image.via), bytes);
+  const response = respond(input, clientHeaders(input, headers, image.via), bytes);
+  const sent = response.body === null ? 0 : bytes.byteLength;
+  record(input, { src: image.via, startedAt, bytes: sent, subrequests });
+  return response;
 }
