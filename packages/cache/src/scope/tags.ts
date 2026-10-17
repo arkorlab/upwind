@@ -16,6 +16,7 @@ import {
 } from '@stayingupwind/host/cache';
 
 import { controlFenceInvalidations } from './control-fences.ts';
+import { foldsPast, recentFolds } from './folded-invalidations.ts';
 import type { InvalidationRow, TagRow } from './rows.ts';
 import { deleteMeta, readMeta, writeMeta } from './state.ts';
 import { readTagHistory, recordTagHistory } from './tag-history.ts';
@@ -434,8 +435,11 @@ interface RecentQuery {
  * asks every moment, and one that heard of the scope lately has few to read, where its window may
  * hold thousands on a busy scope. Those answer it where they are all there are past `since`, or
  * where they fill an answer. Otherwise the window is read through when each took effect
- * (`recentWindow`): a scope keeps every invalidation it ever recorded, and a walk down the
+ * (`recentWindow`): a scope keeps every invalidation of its history window, and a walk down the
  * revisions in search of a quiet window's few would read them all.
+ *
+ * A window that reaches back past the history window is told each tag's fold among them, as one
+ * invalidation of the tag that counts as all it stands for (`recentFolds`).
  */
 function recentDelta(sql: SqlStorage, input: RecentQuery): TagsDeltaResponse {
   const newest = sql
@@ -455,10 +459,15 @@ function recentDelta(sql: SqlStorage, input: RecentQuery): TagsDeltaResponse {
     newest.length < RECENT_NEWEST || recent.length > input.limit
       ? recent
       : recentWindow(sql, input);
+  const folds = recentFolds(sql, input);
+  const told =
+    folds.rows.length === 0
+      ? rows
+      : [...rows, ...folds.rows].toSorted((a, b) => b.revision - a.revision);
   return delta(sql, {
     revision: input.revision,
-    truncated: rows.length > input.limit,
-    rows: rows.slice(0, input.limit).toReversed(),
+    truncated: rows.length + folds.folded > input.limit,
+    rows: told.slice(0, input.limit).toReversed(),
     historical: true,
   });
 }
@@ -549,9 +558,14 @@ export interface Weighed {
   readonly heldThrough: number;
 }
 
-/** The invalidations recorded after a render read its inputs that name what it depends on. */
+/**
+ * The invalidations recorded after a render read its inputs that name what it depends on. Where it
+ * read them before the history window, those retention folded are weighed as their tag's fold, one
+ * invalidation that condemns whatever they did (`foldsPast`); its meaning is the latest one's, as
+ * what the render's view held of the tag is judged by the latest one it held.
+ */
 export function weighInvalidations(sql: SqlStorage, query: CondemnationQuery): Weighed {
-  const persistent = sql
+  const kept = sql
     .exec<InvalidationRow>(
       `SELECT * FROM invalidations
        WHERE revision > ?
@@ -563,6 +577,7 @@ export function weighInvalidations(sql: SqlStorage, query: CondemnationQuery): W
       query.entryId,
     )
     .toArray();
+  const persistent = [...foldsPast(sql, query.tagIds, query.afterRevision), ...kept];
   const { held } = query;
   if (held === undefined) {
     return {

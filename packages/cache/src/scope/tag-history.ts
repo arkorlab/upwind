@@ -1,6 +1,7 @@
 import { MAX_TAG_HISTORY, type TagHistoryMark, withTagHistory } from '@stayingupwind/core/cache';
 
 import { controlFenceTag } from './control-fences.ts';
+import { foldedMark } from './folded-invalidations.ts';
 import type { InvalidationRow, TagRow } from './rows.ts';
 import { readMeta, writeMeta } from './state.ts';
 
@@ -66,6 +67,7 @@ function tailMark(sql: SqlStorage, tagId: string, through: number): TagHistoryMa
  * Upgrade old metadata only on mutation, with bounded reads as well as bounded retained state.
  * Small ledgers remain exact. Overflow retains the newest fifteen rows and a conservative old
  * tail: its deadline lower bound may expire an old value early, but never reopens an expired one.
+ * A tag's fold stands for the rows retention folded (`foldedMark`).
  */
 function legacyHistory(sql: SqlStorage, tagId: string): TagHistoryMark[] {
   const newest = sql
@@ -80,6 +82,8 @@ function legacyHistory(sql: SqlStorage, tagId: string): TagHistoryMark[] {
   const cutoff = newest.length > MAX_TAG_HISTORY ? newest[MAX_TAG_HISTORY - 1] : undefined;
   const retained = cutoff === undefined ? newest : newest.slice(0, MAX_TAG_HISTORY - 1);
   let history = cutoff === undefined ? [] : [tailMark(sql, tagId, cutoff.revision)];
+  const folded = foldedMark(sql, tagId);
+  if (folded !== undefined) history = withTagHistory(history, folded);
   for (const row of retained.toReversed()) history = withTagHistory(history, toMark(row));
   return history;
 }
