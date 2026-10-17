@@ -42,6 +42,16 @@ export interface BlobStore {
   }>;
 }
 
+/**
+ * A data value's bytes as its write handed them over with it, by the name the gateway gave them as
+ * it stored them (`DataSetInput.bytes`): what the write's settle makes the value's record of, in
+ * place of a read of the store they were stored in.
+ */
+export interface CarriedValue {
+  readonly sha256: string;
+  readonly bytes: Uint8Array;
+}
+
 class InjectedFaultError extends Error {
   constructor(target: string, options?: ErrorOptions) {
     super(`injected ${target} fault`, options);

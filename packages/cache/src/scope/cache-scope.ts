@@ -40,7 +40,7 @@ import {
 } from './attempts.ts';
 import { answerCommit, wantedRecords, withCurrentRecord } from './commit-record.ts';
 import { type CommitOutcome, planCommit } from './commit.ts';
-import { adoptDataUpload } from './data-adopt.ts';
+import { adoptDataUpload, carriedValueOf } from './data-adopt.ts';
 import { type DataUploadPage, listDataUploads } from './data-uploads.ts';
 import type { DataSetInput, DataSetOutcome } from './data.ts';
 import {
@@ -225,7 +225,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
     now: number,
     plan: (input: TxInput) => Apply<T> | Promise<Apply<T>>,
     answers: { readonly atOnce?: boolean } & ({ readonly empty: T } | { readonly seed: T }),
-    { wanted, timing }: Pick<OwnRecords, 'wanted'> & Pick<SettleDeps, 'timing'> = {},
+    { wanted, timing, carried }: Pick<OwnRecords, 'wanted' | 'carried'> & Pick<SettleDeps, 'timing'> = {},
   ): Promise<T> {
     const result = await this.#mutations.run(async () => {
       const committed = await commitMutation(
@@ -249,7 +249,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
     });
     timing?.lap('commit');
     if (result.own === undefined) return result.value;
-    const own = result.own === null ? null : { ...result.own, wanted };
+    const own = result.own === null ? null : { ...result.own, wanted, carried };
     const run = this.#settle(own, undefined, timing);
     if (answers.atOnce === true) run.answerNow();
     await run.answered;
@@ -542,7 +542,8 @@ export class CacheScope extends DurableObject<CacheBindings> {
     const deps = { sql: this.#sql, scopeId: this.#scopeId, blobs: () => this.#blobs() };
     const authorityNow = () => (this.#vars.ARKOR_TEST_HOOKS ? now : Date.now());
     const adopt = (tx: TxInput) => adoptDataUpload({ ...deps, now: authorityNow }, tx, input);
-    const outcome = await this.#mutate(now, adopt, REFUSED, { timing });
+    const carried = carriedValueOf(input);
+    const outcome = await this.#mutate(now, adopt, REFUSED, { timing, carried });
     const needsCleanup =
       !isRefusal(outcome) ||
       (outcome.code === 'quota_exceeded' && (readScope(this.#sql)?.body_bytes ?? 0) > 0);

@@ -12,7 +12,7 @@ import {
 } from './entries.ts';
 import { findGeneration } from './generations.ts';
 import type { ScopeHistory } from './history.ts';
-import { type BlobStore, type KvSink, writeKey } from './io.ts';
+import { type BlobStore, type CarriedValue, type KvSink, writeKey } from './io.ts';
 import { PROJECTION_MEMORY_BYTES, withProjectionMemory } from './projection-memory.ts';
 import { dataRecordJson, generationRecordBytes, projectionMemoryOf } from './records.ts';
 import type { EntryRow, GenerationRow } from './rows.ts';
@@ -150,13 +150,14 @@ export interface WantedRecords {
 }
 
 /**
- * How a run writes its records: whether the scope is retired, which withdraws every one, and which
- * of the generations' records it writes the change whose run it is wants back
- * (`OwnRecords.wanted`).
+ * How a run writes its records: whether the scope is retired, which withdraws every one, which of
+ * the generations' records it writes the change whose run it is wants back (`OwnRecords.wanted`),
+ * and the bytes of the value that change wrote, which its record is made of (`OwnRecords.carried`).
  */
 interface Writing {
   readonly retired: boolean;
   readonly wanted?: WantedRecords | undefined;
+  readonly carried?: CarriedValue | undefined;
 }
 
 interface ProjectingEntry {
@@ -229,7 +230,7 @@ async function projectEntry(
     return undefined;
   }
   if (data) {
-    const json = await dataRecordJson(deps, entry, current);
+    const json = await dataRecordJson(deps, entry, current, writing.carried);
     await writeKey(() => deps.kv.put(key, json));
     return undefined;
   }
@@ -310,6 +311,11 @@ export interface OwnRecords {
    * published it (`CacheScope.commit`).
    */
   readonly wanted?: WantedRecords | undefined;
+  /**
+   * The bytes a data write handed over with its value (`DataSetInput.bytes`), which its run makes
+   * the value's record of instead of reading back from storage what the gateway stored just before.
+   */
+  readonly carried?: CarriedValue | undefined;
 }
 
 /** What the change that has just committed at `revision` left behind (`OwnRecords`). */
@@ -446,7 +452,8 @@ async function projectOwn(
   let more = own.first.length === PROJECTION_BATCH;
   for (;;) {
     if (entries.length > 0) {
-      const page = await projectPage(deps, entries, { retired, wanted: own.wanted }, stop);
+      const writing = { retired, wanted: own.wanted, carried: own.carried };
+      const page = await projectPage(deps, entries, writing, stop);
       failed += page.failed;
       written += page.written;
       if (page.reached < entries.length) {

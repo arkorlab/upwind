@@ -74,6 +74,12 @@ export interface DataSetInput {
   readonly value: DataValueUpload;
   /** Where the write stands among its writer's (`writtenAfter`), when its writer says. */
   readonly order?: WriteOrder | undefined;
+  /**
+   * The value's bytes as the gateway stored them, where the value is small (its `CARRIED_VALUE_BYTES`):
+   * what the write's own settle makes the value's record of, rather than read back from storage what
+   * was stored a moment before (`CarriedValue`).
+   */
+  readonly bytes?: Uint8Array | undefined;
 }
 
 export interface DataSetOutcome {

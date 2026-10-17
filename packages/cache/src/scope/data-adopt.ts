@@ -1,6 +1,6 @@
 import { dataUploadExpired, dataUploadStartedAt } from './data-uploads.ts';
 import { type DataSetInput, type DataSetOutcome, planSetData } from './data.ts';
-import type { BlobStore } from './io.ts';
+import type { BlobStore, CarriedValue } from './io.ts';
 import { isRefusal, type Refusal, refuse, requireActiveScope } from './state.ts';
 import type { Apply, TxInput } from './tx.ts';
 
@@ -35,4 +35,12 @@ export async function adoptDataUpload(
     return () => refuse('artifact_missing', 'the data upload is no longer present');
   }
   return planSetData(tx, input);
+}
+
+/**
+ * The bytes a write handed over with its value (`DataSetInput.bytes`), named as the gateway named
+ * them, for its settle to make the value's record of; `undefined` where it handed over none.
+ */
+export function carriedValueOf(input: DataSetInput): CarriedValue | undefined {
+  return input.bytes === undefined ? undefined : { sha256: input.value.sha256, bytes: input.bytes };
 }
