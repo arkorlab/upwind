@@ -135,6 +135,7 @@ export {
   invalidateResponseSchema,
   MAX_DATA_HANDLER_LENGTH,
   MAX_DATA_KEY_LENGTH,
+  MAX_DELTA_PAGE_TAGS,
   MAX_INLINE_DATA_VALUE_BYTES,
   type ObservationInput,
   observationInputSchema,
