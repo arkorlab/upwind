@@ -181,4 +181,37 @@ describe('forwarded native transport', () => {
     }).toStrictEqual({ head: '12', get: null });
     await expect(get.text()).resolves.toBe('twelve bytes');
   });
+
+  /**
+   * Where its status lets it say a length at all (RFC 9110 §8.6): a 204 says none, and a 205 says
+   * only that it is empty (§15.3.6). A 304 says the length of what a `GET` would get, as any other
+   * answer to `HEAD` does (cubic, upwind#179).
+   */
+  it.each([
+    [204, '12', null],
+    [205, '12', null],
+    [205, '0', '0'],
+    [304, '12', '12'],
+    [404, '12', '12'],
+  ])(
+    'keeps the length of an answer to HEAD under %i where it may say one',
+    (status, length, kept) => {
+      const upstream = new Response(null, { status, headers: { 'content-length': length } });
+      const head = forwardedResponse(upstream, CONTEXT, 'HEAD');
+
+      expect([head.status, head.headers.get('content-length')]).toStrictEqual([status, kept]);
+    },
+  );
+
+  /** Nor does a 1xx say one, whatever the method (RFC 9110 §8.6). */
+  it('keeps no length of a WebSocket handshake answered to HEAD', () => {
+    const upstream = new Response(null, {
+      // eslint-disable-next-line unicorn/no-invalid-response-options -- a Worker answers a handshake 101, with the socket
+      status: 101,
+      webSocket: new WebSocketPair()[0],
+      headers: { 'content-length': '12' },
+    });
+
+    expect(forwardedResponse(upstream, CONTEXT, 'HEAD').headers.get('content-length')).toBeNull();
+  });
 });

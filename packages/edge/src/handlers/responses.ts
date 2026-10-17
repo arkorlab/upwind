@@ -2,6 +2,7 @@ import { mergeMiddlewareResponseHeaders } from '@stayingupwind/core/paas';
 import {
   EDGE_DEBUG_HEADER,
   NO_STORE_CACHE_CONTROL,
+  NULL_BODY_STATUS,
   PASSTHROUGH_RESPONSE_HEADER_DENYLIST,
   type PassthroughResponseContext,
   PLATFORM_HEADER_PREFIX,
@@ -9,6 +10,7 @@ import {
   SHARED_CACHE_CONTROL_HEADERS,
 } from '@stayingupwind/core/request';
 
+const HTTP_OK_STATUS = 200;
 const NOT_FOUND_STATUS = 404;
 const CACHE_CONTROL_HEADER = 'cache-control';
 const S_MAXAGE_DIRECTIVE = 's-maxage';
@@ -86,6 +88,20 @@ function nominatedBy(headers: Headers): ReadonlySet<string> | undefined {
 }
 
 /**
+ * Whether an answer's status lets it say how long it is (RFC 9110 §8.6): no 1xx or 204 does, and a
+ * 205 says only that it is empty, which is all a 205 is (§15.3.6).
+ */
+function statusAllowsLength(response: Response): boolean {
+  const { status } = response;
+  if (status < HTTP_OK_STATUS || status === NULL_BODY_STATUS.noContent) {
+    return false;
+  }
+  return (
+    status !== NULL_BODY_STATUS.resetContent || response.headers.get(CONTENT_LENGTH_HEADER) === '0'
+  );
+}
+
+/**
  * Copy a forwarded answer with its native transport, including a WebSocket handshake. Filtering
  * the copy's headers avoids constructing another Headers and copying every allowed header twice.
  * Read names from the original: deleting from the iterator's own Headers would skip entries.
@@ -93,7 +109,8 @@ function nominatedBy(headers: Headers): ReadonlySet<string> | undefined {
  * `method` is that of the request answered. An answer to `HEAD` keeps its `Content-Length`, which
  * the denylist takes off a body the edge streams on, for the runtime to frame by what it streams:
  * such an answer has none, and the length is that of the answer a `GET` would get (RFC 9110
- * §9.3.2), which the runtime hands the client as given.
+ * §9.3.2), which the runtime hands the client as given — where its status allows a length at all
+ * (`statusAllowsLength`).
  */
 export function forwardedResponse(
   response: Response,
@@ -103,7 +120,8 @@ export function forwardedResponse(
   const answer = new Response(response.body, response);
   const headers = answer.headers;
   const nominated = nominatedBy(response.headers);
-  const kept = method === 'HEAD' ? CONTENT_LENGTH_HEADER : undefined;
+  const kept =
+    method === 'HEAD' && statusAllowsLength(response) ? CONTENT_LENGTH_HEADER : undefined;
   headers.delete(SET_COOKIE_HEADER);
   for (const [name, value] of response.headers) {
     if (
