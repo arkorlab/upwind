@@ -1,7 +1,4 @@
-import { isSignableScopeId } from '@stayingupwind/host/cache';
-
-/** The longest id a scope is named by: what a deploy issues, and nothing longer. */
-const MAX_SCOPE_ID_LENGTH = 256;
+import { isSignableScopeId, MAX_SCOPE_ID_LENGTH } from '@stayingupwind/host/cache';
 
 /**
  * Whether an id can name a scope: one that no key of another scope's could hold, that a token can
