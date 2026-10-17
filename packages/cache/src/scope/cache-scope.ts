@@ -38,7 +38,7 @@ import {
   planStartAttempt,
   type UploadedArtifact,
 } from './attempts.ts';
-import { wantedRecords, withCurrentRecord, withWrittenRecord } from './commit-record.ts';
+import { answerCommit, wantedRecords, withCurrentRecord } from './commit-record.ts';
 import { type CommitOutcome, planCommit } from './commit.ts';
 import { adoptDataUpload } from './data-adopt.ts';
 import { type DataUploadPage, listDataUploads } from './data-uploads.ts';
@@ -518,7 +518,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
     return this.#mutate(now, (tx) => () => applyRecordArtifact(tx, attemptId, upload), AT_ONCE);
   }
 
-  /** Publish an attempt's generation, answered with the record its settle wrote (`withWrittenRecord`). */
+  /** Publish an attempt's generation, answered with the record its run wrote (`answerCommit`). */
   commit(attemptId: string, request: CommitRequest, now: number): Promise<CommitOutcome | Refusal> {
     // A retired scope's commit is refused before its planning asks storage anything.
     const plan = async (tx: TxInput): Promise<Apply<CommitOutcome | Refusal>> => {
@@ -528,7 +528,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
     const entryOf = (): string | undefined => findAttempt(this.#sql, attemptId)?.entry_id;
     const wanted = wantedRecords(entryOf);
     const committed = this.#mutate(now, plan, REFUSED, { wanted });
-    return withWrittenRecord(committed, wanted.records, entryOf, this.#deps());
+    return answerCommit(committed, wanted, entryOf, this.#deps());
   }
 
   fail(attemptId: string, request: FailRequest, now: number): Promise<FailResponse | Refusal> {

@@ -141,7 +141,8 @@ export interface WrittenRecord {
  * The generations' delivery records a change's own run hands back, where the change asks for any:
  * those it `wants`, by entry and size, asked as each is written so that no other record's bytes are
  * held past its write — a run rewrites a page of records behind at a time — and kept in `records`
- * once their write is acknowledged.
+ * once their write is acknowledged. Wanting one, the change keeps its bytes past the chunk that
+ * built them, and charges them to the isolate's room as it says so (`commit-record.ts`).
  */
 export interface WantedRecords {
   readonly wants: (entryId: string, bytes: number) => boolean;
