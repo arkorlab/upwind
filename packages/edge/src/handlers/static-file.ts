@@ -29,6 +29,7 @@ import {
   removeSharedCacheOverrides,
   serviceUnavailableResponse,
 } from './responses.ts';
+import { preconditionFails, requestedRange } from './static-file-conditions.ts';
 
 /**
  * A file the build shipped, served from storage without asking anyone.
@@ -75,9 +76,8 @@ const HTTP_OK = 200;
 const NOT_MODIFIED_STATUS = 304;
 const CONTENT_LENGTH = 'content-length';
 const PARTIAL_CONTENT_STATUS = 206;
+const PRECONDITION_FAILED_STATUS = 412;
 const RANGE_NOT_SATISFIABLE_STATUS = 416;
-/** One range of bytes; several, or another unit, are answered with the whole file, as allowed. */
-const SINGLE_BYTE_RANGE = /^bytes=(?<start>\d*)-(?<end>\d*)$/u;
 const ONE_YEAR_SECONDS = 31_536_000;
 const IMMUTABLE_CACHE_CONTROL = `public, max-age=${ONE_YEAR_SECONDS}, immutable`;
 const REVALIDATE_CACHE_CONTROL = 'public, max-age=0, must-revalidate';
@@ -274,44 +274,11 @@ function storageFailure(input: StaticFileInput, reason: string): Response {
   return new Response(own.body, { status: own.status, headers });
 }
 
-/**
- * The single byte range asked for, when one was and the entity is the one it was asked of: an
- * `If-Range` naming another entity tag turns the request into one for the whole file. `undefined`
- * for no usable range; `null` for one that no byte of the file satisfies.
- */
-function requestedRange(input: StaticFileInput): BlobRange | null | undefined {
-  const { request, file } = input;
-  const range = request.headers.get('range');
-  if (range === null || request.method !== 'GET') {
-    return undefined;
-  }
-  // Strong comparison (RFC 9110 §13.1.5): a weak tag does not say which bytes a client holds, so
-  // it resumes nothing, even one spelled the same as the tag the answer carries.
-  const condition = request.headers.get('if-range');
-  const tag = entityTagOf(input);
-  if (condition !== null && (condition !== tag || tag.startsWith('W/'))) {
-    return undefined;
-  }
-  const groups = SINGLE_BYTE_RANGE.exec(range.trim())?.groups;
-  if (groups === undefined || (groups['start'] === '' && groups['end'] === '')) {
-    return undefined;
-  }
-  const length = file.byteLength;
-  // No byte of an empty file satisfies any range, and a suffix of it would compute an end before
-  // its start: RFC 9110 §14.1.1 has nothing to return but 416.
-  if (length === 0) {
-    return null;
-  }
-  if (groups['start'] === '') {
-    // A suffix: the last N bytes. An empty file has no last byte, whatever N is.
-    const suffix = Number(groups['end']);
-    return suffix === 0 || length === 0
-      ? null
-      : { start: Math.max(0, length - suffix), end: length - 1 };
-  }
-  const start = Number(groups['start']);
-  const end = groups['end'] === '' ? length - 1 : Math.min(Number(groups['end']), length - 1);
-  return start >= length || start > end ? null : { start, end };
+/** The range asked of the file (`requestedRange`), where it answers as itself; none otherwise. */
+function rangeAsked(input: StaticFileInput): BlobRange | null | undefined {
+  return answersAsItself(input)
+    ? requestedRange(input.request, entityTagOf(input), input.file.byteLength)
+    : undefined;
 }
 
 function rangeNotSatisfiable(headers: Headers, file: StaticFileEntry): Response {
@@ -335,12 +302,46 @@ function unmodified(input: StaticFileInput): boolean {
   );
 }
 
-/** Whether the manifest is all the answer needs: a HEAD, or an entity the client already has. */
+/**
+ * Whether the file fails a precondition the request holds it to (`preconditionFails`), judged
+ * against the answer the file would be given: the entity tag it carries, and the `Last-Modified` a
+ * rule or the middleware gave it — storage keeps no date of the file's own. Only a file answered as
+ * itself is judged (`answersAsItself`).
+ */
+function preconditionFailed(input: StaticFileInput): boolean {
+  return (
+    answersAsItself(input) &&
+    preconditionFails(input.request, entityTagOf(input), () =>
+      fileHeaders(input, 'manifest').get('last-modified'),
+    )
+  );
+}
+
+/**
+ * A precondition the file fails, answered 412 as Next.js's file server answers it, whatever
+ * validator or range the request carries and to a `HEAD` as well. Under the file's headers and with
+ * no body, as a 416 is — Next.js renders its error page there — and kept by nobody: a cache keyed on
+ * the URL alone would hand the refusal to every request for the file.
+ */
+function preconditionFailure(input: StaticFileInput): Response {
+  const headers = fileHeaders(input, 'manifest');
+  headers.delete(CONTENT_LENGTH);
+  keptByNobody(headers);
+  return new Response(null, { status: PRECONDITION_FAILED_STATUS, headers });
+}
+
+/**
+ * Whether the manifest is all the answer needs: a HEAD, a precondition the file fails, or an entity
+ * the client already has.
+ */
 function answeredFromManifest(input: StaticFileInput): boolean {
-  return input.request.method === 'HEAD' || unmodified(input);
+  return input.request.method === 'HEAD' || preconditionFailed(input) || unmodified(input);
 }
 
 function metadataResponse(input: StaticFileInput): Response | undefined {
+  if (preconditionFailed(input)) {
+    return preconditionFailure(input);
+  }
   const matched = unmodified(input);
   if (!matched && input.request.method !== 'HEAD') {
     return undefined;
@@ -506,7 +507,7 @@ export function startFileRead(input: StaticFileInput): EarlyFileRead | undefined
   if (answeredFromManifest(input)) {
     return undefined;
   }
-  const range = answersAsItself(input) ? requestedRange(input) : undefined;
+  const range = rangeAsked(input);
   if (range === null) {
     return undefined;
   }
@@ -589,7 +590,7 @@ export async function handleStaticFile(
     recordManifestAnswer(input, startedAt, [early, replaced]);
     return metadata;
   }
-  const range = answersAsItself(input) ? requestedRange(input) : undefined;
+  const range = rangeAsked(input);
   if (range === null) {
     abandonFileRead(early);
     recordManifestAnswer(input, startedAt, [early, replaced]);
