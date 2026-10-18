@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import type { Plugin } from 'rolldown';
 
+import { buildPaths } from '../build-paths.ts';
 import { arkorWasmGlobal, type WasmCollector } from '../wasm.ts';
 import {
   isStubbedModule,
@@ -35,13 +36,15 @@ export function patchesPlugin(
   ctx: PatchContext,
   onApplied?: (applied: AppliedPatch) => void,
 ): Plugin {
+  const external = buildPaths(ctx.projectDir, ctx.distDir).external;
+  const enabled = patches.filter((patch) => patch.externalOutputOnly !== true || external);
   return {
     name: 'arkor-patches',
     load: {
       // Tested against the id with `/` separators, whatever the platform's; so are the targets.
-      filter: { id: patches.map((patch) => patch.target) },
+      filter: { id: enabled.map((patch) => patch.target) },
       async handler(id) {
-        const matching = patches.filter((candidate) => candidate.target.test(id));
+        const matching = enabled.filter((candidate) => candidate.target.test(id));
         if (matching.length === 0) {
           return null;
         }

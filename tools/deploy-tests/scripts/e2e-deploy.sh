@@ -87,7 +87,10 @@ fixture() {
 fixture pnpm install --no-frozen-lockfile --prod=false >&2
 
 # The harness writes the application's own build script and appends `&& pnpm post-build`
-# (`test/lib/next-modes/base.ts`). Run exactly what it wrote: a fixture's own build command and its
+# (`test/lib/next-modes/base.ts`). Run its build through pnpm, including prebuild and postbuild:
+# fixtures may prepare additional roots before Next.js reads their config. Explicitly enable
+# lifecycle scripts even when the fixture's own pnpm settings turn them off. The build script
+# still runs exactly what the harness wrote: a fixture's own command and its
 # build arguments are not ours to replace with a plain `next build`, and the appended step is not
 # ours to drop either — in deploy mode the harness writes a `post-build` of its own that prints the
 # three markers, but a fixture that has one keeps it (`...pkgScripts` comes after), and that one may
@@ -100,8 +103,7 @@ fixture pnpm install --no-frozen-lockfile --prod=false >&2
 # `parseIdsFromCliOuput`) — and `.adapter-build.log` below puts ours at the top, ahead of the build's
 # own output. Checked against v16.3.6.
 build_command="$(
-  node -p "JSON.parse(require('fs').readFileSync('package.json','utf8')).scripts?.build ?? 'next build'" \
-    2>/dev/null || echo 'next build'
+  node -p "typeof JSON.parse(require('fs').readFileSync('package.json','utf8')).scripts?.build === 'string' ? 'pnpm --config.enable-pre-post-scripts=true run build' : 'next build'"
 )"
 echo "build command: ${build_command}" >&2
 

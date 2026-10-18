@@ -78,6 +78,8 @@ export interface Patch {
   readonly name: string;
   /** Matches the path of the file to rewrite, with `/` separators whatever the platform's. */
   readonly target: RegExp;
+  /** Skipped, including its dependency record, when distDir remains inside the project. */
+  readonly externalOutputOnly?: true;
   /**
    * For a patch whose file has no name to match — Turbopack puts its WebAssembly loader in
    * whichever chunk first needed it — what in the source says this is the file. A file the
