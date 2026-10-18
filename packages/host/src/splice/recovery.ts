@@ -32,6 +32,7 @@ const CURRENT_RECOVERY_TOKEN = `$1${RECOVERY_SCRIPT_CSP_SOURCE}`;
  * applied. The new string is retained only where that policy named the old script.
  */
 export function replaceLegacyRecoverySource(policy: string): string {
+  // eslint-disable-next-line unicorn/no-unsafe-string-replacement -- A fixed public hash follows the intended $1 separator capture; no replacement text comes from input.
   return policy.replaceAll(LEGACY_RECOVERY_TOKEN, CURRENT_RECOVERY_TOKEN);
 }
 
