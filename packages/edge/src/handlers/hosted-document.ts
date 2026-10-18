@@ -17,6 +17,7 @@ import { type MemberRead, startMemberRead, upgradesMember } from '../cache/membe
 import { type RewriteSeen, rewriteSeenKey } from '../memory/caches.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { loadShell, type ShellLoadResult } from '../strategies/shell-loader.ts';
+import { withJudgedRules } from './configured-headers.ts';
 import { handleDocument } from './document.ts';
 import { serveMemberWithoutShell, type Unserved } from './hosted-member.ts';
 import { composePagesData, composePayload, composeSegment } from './hosted-parts.ts';
@@ -37,7 +38,6 @@ import {
   type MiddlewareOutcome,
   middlewareResponse,
   runMiddleware,
-  withJudgedRules,
 } from './middleware.ts';
 import { PATTERN_BUDGET, type PassthroughWait, passthroughReason } from './passthrough.ts';
 

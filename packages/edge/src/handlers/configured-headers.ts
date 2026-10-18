@@ -1,10 +1,12 @@
-import type { ConfiguredHeaders } from '@stayingupwind/core/manifest';
+import type { ConfiguredHeaders, ProjectManifest } from '@stayingupwind/core/manifest';
 import {
   PASSTHROUGH_RESPONSE_HEADER_DENYLIST,
   type PassthroughResponseContext,
   PLATFORM_HEADER_PREFIX,
   rewriteSetCookieForPreview,
 } from '@stayingupwind/core/request';
+
+import type { MiddlewareOutcome } from './middleware.ts';
 
 const SET_COOKIE_HEADER = 'set-cookie';
 
@@ -105,4 +107,31 @@ export function layConfiguredOver(
       setConfigured(headers, name, value, scope);
     }
   }
+}
+
+/**
+ * Whether the rules a manifest carries are every rule of `next.config` that sets a header: a build
+ * whose routing the edge reproduces publishes them all, and its dynamic routes, an empty list
+ * included. One it does not — with `i18n` — publishes only the rules `next build` writes itself, and
+ * folds its others into its routes' headers (`foldedHeaderRules`), which no request is judged by.
+ */
+function judgesEveryHeaderRule(manifest: ProjectManifest): boolean {
+  return manifest.dynamicRoutes !== undefined && manifest.foldedHeaderRules === undefined;
+}
+
+/**
+ * What the middleware decided, with the headers the rules of `next.config` set on the request as
+ * the client sent it (`configured`, judged before the middleware ran) beside a decision to let the
+ * request on (`MiddlewareContinued.judgedRules`), for the Function it may be handed to. Not where the
+ * manifest holds only some of the rules (`judgesEveryHeaderRule`): the Function judges them all, as
+ * it did, and the edge lays none.
+ */
+export function withJudgedRules<Outcome extends MiddlewareOutcome>(
+  outcome: Outcome,
+  configured: ConfiguredHeaders,
+  manifest: ProjectManifest,
+): Outcome {
+  return outcome.kind === 'continue' && judgesEveryHeaderRule(manifest)
+    ? { ...outcome, judgedRules: configured }
+    : outcome;
 }

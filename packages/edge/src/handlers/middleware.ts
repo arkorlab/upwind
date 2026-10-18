@@ -311,10 +311,7 @@ export function middlewareMatches(
   url: URL,
   headers: Headers,
 ): boolean {
-  if (edge.app?.middlewareScriptName === undefined) {
-    return false;
-  }
-  if (manifest.middleware === undefined) {
+  if (edge.app?.middlewareScriptName === undefined || manifest.middleware === undefined) {
     return false;
   }
   const { matchers } = manifest.middleware;
@@ -361,33 +358,6 @@ export function judgeHeaderRulesAhead(
   headers: Headers,
 ): RequestHeaderRules {
   return requestHeaderRulesFor(manifest, url, routedHeaders(edge, manifest.headerRules, headers));
-}
-
-/**
- * Whether the rules a manifest carries are every rule of `next.config` that sets a header: a build
- * whose routing the edge reproduces publishes them all, and its dynamic routes, an empty list
- * included. One it does not — with `i18n` — publishes only the rules `next build` writes itself, and
- * folds its others into its routes' headers (`foldedHeaderRules`), which no request is judged by.
- */
-function judgesEveryHeaderRule(manifest: ProjectManifest): boolean {
-  return manifest.dynamicRoutes !== undefined && manifest.foldedHeaderRules === undefined;
-}
-
-/**
- * What the middleware decided, with the headers the rules of `next.config` set on the request as
- * the client sent it (`configured`, judged before the middleware ran) beside a decision to let the
- * request on (`MiddlewareContinued.judgedRules`), for the Function it may be handed to. Not where the
- * manifest holds only some of the rules (`judgesEveryHeaderRule`): the Function judges them all, as
- * it did, and the edge lays none.
- */
-export function withJudgedRules<Outcome extends MiddlewareOutcome>(
-  outcome: Outcome,
-  configured: ConfiguredHeaders,
-  manifest: ProjectManifest,
-): Outcome {
-  return outcome.kind === 'continue' && judgesEveryHeaderRule(manifest)
-    ? { ...outcome, judgedRules: configured }
-    : outcome;
 }
 
 /**
