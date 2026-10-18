@@ -300,6 +300,17 @@ function withoutCredentials(headers: Headers, credentials: HostCredentials): Hea
   return copy;
 }
 
+/** The classifier reads these before routing; removing one would admit a request it must pass on. */
+function keptForClassification(name: string, headers: Headers): boolean {
+  if (name === 'cookie') {
+    return getCookieValue(headers.get('cookie'), EDGE_BYPASS_COOKIE) !== undefined;
+  }
+  return (
+    (name !== 'host' && name !== 'x-real-ip' && CLASSIFIED_HEADERS.has(name)) ||
+    CLASSIFIED_HEADER_PREFIXES.some((prefix) => name.startsWith(prefix))
+  );
+}
+
 /**
  * The headers a request is classified on (`classifyRequest`), and its route's conditions are judged
  * on where no middleware runs (`requestAsLeft`): the class of a member served from its record, what
@@ -313,8 +324,9 @@ function withoutCredentials(headers: Headers, credentials: HostCredentials): Hea
  * What the classification reads by name besides — a router's headers, a navigation's, draft mode's
  * cookies — is read on the same headers, and a host that keeps one of those as its own has them
  * copied for that alone (`classificationReadsCredentials`): Next.js is never handed it either.
- * Only known forwarding fields read by the manifest (`routingReadsFor`) take their forwarded values.
- * The client markers used by classification, including the recovery cookie, stay as they came.
+ * Every forwarding field read by the manifest (`routingReadsFor`) takes its forwarded value,
+ * including the public country header the forwarder supplies. The client markers used by
+ * classification, including the recovery cookie, stay as they came (`keptForClassification`).
  */
 function headersToClassify(
   manifest: ProjectManifest | undefined,
@@ -328,12 +340,15 @@ function headersToClassify(
   const classified = copied ? withoutCredentials(headers, credentials) : headers;
   const fields = routing?.forwardedFields ?? [];
   if (fields.length === 0) return classified;
-  const forwarded = withoutHostCredentials(
-    sanitizePassthroughHeaders(headers, forwarding),
-    credentials,
-  );
-  const routed = classified === headers ? new Headers(classified) : classified;
+  let forwarded: Headers | undefined;
+  let routed = classified;
   for (const name of fields) {
+    if (keptForClassification(name, headers)) continue;
+    forwarded ??= withoutHostCredentials(
+      sanitizePassthroughHeaders(headers, forwarding),
+      credentials,
+    );
+    if (routed === headers) routed = new Headers(classified);
     const value = forwarded.get(name);
     if (value === null) routed.delete(name);
     else routed.set(name, value);

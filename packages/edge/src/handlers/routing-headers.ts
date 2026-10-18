@@ -45,15 +45,6 @@ export function readsForwarding(condition: Condition): boolean {
   );
 }
 
-/** Known headers forwarding removes or supplies, apart from the URL a host condition reads. */
-const FORWARDED_ROUTING_FIELDS: ReadonlySet<string> = new Set([
-  'host',
-  'x-forwarded-host',
-  'x-forwarded-proto',
-  'x-forwarded-port',
-  'x-forwarded-for',
-  'via',
-]);
 interface RoutingReads {
   readonly credentials: HostCredentials;
   readonly reads: boolean;
@@ -73,9 +64,12 @@ export function routingReadsFor(
   const fields = new Set<string>();
   const remember = (conditions: readonly Condition[] | undefined): void => {
     for (const condition of conditions ?? []) {
-      reads ||= readsCredentials(condition, credentials);
+      const credentialsRead = readsCredentials(condition, credentials);
+      reads ||= credentialsRead;
       const name = condition.type === 'header' ? condition.key?.toLowerCase() : undefined;
-      if (name !== undefined && FORWARDED_ROUTING_FIELDS.has(name)) fields.add(name);
+      if (name !== undefined && (credentialsRead || readsForwarding(condition))) {
+        fields.add(name);
+      }
     }
   };
   for (const rule of manifest.reservedRoutes ?? []) {
