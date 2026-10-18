@@ -626,13 +626,20 @@ export function condemnationOf(
   if (invalidations.length === 0) {
     return null;
   }
-  const staleAt = Math.min(...invalidations.map((row) => row.stale_at));
-  const hardExpiries = invalidations.flatMap((row) =>
-    row.hard_expire_at === null ? [] : [row.hard_expire_at],
-  );
+  let revision = Number.NEGATIVE_INFINITY;
+  let staleAt = Number.POSITIVE_INFINITY;
+  let hardExpireAt: number | undefined;
+  // A seed reads every retained invalidation of its tags, more than a call's arguments may hold.
+  for (const row of invalidations) {
+    revision = Math.max(revision, row.revision);
+    staleAt = Math.min(staleAt, row.stale_at);
+    if (row.hard_expire_at !== null) {
+      hardExpireAt = Math.min(hardExpireAt ?? Number.POSITIVE_INFINITY, row.hard_expire_at);
+    }
+  }
   return {
-    revision: Math.max(...invalidations.map((row) => row.revision)),
+    revision,
     staleAt,
-    ...(hardExpiries.length > 0 && { hardExpireAt: Math.min(...hardExpiries) }),
+    ...(hardExpireAt !== undefined && { hardExpireAt }),
   };
 }
