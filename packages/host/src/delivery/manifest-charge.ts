@@ -47,6 +47,12 @@ interface RuleObjects {
   readonly missing?: readonly unknown[] | undefined;
   readonly headers?: Readonly<Record<string, string>> | undefined;
   readonly documentHeaders?: Readonly<Record<string, string>> | undefined;
+  readonly members?:
+    | {
+        readonly bypassFor?: readonly unknown[] | undefined;
+        readonly keyedBy?: readonly unknown[] | undefined;
+      }
+    | undefined;
 }
 
 function keysOf(record: Readonly<Record<string, unknown>> | undefined): number {
@@ -70,6 +76,10 @@ function ruleObjects(rules: readonly RuleObjects[] | undefined): number {
   for (const rule of rules) {
     objects += 1 + listObjects(rule.has) + listObjects(rule.missing);
     objects += (rule.headers === undefined ? 0 : 1) + (rule.documentHeaders === undefined ? 0 : 1);
+    const members = rule.members;
+    if (members !== undefined) {
+      objects += 1 + listObjects(members.bypassFor) + (members.keyedBy === undefined ? 0 : 1);
+    }
   }
   return objects;
 }

@@ -41,7 +41,7 @@ export const SIGNABLE_SCOPE_ID = /^[\w+~-]+$/u;
  */
 export const MAX_SCOPE_ID_LENGTH = 256;
 
-/** Whether a token can be signed for `scopeId` (`SIGNABLE_SCOPE_ID`). */
+/** Whether `scopeId` uses the token and storage alphabet (`SIGNABLE_SCOPE_ID`). */
 export function isSignableScopeId(scopeId: string): boolean {
   return SIGNABLE_SCOPE_ID.test(scopeId);
 }
@@ -88,6 +88,9 @@ export async function signCacheToken(
 ): Promise<string> {
   if (scopeId === '' || scopeId.includes(SEPARATOR)) {
     throw new Error('a scope id cannot carry the token separator');
+  }
+  if (scopeId.length > MAX_SCOPE_ID_LENGTH) {
+    throw new Error(`a scope id is at most ${MAX_SCOPE_ID_LENGTH} characters`);
   }
   const signed = message(scopeId, naming);
   if (signed === undefined) {

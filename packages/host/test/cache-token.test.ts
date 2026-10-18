@@ -45,6 +45,25 @@ describe('cache tokens', () => {
     ).resolves.toBe(true);
   });
 
+  it('can be minted for the longest id the scope authority accepts', async () => {
+    const scopeId = 'a'.repeat(MAX_SCOPE_ID_LENGTH);
+    const token = await signCacheToken(SECRET, scopeId, NAMING);
+
+    expect(parseCacheToken(token)?.scopeId).toBe(scopeId);
+    await expect(
+      verifyCacheToken({ token, scopeId, secret: SECRET, naming: NAMING }),
+    ).resolves.toBe(true);
+  });
+
+  it('refuses a longer scope before importing a signing key', async () => {
+    const importKey = vi.spyOn(crypto.subtle, 'importKey');
+
+    await expect(
+      signCacheToken(SECRET, 'a'.repeat(MAX_SCOPE_ID_LENGTH + 1), NAMING),
+    ).rejects.toThrow(`a scope id is at most ${MAX_SCOPE_ID_LENGTH} characters`);
+    expect(importKey).not.toHaveBeenCalled();
+  });
+
   it('open no other scope, and nothing under another key', async () => {
     const token = await signCacheToken(SECRET, SCOPE, NAMING);
     const signature = token.split('.', PARTS)[2] ?? '';
