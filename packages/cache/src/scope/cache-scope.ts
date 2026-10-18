@@ -198,10 +198,10 @@ export class CacheScope extends DurableObject<CacheBindings> {
    * scope here, whose marker in KV outlives it: a retired scope is never seeded again, and the seed
    * is answered with `seed`. Both are decided under the lock, where erasure happens.
    *
-   * A change that committed is answered once the run that follows its commit has written the
-   * delivery and tag records it left, and runs go one after another (`#settle`): it waits for the
-   * runs asked for before its own as well, an invalidation's rewrite say. A change of an operation
-   * that never leaves such a record — a lease, a heartbeat, an upload's record, a failed attempt's
+   * A change that committed waits for its run to attempt its delivery and tag records; a public
+   * projection KV refuses is retried after the answer (`#settle`). Its run waits for the preceding
+   * runs as well, an invalidation's rewrite say. An operation that never leaves such a record —
+   * a lease, a heartbeat, an upload's record, a failed attempt's
    * end, a seed — is answered as it commits instead (`AT_ONCE`, `SEED`). Its answer is read from
    * its own transaction, and nothing its caller does next is held to what a run writes: KV is read
    * where the caller runs, behind by its cache and its propagation whatever has been written, and
@@ -281,9 +281,10 @@ export class CacheScope extends DurableObject<CacheBindings> {
    * Settles run one after another; a caller waits for the run that follows its commit — for the
    * whole of it (`done`), or only until what its change owes is done (`answered`, see
    * `settlePending`), or not at all where it owes nothing before its answer (`answerNow`). A run
-   * that fails before then fails the caller's wait as well. `from` is what a change left behind as
-   * it committed (`ownRecordsOf`), whose records its run writes, or `null` when it committed
-   * nothing; the alarm's runs leave it out and write the backlog. `timing` is where a change that
+   * that cannot arm its retry fails the caller's wait; an owned private mark must also be written.
+   * `from` is what a change left behind as it committed (`ownRecordsOf`), whose records its run
+   * writes, or `null` when it committed nothing; the alarm's runs leave it out and write the backlog.
+   * `timing` is where a change that
    * says how long its parts took has its run timed, whether it committed anything or not.
    */
   #settle(

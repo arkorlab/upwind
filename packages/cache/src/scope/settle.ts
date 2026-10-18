@@ -41,9 +41,9 @@ import { timedDeps, type Timing } from './timing.ts';
  * say is pending, so a run that fails halfway is picked up where it stopped, by the next commit's
  * settle or by the alarm.
  *
- * Of these, only the delivery records — and the tag records beside them — are what anything is
- * served or judged from, so they are all a change waits for; what the history owes follows its
- * answer (`settlePending`).
+ * A public change waits for the attempt to write its delivery and tag records, not the history
+ * (`settlePending`). A projection KV refuses is owed to the retry alarm: the change is committed,
+ * so its caller is still answered. An owned private mark must be projected (`finishSettle`).
  */
 
 const PROJECTION_BATCH = 50;

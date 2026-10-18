@@ -76,6 +76,41 @@ jobs:
           matrix_next_version="$(node -p 'require("./packages/adapter/node_modules/next/package.json").version')"
           pnpm check:matrix --fixture next-external-output --versions "$matrix_next_version"
 
+  website:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: web-site
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+      WRANGLER_SEND_METRICS: 'false'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web-site/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typegen
+      - run: pnpm typecheck
+      # Build the website with its released adapter, independently of workspace packages.
+      - run: pnpm build
+      - name: Compiled Edge middleware behavior
+        timeout-minutes: 2
+        run: node scripts/check-middleware.mjs
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: website-middleware-${{ github.run_id }}-${{ github.run_attempt }}
+          path: web-site/.arkor/middleware-check.json
+          include-hidden-files: true
+          retention-days: 14
+
   audit:
     runs-on: ubuntu-latest
     timeout-minutes: 10

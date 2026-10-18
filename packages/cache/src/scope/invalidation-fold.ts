@@ -1,6 +1,7 @@
 import type { ScopeLimits } from '../env.ts';
 import { raiseFoldedThrough } from './folded-invalidations.ts';
 import type { InvalidationRow } from './rows.ts';
+import { deleteMeta, readMeta, writeMeta } from './state.ts';
 import { keepTagHistory } from './tag-history.ts';
 import { findTag } from './tags.ts';
 
@@ -27,14 +28,80 @@ import { findTag } from './tags.ts';
  *   invalidation of it (`legacyHistory`). The fold stores that history first, as the upgrade would
  *   (`keepTagHistory`), before any row of the tag goes.
  *
- * A batch at a time, the oldest first, as retention lets go of anything: one that comes back full
- * leaves the rest to a run that comes within a second (`RetentionPlan.more`). Nothing is announced
- * and no revision is committed: what any reader is told of a tag stands as it stood. Only an active
- * scope's are folded: a retired one records no more, and goes whole once its history window is over.
+ * A batch of candidates at a time, oldest first: even a batch a head keeps leaves the rest to a run
+ * within a second (`RetentionPlan.more`). Its position survives a restart; a finished pass returns
+ * to the beginning next period, revisiting rows a head let go of and any inserted behind it.
+ * Nothing is announced and no revision committed: what a reader is told of a tag stands as it stood.
+ * Only an active scope's are folded: a retired one records no more, and goes whole once its history
+ * window is over.
  */
 
-/** How many invalidations one run of retention folds at the most. */
+/** How many invalidations one run of retention examines at the most. */
 const FOLD_BATCH = 200;
+const META_FOLD_CURSOR = 'invalidations_fold_cursor';
+
+interface FoldCursor {
+  readonly staleAt: number;
+  readonly id: string;
+  readonly before: number;
+}
+
+/**
+ * Built only by retention, never an object's serving-path initialization. The tuple index seeks
+ * past a page even when many rows took effect together; the head index bounds each candidate's
+ * protection check, rather than building the whole head set each run. Existing objects gain both
+ * idempotently at their next fold, with the initial index build borne by that background run.
+ */
+function prepareFold(sql: SqlStorage): void {
+  sql.exec(
+    `CREATE INDEX IF NOT EXISTS invalidations_to_fold
+     ON invalidations (stale_at, invalidation_id) WHERE target_kind = 'tag'`,
+  );
+  sql.exec(
+    `CREATE INDEX IF NOT EXISTS resource_heads_by_tag_revision ON resource_heads (tag_revision)`,
+  );
+}
+
+/**
+ * Candidates are bounded before protection is tested, including a batch entirely kept by heads.
+ * Keep the pass's original cutoff: rows that age past the window during it wait for the next pass,
+ * rather than making it chase a busy scope's advancing window. A clock that went back still keeps
+ * the history window intact. Backdated insertions behind the cursor wait for the next pass too.
+ */
+function candidates(
+  sql: SqlStorage,
+  before: number,
+): (InvalidationRow & { at_resource_head: number })[] {
+  const kept = readMeta(sql, META_FOLD_CURSOR);
+  const after = kept === undefined ? undefined : (JSON.parse(kept) as FoldCursor);
+  const position = after === undefined ? [] : [after.staleAt, after.id];
+  const cutoff = Math.min(before, after?.before ?? before);
+  const rows = sql
+    .exec<InvalidationRow & { at_resource_head: number }>(
+      `SELECT i.*, EXISTS (
+         SELECT 1 FROM resource_heads AS h WHERE h.tag_revision = i.revision
+       ) AS at_resource_head
+       FROM invalidations AS i INDEXED BY invalidations_to_fold
+       WHERE target_kind = 'tag' AND stale_at < ?
+         ${after === undefined ? '' : 'AND (stale_at, invalidation_id) > (?, ?)'}
+       ORDER BY stale_at, invalidation_id LIMIT ?`,
+      cutoff,
+      ...position,
+      FOLD_BATCH,
+    )
+    .toArray();
+  const last = rows.at(-1);
+  if (last !== undefined && rows.length === FOLD_BATCH) {
+    writeMeta(
+      sql,
+      META_FOLD_CURSOR,
+      JSON.stringify({ staleAt: last.stale_at, id: last.invalidation_id, before: cutoff }),
+    );
+  } else {
+    deleteMeta(sql, META_FOLD_CURSOR);
+  }
+  return rows;
+}
 
 interface FoldInput {
   readonly sql: SqlStorage;
@@ -119,23 +186,17 @@ function foldInto(sql: SqlStorage, tagId: string, fold: Folded): void {
 }
 
 /**
- * Fold the oldest batch of the invalidations that took effect before the history window, inside
- * retention's transaction; whether the batch came back full, and more is left.
+ * Examine the next bounded page before the history window and fold what no resource head keeps,
+ * inside retention's transaction; whether the candidate page was full, and more is left.
  */
 export function foldInvalidations(input: FoldInput): boolean {
   const { sql } = input;
-  const rows = sql
-    .exec<InvalidationRow>(
-      `SELECT * FROM invalidations INDEXED BY invalidations_by_stale_at
-       WHERE stale_at < ? AND target_kind = 'tag'
-         AND revision NOT IN (SELECT tag_revision FROM resource_heads)
-       ORDER BY stale_at LIMIT ?`,
-      input.now - input.limits.retainHistoryMs,
-      FOLD_BATCH,
-    )
-    .toArray();
+  prepareFold(sql);
+  const page = candidates(sql, input.now - input.limits.retainHistoryMs);
+  const more = page.length === FOLD_BATCH;
+  const rows = page.filter((row) => row.at_resource_head === 0);
   if (rows.length === 0) {
-    return false;
+    return more;
   }
   const byTag = Map.groupBy(rows, (row) => row.target_id);
   for (const [tagId, folded] of byTag) {
@@ -150,5 +211,5 @@ export function foldInvalidations(input: FoldInput): boolean {
     `DELETE FROM invalidations WHERE invalidation_id IN (SELECT value FROM json_each(?))`,
     JSON.stringify(rows.map((row) => row.invalidation_id)),
   );
-  return rows.length === FOLD_BATCH;
+  return more;
 }
