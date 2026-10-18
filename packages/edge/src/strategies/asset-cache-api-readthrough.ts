@@ -27,6 +27,19 @@ import type { EdgeContext } from './context.ts';
 
 const STRATEGY_ID = 'cache-api-readthrough';
 
+/** Percent-encoded dots still normalize; these spellings cannot be URI-encoded input. */
+function cacheSegment(value: string): string {
+  if (value === '.' || value === '..') {
+    return value === '.' ? '%2E_' : '%2E%2E_';
+  }
+  try {
+    return encodeURIComponent(value);
+  } catch {
+    // JSON preserves lone surrogates. A literal tilde never encodes to this prefix.
+    return `%7E${encodeURIComponent(JSON.stringify(value).slice(1, -1))}`;
+  }
+}
+
 /**
  * Per-data-center Cache API read-through keyed by the asset's URL (including `?dpl`); the
  * upstream is the deployment's own Worker.
@@ -60,7 +73,7 @@ export function admittedAssetCacheKey(
   // separately, sharing one entry the day that rule widens. Each segment is encoded, so neither the
   // project nor the hostname can carry a `/` of its own: the first two segments are exactly the two
   // of them, and nothing else can look like them.
-  key.pathname = `/${encodeURIComponent(projectId)}/${encodeURIComponent(previewHost)}${key.pathname}`;
+  key.pathname = `/${cacheSegment(projectId)}/${cacheSegment(previewHost)}${key.pathname}`;
   return key.href;
 }
 

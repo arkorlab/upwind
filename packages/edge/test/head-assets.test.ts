@@ -9,6 +9,7 @@ import { createEdgeMemory } from '../src/memory/caches.ts';
 import type { EdgeMetric } from '../src/observability/metrics.ts';
 import { serveFromPointer } from '../src/route.ts';
 import { standaloneHost, standaloneRuntime } from '../src/standalone/index.ts';
+import { admittedAssetCacheKey } from '../src/strategies/asset-cache-api-readthrough.ts';
 import { pprDocument, seedSite } from './helpers/site.ts';
 
 const ASSET = 'https://site.example/_next/static/chunks/main-abc123.js';
@@ -301,5 +302,73 @@ describe('asset cache lookup bodies', () => {
     expect(cancelled).not.toHaveBeenCalled();
 
     await response.body?.cancel();
+  });
+});
+
+describe('asset project identity', () => {
+  const identifiers = [
+    '.',
+    '..',
+    '%2E',
+    '%2e',
+    '%2E_',
+    '._',
+    '.._',
+    '../',
+    '.\\',
+    '.%2e',
+    '%2e.',
+    '%2E%2E',
+    '%',
+    '~',
+    'project',
+    'a/b',
+    'a%2Fb',
+  ];
+
+  it('keeps dot segments distinct through Request and the real Cache API', async () => {
+    const origin = new URL(`https://site.example/_next/static/${crypto.randomUUID()}.js?dpl=one`);
+    const cache = await caches.open('asset-project-identity');
+    const keys = identifiers.map(
+      (id) => new Request(admittedAssetCacheKey(origin, 'site.example', id)),
+    );
+
+    expect(new Set(keys.map((key) => key.url)).size).toBe(identifiers.length);
+
+    for (const [index, key] of keys.entries()) {
+      await cache.put(
+        key,
+        new Response(String(index), { headers: { 'cache-control': CACHE_CONTROL } }),
+      );
+    }
+    for (const [index, key] of keys.entries()) {
+      const hit = await cache.match(key);
+
+      await expect(hit?.text()).resolves.toBe(String(index));
+      expect(new URL(key.url).search).toBe('?dpl=one');
+    }
+  });
+
+  it('keeps all UTF-16 identifiers distinct without changing ordinary keys', async () => {
+    const origin = new URL(ASSET);
+    const ids = ['\u{D800}', '\u{DC00}', String.raw`\ud800`, '%7E%5Cud800', '\u{FFFD}', '😀'];
+    const keys = ids.map((id) => new Request(admittedAssetCacheKey(origin, 'site.example', id)));
+    const cache = await caches.open('asset-project-unicode');
+
+    expect(new Set(keys.map((key) => key.url)).size).toBe(ids.length);
+
+    for (const [index, key] of keys.entries()) {
+      await cache.put(
+        key,
+        new Response(String(index), { headers: { 'cache-control': CACHE_CONTROL } }),
+      );
+    }
+    for (const [index, key] of keys.entries()) {
+      await expect((await cache.match(key))?.text()).resolves.toBe(String(index));
+    }
+
+    expect(admittedAssetCacheKey(origin, 'site.example', 'project-a_1.~')).toBe(
+      'https://site.example/project-a_1.~/site.example/_next/static/chunks/main-abc123.js',
+    );
   });
 });
