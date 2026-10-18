@@ -717,10 +717,25 @@ const invalidationResultSchema = z.object({
   history: z.array(tagHistoryMarkSchema).max(MAX_TAG_HISTORY).optional(),
 });
 
-export const invalidateResponseSchema = z.object({
-  revision: z.number().int().positive(),
-  /** A result for each tag the invalidation named, so no more than an invalidation may name. */
-  invalidations: z.array(invalidationResultSchema).max(MAX_TAGS_PER_CALL),
-  affectedEntryIds: z.array(z.string().min(1)),
-});
+export const invalidateResponseSchema = z
+  .object({
+    revision: z.number().int().positive(),
+    /** A result for each tag the invalidation named, so no more than an invalidation may name. */
+    invalidations: z.array(invalidationResultSchema).max(MAX_TAGS_PER_CALL),
+    affectedEntryIds: z.array(z.string().min(1)),
+  })
+  .refine(
+    (answer) => {
+      for (const invalidation of answer.invalidations) {
+        if (invalidation.history?.some((mark) => mark.revision > answer.revision) === true) {
+          return false;
+        }
+      }
+      return true;
+    },
+    {
+      message: 'an invalidation holds no history past its answered revision',
+      path: ['invalidations'],
+    },
+  );
 export type InvalidateResponse = z.infer<typeof invalidateResponseSchema>;
