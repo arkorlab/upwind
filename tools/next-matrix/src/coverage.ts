@@ -51,6 +51,11 @@ const PACKAGE_PATCHES = [
 export type Expected = string | readonly string[];
 
 export interface FixtureCoverage {
+  /** A variant may copy another fixture before removing its project instrumentation hook. */
+  readonly sourceFixture?: string;
+  readonly removeOwnInstrumentation?: boolean;
+  /** A fixture may configure the built adapter with its own generic host hooks. */
+  readonly adapterFile?: string;
   /** The physical output in dependency records; omitted for the usual `.next/`. */
   readonly buildDirectory?: string;
   /** Every patch a build of this fixture has to apply, in one Function or the other. */
@@ -72,6 +77,24 @@ export function namesIn(expected: readonly Expected[]): string[] {
 }
 
 export const FIXTURE_COVERAGE = {
+  'next-edge-instrumentation-baseline': {
+    sourceFixture: 'next-edge-instrumentation',
+    adapterFile: 'adapter-node.mjs',
+    expected: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
+    chunks: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
+  },
+  'next-edge-instrumentation': {
+    adapterFile: 'adapter.mjs',
+    expected: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
+    chunks: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
+  },
+  'next-edge-instrumentation-no-own': {
+    sourceFixture: 'next-edge-instrumentation',
+    removeOwnInstrumentation: true,
+    adapterFile: 'adapter.mjs',
+    expected: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
+    chunks: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
+  },
   // A real HTTP request through the bundled route and client-reference manifest, from an output
   // beside the project. Unlike the other fixtures, this also exercises the Function in workerd.
   'next-external-output': {
