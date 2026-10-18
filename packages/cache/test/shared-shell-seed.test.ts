@@ -5,7 +5,7 @@ import { runInDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 
-// eslint-disable-next-line import-x/no-relative-packages -- Tests share this fixture without publishing it.
+/* eslint import-x/no-relative-packages: "off" -- Tests share this fixture without publishing it. */
 import { SHARED_SHELL, shellBundle, taggedShell } from '../../host/test/shared-shell-fixture.ts';
 import { limitsOf, parseVars } from '../src/env.ts';
 import { NO_HISTORY } from '../src/scope/history.ts';
