@@ -93,13 +93,18 @@ export function regenerationHeaders(
   };
 }
 
+/** Either id may contain a colon; the manifest's length keeps the pair distinct. */
+function regenerationKey(manifestId: string, entryId: string): string {
+  return `${String(manifestId.length)}:${manifestId}:${entryId}`;
+}
+
 /** Whether to ask now: not when this isolate asked for the entry within the cooldown. */
 export function shouldAsk(
   edge: EdgeContext,
   entryId: string,
   settings: RuntimeCacheSettings,
 ): boolean {
-  const key = `${edge.manifestId}:${entryId}`;
+  const key = regenerationKey(edge.manifestId, entryId);
   const asked = edge.runtime.memory.regenerations.get(key);
   const now = edge.runtime.now();
   if (asked !== undefined && now - asked.at < settings.regenerateCooldownMs) {
@@ -117,7 +122,7 @@ export function shouldAsk(
  * given back: an older visitor leaving cannot undo a newer ask, even with the same clock reading.
  */
 export function allowAnotherAsk(edge: EdgeContext, entryId: string): () => void {
-  const key = `${edge.manifestId}:${entryId}`;
+  const key = regenerationKey(edge.manifestId, entryId);
   const asked = edge.runtime.memory.regenerations.get(key);
   return () => {
     if (asked !== undefined && edge.runtime.memory.regenerations.get(key) === asked) {

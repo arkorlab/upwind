@@ -30,6 +30,47 @@ function edgeAt(clock: { now: number }): EdgeContext {
 }
 
 describe('a regeneration asked for', () => {
+  it.each([
+    ['a', 'b:c', 'a:b', 'c'],
+    ['a/', 'b:c', 'a/:b', 'c'],
+    ['漢', '字:é', '漢:字', 'é'],
+    ['\u{D800}', 'x:y', '\u{D800}:x', 'y'],
+  ])('keeps distinct manifest/entry pairs on separate cooldowns: %j', (left, a, right, b) => {
+    const edge = edgeAt({ now: 1_800_000_000_000 });
+    const first = { ...edge, manifestId: left };
+    const second = { ...edge, manifestId: right };
+    const settings = DEFAULT_RUNTIME_CACHE_SETTINGS;
+
+    expect([
+      shouldAsk(first, a, settings),
+      shouldAsk(second, b, settings),
+      shouldAsk(first, a, settings),
+      shouldAsk(second, b, settings),
+    ]).toStrictEqual([true, true, false, false]);
+  });
+
+  it('returns only the abandoned pair while another pair keeps its reservation', () => {
+    const edge = edgeAt({ now: 1_800_000_000_000 });
+    const first = { ...edge, manifestId: 'a' };
+    const second = { ...edge, manifestId: 'a:b' };
+    const settings = DEFAULT_RUNTIME_CACHE_SETTINGS;
+    shouldAsk(first, 'b:c', settings);
+    const abandonFirst = allowAnotherAsk(first, 'b:c');
+    // A newer reservation at the same clock reading still belongs to the other pair.
+    shouldAsk(second, 'c', { ...settings, regenerateCooldownMs: 0 });
+    const abandonSecond = allowAnotherAsk(second, 'c');
+
+    abandonFirst();
+    const afterFirst = [shouldAsk(first, 'b:c', settings), shouldAsk(second, 'c', settings)];
+    abandonSecond();
+    const afterSecond = [shouldAsk(first, 'b:c', settings), shouldAsk(second, 'c', settings)];
+
+    expect([afterFirst, afterSecond]).toStrictEqual([
+      [true, false],
+      [false, true],
+    ]);
+  });
+
   it('is not asked for again within a cooldown longer than an hour, and is once it is over', () => {
     const clock = { now: 1_800_000_000_000 };
     const edge = edgeAt(clock);
