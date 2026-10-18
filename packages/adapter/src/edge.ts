@@ -1,4 +1,5 @@
 import { writeFile } from 'node:fs/promises';
+import { isBuiltin } from 'node:module';
 import path from 'node:path';
 
 import { type InputOptions, type OutputChunk, rolldown } from 'rolldown';
@@ -202,13 +203,21 @@ export function edgeBundleOptions(
   return {
     cwd: projectDir,
     input: entryFile,
-    // Node built-ins, with or without the `node:` prefix, are the Function's own to resolve.
-    platform: 'node',
-    // Existing Edge chunks are already compiled by Next.js. A host module added here still has
-    // package exports to resolve. Do not enable `node`: an earlier Node export would otherwise
-    // win over `edge-light` regardless of the order in conditionNames.
+    // Node platform adds its own export condition even when conditionNames is explicit. Keep
+    // legacy builds as they were; newly added Edge hosts must not select a Node export first.
+    platform: settings.hostInstrumentation === true ? 'neutral' : 'node',
     ...(settings.hostInstrumentation === true && {
-      resolve: { conditionNames: ['edge-light', 'workerd', 'worker', 'default'] },
+      resolve: {
+        conditionNames: ['edge-light', 'workerd', 'worker', 'default'],
+        mainFields: ['main', 'module'],
+      },
+      // Neutral platform does not externalize built-ins itself. Preserve both spellings and
+      // their audit records, leaving resolution to the Function rather than bundling a shim.
+      external(specifier: string) {
+        if (!isBuiltin(specifier)) return false;
+        onExternal(specifier);
+        return true;
+      },
     }),
     plugins: [
       globalObjectPlugin(),
@@ -267,6 +276,9 @@ export async function bundleEdge(
   const { output } = await bundle.write({
     format: 'cjs',
     file: outFile,
+    // A host may lazily import an Edge SDK. Keep its initializer in this Function's one
+    // module instead of emitting an additional chunk that the Function does not carry.
+    ...(input.instrumentation !== undefined && { codeSplitting: false }),
     // Next.js's storages read `globalThis.AsyncLocalStorage` once, as they do in `app.cjs`, and
     // workerd has it only under `node:async_hooks`.
     banner: FUNCTION_BANNER,

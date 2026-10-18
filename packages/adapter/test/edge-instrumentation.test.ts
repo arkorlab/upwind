@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { runInNewContext } from 'node:vm';
 
+import { rolldown } from 'rolldown';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -12,7 +13,7 @@ import {
   edgeInstrumentationOf,
   edgeInstrumentationSource,
 } from '../src/edge-instrumentation.ts';
-import { edgeEntrySource, type EdgeEntry } from '../src/edge.ts';
+import { bundleEdge, edgeBundleOptions, edgeEntrySource, type EdgeEntry } from '../src/edge.ts';
 
 interface Hook {
   readonly marker?: string;
@@ -269,6 +270,102 @@ describe('edge instrumentation build boundaries', () => {
     await Promise.all(
       temporary.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
     );
+  });
+
+  it.each([
+    { hostInstrumentation: false, target: 'node-target', other: 'edge-target' },
+    { hostInstrumentation: true, target: 'edge-target', other: 'node-target' },
+  ])(
+    'resolves host packages for the intended runtime: $target',
+    async ({ hostInstrumentation, target, other }) => {
+      const root = await mkdtemp(path.join(tmpdir(), 'upwind-edge-resolution-'));
+      temporary.push(root);
+      const fixture = path.join(root, 'node_modules', 'conditional-host');
+      const legacy = path.join(root, 'node_modules', 'legacy-host');
+      await mkdir(fixture, { recursive: true });
+      await mkdir(legacy, { recursive: true });
+      await writeFile(
+        path.join(fixture, 'package.json'),
+        JSON.stringify({
+          exports: { node: './node.cjs', 'edge-light': './edge.cjs', default: './node.cjs' },
+        }),
+      );
+      await writeFile(path.join(fixture, 'node.cjs'), 'module.exports = "node-target";');
+      await writeFile(path.join(fixture, 'edge.cjs'), 'module.exports = "edge-target";');
+      const formatFixture = path.join(root, 'node_modules', 'format-host');
+      await mkdir(formatFixture, { recursive: true });
+      await writeFile(
+        path.join(formatFixture, 'package.json'),
+        JSON.stringify({ exports: { import: './import.mjs', require: './require.cjs' } }),
+      );
+      await writeFile(path.join(formatFixture, 'import.mjs'), 'export default "import-target";');
+      await writeFile(
+        path.join(formatFixture, 'require.cjs'),
+        'module.exports = "require-target";',
+      );
+      await writeFile(
+        path.join(root, 'esm-host.mjs'),
+        'import value from "format-host"; export default value;',
+      );
+      await writeFile(path.join(legacy, 'package.json'), JSON.stringify({ main: './main.cjs' }));
+      await writeFile(path.join(legacy, 'main.cjs'), 'module.exports = "legacy-main-target";');
+      const entry = path.join(root, 'entry.cjs');
+      await writeFile(
+        entry,
+        'module.exports = [require("conditional-host"), require("format-host"), require("./esm-host.mjs"), require("legacy-host"), require("node:async_hooks"), require("fs")];',
+      );
+      const external = vi.fn();
+      await using build = await rolldown(
+        edgeBundleOptions(root, entry, external, { hostInstrumentation }),
+      );
+      const { output } = await build.generate({ format: 'cjs' });
+      const chunk = output.find((item) => item.type === 'chunk');
+
+      expect(chunk?.code).toContain(target);
+      expect(chunk?.code).not.toContain(other);
+      expect(chunk?.code).toContain('legacy-main-target');
+      expect(chunk?.code).toContain('import-target');
+      expect(chunk?.code).toContain('require-target');
+      expect(external).toHaveBeenCalledTimes(2);
+      expect(external).toHaveBeenCalledWith('fs');
+      expect(external).toHaveBeenCalledWith('node:async_hooks');
+    },
+  );
+
+  it('carries a dynamically imported host SDK in the single emitted Edge module', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'upwind-edge-dynamic-'));
+    temporary.push(root);
+    const distDir = path.join(root, '.next');
+    await mkdir(distDir);
+    const entry = path.join(distDir, 'entry.js');
+    const module = path.join(root, 'host.cjs');
+    const sdk = path.join(root, 'host-sdk.mjs');
+    await writeFile(entry, 'globalThis._ENTRIES.middleware = { handler() {} };');
+    await writeFile(sdk, 'export const marker = "dynamic-sdk-target";');
+    await writeFile(
+      module,
+      'module.exports = () => ({ finish() { return import("./host-sdk.mjs"); }, fail(error) { throw error; } });',
+    );
+    const entrySpec: EdgeEntry = {
+      id: '/_middleware',
+      entryKey: 'middleware',
+      handlerExport: 'handler',
+      files: [entry],
+      env: {},
+      wasm: [],
+      inlineAssets: [],
+    };
+    const result = await bundleEdge({
+      kind: 'middleware',
+      projectDir: root,
+      distDir,
+      workDir: root,
+      entries: [entrySpec],
+      instrumentation: { module, files: [], own: false },
+    });
+
+    await expect(readFile(result.outFile, 'utf8')).resolves.toContain('dynamic-sdk-target');
+    expect(result.trace.inputs.some((input) => input.file.endsWith('/host-sdk.mjs'))).toBe(true);
   });
 
   it('keeps the existing emitted Edge entry bytes when the new option is absent', () => {
