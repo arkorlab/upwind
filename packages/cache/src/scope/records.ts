@@ -388,16 +388,21 @@ export async function generationRecordBytes(
 ): Promise<Uint8Array> {
   const outputs = generationOutputs(generation);
   const { primary, postponed } = recordBodies(outputs);
-  const [html, state] = await Promise.all([
-    primary === undefined ? EMPTY : verifiedBytes(deps.blobs, primary),
-    postponed === undefined ? undefined : verifiedBytes(deps.blobs, postponed),
-  ]);
-  const header = packHeaderOf(
-    headerFieldsOf(deps.scopeId, entry, generation, outputs),
-    { revision: entry.record_revision, condemned: condemnedOf(generation) },
-    await packBodyDigests(html, state),
-  );
-  return encodeGenerationPack(header, html, state);
+  const readingHtml = primary === undefined ? EMPTY : verifiedBytes(deps.blobs, primary);
+  const readingState = postponed === undefined ? undefined : verifiedBytes(deps.blobs, postponed);
+  try {
+    const [html, state] = await Promise.all([readingHtml, readingState]);
+    const header = packHeaderOf(
+      headerFieldsOf(deps.scopeId, entry, generation, outputs),
+      { revision: entry.record_revision, condemned: condemnedOf(generation) },
+      await packBodyDigests(html, state),
+    );
+    return encodeGenerationPack(header, html, state);
+  } catch (error) {
+    // The caller holds room for both reads until this ends, including the one that did not fail.
+    await Promise.allSettled([readingHtml, readingState]);
+    throw error;
+  }
 }
 
 function seconds(duration: Duration): number {
