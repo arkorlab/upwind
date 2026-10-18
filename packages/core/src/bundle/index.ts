@@ -65,6 +65,7 @@ export {
   underBasePath,
 } from './pages-data.ts';
 export { queryDependent } from './query.ts';
+export { partialFallbackUpgradeOf } from './partial-fallback.ts';
 export {
   type PrefetchSegment,
   prefetchSegments,

@@ -36,8 +36,10 @@ import { catchUp, settledWithin } from './cache/pulls.ts';
 import { regenerate, type RegenerationOutcome } from './cache/regenerate.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
 import { servable } from './cache/servable.ts';
+import { documentFromBuild, rscFromBuild } from './documents.ts';
 import { nodeHandlerOf } from './entries.ts';
 import { observationOf } from './incoming.ts';
+import { partialUpgrade, upgradePathname, withPartialFallbackUpgrade } from './partial-fallback.ts';
 import { PAGES_DATA, ROUTE_BODY, SEGMENT_PREFIX } from './representations.ts';
 import { routingParameters } from './route-parameters.ts';
 import { bypassesPrerender, resume, type RoutedInput } from './serve.ts';
@@ -127,7 +129,9 @@ async function targetOf(input: RoutedInput, store: Store): Promise<Target | unde
   }
   const asked = new URL(input.request.url).pathname;
   const member = input.request.headers.has(CACHE_UPGRADE_HEADER) && !isClassShell(asked, route);
-  const pathname = member ? asked : entryPathnameOf(store, route, asked);
+  const pathname = member
+    ? upgradePathname(store, route, asked)
+    : entryPathnameOf(store, route, asked);
   const shell = store.prerendersByPathname.get(pathname) ?? findShell(store, route, pathname);
   if (bypassesPrerender(store, input.request, shell) || queryDependent(shell, route, pathname)) {
     return undefined;
@@ -211,6 +215,12 @@ function scheduleJob(job: Job, reason: AttemptReason, base?: string | null): boo
   return true;
 }
 
+function afterPartialFallback(job: Job, response: Response): Response {
+  return withPartialFallbackUpgrade(job, response, (reason, base) =>
+    scheduleJob(job, reason, base),
+  );
+}
+
 function withOutcome(response: Response, outcome: string): Response {
   const headers = new Headers(response.headers);
   headers.set(CACHE_OUTCOME_HEADER, outcome);
@@ -239,6 +249,9 @@ export async function withBackgroundRegeneration(
   const job = await jobOf(input, store);
   if (job === undefined) {
     return withOutcome(response, 'skipped');
+  }
+  if (input.request.headers.has(CACHE_UPGRADE_HEADER) && partialUpgrade(job)) {
+    return afterPartialFallback(job, withOutcome(response, 'accepted'));
   }
   return afterBody(withOutcome(response, 'accepted'), () => {
     scheduleJob(job, 'stale');
@@ -545,6 +558,19 @@ async function answerMiss(
   want: Want,
   once: boolean,
 ): Promise<Response | undefined> {
+  if (once && partialUpgrade(job)) {
+    const { input, store, target } = job;
+    const resolved = {
+      route: source.route,
+      pathname: new URL(source.url, input.request.url).pathname,
+      url: source.url,
+    };
+    const entry = { kind: 'node' as const, handler: target.handler };
+    const response = await (source.representation === 'html'
+      ? documentFromBuild(input, store, resolved, { entry, status: 200 })
+      : rscFromBuild(input, store, entry, resolved));
+    return input.request.method === 'HEAD' ? response : afterPartialFallback(job, response);
+  }
   const { onMiss } = source;
   if (onMiss === 'render' && once) {
     const outcome = await runJob(job, 'miss', null);
