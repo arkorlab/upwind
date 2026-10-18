@@ -1,7 +1,7 @@
 # `@upwind-tools/next-matrix`
 
-Builds `fixtures/next-minimal`, `fixtures/next-edge`, `fixtures/next-workflow` and
-`fixtures/next-external-output` with each Next.js
+Builds `fixtures/next-minimal`, `fixtures/next-edge`, `fixtures/next-workflow`,
+`fixtures/next-external-output` and the instrumentation fixtures with each Next.js
 it is given, and holds each build to what the adapter promises: the bundle parses against
 `deploymentBundleSchema`, every patch the fixture was written to reach appears in
 `.arkor/dependencies.json`, and the outputs that fixture exists to produce are there.
@@ -10,6 +10,20 @@ The external-output fixture also starts the built Function in Miniflare and requ
 App Router page. Its client component requires the carried client-reference manifest, so this
 checks the lazy entry, bundled code and VFS mount together. Pull-request CI runs this one fixture
 with the installed Next.js version; the full version matrix remains separate.
+
+The instrumentation fixtures compile Edge middleware, an Edge route and a Node route with host
+hooks, both with and without the project's own hook. Miniflare verifies awaited, once-only
+registration, host-first error hooks, preserved arguments and receivers, isolated host failures,
+and zero outbound requests. The own hook value-imports `next/server` to exercise early Edge
+globals, while a conditional-export package verifies that added host imports use the Edge
+target. CI builds these fixtures with the installed Next.js version and retains each completed
+or failed case as JSON under `UPWIND_MATRIX_PROOF_DIR`.
+Error-hook composition is checked where Next.js dispatches it: middleware and the Node route.
+The Edge route retains Next.js 16.4.2's thrown-handler result, HTTP 500 without either error hook,
+while still proving registration composition.
+The separate baseline fixture builds the same sources with only Node host configuration and no
+Edge opt-in. Its Edge route must show the same HTTP 500/no-error-hook result, with only the
+project's registration. CI requires all 30 opt-in cases and this independent baseline case.
 
 ```console
 $ pnpm --filter @stayingupwind/adapter build     # the matrix builds against dist, as a user would
