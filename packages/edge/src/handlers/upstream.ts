@@ -287,7 +287,15 @@ export function fetchUpstream(
   // catches up before it judges anything (`SCOPE_REVISION_HEADER`). A deployment's scope is its id.
   const told = withScopeRevision(runtime, app.deploymentId, request);
   if (app.functions === undefined) {
-    return runtime.dispatchApp(app.scriptName, told);
+    // Catch only the synchronous call; awaiting or observing it would wrap its normal promise.
+    // eslint-disable-next-line sonarjs/no-try-promise
+    try {
+      return runtime.dispatchApp(app.scriptName, told);
+    } catch (error) {
+      // Preserve the host's failure value, as the split async dispatcher does.
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+      return Promise.reject(error);
+    }
   }
   const progress: Progress = { fn: fn ?? PRIMARY_FUNCTION, dispatched: undefined };
   const answer = dispatchSplit(runtime.dispatchApp, app, told, progress);
