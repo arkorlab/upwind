@@ -45,6 +45,17 @@ const IDENTITIES = [
 ] as const;
 type Family = 'static' | 'segment' | 'image';
 
+/** The image service's known bytes under both Workers and DOM stream declarations. */
+function transformedBody(): ReadableStream<Uint8Array> {
+  const bytes = encodeUtf8(BODY);
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(bytes);
+      controller.close();
+    },
+  });
+}
+
 /** The public entry with actual stored file/segment bytes and an image service's result. */
 async function serve(family: Family, identity: string) {
   const document = pprDocument();
@@ -85,7 +96,7 @@ async function serve(family: Family, identity: string) {
         fetchImpl: () => Promise.resolve(new Response(sourceBytes)),
         transformImage: async (stream) => {
           await new Response(stream).arrayBuffer();
-          return { contentType: 'image/webp', body: new Blob([BODY]).stream() };
+          return { contentType: 'image/webp', body: transformedBody() };
         },
       }),
       host: standaloneHost(env),
