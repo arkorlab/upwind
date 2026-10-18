@@ -88,6 +88,12 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, phase: Phase): Pr
   }
 }
 
+/** A timed-out origin may ignore its abort; keep only its promise until its body can be released. */
+async function releaseLateResponse(upstream: Promise<Response>): Promise<void> {
+  const response = await upstream;
+  releaseStream(response.body, TIMEOUT_ABORT_REASON);
+}
+
 /** How much of a refused answer is kept, for whoever reads why it was refused. */
 const OPENING_BYTES = 400;
 /** And how much of the list of header names it came with; the names are short and few. */
@@ -350,6 +356,10 @@ class SplicePump {
       return await withTimeout(this.#options.upstream, this.#budgetMs(), HEAD_PHASE);
     } catch (error) {
       if (error instanceof TimeoutError) {
+        // Register before recovery or abort callbacks, which may themselves throw.
+        void releaseLateResponse(this.#options.upstream).catch(() => {
+          // An origin that rejects after recovery has no response left to release.
+        });
         this.#fail({ kind: 'timeout', phase: HEAD_PHASE, forwarded: 0, recovered: false });
         this.#options.abortUpstream(TIMEOUT_ABORT_REASON);
       } else {
