@@ -13,6 +13,7 @@ import {
   type SeedScopeResult,
 } from '@stayingupwind/host/cache';
 
+import type { Logger } from '../logger.ts';
 import { artifactIdsFor, referenceBuildArtifacts } from './artifacts.ts';
 import {
   type EntryIdentity,
@@ -27,7 +28,12 @@ import { findGeneration, insertGeneration, retireGenerations } from './generatio
 import type { EventInput } from './history.ts';
 import { type PackHeaderFields, unwritableRecord } from './records.ts';
 import { toEntry, toEntryState, toPublicGeneration, toScope } from './rows.ts';
-import { repairSeedEntries } from './seed-repair.ts';
+import {
+  repairSeedEntries,
+  seedRepairVerification,
+  type SeedLocationProofs,
+  type SeedRepairVerification,
+} from './seed-repair.ts';
 import { isRefusal, readScope, type Refusal, refuse, requireActiveScope } from './state.ts';
 import {
   condemnationOf,
@@ -37,6 +43,8 @@ import {
   tagRefsFor,
 } from './tags.ts';
 import { type Apply, inChunks, record, type TxInput } from './tx.ts';
+
+export { finishSeedRepair, needsSeedVerification } from './seed-repair.ts';
 
 /**
  * What a deploy does to a scope: creates it once, seeds each entry's build generation
@@ -121,6 +129,28 @@ interface SeedPlan {
 
 type SeedRefusal = SeedEntriesResult['refused'][number];
 
+export function logSeedRefusals(log: Logger, result: SeedEntriesResult | Refusal): void {
+  if (isRefusal(result)) return;
+  for (const refused of result.refused) {
+    log.warn('build entry not seeded', {
+      pathname: refused.descriptor.pathname,
+      detail: refused.reason,
+    });
+  }
+}
+
+function addedSeedReferences(plans: readonly SeedPlan[]): Map<string, number> {
+  const added = new Map<string, number>();
+  for (const plan of plans) {
+    for (const output of plan.outputs) {
+      for (const artifact of output.artifacts) {
+        added.set(artifact.sha256, (added.get(artifact.sha256) ?? 0) + 1);
+      }
+    }
+  }
+  return added;
+}
+
 /** A tag's value as a generation may carry one: what a commit's tags are held to. */
 const TAG_VALUE = generationTagSchema.shape.value;
 
@@ -143,7 +173,8 @@ function tagsRefusal(tags: SeedEntryInput['generation']['tags']): string | undef
 export async function planSeedEntries(
   input: TxInput,
   batch: SeedEntriesInput,
-): Promise<Apply<SeedEntriesResult | Refusal>> {
+  proofs: SeedLocationProofs = new Map(),
+): Promise<Apply<SeedEntriesResult | Refusal | SeedRepairVerification>> {
   const plans = await inChunks(batch.entries, SEED_PLANS_AT_ONCE, async (entry) => {
     // Judged before a tag of it is named: an entry that may not carry its tags keeps none.
     const tagsRefused = tagsRefusal(entry.generation.tags);
@@ -159,7 +190,7 @@ export async function planSeedEntries(
     ]);
     return { entry, identity, tagRefs, outputs: seedOutputs(entry, artifactIds), tagsRefused };
   });
-  return () => applySeedEntries(input, plans);
+  return () => applySeedEntries(input, plans, proofs);
 }
 
 function seedOutputs(
@@ -303,7 +334,11 @@ function seedOne(input: TxInput, plan: SeedPlan, events: EventInput[]): void {
   }
 }
 
-function applySeedEntries(input: TxInput, plans: readonly SeedPlan[]): SeedEntriesResult | Refusal {
+function applySeedEntries(
+  input: TxInput,
+  plans: readonly SeedPlan[],
+  proofs: SeedLocationProofs,
+): SeedEntriesResult | Refusal | SeedRepairVerification {
   const { sql, limits, revision } = input;
   const scope = requireActiveScope(sql);
   if (isRefusal(scope)) {
@@ -348,12 +383,15 @@ function applySeedEntries(input: TxInput, plans: readonly SeedPlan[]): SeedEntri
   if (scope.entry_count + seedable.length > limits.entriesPerScope) {
     return refuse('quota_exceeded', 'the scope holds as many entries as it may');
   }
+  const addedRefs = addedSeedReferences(retries.length > 0 ? seedable : []);
+  const verification = seedRepairVerification(sql, retries, proofs, addedRefs);
+  if (verification !== undefined) return verification;
   const inserted = seedable.length;
   const skipped = plans.length - fresh.length;
   for (const plan of seedable) {
     seedOne(input, plan, events);
   }
-  const repaired = repairSeedEntries(input, retries, events);
+  const repaired = repairSeedEntries(input, retries, events, proofs);
   if (inserted === 0 && repaired === 0) {
     return { inserted, skipped, refused, revision: revision - 1 };
   }

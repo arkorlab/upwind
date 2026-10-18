@@ -70,7 +70,7 @@ import {
   runRetention,
   type TickOptions,
 } from './retention-run.ts';
-import { applyRetire, applySeedScope, planSeedEntries, type RetireOutcome } from './seed.ts';
+import * as seed from './seed.ts';
 import { countSettleFailures, retryDelayMs, settleRetryMs } from './settle-retry.ts';
 import {
   chainSettle,
@@ -409,7 +409,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
   // ---- what a deploy calls ---------------------------------------------------------------------
 
   async seedScope(input: SeedScopeInput, now: number): Promise<SeedScopeResult> {
-    const outcome = await this.#mutate(now, (tx) => () => applySeedScope(tx, input), SEED);
+    const outcome = await this.#mutate(now, (tx) => () => seed.applySeedScope(tx, input), SEED);
     if (this.#tables && readScope(this.#sql)?.status === 'active') {
       // An upload may never reach setData at all. Seeding must arm its eventual orphan sweep.
       await this.#armAlarm(now + RETENTION_INTERVAL_MS);
@@ -436,20 +436,20 @@ export class CacheScope extends DurableObject<CacheBindings> {
   }
 
   async seedEntries(input: SeedEntriesInput, now: number): Promise<SeedEntriesResult | Refusal> {
-    const result = await this.#mutate(now, (tx) => planSeedEntries(tx, input), REFUSED);
-    if (!isRefusal(result)) {
-      for (const refused of result.refused) {
-        this.#log.warn('build entry not seeded', {
-          pathname: refused.descriptor.pathname,
-          detail: refused.reason,
-        });
-      }
+    let result = await this.#mutate(now, (tx) => seed.planSeedEntries(tx, input), REFUSED);
+    if (seed.needsSeedVerification(result)) {
+      result = await seed.finishSeedRepair(result, {
+        bucket: this.env.ARTIFACTS,
+        retry: (seen) => this.#mutate(now, (tx) => seed.planSeedEntries(tx, input, seen), REFUSED),
+        faults: () => this.#faults,
+      });
     }
+    seed.logSeedRefusals(this.#log, result);
     return result;
   }
 
-  async retire(reason: string, now: number): Promise<RetireOutcome> {
-    const outcome = await this.#mutate(now, (tx) => () => applyRetire(tx, reason), UNKNOWN);
+  async retire(reason: string, now: number): Promise<seed.RetireOutcome> {
+    const outcome = await this.#mutate(now, (tx) => () => seed.applyRetire(tx, reason), UNKNOWN);
     if (outcome.kind === 'retired') {
       // A scope that only ever held a build's seed has never armed an alarm: without one here,
       // nothing would come back to prune its bodies or, in the end, delete it.
