@@ -8,7 +8,9 @@ import {
 import type { FetchLike } from '@stayingupwind/runtime/cache-host';
 import { describe, expect, it, vi } from 'vitest';
 
+import { DataCopies } from '../src/function/data-copies.ts';
 import { Gateway } from '../src/function/gateway.ts';
+import { ReadBudget } from '../src/function/read-budget.ts';
 
 const SCOPE = 'scope_identity';
 const ENTRY = { kind: 'app-page', route: '/articles/[slug]', pathname: '/articles/a' } as const;
@@ -123,6 +125,61 @@ describe('the entry named by a gateway answer', () => {
         }),
       ).resolves.toStrictEqual(value);
       expect(send).toHaveBeenCalledTimes(1);
+    },
+  );
+});
+
+describe('the entry named by a data copy', () => {
+  it.each(['key', 'kind', 'handler', 'entry-id', 'matching'] as const)(
+    'judges a cached %s identity before answering',
+    async (variation) => {
+      const scopeId = `scope-${crypto.randomUUID()}`;
+      const request = { kind: 'data:use-cache', key: 'key-a', handler: 'remote' } as const;
+      const derived = await deriveEntry(scopeId, request);
+      const value = await valueOf(request);
+      const answer = {
+        ...value,
+        entryId: derived.entryId,
+        entry: { ...value.entry, timestamp: Date.now(), expire: 3600 },
+      };
+      switch (variation) {
+        case 'key': {
+          answer.entryId = (await deriveEntry(scopeId, { ...request, key: 'key-b' })).entryId;
+
+          break;
+        }
+        case 'kind': {
+          answer.entry.kind = 'data:fetch';
+          delete answer.entry.handler;
+
+          break;
+        }
+        case 'handler': {
+          answer.entry.handler = 'another-handler';
+
+          break;
+        }
+        case 'entry-id': {
+          answer.entryId = 'entry_wrong';
+
+          break;
+        }
+        case 'matching': {
+          break;
+        }
+      }
+      const copies = new DataCopies(
+        caches,
+        { copyCache: 'data-copy-identities', copyKeyOrigin: 'https://copies.example' },
+        { scopeId, token: 'scope-token' },
+        new ReadBudget(2 * 1024 * 1024),
+      );
+      // A schema-valid value planted at the requested key, as unrelated application code can do.
+      await copies.keepCurrent(request, answer);
+
+      const found = await copies.find(request);
+
+      expect(found).toStrictEqual(variation === 'matching' ? answer : undefined);
     },
   );
 });

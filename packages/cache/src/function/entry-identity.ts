@@ -23,7 +23,19 @@ function digestOf(text: string): string {
  * and the derived-id seed are repeated here, held to core by the parity tests.
  */
 export function requestedEntryId(scopeId: string, descriptor: EntryDescriptor): string {
-  const digest = digestOf(canonicalEntryMaterial(descriptor));
-  const seed = `${scopeId}|k${KEY_SCHEMA_VERSION}|${descriptor.kind}|${digest}`;
+  return requestedEntryIdFromDigest(
+    scopeId,
+    descriptor.kind,
+    digestOf(canonicalEntryMaterial(descriptor)),
+  );
+}
+
+/** Reuse the digest already computed for a data copy's authenticated Cache API key. */
+export function requestedEntryIdFromDigest(
+  scopeId: string,
+  kind: EntryDescriptor['kind'],
+  digest: string,
+): string {
+  const seed = `${scopeId}|k${KEY_SCHEMA_VERSION}|${kind}|${digest}`;
   return formatId(ENTRY_ID_PREFIX, BigInt(`0x${digestOf(seed)}`) % ID_MODULUS);
 }
