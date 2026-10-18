@@ -70,6 +70,18 @@ describe('a regeneration asked for', () => {
     expect(shouldAsk(edge, 'entry', DEFAULT_RUNTIME_CACHE_SETTINGS)).toBe(false);
   });
 
+  it('lets another ask through when a resume rejects before answering', async () => {
+    const edge = edgeAt({ now: 1_800_000_000_000 });
+    shouldAsk(edge, 'entry', DEFAULT_RUNTIME_CACHE_SETTINGS);
+    const regeneration = { onAbandoned: allowAnotherAsk(edge, 'entry') };
+    const error = new Error('the Worker did not answer');
+
+    const result = await settle(Promise.reject(error), regeneration);
+
+    expect(result).toStrictEqual({ ok: false, error });
+    expect(shouldAsk(edge, 'entry', DEFAULT_RUNTIME_CACHE_SETTINGS)).toBe(true);
+  });
+
   it('keeps an answered resume on cooldown when the client leaves before the splice holds it', async () => {
     const edge = edgeAt({ now: 1_800_000_000_000 });
     shouldAsk(edge, 'entry', DEFAULT_RUNTIME_CACHE_SETTINGS);

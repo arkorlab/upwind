@@ -39,6 +39,7 @@ export async function settle(
     }
     return { ok: true, response };
   } catch (error) {
+    regeneration?.onAbandoned?.();
     return { ok: false, error };
   }
 }
