@@ -492,7 +492,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
   async startAttempt(
     request: StartAttemptRequest,
     now: number,
-  ): ReturnType<typeof withCurrentRecord> {
+  ): ReturnType<typeof recordAnswers.withCurrentRecord> {
     const result = await this.#mutate(now, (tx) => planStartAttempt(tx, request), AT_ONCE);
     if (result.kind === 'leased') {
       await this.#armOrLog(result.leaseExpiresAt + LEASE_SWEEP_GRACE_MS);
