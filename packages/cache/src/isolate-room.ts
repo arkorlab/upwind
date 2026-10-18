@@ -50,9 +50,19 @@ interface Seen {
 /** What gives a claim's room back: called by the request that holds it, whose timer it clears. */
 export type GiveBack = () => void;
 
-function pause(ms: number): Promise<void> {
+/** One re-check, woken by its own timer or abort, with nothing kept once either has happened. */
+function pause(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
-    setTimeout(resolve, ms);
+    const waiting: { timer?: ReturnType<typeof setTimeout> } = {};
+    const finish = (): void => {
+      if (waiting.timer !== undefined) {
+        clearTimeout(waiting.timer);
+      }
+      signal.removeEventListener('abort', finish);
+      resolve();
+    };
+    waiting.timer = setTimeout(finish, ms);
+    signal.addEventListener('abort', finish, { once: true });
   });
 }
 
@@ -165,22 +175,19 @@ export class IsolateRoom {
 
   /**
    * `claim` held once it is first in line and there is room for it, asked again on a timer of its
-   * own request, and at once as `woken` settles; `undefined`, and its place given up, once
-   * `givenUp()` says so. Every `ASKS_A_LOOK` askings it looks at the others (`#look`), as it last
+   * own request, and at once as `signal` aborts; `undefined`, and its place given up, once
+   * it has aborted. Every `ASKS_A_LOOK` askings it looks at the others (`#look`), as it last
    * saw them.
    */
-  async #waitFor(
-    claim: Claim,
-    givenUp: () => boolean,
-    woken: Promise<unknown>,
-  ): Promise<GiveBack | undefined> {
+  async #waitFor(claim: Claim, signal: AbortSignal): Promise<GiveBack | undefined> {
     const seen = new Map<Claim, Seen>();
     let asked = 0;
     this.#renew(claim);
     this.#look(claim, seen);
     while (!this.#admits(claim)) {
-      await Promise.race([pause(ASK_AGAIN_MS), woken]);
-      if (givenUp()) {
+      // Repeated races against one pending abort promise would keep every completed check alive.
+      await pause(ASK_AGAIN_MS, signal);
+      if (signal.aborted) {
         this.#remove(claim);
         return undefined;
       }
@@ -227,16 +234,14 @@ export class IsolateRoom {
     }
     signal.throwIfAborted();
     const claim = this.#claimOf(bytes);
-    const aborted = Promise.withResolvers<undefined>();
     const leave = (): void => {
       if (!claim.holding) {
         this.#remove(claim);
       }
-      aborted.resolve(undefined);
     };
     signal.addEventListener('abort', leave, { once: true });
     try {
-      const given = await this.#waitFor(claim, () => signal.aborted, aborted.promise);
+      const given = await this.#waitFor(claim, signal);
       if (given === undefined) {
         // Given up only as the signal aborted.
         throw signal.reason;
@@ -257,14 +262,12 @@ export class IsolateRoom {
     if (now !== undefined) {
       return now;
     }
-    const late = Promise.withResolvers<undefined>();
-    let over = false;
+    const deadline = new AbortController();
     const timer = setTimeout(() => {
-      over = true;
-      late.resolve(undefined);
+      deadline.abort();
     }, ms);
     try {
-      return await this.#waitFor(this.#claimOf(bytes), () => over, late.promise);
+      return await this.#waitFor(this.#claimOf(bytes), deadline.signal);
     } finally {
       clearTimeout(timer);
     }
