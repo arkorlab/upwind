@@ -6,6 +6,7 @@ import {
   encodeGenerationPack,
   packBodyDigests,
   type RouteEntryDescriptor,
+  sharedShellTagOf,
 } from '@stayingupwind/core/cache';
 import {
   CACHE_OUTCOME_HEADER,
@@ -18,7 +19,9 @@ import { TtlCache } from '@stayingupwind/core/util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { NodeHandler } from '../src/app-module.ts';
+import { withClock } from '../src/cache/clock.ts';
 import type { CacheHost, CommitRequest } from '../src/cache/host.ts';
+import { regenerate } from '../src/cache/regenerate.ts';
 import type { CacheRuntime } from '../src/cache/runtime.ts';
 import { TagState } from '../src/cache/tags.ts';
 import { handleRequest } from '../src/handle.ts';
@@ -279,7 +282,7 @@ function readerOf(response: Response): ReadableStreamDefaultReader<Uint8Array> {
 
 type CacheCallback = (entry: unknown, meta: { url: string }) => boolean | Promise<boolean>;
 
-async function capture(input: InvokeInput): Promise<Response> {
+async function capture(input: InvokeInput, postponed?: string): Promise<Response> {
   const callback = input.requestMeta['onCacheEntryV2'] as CacheCallback | undefined;
   if (callback === undefined) throw new Error('the static render supplied no capture callback');
   await callback(
@@ -288,6 +291,7 @@ async function capture(input: InvokeInput): Promise<Response> {
         kind: 'APP_PAGE',
         html: { toUnchunkedString: () => UPGRADED },
         rscData: encoder.encode(FLIGHT),
+        postponed,
         status: 200,
         headers: {},
       },
@@ -308,6 +312,44 @@ describe('partial fallback shell promotion', () => {
     vi.unstubAllGlobals();
     vi.resetAllMocks();
   });
+
+  it.each([undefined, 'still resumable'])(
+    'keeps shared-class invalidation identity when the next render has postponed=%s',
+    async (postponed) => {
+      const { runtime, commits } = cache();
+      const descriptor = {
+        kind: 'app-page' as const,
+        route: '/[slug]/[id]',
+        pathname: '/two/[id]',
+      };
+      const { entryId } = await deriveEntry(SCOPE, descriptor);
+      const pending: Promise<unknown>[] = [];
+      vi.mocked(invokeNodeHandler).mockImplementation((input) => capture(input, postponed));
+
+      const result = await withClock(NOW, () => {
+        return regenerate({
+          runtime,
+          request: new Request('https://app.test/two/first'),
+          handler,
+          target: { descriptor, reason: 'manual' },
+          previewToken: undefined,
+          waitUntil: (work) => {
+            pending.push(work);
+          },
+          run: (work) => work(),
+        });
+      });
+
+      expect(result.kind).toBe('accepted');
+
+      await Promise.all(pending);
+
+      expect(commits[0]?.generation.tags).toContainEqual({
+        kind: 'next-implicit',
+        value: sharedShellTagOf(entryId),
+      });
+    },
+  );
 
   it('serves the first fallback before publishing the route shell used by the next HTML and Flight requests', async () => {
     const { runtime, startAttempt, commits, fail } = cache();
