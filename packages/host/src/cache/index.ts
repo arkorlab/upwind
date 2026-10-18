@@ -93,6 +93,7 @@ export {
   currentDataRequestSchema,
   type CurrentGenerationSummary,
   currentGenerationSummarySchema,
+  dataCopyResponseSchema,
   type DataEntryMetadata,
   dataEntryMetadataSchema,
   type DataGetRequest,
