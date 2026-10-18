@@ -7,7 +7,7 @@ a guarantee that its results represent every visitor. Its geographic region is n
 
 ## Repeat a measurement
 
-Node **24.21.0**, with no dependency install, platform credential or build:
+Node **24.22.0**, with no dependency install, platform credential or build:
 
 ```sh
 node tools/benchmark/src/main.ts > measurement.json
