@@ -352,6 +352,7 @@ function releaseLateSource(pending: Promise<Response>): void {
   void pending
     .then((response) => {
       releaseStream(response.body, 'image source abandoned');
+      return undefined;
     })
     .catch(() => {
       // A fetch cancelled with its request usually fails instead of answering.
