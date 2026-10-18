@@ -5,6 +5,7 @@ import {
   type Prerender,
   prerenderResponseHeaders,
   sharedShellPathname,
+  standsForClass,
 } from '@stayingupwind/core/bundle';
 import {
   appPathFor,
@@ -53,10 +54,6 @@ export interface SeededRoute {
   readonly input: SeedEntryInput;
   /** What the manifest carries for the route; nothing for a route handler, which no route names. */
   readonly cache: RouteCache | undefined;
-}
-
-function isTemplate(pathname: string): boolean {
-  return pathname.includes('[');
 }
 
 function headerText(value: string | readonly string[] | undefined): string | undefined {
@@ -123,7 +120,7 @@ export function prerenderEntryKind(bundle: DeploymentBundle, prerender: Prerende
  */
 export function buildTagsOf(kind: RouteEntryKind, prerender: Prerender): GenerationTag[] {
   const recorded = parseCacheTagsHeader(headerText(prerender.initialHeaders?.[CACHE_TAGS_HEADER]));
-  const concrete = isTemplate(prerender.pathname) ? undefined : prerender.pathname;
+  const concrete = standsForClass(prerender) ? undefined : prerender.pathname;
   const implicit =
     kind === 'pages' ? [] : implicitTagsFor(appPathFor(kind, prerender.route), concrete);
   const values = new Set(recorded);
@@ -311,7 +308,7 @@ export async function seedRouteFor(
             kind,
             delivery: prerender.postponed === undefined ? 'complete' : 'resume',
             // What a member's own entry is keyed by beside a class's: the route, not the template.
-            ...(isTemplate(prerender.pathname) && { route: prerender.route }),
+            ...(standsForClass(prerender) && { route: prerender.route }),
           },
   };
 }

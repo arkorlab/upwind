@@ -18,7 +18,13 @@ const CONDITION = { type: 'host' as const };
 const MANY_RULES = 1000;
 const MANY_CONDITIONS = 600;
 
-function manifestOf(dynamicRoutes: readonly DynamicRoute[]) {
+function manifestOf(
+  dynamicRoutes: readonly DynamicRoute[],
+  gateFields: {
+    readonly gates?: Readonly<Record<string, string>>;
+    readonly gatedPathnames?: Readonly<Record<string, string>>;
+  } = {},
+) {
   return buildProjectManifest({
     projectId: 'manifest-memory',
     runId: 'run',
@@ -28,6 +34,7 @@ function manifestOf(dynamicRoutes: readonly DynamicRoute[]) {
     routes: [],
     app: { deploymentId: 'dpl_manifestMemory', scriptName: 'manifest-app' },
     dynamicRoutes,
+    ...gateFields,
   });
 }
 
@@ -99,5 +106,39 @@ describe('the memory held by a manifest’s member routes', () => {
     );
     expect(manifestCharge(parsed, bytes)).toBeGreaterThan(EDGE_ISOLATE_BUDGET_BYTES);
     expect(manifestCharge(ordinary, ordinaryBytes)).toBeLessThan(EDGE_ISOLATE_BUDGET_BYTES);
+  });
+});
+
+describe('the additional lookup tables of a gated manifest', () => {
+  it.each([
+    { gates: 1, pathnames: 2 },
+    { gates: 2, pathnames: 3 },
+  ])('charges $gates gate names and $pathnames pathname mappings after parsing', (counts) => {
+    const gates = Object.fromEntries(
+      Array.from({ length: counts.gates }, (_, index) => [`/gate-${index}`, 'protected']),
+    );
+    const gatedPathnames = Object.fromEntries(
+      Array.from({ length: counts.pathnames }, (_, index) => [
+        `/member-${index}`,
+        `/gate-${index % counts.gates}`,
+      ]),
+    );
+    const plain = manifestOf([RULE]);
+    const listed = manifestOf([RULE], { gates, gatedPathnames });
+    const plainStored = serializeManifest(plain);
+    const stored = serializeManifest(listed);
+    const parsed = parseProjectManifest(stored);
+
+    expect(parsed.gates).toStrictEqual(gates);
+    expect(parsed.gatedPathnames).toStrictEqual(gatedPathnames);
+    expect(parsed.gates).not.toBe(gates);
+    expect(parsed.gatedPathnames).not.toBe(gatedPathnames);
+    // Their strings pay the existing JSON multiplier; each extra table entry pays the same
+    // 48 bytes already used for exactFunctions, rather than disappearing beside its pathname.
+    expect(
+      manifestCharge(parsed, encodeUtf8(stored).byteLength) -
+        manifestCharge(plain, encodeUtf8(plainStored).byteLength) -
+        1.5 * (encodeUtf8(stored).byteLength - encodeUtf8(plainStored).byteLength),
+    ).toBe(48 * (counts.gates + counts.pathnames));
   });
 });
