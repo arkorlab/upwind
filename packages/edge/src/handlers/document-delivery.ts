@@ -1,4 +1,5 @@
 import type { EncodedShellRef, ShellEncoding } from '@stayingupwind/core/artifact';
+import type { DecodedGenerationPack } from '@stayingupwind/core/cache';
 import type { RouteEntry } from '@stayingupwind/core/manifest';
 import {
   brotliWire,
@@ -8,6 +9,8 @@ import {
   type WireEncoding,
 } from '@stayingupwind/host/splice';
 
+import type { ServedValidity } from '../cache/decision.ts';
+import type { DetachedRegeneration } from '../cache/regenerate.ts';
 import { logWarn } from '../observability/logger.ts';
 import type { ShellLoadResult } from '../strategies/shell-loader.ts';
 import { IDENTITY_ENCODING, type ShellDelivery } from './document-headers.ts';
@@ -55,6 +58,42 @@ function renderingWire(
  * two codings (`layered-clients.ts`). `on`: it is.
  */
 export type Layering = 'off' | 'declined' | 'on';
+
+/**
+ * The generation a hosted application's document is served from, when the deployment's runtime
+ * cache holds one: its record is the shell, its state is what the resume completes, and what it
+ * says of its own freshness is on the wire for whoever reads the markers.
+ */
+export interface ServedGeneration {
+  readonly pack: DecodedGenerationPack;
+  readonly validity: ServedValidity;
+  /** Where the record came from: this isolate's memory, this data center's copy, or KV. */
+  readonly source: string;
+  /**
+   * The record's size as this request read it from KV; none for a record the isolate held, or one
+   * the data center's copy answered with.
+   */
+  readonly readBytes: number | undefined;
+  readonly lookupMs: number;
+  /** The record is a member's own, read beside the class shell's (`concreteUpgrade`). */
+  readonly member: boolean;
+  /** What the resume is told beside the request when the entry is to be regenerated behind it. */
+  readonly regeneration: Readonly<Record<string, string>> | undefined;
+  /** Give its ask back when the visitor takes the resume away before it answers. */
+  readonly onAbandoned?: (() => void) | undefined;
+  /**
+   * The regeneration asked behind a document complete in itself as a request of its own, there being
+   * no resume to ask beside (`triggerDetached`): the document's point counts its dispatches.
+   */
+  readonly detached?: DetachedRegeneration | undefined;
+  /**
+   * What serving the record sets off behind the response (`readServedAgain`), called once the
+   * document is certain to go out from it, whole or resumed: not for one handed to the application
+   * whole instead (`delegateSandboxedDocument`), which serves nothing of the record and dispatches no
+   * resume for its regeneration to ride.
+   */
+  readonly onServed: (() => void) | undefined;
+}
 
 export interface DeliveryInput {
   readonly entry: RouteEntry;
