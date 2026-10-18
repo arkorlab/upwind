@@ -77,6 +77,8 @@ const LOCATION_HEADER = 'location';
  * (`withRoutingHeaders`): over the answer's own, and a cookie beside the answer's, scoped as every
  * cookie a Function answers with is. What the edge takes off every answer it hands on
  * (`forwardedResponse`) is not a rule's to put back, and a name no header can have is left off.
+ * The original Function answer's `Connection` options apply to these deferred rules too: the
+ * Function would otherwise have laid them before the edge removed the one hop's fields.
  *
  * The Function leaves off only the rules that set headers. Its redirects ahead of the middleware
  * stay, each with its `Location`, so none is laid here: on any other answer — a path a redirect
@@ -88,12 +90,14 @@ export function layConfiguredOver(
   headers: Headers,
   configured: ConfiguredHeaders,
   scope: PassthroughResponseContext,
+  nominated: ReadonlySet<string> | undefined,
 ): void {
   for (const [name, value] of Object.entries(configured.headers)) {
     if (
       name === LOCATION_HEADER ||
       PASSTHROUGH_RESPONSE_HEADER_DENYLIST.includes(name) ||
-      name.startsWith(PLATFORM_HEADER_PREFIX)
+      name.startsWith(PLATFORM_HEADER_PREFIX) ||
+      nominated?.has(name) === true
     ) {
       continue;
     }

@@ -35,6 +35,7 @@ import {
   forwardedResponse,
   keptByNobody,
   mergeScopedMiddlewareHeaders,
+  nominatedBy,
   privateCacheControl,
 } from './responses.ts';
 import {
@@ -437,7 +438,7 @@ function layAfterMiddleware(
 ): void {
   const { judgedRules } = middleware;
   if (judgedRules !== undefined && answer.headers.get(HEADER_RULES_LEFT_HEADER) === '1') {
-    layConfiguredOver(headers, judgedRules, scope);
+    layConfiguredOver(headers, judgedRules, scope, nominatedBy(answer.headers));
   }
   // After the Worker's own, which may repeat the middleware's cookies as Next.js writes them back
   // (`splice/cookies.ts`): a browser keeps the last of a cookie set twice, and the middleware's is
