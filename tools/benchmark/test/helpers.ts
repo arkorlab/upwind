@@ -20,7 +20,7 @@ export const SOURCE: Source = {
     arch: 'X64',
     imageOS: 'ubuntu24',
     imageVersion: '20261012.1',
-    node: 'v24.21.0',
+    node: 'v24.22.0',
   },
 };
 
