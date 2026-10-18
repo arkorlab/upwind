@@ -7,6 +7,17 @@ import { cuttable, imageWithin } from './image-stream.ts';
 /** What the service answers a transformation with. */
 type Transformed = Awaited<ReturnType<TransformImage>>;
 
+/** A failed source's location, without credentials its URL may carry. Only warnings ask for it. */
+export function imageHrefForLog(href: string): string {
+  try {
+    const url = new URL(href, 'https://image.invalid');
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return '[redacted]';
+    return href.startsWith('/') ? url.pathname : `${url.origin}${url.pathname}`;
+  } catch {
+    return '[redacted]';
+  }
+}
+
 /** What a transformation answers once it is past its budget, let go of unread. */
 async function releaseLate(pending: Promise<Transformed>, reason: string): Promise<void> {
   releaseStream((await pending).body, reason);
@@ -99,7 +110,7 @@ export function withinBudget(
         read = await withDeadline(reader.read(), rest.budgetMs - spent, 'image result');
       } catch (error) {
         logWarn('image result stopped arriving', {
-          href: rest.href,
+          href: imageHrefForLog(rest.href),
           detail: error instanceof Error ? error.message : String(error),
         });
         // Not awaited: a result that stopped arriving may never acknowledge the cancel either.

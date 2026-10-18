@@ -42,7 +42,7 @@ import {
   sourceLimit,
 } from './image-source.ts';
 import { cuttable } from './image-stream.ts';
-import { transformWithin, withinBudget } from './image-transform.ts';
+import { imageHrefForLog, transformWithin, withinBudget } from './image-transform.ts';
 import type { MiddlewareContinued } from './middleware.ts';
 import { observeMetric, observeTransformed } from './observer.ts';
 import {
@@ -362,7 +362,10 @@ async function optimize(input: ImageInput, imageSource: ImageSource): Promise<Op
     if (input.request.signal.aborted) {
       return { kind: 'error', error: badGateway('image request abandoned', spent) };
     }
-    logWarn('image transformation failed', { href: params.href, detail: errorDetail(error) });
+    logWarn('image transformation failed', {
+      href: imageHrefForLog(params.href),
+      detail: errorDetail(error),
+    });
     if (isBodyLimitError(error)) {
       return { kind: 'error', error: tooLarge(imageSource, spent) };
     }
