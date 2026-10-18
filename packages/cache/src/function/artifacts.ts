@@ -42,6 +42,8 @@ import { ArtifactRoom, type ReadBudget } from './read-budget.ts';
  * bytes are held to their id or it is given up; the authority's answer asked beside it is read in
  * the same room rather than behind it (`ArtifactRoom`). A copy kept before copies said their length
  * is read as it always was, until it ages out.
+ * The Function gateway reads authority artifacts up to 32 MiB; a larger seeded or configured-high
+ * artifact remains deployed and streamable elsewhere, but is a miss in this whole-buffer API.
  *
  * Retirement needs nothing of either. A deployment's scope is retired once its Workers have been
  * taken down, and what an isolate holds goes with the isolate. The copies are keyed under the
@@ -104,11 +106,11 @@ const HELD_ENTRY_BYTES = HELD_BYTES / HELD_ENTRY_SHARE;
 const UTF16_BYTES = 2;
 const DIGITS = /^\d+$/u;
 /**
- * The largest artifact the authority keeps (`MAX_ARTIFACT_BYTES`, 25 MiB): no copy of one runs
- * longer. A copy's body is read whole before it is held to its id, and the application's own code
+ * The copy ceiling, matching the authority's default upload limit of 25 MiB. Its configured limit
+ * may be higher; no copy runs longer. A copy's body is read whole before it is held to its id, and the application's own code
  * can write into the copies' cache — a body read whatever its size could run past the isolate's
  * memory. One that runs longer is not the artifact, and is read no further than this. Nor is one
- * kept: an authority configured to keep larger artifacts has them read from it every time.
+ * kept: a larger artifact is read from the authority, within the Function's separate read ceiling.
  */
 const MAX_COPY_MIB = 25;
 const MAX_COPY_BYTES = MAX_COPY_MIB * MIB;
