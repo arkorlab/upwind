@@ -295,3 +295,10 @@ export function serviceUnavailableResponse(reason: string): Response {
     `error;reason=${reason}`,
   );
 }
+
+/** A conditional response with the full representation's headers, without its body length. */
+export function notModifiedResponse(headers: Headers): Response {
+  const kept = new Headers(headers);
+  kept.delete(CONTENT_LENGTH_HEADER);
+  return new Response(null, { status: NULL_BODY_STATUS.notModified, headers: kept });
+}

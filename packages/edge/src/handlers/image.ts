@@ -11,7 +11,11 @@ import {
   upstreamMaxAge,
 } from '@stayingupwind/core/images';
 import type { ConfiguredHeaders, ProjectManifest } from '@stayingupwind/core/manifest';
-import { EDGE_DEBUG_HEADER, NO_STORE_CACHE_CONTROL } from '@stayingupwind/core/request';
+import {
+  EDGE_DEBUG_HEADER,
+  NO_STORE_CACHE_CONTROL,
+  NULL_BODY_STATUSES,
+} from '@stayingupwind/core/request';
 import {
   type BoundedBody,
   isBodyLimitError,
@@ -27,7 +31,6 @@ import type { EdgeMetric } from '../observability/metrics.ts';
 import { validatorMatches } from '../strategies/asset-upstream.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { setConfiguredUnder } from './configured-headers.ts';
-import type { MiddlewareContinue } from './hosted-gate.ts';
 import {
   fetchImageSource,
   type ImageSource,
@@ -40,10 +43,12 @@ import {
 } from './image-source.ts';
 import { cuttable } from './image-stream.ts';
 import { transformWithin, withinBudget } from './image-transform.ts';
+import type { MiddlewareContinued } from './middleware.ts';
 import { observeMetric, observeTransformed } from './observer.ts';
 import {
   keptByNobody,
   mergeScopedMiddlewareHeaders,
+  notModifiedResponse,
   removeSharedCacheOverrides,
 } from './responses.ts';
 
@@ -74,7 +79,7 @@ export interface ImageAnswerInput {
    */
   readonly configured: ConfiguredHeaders;
   /** What the application's middleware set, when the edge ran it and it let the request on. */
-  readonly middleware: MiddlewareContinue | undefined;
+  readonly middleware: MiddlewareContinued | undefined;
   /** The dispatches the middleware took before the image was served, which its metric counts. */
   readonly middlewareDispatches?: number | undefined;
   /** How long the middleware took, where it ran, which its metric reports. */
@@ -455,32 +460,27 @@ function refusal(input: ImageAnswerInput, error: SourceError, reason: string): R
   return new Response(body, { status: error.status, headers });
 }
 
-const NOT_MODIFIED_STATUS = 304;
-
-/**
- * A 304 carries every header the full answer would — what the middleware set, a cookie it
- * refreshes on every request, the rules of `next.config` — short of the body's own length.
- */
-function notModified(headers: Headers): Response {
-  const kept = new Headers(headers);
-  kept.delete(CONTENT_LENGTH_HEADER);
-  return new Response(null, { status: NOT_MODIFIED_STATUS, headers: kept });
-}
+const HTTP_OK = 200;
 
 /**
  * The image as the request asks for it: whole, or without a body — a 304 to a client that holds it
  * already, the headers alone to a `HEAD` — which its point then counts as nothing sent.
+ * A successful image keeps its rewrite status; a matching validator still answers 304, as the
+ * optimizer does. A rewrite with no body releases the image before its metric counts it.
  */
 function respond(input: ImageAnswerInput, headers: Headers, body: BodyInit | null): Response {
   if (validatorMatches(input.request, headers.get('etag'))) {
     releaseStream(body instanceof ReadableStream ? body : undefined, 'not modified');
-    return notModified(headers);
+    return notModifiedResponse(headers);
   }
-  if (input.request.method === 'HEAD') {
-    releaseStream(body instanceof ReadableStream ? body : undefined, 'head');
-    return new Response(null, { headers });
+  const status = input.middleware?.rewriteStatus ?? HTTP_OK;
+  const bodyless = NULL_BODY_STATUSES.has(status);
+  if (bodyless) headers.delete(CONTENT_LENGTH_HEADER);
+  if (bodyless || input.request.method === 'HEAD') {
+    releaseStream(body instanceof ReadableStream ? body : undefined, 'head or bodyless rewrite');
+    return new Response(null, { status, headers });
   }
-  return new Response(body, { headers });
+  return new Response(body, { status, headers });
 }
 
 interface Outcome {
