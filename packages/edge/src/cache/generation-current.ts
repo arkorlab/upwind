@@ -6,7 +6,7 @@ import {
 import { TtlCache, withDeadline } from '@stayingupwind/core/util';
 import type { RuntimeCacheSettings } from '@stayingupwind/host/delivery';
 
-import type { EdgeRuntime } from '../edge-runtime.ts';
+import type { EdgeMemory } from '../memory/caches.ts';
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { isInvalidated } from './condemned.ts';
@@ -26,8 +26,11 @@ interface CurrentReads {
   readonly pending: Set<string>;
 }
 
-/** Created only when a stale record is served; fresh delivery has no bookkeeping here. */
-const reads = new WeakMap<EdgeRuntime, CurrentReads>();
+/**
+ * A request gets a runtime of its own, but shares its isolate memory. Keep both limits with that
+ * memory, created only after stale delivery; fresh delivery has no bookkeeping here.
+ */
+const reads = new WeakMap<EdgeMemory, CurrentReads>();
 
 interface CurrentRead {
   readonly pack: DecodedGenerationPack;
@@ -116,13 +119,13 @@ async function boundedRead(
 }
 
 function readsOf(edge: EdgeContext, cadenceMs: number): CurrentReads {
-  let state = reads.get(edge.runtime);
+  let state = reads.get(edge.runtime.memory);
   if (state === undefined) {
     state = {
       recent: new TtlCache(cadenceMs, MAX_RECENT_READS, edge.runtime.now),
       pending: new Set(),
     };
-    reads.set(edge.runtime, state);
+    reads.set(edge.runtime.memory, state);
   }
   return state;
 }
