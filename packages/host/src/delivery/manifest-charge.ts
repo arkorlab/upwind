@@ -49,6 +49,7 @@ interface RuleObjects {
   readonly missing?: readonly unknown[] | undefined;
   readonly headers?: Readonly<Record<string, string>> | undefined;
   readonly documentHeaders?: Readonly<Record<string, string>> | undefined;
+  readonly documentRecoverySources?: Readonly<Record<string, string>> | undefined;
   readonly members?:
     | {
         readonly bypassFor?: readonly unknown[] | undefined;
@@ -70,30 +71,46 @@ function listObjects(list: readonly unknown[] | undefined): number {
 }
 
 /** The objects rules are made of: each rule, its conditions and their lists, and its headers. */
-function ruleObjects(rules: readonly RuleObjects[] | undefined): number {
-  if (rules === undefined) {
-    return 0;
-  }
+function ruleObjects(
+  rules: readonly RuleObjects[] | undefined,
+  following?: readonly RuleObjects[],
+): number {
   let objects = 0;
   let memberConditions: WeakSet<readonly unknown[]> | undefined;
-  for (const rule of rules) {
-    objects += 1 + listObjects(rule.has) + listObjects(rule.missing);
-    objects += (rule.headers === undefined ? 0 : 1) + (rule.documentHeaders === undefined ? 0 : 1);
-    const members = rule.members;
-    if (members === undefined) {
-      continue;
+  let recoveryMaps: WeakSet<Readonly<Record<string, string>>> | undefined;
+  let list = rules ?? following;
+  let next = rules === undefined ? undefined : following;
+  while (list !== undefined) {
+    for (const rule of list) {
+      objects += 1 + listObjects(rule.has) + listObjects(rule.missing);
+      objects +=
+        (rule.headers === undefined ? 0 : 1) + (rule.documentHeaders === undefined ? 0 : 1);
+      const sources = rule.documentRecoverySources;
+      if (sources !== undefined) {
+        recoveryMaps ??= new WeakSet();
+        if (!recoveryMaps.has(sources)) {
+          recoveryMaps.add(sources);
+          objects += 1;
+        }
+      }
+      const members = rule.members;
+      if (members === undefined) {
+        continue;
+      }
+      objects += 1 + (members.keyedBy === undefined ? 0 : 1);
+      const conditions = members.bypassFor;
+      if (conditions === undefined) {
+        continue;
+      }
+      // Digest-vouched reads restore one table array for every member that shares it.
+      memberConditions ??= new WeakSet();
+      if (!memberConditions.has(conditions)) {
+        memberConditions.add(conditions);
+        objects += listObjects(conditions);
+      }
     }
-    objects += 1 + (members.keyedBy === undefined ? 0 : 1);
-    const conditions = members.bypassFor;
-    if (conditions === undefined) {
-      continue;
-    }
-    // Digest-vouched reads restore one table array for every member that shares it.
-    memberConditions ??= new WeakSet();
-    if (!memberConditions.has(conditions)) {
-      memberConditions.add(conditions);
-      objects += listObjects(conditions);
-    }
+    list = next;
+    next = undefined;
   }
   return objects;
 }
@@ -107,8 +124,7 @@ function manifestObjects(manifest: ProjectManifest): number {
     keysOf(manifest.filesystemPages) +
     ruleObjects(manifest.dynamicRoutes) +
     ruleObjects(manifest.reservedRoutes) +
-    ruleObjects(manifest.headerRules) +
-    ruleObjects(manifest.foldedHeaderRules) +
+    ruleObjects(manifest.headerRules, manifest.foldedHeaderRules) +
     ruleObjects(manifest.middleware?.matchers)
   );
 }
