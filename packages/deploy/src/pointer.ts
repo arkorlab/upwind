@@ -51,7 +51,7 @@ export function edgePointerOf(
   site: PointerSite,
   payload: EdgePointerPayload,
   now: number,
-): EdgePointer {
+): Omit<EdgePointer, 'selectedPolicy'> {
   return {
     v: 1,
     projectId: site.projectId,

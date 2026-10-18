@@ -190,6 +190,11 @@ async function answered(
       async () => {
         const warm = resourceWarmOf(props);
         if (warm !== undefined) {
+          // Middleware carries no cache host, so it cannot regenerate a page. Keep its existing
+          // answer here, where the build can leave the page-regeneration graph out of this Worker.
+          if (__ARKOR_FUNCTION_KIND__ === 'middleware') {
+            return Response.json({ v: 1, kind: 'unsupported' });
+          }
           const result = await warmResourceRoute({
             props: warm,
             tables: { app: app as AppModule, edge: edge as EdgeModule },

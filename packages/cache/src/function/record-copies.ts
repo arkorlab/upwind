@@ -278,8 +278,8 @@ export class RecordCopies {
       releaseStream(found.body, 'a record copy longer than any kept');
       return undefined;
     }
-    const room = await this.#budget.takeWithin(length, leftOf(startedAt));
-    if (room === undefined) {
+    const giveBack = await this.#budget.takeWithin(length, leftOf(startedAt));
+    if (giveBack === undefined) {
       releaseStream(found.body, 'a record copy with no room in time');
       return undefined;
     }
@@ -296,7 +296,7 @@ export class RecordCopies {
       }
       return body.bytes;
     } finally {
-      this.#budget.give(room);
+      giveBack();
     }
   }
 

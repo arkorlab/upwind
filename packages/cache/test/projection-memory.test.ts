@@ -7,8 +7,24 @@ import {
   withProjectionMemoryAtOnce,
 } from '../src/scope/projection-memory.ts';
 
-/** How long a claim lasts without its object renewing it (`CLAIM_LAPSE_MS`). */
+/**
+ * How long a claim nothing renews lasts at the least: five looks of a chunk that waits, each fifty
+ * of its askings 20 ms apart (`LOOKS_TO_LAPSE`, `ASKS_A_LOOK`, `isolate-room.ts`).
+ */
 const CLAIM_LAPSE_MS = 5000;
+/** Where the clock stands while the timers here fire. */
+const FROZEN_AT = 1_800_000_000_000;
+
+/**
+ * Timers that fire as time is moved on, under a clock that does not move with them: as an object's
+ * stands still on a Workers host while its code runs, moved only by its I/O. Whatever lapses here
+ * lapses by the timers alone.
+ */
+function freezeClock(): void {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+  vi.spyOn(Date, 'now').mockReturnValue(FROZEN_AT);
+  vi.spyOn(performance, 'now').mockReturnValue(0);
+}
 const MINUTE_MS = 60_000;
 /** The bytes of a record a run keeps past its chunk, as a commit's is. */
 const KEPT_BYTES = 1024;
@@ -17,6 +33,7 @@ const KEPT_BYTES = 1024;
 describe('the memory an isolate builds records in', () => {
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it('lets chunks that each take the whole of it build one at a time, in the order they asked', async () => {
@@ -107,10 +124,10 @@ describe('the memory an isolate builds records in', () => {
   /**
    * An object reset while its chunk builds never comes back to give its room back, and its timers
    * go with it: nothing renews its claim, which lapses rather than holding every other scope's
-   * records for good.
+   * records for good. The clock stands still all the while.
    */
   it('takes back the room of a chunk whose object was reset as it built', async () => {
-    vi.useFakeTimers();
+    freezeClock();
     void withProjectionMemory(
       PROJECTION_MEMORY_BYTES,
       () =>
@@ -382,10 +399,10 @@ describe('the memory an isolate builds records in', () => {
 
   /**
    * A record an object kept when it was reset is renewed no more, and its room lapses with it: until
-   * then it holds back even a chunk that would build alone.
+   * then it holds back even a chunk that would build alone. The clock stands still all the while.
    */
   it('takes back the room of a record whose object was reset as it kept it', async () => {
-    vi.useFakeTimers();
+    freezeClock();
     retain(PROJECTION_MEMORY_BYTES);
     // Its object reset: the timer that renewed its claim never fires again.
     vi.clearAllTimers();

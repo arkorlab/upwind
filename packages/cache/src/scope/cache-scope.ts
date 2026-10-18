@@ -38,17 +38,12 @@ import {
   planStartAttempt,
   type UploadedArtifact,
 } from './attempts.ts';
-import { answerCommit, wantedRecords, withCurrentRecord } from './commit-record.ts';
+import * as recordAnswers from './commit-record.ts';
 import { type CommitOutcome, planCommit } from './commit.ts';
 import { adoptDataUpload, carriedValueOf } from './data-adopt.ts';
 import { type DataUploadPage, listDataUploads } from './data-uploads.ts';
 import type { DataSetInput, DataSetOutcome } from './data.ts';
-import {
-  type HistoryFactory,
-  type HistoryFields,
-  NO_HISTORY,
-  type ScopeHistory,
-} from './history.ts';
+import * as history from './history.ts';
 import { type InvalidateResult, planInvalidate } from './invalidations.ts';
 import { type BlobStore, blobStore, checkFault, kvSink, type TestFaults } from './io.ts';
 import { Alarm, commitMutation, initializeScope, scopeName, ScopeQueue } from './mutations.ts';
@@ -106,7 +101,7 @@ import type { Apply, TxInput } from './tx.ts';
  *
  * Every mutation is one synchronous SQLite transaction at one scope revision, planned under a
  * mutex so the ids derived ahead of it are derived for the revision it commits at. What the commit
- * owes to KV, and whatever the host's history owes for it (`ScopeHistory.publish`), is settled
+ * owes to KV, and whatever the host's history owes for it (`history.ScopeHistory.publish`), is settled
  * afterwards — awaited by the caller as far as the delivery and tag records, which are what is
  * served and judged, so those are written before a change is answered, while what the history owes
  * follows the answer, and a change that owes no such record is answered as it commits — and by the
@@ -139,8 +134,8 @@ const SEED = { seed: { kind: 'conflict', reason: 'the scope is retired' }, atOnc
 type OwnRun = Pick<OwnRecords, 'wanted' | 'carried'> & Pick<SettleDeps, 'timing'>;
 
 export class CacheScope extends DurableObject<CacheBindings> {
-  /** The history a host keeps of each scope, made as each object is (`ScopeHistory`): none here. */
-  static readonly historyOf: HistoryFactory = () => NO_HISTORY;
+  /** The history a host keeps of each scope, made as each object is (`history.ScopeHistory`): none here. */
+  static readonly historyOf: history.HistoryFactory = () => history.NO_HISTORY;
   readonly #mutations = new ScopeQueue();
   readonly #alarm = new Alarm(this.ctx.storage);
   #settling: Promise<void> = Promise.resolve();
@@ -151,7 +146,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
   #logger: Logger | undefined;
   /** Whether this object holds its scope's tables (`holdsScopeTables`). */
   #tables: boolean;
-  readonly #history: ScopeHistory;
+  readonly #history: history.ScopeHistory;
 
   constructor(ctx: DurableObjectState, env: CacheBindings) {
     super(ctx, env);
@@ -407,9 +402,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
   }
 
   #requireTestHooks(): void {
-    if (!this.#vars.ARKOR_TEST_HOOKS) {
-      throw new Error('test hooks are off');
-    }
+    if (!this.#vars.ARKOR_TEST_HOOKS) throw new Error('test hooks are off');
   }
 
   // ---- what a deploy calls ---------------------------------------------------------------------
@@ -426,10 +419,14 @@ export class CacheScope extends DurableObject<CacheBindings> {
   /**
    * Arm the alarm again (`#rearm`), as a host that checks on its scopes from time to time asks, so
    * that a scope whose sweep is not armed is swept again. Asked to, it has the host's history stop
-   * as well, for good (`ScopeHistory.stop`), as that history reads `epoch`; what came of it is the
+   * as well, for good (`history.ScopeHistory.stop`), as that history reads `epoch`; what came of it is the
    * answer.
    */
-  async ensureRetention(now: number, stop = false, epoch?: number): Promise<HistoryFields | null> {
+  async ensureRetention(
+    now: number,
+    stop = false,
+    epoch?: number,
+  ): Promise<history.HistoryFields | null> {
     return this.#mutations.run(async () => {
       const stopped = stop ? this.#history.stop(this.ctx.storage, now, epoch) : null;
       await this.#rearm(now);
@@ -495,12 +492,12 @@ export class CacheScope extends DurableObject<CacheBindings> {
   async startAttempt(
     request: StartAttemptRequest,
     now: number,
-  ): ReturnType<typeof withCurrentRecord> {
+  ): ReturnType<typeof recordAnswers.withCurrentRecord> {
     const result = await this.#mutate(now, (tx) => planStartAttempt(tx, request), AT_ONCE);
     if (result.kind === 'leased') {
       await this.#armOrLog(result.leaseExpiresAt + LEASE_SWEEP_GRACE_MS);
     }
-    return withCurrentRecord(result, request.replaces, this.#deps());
+    return recordAnswers.withCurrentRecord(result, request.replaces, this.#deps());
   }
 
   heartbeat(
@@ -527,9 +524,9 @@ export class CacheScope extends DurableObject<CacheBindings> {
       return isRefusal(scope) ? () => scope : planCommit(tx, attemptId, request, this.#blobs());
     };
     const entryOf = (): string | undefined => findAttempt(this.#sql, attemptId)?.entry_id;
-    const wanted = wantedRecords(entryOf);
+    const wanted = recordAnswers.wantedRecords(entryOf);
     const committed = this.#mutate(now, plan, REFUSED, { wanted });
-    return answerCommit(committed, wanted, entryOf, this.#deps());
+    return recordAnswers.answerCommit(committed, wanted, entryOf, this.#deps());
   }
 
   fail(attemptId: string, request: FailRequest, now: number): Promise<FailResponse | Refusal> {
@@ -601,6 +598,11 @@ export class CacheScope extends DurableObject<CacheBindings> {
   /** The data-cache value the key holds now, read from the scope rather than from KV. */
   currentData(request: CurrentDataRequest): ReturnType<typeof readCurrentData> {
     return this.#tables ? readCurrentData(this.#deps(), request) : Promise.resolve(undefined);
+  }
+
+  /** A newer route record from the authority's current state, without leasing or writing it. */
+  async currentRecord(entry: string, after: number): Promise<ArrayBuffer | undefined> {
+    return this.#tables ? recordAnswers.readCurrentRecord(this.#deps(), entry, after) : undefined;
   }
 
   readEntry(entryId: string, now: number): ReadEntryResult {

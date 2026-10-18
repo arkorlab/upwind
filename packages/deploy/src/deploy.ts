@@ -230,7 +230,10 @@ async function blobOf(blobs: DeployBlobs, ref: BlobRef): Promise<Uint8Array> {
  * it names that is missing or other bytes would fail a read the deployment's Functions or its cache
  * make after it was published. Function modules are not among them: a host deploys its Functions.
  */
-async function stageBlobs(target: DeployTarget, bundle: DeploymentBundle): Promise<BlobRef[]> {
+async function stageBlobs(target: DeployTarget, input: StageInput): Promise<BlobRef[]> {
+  const { bundle } = input;
+  // Read routed bodies when importing their artifacts, so the same bytes supply both stores.
+  const shells = new Set(routedShells(target, input).map((shell) => shell.sha256));
   const refs = [
     ...bundle.prerenders.flatMap((prerender) => [prerender.body, prerender.postponed]),
     ...bundle.staticFiles.map((file) => file.blob),
@@ -241,11 +244,15 @@ async function stageBlobs(target: DeployTarget, bundle: DeploymentBundle): Promi
       continue;
     }
     checked.set(ref.sha256, { sha256: ref.sha256, byteLength: ref.byteLength });
+    if (shells.has(ref.sha256)) {
+      continue;
+    }
     const bytes = await blobOf(target.blobs, ref);
     if (!target.blobs.uploaded) {
       await target.bucket.put(blobObjectKey(ref.sha256), bytes, { contentType: ref.contentType });
     }
   }
+  await importShells(target, input);
   return [...checked.values()];
 }
 
@@ -319,6 +326,11 @@ async function preloadsOf(
 async function importShells(target: DeployTarget, input: StageInput): Promise<void> {
   for (const shell of routedShells(target, input)) {
     const bytes = await blobOf(target.blobs, shell);
+    if (!target.blobs.uploaded) {
+      await target.bucket.put(blobObjectKey(shell.sha256), bytes, {
+        contentType: shell.contentType,
+      });
+    }
     // As what it is: a segment or a payload is an RSC payload, and a page's props are JSON.
     await target.bucket.put(r2ArtifactKey(shell.sha256), bytes, {
       contentType: shell.contentType,
@@ -417,8 +429,7 @@ export async function stageDeployment(
   if (assembled.kind === 'refused') {
     throw new DeployRefusalError(assembled.reason, { code: 'bundle_invalid' });
   }
-  const blobs = await stageBlobs(target, bundle);
-  await importShells(target, input);
+  const blobs = await stageBlobs(target, input);
   const token = target.cache === undefined ? undefined : await seedCache(target.cache, input);
   const { manifest, manifestId, serialized } = assembled;
   return { manifest, manifestId, serialized, token, blobs };

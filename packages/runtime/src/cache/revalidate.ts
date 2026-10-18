@@ -10,7 +10,7 @@ import { descriptorFor } from '../generations.ts';
 import { escapedNameOf } from '../name-spellings.ts';
 import { elsewhere } from '../placement.ts';
 import { routingParameters } from '../route-parameters.ts';
-import { completedShell, findShell, getStore, type Store } from '../store.ts';
+import { completedShell, findShell, getStore, queryCompletedShell, type Store } from '../store.ts';
 import { requestContext } from './context.ts';
 import { invalidateNow } from './handlers.ts';
 import { regenerate } from './regenerate.ts';
@@ -102,13 +102,21 @@ function routeOf(store: Store, pathname: string): RouteEntryDescriptor | undefin
   if (named !== undefined && store.pathnames.includes(pathname)) {
     const shell = findShell(store, named.route, pathname);
     if (shell?.id === named.id) {
-      return descriptorFor(store, named.route, completedShell(shell, pathname));
+      return descriptorFor(
+        store,
+        named.route,
+        queryCompletedShell(shell, pathname) ?? completedShell(shell, pathname),
+      );
     }
   }
   for (const route of orderedRoutes(store)) {
     const shell = findShell(store, route, pathname);
     if (shell !== undefined) {
-      return descriptorFor(store, route, completedShell(shell, pathname));
+      return descriptorFor(
+        store,
+        route,
+        queryCompletedShell(shell, pathname) ?? completedShell(shell, pathname),
+      );
     }
   }
   return undefined;

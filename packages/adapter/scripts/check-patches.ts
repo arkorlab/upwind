@@ -108,6 +108,8 @@ const CONTEXT: PatchContext = {
   instrumentation: undefined,
   wasm: [],
 };
+/** Conditional output rewrites are checked too, without changing other patches' context. */
+const EXTERNAL_CONTEXT: PatchContext = { ...CONTEXT, distDir: path.join(REPO, '..', '.next') };
 
 /** What one patch did to one file. */
 interface Applied {
@@ -301,7 +303,11 @@ async function profile(root: string): Promise<Applied[]> {
       if (patch.marker !== undefined && !patch.marker(source)) {
         continue;
       }
-      const result = patch.apply(source, name, CONTEXT);
+      const result = patch.apply(
+        source,
+        name,
+        patch.externalOutputOnly === true ? EXTERNAL_CONTEXT : CONTEXT,
+      );
       applied.push({ patch: patch.name, file: name, edits: result.edits });
     }
   }

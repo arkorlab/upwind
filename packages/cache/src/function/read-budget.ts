@@ -7,106 +7,7 @@
  * isolate serves would otherwise all be read at once, however many there were and however long.
  */
 
-/**
- * The bytes of artifacts an isolate reads at once, and the reads waiting for room, in the order
- * they asked. A read takes as many bytes as it says it holds, the whole budget at the most, so one
- * alone always has room; one that has none, or that comes while another waits, waits for bytes
- * given back, or until its signal aborts.
- */
-export class ReadBudget {
-  readonly #limit: number;
-  #taken = 0;
-  readonly #waiting: { readonly bytes: number; readonly grant: () => void }[] = [];
-
-  constructor(limit: number) {
-    this.#limit = limit;
-  }
-
-  /** Room for whoever waits first, for as long as there is room for them. */
-  #admit(): void {
-    let next = this.#waiting[0];
-    while (next !== undefined && this.#taken + next.bytes <= this.#limit) {
-      this.#waiting.shift();
-      this.#taken += next.bytes;
-      next.grant();
-      next = this.#waiting[0];
-    }
-  }
-
-  /**
-   * Room for `bytes` where there is room for them now and no read waits ahead: the bytes taken, to
-   * be given back (`give`), or none.
-   */
-  takeAtOnce(bytes: number): number | undefined {
-    const wanted = Math.min(bytes, this.#limit);
-    if (this.#waiting.length > 0 || this.#taken + wanted > this.#limit) {
-      return undefined;
-    }
-    this.#taken += wanted;
-    return wanted;
-  }
-
-  /** Room for `bytes`, once there is room for them: the bytes taken, to be given back (`give`). */
-  async take(bytes: number, signal: AbortSignal): Promise<number> {
-    const now = this.takeAtOnce(bytes);
-    if (now !== undefined) {
-      return now;
-    }
-    signal.throwIfAborted();
-    const wanted = Math.min(bytes, this.#limit);
-    const granted = Promise.withResolvers<number>();
-    const place = {
-      bytes: wanted,
-      grant: () => {
-        granted.resolve(wanted);
-      },
-    };
-    const leave = (): void => {
-      const at = this.#waiting.indexOf(place);
-      // Given room just as the signal aborted: the read gives it back once it fails.
-      if (at === -1) return;
-      this.#waiting.splice(at, 1);
-      granted.reject(signal.reason);
-      this.#admit();
-    };
-    this.#waiting.push(place);
-    signal.addEventListener('abort', leave, { once: true });
-    try {
-      return await granted.promise;
-    } finally {
-      signal.removeEventListener('abort', leave);
-    }
-  }
-
-  /**
-   * Room for `bytes`, taken at once where there is room, and otherwise waited for no longer than
-   * `ms`: the bytes taken, to be given back (`give`), or `undefined` where none came in time — and
-   * the place in line given up with it. For a read that has a deadline of its own to keep: a copy
-   * read ahead of a response's first byte, which waits no longer for its room than for its body.
-   */
-  async takeWithin(bytes: number, ms: number): Promise<number | undefined> {
-    const now = this.takeAtOnce(bytes);
-    if (now !== undefined) {
-      return now;
-    }
-    const given = new AbortController();
-    const timer = setTimeout(() => {
-      given.abort();
-    }, ms);
-    try {
-      return await this.take(bytes, given.signal);
-    } catch {
-      return undefined;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  give(bytes: number): void {
-    this.#taken -= bytes;
-    this.#admit();
-  }
-}
+import { type GiveBack, type IsolateRoom } from '../isolate-room.ts';
 
 /** What `promise` comes to, or `signal`'s reason where it aborts first. */
 async function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -124,13 +25,13 @@ async function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promis
 }
 
 /** The room a take was granted, given back once it is; rejects where it was called off first. */
-async function giveBack(budget: ReadBudget, granted: Promise<number>): Promise<void> {
-  budget.give(await granted);
+async function giveBack(granted: Promise<GiveBack>): Promise<void> {
+  (await granted)();
 }
 
-/** Room asked of the budget for an artifact's reads: what it grants, and how to call it off. */
+/** Room asked of the budget for an artifact's reads: what grants it, and how to call it off. */
 interface Claim {
-  readonly granted: Promise<number>;
+  readonly granted: Promise<GiveBack>;
   readonly abandoned: AbortController;
 }
 
@@ -145,12 +46,12 @@ interface Claim {
  * holds it, so that a read after them takes room of its own.
  */
 export class ArtifactRoom {
-  readonly #budget: ReadBudget;
+  readonly #budget: IsolateRoom;
   /** The room asked for, while a read holds it or waits for it; none once neither does. */
   #claim: Claim | undefined;
   #holders = 0;
 
-  constructor(budget: ReadBudget) {
+  constructor(budget: IsolateRoom) {
     this.#budget = budget;
   }
 
@@ -175,7 +76,7 @@ export class ArtifactRoom {
     }
     this.#claim = undefined;
     claim.abandoned.abort();
-    void giveBack(this.#budget, claim.granted).catch(() => {
+    void giveBack(claim.granted).catch(() => {
       // Called off before room came: nothing was taken.
     });
   }
@@ -203,3 +104,12 @@ export class ArtifactRoom {
     };
   }
 }
+
+/**
+ * The bytes of artifacts an isolate reads at once, and the reads waiting for room, in the order
+ * they asked: the isolate's room (`IsolateRoom`). A read takes as many bytes as it says it holds,
+ * the whole budget at the most, so one alone always has room; one that has none, or that comes
+ * while another waits, waits for bytes given back, or until its signal aborts. A read whose request
+ * is cancelled as it waits or holds room gives its place and its room up once its claim lapses.
+ */
+export { IsolateRoom as ReadBudget } from '../isolate-room.ts';

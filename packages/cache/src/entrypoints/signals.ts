@@ -1,3 +1,5 @@
+import { ENTRY_ID_PREFIX } from '@stayingupwind/core/cache';
+import { isId } from '@stayingupwind/core/util';
 import {
   MAX_RECENT_INVALIDATIONS,
   RECENT_INVALIDATIONS_MS,
@@ -7,6 +9,7 @@ import { WorkerEntrypoint } from 'cloudflare:workers';
 
 import type { AuthorityHost } from '../authority-host.ts';
 import type { CacheBindings } from '../bindings.ts';
+import { meterRead } from '../gateway/read-data.ts';
 import { scopeRetired } from '../gateway/retirement.ts';
 import { isScopeId } from '../scope-id.ts';
 import { scopeStub } from '../scope/stub.ts';
@@ -29,6 +32,32 @@ import { scopeStub } from '../scope/stub.ts';
  */
 export function cacheSignals(authority: AuthorityHost): CacheSignalsClass {
   return class extends WorkerEntrypoint<CacheBindings> implements CacheSignals {
+    /**
+     * A trusted edge's background read of a newer record. It bypasses KV's regional cache and
+     * creates no lease, generation or write; an unchanged, absent or retired entry answers none.
+     */
+    async currentRecord(
+      scopeId: string,
+      entryId: string,
+      afterRevision: number,
+    ): Promise<ArrayBuffer | undefined> {
+      if (typeof scopeId !== 'string' || !isScopeId(scopeId)) {
+        throw new TypeError('no such scope');
+      }
+      if (typeof entryId !== 'string' || !isId(ENTRY_ID_PREFIX, entryId)) {
+        throw new TypeError('no such entry');
+      }
+      if (!Number.isSafeInteger(afterRevision) || afterRevision < 0) {
+        throw new TypeError('the record revision must be a nonnegative safe integer');
+      }
+      const record = await scopeStub(this.env, scopeId, authority.locationHint).currentRecord(
+        entryId,
+        afterRevision,
+      );
+      if (record !== undefined) meterRead(authority, scopeId, record.byteLength);
+      return record;
+    }
+
     async scopeSignals(scopeId: string, since: number | null): Promise<ScopeSignals> {
       // An id no scope is seeded under (`isScopeId`): the same bound the seed is held to.
       if (!isScopeId(scopeId)) {
@@ -67,4 +96,9 @@ export type CacheSignalsClass = new (
 /** What an edge may ask of the authority (`cacheSignals`). */
 export interface CacheSignals {
   scopeSignals(scopeId: string, since: number | null): Promise<ScopeSignals>;
+  currentRecord(
+    scopeId: string,
+    entryId: string,
+    afterRevision: number,
+  ): Promise<ArrayBuffer | undefined>;
 }

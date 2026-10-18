@@ -1,4 +1,5 @@
 import {
+  HEADER_RULES_JUDGED_HEADER,
   MIDDLEWARE_DONE_HEADER,
   MIDDLEWARE_REWRITE_STATUS_HEADER,
   ORIGINAL_URL_HEADER,
@@ -48,6 +49,19 @@ export function edgeRewriteStatusOf(headers: Headers): number | undefined {
   }
   const value = headers.get(MIDDLEWARE_REWRITE_STATUS_HEADER);
   return value !== null && REWRITE_STATUS.test(value) ? Number(value) : undefined;
+}
+
+/**
+ * Whether the edge lays the header rules of `next.config` on this request's answer itself: it ran the
+ * middleware (`MIDDLEWARE_DONE_HEADER`), and judged the rules on the request as the client sent it,
+ * before that (`HEADER_RULES_JUDGED_HEADER`). Routing leaves them out then (`routingTables`), and the
+ * answer says so (`withHeaderRulesLeft`). Only the edge names either: it strips the platform's
+ * headers off what a client sends.
+ */
+export function edgeJudgesHeaderRules(headers: Headers): boolean {
+  return (
+    headers.get(MIDDLEWARE_DONE_HEADER) === '1' && headers.get(HEADER_RULES_JUDGED_HEADER) === '1'
+  );
 }
 
 /** The URL the client asked for: the edge names it when it rewrote the request, else it is this one. */
