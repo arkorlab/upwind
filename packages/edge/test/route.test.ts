@@ -9,6 +9,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import type { EdgeHost } from '../src/edge-host.ts';
 import { observationOf } from '../src/handlers/passthrough-observer.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
+import type { EdgeMetric } from '../src/observability/metrics.ts';
 import type { IncomingRequest } from '../src/request-context.ts';
 import {
   type CopyRequestBody,
@@ -36,6 +37,63 @@ const HOST_SESSION = 'host_session';
 const ON_HOST_SESSION = [{ type: 'cookie' as const, key: HOST_SESSION }];
 /** Any member of a class at the site's root, as Next.js compiles `/[slug]`. */
 const SLUG = '^/(?<slug>[^/]+?)(?:/)?$';
+
+describe('a deployment with no application Worker', () => {
+  it.each(['GET', 'HEAD', 'POST'])('records one zero-dispatch failure for %s', async (method) => {
+    const site = await seedSite({ document: pprDocument() });
+    const points: EdgeMetric[] = [];
+    const host = standaloneHost(env);
+    const runtime = standaloneRuntime(env, {
+      memory: createEdgeMemory(() => Date.now()),
+      dispatchApp: () => Promise.reject(new Error('an undeployed application must not dispatch')),
+    });
+    const request = navigation('/not-yet', { method });
+    const ctx = createExecutionContext();
+    const response = await serveFromPointer({
+      request,
+      url: new URL(request.url),
+      env,
+      ctx,
+      runtime,
+      host: {
+        ...host,
+        observer: {
+          ...host.observer,
+          metric: (point) => {
+            points.push(point);
+          },
+        },
+      },
+      pointer: { ...site.pointer, app: undefined, manifestId: undefined },
+      pointerMs: 3,
+      privateDelivery: false,
+      cspReportingPath: undefined,
+    });
+    await response.arrayBuffer();
+    await waitOnExecutionContext(ctx);
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get('cache-control')).toBe('private, no-store');
+    expect(points).toHaveLength(1);
+    expect({
+      kind: points[0]?.kind,
+      outcome: points[0]?.outcomeKind,
+      projectId: points[0]?.projectId,
+      pathname: points[0]?.pathname,
+      fn: points[0]?.fn,
+      subrequests: points[0]?.subrequests,
+      pointerMs: points[0]?.pointerLookupMs,
+    }).toStrictEqual({
+      kind: 'passthrough',
+      outcome: 'not-deployed',
+      projectId: site.pointer.projectId,
+      pathname: '/not-yet',
+      fn: undefined,
+      subrequests: 0,
+      pointerMs: 3,
+    });
+  });
+});
 
 /** What reaches a request's or a response's body, or locks it. */
 type BodyAccess =

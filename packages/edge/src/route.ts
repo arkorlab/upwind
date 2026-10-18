@@ -29,6 +29,7 @@ import { passthroughHeaders } from './forwarding.ts';
 import { answerAsset } from './handlers/asset-answer.ts';
 import { routeHostedDocument } from './handlers/hosted-document.ts';
 import type { MiddlewareOutcome, MiddlewareTiming } from './handlers/middleware.ts';
+import { observeMetric } from './handlers/observer.ts';
 import {
   finishObserved,
   type ObservePassthrough,
@@ -73,6 +74,7 @@ const STATIC_FILE_CLASS = 'static-file';
 const ROUTE_NOT_PROVED = 'route-not-proved';
 /** A probe of one app Worker of a split deployment (`fn`, signed): that Worker's to answer. */
 const FUNCTION_PROBE = 'function-probe';
+const NOT_DEPLOYED = 'not-deployed';
 
 /** A request routed by the edge, with what it knows of the project and what it waited on for it. */
 export interface RoutingInput {
@@ -506,7 +508,32 @@ function routeWithinBudget(input: ManifestRoutingInput): Promise<Response> {
   // sending it there would arrive straight back here and go round again. The same whichever
   // hostname it came in on.
   if (notDeployed(state)) {
-    return Promise.resolve(serviceUnavailableResponse('not-deployed'));
+    observeMetric(input.host, {
+      projectId: state.projectId,
+      kind: 'passthrough',
+      pathname: url.pathname,
+      shellStrategy: '',
+      shellSource: '',
+      outcomeKind: NOT_DEPLOYED,
+      colo: coloOf(request) ?? '',
+      originCacheHeader: '',
+      manifestId: state.manifestId,
+      policyId: state.policy.id,
+      encoding: '',
+      ttfbInternalMs: 0,
+      shellLookupMs: 0,
+      originFirstByteMs: 0,
+      originTotalMs: 0,
+      shellBytes: 0,
+      suffixBytes: 0,
+      recovery: 0,
+      retry: 0,
+      assetHit: 0,
+      subrequests: 0,
+      pointerLookupMs: input.timings.pointerMs,
+      manifestLookupMs: input.timings.manifestMs,
+    });
+    return Promise.resolve(serviceUnavailableResponse(NOT_DEPLOYED));
   }
   // The core classifier decides which non-read requests are Actions and which are other methods;
   // neither can use a manifest's files or pages. A single Function may reach here before its
