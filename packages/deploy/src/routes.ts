@@ -119,6 +119,37 @@ export function maySetPreloadPolicy(rule: HeaderRule): boolean {
 }
 
 /**
+ * Permit recovery in a rule's document policies. A captured name or CSP value is judged after
+ * interpolation instead: widening a template before it becomes a policy can miss its directives.
+ * Other captured fields keep their original values, even when their name is not a policy.
+ */
+export function documentHeaderRule(rule: HeaderRule, recoverySource: string): HeaderRule {
+  let widened = allowRecoveryScript(rule.headers, recoverySource);
+  let recoverySources: Record<string, string> | undefined;
+  let changed = false;
+  for (const [name, value] of Object.entries(rule.headers)) {
+    const captured =
+      hasCapture(name) || (name.toLowerCase() === 'content-security-policy' && hasCapture(value));
+    if (captured) {
+      recoverySources ??= {};
+      recoverySources[name] = recoverySource;
+      if (widened[name] !== value) {
+        widened = { ...widened, [name]: value };
+      }
+    } else {
+      changed ||= widened[name] !== value;
+    }
+  }
+  return changed || recoverySources !== undefined
+    ? {
+        ...rule,
+        ...(changed && { documentHeaders: widened }),
+        ...(recoverySources !== undefined && { documentRecoverySources: recoverySources }),
+      }
+    : rule;
+}
+
+/**
  * One rule's possible headers on this page. A concrete page has the same path captures the edge
  * fills in; reuse the bundle's folding for its keys, values and router reference version, with
  * only this rule made unconditional. A class shell's template names no request: where a policy
