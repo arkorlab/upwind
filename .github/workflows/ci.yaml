@@ -75,6 +75,16 @@ jobs:
         run: |
           matrix_next_version="$(node -p 'require("./packages/adapter/node_modules/next/package.json").version')"
           pnpm check:matrix --fixture next-external-output --versions "$matrix_next_version"
+      # The compiler a new application installs is the template's own dependency, independent of
+      # this workspace's catalog. Exercise the built CLI and typecheck that application as created.
+      - name: Generated application typecheck
+        run: |
+          scaffold_dir="$(mktemp -d)"
+          node packages/create-upwind/dist/cli.js "$scaffold_dir/app" --skip-install --no-git
+          cd "$scaffold_dir/app"
+          npm install --no-audit --no-fund
+          npm exec -- next typegen
+          npm exec -- tsc --noEmit
 
   audit:
     runs-on: ubuntu-latest

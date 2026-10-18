@@ -29,7 +29,7 @@ catalog:
   # What `@stayingupwind/auth` wraps. A peer dependency there, so a project brings its own copy and
   # this pin is what the repository builds and typechecks against — the same arrangement as `next`.
   better-auth: 1.7.10
-  eslint: 10.12.0
+  eslint: 10.13.0
   eslint-config-prettier: 10.1.8
   eslint-import-resolver-typescript: 4.4.5
   eslint-plugin-import-x: 4.17.1
@@ -50,15 +50,15 @@ catalog:
   # nothing of it reaches a Function.
   jsonc-parser: 3.3.1
   knip: 6.41.0
-  # The workerd `upwind dev` and `upwind build` bind a project's local storage to. The version is
-  # the registry's `latest`, which is a prerelease: the last non-prerelease carries a workerd from
-  # July, and a compatibility date a Function is built against (`FUNCTION_COMPATIBILITY_DATE` in
-  # `@stayingupwind/adapter`) is newer than that — a local run must not be the older runtime.
-  miniflare: 5.20261006.1-alpha
+  # The workerd `upwind dev` and `upwind build` bind a project's local storage to. Follow the
+  # registry's `beta` channel for v5: `latest` still names v4, whose workerd is from July and older
+  # than the compatibility date a Function is built against (`FUNCTION_COMPATIBILITY_DATE` in
+  # `@stayingupwind/adapter`). Keep this aligned with the version Wrangler uses.
+  miniflare: 5.20261012.1-beta
   next: 16.4.2
   oxfmt: 0.73.0
   rolldown: 1.2.14
-  wrangler: 4.151.0
+  wrangler: 4.151.1
   typescript: 6.0.3
   typescript-eslint: 8.71.2
   # The suites of the packages that have them, run by one root runner (`vitest.config.ts`), and the
