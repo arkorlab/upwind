@@ -460,7 +460,8 @@ async function heldCopy(at: CopyAt, names: Names, signal: AbortSignal): Promise<
   const release = length === undefined ? undefined : await roomFor(at, length, hit, signal);
   try {
     const body = await readBoundedBody(hit.body, {
-      limit: MAX_COPY_BYTES,
+      // A copy may have been written by application code: read no more than its room holds.
+      limit: length ?? MAX_COPY_BYTES,
       stallMs: COPY_READ_LIMIT_MS,
       budgetMs: COPY_READ_LIMIT_MS,
     });

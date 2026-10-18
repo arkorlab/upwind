@@ -197,4 +197,124 @@ describe('the room a Function isolate reads in', () => {
 
     expect(next.now()).toBe('held');
   });
+
+  it('waits for the extra room of an authority answer beside a copy that states fewer bytes', async () => {
+    vi.useFakeTimers();
+    const budget = new ReadBudget(LIMIT);
+    const other = await hold(budget, (3 * LIMIT) / 4, deadline());
+    const room = new ArtifactRoom(budget);
+    // The copy holds its stated length while its body stalls; the authority answers beside it.
+    const copy = await room.hold(1, deadline());
+    const authority = room.hold(LIMIT / 2, deadline());
+    const state = watched(authority);
+    await vi.advanceTimersByTimeAsync(100);
+    const besideTheOtherRead = state.now();
+
+    other();
+    await vi.advanceTimersByTimeAsync(100);
+    (await authority)();
+    copy();
+
+    expect(besideTheOtherRead).toBe('waiting');
+    expect(state.now()).toBe('held');
+  });
+
+  it('gives up a larger answer waiting for extra room while the smaller copy still holds its room', async () => {
+    vi.useFakeTimers();
+    const budget = new ReadBudget(LIMIT);
+    const other = await hold(budget, (3 * LIMIT) / 4, deadline());
+    const room = new ArtifactRoom(budget);
+    const copy = await room.hold(1, deadline());
+    const given = new AbortController();
+    const authority = room.hold(LIMIT / 2, given.signal);
+    const state = watched(authority);
+    await vi.advanceTimersByTimeAsync(100);
+
+    given.abort(new Error('the answer was called off'));
+    await vi.advanceTimersByTimeAsync(0);
+    other();
+    const after = hold(budget, LIMIT - 1, deadline());
+    const afterState = watched(after);
+    await vi.advanceTimersByTimeAsync(100);
+    (await after)();
+    try {
+      (await authority)();
+    } catch {
+      // The read gave up before it took room.
+    }
+    copy();
+
+    expect(state.now()).toBe('given up');
+    expect(afterState.now()).toBe('held');
+  });
+
+  it('takes no extra room for a larger answer already called off', async () => {
+    vi.useFakeTimers();
+    const budget = new ReadBudget(LIMIT);
+    const room = new ArtifactRoom(budget);
+    const copy = await room.hold(1, deadline());
+    const given = new AbortController();
+    const error = new Error('the answer was called off');
+    given.abort(error);
+
+    await expect(room.hold(LIMIT / 2, given.signal)).rejects.toBe(error);
+
+    const after = hold(budget, LIMIT - 1, deadline());
+    const state = watched(after);
+    await vi.advanceTimersByTimeAsync(100);
+    (await after)();
+    copy();
+
+    expect(state.now()).toBe('held');
+  });
+
+  it('gives extra room back once the larger answer ends, while the smaller copy still holds', async () => {
+    vi.useFakeTimers();
+    const budget = new ReadBudget(LIMIT);
+    const room = new ArtifactRoom(budget);
+    const copy = await room.hold(1, deadline());
+    const authority = await room.hold(LIMIT / 2, deadline());
+
+    authority();
+    const after = hold(budget, LIMIT - 1, deadline());
+    const state = watched(after);
+    await vi.advanceTimersByTimeAsync(100);
+    (await after)();
+    copy();
+
+    expect(state.now()).toBe('held');
+  });
+
+  it('keeps the larger answer charged after the smaller copy has gone', async () => {
+    vi.useFakeTimers();
+    const budget = new ReadBudget(LIMIT);
+    const room = new ArtifactRoom(budget);
+    const copy = await room.hold(1, deadline());
+    const authority = await room.hold(LIMIT / 2, deadline());
+    copy();
+    const after = hold(budget, (3 * LIMIT) / 4, deadline());
+    const state = watched(after);
+    await vi.advanceTimersByTimeAsync(100);
+    const whileTheAnswerHolds = state.now();
+
+    authority();
+    await vi.advanceTimersByTimeAsync(100);
+    (await after)();
+
+    expect(whileTheAnswerHolds).toBe('waiting');
+    expect(state.now()).toBe('held');
+  });
+
+  it('lets a larger answer alone take the whole room, however long it says it is', async () => {
+    const budget = new ReadBudget(LIMIT);
+    const room = new ArtifactRoom(budget);
+    const copy = await room.hold(1, deadline());
+
+    const authority = await room.hold(2 * LIMIT, deadline());
+
+    authority();
+    copy();
+
+    expect(authority).toBeTypeOf('function');
+  });
 });

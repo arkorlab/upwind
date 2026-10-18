@@ -101,6 +101,11 @@ async function verifiedBytes(blobs: BlobStore, artifact: RecordArtifact): Promis
       `artifact ${artifact.sha256} (${artifact.role}) is not in storage`,
     );
   }
+  if (bytes.byteLength !== artifact.byteLength) {
+    throw new InvalidArtifactError(
+      `artifact ${artifact.sha256} (${artifact.role}) has ${bytes.byteLength} bytes, not ${artifact.byteLength}`,
+    );
+  }
   if ((await sha256Hex(bytes)) !== artifact.sha256) {
     throw new InvalidArtifactError(
       `artifact ${artifact.sha256} (${artifact.role}) does not hash to its name`,

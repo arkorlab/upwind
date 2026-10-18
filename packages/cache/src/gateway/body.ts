@@ -8,13 +8,14 @@ import {
 import { MAX_DATA_HANDLER_LENGTH, MAX_DATA_KEY_LENGTH } from '@stayingupwind/host/cache';
 import {
   type CheckingSchema,
+  jsonValuesWithin,
   type ParseFailure,
   safeParseBounded,
   UNLISTED_MISMATCH,
 } from '@stayingupwind/host/util';
 import type { Context } from 'hono';
 
-import { withBodyRoom } from './body-room.ts';
+import { UNCOUNTED_BODY_BYTES, withBodyRoom } from './body-room.ts';
 import { describeIssues, fail } from './respond.ts';
 
 /**
@@ -25,7 +26,9 @@ import { describeIssues, fail } from './respond.ts';
  * one read to its end before anything measured it is one deployment deciding how much of that
  * isolate the others are left. The declared length is only the early answer: a body a Worker
  * streams arrives without one, so the bytes are counted as they come and the read stops at the
- * first one past the limit. The bodies a write is read whole for, as long as an artifact may be,
+ * first one past the limit. It stops past the declared length too: a synthetic request can
+ * understate what its body holds, which admission otherwise takes no room for (Codex). The bodies
+ * a write is read whole for, as long as an artifact may be,
  * are read in room the isolate keeps for them (`inBodyRoom`), unless they say they hold a mebibyte
  * or less.
  */
@@ -48,6 +51,15 @@ export const JSON_BYTES_PER_CODE_UNIT = 6;
  */
 const REST_KIB = 16;
 const REST_BYTES = REST_KIB * KIB;
+/**
+ * How many values a JSON body longer than a mebibyte may hold. Only a data write may be longer:
+ * its base64 is one string, and beside it are at most 1,024 tags and a few fields
+ * (`dataSetRequestSchema`). Long strings cost about what they weigh; a body of many small objects
+ * can make far more of the isolate than its bytes — 22 MiB for a mebibyte of `[{},{},…]` — before
+ * a schema has anything to refuse. This leaves room beyond the write's metadata while bounding
+ * that expansion before the parse. Shorter bodies keep the bound their bytes already gave them.
+ */
+const MAX_LARGE_JSON_VALUES = 16_384;
 
 /**
  * How far a body that names an entry is read: the longest key and handler name the data cache
@@ -129,7 +141,7 @@ export async function readBody(
   let read: BoundedBody;
   try {
     read = await readBoundedBody(c.req.raw.body, {
-      limit,
+      limit: length.most,
       stallMs: BODY_STALL_MS,
       budgetMs: BODY_BUDGET_MS,
     });
@@ -138,7 +150,9 @@ export async function readBody(
   }
   if (read.kind === 'over-limit') {
     releaseStream(read.body, 'body past its limit');
-    return fail(c, 'too_large', tooLarge);
+    return length.most < limit
+      ? fail(c, 'invalid_request', 'the body is longer than its content-length')
+      : fail(c, 'too_large', tooLarge);
   }
   return read.bytes;
 }
@@ -156,6 +170,13 @@ export async function readJson(
   const body = await readBody(c, limit, tooLarge);
   if (body instanceof Response) {
     return body;
+  }
+  if (body.byteLength > UNCOUNTED_BODY_BYTES && !jsonValuesWithin(body, MAX_LARGE_JSON_VALUES)) {
+    return fail(
+      c,
+      'invalid_request',
+      `a JSON body past ${UNCOUNTED_BODY_BYTES} bytes may hold at most ${MAX_LARGE_JSON_VALUES} values`,
+    );
   }
   try {
     return { json: JSON.parse(decodeUtf8(body)) as unknown, length: body.byteLength };

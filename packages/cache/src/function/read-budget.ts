@@ -31,8 +31,17 @@ async function giveBack(granted: Promise<GiveBack>): Promise<void> {
 
 /** Room asked of the budget for an artifact's reads: what grants it, and how to call it off. */
 interface Claim {
+  /** The room this and its preceding claims account for together. */
+  readonly bytes: number;
+  readonly before: Claim | undefined;
   readonly granted: Promise<GiveBack>;
+  readonly ready: Promise<unknown>;
   readonly abandoned: AbortController;
+}
+
+/** The room one candidate still needs: a copy and the authority's answer can disagree. */
+interface Holder {
+  readonly bytes: number;
 }
 
 /**
@@ -47,59 +56,83 @@ interface Claim {
  */
 export class ArtifactRoom {
   readonly #budget: IsolateRoom;
-  /** The room asked for, while a read holds it or waits for it; none once neither does. */
+  /** The first candidate's room, then any extra a larger candidate needs beside it. */
   #claim: Claim | undefined;
-  #holders = 0;
+  readonly #holders: Holder[] = [];
 
   constructor(budget: IsolateRoom) {
     this.#budget = budget;
   }
 
-  /** Room for `bytes` from the budget: at once where there is, otherwise in its place in line. */
+  /** Room for `bytes` from the budget: only what the preceding claims do not account for yet. */
   #ask(bytes: number): Claim {
+    const before = this.#claim;
+    const extra = bytes - (before?.bytes ?? 0);
     const abandoned = new AbortController();
-    const now = this.#budget.takeAtOnce(bytes);
+    const now = this.#budget.takeAtOnce(extra);
     const granted =
-      now === undefined ? this.#budget.take(bytes, abandoned.signal) : Promise.resolve(now);
-    return { granted, abandoned };
+      now === undefined ? this.#budget.take(extra, abandoned.signal) : Promise.resolve(now);
+    const ready = before === undefined ? granted : Promise.all([before.ready, granted]);
+    const claim = { bytes, before, granted, ready, abandoned };
+    this.#claim = claim;
+    return claim;
   }
 
   /**
-   * One read fewer holds the room. Once none does, the room goes back, or a take still waiting
-   * gives its place up — and room granted just as it did goes back as it comes.
+   * One candidate fewer needs room. Any extra no remaining candidate needs goes back, or gives
+   * its place up while still waiting; room granted just as it did goes back as it comes.
    */
-  #leave(): void {
-    this.#holders -= 1;
-    const claim = this.#claim;
-    if (claim === undefined || this.#holders > 0) {
-      return;
+  #leave(holder: Holder): void {
+    this.#holders.splice(this.#holders.indexOf(holder), 1);
+    let needed = 0;
+    for (const remaining of this.#holders) {
+      needed = Math.max(needed, remaining.bytes);
     }
-    this.#claim = undefined;
-    claim.abandoned.abort();
-    void giveBack(claim.granted).catch(() => {
-      // Called off before room came: nothing was taken.
-    });
+    let claim = this.#claim;
+    while (
+      claim !== undefined &&
+      (this.#holders.length === 0 || (claim.before !== undefined && claim.before.bytes >= needed))
+    ) {
+      this.#claim = claim.before;
+      claim.abandoned.abort();
+      void giveBack(claim.granted).catch(() => {
+        // Called off before room came: nothing was taken.
+      });
+      claim = this.#claim;
+    }
   }
 
   /**
    * Room for a read of `bytes` once there is, and what gives it back: the room the other read of
-   * the artifact holds or waits for, where it does; otherwise taken from the budget, at once where
-   * there is room. Given up, and the read's place in line with it, where `signal` aborts first.
+   * the artifact holds or waits for, where it does; otherwise taken from the budget. A larger answer
+   * takes only the extra: a copy written by application code may state less than the authority answers
+   * with. Given up, and any extra needed only by this read with it, where `signal` aborts first.
    */
   async hold(bytes: number, signal: AbortSignal): Promise<() => void> {
-    this.#claim ??= this.#ask(bytes);
-    this.#holders += 1;
+    signal.throwIfAborted();
+    const size = Number.isFinite(bytes)
+      ? Math.min(bytes, this.#budget.capacity)
+      : this.#budget.capacity;
+    const holder = { bytes: size };
+    let claim = this.#claim;
+    while (claim?.before !== undefined && claim.before.bytes >= size) {
+      claim = claim.before;
+    }
+    if (claim === undefined || claim.bytes < size) {
+      claim = this.#ask(size);
+    }
+    this.#holders.push(holder);
     try {
-      await untilAborted(this.#claim.granted, signal);
+      await untilAborted(claim.ready, signal);
     } catch (error) {
-      this.#leave();
+      this.#leave(holder);
       throw error;
     }
     let holding = true;
     return () => {
       if (holding) {
         holding = false;
-        this.#leave();
+        this.#leave(holder);
       }
     };
   }
