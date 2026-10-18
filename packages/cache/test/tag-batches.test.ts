@@ -214,10 +214,11 @@ describe('replacing the tags of a current generation', () => {
     });
 
     expect(result.seeded).toMatchObject({ inserted: 3, skipped: 0, refused: [], revision: 2 });
-    expect(result.invalidated).toMatchObject({
-      revision: 3,
-      affectedEntryIds: expect.arrayContaining(result.expectedIds),
-    });
+    expect(result.invalidated).toMatchObject({ revision: 3 });
+    expect(result.invalidated).toHaveProperty(
+      'affectedEntryIds',
+      expect.arrayContaining(result.expectedIds),
+    );
     expect(result.revision).toBe(3);
     expect(result.entries).toStrictEqual([
       { pathname: '/a', record_revision: 3, tombstone_revision: 3, regeneration: 'queued' },
