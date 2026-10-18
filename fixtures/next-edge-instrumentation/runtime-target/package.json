@@ -2,6 +2,7 @@
   "name": "instrumentation-runtime-target",
   "version": "0.0.0",
   "private": true,
+  "license": "MIT OR Apache-2.0",
   "type": "module",
   "exports": { ".": { "node": "./node.js", "edge-light": "./edge.js", "default": "./node.js" } }
 }

@@ -112,7 +112,6 @@ jobs:
     env:
       NEXT_TELEMETRY_DISABLED: '1'
       WRANGLER_SEND_METRICS: 'false'
-      UPWIND_MATRIX_PROOF_DIR: ${{ runner.temp }}/instrumentation-proof
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -123,6 +122,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @stayingupwind/adapter build
       - name: Compiled host and project instrumentation
+        env:
+          UPWIND_MATRIX_PROOF_DIR: ${{ runner.temp }}/instrumentation-proof
         run: |
           set -euo pipefail
           matrix_next_version="$(node -p 'require("./packages/adapter/node_modules/next/package.json").version')"
