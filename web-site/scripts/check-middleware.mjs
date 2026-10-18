@@ -60,6 +60,21 @@ async function protocol() {
   return import(pathToFileURL(file));
 }
 
+function assertUrlHeader(value, expectedPath) {
+  if (expectedPath === undefined) {
+    assert.equal(value, undefined);
+    return;
+  }
+  const expected = new URL(expectedPath, 'http://locale.test:8443');
+  const actual = new URL(value);
+  // Next.js serializes URLSearchParams: %20 and + represent the same space. Keep query
+  // values, ordering and duplicate keys exact, including nested escapes and literal pluses.
+  assert.deepEqual([...actual.searchParams], [...expected.searchParams]);
+  actual.search = '';
+  expected.search = '';
+  assert.equal(actual.href, expected.href);
+}
+
 function request(address, pathname, header, options = {}) {
   return new Promise((resolve, reject) => {
     const started = performance.now();
@@ -200,8 +215,8 @@ try {
   const address = await bounded(runtime.ready);
   const cases = [
     {
-      path: '/?next=%2Fdocs%3Fq%3D1&x=two%20words',
-      rewrite: '/en?next=%2Fdocs%3Fq%3D1&x=two%20words',
+      path: '/?next=%2Fdocs%3Fq%3D1&x=two%20words&literal=%2B&tag=a&tag=b',
+      rewrite: '/en?next=%2Fdocs%3Fq%3D1&x=two%20words&literal=%2B&tag=a&tag=b',
     },
     { path: '/', rewrite: '/en', headers: { 'accept-language': 'en' } },
     { path: '/', status: 307, location: '/ja', vary: true, headers: { 'accept-language': 'ja' } },
@@ -235,14 +250,8 @@ try {
     assert.equal(response.status, test.status ?? 200, test.path);
     assert.equal(response.bytes, 0, `unexpected app/body ${test.path}`);
     assert.equal(response.complete, true);
-    assert.equal(
-      response.headers['x-middleware-rewrite'],
-      test.rewrite ? new URL(test.rewrite, 'http://locale.test:8443').href : undefined,
-    );
-    assert.equal(
-      response.headers.location,
-      test.location ? new URL(test.location, 'http://locale.test:8443').href : undefined,
-    );
+    assertUrlHeader(response.headers['x-middleware-rewrite'], test.rewrite);
+    assertUrlHeader(response.headers.location, test.location);
     assert.equal(response.headers['x-middleware-next'], test.next ? '1' : undefined);
     const cookies = response.headers['set-cookie'] ?? [];
     assert.equal(cookies.length, test.cookie ? 1 : 0);
