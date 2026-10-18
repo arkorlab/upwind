@@ -41,7 +41,7 @@ export function rememberSeedFailure(
   });
 }
 
-/** Once its record went out, the build's locations are no longer open to a seed's retry. */
+/** Once its record is acknowledged in KV, the build's locations are closed to a seed's retry. */
 export function forgetSeedFailure(sql: SqlStorage, entryId: string): void {
   deleteMeta(sql, FAILURE_PREFIX + entryId);
 }
@@ -151,9 +151,9 @@ function repairOne(input: TxInput, plan: SeedLocations, events: EventInput[]): b
 }
 
 /**
- * A seed that never delivered a record may correct where its unchanged bytes are kept after
- * projection found them missing or corrupt. No seed reads storage to ask in advance, and a retry
- * changes neither a delivered generation nor one a render now holds the right to replace.
+ * A seed whose record has never been acknowledged in KV may correct where its unchanged bytes are
+ * kept after projection found them missing or corrupt. No seed reads storage to ask in advance,
+ * and a retry changes neither an acknowledged generation nor one a render holds a lease to replace.
  */
 export function repairSeedEntries(
   input: TxInput,

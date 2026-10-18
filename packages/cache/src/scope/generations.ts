@@ -19,8 +19,8 @@ import { generationHeaders, type GenerationRow, parseJson } from './rows.ts';
  * Generations: immutable once written, except for the four things the authority learns about
  * them afterwards — that a newer one replaced them, that an invalidation condemned them, that
  * their bytes were pruned, and where they are in publication.
- * A build's storage locations can be corrected before its first delivery record goes out
- * (`seed-repair.ts`); the bytes it names stay the same.
+ * A build's storage locations can be corrected before its first delivery record is acknowledged
+ * in KV (`seed-repair.ts`); the bytes it names stay the same.
  */
 
 export interface GenerationInsert {
