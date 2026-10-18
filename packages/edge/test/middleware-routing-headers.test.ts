@@ -5,7 +5,7 @@ import {
   kvGenerationKey,
   policyFromBuild,
 } from '@stayingupwind/core/cache';
-import type { ProjectManifest } from '@stayingupwind/core/manifest';
+import type { DynamicRoute, ProjectManifest } from '@stayingupwind/core/manifest';
 import { EDGE_BYPASS_COOKIE } from '@stayingupwind/core/request';
 import { encodeUtf8 } from '@stayingupwind/core/util';
 import {
@@ -73,48 +73,10 @@ async function seedMemberRecord(document: ReturnType<typeof pprDocument>, scopeI
   await env.CACHE_STATE.put(kvGenerationKey(scopeId, entryId), bytes);
 }
 
-async function routedAfterMiddleware(example: Example) {
-  const document = pprDocument();
-  const pathname = example.member
-    ? '/unrelated'
-    : example.kind === 'dynamic'
-      ? '/[slug]'
-      : '/target';
-  const condition = {
-    type: example.type ?? 'header',
-    key: example.key ?? '',
-    value: example.value,
-  };
-  const conditions = { [example.condition ?? 'has']: [condition] };
-  const site = await seedSite({
-    document,
-    pathname,
-    bypassFor: example.kind === 'bypass' ? [condition] : undefined,
-    reservedRoutes:
-      example.kind === 'reserved'
-        ? [{ sourceRegex: '^/target$', beforeFiles: true, ...conditions }]
-        : undefined,
-    dynamicRoutes: example.member
-      ? [
-          {
-            sourceRegex: '^/target$',
-            members: { route: '/[slug]', kind: 'app-page' },
-            ...(example.kind === 'dynamic' && conditions),
-          },
-        ]
-      : example.kind === 'dynamic'
-        ? [{ sourceRegex: '^/([^/]+)$', route: pathname, ...conditions }]
-        : undefined,
-  });
-  const scopeId = `member-${example.label}`;
-  if (example.member) await seedMemberRecord(document, scopeId);
-  const manifest: ProjectManifest = {
-    ...site.manifest,
-    middleware: { matchers: [{ sourceRegex: '^/.*$' }] },
-    ...(example.member && { cache: { keySchemaVersion: 1, scopeId } }),
-  };
+/** The response protocol emitted by this fixture's middleware. */
+function middlewareHeadersFor(example: Example): Headers {
   const middlewareHeaders = new Headers(
-    example.headersOnly || example.kind === 'unchanged' || example.kind === 'bypass'
+    example.headersOnly === true || example.kind === 'unchanged' || example.kind === 'bypass'
       ? { 'x-middleware-next': '1' }
       : { 'x-middleware-rewrite': 'https://site.example/target' },
   );
@@ -129,9 +91,67 @@ async function routedAfterMiddleware(example: Example) {
         (example.override === 'cookie' ? `theme=${example.value ?? ''}` : (example.value ?? '')),
     );
   }
+  return middlewareHeaders;
+}
+
+/** The build shell is deliberately unrelated when this fixture serves a saved member. */
+function shellPathname(example: Example): string {
+  if (example.member === true) return '/unrelated';
+  return example.kind === 'dynamic' ? '/[slug]' : '/target';
+}
+
+/** Match the same concrete path either to a class shell or to a class with only member records. */
+function dynamicRoutesFor(
+  example: Example,
+  condition: NonNullable<DynamicRoute['has']>[number],
+  pathname: string,
+): readonly DynamicRoute[] | undefined {
+  const conditions = { [example.condition ?? 'has']: [condition] };
+  if (example.member === true) {
+    return [
+      {
+        sourceRegex: '^/target$',
+        members: { route: '/[slug]', kind: 'app-page' },
+        ...(example.kind === 'dynamic' && conditions),
+      },
+    ];
+  }
+  return example.kind === 'dynamic'
+    ? [{ sourceRegex: '^/([^/]+)$', route: pathname, ...conditions }]
+    : undefined;
+}
+
+async function routedAfterMiddleware(example: Example) {
+  const document = pprDocument();
+  const member = example.member === true;
+  const pathname = shellPathname(example);
+  const condition = {
+    type: example.type ?? 'header',
+    key: example.key ?? '',
+    value: example.value,
+  };
+  const conditions = { [example.condition ?? 'has']: [condition] };
+  const site = await seedSite({
+    document,
+    pathname,
+    bypassFor: example.kind === 'bypass' ? [condition] : undefined,
+    reservedRoutes:
+      example.kind === 'reserved'
+        ? [{ sourceRegex: '^/target$', beforeFiles: true, ...conditions }]
+        : undefined,
+    dynamicRoutes: dynamicRoutesFor(example, condition, pathname),
+  });
+  const scopeId = `member-${example.label}`;
+  if (member) await seedMemberRecord(document, scopeId);
+  const manifest: ProjectManifest = {
+    ...site.manifest,
+    middleware: { matchers: [{ sourceRegex: '^/.*$' }] },
+    ...(member && { cache: { keySchemaVersion: 1, scopeId } }),
+  };
+  const middlewareHeaders = middlewareHeadersFor(example);
   const dispatched: Request[] = [];
   const requestPath =
-    example.headersOnly || example.kind === 'unchanged' || example.kind === 'bypass'
+    example.headersOnly === true || example.kind === 'unchanged' || example.kind === 'bypass'
       ? '/target'
       : '/start';
   const request = navigation(requestPath, {
@@ -177,7 +197,7 @@ async function routedAfterMiddleware(example: Example) {
       policyLookup: Promise.resolve({
         kind: 'found',
         source: 'exact',
-        policy: example.member
+        policy: member
           ? {
               ...DEFAULT_DELIVERY_POLICY,
               runtimeCache: {

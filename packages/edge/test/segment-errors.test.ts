@@ -237,12 +237,21 @@ describe('configured transport fields on router parts', () => {
       expect(HOP_FIELDS.filter((name) => response.headers.has(name))).toStrictEqual([]);
       expect(response.headers.has('x-internal')).toBe(false);
       expect(response.headers.getSetCookie()).toStrictEqual([]);
-      expect(response.headers.get('content-security-policy')).toBe(CSP);
-      expect(response.headers.get('access-control-allow-origin')).toBe(ORIGIN);
-      expect(response.headers.get('content-type')).toBe(PART_CONTENT_TYPES[kind]);
-      expect(response.headers.get('content-length')).toBe(String(BODY.byteLength));
-      expect(response.headers.get('content-encoding')).toBeNull();
-      expect(response.headers.get('cache-control')).toBe('public, max-age=600');
+      expect({
+        policy: response.headers.get('content-security-policy'),
+        origin: response.headers.get('access-control-allow-origin'),
+        type: response.headers.get('content-type'),
+        length: response.headers.get('content-length'),
+        encoding: response.headers.get('content-encoding'),
+        cache: response.headers.get('cache-control'),
+      }).toStrictEqual({
+        policy: CSP,
+        origin: ORIGIN,
+        type: PART_CONTENT_TYPES[kind],
+        length: String(BODY.byteLength),
+        encoding: null,
+        cache: 'public, max-age=600',
+      });
       await expect(response.text()).resolves.toBe('the stored router part');
       expect(getShell).toHaveBeenCalledTimes(1);
     },

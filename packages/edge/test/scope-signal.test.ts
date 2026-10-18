@@ -96,6 +96,7 @@ interface Authority {
 function authority(
   signals: () => ScopeSignals,
   gate: Promise<unknown> = Promise.resolve(),
+  onAsked?: () => void,
 ): Authority {
   let asked = 0;
   return {
@@ -103,6 +104,7 @@ function authority(
     source: {
       scopeSignals: async () => {
         asked += 1;
+        onAsked?.();
         await gate;
         return signals();
       },
@@ -212,6 +214,8 @@ describe('where a scope stands, as the edge comes to know it', () => {
     ['日本', '%E6%97%A5%E6%9C%AC'],
     ['ordinary', 'ordinary/claim'],
   ])('keeps the claim for %s separate from the signals for %s', async (askingScope, keptScope) => {
+    // This proves key ownership, independently of a busy runner exhausting the real copy deadline.
+    vi.useFakeTimers({ toFake: ['Date', 'performance', 'setTimeout', 'clearTimeout'] });
     const cache = `signals-${crypto.randomUUID()}`;
     const kept = authority(() => ({ ...UNMOVED, revision: 9 }));
     const keptHost = hostOf(cache, kept.source);
@@ -220,14 +224,23 @@ describe('where a scope stands, as the edge comes to know it', () => {
     await Promise.all(seeded);
 
     const gate = Promise.withResolvers<true>();
-    const asking = authority(() => ({ ...UNMOVED, revision: 5 }), gate.promise);
+    const entered = Promise.withResolvers<void>();
+    const asking = authority(
+      () => ({ ...UNMOVED, revision: 5 }),
+      gate.promise,
+      () => {
+        entered.resolve();
+      },
+    );
     const askingHost = hostOf(cache, asking.source);
     const pending: Promise<unknown>[] = [];
     try {
       await look(runtimeOf(), askingHost, askingScope, pending);
-      await vi.waitFor(() => {
-        expect(asking.asked()).toBe(1);
-      });
+      // A source-entry handshake does not auto-advance the fake 50ms deadline as vi.waitFor does.
+      await entered.promise;
+
+      expect(asking.asked()).toBe(1);
+
       const cold = runtimeOf();
       const behind: Promise<unknown>[] = [];
       await look(cold, keptHost, keptScope, behind);

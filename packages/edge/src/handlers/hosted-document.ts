@@ -148,7 +148,7 @@ function hostedEntry(
     classification.kind === 'document' || forRouter(classification)
       ? classification.entry
       : undefined;
-  if (middleware.kind !== 'continue' || routedHeaders === undefined) {
+  if (routedHeaders === undefined || middleware.kind !== 'continue') {
     return classified;
   }
   const { url } = middleware;

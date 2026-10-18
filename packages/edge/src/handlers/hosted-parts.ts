@@ -21,6 +21,7 @@ import {
   type ShellDeliveryStrategy,
 } from '@stayingupwind/host/delivery';
 
+import { CacheBody } from '../cache/cache-body.ts';
 import { condemnedIn } from '../cache/condemned.ts';
 import { decideGeneration, type GenerationDecision } from '../cache/decision.ts';
 import { generationAsHeld, readServedAgain } from '../cache/generation-hold.ts';
@@ -30,6 +31,7 @@ import { partialFallbackInHand } from '../cache/partial-fallback.ts';
 import { type DetachedRegeneration, shouldAsk, triggerDetached } from '../cache/regenerate.ts';
 import { memberEntryKey } from '../memory/caches.ts';
 import type { EdgeContext } from '../strategies/context.ts';
+import { finishShellBody } from '../strategies/shell-loader.ts';
 import { generationKeyOf, requestAsLeft } from './hosted-route.ts';
 import { dispatchedFor, type MiddlewareOutcome, routedHeaders } from './middleware.ts';
 import type { PassthroughWait } from './passthrough.ts';
@@ -410,7 +412,7 @@ async function answerPart(input: PartInput, part: PartAnswer): Promise<Response>
   // loadShell retains the existing memory / Cache API race and hash verification. No authority read.
   const strategy: ShellDeliveryStrategy<EdgeContext> = {
     id: 'r2',
-    async getShell(ref, ctx) {
+    async getShell(ref, ctx, reading = new CacheBody()) {
       const began = ctx.runtime.now();
       const object = await ctx.env.ARTIFACTS.get(storageRef);
       if (object === null) return;
@@ -420,8 +422,10 @@ async function answerPart(input: PartInput, part: PartAnswer): Promise<Response>
         releaseStream(object.body, 'router part of another length');
         throw new Error(`the part is stored at ${object.size} bytes, not ${ref.byteLength}`);
       }
+      const pending = reading.open(new Response(object.body), ref.byteLength);
+      if (pending === undefined) return;
       return {
-        bytes: new Uint8Array(await object.arrayBuffer()),
+        bytes: finishShellBody(reading, await pending, ref.byteLength),
         source: 'r2',
         latencyMs: ctx.runtime.now() - began,
       };

@@ -4,7 +4,12 @@ import {
   staticAssetShellPath,
 } from '@stayingupwind/core/artifact';
 import { withDeadline } from '@stayingupwind/core/util';
-import type { ShellDeliveryStrategy, ShellRead } from '@stayingupwind/host/delivery';
+import type {
+  ShellBodyReader,
+  ShellBodyResult,
+  ShellDeliveryStrategy,
+  ShellRead,
+} from '@stayingupwind/host/delivery';
 
 import { CacheBody } from '../cache/cache-body.ts';
 import { logWarn } from '../observability/logger.ts';
@@ -121,6 +126,25 @@ export class ShellSizeMismatchError extends Error {
   }
 }
 
+/** Preserve exact native views and the existing corrupt-length classification. */
+export function finishShellBody(
+  reading: ShellBodyReader,
+  result: ShellBodyResult,
+  expected: number,
+): Uint8Array<ArrayBuffer> {
+  try {
+    const bytes = reading.finish(result);
+    return bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  } catch (error) {
+    const actual =
+      result instanceof ArrayBuffer ? result.byteLength : (result.value?.byteLength ?? 0);
+    if (actual !== expected) {
+      throw new ShellSizeMismatchError(actual, { cause: error });
+    }
+    throw error;
+  }
+}
+
 type BackendMiss = Extract<ShellLoadResult, { kind: 'missing' | 'corrupt' | 'unavailable' }>;
 
 /** The backend read is the one place every shell backend's exception is folded into a result. */
@@ -146,8 +170,9 @@ function failedBackend(
 /**
  * Bound the existing backend wait, including a backend's body read. One settlement observer
  * replaces its former await; a race and another async wrapper would add a normal response stage.
- * KV/R2 bindings cannot cancel their lookup. Late bytes or failures are discarded here,
- * never adopted or cached, and the source's rejection is still consumed after the timer wins.
+ * KV/R2 bindings cannot cancel their lookup. Streamed built-ins use the same body's owner to
+ * release an active read or late unread body. Opaque custom strategies and KV still discard late
+ * bytes; every late failure remains observed after the timer wins.
  */
 function readBackend(
   ref: ArtifactLocator,
@@ -155,6 +180,7 @@ function readBackend(
   ctx: EdgeContext,
 ): Promise<ShellRead | BackendMiss> {
   return new Promise((resolve, reject) => {
+    const reading = strategy.id === 'kv' ? undefined : new CacheBody();
     let finished = false;
     const timer = setTimeout(() => {
       failed(new Error('shell backend read timed out'));
@@ -168,6 +194,7 @@ function readBackend(
     function failed(error: unknown): void {
       if (finished) return;
       try {
+        reading?.stop();
         finish(failedBackend(ref, strategy, error));
       } catch (error_) {
         finished = true;
@@ -184,7 +211,7 @@ function readBackend(
     try {
       // Both outcomes settle the same owner; a following catch would add another observer.
       // eslint-disable-next-line unicorn/prefer-then-catch
-      void strategy.getShell(ref, ctx).then((read) => {
+      void strategy.getShell(ref, ctx, reading).then((read) => {
         finish(read ?? { kind: 'missing' });
         return null;
       }, failed);
