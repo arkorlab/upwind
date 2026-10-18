@@ -313,7 +313,7 @@ async function verdict(
   // Replaced rather than rewritten — a new file where the map was, which a link does not follow —
   // or rewritten where only a copy was kept.
   const liveNow = await writtenIfThere(path.join(distDir, entry.map));
-  return liveNow !== undefined && !sameWrite(liveNow, entry.mapWritten) ? entry.map : null;
+  return liveNow === undefined || sameWrite(liveNow, entry.mapWritten) ? null : entry.map;
 }
 
 /** Posix separators in the index, so it reads the same wherever it was written. */
