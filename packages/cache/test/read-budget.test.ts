@@ -12,6 +12,8 @@ const LAPSE_MS = 5000;
 const FROZEN_AT = 1_800_000_000_000;
 /** How long the reads here wait for room before they give up, as the Function's reads have one. */
 const WAIT_MS = 10_000;
+/** Several requests in one isolate: their observations must not combine into a shorter lapse. */
+const WAITERS = 8;
 
 /** A signal that aborts once `WAIT_MS` have gone by, as a read's deadline does. */
 function deadline(): AbortSignal {
@@ -109,6 +111,49 @@ describe('the room a Function isolate reads in', () => {
 
     expect(waiting.now()).toBe('given up');
     expect(beside.now()).toBe('held');
+  });
+
+  it('keeps a live holder renewed while several requests wait past a lapse', async () => {
+    freezeClock();
+    const budget = new ReadBudget(LIMIT);
+    const first = await hold(budget, LIMIT, deadline());
+    const queued = Array.from({ length: WAITERS }, () => hold(budget, 1, deadline()));
+    const states = queued.map((held) => watched(held));
+    await vi.advanceTimersByTimeAsync(LAPSE_MS + 1000);
+    const whileFirstHolds = states.map((state) => state.now());
+    first();
+    await vi.advanceTimersByTimeAsync(100);
+    const releases = await Promise.all(queued);
+    for (const release of releases) {
+      release();
+    }
+
+    expect(whileFirstHolds).toStrictEqual(Array.from({ length: WAITERS }, () => 'waiting'));
+    expect(states.map((state) => state.now())).toStrictEqual(
+      Array.from({ length: WAITERS }, () => 'held'),
+    );
+  });
+
+  it('does not lapse an abandoned holder sooner when several requests wait', async () => {
+    freezeClock();
+    const budget = new ReadBudget(LIMIT);
+    await hold(budget, LIMIT, deadline());
+    // The holder's request is gone, including the timer that renewed its claim.
+    vi.clearAllTimers();
+    const queued = Array.from({ length: WAITERS }, () => hold(budget, 1, deadline()));
+    const states = queued.map((held) => watched(held));
+    await vi.advanceTimersByTimeAsync(LAPSE_MS - 1);
+    const beforeLapse = states.map((state) => state.now());
+    await vi.advanceTimersByTimeAsync(100);
+    const releases = await Promise.all(queued);
+    for (const release of releases) {
+      release();
+    }
+
+    expect(beforeLapse).toStrictEqual(Array.from({ length: WAITERS }, () => 'waiting'));
+    expect(states.map((state) => state.now())).toStrictEqual(
+      Array.from({ length: WAITERS }, () => 'held'),
+    );
   });
 
   /**
