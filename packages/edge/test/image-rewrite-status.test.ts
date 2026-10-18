@@ -75,7 +75,15 @@ async function rewrittenImage(options: Options) {
     transformImage: async (source) => {
       await new Response(source).arrayBuffer();
       const bytes = options.streamed === true ? new Uint8Array(9 * 1024 * 1024) : OUTPUT;
-      return { contentType: 'image/webp', body: new Blob([bytes]).stream() };
+      return {
+        contentType: 'image/webp',
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(bytes);
+            controller.close();
+          },
+        }),
+      };
     },
   });
   const host = standaloneHost(env);
