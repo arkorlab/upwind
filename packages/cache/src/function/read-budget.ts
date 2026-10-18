@@ -69,9 +69,9 @@ export class ArtifactRoom {
     const before = this.#claim;
     const extra = bytes - (before?.bytes ?? 0);
     const abandoned = new AbortController();
-    const now = this.#budget.takeAtOnce(extra);
+    const now = this.#budget.takeAtOnce(extra, this);
     const granted =
-      now === undefined ? this.#budget.take(extra, abandoned.signal) : Promise.resolve(now);
+      now === undefined ? this.#budget.take(extra, abandoned.signal, this) : Promise.resolve(now);
     const ready = before === undefined ? granted : Promise.all([before.ready, granted]);
     const claim = { bytes, before, granted, ready, abandoned };
     this.#claim = claim;

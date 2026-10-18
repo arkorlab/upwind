@@ -57,6 +57,11 @@ function watched(held: Promise<() => void>): { readonly now: () => string } {
   return { now: () => state };
 }
 
+/** One table case finishes the copy before asking whether its authority answer can proceed. */
+function finishCopy(state: string, release: () => void): void {
+  if (state === 'finished') release();
+}
+
 /** The room a Function isolate reads artifacts and records in, one for every request it serves. */
 describe('the room a Function isolate reads in', () => {
   afterEach(() => {
@@ -196,6 +201,92 @@ describe('the room a Function isolate reads in', () => {
     await vi.advanceTimersByTimeAsync(LAPSE_MS + 1000);
 
     expect(next.now()).toBe('held');
+  });
+
+  it.each(['reading', 'finished'])(
+    'grows an artifact ahead of a full-budget reader while its copy is %s',
+    async (copyState) => {
+      freezeClock();
+      const budget = new ReadBudget(LIMIT);
+      const room = new ArtifactRoom(budget);
+      const stopped = new AbortController();
+      const copy = await room.hold(1, stopped.signal);
+      const next = hold(budget, LIMIT, deadline());
+      const nextState = watched(next);
+      const authority = room.hold(LIMIT / 2, stopped.signal);
+      const authorityState = watched(authority);
+      finishCopy(copyState, copy);
+      await vi.advanceTimersByTimeAsync(100);
+      const beforeRelease = [authorityState.now(), nextState.now()];
+
+      // Release a completed read, or abort the old implementation's still-pending upgrade.
+      stopped.abort(new Error('the read ended'));
+      try {
+        (await authority)();
+      } catch {
+        // The old source could not grow past the later full-budget reader.
+      }
+      copy();
+      await vi.advanceTimersByTimeAsync(100);
+      (await next)();
+
+      expect(beforeRelease).toStrictEqual(['held', 'waiting']);
+      expect(nextState.now()).toBe('held');
+    },
+  );
+
+  it('grows a pending artifact at its original place ahead of a later full-budget reader', async () => {
+    freezeClock();
+    const budget = new ReadBudget(LIMIT);
+    const blocking = await hold(budget, LIMIT, deadline());
+    const room = new ArtifactRoom(budget);
+    const stopped = new AbortController();
+    const copy = room.hold(1, stopped.signal);
+    const copyState = watched(copy);
+    const next = hold(budget, LIMIT, deadline());
+    const nextState = watched(next);
+    const authority = room.hold(LIMIT / 2, stopped.signal);
+    const authorityState = watched(authority);
+
+    blocking();
+    await vi.advanceTimersByTimeAsync(100);
+    const beforeRelease = [copyState.now(), authorityState.now(), nextState.now()];
+    stopped.abort(new Error('the read ended'));
+    try {
+      (await authority)();
+    } catch {
+      // As above, the old source left the larger answer behind its own base claim.
+    }
+    (await copy)();
+    await vi.advanceTimersByTimeAsync(100);
+    (await next)();
+
+    expect(beforeRelease).toStrictEqual(['held', 'held', 'waiting']);
+    expect(nextState.now()).toBe('held');
+  });
+
+  it('keeps a pending artifact and its growth behind an earlier full-budget reader', async () => {
+    freezeClock();
+    const budget = new ReadBudget(LIMIT);
+    const blocking = await hold(budget, LIMIT, deadline());
+    const next = hold(budget, LIMIT, deadline());
+    const nextState = watched(next);
+    const room = new ArtifactRoom(budget);
+    const copy = room.hold(1, deadline());
+    const copyState = watched(copy);
+    const authority = room.hold(LIMIT / 2, deadline());
+    const authorityState = watched(authority);
+
+    blocking();
+    await vi.advanceTimersByTimeAsync(100);
+    const whileEarlierHolds = [nextState.now(), copyState.now(), authorityState.now()];
+    (await next)();
+    await vi.advanceTimersByTimeAsync(100);
+    (await copy)();
+    (await authority)();
+
+    expect(whileEarlierHolds).toStrictEqual(['held', 'waiting', 'waiting']);
+    expect([copyState.now(), authorityState.now()]).toStrictEqual(['held', 'held']);
   });
 
   it('waits for the extra room of an authority answer beside a copy that states fewer bytes', async () => {
