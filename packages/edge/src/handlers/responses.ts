@@ -6,6 +6,7 @@ import {
 } from '@stayingupwind/core/paas';
 import {
   EDGE_DEBUG_HEADER,
+  HOP_BY_HOP_HEADERS,
   NO_STORE_CACHE_CONTROL,
   NULL_BODY_STATUS,
   PASSTHROUGH_RESPONSE_HEADER_DENYLIST,
@@ -217,7 +218,11 @@ export function mergeScopedMiddlewareHeaders(
   const nominated = nominatedBy(added);
   const scoped = new Headers();
   for (const [name, value] of added) {
-    if (name.startsWith(PLATFORM_HEADER_PREFIX) || nominated?.has(name) === true) {
+    if (
+      HOP_BY_HOP_HEADERS.includes(name) ||
+      name.startsWith(PLATFORM_HEADER_PREFIX) ||
+      nominated?.has(name) === true
+    ) {
       continue;
     }
     scoped.append(
