@@ -337,7 +337,9 @@ describe('ordinary RSC navigation of an unbuilt fallback', () => {
         return value;
       })();
 
-      await Promise.resolve();
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
 
       expect(ended).toBe(false);
 
