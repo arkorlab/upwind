@@ -12,6 +12,15 @@ export interface ShellRead {
   readonly latencyMs: number;
 }
 
+/** A whole body or the exact native byte view returned by an owned read. */
+export type ShellBodyResult = ArrayBuffer | ReadableStreamReadResult<Uint8Array<ArrayBuffer>>;
+
+/** Optional body ownership supplied by the shell loader; existing custom strategies may ignore it. */
+export interface ShellBodyReader {
+  open(response: Response, expected?: number): Promise<ShellBodyResult> | undefined;
+  finish(result: ShellBodyResult): ArrayBuffer | Uint8Array<ArrayBuffer>;
+}
+
 /**
  * Reads shells; generic over the runtime context so this contract stays Cloudflare-free. A
  * pre-compressed rendering of a shell is stored and read exactly like the shell itself. `Id` is the
@@ -19,7 +28,7 @@ export interface ShellRead {
  */
 export interface ShellDeliveryStrategy<C, Id extends ShellBackendId = ShellBackendId> {
   readonly id: Id;
-  getShell(ref: ArtifactLocator, ctx: C): Promise<ShellRead | undefined>;
+  getShell(ref: ArtifactLocator, ctx: C, body?: ShellBodyReader): Promise<ShellRead | undefined>;
 }
 
 /** What an asset strategy did, reported structurally so metrics never parse their own headers. */
