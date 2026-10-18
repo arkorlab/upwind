@@ -66,13 +66,11 @@ function middlewareCovers(matchers: readonly MiddlewareMatcher[], pathname: stri
   if (isTemplate(pathname)) {
     return matchers.length > 0;
   }
-  return matchers.some((matcher) => {
-    // The flags `middlewareApplies` runs them under at the edge: case-insensitive, as Next.js
-    // matches them, and without the unicode flag, as it compiled them. A route this read as
-    // uncovered and the edge reads as covered is a route with hints nothing there will use.
-    // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-    return new RegExp(matcher.sourceRegex, 'i').test(pathname);
-  });
+  // The flags `middlewareApplies` runs them under at the edge: case-insensitive, as Next.js
+  // matches them, and without the unicode flag, as it compiled them. A route this read as
+  // uncovered and the edge reads as covered is a route with hints nothing there will use.
+  // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
+  return matchers.some((matcher) => new RegExp(matcher.sourceRegex, 'i').test(pathname));
 }
 
 /**
