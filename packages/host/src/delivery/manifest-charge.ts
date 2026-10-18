@@ -73,12 +73,24 @@ function ruleObjects(rules: readonly RuleObjects[] | undefined): number {
     return 0;
   }
   let objects = 0;
+  let memberConditions: WeakSet<readonly unknown[]> | undefined;
   for (const rule of rules) {
     objects += 1 + listObjects(rule.has) + listObjects(rule.missing);
     objects += (rule.headers === undefined ? 0 : 1) + (rule.documentHeaders === undefined ? 0 : 1);
     const members = rule.members;
-    if (members !== undefined) {
-      objects += 1 + listObjects(members.bypassFor) + (members.keyedBy === undefined ? 0 : 1);
+    if (members === undefined) {
+      continue;
+    }
+    objects += 1 + (members.keyedBy === undefined ? 0 : 1);
+    const conditions = members.bypassFor;
+    if (conditions === undefined) {
+      continue;
+    }
+    // Digest-vouched reads restore one table array for every member that shares it.
+    memberConditions ??= new WeakSet();
+    if (!memberConditions.has(conditions)) {
+      memberConditions.add(conditions);
+      objects += listObjects(conditions);
     }
   }
   return objects;
