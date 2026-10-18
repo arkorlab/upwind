@@ -332,8 +332,8 @@ export class DataCopies {
       releaseStream(found.body, 'a data copy longer than any kept');
       return undefined;
     }
-    const room = await this.#budget.takeWithin(length, leftOf(startedAt));
-    if (room === undefined) {
+    const giveBack = await this.#budget.takeWithin(length, leftOf(startedAt));
+    if (giveBack === undefined) {
       releaseStream(found.body, 'a data copy with no room in time');
       return undefined;
     }
@@ -350,7 +350,7 @@ export class DataCopies {
       }
       return body.bytes;
     } finally {
-      this.#budget.give(room);
+      giveBack();
     }
   }
 

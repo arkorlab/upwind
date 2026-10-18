@@ -8,14 +8,12 @@
  * answering. Every other body the gateway reads is bounded by the contract at a mebibyte or less —
  * a commit, a batch of small artifacts — and is read beside these as before.
  *
- * A write waits for room in its own request's time, asking again every few milliseconds, and is not
- * woken by the write that gives the room back: the runtime refuses to settle one request's promise
- * from another's ("Cannot perform I/O on behalf of a different request"), and the waiting write
- * would never go on. A request the runtime cancels, its sender gone, may never run the code after
- * its `await`, so a claim is renewed by its own request for as long as it waits or holds, and
- * lapses once nothing has renewed it for a while: a cancelled write does not hold the room for
- * good. The records a settle builds wait for theirs the same way (`projection-memory.ts`).
+ * The room is the isolate's (`IsolateRoom`): a write waits for it in its own request's time, asking
+ * again every few milliseconds, and a write whose request the runtime cancels, its sender gone,
+ * gives its place and its room up once its claim lapses rather than holding the room for good.
  */
+
+import { IsolateRoom } from '../isolate-room.ts';
 
 const KIB = 1024;
 const BODY_ROOM_MIB = 32;
@@ -26,63 +24,8 @@ const BODY_ROOM_MIB = 32;
  * body's length: its claim is the whole budget at the most.
  */
 export const BODY_ROOM_BYTES = BODY_ROOM_MIB * KIB * KIB;
-/** How often a write waiting for room asks again, which renews its claim. */
-const ASK_AGAIN_MS = 20;
-/** How often the request of a write that holds room renews its claim. */
-const RENEW_MS = 1000;
-/** How long a claim lasts without its request renewing it: past it, that request is gone. */
-const CLAIM_LAPSE_MS = 5000;
-
-/** A claim on the room: its bytes, whether they are held yet, and until when it holds unrenewed. */
-interface Claim {
-  readonly bytes: number;
-  holding: boolean;
-  until: number;
-}
-
-/** The claims of every write in the isolate, in the order they were made: the module's. */
-const claims: Claim[] = [];
-
-/**
- * Renew `claim`, as its own request's work. A claim that lapsed while its request still waits or
- * holds — its timers held up past the lapse — is counted again, as one made last.
- */
-function renew(claim: Claim): void {
-  claim.until = Date.now() + CLAIM_LAPSE_MS;
-  if (!claims.includes(claim)) {
-    claims.push(claim);
-  }
-}
-
-function remove(claim: Claim): void {
-  const at = claims.indexOf(claim);
-  if (at !== -1) {
-    claims.splice(at, 1);
-  }
-}
-
-/**
- * Whether `claim` may be held at `now`: it is the first that waits, and there is room for it beside
- * the claims held. What has lapsed is let go of first.
- */
-function admits(claim: Claim, now: number): boolean {
-  for (let index = claims.length - 1; index >= 0; index -= 1) {
-    if ((claims[index]?.until ?? now) <= now) {
-      claims.splice(index, 1);
-    }
-  }
-  let held = 0;
-  for (const other of claims) {
-    held += other.holding ? other.bytes : 0;
-  }
-  return claims.find((other) => !other.holding) === claim && held + claim.bytes <= BODY_ROOM_BYTES;
-}
-
-function pause(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
+/** The room every write the isolate reads takes its body's bytes from: the module's. */
+const room = new IsolateRoom(BODY_ROOM_BYTES);
 
 /**
  * What `write` comes to, made once the isolate has room for the `bytes` its body may hold, and the
@@ -96,25 +39,13 @@ export async function withBodyRoom<T>(
   write: () => Promise<T>,
   refuse: () => T,
 ): Promise<T> {
-  const claim: Claim = { bytes: Math.min(bytes, BODY_ROOM_BYTES), holding: false, until: 0 };
-  const givenUpAt = Date.now() + waitMs;
-  let renewal: ReturnType<typeof setInterval> | undefined;
+  const giveBack = await room.takeWithin(bytes, waitMs);
+  if (giveBack === undefined) {
+    return refuse();
+  }
   try {
-    renew(claim);
-    while (!admits(claim, Date.now())) {
-      await pause(ASK_AGAIN_MS);
-      if (Date.now() >= givenUpAt) {
-        return refuse();
-      }
-      renew(claim);
-    }
-    claim.holding = true;
-    renewal = setInterval(() => {
-      renew(claim);
-    }, RENEW_MS);
     return await write();
   } finally {
-    clearInterval(renewal);
-    remove(claim);
+    giveBack();
   }
 }

@@ -6,13 +6,13 @@
  * would fail every request of every object in it.
  *
  * A chunk waits for room in its own object's time, asking again every few milliseconds, and is not
- * woken by the chunk that gives the room back: the runtime refuses to settle one object's promise
- * from another's ("Cannot perform I/O on behalf of a different Durable Object"), and the waiting run
- * would never go on. An object can be reset while its run waits or builds, and the code after its
- * `await` then never runs. So a claim is renewed by its own object for as long as it waits or
- * builds — as it asks again, and on a timer of its own as it builds — and lapses once nothing has
- * renewed it for a while: a reset object's claim does not hold the isolate's room for good, and a
- * build that takes long, a storage read that does not answer say, holds its room while it runs.
+ * woken by the chunk that gives the room back: an object can be reset while its run waits or
+ * builds, and the code after its `await` then never runs, so room handed to a waiting run could go
+ * to one that can never give it back. So a claim is renewed by its own object for as long as it
+ * waits or builds — as it asks again, and on a timer of its own as it builds — and lapses once
+ * nothing has renewed it for a while: a reset object's claim does not hold the isolate's room for
+ * good, and a build that takes long, a storage read that does not answer say, holds its room while
+ * it runs.
  *
  * A record a run keeps past the chunk that built it — the one a commit is answered with — holds its
  * bytes as long as it is kept, and is charged until the run lets it go (`retain`), renewed as a
