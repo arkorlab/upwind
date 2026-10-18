@@ -1,9 +1,4 @@
-import {
-  evaluateFreshness,
-  NEXT_ONE_YEAR_SECONDS,
-  routeEntryKindSchema,
-  tagIdFor,
-} from '@stayingupwind/core/cache';
+import { NEXT_ONE_YEAR_SECONDS, routeEntryKindSchema, tagIdFor } from '@stayingupwind/core/cache';
 import { createId } from '@stayingupwind/core/util';
 import {
   type ApplyResourceChangeInput,
@@ -409,8 +404,12 @@ function currentGeneration(sql: SqlStorage, entryId: string): GenerationRow | un
     .toArray()[0];
 }
 
-/** A lost ACK is harmless; only the authority's fresh, fully published generation satisfies work. */
-function satisfied(sql: SqlStorage, scopeId: string, job: WarmJobRow, now: number): boolean {
+/**
+ * A change is warmed once a fully published generation covers its revision. Natural time expiry
+ * does not undo that work: short or unknown lifetimes cannot stay fresh until every ACK arrives.
+ * Serving still judges freshness independently; a lost ACK can retire the same completed work.
+ */
+function satisfied(sql: SqlStorage, job: WarmJobRow): boolean {
   const row = currentGeneration(sql, job.entry_id);
   if (
     row?.status !== HTTP_OK ||
@@ -421,15 +420,7 @@ function satisfied(sql: SqlStorage, scopeId: string, job: WarmJobRow, now: numbe
   ) {
     return false;
   }
-  const generation = toGeneration(scopeId, row);
-  return (
-    evaluateFreshness({
-      policy: generation.policy,
-      cacheTimestamp: generation.cacheTimestamp,
-      invalidation: generation.condemned ?? undefined,
-      now,
-    }).validity === 'fresh'
-  );
+  return true;
 }
 
 function nextRetryAt(sql: SqlStorage): number | null {
@@ -467,7 +458,7 @@ export function claimResourceWarmJobs(
     .toArray();
   const jobs: ResourceWarmJob[] = [];
   for (const job of candidates) {
-    if (satisfied(sql, input.scopeId, job, now)) {
+    if (satisfied(sql, job)) {
       sql.exec(`DELETE FROM resource_warm_jobs WHERE job_id = ?`, job.job_id);
       continue;
     }
@@ -518,7 +509,7 @@ export function finishResourceWarmJob(
   ) {
     return { kind: 'superseded', nextRetryAt: nextRetryAt(sql) };
   }
-  if (satisfied(sql, input.scopeId, job, now)) {
+  if (satisfied(sql, job)) {
     sql.exec(`DELETE FROM resource_warm_jobs WHERE job_id = ?`, job.job_id);
     return { kind: 'completed', nextRetryAt: nextRetryAt(sql) };
   }
@@ -543,7 +534,7 @@ export function finishResourceWarmJob(
      lease_expires_at = NULL, detail = ?, updated_at = ? WHERE job_id = ?`,
     retryAt,
     input.detail ??
-      (input.outcome === 'published' ? 'generation is not fresh at required revision' : null),
+      (input.outcome === 'published' ? 'no usable generation at required revision' : null),
     now,
     job.job_id,
   );
