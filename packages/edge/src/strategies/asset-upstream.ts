@@ -25,6 +25,8 @@ export const FORWARDED_ASSET_HEADERS: readonly string[] = [
 ];
 const NOT_MODIFIED_STATUS = 304;
 const CACHE_CONTROL_HEADER = 'cache-control';
+/** Visible ASCII stays; percent marks escapes and must be escaped itself. */
+const UNSAFE_IN_DEBUG = /[^\u{20}-\u{24}\u{26}-\u{7E}]/gu;
 
 export function assetUpstreamRequest(
   request: Request,
@@ -78,7 +80,11 @@ export function storableAssetCacheControl(ctx: EdgeContext): string {
  * than a cache entry some earlier policy left behind.
  */
 export function assetDebug(ctx: EdgeContext, strategyId: string, verdict: string): string {
-  return `asset;strategy=${strategyId};${verdict};project=${ctx.projectId};policy=${ctx.policy.id}`;
+  // JSON also represents lone surrogates, which URI encoding alone refuses.
+  const projectId = ctx.projectId.replaceAll(UNSAFE_IN_DEBUG, (character) =>
+    encodeURIComponent(JSON.stringify(character).slice(1, -1)),
+  );
+  return `asset;strategy=${strategyId};${verdict};project=${projectId};policy=${ctx.policy.id}`;
 }
 
 /**

@@ -201,7 +201,10 @@ describe('asset dispatch failures', () => {
 });
 
 /** A real asset route with only the Cache API's answer held by the test. */
-async function assetWithLookup(lookup: Promise<Response | undefined>): Promise<Response> {
+async function assetWithLookup(
+  lookup: Promise<Response | undefined>,
+  projectId = 'site',
+): Promise<Response> {
   vi.spyOn(caches, 'open').mockResolvedValue({
     match: () => lookup,
   } as unknown as Cache);
@@ -225,13 +228,13 @@ async function assetWithLookup(lookup: Promise<Response | undefined>): Promise<R
         },
       }),
       host: standaloneHost(env),
-      pointer: site.pointer,
+      pointer: { ...site.pointer, projectId },
       pointerMs: 0,
       privateDelivery: false,
       cspReportingPath: undefined,
     },
     {
-      manifestLookup: Promise.resolve({ kind: 'found', value: site.manifest }),
+      manifestLookup: Promise.resolve({ kind: 'found', value: { ...site.manifest, projectId } }),
       policyLookup: Promise.resolve({
         kind: 'found',
         source: 'exact',
@@ -370,5 +373,38 @@ describe('asset project identity', () => {
     expect(admittedAssetCacheKey(origin, 'site.example', 'project-a_1.~')).toBe(
       'https://site.example/project-a_1.~/site.example/_next/static/chunks/main-abc123.js',
     );
+  });
+});
+
+describe('asset project diagnostics', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each([
+    { projectId: 'site:one+two ._~', encoded: 'site:one+two ._~' },
+    { projectId: 'line\rbreak', encoded: 'line%5Crbreak' },
+    { projectId: 'line\nbreak', encoded: 'line%5Cnbreak' },
+    { projectId: 'nul\0byte', encoded: 'nul%5Cu0000byte' },
+    { projectId: 'tab\tbyte', encoded: 'tab%5Ctbyte' },
+    { projectId: 'caf\u{E9}', encoded: 'caf%C3%A9' },
+    { projectId: '😀', encoded: '%F0%9F%98%80' },
+    { projectId: '\u{D800}', encoded: '%5Cud800' },
+    { projectId: '\u{DC00}', encoded: '%5Cudc00' },
+    { projectId: '%5Cud800', encoded: '%255Cud800' },
+    { projectId: String.raw`\ud800`, encoded: String.raw`\ud800` },
+  ])('serves a cached asset with header-safe project $encoded', async ({ projectId, encoded }) => {
+    const response = await assetWithLookup(
+      Promise.resolve(
+        new Response('cached asset', {
+          headers: { 'cache-control': CACHE_CONTROL, 'content-type': 'text/javascript' },
+        }),
+      ),
+      projectId,
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('x-arkor-edge')).toBe(
+      `asset;strategy=cache-api-readthrough;hit=1;project=${encoded};policy=${DEFAULT_DELIVERY_POLICY.id}`,
+    );
+    await expect(response.text()).resolves.toBe('cached asset');
   });
 });
