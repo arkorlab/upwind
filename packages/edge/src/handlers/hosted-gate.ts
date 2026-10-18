@@ -19,6 +19,7 @@ import {
   middlewareResponse,
   type MiddlewareTiming,
   routedHeaders,
+  withJudgedRules,
 } from './middleware.ts';
 import { PATTERN_BUDGET } from './passthrough.ts';
 
@@ -149,7 +150,10 @@ export async function serveAfterMiddleware(
     gate.abandon?.();
     throw error;
   }
-  const { outcome: middleware, dispatches } = decided;
+  const { dispatches } = decided;
+  // With the rules judged on the request as it came, for the Function a request the middleware lets
+  // on may be handed to, which leaves them for the edge to lay (`withJudgedRules`).
+  const middleware = withJudgedRules(decided.outcome, configured, manifest);
   try {
     return await actOnMiddleware(resolved, gate, { middleware, dispatches, configured });
   } catch (error) {

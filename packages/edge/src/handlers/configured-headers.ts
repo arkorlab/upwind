@@ -1,5 +1,8 @@
+import type { ConfiguredHeaders } from '@stayingupwind/core/manifest';
 import {
+  PASSTHROUGH_RESPONSE_HEADER_DENYLIST,
   type PassthroughResponseContext,
+  PLATFORM_HEADER_PREFIX,
   rewriteSetCookieForPreview,
 } from '@stayingupwind/core/request';
 
@@ -55,5 +58,36 @@ export function setConfiguredUnder(
     }
   } catch {
     // As above: `has` refuses such a name as `set` does.
+  }
+}
+
+/**
+ * The headers the rules of `next.config` set on a request, laid on an answer a Function left them
+ * off (`HEADER_RULES_LEFT_HEADER`), as the runtime lays what routing collected on its answer
+ * (`withRoutingHeaders`): over the answer's own, and a cookie beside the answer's, scoped as every
+ * cookie a Function answers with is. What the edge takes off every answer it hands on
+ * (`forwardedResponse`) is not a rule's to put back, and a name no header can have is left off.
+ */
+export function layConfiguredOver(
+  headers: Headers,
+  configured: ConfiguredHeaders,
+  scope: PassthroughResponseContext,
+): void {
+  for (const [name, value] of Object.entries(configured.headers)) {
+    if (
+      PASSTHROUGH_RESPONSE_HEADER_DENYLIST.includes(name) ||
+      name.startsWith(PLATFORM_HEADER_PREFIX)
+    ) {
+      continue;
+    }
+    if (name === SET_COOKIE_HEADER) {
+      try {
+        headers.append(name, scopedValue(name, value, scope));
+      } catch {
+        // Not a header value, on this request: left off.
+      }
+    } else {
+      setConfigured(headers, name, value, scope);
+    }
   }
 }

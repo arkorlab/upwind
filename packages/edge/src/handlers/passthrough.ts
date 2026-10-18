@@ -1,5 +1,7 @@
-import type { AppRuntime, ProjectManifest } from '@stayingupwind/core/manifest';
+import type { AppRuntime, ConfiguredHeaders, ProjectManifest } from '@stayingupwind/core/manifest';
 import {
+  HEADER_RULES_JUDGED_HEADER,
+  HEADER_RULES_LEFT_HEADER,
   INVALIDATED_REVISION_HEADER,
   INVALIDATED_TAGS_HEADER,
   MIDDLEWARE_DONE_HEADER,
@@ -25,6 +27,7 @@ import { logWarn } from '../observability/logger.ts';
 import type { EdgeMetric } from '../observability/metrics.ts';
 import { stripEdgeHeaders } from '../request-context.ts';
 import type { EdgeContext } from '../strategies/context.ts';
+import { layConfiguredOver } from './configured-headers.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
 import { observeMetric } from './observer.ts';
 import {
@@ -200,10 +203,14 @@ export interface PassthroughInput {
   readonly privateDelivery?: boolean | undefined;
   /**
    * What the application's middleware decided, when the edge ran it and then found nothing to
-   * serve itself: the request goes on as the middleware left it, and the runtime is told so.
+   * serve itself: the request goes on as the middleware left it, and the runtime is told so — and
+   * that the edge lays the header rules it judged before it (`judgedRules`), where it did.
    */
   readonly middleware?:
-    | (MiddlewareContinue & { readonly rewriteStatus?: number | undefined })
+    | (MiddlewareContinue & {
+        readonly rewriteStatus?: number | undefined;
+        readonly judgedRules?: ConfiguredHeaders | undefined;
+      })
     | undefined;
   /** What the edge tells the runtime beside the request, set after the forwarding headers. */
   readonly headers?: Readonly<Record<string, string>> | undefined;
@@ -316,9 +323,14 @@ function afterMiddleware(client: Request, middleware: MiddlewareContinue): Reque
 function markMiddlewareDone(
   request: Request,
   client: Request,
-  middleware: MiddlewareContinue & { readonly rewriteStatus?: number | undefined },
+  middleware: NonNullable<PassthroughInput['middleware']>,
 ): void {
   request.headers.set(MIDDLEWARE_DONE_HEADER, '1');
+  // The header rules of `next.config`, judged on the request as the client sent it, which the edge
+  // lays on the answer itself where the runtime says it left them off (`HEADER_RULES_LEFT_HEADER`).
+  if (middleware.judgedRules !== undefined) {
+    request.headers.set(HEADER_RULES_JUDGED_HEADER, '1');
+  }
   // The status the middleware gave its rewrite, which the runtime answers the route under as one it
   // ran the middleware for itself.
   if (middleware.rewriteStatus !== undefined) {
@@ -410,6 +422,29 @@ function takeResponseInvalidation(input: PassthroughInput, response: Response): 
   }
 }
 
+/**
+ * What the edge lays on the Worker's answer to a request it ran the middleware for, over the
+ * Worker's own: the header rules the runtime left to the edge (`HEADER_RULES_LEFT_HEADER`), read off
+ * the answer as it came, before the edge's protocol is taken off it — a runtime from before it lays
+ * the rules itself and says nothing, and none is laid twice — and the middleware's headers over
+ * them, as Next.js's router collects the two ahead of the route.
+ */
+function layAfterMiddleware(
+  headers: Headers,
+  answer: Response,
+  middleware: NonNullable<PassthroughInput['middleware']>,
+  scope: ForwardingContext,
+): void {
+  const { judgedRules } = middleware;
+  if (judgedRules !== undefined && answer.headers.get(HEADER_RULES_LEFT_HEADER) === '1') {
+    layConfiguredOver(headers, judgedRules, scope);
+  }
+  // After the Worker's own, which may repeat the middleware's cookies as Next.js writes them back
+  // (`splice/cookies.ts`): a browser keeps the last of a cookie set twice, and the middleware's is
+  // the one it meant — a `Max-Age=0` that the copy before it lost, say.
+  mergeScopedMiddlewareHeaders(headers, middleware.responseHeaders, scope);
+}
+
 /** Transparent proxy to the deployment's Worker: any method, streamed body, rewritten cookies. */
 
 export async function handlePassthrough(input: PassthroughInput): Promise<Response> {
@@ -473,10 +508,7 @@ export async function handlePassthrough(input: PassthroughInput): Promise<Respon
   const response = forwardedResponse(originResponse, input.forwarding, input.request.method);
   const headers = response.headers;
   if (input.middleware !== undefined) {
-    // After the Worker's own, which may repeat the middleware's cookies as Next.js writes them back
-    // (`splice/cookies.ts`): a browser keeps the last of a cookie set twice, and the middleware's
-    // is the one it meant — a `Max-Age=0` that the copy before it lost, say.
-    mergeScopedMiddlewareHeaders(headers, input.middleware.responseHeaders, input.forwarding);
+    layAfterMiddleware(headers, originResponse, input.middleware, input.forwarding);
   }
   privateCacheControl(headers);
   if (input.privateDelivery === true) {

@@ -92,6 +92,15 @@ export interface MiddlewareContinued extends Extract<
    * beside it (`MIDDLEWARE_REWRITE_STATUS_HEADER`), and answers under it without running it again.
    */
   readonly rewriteStatus?: number | undefined;
+  /**
+   * The headers the rules of `next.config` set on the request as the client sent it, judged before
+   * the middleware ran (`withJudgedRules`): what Next.js's router lays on whatever answers the
+   * request. A Function the request is handed on to is told the edge holds them
+   * (`HEADER_RULES_JUDGED_HEADER`), and leaves them for the edge to lay where it says it did
+   * (`HEADER_RULES_LEFT_HEADER`): judged there, on the request as the middleware left it, the rules
+   * of the path the client asked for were lost and those of the path it was rewritten to added.
+   */
+  readonly judgedRules?: ConfiguredHeaders | undefined;
 }
 
 /**
@@ -352,6 +361,33 @@ export function judgeHeaderRulesAhead(
   headers: Headers,
 ): RequestHeaderRules {
   return requestHeaderRulesFor(manifest, url, routedHeaders(edge, manifest.headerRules, headers));
+}
+
+/**
+ * Whether the rules a manifest carries are every rule of `next.config` that sets a header: a build
+ * whose routing the edge reproduces publishes them all, and its dynamic routes, an empty list
+ * included. One it does not — with `i18n` — publishes only the rules `next build` writes itself, and
+ * folds its others into its routes' headers (`foldedHeaderRules`), which no request is judged by.
+ */
+function judgesEveryHeaderRule(manifest: ProjectManifest): boolean {
+  return manifest.dynamicRoutes !== undefined && manifest.foldedHeaderRules === undefined;
+}
+
+/**
+ * What the middleware decided, with the headers the rules of `next.config` set on the request as
+ * the client sent it (`configured`, judged before the middleware ran) beside a decision to let the
+ * request on (`MiddlewareContinued.judgedRules`), for the Function it may be handed to. Not where the
+ * manifest holds only some of the rules (`judgesEveryHeaderRule`): the Function judges them all, as
+ * it did, and the edge lays none.
+ */
+export function withJudgedRules<Outcome extends MiddlewareOutcome>(
+  outcome: Outcome,
+  configured: ConfiguredHeaders,
+  manifest: ProjectManifest,
+): Outcome {
+  return outcome.kind === 'continue' && judgesEveryHeaderRule(manifest)
+    ? { ...outcome, judgedRules: configured }
+    : outcome;
 }
 
 /**

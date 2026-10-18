@@ -37,6 +37,7 @@ import {
   type MiddlewareOutcome,
   middlewareResponse,
   runMiddleware,
+  withJudgedRules,
 } from './middleware.ts';
 import { PATTERN_BUDGET, type PassthroughWait, passthroughReason } from './passthrough.ts';
 
@@ -376,8 +377,11 @@ export async function routeHostedDocument(input: HostedDocumentInput): Promise<R
   const target = preloadTarget(input, seen);
   const preload = target === undefined ? undefined : preloadFor(input, target);
   const middlewareStarted = edge.runtime.now();
-  const middleware = await runMiddleware(edge, request);
+  const decided = await runMiddleware(edge, request);
   const middlewareMs = edge.runtime.now() - middlewareStarted;
+  // With the rules judged on the request as it came, for the Function a request the middleware lets
+  // on may be handed to, which leaves them for the edge to lay (`withJudgedRules`).
+  const middleware = withJudgedRules(decided, headerRules.response, manifest);
   const answered = {
     pathname: url.pathname,
     middlewareMs: middleware.middlewareMs,
