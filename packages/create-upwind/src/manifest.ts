@@ -29,14 +29,14 @@ import { ownRange } from './version.ts';
  */
 const VERSIONS = {
   '@tailwindcss/postcss': '^4.3.3',
-  '@types/node': '^24.13.4',
+  '@types/node': '^24.19.2',
   '@types/react': '^19.3.0',
   '@types/react-dom': '^19.3.0',
   next: '^16.4.2',
   react: '^19.3.1',
   'react-dom': '^19.3.1',
   tailwindcss: '^4.3.3',
-  typescript: '^5.9.3',
+  typescript: '^6.0.3',
 } as const;
 
 export async function writeManifest(target: string, name: string): Promise<void> {
