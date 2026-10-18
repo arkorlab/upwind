@@ -25,7 +25,9 @@ import { describeIssues, fail } from './respond.ts';
  * one read to its end before anything measured it is one deployment deciding how much of that
  * isolate the others are left. The declared length is only the early answer: a body a Worker
  * streams arrives without one, so the bytes are counted as they come and the read stops at the
- * first one past the limit. The bodies a write is read whole for, as long as an artifact may be,
+ * first one past the limit. It stops past the declared length too: a synthetic request can
+ * understate what its body holds, which admission otherwise takes no room for (Codex). The bodies
+ * a write is read whole for, as long as an artifact may be,
  * are read in room the isolate keeps for them (`inBodyRoom`), unless they say they hold a mebibyte
  * or less.
  */
@@ -129,7 +131,7 @@ export async function readBody(
   let read: BoundedBody;
   try {
     read = await readBoundedBody(c.req.raw.body, {
-      limit,
+      limit: length.most,
       stallMs: BODY_STALL_MS,
       budgetMs: BODY_BUDGET_MS,
     });
@@ -138,7 +140,9 @@ export async function readBody(
   }
   if (read.kind === 'over-limit') {
     releaseStream(read.body, 'body past its limit');
-    return fail(c, 'too_large', tooLarge);
+    return length.most < limit
+      ? fail(c, 'invalid_request', 'the body is longer than its content-length')
+      : fail(c, 'too_large', tooLarge);
   }
   return read.bytes;
 }
