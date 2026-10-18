@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "upwind dev",
     "build": "upwind build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "typegen": "next typegen"
   },
   "dependencies": {
     "next": "^16.4.2",
