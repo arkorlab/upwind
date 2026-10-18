@@ -1,4 +1,9 @@
-import { mergeMiddlewareResponseHeaders } from '@stayingupwind/core/paas';
+import {
+  mergeMiddlewareResponseHeaders,
+  MIDDLEWARE_SET_COOKIE_HEADER,
+  type MiddlewareResult,
+  readMiddlewareResponse,
+} from '@stayingupwind/core/paas';
 import {
   EDGE_DEBUG_HEADER,
   NO_STORE_CACHE_CONTROL,
@@ -85,6 +90,53 @@ export function nominatedBy(headers: Headers): ReadonlySet<string> | undefined {
   return connection === null
     ? undefined
     : new Set(connection.split(',').map((option) => option.trim().toLowerCase()));
+}
+
+/** Local middleware control fields, kept through parsing and never sent to a client. */
+const MIDDLEWARE_PROTOCOL_HEADERS: ReadonlySet<string> = new Set([
+  MIDDLEWARE_SET_COOKIE_HEADER,
+  'x-middleware-next',
+  'x-middleware-override-headers',
+  'x-middleware-redirect',
+  'x-middleware-refresh',
+  'x-middleware-rewrite',
+]);
+
+export function middlewareProtocolHeader(name: string): boolean {
+  return MIDDLEWARE_PROTOCOL_HEADERS.has(name) || name.startsWith('x-middleware-request-');
+}
+
+/**
+ * Decode local control before filtering transport fields: a nominated Location still decides a
+ * middleware's own answer. For a continuing answer, the ordinary additions seen by the render and
+ * by response decisions must be the same ones the client may receive. Explicit request overrides
+ * and the cookie handoff remain local protocol, independently of those ordinary additions.
+ * Hosts composing the edge's handlers use this transport boundary rather than core's protocol-only
+ * decoder. With no Connection options, the existing parser and its allocations suffice.
+ */
+export function readMiddlewareAnswer(
+  response: Response,
+  url: URL,
+  client: Headers,
+  handed: Headers,
+): MiddlewareResult {
+  const result = readMiddlewareResponse(response, url, client);
+  if (result.kind === 'responded') return result;
+  const nominated = nominatedBy(response.headers);
+  let transported = response;
+  if (nominated !== undefined) {
+    transported = new Response(response.body, response);
+    for (const [name] of response.headers) {
+      if (nominated.has(name) && !middlewareProtocolHeader(name)) {
+        transported.headers.delete(name);
+      }
+    }
+    transported.headers.delete(CONNECTION_HEADER);
+  }
+  if (result.kind === 'external-rewrite') {
+    return readMiddlewareResponse(transported, url, handed);
+  }
+  return transported === response ? result : readMiddlewareResponse(transported, url, client);
 }
 
 /**

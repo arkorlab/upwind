@@ -51,6 +51,8 @@ export interface StaticFileInput {
    * What the application's middleware set, when the edge ran it for this file and it let the request
    * on — with the status it gave a rewrite, which an answer of 200 goes out under
    * (`underRewriteStatus`, in `hosted-static-file.ts`).
+   * Parsed by `runMiddleware` or `readMiddlewareAnswer`: Connection-nominated fields have gone
+   * from both its request and response views, before conditional decisions read them.
    */
   readonly middleware?:
     | (Extract<MiddlewareResult, { kind: 'continue' }> & {

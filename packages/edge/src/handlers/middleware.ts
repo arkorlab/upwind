@@ -9,11 +9,9 @@ import {
 } from '@stayingupwind/core/manifest';
 import {
   MIDDLEWARE_ONLY_HEADER,
-  MIDDLEWARE_SET_COOKIE_HEADER,
   middlewareApplies,
   type MiddlewareResult,
   PLATFORM_REQUEST_HEADERS,
-  readMiddlewareResponse,
 } from '@stayingupwind/core/paas';
 import {
   dataRequestHeaders,
@@ -37,8 +35,10 @@ import {
   forwardedResponse,
   keptByNobody,
   mergeScopedMiddlewareHeaders,
+  middlewareProtocolHeader,
   nominatedBy,
   privateCacheControl,
+  readMiddlewareAnswer,
 } from './responses.ts';
 import { readsCredentials, readsForwarding } from './routing-headers.ts';
 
@@ -145,25 +145,6 @@ const SET_COOKIE_HEADER = 'set-cookie';
 const CONTENT_TYPE_HEADER = 'content-type';
 const FORWARDED_HOST_HEADER = 'x-forwarded-host';
 const HTTP_OK = 200;
-/**
- * What of the middleware protocol a middleware's own answer may still carry, which Next.js's router
- * reads off it and hands no client (`resolve-routes.js`): the copy of its cookies `NextResponse`
- * writes beside each it sets, for the render a `next()` would have led to; the request headers it
- * overrode; the markers of what it decided. Core's own list (`PROTOCOL_HEADERS`, which
- * `readMiddlewareResponse` takes off an answer that lets the request on), less the length, which
- * `forwardedResponse` judges by the method. Not every name under the prefix: Next.js hands a client
- * `x-middleware-cache`, which its own router reads.
- */
-const MIDDLEWARE_PROTOCOL_HEADERS: ReadonlySet<string> = new Set([
-  MIDDLEWARE_SET_COOKIE_HEADER,
-  REWRITE_HEADER,
-  'x-middleware-next',
-  'x-middleware-override-headers',
-  'x-middleware-redirect',
-  'x-middleware-refresh',
-]);
-/** A request header the middleware overrode, one each (`x-middleware-request-<name>`). */
-const MIDDLEWARE_REQUEST_HEADER_PREFIX = 'x-middleware-request-';
 
 function describe(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).slice(0, MAX_REASON_LENGTH);
@@ -179,26 +160,6 @@ function decided(result: MiddlewareResult, response: Response): MiddlewareOutcom
     response.status !== HTTP_OK &&
     response.headers.has(REWRITE_HEADER)
     ? { ...result, rewriteStatus: response.status }
-    : result;
-}
-
-/**
- * The middleware's answer, read against the client's own headers (`runMiddlewareIn`) — but a
- * rewrite to another origin, which nothing forwards again, against the headers the middleware was
- * handed (`middlewareRequest`). Next.js's proxy sends another origin the request its middleware was
- * handed, as the middleware left it (`proxyRequest`, in `server/lib/router-utils/proxy-request.ts`):
- * so the origin is sent the forwarding headers the middleware saw — the edge's own, never a client's
- * `x-forwarded-*` or `cf-*` — and no more of the client's request than the middleware was handed.
- */
-function readAnswer(
-  response: Response,
-  url: URL,
-  client: Headers,
-  handed: Headers,
-): MiddlewareResult {
-  const result = readMiddlewareResponse(response, url, client);
-  return result.kind === 'external-rewrite'
-    ? readMiddlewareResponse(response, url, handed)
     : result;
 }
 
@@ -502,7 +463,7 @@ async function runMiddlewareIn(
   const client = withoutHostCredentials(new Headers(request.headers), edge.host.credentials);
   let result: MiddlewareResult;
   try {
-    result = readAnswer(response, new URL(request.url), client, forwarded.headers);
+    result = readMiddlewareAnswer(response, new URL(request.url), client, forwarded.headers);
   } catch (error) {
     // An answer that says in the middleware's own headers what no request can be — a rewrite to no
     // URL at all, an override naming no header — is the middleware failing as surely as a throw:
@@ -760,13 +721,10 @@ function layConfiguredUnder(
   }
 }
 
-/** Take what is the middleware protocol's off its own answer (`MIDDLEWARE_PROTOCOL_HEADERS`). */
+/** Take what is the middleware protocol's off its own answer. */
 function withoutMiddlewareProtocol(headers: Headers): void {
   // The names chosen first: deleting from the iterator's own Headers would skip entries.
-  const protocol = [...headers.keys()].filter(
-    (name) =>
-      MIDDLEWARE_PROTOCOL_HEADERS.has(name) || name.startsWith(MIDDLEWARE_REQUEST_HEADER_PREFIX),
-  );
+  const protocol = [...headers.keys()].filter(middlewareProtocolHeader);
   for (const name of protocol) {
     headers.delete(name);
   }

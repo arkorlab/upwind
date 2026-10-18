@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { createEdgeMemory } from '../src/memory/caches.ts';
 import { serveFromPointer } from '../src/route.ts';
 import { standaloneHost, standaloneRuntime } from '../src/standalone/index.ts';
-import { navigation, pprDocument, seedSite } from './helpers/site.ts';
+import { htmlResponse, navigation, pprDocument, seedSite } from './helpers/site.ts';
 
 /**
  * What the edge hands a client where the application's middleware answered the request itself — a
@@ -33,6 +33,8 @@ interface Answering {
    * own and nothing else.
    */
   readonly origin?: ((request: Request) => Response) | undefined;
+  /** The application's answer, after the middleware; absent, a plain response. */
+  readonly application?: ((request: Request) => Response) | undefined;
 }
 
 /**
@@ -57,11 +59,11 @@ async function throughMiddleware(
   const origin = answering.origin ?? ((): Response => new Response('from the origin'));
   const runtime = standaloneRuntime(env, {
     memory: createEdgeMemory(() => Date.now()),
-    dispatchApp: (scriptName: string): Promise<Response> => {
+    dispatchApp: (scriptName: string, request: Request): Promise<Response> => {
       return Promise.resolve(
         scriptName === MIDDLEWARE_SCRIPT
           ? answering.middleware()
-          : new Response('from the Function'),
+          : (answering.application?.(request) ?? new Response('from the Function')),
       );
     },
     fetchImpl: (request: Request): Promise<Response> => Promise.resolve(origin(request)),
@@ -97,6 +99,9 @@ async function throughMiddleware(
       }),
     },
   );
+  if (answering.application !== undefined) {
+    await response.clone().arrayBuffer();
+  }
   await waitOnExecutionContext(ctx);
   return response;
 }
@@ -363,5 +368,188 @@ describe('an answer the middleware gives', () => {
       connection: headers.get('connection'),
       language: headers.get('accept-language'),
     }).toStrictEqual({ internal: null, connection: null, language: 'ja' });
+  });
+});
+
+/** A middleware tag removed before every response decision. */
+function discardedTag(): Response {
+  return new Response(null, {
+    headers: { 'x-middleware-next': '1', connection: 'ETag', etag: '"discarded"' },
+  });
+}
+
+describe('connection semantics across middleware consumers', () => {
+  it.each([
+    ['if-match', 200],
+    ['if-none-match', 304],
+  ] as const)('judges %s under the tag the file actually sends', async (condition, status) => {
+    const first = await throughMiddleware(FILE, { middleware: discardedTag });
+    const tag = first.headers.get('etag') ?? '';
+    const response = await throughMiddleware(
+      FILE,
+      { middleware: discardedTag },
+      {
+        headers: { [condition]: tag },
+      },
+    );
+
+    expect(response.status).toBe(status);
+    expect(response.headers.get('etag')).toBe(tag);
+  });
+
+  it('judges If-Range under the retained file tag', async () => {
+    const first = await throughMiddleware(FILE, { middleware: discardedTag });
+    const tag = first.headers.get('etag') ?? '';
+    const response = await throughMiddleware(
+      FILE,
+      { middleware: discardedTag },
+      {
+        headers: { 'if-range': tag, range: 'bytes=0-3' },
+      },
+    );
+
+    expect(response.status).toBe(206);
+    await expect(response.text()).resolves.toBe('User');
+  });
+
+  it('does not reinstate a nominated cache lifetime or modification date on a file', async () => {
+    const response = await throughMiddleware(
+      FILE,
+      {
+        middleware: () => {
+          return new Response(null, {
+            headers: {
+              'x-middleware-next': '1',
+              connection: 'Cache-Control, Last-Modified',
+              'cache-control': 'public, max-age=1234',
+              'last-modified': 'Tue, 15 Nov 1994 12:45:26 GMT',
+            },
+          });
+        },
+      },
+      { headers: { 'if-modified-since': 'Wed, 16 Nov 1994 12:45:26 GMT' } },
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('private, max-age=0, must-revalidate');
+    expect(response.headers.get('last-modified')).toBeNull();
+  });
+
+  it('keeps discarded CSP and timing out of document decisions and headers', async () => {
+    const document = pprDocument();
+    const handed: Headers[] = [];
+    const response = await throughMiddleware(
+      '/',
+      {
+        middleware: () => {
+          return new Response(null, {
+            headers: {
+              'x-middleware-next': '1',
+              connection: 'Content-Security-Policy, Server-Timing, Set-Cookie, X-Source',
+              'content-security-policy': 'sandbox',
+              'server-timing': 'private-hop;dur=7',
+              'set-cookie': 'discarded=1; Path=/',
+              'x-source': 'middleware hop',
+              'x-middleware-set-cookie': 'handed=1; Path=/',
+            },
+          });
+        },
+        application: (request) => {
+          handed.push(request.headers);
+          return htmlResponse(document.suffix);
+        },
+      },
+      { headers: { 'x-source': 'client' } },
+    );
+
+    expect(response.headers.get('x-arkor-edge')).toContain('cont=resume');
+    expect(response.headers.get('content-security-policy')).toBeNull();
+    expect(response.headers.get('server-timing')).not.toContain('private-hop');
+    expect(response.headers.getSetCookie()).toStrictEqual([]);
+    expect(handed.map((headers) => headers.get('x-source'))).toStrictEqual(['client']);
+    expect(handed[0]?.get('x-middleware-set-cookie')).toBe('handed=1; Path=/');
+
+    await response.text();
+  });
+
+  it('does not resurrect a nominated content type on an external rewrite', async () => {
+    const response = await throughMiddleware('/', {
+      middleware: () => {
+        return new Response(null, {
+          headers: {
+            'x-middleware-rewrite': 'https://elsewhere.example/feed',
+            connection: 'Content-Type, Location',
+            'content-type': 'text/csv',
+            location: 'https://site.example/login',
+          },
+        });
+      },
+      origin: () => new Response(new Uint8Array([1, 2, 3])),
+    });
+
+    expect(response.headers.get('x-arkor-edge')).toBe('passthrough;reason=external-rewrite');
+    expect(response.headers.get('content-type')).toBeNull();
+    expect(response.headers.get('location')).toBeNull();
+  });
+
+  it('preserves a nominated Location as a local response decision before stripping it', async () => {
+    const response = await throughMiddleware(FILE, {
+      middleware: () => {
+        return new Response('denied', {
+          status: 401,
+          headers: {
+            'x-middleware-next': '1',
+            connection: 'Location',
+            location: 'https://site.example/login',
+          },
+        });
+      },
+    });
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get('location')).toBeNull();
+    await expect(response.text()).resolves.toBe('denied');
+  });
+
+  it('preserves explicit request overrides while removing nominated ordinary additions', async () => {
+    const forwarded: string[] = [];
+    const response = await throughMiddleware(
+      '/api/hello',
+      {
+        middleware: () => {
+          return new Response(null, {
+            headers: {
+              'x-middleware-next': '1',
+              connection: 'X-Source, X-Middleware-Next, X-Middleware-Request-X-Source',
+              'x-source': 'middleware hop',
+              'x-middleware-override-headers': 'x-source',
+              'x-middleware-request-x-source': 'explicit',
+            },
+          });
+        },
+        application: (request) => {
+          forwarded.push(request.headers.get('x-source') ?? '');
+          return new Response('from the Function');
+        },
+      },
+      { headers: { 'x-source': 'client' } },
+    );
+
+    expect(forwarded).toStrictEqual(['explicit']);
+    await expect(response.text()).resolves.toBe('from the Function');
+  });
+
+  it('retains an ordinary middleware tag when no Connection option nominates it', async () => {
+    const response = await throughMiddleware(
+      FILE,
+      {
+        middleware: () =>
+          new Response(null, { headers: { 'x-middleware-next': '1', etag: '"kept"' } }),
+      },
+      { headers: { 'if-none-match': '"kept"' } },
+    );
+
+    expect(response.status).toBe(304);
+    expect(response.headers.get('etag')).toBe('"kept"');
   });
 });

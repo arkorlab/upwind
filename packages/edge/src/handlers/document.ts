@@ -116,6 +116,8 @@ export interface DocumentInput {
    * The middleware's answer, for a hosted application whose middleware the edge ran: the request
    * goes on as it left it, and its response headers join the document's. Skipped when the edge
    * had no reason to run it; `undefined` when the project fronts an origin.
+   * A host composing this handler uses `runMiddleware` or `readMiddlewareAnswer` to decode it,
+   * with Connection-nominated fields removed before response decisions and cookie accounting.
    */
   readonly middleware:
     | ((MiddlewareContinue | MiddlewareSkipped) & Partial<MiddlewareTiming>)
