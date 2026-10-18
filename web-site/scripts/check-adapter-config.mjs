@@ -13,6 +13,24 @@ const require = createRequire(new URL('../package.json', import.meta.url));
 const cases = ['unset', 'empty', 'explicit', 'vercel'];
 const CHILD_TIMEOUT_MS = 15_000;
 
+/** Bound retained diagnostics and replace fixture paths without changing the thrown error. */
+export function caseFailure(error, stdout = '', directory = '') {
+  const clean = (value, limit) => {
+    let text = String(value ?? '').replaceAll(root, '[website]/');
+    if (directory !== '') text = text.replaceAll(directory, '[adapter-control]');
+    return text
+      .replace(/\p{Cc}/gu, (character) =>
+        character === '\n' || character === '\t' ? character : '',
+      )
+      .slice(0, limit);
+  };
+  return {
+    message: clean(error instanceof Error ? error.message : error, 2048),
+    stdout: clean(error?.stdout ?? stdout, 4096),
+    stderr: clean(error?.stderr, 4096),
+  };
+}
+
 /** Each child loads both the source config and Next's installed configuration loader afresh. */
 async function checkOne(name, explicitAdapter) {
   assert.ok(cases.includes(name), 'unknown adapter selection case');
@@ -73,8 +91,9 @@ async function main(output) {
       if (name === 'empty') env.NEXT_ADAPTER_PATH = '';
       if (name === 'explicit') env.NEXT_ADAPTER_PATH = adapter;
       if (name === 'vercel') env.VERCEL = '1';
+      let stdout = '';
       try {
-        const stdout = execFileSync(process.execPath, [script, '--case', name, adapter], {
+        stdout = execFileSync(process.execPath, [script, '--case', name, adapter], {
           cwd: root,
           env,
           encoding: 'utf8',
@@ -84,7 +103,7 @@ async function main(output) {
         proof.cases.push(JSON.parse(stdout));
       } catch (error) {
         failure ??= error;
-        proof.cases.push({ name, status: 'failed' });
+        proof.cases.push({ name, status: 'failed', error: caseFailure(error, stdout, directory) });
       }
     }
     proof.status = failure === undefined ? 'success' : 'failed';
@@ -110,9 +129,11 @@ async function main(output) {
   console.log(`Website adapter selection: ${String(proof.cases.length)} cases passed.`);
 }
 
-if (process.argv[2] === '--case') {
-  console.log(JSON.stringify(await checkOne(process.argv[3], process.argv[4])));
-} else {
-  assert.ok(process.argv[2] !== undefined, 'provide an output JSON path');
-  await main(path.resolve(process.argv[2]));
+if (process.argv[1] !== undefined && path.resolve(process.argv[1]) === script) {
+  if (process.argv[2] === '--case') {
+    console.log(JSON.stringify(await checkOne(process.argv[3], process.argv[4])));
+  } else {
+    assert.ok(process.argv[2] !== undefined, 'provide an output JSON path');
+    await main(path.resolve(process.argv[2]));
+  }
 }

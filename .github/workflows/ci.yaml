@@ -126,7 +126,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Website adapter selection
         timeout-minutes: 2
-        run: node scripts/check-adapter-config.mjs "$RUNNER_TEMP/website-adapter-config-check.json"
+        run: |
+          node --test scripts/check-adapter-config.test.mjs
+          node scripts/check-adapter-config.mjs "$RUNNER_TEMP/website-adapter-config-check.json"
       - run: pnpm run typegen
       - run: pnpm typecheck
       # Build the website with its released adapter, independently of workspace packages.
