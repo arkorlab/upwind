@@ -8,13 +8,14 @@ import {
 import { MAX_DATA_HANDLER_LENGTH, MAX_DATA_KEY_LENGTH } from '@stayingupwind/host/cache';
 import {
   type CheckingSchema,
+  jsonValuesWithin,
   type ParseFailure,
   safeParseBounded,
   UNLISTED_MISMATCH,
 } from '@stayingupwind/host/util';
 import type { Context } from 'hono';
 
-import { withBodyRoom } from './body-room.ts';
+import { UNCOUNTED_BODY_BYTES, withBodyRoom } from './body-room.ts';
 import { describeIssues, fail } from './respond.ts';
 
 /**
@@ -50,6 +51,15 @@ export const JSON_BYTES_PER_CODE_UNIT = 6;
  */
 const REST_KIB = 16;
 const REST_BYTES = REST_KIB * KIB;
+/**
+ * How many values a JSON body longer than a mebibyte may hold. Only a data write may be longer:
+ * its base64 is one string, and beside it are at most 1,024 tags and a few fields
+ * (`dataSetRequestSchema`). Long strings cost about what they weigh; a body of many small objects
+ * can make far more of the isolate than its bytes — 22 MiB for a mebibyte of `[{},{},…]` — before
+ * a schema has anything to refuse. This leaves room beyond the write's metadata while bounding
+ * that expansion before the parse. Shorter bodies keep the bound their bytes already gave them.
+ */
+const MAX_LARGE_JSON_VALUES = 16_384;
 
 /**
  * How far a body that names an entry is read: the longest key and handler name the data cache
@@ -160,6 +170,13 @@ export async function readJson(
   const body = await readBody(c, limit, tooLarge);
   if (body instanceof Response) {
     return body;
+  }
+  if (body.byteLength > UNCOUNTED_BODY_BYTES && !jsonValuesWithin(body, MAX_LARGE_JSON_VALUES)) {
+    return fail(
+      c,
+      'invalid_request',
+      `a JSON body past ${UNCOUNTED_BODY_BYTES} bytes may hold at most ${MAX_LARGE_JSON_VALUES} values`,
+    );
   }
   try {
     return { json: JSON.parse(decodeUtf8(body)) as unknown, length: body.byteLength };
