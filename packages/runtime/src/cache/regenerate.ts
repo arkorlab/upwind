@@ -1,10 +1,7 @@
 import {
-  appPathFor,
   type DecodedGenerationPack,
   generationResponseHeaders,
   type GenerationTag,
-  implicitTagsFor,
-  parseCacheTagsHeader,
   policyFromCacheControl,
   type RouteEntryDescriptor,
   tagKindOf,
@@ -23,6 +20,7 @@ import {
   publishedRecordOf,
   rememberRecord,
 } from './current.ts';
+import { generationTagValues } from './generation-tags.ts';
 import { HeldTags } from './held-tags.ts';
 import {
   type AttemptOutcome,
@@ -81,7 +79,6 @@ const RSC_TYPE = 'text/x-component';
 const JSON_TYPE = 'application/json';
 const JSON_UTF8_TYPE = 'application/json; charset=utf-8';
 const OCTET_STREAM = 'application/octet-stream';
-const CACHE_TAGS_HEADER = 'x-next-cache-tags';
 /** The artifact role and representation of a route handler's body. */
 const ROUTE_BODY = 'route-body';
 /** The artifact role and representation of a Pages Router page's data. */
@@ -266,24 +263,8 @@ function renderStatic(
   });
 }
 
-/** Every tag the render leaves on the entry: the ones it recorded, and the route's implicit ones. */
-function tagValuesOf(target: RegenerationTarget, render: CapturedRender): Set<string> {
-  const { descriptor } = target;
-  const recorded = parseCacheTagsHeader(render.headers[CACHE_TAGS_HEADER]);
-  const concrete = descriptor.pathname.includes('[') ? undefined : descriptor.pathname;
-  const implicit =
-    descriptor.kind === 'pages'
-      ? []
-      : implicitTagsFor(appPathFor(descriptor.kind, descriptor.route), concrete);
-  const values = new Set(recorded);
-  for (const value of implicit) {
-    values.add(value);
-  }
-  return values;
-}
-
 /**
- * The tags the render leaves on the entry, as the commit names them (`tagValuesOf`).
+ * The tags the render leaves on the entry, as the commit names them (`generationTagValues`).
  *
  * Refused here rather than at the gateway where a generation may not carry them (`refusedTags`): a
  * request past the contract's bounds is turned away by a schema whose message says nothing about
@@ -291,8 +272,12 @@ function tagValuesOf(target: RegenerationTarget, render: CapturedRender): Set<st
  * before the outputs are uploaded, the attempt carries what was wrong and the pathname into the
  * inspector.
  */
-function tagsOf(target: RegenerationTarget, render: CapturedRender): GenerationTag[] {
-  const values = [...tagValuesOf(target, render)];
+function tagsOf(
+  target: RegenerationTarget,
+  render: CapturedRender,
+  entryId: string,
+): GenerationTag[] {
+  const values = [...generationTagValues(target.descriptor, render, entryId)];
   const refused = refusedTags(values);
   if (refused !== undefined) {
     throw new RegenerationError(`the render of ${target.descriptor.pathname} ${refused.message}`, {
@@ -511,7 +496,7 @@ async function publish(
   try {
     // Ahead of the uploads: a render the contract will not take is one whose outputs are not
     // worth sending, and what says so is `tagsOf`.
-    const tags = tagsOf(target, render);
+    const tags = tagsOf(target, render, lease.entryId);
     const uploads = await upload(input, lease, render);
     // What the render's view held of each of its tags (`HeldTags`), its reads over with it.
     const values = tags.map((tag) => tag.value);
@@ -693,7 +678,7 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
         {
           render: { ...captured, headers: generationHeadersOf(target, captured) },
           attemptId: lease.attemptId,
-          tags: [...tagValuesOf(target, captured)],
+          tags: [...generationTagValues(target.descriptor, captured, lease.entryId)],
           observedTagRevision: observed.tagRevision,
           observedLosses: observed.losses,
           held,
