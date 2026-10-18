@@ -5,7 +5,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { InvalidatedTags, RequestWrites, withRequestContext } from '../src/cache/context.ts';
 import { invalidateNow } from '../src/cache/handlers.ts';
-import { regenerate } from '../src/cache/regenerate.ts';
+import {
+  type PublishOutcome,
+  type RegenerationOutcome,
+  regenerate,
+} from '../src/cache/regenerate.ts';
 import { platformRevalidate } from '../src/cache/revalidate.ts';
 import type { CacheRuntime } from '../src/cache/runtime.ts';
 import { nodeHandlerOf } from '../src/entries.ts';
@@ -30,6 +34,16 @@ vi.mock(import('../src/store.ts'), async (importOriginal) => {
 });
 
 const SCOPE = 'revalidate-routing';
+const RENDER = {
+  html: new Uint8Array(),
+  postponed: undefined,
+  rscData: undefined,
+  segments: new Map<string, Uint8Array>(),
+  headers: {},
+  status: 200,
+  cacheControl: { revalidate: 60, expire: undefined },
+  data: undefined,
+};
 
 /** One source route, with a concrete seed when the adapter writes one before its template. */
 interface Route {
@@ -194,23 +208,21 @@ async function routedPage(store: Store, pathname: string): Promise<string | unde
   return result.resolvedPathname;
 }
 
-function revalidate(store: Store, urlPath: string, remote = false): Promise<void> {
+function revalidate(
+  store: Store,
+  urlPath: string,
+  remote = false,
+  options: { readonly invalidated?: InvalidatedTags; readonly outcome?: RegenerationOutcome } = {},
+): Promise<void> {
   vi.mocked(getStore).mockReturnValue(store);
   vi.mocked(nodeHandlerOf).mockResolvedValue(remote ? undefined : () => Promise.resolve());
-  vi.mocked(regenerate).mockResolvedValue({
-    kind: 'accepted',
-    render: {
-      html: new Uint8Array(),
-      postponed: undefined,
-      rscData: undefined,
-      segments: new Map(),
-      headers: {},
-      status: 200,
-      cacheControl: { revalidate: 60, expire: undefined },
-      data: undefined,
+  vi.mocked(regenerate).mockResolvedValue(
+    options.outcome ?? {
+      kind: 'accepted',
+      render: RENDER,
+      published: Promise.resolve({ kind: 'published', generationId: 'new' }),
     },
-    published: Promise.resolve({ kind: 'published', generationId: 'new' }),
-  });
+  );
   return withRequestContext(
     {
       request: new Request('https://app.test/api/revalidate'),
@@ -222,7 +234,7 @@ function revalidate(store: Store, urlPath: string, remote = false): Promise<void
         // Regeneration is replaced; no background work is started.
       },
       run: (work) => work(),
-      invalidated: new InvalidatedTags(),
+      invalidated: options.invalidated ?? new InvalidatedTags(),
       writes: new RequestWrites(),
     },
     () => platformRevalidate({ urlPath }),
@@ -284,25 +296,20 @@ describe('manual revalidation of a shared terminal shell', () => {
     vi.mocked(invalidateNow).mockReset();
   });
 
-  it('invalidates the held class before regenerating the same entry its visitors read', async () => {
+  it('regenerates the shared entry without expiring the previous generation', async () => {
     const store = terminalDeployment();
     const descriptor = {
       kind: 'app-page' as const,
       route: '/prefix/[one]/[two]',
       pathname: '/prefix/b/[two]',
     };
-    const { entryId } = await deriveEntry(SCOPE, descriptor);
+    const invalidated = new InvalidatedTags();
 
-    await revalidate(store, '/prefix/b/foo');
+    await revalidate(store, '/prefix/b/foo', false, { invalidated });
 
     expect(vi.mocked(regenerate).mock.calls[0]?.[0].target.descriptor).toStrictEqual(descriptor);
-    expect(invalidateNow).toHaveBeenCalledWith(expect.anything(), [
-      `${IMPLICIT_TAG_PREFIX}/prefix/b/foo`,
-      sharedShellTagOf(entryId),
-    ]);
-    expect(vi.mocked(invalidateNow).mock.invocationCallOrder[0]).toBeLessThan(
-      vi.mocked(regenerate).mock.invocationCallOrder[0] ?? 0,
-    );
+    expect(invalidateNow).not.toHaveBeenCalled();
+    expect(invalidated.tags.size).toBe(0);
   });
 
   it('invalidates only the selected class when its page belongs to another Function', async () => {
@@ -323,19 +330,80 @@ describe('manual revalidation of a shared terminal shell', () => {
     expect(regenerate).not.toHaveBeenCalled();
   });
 
-  it('stops before regeneration if shared-class invalidation fails', async () => {
-    vi.mocked(invalidateNow).mockRejectedValueOnce(new Error('invalidation unavailable'));
+  it('leaves the previous class untouched when its manual render fails', async () => {
+    const invalidated = new InvalidatedTags();
 
-    await expect(revalidate(terminalDeployment(), '/prefix/b/foo')).rejects.toThrow(
-      'invalidation unavailable',
-    );
+    await expect(
+      revalidate(terminalDeployment(), '/prefix/b/foo', false, {
+        invalidated,
+        outcome: { kind: 'failed', render: undefined, error: 'render failed' },
+      }),
+    ).rejects.toThrow('was not regenerated (failed)');
 
-    expect(regenerate).not.toHaveBeenCalled();
+    expect(invalidateNow).not.toHaveBeenCalled();
+    expect(invalidated.tags.size).toBe(0);
+  });
+
+  it('preserves another invalidation while publishing the shared shell', async () => {
+    const invalidated = new InvalidatedTags();
+    invalidated.add(['another-change'], 17);
+
+    await revalidate(terminalDeployment(), '/prefix/b/foo', false, {
+      invalidated,
+      outcome: {
+        kind: 'accepted',
+        render: RENDER,
+        published: Promise.resolve({ kind: 'published', generationId: 'new' }),
+      },
+    });
+
+    expect([...invalidated.tags]).toStrictEqual(['another-change']);
+    expect(invalidated.revision).toBe(17);
+    expect(invalidateNow).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { stage: 'upload', result: { kind: 'failed', error: 'upload failed' } },
+    { stage: 'commit', result: { kind: 'refused', reason: 'commit refused' } },
+  ] as const)('leaves the previous class untouched when $stage fails', async ({ result }) => {
+    const invalidated = new InvalidatedTags();
+
+    await expect(
+      revalidate(terminalDeployment(), '/prefix/b/foo', false, {
+        invalidated,
+        outcome: { kind: 'accepted', render: RENDER, published: Promise.resolve(result) },
+      }),
+    ).rejects.toThrow(`was not regenerated (${result.kind})`);
+
+    expect(invalidateNow).not.toHaveBeenCalled();
+    expect(invalidated.tags.size).toBe(0);
+  });
+
+  it('keeps fresh visitors unmarked while the manual publication is pending', async () => {
+    const publishing = Promise.withResolvers<PublishOutcome>();
+    const invalidated = new InvalidatedTags();
+    const manual = revalidate(terminalDeployment(), '/prefix/b/foo', false, {
+      invalidated,
+      outcome: { kind: 'accepted', render: RENDER, published: publishing.promise },
+    });
+
+    try {
+      await vi.waitFor(() => {
+        expect(regenerate).toHaveBeenCalledTimes(1);
+      });
+
+      expect(invalidateNow).not.toHaveBeenCalled();
+      expect(invalidated.tags.size).toBe(0);
+    } finally {
+      publishing.resolve({ kind: 'published', generationId: 'new' });
+      await manual;
+    }
   });
 
   it('invalidates a long shared class through its bounded identity without an oversized pathname tag', async () => {
     const prefix = 'b'.repeat(500);
     const store = terminalDeployment({}, true, [prefix, 'c']);
+    vi.mocked(elsewhere).mockReturnValue('app-other');
     const descriptor = {
       kind: 'app-page' as const,
       route: '/prefix/[one]/[two]',
@@ -343,10 +411,10 @@ describe('manual revalidation of a shared terminal shell', () => {
     };
     const { entryId } = await deriveEntry(SCOPE, descriptor);
 
-    await revalidate(store, `/prefix/${prefix}/foo`);
+    await revalidate(store, `/prefix/${prefix}/foo`, true);
 
     expect(invalidateNow).toHaveBeenCalledWith(expect.anything(), [sharedShellTagOf(entryId)]);
-    expect(vi.mocked(regenerate).mock.calls[0]?.[0].target.descriptor).toStrictEqual(descriptor);
+    expect(regenerate).not.toHaveBeenCalled();
   });
 
   it.each([

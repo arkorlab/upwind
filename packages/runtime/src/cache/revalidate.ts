@@ -185,13 +185,10 @@ export async function platformRevalidate(input: RevalidateInput): Promise<void> 
     await invalidateNow(context.runtime, await tags());
     return;
   }
-  // Mark only this shared class before the replacement is rendered. An Edge holding its old
-  // generation must stop serving it, and the new generation must observe that invalidation.
-  if (shared) {
-    await invalidateNow(context.runtime, await tags());
-  }
   // As routing hands a render of a request for it the page's parameters, where Next.js would read
   // them otherwise off its name (`routingParameters`).
+  // The previous generation stays servable if this local attempt fails. Other isolates learn a
+  // successful publication through their normal record refresh, as for any manual regeneration.
   const parameters = routingParameters(store, descriptor.route, descriptor.pathname);
   const outcome = await regenerate({
     runtime: context.runtime,
