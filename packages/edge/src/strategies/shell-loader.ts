@@ -6,6 +6,7 @@ import {
 import { withDeadline } from '@stayingupwind/core/util';
 import type { ShellDeliveryStrategy, ShellRead } from '@stayingupwind/host/delivery';
 
+import { CacheBody } from '../cache/cache-body.ts';
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeContext } from './context.ts';
 
@@ -40,24 +41,28 @@ function cacheApiKey(ctx: EdgeContext, sha256: string): Request {
 async function matchCacheApi(
   ctx: EdgeContext,
   ref: ArtifactLocator,
+  reading: CacheBody,
 ): Promise<Uint8Array | undefined> {
   const hit = await caches.default.match(cacheApiKey(ctx, ref.sha256));
-  return hit === undefined ? undefined : new Uint8Array(await hit.arrayBuffer());
+  if (hit === undefined) return undefined;
+  const readable = reading.open(hit);
+  return readable === undefined ? undefined : new Uint8Array(await readable.arrayBuffer());
 }
 
 /**
  * A Cache API failure or a slow answer is a miss: the layer is an accelerator on the first-byte
- * path, the backend is the source of truth. The Cache API cannot be cancelled, so the budget only
- * stops the wait; a late answer is discarded.
+ * path, the backend is the source of truth. The lookup cannot be cancelled, but a body being read
+ * is released when its budget ends, and a late answer is released before reading it.
  */
 async function readCacheApi(
   ctx: EdgeContext,
   ref: ArtifactLocator,
+  reading: CacheBody,
 ): Promise<ShellRead | undefined> {
   const startedAt = ctx.runtime.now();
   try {
     const bytes = await withDeadline(
-      matchCacheApi(ctx, ref),
+      matchCacheApi(ctx, ref, reading),
       CACHE_API_READ_BUDGET_MS,
       'shell cache-api read',
     );
@@ -66,7 +71,11 @@ async function readCacheApi(
     }
     return { bytes, source: 'cache-api', latencyMs: ctx.runtime.now() - startedAt };
   } catch (error) {
-    logWarn('shell cache-api read failed', { sha256: ref.sha256, detail: errorDetail(error) });
+    const abandoned = reading.stopped;
+    reading.stop();
+    if (!abandoned) {
+      logWarn('shell cache-api read failed', { sha256: ref.sha256, detail: errorDetail(error) });
+    }
     return undefined;
   }
 }
@@ -202,8 +211,12 @@ type FirstBytes =
   | { readonly source: 'cache'; readonly read: ShellRead }
   | { readonly source: 'backend'; readonly read: ShellRead | BackendMiss };
 
-async function cacheOutcome(ctx: EdgeContext, ref: ArtifactLocator): Promise<CacheOutcome> {
-  const read = await readCacheApi(ctx, ref);
+async function cacheOutcome(
+  ctx: EdgeContext,
+  ref: ArtifactLocator,
+  reading: CacheBody,
+): Promise<CacheOutcome> {
+  const read = await readCacheApi(ctx, ref, reading);
   return read === undefined ? { kind: 'miss' } : { kind: 'hit', read };
 }
 
@@ -280,7 +293,8 @@ export async function loadShell(
   if (!layered || !ctx.policy.shell.cacheApiLayer) {
     return adopt(ctx, ref, await backend, false);
   }
-  const cache = cacheOutcome(ctx, ref);
+  const reading = new CacheBody();
+  const cache = cacheOutcome(ctx, ref, reading);
   const winner = await firstBytes(cache, backend);
   if (winner.source === 'cache') {
     const cached = adoptCacheApi(ctx, ref, winner.read);
@@ -296,5 +310,6 @@ export async function loadShell(
   }
   // The Cache API is still in flight. Holding it with waitUntil would keep the isolate on a miss
   // budget that this request no longer needs; adopt stores the backend bytes for the next one.
+  reading.stop();
   return adopt(ctx, ref, winner.read, true);
 }
