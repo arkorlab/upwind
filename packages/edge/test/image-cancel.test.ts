@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { EdgeRuntime, FetchImpl, TransformImage } from '../src/edge-runtime.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
+import type { IncomingRequest } from '../src/request-context.ts';
 import { serveFromPointer } from '../src/route.ts';
 import { standaloneHost, type StandaloneEnv, standaloneRuntime } from '../src/standalone/index.ts';
 import { pprDocument, seedSite } from './helpers/site.ts';
@@ -59,7 +60,7 @@ function begin(served: Serving, source: string, signal: AbortSignal) {
   const request = new Request(`https://site.example/_next/image?${query}`, {
     headers: { accept: 'image/webp', 'sec-fetch-dest': 'image' },
     signal,
-  });
+  }) as IncomingRequest;
   const ctx = createExecutionContext();
   const response = serveFromPointer({
     request,
