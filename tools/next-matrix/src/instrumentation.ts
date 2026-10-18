@@ -30,6 +30,7 @@ interface Snapshot {
   hostErrors: number;
   ownErrors: number;
   hostReady: boolean;
+  hostDynamicReady: boolean;
   ownReady: boolean;
   hostReceiver: boolean;
   ownReceiver: boolean;
@@ -111,6 +112,7 @@ function assertRegistered(value: Snapshot, own: boolean, selectedCase: string, k
   assert.equal(value.hostReady, hostReady, 'host registration was not awaited');
   assert.equal(value.ownReady, own, 'project registration was not awaited');
   if (hostLoaded) {
+    assert.equal(value.hostDynamicReady, true, 'awaited host dependency is absent');
     assert.equal(value.hostReceiver, true, 'host register receiver');
     assert.equal(value.hostTarget, edge ? 'edge-light' : 'node', 'host conditional export target');
     if (edge) assert.equal(value.hostRuntime, 'edge', 'host NEXT_RUNTIME');

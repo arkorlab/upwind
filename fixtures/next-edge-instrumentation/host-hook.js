@@ -12,6 +12,8 @@ export async function register() {
   value.hostReceiver = this?.hostIdentity === hostIdentity;
   value.hostRuntime = process.env.NEXT_RUNTIME;
   value.hostTarget = target;
+  const sdk = await import('./host-sdk.js');
+  value.hostDynamicReady = sdk.marker === 'dynamic-host-module';
   await new Promise((resolve) => setTimeout(resolve, 10));
   if (selectedCase() === 'host-register-throws') throw new Error('fixture host register failure');
   value.hostReady = true;

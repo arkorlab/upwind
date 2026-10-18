@@ -16,6 +16,7 @@ export function snapshot() {
     ownErrors: value.ownErrors,
     handled: value.handled,
     hostReady: value.hostReady === true,
+    hostDynamicReady: value.hostDynamicReady === true,
     ownReady: value.ownReady === true,
     hostReceiver: value.hostReceiver === true,
     ownReceiver: value.ownReceiver === true,

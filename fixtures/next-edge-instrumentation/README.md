@@ -8,6 +8,8 @@ The host imports the fixture package's own `runtime-target` subpath, whose `node
 `edge-light`, so the emitted code must select the Edge condition explicitly rather than
 incidentally finding it first. This self-reference tests package exports without a synthetic
 registry dependency.
+Its registration also awaits a separate module through `import()`, proving that a host's lazy
+dependency is carried in the emitted Function rather than becoming an unshipped output chunk.
 
 `next-edge-instrumentation-no-own` copies these same sources and removes `instrumentation.js`
 before building, proving that a host hook also works when the project supplied none. No remote
