@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { BODY_ROOM_BYTES, withBodyRoom } from '../src/gateway/body-room.ts';
+import { BODY_ROOM_BYTES, UNCOUNTED_BODY_BYTES, withBodyRoom } from '../src/gateway/body-room.ts';
 
 /** How long a claim lasts without its request renewing it (`CLAIM_LAPSE_MS`). */
 const CLAIM_LAPSE_MS = 5000;
 /** How long the writes here wait for room before they are refused. */
 const WAIT_MS = 10_000;
 const MINUTE_MS = 60_000;
+/** The least a write's body may hold and still take room. */
+const COUNTED = UNCOUNTED_BODY_BYTES + 1;
 
 /** What a write refused for want of room comes to here. */
 function refused(): string {
@@ -51,7 +53,7 @@ describe('the room for the bodies of writes', () => {
       withBodyRoom(BODY_ROOM_BYTES, WAIT_MS, writing(made, 'first', first.promise), refused),
       withBodyRoom(BODY_ROOM_BYTES, WAIT_MS, writing(made, 'second'), refused),
       // Room for it beside nothing but the first, and it waits behind the second all the same.
-      withBodyRoom(1, WAIT_MS, writing(made, 'third'), refused),
+      withBodyRoom(COUNTED, WAIT_MS, writing(made, 'third'), refused),
     ];
     await vi.advanceTimersByTimeAsync(1000);
     const whileFirstHolds = [...made];
@@ -69,16 +71,47 @@ describe('the room for the bodies of writes', () => {
     const first = Promise.withResolvers<undefined>();
 
     const holding = withBodyRoom(
-      BODY_ROOM_BYTES - 1,
+      BODY_ROOM_BYTES - COUNTED,
       WAIT_MS,
       writing(made, 'first', first.promise),
       refused,
     );
-    const beside = await withBodyRoom(1, WAIT_MS, writing(made, 'beside'), refused);
+    const beside = await withBodyRoom(COUNTED, WAIT_MS, writing(made, 'beside'), refused);
     first.resolve(undefined);
 
     expect(beside).toBe('beside');
     await expect(holding).resolves.toBe('first');
+  });
+
+  /**
+   * A write of a mebibyte or less takes no room at all: it is made at once, ahead of a write that
+   * waits, beside one that holds all of it.
+   */
+  it('lets a write of a mebibyte or less in at once, ahead of one that waits', async () => {
+    vi.useFakeTimers();
+    const made: string[] = [];
+    const first = Promise.withResolvers<undefined>();
+
+    const holding = withBodyRoom(
+      BODY_ROOM_BYTES,
+      WAIT_MS,
+      writing(made, 'first', first.promise),
+      refused,
+    );
+    const waiting = withBodyRoom(BODY_ROOM_BYTES, WAIT_MS, writing(made, 'waiting'), refused);
+    await vi.advanceTimersByTimeAsync(100);
+    const small = withBodyRoom(UNCOUNTED_BODY_BYTES, WAIT_MS, writing(made, 'small'), refused);
+    await vi.advanceTimersByTimeAsync(1000);
+    const whileFirstHolds = [...made];
+    first.resolve(undefined);
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(whileFirstHolds).toStrictEqual(['first', 'small']);
+    await expect(Promise.all([holding, waiting, small])).resolves.toStrictEqual([
+      'first',
+      'waiting',
+      'small',
+    ]);
   });
 
   /**
@@ -97,7 +130,7 @@ describe('the room for the bodies of writes', () => {
       refused,
     );
     const waiting = withBodyRoom(BODY_ROOM_BYTES, WAIT_MS, writing(made, 'waiting'), refused);
-    const after = withBodyRoom(1, 2 * WAIT_MS, writing(made, 'after'), refused);
+    const after = withBodyRoom(COUNTED, 2 * WAIT_MS, writing(made, 'after'), refused);
     await vi.advanceTimersByTimeAsync(WAIT_MS - 1000);
     const beforeItsWaitEnds = [...made];
     await vi.advanceTimersByTimeAsync(2000);

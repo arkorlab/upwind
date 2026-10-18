@@ -26,7 +26,8 @@ import { describeIssues, fail } from './respond.ts';
  * isolate the others are left. The declared length is only the early answer: a body a Worker
  * streams arrives without one, so the bytes are counted as they come and the read stops at the
  * first one past the limit. The bodies a write is read whole for, as long as an artifact may be,
- * are read in room the isolate keeps for them (`inBodyRoom`).
+ * are read in room the isolate keeps for them (`inBodyRoom`), unless they say they hold a mebibyte
+ * or less.
  */
 
 /**
@@ -94,7 +95,8 @@ function lengthOf(
 /**
  * What `write` answers, made in the room the isolate keeps for the bodies it reads whole for a
  * write (`body-room.ts`): taken before any of the body is read, by the length it declares, or by
- * `limit` where it declares none, and given back once `write` is done, whatever it came to. Where
+ * `limit` where it declares none, and given back once `write` is done, whatever it came to. A body
+ * that declares a mebibyte or less takes none (`UNCOUNTED_BODY_BYTES`), and is read at once. Where
  * none came within `ROOM_WAIT_MS`, the write is refused as one to make again later, its body
  * unread: a write the Function makes after a render, which costs a later render, not a response.
  * A body whose length is refused (`readBody`) is refused before it waits.
