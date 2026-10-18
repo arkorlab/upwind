@@ -170,8 +170,12 @@ describe('a seed whose artifact projection could not read', () => {
       const plan = await planFor(scope);
       plan.artifact.byteLength += difference;
       await seedBatch(scope, [plan.seed]);
-      expect(await env.CACHE_STATE.get(kvGenerationKey(scope.scopeId, plan.entryId))).toBeNull();
-      expect((await rowsFor(scope, plan)).entry.kv_revision).toBe(0);
+
+      await expect(
+        env.CACHE_STATE.get(kvGenerationKey(scope.scopeId, plan.entryId)),
+      ).resolves.toBeNull();
+      await expect(rowsFor(scope, plan)).resolves.toMatchObject({ entry: { kv_revision: 0 } });
+
       const failure = await runInDurableObject(scope.stub, (_instance, state) => {
         return state.storage.sql
           .exec<{ value: string }>(
@@ -180,6 +184,7 @@ describe('a seed whose artifact projection could not read', () => {
           )
           .one().value;
       });
+
       expect(failure).toBe(plan.generationId);
     },
   );
