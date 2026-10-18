@@ -331,6 +331,38 @@ function invalidationAnswer(count: number) {
 }
 
 describe("an invalidation's answer", () => {
+  it.each([
+    { revisions: undefined, accepted: true },
+    { revisions: [], accepted: true },
+    { revisions: [9], accepted: true },
+    { revisions: [10], accepted: true },
+    { revisions: [20], accepted: false },
+    { revisions: [1, 20], accepted: false },
+    { revisions: [20, 1], accepted: false },
+  ])('bounds every historical mark by its answered revision: %j', ({ revisions, accepted }) => {
+    const answer = {
+      revision: 10,
+      invalidations: [
+        invalidationResult('first'),
+        {
+          ...invalidationResult('second'),
+          ...(revisions !== undefined && {
+            history: revisions.map((revision) => {
+              return {
+                revision,
+                staleAt: 1,
+                hardExpireAt: null,
+              };
+            }),
+          }),
+        },
+      ],
+      affectedEntryIds: [],
+    };
+
+    expect(invalidateResponseSchema.safeParse(answer).success).toBe(accepted);
+  });
+
   it('holds a result for each tag an invalidation may name', () => {
     expect(invalidateResponseSchema.safeParse(invalidationAnswer(MAX_TAGS_PER_CALL)).success).toBe(
       true,
