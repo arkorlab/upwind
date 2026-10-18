@@ -1,4 +1,5 @@
 import { MAX_TAG_LENGTH, MAX_TAGS_PER_CALL, MAX_TAGS_PER_ENTRY } from '@stayingupwind/core/cache';
+import { toBase64 } from '@stayingupwind/core/util';
 import { describe, expect, it } from 'vitest';
 
 import { ENTITY_SCHEMA_VERSION, invalidationRecordSchema } from '../src/cache/entities.ts';
@@ -13,6 +14,7 @@ import {
   MAX_DATA_HANDLER_LENGTH,
   MAX_DATA_KEY_LENGTH,
   MAX_DELTA_PAGE_TAGS,
+  MAX_INLINE_DATA_VALUE_BYTES,
   tagDeltaEntrySchema,
   tagsDeltaResponseSchema,
   tagsGetResponseSchema,
@@ -55,6 +57,57 @@ describe('data-cache tag bounds', () => {
     expect(
       dataGetResponseSchema.safeParse({ ...read, entry: entry(kind, limit + 1) }).success,
     ).toBe(false);
+  });
+});
+
+describe('the existing inline data-value byte contract', () => {
+  const read = {
+    entryId: 'ent_inline',
+    generationId: 'gen_inline',
+    dependencyRevision: 1,
+    entry: entry('data:fetch', 0),
+  };
+
+  it.each([
+    { size: MAX_INLINE_DATA_VALUE_BYTES - 1, accepted: true },
+    { size: MAX_INLINE_DATA_VALUE_BYTES, accepted: true },
+    { size: MAX_INLINE_DATA_VALUE_BYTES + 1, accepted: false },
+  ])('bounds padded and unpadded inline values of $size bytes', ({ size, accepted }) => {
+    const encoded = toBase64(new Uint8Array(size));
+    for (const base64 of [encoded, encoded.replace(/=+$/u, '')]) {
+      expect(
+        dataGetResponseSchema.safeParse({ ...read, value: { kind: 'inline', base64 } }).success,
+      ).toBe(accepted);
+    }
+  });
+
+  it.each([
+    { size: MAX_INLINE_DATA_VALUE_BYTES, accepted: true },
+    { size: MAX_INLINE_DATA_VALUE_BYTES + 1, accepted: false },
+  ])('judges decoded bytes rather than whitespace in a $size-byte value', ({ size, accepted }) => {
+    const encoded = toBase64(new Uint8Array(size));
+    const base64 = ` \t\r\n\f${encoded}\n\t `;
+
+    expect(
+      dataGetResponseSchema.safeParse({ ...read, value: { kind: 'inline', base64 } }).success,
+    ).toBe(accepted);
+  });
+
+  it('keeps empty inline values, artifact references and larger data writes admissible', () => {
+    expect(
+      dataGetResponseSchema.safeParse({ ...read, value: { kind: 'inline', base64: '' } }).success,
+    ).toBe(true);
+    expect(
+      dataGetResponseSchema.safeParse({ ...read, value: { kind: 'ref', artifactId: 'large-value' } })
+        .success,
+    ).toBe(true);
+    expect(
+      dataSetRequestSchema.safeParse({
+        key: 'larger-value',
+        entry: read.entry,
+        valueBase64: toBase64(new Uint8Array(MAX_INLINE_DATA_VALUE_BYTES + 1)),
+      }).success,
+    ).toBe(true);
   });
 });
 
