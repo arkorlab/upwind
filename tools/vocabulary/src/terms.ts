@@ -228,6 +228,8 @@ const ALLOWED: readonly RegExp[] = [
   /(?<![\p{L}\p{N}_-])\.arkor\//gu,
   /(?<![\p{L}\p{N}_-])arkor:/gu,
   /(?<![\p{L}\p{N}_-])__arkor(?![\p{L}\p{N}_])/gu,
+  // The exact recovery cookie already published as EDGE_BYPASS_COOKIE in core/request.
+  /(?<![\p{L}\p{N}_-])__arkor_edge_bypass(?![\p{L}\p{N}_-])/gu,
   /(?<![\p{L}\p{N}_-])arkor-(?:csp|edge)(?![\p{L}\p{N}_])/gu,
   // The kind of artifact a document's shell is (`artifactKindSchema` in `@stayingupwind/core`):
   // the name alone, not another made from it on either side.
