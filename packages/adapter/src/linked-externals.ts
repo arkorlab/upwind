@@ -66,7 +66,7 @@ export function linkedImportsPlugin(onLinked: (id: string) => void): Plugin {
 /** The link a name is imported through: its package, `@scope/name-hash` or `name-hash`. */
 function linkOf(id: string): string {
   const segments = id.split('/');
-  return (id.startsWith('@') ? segments.slice(0, 2) : segments.slice(0, 1)).join('/');
+  return segments.slice(0, id.startsWith('@') ? 2 : 1).join('/');
 }
 
 async function isLinked(distDir: string, id: string): Promise<boolean> {

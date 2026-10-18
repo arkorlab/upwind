@@ -166,15 +166,15 @@ export function* memberValuesOf(
   const kept = escapes.map(() => 0);
   do {
     const choices = kept.values();
-    yield segments.map((segment) =>
-      segment.replaceAll(BUILT_ESCAPE, (found, escape?: string) => {
+    yield segments.map((segment) => {
+      return segment.replaceAll(BUILT_ESCAPE, (found, escape?: string) => {
         if (escape === undefined) {
           // The delimiter's escape is the match itself: `%2F`, whose code is the two digits after `%`.
           return String.fromCodePoint(Number.parseInt(found.slice(1), HEX));
         }
         return choices.next().value === 1 ? found : `%${escape}`;
-      }),
-    );
+      });
+    });
   } while (advance(kept, sizes));
 }
 
