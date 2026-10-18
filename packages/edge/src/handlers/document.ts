@@ -23,7 +23,6 @@ import type { ServedValidity } from '../cache/decision.ts';
 import type { DetachedRegeneration } from '../cache/regenerate.ts';
 import { logWarn } from '../observability/logger.ts';
 import { serverTiming, type ServerTimingEntry } from '../observability/server-timing.ts';
-import { stripEdgeHeaders } from '../request-context.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { resumeContinuation } from '../strategies/continuation-resume.ts';
 import { loadShell, type ShellLoadResult, storageReadsOf } from '../strategies/shell-loader.ts';
@@ -44,6 +43,7 @@ import {
 } from './document-headers.ts';
 import { reportOutcome } from './document-report.ts';
 import {
+  continuationRequest,
   fallbackToApp,
   followClient,
   releaseUpstream,
@@ -324,27 +324,6 @@ function layeringFor(
     return 'off';
   }
   return decodesLayeredBrotli(input.request.headers.get(USER_AGENT_HEADER)) ? 'on' : 'declined';
-}
-
-/**
- * The request the continuation is asked for: the client's, or the request as the middleware left
- * it — its rewrite target and its headers — with the URL the client asked for kept on the context
- * for the runtime to see.
- */
-function continuationRequest(input: DocumentInput): { client: Request; edge: EdgeContext } {
-  const { middleware } = input;
-  const stripped = stripEdgeHeaders(input.request.headers);
-  if (middleware?.kind !== 'continue') {
-    return { client: new Request(input.request, { headers: stripped }), edge: input.edge };
-  }
-  const client = new Request(middleware.url.href, {
-    method: input.request.method,
-    headers: stripEdgeHeaders(middleware.requestHeaders),
-  });
-  return {
-    client,
-    edge: middleware.rewritten ? { ...input.edge, originalUrl: input.request.url } : input.edge,
-  };
 }
 
 /**
@@ -761,6 +740,7 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
     const dispatched = dispatchedSoFar(handle.response);
     edge.ctx.waitUntil(reportOutcome({ input, outcome, ...read, subrequests: 1, dispatched }));
     return composeDocument(input, {
+      startedAt: compositionStarted,
       headers,
       recorded: [recorded, rules.headers],
       delivery,

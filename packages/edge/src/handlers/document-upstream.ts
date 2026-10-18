@@ -2,6 +2,8 @@ import { releaseStream } from '@stayingupwind/core/util';
 import type { ContinuationHandle } from '@stayingupwind/host/delivery';
 
 import type { ContinuationFailureKind } from '../reports.ts';
+import { stripEdgeHeaders } from '../request-context.ts';
+import type { EdgeContext } from '../strategies/context.ts';
 import type { ShellLoadResult } from '../strategies/shell-loader.ts';
 import type { DocumentInput } from './document.ts';
 import { sendReport } from './observer.ts';
@@ -43,6 +45,27 @@ export async function unsettle(settled: Promise<Upstream>): Promise<Response> {
     throw result.error instanceof Error ? result.error : new Error(String(result.error));
   }
   return result.response;
+}
+
+/**
+ * The request the continuation is asked for: the client's, or the request as the middleware left
+ * it — its rewrite target and its headers — with the URL the client asked for kept on the context
+ * for the runtime to see.
+ */
+export function continuationRequest(input: DocumentInput): { client: Request; edge: EdgeContext } {
+  const { middleware } = input;
+  const stripped = stripEdgeHeaders(input.request.headers);
+  if (middleware?.kind !== 'continue') {
+    return { client: new Request(input.request, { headers: stripped }), edge: input.edge };
+  }
+  const client = new Request(middleware.url.href, {
+    method: input.request.method,
+    headers: stripEdgeHeaders(middleware.requestHeaders),
+  });
+  return {
+    client,
+    edge: middleware.rewritten ? { ...input.edge, originalUrl: input.request.url } : input.edge,
+  };
 }
 
 /** Why a resume is let go of when its client leaves before a splice holds it. */
