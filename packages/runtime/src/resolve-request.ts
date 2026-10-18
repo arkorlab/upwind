@@ -4,6 +4,7 @@ import { releaseStream } from '@stayingupwind/core/util';
 
 import { afterBody } from './after-body.ts';
 import { outcomeOn } from './generations.ts';
+import { edgeJudgesHeaderRules } from './incoming.ts';
 import { middlewareInvoker, type MiddlewareTrace } from './middleware-invoke.ts';
 import { settleRewrittenPath } from './rewritten-path.ts';
 import {
@@ -15,6 +16,7 @@ import {
   routingI18n,
   routingTables,
   undecodedResponse,
+  withHeaderRulesLeft,
   withRoutingHeaders,
 } from './routing.ts';
 import { externalRewrite, type RoutedInput } from './serve.ts';
@@ -33,6 +35,12 @@ export interface RoutingAsk {
   readonly body: ReadableStream<Uint8Array> | null | undefined;
   /** Leave the middleware out: one the edge has run, or none this Function holds. */
   readonly skipMiddleware: boolean;
+  /**
+   * Leave the header rules ahead of the middleware out: the edge judged them on the request as the
+   * client sent it, before the middleware it ran, and lays them on the answer itself
+   * (`edgeJudgesHeaderRules`).
+   */
+  readonly skipHeaderRules: boolean;
   readonly trace: MiddlewareTrace;
 }
 
@@ -63,7 +71,7 @@ export function routingOf(
     headers: asked.headers,
     pathnames: pathnamesFor(store, url),
     ...(i18n !== null && i18n !== undefined && { i18n: routingI18n(i18n) }),
-    routes: routingTables(store, asked.skipMiddleware, url),
+    routes: routingTables(store, asked.skipMiddleware, url, asked.skipHeaderRules),
     invokeMiddleware: middlewareInvoker(input, store, asked.trace),
   });
 }
@@ -120,7 +128,9 @@ async function exitAnswer(
  * (`handleFull`), but without the middleware, which the regeneration did not run either; and where
  * routing answers it itself — a redirect before routing or by a rule, a 400, another origin's
  * answer, a rule's status, which a request it finds no route for comes back with — answered so, as
- * the usual path answers it (`routeAndServe`, `unrouted`), the render let go (`exitAnswer`).
+ * the usual path answers it (`routeAndServe`, `unrouted`), the render let go (`exitAnswer`). Where
+ * the edge judged the header rules ahead of the middleware it ran, routing leaves them out, as the
+ * usual path does, and what routing answered says so (`withHeaderRulesLeft`).
  */
 export async function withRoutingOf(
   input: RoutedInput,
@@ -138,24 +148,29 @@ export async function withRoutingOf(
     headers,
     body: undefined,
     skipMiddleware: true,
+    skipHeaderRules: edgeJudgesHeaderRules(input.request.headers),
     trace: untraced(),
   });
   settleRewrittenPath(routed.resolvedHeaders, headers, url, undefined);
   const exit = routingExitOf(routed);
   if (exit instanceof URL) {
-    return exitAnswer(input, answer, async () => {
+    const proxied = await exitAnswer(input, answer, async () => {
       const forwarded = new Request(input.request, { headers });
       return withRoutingHeaders(await externalRewrite(forwarded, exit), routed.resolvedHeaders);
     });
+    return withHeaderRulesLeft(input.request, proxied);
   }
   if (exit !== undefined) {
-    return exitAnswer(input, answer, () => exit);
+    return withHeaderRulesLeft(input.request, await exitAnswer(input, answer, () => exit));
   }
   // What the regeneration came to is said last, over routing's headers as over the render's: a rule
   // of `next.config` may name any header, and this one is the runtime's to say, not the
   // application's — as the usual path says it last (`outcomeOn` in `handle.ts`).
   const outcome = answer.headers.get(CACHE_OUTCOME_HEADER);
-  const laid = withRoutingHeaders(answer, routed.resolvedHeaders);
+  const laid = withHeaderRulesLeft(
+    input.request,
+    withRoutingHeaders(answer, routed.resolvedHeaders),
+  );
   const routedAnswer = outcome === null ? laid : outcomeOn(laid, outcome);
   // What the request uploads is let go of once the answer is done with — and only then, as the
   // render may read it while it streams. A request with none, as every document a regeneration is
