@@ -60,6 +60,7 @@ const SEGMENT_PREFETCH = 'segment-prefetch';
 const RSC_PAYLOAD = 'rsc-payload';
 const PAGES_DATA = 'pages-data';
 const RSC_ROLE = 'rsc';
+const HTTP_OK = 200;
 
 /**
  * A member's record, read as the member's: one of its own, or the one its class completes to
@@ -81,7 +82,7 @@ type PartGeneration =
       /** Where the record is a member's; a class's or a route's own is none. */
       readonly member: MemberRecord | undefined;
     }
-  | { readonly kind: 'function' };
+  | { readonly kind: 'function'; readonly afterResponse?: (() => void) | undefined };
 
 /**
  * A part answered from a record that asks for its regeneration — stale, or past its expiry, or a
@@ -114,11 +115,24 @@ function readPartAgain(
  */
 function partialPartGeneration(
   input: PartInput,
-  { entry, pathname }: PartAnswer,
+  { entry, pathname, kind, middleware }: PartAnswer,
 ): PartGeneration | undefined {
   if (input.request.method !== 'GET' || entry.partialFallback === undefined) return undefined;
   const partial = partialFallbackInHand(input.edge, input.manifest, entry, pathname);
   if (partial !== undefined) {
+    if (
+      kind === 'segment' &&
+      partial.load.kind === 'none' &&
+      requestAsLeft(input, middleware).headers.get(NEXT_ROUTER_PREFETCH_HEADER) === '1'
+    ) {
+      // Start the bounded watch after a cold Function has answered, rather than spend it on startup.
+      return {
+        kind: 'function',
+        afterResponse: () => {
+          partial.refresh(true);
+        },
+      };
+    }
     partial.refresh();
     const decision = decideGeneration(
       partial.load,
@@ -351,7 +365,12 @@ async function answerPart(input: PartInput, part: PartAnswer): Promise<Response>
   const fallback = (waited?: PassthroughWait) =>
     input.passthrough(reason, middleware, entry.pathname, waited);
   const generation = await partGeneration(input, part);
-  if (generation.kind === 'function') return fallback();
+  if (generation.kind === 'function') {
+    if (generation.afterResponse === undefined) return fallback();
+    const response = await fallback();
+    if (response.status === HTTP_OK) generation.afterResponse();
+    return response;
+  }
   if (generation.kind === 'build') {
     return buildPart === undefined
       ? fallback()
