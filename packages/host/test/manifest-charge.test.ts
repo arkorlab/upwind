@@ -118,10 +118,9 @@ describe('the additional lookup tables of a gated manifest', () => {
       Array.from({ length: counts.gates }, (_, index) => [`/gate-${index}`, 'protected']),
     );
     const gatedPathnames = Object.fromEntries(
-      Array.from({ length: counts.pathnames }, (_, index) => [
-        `/member-${index}`,
-        `/gate-${index % counts.gates}`,
-      ]),
+      Array.from({ length: counts.pathnames }, (_, index) => {
+        return [`/member-${index}`, `/gate-${index % counts.gates}`];
+      }),
     );
     const plain = manifestOf([RULE]);
     const listed = manifestOf([RULE], { gates, gatedPathnames });

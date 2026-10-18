@@ -462,9 +462,13 @@ export type DataEntryMetadata = z.infer<typeof dataEntryMetadataSchema>;
  * escape — `\/` for each slash of the base64 — can be refused as too large though its value fits.
  */
 const MAX_WRITER_LENGTH = 64;
+const dataKeySchema = z
+  .string()
+  .min(1)
+  .refine((key) => key.length <= MAX_DATA_KEY_LENGTH, 'data key exceeds its UTF-16 length limit');
 
 export const dataSetRequestSchema = z.object({
-  key: z.string().min(1).max(MAX_DATA_KEY_LENGTH),
+  key: dataKeySchema,
   entry: dataEntryMetadataSchema,
   valueBase64: z.string(),
   /**
@@ -514,7 +518,7 @@ export type DataSetResponse = z.infer<typeof dataSetResponseSchema>;
  */
 export const dataGetRequestSchema = z
   .object({
-    key: z.string().min(1).max(MAX_DATA_KEY_LENGTH),
+    key: dataKeySchema,
     kind: z.enum(['data:fetch', DATA_USE_CACHE_KIND]),
     handler: z.string().min(1).max(MAX_DATA_HANDLER_LENGTH).optional(),
   })
@@ -554,10 +558,11 @@ function inlineValueFits(value: string): boolean {
   let characters = 0;
   padding = 0;
   for (let index = 0; index < value.length; index += 1) {
+    // eslint-disable-next-line unicorn/prefer-code-point -- Base64 syntax and its ASCII whitespace are counted as UTF-16 code units.
     const code = value.charCodeAt(index);
     if (
       code === ASCII_SPACE ||
-      (code >= ASCII_TAB && code <= ASCII_CARRIAGE_RETURN && code !== ASCII_VERTICAL_TAB)
+      (code !== ASCII_VERTICAL_TAB && code >= ASCII_TAB && code <= ASCII_CARRIAGE_RETURN)
     ) {
       continue;
     }
@@ -576,12 +581,17 @@ function inlineValueFits(value: string): boolean {
   );
 }
 
+const referencedDataValueSchema = z.object({
+  kind: z.literal('ref'),
+  artifactId: z.string().min(1),
+});
+
 const dataValueSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('inline'),
     base64: z.string().refine(inlineValueFits, 'inline data value exceeds its byte limit'),
   }),
-  z.object({ kind: z.literal('ref'), artifactId: z.string().min(1) }),
+  referencedDataValueSchema,
 ]);
 
 export const dataGetResponseSchema = z.object({
@@ -594,6 +604,18 @@ export const dataGetResponseSchema = z.object({
   invalidation: invalidationStateSchema.optional(),
 });
 export type DataGetResponse = z.infer<typeof dataGetResponseSchema>;
+
+/**
+ * A Function's data-center copy has the same metadata as a gateway answer. Its existing whole-JSON
+ * byte limit owns the value's size: a write can fit in that copy while exceeding the gateway's
+ * inline threshold, which would make the gateway answer with an artifact reference instead.
+ */
+export const dataCopyResponseSchema = dataGetResponseSchema.extend({
+  value: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('inline'), base64: z.string() }),
+    referencedDataValueSchema,
+  ]),
+});
 
 /**
  * Whether a data read's answer is of the namespace the read asked in: the kind of value, and the

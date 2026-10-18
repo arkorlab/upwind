@@ -6,6 +6,8 @@ import { ENTITY_SCHEMA_VERSION, invalidationRecordSchema } from '../src/cache/en
 import {
   answersTheRead,
   answersTheTags,
+  currentDataRequestSchema,
+  dataCopyResponseSchema,
   dataGetRequestSchema,
   dataGetResponseSchema,
   dataSetRequestSchema,
@@ -74,7 +76,8 @@ describe('the existing inline data-value byte contract', () => {
     { size: MAX_INLINE_DATA_VALUE_BYTES + 1, accepted: false },
   ])('bounds padded and unpadded inline values of $size bytes', ({ size, accepted }) => {
     const encoded = toBase64(new Uint8Array(size));
-    for (const base64 of [encoded, encoded.replace(/=+$/u, '')]) {
+    const padding = Number(encoded.endsWith('=')) + Number(encoded.endsWith('=='));
+    for (const base64 of [encoded, encoded.slice(0, encoded.length - padding)]) {
       expect(
         dataGetResponseSchema.safeParse({ ...read, value: { kind: 'inline', base64 } }).success,
       ).toBe(accepted);
@@ -93,19 +96,41 @@ describe('the existing inline data-value byte contract', () => {
     ).toBe(accepted);
   });
 
+  it('keeps the larger stored-copy value separate from the gateway inline contract', () => {
+    const base64 = toBase64(new Uint8Array(600 * 1024));
+    const answer = { ...read, value: { kind: 'inline', base64 } };
+
+    expect(dataGetResponseSchema.safeParse(answer).success).toBe(false);
+    expect(dataCopyResponseSchema.safeParse(answer).success).toBe(true);
+    expect(
+      dataCopyResponseSchema.safeParse({ ...answer, entry: { ...read.entry, expire: -1 } }).success,
+    ).toBe(false);
+    expect(
+      dataCopyResponseSchema.safeParse({ ...answer, invalidation: { revision: -1 } }).success,
+    ).toBe(false);
+    expect(
+      dataCopyResponseSchema.safeParse({ ...answer, value: { kind: 'ref', artifactId: '' } })
+        .success,
+    ).toBe(false);
+  });
+
   it('keeps empty inline values, artifact references and larger data writes admissible', () => {
+    const largerValue = toBase64(new Uint8Array(MAX_INLINE_DATA_VALUE_BYTES + 1));
+
     expect(
       dataGetResponseSchema.safeParse({ ...read, value: { kind: 'inline', base64: '' } }).success,
     ).toBe(true);
     expect(
-      dataGetResponseSchema.safeParse({ ...read, value: { kind: 'ref', artifactId: 'large-value' } })
-        .success,
+      dataGetResponseSchema.safeParse({
+        ...read,
+        value: { kind: 'ref', artifactId: 'large-value' },
+      }).success,
     ).toBe(true);
     expect(
       dataSetRequestSchema.safeParse({
         key: 'larger-value',
         entry: read.entry,
-        valueBase64: toBase64(new Uint8Array(MAX_INLINE_DATA_VALUE_BYTES + 1)),
+        valueBase64: largerValue,
       }).success,
     ).toBe(true);
   });
@@ -120,6 +145,42 @@ describe('a data read', () => {
 
   it('names a key and a handler as long as a write may', () => {
     expect(dataGetRequestSchema.safeParse(read).success).toBe(true);
+  });
+
+  it.each([
+    {
+      name: 'astral characters at the code-unit bound',
+      key: '😀'.repeat(MAX_DATA_KEY_LENGTH / 2),
+      accepted: true,
+    },
+    {
+      name: 'mixed characters at the code-unit bound',
+      key: `${'😀'.repeat(MAX_DATA_KEY_LENGTH / 2 - 1)}ab`,
+      accepted: true,
+    },
+    {
+      name: 'one extra code unit',
+      key: `${'😀'.repeat(MAX_DATA_KEY_LENGTH / 2)}x`,
+      accepted: false,
+    },
+    {
+      name: 'the code-point bound with twice as many code units',
+      key: '😀'.repeat(MAX_DATA_KEY_LENGTH),
+      accepted: false,
+    },
+    {
+      name: 'lone surrogates at the code-unit bound',
+      key: '\u{D800}'.repeat(MAX_DATA_KEY_LENGTH),
+      accepted: true,
+    },
+    { name: 'an empty key', key: '', accepted: false },
+  ])('measures $name identically on writes and both read routes', ({ key, accepted }) => {
+    const written = { ...useCacheWrite(), key };
+    const requested = { ...read, key };
+
+    expect(dataSetRequestSchema.safeParse(written).success).toBe(accepted);
+    expect(dataGetRequestSchema.safeParse(requested).success).toBe(accepted);
+    expect(currentDataRequestSchema.safeParse({ ...requested, than: 1 }).success).toBe(accepted);
   });
 
   /** Nothing is stored under a longer one, so a read of it has nothing to find. */
