@@ -1,13 +1,15 @@
 import type { ImagesConfig } from '@stayingupwind/core/images';
+import type { ProjectManifest } from '@stayingupwind/core/manifest';
 import { concatBytes, encodeUtf8 } from '@stayingupwind/core/util';
-import type { EdgePointer } from '@stayingupwind/host/delivery';
+import { DEFAULT_DELIVERY_POLICY, type EdgePointer } from '@stayingupwind/host/delivery';
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { EdgeHost } from '../src/edge-host.ts';
 import type { EdgeRuntime, FetchImpl, TransformImage } from '../src/edge-runtime.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
-import { serveFromPointer } from '../src/route.ts';
+import { type PointerReads, serveFromPointer } from '../src/route.ts';
 import { standaloneHost, type StandaloneEnv, standaloneRuntime } from '../src/standalone/index.ts';
 import { pprDocument, seedSite } from './helpers/site.ts';
 
@@ -40,10 +42,17 @@ interface Serving {
   readonly site: StandaloneEnv;
   readonly pointer: EdgePointer;
   readonly runtime: EdgeRuntime;
+  readonly host: EdgeHost;
+  readonly manifest: ProjectManifest;
+  readonly reads?: PointerReads;
 }
 
-async function serving(fetchImpl: FetchImpl, transformImage: TransformImage): Promise<Serving> {
-  const { pointer } = await seedSite({ document: pprDocument(), images: CONFIG });
+async function serving(
+  fetchImpl: FetchImpl,
+  transformImage: TransformImage,
+  files?: Readonly<Record<string, string>>,
+): Promise<Serving> {
+  const { pointer, manifest } = await seedSite({ document: pprDocument(), images: CONFIG, files });
   const site = { ...env };
   const runtime = standaloneRuntime(site, {
     memory: createEdgeMemory(() => Date.now()),
@@ -51,7 +60,7 @@ async function serving(fetchImpl: FetchImpl, transformImage: TransformImage): Pr
     dispatchApp: (_scriptName, request) => fetchImpl(request),
     transformImage,
   });
-  return { site, pointer, runtime };
+  return { site, pointer, runtime, manifest, host: standaloneHost(site) };
 }
 
 function begin(served: Serving, source: string, signal: AbortSignal) {
@@ -64,18 +73,21 @@ function begin(served: Serving, source: string, signal: AbortSignal) {
     },
   );
   const ctx = createExecutionContext();
-  const response = serveFromPointer({
-    request,
-    url: new URL(request.url),
-    env: served.site,
-    ctx,
-    runtime: served.runtime,
-    host: standaloneHost(served.site),
-    pointer: served.pointer,
-    pointerMs: 0,
-    privateDelivery: false,
-    cspReportingPath: undefined,
-  });
+  const response = serveFromPointer(
+    {
+      request,
+      url: new URL(request.url),
+      env: served.site,
+      ctx,
+      runtime: served.runtime,
+      host: served.host,
+      pointer: served.pointer,
+      pointerMs: 0,
+      privateDelivery: false,
+      cspReportingPath: undefined,
+    },
+    served.reads,
+  );
   // Old-source proofs deliberately end with a request still waiting on its old deadline.
   void response.catch(() => {
     // The request's eventual failure is not an unhandled promise after the assertion failed.
@@ -103,6 +115,110 @@ describe('an image request whose client leaves', () => {
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  it.each(['local', 'remote'])(
+    'refuses a %s source abandoned during the preceding cache lookup',
+    async (kind) => {
+      const entered = Promise.withResolvers<undefined>();
+      const lookup = Promise.withResolvers<undefined>();
+      const fetchSource = vi.fn(() => Promise.resolve(new Response(PNG)));
+      const transform = vi.fn(transformed);
+      const served = await serving(fetchSource, transform);
+      const cache = await caches.open(standaloneHost(served.site).names.imageCache);
+      vi.spyOn(cache, 'match').mockImplementation(() => {
+        entered.resolve(undefined);
+        return lookup.promise;
+      });
+      vi.spyOn(caches, 'open').mockResolvedValue(cache);
+      const client = new AbortController();
+      const source = kind === 'local' ? `/draw/${crypto.randomUUID()}.png` : remote();
+      const run = begin(served, source, client.signal);
+      await entered.promise;
+
+      client.abort(new Error('client left during lookup'));
+      lookup.resolve(undefined);
+
+      await expect(run.response).resolves.toHaveProperty('status', 502);
+      await expect((await run.response).text()).resolves.toBe('image request abandoned');
+      expect(fetchSource).not.toHaveBeenCalled();
+      expect(transform).not.toHaveBeenCalled();
+
+      await waitOnExecutionContext(run.ctx);
+    },
+  );
+
+  it('refuses a source abandoned after source middleware without losing its dispatch count', async () => {
+    const entered = Promise.withResolvers<undefined>();
+    const middleware = Promise.withResolvers<Response>();
+    const fetchSource = vi.fn(() => {
+      entered.resolve(undefined);
+      return middleware.promise;
+    });
+    const transform = vi.fn(transformed);
+    const path = `/gated/${crypto.randomUUID()}.png`;
+    const served = await serving(fetchSource, transform, { [path]: 'unread' });
+    const app = {
+      deploymentId: 'dpl_site',
+      scriptName: 'site-app',
+      middlewareScriptName: 'site-middleware',
+    };
+    const manifest: ProjectManifest = {
+      ...served.manifest,
+      middleware: { matchers: [{ sourceRegex: '^/gated/' }] },
+    };
+    const reads: PointerReads = {
+      manifestLookup: Promise.resolve({ kind: 'found', value: manifest }),
+      policyLookup: Promise.resolve({
+        kind: 'found',
+        source: 'exact',
+        policy: DEFAULT_DELIVERY_POLICY,
+      }),
+    };
+    const metric = vi.spyOn(served.host.observer, 'metric');
+    const client = new AbortController();
+    const run = begin(
+      { ...served, pointer: { ...served.pointer, app }, reads },
+      path,
+      client.signal,
+    );
+    await entered.promise;
+
+    client.abort(new Error('client left during middleware'));
+    middleware.resolve(
+      new Response(null, { headers: { 'x-middleware-rewrite': 'https://elsewhere.example/file' } }),
+    );
+
+    await expect(run.response).resolves.toHaveProperty('status', 502);
+    expect(metric.mock.calls.at(-1)?.[0].subrequests).toBe(1);
+    expect(fetchSource).toHaveBeenCalledTimes(1);
+    expect(transform).not.toHaveBeenCalled();
+
+    await waitOnExecutionContext(run.ctx);
+  });
+
+  it('refuses a source abandoned between remote redirect hops without losing the first hop', async () => {
+    const client = new AbortController();
+    const redirected = vi.fn(() => {
+      client.abort(new Error('client left between redirects'));
+    });
+    const response = new Response(new ReadableStream<Uint8Array>({ cancel: redirected }), {
+      status: 302,
+      headers: { location: remote() },
+    });
+    const fetchSource = vi.fn(() => Promise.resolve(response));
+    const transform = vi.fn(transformed);
+    const served = await serving(fetchSource, transform);
+    const metric = vi.spyOn(served.host.observer, 'metric');
+    const run = begin(served, remote(), client.signal);
+
+    await expect(run.response).resolves.toHaveProperty('status', 502);
+    expect(redirected).toHaveBeenCalledWith('image source redirected');
+    expect(metric.mock.calls.at(-1)?.[0].subrequests).toBe(1);
+    expect(fetchSource).toHaveBeenCalledTimes(1);
+    expect(transform).not.toHaveBeenCalled();
+
+    await waitOnExecutionContext(run.ctx);
   });
 
   it.each(['local', 'remote'])(
@@ -278,5 +394,23 @@ describe('an image request whose client leaves', () => {
     await waitOnExecutionContext(run.ctx);
 
     expect(fetchSource).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the ordinary upstream refusal while its client remains', async () => {
+    const transform = vi.fn(transformed);
+    const served = await serving(
+      () => Promise.resolve(new Response('missing', { status: 404 })),
+      transform,
+    );
+    const run = begin(served, remote(), new AbortController().signal);
+    const response = await run.response;
+
+    expect(response.status).toBe(404);
+    await expect(response.text()).resolves.toBe(
+      '"url" parameter is valid but upstream response is invalid',
+    );
+    expect(transform).not.toHaveBeenCalled();
+
+    await waitOnExecutionContext(run.ctx);
   });
 });

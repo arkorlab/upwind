@@ -86,6 +86,7 @@ export type SourceResult =
 
 const HTTP_BAD_REQUEST = 400;
 const HTTP_PAYLOAD_TOO_LARGE = 413;
+const HTTP_BAD_GATEWAY = 502;
 const HTTP_GATEWAY_TIMEOUT = 504;
 const HTTP_LOOP_DETECTED = 508;
 /** Next.js's own budget for a source; a slower one is answered 504 rather than waited for. */
@@ -95,6 +96,7 @@ const UPSTREAM_INVALID = '"url" parameter is valid but upstream response is inva
 const INTERNAL_INVALID = '"url" parameter is valid but internal response is invalid';
 const TIMED_OUT = '"url" parameter is valid but upstream response timed out';
 const SOURCE_REFUSED = 'image source refused';
+const ABANDONED = 'image request abandoned';
 
 const HTTP_INTERNAL_ERROR = 500;
 /** The statuses Fetch calls ok: the only ones Next.js's optimizer takes a source of its own under. */
@@ -379,7 +381,9 @@ async function fetchLocal(
   { earlier, budgetMs = SOURCE_FETCH_BUDGET_MS }: LocalFetch,
 ): Promise<SourceResult> {
   const { edge, config, signal } = local;
-  signal.throwIfAborted();
+  if (signal.aborted) {
+    return refused(HTTP_BAD_GATEWAY, ABANDONED, earlier);
+  }
   // A budget the middleware spent is a timed-out source, not a request sent and abandoned.
   if (budgetMs <= 0) {
     return refused(HTTP_GATEWAY_TIMEOUT, TIMED_OUT, earlier);
@@ -550,7 +554,9 @@ async function fetchHop(
   requests: number,
 ): Promise<Response | SourceResult> {
   const { edge, signal } = local;
-  signal.throwIfAborted();
+  if (signal.aborted) {
+    return refused(HTTP_BAD_GATEWAY, ABANDONED, requests);
+  }
   const remaining = deadline - edge.runtime.now();
   if (remaining <= 0) {
     return refused(HTTP_GATEWAY_TIMEOUT, TIMED_OUT, requests);
@@ -635,7 +641,9 @@ export function fetchImageSource(
   source: ImageSource,
   request: Pick<LocalContext, 'manifest' | 'signal'>,
 ): Promise<SourceResult> {
-  request.signal.throwIfAborted();
+  if (request.signal.aborted) {
+    return Promise.resolve(refused(HTTP_BAD_GATEWAY, ABANDONED, 0));
+  }
   const local: LocalContext = { edge, config, ...request };
   switch (source.kind) {
     case 'blob': {
