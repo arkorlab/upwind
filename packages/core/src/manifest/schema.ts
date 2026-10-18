@@ -119,6 +119,13 @@ export const routeSegmentSchema = z.object({
 });
 export type RouteSegment = z.infer<typeof routeSegmentSchema>;
 
+/** The source route and parameter key of a shell completed behind a partial fallback response. */
+export const partialFallbackUpgradeSchema = z.object({
+  route: z.string().startsWith('/'),
+  keyedBy: z.array(z.string().min(1)).min(1).optional(),
+});
+export type PartialFallbackUpgrade = z.infer<typeof partialFallbackUpgradeSchema>;
+
 /** One route the build prerendered: its pathname, its shell artifact and its response headers. */
 export const routeEntrySchema = z.object({
   pathname: z.string().startsWith('/'),
@@ -172,6 +179,12 @@ export const routeEntrySchema = z.object({
   prerenderId: z.string().min(1).optional(),
   /** The runtime cache entry the route is served from, when the deployment has a cache. */
   cache: routeCacheSchema.optional(),
+  /**
+   * A built partial fallback whose completed shell is published behind its first response, under
+   * the route and parameter key named here. Absent on ordinary shells and older manifests; a
+   * reader unaware of this field keeps serving and resuming the build's fallback as before.
+   */
+  partialFallback: partialFallbackUpgradeSchema.optional(),
   /**
    * Conditions under which Next.js would not serve the prerender at all (a Server Action, a
    * multipart body): any one holding sends the request to the deployment's Function untouched.
