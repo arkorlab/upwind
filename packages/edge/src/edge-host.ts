@@ -81,9 +81,12 @@ export interface EdgeHost {
    */
   readonly scopeSignals?: ScopeSignalSource | undefined;
   /**
-   * A delivery record newer than the one served stale, read from the authority behind the
-   * response. Optional for hosts whose records reach the edge only through KV. Fresh delivery
-   * never calls it; returned bytes are held to their identity, digests and revision before use.
+   * A delivery record newer than the one already held, read from the authority by background
+   * checks. These checks can overlap response preparation. Optional for hosts whose records
+   * reach the edge only through KV. Ordinary fresh
+   * generation delivery never calls it. Partial-fallback completions also check on their hold
+   * cadence to observe newer generations and invalidations while the held record remains fresh.
+   * Returned bytes are held to their identity, digests and revision before use.
    */
   readonly currentRecord?:
     | ((
