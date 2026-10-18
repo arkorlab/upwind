@@ -13,7 +13,7 @@ import {
   type SeedScopeResult,
 } from '@stayingupwind/host/cache';
 
-import { artifactIdsFor, referenceArtifact } from './artifacts.ts';
+import { artifactIdsFor, referenceBuildArtifacts } from './artifacts.ts';
 import {
   type EntryIdentity,
   findEntry,
@@ -237,10 +237,14 @@ function seedOne(input: TxInput, plan: SeedPlan, events: EventInput[]): void {
   for (const output of outputs) {
     for (const artifact of output.artifacts) {
       bodyBytes += artifact.byteLength;
-      // The build's blobs are its deploy's, under its keys: referenced, never deleted here.
-      referenceArtifact(sql, { ...artifact, owned: false }, now);
     }
   }
+  // The build's blobs are its deploy's, under its keys: referenced, never deleted here.
+  referenceBuildArtifacts(
+    sql,
+    outputs.flatMap((output) => output.artifacts),
+    now,
+  );
   // The build's output is older than anything its scope has recorded. An invalidation of one of its
   // tags, recorded while the deploy's batches were still on their way, reached that output all the
   // same, and the generation arrives condemned by it, as one seeded before it was condemned
