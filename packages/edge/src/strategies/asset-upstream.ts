@@ -25,8 +25,8 @@ export const FORWARDED_ASSET_HEADERS: readonly string[] = [
 ];
 const NOT_MODIFIED_STATUS = 304;
 const CACHE_CONTROL_HEADER = 'cache-control';
-/** Visible ASCII stays; percent marks escapes and must be escaped itself. */
-const UNSAFE_IN_DEBUG = /[^\u{20}-\u{24}\u{26}-\u{7E}]/gu;
+/** Keep visible ASCII except the field delimiter and percent escape marker. */
+const UNSAFE_IN_DEBUG = /[^\u{20}-\u{24}\u{26}-\u{3A}\u{3C}-\u{7E}]/gu;
 
 export function assetUpstreamRequest(
   request: Request,

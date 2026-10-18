@@ -381,6 +381,8 @@ describe('asset project diagnostics', () => {
 
   it.each([
     { projectId: 'site:one+two ._~', encoded: 'site:one+two ._~' },
+    { projectId: 'site;policy=forged', encoded: 'site%3Bpolicy=forged' },
+    { projectId: 'site%3Bpolicy=forged', encoded: 'site%253Bpolicy=forged' },
     { projectId: 'line\rbreak', encoded: 'line%5Crbreak' },
     { projectId: 'line\nbreak', encoded: 'line%5Cnbreak' },
     { projectId: 'nul\0byte', encoded: 'nul%5Cu0000byte' },
