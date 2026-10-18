@@ -1,4 +1,4 @@
-import type { AppRuntime, MiddlewareMatcher, ProjectManifest } from '@stayingupwind/core/manifest';
+import type { AppRuntime, ProjectManifest } from '@stayingupwind/core/manifest';
 import { MIDDLEWARE_DONE_HEADER } from '@stayingupwind/core/paas';
 import {
   BYPASS_COOKIE_NAMES,
@@ -28,11 +28,7 @@ import type { EdgeHost } from './edge-host.ts';
 import type { EdgeRuntime } from './edge-runtime.ts';
 import { answerAsset } from './handlers/asset-answer.ts';
 import { routeHostedDocument } from './handlers/hosted-document.ts';
-import {
-  type MiddlewareOutcome,
-  type MiddlewareTiming,
-  readsCredentials,
-} from './handlers/middleware.ts';
+import type { MiddlewareOutcome, MiddlewareTiming } from './handlers/middleware.ts';
 import {
   finishObserved,
   type ObservePassthrough,
@@ -46,7 +42,7 @@ import {
   passthroughReason,
 } from './handlers/passthrough.ts';
 import { serviceUnavailableResponse } from './handlers/responses.ts';
-import { forwardedFieldsFor } from './handlers/routing-headers.ts';
+import { routingReadsFor } from './handlers/routing-headers.ts';
 import { hostedFirst } from './hosted-first.ts';
 import { withPatternBudget } from './pattern-budget.ts';
 import {
@@ -230,41 +226,6 @@ function passthroughFor(
   return observed.finish === undefined ? forwarding : finishObserved(forwarding, observed.finish);
 }
 
-/** A rule of the application's routing, as far as its conditions go. */
-type Conditioned = Pick<MiddlewareMatcher, 'has' | 'missing'>;
-type Condition = NonNullable<Conditioned['has']>[number];
-
-/** What `routingReadsCredentials` found for a manifest, and for which credentials. */
-const manifestReaders = new WeakMap<
-  ProjectManifest,
-  { readonly credentials: HostCredentials; readonly reads: boolean }
->();
-
-/**
- * Whether a condition a request is judged by as it came can read otherwise without the host's
- * credentials (`readsCredentials`): one of a redirect or a rewrite ahead of the routes
- * (`reservedRoutes`), of a dynamic route (`dynamicRoutes`), or one a route, or a class's members,
- * are not served a prerender under (`bypassFor`). Asked once for a manifest, which is held for as
- * long as it is.
- */
-function routingReadsCredentials(manifest: ProjectManifest, credentials: HostCredentials): boolean {
-  const known = manifestReaders.get(manifest);
-  if (known?.credentials === credentials) {
-    return known.reads;
-  }
-  const reads = (conditions: readonly Condition[] | undefined): boolean =>
-    conditions?.some((condition) => readsCredentials(condition, credentials)) === true;
-  const ruleReads = (rule: Conditioned): boolean => reads(rule.has) || reads(rule.missing);
-  const reserved = manifest.reservedRoutes ?? [];
-  const dynamic = manifest.dynamicRoutes ?? [];
-  const found =
-    reserved.some((rule) => ruleReads(rule)) ||
-    dynamic.some((route) => ruleReads(route) || reads(route.members?.bypassFor)) ||
-    Object.values(manifest.routes).some((entry) => reads(entry.bypassFor));
-  manifestReaders.set(manifest, { credentials, reads: found });
-  return found;
-}
-
 /**
  * The headers the classification reads by name (`classifyRequest`), beside the application's
  * conditions, and what is read of the request as it came after it (`requestAsLeft`): the router's
@@ -345,15 +306,14 @@ function withoutCredentials(headers: Headers, credentials: HostCredentials): Hea
  * a route is not served a prerender under. The application's conditions among them are judged
  * without the host's own credentials (`withoutHostCredentials`), as the middleware's matchers are
  * (`routedHeaders`): the application's routing is never handed them, so a `missing` that names one
- * holds for every request, and a `has` that names one for none. The headers are copied only where
- * one of those conditions can read otherwise without them (`routingReadsCredentials`) — not for
- * any condition at all, since Next.js writes one on `rsc` into every build with a deployment id —
- * and never for a host that keeps none.
+ * holds for every request, and a `has` that names one for none. Removing credentials copies only
+ * where a condition can read one (`routingReadsFor`), not for any condition at all: Next.js writes
+ * one on `rsc` into every build with a deployment id.
  *
  * What the classification reads by name besides — a router's headers, a navigation's, draft mode's
  * cookies — is read on the same headers, and a host that keeps one of those as its own has them
  * copied for that alone (`classificationReadsCredentials`): Next.js is never handed it either.
- * Only authority fields read by the manifest (`forwardedFieldsFor`) take their forwarded values.
+ * Only authority fields read by the manifest (`routingReadsFor`) take their forwarded values.
  * The client markers used by classification, including the recovery cookie, stay as they came.
  */
 function headersToClassify(
@@ -363,12 +323,10 @@ function headersToClassify(
   forwarding: ForwardingContext,
 ): Headers {
   const kept = credentials.cookies.length > 0 || credentials.headers.length > 0;
-  const copied =
-    kept &&
-    (classificationReadsCredentials(credentials) ||
-      (manifest !== undefined && routingReadsCredentials(manifest, credentials)));
+  const routing = manifest === undefined ? undefined : routingReadsFor(manifest, credentials);
+  const copied = kept && (classificationReadsCredentials(credentials) || routing?.reads === true);
   const classified = copied ? withoutCredentials(headers, credentials) : headers;
-  const fields = manifest === undefined ? [] : forwardedFieldsFor(manifest);
+  const fields = routing?.forwardedFields ?? [];
   if (fields.length === 0) return classified;
   const forwarded = withoutHostCredentials(
     sanitizePassthroughHeaders(headers, forwarding),

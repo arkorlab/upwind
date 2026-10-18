@@ -52,26 +52,41 @@ const FORWARDED_ROUTING_FIELDS = [
   'x-forwarded-proto',
   'x-forwarded-port',
 ];
-const manifestFields = new WeakMap<ProjectManifest, readonly string[]>();
+interface RoutingReads {
+  readonly credentials: HostCredentials;
+  readonly reads: boolean;
+  readonly forwardedFields: readonly string[];
+}
 
-/** Only the authority fields a manifest's routing conditions actually read, found once per manifest. */
-export function forwardedFieldsFor(manifest: ProjectManifest): readonly string[] {
-  const known = manifestFields.get(manifest);
-  if (known !== undefined) return known;
+const manifestReaders = new WeakMap<ProjectManifest, RoutingReads>();
+
+/** Credential readers and authority fields found together, once per manifest and host credentials. */
+export function routingReadsFor(
+  manifest: ProjectManifest,
+  credentials: HostCredentials,
+): RoutingReads {
+  const known = manifestReaders.get(manifest);
+  if (known?.credentials === credentials) return known;
+  let reads = false;
   const fields = new Set<string>();
   const remember = (conditions: readonly Condition[] | undefined): void => {
     for (const condition of conditions ?? []) {
+      reads ||= readsCredentials(condition, credentials);
       const name = condition.type === 'header' ? condition.key?.toLowerCase() : undefined;
       if (name !== undefined && FORWARDED_ROUTING_FIELDS.includes(name)) fields.add(name);
     }
   };
-  for (const rule of [...(manifest.reservedRoutes ?? []), ...(manifest.dynamicRoutes ?? [])]) {
+  for (const rule of manifest.reservedRoutes ?? []) {
     remember(rule.has);
     remember(rule.missing);
   }
-  for (const route of manifest.dynamicRoutes ?? []) remember(route.members?.bypassFor);
+  for (const route of manifest.dynamicRoutes ?? []) {
+    remember(route.has);
+    remember(route.missing);
+    remember(route.members?.bypassFor);
+  }
   for (const entry of Object.values(manifest.routes)) remember(entry.bypassFor);
-  const found = [...fields];
-  manifestFields.set(manifest, found);
+  const found = { credentials, reads, forwardedFields: [...fields] };
+  manifestReaders.set(manifest, found);
   return found;
 }
