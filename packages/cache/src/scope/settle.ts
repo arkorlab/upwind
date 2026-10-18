@@ -377,11 +377,16 @@ function acknowledge(deps: SettleDeps, projected: readonly ProjectedEntry[]): Se
     return marked;
   }
   deps.transaction(() => {
+    const acknowledged: ProjectedEntry[] = [];
     for (const entry of projected) {
       if (markRecordWritten(deps.sql, entry.entryId, entry.kvRevision)) {
         forgetSeedFailure(deps.sql, entry.entryId);
         marked.add(entry.entryId);
+        acknowledged.push(entry);
       }
+    }
+    if (acknowledged.length === 0) {
+      return;
     }
     const revision = readRevision(deps.sql) + 1;
     commitRevision(deps.sql, revision);
@@ -391,7 +396,7 @@ function acknowledge(deps: SettleDeps, projected: readonly ProjectedEntry[]): Se
         entityType: 'scope',
         entityId: deps.scopeId,
         kind: 'entries.projected',
-        payload: { entries: projected },
+        payload: { entries: acknowledged },
       },
     );
   });
