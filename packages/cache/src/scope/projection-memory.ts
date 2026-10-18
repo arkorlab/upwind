@@ -5,14 +5,13 @@
  * isolate holds, each within its own, could together build more than the isolate has, and its reset
  * would fail every request of every object in it.
  *
- * A chunk waits for room in its own object's time, asking again every few milliseconds, and is not
- * woken by the chunk that gives the room back: an object can be reset while its run waits or
- * builds, and the code after its `await` then never runs, so room handed to a waiting run could go
- * to one that can never give it back. So a claim is renewed by its own object for as long as it
- * waits or builds — as it asks again, and on a timer of its own as it builds — and lapses once
- * nothing has renewed it for a while: a reset object's claim does not hold the isolate's room for
- * good, and a build that takes long, a storage read that does not answer say, holds its room while
- * it runs.
+ * The budget is the isolate's room (`IsolateRoom`): a chunk waits for it in its own object's time,
+ * asking again every few milliseconds, and its claim is renewed by its own object for as long as it
+ * waits or builds — as it asks again, and on a timer of its own as it builds. An object can be
+ * reset while its run waits or builds, and the code after its `await` then never runs: its claim
+ * lapses once nothing has renewed it for a while, so a reset object's claim does not hold the
+ * isolate's room for good, and a build that takes long, a storage read that does not answer say,
+ * holds its room while it runs.
  *
  * A record a run keeps past the chunk that built it — the one a commit is answered with — holds its
  * bytes as long as it is kept, and is charged until the run lets it go (`retain`), renewed as a
@@ -33,96 +32,15 @@
  * waits, so the line goes on as above: let in, it is one more chunk building, which ends.
  */
 
+import { type GiveBack, IsolateRoom } from '../isolate-room.ts';
+
 const KIB = 1024;
 const PROJECTION_MEMORY_MIB = 48;
 /** Leave room in the 128 MiB isolate for scope state, other requests and a returned commit record. */
 export const PROJECTION_MEMORY_BYTES = PROJECTION_MEMORY_MIB * KIB * KIB;
-/** How often a chunk waiting for room asks again, which renews its claim. */
-const ASK_AGAIN_MS = 20;
-/** How often the object of a building chunk, or of a record kept, renews its claim. */
-const RENEW_MS = 1000;
-/** How long a claim lasts without its object renewing it: past it, that object is gone. */
-const CLAIM_LAPSE_MS = 5000;
 
-/** A claim on the isolate's room: the bytes, what holds them, and until when it holds unrenewed. */
-interface Claim {
-  readonly bytes: number;
-  /** A chunk waiting for room, one building its records, or a record a run keeps past its chunk. */
-  kind: 'waiting' | 'building' | 'kept';
-  until: number;
-}
-
-/** The claims of every run in the isolate, in the order they were made: the module's, no scope's. */
-const claims: Claim[] = [];
-
-/**
- * Renew `claim`, as its own object's work. A claim that lapsed while its object still waits or
- * builds — its timers held up past the lapse — is counted again, as one made last.
- */
-function renew(claim: Claim): void {
-  claim.until = Date.now() + CLAIM_LAPSE_MS;
-  if (!claims.includes(claim)) {
-    claims.push(claim);
-  }
-}
-
-function remove(claim: Claim): void {
-  const at = claims.indexOf(claim);
-  if (at !== -1) {
-    claims.splice(at, 1);
-  }
-}
-
-/**
- * Hold `claim`, renewed on a timer of the object that holds it, until the function returned lets it
- * go: called by that object, which set the timer, since a timer is its own object's.
- */
-function hold(claim: Claim): () => void {
-  renew(claim);
-  const renewal = setInterval(() => {
-    renew(claim);
-  }, RENEW_MS);
-  return () => {
-    clearInterval(renewal);
-    remove(claim);
-  };
-}
-
-/**
- * Whether `claim` may begin at `now`: it is the first that waits, and there is room for it beside
- * the chunks building and the records kept. What has lapsed is let go of first.
- */
-function admits(claim: Claim, now: number): boolean {
-  for (let index = claims.length - 1; index >= 0; index -= 1) {
-    if ((claims[index]?.until ?? now) <= now) {
-      claims.splice(index, 1);
-    }
-  }
-  let building = 0;
-  let kept = 0;
-  for (const other of claims) {
-    building += other.kind === 'building' ? other.bytes : 0;
-    kept += other.kind === 'kept' ? other.bytes : 0;
-  }
-  return (
-    claims.find((other) => other.kind === 'waiting') === claim &&
-    building + kept + claim.bytes <= PROJECTION_MEMORY_BYTES
-  );
-}
-
-/**
- * A claim on `bytes` that waits to be let in: one whose reckoning is no number at all is taken to
- * hold the whole budget, as a record it cannot reckon is, and none holds more.
- */
-function waitingClaim(bytes: number): Claim {
-  return {
-    bytes: Number.isFinite(bytes)
-      ? Math.min(bytes, PROJECTION_MEMORY_BYTES)
-      : PROJECTION_MEMORY_BYTES,
-    kind: 'waiting',
-    until: 0,
-  };
-}
+/** The room every run in the isolate builds in: the module's, no scope's. */
+const room = new IsolateRoom(PROJECTION_MEMORY_BYTES);
 
 /**
  * `build`, once the isolate has room for the `bytes` it reckons it holds, given back as it ends. A
@@ -139,25 +57,16 @@ export async function withProjectionMemory<T>(
   if (bytes === 0) {
     return build();
   }
-  const claim = waitingClaim(bytes);
-  let release: (() => void) | undefined;
+  let giveBack: GiveBack | undefined = room.takeAtOnce(bytes);
+  if (giveBack === undefined) {
+    beforeWait?.();
+    // Waited for as long as it takes: nothing calls a chunk off.
+    giveBack = await room.take(bytes, new AbortController().signal);
+  }
   try {
-    renew(claim);
-    if (!admits(claim, Date.now())) {
-      beforeWait?.();
-      while (!admits(claim, Date.now())) {
-        await new Promise((resolve) => {
-          setTimeout(resolve, ASK_AGAIN_MS);
-        });
-        renew(claim);
-      }
-    }
-    claim.kind = 'building';
-    release = hold(claim);
     return await build();
   } finally {
-    release?.();
-    remove(claim);
+    giveBack();
   }
 }
 
@@ -171,18 +80,14 @@ export async function withProjectionMemoryAtOnce<T>(
   bytes: number,
   build: () => Promise<T>,
 ): Promise<T | undefined> {
-  const claim = waitingClaim(bytes);
-  renew(claim);
-  if (!admits(claim, Date.now())) {
-    remove(claim);
+  const giveBack = room.takeAtOnce(bytes);
+  if (giveBack === undefined) {
     return undefined;
   }
-  claim.kind = 'building';
-  const release = hold(claim);
   try {
     return await build();
   } finally {
-    release();
+    giveBack();
   }
 }
 
@@ -194,5 +99,5 @@ export async function withProjectionMemoryAtOnce<T>(
  * between the two.
  */
 export function retain(bytes: number): () => void {
-  return hold({ bytes, kind: 'kept', until: 0 });
+  return room.charge(bytes);
 }

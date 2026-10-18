@@ -1,35 +1,50 @@
 /**
  * Room an isolate keeps for bytes it holds whole, one for every request it serves: the Function's
  * for the artifacts and records it reads (`function/read-budget.ts`), the gateway's for the bodies
- * of the writes it reads (`gateway/body-room.ts`). Each read or write claims its bytes before it
- * holds any of them, and claims are let in in the order they were made.
+ * of the writes it reads (`gateway/body-room.ts`), and a scope object's for the records its settle
+ * runs build (`scope/projection-memory.ts`), shared by the objects of an isolate. Each read, write
+ * or chunk claims its bytes before it holds any of them, and claims are let in in the order they
+ * were made.
  *
  * A claim that waits asks again on a timer of its own request every few milliseconds; it is not
- * woken by the claim that gives room back. A request can be cancelled — its caller gone — at the
- * next thing its work waits on, and the code after that `await` never runs: room it holds would
- * never be given back, and room given to it as it waits would never be given back either, since it
- * is given to a request that can no longer use it. So a claim is renewed by its own request for as
- * long as it waits or holds — as it asks again, and on a timer as it holds — and lapses once
- * nothing has renewed it for a while: a cancelled request's claim leaves the line, and its room
- * comes back. The settle runs of a scope's object wait for theirs the same way
- * (`scope/projection-memory.ts`).
+ * woken by the claim that gives room back. A request can be cancelled — its caller gone — and an
+ * object reset, at the next thing its work waits on, and the code after that `await` never runs:
+ * room it holds would never be given back, and room given to it as it waits would never be given
+ * back either, since it is given to a request that can no longer use it. So a claim is renewed by
+ * its own request for as long as it waits or holds — as it asks again, and on a timer as it holds —
+ * and lapses once nothing has renewed it for a while: a cancelled request's claim leaves the line,
+ * and its room comes back.
  *
- * The time is read from `performance`, not `Date`: the Function claims room from inside renders,
- * where Next.js extends `Date`.
+ * "A while" is counted in timer firings, not read from a clock: on a Workers host a request's clock
+ * stands still while its code runs and moves only with its I/O, which leaves a clock nothing to
+ * judge a lapse by. Each waiting claim counts its own askings, which come no more often than every
+ * `ASK_AGAIN_MS`, and every `ASKS_A_LOOK` of them it looks at the others: one it saw renewed by
+ * none of `LOOKS_TO_LAPSE` looks in a row is let go. Each waiter keeps its own count, so a crowd of
+ * them lets nothing go sooner than one would, and one whose own request is gone looks no more and
+ * is let go by those behind it. A read that needs room always ends up waiting for it, so there is a
+ * waiter to look for as long as anyone needs the room a lapsed claim held.
  */
 
 /** How often a claim waiting for room asks again, which renews it. */
 const ASK_AGAIN_MS = 20;
 /** How often the request of a claim that holds room renews it. */
 const RENEW_MS = 1000;
-/** How long a claim lasts without its request renewing it: past it, that request is gone. */
-const CLAIM_LAPSE_MS = 5000;
+/** How many times a waiting claim asks again between its looks at the others: a second or more. */
+const ASKS_A_LOOK = 50;
+/** How many looks in a row a claim goes unrenewed before it is let go: five seconds or more. */
+const LOOKS_TO_LAPSE = 5;
 
-/** A claim on the room: its bytes, whether they are held yet, and until when it holds unrenewed. */
+/** A claim on the room: its bytes, whether they are held yet, and how often it has been renewed. */
 interface Claim {
   readonly bytes: number;
   holding: boolean;
-  until: number;
+  renewals: number;
+}
+
+/** What a waiting claim last saw of another: how often it was renewed, and since how many looks. */
+interface Seen {
+  readonly renewals: number;
+  looks: number;
 }
 
 /** What gives a claim's room back: called by the request that holds it, whose timer it clears. */
@@ -56,8 +71,13 @@ export class IsolateRoom {
     this.#limit = limit;
   }
 
+  /** A claim on `bytes`, the whole room at the most; one that is no number at all, the whole room. */
   #claimOf(bytes: number): Claim {
-    return { bytes: Math.min(bytes, this.#limit), holding: false, until: 0 };
+    return {
+      bytes: Number.isFinite(bytes) ? Math.min(bytes, this.#limit) : this.#limit,
+      holding: false,
+      renewals: 0,
+    };
   }
 
   /**
@@ -65,7 +85,7 @@ export class IsolateRoom {
    * holds — its timers held up past the lapse — is counted again, as one made last.
    */
   #renew(claim: Claim): void {
-    claim.until = performance.now() + CLAIM_LAPSE_MS;
+    claim.renewals += 1;
     if (!this.#claims.includes(claim)) {
       this.#claims.push(claim);
     }
@@ -78,16 +98,8 @@ export class IsolateRoom {
     }
   }
 
-  /**
-   * Whether `claim` may hold its bytes at `now`: it is the first that waits, and there is room for
-   * it beside the claims held. What has lapsed is let go of first.
-   */
-  #admits(claim: Claim, now: number): boolean {
-    for (let index = this.#claims.length - 1; index >= 0; index -= 1) {
-      if ((this.#claims[index]?.until ?? now) <= now) {
-        this.#claims.splice(index, 1);
-      }
-    }
+  /** Whether `claim` may hold its bytes: it is the first that waits, with room beside those held. */
+  #admits(claim: Claim): boolean {
     let held = 0;
     for (const other of this.#claims) {
       held += other.holding ? other.bytes : 0;
@@ -97,14 +109,56 @@ export class IsolateRoom {
     );
   }
 
-  /** Hold `claim`, renewed on a timer of the request that holds it, until it is given back. */
+  /**
+   * Look at every other claim as `waiter`, which waits, last saw it (`seen`): one renewed since is
+   * seen afresh, and one that none of `LOOKS_TO_LAPSE` looks in a row saw renewed is let go — its
+   * request is gone.
+   */
+  #look(waiter: Claim, seen: Map<Claim, Seen>): void {
+    const lapsed: Claim[] = [];
+    for (const other of this.#claims) {
+      const last = seen.get(other);
+      if (other === waiter) {
+        // Its own claim, renewed as it looks.
+      } else if (last?.renewals === other.renewals) {
+        last.looks += 1;
+        if (last.looks >= LOOKS_TO_LAPSE) {
+          lapsed.push(other);
+        }
+      } else {
+        seen.set(other, { renewals: other.renewals, looks: 0 });
+      }
+    }
+    for (const other of lapsed) {
+      this.#remove(other);
+    }
+    const standing = new Set(this.#claims);
+    for (const known of seen.keys()) {
+      if (!standing.has(known)) {
+        seen.delete(known);
+      }
+    }
+  }
+
+  /**
+   * Hold `claim`, renewed on a timer of the request that holds it, until it is given back. The
+   * same kind of timer as a waiting claim asks again on, so that the two are counted alike: a
+   * renewal is set again each time it fires, rather than on an interval.
+   */
   #hold(claim: Claim): GiveBack {
     claim.holding = true;
-    const renewal = setInterval(() => {
-      this.#renew(claim);
-    }, RENEW_MS);
+    const renewal: { timer?: ReturnType<typeof setTimeout> } = {};
+    const renewLater = (): void => {
+      renewal.timer = setTimeout(() => {
+        this.#renew(claim);
+        renewLater();
+      }, RENEW_MS);
+    };
+    renewLater();
     return () => {
-      clearInterval(renewal);
+      if (renewal.timer !== undefined) {
+        clearTimeout(renewal.timer);
+      }
       this.#remove(claim);
     };
   }
@@ -112,21 +166,29 @@ export class IsolateRoom {
   /**
    * `claim` held once it is first in line and there is room for it, asked again on a timer of its
    * own request, and at once as `woken` settles; `undefined`, and its place given up, once
-   * `givenUp()` says so.
+   * `givenUp()` says so. Every `ASKS_A_LOOK` askings it looks at the others (`#look`), as it last
+   * saw them.
    */
   async #waitFor(
     claim: Claim,
     givenUp: () => boolean,
     woken: Promise<unknown>,
   ): Promise<GiveBack | undefined> {
+    const seen = new Map<Claim, Seen>();
+    let asked = 0;
     this.#renew(claim);
-    while (!this.#admits(claim, performance.now())) {
+    this.#look(claim, seen);
+    while (!this.#admits(claim)) {
       await Promise.race([pause(ASK_AGAIN_MS), woken]);
       if (givenUp()) {
         this.#remove(claim);
         return undefined;
       }
       this.#renew(claim);
+      asked += 1;
+      if (asked % ASKS_A_LOOK === 0) {
+        this.#look(claim, seen);
+      }
     }
     return this.#hold(claim);
   }
@@ -135,10 +197,21 @@ export class IsolateRoom {
   takeAtOnce(bytes: number): GiveBack | undefined {
     const claim = this.#claimOf(bytes);
     this.#renew(claim);
-    if (!this.#admits(claim, performance.now())) {
+    if (!this.#admits(claim)) {
       this.#remove(claim);
       return undefined;
     }
+    return this.#hold(claim);
+  }
+
+  /**
+   * Room for `bytes` that are held already, counted at once whatever else holds room, until what
+   * is returned gives it back: bytes taken in without waiting, that what is let in after them must
+   * leave room for.
+   */
+  charge(bytes: number): GiveBack {
+    const claim = this.#claimOf(bytes);
+    this.#renew(claim);
     return this.#hold(claim);
   }
 
