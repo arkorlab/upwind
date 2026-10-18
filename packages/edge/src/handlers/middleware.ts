@@ -1,3 +1,4 @@
+import { isPagesDataRequestPath } from '@stayingupwind/core/bundle';
 import {
   type ConfiguredHeaders,
   headerRulesFor,
@@ -15,6 +16,7 @@ import {
   readMiddlewareResponse,
 } from '@stayingupwind/core/paas';
 import {
+  dataRequestHeaders,
   EDGE_DEBUG_HEADER,
   HOP_BY_HOP_HEADERS,
   PASSTHROUGH_RESPONSE_HEADER_DENYLIST,
@@ -253,11 +255,49 @@ export function routedHeaders(
 }
 
 /**
+ * The headers the middleware is handed (`middlewareRequest`), as the application's Worker is handed
+ * any request: the client's, forwarded the way every upstream request forwards them — the edge's
+ * own `x-forwarded-*` in place of a client's, without what no application is sent — and without
+ * the host's credentials.
+ */
+function handedHeaders(edge: Pick<EdgeContext, 'host' | 'forwarding'>, headers: Headers): Headers {
+  return withoutHostCredentials(
+    sanitizePassthroughHeaders(headers, edge.forwarding),
+    edge.host.credentials,
+  );
+}
+
+/** What `rulesReadHeaders` found for a set of rules. */
+const headerReaders = new WeakMap<readonly Conditioned[], boolean>();
+
+/**
+ * Whether a condition of `rules` reads the request's headers — a header's, or a cookie's, which
+ * reads the `cookie` header — asked once for a set of rules, which a manifest holds for as long as
+ * it is held.
+ */
+function rulesReadHeaders(rules: readonly Conditioned[]): boolean {
+  let reads = headerReaders.get(rules);
+  if (reads === undefined) {
+    reads = rules.some((rule) => {
+      return [...(rule.has ?? []), ...(rule.missing ?? [])].some(
+        (condition) => condition.type === 'header' || condition.type === 'cookie',
+      );
+    });
+    headerReaders.set(rules, reads);
+  }
+  return reads;
+}
+
+/**
  * Whether this request would run the application's middleware at all, judged on the headers the
- * middleware is handed (`runMiddleware`, `routedHeaders`).
+ * application's Worker judges its matchers on: those it is handed (`handedHeaders`) — Next.js tests
+ * a matcher on the request the proxy in front of it forwarded, less its own internal headers
+ * (`filterInternalHeaders`, in `router-server.js`) — and `x-nextjs-data` set on a data request, as
+ * its router sets it before the matcher is tested (`resolve-routes.js`). Built only for matchers
+ * that read a header: on the others, the headers say nothing.
  */
 export function middlewareMatches(
-  edge: Pick<EdgeContext, 'host' | 'app'>,
+  edge: Pick<EdgeContext, 'host' | 'app' | 'forwarding'>,
   manifest: ProjectManifest,
   url: URL,
   headers: Headers,
@@ -269,7 +309,17 @@ export function middlewareMatches(
     return false;
   }
   const { matchers } = manifest.middleware;
-  return middlewareApplies(matchers, url, routedHeaders(edge, matchers, headers));
+  if (!rulesReadHeaders(matchers)) {
+    return middlewareApplies(matchers, url, headers);
+  }
+  const handed = handedHeaders(edge, headers);
+  return middlewareApplies(
+    matchers,
+    url,
+    isPagesDataRequestPath(manifest.pagesDataBasePath ?? '', url.pathname)
+      ? dataRequestHeaders(handed)
+      : handed,
+  );
 }
 
 /**
@@ -309,10 +359,7 @@ export function judgeHeaderRulesAhead(
  * upstream request forwards them, and the marker that asks for the middleware alone.
  */
 function middlewareRequest(edge: EdgeContext, request: Request, signal: AbortSignal): Request {
-  const headers = withoutHostCredentials(
-    sanitizePassthroughHeaders(request.headers, edge.forwarding),
-    edge.host.credentials,
-  );
+  const headers = handedHeaders(edge, request.headers);
   headers.set(MIDDLEWARE_ONLY_HEADER, '1');
   // The method as the client sent it: a middleware may decide differently for `HEAD`. Neither
   // method the edge runs it for carries a body.
