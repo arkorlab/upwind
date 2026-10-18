@@ -1,10 +1,6 @@
 import type { BlobRange } from '../preview/blobs.ts';
-import {
-  httpDateMs,
-  listsTag,
-  unmodifiedSince,
-  validatorMatches,
-} from '../strategies/asset-upstream.ts';
+import { httpDateMs, unmodifiedSince, validatorMatches } from '../strategies/asset-upstream.ts';
+import { listsTag } from '../strategies/entity-tags.ts';
 
 /**
  * What a request's preconditions and range make of the answer the edge gives with a shipped file.

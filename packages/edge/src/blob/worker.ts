@@ -1,3 +1,4 @@
+import { listsTag } from '../strategies/entity-tags.ts';
 import { logError } from './logger.ts';
 
 /**
@@ -123,14 +124,13 @@ function carriedByTheBody(): void {
   // reader that cancelled has stopped reading.
 }
 
-/** Weakly (RFC 9110 §13.1.2): the tag is the hash, so any spelling of it names these bytes. */
+/**
+ * Weakly (RFC 9110 §13.1.2): the tag is the hash, so any spelling of it names these bytes — of a list
+ * read as RFC 9110 writes one, a comma inside a quoted tag being the tag's own (`listsTag`).
+ */
 function validatorMatches(request: Request, tag: string): boolean {
   const header = request.headers.get('if-none-match');
-  if (header === null) {
-    return false;
-  }
-  const answering = new Set(['*', `W/${tag}`, tag]);
-  return header.split(',').some((value) => answering.has(value.trim()));
+  return header !== null && listsTag(header, tag);
 }
 
 /** The one range a `Range` header asks for, against an object of `size` bytes (RFC 9110 §14.1). */
