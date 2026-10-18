@@ -169,7 +169,7 @@ function runJob(
     handler: target.handler,
     target: {
       descriptor,
-      classShell: generationClassShell(descriptor, shell),
+      isClass: generationClassShell(descriptor, shell),
       reason,
       replaces,
       allowHeader: shell?.allowHeader,

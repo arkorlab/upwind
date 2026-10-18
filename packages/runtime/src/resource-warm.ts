@@ -100,7 +100,7 @@ export async function warmResourceRoute(input: ResourceWarmInput): Promise<Resou
         handler,
         target: {
           descriptor: entry,
-          classShell: generationClassShell(entry, shell),
+          isClass: generationClassShell(entry, shell),
           reason: 'invalidated',
           allowHeader: shell?.allowHeader,
           ...(entry.kind === 'pages' && {
