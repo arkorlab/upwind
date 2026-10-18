@@ -8,6 +8,8 @@
  * isolate serves would otherwise all be read at once, however many there were and however long.
  */
 
+import { concatBytes, releaseStream } from '@stayingupwind/core/util';
+
 import { type GiveBack, IsolateRoom } from '../isolate-room.ts';
 
 /** What `promise` comes to, or `signal`'s reason where it aborts first. */
@@ -153,10 +155,97 @@ const KIB = 1024;
 const MIB = KIB * KIB;
 const FUNCTION_READ_MIB = 32;
 export const FUNCTION_READ_BYTES = FUNCTION_READ_MIB * MIB;
-const shared: { room?: IsolateRoom } = {};
+const shared: { room?: IsolateRoom; lengthErrors?: WeakSet<Error> } = {};
 
 /** Allocated only when this isolate first reads through either host interface. */
 export function functionReadBudget(): IsolateRoom {
   shared.room ??= new IsolateRoom(FUNCTION_READ_BYTES);
   return shared.room;
+}
+
+/** Workers adds this native operation; other hosts may expose only the standard BYOB reader. */
+type NativeRead = (
+  this: ReadableStreamBYOBReader,
+  min: number,
+  view: Uint8Array<ArrayBuffer>,
+) => Promise<ReadableStreamReadResult<Uint8Array>>;
+
+type ReadResult = Uint8Array | ReadableStreamReadResult<Uint8Array>;
+export interface BodyRead {
+  readonly reader: ReadableStreamDefaultReader<Uint8Array> | ReadableStreamBYOBReader;
+  readonly pending: Promise<ReadResult>;
+}
+/** Recognize only an overflow made by this reader, preserving its ordinary Error contract. */
+export function isBodyLengthError(error: unknown): boolean {
+  return error instanceof Error && shared.lengthErrors?.has(error) === true;
+}
+
+function bodyLengthError(what: string): Error {
+  const error = new Error(`${what} length mismatch`);
+  shared.lengthErrors ??= new WeakSet();
+  shared.lengthErrors.add(error);
+  return error;
+}
+function nativeReadOf(reader: ReadableStreamBYOBReader): NativeRead | undefined {
+  const read: unknown = Reflect.get(reader, 'readAtLeast');
+  return typeof read === 'function' ? (read as NativeRead) : undefined;
+}
+
+/** Only non-byte adapter streams take this bounded chunk path; native service bodies do not. */
+async function otherBytes(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  limit: number,
+  what: string,
+): Promise<Uint8Array> {
+  const parts: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return concatBytes(parts);
+    total += value.byteLength;
+    if (total > limit) throw bodyLengthError(what);
+    parts.push(value);
+  }
+}
+
+/** One sentinel byte distinguishes exact EOF from a larger answer without reading it whole. */
+export function beginBody(body: ReadableStream<Uint8Array>, limit: number, what: string): BodyRead {
+  let byob: ReadableStreamBYOBReader | undefined;
+  try {
+    byob = body.getReader({ mode: 'byob' });
+  } catch {
+    // A custom host may answer with a non-byte stream; keep that path bounded too.
+  }
+  if (byob !== undefined) {
+    const read = nativeReadOf(byob);
+    if (read !== undefined) {
+      const capacity = limit + 1;
+      try {
+        return { reader: byob, pending: read.call(byob, capacity, new Uint8Array(capacity)) };
+      } catch (error) {
+        releaseStream(byob, `${what} reader not started`);
+        byob.releaseLock();
+        throw error;
+      }
+    }
+    byob.releaseLock();
+  }
+  const reader = body.getReader();
+  return { reader, pending: otherBytes(reader, limit, what) };
+}
+
+const DIGITS = /^\d+$/u;
+
+/** How long an answer says it is (`content-length`); `undefined` for one that does not say. */
+export function saidLength(response: Response): number | undefined {
+  const length = response.headers.get('content-length');
+  return length !== null && DIGITS.test(length) ? Number(length) : undefined;
+}
+
+/**
+ * How long the authority says its answer is (`content-length`), which it always says. An answer
+ * that does not say is taken to be as long as a read may take.
+ */
+export function projectedLength(response: Response): number {
+  return saidLength(response) ?? FUNCTION_READ_BYTES;
 }

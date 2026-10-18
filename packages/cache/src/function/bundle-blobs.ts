@@ -1,9 +1,4 @@
-import {
-  concatBytes,
-  isDeadlineError,
-  releaseStream,
-  withDeadline,
-} from '@stayingupwind/core/util';
+import { isDeadlineError, releaseStream, withDeadline } from '@stayingupwind/core/util';
 import {
   PREFETCH_BLOB_PATH,
   PREFETCH_INTERNAL_ORIGIN,
@@ -11,7 +6,12 @@ import {
 } from '@stayingupwind/host/bindings';
 import type { BundleBlobReader, BundleBlobsInit } from '@stayingupwind/runtime/bundle-blobs';
 
-import { FUNCTION_READ_BYTES, functionReadBudget } from './read-budget.ts';
+import {
+  beginBody,
+  type BodyRead,
+  FUNCTION_READ_BYTES,
+  functionReadBudget,
+} from './read-budget.ts';
 
 /**
  * One blob of a deployment's own bundle, read from the Worker that keeps the build's outputs.
@@ -49,66 +49,7 @@ interface PrefetchService {
   fetch(request: Request): Promise<Response>;
 }
 
-/** Workers adds this native operation; other hosts may expose only the standard BYOB reader. */
-type NativeRead = (
-  this: ReadableStreamBYOBReader,
-  min: number,
-  view: Uint8Array<ArrayBuffer>,
-) => Promise<ReadableStreamReadResult<Uint8Array>>;
-
-type ReadResult = Uint8Array | ReadableStreamReadResult<Uint8Array>;
-interface BodyRead {
-  readonly reader: ReadableStreamDefaultReader<Uint8Array> | ReadableStreamBYOBReader;
-  readonly pending: Promise<ReadResult>;
-}
 const WRONG_LENGTH = 'bundle blob length mismatch';
-
-function nativeReadOf(reader: ReadableStreamBYOBReader): NativeRead | undefined {
-  const read: unknown = Reflect.get(reader, 'readAtLeast');
-  return typeof read === 'function' ? (read as NativeRead) : undefined;
-}
-
-/** Only non-byte adapter streams take this bounded chunk path; native service bodies do not. */
-async function otherBytes(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  limit: number,
-): Promise<Uint8Array> {
-  const parts: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) return concatBytes(parts);
-    total += value.byteLength;
-    if (total > limit) throw new Error(WRONG_LENGTH);
-    parts.push(value);
-  }
-}
-
-/** One sentinel byte distinguishes exact EOF from a larger answer without reading it whole. */
-function beginBody(body: ReadableStream<Uint8Array>, limit: number): BodyRead {
-  let byob: ReadableStreamBYOBReader | undefined;
-  try {
-    byob = body.getReader({ mode: 'byob' });
-  } catch {
-    // A custom host may answer with a non-byte stream; keep that path bounded too.
-  }
-  if (byob !== undefined) {
-    const read = nativeReadOf(byob);
-    if (read !== undefined) {
-      const capacity = limit + 1;
-      try {
-        return { reader: byob, pending: read.call(byob, capacity, new Uint8Array(capacity)) };
-      } catch (error) {
-        releaseStream(byob, 'bundle blob reader not started');
-        byob.releaseLock();
-        throw error;
-      }
-    }
-    byob.releaseLock();
-  }
-  const reader = body.getReader();
-  return { reader, pending: otherBytes(reader, limit) };
-}
 
 /** A declared bundle size, held to the isolate's existing whole-read ceiling. */
 function readLimit(expected: number | undefined): number {
@@ -148,7 +89,7 @@ async function blobOf(
       if (expected !== undefined && expected !== 0) throw new Error(WRONG_LENGTH);
       return new Uint8Array();
     }
-    reading = beginBody(answer.body, limit);
+    reading = beginBody(answer.body, limit, 'bundle blob');
     request.signal.addEventListener('abort', abort, { once: true });
     const result = await reading.pending;
     request.signal.throwIfAborted();

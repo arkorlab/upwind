@@ -54,8 +54,13 @@ import { ArtifactCopies, type FunctionCacheNaming } from './artifacts.ts';
 import { requestedEntryId } from './entry-identity.ts';
 import {
   ArtifactRoom,
+  beginBody,
+  type BodyRead,
   FUNCTION_READ_BYTES as AUTHORITY_READ_BYTES,
   functionReadBudget,
+  isBodyLengthError,
+  projectedLength,
+  saidLength,
   type ReadBudget,
 } from './read-budget.ts';
 
@@ -127,22 +132,6 @@ const ARTIFACT_READ_DEADLINE_MS = 10_000;
  * that long, or for good where its caller hands no signal.
  */
 const RECORD_READ_DEADLINE_MS = ARTIFACT_READ_DEADLINE_MS;
-const DIGITS = /^\d+$/u;
-
-/** How long an answer says it is (`content-length`); `undefined` for one that does not say. */
-function saidLength(response: Response): number | undefined {
-  const length = response.headers.get('content-length');
-  return length !== null && DIGITS.test(length) ? Number(length) : undefined;
-}
-
-/**
- * How long the authority says its answer is (`content-length`), which it always says. An answer
- * that does not say is taken to be as long as a read may take.
- */
-function projectedLength(response: Response): number {
-  return saidLength(response) ?? AUTHORITY_READ_BYTES;
-}
-
 /**
  * `read`, given up once it has taken `deadlineMs`, and the request under it with it: it rejects
  * with the deadline's error, and the signal it was handed is aborted, so a gateway that has not
@@ -322,8 +311,66 @@ export class Gateway {
       if (!response.ok) {
         await this.#throwFailure(response);
       }
-      return this.#readWhole(response, asked, room ?? new ArtifactRoom(this.#reading));
+      return this.#readArtifactWhole(response, asked, room ?? new ArtifactRoom(this.#reading));
     });
+  }
+
+  /**
+   * The Function's artifact buffer, at most its shared 32 MiB room. Larger seeded or configured
+   * uploads still deploy and stream elsewhere; this cache read misses. A native body takes one
+   * BYOB read with a sentinel byte: capacity is charged up to the budget's ceiling, with one extra
+   * byte at that ceiling. Generic host streams stay bounded in chunks.
+   */
+  async #readArtifactWhole(
+    response: Response,
+    signal: AbortSignal,
+    room: ArtifactRoom,
+  ): Promise<Uint8Array | undefined> {
+    const expected = saidLength(response);
+    if (expected !== undefined && expected > AUTHORITY_READ_BYTES) {
+      releaseStream(response.body, 'artifact exceeds the Function read budget');
+      return;
+    }
+    const limit = expected ?? AUTHORITY_READ_BYTES;
+    let release: () => void;
+    try {
+      release = await room.hold(limit + 1, signal);
+    } catch (error) {
+      releaseStream(response.body, 'an artifact read given up before its body');
+      throw error;
+    }
+    let reading: BodyRead | undefined;
+    const abort = (): void => {
+      releaseStream(reading?.reader ?? response.body, 'artifact read abandoned');
+    };
+    try {
+      signal.addEventListener('abort', abort, { once: true });
+      signal.throwIfAborted();
+      if (response.body === null) {
+        return expected === undefined || expected === 0 ? new Uint8Array() : undefined;
+      }
+      reading = beginBody(response.body, limit, 'artifact');
+      if (signal.aborted) abort();
+      const result = await reading.pending;
+      signal.throwIfAborted();
+      const bytes = result instanceof Uint8Array ? result : (result.value ?? new Uint8Array());
+      if (bytes.byteLength > limit || (expected !== undefined && bytes.byteLength !== expected)) {
+        abort();
+        return;
+      }
+      return bytes;
+    } catch (error) {
+      abort();
+      if (isBodyLengthError(error)) return;
+      throw error;
+    } finally {
+      signal.removeEventListener('abort', abort);
+      try {
+        reading?.reader.releaseLock();
+      } finally {
+        release();
+      }
+    }
   }
 
   /**
