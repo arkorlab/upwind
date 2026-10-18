@@ -7,8 +7,11 @@ import {
 } from '@stayingupwind/core/request';
 
 import type { MiddlewareOutcome } from './middleware.ts';
+import { nominatedBy, statusAllowsLength } from './responses.ts';
 
 const SET_COOKIE_HEADER = 'set-cookie';
+const CONNECTION_HEADER = 'connection';
+const CONTENT_LENGTH_HEADER = 'content-length';
 
 /**
  * A rule's value as it goes out: a `Set-Cookie` scoped as a Function's is
@@ -71,14 +74,28 @@ export function setConfiguredUnder(
  */
 const LOCATION_HEADER = 'location';
 
+interface ConfiguredAnswerContext {
+  readonly forwarding: PassthroughResponseContext;
+  readonly request: Pick<Request, 'method'>;
+}
+
+/** Remove actual field names, never malformed Connection options, from a stable list. */
+function removeNominatedFields(headers: Headers, nominated: ReadonlySet<string> | undefined): void {
+  const names = [...headers.keys()];
+  for (const name of names) {
+    if (nominated?.has(name) === true) headers.delete(name);
+  }
+}
+
 /**
  * The headers the rules of `next.config` set on a request, laid on an answer a Function left them
  * off (`HEADER_RULES_LEFT_HEADER`), as the runtime lays what routing collected on its answer
  * (`withRoutingHeaders`): over the answer's own, and a cookie beside the answer's, scoped as every
  * cookie a Function answers with is. What the edge takes off every answer it hands on
  * (`forwardedResponse`) is not a rule's to put back, and a name no header can have is left off.
- * The original Function answer's `Connection` options apply to these deferred rules too: the
- * Function would otherwise have laid them before the edge removed the one hop's fields.
+ * The Function's and the rules' `Connection` options apply before middleware is merged: the
+ * runtime would have laid the rules before forwarding removed the one hop's fields. A HEAD's
+ * configured length is kept under the same status policy as an ordinary forwarded answer.
  *
  * The Function leaves off only the rules that set headers. Its redirects ahead of the middleware
  * stay, each with its `Location`, so none is laid here: on any other answer — a path a redirect
@@ -89,13 +106,25 @@ const LOCATION_HEADER = 'location';
 export function layConfiguredOver(
   headers: Headers,
   configured: ConfiguredHeaders,
-  scope: PassthroughResponseContext,
-  nominated: ReadonlySet<string> | undefined,
+  answer: Response,
+  context: ConfiguredAnswerContext,
 ): void {
+  const connection = configured.headers[CONNECTION_HEADER];
+  const nominated = nominatedBy(answer.headers, connection);
+  if (connection !== undefined) {
+    removeNominatedFields(headers, nominated);
+  }
+  const scope = context.forwarding;
   for (const [name, value] of Object.entries(configured.headers)) {
+    const length =
+      name === CONTENT_LENGTH_HEADER &&
+      context.request.method === 'HEAD' &&
+      statusAllowsLength(answer, value);
+    // The configured value replaces the old one even where this status cannot carry it.
+    if (name === CONTENT_LENGTH_HEADER && !length) headers.delete(CONTENT_LENGTH_HEADER);
     if (
       name === LOCATION_HEADER ||
-      PASSTHROUGH_RESPONSE_HEADER_DENYLIST.includes(name) ||
+      (!length && PASSTHROUGH_RESPONSE_HEADER_DENYLIST.includes(name)) ||
       name.startsWith(PLATFORM_HEADER_PREFIX) ||
       nominated?.has(name) === true
     ) {

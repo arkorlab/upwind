@@ -16,9 +16,20 @@ const ORIGINAL_COOKIE = 'own=1; Path=/';
 const RULE_COOKIE = 'rule=1; Path=/';
 const MIDDLEWARE_COOKIE = 'mw=1; Path=/';
 
+interface DeferredRequest {
+  readonly method?: string;
+  readonly headers?: Readonly<Record<string, string>>;
+}
+
 /** A Function answer after the edge ran middleware and judged the request's header rules. */
-async function handedOn(answer: Response, middlewareHeaders = new Headers()): Promise<Response> {
-  const request = new Request('https://customer.example.test/api/hello');
+async function handedOn(
+  answer: Response,
+  middlewareHeaders = new Headers(),
+  configured: DeferredRequest = {},
+): Promise<Response> {
+  const request = new Request('https://customer.example.test/api/hello', {
+    method: configured.method ?? 'GET',
+  });
   return handlePassthrough({
     request,
     forwarding: SCOPE,
@@ -41,6 +52,7 @@ async function handedOn(answer: Response, middlewareHeaders = new Headers()): Pr
           'x-rule': 'configured',
           'x-precedence': 'configured',
           'set-cookie': RULE_COOKIE,
+          ...configured.headers,
         },
         conditioned: false,
       },
@@ -114,4 +126,94 @@ describe('deferred configured headers', () => {
     expect(response.headers.get('x-precedence')).toBe('origin');
     expect(response.headers.getSetCookie()).toStrictEqual([ORIGINAL_COOKIE]);
   });
+});
+
+/** A bodyless Function answer carrying the length a corresponding GET would have. */
+function lengthAnswer(status: number, length: string | undefined, connection?: string): Response {
+  const headers = new Headers({ [HEADER_RULES_LEFT_HEADER]: '1' });
+  if (length !== undefined) headers.set('content-length', length);
+  if (connection !== undefined) headers.set('connection', connection);
+  return new Response(null, { status, headers });
+}
+
+describe('transport fields in deferred configured headers', () => {
+  it('removes rule-nominated fields from both the Function and the deferred rules', async () => {
+    const origin = functionAnswer(true);
+    origin.headers.set('x-origin-only', 'private');
+    const original = [...origin.headers];
+    const response = await handedOn(origin, new Headers(), {
+      headers: { connection: 'X-Rule, X-Origin-Only, Set-Cookie, not a name, , ' },
+    });
+
+    expect(response.headers.get('x-rule')).toBeNull();
+    expect(response.headers.get('x-origin-only')).toBeNull();
+    expect(response.headers.getSetCookie()).toStrictEqual([]);
+    expect(response.headers.get('connection')).toBeNull();
+    expect(response.headers.get('x-precedence')).toBe('configured');
+    expect([...origin.headers]).toStrictEqual(original);
+  });
+
+  it('keeps an independent middleware field and cookie after rule nominations', async () => {
+    const response = await handedOn(
+      functionAnswer(true),
+      new Headers({ 'x-rule': 'middleware', 'set-cookie': MIDDLEWARE_COOKIE }),
+      { headers: { connection: 'x-rule, set-cookie' } },
+    );
+
+    expect(response.headers.get('x-rule')).toBe('middleware');
+    expect(response.headers.getSetCookie()).toStrictEqual([MIDDLEWARE_COOKIE]);
+  });
+
+  it('honors both the Function and configured Connection options', async () => {
+    const response = await handedOn(functionAnswer(true, 'X-Precedence'), new Headers(), {
+      headers: { connection: 'x-rule' },
+    });
+
+    expect(response.headers.get('x-rule')).toBeNull();
+    expect(response.headers.get('x-precedence')).toBeNull();
+  });
+
+  it.each([
+    { method: 'HEAD', status: 200, original: '11', configured: '17', expected: '17' },
+    { method: 'HEAD', status: 304, original: '11', configured: '17', expected: '17' },
+    { method: 'HEAD', status: 204, original: '11', configured: '17', expected: null },
+    { method: 'HEAD', status: 205, original: undefined, configured: '0', expected: '0' },
+    { method: 'HEAD', status: 205, original: '100', configured: '0', expected: '0' },
+    { method: 'HEAD', status: 205, original: '0', configured: '100', expected: null },
+    { method: 'HEAD', status: 205, original: '0', configured: '0', expected: '0' },
+    { method: 'HEAD', status: 205, original: undefined, configured: '100', expected: null },
+    { method: 'GET', status: 200, original: '11', configured: '17', expected: null },
+    { method: 'GET', status: 304, original: '11', configured: '17', expected: null },
+  ])(
+    'restores $method $status length $original -> $configured under the existing forwarding policy',
+    async ({ method, status, original, configured, expected }) => {
+      const response = await handedOn(lengthAnswer(status, original), new Headers(), {
+        method,
+        headers: { 'content-length': configured },
+      });
+
+      expect(response.status).toBe(status);
+      expect(response.headers.get('content-length')).toBe(expected);
+      await expect(response.text()).resolves.toBe('');
+    },
+  );
+
+  it.each(['Function', 'rule'])(
+    'drops HEAD length nominated by the %s Connection',
+    async (where) => {
+      const response = await handedOn(
+        lengthAnswer(200, '11', where === 'Function' ? 'Content-Length' : undefined),
+        new Headers(),
+        {
+          method: 'HEAD',
+          headers: {
+            'content-length': '17',
+            ...(where === 'rule' && { connection: 'Content-Length' }),
+          },
+        },
+      );
+
+      expect(response.headers.get('content-length')).toBeNull();
+    },
+  );
 });

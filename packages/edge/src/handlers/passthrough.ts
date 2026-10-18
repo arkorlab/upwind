@@ -35,7 +35,6 @@ import {
   forwardedResponse,
   keptByNobody,
   mergeScopedMiddlewareHeaders,
-  nominatedBy,
   privateCacheControl,
 } from './responses.ts';
 import {
@@ -432,11 +431,12 @@ function layAfterMiddleware(
   headers: Headers,
   answer: Response,
   middleware: NonNullable<PassthroughInput['middleware']>,
-  scope: ForwardingContext,
+  input: Pick<PassthroughInput, 'forwarding' | 'request'>,
 ): void {
+  const scope = input.forwarding;
   const { judgedRules } = middleware;
   if (judgedRules !== undefined && answer.headers.get(HEADER_RULES_LEFT_HEADER) === '1') {
-    layConfiguredOver(headers, judgedRules, scope, nominatedBy(answer.headers));
+    layConfiguredOver(headers, judgedRules, answer, input);
   }
   // After the Worker's own, which may repeat the middleware's cookies as Next.js writes them back
   // (`splice/cookies.ts`): a browser keeps the last of a cookie set twice, and the middleware's is
@@ -497,7 +497,7 @@ export async function handlePassthrough(input: PassthroughInput): Promise<Respon
   const response = forwardedResponse(originResponse, input.forwarding, input.request.method);
   const headers = response.headers;
   if (input.middleware !== undefined) {
-    layAfterMiddleware(headers, originResponse, input.middleware, input.forwarding);
+    layAfterMiddleware(headers, originResponse, input.middleware, input);
   }
   privateCacheControl(headers);
   if (input.privateDelivery === true) {

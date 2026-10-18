@@ -83,10 +83,17 @@ const CONTENT_LENGTH_HEADER = 'content-length';
  * removes them with it (RFC 9110 §7.6.1), as a response stored whole loses them
  * (`filterStoredResponseHeaders`). Matched against the message's own names, never handed to
  * `Headers` as names, so an option that is no header's name removes nothing and throws nothing.
- * `undefined` for a message without one, which is most.
+ * A deferred rule can add its options without copying Headers. `undefined` without either,
+ * which is most.
  */
-export function nominatedBy(headers: Headers): ReadonlySet<string> | undefined {
-  const connection = headers.get(CONNECTION_HEADER);
+export function nominatedBy(
+  headers: Headers,
+  additional?: string,
+): ReadonlySet<string> | undefined {
+  let connection = headers.get(CONNECTION_HEADER);
+  if (additional !== undefined) {
+    connection = connection === null ? additional : `${connection},${additional}`;
+  }
   return connection === null
     ? undefined
     : new Set(connection.split(',').map((option) => option.trim().toLowerCase()));
@@ -141,15 +148,17 @@ export function readMiddlewareAnswer(
 
 /**
  * Whether an answer's status lets it say how long it is (RFC 9110 §8.6): no 1xx or 204 does, and a
- * 205 says only that it is empty, which is all a 205 is (§15.3.6).
+ * 205 says only that it is empty, which is all a 205 is (§15.3.6). A deferred value is judged
+ * in place of the original length, as if the runtime had already applied that rule.
  */
-function statusAllowsLength(response: Response): boolean {
+export function statusAllowsLength(response: Response, candidate?: string): boolean {
   const { status } = response;
   if (status < HTTP_OK_STATUS || status === NULL_BODY_STATUS.noContent) {
     return false;
   }
   return (
-    status !== NULL_BODY_STATUS.resetContent || response.headers.get(CONTENT_LENGTH_HEADER) === '0'
+    status !== NULL_BODY_STATUS.resetContent ||
+    (candidate ?? response.headers.get(CONTENT_LENGTH_HEADER)) === '0'
   );
 }
 
