@@ -96,7 +96,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: web-site/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
-      - run: pnpm typegen
+      - run: pnpm run typegen
       - run: pnpm typecheck
       # Build the website with its released adapter, independently of workspace packages.
       - run: pnpm build
