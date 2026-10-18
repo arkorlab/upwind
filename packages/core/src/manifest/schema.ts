@@ -439,6 +439,11 @@ export const headerRuleSchema = z.object({
    * the rule matches can. Absent where the rule sets no policy it widens.
    */
   documentHeaders: z.record(z.string(), z.string()).optional(),
+  /**
+   * Recovery sources for raw names whose enforcing policy is known only after interpolation.
+   * Applied only to a document's resolved CSP, leaving other captured fields as configured.
+   */
+  documentRecoverySources: z.record(z.string(), z.string()).optional(),
 });
 export type HeaderRule = z.infer<typeof headerRuleSchema>;
 
