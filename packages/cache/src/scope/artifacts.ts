@@ -22,6 +22,9 @@ export interface ArtifactReference {
  * thousand artifacts or more, and each id is a digest.
  */
 const ARTIFACT_IDS_AT_ONCE = 128;
+/** SQLite takes 100 bindings: one SHA or location per lookup, six fields per borrowed insert. */
+const REFERENCES_PER_LOOKUP = 100;
+const BORROWED_PER_INSERT = 16;
 
 /** Ids for the blobs a commit names, derived ahead of its transaction. */
 export async function artifactIdsFor(
@@ -106,6 +109,85 @@ export function referenceArtifact(
     ref.sha256,
   );
   return { addedBytes };
+}
+
+type BorrowedArtifact = Omit<ArtifactReference, 'owned'>;
+
+interface BorrowedReferences {
+  readonly first: BorrowedArtifact;
+  count: number;
+  /** The existing location wins; only its pending deletion is taken back. */
+  canonical: string;
+}
+
+/** The first proposed reference per SHA, and every occurrence that contributes to its count. */
+function borrowedCounts(refs: Iterable<BorrowedArtifact>): Map<string, BorrowedReferences> {
+  const bySha = new Map<string, BorrowedReferences>();
+  for (const ref of refs) {
+    const held = bySha.get(ref.sha256);
+    if (held === undefined) {
+      bySha.set(ref.sha256, { first: ref, count: 1, canonical: ref.storageRef });
+    } else {
+      held.count += 1;
+    }
+  }
+  return bySha;
+}
+
+function keepBorrowedLocations(
+  sql: SqlStorage,
+  bySha: ReadonlyMap<string, BorrowedReferences>,
+): void {
+  const refs = [...bySha.values()];
+  for (let offset = 0; offset < refs.length; offset += REFERENCES_PER_LOOKUP) {
+    const batch = refs.slice(offset, offset + REFERENCES_PER_LOOKUP);
+    const places = batch.map(() => '?').join(', ');
+    const heldRows = sql.exec<{ sha256: string; storage_ref: string }>(
+      `SELECT sha256, storage_ref FROM artifacts WHERE sha256 IN (${places})`,
+      ...batch.map(({ first }) => first.sha256),
+    );
+    for (const row of heldRows) {
+      const held = bySha.get(row.sha256);
+      if (held !== undefined) held.canonical = row.storage_ref;
+    }
+  }
+  const keys = [...new Set(refs.map((ref) => ref.canonical))];
+  for (let offset = 0; offset < keys.length; offset += REFERENCES_PER_LOOKUP) {
+    const batch = keys.slice(offset, offset + REFERENCES_PER_LOOKUP);
+    const places = batch.map(() => '?').join(', ');
+    sql.exec(`DELETE FROM pending_deletions WHERE storage_ref IN (${places})`, ...batch);
+  }
+}
+
+/**
+ * The build's references, within the seed's existing transaction. Count every output occurrence,
+ * retaining the first proposed location for a new SHA and every canonical field of an existing
+ * row. Only the count and reference time change on a row already held, as `referenceArtifact`
+ * changes them. Borrowed blobs add nothing to the scope's byte quota.
+ */
+export function referenceBuildArtifacts(
+  sql: SqlStorage,
+  refs: Iterable<BorrowedArtifact>,
+  now: number,
+): void {
+  const bySha = borrowedCounts(refs);
+  keepBorrowedLocations(sql, bySha);
+  const counted = [...bySha.values()];
+  for (let offset = 0; offset < counted.length; offset += BORROWED_PER_INSERT) {
+    const batch = counted.slice(offset, offset + BORROWED_PER_INSERT);
+    const values = batch.map(() => '(?, ?, ?, ?, 0, ?, ?)').join(', ');
+    const bindings: SqlStorageValue[] = [];
+    for (const { first, count } of batch) {
+      bindings.push(first.artifactId, first.sha256, first.storageRef, first.byteLength, count, now);
+    }
+    sql.exec(
+      `INSERT INTO artifacts (artifact_id, sha256, storage_ref, byte_length, owned, refs, referenced_at)
+       VALUES ${values}
+       ON CONFLICT (sha256) DO UPDATE SET refs = refs + excluded.refs,
+         referenced_at = excluded.referenced_at`,
+      ...bindings,
+    );
+  }
 }
 
 export interface ReleasedArtifact {

@@ -38,6 +38,7 @@ import {
 
 import {
   type ManifestContext,
+  maySetPreloadPolicy,
   middlewareMatchersOf,
   routeArtifactsOf,
   routeCachesOf,
@@ -75,9 +76,6 @@ export function oversizedManifest(
     ? `this deployment's manifest lists so many routes, files, pathnames and rules that the edge would take ${charge} bytes to hold it, past the ${EDGE_ISOLATE_BUDGET_BYTES} an isolate holds everything in, so fewer prerendered routes, files or rules`
     : undefined;
 }
-
-/** The policies a hint answers to (`withoutForbidden`), by the lowercase names they go by. */
-const POLICY_HEADERS: ReadonlySet<string> = new Set(['content-security-policy', 'referrer-policy']);
 
 /**
  * The pages a deployment's manifest routes, asked of the build as its servability is
@@ -259,12 +257,7 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
     preloads: input.preloads,
     caches,
     matchers: middlewareMatchers ?? [],
-    policyRules: rules.filter((rule) => {
-      return (
-        (rule.has !== undefined || rule.missing !== undefined) &&
-        Object.keys(rule.headers).some((name) => POLICY_HEADERS.has(name.toLowerCase()))
-      );
-    }),
+    policyRules: rules.filter(maySetPreloadPolicy),
     recoverySource: input.recoverySource,
     resumable: new Set(resumablePrerenders(bundle).map((prerender) => prerender.id)),
     segments: routeSegmentsOf(bundle, input.encodings, servable),

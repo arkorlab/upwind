@@ -50,6 +50,8 @@ const META_CONTROL_TAG_PENDING_COUNT = 'control_tag_pending_count';
 const META_RETIRED_CONTROL_TAG_REPEAT_AT = 'retired_control_tag_repeat_at';
 export const CONTROL_TAG_PENDING_LIMIT = 1024;
 const KV_LIST_GRACE_MS = 60_000;
+/** SQLite takes 100 bound parameters: a tag and its entry per row, in the same transaction. */
+const TAG_REFS_PER_INSERT = 50;
 
 export interface TagRef {
   readonly tagId: string;
@@ -80,11 +82,12 @@ export function tagKindFor(value: string, kind: TagKind | undefined): TagKind {
 
 export function replaceEntryTags(sql: SqlStorage, entryId: string, refs: readonly TagRef[]): void {
   sql.exec(`DELETE FROM entry_tags WHERE entry_id = ?`, entryId);
-  for (const ref of refs) {
+  for (let offset = 0; offset < refs.length; offset += TAG_REFS_PER_INSERT) {
+    const batch = refs.slice(offset, offset + TAG_REFS_PER_INSERT);
+    const values = batch.map(() => '(?, ?)').join(', ');
     sql.exec(
-      `INSERT OR IGNORE INTO entry_tags (tag_id, entry_id) VALUES (?, ?)`,
-      ref.tagId,
-      entryId,
+      `INSERT OR IGNORE INTO entry_tags (tag_id, entry_id) VALUES ${values}`,
+      ...batch.flatMap((ref) => [ref.tagId, entryId]),
     );
   }
 }

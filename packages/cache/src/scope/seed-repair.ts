@@ -1,11 +1,14 @@
 import { canonicalJson } from '@stayingupwind/core/artifact';
 import type { OutputSnapshot } from '@stayingupwind/core/cache';
-import type { SeedEntryInput } from '@stayingupwind/host/cache';
+import { withDeadline } from '@stayingupwind/core/util';
+import type { SeedEntriesResult, SeedEntryInput } from '@stayingupwind/host/cache';
 
+import { findArtifactBySha } from './artifacts.ts';
 import { entryStateEvent } from './attempts.ts';
 import { type EntryIdentity, findEntry, requireEntry } from './entries.ts';
 import { findGeneration } from './generations.ts';
 import type { EventInput } from './history.ts';
+import { checkFault, type TestFaults, verifyBlob } from './io.ts';
 import { headerFieldsOf, InvalidArtifactError, unwritableRecord } from './records.ts';
 import {
   type EntryRow,
@@ -14,7 +17,7 @@ import {
   toEntryState,
   toPublicGeneration,
 } from './rows.ts';
-import { deleteMeta, readMeta, writeMeta } from './state.ts';
+import { deleteMeta, readMeta, type Refusal, refuse, writeMeta } from './state.ts';
 import type { TxInput } from './tx.ts';
 
 const FAILURE_PREFIX = 'seed_artifact_failure:';
@@ -50,6 +53,182 @@ interface SeedLocations {
   readonly entry: SeedEntryInput;
   readonly identity: Pick<EntryIdentity, 'entryId'>;
   readonly outputs: readonly OutputSnapshot[];
+}
+
+export interface SeedLocationCheck {
+  readonly sha256: string;
+  readonly byteLength: number;
+  readonly storageRef: string;
+}
+
+/** Internal preparation only: no entry, generation, revision or event has changed. */
+export interface SeedRepairVerification {
+  readonly kind: 'verify-seed-locations';
+  readonly locations: readonly SeedLocationCheck[];
+}
+
+export type SeedLocationProofs = ReadonlyMap<string, boolean>;
+type SeedOutcome = SeedEntriesResult | Refusal | SeedRepairVerification;
+
+export function needsSeedVerification(value: SeedOutcome): value is SeedRepairVerification {
+  return 'kind' in value && value.kind === 'verify-seed-locations';
+}
+
+/** Each preparation committed nothing; verification waits outside the writer's queue. */
+export async function finishSeedRepair(
+  prepared: SeedRepairVerification,
+  deps: {
+    readonly bucket: Pick<R2Bucket, 'get'>;
+    readonly retry: (proofs: SeedLocationProofs) => Promise<SeedOutcome>;
+    readonly faults: () => TestFaults;
+  },
+): Promise<SeedEntriesResult | Refusal> {
+  const proofs = new Map<string, boolean>();
+  let result: SeedOutcome = prepared;
+  while (needsSeedVerification(result)) {
+    try {
+      checkFault(deps.faults, 'r2');
+      await verifySeedLocations((key) => deps.bucket.get(key), result.locations, proofs);
+    } catch {
+      return refuse('internal', 'the proposed shared artifact locations could not be verified');
+    }
+    result = await deps.retry(proofs);
+  }
+  return result;
+}
+
+export function seedLocationKey(location: SeedLocationCheck): string {
+  return JSON.stringify([location.sha256, location.byteLength, location.storageRef]);
+}
+
+/** The artifact gateway's ten-second read budget, applied to each verification phase. */
+const REPAIR_VERIFICATION_MS = 10_000;
+
+/** Called only after preparation has left the mutation queue, with no transaction held. */
+export async function verifySeedLocations(
+  open: Parameters<typeof verifyBlob>[0],
+  locations: readonly SeedLocationCheck[],
+  proofs: Map<string, boolean>,
+  deadlineMs = REPAIR_VERIFICATION_MS,
+): Promise<void> {
+  const controller = new AbortController();
+  const checking = async (): Promise<void> => {
+    for (const location of locations) {
+      controller.signal.throwIfAborted();
+      proofs.set(seedLocationKey(location), await verifyBlob(open, location, controller.signal));
+    }
+  };
+  try {
+    await withDeadline(checking(), deadlineMs, 'seed artifact verification');
+  } finally {
+    controller.abort();
+  }
+}
+
+/** Ask only for changed, shared borrowed rows a failed seed could actually relocate. */
+export function seedRepairVerification(
+  sql: SqlStorage,
+  plans: readonly SeedLocations[],
+  proofs: SeedLocationProofs,
+  addedRefs: ReadonlyMap<string, number>,
+): SeedRepairVerification | undefined {
+  const locations = new Map<string, SeedLocationCheck>();
+  for (const plan of plans) {
+    const generation = repairableGeneration(sql, plan);
+    if (generation === undefined) continue;
+    const previous = generationOutputs(generation);
+    const outputs = relocatedOutputs(previous, plan.outputs);
+    if (outputs === undefined) continue;
+    addSharedChecks(sql, previous, outputs, { proofs, addedRefs, locations });
+  }
+  return locations.size === 0
+    ? undefined
+    : { kind: 'verify-seed-locations', locations: [...locations.values()] };
+}
+
+function addSharedChecks(
+  sql: SqlStorage,
+  previous: readonly OutputSnapshot[],
+  outputs: readonly OutputSnapshot[],
+  checks: {
+    readonly proofs: SeedLocationProofs;
+    readonly addedRefs: ReadonlyMap<string, number>;
+    readonly locations: Map<string, SeedLocationCheck>;
+  },
+): void {
+  const { proofs, addedRefs, locations } = checks;
+  for (const [index, output] of outputs.entries()) {
+    for (const [offset, artifact] of output.artifacts.entries()) {
+      const before = previous[index]?.artifacts[offset]?.storageRef;
+      if (artifact.storageRef === before) continue;
+      const row = findArtifactBySha(sql, artifact.sha256);
+      if (
+        row?.owned !== 0 ||
+        row.refs + (addedRefs.get(artifact.sha256) ?? 0) <= 1 ||
+        row.storage_ref !== before
+      )
+        continue;
+      const key = seedLocationKey(artifact);
+      if (!proofs.has(key)) locations.set(key, artifact);
+    }
+  }
+}
+
+function protectedOutputs(
+  sql: SqlStorage,
+  previous: readonly OutputSnapshot[],
+  proposed: readonly OutputSnapshot[],
+  proofs: SeedLocationProofs,
+): OutputSnapshot[] {
+  const locations = new Map<string, string>();
+  const selected = new Set<string>();
+  for (const [index, output] of proposed.entries()) {
+    for (const [offset, artifact] of output.artifacts.entries()) {
+      selectLocation(sql, artifact, previous[index]?.artifacts[offset]?.storageRef, {
+        proofs,
+        locations,
+        selected,
+      });
+    }
+  }
+  return proposed.map((output) => {
+    return {
+      ...output,
+      artifacts: output.artifacts.map((artifact) => {
+        return {
+          ...artifact,
+          storageRef: locations.get(artifact.sha256) ?? artifact.storageRef,
+        };
+      }),
+    };
+  });
+}
+
+function selectLocation(
+  sql: SqlStorage,
+  artifact: SeedLocationCheck,
+  before: string | undefined,
+  chosen: {
+    readonly proofs: SeedLocationProofs;
+    readonly locations: Map<string, string>;
+    readonly selected: Set<string>;
+  },
+): void {
+  const { locations, proofs, selected } = chosen;
+  if (selected.has(artifact.sha256)) return;
+  const row = findArtifactBySha(sql, artifact.sha256);
+  if (row === undefined) return;
+  locations.set(artifact.sha256, row.storage_ref);
+  if (
+    row.owned === 0 &&
+    row.byte_length === artifact.byteLength &&
+    row.storage_ref === before &&
+    artifact.storageRef !== before &&
+    (row.refs <= 1 || proofs.get(seedLocationKey(artifact)) === true)
+  ) {
+    locations.set(artifact.sha256, artifact.storageRef);
+    selected.add(artifact.sha256);
+  }
 }
 
 /** Only the locations may differ: the generation's bytes and every other field stay its own. */
@@ -94,12 +273,19 @@ function repairableGeneration(sql: SqlStorage, plan: SeedLocations): GenerationR
     : undefined;
 }
 
-function repairOne(input: TxInput, plan: SeedLocations, events: EventInput[]): boolean {
+function repairOne(
+  input: TxInput,
+  plan: SeedLocations,
+  events: EventInput[],
+  proofs: SeedLocationProofs,
+): boolean {
   const { sql, revision, now, scopeId } = input;
   const generation = repairableGeneration(sql, plan);
   if (generation === undefined) return false;
   const previous = generationOutputs(generation);
-  const outputs = relocatedOutputs(previous, plan.outputs);
+  const proposed = relocatedOutputs(previous, plan.outputs);
+  const outputs =
+    proposed === undefined ? undefined : protectedOutputs(sql, previous, proposed, proofs);
   const entry = findEntry(sql, generation.entry_id);
   if (
     outputs === undefined ||
@@ -111,15 +297,19 @@ function repairOne(input: TxInput, plan: SeedLocations, events: EventInput[]): b
   ) {
     return false;
   }
-  // A borrowed artifact may be shared by several entries. Relocate its reference, never its
-  // ownership or reference count, and never a different location another change has given it.
+  // Another entry may already use this shared location. Move it only to verified identical bytes;
+  // a bad proposed copy leaves its canonical location in both the row and the repaired snapshot.
   for (const [index, output] of outputs.entries()) {
     for (const [offset, artifact] of output.artifacts.entries()) {
+      const before = previous[index]?.artifacts[offset]?.storageRef ?? '';
+      if (artifact.storageRef === before) continue;
       sql.exec(
-        `UPDATE artifacts SET storage_ref = ? WHERE sha256 = ? AND storage_ref = ? AND owned = 0`,
+        `UPDATE artifacts SET storage_ref = ?
+         WHERE sha256 = ? AND storage_ref = ? AND byte_length = ? AND owned = 0`,
         artifact.storageRef,
         artifact.sha256,
-        previous[index]?.artifacts[offset]?.storageRef ?? '',
+        before,
+        artifact.byteLength,
       );
     }
   }
@@ -152,13 +342,15 @@ function repairOne(input: TxInput, plan: SeedLocations, events: EventInput[]): b
 
 /**
  * A seed whose record has never been acknowledged in KV may correct where its unchanged bytes are
- * kept after projection found them missing or corrupt. No seed reads storage to ask in advance,
- * and a retry changes neither an acknowledged generation nor one a render holds a lease to replace.
+ * kept after projection found them missing or corrupt. Only a changed shared location needs a
+ * streaming check before repair; ordinary seeds and serving reads do not ask storage in advance.
+ * A retry changes neither an acknowledged generation nor one a render holds a lease to replace.
  */
 export function repairSeedEntries(
   input: TxInput,
   plans: readonly SeedLocations[],
   events: EventInput[],
+  proofs: SeedLocationProofs,
 ): number {
-  return plans.reduce((count, plan) => count + Number(repairOne(input, plan, events)), 0);
+  return plans.reduce((count, plan) => count + Number(repairOne(input, plan, events, proofs)), 0);
 }

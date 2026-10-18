@@ -1,5 +1,6 @@
 import { sha256Hex } from '@stayingupwind/core/artifact';
 import {
+  artifactIdFor,
   buildGenerationIdFor,
   decodeGenerationPack,
   deriveEntry,
@@ -13,6 +14,10 @@ import { runInDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 
+import { limitsOf, parseVars } from '../src/env.ts';
+import { NO_HISTORY } from '../src/scope/history.ts';
+import { seedLocationKey } from '../src/scope/seed-repair.ts';
+import { planSeedEntries } from '../src/scope/seed.ts';
 import { scopeStub } from '../src/scope/stub.ts';
 
 const NOW = 1_800_000_000_000;
@@ -41,11 +46,11 @@ async function scopeForTest() {
 
 type Scope = Awaited<ReturnType<typeof scopeForTest>>;
 
-async function planFor(scope: Scope, pathname = '/') {
+async function planFor(scope: Scope, pathname = '/', body = BODY) {
   const descriptor = { kind: 'app-page' as const, route: pathname, pathname };
   const { entryId } = await deriveEntry(scope.scopeId, descriptor);
   const generationId = await buildGenerationIdFor(scope.scopeId, entryId);
-  const bytes = encodeUtf8(BODY);
+  const bytes = encodeUtf8(body);
   const sha256 = await sha256Hex(bytes);
   const storageRef = `build/${scope.scopeId}/${sha256}`;
   await env.ARTIFACTS.put(storageRef, bytes as BufferSource);
@@ -110,12 +115,33 @@ function seedBatch(scope: Scope, entries: readonly SeedEntryInput[]) {
   );
 }
 
+async function withSharedRsc(scope: Scope, plan: Plan, storageRef: string) {
+  const bytes = encodeUtf8('the shared RSC');
+  const sha256 = await sha256Hex(bytes);
+  const artifact = {
+    ...plan.artifact,
+    role: 'rsc' as const,
+    sha256,
+    byteLength: bytes.byteLength,
+    contentType: 'text/x-component',
+    storageRef,
+  };
+  plan.seed.generation.outputs[0]?.artifacts.push(artifact);
+  return { artifact, artifactId: await artifactIdFor(scope.scopeId, sha256), bytes };
+}
+
 async function recordFor(scope: Scope, entryId: string) {
   const stored = await env.CACHE_STATE.get(kvGenerationKey(scope.scopeId, entryId), 'arrayBuffer');
   if (stored === null) throw new Error('the entry has no delivery record');
   const decoded = decodeGenerationPack(new Uint8Array(stored));
   if (decoded.kind !== 'ok') throw new Error(`the delivery record is ${decoded.kind}`);
   return decoded.pack;
+}
+
+function rscOf(seed: SeedEntryInput) {
+  const artifact = seed.generation.outputs[0]?.artifacts.find((item) => item.role === 'rsc');
+  if (artifact === undefined) throw new Error('the test seed has no RSC artifact');
+  return artifact;
 }
 
 function rowsFor(scope: Scope, plan: Plan) {
@@ -147,9 +173,14 @@ function rowsFor(scope: Scope, plan: Plan) {
   });
 }
 
-async function badLocationFor(scope: Scope, fault: string) {
+async function badLocationFor(
+  scope: Scope,
+  fault: string,
+  byteLength = encodeUtf8(BODY).byteLength,
+) {
   const location = `bad/${scope.scopeId}`;
-  if (fault === 'corrupt') await env.ARTIFACTS.put(location, 'other bytes');
+  if (fault === 'corrupt')
+    await env.ARTIFACTS.put(location, new Uint8Array(byteLength) as BufferSource);
   return location;
 }
 
@@ -163,6 +194,186 @@ async function lease(scope: Scope, plan: Plan) {
 }
 
 describe('a seed whose artifact projection could not read', () => {
+  it('uses one verified canonical location for duplicate SHA roles in a generation', async () => {
+    const scope = await scopeForTest();
+    const plan = await planFor(scope);
+    plan.seed.generation.outputs[0]?.artifacts.push({ ...plan.artifact, role: 'rsc' });
+    await seedBatch(scope, [atLocation(plan, 'missing/shared')]);
+    const retry = atLocation(plan, 'missing/shared');
+    rscOf(retry).storageRef = plan.artifact.storageRef;
+
+    await seedBatch(scope, [retry]);
+
+    expect(decodeUtf8((await recordFor(scope, plan.entryId)).html)).toBe(BODY);
+    await expect(rowsFor(scope, plan)).resolves.toMatchObject({
+      artifact: { owned: 0, refs: 2, storage_ref: plan.artifact.storageRef },
+    });
+  });
+
+  it.each(['unchanged', 'invalid', 'valid'] as const)(
+    'reuses the advanced canonical location for a later %s proposal',
+    async (proposal) => {
+      const scope = await scopeForTest();
+      const first = await planFor(scope, '/first');
+      const second = await planFor(scope, '/second');
+      const locations = {
+        unchanged: `missing/shared/${scope.scopeId}`,
+        invalid: `missing/proposed/${scope.scopeId}`,
+        valid: `build/alternate/${scope.scopeId}`,
+      };
+      await env.ARTIFACTS.put(locations.valid, BODY);
+      await seedBatch(scope, [
+        atLocation(first, locations.unchanged),
+        atLocation(second, locations.unchanged),
+      ]);
+
+      await seedBatch(scope, [first.seed, atLocation(second, locations[proposal])]);
+
+      expect(decodeUtf8((await recordFor(scope, first.entryId)).html)).toBe(BODY);
+      expect(decodeUtf8((await recordFor(scope, second.entryId)).html)).toBe(BODY);
+      await expect(rowsFor(scope, second)).resolves.toMatchObject({
+        artifact: { owned: 0, refs: 2, storage_ref: first.artifact.storageRef },
+      });
+    },
+  );
+
+  it('prepares shared verification without recording anything, then rechecks a newer lease', async () => {
+    const scope = await scopeForTest();
+    const first = await planFor(scope, '/first');
+    const fresh = await planFor(scope, '/fresh');
+    await seedBatch(scope, [atLocation(first, 'missing/shared')]);
+    const batch = { scopeId: scope.scopeId, batchIndex: 0, entries: [first.seed, fresh.seed] };
+    const prepared = await runInDurableObject(scope.stub, async (_instance, state) => {
+      const sql = state.storage.sql;
+      const snapshot = () => {
+        return [
+          sql.exec(`SELECT * FROM scope`).toArray(),
+          sql.exec(`SELECT * FROM entries ORDER BY entry_id`).toArray(),
+          sql.exec(`SELECT * FROM generations ORDER BY generation_id`).toArray(),
+          sql.exec(`SELECT * FROM artifacts ORDER BY artifact_id`).toArray(),
+          sql.exec(`SELECT * FROM meta ORDER BY key`).toArray(),
+        ];
+      };
+      const before = snapshot();
+      const apply = await planSeedEntries(
+        {
+          sql,
+          scopeId: scope.scopeId,
+          limits: limitsOf(parseVars({})),
+          now: NOW,
+          revision: 100,
+          history: {
+            ...NO_HISTORY,
+            append: () => {
+              throw new Error('preparation recorded history');
+            },
+          },
+        },
+        batch,
+      );
+      const result = state.storage.transactionSync(apply);
+      return { before, after: snapshot(), result };
+    });
+
+    expect(prepared.after).toStrictEqual(prepared.before);
+    expect(prepared.result).toMatchObject({
+      kind: 'verify-seed-locations',
+      locations: [first.artifact],
+    });
+
+    await lease(scope, first);
+    const before = await rowsFor(scope, first);
+    const result = await runInDurableObject(scope.stub, async (_instance, state) => {
+      const apply = await planSeedEntries(
+        {
+          sql: state.storage.sql,
+          scopeId: scope.scopeId,
+          limits: limitsOf(parseVars({})),
+          now: NOW,
+          revision: before.revision + 1,
+          history: NO_HISTORY,
+        },
+        { ...batch, entries: [first.seed] },
+        new Map([[seedLocationKey(first.artifact), true]]),
+      );
+      return state.storage.transactionSync(apply);
+    });
+
+    expect(result).toMatchObject({ inserted: 0, skipped: 1, revision: before.revision });
+    await expect(rowsFor(scope, first)).resolves.toStrictEqual(before);
+  });
+
+  it('repairs a shared side artifact while another unacknowledged reference is outside the batch', async () => {
+    const scope = await scopeForTest();
+    const first = await planFor(scope, '/first', '<html>first</html>');
+    const second = await planFor(scope, '/second', '<html>second</html>');
+    const sharedRef = `shared/${scope.scopeId}`;
+    const shared = await withSharedRsc(scope, first, sharedRef);
+    await withSharedRsc(scope, second, sharedRef);
+    await env.ARTIFACTS.put(sharedRef, shared.bytes as BufferSource);
+    await seedBatch(scope, [atLocation(first, 'missing/all'), atLocation(second, 'missing/all')]);
+    const secondBefore = await rowsFor(scope, second);
+
+    await seedBatch(scope, [first.seed]);
+
+    await expect(scope.stub.artifact(shared.artifactId)).resolves.toMatchObject({
+      storageRef: sharedRef,
+    });
+    await expect(rowsFor(scope, second)).resolves.toMatchObject({
+      entry: secondBefore.entry,
+      generation: secondBefore.generation,
+    });
+    expect(decodeUtf8((await recordFor(scope, first.entryId)).html)).toBe('<html>first</html>');
+
+    await seedBatch(scope, [second.seed]);
+
+    expect(decodeUtf8((await recordFor(scope, second.entryId)).html)).toBe('<html>second</html>');
+  });
+
+  it.each(['missing', 'corrupt'])(
+    "keeps an acknowledged entry's shared RSC location when another retry proposes %s bytes",
+    async (fault) => {
+      const scope = await scopeForTest();
+      const healthy = await planFor(scope, '/healthy', '<html>healthy</html>');
+      const failed = await planFor(scope, '/failed', '<html>failed</html>');
+      const sharedRef = `shared/${scope.scopeId}`;
+      const shared = await withSharedRsc(scope, healthy, sharedRef);
+      await withSharedRsc(scope, failed, sharedRef);
+      await env.ARTIFACTS.put(sharedRef, shared.bytes as BufferSource);
+      await seedBatch(scope, [healthy.seed]);
+      const broken = atLocation(failed, 'missing/html');
+      rscOf(broken).storageRef = sharedRef;
+      await seedBatch(scope, [broken]);
+      const before = await rowsFor(scope, healthy);
+      const beforeRecord = await recordFor(scope, healthy.entryId);
+      const changed = atLocation(failed, failed.artifact.storageRef);
+      rscOf(changed).storageRef = await badLocationFor(scope, fault, shared.bytes.byteLength);
+
+      await seedBatch(scope, [changed]);
+
+      await expect(scope.stub.artifact(shared.artifactId)).resolves.toMatchObject({
+        storageRef: sharedRef,
+      });
+      await expect(rowsFor(scope, healthy)).resolves.toMatchObject({
+        entry: before.entry,
+        generation: before.generation,
+      });
+      await expect(recordFor(scope, healthy.entryId)).resolves.toStrictEqual(beforeRecord);
+      expect(decodeUtf8((await recordFor(scope, failed.entryId)).html)).toBe('<html>failed</html>');
+
+      const row = await runInDurableObject(scope.stub, (_instance, state) => {
+        return state.storage.sql
+          .exec<{ storage_ref: string; owned: number; refs: number }>(
+            `SELECT storage_ref, owned, refs FROM artifacts WHERE sha256 = ?`,
+            shared.artifact.sha256,
+          )
+          .one();
+      });
+
+      expect(row).toStrictEqual({ storage_ref: sharedRef, owned: 0, refs: 2 });
+    },
+  );
+
   it.each([-1, 1])(
     'refuses an artifact whose declared length differs by %i bytes',
     async (difference) => {

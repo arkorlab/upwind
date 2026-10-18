@@ -1,3 +1,5 @@
+import { releaseStream } from '@stayingupwind/core/util';
+
 /**
  * What the authority writes to after a commit, behind interfaces narrow enough to fake, and the
  * faults a test may inject into them — into a host's history's own as well (`history`), and into
@@ -52,6 +54,8 @@ export interface CarriedValue {
   readonly bytes: Uint8Array;
 }
 
+const HEX_RADIX = 16;
+
 class InjectedFaultError extends Error {
   constructor(target: string, options?: ErrorOptions) {
     super(`injected ${target} fault`, options);
@@ -63,6 +67,60 @@ export function checkFault(faults: () => TestFaults, target: keyof TestFaults): 
   if (faults()[target] === true) {
     throw new InjectedFaultError(target);
   }
+}
+
+/** Verify a proposed shared location without retaining the artifact's body in memory. */
+export async function verifyBlob(
+  open: (key: string) => Promise<Pick<R2ObjectBody, 'size' | 'body'> | null>,
+  location: { readonly storageRef: string; readonly byteLength: number; readonly sha256: string },
+  signal: AbortSignal,
+): Promise<boolean> {
+  const object = await open(location.storageRef);
+  if (object === null) return false;
+  if (signal.aborted || object.size !== location.byteLength) {
+    releaseStream(object.body);
+    signal.throwIfAborted();
+    return false;
+  }
+  const { hash, byteLength } = await digestBody(object.body, signal);
+  const hex = [...new Uint8Array(hash)]
+    .map((byte) => byte.toString(HEX_RADIX).padStart(2, '0'))
+    .join('');
+  return byteLength === location.byteLength && hex === location.sha256;
+}
+
+async function digestBody(body: ReadableStream<unknown>, signal: AbortSignal) {
+  const reader = body.getReader();
+  const digest = new crypto.DigestStream('SHA-256');
+  const writer = digest.getWriter();
+  const stop = (): void => {
+    releaseStream(reader);
+    void writer.abort(signal.reason).catch(() => {
+      /* A closed digest has nothing left to abort. */
+    });
+  };
+  signal.addEventListener('abort', stop, { once: true });
+  const copy = async (): Promise<void> => {
+    try {
+      for (;;) {
+        const item = await reader.read();
+        signal.throwIfAborted();
+        if (item.done) break;
+        if (!(item.value instanceof Uint8Array)) throw new TypeError('artifact body is not bytes');
+        await writer.write(item.value);
+      }
+      await writer.close();
+    } catch (error) {
+      stop();
+      throw error;
+    } finally {
+      signal.removeEventListener('abort', stop);
+      reader.releaseLock();
+      writer.releaseLock();
+    }
+  };
+  const [, hash] = await Promise.all([copy(), digest.digest]);
+  return { hash, byteLength: Number(digest.bytesWritten) };
 }
 
 export function kvSink(kv: KVNamespace, faults: () => TestFaults): KvSink {
