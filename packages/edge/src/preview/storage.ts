@@ -70,3 +70,52 @@ export async function lookup<T>(
     return UNAVAILABLE;
   }
 }
+
+/**
+ * A manifest backend cannot keep a cold request from reaching its Function forever. Settle this
+ * owner once, consuming late binding outcomes without letting them become an answer. `active`
+ * also stops a durable lookup from starting its next read after its budget has ended.
+ */
+export function boundedLookup<T>(
+  what: string,
+  fields: LogFields,
+  read: (active: () => boolean) => Promise<T | undefined>,
+  budgetMs: number,
+): Promise<Lookup<T>> {
+  return new Promise((resolve, reject) => {
+    let finished = false;
+    const timer = setTimeout(() => {
+      failed(new Error(`${what} read timed out`));
+    }, budgetMs);
+    function failed(error: unknown): void {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      try {
+        logWarn('storage read failed', {
+          what,
+          ...fields,
+          detail: error instanceof Error ? error.message : String(error),
+        });
+        resolve(UNAVAILABLE);
+      } catch (error_) {
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- Preserve the logger's original failure, as lookup does.
+        reject(error_);
+      }
+    }
+    function complete(value: T | undefined): void {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      resolve(value === undefined ? MISSING : { kind: 'found', value });
+    }
+    // The binding can throw before returning; both asynchronous outcomes use this one owner.
+    // eslint-disable-next-line sonarjs/no-try-promise
+    try {
+      // eslint-disable-next-line unicorn/prefer-then-catch
+      void read(() => !finished).then(complete, failed);
+    } catch (error) {
+      failed(error);
+    }
+  });
+}

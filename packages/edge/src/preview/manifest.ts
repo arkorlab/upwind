@@ -26,7 +26,10 @@ import type { EdgeRuntime } from '../edge-runtime.ts';
 import type { PolicyStandIn } from '../memory/caches.ts';
 import { logWarn } from '../observability/logger.ts';
 import { readManifestCopy } from './blobs.ts';
-import { type HoldRefresh, type Lookup, lookup, MISSING } from './storage.ts';
+import { boundedLookup, type HoldRefresh, type Lookup, lookup, MISSING } from './storage.ts';
+
+/** Each cold backend gets the same two seconds as an immutable blob or record read. */
+const MANIFEST_READ_BUDGET_MS = 2000;
 
 /**
  * The copy of a manifest a deploy keeps in R2, for a read KV could not answer.
@@ -48,26 +51,36 @@ async function durableManifest(
   runtime: EdgeRuntime,
   manifestId: string,
 ): Promise<Lookup<ArrayBuffer>> {
-  return lookup('manifest-object', { manifestId }, async () => {
-    // Its own digest check: the blob Worker's copy is only ever the bucket's bytes, or nothing.
-    const cached = await readManifestCopy(runtime.blobWorker, manifestId);
-    if (cached !== undefined) {
-      return cached;
-    }
-    const object = await env.ARTIFACTS.get(r2ManifestKey(manifestId));
-    if (object === null) {
-      return;
-    }
-    // No manifest a deploy writes is larger than this (`oversizedManifest`): an object that is
-    // is a store's fault, refused on the size it states before its body is read into memory.
-    if (object.size > MAX_MANIFEST_BYTES) {
-      releaseStream(object.body, 'a manifest object larger than any manifest');
-      logWarn('manifest copy is larger than any manifest', { manifestId, bytes: object.size });
-      return;
-    }
-    const bytes = await object.arrayBuffer();
-    return (await takenUnder(bytes, manifestId, 'r2')) ? bytes : undefined;
-  });
+  return boundedLookup(
+    'manifest-object',
+    { manifestId },
+    async (active) => {
+      // Its own digest check: the blob Worker's copy is only ever the bucket's bytes, or nothing.
+      const cached = await readManifestCopy(runtime.blobWorker, manifestId);
+      if (!active()) return;
+      if (cached !== undefined) {
+        return cached;
+      }
+      const object = await env.ARTIFACTS.get(r2ManifestKey(manifestId));
+      if (object === null) {
+        return;
+      }
+      if (!active()) {
+        releaseStream(object.body, 'manifest lookup no longer waiting');
+        return;
+      }
+      // No manifest a deploy writes is larger than this (`oversizedManifest`): an object that is
+      // is a store's fault, refused on the size it states before its body is read into memory.
+      if (object.size > MAX_MANIFEST_BYTES) {
+        releaseStream(object.body, 'a manifest object larger than any manifest');
+        logWarn('manifest copy is larger than any manifest', { manifestId, bytes: object.size });
+        return;
+      }
+      const bytes = await object.arrayBuffer();
+      return active() && (await takenUnder(bytes, manifestId, 'r2')) ? bytes : undefined;
+    },
+    MANIFEST_READ_BUDGET_MS,
+  );
 }
 
 /**
@@ -315,13 +328,20 @@ async function kvManifest(
   // The digest is taken inside the lookup, as the durable copy's is: a check that cannot be made
   // is the store's failure, said as one, and never a rejection the race between the stores would
   // carry to the request (`readCopies`).
-  return lookup('manifest', { manifestId }, async () => {
-    const stored = await env.EDGE_STATE.get(kvManifestKey(manifestId), {
-      type: 'arrayBuffer',
-      cacheTtl,
-    });
-    return stored !== null && (await takenUnder(stored, manifestId, 'kv')) ? stored : undefined;
-  });
+  return boundedLookup(
+    'manifest',
+    { manifestId },
+    async (active) => {
+      const stored = await env.EDGE_STATE.get(kvManifestKey(manifestId), {
+        type: 'arrayBuffer',
+        cacheTtl,
+      });
+      return stored !== null && active() && (await takenUnder(stored, manifestId, 'kv'))
+        ? stored
+        : undefined;
+    },
+    MANIFEST_READ_BUDGET_MS,
+  );
 }
 
 /** What the two stores answered: `kv` is left out only when the durable copy won the race. */
