@@ -26,6 +26,7 @@ import {
   type Store,
 } from '../store.ts';
 import { requestContext } from './context.ts';
+import { generationClassShell } from './generation-tags.ts';
 import { invalidateNow } from './handlers.ts';
 import { regenerate } from './regenerate.ts';
 
@@ -190,14 +191,16 @@ export async function platformRevalidate(input: RevalidateInput): Promise<void> 
   // The previous generation stays servable if this local attempt fails. Other isolates learn a
   // successful publication through their normal record refresh, as for any manual regeneration.
   const parameters = routingParameters(store, descriptor.route, descriptor.pathname);
+  const targetShell = findShell(store, descriptor.route, descriptor.pathname);
   const outcome = await regenerate({
     runtime: context.runtime,
     request: context.request,
     handler,
     target: {
       descriptor,
+      classShell: generationClassShell(descriptor, targetShell),
       reason: 'manual',
-      allowHeader: findShell(store, descriptor.route, descriptor.pathname)?.allowHeader,
+      allowHeader: targetShell?.allowHeader,
       dataPathname:
         descriptor.kind === 'pages'
           ? pagesDataPathnameUnder(store.manifest.buildId, store.manifest.config.basePath, pathname)
