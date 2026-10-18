@@ -44,7 +44,7 @@ import {
   routeEntryOf,
   routeSegmentsOf,
 } from './routes.ts';
-import { staticFilesOf } from './static-files.ts';
+import { staticFileRequestKeysOf, staticFilesOf } from './static-files.ts';
 
 /**
  * The manifest a deployment publishes, assembled from its build: everything the edge answers a
@@ -314,6 +314,7 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
     crawlersStreamed: nextSupportOf(bundle.nextVersion) === 'full',
     ...(staticFileLocales !== undefined && { staticFileLocales }),
     ...(staticFileAssetPrefix !== undefined && { staticFileAssetPrefix }),
+    ...(staticFileRequestKeysOf(bundle, input.previous) && { staticFileRequestKeys: true }),
     ...(spelledPrefix !== undefined && { spelledPrefix }),
     // Where a route holds a Pages Router page's props, what a client asks for them under.
     ...(context.pagesData.size > 0 && {
