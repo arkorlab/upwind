@@ -3,6 +3,7 @@ import {
   cacheablePrerenders,
   type DeploymentBundle,
   functionOfPrerender,
+  partialFallbackUpgradeOf,
   prefetchSegments,
   type Prerender,
   PRIMARY_FUNCTION,
@@ -221,6 +222,7 @@ export function routeEntryOf(
   const pagesData = context.pagesData.get(prerender.pathname);
   // The Worker that resumes and regenerates the shell: its route's, named where it is not the first.
   const fn = functionOfPrerender(context.placed, prerender);
+  const partialFallback = partialFallbackUpgradeOf(bundle, prerender);
   return {
     pathname,
     status: 200,
@@ -238,6 +240,7 @@ export function routeEntryOf(
     headers,
     prerenderId: prerender.id,
     ...(cache !== undefined && { cache }),
+    ...(partialFallback !== undefined && { partialFallback }),
     ...(prerender.bypassFor !== undefined &&
       prerender.bypassFor.length > 0 && { bypassFor: prerender.bypassFor }),
     // Recorded rather than acted on: the nonce the edge mints is what stops an inline script this
