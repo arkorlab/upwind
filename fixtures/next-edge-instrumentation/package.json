@@ -4,9 +4,15 @@
   "private": true,
   "license": "MIT OR Apache-2.0",
   "type": "module",
+  "exports": {
+    "./runtime-target": {
+      "node": "./runtime-target/node.js",
+      "edge-light": "./runtime-target/edge.js",
+      "default": "./runtime-target/node.js"
+    }
+  },
   "scripts": { "build": "next build" },
   "dependencies": {
-    "instrumentation-runtime-target": "file:./runtime-target",
     "next": "16.4.2",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

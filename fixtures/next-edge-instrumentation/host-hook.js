@@ -1,4 +1,4 @@
-import { target } from 'instrumentation-runtime-target';
+import { target } from '@upwind-fixture/next-edge-instrumentation/runtime-target';
 
 import { selectedCase, state } from './state.js';
 
