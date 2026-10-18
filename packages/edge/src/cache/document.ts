@@ -113,6 +113,10 @@ export interface CachedDocumentInput extends Omit<DocumentInput, 'shellRead' | '
    * (`MemberRoute.keyedBy`), not one of its own: regenerated as itself.
    */
   readonly keyed?: boolean | undefined;
+  /** A supplied completion is member-owned even when its build shell remains available. */
+  readonly recordMember?: { readonly keyed: boolean } | undefined;
+  /** The same completion cooldown used before its entry id was derived. */
+  readonly regenerationKey?: string | undefined;
   /** A partial fallback target is refreshed through its authority, never through a KV absence. */
   readonly refreshRecord?: (() => void) | undefined;
   /**
@@ -193,7 +197,9 @@ function serveRecord(
   // At most once per cooldown, which only a response that asks for something spends.
   const wanted = wantedRegeneration(input, decision, target, upgrade);
   const asked =
-    wanted !== undefined && shouldAsk(edge, wanted.entryId, settings) ? wanted : undefined;
+    wanted !== undefined && shouldAsk(edge, input.regenerationKey ?? wanted.entryId, settings)
+      ? wanted
+      : undefined;
   // A document nothing resumes has no request to ask beside: the regeneration is its own, counted
   // in the document's point.
   const detached =
@@ -361,7 +367,10 @@ export async function serveCachedDocument(input: CachedDocumentInput): Promise<R
   }
   // A member's record, where there is no class shell, is regenerated as the member's — or as
   // itself, where it is the one the member's keyed class completes to.
-  const own = input.noBuild === undefined ? {} : { member: true, keyed: input.keyed };
+  const own =
+    input.recordMember === undefined && input.noBuild === undefined
+      ? {}
+      : { member: true, keyed: input.recordMember?.keyed ?? input.keyed };
   switch (decision.kind) {
     case 'build': {
       if (input.noBuild !== undefined) {

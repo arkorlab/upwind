@@ -68,6 +68,8 @@ const RSC_ROLE = 'rsc';
 interface MemberRecord {
   readonly keyed: boolean;
   readonly refreshRecord?: (() => void) | undefined;
+  /** The completion's cooldown, shared with its initial HTML regeneration request. */
+  readonly regenerationKey?: string | undefined;
 }
 
 type PartGeneration =
@@ -130,6 +132,11 @@ function partialPartGeneration(
       : partFrom(input, decision, {
           keyed: entry.partialFallback.keyedBy !== undefined,
           refreshRecord: partial.refresh,
+          regenerationKey: memberEntryKey(
+            input.manifest.cache?.scopeId ?? '',
+            partial.route,
+            partial.pathname,
+          ),
         });
   }
   return undefined;
@@ -312,7 +319,14 @@ function refreshPart(
 ): DetachedRegeneration | undefined {
   const { pack } = generation;
   const entryId = pack.header.entryId;
-  if (!shouldAsk(input.edge, entryId, runtimeCacheOf(input.edge.policy))) return undefined;
+  if (
+    !shouldAsk(
+      input.edge,
+      generation.member?.regenerationKey ?? entryId,
+      runtimeCacheOf(input.edge.policy),
+    )
+  )
+    return undefined;
   // A Pages data URL is not the page's ISR entry pathname. Other requests retain their
   // concrete pathname so the Function can apply its own class/keyed-parameter rules.
   const request =

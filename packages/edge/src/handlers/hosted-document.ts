@@ -515,22 +515,25 @@ function composePartialFallback(
   const partial = partialFallbackInHand(input.edge, input.manifest, entry, pathname);
   if (partial !== undefined) {
     partial.refresh();
-    if (partial.key !== undefined && partial.load.kind === 'generation') {
-      return serveCachedDocument({
-        ...document,
-        key: partial.key,
-        settings: runtimeCacheOf(input.edge.policy),
-        generationRead: { load: Promise.resolve(partial.load), shell: undefined },
-        member: undefined,
-        refreshRecord: partial.refresh,
-      });
-    }
     // The stable completion key spends the same cooldown before and after its digest is derived.
     const cooldownKey = memberEntryKey(
       input.manifest.cache?.scopeId ?? '',
       partial.route,
       partial.pathname,
     );
+    if (partial.key !== undefined && partial.load.kind === 'generation') {
+      if (ready !== undefined) abandon(input.edge, ready);
+      return serveCachedDocument({
+        ...document,
+        key: partial.key,
+        settings: runtimeCacheOf(input.edge.policy),
+        generationRead: { load: Promise.resolve(partial.load), shell: undefined },
+        member: undefined,
+        recordMember: { keyed: entry.partialFallback.keyedBy !== undefined },
+        regenerationKey: cooldownKey,
+        refreshRecord: partial.refresh,
+      });
+    }
     const buildRegeneration = shouldAsk(input.edge, cooldownKey, runtimeCacheOf(input.edge.policy))
       ? {
           [REGENERATE_HEADER]: 'background',
