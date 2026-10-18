@@ -3,7 +3,7 @@ import { createId } from '@stayingupwind/core/util';
 import type { ResourceWarmJob } from '@stayingupwind/host/cache';
 import { runInDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { limitsOf, parseVars } from '../src/env.ts';
 import { identifyEntry, insertEntry, publishEntry } from '../src/scope/entries.ts';
@@ -26,6 +26,50 @@ interface Fixture {
   readonly entryId: string;
   readonly sql: SqlStorage;
   readonly storage: DurableObjectStorage;
+}
+
+interface QueuedJob {
+  readonly id: string;
+  readonly status: 'pending' | 'leased' | 'skipped';
+  readonly retryAt: number;
+  readonly leaseExpiresAt: number | null;
+}
+
+function queuedJob(id: string, status: QueuedJob['status'], at: number): QueuedJob {
+  return {
+    id,
+    status,
+    retryAt: status === 'leased' ? NOW - 100 * SECOND : at,
+    leaseExpiresAt: status === 'leased' ? at : null,
+  };
+}
+
+function interleavedJobs(count: number): QueuedJob[] {
+  const jobs: QueuedJob[] = [];
+  for (let index = 0; index < count; index += 1) {
+    jobs.push(
+      queuedJob(`pending-${index}`, 'pending', NOW - index * SECOND),
+      queuedJob(`leased-${index}`, 'leased', NOW - index * SECOND),
+    );
+  }
+  return jobs;
+}
+
+function queue(fixture: Fixture, jobs: readonly QueuedJob[]): void {
+  fixture.sql.exec('DELETE FROM resource_warm_jobs');
+  fixture.sql.exec(
+    `INSERT INTO resource_warm_jobs (job_id, resource_id, entry_id, event_id, version,
+     required_revision, status, attempt_count, retry_at, lease_token, lease_expires_at,
+     detail, updated_at)
+     SELECT json_extract(value, '$.id'), json_extract(value, '$.id'), ?, 'event', 1, ?,
+       json_extract(value, '$.status'), 1, json_extract(value, '$.retryAt'),
+       CASE json_extract(value, '$.status') WHEN 'leased' THEN 'old-lease' ELSE NULL END,
+       json_extract(value, '$.leaseExpiresAt'), NULL, ? FROM json_each(?)`,
+    fixture.entryId,
+    REQUIRED,
+    NOW,
+    JSON.stringify(jobs),
+  );
 }
 
 function publish(fixture: Fixture, policy: CachePolicy, revision: number, seq: number): void {
@@ -136,6 +180,31 @@ function jobsLeft(sql: SqlStorage): number {
     .count;
 }
 
+/** Observe the actual candidate and next-time cursors, excluding the unchanged orphan cleanup. */
+function countedClaim(fixture: Fixture) {
+  const { sql } = fixture;
+  const exec = sql.exec.bind(sql);
+  const reads: (() => number)[] = [];
+  const spy = vi
+    .spyOn(sql, 'exec')
+    .mockImplementation((query: string, ...bindings: SqlStorageValue[]) => {
+      const cursor = exec(query, ...bindings);
+      if (
+        query.includes('FROM resource_warm_jobs') &&
+        (query.includes('ORDER BY') || query.includes('SELECT MIN('))
+      ) {
+        reads.push(() => cursor.rowsRead);
+      }
+      return cursor;
+    });
+  try {
+    const answer = claim(fixture, NOW);
+    return { answer, reads: reads.map((read) => read()) };
+  } finally {
+    spy.mockRestore();
+  }
+}
+
 type Defect = 'under-revision' | 'condemned' | 'unpublished' | 'pruned' | 'non-200';
 
 function spoil(fixture: Fixture, defect: Defect): void {
@@ -184,6 +253,93 @@ const POLICIES = [
 ];
 
 describe('completion of a resource change warm job', () => {
+  it('merges pending retries and expired leases by due time and job ID', async () => {
+    const result = await inScope((fixture) => {
+      queue(fixture, [
+        queuedJob('b-pending', 'pending', NOW - 2 * SECOND),
+        queuedJob('a-leased', 'leased', NOW - 2 * SECOND),
+        queuedJob('c-pending', 'pending', NOW - SECOND),
+        queuedJob('d-live-lease', 'leased', NOW + SECOND),
+        queuedJob('e-future', 'pending', NOW + 2 * SECOND),
+        queuedJob('f-skipped', 'skipped', NOW - 10 * SECOND),
+      ]);
+      const answer = fixture.storage.transactionSync(() =>
+        claimResourceWarmJobs(fixture.sql, { scopeId: fixture.scopeId, limit: 3 }, NOW),
+      );
+      return { ids: answer.jobs.map((job) => job.jobId), nextRetryAt: answer.nextRetryAt };
+    });
+
+    expect(result).toStrictEqual({
+      ids: ['a-leased', 'b-pending', 'c-pending'],
+      nextRetryAt: NOW + SECOND,
+    });
+  });
+
+  it.each([1, 2, 4, 20])('keeps the original global top %s and next retry', async (limit) => {
+    const result = await inScope((fixture) => {
+      queue(fixture, interleavedJobs(40));
+      const expected = fixture.sql
+        .exec<{ job_id: string }>(
+          `SELECT job_id FROM resource_warm_jobs
+           WHERE (status = 'pending' AND retry_at <= ?)
+              OR (status = 'leased' AND lease_expires_at <= ?)
+           ORDER BY CASE status WHEN 'leased' THEN lease_expires_at ELSE retry_at END, job_id
+           LIMIT ?`,
+          NOW,
+          NOW,
+          limit,
+        )
+        .toArray();
+      const answer = fixture.storage.transactionSync(() =>
+        claimResourceWarmJobs(fixture.sql, { scopeId: fixture.scopeId, limit }, NOW),
+      );
+      const next = fixture.sql
+        .exec<{ at: number | null }>(
+          `SELECT MIN(CASE status WHEN 'leased' THEN lease_expires_at ELSE retry_at END) AS at
+           FROM resource_warm_jobs WHERE status IN ('pending', 'leased')`,
+        )
+        .one().at;
+      return {
+        ids: answer.jobs.map((job) => job.jobId),
+        expected: expected.map((job) => job.job_id),
+        nextRetryAt: answer.nextRetryAt,
+        next,
+      };
+    });
+
+    expect(result.ids).toStrictEqual(result.expected);
+    expect(result.nextRetryAt).toBe(result.next);
+  });
+
+  it('bounds candidate and next-time reads with the existing partial indexes', async () => {
+    const result = await inScope((fixture) => {
+      queue(fixture, interleavedJobs(500));
+      return countedClaim(fixture);
+    });
+
+    expect(result.answer.jobs).toHaveLength(2);
+    expect(result.reads).toHaveLength(2);
+    expect(result.reads[0]).toBeLessThanOrEqual(64);
+    expect(result.reads[1]).toBeLessThanOrEqual(16);
+  });
+
+  it('still removes future and skipped orphan jobs before computing the next retry', async () => {
+    const result = await inScope((fixture) => {
+      queue(fixture, [
+        queuedJob('future-orphan', 'pending', NOW + SECOND),
+        queuedJob('skipped-orphan', 'skipped', NOW - SECOND),
+        queuedJob('live-future', 'pending', NOW + 2 * SECOND),
+      ]);
+      fixture.sql.exec(
+        `UPDATE resource_warm_jobs SET entry_id = 'absent'
+         WHERE job_id IN ('future-orphan', 'skipped-orphan')`,
+      );
+      return { answer: claim(fixture, NOW), left: jobsLeft(fixture.sql) };
+    });
+
+    expect(result).toStrictEqual({ answer: { jobs: [], nextRetryAt: NOW + 2 * SECOND }, left: 1 });
+  });
+
   it.each(POLICIES)(
     'completes a revision-covering $name lifetime after publication',
     async ({ policy }) => {

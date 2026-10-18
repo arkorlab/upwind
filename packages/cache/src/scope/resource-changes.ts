@@ -458,8 +458,13 @@ function satisfied(sql: SqlStorage, job: WarmJobRow): boolean {
 function nextRetryAt(sql: SqlStorage): number | null {
   return sql
     .exec<{ at: number | null }>(
-      `SELECT MIN(CASE status WHEN 'leased' THEN lease_expires_at ELSE retry_at END) AS at
-       FROM resource_warm_jobs WHERE status IN ('pending', 'leased')`,
+      `SELECT MIN(at) AS at FROM (
+         SELECT MIN(retry_at) AS at FROM resource_warm_jobs
+         WHERE status = 'pending'
+         UNION ALL
+         SELECT MIN(lease_expires_at) AS at FROM resource_warm_jobs
+         WHERE status = 'leased'
+       )`,
     )
     .one().at;
 }
@@ -476,16 +481,26 @@ export function claimResourceWarmJobs(
   // Taken up in the order they came due: a pending job at its retry, and one whose dispatch lease
   // ran out with no answer once it ran out. By its first retry, a job whose answers keep being lost
   // would be taken up again ahead of every job that came due since, each time.
+  // Each status need supply only its first limit rows to the merge. Orphan cleanup still scans jobs.
+  const limit = input.limit ?? 2;
   const candidates = sql
     .exec<WarmJobRow>(
-      `SELECT * FROM resource_warm_jobs
-       WHERE (status = 'pending' AND retry_at <= ?)
-          OR (status = 'leased' AND lease_expires_at <= ?)
+      `WITH pending AS (
+         SELECT * FROM resource_warm_jobs
+         WHERE status = 'pending' AND retry_at <= ? ORDER BY retry_at, job_id LIMIT ?
+       ), leased AS (
+         SELECT * FROM resource_warm_jobs
+         WHERE status = 'leased' AND lease_expires_at <= ?
+         ORDER BY lease_expires_at, job_id LIMIT ?
+       )
+       SELECT * FROM (SELECT * FROM pending UNION ALL SELECT * FROM leased)
        ORDER BY CASE status WHEN 'leased' THEN lease_expires_at ELSE retry_at END, job_id
        LIMIT ?`,
       now,
+      limit,
       now,
-      input.limit ?? 2,
+      limit,
+      limit,
     )
     .toArray();
   const jobs: ResourceWarmJob[] = [];
