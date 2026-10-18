@@ -2,6 +2,7 @@ import { sha256HexOfText } from '@stayingupwind/core/artifact';
 import { cacheKeyDigestOf } from '@stayingupwind/core/cache';
 import { readBoundedBody, releaseStream } from '@stayingupwind/core/util';
 import {
+  answersTheRead,
   type DataGetRequest,
   type DataGetResponse,
   dataGetResponseSchema,
@@ -11,6 +12,7 @@ import {
 import { requestClock } from '@stayingupwind/runtime/cache-host';
 
 import { cacheStorage, type FunctionCacheNaming, turnsOfRequest, within } from './artifacts.ts';
+import { requestedEntryIdFromDigest } from './entry-identity.ts';
 import type { ReadBudget } from './read-budget.ts';
 
 /**
@@ -140,7 +142,7 @@ function withdrawnBy(copy: DataGetResponse, at: number): boolean {
 
 /** A copy as it is kept: its record, the seconds the data center keeps it for, and its revision. */
 interface KeptCopy {
-  readonly body: Uint8Array<ArrayBuffer>;
+  readonly body: ReturnType<TextEncoder['encode']>;
   readonly maxAge: number;
   readonly revision: number;
 }
@@ -197,9 +199,15 @@ async function keptRevision(cache: Cache, key: string): Promise<number> {
 }
 
 /** Let go of what a lookup given up on answers with, once it does. */
-async function releaseLate(lookup: Promise<Response | undefined>): Promise<void> {
+async function releaseLate(lookup: Promise<LocatedCopy | undefined>): Promise<void> {
   const late = await lookup;
-  releaseStream(late?.body, 'a data copy that came too late');
+  releaseStream(late?.response.body, 'a data copy that came too late');
+}
+
+/** The bytes found with the digest already taken for the requested key. */
+interface LocatedCopy {
+  readonly response: Response;
+  readonly digest: string;
 }
 
 /** The scope whose copies these are, and the token that opens it. */
@@ -242,14 +250,19 @@ export class DataCopies {
     this.#budget = budget;
   }
 
-  async #keyOf(request: DataGetRequest): Promise<string> {
+  async #keyOf(
+    request: DataGetRequest,
+  ): Promise<{ readonly key: string; readonly digest: string }> {
     const digest = await cacheKeyDigestOf({
       kind: request.kind,
       key: request.key,
       ...(request.handler !== undefined && { handler: request.handler }),
     });
     const secret = await sha256HexOfText(`${this.#token}|${digest}`);
-    return `${this.#naming.copyKeyOrigin}/data/${encodeURIComponent(this.#scopeId)}/${secret}`;
+    return {
+      key: `${this.#naming.copyKeyOrigin}/data/${encodeURIComponent(this.#scopeId)}/${secret}`,
+      digest,
+    };
   }
 
   /**
@@ -271,7 +284,7 @@ export class DataCopies {
         return undefined;
       }
       try {
-        const key = await this.#keyOf(descriptor);
+        const { key } = await this.#keyOf(descriptor);
         const cache = await this.#storage.open(this.#naming.copyCache);
         if (stands?.(await keptRevision(cache, key)) === true) {
           return true;
@@ -306,15 +319,16 @@ export class DataCopies {
    * is looked up (`COPY_LOOKUPS_AT_ONCE`): given back once it has answered. None where no turn came
    * in time.
    */
-  async #lookUp(request: DataGetRequest): Promise<Response | undefined> {
+  async #lookUp(request: DataGetRequest): Promise<LocatedCopy | undefined> {
     const turns = turnsOfRequest()?.lookups;
     if (turns !== undefined && !(await turns.take(DATA_COPY_READ_MS))) {
       return undefined;
     }
     try {
-      const key = await this.#keyOf(request);
+      const { key, digest } = await this.#keyOf(request);
       const cache = await this.#storage.open(this.#naming.copyCache);
-      return await cache.match(key);
+      const response = await cache.match(key);
+      return response === undefined ? undefined : { response, digest };
     } finally {
       turns?.give();
     }
@@ -426,15 +440,21 @@ export class DataCopies {
         return undefined;
       }
       if (leftOf(startedAt) <= 0) {
-        releaseStream(found.body, 'a data copy found too late to read');
+        releaseStream(found.response.body, 'a data copy found too late to read');
         return undefined;
       }
-      const bytes = await this.#bodyOf(found, startedAt);
+      const bytes = await this.#bodyOf(found.response, startedAt);
       if (bytes === undefined) {
         return undefined;
       }
       const parsed = dataGetResponseSchema.safeParse(JSON.parse(new TextDecoder().decode(bytes)));
-      return parsed.success && !withdrawnBy(parsed.data, now()) ? parsed.data : undefined;
+      return parsed.success &&
+        !withdrawnBy(parsed.data, now()) &&
+        answersTheRead(request, parsed.data) &&
+        parsed.data.entryId ===
+          requestedEntryIdFromDigest(this.#scopeId, request.kind, found.digest)
+        ? parsed.data
+        : undefined;
     } catch (error) {
       warn('data copy read failed', error);
       return undefined;

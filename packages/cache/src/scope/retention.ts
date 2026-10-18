@@ -296,12 +296,19 @@ function ageOutHistory(input: RetentionInput, windows: Windows, deletable: strin
       PRUNE_BATCH,
     )
     .toArray();
-  deletePrunedBefore(sql, before);
-  sql.exec(
-    `DELETE FROM dependencies WHERE owner_generation_id NOT IN (SELECT generation_id FROM generations)`,
-  );
+  const generations = deletePrunedBefore(sql, before, PRUNE_BATCH);
+  // Only the owners actually removed above can have become orphaned in this transaction.
+  // Use their existing primary-key prefix, keeping every statement within SQLite's binding limit.
+  const ownersPerStatement = 100;
+  for (let start = 0; start < generations.length; start += ownersPerStatement) {
+    const owners = generations.slice(start, start + ownersPerStatement);
+    sql.exec(
+      `DELETE FROM dependencies WHERE owner_generation_id IN (${owners.map(() => '?').join(',')})`,
+      ...owners,
+    );
+  }
   pruneQuotaWindows(sql, now);
-  return attempts.length === PRUNE_BATCH;
+  return attempts.length === PRUNE_BATCH || generations.length === PRUNE_BATCH;
 }
 
 /** Expired data has no useful current value; withdraw it before reclaiming its entry slot. */

@@ -100,7 +100,15 @@ export async function readCurrentData(
   }
   budget.reserved += memory;
   try {
-    return await dataRecordFor(deps, entry, current);
+    const record = await dataRecordFor(deps, entry, current);
+    // Blob I/O can yield to a write or invalidation. This authority fallback must still be current.
+    const latest = findEntry(sql, entryId);
+    return latest !== undefined &&
+      latest.publication !== 'retired' &&
+      latest.current_generation_id === current.generation_id &&
+      latest.record_revision === entry.record_revision
+      ? record
+      : undefined;
   } finally {
     budget.reserved -= memory;
   }
