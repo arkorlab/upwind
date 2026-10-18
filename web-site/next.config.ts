@@ -15,9 +15,9 @@ import type { NextConfig } from 'next';
  * resolve from the project, which is the only place that has the adapter. Basing it on the current
  * directory instead would be wrong for a `next build ./some-app` run from anywhere else.
  *
- * `upwind build` sets the same thing in the environment, so a build started that way needs nothing
- * from this file. This line is what makes a plain `next build` — from CI, from a script, from
- * anything that does not know about upwind — produce the same deployment bundle.
+ * An explicit `NEXT_ADAPTER_PATH` is the build's choice, including a host's configured adapter.
+ * Leave it to Next.js's environment default. The installed copy below is only the fallback for a
+ * plain `next build` that names none — from CI, from a script, or from another build tool.
  *
  * **Except on Vercel**, which builds this site too, from the same commit. An adapter named in a build
  * takes the deployment over: the build writes a bundle Vercel does not read,
@@ -29,9 +29,11 @@ import type { NextConfig } from 'next';
  */
 const vercel = process.env['VERCEL'];
 const onVercel = vercel !== undefined && vercel !== '';
+const namedAdapter = process.env['NEXT_ADAPTER_PATH'];
+const environmentNamesAdapter = namedAdapter !== undefined && namedAdapter !== '';
 
 const config: NextConfig = {
-  ...(onVercel
+  ...(onVercel || environmentNamesAdapter
     ? {}
     : { adapterPath: createRequire(import.meta.url).resolve('@stayingupwind/adapter') }),
   experimental: {
