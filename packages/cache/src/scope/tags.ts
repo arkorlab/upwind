@@ -626,15 +626,15 @@ export function condemnationOf(
   if (invalidations.length === 0) {
     return null;
   }
-  let revision = Number.NEGATIVE_INFINITY;
-  let staleAt = Number.POSITIVE_INFINITY;
+  let revision = -Infinity;
+  let staleAt = Infinity;
   let hardExpireAt: number | undefined;
   // A seed reads every retained invalidation of its tags, more than a call's arguments may hold.
   for (const row of invalidations) {
     revision = Math.max(revision, row.revision);
     staleAt = Math.min(staleAt, row.stale_at);
     if (row.hard_expire_at !== null) {
-      hardExpireAt = Math.min(hardExpireAt ?? Number.POSITIVE_INFINITY, row.hard_expire_at);
+      hardExpireAt = Math.min(hardExpireAt ?? Infinity, row.hard_expire_at);
     }
   }
   return {
