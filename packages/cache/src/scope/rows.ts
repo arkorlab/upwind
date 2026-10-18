@@ -124,6 +124,31 @@ export interface TagRow extends Record<string, SqlStorageValue> {
   meaning: string | null;
 }
 
+export interface ResourceHeadRow extends Record<string, SqlStorageValue> {
+  resource_id: string;
+  event_id: string;
+  version: number;
+  tag: string;
+  tag_revision: number;
+  applied_at: number;
+}
+
+export interface WarmJobRow extends Record<string, SqlStorageValue> {
+  job_id: string;
+  resource_id: string;
+  entry_id: string;
+  event_id: string;
+  version: number;
+  required_revision: number;
+  status: string;
+  attempt_count: number;
+  retry_at: number;
+  lease_token: string | null;
+  lease_expires_at: number | null;
+  detail: string | null;
+  updated_at: number;
+}
+
 export interface AttemptRow extends Record<string, SqlStorageValue> {
   attempt_id: string;
   entry_id: string;

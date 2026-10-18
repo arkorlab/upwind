@@ -16,8 +16,10 @@ import {
   type EntryRow,
   type GenerationRow,
   generationHeaders,
+  type ResourceHeadRow,
   type TagRow,
   toGeneration,
+  type WarmJobRow,
 } from './rows.ts';
 import { isRefusal, readScope, type Refusal, refuse, requireActiveScope } from './state.ts';
 import { findTag } from './tags.ts';
@@ -72,12 +74,15 @@ function sqliteRouteKey(route: string): string {
 function allowedRouteKeys(routes: readonly string[]) {
   if (routes.some((route) => BYTE_EXACT_ROUTE.test(route))) {
     // All candidates use bytes on this rare path: decoded SQL strings can lose lone surrogates.
-    return { allowed: undefined, byteExact: new Set(routes.map(sqliteRouteKey)) };
+    return { allowed: undefined, byteExact: new Set(routes.map((route) => sqliteRouteKey(route))) };
   }
   return { allowed: new Set(routes), byteExact: undefined };
 }
 
-type WarmRoute = { route?: EntryRow['route']; route_bytes?: ArrayBuffer | null };
+interface WarmRoute {
+  route?: EntryRow['route'];
+  route_bytes?: ArrayBuffer | null;
+}
 
 function routeIsAllowed(entry: WarmRoute, keys: ReturnType<typeof allowedRouteKeys>): boolean {
   if (keys.byteExact !== undefined) {
@@ -86,31 +91,6 @@ function routeIsAllowed(entry: WarmRoute, keys: ReturnType<typeof allowedRouteKe
     return keys.byteExact.has(key);
   }
   return entry.route !== undefined && entry.route !== null && keys.allowed.has(entry.route);
-}
-
-interface ResourceHeadRow extends Record<string, SqlStorageValue> {
-  resource_id: string;
-  event_id: string;
-  version: number;
-  tag: string;
-  tag_revision: number;
-  applied_at: number;
-}
-
-interface WarmJobRow extends Record<string, SqlStorageValue> {
-  job_id: string;
-  resource_id: string;
-  entry_id: string;
-  event_id: string;
-  version: number;
-  required_revision: number;
-  status: string;
-  attempt_count: number;
-  retry_at: number;
-  lease_token: string | null;
-  lease_expires_at: number | null;
-  detail: string | null;
-  updated_at: number;
 }
 
 function headOf(sql: SqlStorage, resourceId: string): ResourceHeadRow | undefined {
