@@ -205,9 +205,14 @@ describe('a shipped file asked under a precondition', () => {
 /** Configured fields pass the same transport boundary before any file condition reads them. */
 describe('a shipped file with configured transport fields', () => {
   it.each([
-    { method: 'GET', status: 200, body: BODY },
-    { method: 'HEAD', status: 200, body: '' },
-    { method: 'GET', status: 206, body: 'the' },
+    { method: 'GET', headers: new Headers(), status: 200, body: BODY },
+    { method: 'HEAD', headers: new Headers(), status: 200, body: '' },
+    {
+      method: 'GET',
+      headers: new Headers({ range: 'bytes=0-2' }),
+      status: 206,
+      body: 'the',
+    },
   ])('excludes the rule hop for $method status $status', async (example) => {
     const { pointer, tagOf } = await shipping({ [FILE]: BODY }, [
       {
@@ -227,14 +232,9 @@ describe('a shipped file with configured transport fields', () => {
       },
     ]);
 
-    const headers = new Headers();
-    if (example.status === 206) {
-      headers.set('range', 'bytes=0-2');
-    }
-
     const { response, body } = await serve(pointer, FILE, {
       method: example.method,
-      headers,
+      headers: example.headers,
     });
 
     expect([response.status, body]).toStrictEqual([example.status, example.body]);
@@ -276,6 +276,7 @@ describe('a shipped file with configured transport fields', () => {
 
     expect([dated.response.status, dated.body]).toStrictEqual([200, BODY]);
     expect([tagged.response.status, tagged.body]).toStrictEqual([304, '']);
+
     for (const { response } of [dated, tagged]) {
       expect(response.headers.has('connection')).toBe(false);
       expect(response.headers.has('last-modified')).toBe(false);

@@ -77,6 +77,7 @@ export async function lookup<T>(
  * also stops a durable lookup from starting its next read after its budget has ended. A reader
  * it owns can be released by `onAbandoned` on failure, without waiting for cancellation to finish.
  */
+// eslint-disable-next-line max-params -- Preserve scalar callers and the optional failure-only cleanup.
 export function boundedLookup<T>(
   what: string,
   fields: LogFields,

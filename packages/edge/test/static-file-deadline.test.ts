@@ -9,7 +9,6 @@ import { createEdgeMemory } from '../src/memory/caches.ts';
 import { serveFromPointer } from '../src/route.ts';
 import type { StandaloneEnv } from '../src/standalone/env.ts';
 import { standaloneHost, standaloneRuntime } from '../src/standalone/index.ts';
-import type { StaticFileContext } from '../src/strategies/context.ts';
 import { navigation, pprDocument, seedSite } from './helpers/site.ts';
 
 const FILE_PATH = '/stored-manual.txt';
@@ -154,7 +153,7 @@ describe('a direct shipped-file lookup has a storage deadline', () => {
   it('still bounds a stream caller that supplies progress without owning a deadline', async () => {
     const subject = await fixture();
     const progress = { signal: new AbortController().signal, requests: 0 };
-    const context = { env: subject.bindings, runtime: subject.runtime } as StaticFileContext;
+    const context = { env: subject.bindings, runtime: subject.runtime };
     vi.useFakeTimers();
     const result = settled(readStaticFileStream(context, subject.file, progress));
     await subject.entered.promise;

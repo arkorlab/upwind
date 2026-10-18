@@ -14,6 +14,21 @@ import type { EdgeContext } from '../src/strategies/context.ts';
 const BODY = encodeUtf8('the stored router part');
 const CSP = "default-src 'none'";
 const ORIGIN = 'https://reader.example';
+const HOP_FIELDS = [
+  'connection',
+  'keep-alive',
+  'proxy-connection',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
+  'x-arkor-internal',
+];
+const PART_CONTENT_TYPES = {
+  segment: 'text/x-component',
+  payload: 'text/x-component',
+  data: 'text/configured',
+};
 const FORWARDING = {
   previewDomain: 'example.test',
   previewHost: 'customer.example.test',
@@ -111,6 +126,27 @@ async function inputFor(kind: RouterPart = 'segment') {
   return { input, metric, getShell };
 }
 
+function withConfiguredHop(input: SegmentInput): SegmentInput {
+  return {
+    ...input,
+    configured: {
+      ...input.configured,
+      headers: {
+        ...input.configured.headers,
+        connection: ' X-InTeRnAl , Set-Cookie, not a name, X-Internal ',
+        'x-internal': 'rule-only',
+        'keep-alive': 'timeout=5',
+        'proxy-connection': 'keep-alive',
+        te: 'trailers',
+        trailer: 'x-internal',
+        'transfer-encoding': 'chunked',
+        upgrade: 'websocket',
+        'x-arkor-internal': 'rule-only',
+      },
+    },
+  };
+}
+
 function failureRead(failure: Failure): Promise<ShellRead | undefined> {
   if (failure === 'missing') return Promise.resolve(undefined);
   if (failure === 'unavailable') return Promise.reject(new Error('storage refused'));
@@ -187,6 +223,63 @@ describe.each(['segment', 'payload', 'data'] as const)('a failed stored %s', (ki
       expect(getShell).toHaveBeenCalledTimes(1);
     },
   );
+});
+
+describe('configured transport fields on router parts', () => {
+  it.each(['segment', 'payload', 'data'] as const)(
+    'filters the configured hop before answering a stored %s',
+    async (kind) => {
+      const { input, getShell } = await inputFor(kind);
+      getShell.mockResolvedValue({ bytes: BODY, source: 'kv', latencyMs: 0 });
+      const response = await handleSegment({ ...withConfiguredHop(input), middleware: undefined });
+
+      expect(response.status).toBe(200);
+      expect(HOP_FIELDS.filter((name) => response.headers.has(name))).toStrictEqual([]);
+      expect(response.headers.has('x-internal')).toBe(false);
+      expect(response.headers.getSetCookie()).toStrictEqual([]);
+      expect(response.headers.get('content-security-policy')).toBe(CSP);
+      expect(response.headers.get('access-control-allow-origin')).toBe(ORIGIN);
+      expect(response.headers.get('content-type')).toBe(PART_CONTENT_TYPES[kind]);
+      expect(response.headers.get('content-length')).toBe(String(BODY.byteLength));
+      expect(response.headers.get('content-encoding')).toBeNull();
+      expect(response.headers.get('cache-control')).toBe('public, max-age=600');
+      await expect(response.text()).resolves.toBe('the stored router part');
+      expect(getShell).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(['segment', 'payload', 'data'] as const)(
+    'keeps independent middleware fields nominated by the configured %s hop',
+    async (kind) => {
+      const { input, getShell } = await inputFor(kind);
+      input.middleware?.responseHeaders.set('x-internal', 'middleware-only');
+      getShell.mockResolvedValue({ bytes: BODY, source: 'kv', latencyMs: 0 });
+      const response = await handleSegment(withConfiguredHop(input));
+
+      expect(response.status).toBe(200);
+      expect(HOP_FIELDS.filter((name) => response.headers.has(name))).toStrictEqual([]);
+      expect(response.headers.get('x-internal')).toBe('middleware-only');
+      expect(response.headers.getSetCookie()).toStrictEqual(['middleware=1; Path=/']);
+      expect(response.headers.get('cache-control')).toBe('private, max-age=0, must-revalidate');
+      await expect(response.text()).resolves.toBe('the stored router part');
+      expect(getShell).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('filters configured transport fields on an unavailable part as well', async () => {
+    const { input, getShell } = await inputFor();
+    getShell.mockResolvedValue(undefined);
+    const response = await handleSegment({ ...withConfiguredHop(input), middleware: undefined });
+
+    expect(response.status).toBe(503);
+    expect(HOP_FIELDS.filter((name) => response.headers.has(name))).toStrictEqual([]);
+    expect(response.headers.has('x-internal')).toBe(false);
+    expect(response.headers.getSetCookie()).toStrictEqual([]);
+    expect(response.headers.get('content-security-policy')).toBe(CSP);
+    expect(response.headers.get('cache-control')).toBe('private, no-store');
+    await expect(response.text()).resolves.toContain('Please retry shortly');
+    expect(getShell).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('the ownership of a segment delivery', () => {

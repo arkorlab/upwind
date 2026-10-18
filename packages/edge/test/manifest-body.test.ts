@@ -75,7 +75,7 @@ describe('the durable manifest owns its body until its backend deadline', () => 
     async (outcome) => {
       const subject = await fixture();
       const input = Promise.withResolvers<ReadableStreamDefaultController<Uint8Array>>();
-      const cancelled = vi.fn(() => Promise.withResolvers<void>().promise);
+      const cancelled = vi.fn(() => Promise.withResolvers<never>().promise);
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
           controller.enqueue(subject.bytes.subarray(0, 1));
@@ -128,9 +128,15 @@ describe('the durable manifest owns its body until its backend deadline', () => 
     vi.useFakeTimers();
     const reading = subject.read();
     try {
+      // Consume the native prefix before advancing its owner's deadline.
+      await expect(writing).resolves.toBe('fulfilled');
+
       await vi.advanceTimersByTimeAsync(READ_MS + 1);
 
       expect((await reading).kind).toBe('missing');
+      // IdentityTransformStream exposes a readable cancel to its writer on the next write;
+      // writer.closed alone need not settle proactively in workerd's native implementation.
+      await expect(settled(writer.write(subject.bytes.subarray(0, 1)))).resolves.toBe('rejected');
       await expect(closed).resolves.toBe('rejected');
       expect(original.arrayBuffer).not.toHaveBeenCalled();
       expect(subject.runtime.memory.manifests.get(subject.site.manifestId)).toBeUndefined();
@@ -138,6 +144,7 @@ describe('the durable manifest owns its body until its backend deadline', () => 
     } finally {
       await settled(writer.abort());
       await writing;
+      await closed;
       await reading;
     }
   });
@@ -163,8 +170,13 @@ describe('the durable manifest owns its body until its backend deadline', () => 
 
   it('hashes and parses only the exact visible bytes of a timely native R2 body', async () => {
     const subject = await fixture();
-    const object = await env.ARTIFACTS.get(r2ManifestKey(subject.site.manifestId));
-    if (object === null) throw new Error('the seeded native R2 object is required');
+    const key = r2ManifestKey(subject.site.manifestId);
+    // seedSite leaves its manifest in KV; this control explicitly exercises R2's native body.
+    await env.ARTIFACTS.put(key, subject.bytes);
+    const object = await env.ARTIFACTS.get(key);
+
+    expect(object).not.toBeNull();
+
     subject.pending.resolve(object);
     vi.useFakeTimers();
 

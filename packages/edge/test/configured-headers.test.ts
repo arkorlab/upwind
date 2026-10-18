@@ -1,8 +1,10 @@
+import { buildProjectManifest, requestHeaderRulesFor } from '@stayingupwind/core/manifest';
 import { HEADER_RULES_LEFT_HEADER } from '@stayingupwind/core/paas';
 import type { ForwardingContext } from '@stayingupwind/core/request';
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 
+import { replayedDocumentHeaders } from '../src/handlers/document-headers.ts';
 import { handlePassthrough } from '../src/handlers/passthrough.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
 import { standaloneHost, standaloneRuntime } from '../src/standalone/index.ts';
@@ -125,6 +127,58 @@ describe('deferred configured headers', () => {
     expect(response.headers.get('x-rule')).toBeNull();
     expect(response.headers.get('x-precedence')).toBe('origin');
     expect(response.headers.getSetCookie()).toStrictEqual([ORIGINAL_COOKIE]);
+  });
+});
+
+describe('captured policies at the composed document boundary', () => {
+  const source = "'sha256-recovery'";
+  const policy = "script-src 'none'";
+  const manifest = buildProjectManifest({
+    projectId: 'captured-policies',
+    runId: 'run',
+    originHost: 'customer.example.test',
+    generatedAt: '2026-10-18T00:00:00.000Z',
+    deployment: { assetSetHash: 'assets', observedAt: '2026-10-18T00:00:00.000Z' },
+    app: { deploymentId: 'dpl_policy', scriptName: 'policy-app' },
+    routes: [],
+    headerRules: [
+      {
+        sourceRegex: '^/docs/(.*)$',
+        headers: { $1: policy },
+        documentRecoverySources: { $1: source },
+      },
+    ],
+  });
+
+  it('replays the resolved policy with recovery after it replaces the recorded policy', () => {
+    const judged = requestHeaderRulesFor(
+      manifest,
+      new URL('https://customer.example.test/docs/content-security-policy'),
+      new Headers(),
+    );
+    const headers = replayedDocumentHeaders(
+      { 'content-security-policy': "script-src 'self'" },
+      judged.document,
+    );
+
+    expect(headers.get('content-security-policy')).toBe(`${policy} ${source}`);
+    expect(judged.response.headers['content-security-policy']).toBe(policy);
+  });
+
+  it('keeps report-only policies unchanged and leaves the recorded enforcing policy alone', () => {
+    const judged = requestHeaderRulesFor(
+      manifest,
+      new URL('https://customer.example.test/docs/content-security-policy-report-only'),
+      new Headers(),
+    );
+    const headers = replayedDocumentHeaders(
+      { 'content-security-policy': "script-src 'self'" },
+      judged.document,
+    );
+
+    expect(headers.get('content-security-policy-report-only')).toBe(policy);
+    expect(headers.get('content-security-policy')).toBe("script-src 'self'");
+    expect(judged.document).toStrictEqual(judged.response);
   });
 });
 

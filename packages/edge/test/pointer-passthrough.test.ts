@@ -29,7 +29,7 @@ import { serveFromPointer } from '../src/route.ts';
 import { standaloneHost, standaloneRuntime } from '../src/standalone/index.ts';
 import { navigation, pprDocument, seedSite } from './helpers/site.ts';
 
-const HIGH_SURROGATE_UNIT = 0xd800;
+const HIGH_SURROGATE_UNIT = 55_296;
 const LONE_HIGH_SURROGATE = String.fromCodePoint(HIGH_SURROGATE_UNIT);
 
 const POLICY: PolicyLookup = {

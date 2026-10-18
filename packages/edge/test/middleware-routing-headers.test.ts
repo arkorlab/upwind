@@ -1,6 +1,17 @@
+import { sha256Hex } from '@stayingupwind/core/artifact';
+import {
+  deriveEntry,
+  encodeGenerationPack,
+  kvGenerationKey,
+  policyFromBuild,
+} from '@stayingupwind/core/cache';
 import type { ProjectManifest } from '@stayingupwind/core/manifest';
 import { EDGE_BYPASS_COOKIE } from '@stayingupwind/core/request';
-import { DEFAULT_DELIVERY_POLICY } from '@stayingupwind/host/delivery';
+import { encodeUtf8 } from '@stayingupwind/core/util';
+import {
+  DEFAULT_DELIVERY_POLICY,
+  DEFAULT_RUNTIME_CACHE_SETTINGS,
+} from '@stayingupwind/host/delivery';
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
@@ -21,11 +32,54 @@ interface Example {
   readonly overrideValue?: string;
   readonly setCookie?: string;
   readonly shell: boolean;
+  readonly member?: boolean;
+  readonly headersOnly?: boolean;
+}
+
+/** A complete saved member, so serving it needs no resume dispatch to the application. */
+async function seedMemberRecord(document: ReturnType<typeof pprDocument>, scopeId: string) {
+  const pathname = '/target';
+  const route = '/[slug]';
+  const { entryId } = await deriveEntry(scopeId, { kind: 'app-page', route, pathname });
+  const html = encodeUtf8(document.shellText + document.suffixText);
+  const now = Date.now();
+  const bytes = encodeGenerationPack(
+    {
+      schemaVersion: 1,
+      scopeId,
+      entryId,
+      generationId: 'gen_member',
+      seq: 1,
+      revision: 1,
+      source: 'runtime',
+      kind: 'app-page',
+      route,
+      pathname,
+      cacheTimestamp: now,
+      producedAt: now,
+      policy: policyFromBuild({ initialRevalidate: 60, initialExpiration: 600 }),
+      status: 200,
+      headers: { 'content-type': 'text/html' },
+      tags: [],
+      htmlSha256: await sha256Hex(html),
+      htmlLength: html.byteLength,
+      postponedSha256: null,
+      postponedLength: 0,
+      artifacts: [],
+    },
+    html,
+    undefined,
+  );
+  await env.CACHE_STATE.put(kvGenerationKey(scopeId, entryId), bytes);
 }
 
 async function routedAfterMiddleware(example: Example) {
   const document = pprDocument();
-  const pathname = example.kind === 'dynamic' ? '/[slug]' : '/target';
+  const pathname = example.member
+    ? '/unrelated'
+    : example.kind === 'dynamic'
+      ? '/[slug]'
+      : '/target';
   const condition = {
     type: example.type ?? 'header',
     key: example.key ?? '',
@@ -40,17 +94,27 @@ async function routedAfterMiddleware(example: Example) {
       example.kind === 'reserved'
         ? [{ sourceRegex: '^/target$', beforeFiles: true, ...conditions }]
         : undefined,
-    dynamicRoutes:
-      example.kind === 'dynamic'
+    dynamicRoutes: example.member
+      ? [
+          {
+            sourceRegex: '^/target$',
+            members: { route: '/[slug]', kind: 'app-page' },
+            ...(example.kind === 'dynamic' && conditions),
+          },
+        ]
+      : example.kind === 'dynamic'
         ? [{ sourceRegex: '^/([^/]+)$', route: pathname, ...conditions }]
         : undefined,
   });
+  const scopeId = `member-${example.label}`;
+  if (example.member) await seedMemberRecord(document, scopeId);
   const manifest: ProjectManifest = {
     ...site.manifest,
     middleware: { matchers: [{ sourceRegex: '^/.*$' }] },
+    ...(example.member && { cache: { keySchemaVersion: 1, scopeId } }),
   };
   const middlewareHeaders = new Headers(
-    example.kind === 'unchanged' || example.kind === 'bypass'
+    example.headersOnly || example.kind === 'unchanged' || example.kind === 'bypass'
       ? { 'x-middleware-next': '1' }
       : { 'x-middleware-rewrite': 'https://site.example/target' },
   );
@@ -67,7 +131,9 @@ async function routedAfterMiddleware(example: Example) {
   }
   const dispatched: Request[] = [];
   const requestPath =
-    example.kind === 'unchanged' || example.kind === 'bypass' ? '/target' : '/start';
+    example.headersOnly || example.kind === 'unchanged' || example.kind === 'bypass'
+      ? '/target'
+      : '/start';
   const request = navigation(requestPath, {
     headers: {
       'cf-ipcountry': 'XX',
@@ -111,13 +177,22 @@ async function routedAfterMiddleware(example: Example) {
       policyLookup: Promise.resolve({
         kind: 'found',
         source: 'exact',
-        policy: DEFAULT_DELIVERY_POLICY,
+        policy: example.member
+          ? {
+              ...DEFAULT_DELIVERY_POLICY,
+              runtimeCache: {
+                ...DEFAULT_RUNTIME_CACHE_SETTINGS,
+                generations: 'on',
+                cacheApiMaxAgeMs: 0,
+              },
+            }
+          : DEFAULT_DELIVERY_POLICY,
       }),
     },
   );
-  await response.text();
+  const body = await response.text();
   await waitOnExecutionContext(ctx);
-  return { response, dispatched };
+  return { response, dispatched, body, document };
 }
 
 const EXAMPLES: readonly Example[] = [
@@ -270,5 +345,78 @@ describe('routing after middleware uses application forwarding headers', () => {
     expect(dispatched[0]?.headers.get('cf-ipcountry')).toBeNull();
     expect(dispatched[0]?.headers.get('x-forwarded-host')).toBe('site.example');
     expect(dispatched[0]?.headers.get('x-middleware-set-cookie')).toBe(example.setCookie ?? null);
+  });
+});
+
+const MEMBER_EXAMPLES: readonly Example[] = [
+  {
+    label: 'a rewrite respects a beforeFiles rule on a removed country header',
+    kind: 'reserved',
+    condition: 'missing',
+    key: 'cf-ipcountry',
+    member: true,
+    shell: false,
+  },
+  {
+    label: 'a header-only change respects the same beforeFiles rule',
+    kind: 'reserved',
+    condition: 'missing',
+    key: 'cf-ipcountry',
+    override: 'cf-ipcountry',
+    value: 'XX',
+    headersOnly: true,
+    member: true,
+    shell: false,
+  },
+  {
+    label: 'a member condition cannot match a spoofed forwarding host',
+    kind: 'dynamic',
+    key: 'x-forwarded-host',
+    value: String.raw`spoof\.example`,
+    member: true,
+    shell: false,
+  },
+  {
+    label: 'a member condition sees the actual forwarding host',
+    kind: 'dynamic',
+    key: 'x-forwarded-host',
+    value: String.raw`site\.example`,
+    member: true,
+    shell: true,
+  },
+  {
+    label: 'a member condition preserves an ordinary middleware override',
+    kind: 'dynamic',
+    key: 'x-variant',
+    value: 'selected',
+    override: 'x-variant',
+    member: true,
+    shell: true,
+  },
+  {
+    label: 'an unchanged middleware still serves the saved member',
+    kind: 'unchanged',
+    member: true,
+    shell: true,
+  },
+  {
+    label: 'a raw edge recovery cookie still bypasses the saved member',
+    kind: 'unchanged',
+    override: 'cookie',
+    overrideValue: `${EDGE_BYPASS_COOKIE}=1`,
+    member: true,
+    shell: false,
+  },
+];
+
+describe('saved members share the routing headers selected after middleware', () => {
+  it.each(MEMBER_EXAMPLES)('$label', async (example) => {
+    const { response, dispatched, body, document } = await routedAfterMiddleware(example);
+
+    expect(response.headers.get('x-arkor-edge')?.includes(';member=1')).toBe(example.shell);
+    expect(dispatched).toHaveLength(example.shell ? 0 : 1);
+    expect(body).toBe(
+      example.shell ? document.shellText + document.suffixText : document.suffixText,
+    );
   });
 });

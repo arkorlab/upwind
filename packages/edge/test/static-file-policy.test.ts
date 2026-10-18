@@ -15,7 +15,7 @@ import { navigation, pprDocument, seedSite } from './helpers/site.ts';
 const FILE_PATH = '/download.txt';
 const FILE_BODY = 'the shipped file';
 const POLICY_ID = 'slow-named-policy';
-const HIGH_SURROGATE_UNIT = 0xd800;
+const HIGH_SURROGATE_UNIT = 55_296;
 const LONE_HIGH_SURROGATE = String.fromCodePoint(HIGH_SURROGATE_UNIT);
 
 /** A policy still out while the manifest is already present. */
@@ -178,18 +178,17 @@ describe('a shipped file with a policy read still out', () => {
   });
 
   it('keeps independent middleware fields and cookies named by the configured hop', async () => {
-    const dispatchApp = vi.fn(() =>
-      Promise.resolve(
-        new Response(null, {
-          headers: {
-            'x-middleware-next': '1',
-            'x-internal': 'middleware-value',
-            'set-cookie': 'middleware=kept; Path=/',
-            'access-control-allow-origin': '*',
-          },
-        }),
-      ),
-    );
+    const dispatchApp = vi.fn(() => {
+      const response = new Response(null, {
+        headers: {
+          'x-middleware-next': '1',
+          'x-internal': 'middleware-value',
+          'set-cookie': 'middleware=kept; Path=/',
+          'access-control-allow-origin': '*',
+        },
+      });
+      return Promise.resolve(response);
+    });
     const pending = await delayedPolicyFile({
       match: String.raw`^/download\.txt$`,
       ruleHeaders: {

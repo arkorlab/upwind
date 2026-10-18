@@ -142,37 +142,28 @@ function hostedEntry(
   manifest: ProjectManifest,
   classification: RequestClass,
   middleware: MiddlewareOutcome,
-  asked: { readonly headers: Headers; readonly edge: EdgeContext },
+  routedHeaders: Headers | undefined,
 ): RouteEntry | undefined {
   const classified =
     classification.kind === 'document' || forRouter(classification)
       ? classification.entry
       : undefined;
-  if (middleware.kind !== 'continue') {
-    return classified;
-  }
-  if (
-    !middleware.rewritten &&
-    headersLeftAlone(asked.headers, middleware.requestHeaders, asked.edge.host.credentials)
-  ) {
+  if (middleware.kind !== 'continue' || routedHeaders === undefined) {
     return classified;
   }
   const { url } = middleware;
-  // Route conditions see the forwarded request, keeping ordinary middleware overrides while
-  // replacing or removing forwarding fields exactly as the application dispatch does.
-  const requestHeaders = handedHeaders(asked.edge, middleware.requestHeaders);
   // Behind the same gate the client's own pathname passed: the middleware runs before the
   // `beforeFiles` rewrites and the filesystem, so a rule of theirs claims the path it was
   // rewritten to, or the request it changed, exactly as it would have claimed the path the client
   // asked for (`classifyRequest`).
-  if (isReserved(manifest, url, requestHeaders, true)) {
+  if (isReserved(manifest, url, routedHeaders, true)) {
     return undefined;
   }
   return (
     findRouteEntry(manifest, url.pathname) ??
     (isExactPathname(manifest, url.pathname)
       ? undefined
-      : matchDynamicRoute(manifest, url, requestHeaders))
+      : matchDynamicRoute(manifest, url, routedHeaders))
   );
 }
 
@@ -482,6 +473,7 @@ async function serveAfterItsMiddleware(
 function unprovedRoute(
   input: HostedDocumentInput,
   middleware: MiddlewareOutcome,
+  routedHeaders: Headers | undefined,
 ): Promise<Response> {
   const { classification } = input;
   // A rewrite that lands on a shipped file — a download behind a friendlier path — is served
@@ -502,7 +494,7 @@ function unprovedRoute(
       classification.kind === 'document' ? 'rewrite-not-proved' : passthroughReason(classification);
     return input.passthrough(reason, middleware, route, waited);
   };
-  return serveMemberWithoutShell(input, middleware, toWorker) ?? toWorker();
+  return serveMemberWithoutShell(input, middleware, toWorker, routedHeaders) ?? toWorker();
 }
 
 /** A partial fallback uses only its target's already-held record, never a foreground lookup. */
@@ -624,17 +616,26 @@ function serveHostedDocument(
   preload: Preload | undefined,
 ): Promise<Response> {
   const { manifest, classification } = input;
-  const entry = hostedEntry(manifest, classification, middleware, {
-    headers: input.request.headers,
-    edge: input.edge,
-  });
+  // Share the forwarded request view with a shell-less member lookup: both route gates must
+  // see the same headers the application receives, while bypass checks retain the raw cookies.
+  const routedHeaders =
+    middleware.kind === 'continue' &&
+    (middleware.rewritten ||
+      !headersLeftAlone(
+        input.request.headers,
+        middleware.requestHeaders,
+        input.edge.host.credentials,
+      ))
+      ? handedHeaders(input.edge, middleware.requestHeaders)
+      : undefined;
+  const entry = hostedEntry(manifest, classification, middleware, routedHeaders);
   rememberRewrite(input, middleware, entry);
   const preloaded = preload !== undefined && entry?.pathname === preload.entry.pathname;
   if (preload !== undefined && !preloaded) {
     abandon(input.edge, preload);
   }
   if (entry === undefined) {
-    return unprovedRoute(input, middleware);
+    return unprovedRoute(input, middleware, routedHeaders);
   }
   const off = offTheEdge(input.edge, entry);
   if (off !== undefined) {

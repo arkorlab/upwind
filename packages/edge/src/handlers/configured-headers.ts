@@ -58,11 +58,11 @@ export function layImageConfiguredUnder(
 }
 
 /**
- * A shipped file's configured fields, over its defaults and before independent middleware.
+ * A stored file or router part's configured fields, before independent middleware.
  * A rule's Connection names only that rule layer's hop fields (RFC 9110, 7.6.1); the file's
- * byte metadata still belongs to the file. Iterate once, as the original static overlay did.
+ * byte metadata still belongs to the representation. Iterate once, as the original overlay did.
  */
-export function layStaticConfiguredOver(
+export function layStoredConfiguredOver(
   headers: Headers,
   configured: ConfiguredHeaders | undefined,
   scope: PassthroughResponseContext,

@@ -26,7 +26,7 @@ import {
   readShippedFile,
 } from '../preview/blobs.ts';
 import type { StaticFileContext } from '../strategies/context.ts';
-import { layStaticConfiguredOver } from './configured-headers.ts';
+import { layStoredConfiguredOver } from './configured-headers.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
 import { observeMetric } from './observer.ts';
 import {
@@ -194,7 +194,7 @@ function defaultCacheControl(file: StaticFileEntry): string {
  * with for a file as for a document. A cookie of either is scoped as a Function's is.
  */
 function applicationHeaders(input: StaticFileInput, headers: Headers): void {
-  layStaticConfiguredOver(headers, input.configured, input.edge.forwarding, ENTITY_HEADERS);
+  layStoredConfiguredOver(headers, input.configured, input.edge.forwarding, ENTITY_HEADERS);
   if (input.middleware !== undefined) {
     mergeScopedMiddlewareHeaders(headers, input.middleware.responseHeaders, input.edge.forwarding);
   }
@@ -409,7 +409,7 @@ function sliceStream(
  * way: the cache that keeps a file is the blob Worker's.
  */
 async function readFile(
-  edge: StaticFileContext,
+  edge: Pick<StaticFileContext, 'env' | 'runtime'>,
   file: StaticFileEntry,
   range: BlobRange | undefined,
   progress?: FileReadProgress,
@@ -439,7 +439,7 @@ export interface StoredStream extends Pick<FileRead, 'requests'> {
 
 /** A shipped file's bytes, for something the edge derives from the file rather than serves as it is. */
 export async function readStaticFileStream(
-  edge: StaticFileContext,
+  edge: Pick<StaticFileContext, 'env' | 'runtime'>,
   file: StaticFileEntry,
   progress?: FileReadProgress,
 ): Promise<StoredStream> {

@@ -20,7 +20,7 @@ import type { DetachedRegeneration } from '../cache/regenerate.ts';
 import type { EdgeMetric } from '../observability/metrics.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { loadShell, storageReadsOf } from '../strategies/shell-loader.ts';
-import { setConfigured } from './configured-headers.ts';
+import { layStoredConfiguredOver, setConfigured } from './configured-headers.ts';
 import { ACCEPT_ENCODING_HEADER, IDENTITY_ENCODING, varyOn } from './document-headers.ts';
 import { observeMetric } from './observer.ts';
 import {
@@ -228,14 +228,7 @@ function applicationHeaders(input: SegmentInput, headers: Headers): void {
     }
   }
   // Explicit rules describe this request, including any Link the application intentionally sets.
-  for (const [name, value] of Object.entries(input.configured.headers)) {
-    if (!leftBehind.has(name.toLowerCase())) {
-      // A rule may interpolate a path capture into a header *name*, and a capture that spans
-      // segments makes one the `Headers` API refuses with a throw — which would take the whole
-      // answer down rather than one header of it (`setConfigured`).
-      setConfigured(headers, name, value, input.edge.forwarding);
-    }
-  }
+  layStoredConfiguredOver(headers, input.configured, input.edge.forwarding, leftBehind);
 }
 
 function generationHeaders(input: SegmentInput, headers: Headers): void {

@@ -65,7 +65,11 @@ export type Unserved = (route?: string, waited?: PassthroughWait) => Promise<Res
  * cache whose policy serves from records. A validation request proves the build's shells and reads
  * no record. Whole Flight can use the same member record; segment prefetches remain the Worker's.
  */
-function memberOf(input: MemberInput, middleware: MiddlewareOutcome): MemberOfClass | undefined {
+function memberOf(
+  input: MemberInput,
+  middleware: MiddlewareOutcome,
+  routedHeaders: Headers | undefined,
+): MemberOfClass | undefined {
   const { manifest, classification, edge } = input;
   const navigation =
     classification.kind === 'document' ||
@@ -80,13 +84,13 @@ function memberOf(input: MemberInput, middleware: MiddlewareOutcome): MemberOfCl
     return undefined;
   }
   const left = requestAsLeft(input, middleware);
-  // Behind the gate a rewrite's target passes on its way to a route (`hostedEntry`): a rule ahead
-  // of the filesystem claims it first.
-  const rewritten = middleware.kind === 'continue' && middleware.rewritten;
-  if (rewritten && isReserved(manifest, left.url, left.headers, true)) {
+  // Reuse hostedEntry's forwarded view for every changed request, including a header-only
+  // change: a rule ahead of the filesystem claims it before a saved member can answer.
+  const headers = routedHeaders ?? left.headers;
+  if (routedHeaders !== undefined && isReserved(manifest, left.url, headers, true)) {
     return undefined;
   }
-  const member = memberRouteFor(manifest, left.url, left.headers);
+  const member = memberRouteFor(manifest, left.url, headers);
   return classification.kind === RSC_PAYLOAD && member?.members.kind !== 'app-page'
     ? undefined
     : member;
@@ -100,8 +104,9 @@ export function serveMemberWithoutShell(
   input: MemberInput,
   middleware: MiddlewareOutcome,
   unserved: Unserved,
+  routedHeaders: Headers | undefined,
 ): Promise<Response> | undefined {
-  const member = memberOf(input, middleware);
+  const member = memberOf(input, middleware, routedHeaders);
   const scopeId = input.manifest.cache?.scopeId;
   if (member === undefined || scopeId === undefined) {
     return undefined;
