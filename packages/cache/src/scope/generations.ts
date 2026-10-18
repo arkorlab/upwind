@@ -99,7 +99,11 @@ export function condemnedOf(row: GenerationRow): InvalidationState | null {
 
 export function markPruned(sql: SqlStorage, generationId: string, now: number): void {
   sql.exec(
-    `UPDATE generations SET storage = 'pruned', pruned_at = ? WHERE generation_id = ?`,
+    `UPDATE generations SET storage = 'pruned', pruned_at = ?,
+       publication = CASE WHEN EXISTS (SELECT 1 FROM entries e
+         WHERE e.entry_id = generations.entry_id AND e.publication = 'retired')
+         THEN 'retired' ELSE publication END
+     WHERE generation_id = ?`,
     now,
     generationId,
   );
@@ -122,8 +126,9 @@ export function summaryOf(row: GenerationRow): CurrentGenerationSummary {
  * are present, read in that order (`generations_formers`) as far as the batch. Each is placed among
  * its entry's former generations by those after it (`generations_by_entry`), counted no further than
  * the number retained: the newest is always kept for rollback, and a pruned one's place still
- * counts towards that number. Neither the history of pruned ones nor all of a long-lived entry's is
- * read for it, and a rollback copy or a generation still within its keep crowds out no later entry.
+ * counts towards that number. A retired entry keeps no rollback copy: its former rows join the
+ * same prune pages, without a history-wide retirement update. Neither the history of pruned ones nor
+ * all of a long-lived entry's is read for it, and a rollback copy or a generation still within its keep crowds out no later entry.
  *
  * `before` is measured from when the generation stopped being current: the commit of the one that
  * replaced it, published at the revision that superseded it — the next of its entry, found through
@@ -139,7 +144,9 @@ export function prunableGenerations(
     .exec<GenerationRow>(
       `SELECT * FROM generations AS former
        WHERE storage = 'present' AND publication <> 'published'
-         AND (publication = 'retired' OR (
+         AND (publication = 'retired'
+           OR EXISTS (SELECT 1 FROM entries e
+             WHERE e.entry_id = former.entry_id AND e.publication = 'retired') OR (
            EXISTS (SELECT 1 FROM generations g
              WHERE g.entry_id = former.entry_id AND g.seq > former.seq
                AND g.publication <> 'published')

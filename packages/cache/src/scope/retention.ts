@@ -279,19 +279,29 @@ function dropOrphanedUploads(input: RetentionInput, deletable: string[]): boolea
   return rows.length === PRUNE_BATCH;
 }
 
-function ageOutHistory(input: RetentionInput, windows: Windows, deletable: string[]): void {
+function ageOutHistory(input: RetentionInput, windows: Windows, deletable: string[]): boolean {
   const { sql, now } = input;
   const before = now - windows.historyMs;
   deletable.push(...input.history.ageOut(sql, before));
-  sql.exec(
-    `DELETE FROM attempts WHERE status NOT IN ('leased', 'uploading') AND finished_at < ?`,
-    before,
-  );
+  // Removing the oldest page advances the existing finished-at index, including tied timestamps.
+  // RETURNING counts attempts, not their additional index writes, for the backlog signal.
+  const attempts = sql
+    .exec<{ attempt_id: string }>(
+      `DELETE FROM attempts WHERE attempt_id IN (
+       SELECT attempt_id FROM attempts INDEXED BY attempts_by_finished_at
+       WHERE finished_at < ? AND status NOT IN ('leased', 'uploading')
+       ORDER BY finished_at LIMIT ?)
+     RETURNING attempt_id`,
+      before,
+      PRUNE_BATCH,
+    )
+    .toArray();
   deletePrunedBefore(sql, before);
   sql.exec(
     `DELETE FROM dependencies WHERE owner_generation_id NOT IN (SELECT generation_id FROM generations)`,
   );
   pruneQuotaWindows(sql, now);
+  return attempts.length === PRUNE_BATCH;
 }
 
 /** Expired data has no useful current value; withdraw it before reclaiming its entry slot. */
@@ -316,7 +326,10 @@ function retireExpiredData(input: RetentionInput): boolean {
   const revision = readRevision(sql) + 1;
   commitRevision(sql, revision);
   for (const entry of entries) {
-    sql.exec(`UPDATE generations SET publication = 'retired' WHERE entry_id = ?`, entry.entry_id);
+    sql.exec(
+      `UPDATE generations SET publication = 'retired' WHERE generation_id = ?`,
+      entry.current_generation_id,
+    );
     sql.exec(
       `UPDATE entries SET publication = 'retired', current_generation_id = NULL,
       revision = ?, record_revision = ?, updated_at = ? WHERE entry_id = ?`,
@@ -461,8 +474,7 @@ export function applyRetention(input: RetentionInput): RetentionPlan {
     );
     forgetWriterMarks(input);
   }
-  full.push(dropOrphanedUploads(input, deletable));
-  ageOutHistory(input, windows, deletable);
+  full.push(dropOrphanedUploads(input, deletable), ageOutHistory(input, windows, deletable));
   queueDeletions(input.sql, deletable, input.now);
   forgetReferenced(input.sql);
   const page = pendingDeletions(input.sql, PRUNE_BATCH);
