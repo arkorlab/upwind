@@ -601,9 +601,8 @@ export class CacheScope extends DurableObject<CacheBindings> {
   }
 
   /** A newer route record from the authority's current state, without leasing or writing it. */
-  currentRecord(entryId: string, afterRevision: number): Promise<ArrayBuffer | undefined> {
-    if (!this.#tables) return Promise.resolve(undefined);
-    return recordAnswers.readCurrentRecord(this.#deps(), entryId, afterRevision);
+  async currentRecord(entry: string, after: number): Promise<ArrayBuffer | undefined> {
+    return this.#tables ? recordAnswers.readCurrentRecord(this.#deps(), entry, after) : undefined;
   }
 
   readEntry(entryId: string, now: number): ReadEntryResult {
