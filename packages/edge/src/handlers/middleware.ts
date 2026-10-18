@@ -210,7 +210,10 @@ export function routedHeaders(
  * own `x-forwarded-*` in place of a client's, without what no application is sent — and without
  * the host's credentials.
  */
-function handedHeaders(edge: Pick<EdgeContext, 'host' | 'forwarding'>, headers: Headers): Headers {
+export function handedHeaders(
+  edge: Pick<EdgeContext, 'host' | 'forwarding'>,
+  headers: Headers,
+): Headers {
   return withoutHostCredentials(
     sanitizePassthroughHeaders(headers, edge.forwarding),
     edge.host.credentials,

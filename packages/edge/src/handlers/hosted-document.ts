@@ -16,7 +16,6 @@ import {
   REGENERATE_HEADER,
 } from '@stayingupwind/core/paas';
 import { PatternBudgetExceededError, type RequestClass } from '@stayingupwind/core/request';
-import type { HostCredentials } from '@stayingupwind/host/credentials';
 import { type ResolvedPolicy, runtimeCacheOf } from '@stayingupwind/host/delivery';
 
 import { type RecordRead, serveCachedDocument, startRecordRead } from '../cache/document.ts';
@@ -42,6 +41,7 @@ import { serveHostedFile } from './hosted-static-file.ts';
 import {
   dispatchedFor,
   followExternalRewrite,
+  handedHeaders,
   judgeHeaderRulesAhead,
   middlewareFailedReason,
   middlewareMatches,
@@ -142,7 +142,7 @@ function hostedEntry(
   manifest: ProjectManifest,
   classification: RequestClass,
   middleware: MiddlewareOutcome,
-  asked: { readonly headers: Headers; readonly credentials: HostCredentials },
+  asked: { readonly headers: Headers; readonly edge: EdgeContext },
 ): RouteEntry | undefined {
   const classified =
     classification.kind === 'document' || forRouter(classification)
@@ -153,11 +153,14 @@ function hostedEntry(
   }
   if (
     !middleware.rewritten &&
-    headersLeftAlone(asked.headers, middleware.requestHeaders, asked.credentials)
+    headersLeftAlone(asked.headers, middleware.requestHeaders, asked.edge.host.credentials)
   ) {
     return classified;
   }
-  const { url, requestHeaders } = middleware;
+  const { url } = middleware;
+  // Route conditions see the forwarded request, keeping ordinary middleware overrides while
+  // replacing or removing forwarding fields exactly as the application dispatch does.
+  const requestHeaders = handedHeaders(asked.edge, middleware.requestHeaders);
   // Behind the same gate the client's own pathname passed: the middleware runs before the
   // `beforeFiles` rewrites and the filesystem, so a rule of theirs claims the path it was
   // rewritten to, or the request it changed, exactly as it would have claimed the path the client
@@ -624,7 +627,7 @@ function serveHostedDocument(
   const { manifest, classification } = input;
   const entry = hostedEntry(manifest, classification, middleware, {
     headers: input.request.headers,
-    credentials: input.edge.host.credentials,
+    edge: input.edge,
   });
   rememberRewrite(input, middleware, entry);
   const preloaded = preload !== undefined && entry?.pathname === preload.entry.pathname;
