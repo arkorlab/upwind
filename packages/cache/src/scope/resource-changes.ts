@@ -79,7 +79,7 @@ function allowedRouteKeys(routes: readonly string[]) {
   return { allowed: new Set(routes), byteExact: undefined };
 }
 
-interface WarmRoute {
+interface WarmRoute extends Record<string, SqlStorageValue> {
   route?: EntryRow['route'];
   route_bytes?: ArrayBuffer | null;
 }
