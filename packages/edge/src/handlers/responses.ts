@@ -219,11 +219,14 @@ export function forwardedResponse(
  * resume writes back with the cookies the middleware handed the render, as the render was given
  * them (`sentCookies`).
  * The middleware's `Connection` options exclude only its own additions, not the base answer's.
+ * A handler may also reserve fields that describe or protect the representation it produced;
+ * middleware cookies and the rest of its ordinary additions retain their existing precedence.
  */
 export function mergeScopedMiddlewareHeaders(
   target: Headers,
   added: Headers,
   scope: PassthroughResponseContext,
+  excluded?: ReadonlySet<string>,
 ): void {
   const nominated = nominatedBy(added);
   const scoped = new Headers();
@@ -231,7 +234,8 @@ export function mergeScopedMiddlewareHeaders(
     if (
       HOP_BY_HOP_HEADERS.includes(name) ||
       name.startsWith(PLATFORM_HEADER_PREFIX) ||
-      nominated?.has(name) === true
+      nominated?.has(name) === true ||
+      excluded?.has(name) === true
     ) {
       continue;
     }

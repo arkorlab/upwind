@@ -30,7 +30,7 @@ import { logWarn } from '../observability/logger.ts';
 import type { EdgeMetric } from '../observability/metrics.ts';
 import { validatorMatches } from '../strategies/asset-upstream.ts';
 import type { EdgeContext } from '../strategies/context.ts';
-import { layImageConfiguredUnder } from './configured-headers.ts';
+import { IMAGE_OPTIMIZER_HEADERS, layImageConfiguredUnder } from './configured-headers.ts';
 import {
   fetchImageSource,
   type ImageSource,
@@ -415,35 +415,31 @@ function debugHeader(input: ImageAnswerInput, src: string): string {
  */
 function clientHeaders(input: ImageAnswerInput, headers: Headers, src: string): Headers {
   const out = new Headers(headers);
+  const gated = input.configured.conditioned || input.middleware !== undefined;
   layImageConfiguredUnder(out, input.configured, input.edge.forwarding);
-  // A rule the request itself selected answers the next visitor differently, so this optimized
-  // image is one visitor's however public the optimizer's own lifetime is.
-  if (input.configured.conditioned) {
-    out.set(CACHE_CONTROL_HEADER, GATED_CACHE_CONTROL);
-  }
   // The middleware's headers, then the caching they must not widen: a result the middleware
   // admitted for one visitor stays private whatever it said, as a gated file does.
   if (input.middleware !== undefined) {
-    mergeScopedMiddlewareHeaders(out, input.middleware.responseHeaders, input.edge.forwarding);
-    out.set(CACHE_CONTROL_HEADER, GATED_CACHE_CONTROL);
+    mergeScopedMiddlewareHeaders(
+      out,
+      input.middleware.responseHeaders,
+      input.edge.forwarding,
+      src === 'error' ? undefined : IMAGE_OPTIMIZER_HEADERS,
+    );
   }
-  if (input.edge.validated) {
-    out.set(CACHE_CONTROL_HEADER, NO_STORE_CACHE_CONTROL);
+  // A rule or middleware selected this visitor's answer, whatever the optimizer's lifetime is.
+  if (gated) {
+    out.set(CACHE_CONTROL_HEADER, GATED_CACHE_CONTROL);
   }
   // Where delivery is private nothing is kept, by the browser or a cache between: either could
   // hand the image back without the host being asked (`privateDelivery`).
-  if (input.edge.privateDelivery) {
+  if (input.edge.validated || input.edge.privateDelivery) {
     out.set(CACHE_CONTROL_HEADER, NO_STORE_CACHE_CONTROL);
   }
   // Wherever one of those kept the image from shared caches, the lifetimes a rule or a middleware
   // gave them go too, as they outrank `cache-control` for exactly those caches — and one honouring
   // them would hand one visitor's image, cookie and all, to the next.
-  const unshared =
-    input.configured.conditioned ||
-    input.middleware !== undefined ||
-    input.edge.validated ||
-    input.edge.privateDelivery;
-  if (unshared) {
+  if (gated || input.edge.validated || input.edge.privateDelivery) {
     removeSharedCacheOverrides(out);
   }
   out.set(EDGE_DEBUG_HEADER, debugHeader(input, src));

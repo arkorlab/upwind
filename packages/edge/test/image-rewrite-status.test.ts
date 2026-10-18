@@ -36,6 +36,18 @@ const CONFIG: ImagesConfig = {
 const OUTPUT = encodeUtf8('optimized');
 const RULE_TAG = '"configured-tag"';
 const RULE_CSP = "default-src 'self'";
+const MIDDLEWARE_TAG = '"middleware-tag"';
+const MIDDLEWARE_HEADERS = {
+  'content-security-policy': "default-src * 'unsafe-inline'",
+  'content-disposition': 'inline',
+  vary: 'X-Custom',
+  etag: MIDDLEWARE_TAG,
+  'x-nextjs-cache': 'MIDDLEWARE',
+  'content-range': 'bytes 0-0/1',
+  'accept-ranges': 'bytes',
+  'access-control-allow-origin': '*',
+  'x-middleware-ordinary': 'retained',
+};
 const STREAM_BYTES = 9 * 1024 * 1024;
 const PNG = concatBytes([
   new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
@@ -50,6 +62,7 @@ interface Options {
   readonly streamed?: boolean;
   readonly configured?: boolean;
   readonly nominatedCookie?: boolean;
+  readonly middlewareHeaders?: boolean;
 }
 
 async function rewrittenImage(options: Options) {
@@ -104,6 +117,7 @@ async function rewrittenImage(options: Options) {
           headers: {
             'x-middleware-rewrite': `https://site.example/_next/image?${query.toString()}`,
             'set-cookie': 'mw=1; Path=/',
+            ...(options.middlewareHeaders === true && MIDDLEWARE_HEADERS),
           },
         }),
       );
@@ -230,6 +244,95 @@ describe('an optimized image under its middleware rewrite status', () => {
     expect(response.body).toBeNull();
     expect(response.headers.has('content-length')).toBe(false);
     expect(metrics.at(-1)?.suffixBytes).toBe(0);
+  });
+});
+
+describe('middleware headers beside the optimizer response', () => {
+  it.each(['GET', 'HEAD'])('preserves optimizer metadata for %s', async (method) => {
+    const { response } = await rewrittenImage({ status: 200, method, middlewareHeaders: true });
+
+    await response.arrayBuffer();
+
+    expect({
+      csp: response.headers.get('content-security-policy'),
+      vary: response.headers.get('vary'),
+      etag: response.headers.get('etag'),
+      cache: response.headers.get('x-nextjs-cache'),
+      range: response.headers.get('content-range'),
+      acceptsRanges: response.headers.get('accept-ranges'),
+    }).toStrictEqual({
+      csp: CONFIG.contentSecurityPolicy,
+      vary: 'Accept',
+      etag: `"${await sha256Hex(OUTPUT)}"`,
+      cache: 'MISS',
+      range: null,
+      acceptsRanges: null,
+    });
+    expect(response.headers.get('content-disposition')).toMatch(/^attachment;/u);
+    expect({
+      cookies: response.headers.getSetCookie(),
+      cors: response.headers.get('access-control-allow-origin'),
+      ordinary: response.headers.get('x-middleware-ordinary'),
+      privacy: response.headers.get('cache-control'),
+    }).toStrictEqual({
+      cookies: ['mw=1; Path=/'],
+      cors: '*',
+      ordinary: 'retained',
+      privacy: 'private, max-age=0, must-revalidate',
+    });
+  });
+
+  it('does not answer 304 for a middleware validator unrelated to the image', async () => {
+    const { response } = await rewrittenImage({
+      status: 200,
+      middlewareHeaders: true,
+      validator: MIDDLEWARE_TAG,
+    });
+
+    expect(response.status).toBe(200);
+    expect(new Uint8Array(await response.arrayBuffer())).toStrictEqual(OUTPUT);
+  });
+
+  it('still answers 304 for the optimized bytes', async () => {
+    const validator = `"${await sha256Hex(OUTPUT)}"`;
+    const { response } = await rewrittenImage({ status: 200, middlewareHeaders: true, validator });
+
+    expect(response.status).toBe(304);
+    expect(response.body).toBeNull();
+    expect(response.headers.get('etag')).toBe(validator);
+  });
+
+  it('does not introduce a middleware validator or ranges on an unhashed stream', async () => {
+    const { response } = await rewrittenImage({
+      status: 200,
+      middlewareHeaders: true,
+      streamed: true,
+      validator: MIDDLEWARE_TAG,
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('etag')).toBeNull();
+    expect(response.headers.get('content-range')).toBeNull();
+    expect(response.headers.get('accept-ranges')).toBeNull();
+    expect((await response.arrayBuffer()).byteLength).toBe(STREAM_BYTES);
+  });
+
+  it('retains application middleware headers on an optimizer refusal', async () => {
+    const { response } = await rewrittenImage({
+      status: 200,
+      middlewareHeaders: true,
+      invalid: true,
+    });
+
+    expect(response.status).toBe(400);
+    expect(response.headers.get('content-security-policy')).toBe(
+      MIDDLEWARE_HEADERS['content-security-policy'],
+    );
+    expect(response.headers.get('content-disposition')).toBe('inline');
+    expect(response.headers.get('etag')).toBe(MIDDLEWARE_TAG);
+    expect(response.headers.getSetCookie()).toStrictEqual(['mw=1; Path=/']);
+    expect(response.headers.get('cache-control')).toBe('private, no-store');
+    await expect(response.text()).resolves.toContain('quality');
   });
 });
 

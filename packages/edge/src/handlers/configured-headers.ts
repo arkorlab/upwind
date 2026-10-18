@@ -23,6 +23,15 @@ const IMAGE_ENTITY_HEADERS: ReadonlySet<string> = new Set([
   'etag',
 ]);
 
+/** Successful optimizer responses own their byte metadata, protections and cache marker. */
+export const IMAGE_OPTIMIZER_HEADERS: ReadonlySet<string> = new Set([
+  ...IMAGE_ENTITY_HEADERS,
+  'content-disposition',
+  'content-security-policy',
+  'vary',
+  'x-nextjs-cache',
+]);
+
 /** Supplement image headers without replacing byte metadata or exporting a hop's fields. */
 export function layImageConfiguredUnder(
   headers: Headers,
