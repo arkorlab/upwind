@@ -146,15 +146,17 @@ export function forwardedResponse(
  * Scoped where they are merged, not where the middleware answered: the splice compares what a
  * resume writes back with the cookies the middleware handed the render, as the render was given
  * them (`sentCookies`).
+ * The middleware's `Connection` options exclude only its own additions, not the base answer's.
  */
 export function mergeScopedMiddlewareHeaders(
   target: Headers,
   added: Headers,
   scope: PassthroughResponseContext,
 ): void {
+  const nominated = nominatedBy(added);
   const scoped = new Headers();
   for (const [name, value] of added) {
-    if (name.startsWith(PLATFORM_HEADER_PREFIX)) {
+    if (name.startsWith(PLATFORM_HEADER_PREFIX) || nominated?.has(name) === true) {
       continue;
     }
     scoped.append(

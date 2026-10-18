@@ -126,6 +126,28 @@ function refusal(): Response {
 }
 
 describe('an answer the middleware gives', () => {
+  it.each([FILE, '/api/hello'])(
+    'drops fields nominated by continuing middleware Connection on %s',
+    async (path) => {
+      const response = await throughMiddleware(path, {
+        middleware: () => {
+          return new Response(null, {
+            headers: {
+              'x-middleware-next': '1',
+              connection: 'X-Internal',
+              'x-internal': 'one hop only',
+              'x-visible': 'retained',
+            },
+          });
+        },
+      });
+
+      expect(response.headers.get('x-internal')).toBeNull();
+      expect(response.headers.get('connection')).toBeNull();
+      expect(response.headers.get('x-visible')).toBe('retained');
+    },
+  );
+
   /**
    * The headers a rule of `next.config` sets are collected by Next.js's router before the
    * middleware runs, and laid on a redirect or a whole response the middleware answers with, under
