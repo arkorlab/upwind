@@ -75,12 +75,30 @@ jobs:
         run: |
           matrix_next_version="$(node -p 'require("./packages/adapter/node_modules/next/package.json").version')"
           pnpm check:matrix --fixture next-external-output --versions "$matrix_next_version"
-      # The compiler a new application installs is the template's own dependency, independent of
-      # this workspace's catalog. Exercise the built CLI and typecheck that application as created.
+      # The compiler a new application installs is independent of this workspace's catalog. Pack
+      # its own dependencies locally so a release PR does not require its version on npm already.
       - name: Generated application typecheck
         run: |
           scaffold_dir="$(mktemp -d)"
+          for package in core runtime adapter upwind; do
+            pnpm --dir "packages/$package" pack --out "$scaffold_dir/$package.tgz"
+          done
           node packages/create-upwind/dist/cli.js "$scaffold_dir/app" --skip-install --no-git
+          node --input-type=module - "$scaffold_dir" <<'NODE'
+          import { readFile, writeFile } from 'node:fs/promises';
+          import path from 'node:path';
+
+          const root = process.argv[2];
+          const manifestPath = path.join(root, 'app/package.json');
+          const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+          manifest.devDependencies.upwind = `file:${root}/upwind.tgz`;
+          manifest.devDependencies['@stayingupwind/adapter'] = `file:${root}/adapter.tgz`;
+          manifest.overrides = {
+            '@stayingupwind/core': `file:${root}/core.tgz`,
+            '@stayingupwind/runtime': `file:${root}/runtime.tgz`,
+          };
+          await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+          NODE
           cd "$scaffold_dir/app"
           npm install --no-audit --no-fund
           npm exec -- next typegen
