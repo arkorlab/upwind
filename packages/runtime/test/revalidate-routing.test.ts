@@ -1,6 +1,6 @@
 import { resolveRoutes } from '@next/routing';
 import type { Prerender } from '@stayingupwind/core/bundle';
-import { IMPLICIT_TAG_PREFIX } from '@stayingupwind/core/cache';
+import { deriveEntry, IMPLICIT_TAG_PREFIX, sharedShellTagOf } from '@stayingupwind/core/cache';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { InvalidatedTags, RequestWrites, withRequestContext } from '../src/cache/context.ts';
@@ -28,6 +28,8 @@ vi.mock(import('../src/store.ts'), async (importOriginal) => {
     getStore: vi.fn(),
   };
 });
+
+const SCOPE = 'revalidate-routing';
 
 /** One source route, with a concrete seed when the adapter writes one before its template. */
 interface Route {
@@ -213,7 +215,7 @@ function revalidate(store: Store, urlPath: string, remote = false): Promise<void
     {
       request: new Request('https://app.test/api/revalidate'),
       tables: { app: { entries: {} }, edge: { entries: {} } },
-      runtime: {} as CacheRuntime,
+      runtime: { scopeId: SCOPE } as CacheRuntime,
       startedAt: 0,
       fetchStarts: new Map(),
       waitUntil: () => {
@@ -226,6 +228,143 @@ function revalidate(store: Store, urlPath: string, remote = false): Promise<void
     () => platformRevalidate({ urlPath }),
   );
 }
+
+/** Two independently reusable shells of one page; the final parameter is resumed per visitor. */
+function terminalDeployment(
+  overrides: Partial<Prerender> = {},
+  cacheComponents = true,
+  classes: readonly string[] = ['b', 'c'],
+): Store {
+  const route = '/prefix/[one]/[two]';
+  const shells: Prerender[] = classes.map((one) => {
+    return {
+      id: one,
+      route,
+      pathname: `/prefix/${one}/[two]`,
+      parentOutputId: route,
+      groupId: 1,
+      routeType: 'shell',
+      response: 'initial',
+      compute: 'resuming',
+      renderingMode: 'PARTIALLY_STATIC',
+      body: { sha256: 'html', byteLength: 10, contentType: 'text/html' },
+      postponed: { sha256: 'state', byteLength: 5, contentType: 'application/json' },
+      ...overrides,
+    };
+  });
+  return {
+    manifest: {
+      config: { basePath: '', i18n: null, cacheComponents, partialPrefetching: false },
+      entrypoints: [{ id: route, pathname: route, kind: 'app-page' }],
+    },
+    prerendersByPathname: new Map(shells.map((shell) => [shell.pathname, shell])),
+    shellsByRoute: new Map([
+      [
+        route,
+        {
+          pages: new Map(),
+          patterns: shells.map((prerender) => {
+            return {
+              // eslint-disable-next-line security/detect-non-literal-regexp -- Test-owned literal class values.
+              pattern: new RegExp(`^/prefix/${prerender.id}/[^/]+$`, 'u'),
+              prerender,
+            };
+          }),
+        },
+      ],
+    ]),
+    pathnames: shells.map((shell) => shell.pathname),
+    slashSpellings: new Map(),
+  } as unknown as Store;
+}
+
+describe('manual revalidation of a shared terminal shell', () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(invalidateNow).mockReset();
+  });
+
+  it('invalidates the held class before regenerating the same entry its visitors read', async () => {
+    const store = terminalDeployment();
+    const descriptor = {
+      kind: 'app-page' as const,
+      route: '/prefix/[one]/[two]',
+      pathname: '/prefix/b/[two]',
+    };
+    const { entryId } = await deriveEntry(SCOPE, descriptor);
+
+    await revalidate(store, '/prefix/b/foo');
+
+    expect(vi.mocked(regenerate).mock.calls[0]?.[0].target.descriptor).toStrictEqual(descriptor);
+    expect(invalidateNow).toHaveBeenCalledWith(expect.anything(), [
+      `${IMPLICIT_TAG_PREFIX}/prefix/b/foo`,
+      sharedShellTagOf(entryId),
+    ]);
+    expect(vi.mocked(invalidateNow).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(regenerate).mock.invocationCallOrder[0] ?? 0,
+    );
+  });
+
+  it('invalidates only the selected class when its page belongs to another Function', async () => {
+    const store = terminalDeployment();
+    vi.mocked(elsewhere).mockReturnValue('app-other');
+    const { entryId } = await deriveEntry(SCOPE, {
+      kind: 'app-page',
+      route: '/prefix/[one]/[two]',
+      pathname: '/prefix/b/[two]',
+    });
+
+    await revalidate(store, '/prefix/b/foo', true);
+
+    expect(invalidateNow).toHaveBeenCalledWith(expect.anything(), [
+      `${IMPLICIT_TAG_PREFIX}/prefix/b/foo`,
+      sharedShellTagOf(entryId),
+    ]);
+    expect(regenerate).not.toHaveBeenCalled();
+  });
+
+  it('stops before regeneration if shared-class invalidation fails', async () => {
+    vi.mocked(invalidateNow).mockRejectedValueOnce(new Error('invalidation unavailable'));
+
+    await expect(revalidate(terminalDeployment(), '/prefix/b/foo')).rejects.toThrow(
+      'invalidation unavailable',
+    );
+
+    expect(regenerate).not.toHaveBeenCalled();
+  });
+
+  it('invalidates a long shared class through its bounded identity without an oversized pathname tag', async () => {
+    const prefix = 'b'.repeat(500);
+    const store = terminalDeployment({}, true, [prefix, 'c']);
+    const descriptor = {
+      kind: 'app-page' as const,
+      route: '/prefix/[one]/[two]',
+      pathname: `/prefix/${prefix}/[two]`,
+    };
+    const { entryId } = await deriveEntry(SCOPE, descriptor);
+
+    await revalidate(store, `/prefix/${prefix}/foo`);
+
+    expect(invalidateNow).toHaveBeenCalledWith(expect.anything(), [sharedShellTagOf(entryId)]);
+    expect(vi.mocked(regenerate).mock.calls[0]?.[0].target.descriptor).toStrictEqual(descriptor);
+  });
+
+  it.each([
+    { overrides: { postponed: undefined }, cacheComponents: true },
+    { overrides: {}, cacheComponents: false },
+    { overrides: { partialFallback: true }, cacheComponents: true },
+  ])(
+    'preserves concrete manual regeneration for an incompatible build: %j',
+    async ({ overrides, cacheComponents }) => {
+      await revalidate(terminalDeployment(overrides, cacheComponents), '/prefix/b/foo');
+
+      expect(vi.mocked(regenerate).mock.calls[0]?.[0].target.descriptor.pathname).toBe(
+        '/prefix/b/foo',
+      );
+      expect(invalidateNow).not.toHaveBeenCalled();
+    },
+  );
+});
 
 describe('manual revalidation route precedence', () => {
   afterEach(() => vi.clearAllMocks());

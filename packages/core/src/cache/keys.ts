@@ -43,6 +43,10 @@ export const GENERATION_ID_PREFIX = 'gen';
 export const TAG_ID_PREFIX = 'tag';
 /** Next.js prefixes the tags it derives from a route (`revalidatePath` works through them). */
 export const IMPLICIT_TAG_PREFIX = '_N_T_';
+/** A bounded identity for one shared shell, distinct from Next.js's pathname tags. */
+export function sharedShellTagOf(entryId: string): string {
+  return `${IMPLICIT_TAG_PREFIX}upwind:shared-shell:${entryId}`;
+}
 /** Next.js's own limit on a tag's length (`NEXT_CACHE_TAG_MAX_LENGTH`). */
 export const MAX_TAG_LENGTH = 256;
 /**

@@ -37,6 +37,7 @@ export {
   r2EventPayloadKey,
   r2RecordKey,
   r2RecordPrefix,
+  sharedShellTagOf,
   TAG_ID_PREFIX,
   tagIdFor,
   tagKindOf,

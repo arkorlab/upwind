@@ -1,8 +1,15 @@
-import { pagesDataPathnameUnder } from '@stayingupwind/core/bundle';
 import {
+  pagesDataPathnameUnder,
+  type Prerender,
+  sharedShellPathname,
+} from '@stayingupwind/core/bundle';
+import {
+  deriveEntry,
   IMPLICIT_TAG_PREFIX,
+  MAX_TAG_LENGTH,
   normalizeRoutePathname,
   type RouteEntryDescriptor,
+  sharedShellTagOf,
 } from '@stayingupwind/core/cache';
 
 import { nodeHandlerOf } from '../entries.ts';
@@ -10,7 +17,14 @@ import { descriptorFor } from '../generations.ts';
 import { escapedNameOf } from '../name-spellings.ts';
 import { elsewhere } from '../placement.ts';
 import { routingParameters } from '../route-parameters.ts';
-import { completedShell, findShell, getStore, queryCompletedShell, type Store } from '../store.ts';
+import {
+  completedShell,
+  entrypointKindOf,
+  findShell,
+  getStore,
+  queryCompletedShell,
+  type Store,
+} from '../store.ts';
 import { requestContext } from './context.ts';
 import { invalidateNow } from './handlers.ts';
 import { regenerate } from './regenerate.ts';
@@ -89,12 +103,23 @@ function orderedRoutes(store: Store): readonly string[] {
   return routes;
 }
 
-/**
- * The route whose shell answers a pathname, and the entry it is kept under; `undefined` when none
- * does. A member of a route that blocks is kept under the shell it completes to, where the build
- * keys the route's entries by some of its parameters (`completedShell`): that entry is the one its
- * requests read, and the one Next.js 16.4 revalidates for it.
- */
+/** Only a built, resumable class leaves the visitor's dynamic tail unresolved during regeneration. */
+function sharedPathname(store: Store, shell: Prerender): string | undefined {
+  return store.manifest.config.cacheComponents === true &&
+    entrypointKindOf(store, shell.route) === 'app-page'
+    ? sharedShellPathname(shell)
+    : undefined;
+}
+
+function manualPathname(store: Store, shell: Prerender, pathname: string): string {
+  return (
+    sharedPathname(store, shell) ??
+    queryCompletedShell(shell, pathname) ??
+    completedShell(shell, pathname)
+  );
+}
+
+/** The selected page's existing manual key, or the identity of its reusable terminal shell. */
 function routeOf(store: Store, pathname: string): RouteEntryDescriptor | undefined {
   const named = store.prerendersByPathname.get(pathname);
   // The router resolves a closed route's concrete page by name before its dynamic routes. Open
@@ -102,21 +127,13 @@ function routeOf(store: Store, pathname: string): RouteEntryDescriptor | undefin
   if (named !== undefined && store.pathnames.includes(pathname)) {
     const shell = findShell(store, named.route, pathname);
     if (shell?.id === named.id) {
-      return descriptorFor(
-        store,
-        named.route,
-        queryCompletedShell(shell, pathname) ?? completedShell(shell, pathname),
-      );
+      return descriptorFor(store, named.route, manualPathname(store, shell, pathname));
     }
   }
   for (const route of orderedRoutes(store)) {
     const shell = findShell(store, route, pathname);
     if (shell !== undefined) {
-      return descriptorFor(
-        store,
-        route,
-        queryCompletedShell(shell, pathname) ?? completedShell(shell, pathname),
-      );
+      return descriptorFor(store, route, manualPathname(store, shell, pathname));
     }
   }
   return undefined;
@@ -127,6 +144,7 @@ export async function platformRevalidate(input: RevalidateInput): Promise<void> 
   if (context?.runtime === undefined) {
     return;
   }
+  const { runtime } = context;
   const store = getStore();
   const asked = input.urlPath.split('?', 1)[0] ?? input.urlPath;
   const name = escapedNameOf(store, asked) ?? asked;
@@ -141,6 +159,18 @@ export async function platformRevalidate(input: RevalidateInput): Promise<void> 
   }
   // A page on the edge runtime has no generation to make: nothing here captures its render.
   const handler = await nodeHandlerOf(context.tables, descriptor.route);
+  const shell = findShell(store, descriptor.route, pathname);
+  const shared = shell !== undefined && sharedPathname(store, shell) === descriptor.pathname;
+  const tags = async (): Promise<string[]> => {
+    // A shared class can hold a long resolved prefix. Its bounded identity is sufficient even
+    // when the visitor's legacy pathname tag would exceed the cache host's tag-length limit.
+    const values = pathTags(pathname).filter((tag) => !shared || tag.length <= MAX_TAG_LENGTH);
+    if (shared) {
+      const { entryId } = await deriveEntry(runtime.scopeId, descriptor);
+      values.push(sharedShellTagOf(entryId));
+    }
+    return values;
+  };
   if (handler === undefined) {
     // A page in another app Function, where a build split its routes across several: an App
     // Router page a Pages Router handler asks for, since the Pages Router travels whole
@@ -152,8 +182,13 @@ export async function platformRevalidate(input: RevalidateInput): Promise<void> 
     if (entry?.runtime === 'edge' || elsewhere(store, descriptor.route) === undefined) {
       throw new Error(`revalidate: no Node.js entrypoint for ${descriptor.route}`);
     }
-    await invalidateNow(context.runtime, pathTags(pathname));
+    await invalidateNow(context.runtime, await tags());
     return;
+  }
+  // Mark only this shared class before the replacement is rendered. An Edge holding its old
+  // generation must stop serving it, and the new generation must observe that invalidation.
+  if (shared) {
+    await invalidateNow(context.runtime, await tags());
   }
   // As routing hands a render of a request for it the page's parameters, where Next.js would read
   // them otherwise off its name (`routingParameters`).
