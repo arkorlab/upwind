@@ -6,6 +6,7 @@ import {
   partialFallbackUpgradeOf,
   prefetchSegments,
   type Prerender,
+  prerenderResponseHeaders,
   PRIMARY_FUNCTION,
   routePathnameOf,
   type ServableOptions,
@@ -98,6 +99,58 @@ function lowercased(headers: Readonly<Record<string, string>>): Record<string, s
   );
 }
 
+/** A compiled path reference, including the named form older bundles retain. */
+function hasCapture(value: string): boolean {
+  return value.includes('$') || /:[A-Za-z_]\w*/u.test(value);
+}
+
+/** The policies a hint answers to (`withoutForbidden`), by their lowercase names. */
+const POLICY_HEADERS: ReadonlySet<string> = new Set(['content-security-policy', 'referrer-policy']);
+
+/** A conditional rule that names a policy, or can fill its name from a path capture. */
+export function maySetPreloadPolicy(rule: HeaderRule): boolean {
+  return (
+    (rule.has !== undefined || rule.missing !== undefined) &&
+    Object.keys(rule.headers).some(
+      (name) => POLICY_HEADERS.has(name.toLowerCase()) || hasCapture(name),
+    )
+  );
+}
+
+/**
+ * One rule's possible headers on this page. A concrete page has the same path captures the edge
+ * fills in; reuse the bundle's folding for its keys, values and router reference version, with
+ * only this rule made unconditional. A class shell's template names no request: where a policy
+ * or its name still depends on a capture, its hints cannot be declared safe for every member.
+ */
+function policyHeadersOf(
+  rule: HeaderRule,
+  bundle: DeploymentBundle,
+  prerender: Prerender,
+): Record<string, string> | undefined {
+  if (isTemplate(prerender.pathname)) {
+    const unresolved = Object.entries(rule.headers).some(
+      ([name, value]) =>
+        hasCapture(name) || (POLICY_HEADERS.has(name.toLowerCase()) && hasCapture(value)),
+    );
+    return unresolved ? undefined : lowercased(rule.headers);
+  }
+  return Object.fromEntries(
+    prerenderResponseHeaders(
+      {
+        ...bundle,
+        routing: {
+          ...bundle.routing,
+          beforeMiddleware: [{ sourceRegex: rule.sourceRegex, headers: rule.headers }],
+          afterFiles: [],
+          onMatch: [],
+        },
+      },
+      { ...prerender, initialHeaders: {} },
+    ),
+  );
+}
+
 /**
  * The hints the route's own policies leave standing, less what a rule judged on each request
  * forbids or quietens with the policies it lays over them: a `103` replays the same hints to the
@@ -106,11 +159,18 @@ function lowercased(headers: Readonly<Record<string, string>>): Record<string, s
 function withoutRuledOut(
   hints: readonly string[],
   headers: Readonly<Record<string, string>>,
-  rules: readonly HeaderRule[],
+  prerender: Prerender,
+  context: ManifestContext,
 ): string[] {
   let kept = [...hints];
+  const rules = policyRulesCovering(
+    context.policyRules,
+    routePathnameOf(context.bundle, prerender),
+  );
   for (const rule of rules) {
-    kept = withoutForbidden(kept, { ...headers, ...lowercased(rule.headers) });
+    const possible = policyHeadersOf(rule, context.bundle, prerender);
+    if (possible === undefined) return [];
+    kept = withoutForbidden(kept, { ...headers, ...possible });
   }
   return kept;
 }
@@ -215,7 +275,8 @@ export function routeEntryOf(
   const preloads = withoutRuledOut(
     withoutForbidden(withoutAdvertised(named, headers['link']), headers),
     headers,
-    policyRulesCovering(context.policyRules, pathname),
+    prerender,
+    context,
   );
   const segments = context.segments.get(prerender.pathname);
   const payload = context.payloads.get(prerender.pathname);
