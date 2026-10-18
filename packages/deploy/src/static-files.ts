@@ -136,12 +136,15 @@ function underMovedPrefix(
  * `_next`, a `public/` file there. `next build` rewrites a request under that prefix to this build's
  * `_next` before it looks for a file at the path (`beforeFiles`), so such a file answers no request;
  * filed under its own name, it would be found ahead of the file the request is rewritten to, which
- * the edge finds by taking the prefix off (`staticFileKey`). The same on a first deployment as on
- * any other.
+ * the edge finds by taking the prefix off (`staticFileKey`). An explicit rewrite onto the same
+ * base path still names the build's own files. The same on a first deployment as on any other.
  */
 function ownFiles(bundle: DeploymentBundle): Record<string, StaticFileEntry> {
   const prefix = staticFileAssetPrefixOf(bundle);
-  const rewritten = prefix === undefined ? undefined : `${prefix.assetPrefix}/_next/`;
+  const rewritten =
+    prefix === undefined || prefix.assetPrefix === prefix.basePath
+      ? undefined
+      : `${prefix.assetPrefix}/_next/`;
   const files: Record<string, StaticFileEntry> = {};
   for (const file of bundle.staticFiles) {
     if (rewritten === undefined || !file.pathname.startsWith(rewritten)) {

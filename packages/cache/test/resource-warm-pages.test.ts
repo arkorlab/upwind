@@ -42,12 +42,14 @@ interface Fixture {
 }
 
 function inputFor(fixture: Fixture): TxInput {
+  const revision = fixture.nextRevision;
+  fixture.nextRevision += 1;
   return {
     sql: fixture.sql,
     scopeId: fixture.scopeId,
     limits: fixture.limits,
     now: NOW,
-    revision: fixture.nextRevision++,
+    revision,
     history: NO_HISTORY,
   };
 }
@@ -97,7 +99,8 @@ function insertOne(fixture: Fixture, identity: EntryIdentity, revision: number):
 /** Derive real identities in small batches; clone only invariant columns of a real generation. */
 async function populate(fixture: Fixture, start: number, count: number): Promise<void> {
   if (count === 0) return;
-  const revision = fixture.nextRevision++;
+  const revision = fixture.nextRevision;
+  fixture.nextRevision += 1;
   for (let offset = 0; offset < count; offset += PAGE) {
     const indices = Array.from(
       { length: Math.min(PAGE, count - offset) },
@@ -188,7 +191,8 @@ function withEntries<T>(count: number, action: (fixture: Fixture) => T | Promise
         buildId: 'build',
       },
     });
-    const revision = fixture.nextRevision++;
+    const revision = fixture.nextRevision;
+    fixture.nextRevision += 1;
     fixture.storage.transactionSync(() => {
       insertOne(fixture, first, revision);
     });
@@ -303,37 +307,96 @@ describe('resource changes larger than one SQL value', () => {
     expect(result.kept).toStrictEqual({ status: 'leased', lease_token: result.token });
   });
 
-  it('preserves SQLite route equality for Unicode, NUL and malformed UTF-16 inputs', async () => {
+  it.each([
+    [['/café', '/cafe\u{0301}', '/emoji-🙂', '/nul\0tail', '/bad\u{D800}']],
+    [['/bad\u{D800}']],
+    [['/bad\u{DC00}']],
+    [['/bad\u{D800}\u{D800}']],
+    [['/bad\u{FFFD}']],
+    [['/bad\u{FFFD}\u{FFFD}\u{FFFD}']],
+    [['/emoji-🙂']],
+    [['/mixed-🙂\u{D800}']],
+    [['/café']],
+    [['/cafe\u{0301}']],
+    [['/nul\0tail']],
+  ])('preserves the old SQLite route oracle for %j', async (allowed) => {
     const result = await withEntries(1, async (fixture) => {
-      const allowed = ['/café', '/cafe\u0301', '/emoji-🙂', '/nul\0tail', '/bad\uD800'];
-      for (const route of allowed) {
+      const routes = [
+        '/café',
+        '/cafe\u{0301}',
+        '/emoji-🙂',
+        '/mixed-🙂\u{D800}',
+        '/nul\0tail',
+        '/nul\0other',
+        '/bad\u{D800}',
+        '/bad\u{DC00}',
+        '/bad\u{D800}\u{D800}',
+        '/bad\u{FFFD}',
+        '/bad\u{FFFD}\u{FFFD}\u{FFFD}',
+      ];
+      for (const route of routes) {
         const identity = await identifyEntry(fixture.scopeId, {
           kind: 'app-page',
           route,
           pathname: route,
         });
-        const revision = fixture.nextRevision++;
+        const revision = fixture.nextRevision;
+        fixture.nextRevision += 1;
         fixture.storage.transactionSync(() => {
           insertOne(fixture, identity, revision);
         });
       }
-      const expected = fixture.sql
-        .exec<{ entry_id: string }>(
+      const expected = Array.from(
+        fixture.sql.exec<{ entry_id: string }>(
           `SELECT entry_id FROM entries
            WHERE route IN (SELECT value FROM json_each(?)) ORDER BY entry_id`,
           JSON.stringify(allowed),
-        )
-        .toArray()
-        .map((row) => row.entry_id);
+        ),
+        (row) => row.entry_id,
+      );
       await change(fixture, allowed);
-      const actual = fixture.sql
-        .exec<{ entry_id: string }>('SELECT entry_id FROM resource_warm_jobs ORDER BY entry_id')
-        .toArray()
-        .map((row) => row.entry_id);
+      const actual = Array.from(
+        fixture.sql.exec<{ entry_id: string }>(
+          'SELECT entry_id FROM resource_warm_jobs ORDER BY entry_id',
+        ),
+        (row) => row.entry_id,
+      );
       return { expected, actual };
     });
 
     expect(result.actual).toStrictEqual(result.expected);
+  });
+
+  it('returns a large route once when an exceptional allowlist needs byte comparison', async () => {
+    const route = `/${'x'.repeat((SQL_VALUE_BYTES * 3) / 4)}`;
+    const allowed = [route, '/bad\u{D800}'];
+    const result = await withEntries(1, async (fixture) => {
+      // Keep the stored row below the existing SQL limit; duplicating its route exceeds it.
+      fixture.sql.exec(
+        'UPDATE entries SET route = ? WHERE entry_id = ?',
+        route,
+        fixture.firstEntryId,
+      );
+      const expected = Array.from(
+        fixture.sql.exec<{ entry_id: string }>(
+          `SELECT entry_id FROM entries
+           WHERE route IN (SELECT value FROM json_each(?)) ORDER BY entry_id`,
+          JSON.stringify(allowed),
+        ),
+        (row) => row.entry_id,
+      );
+      await change(fixture, allowed);
+      const actual = Array.from(
+        fixture.sql.exec<{ entry_id: string }>(
+          'SELECT entry_id FROM resource_warm_jobs ORDER BY entry_id',
+        ),
+        (row) => row.entry_id,
+      );
+      return { expected, actual };
+    });
+
+    expect(result.actual).toStrictEqual(result.expected);
+    expect(result.actual).toHaveLength(1);
   });
 
   it('rolls back invalidations, the resource head and earlier job pages if a later page fails', async () => {

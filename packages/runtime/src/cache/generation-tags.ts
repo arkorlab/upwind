@@ -1,3 +1,4 @@
+import { type Prerender, standsForClass } from '@stayingupwind/core/bundle';
 import {
   appPathFor,
   implicitTagsFor,
@@ -9,14 +10,25 @@ import {
 import { isClassShell } from '../store.ts';
 import type { CapturedRender } from './capture.ts';
 
+/** Use the selected build's classification only when it describes this exact entry. */
+export function generationClassShell(
+  descriptor: RouteEntryDescriptor,
+  shell: Prerender | undefined,
+): boolean {
+  return shell?.route === descriptor.route && shell.pathname === descriptor.pathname
+    ? standsForClass(shell)
+    : isClassShell(descriptor.pathname, descriptor.route);
+}
+
 /** The render's tags and the implicit identities under which its entry can be invalidated. */
 export function generationTagValues(
   descriptor: RouteEntryDescriptor,
   render: CapturedRender,
   entryId: string,
+  classShell = descriptor.kind !== 'pages' && isClassShell(descriptor.pathname, descriptor.route),
 ): Set<string> {
   const recorded = parseCacheTagsHeader(render.headers['x-next-cache-tags']);
-  const concrete = descriptor.pathname.includes('[') ? undefined : descriptor.pathname;
+  const concrete = classShell ? undefined : descriptor.pathname;
   const implicit =
     descriptor.kind === 'pages'
       ? []
@@ -27,7 +39,7 @@ export function generationTagValues(
   }
   // This identity survives a new render becoming complete: the immutable build still selects
   // the shared entry for later manual revalidation, even when that generation needs no resume.
-  if (descriptor.kind === 'app-page' && isClassShell(descriptor.pathname, descriptor.route)) {
+  if (descriptor.kind === 'app-page' && classShell) {
     values.add(sharedShellTagOf(entryId));
   }
   return values;

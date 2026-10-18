@@ -1,5 +1,5 @@
 import { NEXT_ONE_YEAR_SECONDS, routeEntryKindSchema, tagIdFor } from '@stayingupwind/core/cache';
-import { createId } from '@stayingupwind/core/util';
+import { createId, toHex } from '@stayingupwind/core/util';
 import {
   type ApplyResourceChangeInput,
   type ApplyResourceChangeResult,
@@ -42,6 +42,51 @@ const PRIVATE_CACHE_CONTROL = /\b(?:private|no-store)\b/iu;
  * value or a statement for each route.
  */
 const WARM_JOB_PAGE = 500;
+// Unicode mode excludes valid surrogate pairs; those remain ordinary four-byte UTF-8 routes.
+const BYTE_EXACT_ROUTE = /[\u{D800}-\u{DFFF}\u{FFFD}]/u;
+const LONE_SURROGATES = /[\u{D800}-\u{DFFF}]/gu;
+const SURROGATE_UTF8_LEAD = 0xed;
+const UTF8_CONTINUATION = 0x80;
+const UTF8_GROUP_WIDTH = 64;
+
+/** SQLite json_each preserves isolated UTF-16 units as three-byte UTF-8, not U+FFFD. */
+function sqliteRouteKey(route: string): string {
+  const encoder = new TextEncoder();
+  let hex = '';
+  let start = 0;
+  for (const match of route.matchAll(LONE_SURROGATES)) {
+    hex += toHex(encoder.encode(route.slice(start, match.index)));
+    const code = match[0].codePointAt(0) ?? 0;
+    hex += toHex(
+      new Uint8Array([
+        SURROGATE_UTF8_LEAD,
+        UTF8_CONTINUATION + (Math.floor(code / UTF8_GROUP_WIDTH) % UTF8_GROUP_WIDTH),
+        UTF8_CONTINUATION + (code % UTF8_GROUP_WIDTH),
+      ]),
+    );
+    start = match.index + 1;
+  }
+  return hex + toHex(encoder.encode(route.slice(start)));
+}
+
+function allowedRouteKeys(routes: readonly string[]) {
+  if (routes.some((route) => BYTE_EXACT_ROUTE.test(route))) {
+    // All candidates use bytes on this rare path: decoded SQL strings can lose lone surrogates.
+    return { allowed: undefined, byteExact: new Set(routes.map(sqliteRouteKey)) };
+  }
+  return { allowed: new Set(routes), byteExact: undefined };
+}
+
+type WarmRoute = { route?: EntryRow['route']; route_bytes?: ArrayBuffer | null };
+
+function routeIsAllowed(entry: WarmRoute, keys: ReturnType<typeof allowedRouteKeys>): boolean {
+  if (keys.byteExact !== undefined) {
+    if (entry.route_bytes === undefined || entry.route_bytes === null) return false;
+    const key = toHex(new Uint8Array(entry.route_bytes));
+    return keys.byteExact.has(key);
+  }
+  return entry.route !== undefined && entry.route !== null && keys.allowed.has(entry.route);
+}
 
 interface ResourceHeadRow extends Record<string, SqlStorageValue> {
   resource_id: string;
@@ -107,11 +152,15 @@ function eligibleEntries(
 ): string[] {
   if (allowedRoutes.length === 0 || affectedEntryIds.length === 0) return [];
   // A trusted route list can itself exceed one SQL value, so it is never bound as JSON here.
-  const allowed = new Set(allowedRoutes);
+  const keys = allowedRouteKeys(allowedRoutes);
+  // Both projections are fixed SQL. Ordinary allowlists add no column or byte encoding.
+  // Return each route once, at its original byte length; hex expansion stays in JavaScript.
+  const routeColumns =
+    keys.byteExact === undefined ? 'e.route' : 'CAST(e.route AS BLOB) AS route_bytes';
   const eligible: string[] = [];
   for (let offset = 0; offset < affectedEntryIds.length; offset += WARM_JOB_PAGE) {
-    const entries = sql.exec<Pick<GenerationRow, 'entry_id' | 'headers'> & Pick<EntryRow, 'route'>>(
-      `SELECT e.entry_id, e.route, g.headers FROM entries e
+    const entries = sql.exec<Pick<GenerationRow, 'entry_id' | 'headers'> & WarmRoute>(
+      `SELECT e.entry_id, ${routeColumns}, g.headers FROM entries e
        JOIN generations g ON g.generation_id = e.current_generation_id
        WHERE e.entry_id IN (SELECT value FROM json_each(?))
          AND e.kind IN ('app-page', 'pages', 'app-route')
@@ -121,7 +170,7 @@ function eligibleEntries(
     );
     // Disallowed headers are not parsed or retained in a page-sized JavaScript array.
     for (const entry of entries) {
-      if (entry.route === null || !allowed.has(entry.route)) continue;
+      if (!routeIsAllowed(entry, keys)) continue;
       if (
         Object.entries(generationHeaders(entry)).every(([name, value]) => {
           const normalized = name.toLowerCase();
