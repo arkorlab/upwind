@@ -38,7 +38,7 @@ import {
   planStartAttempt,
   type UploadedArtifact,
 } from './attempts.ts';
-import { answerCommit, wantedRecords, withCurrentRecord } from './commit-record.ts';
+import * as recordAnswers from './commit-record.ts';
 import { type CommitOutcome, planCommit } from './commit.ts';
 import { adoptDataUpload, carriedValueOf } from './data-adopt.ts';
 import { type DataUploadPage, listDataUploads } from './data-uploads.ts';
@@ -407,9 +407,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
   }
 
   #requireTestHooks(): void {
-    if (!this.#vars.ARKOR_TEST_HOOKS) {
-      throw new Error('test hooks are off');
-    }
+    if (!this.#vars.ARKOR_TEST_HOOKS) throw new Error('test hooks are off');
   }
 
   // ---- what a deploy calls ---------------------------------------------------------------------
@@ -500,7 +498,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
     if (result.kind === 'leased') {
       await this.#armOrLog(result.leaseExpiresAt + LEASE_SWEEP_GRACE_MS);
     }
-    return withCurrentRecord(result, request.replaces, this.#deps());
+    return recordAnswers.withCurrentRecord(result, request.replaces, this.#deps());
   }
 
   heartbeat(
@@ -527,9 +525,9 @@ export class CacheScope extends DurableObject<CacheBindings> {
       return isRefusal(scope) ? () => scope : planCommit(tx, attemptId, request, this.#blobs());
     };
     const entryOf = (): string | undefined => findAttempt(this.#sql, attemptId)?.entry_id;
-    const wanted = wantedRecords(entryOf);
+    const wanted = recordAnswers.wantedRecords(entryOf);
     const committed = this.#mutate(now, plan, REFUSED, { wanted });
-    return answerCommit(committed, wanted, entryOf, this.#deps());
+    return recordAnswers.answerCommit(committed, wanted, entryOf, this.#deps());
   }
 
   fail(attemptId: string, request: FailRequest, now: number): Promise<FailResponse | Refusal> {
@@ -601,6 +599,12 @@ export class CacheScope extends DurableObject<CacheBindings> {
   /** The data-cache value the key holds now, read from the scope rather than from KV. */
   currentData(request: CurrentDataRequest): ReturnType<typeof readCurrentData> {
     return this.#tables ? readCurrentData(this.#deps(), request) : Promise.resolve(undefined);
+  }
+
+  /** A newer route record from the authority's current state, without leasing or writing it. */
+  currentRecord(entryId: string, afterRevision: number): Promise<ArrayBuffer | undefined> {
+    if (!this.#tables) return Promise.resolve(undefined);
+    return recordAnswers.readCurrentRecord(this.#deps(), entryId, afterRevision);
   }
 
   readEntry(entryId: string, now: number): ReadEntryResult {

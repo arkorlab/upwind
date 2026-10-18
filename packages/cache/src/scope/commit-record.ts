@@ -8,7 +8,7 @@ import { retain, withProjectionMemoryAtOnce } from './projection-memory.ts';
 import { generationRecordBytes, packMemoryOf, type RecordDeps, recordBytesOf } from './records.ts';
 import type { EntryRow, GenerationRow } from './rows.ts';
 import { dropRecordBytes, type WantedRecords, type WrittenRecord } from './settle.ts';
-import { isRefusal, type Refusal } from './state.ts';
+import { isRefusal, readScope, type Refusal } from './state.ts';
 
 const KIB = 1024;
 const MAX_RETURNED_RECORD_MIB = 4;
@@ -193,6 +193,37 @@ async function currentRecord(
   return bytes !== undefined && currentRevision(deps, entryId, generationId) === revision
     ? bytes
     : undefined;
+}
+
+/**
+ * A newer delivery record read directly from the authority, without a lease or a read of KV.
+ * The scope must remain active while its bytes are built; the shared builder bounds their size
+ * and takes memory only where it is available at once, and checks the generation and revision
+ * again after reading its artifacts. A read never moves any of those rows.
+ */
+export async function readCurrentRecord(
+  deps: StandingDeps,
+  entryId: string,
+  afterRevision: number,
+): Promise<ArrayBuffer | undefined> {
+  const active = (): boolean => {
+    const scope = readScope(deps.sql);
+    return scope?.scope_id === deps.scopeId && scope.status === 'active';
+  };
+  if (!active()) return undefined;
+  const entry = findEntry(deps.sql, entryId);
+  if (entry === undefined) return undefined;
+  if (entry.current_generation_id === null || entry.record_revision <= afterRevision) {
+    return undefined;
+  }
+  const record = await currentRecord(deps, entryId, entry.current_generation_id);
+  if (record === undefined || !active()) return undefined;
+  // The pack encoder allocates the whole buffer; return it without making a second pack copy.
+  return record.buffer instanceof ArrayBuffer &&
+    record.byteOffset === 0 &&
+    record.byteLength === record.buffer.byteLength
+    ? record.buffer
+    : new Uint8Array(record).buffer;
 }
 
 /** An answer for a lease as the scope gives it to the gateway, with the record it carries. */
