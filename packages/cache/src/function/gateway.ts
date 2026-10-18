@@ -52,7 +52,12 @@ import {
 
 import { ArtifactCopies, type FunctionCacheNaming } from './artifacts.ts';
 import { requestedEntryId } from './entry-identity.ts';
-import { ArtifactRoom, ReadBudget } from './read-budget.ts';
+import {
+  ArtifactRoom,
+  FUNCTION_READ_BYTES as AUTHORITY_READ_BYTES,
+  functionReadBudget,
+  type ReadBudget,
+} from './read-budget.ts';
 
 /**
  * The cache gateway as this Worker speaks to it: every route under the deployment's own scope,
@@ -122,21 +127,6 @@ const ARTIFACT_READ_DEADLINE_MS = 10_000;
  * that long, or for good where its caller hands no signal.
  */
 const RECORD_READ_DEADLINE_MS = ARTIFACT_READ_DEADLINE_MS;
-const KIB = 1024;
-const MIB = KIB * KIB;
-/**
- * How many bytes of artifacts one isolate reads at once, in MiB (`ReadBudget`): the authority's
- * answers and its data center's copies alike, the delivery records the gateways answer and the data
- * center's copies of them, and its copies of the values written. An artifact is read whole before
- * it is answered with — the runtime takes bytes, not a stream — and one render may miss several
- * large data values or outputs together: 25 MiB each by default, five of which would all but fill a
- * Function's 128 MB. A record may be as long, and the runtime reads many at once. A value too large
- * for the isolate to hold is read whole from its copy every time it is read. Past this a read
- * waits, once its answer or the copy has said how long what it reads is, for those before it to be
- * read; one read alone is never held, however long.
- */
-const AUTHORITY_READ_MIB = 32;
-const AUTHORITY_READ_BYTES = AUTHORITY_READ_MIB * MIB;
 const DIGITS = /^\d+$/u;
 
 /** How long an answer says it is (`content-length`); `undefined` for one that does not say. */
@@ -200,7 +190,7 @@ export class Gateway {
    * copies, of delivery records, from the gateways and from its data center's copies, and of its
    * data center's copies of values (`reading`): one gateway an isolate.
    */
-  readonly #reading = new ReadBudget(AUTHORITY_READ_BYTES);
+  readonly #reading = functionReadBudget();
 
   constructor(options: GatewayOptions) {
     if (options.readGatewayUrl !== undefined && options.readFetchImpl === undefined) {

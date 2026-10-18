@@ -2,12 +2,13 @@
  * The room an isolate has for the artifacts it reads whole: the authority's answers, and its data
  * center's copies of them (`artifacts.ts`); for the delivery records it reads, from the gateways and
  * from its data center's copies of them (`gateway.ts`, `record-copies.ts`); and for its data
- * center's copies of the values it wrote (`data-copies.ts`). An artifact is read whole before it is
+ * center's copies of the values it wrote (`data-copies.ts`), and optional host-fetched bundle blobs
+ * (`bundle-blobs.ts`). An artifact is read whole before it is
  * answered with — the runtime takes bytes, not a stream — and the reads of every request the
  * isolate serves would otherwise all be read at once, however many there were and however long.
  */
 
-import { type GiveBack, type IsolateRoom } from '../isolate-room.ts';
+import { type GiveBack, IsolateRoom } from '../isolate-room.ts';
 
 /** What `promise` comes to, or `signal`'s reason where it aborts first. */
 async function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -146,3 +147,16 @@ export class ArtifactRoom {
  * is cancelled as it waits or holds room gives its place and its room up once its claim lapses.
  */
 export { IsolateRoom as ReadBudget } from '../isolate-room.ts';
+
+/** Bytes read whole at once by a Function isolate, across gateways and optional bundle fallbacks. */
+const KIB = 1024;
+const MIB = KIB * KIB;
+const FUNCTION_READ_MIB = 32;
+export const FUNCTION_READ_BYTES = FUNCTION_READ_MIB * MIB;
+const shared: { room?: IsolateRoom } = {};
+
+/** Allocated only when this isolate first reads through either host interface. */
+export function functionReadBudget(): IsolateRoom {
+  shared.room ??= new IsolateRoom(FUNCTION_READ_BYTES);
+  return shared.room;
+}
