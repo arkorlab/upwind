@@ -58,6 +58,22 @@ export function headersLeftAlone(
   return names === [...handed.keys()].length;
 }
 
+/** The shared forwarded view for a changed middleware request and a shell-less member lookup. */
+export function headersAfterMiddleware(
+  input: { readonly request: Request; readonly edge: EdgeContext },
+  middleware: MiddlewareOutcome,
+): Headers | undefined {
+  return middleware.kind === 'continue' &&
+    (middleware.rewritten ||
+      !headersLeftAlone(
+        input.request.headers,
+        middleware.requestHeaders,
+        input.edge.host.credentials,
+      ))
+    ? handedHeaders(input.edge, middleware.requestHeaders)
+    : undefined;
+}
+
 /**
  * The record to read for a route: when the deployment has a runtime cache, the route an entry
  * in it, and the policy serves from records. A validation request proves the build's shell and

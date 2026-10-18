@@ -117,9 +117,10 @@ async function answered(example: Example) {
       }),
   };
   const url = member ? `${SITE}member` : SITE;
+  const pathname = member ? '/member' : '/';
   const request =
     example.incoming === undefined
-      ? navigation(member ? '/member' : '/')
+      ? navigation(pathname)
       : new Request<unknown, IncomingRequestCfProperties>(url, {
           headers: {
             [RSC_HEADER]: '1',

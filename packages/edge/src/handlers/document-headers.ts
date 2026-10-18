@@ -338,7 +338,8 @@ export function replayedDocumentHeaders(
 }
 
 /** Only the final enforcing policy of a document that may append recovery is rotated. */
-function currentRecoveryPolicy(headers: Headers): void {
+function currentRecoveryPolicy(headers: Headers, complete: boolean): void {
+  if (complete) return;
   const policy = headers.get(CSP_HEADER);
   if (policy === null) return;
   const current = replaceLegacyRecoverySource(policy);
@@ -433,9 +434,7 @@ export function documentHeaders(header: DocumentHeaderInput): DocumentHeaders {
   }
   // Old immutable deployments permitted the previous default script. Rotate only that source,
   // after every replacing policy has had its say, without parsing policies or walking their rules.
-  if (!header.complete) {
-    currentRecoveryPolicy(headers);
-  }
+  currentRecoveryPolicy(headers, header.complete);
   // Every composed document is one visitor's — `documentCacheControl` says `private` whatever else
   // it says — so the lifetimes a rule or the middleware gave shared caches go: `CDN-Cache-Control`
   // and its kin outrank `cache-control` for exactly those caches, and one honouring them would hand

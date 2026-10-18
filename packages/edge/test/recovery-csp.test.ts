@@ -330,7 +330,7 @@ describe('recovery permission after final document policy overrides', () => {
     const site = await seedSite({
       document: pprDocument(),
       files: { '/manual.txt': 'the manual' },
-      headerRules: [{ sourceRegex: '^/manual\\.txt$', headers: { [CSP]: OLD_POLICY } }],
+      headerRules: [{ sourceRegex: String.raw`^/manual\.txt$`, headers: { [CSP]: OLD_POLICY } }],
     });
     const ctx = createExecutionContext();
     const request = navigation('/manual.txt');

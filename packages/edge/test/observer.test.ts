@@ -162,7 +162,7 @@ interface HostedFallback {
 
 /** The same dispatcher handles a middleware-only retry and the final application request. */
 function hostedRuntime(example: HostedFallback, calls: boolean[]): EdgeRuntime {
-  return standaloneRuntime(env, {
+  const runtime = standaloneRuntime(env, {
     memory: createEdgeMemory(() => Date.now()),
     dispatchApp:
       example.mode === 'unreachable'
@@ -181,6 +181,8 @@ function hostedRuntime(example: HostedFallback, calls: boolean[]): EdgeRuntime {
             return Promise.resolve(new Response(null, { headers }));
           },
   });
+  // The factory treats an undefined override as its default service dispatcher.
+  return example.mode === 'unreachable' ? { ...runtime, dispatchApp: undefined } : runtime;
 }
 
 /** A real hosted gate routes a file/image through its middleware, then the Function fallback. */

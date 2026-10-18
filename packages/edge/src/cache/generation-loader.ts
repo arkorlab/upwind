@@ -233,11 +233,11 @@ export async function adoptDecoded(
     logWarn(refused, { key: read.recordKey });
     return { kind: 'unusable', reason: 'corrupt' };
   }
+  if (from.wanted?.() === false) return { kind: 'unusable', reason: 'unsupported' };
   const pack =
     decoded.pack.header.headers[CSP_HEADER] === undefined || decoded.pack.postponed === undefined
       ? decoded.pack
       : withRecoveryPermitted(decoded.pack);
-  if (from.wanted?.() === false) return { kind: 'unusable', reason: 'unsupported' };
   const { revision } = pack.header;
   const later = heldLater(edge, read.recordKey, revision);
   if (later !== undefined) {

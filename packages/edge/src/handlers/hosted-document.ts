@@ -37,7 +37,7 @@ import { composePagesData, composePayload, composeSegment } from './hosted-parts
 import {
   bypassed,
   generationKeyOf,
-  headersLeftAlone,
+  headersAfterMiddleware,
   offTheEdge,
   requestAsLeft,
 } from './hosted-route.ts';
@@ -49,6 +49,7 @@ import {
   judgeHeaderRulesAhead,
   middlewareFailedReason,
   middlewareMatches,
+  type MiddlewareContinued,
   type MiddlewareOutcome,
   middlewareResponse,
   runMiddleware,
@@ -613,6 +614,18 @@ function composeHostedDocument(
   });
 }
 
+/** Only after middleware asks for Flight: confirm the request the Function actually receives. */
+function middlewareRequestsFlight(
+  input: HostedDocumentInput,
+  middleware: MiddlewareContinued,
+  routedHeaders: Headers | undefined,
+): boolean {
+  return (
+    !forRouter(input.classification) &&
+    (routedHeaders ?? handedHeaders(input.edge, middleware.requestHeaders)).get(RSC_HEADER) === '1'
+  );
+}
+
 /** Serve the route the middleware left the request on, with the read that may already be under way. */
 function serveHostedDocument(
   input: HostedDocumentInput,
@@ -622,23 +635,13 @@ function serveHostedDocument(
   const { manifest, classification } = input;
   // Share the forwarded request view with a shell-less member lookup: both route gates must
   // see the same headers the application receives, while bypass checks retain the raw cookies.
-  const routedHeaders =
-    middleware.kind === 'continue' &&
-    (middleware.rewritten ||
-      !headersLeftAlone(
-        input.request.headers,
-        middleware.requestHeaders,
-        input.edge.host.credentials,
-      ))
-      ? handedHeaders(input.edge, middleware.requestHeaders)
-      : undefined;
+  const routedHeaders = headersAfterMiddleware(input, middleware);
   // A navigation made into Flight is answered as Flight by the Function. Reuse the request view
   // it receives, after transport fields and host credentials have been removed.
   if (
     middleware.kind === 'continue' &&
     middleware.requestHeaders.get(RSC_HEADER) === '1' &&
-    !forRouter(classification) &&
-    (routedHeaders ?? handedHeaders(input.edge, middleware.requestHeaders)).get(RSC_HEADER) === '1'
+    middlewareRequestsFlight(input, middleware, routedHeaders)
   ) {
     if (preload !== undefined) abandon(input.edge, preload);
     return input.passthrough('middleware-request-kind', middleware);
