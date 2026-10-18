@@ -4,6 +4,7 @@ import {
   MAX_DATA_HANDLER_LENGTH,
   MAX_DATA_KEY_LENGTH,
 } from '@stayingupwind/host/cache';
+import { jsonValuesWithin } from '@stayingupwind/host/util';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -16,6 +17,12 @@ const encoder = new TextEncoder();
 const TOO_LARGE = 'the body is too long';
 const MAX_BYTES = DEFAULT_CACHE_VARS.MAX_ARTIFACT_BYTES;
 const BODY_LIMIT = maxSetBodyBytes(MAX_BYTES);
+const STRUCTURE_LIMIT = 16_384;
+
+vi.mock(import('@stayingupwind/host/util'), async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, jsonValuesWithin: vi.fn(actual.jsonValuesWithin) };
+});
 
 /** A body read through the gateway's parser, without an authority or storage after it. */
 async function read(
@@ -76,6 +83,7 @@ function largestWrite(): ReadableStream<Uint8Array> {
 
 describe('the gateway JSON body', () => {
   afterEach(() => {
+    vi.clearAllMocks();
     vi.restoreAllMocks();
   });
 
@@ -91,19 +99,30 @@ describe('the gateway JSON body', () => {
       ok: false,
       error: {
         code: 'invalid_request',
-        message: `a JSON body past ${UNCOUNTED_BODY_BYTES} bytes may hold at most 16384 values`,
+        message: `a JSON body may hold at most ${STRUCTURE_LIMIT} values`,
       },
     });
   });
 
-  it('keeps the existing parse path for a body of exactly one mebibyte', async () => {
+  it('refuses too many small values even at the immediate admission boundary', async () => {
     const values = `[${'{},'.repeat(10_000)}{}]`;
     const text = values.padEnd(UNCOUNTED_BODY_BYTES, ' ');
     const parse = vi.spyOn(JSON, 'parse');
 
     const response = await read(text);
 
+    expect(response.status).toBe(400);
+    expect(parse).not.toHaveBeenCalledWith(text);
+  });
+
+  it('parses a body of at most sixteen kibibytes without a structural scan', async () => {
+    const text = JSON.stringify([{}, String.raw`\",{}[]`]).padEnd(STRUCTURE_LIMIT, ' ');
+    const parse = vi.spyOn(JSON, 'parse');
+
+    const response = await read(text);
+
     expect(response.status).toBe(204);
+    expect(jsonValuesWithin).not.toHaveBeenCalled();
     expect(parse).toHaveBeenCalledWith(text);
   });
 
