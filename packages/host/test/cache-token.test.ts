@@ -143,6 +143,59 @@ describe('cache tokens', () => {
   });
 
   it.each([
+    { previousSecret: undefined, accepted: false, imports: 1 },
+    { previousSecret: '', accepted: false, imports: 1 },
+    { previousSecret: 'wrong-key', accepted: false, imports: 2 },
+    { previousSecret: 'old-key', accepted: true, imports: 2 },
+  ])('checks an old token with previous key $previousSecret', async (fixture) => {
+    const token = await signCacheToken('old-key', SCOPE, NAMING);
+    const importKey = vi.spyOn(crypto.subtle, 'importKey');
+
+    await expect(
+      verifyCacheToken({
+        token,
+        scopeId: SCOPE,
+        secret: SECRET,
+        previousSecret: fixture.previousSecret,
+        naming: NAMING,
+      }),
+    ).resolves.toBe(fixture.accepted);
+    expect(importKey).toHaveBeenCalledTimes(fixture.imports);
+  });
+
+  it('accepts the current key before considering an empty previous key', async () => {
+    const token = await signCacheToken(SECRET, SCOPE, NAMING);
+    const importKey = vi.spyOn(crypto.subtle, 'importKey');
+
+    await expect(
+      verifyCacheToken({
+        token,
+        scopeId: SCOPE,
+        secret: SECRET,
+        previousSecret: '',
+        naming: NAMING,
+      }),
+    ).resolves.toBe(true);
+    expect(importKey).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a nonempty previous key exactly as supplied', async () => {
+    const token = await signCacheToken(' ', SCOPE, NAMING);
+    const importKey = vi.spyOn(crypto.subtle, 'importKey');
+
+    await expect(
+      verifyCacheToken({
+        token,
+        scopeId: SCOPE,
+        secret: SECRET,
+        previousSecret: ' ',
+        naming: NAMING,
+      }),
+    ).resolves.toBe(true);
+    expect(importKey).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
     '',
     'v1',
     `v1.${SCOPE}`,

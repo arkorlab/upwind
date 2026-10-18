@@ -170,6 +170,8 @@ export async function verifyCacheToken(input: VerifyCacheTokenInput): Promise<bo
     return true;
   }
   return (
-    input.previousSecret !== undefined && verifyWith(input.previousSecret, signed, parsed.signature)
+    input.previousSecret !== undefined &&
+    input.previousSecret !== '' &&
+    verifyWith(input.previousSecret, signed, parsed.signature)
   );
 }
