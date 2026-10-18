@@ -209,12 +209,12 @@ function serveRecord(
       lookupMs: decided.recordMs,
       member: target.member === true,
       regeneration:
-        asked !== undefined && !complete
-          ? regenerationHeaders(edge, 'background', asked)
-          : undefined,
+        asked === undefined || complete
+          ? undefined
+          : regenerationHeaders(edge, 'background', asked),
       detached,
       onAbandoned:
-        asked !== undefined && !complete ? allowAnotherAsk(edge, asked.entryId) : undefined,
+        asked === undefined || complete ? undefined : allowAnotherAsk(edge, asked.entryId),
       // Served stale with its own regeneration wanted — asked for by this request, or by one before
       // it within the cooldown — the record is read again a second on, for what that regeneration
       // publishes: once the document is certain to go out from it, and not where it is handed to the

@@ -139,8 +139,8 @@ export async function handleAsset(input: AssetInput): Promise<AssetOutcome> {
   }
   const firstByteMs = input.edge.runtime.now() - startedAt;
   const { response } = result;
-  const pointOf = (kept: AssetKeepOutcome | undefined): EdgeMetric =>
-    assetMetric(input, {
+  const pointOf = (kept: AssetKeepOutcome | undefined): EdgeMetric => {
+    return assetMetric(input, {
       outcomeKind: assetOutcomeKind(result.admitted, kept),
       originCacheHeader: response.headers.get('x-vercel-cache') ?? '',
       // A time to first byte again: on a miss the strategy answers on the origin's headers and
@@ -149,6 +149,7 @@ export async function handleAsset(input: AssetInput): Promise<AssetOutcome> {
       assetHit: result.hit ? 1 : 0,
       subrequests: result.subrequests,
     });
+  };
   const answer = input.edge.privateDelivery ? privateCopy(response) : response;
   if (!result.admitted) {
     const point = pointOf(undefined);

@@ -396,10 +396,11 @@ describe('where a scope stands, as the edge comes to know it', () => {
 
   it('is not waited for past a moment where the Cache API does not answer', async () => {
     const stalled = {
-      match: () =>
-        new Promise<never>(() => {
+      match: () => {
+        return new Promise<never>(() => {
           // The lookup never answers.
-        }),
+        });
+      },
       put: () => Promise.resolve(),
     };
     vi.spyOn(caches, 'open').mockResolvedValue(stalled as unknown as Cache);
