@@ -69,7 +69,7 @@ export function setConfiguredUnder(
  * included, and say nothing of which of them answers, so a `Location` judged among them may be a
  * redirect's.
  */
-const REDIRECT_LOCATION = 'location';
+const LOCATION_HEADER = 'location';
 
 /**
  * The headers the rules of `next.config` set on a request, laid on an answer a Function left them
@@ -91,7 +91,7 @@ export function layConfiguredOver(
 ): void {
   for (const [name, value] of Object.entries(configured.headers)) {
     if (
-      name === REDIRECT_LOCATION ||
+      name === LOCATION_HEADER ||
       PASSTHROUGH_RESPONSE_HEADER_DENYLIST.includes(name) ||
       name.startsWith(PLATFORM_HEADER_PREFIX)
     ) {
@@ -124,14 +124,18 @@ function judgesEveryHeaderRule(manifest: ProjectManifest): boolean {
  * the client sent it (`configured`, judged before the middleware ran) beside a decision to let the
  * request on (`MiddlewareContinued.judgedRules`), for the Function it may be handed to. Not where the
  * manifest holds only some of the rules (`judgesEveryHeaderRule`): the Function judges them all, as
- * it did, and the edge lays none.
+ * it did, and the edge lays none. A matched `Location` is left to the Function too: the manifest
+ * cannot tell a header rule's from a redirect's. Telling the Function to leave it off, then dropping
+ * it here as a possible redirect, would lose a header that the Function used to answer with.
  */
 export function withJudgedRules<Outcome extends MiddlewareOutcome>(
   outcome: Outcome,
   configured: ConfiguredHeaders,
   manifest: ProjectManifest,
 ): Outcome {
-  return outcome.kind === 'continue' && judgesEveryHeaderRule(manifest)
+  return outcome.kind === 'continue' &&
+    !Object.hasOwn(configured.headers, LOCATION_HEADER) &&
+    judgesEveryHeaderRule(manifest)
     ? { ...outcome, judgedRules: configured }
     : outcome;
 }
