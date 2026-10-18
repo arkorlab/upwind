@@ -606,21 +606,25 @@ export const MAX_DELTA_PAGE_TAGS = 1000;
  * for from there. One that stood past its tags, or held none, would bring its reader past
  * invalidations it never heard of, and a render judged against that view would claim it had judged
  * its reads against them. The last page stands at the scope's revision, which a write moves as an
- * invalidation does, so it may stand past its tags.
+ * invalidation does, so it may stand past its tags. No tag or historical invalidation may stand
+ * past the page's cursor, whether another page follows or not.
  */
 function standsAtItsTags(delta: {
   readonly revision: number;
   readonly truncated: boolean;
-  readonly tags: readonly { readonly revision: number }[];
+  readonly tags: readonly Pick<TagDeltaEntry, 'revision' | 'history'>[];
 }): boolean {
-  if (!delta.truncated) {
-    return true;
-  }
   let last = 0;
   for (const tag of delta.tags) {
+    if (
+      tag.revision > delta.revision ||
+      tag.history?.some((mark) => mark.revision > tag.revision) === true
+    ) {
+      return false;
+    }
     last = Math.max(last, tag.revision);
   }
-  return delta.tags.length > 0 && delta.revision === last;
+  return !delta.truncated || (delta.tags.length > 0 && delta.revision === last);
 }
 
 export const tagsDeltaResponseSchema = z
@@ -635,7 +639,7 @@ export const tagsDeltaResponseSchema = z
     latest: tagRevisionSchema.optional(),
   })
   .refine(standsAtItsTags, {
-    message: 'a page with more to follow stands at the last revision whose tags it holds',
+    message: 'a delta holds no future tag revisions and a truncated page ends at its last tag',
     path: ['revision'],
   });
 export type TagsDeltaResponse = z.infer<typeof tagsDeltaResponseSchema>;
