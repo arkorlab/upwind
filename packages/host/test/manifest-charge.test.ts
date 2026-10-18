@@ -196,3 +196,21 @@ describe('the additional lookup tables of a gated manifest', () => {
     ).toBe(48 * (counts.gates + counts.pathnames));
   });
 });
+
+describe('the request-key static file format', () => {
+  it('charges its primitive mode flag through the existing stored JSON multiplier', () => {
+    const plain = manifestOf([]);
+    const listed = { ...plain, schemaVersion: 7 as const, staticFileRequestKeys: true as const };
+    const plainStored = serializeManifest(plain);
+    const stored = serializeManifest(listed);
+    const parsed = parseProjectManifest(stored);
+    const extraBytes = encodeUtf8(stored).byteLength - encodeUtf8(plainStored).byteLength;
+
+    expect(parsed.staticFileRequestKeys).toBe(true);
+    expect(extraBytes).toBeGreaterThan(0);
+    expect(
+      manifestCharge(parsed, encodeUtf8(stored).byteLength) -
+        manifestCharge(plain, encodeUtf8(plainStored).byteLength),
+    ).toBe(1.5 * extraBytes);
+  });
+});
