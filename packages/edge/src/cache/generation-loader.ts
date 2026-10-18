@@ -22,6 +22,13 @@ import {
   type RecordCopy,
   worthKeeping,
 } from './generation-copy.ts';
+import type {
+  GenerationKey as HoldKey,
+  GenerationLoad as HoldLoad,
+  HeldGeneration as HeldRecord,
+  LoadOptions as HoldOptions,
+  Read as HoldRead,
+} from './generation-hold.ts';
 
 /**
  * The delivery record of an entry: the current generation of a hosted application's route, as
@@ -58,6 +65,8 @@ import {
 
 /** The requested regional-cache TTL; KV distribution itself remains eventually consistent. */
 const KV_CACHE_TTL_SECONDS = 30;
+/** Same longest wait as the immutable manifest and build shell reads. */
+const RECORD_READ_BUDGET_MS = 2000;
 const MS_PER_SECOND = 1000;
 /**
  * How long KV keeps a record it answered with in a data center (`cacheTtl`): for that long after KV
@@ -66,72 +75,6 @@ const MS_PER_SECOND = 1000;
 export const KV_ANSWER_HELD_MS = KV_CACHE_TTL_SECONDS * MS_PER_SECOND;
 const DECODED_METADATA_MULTIPLIER = 4;
 const CSP_HEADER = 'content-security-policy';
-
-export interface GenerationKey {
-  readonly scopeId: string;
-  readonly entryId: string;
-}
-
-/** A record this isolate holds, when its hold began, and what it weighs in memory. */
-export interface HeldGeneration {
-  readonly pack: DecodedGenerationPack;
-  /**
-   * When this isolate read it, or held it again: a request that finds the hold over serves it and
-   * holds it again while the entry is read behind the response (`generation-hold.ts`).
-   */
-  readonly readAt: number;
-  readonly bytes: number;
-}
-
-type GenerationSource = 'memory' | 'cache-api' | 'kv';
-
-export type GenerationLoad =
-  | {
-      readonly kind: 'generation';
-      readonly pack: DecodedGenerationPack;
-      readonly source: GenerationSource;
-      /**
-       * The record's size as KV returned it, for a load that read it there: what serving it is
-       * reported to the host's observer as (`EdgeObserver.recordServed`), which a host may meter.
-       * None for one this isolate held, nor for one this data center's copy answered with.
-       */
-      readonly readBytes?: number | undefined;
-      /**
-       * The load waited on KV's answer, whatever its bytes are: a record this isolate held, served
-       * because KV answered with an earlier one, comes from memory, but only once KV had answered.
-       * A record KV's own answer brought says so by its `source`.
-       */
-      readonly afterKv?: boolean | undefined;
-      readonly lookupMs: number;
-    }
-  /** KV holds no record: the entry was never seeded, or the scope is gone. */
-  | { readonly kind: 'none'; readonly lookupMs: number }
-  /** A record that cannot be read as one; it is never taken for a generation. */
-  | {
-      readonly kind: 'unusable';
-      readonly reason: 'corrupt' | 'unsupported';
-      readonly lookupMs: number;
-    }
-  /**
-   * KV threw, and this data center had no copy to answer with. The record this isolate last read,
-   * if any, is offered for what it is worth.
-   */
-  | {
-      readonly kind: 'unavailable';
-      readonly detail: string;
-      readonly held: DecodedGenerationPack | undefined;
-      readonly lookupMs: number;
-    };
-
-export interface LoadOptions {
-  /**
-   * Hold a record's absence for the hold as well as its presence. For an entry that may have no
-   * record at all — a member's own, beside the class shell's — asking KV on every request would
-   * find it absent on every request; held, the absence is asked about once per hold, as a record
-   * is.
-   */
-  readonly holdAbsence?: boolean | undefined;
-}
 
 function packBytes(pack: DecodedGenerationPack, recordBytes: number): number {
   const bodyBytes = pack.html.byteLength + (pack.postponed?.byteLength ?? 0);
@@ -163,26 +106,62 @@ async function withRecoveryPermitted(pack: DecodedGenerationPack): Promise<Decod
   return { ...pack, header: { ...pack.header, headers: { ...permitted } } };
 }
 
-async function readRecord(edge: EdgeContext, key: string): Promise<ArrayBuffer | null> {
-  return edge.env.CACHE_STATE.get(key, { type: 'arrayBuffer', cacheTtl: KV_CACHE_TTL_SECONDS });
-}
-
 /** What KV said: the record's bytes, that it holds none, or nothing at all, because it threw. */
 type KvAnswer =
   | { readonly kind: 'bytes'; readonly bytes: ArrayBuffer }
   | { readonly kind: 'none' }
   | { readonly kind: 'failed'; readonly detail: string };
 
-/** Ask KV for the record. Never rejects: a KV that throws has answered `failed`. */
-async function askKv(edge: EdgeContext, recordKey: string): Promise<KvAnswer> {
-  try {
-    const bytes = await readRecord(edge, recordKey);
-    return bytes === null ? { kind: 'none' } : { kind: 'bytes', bytes };
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    logWarn('delivery record read failed', { key: recordKey, detail });
-    return { kind: 'failed', detail };
-  }
+/**
+ * Bound the existing KV wait with one settlement observer, without another race/await stage.
+ * KV cannot cancel this binding read. Late bytes/null and rejections are consumed here, before
+ * any caller can note an answer, adopt bytes or change a copy. A failed read preserves held state.
+ */
+function askKv(edge: EdgeContext, recordKey: string): Promise<KvAnswer> {
+  return new Promise((resolve, reject) => {
+    let finished = false;
+    const timer = setTimeout(() => {
+      failed(new Error('delivery record read timed out'));
+    }, RECORD_READ_BUDGET_MS);
+    function finish(answer: KvAnswer): void {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      resolve(answer);
+    }
+    function failed(error: unknown): void {
+      if (finished) return;
+      try {
+        const detail = error instanceof Error ? error.message : String(error);
+        logWarn('delivery record read failed', { key: recordKey, detail });
+        finish({ kind: 'failed', detail });
+      } catch (error_) {
+        finished = true;
+        clearTimeout(timer);
+        reject(
+          error_ instanceof Error
+            ? error_
+            : new Error('record failure handling failed', { cause: error_ }),
+        );
+      }
+    }
+    // The binding can throw before returning its Promise, as a host-provided shell read can.
+    // eslint-disable-next-line sonarjs/no-try-promise
+    try {
+      const operation = edge.env.CACHE_STATE.get(recordKey, {
+        type: 'arrayBuffer',
+        cacheTtl: KV_CACHE_TTL_SECONDS,
+      });
+      // Both outcomes settle this owner; a following catch would add another observer.
+      // eslint-disable-next-line unicorn/prefer-then-catch
+      void operation.then((bytes) => {
+        finish(bytes === null ? { kind: 'none' } : { kind: 'bytes', bytes });
+        return null;
+      }, failed);
+    } catch (error) {
+      failed(error);
+    }
+  });
 }
 
 /** Where a record's bytes came from, which decides what they are checked for. */
@@ -228,35 +207,6 @@ async function untrusted(decoded: Decoded, key: GenerationKey, from: Origin): Pr
     return 'delivery record is not the entry it was read under';
   }
   return (await verifyGenerationPack(decoded.pack)) ? undefined : NOT_THE_DIGESTS;
-}
-
-/** The entry, and the KV key its record is kept under. */
-interface RecordName {
-  readonly key: GenerationKey;
-  readonly recordKey: string;
-}
-
-/** A read in flight, and what it is for. */
-export interface Read extends RecordName {
-  readonly options: LoadOptions;
-  readonly startedAt: number;
-  /** The data center's copies are read and kept beside KV. */
-  readonly copies: boolean;
-  /**
-   * The revision of the record in this isolate's memory when the read began: the one a request
-   * served past its hold, for the read behind that response (`generation-hold.ts`); the last one
-   * read, under a hold of zero; none, for a read that found nothing held.
-   */
-  readonly heldRevision: number | undefined;
-  /**
-   * The record this isolate held when the read began. Each read that puts one in place decodes it
-   * anew, so a record held since under another pack is one another read put there, however close
-   * in time the two reads were; a hold renewed meanwhile keeps its pack, and is no read
-   * (`forgetSeen`).
-   */
-  readonly heldAtStart: HeldGeneration | undefined;
-  /** The record this read put in place itself, if it put one: the data center's copy, say. */
-  readonly adopted: { held: HeldGeneration | undefined };
 }
 
 /**
@@ -809,3 +759,9 @@ export async function readGeneration(
   // the wait the copy is there to take away.
   return loadBeside(edge, { ...beside, copy: readCopy(edge, recordKey, maxAgeMs) });
 }
+
+export type GenerationKey = HoldKey;
+export type GenerationLoad = HoldLoad;
+export type HeldGeneration = HeldRecord;
+export type LoadOptions = HoldOptions;
+export type Read = HoldRead;
