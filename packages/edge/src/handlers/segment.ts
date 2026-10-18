@@ -24,6 +24,7 @@ import { setConfigured } from './configured-headers.ts';
 import { ACCEPT_ENCODING_HEADER, IDENTITY_ENCODING, varyOn } from './document-headers.ts';
 import { observeMetric } from './observer.ts';
 import {
+  keptByNobody,
   mergeScopedMiddlewareHeaders,
   removeSharedCacheOverrides,
   serviceUnavailableResponse,
@@ -316,6 +317,24 @@ function segmentHeaders(input: SegmentInput, rendering: Rendering, source: strin
   return headers;
 }
 
+/** The edge's 503 under the application's headers, with its own body and cache policy. */
+function storageFailure(input: SegmentInput, reason: string): Response {
+  const own = serviceUnavailableResponse(reason);
+  const headers = new Headers();
+  applicationHeaders(input, headers);
+  if (input.middleware !== undefined) {
+    mergeScopedMiddlewareHeaders(headers, input.middleware.responseHeaders, input.edge.forwarding);
+  }
+  headers.delete(CONTENT_ENCODING);
+  headers.delete(CONTENT_LENGTH);
+  headers.delete(EDGE_VALIDATED_HEADER);
+  for (const [name, value] of own.headers) {
+    headers.set(name, value);
+  }
+  keptByNobody(headers);
+  return new Response(own.body, { status: own.status, headers });
+}
+
 /** What one answer cost and what it was, for the metric its host is told (`EdgeObserver`). */
 interface SegmentDelivery {
   readonly source: string;
@@ -403,7 +422,14 @@ export async function handleSegment(input: SegmentInput): Promise<Response> {
   const loaded = fallback ?? first;
   if (loaded.kind !== 'ok') {
     if (input.onUnavailable !== undefined) return input.onUnavailable();
-    return serviceUnavailableResponse(`${input.kind}-${loaded.kind}`);
+    recordDelivery(input, {
+      source: loaded.kind,
+      rendering,
+      lookupMs: edge.runtime.now() - lookupStartedAt,
+      bytes: 0,
+      reads: storageReadsOf(first) + (fallback === undefined ? 0 : storageReadsOf(fallback)),
+    });
+    return storageFailure(input, `${input.kind}-${loaded.kind}`);
   }
   const headers = segmentHeaders(input, rendering, loaded.read.source);
   const { bytes } = loaded.read;
