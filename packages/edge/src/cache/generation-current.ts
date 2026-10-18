@@ -9,12 +9,11 @@ import type { RuntimeCacheSettings } from '@stayingupwind/host/delivery';
 import type { EdgeMemory } from '../memory/caches.ts';
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeContext } from '../strategies/context.ts';
+import { claimBackgroundRecord } from './background-record-budget.ts';
 import { isInvalidated } from './condemned.ts';
 import { keepCopyAhead } from './generation-copy.ts';
 import { adoptDecoded, copyMaxAgeMs, heldLater, type Read } from './generation-loader.ts';
 
-/** Two bounded packs leave room for live delivery beside the authority's projection budget. */
-const MAX_PENDING_READS = 2;
 const MAX_RECENT_READS = 1024;
 const CURRENT_RECORD_READ_MS = 1000;
 const MAX_RECORD_MIB = 4;
@@ -23,7 +22,6 @@ const MAX_RECORD_BYTES = MAX_RECORD_MIB * KIB * KIB;
 
 interface CurrentReads {
   readonly recent: TtlCache<string, number>;
-  readonly pending: Set<string>;
 }
 
 /**
@@ -123,7 +121,6 @@ function readsOf(edge: EdgeContext, cadenceMs: number): CurrentReads {
   if (state === undefined) {
     state = {
       recent: new TtlCache(cadenceMs, MAX_RECENT_READS, edge.runtime.now),
-      pending: new Set(),
     };
     reads.set(edge.runtime.memory, state);
   }
@@ -153,18 +150,13 @@ export function readCurrentBehind(
   const { scopeId, entryId, revision } = pack.header;
   const recordKey = kvGenerationKey(scopeId, entryId);
   const state = readsOf(edge, cadenceMs);
-  if (
-    state.pending.has(recordKey) ||
-    state.pending.size >= MAX_PENDING_READS ||
-    state.recent.get(recordKey) === revision
-  ) {
+  if (state.recent.get(recordKey) === revision) {
     return;
   }
+  const release = claimBackgroundRecord(edge.runtime, recordKey);
+  if (release === undefined) return;
   state.recent.set(recordKey, revision, cadenceMs);
-  state.pending.add(recordKey);
   const current: CurrentRead = { pack, settings, active: true };
-  const operation = readCurrent(edge, current, () => {
-    state.pending.delete(recordKey);
-  });
+  const operation = readCurrent(edge, current, release);
   edge.ctx.waitUntil(boundedRead(operation, current, recordKey));
 }

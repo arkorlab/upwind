@@ -113,6 +113,8 @@ export interface CachedDocumentInput extends Omit<DocumentInput, 'shellRead' | '
    * (`MemberRoute.keyedBy`), not one of its own: regenerated as itself.
    */
   readonly keyed?: boolean | undefined;
+  /** A partial fallback target is refreshed through its authority, never through a KV absence. */
+  readonly refreshRecord?: (() => void) | undefined;
   /**
    * Proxy the request to the application's Worker, with what the middleware decided, counted under
    * the route the document was classified as (`route`).
@@ -170,6 +172,10 @@ function readTargetAgain(
   target: RegenerationTarget,
   servedStale = false,
 ): void {
+  if (input.refreshRecord !== undefined) {
+    input.refreshRecord();
+    return;
+  }
   const options = { holdAbsence: target.member === true, servedStale };
   readServedAgain(input.edge, target.pack, input.settings, options);
 }

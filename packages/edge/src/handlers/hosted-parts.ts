@@ -26,6 +26,7 @@ import { decideGeneration, type GenerationDecision } from '../cache/decision.ts'
 import { generationAsHeld, readServedAgain } from '../cache/generation-hold.ts';
 import type { GenerationLoad } from '../cache/generation-loader.ts';
 import { upgradesMember } from '../cache/member.ts';
+import { partialFallbackInHand } from '../cache/partial-fallback.ts';
 import { type DetachedRegeneration, shouldAsk, triggerDetached } from '../cache/regenerate.ts';
 import { memberEntryKey } from '../memory/caches.ts';
 import type { EdgeContext } from '../strategies/context.ts';
@@ -66,6 +67,7 @@ const RSC_ROLE = 'rsc';
  */
 interface MemberRecord {
   readonly keyed: boolean;
+  readonly refreshRecord?: (() => void) | undefined;
 }
 
 type PartGeneration =
@@ -92,6 +94,10 @@ function readPartAgain(
   pack: DecodedGenerationPack,
   member: MemberRecord | undefined,
 ): void {
+  if (member?.refreshRecord !== undefined) {
+    member.refreshRecord();
+    return;
+  }
   readServedAgain(
     input.edge,
     pack,
@@ -104,10 +110,35 @@ function readPartAgain(
  * Read the same held generation as HTML, without another metadata read ahead of a prefetch: a
  * record that asks for its regeneration is read again only behind the response (`readPartAgain`).
  */
-async function partGeneration(
+function partialPartGeneration(
   input: PartInput,
-  { entry, pathname, kind, held, keyed }: PartAnswer,
-): Promise<PartGeneration> {
+  { entry, pathname }: PartAnswer,
+): PartGeneration | undefined {
+  if (input.request.method !== 'GET' || entry.partialFallback === undefined) return undefined;
+  const partial = partialFallbackInHand(input.edge, input.manifest, entry, pathname);
+  if (partial !== undefined) {
+    partial.refresh();
+    const decision = decideGeneration(
+      partial.load,
+      input.edge.runtime.now(),
+      condemnedIn(input.edge.runtime.memory, input.edge.app?.deploymentId),
+    );
+    // Generic build parts do not describe a completed member's HTML. Missing or incompatible
+    // representations remain with the Function, which can resume that member's own record.
+    return decision.kind === 'build'
+      ? { kind: 'function' }
+      : partFrom(input, decision, {
+          keyed: entry.partialFallback.keyedBy !== undefined,
+          refreshRecord: partial.refresh,
+        });
+  }
+  return undefined;
+}
+
+async function partGeneration(input: PartInput, part: PartAnswer): Promise<PartGeneration> {
+  const partial = partialPartGeneration(input, part);
+  if (partial !== undefined) return partial;
+  const { entry, pathname, kind, held, keyed } = part;
   let key = generationKeyOf(input, entry);
   if (key === undefined) return { kind: 'build' };
   const settings = runtimeCacheOf(input.edge.policy);

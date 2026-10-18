@@ -126,6 +126,8 @@ export interface DocumentInput {
   readonly shellRead: Promise<ShellLoadResult> | undefined;
   /** The generation to serve instead of the build's shell; `undefined` serves the build's. */
   readonly generation: ServedGeneration | undefined;
+  /** A built partial fallback asks for its completed shell beside the resume it already needs. */
+  readonly buildRegeneration?: Readonly<Record<string, string>> | undefined;
   /**
    * Proxy the request to the application's Worker, as every passthrough of the request goes: routed
    * again from the pointer when the Workers it names turned out to be gone
@@ -340,11 +342,12 @@ function toldBesideResume(
   generation: ServedGeneration | undefined,
 ): Readonly<Record<string, string>> | undefined {
   const { middleware } = input;
+  const regeneration = generation?.regeneration ?? input.buildRegeneration;
   const setCookie = middleware?.kind === 'continue' ? middleware.setCookie : undefined;
   if (setCookie === undefined) {
-    return generation?.regeneration;
+    return regeneration;
   }
-  return { ...generation?.regeneration, [MIDDLEWARE_SET_COOKIE_HEADER]: setCookie };
+  return { ...regeneration, [MIDDLEWARE_SET_COOKIE_HEADER]: setCookie };
 }
 
 /**

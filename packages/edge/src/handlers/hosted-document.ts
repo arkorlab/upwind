@@ -7,6 +7,14 @@ import {
   type RequestHeaderRules,
   type RouteEntry,
 } from '@stayingupwind/core/manifest';
+import {
+  CACHE_ENTRY_HEADER,
+  CACHE_ROUTE_ESCAPED_HEADER,
+  CACHE_ROUTE_HEADER,
+  CACHE_UPGRADE_HEADER,
+  pathHeaders,
+  REGENERATE_HEADER,
+} from '@stayingupwind/core/paas';
 import { PatternBudgetExceededError, type RequestClass } from '@stayingupwind/core/request';
 import type { HostCredentials } from '@stayingupwind/host/credentials';
 import { type ResolvedPolicy, runtimeCacheOf } from '@stayingupwind/host/delivery';
@@ -14,11 +22,13 @@ import { type ResolvedPolicy, runtimeCacheOf } from '@stayingupwind/host/deliver
 import { type RecordRead, serveCachedDocument, startRecordRead } from '../cache/document.ts';
 import type { GenerationKey } from '../cache/generation-loader.ts';
 import { type MemberRead, startMemberRead, upgradesMember } from '../cache/member.ts';
-import { type RewriteSeen, rewriteSeenKey } from '../memory/caches.ts';
+import { partialFallbackInHand } from '../cache/partial-fallback.ts';
+import { shouldAsk } from '../cache/regenerate.ts';
+import { memberEntryKey, type RewriteSeen, rewriteSeenKey } from '../memory/caches.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { loadShell, type ShellLoadResult } from '../strategies/shell-loader.ts';
 import { withJudgedRules } from './configured-headers.ts';
-import { handleDocument } from './document.ts';
+import { type DocumentInput, handleDocument } from './document.ts';
 import { serveMemberWithoutShell, type Unserved } from './hosted-member.ts';
 import { composePagesData, composePayload, composeSegment } from './hosted-parts.ts';
 import {
@@ -492,6 +502,53 @@ function unprovedRoute(
   return serveMemberWithoutShell(input, middleware, toWorker) ?? toWorker();
 }
 
+/** A partial fallback uses only its target's already-held record, never a foreground lookup. */
+function composePartialFallback(
+  input: HostedDocumentInput,
+  document: Omit<DocumentInput, 'shellRead' | 'generation'>,
+  middleware: MiddlewareOutcome,
+  ready: Preload | undefined,
+): Promise<Response> | undefined {
+  const { entry } = document;
+  if (input.request.method !== 'GET' || entry.partialFallback === undefined) return undefined;
+  const { pathname } = requestAsLeft(input, middleware).url;
+  const partial = partialFallbackInHand(input.edge, input.manifest, entry, pathname);
+  if (partial !== undefined) {
+    partial.refresh();
+    if (partial.key !== undefined && partial.load.kind === 'generation') {
+      return serveCachedDocument({
+        ...document,
+        key: partial.key,
+        settings: runtimeCacheOf(input.edge.policy),
+        generationRead: { load: Promise.resolve(partial.load), shell: undefined },
+        member: undefined,
+        refreshRecord: partial.refresh,
+      });
+    }
+    // The stable completion key spends the same cooldown before and after its digest is derived.
+    const cooldownKey = memberEntryKey(
+      input.manifest.cache?.scopeId ?? '',
+      partial.route,
+      partial.pathname,
+    );
+    const buildRegeneration = shouldAsk(input.edge, cooldownKey, runtimeCacheOf(input.edge.policy))
+      ? {
+          [REGENERATE_HEADER]: 'background',
+          ...pathHeaders(CACHE_ROUTE_HEADER, CACHE_ROUTE_ESCAPED_HEADER, partial.route),
+          [CACHE_UPGRADE_HEADER]: '1',
+          ...(partial.key !== undefined && { [CACHE_ENTRY_HEADER]: partial.key.entryId }),
+        }
+      : undefined;
+    return handleDocument({
+      ...document,
+      shellRead: ready?.kind === 'shell' ? ready.read : undefined,
+      generation: undefined,
+      buildRegeneration,
+    });
+  }
+  return undefined;
+}
+
 /** Compose the document for a route: from its record when the deployment has one, else its shell. */
 function composeHostedDocument(
   input: HostedDocumentInput,
@@ -519,6 +576,8 @@ function composeHostedDocument(
       middleware.kind === 'continue' || middleware.kind === 'skipped' ? middleware : undefined,
     passthrough: input.passthrough,
   };
+  const partial = composePartialFallback(input, document, middleware, ready);
+  if (partial !== undefined) return partial;
   const key = generationKeyOf(input, entry);
   if (key === undefined) {
     return handleDocument({
