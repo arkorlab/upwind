@@ -38,6 +38,7 @@ import {
   type SourceError,
   sourceLimit,
 } from './image-source.ts';
+import { cuttable } from './image-stream.ts';
 import { transformWithin, withinBudget } from './image-transform.ts';
 import { observeMetric, observeTransformed } from './observer.ts';
 import {
@@ -283,14 +284,21 @@ type Judged =
  */
 async function fetchJudged(input: ImageInput, imageSource: ImageSource): Promise<Judged> {
   const { edge, config } = input;
-  const fetched = await fetchImageSource(edge, config, imageSource, input.manifest);
+  const fetched = await fetchImageSource(edge, config, imageSource, {
+    manifest: input.manifest,
+    signal: input.request.signal,
+  });
   if (fetched.kind === 'error') {
     return fetched;
   }
   const { source } = fetched;
   let peeked;
   try {
-    peeked = await peekBody(source.body, IMAGE_SIGNATURE_BYTES, IMAGE_BUDGET_MS);
+    peeked = await peekBody(
+      cuttable(source.body, input.request.signal).stream,
+      IMAGE_SIGNATURE_BYTES,
+      IMAGE_BUDGET_MS,
+    );
   } catch (error) {
     // A source can run past its limit within the bytes its type is read from: too large still,
     // as it is when that happens later, whatever chunks it came in.
@@ -340,10 +348,16 @@ async function optimize(input: ImageInput, imageSource: ImageSource): Promise<Op
       format: outputImageType(params.mimeType, judged.verdict.upstreamType),
       quality: params.quality,
     };
-    result = await transformWithin(transform, judged.body, request, IMAGE_BUDGET_MS);
+    result = await transformWithin(transform, judged.body, request, {
+      budgetMs: IMAGE_BUDGET_MS,
+      signal: input.request.signal,
+    });
   } catch (error) {
-    logWarn('image transformation failed', { href: params.href, detail: errorDetail(error) });
     const spent = judged.source.requests + 1;
+    if (input.request.signal.aborted) {
+      return { kind: 'error', error: badGateway('image request abandoned', spent) };
+    }
+    logWarn('image transformation failed', { href: params.href, detail: errorDetail(error) });
     if (isBodyLimitError(error)) {
       return { kind: 'error', error: tooLarge(imageSource, spent) };
     }
@@ -574,7 +588,7 @@ export async function handleImage(input: ImageInput): Promise<Response> {
   try {
     // A source served as it is is read to the limit put on a source, so that running past it is
     // a refusal here; a transformation is the service's, and one too large to hold streams.
-    bounded = await readBoundedBody(image.body, {
+    bounded = await readBoundedBody(cuttable(image.body, input.request.signal).stream, {
       limit: image.via === 'source' ? sourceLimit(input.config) : CACHEABLE_RESULT_BYTES,
       // One budget in two places: the client is waiting on this read, so silence and slowness cost
       // it the same thing and neither may outlast what the whole answer is allowed.

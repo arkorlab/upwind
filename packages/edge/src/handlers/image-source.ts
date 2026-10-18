@@ -23,13 +23,14 @@ import {
   REDIRECT_STATUSES,
   sanitizePassthroughHeaders,
 } from '@stayingupwind/core/request';
-import { isDeadlineError, limitBody, releaseStream, withDeadline } from '@stayingupwind/core/util';
+import { isDeadlineError, limitBody, releaseStream } from '@stayingupwind/core/util';
 import { withoutHostCredentials } from '@stayingupwind/host/credentials';
 import { dnsSpelling, isUnderAnyDomain } from '@stayingupwind/host/domains';
 
 import { logWarn } from '../observability/logger.ts';
 import { asksBlobWorker } from '../preview/blobs.ts';
 import type { EdgeContext } from '../strategies/context.ts';
+import { imageWithin } from './image-stream.ts';
 import { decideMiddleware, type MiddlewareContinued, middlewareMatches } from './middleware.ts';
 import { readStaticFileStream, type StoredStream } from './static-file.ts';
 import { dispatchesOf, dispatchesSoFar, fetchUpstream, functionOfRequest } from './upstream.ts';
@@ -45,9 +46,9 @@ import { dispatchesOf, dispatchesSoFar, fetchUpstream, functionOfRequest } from 
  * amounts to is this deployment's answer for that path rather than the file itself. Any other
  * pathname of the application is asked of its Worker — a route handler that draws images, say —
  * and an absolute URL of the internet, each with the limits Next.js's own optimizer applies
- * (`fetchInternalImage`, `fetchExternalImage`). Nothing of the client's request travels with any
- * of these: the optimized image goes into a shared cache, so it has to be what an anonymous
- * visitor would have been given.
+ * (`fetchInternalImage`, `fetchExternalImage`). None of the client's headers travel with these:
+ * the optimized image goes into a shared cache, so it has to be what an anonymous visitor would
+ * have been given. Its cancellation still ends work nobody remains to read.
  */
 
 /** What stands between the optimizer and a shipped file's path, if anything. */
@@ -253,7 +254,7 @@ function accepted(
  * a path. So the request is the path and query the source resolves to, which the file is looked up
  * by (`localPathname`), at the host, as every request the edge forwards is (`forwardedUrl`).
  */
-function localRequest(edge: EdgeContext, href: string): Request {
+function localRequest(edge: EdgeContext, href: string, signal?: AbortSignal): Request {
   const { pathname, search } = new URL(href, LOCAL_BASE);
   return new Request(`https://${edge.forwarding.previewHost}${pathname}${search}`, {
     headers: {
@@ -262,6 +263,7 @@ function localRequest(edge: EdgeContext, href: string): Request {
       via: '1.1 arkor-edge',
     },
     redirect: 'manual',
+    ...(signal !== undefined && { signal }),
   });
 }
 
@@ -324,7 +326,7 @@ function rewrittenRequest(
   if (middleware.setCookie !== undefined) {
     headers.set(MIDDLEWARE_SET_COOKIE_HEADER, middleware.setCookie);
   }
-  return new Request(middleware.url.href, { headers, redirect: 'manual' });
+  return new Request(middleware.url.href, { headers, redirect: 'manual', signal: original.signal });
 }
 
 /** What a source of the application's own is fetched with. */
@@ -333,6 +335,8 @@ interface LocalContext {
   readonly config: ImagesConfig;
   /** For the tables that say which app Worker a path is in, where the build split them. */
   readonly manifest: ProjectManifest;
+  /** The optimizer's caller: no source or fallback remains wanted after it leaves. */
+  readonly signal: AbortSignal;
 }
 
 /** What a fetch of a source from the application comes after. */
@@ -343,12 +347,24 @@ interface LocalFetch {
   readonly budgetMs?: number;
 }
 
+/** A host's fetch that answered after its wait ended still has no reader for its body. */
+function releaseLateSource(pending: Promise<Response>): void {
+  void pending
+    .then((response) => {
+      releaseStream(response.body, 'image source abandoned');
+    })
+    .catch(() => {
+      // A fetch cancelled with its request usually fails instead of answering.
+    });
+}
+
 async function fetchLocal(
   local: LocalContext,
   request: Request,
   { earlier, budgetMs = SOURCE_FETCH_BUDGET_MS }: LocalFetch,
 ): Promise<SourceResult> {
-  const { edge, config } = local;
+  const { edge, config, signal } = local;
+  signal.throwIfAborted();
   // A budget the middleware spent is a timed-out source, not a request sent and abandoned.
   if (budgetMs <= 0) {
     return refused(HTTP_GATEWAY_TIMEOUT, TIMED_OUT, earlier);
@@ -358,13 +374,16 @@ async function fetchLocal(
   const fn = functionOfRequest(edge.app, local.manifest, request);
   // A source past its budget is let go, not left rendering behind the refusal: nobody reads it.
   const controller = new AbortController();
-  const signalled = new Request(request, { signal: controller.signal });
+  const signalled = new Request(request, {
+    signal: AbortSignal.any([signal, controller.signal]),
+  });
   const answer = fetchUpstream(edge.runtime, edge.app, signalled, fn);
   let response: Response;
   try {
-    response = await withDeadline(answer, budgetMs, 'image source');
+    response = await imageWithin(answer, signal, budgetMs, 'image source');
   } catch (error) {
     controller.abort(error);
+    releaseLateSource(answer);
     // Two where the Worker the first named failed, or was still out when the budget ran out: the
     // deadline's error is its own, so the dispatch is what says how far it got.
     const requests = earlier + dispatchesSoFar(answer);
@@ -440,7 +459,7 @@ async function fetchBlob(
   source: Extract<ImageSource, { kind: 'blob' }>,
 ): Promise<SourceResult> {
   const { edge, config } = local;
-  const request = localRequest(edge, source.href);
+  const request = localRequest(edge, source.href, local.signal);
   if (source.gate === 'reserved') {
     return fetchLocal(local, request, { earlier: 0 });
   }
@@ -510,27 +529,33 @@ function redirectRefused(target: URL, edge: EdgeContext, config: ImagesConfig): 
  * hops used up is a refusal before the request goes out, not a request sent and abandoned.
  */
 async function fetchHop(
-  edge: EdgeContext,
+  local: LocalContext,
   url: URL,
   deadline: number,
   requests: number,
 ): Promise<Response | SourceResult> {
+  const { edge, signal } = local;
+  signal.throwIfAborted();
   const remaining = deadline - edge.runtime.now();
   if (remaining <= 0) {
     return refused(HTTP_GATEWAY_TIMEOUT, TIMED_OUT, requests);
   }
   // A hop past the budget is let go, not left holding a connection behind the refusal.
   const controller = new AbortController();
+  let answer: Promise<Response> | undefined;
   try {
-    return await withDeadline(
-      edge.runtime.fetchImpl(
-        new Request(url.href, { redirect: 'manual', signal: controller.signal }),
-      ),
-      remaining,
-      'image source',
+    answer = edge.runtime.fetchImpl(
+      new Request(url.href, {
+        redirect: 'manual',
+        signal: AbortSignal.any([signal, controller.signal]),
+      }),
     );
+    return await imageWithin(answer, signal, remaining, 'image source');
   } catch (error) {
     controller.abort(error);
+    if (answer !== undefined) {
+      releaseLateSource(answer);
+    }
     return isDeadlineError(error)
       ? refused(HTTP_GATEWAY_TIMEOUT, TIMED_OUT, requests + 1)
       : refused(HTTP_BAD_REQUEST, UPSTREAM_INVALID, requests + 1);
@@ -551,11 +576,8 @@ function redirectTarget(response: Response, from: URL): URL | undefined {
  * count, and without checking each hop against the patterns again — but never off the web, and
  * never back into this edge.
  */
-async function fetchRemote(
-  edge: EdgeContext,
-  config: ImagesConfig,
-  href: string,
-): Promise<SourceResult> {
+async function fetchRemote(local: LocalContext, href: string): Promise<SourceResult> {
+  const { edge, config } = local;
   const deadline = edge.runtime.now() + SOURCE_FETCH_BUDGET_MS;
   let url = new URL(href);
   // The same judgment a redirect gets, on the destination the caller named. The patterns say which
@@ -568,7 +590,7 @@ async function fetchRemote(
   let requests = 0;
   for (let hops = config.maximumRedirects; ; hops -= 1) {
     // `fetchHop` is given the count so far, and counts its own request once it has made it.
-    const hop = await fetchHop(edge, url, deadline, requests);
+    const hop = await fetchHop(local, url, deadline, requests);
     if (!(hop instanceof Response)) {
       return hop;
     }
@@ -596,18 +618,19 @@ export function fetchImageSource(
   edge: EdgeContext,
   config: ImagesConfig,
   source: ImageSource,
-  manifest: ProjectManifest,
+  request: Pick<LocalContext, 'manifest' | 'signal'>,
 ): Promise<SourceResult> {
-  const local: LocalContext = { edge, config, manifest };
+  request.signal.throwIfAborted();
+  const local: LocalContext = { edge, config, ...request };
   switch (source.kind) {
     case 'blob': {
       return fetchBlob(local, source);
     }
     case 'local': {
-      return fetchLocal(local, localRequest(edge, source.href), { earlier: 0 });
+      return fetchLocal(local, localRequest(edge, source.href, local.signal), { earlier: 0 });
     }
     case 'remote': {
-      return fetchRemote(edge, config, source.href);
+      return fetchRemote(local, source.href);
     }
   }
 }
