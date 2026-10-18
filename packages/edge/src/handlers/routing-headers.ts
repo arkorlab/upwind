@@ -45,12 +45,14 @@ export function readsForwarding(condition: Condition): boolean {
   );
 }
 
-/** The authority headers forwarding removes or supplies, apart from the URL a host condition reads. */
+/** Known headers forwarding removes or supplies, apart from the URL a host condition reads. */
 const FORWARDED_ROUTING_FIELDS = [
   'host',
   'x-forwarded-host',
   'x-forwarded-proto',
   'x-forwarded-port',
+  'x-forwarded-for',
+  'via',
 ];
 interface RoutingReads {
   readonly credentials: HostCredentials;
@@ -60,7 +62,7 @@ interface RoutingReads {
 
 const manifestReaders = new WeakMap<ProjectManifest, RoutingReads>();
 
-/** Credential readers and authority fields found together, once per manifest and host credentials. */
+/** Credential readers and forwarding fields found together, once per manifest and host credentials. */
 export function routingReadsFor(
   manifest: ProjectManifest,
   credentials: HostCredentials,

@@ -313,7 +313,7 @@ function withoutCredentials(headers: Headers, credentials: HostCredentials): Hea
  * What the classification reads by name besides — a router's headers, a navigation's, draft mode's
  * cookies — is read on the same headers, and a host that keeps one of those as its own has them
  * copied for that alone (`classificationReadsCredentials`): Next.js is never handed it either.
- * Only authority fields read by the manifest (`routingReadsFor`) take their forwarded values.
+ * Only known forwarding fields read by the manifest (`routingReadsFor`) take their forwarded values.
  * The client markers used by classification, including the recovery cookie, stay as they came.
  */
 function headersToClassify(
