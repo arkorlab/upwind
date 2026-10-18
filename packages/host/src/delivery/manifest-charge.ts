@@ -39,7 +39,9 @@ const MANIFEST_OBJECT_BYTES = 80;
  * entry of its own, each would be charged 104 bytes, more than any took, and a manifest of such
  * pathnames refused past some 207 thousand of them rather than 245 thousand.
  */
-const EXACT_FUNCTION_BYTES = 48;
+// Gate names and gated pathname routes are strings too, so their lookup tables take the same
+// additional per-entry charge. Their JSON still pays for the strings; no per-entry object is made.
+const PATHNAME_TABLE_BYTES = 48;
 
 /** A rule as a manifest lists one: a pattern, and perhaps conditions and headers. */
 interface RuleObjects {
@@ -124,6 +126,7 @@ export function manifestCharge(manifest: ProjectManifest, jsonBytes: number): nu
   return (
     MANIFEST_JSON_FACTOR * jsonBytes +
     MANIFEST_OBJECT_BYTES * manifestObjects(manifest) +
-    EXACT_FUNCTION_BYTES * keysOf(manifest.exactFunctions)
+    PATHNAME_TABLE_BYTES *
+      (keysOf(manifest.exactFunctions) + keysOf(manifest.gates) + keysOf(manifest.gatedPathnames))
   );
 }

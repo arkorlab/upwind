@@ -114,3 +114,121 @@ describe('seeding the shared identity of a reusable terminal shell', () => {
     },
   );
 });
+
+describe('concrete pathname tags and class metadata in a seed', () => {
+  it.each<{
+    name: string;
+    changes: Partial<Prerender>;
+    classed: boolean;
+  }>([
+    {
+      name: 'ordinary static output',
+      changes: { route: '/about', pathname: '/about', routeType: 'page' },
+      classed: false,
+    },
+    {
+      name: 'literal bracket in a static segment',
+      changes: { route: '/literal[brackets]', pathname: '/literal[brackets]', routeType: 'page' },
+      classed: false,
+    },
+    {
+      name: 'bracket-valued member of a dynamic route',
+      changes: {
+        route: '/blog/[slug]',
+        pathname: '/blog/[literal]',
+        routeType: 'page',
+        parentFallbackMode: null,
+      },
+      classed: false,
+    },
+    {
+      name: 'member whose value equals its own placeholder',
+      changes: {
+        route: '/blog/[slug]',
+        pathname: '/blog/[slug]',
+        routeType: 'page',
+        parentFallbackMode: false,
+      },
+      classed: false,
+    },
+    {
+      name: 'legacy bracket-valued member without class metadata',
+      changes: { route: '/blog/[slug]', pathname: '/blog/[literal]', routeType: undefined },
+      classed: false,
+    },
+    {
+      name: 'legacy member whose value spells another parameter',
+      changes: { route: '/[category]/[slug]', pathname: '/news/[category]', routeType: undefined },
+      classed: false,
+    },
+    {
+      name: 'unresolved reusable terminal shell',
+      changes: {},
+      classed: true,
+    },
+    {
+      name: 'fallback class',
+      changes: { route: '/blog/[slug]', pathname: '/blog/[slug]', routeType: 'fallback' },
+      classed: true,
+    },
+    {
+      name: 'blocking class entry labelled as a page',
+      changes: {
+        route: '/blog/[slug]',
+        pathname: '/blog/[slug]',
+        routeType: 'page',
+        compute: 'blocking',
+      },
+      classed: true,
+    },
+    {
+      name: 'empty optional catch-all member',
+      changes: {
+        route: '/docs/[[...slug]]',
+        pathname: '/docs',
+        routeType: 'page',
+        parentFallbackMode: null,
+      },
+      classed: false,
+    },
+    {
+      name: 'bracket-valued optional catch-all member',
+      changes: {
+        route: '/docs/[[...slug]]',
+        pathname: '/docs/[literal]/tail',
+        routeType: 'page',
+        parentFallbackMode: false,
+      },
+      classed: false,
+    },
+    {
+      name: 'optional catch-all class shell',
+      changes: {
+        route: '/docs/[[...slug]]',
+        pathname: '/docs/[[...slug]]',
+        routeType: 'shell',
+      },
+      classed: true,
+    },
+  ])('classifies $name', async ({ changes, classed }) => {
+    const prerender = { ...SHARED_SHELL, ...changes };
+    const seeded = await seedRouteFor(shellBundle(prerender), prerender, CONTEXT);
+    const pathnameTag = `_N_T_${prerender.pathname}`;
+
+    expect(seeded).toBeDefined();
+    expect(seeded?.input.generation.tags.some((tag) => tag.value === pathnameTag)).toBe(!classed);
+    expect(seeded?.cache?.route).toBe(classed ? prerender.route : undefined);
+  });
+
+  it('keeps recorded Pages tags without adding App Router pathname tags', () => {
+    const prerender = {
+      ...SHARED_SHELL,
+      pathname: '/prefix/b/[literal]',
+      initialHeaders: { 'x-next-cache-tags': 'from-build' },
+    };
+
+    expect(buildTagsOf('pages', prerender)).toStrictEqual([
+      { kind: 'next-explicit', value: 'from-build' },
+    ]);
+  });
+});
