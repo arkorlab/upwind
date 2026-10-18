@@ -574,7 +574,7 @@ export function requestHeaderRulesFor(
         applyHeaderSet(response, rule.headers, match, manifest.routerReferences);
         applyHeaderSet(
           document,
-          rule.documentHeaders ?? rule.headers,
+          rule.documentHeaders,
           match,
           manifest.routerReferences,
           undefined,
