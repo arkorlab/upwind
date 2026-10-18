@@ -214,6 +214,24 @@ export function unsupportedNext(
   return `next ${nextVersion} is outside the versions deployed (>=${min.join('.')} <${max.join('.')})`;
 }
 
+/** Declared gates need an edge that asks them before any route is served. */
+export function unsupportedGates(bundle: Pick<DeploymentBundle, 'gates'>): string | undefined {
+  return bundle.gates === undefined
+    ? undefined
+    : 'the edge does not yet serve route gates; remove UPWIND_ROUTE_GATES until it does';
+}
+
+/** Why a build cannot be represented by what this edge serves. */
+function manifestRefusal(input: AssembleManifestInput): string | undefined {
+  return (
+    foreignFingerprint(input.bundle, input.fingerprint) ??
+    foreignFunctions(input) ??
+    unreachableFunctions(input) ??
+    unsupportedGates(input.bundle) ??
+    unsupportedNext(input)
+  );
+}
+
 /**
  * Assemble the manifest from the build: one entry per edge-servable prerender.
  *
@@ -223,11 +241,7 @@ export function unsupportedNext(
  */
 export async function assembleManifest(input: AssembleManifestInput): Promise<AssembledManifest> {
   const { bundle } = input;
-  const refusal =
-    foreignFingerprint(bundle, input.fingerprint) ??
-    foreignFunctions(input) ??
-    unreachableFunctions(input) ??
-    unsupportedNext(input);
+  const refusal = manifestRefusal(input);
   if (refusal !== undefined) {
     return { kind: 'refused', reason: refusal };
   }

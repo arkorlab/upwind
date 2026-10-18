@@ -16,6 +16,7 @@ import { type BlobStore, type CarriedValue, type KvSink, writeKey } from './io.t
 import { PROJECTION_MEMORY_BYTES, withProjectionMemory } from './projection-memory.ts';
 import { dataRecordJson, generationRecordBytes, projectionMemoryOf } from './records.ts';
 import type { EntryRow, GenerationRow } from './rows.ts';
+import { forgetSeedFailure, rememberSeedFailure } from './seed-repair.ts';
 import {
   commitRevision,
   deleteMeta,
@@ -268,6 +269,7 @@ async function projectChunk(
       }
     } else {
       failed += 1;
+      rememberSeedFailure(deps, chunk[index], outcome.reason);
       deps.log.warn('delivery record not written', {
         entryId: entry.entry_id,
         detail: detailOf(outcome.reason),
@@ -377,6 +379,7 @@ function acknowledge(deps: SettleDeps, projected: readonly ProjectedEntry[]): Se
   deps.transaction(() => {
     for (const entry of projected) {
       if (markRecordWritten(deps.sql, entry.entryId, entry.kvRevision)) {
+        forgetSeedFailure(deps.sql, entry.entryId);
         marked.add(entry.entryId);
       }
     }
