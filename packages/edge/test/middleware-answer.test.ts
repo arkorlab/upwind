@@ -27,7 +27,8 @@ const EVERY_PATH = '^/.*$';
 
 interface Answering {
   /** What the middleware answers. */
-  readonly middleware: () => Response;
+  readonly middleware: (request: Request) => Response | Promise<Response>;
+  readonly timeoutMs?: number | undefined;
   /** The rules of `next.config` `headers()`; none, absent. */
   readonly headerRules?: readonly HeaderRule[] | undefined;
   /** Whether the manifest carries the full routing contract needed to judge all header rules. */
@@ -67,7 +68,7 @@ async function throughMiddleware(
     dispatchApp: (scriptName: string, request: Request): Promise<Response> => {
       return Promise.resolve(
         scriptName === MIDDLEWARE_SCRIPT
-          ? answering.middleware()
+          ? answering.middleware(request)
           : (answering.application?.(request) ?? new Response('from the Function')),
       );
     },
@@ -100,7 +101,13 @@ async function throughMiddleware(
       policyLookup: Promise.resolve({
         kind: 'found',
         source: 'exact',
-        policy: DEFAULT_DELIVERY_POLICY,
+        policy: {
+          ...DEFAULT_DELIVERY_POLICY,
+          middleware: {
+            ...DEFAULT_DELIVERY_POLICY.middleware,
+            timeoutMs: answering.timeoutMs ?? DEFAULT_DELIVERY_POLICY.middleware.timeoutMs,
+          },
+        },
       }),
     },
   );
@@ -682,5 +689,84 @@ describe('connection semantics across middleware consumers', () => {
 
     expect(response.status).toBe(304);
     expect(response.headers.get('etag')).toBe('"kept"');
+  });
+});
+
+describe('middleware deadline cleanup', () => {
+  it.each(['continue', 'responded'])(
+    'releases a late %s body without awaiting cancellation',
+    async (kind) => {
+      const pending = Promise.withResolvers<Response>();
+      let cancelled = false;
+      let signal: AbortSignal | undefined;
+      const response = await throughMiddleware('/', {
+        middleware: (request) => {
+          signal = request.signal;
+          return pending.promise;
+        },
+        timeoutMs: 1,
+        application: () => new Response('fallback'),
+      });
+
+      await expect(response.text()).resolves.toBe('fallback');
+      expect(signal?.aborted).toBe(true);
+
+      pending.resolve(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            cancel() {
+              cancelled = true;
+              return new Promise<void>(() => {
+                /* A stalled upstream never acknowledges cancellation. */
+              });
+            },
+          }),
+          { headers: kind === 'continue' ? { 'x-middleware-next': '1' } : {} },
+        ),
+      );
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+
+      expect(cancelled).toBe(true);
+    },
+  );
+
+  it('consumes a late dispatch rejection after the fallback completes', async () => {
+    const pending = Promise.withResolvers<Response>();
+    const response = await throughMiddleware('/', {
+      middleware: () => pending.promise,
+      timeoutMs: 1,
+      application: () => new Response('fallback'),
+    });
+    pending.reject(new Error('late middleware rejection'));
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+
+    await expect(response.text()).resolves.toBe('fallback');
+  });
+
+  it('leaves a timely response body owned by its recipient', async () => {
+    let cancelled = false;
+    const response = await throughMiddleware('/', {
+      middleware: () => {
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode('timely middleware'));
+              controller.close();
+            },
+            cancel() {
+              cancelled = true;
+            },
+          }),
+          { status: 401 },
+        );
+      },
+    });
+
+    await expect(response.text()).resolves.toBe('timely middleware');
+    expect(cancelled).toBe(false);
   });
 });

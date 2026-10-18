@@ -432,13 +432,22 @@ async function runMiddlewareIn(
   const forwarded = middlewareRequest(edge, request, signal);
   const { budget } = target;
   let response: Response;
+  let dispatched: Promise<Response> | undefined;
   const startedAt = edge.runtime.now();
   try {
-    const dispatched = dispatch(target.scriptName, forwarded, budget?.limits);
+    dispatched = dispatch(target.scriptName, forwarded, budget?.limits);
     response = await (budget === undefined
       ? dispatched
       : withDeadline(dispatched, budget.timeoutMs, 'middleware'));
   } catch (error) {
+    if (dispatched !== undefined) {
+      void dispatched
+        .then((late) => {
+          releaseStream(late.body, 'middleware');
+          return null;
+        })
+        .catch(() => null);
+    }
     controller.abort(error);
     return {
       kind: 'failed',
