@@ -3,13 +3,20 @@ import { cronsSchema } from '../cron/schema.ts';
 import { checkedImagesConfigSchema } from '../images/build.ts';
 import { runnableSourceRegexSchema, unsafeRoutePatternReason } from '../request/pattern-safety.ts';
 import * as z from '../schema/index.ts';
-import { routeHasSchema, routerReferencesSchema, splitFunctionNameSchema } from './carried.ts';
+import {
+  routeGatesSchema,
+  routeHasSchema,
+  routerReferencesSchema,
+  splitFunctionNameSchema,
+} from './carried.ts';
 import { deploymentIdSchema } from './deployment-id.ts';
 import {
   durableObjectDeclarationsSchema,
   DURABLE_OBJECT_BUNDLE_VERSION,
   DURABLE_OBJECT_SPLIT_BUNDLE_VERSION,
 } from './durable-objects.ts';
+import { judgedApart } from './gate-conditions.ts';
+import { gatedEitherWay, isOptimizerPath, rewritesOnto } from './gate-routes.ts';
 
 export {
   type RouteHas,
@@ -473,6 +480,18 @@ const bundleSchema = z.object({
    * this field existed.
    */
   crons: cronsSchema.optional(),
+  /**
+   * The routes the build declares a gate for, each with the name of its gate (`ROUTE_GATES_ENV`):
+   * the edge asks the gate a host binds under that name about each request of the route before it
+   * serves the request anything. Absent for a build that declares none, which is every build made
+   * before this field existed.
+   *
+   * No version of its own, though a reader that knew nothing of it would drop it and publish the
+   * deployment with no gate asked: what keeps such a reader from a build that declares one is the
+   * order a host rolls out in, as for the manifest that carries it on (`ProjectManifest.gates`) —
+   * the host before the adapter its builds declare gates with.
+   */
+  gates: routeGatesSchema.optional(),
   /** Host registrations; their code is carried separately from the Next.js Functions. */
   durableObjects: durableObjectDeclarationsSchema.optional(),
   middleware: z.object({ matchers: z.array(routeSchema) }).optional(),
@@ -606,6 +625,76 @@ function splitIssues(bundle: DeploymentBundle): string[] {
   return issues;
 }
 
+/** Whether the build has a middleware: its matchers, in either place, or a Function of its own. */
+function hasMiddleware(bundle: DeploymentBundle): boolean {
+  return (
+    bundle.middleware !== undefined ||
+    bundle.functions.middleware !== undefined ||
+    bundle.routing.middlewareMatchers.length > 0
+  );
+}
+
+/**
+ * What of a bundle's gates no host could ask: a `gates` that declares none; a route the build ships
+ * as a file, which is answered from storage before any route is looked for, or the image
+ * optimizer's own path, which is answered as the optimizer's before any route is; a route the
+ * build does not have, a misspelling among them; any gate of a build with `i18n`, whose dynamic
+ * routes the edge leaves to its Function unread, and so could not tell a request of a gated route
+ * from another; any gate of a build with a middleware, whose rewrites no build can know, and which
+ * runs in the Function for every request the edge hands on rather than serves itself — or whose
+ * router reads a data URL as the page it names, which Next.js writes for such a build alone; a
+ * route a rewrite of `next.config` may send a request to, or have the image optimizer fetch as its
+ * source (`rewritesOnto`), which is served there with no gate asked; a rule a gate is found by that
+ * asks for what the deployment's router is not handed as the visitor sent it (`judgedApart`), which
+ * the edge would judge otherwise; and a prerendered pathname that may be served as a gated route
+ * or as another (`gatedEitherWay`), of which the one gate asked would answer for a route it is not
+ * the gate of. Each would be a route served to some visitor with no gate asked, or answered by a
+ * gate that is not its own, which declaring a gate says must not happen: the build is refused
+ * rather than served so.
+ */
+function gateIssues(bundle: DeploymentBundle): string[] {
+  const { gates } = bundle;
+  if (gates === undefined) {
+    return [];
+  }
+  const routes = Object.keys(gates);
+  if (routes.length === 0) {
+    return ['gates declares no gate; a bundle that declares none leaves it out'];
+  }
+  const issues: string[] = [];
+  const { i18n } = bundle.config;
+  if (i18n !== undefined && i18n !== null) {
+    issues.push(
+      'a build with i18n may declare no gate: the edge leaves its dynamic routes to its Function',
+    );
+  }
+  if (hasMiddleware(bundle)) {
+    issues.push(
+      'a build with a middleware may declare no gate: the edge runs the middleware itself only for the requests it serves as documents, and one it hands on runs it in the Function, where a rewrite onto a gated route reaches that route with no gate asked',
+    );
+  }
+  if (bundle.routing.shouldNormalizeNextData) {
+    issues.push(
+      'a build whose router reads a Pages Router data URL as the page it names (shouldNormalizeNextData) may declare no gate: Next.js has it do so only for a build with a middleware',
+    );
+  }
+  const entrypoints = new Set(bundle.entrypoints.map((entry) => entry.pathname));
+  const files = new Set(bundle.staticFiles.map((file) => file.pathname));
+  issues.push(...judgedApart(bundle), ...gatedEitherWay(bundle, gates));
+  for (const route of routes) {
+    if (files.has(route)) {
+      issues.push(`gates names ${route}, which the build ships as a file, served before any gate`);
+    } else if (isOptimizerPath(bundle, route)) {
+      issues.push(
+        `gates names ${route}, the image optimizer's path, answered as the optimizer's before any gate`,
+      );
+    } else if (!entrypoints.has(route)) {
+      issues.push(`gates names ${route}, which is no route of this build`);
+    }
+  }
+  return [...issues, ...rewritesOnto(bundle, routes)];
+}
+
 /**
  * Every occurrence is checked before collection can collapse references with the same digest, and
  * the tables the edge walks per request are held to what a request can afford.
@@ -632,6 +721,11 @@ export const deploymentBundleSchema = bundleSchema
   .superRefine((bundle, ctx) => {
     for (const message of splitIssues(bundle)) {
       ctx.addIssue({ code: 'custom', message });
+    }
+  })
+  .superRefine((bundle, ctx) => {
+    for (const message of gateIssues(bundle)) {
+      ctx.addIssue({ code: 'custom', message, path: ['gates'] });
     }
   })
   .superRefine((bundle, ctx) => {

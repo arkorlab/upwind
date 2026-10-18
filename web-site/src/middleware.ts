@@ -136,7 +136,7 @@ function localeUrl(request: NextRequest, locale: Locale, segments: readonly stri
   return url;
 }
 
-export const proxy: NextProxy = (request) => {
+export const middleware: NextProxy = (request) => {
   const segments = request.nextUrl.pathname.split('/').filter((segment) => segment !== '');
   const [first, ...rest] = segments;
 

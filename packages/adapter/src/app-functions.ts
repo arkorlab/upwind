@@ -10,6 +10,7 @@ import type { AdapterOutput } from 'next';
 import type { BlobStore } from './blobs.ts';
 import type { BuildContext, RouteCode, ShippedBlob } from './collect.ts';
 import { auditFunctionSize } from './dependencies.ts';
+import type { EdgeInstrumentation } from './edge-instrumentation.ts';
 import type { EdgeEntry } from './edge.ts';
 import { buildFunction, type BuiltFunction, type EntryModule } from './function.ts';
 import type { KeptMaps } from './kept-maps.ts';
@@ -73,6 +74,7 @@ export interface FunctionsContext {
   /** What Next.js's route modules read: all of it in a Function holding every route (`manifestsOf`). */
   readonly manifests: readonly TextModule[];
   readonly hook: HookParts;
+  readonly edgeInstrumentation?: EdgeInstrumentation | undefined;
   /** The module the cache handlers the app configured are loaded from (`writeCacheHandlers`). */
   readonly cacheHandlers: string | undefined;
   readonly middleware: MiddlewareParts;
@@ -240,6 +242,7 @@ export async function buildAppFunction(
     patch: await patchFor(context, [...parts.chunks, ...middleware.chunks], wasm),
     entries: [...parts.modules, ...middleware.node],
     edgeEntries,
+    edgeInstrumentation: context.edgeInstrumentation,
     wasm: wasm.collector,
     manifests: parts.manifests,
     runtimeManifest,
@@ -279,6 +282,7 @@ export async function buildMiddlewareFunction(
     patch: await patchFor(context, middleware.chunks, wasm),
     entries: middleware.node,
     edgeEntries: middleware.edge,
+    edgeInstrumentation: context.edgeInstrumentation,
     wasm: wasm.collector,
     manifests: [],
     runtimeManifest,

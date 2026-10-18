@@ -18,6 +18,26 @@ export const MIDDLEWARE_DONE_HEADER = 'x-arkor-middleware-done';
  * request over whole.
  */
 export const MIDDLEWARE_REWRITE_STATUS_HEADER = 'x-arkor-middleware-rewrite-status';
+/**
+ * Beside `MIDDLEWARE_DONE_HEADER`: the edge judged the header rules of `next.config` on the request
+ * as the client sent it, before the middleware it ran, and lays them on the answer itself wherever
+ * the answer says the runtime left them out (`HEADER_RULES_LEFT_HEADER`).
+ *
+ * Next.js judges those rules once, ahead of the middleware, on the request as it came
+ * (`resolve-routes.ts`). The edge hands the request on as the middleware left it — rewritten, its
+ * headers changed — and judged on that, the rules of the path the client asked for were lost, and
+ * those of the path it was rewritten to, or of a header the middleware changed, were added. Sent
+ * only where the edge holds every such rule; a request without it is routed as before.
+ */
+export const HEADER_RULES_JUDGED_HEADER = 'x-arkor-header-rules-judged';
+/**
+ * On the answer to a request that carried `HEADER_RULES_JUDGED_HEADER` beside
+ * `MIDDLEWARE_DONE_HEADER`: the runtime laid none of the header rules ahead of the middleware on it,
+ * for the edge to lay the ones it judged. A runtime from before it lays the rules as it judges them
+ * and says nothing, and the edge lays none over them. Removed before anything reaches a client, as
+ * every header of the platform's is.
+ */
+export const HEADER_RULES_LEFT_HEADER = 'x-arkor-header-rules-left';
 /** Resume this prerender: render only what its postponed state left out. */
 export const RESUME_PRERENDER_HEADER = 'x-arkor-prerender';
 /** The same, escaped where a header cannot carry it as it is (`pathHeaders`). */
@@ -78,6 +98,7 @@ export const PLATFORM_REQUEST_HEADERS: readonly string[] = [
   MIDDLEWARE_ONLY_HEADER,
   MIDDLEWARE_DONE_HEADER,
   MIDDLEWARE_REWRITE_STATUS_HEADER,
+  HEADER_RULES_JUDGED_HEADER,
   RESUME_PRERENDER_HEADER,
   RESUME_PRERENDER_ESCAPED_HEADER,
   ORIGINAL_URL_HEADER,

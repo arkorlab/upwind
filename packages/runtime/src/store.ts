@@ -4,12 +4,12 @@ import {
   type DeploymentBundle,
   documentPrerenders,
   type EntrypointKind,
-  isPagesDataPathname,
   type ManifestHead,
   type PackedPrerenders,
   placeholderSegments,
   type Prerender,
   queryDependent,
+  routerPathnames as namedExactly,
   type Route,
   standsForClass,
   type StaticFile,
@@ -26,7 +26,6 @@ import { ByteLru } from '@stayingupwind/core/util';
 
 const BUNDLE_ROOT = '/bundle';
 const RUNTIME_MANIFEST = 'runtime.json';
-const LAST_SEGMENT_NAMES_NO_FILE = /\/[^./]+$/u;
 /** What `next build` puts in front of a dynamic route's pattern in an application with `i18n`. */
 const LOCALE_PATTERN = '[/]?(?<nextLocale>[^/]{1,})';
 /** And in front of the page the route's destination names. */
@@ -213,113 +212,15 @@ function readBundleFile(name: string): Uint8Array<ArrayBuffer> {
 }
 
 /**
- * Prerenders the router resolves by name, as Next.js's own filesystem check does.
- *
- * Three kinds, and no others. A `_next/data` output is the only thing a Pages Router data request
- * can land on: the matchers `next build` emits for data URLs point at the data pathname itself,
- * so a build that does not offer it there resolves nothing — the template among them, which
- * carries no body, is how an unbuilt member of the route is reached. A member of a route built
- * with `fallback: false` — `dynamicParams = false` in the App Router — is all that route will
- * ever serve: the matcher `next build` emits for such a route carries the draft-mode cookies as
- * conditions, so nothing but a draft reaches the route at all, and a member that did not resolve
- * by its own name would resolve nowhere. And a class narrower than its route (`narrowerClass`):
- * the shell of a route whose leading parameters the build resolved, `/shop/t1/[item]` of
- * `/shop/[team]/[item]`, which the build gives a matcher of its own ahead of the route's — with no
- * conditions where the route's has them, a parameter closed before one left open (16.4's
- * `unstable_paramMatching`, or `generateStaticParams` beside `dynamicParams = false`). That
- * matcher's destination is the shell's own name, and an unbuilt member of it is reached by no
- * other: past it, only the route's closed matcher is left.
- *
- * Naming a pathname here makes it the route the request resolved to, which is not the route the
- * build filed its shell under; `renderedBy` puts that back, so a member of a closed route is
- * still served from its shell and resumed rather than rendered whole.
- *
- * Every other prerender is reached through its route's entrypoint, which is where the shell and
- * the resume that completes it come from; naming those here would cost every request a longer
- * scan of this list for nothing.
+ * What the router resolves exactly, read once for the runtime and for the checks a bundle's gates
+ * are held to, which follow the router to where it lands a request (`routerPathnames`, in
+ * `@stayingupwind/core/bundle`): the pages, the shipped files, the prerenders it resolves by name,
+ * their spellings behind a trailing slash, and the optimizer's own path. That function itself,
+ * typed by the manifest a store is made from and the store it goes into: no call of its own.
  */
-function resolvedByName(prerender: Prerender, basePath: string): boolean {
-  return (
-    isPagesDataPathname(basePath, prerender.pathname) ||
-    prerender.parentFallbackMode === false ||
-    narrowerClass(prerender)
-  );
-}
-
-/**
- * A prerender that stands for a class of its route's URLs (`standsForClass`) and is not the
- * route's own template: one or more of its parameters resolved, as many segments as the route —
- * a locale's pathname, which leads with one more, is the route's own under that locale.
- */
-function narrowerClass(prerender: Prerender): boolean {
-  return (
-    prerender.pathname !== prerender.route &&
-    prerender.pathname.split('/').length === prerender.route.split('/').length &&
-    standsForClass(prerender)
-  );
-}
-
-/**
- * Whether Next.js spells `pathname` with a trailing slash under `trailingSlash`: a path whose last
- * segment names no file, which its redirect gives the slash. A template is never asked for by
- * name with one: a dynamic route's matcher takes the slash itself.
- */
-function takesTrailingSlash(pathname: string): boolean {
-  return LAST_SEGMENT_NAMES_NO_FILE.test(pathname) && !pathname.includes('[');
-}
-
-/**
- * The pages named with a trailing slash that are the page without it: every page that takes one,
- * where the application keeps its pages there; and, in an application with `i18n` that does not,
- * the root of each locale. `@next/routing` routes the application's root as `/<locale>/`, the
- * default locale put in front of the root's own slash, and Next.js serves `/<locale>/` as that
- * locale's root when no redirect takes the slash off first (`internalRedirect`).
- */
-function slashSpellingsOf(
-  config: RuntimeManifest['config'],
-  named: readonly string[],
-): Map<string, string> {
-  if (config.trailingSlash) {
-    return new Map(
-      named
-        .filter((pathname) => takesTrailingSlash(pathname))
-        .map((pathname) => [`${pathname}/`, pathname] as const),
-    );
-  }
-  const roots = new Set(
-    (config.i18n?.locales ?? []).map((locale) => `${config.basePath}/${locale}`),
-  );
-  return new Map(
-    named.filter((pathname) => roots.has(pathname)).map((pathname) => [`${pathname}/`, pathname]),
-  );
-}
-
-/**
- * What the router resolves exactly: the pages, the Pages Router's data routes (which its dynamic
- * routes rewrite to), the shipped files, the spellings of those with a trailing slash that are the
- * page without it (`slashSpellingsOf`), and the optimizer's own path, which Next.js answers ahead
- * of its rewrites and dynamic routes as a file of its own.
- */
-export function routerPathnames(
+export const routerPathnames: (
   manifest: Pick<RuntimeManifest, 'config' | 'entrypoints' | 'prerenders' | 'staticFiles'>,
-): Pick<Store, 'pathnames' | 'slashSpellings'> {
-  const named = [
-    ...manifest.entrypoints.map((entry) => entry.pathname),
-    ...manifest.prerenders
-      .filter((prerender) => resolvedByName(prerender, manifest.config.basePath))
-      .map((p) => p.pathname),
-    ...manifest.staticFiles.map((file) => file.pathname),
-  ];
-  const slashSpellings = slashSpellingsOf(manifest.config, named);
-  return {
-    pathnames: [
-      ...named,
-      ...slashSpellings.keys(),
-      ...(manifest.config.images === undefined ? [] : [manifest.config.images.path]),
-    ],
-    slashSpellings,
-  };
-}
+) => Pick<Store, 'pathnames' | 'slashSpellings'> = namedExactly;
 
 /**
  * The dynamic routes as the router is handed them: the build's, with an API route of an
@@ -499,7 +400,7 @@ export function getStore(): Store {
       documentPrerenders(manifest.prerenders, manifest.entrypoints),
     ),
     staticFiles,
-    ...routerPathnames(manifest),
+    ...namedExactly(manifest),
     dynamicRoutes: routerDynamicRoutes(manifest),
     renderedPages: renderedPages(manifest),
     readBlob(sha256) {

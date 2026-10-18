@@ -43,9 +43,17 @@ export {
   workflowSchema,
   type WorkflowSpec,
 } from './schema.ts';
-export { type RouteHas, routeHasSchema, splitFunctionNameSchema } from './carried.ts';
+export {
+  gateNameSchema,
+  type RouteGates,
+  routeGatesSchema,
+  type RouteHas,
+  routeHasSchema,
+  splitFunctionNameSchema,
+} from './carried.ts';
 export { DEPLOYMENT_ID_PREFIX, deploymentIdSchema } from './deployment-id.ts';
 export { PRIMARY_FUNCTION } from './function-name.ts';
+export { declaredRouteGates, gatedPathnamesOf, ROUTE_GATES_ENV } from './gates.ts';
 export { type ManifestHead, manifestHead } from './head.ts';
 export { type PackedPrerenders, packPrerenders, unpackPrerenders } from './packed-prerenders.ts';
 export {
@@ -68,6 +76,12 @@ export { queryDependent } from './query.ts';
 export { partialFallbackUpgradeOf } from './partial-fallback.ts';
 export { sharedShellPathname } from './shared-shell.ts';
 export {
+  namesSpelledBy,
+  type RouterNamed,
+  type RouterNames,
+  routerPathnames,
+} from './router-names.ts';
+export {
   type PrefetchSegment,
   prefetchSegments,
   type RoutePagesData,
@@ -75,7 +89,12 @@ export {
   type RoutePayload,
   routePayloads,
 } from './segments.ts';
-export { placeholderSegments, routePathnameOf, standsForClass } from './spelling.ts';
+export {
+  placeholderSegments,
+  resolvedByName,
+  routePathnameOf,
+  standsForClass,
+} from './spelling.ts';
 export {
   cacheablePrerenders,
   completePrerenders,

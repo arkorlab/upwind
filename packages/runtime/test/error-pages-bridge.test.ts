@@ -91,8 +91,8 @@ async function bridge(
     waitUntil: () => {
       // A GET has no work held behind its answer.
     },
-    run: (work) =>
-      withRequestContext(
+    run: (work) => {
+      return withRequestContext(
         {
           request,
           tables: { app: { entries: {} }, edge: { entries: {} } },
@@ -107,7 +107,8 @@ async function bridge(
           writes: new RequestWrites(),
         },
         work,
-      ),
+      );
+    },
   });
   Object.assign(active, { cloudflare: { ctx: transport.dispatch } });
   if (transport.listener === undefined) throw new Error('the bridge did not create its server');

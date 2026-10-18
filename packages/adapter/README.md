@@ -80,6 +80,7 @@ the bundle at all, so no consumer can come to depend on it by accident.
 | `config.cacheHandler`, `cacheHandlers` (as `required-server-files.json` records them)                                                            | —                                                                                                                                    | each module bundled into the Function, not a static export's, and loaded by the `cache-handlers` patch; the build warns (`cache-handlers.ts`, and below)                                                      |
 | `outputs.staticFiles[]`: `pathname`, `filePath`, `immutableHash`                                                                                 | `staticFiles[]` (`pathname`, `blob`, `immutable`); the one named `/index` is offered under `/` too                                   | edge and control (served from storage); runtime (the small ones the Function carries)                                                                                                                         |
 | `public/` (from `projectDir`)                                                                                                                    | `staticFiles[]`, URL-encoded pathnames under the `basePath`                                                                          | as above; not walked for a static export, whose `out/` already holds it                                                                                                                                       |
+| `UPWIND_ROUTE_GATES` in the build's environment: a JSON object of each route, as an entrypoint's `pathname`, to its gate's name                  | `gates`; a route the build does not have, a file, a rewrite's possible target, or a build with `i18n` or a middleware is refused     | the host (carried to the manifest, beside the pathnames and dynamic routes of each gated route); edge (asks the route's gate before it serves a request of it)                                                |
 
 Both routers are built the same way. What the Pages Router adds is `_next/data`: `next build`
 emits a data output per page whose props come from `getServerSideProps` (an entrypoint of its
@@ -376,6 +377,27 @@ a Function loads at startup only the table and evaluates an entry's chunks on th
 needs it; a deployment with no such entrypoint has no `edge.cjs` at all, and its Function is byte
 for byte what it was before.
 
+Hosts may opt into Edge instrumentation with
+`createAdapter({ edgeInstrumentationModules: [absoluteModulePath] })`. These modules must be
+Edge-safe; their imports use the `edge-light` package condition. Their `register` and
+`onRequestError` hooks run before the project's own Edge-compiled hook when Next.js dispatches
+the hook. A host's load or hook
+failure is logged and isolated, while the project's failure keeps Next.js's own behavior.
+Registration is awaited once before the handler can answer. Builds without this option keep their
+existing Edge load path: neither Node `instrumentationModules` nor a generated Workflow World
+registration is inherited. A host needing both runtimes supplies each option explicitly.
+Added host modules must bundle into the Function's single JavaScript module. Additional emitted
+assets are refused rather than omitted; the exact requested source map is retained separately.
+This option does not add raw host WebAssembly loading support.
+
+The adapter installs this composition before Next.js can cache its instrumentation registry entry,
+including when the project's hook imports `next/server`. It retains Next.js's compiled Edge hook
+and checks the Turbopack instrumentation-file prefix and registration shape. An incompatible shape
+fails instead of dropping observability. This does not add Edge support to a host's Node-only
+Workflow World.
+This preserves upstream error dispatch: Next.js 16.4.2's Edge route wrapper does not call either
+`onRequestError` hook for a thrown route handler, while its middleware wrapper does.
+
 Three consequences, all from Next.js's own templates:
 
 - An edge entrypoint renders with `postponed: undefined` (`build/templates/edge-ssr-app.ts`), so
@@ -601,3 +623,52 @@ request path, and no instance is created during bundling or namespace publicatio
 registration, bundled source and its dependency paths. The CLI uses this to start the same class
 modules in its local runtime. The adapter's default export also reads downloaded declarations from
 `UPWIND_DURABLE_OBJECTS`, which is the local build input rather than a storage registration command.
+
+## Route gates
+
+A build declares, in `UPWIND_ROUTE_GATES`, a gate for each of the routes whose every answer is to be
+decided by a service of the host's at the time it is asked rather than by anything kept: a JSON
+object of each route, as Next.js names it — an entrypoint's `pathname`, under the `basePath`, a `/`
+and then printable ASCII (`/posts/[slug]`) — to the name of its gate (a lowercase letter, then
+lowercase letters, digits and hyphens). An unset or blank value, or `{}`, declares no gate, and the
+build is made as it would be without the variable. The adapter carries the gates into the bundle as
+`gates`, and leaves them out of the Functions' own manifest, which nothing in a Function reads.
+
+Any other value that is not such an object fails the build, and so does one that names a route the
+build does not have, one the build ships as a file or the image optimizer's own path answers, any
+route of a build with `i18n` or with a middleware, or a route a rewrite of `next.config` may send a
+request to, or have the image optimizer fetch as its source — each is a route some request would be
+served with no gate asked. A rewrite to the optimizer that leaves the source to the request, or puts
+in what its rule captured, may have it fetch any. The edge runs a middleware itself only for the
+requests it serves as documents; one it hands on runs the middleware in the Function, where a
+rewrite onto a gated route reaches that route with no gate asked, so no build with a middleware
+declares a gate. Nor may a rule of the routing ask for a header the edge takes off what it hands the
+Function or writes there itself — a forwarding header, `host`, `via`, a hop's own, the platform's —
+as the edge would judge the rule on what the visitor sent and the router on what it is handed.
+Nor may a prerendered page be served as a gated route and as another: its own, and a class ahead of
+it that the router reaches it by or a page of its own its name also spells (`/docs/a%2Fb` and
+`/docs/a/b`), or two classes a request's conditions (`has`, `missing`) choose between — the edge
+asks one route's gate before it serves anything, and that gate would answer for the other route as
+well, gated or not.
+
+A rewrite reaches a route where the path it writes may be one of the route's, or of its data, read
+as the router reads it — escapes decoded, dot segments resolved, a `#` kept in the path, and a
+dynamic route's segments in any case. One that puts in what its source captured may reach whatever
+a path written as far as the capture could be: so `/:path*` to `/$1` reaches every route, while one
+to `/api/deliver/$1` reaches none under `/posts`. A whole segment of the request's path, or whole
+segments of it (`:slug`, `:path+`), are never `.` or `..`, but part of a segment (`:name.png`) may
+be, and climb a level, as may a `..` written after a capture; and a value a `has` condition
+captured from the query, a header or a cookie, or one a pattern of the application's own captured
+(`:id(\d+)`), may hold `/` and `..`, and so reaches every route. A redirect, or a rewrite to another
+origin (`http://` or `https://`), reaches none of the routes.
+
+The host binds a gate under each name, and its edge asks the route's gate about every `GET` and
+`HEAD` of the route — a document, a router's request for its payload, a prefetch, a Pages Router
+page's props — before it serves the request anything. An answer that says `x-upwind-gate: pass` has
+the request served as though there were no gate; any other is the answer, kept nowhere. A gate that
+cannot be reached is a `503`, never what was kept of the route. A request of any other method goes
+to the Function, as it does without a gate. Nor is a gated route an image the optimizer may take:
+`/_next/image` answers a source of one `400`, as it answers a source that is no image, before
+anything is fetched or kept — what it optimizes is kept for every visitor, and a gated route's
+every answer is its gate's. An image of a gated route is marked `unoptimized`, so that the browser
+asks for it at its route, of its gate.

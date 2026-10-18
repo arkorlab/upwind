@@ -2,8 +2,8 @@ import * as z from '../schema/index.ts';
 
 /**
  * What a deployment's manifest carries on from its bundle, for a host's edge to read with it: a
- * route's conditions, how the deployment's Functions fill a header's references, and which app
- * Function a route's code is in.
+ * route's conditions, how the deployment's Functions fill a header's references, which app
+ * Function a route's code is in, and which gate a route is asked of first.
  *
  * Apart from the bundle's own schema (`schema.ts`) so that a reader of a manifest builds these and
  * nothing else. A schema is built when its module is evaluated, whether anything reads it or not,
@@ -36,3 +36,25 @@ export type RouteHas = z.infer<typeof routeHasSchema>;
  */
 export const routerReferencesSchema = z.literal('one-pass');
 export type RouterReferences = z.infer<typeof routerReferencesSchema>;
+
+/**
+ * The name a build gives a gate, and a host binds one under: a lowercase letter, then lowercase
+ * letters, digits and hyphens. Upper-cased, each hyphen an underscore, it is a name an environment
+ * binds a service under, and no two names come to the same one there.
+ */
+export const gateNameSchema = z
+  .string()
+  .regex(/^[a-z][\da-z-]*$/u, 'expected a gate name: a lowercase letter, then a-z, 0-9 or -');
+
+/**
+ * The routes a build declares a gate for, each with the name of its gate: a route as Next.js names
+ * it — an entrypoint's pathname, its dynamic segments as written (`/posts/[slug]`) — under the
+ * `basePath`, as every pathname of a build is. In printable ASCII, as a header carries it: the gate
+ * is told the route a request is of in one (`GATE_ROUTE_HEADER`), and a value no header can hold
+ * would fail every request of the route where it is asked rather than where it was declared.
+ */
+export const routeGatesSchema = z.record(
+  z.string().regex(/^\/[\u{20}-\u{7E}]*$/u, 'expected a route: /, then printable ASCII'),
+  gateNameSchema,
+);
+export type RouteGates = z.infer<typeof routeGatesSchema>;
