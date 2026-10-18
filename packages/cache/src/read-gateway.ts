@@ -10,7 +10,13 @@ import type { AuthorityHost } from './authority-host.ts';
 import { ENTRY_BODY_BYTES, readRequest, TAGS_BODY_BYTES } from './gateway/body.ts';
 import { dataReadBytes, meterRead, readDataRecord } from './gateway/read-data.ts';
 import { readTagRecords } from './gateway/read-tags.ts';
-import { dropRecordAnswer, readRecordAnswer, recordResponse } from './gateway/record-answer.ts';
+import {
+  dropRecordAnswer,
+  dropRecordWhenRead,
+  readRecordAnswer,
+  type RecordAnswer,
+  recordResponse,
+} from './gateway/record-answer.ts';
 import { fail, ok } from './gateway/respond.ts';
 import { scopeRetired } from './gateway/retirement.ts';
 import { tokenCheckOf, type TokenKeys } from './gateway/token.ts';
@@ -84,10 +90,18 @@ export function createReadGateway(host: AuthorityHost): Hono<ReadEnv> {
       .get(`${SCOPE_PREFIX}/entries/:entryId/record`, async (c) => {
         const scopeId = c.get('scopeId');
         const key = kvGenerationKey(scopeId, c.req.param('entryId'));
-        const [record, retired] = await Promise.all([
-          readRecordAnswer(c.env.CACHE_STATE, key),
-          scopeRetired(c.env.CACHE_STATE, scopeId),
-        ]);
+        const reading = readRecordAnswer(c.env.CACHE_STATE, key);
+        let record: RecordAnswer | undefined;
+        let retired: boolean;
+        try {
+          [record, retired] = await Promise.all([
+            reading,
+            scopeRetired(c.env.CACHE_STATE, scopeId),
+          ]);
+        } catch (error) {
+          dropRecordWhenRead(reading);
+          throw error;
+        }
         if (retired) {
           dropRecordAnswer(record);
           return fail(c, 'scope_retired', 'the scope is retired');

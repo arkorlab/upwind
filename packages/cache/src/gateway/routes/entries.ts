@@ -11,7 +11,13 @@ import {
 } from '../auth.ts';
 import { ENTRY_BODY_BYTES, readRequest } from '../body.ts';
 import { meterRead } from '../read-data.ts';
-import { dropRecordAnswer, readRecordAnswer, recordResponse } from '../record-answer.ts';
+import {
+  dropRecordAnswer,
+  dropRecordWhenRead,
+  readRecordAnswer,
+  type RecordAnswer,
+  recordResponse,
+} from '../record-answer.ts';
 import { fail, HTTP, ok } from '../respond.ts';
 
 /**
@@ -25,10 +31,15 @@ const OCTET_STREAM = 'application/octet-stream';
 async function currentRecord(c: GatewayContext): Promise<Response> {
   const entryId = c.req.param('entryId') ?? '';
   const key = kvGenerationKey(c.get('scopeId'), entryId);
-  const [record, retired] = await Promise.all([
-    readRecordAnswer(c.env.CACHE_STATE, key),
-    retiredScope(c),
-  ]);
+  const reading = readRecordAnswer(c.env.CACHE_STATE, key);
+  let record: RecordAnswer | undefined;
+  let retired: boolean;
+  try {
+    [record, retired] = await Promise.all([reading, retiredScope(c)]);
+  } catch (error) {
+    dropRecordWhenRead(reading);
+    throw error;
+  }
   if (retired) {
     dropRecordAnswer(record);
     return refuseRetired(c);
