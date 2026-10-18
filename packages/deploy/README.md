@@ -38,3 +38,43 @@ step. It runs as a Worker or under Node.
 | `./bindings`     | What every Function of a deployment is bound to beside its environment, the cache's gateways among them     |
 | `./fingerprint`  | A deployment's fingerprint, which the edge's deployment checks read                                         |
 | `./pointer`      | The pointer that has the edge serve a site from a deployment's manifest                                     |
+
+## Overlapping asset prefixes: request-key manifest rollout
+
+When an asset-prefix rewrite also covers the build's canonical `_next/static` directory,
+new manifests use actual request URL keys and `staticFileRequestKeys: true`. This format is
+version 7; ordinary canonical-key manifests stay at version 6. The reader accepts versions 3
+through 7 without narrowing any previous version. A transition out of overlap also uses request
+keys while retaining the preceding deployment's files, including their original `dpl` selection.
+
+Before enabling this writer, update every edge reader to accept version 7 and confirm that no
+old-reader traffic remains. This is a required rollout order for a new immutable deployment and
+scope, rather than an automatic consequence of merging the reader change.
+Repository build and publication workflows do not enforce that deployment order. An older
+reader refuses version 7. When validation exercises routes in that candidate, it returns
+`validation-unresolved`, retries, and eventually fails the deployment while leaving the active
+deployment in place. Candidates without validated routes do not have that protection; validation
+is not a substitute for upgrading readers first. If an unsupported manifest is already active
+during a mixed rollout or rollback, the existing Function fallback
+can increase TTFB, and assets absent from the Function's shipped files can return 404. Keep
+version-7-capable readers while version 7 manifests remain in use, or republish version 6
+manifests before rolling back the readers. Do not replace an existing manifest under an old
+reader. This change itself performs no deployment.
+
+The new map retains only actual request names, including the preceding deployment's reachable
+asset URLs. It does not expose canonical names that Next.js rewrites elsewhere. Its extra metadata
+pays the existing manifest byte and memory accounting; admission limits and the separate overall
+quota policy are unchanged. Prefixless ordinary HTML misses retain their existing lookup path.
+Rare decoded file hits and request-key lookups have real string and branch costs; restored file
+metadata also has its existing cold manifest decoding cost. No zero-cost claim is made.
+
+The local checker deploys one build with no preceding deployment. Its expected file format is
+therefore derived independently from that build; deployment-transition and previous-`dpl`
+behavior are covered by the deployment file tests instead.
+
+The exported `projectManifestSchema` now discriminates versions. Its `parse` and `safeParse`
+interfaces remain; object-specific methods such as `.extend`, `.omit` and `.strict` are no longer
+part of this export. Repository consumers use parsing only. Legacy versions 3–6 still strip and
+accept the formerly unknown `staticFileRequestKeys` field, regardless of its supplied value;
+version 7 validates it as optional literal `true`. Code that extended the exported object schema
+must instead define its own surrounding schema. This API change accompanies the new reader.

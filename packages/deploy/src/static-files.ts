@@ -3,7 +3,11 @@ import {
   edgeServedRewrites,
   staticFileAssetPrefixOf,
 } from '@stayingupwind/core/bundle';
-import { type StaticFileEntry, staticFileStatus } from '@stayingupwind/core/manifest';
+import {
+  type StaticFileAssetPrefix,
+  type StaticFileEntry,
+  staticFileStatus,
+} from '@stayingupwind/core/manifest';
 
 /**
  * The files a deployment's manifest serves beside its routes: this build's, and the ones of the
@@ -35,6 +39,24 @@ function staticFileEntry(file: BundledStaticFile, basePath: string): StaticFileE
 
 /** The build's own files under `_next/static`, named by hash; nothing a visitor would type. */
 const NEXT_STATIC_PREFIX = '/_next/static/';
+
+/** Whether this build's canonical file keys are themselves claimed by its asset-prefix rewrite. */
+function overlappingPrefix(bundle: DeploymentBundle): boolean {
+  const prefix = staticFileAssetPrefixOf(bundle);
+  return (
+    prefix !== undefined &&
+    prefix.basePath !== prefix.assetPrefix &&
+    `${prefix.basePath}/_next/`.startsWith(`${prefix.assetPrefix}/_next/`)
+  );
+}
+
+/** A transition keeps actual request keys too, even after leaving the overlapping prefix. */
+export function staticFileRequestKeysOf(
+  bundle: DeploymentBundle,
+  previous: DeploymentBundle | undefined,
+): boolean {
+  return overlappingPrefix(bundle) || (previous !== undefined && overlappingPrefix(previous));
+}
 
 /**
  * The asset prefix the deployment before loaded its files from, when this one does not find them
@@ -161,6 +183,76 @@ function ownFiles(bundle: DeploymentBundle): Record<string, StaticFileEntry> {
   return files;
 }
 
+/** Actual request names for a build whose canonical file keys are hidden by its prefix rewrite. */
+function requestFiles(
+  bundle: DeploymentBundle,
+  prefix: StaticFileAssetPrefix | undefined,
+): Record<string, StaticFileEntry> {
+  if (prefix === undefined || prefix.basePath === prefix.assetPrefix) {
+    return ownFiles(bundle);
+  }
+  const source = `${prefix.assetPrefix}/_next/`;
+  const destination = `${prefix.basePath}/_next/`;
+  const files: Record<string, StaticFileEntry> = {};
+  for (const file of bundle.staticFiles) {
+    const alias = file.pathname.startsWith(destination)
+      ? `${source}${file.pathname.slice(destination.length)}`
+      : undefined;
+    const direct = !file.pathname.startsWith(source);
+    if (!direct && alias === undefined) {
+      continue;
+    }
+    const entry = staticFileEntry(file, bundle.config.basePath);
+    if (direct) {
+      files[file.pathname] = entry;
+    }
+    if (alias !== undefined) {
+      files[alias] = entry;
+    }
+  }
+  return files;
+}
+
+/** A previous file's bytes, held at the request name its own documents could reach. */
+function keepRequest(
+  files: Record<string, StaticFileEntry>,
+  pathname: string,
+  file: BundledStaticFile,
+  input: { readonly bundle: DeploymentBundle; readonly previous: DeploymentBundle },
+): void {
+  const current = files[pathname];
+  files[pathname] =
+    current === undefined
+      ? keptEntry(file, input.bundle, input.previous)
+      : sharedEntry(current, file, input.previous);
+}
+
+/** Keep only the previous build's real request names, not canonical keys that it rewrote away. */
+function keepRequestFiles(
+  files: Record<string, StaticFileEntry>,
+  bundle: DeploymentBundle,
+  previous: DeploymentBundle,
+): void {
+  const prefix = staticFileAssetPrefixOf(previous);
+  const source = prefix === undefined ? undefined : `${prefix.assetPrefix}/_next/`;
+  const destination = `${previous.config.basePath}/_next/`;
+  const staticPrefix = `${previous.config.basePath}${NEXT_STATIC_PREFIX}`;
+  const input = { bundle, previous };
+  for (const file of previous.staticFiles) {
+    if (!file.pathname.startsWith(staticPrefix)) {
+      continue;
+    }
+    if (source === undefined || source === destination || !file.pathname.startsWith(source)) {
+      keepRequest(files, file.pathname, file, input);
+    }
+    const alias =
+      source === undefined ? undefined : `${source}${file.pathname.slice(destination.length)}`;
+    if (alias !== undefined && alias !== file.pathname) {
+      keepRequest(files, alias, file, input);
+    }
+  }
+}
+
 /**
  * This build's entry for a name under its own asset prefix's `_next`: the file under its base path
  * the name lands on, which `next build` rewrites a request under the prefix to before it looks for
@@ -198,7 +290,9 @@ export function staticFilesOf(
   bundle: DeploymentBundle,
   previous: DeploymentBundle | undefined,
 ): Record<string, StaticFileEntry> {
-  const files = ownFiles(bundle);
+  const prefix = staticFileAssetPrefixOf(bundle);
+  const requestKeys = staticFileRequestKeysOf(bundle, previous);
+  const files = requestKeys ? requestFiles(bundle, prefix) : ownFiles(bundle);
   // A rewrite to a file the Worker does not carry, served here under the path it is asked for.
   for (const served of edgeServedRewrites(bundle)) {
     const entry = staticFileEntry(served.file, bundle.config.basePath);
@@ -210,11 +304,15 @@ export function staticFilesOf(
   if (previous === undefined) {
     return files;
   }
+  if (requestKeys) {
+    keepRequestFiles(files, bundle, previous);
+    return files;
+  }
   // Named under the basePath, as Next.js names everything of a build.
-  const prefix = `${previous.config.basePath}${NEXT_STATIC_PREFIX}`;
+  const previousPrefix = `${previous.config.basePath}${NEXT_STATIC_PREFIX}`;
   const own = new Map(bundle.staticFiles.map((file) => [file.pathname, file]));
   for (const file of previous.staticFiles) {
-    if (!file.pathname.startsWith(prefix)) {
+    if (!file.pathname.startsWith(previousPrefix)) {
       continue;
     }
     const current = files[file.pathname] ?? landingEntry(bundle, own, file.pathname);

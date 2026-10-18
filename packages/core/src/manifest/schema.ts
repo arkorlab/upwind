@@ -35,8 +35,15 @@ import * as z from '../schema/index.ts';
  *
  * 6: a stored manifest may name a route's headers, conditions and preloads by their place in its
  * `tables` (`stored.ts`). A reader of 4 or 5 would take those places for the values themselves.
+ *
+ * 7: `staticFileRequestKeys` names actual file request URLs. A reader of 6 would reinterpret a
+ * missing request through the asset-prefix rewrite and could serve another file. Writers keep
+ * version 6 when that field is absent, so ordinary deployments keep their stored bytes.
  */
+/** The unchanged writer version for manifests that use canonical static-file keys. */
 export const MANIFEST_SCHEMA_VERSION = 6;
+/** Latest supported format: static-file keys name actual request URLs, not rewrite destinations. */
+export const REQUEST_FILE_KEYS_SCHEMA_VERSION = 7;
 /** The first version a manifest may store what its routes repeat in `tables` at (above). */
 export const TABLES_SCHEMA_VERSION = 6;
 /** The version before, which `routerReferences` was first published at. */
@@ -49,11 +56,15 @@ const EARLIEST_READ_MANIFEST_SCHEMA_VERSION = 3;
  * Every version a manifest is read at: this one, and each one before it that a writer published
  * and a reader has accepted since, whose manifests are still served (above).
  */
-export const READ_MANIFEST_SCHEMA_VERSIONS = [
+const CANONICAL_FILE_SCHEMA_VERSIONS = [
   EARLIEST_READ_MANIFEST_SCHEMA_VERSION,
   PREVIOUS_MANIFEST_SCHEMA_VERSION,
   ONE_PASS_REFERENCES_VERSION,
   MANIFEST_SCHEMA_VERSION,
+] as const;
+export const READ_MANIFEST_SCHEMA_VERSIONS = [
+  ...CANONICAL_FILE_SCHEMA_VERSIONS,
+  REQUEST_FILE_KEYS_SCHEMA_VERSION,
 ] as const;
 const HTTP_OK = 200;
 
@@ -484,9 +495,7 @@ const manifestFields = {
  * The provider-agnostic contract between a host and any delivery topology.
  * Nothing in here refers to particular storage, keys or strategies.
  */
-export const projectManifestSchema = z.object({
-  ...manifestFields,
-  schemaVersion: z.literal(READ_MANIFEST_SCHEMA_VERSIONS),
+const projectFields = {
   /** The Functions this deployment runs as: the application's, and its middleware's. */
   app: appRuntimeSchema,
   /** Files served straight from storage, by pathname. */
@@ -619,5 +628,26 @@ export const projectManifestSchema = z.object({
   gatedPathnames: z.record(z.string().startsWith('/'), z.string().startsWith('/')).optional(),
   /** The runtime cache the routes' entries live in. */
   cache: manifestCacheSchema.optional(),
-});
-export type ProjectManifest = z.infer<typeof projectManifestSchema>;
+};
+
+/**
+ * Version selection keeps formerly unknown fields unknown to the versions that ignored them.
+ * This is a discriminated schema: parse/safeParse remain public, rather than object-only helpers.
+ */
+export const projectManifestSchema = z.discriminatedUnion('schemaVersion', [
+  z.object({
+    ...manifestFields,
+    schemaVersion: z.literal(CANONICAL_FILE_SCHEMA_VERSIONS),
+    ...projectFields,
+  }),
+  z.object({
+    ...manifestFields,
+    schemaVersion: z.literal(REQUEST_FILE_KEYS_SCHEMA_VERSION),
+    ...projectFields,
+    /** Actual request URL keys, including retained files of the previous build. */
+    staticFileRequestKeys: z.literal(true).optional(),
+  }),
+]);
+export type ProjectManifest = z.infer<typeof projectManifestSchema> & {
+  readonly staticFileRequestKeys?: true | undefined;
+};
