@@ -32,6 +32,25 @@ function manifestOf(dynamicRoutes: readonly DynamicRoute[]) {
 }
 
 describe('the memory held by a manifest’s member routes', () => {
+  it.each([
+    { shared: true, objects: 4 },
+    { shared: false, objects: 6 },
+  ])('charges condition arrays by identity, shared: $shared', ({ shared, objects }) => {
+    const first = [{ type: 'host' as const }];
+    const second = shared ? first : [{ type: 'host' as const }];
+    const plain = manifestOf([RULE, RULE]);
+    // The digest-vouched reader restores table references without a schema clone.
+    const listed = {
+      ...plain,
+      dynamicRoutes: [
+        { ...RULE, members: { ...MEMBER, bypassFor: first } },
+        { ...RULE, members: { ...MEMBER, bypassFor: second } },
+      ],
+    };
+
+    expect(manifestCharge(listed, 0) - manifestCharge(plain, 0)).toBe(80 * objects);
+  });
+
   it.each<{ members?: DynamicRoute['members']; objects: number }>([
     { objects: 0 },
     { members: MEMBER, objects: 1 },
