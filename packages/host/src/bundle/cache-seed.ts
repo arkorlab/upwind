@@ -248,6 +248,8 @@ export async function seedRouteFor(
   const generationId = await buildGenerationIdFor(ctx.scopeId, derived.entryId);
   const input: SeedEntryInput = {
     descriptor,
+    ...(prerender.allowQuery !== undefined &&
+      prerender.allowQuery.length > 0 && { allowQuery: prerender.allowQuery }),
     groupInstanceId: String(prerender.groupId),
     generation: {
       generationId,
