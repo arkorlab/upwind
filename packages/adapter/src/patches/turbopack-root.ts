@@ -1,5 +1,4 @@
-import path from 'node:path';
-
+import { BUNDLE_ROOT, buildPaths } from '../build-paths.ts';
 import { jsLiteral } from '../codegen.ts';
 import { type Patch, Rewrite } from './types.ts';
 
@@ -24,8 +23,6 @@ import { type Patch, Rewrite } from './types.ts';
 
 const NAME = 'turbopack-root';
 const TARGET = /\[turbopack\]_runtime\.js$/u;
-/** Where the Function's virtual file system holds what it carries (`store.ts` reads it there). */
-const BUNDLE_ROOT = '/bundle';
 const RUNTIME_ROOT = 'path.resolve(__filename, relativePathToRuntimeRoot)';
 const ABSOLUTE_ROOT = 'path.resolve(__filename, relativePathToDistRoot)';
 /** Anything else resolved against the runtime's own file would be a root this left behind. */
@@ -37,19 +34,22 @@ export const turbopackRootPatch: Patch = {
   // The runtime chunk `next build` writes; a published package holds nothing for this.
   reaches: ['build-output'],
   apply(source, file, ctx) {
-    const at = jsLiteral(
-      `${BUNDLE_ROOT}/${path.relative(ctx.projectDir, file).split(path.sep).join('/')}`,
-    );
+    const paths = buildPaths(ctx.projectDir, ctx.distDir);
+    const runtimePath = paths.runtimePath(file);
+    if (runtimePath === undefined) throw new Error(`Turbopack runtime outside the build: ${file}`);
+    const at = jsLiteral(runtimePath);
     const result = new Rewrite(NAME, file, source)
       .replace(
         RUNTIME_ROOT,
-        `path.resolve(${at}, relativePathToRuntimeRoot)`,
+        paths.external
+          ? jsLiteral(`${BUNDLE_ROOT}/${paths.runtimeDistDir}`)
+          : `path.resolve(${at}, relativePathToRuntimeRoot)`,
         1,
         'the root of the build output',
       )
       .replace(
         ABSOLUTE_ROOT,
-        `path.resolve(${at}, relativePathToDistRoot)`,
+        paths.external ? jsLiteral(BUNDLE_ROOT) : `path.resolve(${at}, relativePathToDistRoot)`,
         1,
         'the root of the project',
       )

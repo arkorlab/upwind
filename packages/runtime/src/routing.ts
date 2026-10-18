@@ -11,13 +11,14 @@ import {
   isPagesDataRequestPath,
   type Route,
 } from '@stayingupwind/core/bundle';
-import { ORIGINAL_URL_HEADER } from '@stayingupwind/core/paas';
+import { HEADER_RULES_LEFT_HEADER, ORIGINAL_URL_HEADER } from '@stayingupwind/core/paas';
 import { NEXT_DATA_HEADER, NULL_BODY_STATUSES } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
-import { stripPlatformHeaders } from './incoming.ts';
+import { edgeJudgesHeaderRules, stripPlatformHeaders } from './incoming.ts';
 import { escapedNameOf, namesWithSpellings, prerenderedName } from './name-spellings.ts';
 import type { Resolved } from './outputs.ts';
+import { misdirectedTo } from './placement.ts';
 import {
   AFTER_FILES,
   BEFORE_FILES,
@@ -150,6 +151,15 @@ function isInternal(route: Route): boolean {
 }
 
 /**
+ * Whether a rule ahead of the middleware only sets headers: one that neither answers nor rewrites,
+ * as core reads the same list (`beforeFilesPhases`). Every rule of `next.config`'s `headers` is one,
+ * and so is a header rule `next build` writes itself.
+ */
+function isHeaderRule(route: Route): boolean {
+  return route.status === undefined && route.destination === undefined;
+}
+
+/**
  * The routing tables as `@next/routing` takes them, with the middleware left out when told to,
  * and without the rules `next build` writes itself, in an application with `i18n` — those are
  * answered ahead of it (`internalRedirect`) — and for a Pages Router data request.
@@ -161,21 +171,28 @@ function isInternal(route: Route): boolean {
  * them on that: every data request of an application with `trailingSlash` was redirected to the
  * page's document, and each client navigation became a full page load
  * (`middleware-trailing-slash`).
+ *
+ * Without the header rules ahead of the middleware either, where the edge judged them itself
+ * (`skipHeaderRules`, `edgeJudgesHeaderRules`): Next.js judges them on the request as the client
+ * sent it, and this one comes as the middleware the edge ran left it. The redirects ahead of the
+ * middleware stay: the edge runs the middleware for a path one of them claims as well, and where the
+ * middleware leaves the path as it was, the redirect is the one Next.js makes there.
  */
-export function routingTables(store: Store, skipMiddleware: boolean, url: URL): RoutingTables {
+export function routingTables(
+  store: Store,
+  skipMiddleware: boolean,
+  url: URL,
+  skipHeaderRules: boolean,
+): RoutingTables {
   const { routing, config } = store.manifest;
   const internalLeftOut =
     (config.i18n !== null && config.i18n !== undefined) ||
     isPagesDataRequestPath(config.basePath, url.pathname);
+  const ahead = routing.beforeMiddleware.filter(
+    (route) => !(internalLeftOut && isInternal(route)) && !(skipHeaderRules && isHeaderRule(route)),
+  );
   return {
-    beforeMiddleware: markedRewrites(
-      routingRoutes(
-        internalLeftOut
-          ? routing.beforeMiddleware.filter((route) => !isInternal(route))
-          : routing.beforeMiddleware,
-      ),
-      BEFORE_MIDDLEWARE,
-    ),
+    beforeMiddleware: markedRewrites(routingRoutes(ahead), BEFORE_MIDDLEWARE),
     middlewareMatchers: skipMiddleware ? [] : routingRoutes(routing.middlewareMatchers),
     beforeFiles: markedRewrites(routingRoutes(routing.beforeFiles), BEFORE_FILES),
     afterFiles: markedRewrites(routingRoutes(routing.afterFiles), AFTER_FILES),
@@ -203,6 +220,22 @@ export function withRoutingHeaders(response: Response, added: Headers | undefine
       headers.set(name, value);
     }
   }
+  return new Response(response.body, { status: response.status, headers });
+}
+
+/**
+ * The answer to a request routing left the header rules ahead of the middleware out of
+ * (`edgeJudgesHeaderRules`), saying so (`HEADER_RULES_LEFT_HEADER`): the edge lays the ones it
+ * judged on the request as the client sent it. Any other answer as it came, and so is one that says
+ * the request is another Function's (`misdirected`), which is known by itself and not by its
+ * headers: the edge sends the request on, and the answer it is given there says it.
+ */
+export function withHeaderRulesLeft(request: Request, response: Response): Response {
+  if (!edgeJudgesHeaderRules(request.headers) || misdirectedTo(response) !== undefined) {
+    return response;
+  }
+  const headers = new Headers(response.headers);
+  headers.set(HEADER_RULES_LEFT_HEADER, '1');
   return new Response(response.body, { status: response.status, headers });
 }
 

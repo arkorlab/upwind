@@ -2,10 +2,12 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { runInNewContext } from 'node:vm';
 
+import { buildPaths, type BuildPaths } from './build-paths.ts';
+
 /**
  * The files Next.js's route modules read from disk at request time, as `(name, contents)` pairs
  * to ship as text modules. Inside the Function they are read back through the virtual file system
- * at `/bundle/<name>`, which is why their names keep the `.next/...` layout.
+ * at `/bundle/<name>`: their build layout, beneath the reserved mount for an external distDir.
  */
 export interface TextModule {
   readonly name: string;
@@ -129,8 +131,11 @@ async function jsonFilesIn(dir: string): Promise<string[]> {
  * segments whatever the build machine's own separator is — the runtime mounts the bundle under
  * POSIX paths, and Next.js reads its manifests by those.
  */
-function moduleName(projectDir: string, file: string): string {
-  return path.relative(projectDir, file).split(path.sep).join('/');
+function moduleName(paths: BuildPaths, file: string): string {
+  paths.assertDataFile(file);
+  const name = paths.moduleName(file);
+  if (name === undefined) throw new Error(`manifest outside the build: ${file}`);
+  return name;
 }
 
 /**
@@ -138,21 +143,22 @@ function moduleName(projectDir: string, file: string): string {
  * (`loadManifests`, `server/route-modules/route-module.ts`).
  */
 async function routeManifestModule(
-  projectDir: string,
+  paths: BuildPaths,
   file: string,
   deploymentId: string,
 ): Promise<TextModule | undefined> {
   if (file.endsWith('react-loadable-manifest.json')) {
     return {
-      name: moduleName(projectDir, file),
+      name: moduleName(paths, file),
       contents: await readFile(file, 'utf8'),
       routeFile: file,
     };
   }
   if (file.endsWith('_client-reference-manifest.js')) {
+    const name = moduleName(paths, file).replace(/\.js$/u, '.json');
     const source = await readFile(file, 'utf8');
     return {
-      name: moduleName(projectDir, file).replace(/\.js$/u, '.json'),
+      name,
       contents: evaluateManifestScript(source, deploymentId, file),
       routeFile: file,
     };
@@ -169,6 +175,7 @@ export async function collectManifests(
   distDir: string,
   deploymentId: string,
 ): Promise<TextModule[]> {
+  const paths = buildPaths(projectDir, distDir);
   const files: string[] = [];
   const buildId = path.join(distDir, 'BUILD_ID');
   if (await exists(buildId)) {
@@ -177,7 +184,7 @@ export async function collectManifests(
   files.push(...(await jsonFilesIn(distDir)), ...(await jsonFilesIn(path.join(distDir, 'server'))));
   const modules: TextModule[] = [];
   for (const file of files) {
-    modules.push({ name: moduleName(projectDir, file), contents: await readFile(file, 'utf8') });
+    modules.push({ name: moduleName(paths, file), contents: await readFile(file, 'utf8') });
   }
   const routeDirs = [path.join(distDir, 'server', 'app'), path.join(distDir, 'server', 'pages')];
   for (const routeDir of routeDirs) {
@@ -186,7 +193,7 @@ export async function collectManifests(
     }
     const routeFiles = await walk(routeDir);
     for (const file of routeFiles) {
-      const module = await routeManifestModule(projectDir, file, deploymentId);
+      const module = await routeManifestModule(paths, file, deploymentId);
       if (module !== undefined) {
         modules.push(module);
       }

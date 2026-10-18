@@ -45,7 +45,13 @@ import {
   sourceRequest,
   sourceResponse,
 } from './image-fallback.ts';
-import { edgeRewriteStatusOf, hasBody, isRscRequest, wantsBlockingMetadata } from './incoming.ts';
+import {
+  edgeJudgesHeaderRules,
+  edgeRewriteStatusOf,
+  hasBody,
+  isRscRequest,
+  wantsBlockingMetadata,
+} from './incoming.ts';
 import { isRead, methodNotAllowed, readsOnly } from './methods.ts';
 import { answerMiddlewareOnly, MIDDLEWARE_ENTRY_ID } from './middleware-invoke.ts';
 import { type Resolved, servePagesData, serveRouteHandler, serveRsc } from './outputs.ts';
@@ -69,6 +75,7 @@ import {
   resolvedOf,
   routedHeaders,
   undecodedResponse,
+  withHeaderRulesLeft,
   withRewriteStatus,
   withRoutingHeaders,
 } from './routing.ts';
@@ -87,7 +94,14 @@ import {
   withoutBody,
   withWritesLanded,
 } from './serve.ts';
-import { completedShell, entrypointKindOf, findShell, getStore, type Store } from './store.ts';
+import {
+  completedShell,
+  entrypointKindOf,
+  findShell,
+  generationPathname,
+  getStore,
+  type Store,
+} from './store.ts';
 import { unrouted } from './unrouted.ts';
 import { renderedBy, serveWithBody } from './with-body.ts';
 
@@ -172,7 +186,8 @@ async function serveDocument(input: RoutedInput, store: Store, asked: Resolved):
   const crawled =
     shell !== undefined && crawlerWantsWholePage(store, shell, resolved, input.request);
   if (shell !== undefined && entry.kind === 'node') {
-    const built = shell.body !== undefined && !crawled;
+    const pathname = generationPathname(shell, resolved.pathname);
+    const built = shell.body !== undefined && !crawled && pathname === shell.pathname;
     const current = await serveFromGeneration(
       input,
       store,
@@ -182,7 +197,7 @@ async function serveDocument(input: RoutedInput, store: Store, asked: Resolved):
         // that blocks is kept under the shell it completes to, where the build keys the route's
         // entries on some of its parameters (`completedShell`), and under its own pathname else.
         route: shell.route,
-        pathname: built ? shell.pathname : completedShell(shell, resolved.pathname),
+        pathname: crawled ? completedShell(shell, resolved.pathname) : pathname,
         url: resolved.url,
         representation: 'html',
         onMiss: built ? 'build' : 'render',
@@ -243,16 +258,23 @@ async function serveImageSource(
   return sourceResponse({ source: answered, params, images, internal: true, method });
 }
 
+/**
+ * A request routed whole: handed over by another app Function, or routed here. What routing answered
+ * says where it left out the header rules ahead of the middleware for the edge to lay
+ * (`withHeaderRulesLeft`) — the Function that handed a request over left them out of the routing it
+ * hands over, as the same request's headers told it to — and a redirect ahead of routing carries
+ * none to leave out.
+ */
 async function handleFull(input: RoutedInput, store: Store): Promise<Response> {
   const url = new URL(input.request.url);
   const handedOff = input.request.headers.get(ROUTED_HEADER);
   if (handedOff !== null) {
-    return serveHandedOff(input, store, url, handedOff);
+    return withHeaderRulesLeft(input.request, await serveHandedOff(input, store, url, handedOff));
   }
   const headers = routedHeaders(input.request, url, store.manifest.config.basePath);
   return (
     (await redirectedBeforeRouting(store, url, headers)) ??
-    routeAndServe(input, store, url, headers)
+    withHeaderRulesLeft(input.request, await routeAndServe(input, store, url, headers))
   );
 }
 
@@ -295,6 +317,7 @@ async function routeAndServe(
     headers: requestHeaders,
     body: bodies.routing,
     skipMiddleware,
+    skipHeaderRules: edgeJudgesHeaderRules(request.headers),
     trace,
   });
   settleRewrittenPath(routed.resolvedHeaders, requestHeaders, url, trace.rewrite);

@@ -11,6 +11,7 @@ import {
   OUTPUT_DIRECTORY_BUILD_ID,
   writeApplication,
 } from './check-application.ts';
+import { checkLifecycle, lifecycleScenarios } from './check-lifecycle.ts';
 import { NEXT_JS_STACK, sameEnvironment, stackSizeScenario } from './check-stack-size.ts';
 import { workspaceScenario } from './check-workspace.ts';
 import { fakeHost, type FakeHost } from './fake-host.ts';
@@ -538,6 +539,7 @@ async function main(): Promise<void> {
     );
     holds("the application's own post-build ran", build.includes('the fixture post-build ran'));
     holds('and it saw no token either', build.includes('it saw ARKOR_API_TOKEN: no'));
+    checkLifecycle(appDir, build, holds);
     const bundle = JSON.parse(readFileSync(path.join(appDir, '.arkor', 'bundle.json'), 'utf8')) as {
       staticFiles: { pathname: string; immutable: boolean }[];
     };
@@ -625,6 +627,13 @@ async function main(): Promise<void> {
     await ownUrlScenarios(deploymentId, appDir, env);
     await nativeConfigScenario(deploymentId, appDir, env);
     await suiteEnvScenario(deploymentId, appDir, env);
+    await lifecycleScenarios({
+      deploymentId,
+      workDir,
+      env,
+      deploy: (dir, hookEnv) => bounded(DEPLOY_HOOK, dir, hookEnv),
+      holds,
+    });
     await workspaceScenario({
       deploymentId,
       workDir,

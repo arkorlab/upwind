@@ -32,7 +32,7 @@ import {
   fetchedAgainBehind,
   holdForRevalidation,
   revalidated,
-  revalidatedBehind,
+  useCacheStore,
 } from './revalidations.ts';
 import type { CacheRuntime } from './runtime.ts';
 import { callsBehind, callsWaitedOn } from './turns.ts';
@@ -535,26 +535,27 @@ async function getUseCache(
       now,
     });
   };
+  const request = { key: cacheKey, kind: USE_CACHE, handler: kind } as const;
+  const weighing = { judge, reread: () => useCacheHeld(runtime, kind, cacheKey) };
   const judged = await laterIfAny(
     runtime,
-    { key: cacheKey, kind: USE_CACHE, handler: kind },
+    request,
     { held, validity: await judge(held) },
-    { judge, reread: () => useCacheHeld(runtime, kind, cacheKey) },
+    weighing,
   );
-  if (judged === undefined) {
-    return undefined;
-  }
+  if (judged === undefined) return undefined;
   const { entry } = judged.held;
   const { validity } = judged;
-  // A regeneration must rebuild from fresh data even when Next's request store permits SWR.
+  const ageMs = nowMs() - entry.timestamp;
+  // Next's built-in default and remote handlers miss strictly after revalidate in production.
   if (
     validity === 'expired' ||
-    (validity === 'stale' && (isRegeneration() || isPrimaryResourceRead()))
+    (validity === 'stale' && (isRegeneration() || isPrimaryResourceRead())) ||
+    ageMs > entry.revalidate * MS_PER_SECOND
   ) {
     return undefined;
   }
-  // Aged as the wrapper will age it, once this has answered: after the reads above.
-  if (revalidatedBehind(validity, nowMs() - entry.timestamp, entry.revalidate, entry.expire)) {
+  if (validity === 'stale' && ageMs <= entry.expire * MS_PER_SECOND) {
     holdForRevalidation(runtime, useCacheStore(kind), cacheKey);
   }
   return {
@@ -565,11 +566,6 @@ async function getUseCache(
     expire: entry.expire,
     revalidate: validity === 'stale' ? REVALIDATE_NOW : entry.revalidate,
   };
-}
-
-/** The store a `use cache` handler's writes are kept track of under, apart from the other's. */
-function useCacheStore(kind: string): string {
-  return `use cache:${kind}`;
 }
 
 /**
