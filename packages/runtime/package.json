@@ -1,6 +1,6 @@
 {
   "name": "@stayingupwind/runtime",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "The Function that serves a Next.js deployment bundle: routing, middleware, and PPR resume over the entrypoints `next build` produced.",
   "license": "MIT OR Apache-2.0",
   "repository": {
