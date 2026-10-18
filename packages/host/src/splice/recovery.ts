@@ -14,6 +14,27 @@ export interface RecoveryHtmlOptions {
 
 const MS_PER_SECOND = 1000;
 
+/** The default script emitted now; checked against the emitted bytes by the host's suite. */
+export const RECOVERY_SCRIPT_CSP_SOURCE = "'sha256-MXE+seoZCrcKyo81yxfujw3J7ntHZ3m+tuAFOWCS4pA='";
+/** The default script deployed before a failed storage guard stopped the reload. */
+export const LEGACY_RECOVERY_SCRIPT_CSP_SOURCE =
+  "'sha256-T/OL9lSzpXVWaZqFmDChVEeKEFuHBdvZl7iXqSgvZys='";
+
+// A whole source token only: a URL or longer token containing the hash is not its permission.
+const LEGACY_RECOVERY_TOKEN =
+  /(^|[\t\n\f\r ])'sha256-T\/OL9lSzpXVWaZqFmDChVEeKEFuHBdvZl7iXqSgvZys='(?=$|[\t\n\f\r ;,])/gu;
+const CURRENT_RECOVERY_TOKEN = `$1${RECOVERY_SCRIPT_CSP_SOURCE}`;
+
+/**
+ * Keep an old deployment's permission for the default recovery script matched to today's script.
+ * Only the owned hash is rotated, in its existing place; no policy is parsed or otherwise widened.
+ * This scans one final enforcing policy when a partial document carries one, before its nonce is
+ * applied. The new string is retained only where that policy named the old script.
+ */
+export function replaceLegacyRecoverySource(policy: string): string {
+  return policy.replaceAll(LEGACY_RECOVERY_TOKEN, CURRENT_RECOVERY_TOKEN);
+}
+
 /**
  * Elements whose content the parser does not read as markup.
  *
@@ -77,7 +98,7 @@ const ESCAPE_PREFIX = `"'">]]>-->${END_TAGS}${LEAVE_FOREIGN_CONTENT}`;
  * Worker) and reloads once. A sessionStorage guard prevents reload loops when cookies are
  * disabled — keyed by the whole request, path and query, since `/search?q=a` failing is no reason
  * to leave the next visitor to `/search?q=b` on a truncated document for the rest of the guard's
- * window.
+ * window. If storage cannot retain that guard, no automatic reload is attempted.
  */
 export function buildRecoveryHtml(options: RecoveryHtmlOptions = {}): string {
   return `${ESCAPE_PREFIX}${RECOVERY_MARKER}<script>${buildRecoveryScript(options)}</script></body></html>`;
@@ -95,7 +116,7 @@ function buildRecoveryScript(options: RecoveryHtmlOptions = {}): string {
     'var t=Number(sessionStorage.getItem(k)||0);',
     `if(Date.now()-t<${guardMs}){return;}`,
     'sessionStorage.setItem(k,String(Date.now()));',
-    '}catch(e){}',
+    '}catch(e){return;}',
     `document.cookie="${cookieName}=1; Path=/; Max-Age=${maxAge}; SameSite=Lax; Secure";`,
     'location.reload();',
     '})();',
