@@ -1,4 +1,9 @@
-import { decodeGenerationPack, deriveEntry, kvGenerationKey } from '@stayingupwind/core/cache';
+import {
+  decodeGenerationPack,
+  deriveEntry,
+  evaluateFreshness,
+  kvGenerationKey,
+} from '@stayingupwind/core/cache';
 import {
   completedPathname,
   type ProjectManifest,
@@ -12,6 +17,7 @@ import { memberEntryKey } from '../memory/caches.ts';
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { claimBackgroundRecord } from './background-record-budget.ts';
+import { isInvalidated } from './condemned.ts';
 import {
   adoptDecoded,
   type GenerationKey,
@@ -27,7 +33,7 @@ const KIB = 1024;
 const MAX_RECORD_BYTES = MAX_RECORD_MIB * KIB * KIB;
 
 interface Reads {
-  readonly recent: TtlCache<string, true>;
+  readonly recent: TtlCache<string, number>;
 }
 
 const reads = new WeakMap<EdgeRuntime, Reads>();
@@ -110,10 +116,12 @@ function refresh(edge: EdgeContext, named: Omit<Target, 'active'>, cadenceMs: nu
     state = { recent: new TtlCache(cadenceMs, MAX_RECENT, edge.runtime.now) };
     reads.set(edge.runtime, state);
   }
-  if (state.recent.get(named.memoKey) === true) return;
+  const now = edge.runtime.now();
+  const started = state.recent.get(named.memoKey);
+  if (started !== undefined && now - started < cadenceMs) return;
   const release = claimBackgroundRecord(edge.runtime, named.memoKey);
   if (release === undefined) return;
-  state.recent.set(named.memoKey, true, cadenceMs);
+  state.recent.set(named.memoKey, now, cadenceMs);
   const target: Target = { ...named, active: true };
   const operation = (async () => {
     try {
@@ -185,10 +193,20 @@ export function partialFallbackInHand(
         ? { kind: 'none', lookupMs: 0 }
         : { kind: 'generation', pack: held.pack, source: 'memory', lookupMs: 0 },
     refresh: () => {
+      const pack = held?.pack;
+      const fresh =
+        pack !== undefined &&
+        !isInvalidated(edge.runtime.memory, pack, edge.app?.deploymentId) &&
+        evaluateFreshness({
+          policy: pack.header.policy,
+          cacheTimestamp: pack.header.cacheTimestamp,
+          invalidation: pack.header.invalidation,
+          now: edge.runtime.now(),
+        }).validity === 'fresh';
       refresh(
         edge,
         { scopeId, route: upgrade.route, pathname: completed, memoKey },
-        held === undefined ? Math.min(settings.holdMs, READ_MS) : settings.holdMs,
+        fresh ? settings.holdMs : Math.min(settings.holdMs, READ_MS),
       );
     },
   };
