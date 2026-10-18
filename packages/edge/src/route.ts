@@ -14,7 +14,6 @@ import {
   PREFETCH_HINT_HEADERS,
   type RequestClass,
   ROUTER_REQUEST_HEADERS,
-  sanitizePassthroughHeaders,
   serializeCookieHeader,
   SKEW_PROTECTION_COOKIE,
 } from '@stayingupwind/core/request';
@@ -26,6 +25,7 @@ import { transferInvalidations } from './cache/condemned.ts';
 import { lookAtScope } from './cache/scope-signal.ts';
 import type { EdgeHost } from './edge-host.ts';
 import type { EdgeRuntime } from './edge-runtime.ts';
+import { passthroughHeaders } from './forwarding.ts';
 import { answerAsset } from './handlers/asset-answer.ts';
 import { routeHostedDocument } from './handlers/hosted-document.ts';
 import type { MiddlewareOutcome, MiddlewareTiming } from './handlers/middleware.ts';
@@ -344,10 +344,7 @@ function headersToClassify(
   let routed = classified;
   for (const name of fields) {
     if (keptForClassification(name, headers)) continue;
-    forwarded ??= withoutHostCredentials(
-      sanitizePassthroughHeaders(headers, forwarding),
-      credentials,
-    );
+    forwarded ??= passthroughHeaders(headers, forwarding, credentials);
     if (routed === headers) routed = new Headers(classified);
     const value = forwarded.get(name);
     if (value === null) routed.delete(name);

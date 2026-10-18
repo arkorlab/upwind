@@ -85,13 +85,16 @@ async function routed(
   readonly body: string;
   readonly asked: string[];
   readonly received: string[];
+  readonly forwarded: Request[];
 }> {
   const { pointer } = await seedSite({ document: pprDocument(), ...site });
   const asked: string[] = [];
   const received: string[] = [];
+  const forwarded: Request[] = [];
   const runtime = standaloneRuntime(env, {
     memory: createEdgeMemory(() => Date.now()),
     dispatchApp: async (_scriptName: string, dispatched: Request): Promise<Response> => {
+      forwarded.push(dispatched);
       asked.push(new URL(dispatched.url).pathname);
       received.push(await dispatched.text());
       return new Response('from the Function');
@@ -113,7 +116,7 @@ async function routed(
   });
   const body = await response.text();
   await waitOnExecutionContext(ctx);
-  return { response, body, asked, received };
+  return { response, body, asked, received, forwarded };
 }
 
 /** What an observer is told, which a test does not look at. */
@@ -414,6 +417,58 @@ describe('the routing a host composes', () => {
     );
 
     expect(response.headers.get('x-arkor-edge')).toMatch(/^shell;/u);
+  });
+
+  it('hands the Function a page reserved for a canonical WebSocket upgrade', async () => {
+    const { response, body, asked } = await routed(
+      navigation('/', { headers: { connection: 'Upgrade', upgrade: 'WebSocket' } }),
+      {
+        reservedRoutes: [
+          {
+            sourceRegex: '^/$',
+            beforeFiles: true,
+            has: [{ type: 'header', key: 'Upgrade', value: 'websocket' }],
+          },
+        ],
+      },
+    );
+
+    expect(response.headers.get('x-arkor-edge')).toBe('passthrough;reason=route-not-proved');
+    expect(body).toBe('from the Function');
+    expect(asked).toStrictEqual(['/']);
+  });
+
+  it.each([
+    ['has', /^passthrough;reason=route-not-proved$/u],
+    ['missing', /^shell;/u],
+  ] as const)(
+    'judges %s on a Connection-nominated field as the Function is handed it',
+    async (condition, marker) => {
+      const { response, forwarded } = await routed(
+        navigation('/', { headers: { connection: 'X-Route, , not a name', 'x-route': 'client' } }),
+        {
+          reservedRoutes: [
+            {
+              sourceRegex: '^/$',
+              beforeFiles: true,
+              [condition]: [{ type: 'header' as const, key: 'X-Route', value: 'client' }],
+            },
+          ],
+        },
+      );
+
+      expect(forwarded[0]?.headers.get('x-route')).toBe('client');
+      expect(response.headers.get('x-arkor-edge')).toMatch(marker);
+    },
+  );
+
+  it('keeps a recovery cookie nominated by Connection visible to classification', async () => {
+    const { response } = await routed(
+      navigation('/', { headers: { connection: 'Cookie', cookie: `${EDGE_BYPASS_COOKIE}=1` } }),
+      { reservedRoutes: [{ sourceRegex: '^/$', beforeFiles: true, missing: ON_HOST_SESSION }] },
+    );
+
+    expect(response.headers.get('x-arkor-edge')).toBe('passthrough;reason=bypass-cookie');
   });
 
   /** So is a dynamic route's own condition: its `missing` holds, and the class's shell is served. */

@@ -25,6 +25,7 @@ import { isDeadlineError, releaseStream, withDeadline } from '@stayingupwind/cor
 import { type HostCredentials, withoutHostCredentials } from '@stayingupwind/host/credentials';
 
 import type { DispatchApp } from '../edge-runtime.ts';
+import { passthroughHeaders } from '../forwarding.ts';
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { setConfigured, setConfiguredUnder } from './configured-headers.ts';
@@ -189,7 +190,7 @@ function rulesReadForwarding(rules: readonly Conditioned[], credentials: HostCre
 
 /**
  * The headers the application's routing judges `rules` on: what forwarding hands the Function
- * (`handedHeaders`), including the edge's forwarding values and without host credentials. Copied
+ * (`passthroughHeaders`), including the edge's forwarding values and without host credentials. Copied
  * only for conditions that can read otherwise after forwarding, not for every header condition:
  * Next.js writes one on unchanged `rsc` into every build with a deployment id.
  */
@@ -200,7 +201,7 @@ export function routedHeaders(
 ): Headers {
   const { credentials } = edge.host;
   return rules !== undefined && rulesReadForwarding(rules, credentials)
-    ? handedHeaders(edge, headers)
+    ? passthroughHeaders(headers, edge.forwarding, credentials)
     : headers;
 }
 

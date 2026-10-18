@@ -37,6 +37,20 @@ export function buildResumeRequest(
   });
 }
 
+/** The headers a transparent proxy sends, including its native WebSocket upgrade. */
+export function passthroughHeaders(
+  client: Headers,
+  ctx: ForwardingContext,
+  credentials: HostCredentials,
+): Headers {
+  const headers = sanitizePassthroughHeaders(client, ctx);
+  // Only a client's canonical upgrade is restored, before host credentials are removed.
+  if (client.get('upgrade')?.toLowerCase() === 'websocket') {
+    headers.set('upgrade', 'websocket');
+  }
+  return withoutHostCredentials(headers, credentials);
+}
+
 /**
  * Build a transparent proxy request (any method, streamed body), on the host the client used:
  * the application's Worker is reached by name, so it is asked on the host it was asked on. It is
@@ -48,15 +62,9 @@ export function buildPassthroughRequest(
   ctx: ForwardingContext,
   credentials: HostCredentials,
 ): Request {
-  const headers = sanitizePassthroughHeaders(clientRequest.headers, ctx);
-  // Fetch establishes a native WebSocket from this header. Other hop-by-hop headers stay out,
-  // and continuation requests never carry it: only the client's own passthrough can upgrade.
-  if (clientRequest.headers.get('upgrade')?.toLowerCase() === 'websocket') {
-    headers.set('upgrade', 'websocket');
-  }
   const init: RequestInit & { duplex?: 'half' } = {
     method: clientRequest.method,
-    headers: withoutHostCredentials(headers, credentials),
+    headers: passthroughHeaders(clientRequest.headers, ctx, credentials),
     redirect: 'manual',
     signal: clientRequest.signal,
   };
