@@ -290,7 +290,7 @@ async function fromHost(
   input: RoutedInput,
   ref: BlobRef,
 ): Promise<Uint8Array<ArrayBuffer> | undefined> {
-  const bytes = await input.blobs?.(ref.sha256);
+  const bytes = await input.blobs?.(ref.sha256, ref.byteLength);
   return bytes === undefined ? undefined : new Uint8Array(bytes);
 }
 

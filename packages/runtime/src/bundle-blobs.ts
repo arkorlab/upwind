@@ -16,7 +16,11 @@
  */
 
 /** The bytes of one blob, or `undefined` where the host does not hold it. */
-export type BundleBlobReader = (sha256: string) => Promise<Uint8Array | undefined>;
+export type BundleBlobReader = (
+  sha256: string,
+  /** The bundle's known size, so a buffering host can bound the read before taking any bytes. */
+  expectedByteLength?: number,
+) => Promise<Uint8Array | undefined>;
 
 /** What the host is handed to find its own way to wherever the build's outputs are kept. */
 export interface BundleBlobsInit {
@@ -87,9 +91,9 @@ export function bundleBlobReader(
   // The return type written out, though it is the alias's own: without it `return undefined` below
   // is read as a `void` function saying nothing, and the lint asks for it to be dropped — which
   // `noImplicitReturns` then refuses. It is the answer, not an absence.
-  return async (sha256): Promise<Uint8Array | undefined> => {
+  return async (sha256, expectedByteLength): Promise<Uint8Array | undefined> => {
     try {
-      return await read(sha256);
+      return await read(sha256, expectedByteLength);
     } catch (error) {
       // To the caller a read that failed and a blob nobody holds are the same answer; the line
       // below is the only place the two differ.
