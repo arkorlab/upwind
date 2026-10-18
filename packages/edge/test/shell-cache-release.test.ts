@@ -9,7 +9,9 @@ import { CacheBody } from '../src/cache/cache-body.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
 import { standaloneHost, standaloneRuntime } from '../src/standalone/index.ts';
 import type { EdgeContext } from '../src/strategies/context.ts';
+import { kvShellStrategy } from '../src/strategies/shell-kv.ts';
 import { loadShell } from '../src/strategies/shell-loader.ts';
+import { r2ShellStrategy } from '../src/strategies/shell-r2.ts';
 
 const BYTES = encodeUtf8('the cached shell');
 
@@ -367,5 +369,78 @@ describe('giving up a shell copy that lost its race', () => {
     expect(loaded).toStrictEqual({ kind: 'missing' });
 
     await waitOnExecutionContext(ctx.ctx);
+  });
+
+  it.each(['kv', 'r2'] as const)(
+    'ends a stalled %s shell read so document fallback can run',
+    async (backend) => {
+      const base = context();
+      const ctx = {
+        ...base,
+        policy: {
+          ...base.policy,
+          shell: { ...base.policy.shell, cacheApiLayer: false },
+        },
+      };
+      const ref = await reference();
+      const pending = Promise.withResolvers<never>();
+      const get =
+        backend === 'kv'
+          ? vi.spyOn(env.EDGE_STATE, 'get').mockImplementation(() => pending.promise)
+          : vi.spyOn(env.ARTIFACTS, 'get').mockImplementation(() => pending.promise);
+      vi.spyOn(console, 'warn').mockImplementation(() => {
+        // The timeout is intentional.
+      });
+      vi.useFakeTimers();
+      const loading = loadShell(ref, backend === 'kv' ? kvShellStrategy : r2ShellStrategy, ctx);
+      let result: Awaited<typeof loading> | undefined;
+      const observed = (async () => {
+        result = await loading;
+      })();
+      try {
+        await vi.advanceTimersByTimeAsync(2000);
+
+        expect(get).toHaveBeenCalledTimes(1);
+        expect(result).toStrictEqual({
+          kind: 'unavailable',
+          detail: 'shell backend read timed out',
+        });
+      } finally {
+        pending.reject(new Error('the test released the stalled lookup'));
+        await observed;
+        await waitOnExecutionContext(ctx.ctx);
+      }
+    },
+  );
+
+  it('ends a stalled backend after a Cache API miss without waiting for a late failure', async () => {
+    const ctx = context();
+    const ref = await reference();
+    const pending = Promise.withResolvers<ShellRead | undefined>();
+    vi.spyOn(caches.default, 'match').mockResolvedValue(undefined);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {
+      // The timeout is intentional.
+    });
+    vi.useFakeTimers();
+    const loading = loadShell(ref, { id: 'kv', getShell: () => pending.promise }, ctx);
+    let result: Awaited<typeof loading> | undefined;
+    const observed = (async () => {
+      result = await loading;
+    })();
+    try {
+      await vi.advanceTimersByTimeAsync(2000);
+
+      expect(result?.kind).toBe('unavailable');
+      expect(warn).toHaveBeenCalledTimes(1);
+
+      pending.reject(new Error('the abandoned backend failed later'));
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      pending.resolve(undefined);
+      await observed;
+      await waitOnExecutionContext(ctx.ctx);
+    }
   });
 });

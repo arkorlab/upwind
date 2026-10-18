@@ -13,6 +13,8 @@ import type { EdgeContext } from './context.ts';
 const ONE_YEAR_SECONDS = 31_536_000;
 /** Longest the shell flush waits on the per-data-center Cache API before going to the backend. */
 const CACHE_API_READ_BUDGET_MS = 100;
+/** As for immutable manifest/blob reads, a stopped backend must not hold document fallback. */
+const BACKEND_READ_BUDGET_MS = 2000;
 
 export type ShellLoadResult =
   | { readonly kind: 'ok'; readonly read: ShellRead }
@@ -122,27 +124,74 @@ export class ShellSizeMismatchError extends Error {
 type BackendMiss = Extract<ShellLoadResult, { kind: 'missing' | 'corrupt' | 'unavailable' }>;
 
 /** The backend read is the one place every shell backend's exception is folded into a result. */
-async function readBackend(
+function failedBackend(
+  ref: ArtifactLocator,
+  strategy: ShellDeliveryStrategy<EdgeContext>,
+  error: unknown,
+): BackendMiss {
+  if (error instanceof ShellSizeMismatchError) {
+    logWarn('shell backend length mismatch', {
+      source: strategy.id,
+      sha256: ref.sha256,
+      expected: ref.byteLength,
+      actual: error.statedBytes,
+    });
+    return { kind: 'corrupt', source: strategy.id };
+  }
+  const detail = errorDetail(error);
+  logWarn('shell backend read failed', { source: strategy.id, sha256: ref.sha256, detail });
+  return { kind: 'unavailable', detail };
+}
+
+/**
+ * Bound the existing backend wait, including a backend's body read. One settlement observer
+ * replaces its former await; a race and another async wrapper would add a normal response stage.
+ * KV/R2 bindings cannot cancel their lookup. Late bytes or failures are discarded here,
+ * never adopted or cached, and the source's rejection is still consumed after the timer wins.
+ */
+function readBackend(
   ref: ArtifactLocator,
   strategy: ShellDeliveryStrategy<EdgeContext>,
   ctx: EdgeContext,
 ): Promise<ShellRead | BackendMiss> {
-  try {
-    return (await strategy.getShell(ref, ctx)) ?? { kind: 'missing' };
-  } catch (error) {
-    if (error instanceof ShellSizeMismatchError) {
-      logWarn('shell backend length mismatch', {
-        source: strategy.id,
-        sha256: ref.sha256,
-        expected: ref.byteLength,
-        actual: error.statedBytes,
-      });
-      return { kind: 'corrupt', source: strategy.id };
+  return new Promise((resolve, reject) => {
+    let finished = false;
+    const timer = setTimeout(() => {
+      failed(new Error('shell backend read timed out'));
+    }, BACKEND_READ_BUDGET_MS);
+    function finish(read: ShellRead | BackendMiss): void {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      resolve(read);
     }
-    const detail = errorDetail(error);
-    logWarn('shell backend read failed', { source: strategy.id, sha256: ref.sha256, detail });
-    return { kind: 'unavailable', detail };
-  }
+    function failed(error: unknown): void {
+      if (finished) return;
+      try {
+        finish(failedBackend(ref, strategy, error));
+      } catch (error_) {
+        finished = true;
+        clearTimeout(timer);
+        reject(
+          error_ instanceof Error
+            ? error_
+            : new Error('shell backend failure handling failed', { cause: error_ }),
+        );
+      }
+    }
+    // A host's call can throw before returning its Promise; keep the existing single observer.
+    // eslint-disable-next-line sonarjs/no-try-promise
+    try {
+      // Both outcomes settle the same owner; a following catch would add another observer.
+      // eslint-disable-next-line unicorn/prefer-then-catch
+      void strategy.getShell(ref, ctx).then((read) => {
+        finish(read ?? { kind: 'missing' });
+        return null;
+      }, failed);
+    } catch (error) {
+      failed(error);
+    }
+  });
 }
 
 async function verifyRead(ref: ArtifactLocator, read: ShellRead): Promise<ShellLoadResult> {
