@@ -1,6 +1,7 @@
 import { sha256Hex } from '@stayingupwind/core/artifact';
 import type { ImagesConfig } from '@stayingupwind/core/images';
 import type { ProjectManifest } from '@stayingupwind/core/manifest';
+import { EDGE_VALIDATED_HEADER } from '@stayingupwind/core/request';
 import { concatBytes, encodeUtf8 } from '@stayingupwind/core/util';
 import { DEFAULT_DELIVERY_POLICY } from '@stayingupwind/host/delivery';
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
@@ -33,6 +34,9 @@ const CONFIG: ImagesConfig = {
   contentDispositionType: 'attachment',
 };
 const OUTPUT = encodeUtf8('optimized');
+const RULE_TAG = '"configured-tag"';
+const RULE_CSP = "default-src 'self'";
+const STREAM_BYTES = 9 * 1024 * 1024;
 const PNG = concatBytes([
   new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
   new Uint8Array(2048),
@@ -44,10 +48,43 @@ interface Options {
   readonly validator?: string;
   readonly invalid?: boolean;
   readonly streamed?: boolean;
+  readonly configured?: boolean;
+  readonly nominatedCookie?: boolean;
 }
 
 async function rewrittenImage(options: Options) {
-  const site = await seedSite({ document: pprDocument(), images: CONFIG });
+  const site = await seedSite({
+    document: pprDocument(),
+    images: CONFIG,
+    headerRules:
+      options.configured === true
+        ? [
+            {
+              sourceRegex: '^/_next/image$',
+              headers: {
+                'Content-Encoding': 'gzip',
+                'Content-Length': '1',
+                ETag: RULE_TAG,
+                'Content-Range': 'bytes 0-0/1',
+                'Accept-Ranges': 'bytes',
+                Connection:
+                  options.nominatedCookie === true
+                    ? 'X-Internal, Set-Cookie'
+                    : 'X-Internal, not a name',
+                'Keep-Alive': 'timeout=5',
+                'Transfer-Encoding': 'chunked',
+                [EDGE_VALIDATED_HEADER]: '1',
+                'X-Internal': 'one hop',
+                'Content-Type': 'text/html',
+                'Content-Security-Policy': RULE_CSP,
+                'Access-Control-Allow-Origin': '*',
+                'Set-Cookie': 'rule=1; Path=/',
+                'X-Rule': 'retained',
+              },
+            },
+          ]
+        : undefined,
+  });
   const manifest: ProjectManifest = {
     ...site.manifest,
     middleware: { matchers: [{ sourceRegex: '^/_next/image$' }] },
@@ -74,7 +111,7 @@ async function rewrittenImage(options: Options) {
     fetchImpl: () => Promise.resolve(new Response(PNG)),
     transformImage: async (source) => {
       await new Response(source).arrayBuffer();
-      const bytes = options.streamed === true ? new Uint8Array(9 * 1024 * 1024) : OUTPUT;
+      const bytes = options.streamed === true ? new Uint8Array(STREAM_BYTES) : OUTPUT;
       return {
         contentType: 'image/webp',
         body: new ReadableStream<Uint8Array>({
@@ -193,5 +230,113 @@ describe('an optimized image under its middleware rewrite status', () => {
     expect(response.body).toBeNull();
     expect(response.headers.has('content-length')).toBe(false);
     expect(metrics.at(-1)?.suffixBytes).toBe(0);
+  });
+});
+
+describe('configured headers beside an optimized image', () => {
+  it.each([
+    {
+      kind: 'buffered',
+      status: 201,
+      expectedLength: String(OUTPUT.byteLength),
+      expectedBytes: OUTPUT.byteLength,
+    },
+    {
+      kind: 'HEAD',
+      status: 201,
+      method: 'HEAD',
+      expectedLength: String(OUTPUT.byteLength),
+      expectedBytes: 0,
+    },
+    { kind: 'refusal', status: 400, invalid: true, expectedLength: null },
+    {
+      kind: 'streamed',
+      status: 201,
+      streamed: true,
+      expectedLength: null,
+      expectedBytes: STREAM_BYTES,
+    },
+    {
+      kind: 'streamed conditional',
+      status: 201,
+      streamed: true,
+      validator: RULE_TAG,
+      expectedLength: null,
+      expectedBytes: STREAM_BYTES,
+    },
+  ])('preserves the owned metadata of a $kind response', async (options) => {
+    const { response } = await rewrittenImage({ ...options, status: 201, configured: true });
+    const body = await response.arrayBuffer();
+
+    expect(response.status).toBe(options.status);
+    expect({
+      coding: response.headers.get('content-encoding'),
+      length: response.headers.get('content-length'),
+      range: response.headers.get('content-range'),
+      acceptsRanges: response.headers.get('accept-ranges'),
+      connection: response.headers.get('connection'),
+      keepAlive: response.headers.get('keep-alive'),
+      transfer: response.headers.get('transfer-encoding'),
+      platform: response.headers.get(EDGE_VALIDATED_HEADER),
+      nominated: response.headers.get('x-internal'),
+    }).toStrictEqual({
+      coding: null,
+      length: options.expectedLength,
+      range: null,
+      acceptsRanges: null,
+      connection: null,
+      keepAlive: null,
+      transfer: null,
+      platform: null,
+      nominated: null,
+    });
+    expect(response.headers.get('content-type')).toBe(
+      options.invalid === true ? 'text/plain; charset=utf-8' : 'image/webp',
+    );
+    expect(response.headers.get('etag')).toBe(
+      options.invalid === true || options.streamed === true ? null : `"${await sha256Hex(OUTPUT)}"`,
+    );
+    expect({
+      csp: response.headers.get('content-security-policy'),
+      cors: response.headers.get('access-control-allow-origin'),
+      cookies: response.headers.getSetCookie(),
+      rule: response.headers.get('x-rule'),
+    }).toStrictEqual({
+      csp: options.invalid === true ? RULE_CSP : CONFIG.contentSecurityPolicy,
+      cors: '*',
+      cookies: ['rule=1; Path=/', 'mw=1; Path=/'],
+      rule: 'retained',
+    });
+    expect({
+      bytes: options.expectedBytes === undefined ? undefined : body.byteLength,
+      refusal:
+        options.invalid === true ? new TextDecoder().decode(body).includes('quality') : undefined,
+    }).toStrictEqual({
+      bytes: options.expectedBytes,
+      refusal: options.invalid === true ? true : undefined,
+    });
+  });
+
+  it('retains an independent middleware cookie after configured Connection nominations', async () => {
+    const { response } = await rewrittenImage({
+      status: 201,
+      configured: true,
+      nominatedCookie: true,
+    });
+
+    await response.arrayBuffer();
+
+    expect(response.headers.getSetCookie()).toStrictEqual(['mw=1; Path=/']);
+  });
+
+  it('keeps the optimized validator conditional under configured headers', async () => {
+    const validator = `"${await sha256Hex(OUTPUT)}"`;
+    const { response } = await rewrittenImage({ status: 201, configured: true, validator });
+
+    expect(response.status).toBe(304);
+    expect(response.body).toBeNull();
+    expect(response.headers.get('etag')).toBe(validator);
+    expect(response.headers.get('content-length')).toBeNull();
+    expect(response.headers.get('content-encoding')).toBeNull();
   });
 });

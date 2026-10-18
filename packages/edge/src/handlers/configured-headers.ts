@@ -1,5 +1,6 @@
 import type { ConfiguredHeaders, ProjectManifest } from '@stayingupwind/core/manifest';
 import {
+  HOP_BY_HOP_HEADERS,
   PASSTHROUGH_RESPONSE_HEADER_DENYLIST,
   type PassthroughResponseContext,
   PLATFORM_HEADER_PREFIX,
@@ -12,6 +13,40 @@ import { nominatedBy, statusAllowsLength } from './responses.ts';
 const SET_COOKIE_HEADER = 'set-cookie';
 const CONNECTION_HEADER = 'connection';
 const CONTENT_LENGTH_HEADER = 'content-length';
+
+/** Coding, framing and entity tags describe the optimizer's bytes; it does not offer ranges. */
+const IMAGE_ENTITY_HEADERS: ReadonlySet<string> = new Set([
+  'accept-ranges',
+  'content-encoding',
+  'content-length',
+  'content-range',
+  'etag',
+]);
+
+/** Supplement image headers without replacing byte metadata or exporting a hop's fields. */
+export function layImageConfiguredUnder(
+  headers: Headers,
+  configured: ConfiguredHeaders,
+  scope: PassthroughResponseContext,
+): void {
+  const connection = configured.headers['connection'];
+  const nominated =
+    connection === undefined
+      ? undefined
+      : new Set(connection.split(',').map((option) => option.trim().toLowerCase()));
+  for (const [name, value] of Object.entries(configured.headers)) {
+    const normalized = name.toLowerCase();
+    if (
+      IMAGE_ENTITY_HEADERS.has(normalized) ||
+      HOP_BY_HOP_HEADERS.includes(normalized) ||
+      normalized.startsWith(PLATFORM_HEADER_PREFIX) ||
+      nominated?.has(normalized) === true
+    ) {
+      continue;
+    }
+    setConfiguredUnder(headers, name, value, scope);
+  }
+}
 
 /**
  * A rule's value as it goes out: a `Set-Cookie` scoped as a Function's is

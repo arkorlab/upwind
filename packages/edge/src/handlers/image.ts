@@ -30,7 +30,7 @@ import { logWarn } from '../observability/logger.ts';
 import type { EdgeMetric } from '../observability/metrics.ts';
 import { validatorMatches } from '../strategies/asset-upstream.ts';
 import type { EdgeContext } from '../strategies/context.ts';
-import { setConfiguredUnder } from './configured-headers.ts';
+import { layImageConfiguredUnder } from './configured-headers.ts';
 import {
   fetchImageSource,
   type ImageSource,
@@ -415,13 +415,10 @@ function debugHeader(input: ImageAnswerInput, src: string): string {
  */
 function clientHeaders(input: ImageAnswerInput, headers: Headers, src: string): Headers {
   const out = new Headers(headers);
-  const { configured } = input;
-  for (const [name, value] of Object.entries(configured.headers)) {
-    setConfiguredUnder(out, name, value, input.edge.forwarding);
-  }
+  layImageConfiguredUnder(out, input.configured, input.edge.forwarding);
   // A rule the request itself selected answers the next visitor differently, so this optimized
   // image is one visitor's however public the optimizer's own lifetime is.
-  if (configured.conditioned) {
+  if (input.configured.conditioned) {
     out.set(CACHE_CONTROL_HEADER, GATED_CACHE_CONTROL);
   }
   // The middleware's headers, then the caching they must not widen: a result the middleware
@@ -442,7 +439,7 @@ function clientHeaders(input: ImageAnswerInput, headers: Headers, src: string): 
   // gave them go too, as they outrank `cache-control` for exactly those caches — and one honouring
   // them would hand one visitor's image, cookie and all, to the next.
   const unshared =
-    configured.conditioned ||
+    input.configured.conditioned ||
     input.middleware !== undefined ||
     input.edge.validated ||
     input.edge.privateDelivery;
