@@ -215,17 +215,22 @@ describe('the ownership of a segment delivery', () => {
     expect(metric).not.toHaveBeenCalled();
   });
 
-  it('lets an unavailable fallback own its response and accounting', async () => {
-    const { input, metric, getShell } = await inputFor();
-    getShell.mockResolvedValue(undefined);
-    const fallback = new Response('the Function answered');
-    const onUnavailable = vi.fn(() => Promise.resolve(fallback));
-    const response = await handleSegment({ ...input, onUnavailable });
+  it.each([false, true])(
+    'hands the unavailable fallback its completed storage reads, compressed=%s',
+    async (encoded) => {
+      const { input, metric, getShell } = await inputFor();
+      getShell.mockResolvedValue(undefined);
+      const fallback = new Response('the Function answered');
+      const onUnavailable = vi.fn(() => Promise.resolve(fallback));
+      const selected = encoded ? await compressed(input) : input;
+      const response = await handleSegment({ ...selected, onUnavailable });
 
-    expect(response).toBe(fallback);
-    expect(onUnavailable).toHaveBeenCalledTimes(1);
-    expect(metric).not.toHaveBeenCalled();
-  });
+      expect(response).toBe(fallback);
+      expect(onUnavailable).toHaveBeenCalledExactlyOnceWith(encoded ? 2 : 1);
+      expect(getShell).toHaveBeenCalledTimes(encoded ? 2 : 1);
+      expect(metric).not.toHaveBeenCalled();
+    },
+  );
 
   it('keeps a successful delivery and its read count', async () => {
     const { input, metric, getShell } = await inputFor();

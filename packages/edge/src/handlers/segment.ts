@@ -79,8 +79,8 @@ export interface SegmentInput {
   readonly generation?:
     | { readonly partial: boolean; readonly cacheState: 'HIT' | 'STALE' }
     | undefined;
-  /** A runtime artifact may be reclaimed or temporarily unavailable; its Function can answer. */
-  readonly onUnavailable?: (() => Promise<Response>) | undefined;
+  /** Its Function can answer an unavailable runtime artifact, counting the reads already made. */
+  readonly onUnavailable?: ((storageReads: number) => Promise<Response>) | undefined;
   /**
    * The regeneration a stale record asked for as a request of its own (`triggerDetached`), whose
    * dispatches the part's point counts.
@@ -420,14 +420,15 @@ export async function handleSegment(input: SegmentInput): Promise<Response> {
       : await loadShell(identity.ref, input.strategy, edge);
   const rendering = fallback === undefined ? negotiated : identity;
   const loaded = fallback ?? first;
+  const reads = storageReadsOf(first) + (fallback === undefined ? 0 : storageReadsOf(fallback));
   if (loaded.kind !== 'ok') {
-    if (input.onUnavailable !== undefined) return input.onUnavailable();
+    if (input.onUnavailable !== undefined) return input.onUnavailable(reads);
     recordDelivery(input, {
       source: loaded.kind,
       rendering,
       lookupMs: edge.runtime.now() - lookupStartedAt,
       bytes: 0,
-      reads: storageReadsOf(first) + (fallback === undefined ? 0 : storageReadsOf(fallback)),
+      reads,
     });
     return storageFailure(input, `${input.kind}-${loaded.kind}`);
   }
@@ -438,7 +439,7 @@ export async function handleSegment(input: SegmentInput): Promise<Response> {
     rendering,
     lookupMs: edge.runtime.now() - lookupStartedAt,
     bytes: bytes.byteLength + (rendering.close?.byteLength ?? 0),
-    reads: storageReadsOf(first) + (fallback === undefined ? 0 : storageReadsOf(fallback)),
+    reads,
   });
   if (rendering.encoding === IDENTITY_ENCODING) {
     // Left to the runtime, which compresses it on the way out for a client that accepts one — the

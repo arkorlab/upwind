@@ -210,7 +210,7 @@ interface Answer {
   readonly startedAt: number;
   readonly generation?: Extract<PartGeneration, { kind: 'runtime' }> | undefined;
   readonly strategy?: ShellDeliveryStrategy<EdgeContext> | undefined;
-  readonly onUnavailable?: (() => Promise<Response>) | undefined;
+  readonly onUnavailable?: ((storageReads: number) => Promise<Response>) | undefined;
   /** The regeneration the stale record asked for on its own (`refreshPart`). */
   readonly detached?: DetachedRegeneration | undefined;
 }
@@ -415,7 +415,7 @@ async function answerPart(input: PartInput, part: PartAnswer): Promise<Response>
     startedAt,
     generation,
     strategy,
-    onUnavailable: () => fallback({ regeneration: detached }),
+    onUnavailable: (storageReads) => fallback({ regeneration: detached, storageReads }),
     detached,
     segment: {
       artifact: {

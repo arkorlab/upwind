@@ -120,8 +120,8 @@ export const PATTERN_BUDGET = 'pattern-budget';
 export interface PassthroughWait {
   readonly recordLookupMs?: number | undefined;
   /**
-   * The reads of storage made for a document the edge then could not serve: its shell's, which
-   * failed, and its rendering's beside it, each counted as a served document's are
+   * The reads of storage made for a document or router part the edge then could not serve: its
+   * bytes and any rendering tried beside them, each counted as a served document's are
    * (`storageReadsOf`).
    */
   readonly storageReads?: number | undefined;
