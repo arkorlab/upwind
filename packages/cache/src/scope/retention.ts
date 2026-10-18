@@ -316,7 +316,10 @@ function retireExpiredData(input: RetentionInput): boolean {
   const revision = readRevision(sql) + 1;
   commitRevision(sql, revision);
   for (const entry of entries) {
-    sql.exec(`UPDATE generations SET publication = 'retired' WHERE entry_id = ?`, entry.entry_id);
+    sql.exec(
+      `UPDATE generations SET publication = 'retired' WHERE generation_id = ?`,
+      entry.current_generation_id,
+    );
     sql.exec(
       `UPDATE entries SET publication = 'retired', current_generation_id = NULL,
       revision = ?, record_revision = ?, updated_at = ? WHERE entry_id = ?`,
