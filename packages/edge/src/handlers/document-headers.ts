@@ -13,7 +13,7 @@ import {
   manifestIdPrefix,
   NO_STORE_CACHE_CONTROL,
 } from '@stayingupwind/core/request';
-import type { WireEncoding } from '@stayingupwind/host/splice';
+import { replaceLegacyRecoverySource, type WireEncoding } from '@stayingupwind/host/splice';
 
 import { serverTiming, type ServerTimingEntry } from '../observability/server-timing.ts';
 import type { EdgeContext } from '../strategies/context.ts';
@@ -24,6 +24,7 @@ import { mergeScopedMiddlewareHeaders, removeSharedCacheOverrides } from './resp
 /** The headers a composed document goes out under: what it is, how it is encoded, who answered. */
 
 const CACHE_CONTROL_HEADER = 'cache-control';
+const CSP_HEADER = 'content-security-policy';
 const SERVER_TIMING_HEADER = 'server-timing';
 const CONTENT_ENCODING_HEADER = 'content-encoding';
 const NEXT_CACHE_HEADER = 'x-nextjs-cache';
@@ -231,6 +232,8 @@ function contentEncodingOf(shell: ShellDelivery): string {
 
 export interface DocumentHeaderInput {
   readonly entry: RouteEntry;
+  /** A complete document never has a recovery script appended. */
+  readonly complete: boolean;
   /** The shell and configured headers already prepared before starting its continuation. */
   readonly headers: Headers;
   readonly edge: EdgeContext;
@@ -334,6 +337,14 @@ export function replayedDocumentHeaders(
   return headers;
 }
 
+/** Only the final enforcing policy of a document that may append recovery is rotated. */
+function currentRecoveryPolicy(headers: Headers): void {
+  const policy = headers.get(CSP_HEADER);
+  if (policy === null) return;
+  const current = replaceLegacyRecoverySource(policy);
+  if (current !== policy) headers.set(CSP_HEADER, current);
+}
+
 /**
  * A middleware that times its own work says so in `Server-Timing` as well, and the merge set its
  * list in place of the edge's. Both stand, in one header: what the application measured, then what
@@ -419,6 +430,11 @@ export function documentHeaders(header: DocumentHeaderInput): DocumentHeaders {
   if (header.middleware !== undefined) {
     mergeScopedMiddlewareHeaders(headers, header.middleware.responseHeaders, edge.forwarding);
     joinServerTiming(headers, header.middleware.responseHeaders, timing);
+  }
+  // Old immutable deployments permitted the previous default script. Rotate only that source,
+  // after every replacing policy has had its say, without parsing policies or walking their rules.
+  if (!header.complete) {
+    currentRecoveryPolicy(headers);
   }
   // Every composed document is one visitor's — `documentCacheControl` says `private` whatever else
   // it says — so the lifetimes a rule or the middleware gave shared caches go: `CDN-Cache-Control`

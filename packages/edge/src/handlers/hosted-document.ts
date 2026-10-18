@@ -15,7 +15,11 @@ import {
   pathHeaders,
   REGENERATE_HEADER,
 } from '@stayingupwind/core/paas';
-import { PatternBudgetExceededError, type RequestClass } from '@stayingupwind/core/request';
+import {
+  PatternBudgetExceededError,
+  type RequestClass,
+  RSC_HEADER,
+} from '@stayingupwind/core/request';
 import { type ResolvedPolicy, runtimeCacheOf } from '@stayingupwind/host/delivery';
 
 import { type RecordRead, serveCachedDocument, startRecordRead } from '../cache/document.ts';
@@ -628,6 +632,17 @@ function serveHostedDocument(
       ))
       ? handedHeaders(input.edge, middleware.requestHeaders)
       : undefined;
+  // A navigation made into Flight is answered as Flight by the Function. Reuse the request view
+  // it receives, after transport fields and host credentials have been removed.
+  if (
+    middleware.kind === 'continue' &&
+    middleware.requestHeaders.get(RSC_HEADER) === '1' &&
+    !forRouter(classification) &&
+    (routedHeaders ?? handedHeaders(input.edge, middleware.requestHeaders)).get(RSC_HEADER) === '1'
+  ) {
+    if (preload !== undefined) abandon(input.edge, preload);
+    return input.passthrough('middleware-request-kind', middleware);
+  }
   const entry = hostedEntry(manifest, classification, middleware, routedHeaders);
   rememberRewrite(input, middleware, entry);
   const preloaded = preload !== undefined && entry?.pathname === preload.entry.pathname;

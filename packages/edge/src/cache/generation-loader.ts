@@ -6,7 +6,7 @@ import {
 } from '@stayingupwind/core/cache';
 import { allowRecoveryScript } from '@stayingupwind/core/request';
 import type { RuntimeCacheSettings } from '@stayingupwind/host/delivery';
-import { recoveryScriptCspSource } from '@stayingupwind/host/splice';
+import { RECOVERY_SCRIPT_CSP_SOURCE } from '@stayingupwind/host/splice';
 
 import { LONGEST_COPY_AGE_MS } from '../memory/invalidations.ts';
 import { logWarn } from '../observability/logger.ts';
@@ -85,12 +85,6 @@ function packBytes(pack: DecodedGenerationPack, recordBytes: number): number {
 }
 
 /**
- * The CSP source that permits the recovery script. The script is the same for every record, so
- * this isolate digests it once, when the first record with a policy is read.
- */
-const recovery: { source: string | undefined } = { source: undefined };
-
-/**
  * The record with its policy permitting the recovery script, as the deployment run records a
  * route's (`allowRecoveryScript`): the edge replays the headers of the generation it serves and
  * appends that script to a document whose resume fails, and a policy restricting inline scripts
@@ -98,11 +92,11 @@ const recovery: { source: string | undefined } = { source: undefined };
  * serves it. Only a record a resume completes, with a policy, comes here; any other — nearly every
  * one — goes on as it was read, without waiting on anything. One complete in itself has no resume
  * to fail and no script behind it, and keeps the policy its render set, as a route the deployment
- * run records complete does.
+ * run records complete does. The default source is bound to the emitted script by CI, so reading
+ * a record does not need to digest that script or wait for its permission.
  */
-async function withRecoveryPermitted(pack: DecodedGenerationPack): Promise<DecodedGenerationPack> {
-  recovery.source ??= await recoveryScriptCspSource();
-  const permitted = allowRecoveryScript(pack.header.headers, recovery.source);
+function withRecoveryPermitted(pack: DecodedGenerationPack): DecodedGenerationPack {
+  const permitted = allowRecoveryScript(pack.header.headers, RECOVERY_SCRIPT_CSP_SOURCE);
   return { ...pack, header: { ...pack.header, headers: { ...permitted } } };
 }
 
@@ -242,7 +236,7 @@ export async function adoptDecoded(
   const pack =
     decoded.pack.header.headers[CSP_HEADER] === undefined || decoded.pack.postponed === undefined
       ? decoded.pack
-      : await withRecoveryPermitted(decoded.pack);
+      : withRecoveryPermitted(decoded.pack);
   if (from.wanted?.() === false) return { kind: 'unusable', reason: 'unsupported' };
   const { revision } = pack.header;
   const later = heldLater(edge, read.recordKey, revision);

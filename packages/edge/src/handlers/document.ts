@@ -413,6 +413,7 @@ function composedResponse(input: DocumentInput, composition: Composition): Respo
   const { delivery } = composition;
   const { headers, nonce } = documentHeaders({
     entry,
+    complete: composition.complete,
     headers: composition.headers,
     edge,
     strategyId: resolved.shell.id,

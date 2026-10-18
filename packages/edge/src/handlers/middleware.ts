@@ -116,6 +116,8 @@ export interface MiddlewareContinued extends Extract<
  */
 export interface MiddlewareTiming {
   readonly middlewareMs: number | undefined;
+  /** Total calls after a retry; otherwise derive the count from the single outcome. */
+  readonly middlewareDispatches?: number | undefined;
 }
 
 /**
@@ -409,7 +411,11 @@ export async function decideMiddleware(
     first.middlewareMs === undefined && outcome.middlewareMs === undefined
       ? undefined
       : (first.middlewareMs ?? 0) + (outcome.middlewareMs ?? 0);
-  return { outcome: { ...outcome, middlewareMs }, dispatches: dispatches + dispatchedFor(outcome) };
+  const middlewareDispatches = dispatches + dispatchedFor(outcome);
+  return {
+    outcome: { ...outcome, middlewareMs, middlewareDispatches },
+    dispatches: middlewareDispatches,
+  };
 }
 
 async function runMiddlewareIn(

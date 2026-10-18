@@ -1,5 +1,9 @@
 import type { ImagesConfig } from '@stayingupwind/core/images';
-import { FUNCTION_HEADER, MISDIRECTED_STATUS } from '@stayingupwind/core/paas';
+import {
+  FUNCTION_HEADER,
+  MIDDLEWARE_ONLY_HEADER,
+  MISDIRECTED_STATUS,
+} from '@stayingupwind/core/paas';
 import { concatBytes, encodeUtf8 } from '@stayingupwind/core/util';
 import { DEFAULT_DELIVERY_POLICY, type EdgePointer } from '@stayingupwind/host/delivery';
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
@@ -106,6 +110,7 @@ interface Served {
   readonly pointer: EdgePointer;
   readonly host: EdgeHost;
   readonly runtime: EdgeRuntime;
+  readonly lookups?: Parameters<typeof serveFromPointer>[1];
 }
 
 async function serve(
@@ -113,18 +118,21 @@ async function serve(
   request: IncomingRequest,
 ): Promise<{ readonly response: Response; readonly bytes: Uint8Array }> {
   const ctx = createExecutionContext();
-  const response = await serveFromPointer({
-    request,
-    url: new URL(request.url),
-    env: served.site,
-    ctx,
-    runtime: served.runtime,
-    host: served.host,
-    pointer: served.pointer,
-    pointerMs: 0,
-    privateDelivery: false,
-    cspReportingPath: undefined,
-  });
+  const response = await serveFromPointer(
+    {
+      request,
+      url: new URL(request.url),
+      env: served.site,
+      ctx,
+      runtime: served.runtime,
+      host: served.host,
+      pointer: served.pointer,
+      pointerMs: 0,
+      privateDelivery: false,
+      cspReportingPath: undefined,
+    },
+    served.lookups,
+  );
   const bytes = new Uint8Array(await response.arrayBuffer());
   await waitOnExecutionContext(ctx);
   return { response, bytes };
@@ -146,6 +154,108 @@ function clientSignal(left: boolean): AbortSignal {
   if (left) controller.abort();
   return controller.signal;
 }
+
+interface HostedFallback {
+  readonly target: 'file' | 'image';
+  readonly mode: 'retry-failed' | 'retry-rewritten' | 'rewritten' | 'skipped' | 'unreachable';
+}
+
+/** The same dispatcher handles a middleware-only retry and the final application request. */
+function hostedRuntime(example: HostedFallback, calls: boolean[]): EdgeRuntime {
+  return standaloneRuntime(env, {
+    memory: createEdgeMemory(() => Date.now()),
+    dispatchApp:
+      example.mode === 'unreachable'
+        ? undefined
+        : (script, request) => {
+            const middlewareOnly = request.headers.get(MIDDLEWARE_ONLY_HEADER) === '1';
+            calls.push(middlewareOnly);
+            if (!middlewareOnly) return Promise.resolve(new Response('the application answered'));
+            if (example.mode === 'retry-failed') {
+              return Promise.reject(new Error('middleware failed'));
+            }
+            if (script === 'site-middleware' && example.mode === 'retry-rewritten') {
+              return Promise.reject(new Error('the first middleware failed'));
+            }
+            const headers = { 'x-middleware-rewrite': `https://${SITE}/application-only` };
+            return Promise.resolve(new Response(null, { headers }));
+          },
+  });
+}
+
+/** A real hosted gate routes a file/image through its middleware, then the Function fallback. */
+async function hostedFallback(example: HostedFallback) {
+  const site = await seedSite({
+    document: pprDocument(),
+    files: { '/robots.txt': 'User-agent: *' },
+    images: IMAGES,
+  });
+  const points: EdgeMetric[] = [];
+  const calls: boolean[] = [];
+  const originalHost = standaloneHost(env);
+  const request =
+    example.target === 'file' ? navigation('/robots.txt') : imageOf(`https://cdn.${SITE}/file.png`);
+  const { response } = await serve(
+    {
+      site: env,
+      runtime: hostedRuntime(example, calls),
+      host: {
+        ...originalHost,
+        observer: {
+          ...originalHost.observer,
+          metric: (point) => {
+            points.push(point);
+          },
+        },
+      },
+      pointer: {
+        ...site.pointer,
+        app: {
+          deploymentId: 'dpl_site',
+          scriptName: 'site-app',
+          middlewareScriptName: 'site-middleware',
+        },
+      },
+      lookups: {
+        policyLookup: Promise.resolve({
+          kind: 'found',
+          policy: DEFAULT_DELIVERY_POLICY,
+          source: 'exact',
+        }),
+        manifestLookup: Promise.resolve({
+          kind: 'found',
+          value: {
+            ...site.manifest,
+            middleware: {
+              matchers: [{ sourceRegex: example.mode === 'skipped' ? '^/elsewhere$' : '^/.*$' }],
+            },
+          },
+        }),
+      },
+    },
+    request,
+  );
+  return { status: response.status, points, calls };
+}
+
+describe('hosted middleware fallback accounting', () => {
+  it.each([
+    { target: 'file', mode: 'retry-failed', calls: [true, true, false], subrequests: 3 },
+    { target: 'image', mode: 'retry-failed', calls: [true, true, false], subrequests: 3 },
+    { target: 'file', mode: 'retry-rewritten', calls: [true, true, false], subrequests: 3 },
+    { target: 'image', mode: 'retry-rewritten', calls: [true, true, false], subrequests: 3 },
+    { target: 'file', mode: 'rewritten', calls: [true, false], subrequests: 2 },
+    { target: 'file', mode: 'skipped', calls: [], subrequests: 1 },
+    { target: 'file', mode: 'unreachable', calls: [], subrequests: 0 },
+  ] as const)('counts $target / $mode before the final answer', async (example) => {
+    const result = await hostedFallback(example);
+
+    expect(result.calls).toStrictEqual(example.calls);
+    expect(result.points).toHaveLength(1);
+    expect(result.points[0]?.subrequests).toBe(example.subrequests);
+    expect(result.status).toBe(example.mode === 'unreachable' ? 502 : 200);
+  });
+});
 
 describe('continuation dispatch accounting', () => {
   it.each([

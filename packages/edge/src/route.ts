@@ -216,7 +216,9 @@ function passthroughFor(
       colo: coloOf(input.request) ?? '',
       // What the middleware took before this gave up on it, where it is what was given up on.
       ...(middleware?.middlewareMs !== undefined && { middlewareMs: middleware.middlewareMs }),
-      ...(middleware !== undefined && { middlewareDispatches: dispatchedFor(middleware) }),
+      ...(middleware !== undefined && {
+        middlewareDispatches: middleware.middlewareDispatches ?? dispatchedFor(middleware),
+      }),
       // And what came before it was handed on (`PassthroughWait`): a record read for the request
       // that served nothing; what a document it could not serve took, reads of storage and a resume
       // let go; and a regeneration a stale record asked for on its own.
