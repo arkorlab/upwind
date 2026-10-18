@@ -27,6 +27,7 @@ import {
   keptByNobody,
   mergeScopedMiddlewareHeaders,
   removeSharedCacheOverrides,
+  safeDiagnosticField,
   serviceUnavailableResponse,
 } from './responses.ts';
 
@@ -293,7 +294,7 @@ function segmentHeaders(input: SegmentInput, rendering: Rendering, source: strin
   const middleware = input.middleware === undefined ? '' : ';mw=hit';
   headers.set(
     EDGE_DEBUG_HEADER,
-    `${input.kind};src=${source};enc=${rendering.encoding};strategy=${input.strategy.id};project=${edge.projectId};policy=${edge.policy.id};m=${manifestIdPrefix(edge.manifestId)}${middleware}`,
+    `${input.kind};src=${source};enc=${rendering.encoding};strategy=${input.strategy.id};project=${safeDiagnosticField(edge.projectId)};policy=${edge.policy.id};m=${manifestIdPrefix(edge.manifestId)}${middleware}`,
   );
   headers.delete(EDGE_VALIDATED_HEADER);
   if (edge.validated) {

@@ -13,7 +13,11 @@ import { releaseStream } from '@stayingupwind/core/util';
 import type { AssetKeepOutcome } from '@stayingupwind/host/delivery';
 
 import { applyCspReporting } from '../handlers/csp-reporting-headers.ts';
-import { nominatedBy, removeSharedCacheOverrides } from '../handlers/responses.ts';
+import {
+  nominatedBy,
+  removeSharedCacheOverrides,
+  safeDiagnosticField,
+} from '../handlers/responses.ts';
 import type { EdgeContext } from './context.ts';
 import { listsTag } from './entity-tags.ts';
 
@@ -25,8 +29,6 @@ export const FORWARDED_ASSET_HEADERS: readonly string[] = [
 ];
 const NOT_MODIFIED_STATUS = 304;
 const CACHE_CONTROL_HEADER = 'cache-control';
-/** Keep visible ASCII except the field delimiter and percent escape marker. */
-const UNSAFE_IN_DEBUG = /[^\u{20}-\u{24}\u{26}-\u{3A}\u{3C}-\u{7E}]/gu;
 
 export function assetUpstreamRequest(
   request: Request,
@@ -80,11 +82,7 @@ export function storableAssetCacheControl(ctx: EdgeContext): string {
  * than a cache entry some earlier policy left behind.
  */
 export function assetDebug(ctx: EdgeContext, strategyId: string, verdict: string): string {
-  // JSON also represents lone surrogates, which URI encoding alone refuses.
-  const projectId = ctx.projectId.replaceAll(UNSAFE_IN_DEBUG, (character) =>
-    encodeURIComponent(JSON.stringify(character).slice(1, -1)),
-  );
-  return `asset;strategy=${strategyId};${verdict};project=${projectId};policy=${ctx.policy.id}`;
+  return `asset;strategy=${strategyId};${verdict};project=${safeDiagnosticField(ctx.projectId)};policy=${ctx.policy.id}`;
 }
 
 /**

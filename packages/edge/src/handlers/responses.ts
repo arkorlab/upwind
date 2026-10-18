@@ -25,6 +25,16 @@ const NO_STORE_DIRECTIVE = 'no-store';
 const PUBLIC_DIRECTIVE = 'public';
 const BAD_GATEWAY_STATUS = 502;
 export const SERVICE_UNAVAILABLE_STATUS = 503;
+/** Keep visible ASCII except the field delimiter and percent escape marker. */
+const UNSAFE_IN_DEBUG = /[^\u{20}-\u{24}\u{26}-\u{3A}\u{3C}-\u{7E}]/gu;
+
+/** One opaque diagnostic field, including strings with lone UTF-16 surrogates. */
+export function safeDiagnosticField(value: string): string {
+  // JSON also represents lone surrogates, which URI encoding alone refuses.
+  return value.replaceAll(UNSAFE_IN_DEBUG, (character) =>
+    encodeURIComponent(JSON.stringify(character).slice(1, -1)),
+  );
+}
 
 /** A page of the edge's own, kept by no cache, with the debug header saying why it was sent. */
 export function html(body: string, status: number, debug: string): Response {

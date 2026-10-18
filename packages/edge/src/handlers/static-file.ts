@@ -31,6 +31,7 @@ import {
   keptByNobody,
   mergeScopedMiddlewareHeaders,
   removeSharedCacheOverrides,
+  safeDiagnosticField,
   serviceUnavailableResponse,
 } from './responses.ts';
 import { clientHolds, preconditionFails, requestedRange } from './static-file-conditions.ts';
@@ -195,15 +196,14 @@ function defaultCacheControl(file: StaticFileEntry): string {
  * with for a file as for a document. A cookie of either is scoped as a Function's is.
  */
 function applicationHeaders(input: StaticFileInput, headers: Headers): void {
-  const { forwarding } = input.edge;
   const configured = Object.entries(input.configured?.headers ?? {});
   for (const [name, value] of configured) {
     if (!ENTITY_HEADERS.has(name.toLowerCase())) {
-      setConfigured(headers, name, value, forwarding);
+      setConfigured(headers, name, value, input.edge.forwarding);
     }
   }
   if (input.middleware !== undefined) {
-    mergeScopedMiddlewareHeaders(headers, input.middleware.responseHeaders, forwarding);
+    mergeScopedMiddlewareHeaders(headers, input.middleware.responseHeaders, input.edge.forwarding);
   }
 }
 
@@ -232,7 +232,7 @@ function fileHeaders(input: StaticFileInput, source: string): Headers {
   // else happened to the response.
   headers.set(
     EDGE_DEBUG_HEADER,
-    `static;src=${source};project=${edge.projectId};policy=${edge.policy.id};m=${manifestIdPrefix(edge.manifestId)}${middleware}`,
+    `static;src=${source};project=${safeDiagnosticField(edge.projectId)};policy=${edge.policy.id};m=${manifestIdPrefix(edge.manifestId)}${middleware}`,
   );
   // Only an accepted validation header produces this, and validation is the only thing that reads
   // it: a candidate's own files are then told apart from the active pointer's answer, as a

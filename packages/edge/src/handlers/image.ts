@@ -50,6 +50,7 @@ import {
   mergeScopedMiddlewareHeaders,
   notModifiedResponse,
   removeSharedCacheOverrides,
+  safeDiagnosticField,
 } from './responses.ts';
 
 /**
@@ -403,9 +404,8 @@ async function optimize(input: ImageInput, imageSource: ImageSource): Promise<Op
 }
 
 function debugHeader(input: ImageAnswerInput, src: string): string {
-  const { edge } = input;
   const middleware = input.middleware === undefined ? '' : ';mw=hit';
-  return `image;src=${src};project=${edge.projectId};policy=${edge.policy.id}${middleware}`;
+  return `image;src=${src};project=${safeDiagnosticField(input.edge.projectId)};policy=${input.edge.policy.id}${middleware}`;
 }
 
 /**
