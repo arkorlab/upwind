@@ -25,5 +25,10 @@ export default defineConfig({
       },
     }),
   ],
-  test: { name: 'cache', include: ['test/**/*.test.ts'] },
+  test: {
+    name: 'cache',
+    include: ['test/**/*.test.ts'],
+    // Plugin 1.4.0 cannot read the host's module cache (cloudflare/workers-sdk#16163).
+    fsModuleCache: false,
+  },
 });
