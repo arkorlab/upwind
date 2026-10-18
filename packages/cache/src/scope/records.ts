@@ -89,13 +89,22 @@ export interface RecordDeps {
 
 type RecordArtifact = OutputSnapshot['artifacts'][number];
 
+/** The store answered, but not with the artifact a generation names. */
+export class InvalidArtifactError extends Error {
+  override name = 'InvalidArtifactError';
+}
+
 async function verifiedBytes(blobs: BlobStore, artifact: RecordArtifact): Promise<Uint8Array> {
   const bytes = await blobs.read(artifact.storageRef);
   if (bytes === undefined) {
-    throw new Error(`artifact ${artifact.sha256} (${artifact.role}) is not in storage`);
+    throw new InvalidArtifactError(
+      `artifact ${artifact.sha256} (${artifact.role}) is not in storage`,
+    );
   }
   if ((await sha256Hex(bytes)) !== artifact.sha256) {
-    throw new Error(`artifact ${artifact.sha256} (${artifact.role}) does not hash to its name`);
+    throw new InvalidArtifactError(
+      `artifact ${artifact.sha256} (${artifact.role}) does not hash to its name`,
+    );
   }
   return bytes;
 }
@@ -244,7 +253,7 @@ function packBytesOf(outputs: readonly OutputSnapshot[]): number {
 }
 
 /** What the entry's record says of its generation, laid out as a pack's header holds it. */
-function headerFieldsOf(
+export function headerFieldsOf(
   scopeId: string,
   entry: EntryRow,
   generation: GenerationRow,

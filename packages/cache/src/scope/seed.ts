@@ -27,6 +27,7 @@ import { findGeneration, insertGeneration, retireGenerations } from './generatio
 import type { EventInput } from './history.ts';
 import { type PackHeaderFields, unwritableRecord } from './records.ts';
 import { toEntry, toEntryState, toPublicGeneration, toScope } from './rows.ts';
+import { repairSeedEntries } from './seed-repair.ts';
 import { isRefusal, readScope, type Refusal, refuse, requireActiveScope } from './state.ts';
 import {
   condemnationOf,
@@ -306,13 +307,18 @@ function applySeedEntries(input: TxInput, plans: readonly SeedPlan[]): SeedEntri
   }
   const events: EventInput[] = [];
   const planned = new Set<string>();
+  const retries: SeedPlan[] = [];
   const fresh = plans.filter((plan) => {
     const { entryId } = plan.identity;
     // A batch that names one entry twice seeds it once.
-    if (planned.has(entryId) || findEntry(sql, entryId) !== undefined) {
+    if (planned.has(entryId)) {
       return false;
     }
     planned.add(entryId);
+    if (findEntry(sql, entryId) !== undefined) {
+      retries.push(plan);
+      return false;
+    }
     return true;
   });
   // An entry no record of could ever be written is left out and said so, and the rest of the
@@ -343,7 +349,8 @@ function applySeedEntries(input: TxInput, plans: readonly SeedPlan[]): SeedEntri
   for (const plan of seedable) {
     seedOne(input, plan, events);
   }
-  if (inserted === 0) {
+  const repaired = repairSeedEntries(input, retries, events);
+  if (inserted === 0 && repaired === 0) {
     return { inserted, skipped, refused, revision: revision - 1 };
   }
   record(input, events);
