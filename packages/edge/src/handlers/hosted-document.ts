@@ -38,6 +38,7 @@ import {
   bypassed,
   generationKeyOf,
   headersAfterMiddleware,
+  middlewareRequestsFlight,
   offTheEdge,
   requestAsLeft,
 } from './hosted-route.ts';
@@ -45,11 +46,9 @@ import { serveHostedFile } from './hosted-static-file.ts';
 import {
   dispatchedFor,
   followExternalRewrite,
-  handedHeaders,
   judgeHeaderRulesAhead,
   middlewareFailedReason,
   middlewareMatches,
-  type MiddlewareContinued,
   type MiddlewareOutcome,
   middlewareResponse,
   runMiddleware,
@@ -176,7 +175,8 @@ function hostedEntry(
  * Let a read the response will not wait for finish: it fills the isolate's memory for the next
  * request that wants it, and a read torn down with the response would fill nothing.
  */
-function abandon(edge: EdgeContext, preload: Preload): void {
+function abandon(edge: EdgeContext, preload: Preload | undefined): void {
+  if (preload === undefined) return;
   if (preload.kind === 'shell') {
     edge.ctx.waitUntil(preload.read);
     return;
@@ -614,18 +614,6 @@ function composeHostedDocument(
   });
 }
 
-/** Only after middleware asks for Flight: confirm the request the Function actually receives. */
-function middlewareRequestsFlight(
-  input: HostedDocumentInput,
-  middleware: MiddlewareContinued,
-  routedHeaders: Headers | undefined,
-): boolean {
-  return (
-    !forRouter(input.classification) &&
-    (routedHeaders ?? handedHeaders(input.edge, middleware.requestHeaders)).get(RSC_HEADER) === '1'
-  );
-}
-
 /** Serve the route the middleware left the request on, with the read that may already be under way. */
 function serveHostedDocument(
   input: HostedDocumentInput,
@@ -636,17 +624,20 @@ function serveHostedDocument(
   // Share the forwarded request view with a shell-less member lookup: both route gates must
   // see the same headers the application receives, while bypass checks retain the raw cookies.
   const routedHeaders = headersAfterMiddleware(input, middleware);
+  const entry = hostedEntry(manifest, classification, middleware, routedHeaders);
   // A navigation made into Flight is answered as Flight by the Function. Reuse the request view
-  // it receives, after transport fields and host credentials have been removed.
+  // it receives, after transport fields and host credentials have been removed. Unproved targets
+  // retain shipped-file precedence; a shell-less member checks its kind once the member is found.
   if (
+    entry !== undefined &&
     middleware.kind === 'continue' &&
     middleware.requestHeaders.get(RSC_HEADER) === '1' &&
-    middlewareRequestsFlight(input, middleware, routedHeaders)
+    !forRouter(classification) &&
+    middlewareRequestsFlight(input.edge, middleware, routedHeaders)
   ) {
-    if (preload !== undefined) abandon(input.edge, preload);
+    abandon(input.edge, preload);
     return input.passthrough('middleware-request-kind', middleware);
   }
-  const entry = hostedEntry(manifest, classification, middleware, routedHeaders);
   rememberRewrite(input, middleware, entry);
   const preloaded = preload !== undefined && entry?.pathname === preload.entry.pathname;
   if (preload !== undefined && !preloaded) {

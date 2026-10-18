@@ -6,14 +6,14 @@ import {
   type ProjectManifest,
   type RequestHeaderRules,
 } from '@stayingupwind/core/manifest';
-import { type RequestClass, wantsBlockingMetadata } from '@stayingupwind/core/request';
+import { type RequestClass, RSC_HEADER, wantsBlockingMetadata } from '@stayingupwind/core/request';
 import { type ResolvedPolicy, runtimeCacheOf } from '@stayingupwind/host/delivery';
 
 import { serveCachedDocument } from '../cache/document.ts';
 import { ownRecordEntry, startMemberRead } from '../cache/member.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { composePayload } from './hosted-parts.ts';
-import { bypassed, offTheEdge, requestAsLeft } from './hosted-route.ts';
+import { bypassed, middlewareRequestsFlight, offTheEdge, requestAsLeft } from './hosted-route.ts';
 import type { MiddlewareOutcome } from './middleware.ts';
 import type { PassthroughWait } from './passthrough.ts';
 
@@ -112,6 +112,15 @@ export function serveMemberWithoutShell(
     return undefined;
   }
   const { edge, manifest } = input;
+  // The static-file owner ran first. Only a real member can now change from HTML to Flight.
+  if (
+    middleware.kind === 'continue' &&
+    middleware.requestHeaders.get(RSC_HEADER) === '1' &&
+    input.classification.kind !== RSC_PAYLOAD &&
+    middlewareRequestsFlight(edge, middleware, routedHeaders)
+  ) {
+    return input.passthrough('middleware-request-kind', middleware);
+  }
   const left = requestAsLeft(input, middleware);
   const named = ownRecordEntry(member);
   const off = offTheEdge(edge, named);

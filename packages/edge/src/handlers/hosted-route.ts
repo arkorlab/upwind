@@ -1,5 +1,10 @@
 import type { ProjectManifest, RouteEntry } from '@stayingupwind/core/manifest';
-import { BYPASS_COOKIE_NAMES, bypassForHolds, hasBypassCookie } from '@stayingupwind/core/request';
+import {
+  BYPASS_COOKIE_NAMES,
+  bypassForHolds,
+  hasBypassCookie,
+  RSC_HEADER,
+} from '@stayingupwind/core/request';
 import { type HostCredentials, withoutHostCredentials } from '@stayingupwind/host/credentials';
 import { runtimeCacheOf } from '@stayingupwind/host/delivery';
 
@@ -7,7 +12,7 @@ import type { GenerationKey } from '../cache/generation-loader.ts';
 import { routeSuspectKey } from '../memory/caches.ts';
 import { isDemoted } from '../preview/pointer.ts';
 import type { EdgeContext } from '../strategies/context.ts';
-import { handedHeaders, type MiddlewareOutcome } from './middleware.ts';
+import { handedHeaders, type MiddlewareContinued, type MiddlewareOutcome } from './middleware.ts';
 import { readsCredentials, readsForwarding } from './routing-headers.ts';
 
 /**
@@ -72,6 +77,15 @@ export function headersAfterMiddleware(
       ))
     ? handedHeaders(input.edge, middleware.requestHeaders)
     : undefined;
+}
+
+/** Only after raw Flight intent: confirm the headers the Function actually receives. */
+export function middlewareRequestsFlight(
+  edge: EdgeContext,
+  middleware: MiddlewareContinued,
+  routedHeaders: Headers | undefined,
+): boolean {
+  return (routedHeaders ?? handedHeaders(edge, middleware.requestHeaders)).get(RSC_HEADER) === '1';
 }
 
 /**
