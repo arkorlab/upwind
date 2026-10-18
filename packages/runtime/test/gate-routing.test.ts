@@ -110,6 +110,7 @@ async function landing(store: Store, path: string): Promise<string | undefined> 
     headers,
     body: undefined,
     skipMiddleware: true,
+    skipHeaderRules: false,
     trace: untraced(),
   });
   return resolvedPathname === undefined || invocationTarget === undefined

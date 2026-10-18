@@ -148,6 +148,13 @@ it is whoever dispatched them. If two must overlap, give the second its own proj
 A run is an inventory of observed compatibility, not an assertion that every feature is supported.
 Beyond that, these limits are worth knowing before reading a failure as this adapter's:
 
+- **The fixture's build lifecycle runs in order.** The deploy hook uses
+  `pnpm --config.enable-pre-post-scripts=true run build`, so `prebuild` can prepare files before
+  Next.js reads the configuration and `postbuild` runs only after success. The harness's separate
+  `post-build`, appended to its build command, still runs once. A package without a build script
+  falls back to `next build`. Every stage runs without the deployment tool's credentials, and the
+  log starts with the adapter's markers derived from the built bundle.
+
 - **A fixture's environment is its own `.env` files, and the suite's own variables over them** —
   those of them that differ from the harness's. A
   suite's `env` (`createNext({ env })`) is what Next.js's deploy mode gives a Vercel deployment as its

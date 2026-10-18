@@ -17,21 +17,9 @@ const REVALIDATION_LIFETIME_MS = 30_000;
 const REVALIDATION_CAP_MS = 300_000;
 const MS_PER_SECOND = 1000;
 
-/**
- * Whether Next.js revalidates a `use cache` value it was answered, `ageMs` old, behind the render:
- * where a tag made it stale, and where its wrapper finds it past its `revalidate`, which it judges
- * once the value has been answered — but not past its `expire`, which the wrapper takes for a miss
- * and computes in front of the render.
- */
-export function revalidatedBehind(
-  validity: Validity,
-  ageMs: number,
-  revalidate: number,
-  expire: number,
-): boolean {
-  return (
-    ageMs <= expire * MS_PER_SECOND && (validity === 'stale' || ageMs > revalidate * MS_PER_SECOND)
-  );
+/** The store each `use cache` handler's reads and writes are kept under. */
+export function useCacheStore(kind: string): string {
+  return `use cache:${kind}`;
 }
 
 /**
@@ -139,7 +127,10 @@ export function holdForRevalidation(runtime: CacheRuntime, store: string, key: s
   }
   const table = tableIn(runtime);
   const id = idOf(store, key);
-  const held = table.get(id) ?? { holds: new Map<RequestContext, Hold>(), heldBy: new WeakSet() };
+  const held: Held = table.get(id) ?? {
+    holds: new Map<RequestContext, Hold>(),
+    heldBy: new WeakSet(),
+  };
   table.set(id, held);
   held.heldBy.add(context);
   if (held.holds.has(context)) {
