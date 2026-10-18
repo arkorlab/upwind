@@ -27,10 +27,11 @@ const POINTER: EdgePointer = {
   updatedAt: '2026-10-18T00:00:00.000Z',
 };
 
-function setup() {
+function setup(held = false) {
   const get = vi.fn<(key: string) => Promise<unknown>>(() => Promise.resolve(POLICY));
   const bindings: EdgeBindings = { ...env, EDGE_STATE: { get } as unknown as KVNamespace };
   const runtime = standaloneRuntime(env, { memory: createEdgeMemory(() => Date.now()) });
+  if (held) runtime.memory.policies.set(POLICY.id, POLICY);
   return { get, bindings, runtime };
 }
 
@@ -50,12 +51,15 @@ describe('a cold policy read has a storage deadline', () => {
         'default pointer': KV_DEFAULT_POLICY_KEY,
         'default policy': kvPolicyKey(FALLBACK.id),
       }[target];
+
       test.get.mockImplementation((key) => {
         if (key === targetKey) return pending.promise;
         if (key === KV_DEFAULT_POLICY_KEY) return Promise.resolve({ policyId: FALLBACK.id });
         return Promise.resolve(key === kvPolicyKey(FALLBACK.id) ? FALLBACK : null);
       });
+
       vi.spyOn(console, 'warn').mockReturnValue();
+
       vi.useFakeTimers();
       let result: Awaited<ReturnType<typeof getPolicy>> | undefined;
       const observed = (async () => {
@@ -73,7 +77,7 @@ describe('a cold policy read has a storage deadline', () => {
         pending.resolve(target === 'default pointer' ? { policyId: FALLBACK.id } : FALLBACK);
         await vi.advanceTimersByTimeAsync(0);
 
-        expect(test.get.mock.calls.length).toBe(reads);
+        expect(test.get.mock.calls).toHaveLength(reads);
         expect(test.runtime.memory.policies.peek(POLICY.id)).toBeUndefined();
         expect(test.runtime.memory.policyStandIns.peek(POLICY.id)).toBeUndefined();
       } finally {
@@ -88,8 +92,11 @@ describe('a cold policy read has a storage deadline', () => {
     async (late) => {
       const test = setup();
       const pending = Promise.withResolvers<unknown>();
+
       test.get.mockReturnValue(pending.promise);
+
       vi.spyOn(console, 'warn').mockReturnValue();
+
       vi.useFakeTimers();
       let result: Awaited<ReturnType<typeof getPolicy>> | undefined;
       const observed = (async () => {
@@ -109,7 +116,9 @@ describe('a cold policy read has a storage deadline', () => {
 
         test.get.mockResolvedValue(POLICY);
 
-        await expect(getPolicyForPointer(test.bindings, test.runtime, POINTER)).resolves.toMatchObject({
+        await expect(
+          getPolicyForPointer(test.bindings, test.runtime, POINTER),
+        ).resolves.toMatchObject({
           kind: 'found',
           policy: POLICY,
           source: 'exact',
@@ -126,13 +135,14 @@ describe('a cold policy read has a storage deadline', () => {
   it.each(['selected', 'held'] as const)(
     'keeps the %s policy free of KV reads and timers',
     async (kind) => {
-      const test = setup();
-      if (kind === 'held') test.runtime.memory.policies.set(POLICY.id, POLICY);
+      const test = setup(kind === 'held');
 
       const pointer = kind === 'selected' ? { ...POINTER, selectedPolicy: POLICY } : POINTER;
       vi.useFakeTimers();
 
-      await expect(getPolicyForPointer(test.bindings, test.runtime, pointer)).resolves.toMatchObject({
+      await expect(
+        getPolicyForPointer(test.bindings, test.runtime, pointer),
+      ).resolves.toMatchObject({
         kind: 'found',
         policy: POLICY,
         source: 'exact',
@@ -152,12 +162,15 @@ describe('a cold policy read has a storage deadline', () => {
         'default-pointer': FALLBACK,
         builtin: DEFAULT_DELIVERY_POLICY,
       }[source];
+
       test.get.mockImplementation((key) => {
         if (source === 'exact') return Promise.resolve(POLICY);
         if (key === KV_DEFAULT_POLICY_KEY) return Promise.resolve({ policyId: FALLBACK.id });
         return Promise.resolve(key === kvPolicyKey(FALLBACK.id) ? FALLBACK : null);
       });
+
       vi.spyOn(console, 'warn').mockReturnValue();
+
       vi.useFakeTimers();
 
       await expect(getPolicy(test.bindings, test.runtime, policyId)).resolves.toMatchObject({
@@ -172,10 +185,14 @@ describe('a cold policy read has a storage deadline', () => {
   it('lets a legacy pointer prerequisite use the existing safe policy after a KV timeout', async () => {
     const test = setup();
     const pending = Promise.withResolvers<unknown>();
+
     test.get.mockReturnValue(pending.promise);
+
     const ctx = createExecutionContext();
     const request = navigation('/');
+
     vi.spyOn(console, 'warn').mockReturnValue();
+
     vi.useFakeTimers();
     let answered = false;
     const response = (async () => {
@@ -197,7 +214,7 @@ describe('a cold policy read has a storage deadline', () => {
 
           const ready = await routing.policyReady();
           return new Response(
-            `${ready.state.policy.assets.backend}/${ready.state.policy.runtimeCache.generations}`,
+            `${ready.state.policy.assets.backend}/${ready.state.policy.runtimeCache?.generations}`,
           );
         },
       );
@@ -226,11 +243,14 @@ describe('a cold policy read has a storage deadline', () => {
     const direct = Promise.withResolvers<unknown>();
     const pointer = Promise.withResolvers<unknown>();
     const fallback = Promise.withResolvers<unknown>();
+
     test.get.mockImplementation((key) => {
       if (key === kvPolicyKey(POLICY.id)) return direct.promise;
       return key === KV_DEFAULT_POLICY_KEY ? pointer.promise : fallback.promise;
     });
+
     vi.spyOn(console, 'warn').mockReturnValue();
+
     vi.useFakeTimers();
     let result: Awaited<ReturnType<typeof getPolicy>> | undefined;
     const observed = (async () => {

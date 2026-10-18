@@ -81,6 +81,7 @@ function settleLateKv(
 /** The authority answers independently of whether the cached copy can finish. */
 function answerBucket(test: Awaited<ReturnType<typeof fixture>>): void {
   const response = new Response(test.bytes);
+
   test.bucket.resolve({
     size: test.bytes.byteLength,
     body: response.body,
@@ -330,7 +331,9 @@ describe('a cold manifest cannot outlive its backend read budget', () => {
     'reads the healthy bucket before the overall deadline when copy %s stall',
     async (phase) => {
       const test = await fixture('stalled');
+
       test.kv.resolve(null);
+
       answerBucket(test);
       const copy = blockedCopy(phase);
       const runtime = { ...test.runtime, blobWorker: copy.blobWorker };
@@ -355,7 +358,9 @@ describe('a cold manifest cannot outlive its backend read budget', () => {
         expect(runtime.memory.manifests.get(test.site.manifestId)).toBeDefined();
       } finally {
         copy.pending.resolve(copy.response);
+
         test.release();
+
         await read;
       }
     },
@@ -363,7 +368,9 @@ describe('a cold manifest cannot outlive its backend read budget', () => {
 
   it('charges slow headers against the same copy body stage budget', async () => {
     const test = await fixture('stalled');
+
     test.kv.resolve(null);
+
     answerBucket(test);
     const copy = blockedCopy('headers');
     const runtime = { ...test.runtime, blobWorker: copy.blobWorker };
@@ -381,14 +388,18 @@ describe('a cold manifest cannot outlive its backend read budget', () => {
       expect(vi.getTimerCount()).toBe(0);
     } finally {
       copy.pending.resolve(copy.response);
+
       test.release();
+
       await read;
     }
   });
 
   it('accepts a timely copy without asking the bucket', async () => {
     const test = await fixture('stalled');
+
     test.kv.resolve(null);
+
     const blobWorker = vi.fn<BlobWorker>(() => Promise.resolve(new Response(test.bytes)));
     const runtime = { ...test.runtime, blobWorker };
     vi.useFakeTimers();

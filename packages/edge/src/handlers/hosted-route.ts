@@ -98,7 +98,9 @@ export function offTheEdge(
 }
 
 /** Fixed cookie names, matched only at a Set-Cookie boundary, including after an Expires comma. */
+// eslint-disable-next-line security/detect-non-literal-regexp -- Fixed core cookie-name list.
 const MIDDLEWARE_BYPASS_COOKIE = new RegExp(
+  // eslint-disable-next-line unicorn/prefer-string-raw -- Avoid a new module startup tag call.
   `(?:^|,)\\s*(?:${BYPASS_COOKIE_NAMES.join('|')})\\s*=`,
   'u',
 );
@@ -121,9 +123,9 @@ function bypassHeaders(
   const reads =
     known?.credentials === credentials
       ? known.reads
-      : conditions.some((condition) => {
-          return readsCredentials(condition, credentials) || readsForwarding(condition);
-        });
+      : conditions.some(
+          (condition) => readsCredentials(condition, credentials) || readsForwarding(condition),
+        );
   if (known?.credentials !== credentials) bypassReaders.set(conditions, { credentials, reads });
   return reads ? handedHeaders(edge, headers) : headers;
 }

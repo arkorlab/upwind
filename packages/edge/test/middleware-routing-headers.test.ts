@@ -1,4 +1,5 @@
 import type { ProjectManifest } from '@stayingupwind/core/manifest';
+import { EDGE_BYPASS_COOKIE } from '@stayingupwind/core/request';
 import { DEFAULT_DELIVERY_POLICY } from '@stayingupwind/host/delivery';
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
@@ -225,7 +226,7 @@ const EXAMPLES: readonly Example[] = [
   {
     label: 'middleware edge recovery cookie prevents composition',
     kind: 'unchanged',
-    setCookie: '__arkor_edge_bypass=1; Path=/',
+    setCookie: `${EDGE_BYPASS_COOKIE}=1; Path=/`,
     shell: false,
   },
   {
@@ -250,7 +251,7 @@ const EXAMPLES: readonly Example[] = [
     label: 'the raw edge recovery cookie check survives application sanitization',
     kind: 'unchanged',
     override: 'cookie',
-    overrideValue: '__arkor_edge_bypass=1',
+    overrideValue: `${EDGE_BYPASS_COOKIE}=1`,
     shell: false,
   },
   {

@@ -6,7 +6,7 @@ import type { EdgeRuntime } from '../edge-runtime.ts';
 import { type HeldPointer, routeSuspectKey } from '../memory/caches.ts';
 import { logWarn } from '../observability/logger.ts';
 import { getManifest, getPolicyForPointer } from './manifest.ts';
-import { type HoldRefresh, type Lookup, lookup, MISSING } from './storage.ts';
+import { boundedLookup, type HoldRefresh, type Lookup, MISSING } from './storage.ts';
 
 export const EDGE_MODE: EdgePointer['mode'] = 'edge';
 
@@ -53,6 +53,8 @@ export interface PointerKind<P extends EdgePointer, T> {
 
 /** KV edge cache for the pointer; the isolate cache in front of it lasts 10 s. */
 const POINTER_KV_CACHE_TTL_SECONDS = 30;
+/** A cold or background pointer read gives up on KV without holding an absence. */
+const POINTER_READ_BUDGET_MS = 2000;
 
 /** What memory holds, as the kind that wrote it reads it back (`PointerKind`). */
 function fromMemory<P extends EdgePointer>(held: HeldPointer): Lookup<P> {
@@ -96,13 +98,18 @@ async function readPointer<P extends EdgePointer>({
   env,
   key,
 }: KeyRead<P>): Promise<Lookup<P>> {
-  const raw = await lookup('pointer', { key }, async () => {
-    const stored: unknown = await env.EDGE_STATE.get(key, {
-      type: 'json',
-      cacheTtl: POINTER_KV_CACHE_TTL_SECONDS,
-    });
-    return stored ?? undefined;
-  });
+  const raw = await boundedLookup(
+    'pointer',
+    { key },
+    async () => {
+      const stored: unknown = await env.EDGE_STATE.get(key, {
+        type: 'json',
+        cacheTtl: POINTER_KV_CACHE_TTL_SECONDS,
+      });
+      return stored ?? undefined;
+    },
+    POINTER_READ_BUDGET_MS,
+  );
   if (raw.kind !== 'found') {
     return raw;
   }
