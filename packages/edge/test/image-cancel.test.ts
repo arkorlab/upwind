@@ -334,7 +334,11 @@ describe('an image request whose client leaves', () => {
       })
       .catch(() => null);
     await entered.promise;
-    await vi.advanceTimersByTimeAsync(7001);
+    await vi.advanceTimersByTimeAsync(2001);
+
+    expect(answered).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(5000);
     const beforeStorageAnswered = answered;
     late.resolve(object);
     await vi.advanceTimersByTimeAsync(0);

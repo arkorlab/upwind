@@ -29,7 +29,7 @@ import { dnsSpelling, isUnderAnyDomain } from '@stayingupwind/host/domains';
 
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeContext } from '../strategies/context.ts';
-import { imageWithin } from './image-stream.ts';
+import { imageWithin, releaseLateSource } from './image-stream.ts';
 import { decideMiddleware, type MiddlewareContinued, middlewareMatches } from './middleware.ts';
 import { readStaticFileStream, type StoredStream } from './static-file.ts';
 import { dispatchesMade, dispatchesOf, fetchUpstream, functionOfRequest } from './upstream.ts';
@@ -371,18 +371,6 @@ interface LocalFetch {
   readonly budgetMs?: number;
 }
 
-/** A source read that answered after its wait ended still has no reader for its body. */
-function releaseLateSource(pending: Promise<Response | StoredStream>): void {
-  void pending
-    .then((response) => {
-      releaseStream(response.body, 'image source abandoned');
-      return null;
-    })
-    .catch(() => {
-      // A fetch cancelled with its request usually fails instead of answering.
-    });
-}
-
 async function fetchLocal(
   local: LocalContext,
   request: Request,
@@ -448,7 +436,11 @@ async function readBlob(
   }
   // Storage's requests are the source's as well: the blob Worker's, the bucket's, or both.
   const stopped = new AbortController();
-  const progress = { signal: AbortSignal.any([signal, stopped.signal]), requests: 0 };
+  const progress = {
+    signal: AbortSignal.any([signal, stopped.signal]),
+    requests: 0,
+    ownsDeadline: true as const,
+  };
   const pending = readStaticFileStream(edge, file, progress);
   let read: StoredStream;
   try {

@@ -1,4 +1,5 @@
 import type { ProjectManifest } from '@stayingupwind/core/manifest';
+import { EDGE_DEBUG_HEADER } from '@stayingupwind/core/request';
 import { DEFAULT_DELIVERY_POLICY } from '@stayingupwind/host/delivery';
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
@@ -20,6 +21,7 @@ async function delayedPolicyFile(
   options: {
     readonly method?: string;
     readonly privateDelivery?: boolean;
+    readonly policyId?: string;
     readonly match?: string;
     readonly dispatchApp?: EdgeRuntime['dispatchApp'];
   } = {},
@@ -57,7 +59,7 @@ async function delayedPolicyFile(
       ctx,
       runtime,
       host: standaloneHost(env),
-      pointer: { ...site.pointer, app, policyId: POLICY_ID },
+      pointer: { ...site.pointer, app, policyId: options.policyId ?? POLICY_ID },
       pointerMs: 0,
       privateDelivery: options.privateDelivery ?? false,
       cspReportingPath: undefined,
@@ -71,6 +73,24 @@ async function delayedPolicyFile(
 }
 
 describe('a shipped file with a policy read still out', () => {
+  it.each([
+    { policyId: 'ordinary-policy', encoded: 'ordinary-policy' },
+    { policyId: '日本\r\n', encoded: '%E6%97%A5%E6%9C%AC%5Cr%5Cn' },
+    { policyId: 'semi;percent%\uD800', encoded: 'semi%3Bpercent%25%5Cud800' },
+  ])('encodes the unresolved policy field $encoded before streaming', async (example) => {
+    const pending = await delayedPolicyFile({ policyId: example.policyId });
+    try {
+      const response = await pending.response;
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get(EDGE_DEBUG_HEADER)).toContain(`policy=${example.encoded};`);
+      await expect(response.text()).resolves.toBe(FILE_BODY);
+    } finally {
+      pending.policy.resolve({ kind: 'unavailable' });
+      await waitOnExecutionContext(pending.ctx);
+    }
+  });
+
   it('answers HEAD from the manifest before policy arrives, retaining headers and private delivery', async () => {
     const pending = await delayedPolicyFile({ method: 'HEAD', privateDelivery: true });
     try {

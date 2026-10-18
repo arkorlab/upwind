@@ -46,7 +46,7 @@ import {
   PATTERN_BUDGET,
   passthroughReason,
 } from './handlers/passthrough.ts';
-import { serviceUnavailableResponse } from './handlers/responses.ts';
+import { safeDiagnosticField, serviceUnavailableResponse } from './handlers/responses.ts';
 import { routingReadsFor } from './handlers/routing-headers.ts';
 import { hostedFirst } from './hosted-first.ts';
 import { withPatternBudget } from './pattern-budget.ts';
@@ -574,7 +574,8 @@ function routeWithManifest(
   // with a scope poll that only document deliveries need.
   lookAtScopeOf(input);
   if (state.mode !== EDGE_MODE || state.manifest === undefined) {
-    return passthrough(state.passthroughReason);
+    // This pointer field is opaque; internal middleware reasons retain their structured fields.
+    return passthrough(safeDiagnosticField(state.passthroughReason));
   }
   const classifiedHeaders = headersToClassify(
     state.manifest,

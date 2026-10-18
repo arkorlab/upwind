@@ -42,6 +42,7 @@ const CACHEABLE_BYTES = 500_000_000;
  * it is let run, the authoritative bucket never asked.
  */
 const BLOB_WORKER_DEADLINE_MS = 2000;
+const BUCKET_READ_MS = 2000;
 /**
  * How long a manifest's body has, once the Worker has answered, and how long it may go quiet: a
  * manifest is at most `MAX_MANIFEST_BYTES`, and a cached one streams from this data center's cache.
@@ -53,6 +54,8 @@ const MANIFEST_BODY_BUDGET_MS = 2000;
 export interface FileReadProgress {
   readonly signal: AbortSignal;
   requests: number;
+  /** Opt in only while the caller bounds the whole read and releases any late body itself. */
+  readonly ownsDeadline?: true | undefined;
 }
 
 /** One range of a file's bytes, as offsets into it. */
@@ -90,6 +93,68 @@ interface ShippedFile {
   readonly byteLength: number;
 }
 
+export interface FileBody {
+  readonly body: ReadableStream<Uint8Array>;
+  /** `blob` through the blob Worker, `r2` from the bucket itself. */
+  readonly source: 'blob' | 'r2';
+  /** What the blob Worker's cache said of the read, when it was read there and the cache said. */
+  readonly cache?: string | undefined;
+}
+
+function blobKey(sha256: string): string {
+  return `blobs/${sha256}`;
+}
+
+/** From the bucket itself: where there is no blob Worker, or it did not answer with the bytes. */
+export async function readShippedBucket(
+  bucket: R2Bucket,
+  file: ShippedFile,
+  range: BlobRange | undefined,
+  progress?: FileReadProgress,
+): Promise<FileBody | undefined> {
+  // A partial read must not download the whole file before the requested bytes can leave.
+  const pending =
+    range === undefined
+      ? bucket.get(blobKey(file.sha256))
+      : bucket.get(blobKey(file.sha256), {
+          range: { offset: range.start, length: range.end - range.start + 1 },
+        });
+  let object: R2ObjectBody | null;
+  try {
+    // Image sources already own this wait and its late body (`readBlob`, in image-source.ts).
+    object = await (progress?.ownsDeadline === true
+      ? pending
+      : withDeadline(pending, BUCKET_READ_MS, 'static file storage'));
+  } catch (error) {
+    if (progress?.ownsDeadline !== true) {
+      // R2 exposes no cancellation signal: let go of any body that arrives after this owner failed.
+      void pending
+        .then((late) => {
+          releaseStream(late?.body, 'static file read abandoned');
+          return null;
+        })
+        .catch(() => null);
+    }
+    throw error;
+  }
+  if (object === null) {
+    return undefined;
+  }
+  // The object is the file only at the size the manifest gives it, which the answer goes out under
+  // with the file's tag and lifetime: one of another size — an upload cut short, a key written over
+  // — is not served as it, as the blob Worker's answer of another length is not taken either.
+  if (object.size !== file.byteLength) {
+    releaseStream(object.body, 'static file of another size');
+    logWarn('static file in storage is not the size the manifest gives it', {
+      sha256: file.sha256,
+      size: object.size,
+      byteLength: file.byteLength,
+    });
+    return undefined;
+  }
+  return { body: object.body as ReadableStream<Uint8Array>, source: 'r2' };
+}
+
 function errorDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -115,11 +180,7 @@ async function ask(
       signal:
         signal === undefined ? controller.signal : AbortSignal.any([signal, controller.signal]),
     });
-    return await withDeadline(
-      pending,
-      options?.budgetMs ?? BLOB_WORKER_DEADLINE_MS,
-      'blob worker',
-    );
+    return await withDeadline(pending, options?.budgetMs ?? BLOB_WORKER_DEADLINE_MS, 'blob worker');
   } catch (error) {
     // Past the deadline the call is let go, so an answer that comes after leaves nothing open.
     controller.abort(error);

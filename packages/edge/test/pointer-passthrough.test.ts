@@ -13,6 +13,7 @@ import {
   MIDDLEWARE_DONE_HEADER,
   MISDIRECTED_STATUS,
 } from '@stayingupwind/core/paas';
+import { EDGE_DEBUG_HEADER } from '@stayingupwind/core/request';
 import { DEFAULT_DELIVERY_POLICY } from '@stayingupwind/host/delivery';
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
@@ -436,6 +437,48 @@ describe('passthrough before unused pointer reads', () => {
       expect(asked).toStrictEqual(['site-app-2']);
     } finally {
       policy.resolve(POLICY);
+      await waitOnExecutionContext(ctx);
+    }
+  });
+});
+
+describe.each(['passthrough', 'disabled'] as const)('opaque reasons in %s pointers', (mode) => {
+  it.each([
+    { reason: 'ordinary-reason', encoded: 'ordinary-reason' },
+    { reason: '理由\r\n', encoded: '%E7%90%86%E7%94%B1%5Cr%5Cn' },
+    { reason: 'semi;percent%\uD800', encoded: 'semi%3Bpercent%25%5Cud800' },
+  ])('answers with the diagnostic field $encoded', async (example) => {
+    const site = await seedSite({ document: pprDocument() });
+    const ctx = createExecutionContext();
+    const request = navigation('/');
+    const runtime = standaloneRuntime(env, {
+      memory: createEdgeMemory(() => Date.now()),
+      dispatchApp: () => Promise.resolve(new Response('from the Function')),
+    });
+    try {
+      const response = await serveFromPointer(
+        {
+          request,
+          url: new URL(request.url),
+          env,
+          ctx,
+          runtime,
+          host: standaloneHost(env),
+          pointer: { ...site.pointer, mode, reason: example.reason },
+          pointerMs: 0,
+          privateDelivery: false,
+          cspReportingPath: undefined,
+        },
+        {
+          manifestLookup: Promise.resolve({ kind: 'found', value: site.manifest }),
+          policyLookup: Promise.resolve(POLICY),
+        },
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get(EDGE_DEBUG_HEADER)).toBe(`passthrough;reason=${example.encoded}`);
+      await expect(response.text()).resolves.toBe('from the Function');
+    } finally {
       await waitOnExecutionContext(ctx);
     }
   });

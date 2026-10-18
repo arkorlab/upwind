@@ -20,7 +20,9 @@ import type { EdgeMetric } from '../observability/metrics.ts';
 import {
   asksBlobWorker,
   type BlobRange,
+  type FileBody,
   type FileReadProgress,
+  readShippedBucket,
   readShippedFile,
 } from '../preview/blobs.ts';
 import type { StaticFileContext } from '../strategies/context.ts';
@@ -119,10 +121,6 @@ function middlewareCacheControl(
   middleware: Extract<MiddlewareResult, { kind: 'continue' }>,
 ): string | undefined {
   return middleware.responseHeaders.get('cache-control') ?? undefined;
-}
-
-function blobKey(sha256: string): string {
-  return `blobs/${sha256}`;
 }
 
 function etagOf(file: StaticFileEntry): string {
@@ -232,7 +230,7 @@ function fileHeaders(input: StaticFileInput, source: string): Headers {
   // else happened to the response.
   headers.set(
     EDGE_DEBUG_HEADER,
-    `static;src=${source};project=${safeDiagnosticField(edge.projectId)};policy=${edge.policy.id};m=${manifestIdPrefix(edge.manifestId)}${middleware}`,
+    `static;src=${source};project=${safeDiagnosticField(edge.projectId)};policy=${safeDiagnosticField(edge.policy.id)};m=${manifestIdPrefix(edge.manifestId)}${middleware}`,
   );
   // Only an accepted validation header produces this, and validation is the only thing that reads
   // it: a candidate's own files are then told apart from the active pointer's answer, as a
@@ -376,14 +374,6 @@ function errorDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-interface FileBody {
-  readonly body: ReadableStream<Uint8Array>;
-  /** `blob` through the blob Worker, `r2` from the bucket itself. */
-  readonly source: 'blob' | 'r2';
-  /** What the blob Worker's cache said of the read, when it was read there and the cache said. */
-  readonly cache?: string | undefined;
-}
-
 /** What a read of storage came to: the file's bytes, if storage holds them, and what it took. */
 interface FileRead {
   readonly file: FileBody | undefined;
@@ -417,37 +407,6 @@ function sliceStream(
   );
 }
 
-/** From the bucket itself: where there is no blob Worker, or it did not answer with the bytes. */
-async function readBucket(
-  bucket: R2Bucket,
-  file: StaticFileEntry,
-  range: BlobRange | undefined,
-): Promise<FileBody | undefined> {
-  // A partial read must not download the whole file before the requested bytes can leave.
-  const object =
-    range === undefined
-      ? await bucket.get(blobKey(file.sha256))
-      : await bucket.get(blobKey(file.sha256), {
-          range: { offset: range.start, length: range.end - range.start + 1 },
-        });
-  if (object === null) {
-    return undefined;
-  }
-  // The object is the file only at the size the manifest gives it, which the answer goes out under
-  // with the file's tag and lifetime: one of another size — an upload cut short, a key written over
-  // — is not served as it, as the blob Worker's answer of another length is not taken either.
-  if (object.size !== file.byteLength) {
-    releaseStream(object.body, 'static file of another size');
-    logWarn('static file in storage is not the size the manifest gives it', {
-      sha256: file.sha256,
-      size: object.size,
-      byteLength: file.byteLength,
-    });
-    return undefined;
-  }
-  return { body: object.body as ReadableStream<Uint8Array>, source: 'r2' };
-}
-
 /**
  * The file's bytes, or the one range of them asked for: through the blob Worker, whose tiered
  * cache is what a data center reads a file from once any data center has; from the bucket where
@@ -467,7 +426,10 @@ async function readFile(
       progress.requests += 1;
     }
     const asked = read.kind === 'unanswered' ? 1 : 0;
-    return { file: await readBucket(edge.env.ARTIFACTS, file, range), requests: asked + 1 };
+    return {
+      file: await readShippedBucket(edge.env.ARTIFACTS, file, range, progress),
+      requests: asked + 1,
+    };
   }
   // The whole file, to a request for a range: the Worker was reached without its cache in front.
   const body = range === undefined || read.partial ? read.body : sliceStream(read.body, range);

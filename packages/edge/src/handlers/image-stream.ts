@@ -8,6 +8,20 @@ export async function releaseLateImage(
   releaseStream(late?.body, 'an image cache hit that came too late');
 }
 
+/** A source read that answered after its wait ended still has no reader for its body. */
+export function releaseLateSource(
+  pending: Promise<{ readonly body: ReadableStream<Uint8Array> | null | undefined }>,
+): void {
+  void pending
+    .then((response) => {
+      releaseStream(response.body, 'image source abandoned');
+      return null;
+    })
+    .catch(() => {
+      // A fetch cancelled with its request usually fails instead of answering.
+    });
+}
+
 /** The image's bytes, and how the edge ends them without waiting for another read. */
 export interface Cuttable {
   readonly stream: ReadableStream<Uint8Array>;

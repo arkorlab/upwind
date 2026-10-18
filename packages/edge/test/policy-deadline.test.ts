@@ -77,7 +77,7 @@ describe('a cold policy read has a storage deadline', () => {
         pending.resolve(target === 'default pointer' ? { policyId: FALLBACK.id } : FALLBACK);
         await vi.advanceTimersByTimeAsync(0);
 
-        expect(test.get.mock.calls).toHaveLength(reads);
+        expect(test.get).toHaveBeenCalledTimes(reads);
         expect(test.runtime.memory.policies.peek(POLICY.id)).toBeUndefined();
         expect(test.runtime.memory.policyStandIns.peek(POLICY.id)).toBeUndefined();
       } finally {

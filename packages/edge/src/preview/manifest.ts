@@ -58,7 +58,11 @@ async function durableManifest(
     { manifestId },
     async (active) => {
       // Its own digest check: the blob Worker's copy is only ever the bucket's bytes, or nothing.
-      const cached = await readManifestCopy(runtime.blobWorker, manifestId, MANIFEST_COPY_BUDGET_MS);
+      const cached = await readManifestCopy(
+        runtime.blobWorker,
+        manifestId,
+        MANIFEST_COPY_BUDGET_MS,
+      );
       if (!active()) return;
       if (cached !== undefined) {
         return cached;

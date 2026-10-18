@@ -96,6 +96,7 @@ describe('a pointer read has its own KV deadline', () => {
 
   it('keeps a fresh held pointer free of KV reads, parsing and timers', async () => {
     const test = setup();
+
     test.runtime.memory.pointers.set(KEY, { pointer: POINTER, readAt: Date.now() });
 
     await expect(test.reader.get(test.bindings, test.runtime, KEY)).resolves.toStrictEqual({
@@ -187,8 +188,10 @@ describe('a pointer read has its own KV deadline', () => {
       old.resolve(POINTER);
       await vi.advanceTimersByTimeAsync(0);
 
-      expect(pointerReadsOut(test.runtime, KEY)).toBe(1);
-      expect(test.runtime.memory.pointers.peek(KEY)).toBeUndefined();
+      expect({
+        pending: pointerReadsOut(test.runtime, KEY),
+        held: test.runtime.memory.pointers.peek(KEY),
+      }).toStrictEqual({ pending: 1, held: undefined });
       expect(test.parse).not.toHaveBeenCalled();
       expect(vi.getTimerCount()).toBe(1);
 
@@ -209,6 +212,7 @@ describe('a pointer read has its own KV deadline', () => {
   it('keeps serving a stale pointer when its background refresh times out', async () => {
     const test = setup();
     const pending = Promise.withResolvers<unknown>();
+
     test.runtime.memory.pointers.set(KEY, { pointer: POINTER, readAt: Date.now() });
 
     test.get.mockReturnValue(pending.promise);
