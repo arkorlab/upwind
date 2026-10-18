@@ -292,7 +292,7 @@ export const prerenderSchema = z.object({
   bypassFor: z.array(uploadedRouteHasSchema).optional(),
   /** `false`: the route admits no parameters beyond the prerendered ones; recorded, not relied on. */
   parentFallbackMode: z.union([z.boolean(), z.null(), z.string()]).optional(),
-  /** A shell to be specialized in the background; recorded, not relied on. */
+  /** A partial fallback shell to be completed with its missing parameters in the background. */
   partialFallback: z.boolean().optional(),
   /**
    * The route's `ensureStatic`, on the entry of a route that has it at `navigation` (Next.js 16.4,
