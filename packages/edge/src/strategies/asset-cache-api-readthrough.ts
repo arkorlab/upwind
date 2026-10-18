@@ -233,16 +233,24 @@ const CACHE_API_READ_BUDGET_MS = 100;
 
 /** A failing or slow Cache API is a miss; the origin remains the source of truth. */
 async function lookupCache(cacheName: string, cacheKey: Request): Promise<Response | undefined> {
+  const lookup = matchAdmittedAsset(cacheName, cacheKey);
   try {
-    return await withDeadline(
-      matchAdmittedAsset(cacheName, cacheKey),
-      CACHE_API_READ_BUDGET_MS,
-      'asset cache-api read',
-    );
+    return await withDeadline(lookup, CACHE_API_READ_BUDGET_MS, 'asset cache-api read');
   } catch (error) {
+    // The deadline ends this wait, not the lookup. A hit arriving after the miss belongs to no
+    // response, so let its body go; the timely hit takes the unchanged path above.
+    void releaseLateAsset(lookup).catch(() => {
+      // A lookup that failed has no body to release; its failure was logged below.
+    });
     logWarn('asset cache-api read failed', { detail: errorDetail(error) });
     return undefined;
   }
+}
+
+/** A lookup the request gave up on owns no response by the time its hit arrives. */
+async function releaseLateAsset(lookup: Promise<Response | undefined>): Promise<void> {
+  const late = await lookup;
+  releaseStream(late?.body, 'an asset cache hit that came too late');
 }
 
 /**

@@ -2,7 +2,7 @@ import { FUNCTION_HEADER, MISDIRECTED_STATUS } from '@stayingupwind/core/paas';
 import { DEFAULT_DELIVERY_POLICY } from '@stayingupwind/host/delivery';
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { dispatchesOfFailure, fetchUpstream } from '../src/handlers/upstream.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
@@ -194,6 +194,111 @@ describe('asset dispatch failures', () => {
     expect(calls).toHaveLength(example.sent);
     expect(points.at(-1)?.kind).toBe('asset');
     expect(points.at(-1)?.subrequests).toBe(example.sent);
+
+    await response.body?.cancel();
+  });
+});
+
+/** A real asset route with only the Cache API's answer held by the test. */
+async function assetWithLookup(lookup: Promise<Response | undefined>): Promise<Response> {
+  vi.spyOn(caches, 'open').mockResolvedValue({
+    match: () => lookup,
+  } as unknown as Cache);
+  const site = await seedSite({ document: pprDocument() });
+  const request = new Request<unknown, IncomingRequestCfProperties>(ASSET);
+  const ctx = createExecutionContext();
+  const response = await serveFromPointer(
+    {
+      request,
+      url: new URL(request.url),
+      env,
+      ctx,
+      runtime: standaloneRuntime(env, {
+        memory: createEdgeMemory(() => Date.now()),
+        dispatchApp: () => {
+          return Promise.resolve(
+            new Response('origin', {
+              headers: { 'cache-control': 'no-store' },
+            }),
+          );
+        },
+      }),
+      host: standaloneHost(env),
+      pointer: site.pointer,
+      pointerMs: 0,
+      privateDelivery: false,
+      cspReportingPath: undefined,
+    },
+    {
+      manifestLookup: Promise.resolve({ kind: 'found', value: site.manifest }),
+      policyLookup: Promise.resolve({
+        kind: 'found',
+        source: 'exact',
+        policy: {
+          ...DEFAULT_DELIVERY_POLICY,
+          assets: { ...DEFAULT_DELIVERY_POLICY.assets, backend: 'cache-api-readthrough' },
+        },
+      }),
+    },
+  );
+  await waitOnExecutionContext(ctx);
+  return response;
+}
+
+describe('asset cache lookup bodies', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('releases a hit that arrives after the origin has answered the timed-out lookup', async () => {
+    const lookup = Promise.withResolvers<Response | undefined>();
+    const cancelled = vi.fn();
+    const body = new ReadableStream<Uint8Array>({ cancel: cancelled });
+    const response = await assetWithLookup(lookup.promise);
+
+    await expect(response.text()).resolves.toBe('origin');
+
+    lookup.resolve(new Response(body));
+    await vi.waitFor(() => {
+      expect(cancelled).toHaveBeenCalledExactlyOnceWith(expect.any(String));
+    });
+  });
+
+  it('handles a late cache miss after the response', async () => {
+    const lookup = Promise.withResolvers<Response | undefined>();
+    const response = await assetWithLookup(lookup.promise);
+
+    await expect(response.text()).resolves.toBe('origin');
+
+    lookup.resolve(undefined);
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+  });
+
+  it('handles a late cache failure after the response', async () => {
+    const lookup = Promise.withResolvers<Response | undefined>();
+    const response = await assetWithLookup(lookup.promise);
+
+    await expect(response.text()).resolves.toBe('origin');
+
+    lookup.reject(new Error('late cache failure'));
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+  });
+
+  it('hands a timely hit to the client without releasing its body', async () => {
+    const cancelled = vi.fn();
+    const body = new ReadableStream<Uint8Array>({ cancel: cancelled });
+    const response = await assetWithLookup(
+      Promise.resolve(
+        new Response(body, {
+          headers: { 'cache-control': CACHE_CONTROL, 'content-type': 'text/javascript' },
+        }),
+      ),
+    );
+
+    expect(response.headers.get('x-arkor-edge')).toContain('hit=1');
+    expect(cancelled).not.toHaveBeenCalled();
 
     await response.body?.cancel();
   });
