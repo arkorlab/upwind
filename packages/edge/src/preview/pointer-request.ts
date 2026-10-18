@@ -7,7 +7,7 @@ import type { EdgeRuntime } from '../edge-runtime.ts';
 import type { IncomingRequest } from '../request-context.ts';
 import type { RoutingInput } from '../route.ts';
 import type { StaticFileContext } from '../strategies/context.ts';
-import { getManifest, getPolicy, type PolicyLookup } from './manifest.ts';
+import { getManifest, getPolicyForPointer, type PolicyLookup } from './manifest.ts';
 import { usableManifest } from './pointer.ts';
 import { manifestStateFromPointer, policyFromPointer, type PreviewState } from './state.ts';
 import { heldBehind, type Lookup, MISSING } from './storage.ts';
@@ -37,7 +37,7 @@ export function startReads(input: {
 }): PointerReads {
   const { env, ctx, runtime, pointer } = input;
   return {
-    policyLookup: getPolicy(env, runtime, pointer.policyId, heldBehind(ctx)),
+    policyLookup: getPolicyForPointer(env, runtime, pointer, heldBehind(ctx)),
     manifestLookup:
       pointer.manifestId === undefined
         ? Promise.resolve(MISSING)

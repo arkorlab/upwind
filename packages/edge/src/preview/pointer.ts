@@ -5,7 +5,7 @@ import type { EdgeBindings } from '../bindings.ts';
 import type { EdgeRuntime } from '../edge-runtime.ts';
 import { type HeldPointer, routeSuspectKey } from '../memory/caches.ts';
 import { logWarn } from '../observability/logger.ts';
-import { getManifest, getPolicy } from './manifest.ts';
+import { getManifest, getPolicyForPointer } from './manifest.ts';
 import { type HoldRefresh, type Lookup, lookup, MISSING } from './storage.ts';
 
 export const EDGE_MODE: EdgePointer['mode'] = 'edge';
@@ -383,7 +383,7 @@ async function readAhead(
   // here is not held against the requests after it, as a live read's is: they ask again
   // (`holdAbsence`). It is a live read all the same, KV's day and the hedge included: the next
   // requests take what it read.
-  const reads: Promise<unknown>[] = [getPolicy(env, runtime, next.policyId, holdRefresh)];
+  const reads: Promise<unknown>[] = [getPolicyForPointer(env, runtime, next, holdRefresh)];
   if (next.manifestId !== undefined) {
     reads.push(
       getManifest(env, runtime, next.manifestId, {

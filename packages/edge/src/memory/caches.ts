@@ -27,7 +27,9 @@ const MIB = KIB * KIB;
  * Pointers, bounded by what they take rather than by their count alone: a host's pointer may carry
  * fields of its own that grow — the hostnames a project is published under, say
  * (`EdgeMemoryOptions.pointerExtraBytes`) — and is held once for every key it is read under. This
- * is about 6,500 pointers of the usual size, and fewer as they carry more.
+ * is about 6,500 pointers without a policy snapshot, and fewer as they carry more. A compact
+ * built-in selection adds 32 bytes; a full custom snapshot is charged for both its raw hint and
+ * validated copy, against the same 8 MiB bound.
  */
 const POINTER_MEMORY_MIB = 8;
 const POINTER_MEMORY_BYTES = POINTER_MEMORY_MIB * MIB;
@@ -36,13 +38,86 @@ const POINTER_MEMORY_BYTES = POINTER_MEMORY_MIB * MIB;
  * and whatever the host says its own fields take beside (`EdgeMemoryOptions.pointerExtraBytes`).
  */
 const POINTER_BYTES = 1280;
+/** The built-in literal holds no parsed copy or per-pointer validation/size memo. */
+const POLICY_BUILTIN_BYTES = 32;
+/** Conservative retained sizes for a snapshot's objects, properties and strings. */
+const POLICY_OBJECT_BYTES = 64;
+const POLICY_PROPERTY_BYTES = 32;
+const POLICY_STRING_BYTES = 24;
+const POLICY_PRIMITIVE_BYTES = 8;
+const POLICY_CHARACTER_BYTES = 2;
+/** The pointer's raw hint and the separate validated copy (`preview/manifest.ts`). */
+const POLICY_COPIES = 2;
+/** Both WeakMap entries: the validated policy and the insertion-time size held below. */
+const POLICY_MEMO_BYTES = 128;
+const POLICY_SOURCE_MAX_BYTES = (POINTER_MEMORY_BYTES - POLICY_MEMO_BYTES) / POLICY_COPIES;
+
+/** Charge an object's slots before keeping its children on the bounded work list. */
+function policyObjectBytes(
+  value: Record<string, unknown>,
+  pending: unknown[],
+  heldBytes: number,
+): number {
+  let bytes = heldBytes + POLICY_OBJECT_BYTES;
+  for (const key in value) {
+    if (!Object.hasOwn(value, key)) {
+      continue;
+    }
+    bytes += POLICY_PROPERTY_BYTES + key.length * POLICY_CHARACTER_BYTES;
+    if (bytes > POLICY_SOURCE_MAX_BYTES) {
+      return Infinity;
+    }
+    pending.push(value[key]);
+  }
+  return bytes;
+}
+
+/**
+ * Bound even a malformed public hint without serializing a second, potentially huge JSON string.
+ * Iterative so deeply nested JSON cannot exhaust the call stack; stop once the pointer cannot fit.
+ */
+function selectedPolicyBytes(snapshot: unknown): number {
+  let bytes = 0;
+  const pending = [snapshot];
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (typeof value === 'string') {
+      bytes += POLICY_STRING_BYTES + value.length * POLICY_CHARACTER_BYTES;
+    } else if (typeof value === 'object' && value !== null) {
+      bytes = policyObjectBytes(value as Record<string, unknown>, pending, bytes);
+    } else {
+      bytes += POLICY_PRIMITIVE_BYTES;
+    }
+    if (bytes > POLICY_SOURCE_MAX_BYTES) {
+      return Infinity;
+    }
+  }
+  return bytes * POLICY_COPIES + POLICY_MEMO_BYTES;
+}
 
 function pointerBytesWith(
   extra: ((pointer: EdgePointer) => number) | undefined,
 ): (held: HeldPointer, key: string) => number {
+  // Immutable pointer objects can be reinserted when their TTL is renewed. Charge them without
+  // walking the snapshot again, and let the memo go whenever the pointer itself is no longer held.
+  const selectedBytes = new WeakMap<EdgePointer, number>();
   return (held, key) => {
-    const bytes = POINTER_BYTES + key.length;
-    return extra === undefined || held.pointer === null ? bytes : bytes + extra(held.pointer);
+    let bytes = POINTER_BYTES + key.length;
+    const { pointer } = held;
+    if (pointer === null) {
+      return bytes;
+    }
+    if (pointer.selectedPolicy === 'builtin') {
+      bytes += POLICY_BUILTIN_BYTES;
+    } else if (pointer.selectedPolicy !== undefined) {
+      let selected = selectedBytes.get(pointer);
+      if (selected === undefined) {
+        selected = selectedPolicyBytes(pointer.selectedPolicy);
+        selectedBytes.set(pointer, selected);
+      }
+      bytes += selected;
+    }
+    return extra === undefined ? bytes : bytes + extra(pointer);
   };
 }
 /**

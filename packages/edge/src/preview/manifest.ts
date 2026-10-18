@@ -12,6 +12,7 @@ import {
   DEFAULT_DELIVERY_POLICY,
   type DeliveryPolicy,
   deliveryPolicySchema,
+  type EdgePointer,
 } from '@stayingupwind/host/delivery';
 import {
   KV_DEFAULT_POLICY_KEY,
@@ -646,4 +647,42 @@ export async function getPolicy(
     return { kind: 'found', policy: cached.value, source: 'exact' };
   }
   return resolvePolicyFromKv(env, runtime, policyId, false);
+}
+
+/** Parsed once per immutable pointer object; never installed in the shared policy-id cache. */
+const selectedPolicies = new WeakMap<EdgePointer, DeliveryPolicy | null>();
+
+/** The exact policy copied by the publisher, or no usable hint. */
+function selectedPolicy(pointer: EdgePointer): DeliveryPolicy | undefined {
+  if (pointer.selectedPolicy === undefined) {
+    return undefined;
+  }
+  if (pointer.selectedPolicy === 'builtin') {
+    return builtinDeliveryPolicy(pointer.policyId);
+  }
+  const cached = selectedPolicies.get(pointer);
+  if (cached !== undefined) {
+    return cached ?? undefined;
+  }
+  const parsed = deliveryPolicySchema.safeParse(pointer.selectedPolicy);
+  const policy = parsed.success && parsed.data.id === pointer.policyId ? parsed.data : null;
+  selectedPolicies.set(pointer, policy);
+  return policy ?? undefined;
+}
+
+/**
+ * Live traffic's selected policy: a publisher's exact snapshot, or the existing lookup. Policy
+ * specs never change under an id; only the pointer's selection moves. A snapshot belongs to this
+ * pointer alone, so an unrelated pointer or validation still resolves its own policy from KV.
+ */
+export function getPolicyForPointer(
+  env: EdgeBindings,
+  runtime: EdgeRuntime,
+  pointer: EdgePointer,
+  holdRefresh?: HoldRefresh,
+): Promise<PolicyLookup> {
+  const policy = selectedPolicy(pointer);
+  return policy === undefined
+    ? getPolicy(env, runtime, pointer.policyId, holdRefresh)
+    : Promise.resolve({ kind: 'found', policy, source: 'exact' });
 }
