@@ -341,6 +341,15 @@ export const edgePointerSchema = z.object({
    */
   manifestId: z.string().optional(),
   policyId: z.string().min(1),
+  /**
+   * The immutable policy this pointer selected, copied by its publisher beside its id so a cold
+   * request needs no separate policy read. `builtin` selects the frozen built-in of `policyId`,
+   * emitted only after the publisher verified that exact spec; other policies carry their full
+   * spec. An optional hint: the edge validates it independently and reads the named policy as
+   * before when it is absent, malformed or names another id. Keeping the field permissive here
+   * means a bad hint never makes the whole pointer unreadable.
+   */
+  selectedPolicy: z.unknown().optional(),
   deployment: deploymentFingerprintSchema.optional(),
   /**
    * The project has handed CSP nonces to the edge.
