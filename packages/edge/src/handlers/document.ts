@@ -59,7 +59,7 @@ import {
 } from './middleware.ts';
 import { observeServed } from './observer.ts';
 import type { PassthroughWait } from './passthrough.ts';
-import { dispatchedSoFar } from './upstream.ts';
+import { dispatchedSoFar, dispatchesMade } from './upstream.ts';
 
 /** What a hosted application's middleware decided for this request, when the edge ran it. */
 type MiddlewareContinue = Extract<MiddlewareResult, { kind: 'continue' }>;
@@ -700,13 +700,15 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
       body: head ? null : wireBody(delivery.wire),
     });
   }
+  // The report adds a redispatch separately; an unavailable dispatcher sent no first request.
+  const subrequests = Number(dispatchesMade(handle.response) > 0);
   if (clientLeft()) {
     // The resume went with the client: nothing is spliced for nobody, and what became of the
     // document is the client's cancel, not a resume that failed, which the route's reports count.
     edge.ctx.waitUntil(releaseUpstream(upstream));
     const outcome: SpliceOutcome = { kind: 'client-cancelled', forwarded: 0 };
     const dispatched = dispatchedSoFar(handle.response);
-    edge.ctx.waitUntil(reportOutcome({ input, outcome, ...read, subrequests: 1, dispatched }));
+    edge.ctx.waitUntil(reportOutcome({ input, outcome, ...read, subrequests, dispatched }));
     return composeDocument(input, {
       startedAt: compositionStarted,
       headers,
@@ -738,7 +740,7 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
       // Where the resume went, as far as it got: the Worker that answered or failed, or the one it
       // was still out to when the first-byte timeout ended it — the report waits for none of them.
       const dispatched = dispatchedSoFar(handle.response);
-      await reportOutcome({ input, outcome, ...read, subrequests: 1, dispatched });
+      await reportOutcome({ input, outcome, ...read, subrequests, dispatched });
     })(),
   );
   return composeDocument(input, {

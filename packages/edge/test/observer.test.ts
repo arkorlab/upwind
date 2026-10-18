@@ -1,4 +1,5 @@
 import type { ImagesConfig } from '@stayingupwind/core/images';
+import { FUNCTION_HEADER, MISDIRECTED_STATUS } from '@stayingupwind/core/paas';
 import { concatBytes, encodeUtf8 } from '@stayingupwind/core/util';
 import type { EdgePointer } from '@stayingupwind/host/delivery';
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
@@ -8,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 import type { EdgeHost } from '../src/edge-host.ts';
 import type { EdgeRuntime } from '../src/edge-runtime.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
+import type { EdgeMetric } from '../src/observability/metrics.ts';
 import type { IncomingRequest } from '../src/request-context.ts';
 import { serveFromPointer } from '../src/route.ts';
 import { standaloneHost, type StandaloneEnv, standaloneRuntime } from '../src/standalone/index.ts';
@@ -138,6 +140,88 @@ function imageOf(source: string): IncomingRequest {
     headers: { accept: 'image/webp,image/*,*/*;q=0.8', 'sec-fetch-dest': 'image' },
   });
 }
+
+function clientSignal(left: boolean): AbortSignal {
+  const controller = new AbortController();
+  if (left) controller.abort();
+  return controller.signal;
+}
+
+describe('continuation dispatch accounting', () => {
+  it.each([
+    { kind: 'unsent', sent: 0, fn: undefined, outcome: 'upstream-error' },
+    { kind: 'client-left', sent: 0, fn: undefined, outcome: 'client-cancelled' },
+    { kind: 'answered', sent: 1, fn: 'app', outcome: 'ok' },
+    { kind: 'failed', sent: 1, fn: 'app', outcome: 'upstream-error' },
+    { kind: 'redispatched', sent: 2, fn: 'app-2', outcome: 'ok' },
+    { kind: 'redispatch-failed', sent: 2, fn: 'app-2', outcome: 'upstream-error' },
+  ])('records only sent requests when $kind', async (example) => {
+    const document = pprDocument();
+    const { pointer } = await seedSite({ document });
+    const points: EdgeMetric[] = [];
+    const calls: string[] = [];
+    const host = standaloneHost(env);
+    const runtime = standaloneRuntime(env, { memory: createEdgeMemory(() => Date.now()) });
+    const served: Served = {
+      site: env,
+      pointer: {
+        ...pointer,
+        app: {
+          deploymentId: 'dpl_site',
+          scriptName: 'site-app',
+          functions: { 'app-2': 'site-app-2' },
+        },
+      },
+      host: {
+        ...host,
+        observer: {
+          ...host.observer,
+          metric: (point) => {
+            points.push(point);
+          },
+        },
+      },
+      runtime: {
+        ...runtime,
+        dispatchApp:
+          example.sent === 0
+            ? undefined
+            : (script) => {
+                calls.push(script);
+                if (script === 'site-app' && example.sent === 2) {
+                  return Promise.resolve(
+                    new Response(null, {
+                      status: MISDIRECTED_STATUS,
+                      headers: { [FUNCTION_HEADER]: 'app-2' },
+                    }),
+                  );
+                }
+                return example.kind.endsWith('failed')
+                  ? Promise.reject(new Error('the continuation failed'))
+                  : Promise.resolve(htmlResponse(document.suffix));
+              },
+      },
+    };
+
+    await serve(served, navigation('/', { signal: clientSignal(example.kind === 'client-left') }));
+
+    expect(calls).toHaveLength(example.sent);
+    expect(points).toHaveLength(1);
+    expect({
+      kind: points[0]?.kind,
+      outcome: points[0]?.outcomeKind,
+      subrequests: points[0]?.subrequests,
+      fn: points[0]?.fn,
+      redispatch: points[0]?.redispatch,
+    }).toStrictEqual({
+      kind: 'document',
+      outcome: example.outcome,
+      subrequests: 1 + example.sent,
+      fn: example.fn,
+      redispatch: example.sent === 2 ? 1 : 0,
+    });
+  });
+});
 
 describe('an observer that throws', () => {
   /** Told before an answer goes out, or as it does, it neither fails one (Codex, upwind#179). */
