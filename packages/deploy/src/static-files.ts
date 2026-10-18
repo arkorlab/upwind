@@ -132,12 +132,14 @@ function underMovedPrefix(
 }
 
 /**
- * This build's files, as the manifest serves them — but none it ships under its own asset prefix's
- * `_next`, a `public/` file there. `next build` rewrites a request under that prefix to this build's
+ * This build's files, as the manifest serves them — but no public file under its own asset prefix's
+ * `_next`. `next build` rewrites a request under that prefix to this build's
  * `_next` before it looks for a file at the path (`beforeFiles`), so such a file answers no request;
  * filed under its own name, it would be found ahead of the file the request is rewritten to, which
  * the edge finds by taking the prefix off (`staticFileKey`). An explicit rewrite onto the same
- * base path still names the build's own files. The same on a first deployment as on any other.
+ * base path still names the build's own files. Their canonical storage keys are kept even when
+ * a nested base path puts them under the prefix too: taking the prefix off must still find them.
+ * The same on a first deployment as on any other.
  */
 function ownFiles(bundle: DeploymentBundle): Record<string, StaticFileEntry> {
   const prefix = staticFileAssetPrefixOf(bundle);
@@ -145,9 +147,14 @@ function ownFiles(bundle: DeploymentBundle): Record<string, StaticFileEntry> {
     prefix === undefined || prefix.assetPrefix === prefix.basePath
       ? undefined
       : `${prefix.assetPrefix}/_next/`;
+  const built = `${bundle.config.basePath}${NEXT_STATIC_PREFIX}`;
   const files: Record<string, StaticFileEntry> = {};
   for (const file of bundle.staticFiles) {
-    if (rewritten === undefined || !file.pathname.startsWith(rewritten)) {
+    if (
+      rewritten === undefined ||
+      !file.pathname.startsWith(rewritten) ||
+      file.pathname.startsWith(built)
+    ) {
       files[file.pathname] = staticFileEntry(file, bundle.config.basePath);
     }
   }
