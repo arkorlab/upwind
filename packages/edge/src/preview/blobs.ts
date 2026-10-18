@@ -49,6 +49,12 @@ const BLOB_WORKER_DEADLINE_MS = 2000;
  */
 const MANIFEST_BODY_BUDGET_MS = 2000;
 
+/** An image's cancellable storage read, counting only the requests it has actually started. */
+export interface FileReadProgress {
+  readonly signal: AbortSignal;
+  requests: number;
+}
+
 /** One range of a file's bytes, as offsets into it. */
 export interface BlobRange {
   readonly start: number;
@@ -92,17 +98,32 @@ async function ask(
   blobWorker: BlobWorker,
   path: string,
   headers: Readonly<Record<string, string>> = {},
+  signal?: AbortSignal,
 ): Promise<Response | undefined> {
+  signal?.throwIfAborted();
   const controller = new AbortController();
+  let pending: Promise<Response> | undefined;
   try {
-    return await withDeadline(
-      blobWorker(path, { headers, signal: controller.signal }),
-      BLOB_WORKER_DEADLINE_MS,
-      'blob worker',
-    );
+    pending = blobWorker(path, {
+      headers,
+      signal:
+        signal === undefined ? controller.signal : AbortSignal.any([signal, controller.signal]),
+    });
+    return await withDeadline(pending, BLOB_WORKER_DEADLINE_MS, 'blob worker');
   } catch (error) {
     // Past the deadline the call is let go, so an answer that comes after leaves nothing open.
     controller.abort(error);
+    if (signal !== undefined && pending !== undefined) {
+      void pending
+        .then((response) => {
+          releaseStream(response.body, 'image source abandoned');
+          return null;
+        })
+        .catch(() => {
+          // An abandoned image's blob fetch usually rejects instead of answering late.
+        });
+    }
+    signal?.throwIfAborted();
     logWarn('blob worker unreachable', { path, detail: errorDetail(error) });
     return undefined;
   }
@@ -182,15 +203,21 @@ export async function readShippedFile(
   blobWorker: BlobWorker | undefined,
   file: ShippedFile,
   range: BlobRange | undefined,
+  progress?: FileReadProgress,
 ): Promise<ShippedRead> {
   if (blobWorker === undefined || !asksBlobWorker(blobWorker, file)) {
     return UNASKED;
+  }
+  progress?.signal.throwIfAborted();
+  if (progress !== undefined) {
+    progress.requests += 1;
   }
   const path = `/${file.sha256}`;
   const response = await ask(
     blobWorker,
     path,
     range === undefined ? {} : { range: `bytes=${range.start}-${range.end}` },
+    progress?.signal,
   );
   if (response === undefined) {
     return UNANSWERED;

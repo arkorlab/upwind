@@ -2,6 +2,7 @@ import type { ImagesConfig } from '@stayingupwind/core/images';
 import type { ProjectManifest } from '@stayingupwind/core/manifest';
 import { concatBytes, encodeUtf8 } from '@stayingupwind/core/util';
 import { DEFAULT_DELIVERY_POLICY, type EdgePointer } from '@stayingupwind/host/delivery';
+import { blobObjectKey } from '@stayingupwind/host/storage';
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -95,6 +96,19 @@ function begin(served: Serving, source: string, signal: AbortSignal) {
   return { response, ctx };
 }
 
+function shippedFile(served: Serving, path: string) {
+  const file = served.manifest.staticFiles?.[path];
+  if (file === undefined) throw new Error('missing shipped fixture');
+  return file;
+}
+
+async function storedFile(served: Serving, path: string) {
+  const file = shippedFile(served, path);
+  const object = await served.site.ARTIFACTS.get(blobObjectKey(file.sha256));
+  if (object === null) throw new Error('missing stored fixture');
+  return object;
+}
+
 function remote(): string {
   return `https://cdn.site.example/${crypto.randomUUID()}.png`;
 }
@@ -117,14 +131,21 @@ describe('an image request whose client leaves', () => {
     vi.restoreAllMocks();
   });
 
-  it.each(['local', 'remote'])(
+  it.each(['local', 'remote', 'blob'])(
     'refuses a %s source abandoned during the preceding cache lookup',
     async (kind) => {
       const entered = Promise.withResolvers<undefined>();
       const lookup = Promise.withResolvers<undefined>();
       const fetchSource = vi.fn(() => Promise.resolve(new Response(PNG)));
       const transform = vi.fn(transformed);
-      const served = await serving(fetchSource, transform);
+      const path = `/shipped/${crypto.randomUUID()}.png`;
+      const served = await serving(
+        fetchSource,
+        transform,
+        kind === 'blob' ? { [path]: 'unread' } : undefined,
+      );
+      const storage = vi.spyOn(served.site.ARTIFACTS, 'get');
+      const metric = vi.spyOn(served.host.observer, 'metric');
       const cache = await caches.open(standaloneHost(served.site).names.imageCache);
       vi.spyOn(cache, 'match').mockImplementation(() => {
         entered.resolve(undefined);
@@ -132,7 +153,8 @@ describe('an image request whose client leaves', () => {
       });
       vi.spyOn(caches, 'open').mockResolvedValue(cache);
       const client = new AbortController();
-      const source = kind === 'local' ? `/draw/${crypto.randomUUID()}.png` : remote();
+      const local = kind === 'blob' ? path : `/draw/${crypto.randomUUID()}.png`;
+      const source = kind === 'remote' ? remote() : local;
       const run = begin(served, source, client.signal);
       await entered.promise;
 
@@ -143,10 +165,140 @@ describe('an image request whose client leaves', () => {
       await expect((await run.response).text()).resolves.toBe('image request abandoned');
       expect(fetchSource).not.toHaveBeenCalled();
       expect(transform).not.toHaveBeenCalled();
+      expect(storage).not.toHaveBeenCalled();
+      expect(metric.mock.calls.at(-1)?.[0].subrequests).toBe(0);
 
       await waitOnExecutionContext(run.ctx);
     },
   );
+
+  it.each(['bucket', 'blob-fallback'])(
+    'abandons a shipped source while its %s storage lookup waits and releases the late body',
+    async (kind) => {
+      const path = `/shipped/${crypto.randomUUID()}.png`;
+      const transform = vi.fn(transformed);
+      const served = await serving(() => never<Response>(), transform, { [path]: 'unread' });
+      const object = await storedFile(served, path);
+      const cancel = vi.spyOn(object.body, 'cancel');
+      const entered = Promise.withResolvers<undefined>();
+      const late = Promise.withResolvers<typeof object>();
+      const get = vi.spyOn(served.site.ARTIFACTS, 'get').mockImplementation(() => {
+        entered.resolve(undefined);
+        return late.promise;
+      });
+      const blob = vi.fn(() => Promise.resolve(new Response(null, { status: 404 })));
+      const metric = vi.spyOn(served.host.observer, 'metric');
+      const client = new AbortController();
+      vi.useFakeTimers();
+      const run = begin(
+        {
+          ...served,
+          runtime: { ...served.runtime, blobWorker: kind === 'bucket' ? undefined : blob },
+        },
+        path,
+        client.signal,
+      );
+      let answered = false;
+      void run.response
+        .then(() => {
+          answered = true;
+          return null;
+        })
+        .catch(() => null);
+      await entered.promise;
+      client.abort(new Error('client left during storage'));
+      await vi.advanceTimersByTimeAsync(0);
+      const beforeStorageAnswered = answered;
+
+      late.resolve(object);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(beforeStorageAnswered).toBe(true);
+      expect((await run.response).status).toBe(502);
+      expect(cancel).toHaveBeenCalledWith('image source abandoned');
+      expect(get).toHaveBeenCalledTimes(1);
+      expect(blob).toHaveBeenCalledTimes(kind === 'bucket' ? 0 : 1);
+      expect(metric.mock.calls.at(-1)?.[0].subrequests).toBe(kind === 'bucket' ? 1 : 2);
+      expect(transform).not.toHaveBeenCalled();
+
+      await waitOnExecutionContext(run.ctx);
+    },
+  );
+
+  it('starts no bucket fallback after a shipped source was abandoned during its blob lookup', async () => {
+    const path = `/shipped/${crypto.randomUUID()}.png`;
+    const transform = vi.fn(transformed);
+    const served = await serving(() => never<Response>(), transform, { [path]: 'unread' });
+    const file = shippedFile(served, path);
+    const late = Promise.withResolvers<Response>();
+    const entered = Promise.withResolvers<AbortSignal | undefined>();
+    const blob = vi.fn((_path: string, init: RequestInit) => {
+      entered.resolve(init.signal ?? undefined);
+      return late.promise;
+    });
+    const get = vi.spyOn(served.site.ARTIFACTS, 'get').mockResolvedValue(null);
+    const metric = vi.spyOn(served.host.observer, 'metric');
+    const cancel = vi.fn();
+    const client = new AbortController();
+    vi.useFakeTimers();
+    const run = begin(
+      { ...served, runtime: { ...served.runtime, blobWorker: blob } },
+      path,
+      client.signal,
+    );
+    const upstream = await entered.promise;
+    client.abort(new Error('client left during blob lookup'));
+    await vi.advanceTimersByTimeAsync(2100);
+    late.resolve(
+      new Response(new ReadableStream<Uint8Array>({ cancel }), {
+        headers: { etag: `"${file.sha256}"` },
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(upstream?.aborted).toBe(true);
+    expect((await run.response).status).toBe(502);
+    expect(get).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledWith('image source abandoned');
+    expect(metric.mock.calls.at(-1)?.[0].subrequests).toBe(1);
+    expect(transform).not.toHaveBeenCalled();
+
+    await waitOnExecutionContext(run.ctx);
+  });
+
+  it('bounds a shipped source storage lookup by the source deadline and releases its late body', async () => {
+    const path = `/shipped/${crypto.randomUUID()}.png`;
+    const served = await serving(() => never<Response>(), transformed, { [path]: 'unread' });
+    const object = await storedFile(served, path);
+    const cancel = vi.spyOn(object.body, 'cancel');
+    const entered = Promise.withResolvers<undefined>();
+    const late = Promise.withResolvers<typeof object>();
+    vi.spyOn(served.site.ARTIFACTS, 'get').mockImplementation(() => {
+      entered.resolve(undefined);
+      return late.promise;
+    });
+    const client = new AbortController();
+    vi.useFakeTimers();
+    const run = begin(served, path, client.signal);
+    let answered = false;
+    void run.response
+      .then(() => {
+        answered = true;
+        return null;
+      })
+      .catch(() => null);
+    await entered.promise;
+    await vi.advanceTimersByTimeAsync(7001);
+    const beforeStorageAnswered = answered;
+    late.resolve(object);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(beforeStorageAnswered).toBe(true);
+    expect((await run.response).status).toBe(504);
+    expect(cancel).toHaveBeenCalledWith('image source abandoned');
+
+    await waitOnExecutionContext(run.ctx);
+  });
 
   it('refuses a source abandoned after source middleware without losing its dispatch count', async () => {
     const entered = Promise.withResolvers<undefined>();

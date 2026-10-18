@@ -17,7 +17,12 @@ import { releaseStream } from '@stayingupwind/core/util';
 
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeMetric } from '../observability/metrics.ts';
-import { asksBlobWorker, type BlobRange, readShippedFile } from '../preview/blobs.ts';
+import {
+  asksBlobWorker,
+  type BlobRange,
+  type FileReadProgress,
+  readShippedFile,
+} from '../preview/blobs.ts';
 import type { StaticFileContext } from '../strategies/context.ts';
 import { setConfigured } from './configured-headers.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
@@ -453,9 +458,14 @@ async function readFile(
   edge: StaticFileContext,
   file: StaticFileEntry,
   range: BlobRange | undefined,
+  progress?: FileReadProgress,
 ): Promise<FileRead> {
-  const read = await readShippedFile(edge.runtime.blobWorker, file, range);
+  const read = await readShippedFile(edge.runtime.blobWorker, file, range, progress);
   if (read.kind !== 'bytes') {
+    if (progress !== undefined) {
+      progress.signal.throwIfAborted();
+      progress.requests += 1;
+    }
     const asked = read.kind === 'unanswered' ? 1 : 0;
     return { file: await readBucket(edge.env.ARTIFACTS, file, range), requests: asked + 1 };
   }
@@ -465,18 +475,18 @@ async function readFile(
 }
 
 /** A shipped file's bytes as a stream, and the requests storage took to answer. */
-export interface StoredStream {
+export interface StoredStream extends Pick<FileRead, 'requests'> {
   /** `undefined` when storage does not hold the file. */
   readonly body: ReadableStream<Uint8Array> | undefined;
-  readonly requests: number;
 }
 
 /** A shipped file's bytes, for something the edge derives from the file rather than serves as it is. */
 export async function readStaticFileStream(
   edge: StaticFileContext,
   file: StaticFileEntry,
+  progress?: FileReadProgress,
 ): Promise<StoredStream> {
-  const read = await readFile(edge, file, undefined);
+  const read = await readFile(edge, file, undefined, progress);
   return { body: read.file?.body, requests: read.requests };
 }
 

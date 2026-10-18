@@ -28,7 +28,6 @@ import { withoutHostCredentials } from '@stayingupwind/host/credentials';
 import { dnsSpelling, isUnderAnyDomain } from '@stayingupwind/host/domains';
 
 import { logWarn } from '../observability/logger.ts';
-import { asksBlobWorker } from '../preview/blobs.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { imageWithin } from './image-stream.ts';
 import { decideMiddleware, type MiddlewareContinued, middlewareMatches } from './middleware.ts';
@@ -96,6 +95,7 @@ const UPSTREAM_INVALID = '"url" parameter is valid but upstream response is inva
 const INTERNAL_INVALID = '"url" parameter is valid but internal response is invalid';
 const TIMED_OUT = '"url" parameter is valid but upstream response timed out';
 const SOURCE_REFUSED = 'image source refused';
+const SOURCE_READ = 'image source';
 const ABANDONED = 'image request abandoned';
 
 const HTTP_INTERNAL_ERROR = 500;
@@ -123,6 +123,14 @@ function localPathname(href: string): string {
   return new URL(href, LOCAL_BASE).pathname;
 }
 
+/** The source has no visitor address or country to put back on its otherwise anonymous request. */
+function anonymousSource(edge: EdgeContext): EdgeContext {
+  return {
+    ...edge,
+    forwarding: { ...edge.forwarding, clientIp: undefined, clientCountry: undefined },
+  };
+}
+
 /**
  * The gate on a shipped file's path, decided on the request the application would see for it and
  * before anything is served: a cached result is keyed by it, so a file kept under one path is
@@ -135,7 +143,7 @@ function blobGate(edge: EdgeContext, manifest: ProjectManifest, href: string): B
   if (isReserved(manifest, url, request.headers, true)) {
     return 'reserved';
   }
-  if (!edge.validated && middlewareMatches(edge, manifest, url, request.headers)) {
+  if (!edge.validated && middlewareMatches(anonymousSource(edge), manifest, url, request.headers)) {
     return 'middleware';
   }
   return 'none';
@@ -363,8 +371,8 @@ interface LocalFetch {
   readonly budgetMs?: number;
 }
 
-/** A host's fetch that answered after its wait ended still has no reader for its body. */
-function releaseLateSource(pending: Promise<Response>): void {
+/** A source read that answered after its wait ended still has no reader for its body. */
+function releaseLateSource(pending: Promise<Response | StoredStream>): void {
   void pending
     .then((response) => {
       releaseStream(response.body, 'image source abandoned');
@@ -399,7 +407,7 @@ async function fetchLocal(
   const answer = fetchUpstream(edge.runtime, edge.app, signalled, fn);
   let response: Response;
   try {
-    response = await imageWithin(answer, signal, budgetMs, 'image source');
+    response = await imageWithin(answer, signal, budgetMs, SOURCE_READ);
   } catch (error) {
     controller.abort(error);
     releaseLateSource(answer);
@@ -423,28 +431,45 @@ async function fetchLocal(
 
 /** A shipped file from storage; its size is known, so one past the limit is refused unread. */
 async function readBlob(
-  edge: EdgeContext,
-  config: ImagesConfig,
+  local: LocalContext,
   file: StaticFileEntry,
   requests: number,
+  budgetMs = SOURCE_FETCH_BUDGET_MS,
 ): Promise<SourceResult> {
+  const { edge, config, signal } = local;
+  if (signal.aborted) {
+    return refused(HTTP_BAD_GATEWAY, ABANDONED, requests);
+  }
+  if (budgetMs <= 0) {
+    return refused(HTTP_GATEWAY_TIMEOUT, TIMED_OUT, requests);
+  }
   if (file.byteLength > sourceLimit(config)) {
     return refused(HTTP_PAYLOAD_TOO_LARGE, INTERNAL_INVALID, requests);
   }
   // Storage's requests are the source's as well: the blob Worker's, the bucket's, or both.
+  const stopped = new AbortController();
+  const progress = { signal: AbortSignal.any([signal, stopped.signal]), requests: 0 };
+  const pending = readStaticFileStream(edge, file, progress);
   let read: StoredStream;
   try {
-    read = await readStaticFileStream(edge, file);
+    read = await imageWithin(pending, signal, budgetMs, SOURCE_READ);
   } catch (error) {
+    stopped.abort(error);
+    releaseLateSource(pending);
+    const spent = requests + progress.requests;
+    if (local.signal.aborted) {
+      return refused(HTTP_BAD_GATEWAY, ABANDONED, spent);
+    }
+    if (isDeadlineError(error)) {
+      return refused(HTTP_GATEWAY_TIMEOUT, TIMED_OUT, spent);
+    }
     // The bucket failed, where the blob Worker did not answer with the bytes: Next.js's answer for
     // a source it could not fetch, rather than an exception that fails the whole request.
     logWarn('image source read failed', {
       sha256: file.sha256,
       detail: error instanceof Error ? error.message : String(error),
     });
-    // What threw is the bucket, read after the blob Worker where that was asked first.
-    const asked = asksBlobWorker(edge.runtime.blobWorker, file) ? 2 : 1;
-    return refused(HTTP_INTERNAL_ERROR, INTERNAL_INVALID, requests + asked);
+    return refused(HTTP_INTERNAL_ERROR, INTERNAL_INVALID, spent);
   }
   const spent = requests + read.requests;
   if (read.body === undefined) {
@@ -483,14 +508,14 @@ async function fetchBlob(
     return fetchLocal(local, request, { earlier: 0 });
   }
   if (source.gate === 'none') {
-    return readBlob(edge, config, source.file, 0);
+    return readBlob(local, source.file, 0);
   }
   const deadline = edge.runtime.now() + SOURCE_FETCH_BUDGET_MS;
   const { outcome, dispatches } = await decideMiddleware(edge, request, deadline);
   const left = (): number => deadline - edge.runtime.now();
   switch (outcome.kind) {
     case 'skipped': {
-      return readBlob(edge, config, source.file, dispatches);
+      return readBlob(local, source.file, dispatches, left());
     }
     case 'continue': {
       const shipped = outcome.rewritten
@@ -504,7 +529,7 @@ async function fetchBlob(
       }
       // Refused unread under a status the optimizer takes no source under.
       return sourceUnder(outcome.rewriteStatus)
-        ? readBlob(edge, config, shipped, dispatches)
+        ? readBlob(local, shipped, dispatches, left())
         : refused(HTTP_BAD_REQUEST, INTERNAL_INVALID, dispatches);
     }
     case 'responded': {
@@ -571,7 +596,7 @@ async function fetchHop(
         signal: AbortSignal.any([signal, controller.signal]),
       }),
     );
-    return await imageWithin(answer, signal, remaining, 'image source');
+    return await imageWithin(answer, signal, remaining, SOURCE_READ);
   } catch (error) {
     controller.abort(error);
     if (answer !== undefined) {
@@ -644,7 +669,11 @@ export function fetchImageSource(
   if (request.signal.aborted) {
     return Promise.resolve(refused(HTTP_BAD_GATEWAY, ABANDONED, 0));
   }
-  const local: LocalContext = { edge, config, ...request };
+  const local: LocalContext = {
+    edge: source.kind === 'blob' && source.gate === 'middleware' ? anonymousSource(edge) : edge,
+    config,
+    ...request,
+  };
   switch (source.kind) {
     case 'blob': {
       return fetchBlob(local, source);

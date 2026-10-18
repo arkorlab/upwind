@@ -2,9 +2,11 @@ import { sha256Hex, sha256HexOfText } from '@stayingupwind/core/artifact';
 import type { ImagesConfig } from '@stayingupwind/core/images';
 import {
   appRuntimeSchema,
+  type MiddlewareMatcher,
   type ProjectManifest,
   type StaticFileEntry,
 } from '@stayingupwind/core/manifest';
+import { IP_COUNTRY_HEADER } from '@stayingupwind/core/paas';
 import { concatBytes, encodeUtf8 } from '@stayingupwind/core/util';
 import { DEFAULT_DELIVERY_POLICY } from '@stayingupwind/host/delivery';
 import { blobObjectKey } from '@stayingupwind/host/storage';
@@ -12,6 +14,7 @@ import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test'
 import { env } from 'cloudflare:workers';
 import { describe, expect, it, vi } from 'vitest';
 
+import type { DispatchApp } from '../src/edge-runtime.ts';
 import { type ImageSource, imageSourceId } from '../src/handlers/image-source.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
 import { serveFromPointer } from '../src/route.ts';
@@ -62,7 +65,7 @@ async function store(bytes: Uint8Array): Promise<StaticFileEntry> {
 }
 
 /** Middleware covers only the file; the optimizer itself remains eligible for the shared cache. */
-async function serving() {
+async function serving(matchers: readonly MiddlewareMatcher[] = [{ sourceRegex: '^/gated/' }]) {
   const path = `/gated/${crypto.randomUUID()}.png`;
   const site = await seedSite({ document: pprDocument(), images: CONFIG });
   const now = png('current image');
@@ -76,12 +79,12 @@ async function serving() {
   const manifest: ProjectManifest = {
     ...site.manifest,
     deployment: { ...site.manifest.deployment, dplId: CURRENT },
-    middleware: { matchers: [{ sourceRegex: '^/gated/' }] },
+    middleware: { matchers: [...matchers] },
     staticFiles: {
       [path]: { ...own, deploymentId: CURRENT, previous: { ...kept, deploymentId: PREVIOUS } },
     },
   };
-  const middleware = vi.fn(() =>
+  const middleware = vi.fn<DispatchApp>(() =>
     Promise.resolve(new Response(null, { headers: { 'x-middleware-next': '1' } })),
   );
   const transform = vi.fn(async (source: ReadableStream<Uint8Array>) => {
@@ -93,12 +96,22 @@ async function serving() {
     dispatchApp: middleware,
     transformImage: transform,
   });
-  const get = async (dpl: string) => {
+  const get = async (dpl: string, country?: string) => {
     const query = new URLSearchParams({ url: path, w: '64', q: '75', dpl });
     const request = new Request<unknown, IncomingRequestCfProperties>(
       `https://${HOST}/_next/image?${query.toString()}`,
-      { headers: { accept: 'image/webp', 'sec-fetch-dest': 'image' } },
+      {
+        headers: {
+          accept: 'image/webp',
+          'sec-fetch-dest': 'image',
+          'cf-connecting-ip': '203.0.113.7',
+          'x-visitor-data': 'private',
+        },
+      },
     );
+    if (country !== undefined) {
+      Object.defineProperty(request, 'cf', { value: { country } });
+    }
     const ctx = createExecutionContext();
     const response = await serveFromPointer(
       {
@@ -130,6 +143,64 @@ async function serving() {
 }
 
 describe('an optimized image source identity', () => {
+  it('keeps source middleware anonymous before sharing its result between countries', async () => {
+    const served = await serving();
+    const anonymous = png('anonymous');
+    served.middleware.mockImplementation((_script, request) => {
+      const bytes = png(request.headers.get(IP_COUNTRY_HEADER) ?? 'anonymous');
+      return Promise.resolve(
+        new Response(bytes, {
+          headers: { 'content-type': 'image/png' },
+        }),
+      );
+    });
+
+    const first = await served.get(CURRENT, 'JP');
+    const second = await served.get(CURRENT, 'US');
+
+    expect(first.body).toStrictEqual(anonymous);
+    expect(second.body).toStrictEqual(anonymous);
+    expect(second.response.headers.get('x-nextjs-cache')).toBe('HIT');
+    expect(served.middleware).toHaveBeenCalledTimes(1);
+    expect(served.transform).toHaveBeenCalledTimes(1);
+
+    const source = served.middleware.mock.calls[0]?.[1];
+
+    const forwarding = ['x-forwarded-host', 'x-forwarded-proto', 'via'];
+
+    expect(forwarding.map((name) => source?.headers.get(name))).toStrictEqual([
+      HOST,
+      'https',
+      '1.1 arkor-edge',
+    ]);
+
+    for (const name of [
+      'cf-connecting-ip',
+      IP_COUNTRY_HEADER,
+      'x-forwarded-for',
+      'x-visitor-data',
+    ]) {
+      expect(source?.headers.has(name)).toBe(false);
+    }
+  });
+
+  it.each(['has', 'missing'] as const)(
+    'judges a source matcher with a %s country condition as an anonymous source',
+    async (condition) => {
+      const served = await serving([
+        {
+          sourceRegex: '^/gated/',
+          [condition]: [{ type: 'header', key: IP_COUNTRY_HEADER, value: 'JP' }],
+        },
+      ]);
+      const response = await served.get(CURRENT, 'JP');
+
+      expect(response.response.status).toBe(200);
+      expect(response.body).toStrictEqual(served.now);
+      expect(served.middleware).toHaveBeenCalledTimes(condition === 'missing' ? 1 : 0);
+    },
+  );
+
   it.each([
     { first: 'a/../local:b', second: 'b' },
     { first: String.raw`a\..\local:b`, second: 'b' },
