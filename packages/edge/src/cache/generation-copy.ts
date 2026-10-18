@@ -2,6 +2,7 @@ import { releaseStream, withDeadline } from '@stayingupwind/core/util';
 
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeContext } from '../strategies/context.ts';
+import { CacheBody } from './cache-body.ts';
 
 /**
  * A data center's copy of a delivery record, kept in the Cache API beside KV.
@@ -87,12 +88,19 @@ async function matchStamped(
   return { hit, stamps: { keptAt, revision } };
 }
 
-async function matchCopy(edge: EdgeContext, recordKey: string): Promise<RecordCopy | undefined> {
+async function matchCopy(
+  edge: EdgeContext,
+  recordKey: string,
+  reading: CacheBody,
+): Promise<RecordCopy | undefined> {
   const stamped = await matchStamped(edge, recordKey);
   if (stamped === undefined) {
     return undefined;
   }
-  return { ...stamped.stamps, bytes: await stamped.hit.arrayBuffer() };
+  const readable = reading.open(stamped.hit);
+  return readable === undefined
+    ? undefined
+    : { ...stamped.stamps, bytes: await readable.arrayBuffer() };
 }
 
 async function matchStamps(edge: EdgeContext, recordKey: string): Promise<CopyStamps | undefined> {
@@ -121,14 +129,16 @@ export async function readCopy(
   recordKey: string,
   maxAgeMs: number,
 ): Promise<RecordCopy | undefined> {
+  const reading = new CacheBody();
   try {
     const copy = await withDeadline(
-      matchCopy(edge, recordKey),
+      matchCopy(edge, recordKey, reading),
       COPY_READ_BUDGET_MS,
       'record copy read',
     );
     return copy !== undefined && young(edge, copy, maxAgeMs) ? copy : undefined;
   } catch (error) {
+    reading.stop();
     logWarn('record copy read failed', { key: recordKey, detail: errorDetail(error) });
     return undefined;
   }
