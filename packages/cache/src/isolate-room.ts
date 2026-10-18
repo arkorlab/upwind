@@ -101,7 +101,8 @@ export class IsolateRoom {
 
   /**
    * Renew `claim`, as its own request's work. One that lapsed while its request still waits or
-   * holds — its timers held up past the lapse — is counted again, as one made last.
+   * holds — its timers held up past the lapse — is counted again beside its artifact's other
+   * claims, or last where no reservation of it remains.
    */
   #renew(claim: Claim): void {
     claim.renewals += 1;
