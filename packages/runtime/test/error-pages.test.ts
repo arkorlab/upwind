@@ -169,12 +169,11 @@ describe('an edge not-found copied into an active Node response', () => {
   });
 
   it('ends HEAD without waiting for the body or its cancellation acknowledgement', async () => {
-    const cancelled = vi.fn(
-      () =>
-        new Promise<undefined>(() => {
-          // A source that never acknowledges its cancellation.
-        }),
-    );
+    const cancelled = vi.fn(() => {
+      return new Promise<undefined>(() => {
+        // A source that never acknowledges its cancellation.
+      });
+    });
     const source = new ReadableStream<Uint8Array>({ cancel: cancelled });
     const response = new CapturedResponse();
 
