@@ -16,8 +16,8 @@ export interface CandidateTarget {
 
 /** How much of the manifest id `x-arkor-edge` names, so a reader can tell which one answered. */
 export const MANIFEST_ID_PREFIX_LENGTH = 8;
-/** Visible ASCII except the field separator and percent escape marker. */
-const UNSAFE_IN_PREFIX = /[^\u{20}-\u{24}\u{26}-\u{3A}\u{3C}-\u{7E}]/gu;
+/** Non-space visible ASCII except the field separator and percent escape marker. */
+const UNSAFE_IN_PREFIX = /[^\u{21}-\u{24}\u{26}-\u{3A}\u{3C}-\u{7E}]/gu;
 
 export function manifestIdPrefix(manifestId: string): string {
   // Slice the identity first. JSON also represents a surrogate split at that boundary.
