@@ -25,10 +25,10 @@ export function generationTagValues(
   descriptor: RouteEntryDescriptor,
   render: CapturedRender,
   entryId: string,
-  classShell = descriptor.kind !== 'pages' && isClassShell(descriptor.pathname, descriptor.route),
+  isClass = descriptor.kind !== 'pages' && isClassShell(descriptor.pathname, descriptor.route),
 ): Set<string> {
   const recorded = parseCacheTagsHeader(render.headers['x-next-cache-tags']);
-  const concrete = classShell ? undefined : descriptor.pathname;
+  const concrete = isClass ? undefined : descriptor.pathname;
   const implicit =
     descriptor.kind === 'pages'
       ? []
@@ -39,7 +39,7 @@ export function generationTagValues(
   }
   // This identity survives a new render becoming complete: the immutable build still selects
   // the shared entry for later manual revalidation, even when that generation needs no resume.
-  if (descriptor.kind === 'app-page' && classShell) {
+  if (isClass && descriptor.kind === 'app-page') {
     values.add(sharedShellTagOf(entryId));
   }
   return values;

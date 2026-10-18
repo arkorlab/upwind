@@ -107,7 +107,7 @@ const HTTP_SERVER_ERROR = 500;
 interface RegenerationTarget {
   readonly descriptor: RouteEntryDescriptor;
   /** The already selected build's class/member classification; never part of the entry's key. */
-  readonly classShell?: boolean | undefined;
+  readonly isClass?: boolean | undefined;
   readonly reason: AttemptReason;
   /** The request headers Next.js lets the render see (`allowHeader`); none by default. */
   readonly allowHeader?: readonly string[] | undefined;
@@ -279,7 +279,7 @@ function tagsOf(
   render: CapturedRender,
   entryId: string,
 ): GenerationTag[] {
-  const values = [...generationTagValues(target.descriptor, render, entryId, target.classShell)];
+  const values = [...generationTagValues(target.descriptor, render, entryId, target.isClass)];
   const refused = refusedTags(values);
   if (refused !== undefined) {
     throw new RegenerationError(`the render of ${target.descriptor.pathname} ${refused.message}`, {
@@ -681,7 +681,7 @@ export async function regenerate(input: RegenerationInput): Promise<Regeneration
           render: { ...captured, headers: generationHeadersOf(target, captured) },
           attemptId: lease.attemptId,
           tags: [
-            ...generationTagValues(target.descriptor, captured, lease.entryId, target.classShell),
+            ...generationTagValues(target.descriptor, captured, lease.entryId, target.isClass),
           ],
           observedTagRevision: observed.tagRevision,
           observedLosses: observed.losses,
