@@ -8,6 +8,7 @@ import {
 
 import { nowMs } from './cache/clock.ts';
 import { requestContextFor } from './cache/context.ts';
+import { generationClassShell } from './cache/generation-tags.ts';
 import { regenerate } from './cache/regenerate.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
 import { type EntryTables, nodeHandlerOf } from './entries.ts';
@@ -99,6 +100,7 @@ export async function warmResourceRoute(input: ResourceWarmInput): Promise<Resou
         handler,
         target: {
           descriptor: entry,
+          classShell: generationClassShell(entry, shell),
           reason: 'invalidated',
           allowHeader: shell?.allowHeader,
           ...(entry.kind === 'pages' && {
