@@ -625,6 +625,7 @@ function serveHostedDocument(
   // see the same headers the application receives, while bypass checks retain the raw cookies.
   const routedHeaders = headersAfterMiddleware(input, middleware);
   const entry = hostedEntry(manifest, classification, middleware, routedHeaders);
+  rememberRewrite(input, middleware, entry);
   // A navigation made into Flight is answered as Flight by the Function. Reuse the request view
   // it receives, after transport fields and host credentials have been removed. Unproved targets
   // retain shipped-file precedence; a shell-less member checks its kind once the member is found.
@@ -636,9 +637,8 @@ function serveHostedDocument(
     middlewareRequestsFlight(input.edge, middleware, routedHeaders)
   ) {
     abandon(input.edge, preload);
-    return input.passthrough('middleware-request-kind', middleware);
+    return input.passthrough('middleware-request-kind', middleware, entry.pathname);
   }
-  rememberRewrite(input, middleware, entry);
   const preloaded = preload !== undefined && entry?.pathname === preload.entry.pathname;
   if (preload !== undefined && !preloaded) {
     abandon(input.edge, preload);

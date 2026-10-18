@@ -119,7 +119,7 @@ export function serveMemberWithoutShell(
     input.classification.kind !== RSC_PAYLOAD &&
     middlewareRequestsFlight(edge, middleware, routedHeaders)
   ) {
-    return input.passthrough('middleware-request-kind', middleware);
+    return input.passthrough('middleware-request-kind', middleware, member.members.route);
   }
   const left = requestAsLeft(input, middleware);
   const named = ownRecordEntry(member);

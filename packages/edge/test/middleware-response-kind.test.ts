@@ -18,7 +18,8 @@ import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test'
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 
-import { createEdgeMemory } from '../src/memory/caches.ts';
+import type { EdgeHost } from '../src/edge-host.ts';
+import { createEdgeMemory, rewriteSeenKey } from '../src/memory/caches.ts';
 import { serveFromPointer } from '../src/route.ts';
 import { standaloneHost, standaloneRuntime } from '../src/standalone/index.ts';
 import { htmlResponse, navigation, pprDocument, seedSite } from './helpers/site.ts';
@@ -36,6 +37,7 @@ interface Example {
   readonly added?: 'payload' | 'segment' | 'ordinary' | 'nominated' | 'credential';
   readonly rewrite?: 'file' | 'document';
   readonly missing?: boolean;
+  readonly remembered?: boolean;
 }
 
 /** A member with complete HTML: the old pre-middleware document choice can actually serve it. */
@@ -115,7 +117,7 @@ function routedManifest(
   if (!member && entry !== undefined) {
     routes['/'] = { ...entry, payload: entry.segments?.[SEGMENT] };
   }
-  if (example.rewrite === 'document' && entry !== undefined) {
+  if (entry !== undefined && (example.rewrite === 'document' || example.remembered === true)) {
     routes['/target'] = { ...entry, pathname: '/target' };
   }
   return {
@@ -154,7 +156,27 @@ async function answered(example: Example) {
           },
         });
   const calls: { readonly middleware: boolean; readonly rsc: string | null }[] = [];
-  const host = standaloneHost(env);
+  const paths: string[] = [];
+  const originalHost = standaloneHost(env);
+  const host: EdgeHost = {
+    ...originalHost,
+    observer: {
+      ...originalHost.observer,
+      metric: (point) => {
+        paths.push(point.pathname);
+      },
+    },
+  };
+  const memory = createEdgeMemory(() => Date.now());
+  const memoKey = rewriteSeenKey(site.manifestId, target);
+  if (example.remembered === true) {
+    memory.rewritesSeen.set(memoKey, {
+      kind: 'served',
+      route: '/target',
+      pathname: '/target',
+    });
+  }
+  const previousMemo = memory.rewritesSeen.get(memoKey);
   const ctx = createExecutionContext();
   const response = await serveFromPointer(
     {
@@ -163,7 +185,7 @@ async function answered(example: Example) {
       env,
       ctx,
       runtime: standaloneRuntime(env, {
-        memory: createEdgeMemory(() => Date.now()),
+        memory,
         dispatchApp: (_script, handed) => {
           const middleware = handed.headers.get(MIDDLEWARE_ONLY_HEADER) === '1';
           calls.push({ middleware, rsc: handed.headers.get(RSC_HEADER) });
@@ -222,7 +244,15 @@ async function answered(example: Example) {
   );
   const body = await response.text();
   await waitOnExecutionContext(ctx);
-  return { response, body, calls, document };
+  return {
+    response,
+    body,
+    calls,
+    document,
+    paths,
+    previousMemo,
+    memo: memory.rewritesSeen.get(memoKey),
+  };
 }
 
 /** Reuse one small chunk for hashing and upload; keep no whole-file buffer in the fixture. */
@@ -266,7 +296,7 @@ async function keepLargeFile() {
   };
 }
 
-async function digestFile(body: ReadableStream<Uint8Array>) {
+async function digestFile(body: ReadableStream<unknown>) {
   const reader = body.getReader();
   const digest = new crypto.DigestStream('SHA-256');
   const writer = digest.getWriter();
@@ -275,6 +305,8 @@ async function digestFile(body: ReadableStream<Uint8Array>) {
     for (;;) {
       const item = await reader.read();
       if (item.done) break;
+      if (!(item.value instanceof Uint8Array))
+        throw new TypeError('the shipped file returned a non-byte chunk');
       byteLength += item.value.byteLength;
       await writer.write(item.value);
     }
@@ -354,6 +386,49 @@ async function largeRewrittenFile() {
 }
 
 describe('the response kind after hosted middleware', () => {
+  it.each([
+    { example: { rewrite: 'document', added: 'payload' }, pathname: '/target' },
+    { example: { member: true, added: 'payload' }, pathname: '/[slug]' },
+    { example: { added: 'payload' }, pathname: '/' },
+  ] as const)('counts Flight under its owned route: %j', async ({ example, pathname }) => {
+    const result = await answered(example);
+
+    expect(result.body).toBe(FLIGHT);
+    expect(result.paths).toStrictEqual([pathname]);
+  });
+
+  it('remembers a document rewrite before handing Flight to the Function', async () => {
+    const result = await answered({ rewrite: 'document', added: 'payload' });
+
+    expect(result.previousMemo).toBeUndefined();
+    expect(result.memo).toStrictEqual({ kind: 'served', route: '/target', pathname: '/target' });
+    expect(result.body).toBe(FLIGHT);
+  });
+
+  it('forgets a stale rewrite when a navigation left in place becomes Flight', async () => {
+    const result = await answered({ remembered: true, added: 'payload' });
+
+    expect(result.previousMemo).toStrictEqual({
+      kind: 'served',
+      route: '/target',
+      pathname: '/target',
+    });
+    expect(result.memo).toBeUndefined();
+    expect(result.paths).toStrictEqual(['/']);
+  });
+
+  it('keeps a navigation rewrite memo unchanged for an existing router request', async () => {
+    const result = await answered({ remembered: true, incoming: 'payload' });
+
+    expect(result.previousMemo).toStrictEqual({
+      kind: 'served',
+      route: '/target',
+      pathname: '/target',
+    });
+    expect(result.memo).toStrictEqual(result.previousMemo);
+    expect(result.calls).toStrictEqual([{ middleware: true, rsc: '1' }]);
+  });
+
   it('streams an actual file above the Function buffer ceiling after a Flight rewrite', async () => {
     const result = await largeRewrittenFile();
 
