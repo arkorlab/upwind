@@ -196,10 +196,11 @@ describe('the room for the bodies of writes', () => {
     void withBodyRoom(
       BODY_ROOM_BYTES,
       WAIT_MS,
-      () =>
-        new Promise<string>(() => {
+      () => {
+        return new Promise<string>(() => {
           // Never settles, as the write of a request cancelled under it does not.
-        }),
+        });
+      },
       refused,
     ).catch(() => {
       // Nor fails: nothing of it is heard again.

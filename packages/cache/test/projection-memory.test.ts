@@ -128,13 +128,11 @@ describe('the memory an isolate builds records in', () => {
    */
   it('takes back the room of a chunk whose object was reset as it built', async () => {
     freezeClock();
-    void withProjectionMemory(
-      PROJECTION_MEMORY_BYTES,
-      () =>
-        new Promise(() => {
-          // Never settles, as the build of an object reset under it does not.
-        }),
-    ).catch(() => {
+    void withProjectionMemory(PROJECTION_MEMORY_BYTES, () => {
+      return new Promise(() => {
+        // Never settles, as the build of an object reset under it does not.
+      });
+    }).catch(() => {
       // Nor fails: nothing of it is heard again.
     });
     // Its object reset: the timer that renewed its claim never fires again.
