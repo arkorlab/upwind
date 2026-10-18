@@ -40,6 +40,9 @@ import {
   nominatedBy,
   privateCacheControl,
 } from './responses.ts';
+import { readsCredentials, readsForwarding } from './routing-headers.ts';
+
+export { readsCredentials } from './routing-headers.ts';
 
 /**
  * Run a hosted application's middleware before a shell is served.
@@ -201,65 +204,42 @@ function readAnswer(
 
 /** A rule of the application's routing, as far as its conditions go. */
 type Conditioned = Pick<MiddlewareMatcher, 'has' | 'missing'>;
-type Condition = NonNullable<Conditioned['has']>[number];
 
-/**
- * Whether a condition can read otherwise once `withoutHostCredentials` has run: it deletes the
- * host's headers, and where the host names cookies it writes the `cookie` header again. A cookie
- * condition reads that header, whichever cookie it names, so it can read otherwise wherever one on
- * the header whole can: where the host names cookies, or names the header itself. Every other
- * condition reads the same value either way.
- */
-export function readsCredentials(condition: Condition, credentials: HostCredentials): boolean {
-  if (condition.type !== 'cookie' && condition.type !== 'header') {
-    return false;
-  }
-  const name = condition.type === 'cookie' ? 'cookie' : (condition.key ?? '').toLowerCase();
-  return (
-    (name === 'cookie' && credentials.cookies.length > 0) ||
-    credentials.headers.some((header) => header.toLowerCase() === name)
-  );
-}
-
-/** What `rulesReadCredentials` found for a set of rules, and for which credentials. */
-const credentialReaders = new WeakMap<
+/** What `rulesReadForwarding` found for a set of rules, and for which credentials. */
+const forwardingReaders = new WeakMap<
   readonly Conditioned[],
   { readonly credentials: HostCredentials; readonly reads: boolean }
 >();
 
 /** Asked once for a set of rules, which a manifest holds for as long as it is held. */
-function rulesReadCredentials(
-  rules: readonly Conditioned[],
-  credentials: HostCredentials,
-): boolean {
-  const known = credentialReaders.get(rules);
+function rulesReadForwarding(rules: readonly Conditioned[], credentials: HostCredentials): boolean {
+  const known = forwardingReaders.get(rules);
   if (known?.credentials === credentials) {
     return known.reads;
   }
   const reads = rules.some((rule) => {
-    return [...(rule.has ?? []), ...(rule.missing ?? [])].some((condition) =>
-      readsCredentials(condition, credentials),
+    return [...(rule.has ?? []), ...(rule.missing ?? [])].some(
+      (condition) => readsCredentials(condition, credentials) || readsForwarding(condition),
     );
   });
-  credentialReaders.set(rules, { credentials, reads });
+  forwardingReaders.set(rules, { credentials, reads });
   return reads;
 }
 
 /**
- * The headers the application's routing judges `rules` on: without the host's own credentials
- * (`withoutHostCredentials`), which never reach the application, so a `has` or `missing` that names
- * one holds or fails as it does where Next.js judges it. They are copied only for rules with a
- * condition that can tell the two apart (`readsCredentials`), not for any condition at all: Next.js
- * writes one on `rsc` into every build with a deployment id.
+ * The headers the application's routing judges `rules` on: what forwarding hands the Function
+ * (`handedHeaders`), including the edge's forwarding values and without host credentials. Copied
+ * only for conditions that can read otherwise after forwarding, not for every header condition:
+ * Next.js writes one on unchanged `rsc` into every build with a deployment id.
  */
 export function routedHeaders(
-  edge: Pick<EdgeContext, 'host'>,
+  edge: Pick<EdgeContext, 'host' | 'forwarding'>,
   rules: readonly Conditioned[] | undefined,
   headers: Headers,
 ): Headers {
   const { credentials } = edge.host;
-  return rules !== undefined && rulesReadCredentials(rules, credentials)
-    ? withoutHostCredentials(new Headers(headers), credentials)
+  return rules !== undefined && rulesReadForwarding(rules, credentials)
+    ? handedHeaders(edge, headers)
     : headers;
 }
 
@@ -330,10 +310,10 @@ export function middlewareMatches(
 
 /**
  * The rules of `next.config` that set a response's headers, judged as the application's router
- * judges them: on the request as it came, without the host's credentials (`routedHeaders`).
+ * judges them: on the original request, with the headers forwarding supplies (`routedHeaders`).
  */
 export function headerRulesAsRouted(
-  edge: Pick<EdgeContext, 'host'>,
+  edge: Pick<EdgeContext, 'host' | 'forwarding'>,
   manifest: ProjectManifest,
   url: URL,
   headers: Headers,
@@ -352,7 +332,7 @@ export function headerRulesAsRouted(
  * after the middleware would spend the request's routing allowance twice, and could fail then.
  */
 export function judgeHeaderRulesAhead(
-  edge: Pick<EdgeContext, 'host'>,
+  edge: Pick<EdgeContext, 'host' | 'forwarding'>,
   manifest: ProjectManifest,
   url: URL,
   headers: Headers,

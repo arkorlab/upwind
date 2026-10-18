@@ -180,20 +180,16 @@ interface Answer {
 /** What a page's props are recorded with: nothing — a Pages Router page records no headers. */
 const NOTHING_RECORDED: Readonly<Record<string, string>> = {};
 
+/** Forward first, then restore the data marker the router supplies rather than taking from clients. */
+function routedPartHeaders(input: PartInput, answered: Answer): Headers {
+  const routed = routedHeaders(input.edge, input.manifest.headerRules, input.request.headers);
+  return answered.kind === 'data' ? dataRequestHeaders(routed) : routed;
+}
+
 function configuredHeadersForPart(input: PartInput, answered: Answer): ConfiguredHeaders {
   const configured =
     input.headerRules?.response ??
-    headerRulesFor(
-      input.manifest,
-      input.url,
-      routedHeaders(
-        input.edge,
-        input.manifest.headerRules,
-        answered.kind === 'data'
-          ? dataRequestHeaders(input.request.headers)
-          : input.request.headers,
-      ),
-    );
+    headerRulesFor(input.manifest, input.url, routedPartHeaders(input, answered));
   if (
     answered.kind === 'data' ||
     (input.manifest.foldedHeaderRules === undefined &&
