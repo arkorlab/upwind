@@ -183,9 +183,17 @@ export function presentGenerations(sql: SqlStorage, limit: number): GenerationRo
 }
 
 /** Pruned generations past the history retention: their metadata goes too. */
-export function deletePrunedBefore(sql: SqlStorage, before: number): number {
-  return sql.exec(
-    `DELETE FROM generations WHERE storage = 'pruned' AND publication <> 'published' AND pruned_at < ?`,
-    before,
-  ).rowsWritten;
+export function deletePrunedBefore(sql: SqlStorage, before: number, limit: number): string[] {
+  return Array.from(
+    sql.exec<{ generation_id: string }>(
+      `DELETE FROM generations WHERE generation_id IN (
+       SELECT generation_id FROM generations INDEXED BY generations_pruned
+       WHERE storage = 'pruned' AND publication <> 'published' AND pruned_at < ?
+       ORDER BY pruned_at LIMIT ?)
+     RETURNING generation_id`,
+      before,
+      limit,
+    ),
+    (row) => row.generation_id,
+  );
 }
