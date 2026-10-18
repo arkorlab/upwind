@@ -5,9 +5,12 @@ import { env } from 'cloudflare:workers';
 import { describe, expect, it, vi } from 'vitest';
 
 import { limitsOf, parseVars } from '../src/env.ts';
+import { createLogger } from '../src/logger.ts';
 import { identifyEntry, insertEntry, publishEntry } from '../src/scope/entries.ts';
 import { insertGeneration } from '../src/scope/generations.ts';
 import { type EventInput, NO_HISTORY } from '../src/scope/history.ts';
+import { blobStore } from '../src/scope/io.ts';
+import { nextRetentionAt, runRetention } from '../src/scope/retention-run.ts';
 import { applyRetention, type RetentionInput } from '../src/scope/retention.ts';
 import { applySchema } from '../src/scope/schema.ts';
 import { applySeedScope } from '../src/scope/seed.ts';
@@ -195,5 +198,151 @@ describe('retention of a frequently replaced data key', () => {
     expect(result.entries).toBe(1);
     expect(result.published).toBe(1);
     expect(result.present).toBeGreaterThan(1);
+  });
+});
+
+const CUTOFF = NOW - LIMITS.retainHistoryUnrecordedMs;
+
+async function attemptHistory(sql: SqlStorage, scopeId: string, count: number) {
+  const identity = await identifyEntry(scopeId, { kind: 'data:fetch', key: 'attempt-key' });
+  insertEntry(sql, { identity, groupInstanceId: null, revision: 2, now: NOW });
+  const add = (id: string, status: string, finished: number | null): void => {
+    sql.exec(
+      `INSERT INTO attempts (attempt_id, entry_id, reason, status, fencing_token,
+      dependency_revision, lease_expires_at, started_at, finished_at)
+      VALUES (?, ?, 'stale', ?, 1, 2, ?, ?, ?)`,
+      id,
+      identity.entryId,
+      status,
+      NOW + 10_000,
+      CUTOFF - 2000,
+      finished,
+    );
+  };
+  for (let index = 0; index < count; index += 1) {
+    add(
+      `old-${String(index).padStart(5, '0')}`,
+      index % 2 === 0 ? 'failed' : 'committed',
+      CUTOFF - 1,
+    );
+  }
+  add('at-cutoff', 'committed', CUTOFF);
+  add('recent', 'failed', NOW);
+  add('leased', 'leased', null);
+  add('uploading', 'uploading', null);
+  add('unfinished', 'failed', null);
+  // Preserve even an inconsistent live row, as the old status predicate did.
+  add('old-live', 'leased', CUTOFF - 1);
+}
+
+function remainingAttempts(sql: SqlStorage) {
+  return {
+    old: sql
+      .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM attempts
+      WHERE attempt_id LIKE 'old-%' AND status NOT IN ('leased', 'uploading')`)
+      .one().n,
+    controls: Array.from(
+      sql.exec<{ attempt_id: string }>(`SELECT attempt_id FROM attempts
+      WHERE attempt_id NOT LIKE 'old-%' OR status = 'leased' ORDER BY attempt_id`),
+      (row) => row.attempt_id,
+    ),
+  };
+}
+
+const KEPT_ATTEMPTS = ['at-cutoff', 'leased', 'old-live', 'recent', 'unfinished', 'uploading'];
+
+describe('finished attempt retention pages', () => {
+  it.each([0, 1, 199, 200, 201, 401, 1001])(
+    'deletes at most one page from %i old attempts',
+    async (count) => {
+      const { stub, scopeId } = await scopeForTest();
+      const result = await runInDurableObject(stub, async (_instance, state) => {
+        const { sql } = state.storage;
+        await attemptHistory(sql, scopeId, count);
+        const plan = state.storage.transactionSync(() => {
+          return applyRetention({
+            sql,
+            limits: LIMITS,
+            now: NOW,
+            history: NO_HISTORY,
+          });
+        });
+        return { more: plan.more, ...remainingAttempts(sql) };
+      });
+
+      expect(result.old).toBe(Math.max(0, count - 200));
+      expect(result.more).toBe(count >= 200);
+      expect(result.controls).toStrictEqual(KEPT_ATTEMPTS);
+    },
+  );
+
+  it('drains equal-timestamp pages across calls and uses the existing one-second backlog alarm', async () => {
+    const { stub, scopeId } = await scopeForTest();
+    await runInDurableObject(stub, async (_instance, state) => {
+      await attemptHistory(state.storage.sql, scopeId, 401);
+    });
+    const pages = [];
+    for (let index = 0; index < 3; index += 1) {
+      pages.push(
+        await runInDurableObject(stub, async (_instance, state) => {
+          const { sql } = state.storage;
+          const erased = await runRetention(
+            {
+              sql,
+              scopeId,
+              limits: LIMITS,
+              history: NO_HISTORY,
+              blobs: blobStore(env.ARTIFACTS, () => ({})),
+              log: createLogger(),
+              transaction: (body) => state.storage.transactionSync(body),
+            },
+            NOW,
+            undefined,
+          );
+          return { erased, next: nextRetentionAt(sql, NOW, 3_600_000), ...remainingAttempts(sql) };
+        }),
+      );
+    }
+
+    expect(pages.map((page) => page.old)).toStrictEqual([201, 1, 0]);
+    expect(pages.map((page) => page.next)).toStrictEqual([NOW + 1000, NOW + 1000, NOW + 3_600_000]);
+
+    for (const page of pages) {
+      expect(page.erased).toBe(false);
+      expect(page.controls).toStrictEqual(KEPT_ATTEMPTS);
+    }
+  });
+
+  it('rolls back a failed page and can retry it without losing or skipping attempts', async () => {
+    const { stub, scopeId } = await scopeForTest();
+    const result = await runInDurableObject(stub, async (_instance, state) => {
+      const { sql } = state.storage;
+      await attemptHistory(sql, scopeId, 401);
+      sql.exec(`CREATE TRIGGER refuse_attempt_delete BEFORE DELETE ON attempts
+        WHEN old.attempt_id = 'old-00150' BEGIN SELECT RAISE(ABORT, 'attempt delete failed'); END`);
+      const run = () => {
+        return state.storage.transactionSync(() => {
+          return applyRetention({
+            sql,
+            limits: LIMITS,
+            now: NOW,
+            history: NO_HISTORY,
+          });
+        });
+      };
+
+      expect(run).toThrow('attempt delete failed');
+
+      const afterFailure = remainingAttempts(sql);
+      sql.exec(`DROP TRIGGER refuse_attempt_delete`);
+      const plan = run();
+      return { afterFailure, afterRetry: remainingAttempts(sql), more: plan.more };
+    });
+
+    expect(result.afterFailure.old).toBe(401);
+    expect(result.afterFailure.controls).toStrictEqual(KEPT_ATTEMPTS);
+    expect(result.afterRetry.old).toBe(201);
+    expect(result.afterRetry.controls).toStrictEqual(KEPT_ATTEMPTS);
+    expect(result.more).toBe(true);
   });
 });
