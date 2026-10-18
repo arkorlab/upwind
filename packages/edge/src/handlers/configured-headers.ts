@@ -62,11 +62,25 @@ export function setConfiguredUnder(
 }
 
 /**
+ * What a redirect of `next.config` puts among a manifest's header rules: the `Location` it answers
+ * with, and nothing else. The rules are every routing rule that names a header, a redirect's
+ * included, and say nothing of which of them answers, so a `Location` judged among them may be a
+ * redirect's.
+ */
+const REDIRECT_LOCATION = 'location';
+
+/**
  * The headers the rules of `next.config` set on a request, laid on an answer a Function left them
  * off (`HEADER_RULES_LEFT_HEADER`), as the runtime lays what routing collected on its answer
  * (`withRoutingHeaders`): over the answer's own, and a cookie beside the answer's, scoped as every
  * cookie a Function answers with is. What the edge takes off every answer it hands on
  * (`forwardedResponse`) is not a rule's to put back, and a name no header can have is left off.
+ *
+ * The Function leaves off only the rules that set headers. Its redirects ahead of the middleware
+ * stay, each with its `Location`, so none is laid here: on any other answer — a path a redirect
+ * claims, which the middleware rewrote, answered by the route it was rewritten to — a redirect's
+ * `Location` would stand on a 200. A rule that names `Location` without redirecting is left off with
+ * it, since the rules cannot tell the two apart.
  */
 export function layConfiguredOver(
   headers: Headers,
@@ -75,6 +89,7 @@ export function layConfiguredOver(
 ): void {
   for (const [name, value] of Object.entries(configured.headers)) {
     if (
+      name === REDIRECT_LOCATION ||
       PASSTHROUGH_RESPONSE_HEADER_DENYLIST.includes(name) ||
       name.startsWith(PLATFORM_HEADER_PREFIX)
     ) {
