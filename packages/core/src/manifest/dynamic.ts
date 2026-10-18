@@ -6,6 +6,7 @@ import {
   patternOf,
 } from '../request/compiled-patterns.ts';
 import { conditionsHold } from '../request/conditions.ts';
+import { allowRecoveryScript } from '../request/csp.ts';
 import { execWithin, testWithin } from '../request/pattern-budget.ts';
 import { requiresLiteral } from '../request/required-literal.ts';
 import { findRouteEntry, namesNoFile, withoutAssetPrefix } from './manifest.ts';
@@ -464,20 +465,31 @@ export interface RequestHeaderRules {
   readonly document: ConfiguredHeaders;
 }
 
-// eslint-disable-next-line max-params -- mirroring avoids an intermediate map or a second interpolation per rule
+// eslint-disable-next-line max-params -- optional mirroring and policy sources reuse the same interpolation loop
 function applyHeaderSet(
   out: Record<string, string>,
   set: Readonly<Record<string, string>>,
   match: RegExpExecArray,
   references: RouterReferences | undefined,
   mirrored?: Record<string, string>,
+  recoverySources?: Readonly<Record<string, string>>,
 ): void {
   for (const [name, value] of Object.entries(set)) {
     const key = interpolateHeader(name, match, references).toLowerCase();
     const interpolated = interpolateHeader(value, match, references);
-    out[key] = interpolated;
-    if (mirrored !== undefined) {
-      mirrored[key] = interpolated;
+    const source =
+      recoverySources === undefined || key !== 'content-security-policy'
+        ? undefined
+        : recoverySources[name];
+    const permitted =
+      source === undefined
+        ? interpolated
+        : (allowRecoveryScript({ [key]: interpolated }, source)[key] ?? interpolated);
+    if (mirrored === undefined) {
+      out[key] = permitted;
+    } else {
+      out[key] = interpolated;
+      mirrored[key] = permitted;
     }
   }
 }
@@ -501,7 +513,14 @@ function configuredHeaders(
     }
     conditioned ||= rule.has !== undefined || rule.missing !== undefined;
     const set = forDocument ? (rule.documentHeaders ?? rule.headers) : rule.headers;
-    applyHeaderSet(out, set, match, manifest.routerReferences);
+    applyHeaderSet(
+      out,
+      set,
+      match,
+      manifest.routerReferences,
+      undefined,
+      forDocument ? rule.documentRecoverySources : undefined,
+    );
   }
   return { headers: out, conditioned };
 }
@@ -543,10 +562,24 @@ export function requestHeaderRulesFor(
       }
       conditioned ||= rule.has !== undefined || rule.missing !== undefined;
       if (rule.documentHeaders === undefined) {
-        applyHeaderSet(response, rule.headers, match, manifest.routerReferences, document);
+        applyHeaderSet(
+          response,
+          rule.headers,
+          match,
+          manifest.routerReferences,
+          document,
+          rule.documentRecoverySources,
+        );
       } else {
         applyHeaderSet(response, rule.headers, match, manifest.routerReferences);
-        applyHeaderSet(document, rule.documentHeaders, match, manifest.routerReferences);
+        applyHeaderSet(
+          document,
+          rule.documentHeaders,
+          match,
+          manifest.routerReferences,
+          undefined,
+          rule.documentRecoverySources,
+        );
       }
     }
   }
@@ -576,10 +609,14 @@ export function foldedHeadersFor(
       continue;
     }
     const set = compiled.rule.documentHeaders ?? compiled.rule.headers;
-    for (const [name, value] of Object.entries(set)) {
-      out[interpolateHeader(name, match, manifest.routerReferences).toLowerCase()] =
-        interpolateHeader(value, match, manifest.routerReferences);
-    }
+    applyHeaderSet(
+      out,
+      set,
+      match,
+      manifest.routerReferences,
+      undefined,
+      compiled.rule.documentRecoverySources,
+    );
   }
   return out;
 }

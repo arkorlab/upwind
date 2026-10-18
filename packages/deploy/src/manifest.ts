@@ -20,14 +20,12 @@ import {
   type AppRuntime,
   buildProjectManifest,
   computeManifestId,
-  type HeaderRule,
   MAX_MANIFEST_BYTES,
   type ProjectManifest,
   type RouteEntry,
   serializeManifest,
   type StaticFileEntry,
 } from '@stayingupwind/core/manifest';
-import { allowRecoveryScript } from '@stayingupwind/core/request';
 import { encodeUtf8 } from '@stayingupwind/core/util';
 import { EDGE_ISOLATE_BUDGET_BYTES, manifestCharge } from '@stayingupwind/host/delivery';
 import {
@@ -37,6 +35,7 @@ import {
 } from '@stayingupwind/host/next-support';
 
 import {
+  documentHeaderRule,
   type ManifestContext,
   maySetPreloadPolicy,
   middlewareMatchersOf,
@@ -276,15 +275,12 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
   // headers rather than over them: a file or an image the same rule matches carries no recovery
   // script, nor does a document the edge serves complete, and each keeps the policy the
   // application set.
-  const forDocuments = (rule: HeaderRule): HeaderRule => {
-    const widened = allowRecoveryScript(rule.headers, context.recoverySource);
-    const changed = Object.entries(rule.headers).some(([name, value]) => widened[name] !== value);
-    return changed ? { ...rule, documentHeaders: widened } : rule;
-  };
-  const headerRules = rules.map((rule) => forDocuments(rule));
+  const headerRules = rules.map((rule) => documentHeaderRule(rule, context.recoverySource));
   // A build the edge does not route folds its unconditional rules into its routes' headers; they
   // travel apart as well, widened the same way, to be laid over a regenerated page's own headers.
-  const foldedHeaderRules = foldedHeaderRulesOf(bundle)?.map((rule) => forDocuments(rule));
+  const foldedHeaderRules = foldedHeaderRulesOf(bundle)?.map((rule) =>
+    documentHeaderRule(rule, context.recoverySource),
+  );
   const staticFiles = staticFilesOf(bundle, input.previous);
   const staticFileLocales = staticFileLocalesOf(bundle);
   const staticFileAssetPrefix = staticFileAssetPrefixOf(bundle);
