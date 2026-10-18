@@ -427,7 +427,22 @@ export class Gateway {
           })
         : failure;
     }
-    return (await this.#result(response, uploadArtifactsResponseSchema)).artifacts;
+    const uploaded = (await this.#result(response, uploadArtifactsResponseSchema)).artifacts;
+    if (
+      uploaded.length !== artifacts.length ||
+      uploaded.some((artifact, index) => {
+        return (
+          artifact.sha256 !== artifacts[index]?.sha256 ||
+          artifact.byteLength !== uploads[index]?.bytes.byteLength
+        );
+      })
+    ) {
+      throw new CacheHostError('the upload batch was answered with other artifacts', {
+        code: 'internal',
+        status: response.status,
+      });
+    }
+    return uploaded;
   }
 
   /** Say the attempt is still going, so the authority does not give its lease to someone else. */
