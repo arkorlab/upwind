@@ -646,7 +646,7 @@ function serveHostedDocument(
     return input.passthrough(off, middleware, entry.pathname);
   }
   const left = requestAsLeft(input, middleware);
-  if (bypassed(manifest, entry, left.url, left.headers)) {
+  if (bypassed(input, entry, left, middleware)) {
     // The read started before the middleware ran is left to finish, as every other read this
     // function abandons is: it fills the isolate's memory for the next request that wants it.
     if (preload !== undefined && preloaded) {

@@ -94,12 +94,18 @@ function errorDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+interface BlobRequestOptions {
+  readonly signal?: AbortSignal;
+  readonly budgetMs?: number;
+}
+
 async function ask(
   blobWorker: BlobWorker,
   path: string,
   headers: Readonly<Record<string, string>> = {},
-  signal?: AbortSignal,
+  options?: BlobRequestOptions,
 ): Promise<Response | undefined> {
+  const signal = options?.signal;
   signal?.throwIfAborted();
   const controller = new AbortController();
   let pending: Promise<Response> | undefined;
@@ -109,7 +115,11 @@ async function ask(
       signal:
         signal === undefined ? controller.signal : AbortSignal.any([signal, controller.signal]),
     });
-    return await withDeadline(pending, BLOB_WORKER_DEADLINE_MS, 'blob worker');
+    return await withDeadline(
+      pending,
+      options?.budgetMs ?? BLOB_WORKER_DEADLINE_MS,
+      'blob worker',
+    );
   } catch (error) {
     // Past the deadline the call is let go, so an answer that comes after leaves nothing open.
     controller.abort(error);
@@ -217,7 +227,7 @@ export async function readShippedFile(
     blobWorker,
     path,
     range === undefined ? {} : { range: `bytes=${range.start}-${range.end}` },
-    progress?.signal,
+    progress,
   );
   if (response === undefined) {
     return UNANSWERED;
@@ -256,12 +266,17 @@ export async function readShippedFile(
 export async function readManifestCopy(
   blobWorker: BlobWorker | undefined,
   manifestId: string,
+  budgetMs?: number,
 ): Promise<ArrayBuffer | undefined> {
   if (blobWorker === undefined || !SHA256_HEX.test(manifestId)) {
     return undefined;
   }
   const path = `/manifests/${manifestId}`;
-  const response = await ask(blobWorker, path);
+  // Only the durable lookup supplies a shared stage budget; standalone callers retain both bounds.
+  const started = budgetMs === undefined ? 0 : Date.now();
+  const options =
+    budgetMs === undefined ? undefined : { budgetMs: Math.min(budgetMs, BLOB_WORKER_DEADLINE_MS) };
+  const response = await ask(blobWorker, path, {}, options);
   if (response === undefined) {
     return undefined;
   }
@@ -269,7 +284,15 @@ export async function readManifestCopy(
     letGo(response, path);
     return undefined;
   }
-  const bytes = await manifestBody(response, path);
+  const bodyBudget =
+    budgetMs === undefined
+      ? MANIFEST_BODY_BUDGET_MS
+      : Math.min(MANIFEST_BODY_BUDGET_MS, budgetMs - (Date.now() - started));
+  if (bodyBudget <= 0) {
+    letGo(response, path);
+    return undefined;
+  }
+  const bytes = await manifestBody(response, path, bodyBudget);
   if (bytes === undefined) {
     return undefined;
   }
@@ -284,12 +307,16 @@ export async function readManifestCopy(
  * The body of a manifest the Worker answered with, within its budget and the size no manifest
  * passes; `undefined`, and the body let go, past either.
  */
-async function manifestBody(response: Response, path: string): Promise<Uint8Array | undefined> {
+async function manifestBody(
+  response: Response,
+  path: string,
+  budgetMs: number,
+): Promise<Uint8Array | undefined> {
   try {
     const body = await readBoundedBody(response.body as ReadableStream<Uint8Array> | null, {
       limit: MAX_MANIFEST_BYTES,
-      stallMs: MANIFEST_BODY_BUDGET_MS,
-      budgetMs: MANIFEST_BODY_BUDGET_MS,
+      stallMs: budgetMs,
+      budgetMs,
     });
     if (body.kind === 'complete') {
       return body.bytes;

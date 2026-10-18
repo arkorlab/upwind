@@ -202,6 +202,75 @@ describe('where a scope stands, as the edge comes to know it', () => {
     }
   });
 
+  it.each([
+    ['.', 'claim'],
+    ['.', '1:.'],
+    ['..', '2:..'],
+    ['.', '%2E'],
+    ['..', '%2E%2E'],
+    ['a/b', 'a%2Fb'],
+    ['日本', '%E6%97%A5%E6%9C%AC'],
+    ['ordinary', 'ordinary/claim'],
+  ])('keeps the claim for %s separate from the signals for %s', async (askingScope, keptScope) => {
+    const cache = `signals-${crypto.randomUUID()}`;
+    const kept = authority(() => ({ ...UNMOVED, revision: 9 }));
+    const keptHost = hostOf(cache, kept.source);
+    const seeded: Promise<unknown>[] = [];
+    await look(runtimeOf(), keptHost, keptScope, seeded);
+    await Promise.all(seeded);
+
+    const gate = Promise.withResolvers<true>();
+    const asking = authority(() => ({ ...UNMOVED, revision: 5 }), gate.promise);
+    const askingHost = hostOf(cache, asking.source);
+    const pending: Promise<unknown>[] = [];
+    try {
+      await look(runtimeOf(), askingHost, askingScope, pending);
+      await vi.waitFor(() => {
+        expect(asking.asked()).toBe(1);
+      });
+      const cold = runtimeOf();
+      const behind: Promise<unknown>[] = [];
+      await look(cold, keptHost, keptScope, behind);
+      await Promise.all(behind);
+
+      expect(cold.memory.scopes.get(keptScope)?.revision).toBe(9);
+      expect(kept.asked()).toBe(1);
+    } finally {
+      gate.resolve(true);
+      await Promise.all(pending);
+    }
+
+    const next = runtimeOf();
+    await look(next, askingHost, askingScope);
+    expect(next.memory.scopes.get(askingScope)?.revision).toBe(5);
+    expect(asking.asked()).toBe(1);
+  });
+
+  it('retains an ordinary scope copy written with its existing key', async () => {
+    const scopeId = 'ordinary:scope/%2E';
+    const cache = `signals-${crypto.randomUUID()}`;
+    const copies = await caches.open(cache);
+    await copies.put(
+      `https://cache.test.invalid/scope-signals/${encodeURIComponent(scopeId)}`,
+      Response.json(
+        { ...UNMOVED, revision: 9 },
+        {
+          headers: {
+            'cache-control': 'max-age=3600',
+            'x-arkor-kept-at': String(Date.now()),
+          },
+        },
+      ),
+    );
+    const answered = authority(() => ({ ...UNMOVED, revision: 5 }));
+    const cold = runtimeOf();
+
+    await look(cold, hostOf(cache, answered.source), scopeId);
+
+    expect(cold.memory.scopes.get(scopeId)?.revision).toBe(9);
+    expect(answered.asked()).toBe(0);
+  });
+
   it('is asked again where the copy the data center had is gone', async () => {
     const scopeId = scopeOfItsOwn();
     const cache = `signals-${crypto.randomUUID()}`;

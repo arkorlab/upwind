@@ -118,7 +118,12 @@ function errorDetail(error: unknown): string {
 }
 
 function signalKey(host: EdgeHost, scopeId: string): string {
-  return `https://${host.names.cacheKeyHost}/scope-signals/${encodeURIComponent(scopeId)}`;
+  const encoded = encodeURIComponent(scopeId);
+  // URL dot segments disappear even when percent-encoded. A literal colon cannot occur in
+  // another encoded scope, so only these two components need a prefix; ordinary keys stay put.
+  const component =
+    encoded === '.' || encoded === '..' ? `${String(scopeId.length)}:${encoded}` : encoded;
+  return `https://${host.names.cacheKeyHost}/scope-signals/${component}`;
 }
 
 function claimKey(host: EdgeHost, scopeId: string): string {

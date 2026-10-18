@@ -117,7 +117,7 @@ export function serveMemberWithoutShell(
   // request reaches the route with: the classification asked the list of the one it came with, and
   // a member's conditions leave that out (`MemberRoute`), but a middleware may change the agent.
   if (
-    bypassed(manifest, named, left.url, left.headers) ||
+    bypassed(input, named, left, middleware) ||
     wantsBlockingMetadata(left.headers.get(USER_AGENT_HEADER), manifest)
   ) {
     return input.passthrough('bypass-for', middleware, named.pathname);

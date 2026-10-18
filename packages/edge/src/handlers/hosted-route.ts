@@ -1,5 +1,5 @@
 import type { ProjectManifest, RouteEntry } from '@stayingupwind/core/manifest';
-import { bypassForHolds, hasBypassCookie } from '@stayingupwind/core/request';
+import { BYPASS_COOKIE_NAMES, bypassForHolds, hasBypassCookie } from '@stayingupwind/core/request';
 import { type HostCredentials, withoutHostCredentials } from '@stayingupwind/host/credentials';
 import { runtimeCacheOf } from '@stayingupwind/host/delivery';
 
@@ -7,7 +7,8 @@ import type { GenerationKey } from '../cache/generation-loader.ts';
 import { routeSuspectKey } from '../memory/caches.ts';
 import { isDemoted } from '../preview/pointer.ts';
 import type { EdgeContext } from '../strategies/context.ts';
-import type { MiddlewareOutcome } from './middleware.ts';
+import { handedHeaders, type MiddlewareOutcome } from './middleware.ts';
+import { readsCredentials, readsForwarding } from './routing-headers.ts';
 
 /**
  * What a hosted document's route is judged by once it is settled, for a route the build proved and
@@ -96,6 +97,37 @@ export function offTheEdge(
   return edge.runtime.memory.suspects.get(key) === true ? 'suspect' : undefined;
 }
 
+/** Fixed cookie names, matched only at a Set-Cookie boundary, including after an Expires comma. */
+const MIDDLEWARE_BYPASS_COOKIE = new RegExp(
+  `(?:^|,)\\s*(?:${BYPASS_COOKIE_NAMES.join('|')})\\s*=`,
+  'u',
+);
+
+type BypassConditions = NonNullable<RouteEntry['bypassFor']>;
+const bypassReaders = new WeakMap<
+  BypassConditions,
+  { readonly credentials: HostCredentials; readonly reads: boolean }
+>();
+
+/** Normalize only conditions forwarding can change, caching the condition scan with the manifest. */
+function bypassHeaders(
+  edge: EdgeContext,
+  conditions: BypassConditions | undefined,
+  headers: Headers,
+): Headers {
+  if (conditions === undefined) return headers;
+  const { credentials } = edge.host;
+  const known = bypassReaders.get(conditions);
+  const reads =
+    known?.credentials === credentials
+      ? known.reads
+      : conditions.some((condition) => {
+          return readsCredentials(condition, credentials) || readsForwarding(condition);
+        });
+  if (known?.credentials !== credentials) bypassReaders.set(conditions, { credentials, reads });
+  return reads ? handedHeaders(edge, headers) : headers;
+}
+
 /**
  * Whether Next.js itself would not serve the prerender to this request (`bypassFor`), or the
  * request is in draft mode.
@@ -111,13 +143,25 @@ export function offTheEdge(
  * its shape does not bound.
  */
 export function bypassed(
-  manifest: ProjectManifest,
+  input: { readonly manifest: ProjectManifest; readonly edge: EdgeContext },
   entry: RouteEntry,
-  url: URL,
-  headers: Headers,
+  left: ReturnType<typeof requestAsLeft>,
+  middleware: MiddlewareOutcome,
 ): boolean {
-  if (hasBypassCookie(headers)) {
+  // The recovery cookie is edge-owned and deliberately removed from the application's view.
+  if (hasBypassCookie(left.headers)) {
     return true;
   }
-  return bypassForHolds(entry, url, headers, manifest);
+  if (
+    middleware.kind === 'continue' &&
+    middleware.setCookie !== undefined &&
+    MIDDLEWARE_BYPASS_COOKIE.test(middleware.setCookie)
+  ) {
+    return true;
+  }
+  const headers =
+    middleware.kind === 'continue'
+      ? bypassHeaders(input.edge, entry.bypassFor, left.headers)
+      : left.headers;
+  return bypassForHolds(entry, left.url, headers, input.manifest);
 }

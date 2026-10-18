@@ -4,6 +4,7 @@ import { env } from 'cloudflare:workers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { EdgeBindings } from '../src/bindings.ts';
+import type { BlobWorker } from '../src/edge-runtime.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
 import { getManifest } from '../src/preview/manifest.ts';
 import { serveFromPointer } from '../src/route.ts';
@@ -12,6 +13,8 @@ import { htmlResponse, navigation, pprDocument, seedSite } from './helpers/site.
 
 const READ_MS = 2000;
 const HEDGE_MS = 50;
+const COPY_MS = 1000;
+const HEADER_DELAY_MS = 750;
 const FALLBACK = 'the application still answers';
 
 async function fixture(durable: 'missing' | 'stalled' = 'missing') {
@@ -73,6 +76,35 @@ function settleLateKv(
 ): void {
   if (late === 'bytes') subject.kv.resolve(subject.bytes);
   else subject.kv.reject(new Error('late binding rejection'));
+}
+
+/** The authority answers independently of whether the cached copy can finish. */
+function answerBucket(test: Awaited<ReturnType<typeof fixture>>): void {
+  const response = new Response(test.bytes);
+  test.bucket.resolve({
+    size: test.bytes.byteLength,
+    body: response.body,
+    arrayBuffer: () => response.arrayBuffer(),
+  } as unknown as R2ObjectBody);
+}
+
+function blockedCopy(phase: 'headers' | 'body') {
+  const pending = Promise.withResolvers<Response>();
+  const cancelled = vi.fn();
+  const signals: (AbortSignal | null | undefined)[] = [];
+  const response = new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{'));
+      },
+      cancel: cancelled,
+    }),
+  );
+  const blobWorker = vi.fn<BlobWorker>((_path, options) => {
+    signals.push(options.signal);
+    return phase === 'headers' ? pending.promise : Promise.resolve(response);
+  });
+  return { pending, response, cancelled, signals, blobWorker };
 }
 
 describe('a cold manifest cannot outlive its backend read budget', () => {
@@ -260,7 +292,7 @@ describe('a cold manifest cannot outlive its backend read budget', () => {
     }
   });
 
-  it('does not start a bucket read after the blob lookup has spent the durable budget', async () => {
+  it('reserves bucket time even when both copy and bucket remain stalled', async () => {
     const test = await fixture('stalled');
 
     test.kv.resolve(null);
@@ -275,17 +307,100 @@ describe('a cold manifest cannot outlive its backend read budget', () => {
       result = await getManifest(test.bindings, runtime, test.site.manifestId);
     })();
     try {
-      await vi.advanceTimersByTimeAsync(READ_MS + 1);
+      await vi.advanceTimersByTimeAsync(COPY_MS);
+
+      expect(result).toBeUndefined();
+      expect(test.getObject).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(READ_MS - COPY_MS + 1);
 
       expect(result?.kind).toBe('missing');
       expect(blobWorker).toHaveBeenCalledTimes(1);
-      expect(test.getObject).not.toHaveBeenCalled();
+      expect(test.runtime.memory.absentManifests.get(test.site.manifestId)).toBeUndefined();
     } finally {
       pending.resolve(new Response(null, { status: 404 }));
 
       test.release();
 
       await reading;
+    }
+  });
+
+  it.each(['headers', 'body'] as const)(
+    'reads the healthy bucket before the overall deadline when copy %s stall',
+    async (phase) => {
+      const test = await fixture('stalled');
+      test.kv.resolve(null);
+      answerBucket(test);
+      const copy = blockedCopy(phase);
+      const runtime = { ...test.runtime, blobWorker: copy.blobWorker };
+      vi.spyOn(console, 'warn').mockReturnValue();
+      vi.useFakeTimers();
+      const read = getManifest(test.bindings, runtime, test.site.manifestId);
+      try {
+        await vi.advanceTimersByTimeAsync(COPY_MS);
+
+        const answer = await read;
+
+        expect(answer.kind).toBe('found');
+        expect(test.getObject).toHaveBeenCalledTimes(1);
+        expect(test.dispatch).not.toHaveBeenCalled();
+        expect(vi.getTimerCount()).toBe(0);
+
+        // A late header answer is abandoned too; it cannot replace the authority's accepted bytes.
+        copy.pending.resolve(copy.response);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(copy.cancelled).toHaveBeenCalledTimes(1);
+        expect(runtime.memory.manifests.get(test.site.manifestId)).toBeDefined();
+      } finally {
+        copy.pending.resolve(copy.response);
+        test.release();
+        await read;
+      }
+    },
+  );
+
+  it('charges slow headers against the same copy body stage budget', async () => {
+    const test = await fixture('stalled');
+    test.kv.resolve(null);
+    answerBucket(test);
+    const copy = blockedCopy('headers');
+    const runtime = { ...test.runtime, blobWorker: copy.blobWorker };
+    vi.spyOn(console, 'warn').mockReturnValue();
+    vi.useFakeTimers();
+    const read = getManifest(test.bindings, runtime, test.site.manifestId);
+    try {
+      await vi.advanceTimersByTimeAsync(HEADER_DELAY_MS);
+      copy.pending.resolve(copy.response);
+      await vi.advanceTimersByTimeAsync(COPY_MS - HEADER_DELAY_MS);
+
+      expect((await read).kind).toBe('found');
+      expect(copy.cancelled).toHaveBeenCalledTimes(1);
+      expect(test.getObject).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      copy.pending.resolve(copy.response);
+      test.release();
+      await read;
+    }
+  });
+
+  it('accepts a timely copy without asking the bucket', async () => {
+    const test = await fixture('stalled');
+    test.kv.resolve(null);
+    const blobWorker = vi.fn<BlobWorker>(() => Promise.resolve(new Response(test.bytes)));
+    const runtime = { ...test.runtime, blobWorker };
+    vi.useFakeTimers();
+    try {
+      const answer = await getManifest(test.bindings, runtime, test.site.manifestId);
+
+      expect(answer.kind).toBe('found');
+      expect(blobWorker).toHaveBeenCalledTimes(1);
+      expect(test.getObject).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      test.release();
     }
   });
 });

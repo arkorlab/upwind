@@ -26,10 +26,12 @@ import type { EdgeRuntime } from '../edge-runtime.ts';
 import type { PolicyStandIn } from '../memory/caches.ts';
 import { logWarn } from '../observability/logger.ts';
 import { readManifestCopy } from './blobs.ts';
-import { boundedLookup, type HoldRefresh, type Lookup, lookup, MISSING } from './storage.ts';
+import { boundedLookup, type HoldRefresh, type Lookup, MISSING } from './storage.ts';
 
 /** Each cold backend gets the same two seconds as an immutable blob or record read. */
 const MANIFEST_READ_BUDGET_MS = 2000;
+/** A slow cached copy must leave time for the authoritative bucket inside that same budget. */
+const MANIFEST_COPY_BUDGET_MS = 1000;
 
 /**
  * The copy of a manifest a deploy keeps in R2, for a read KV could not answer.
@@ -56,7 +58,7 @@ async function durableManifest(
     { manifestId },
     async (active) => {
       // Its own digest check: the blob Worker's copy is only ever the bucket's bytes, or nothing.
-      const cached = await readManifestCopy(runtime.blobWorker, manifestId);
+      const cached = await readManifestCopy(runtime.blobWorker, manifestId, MANIFEST_COPY_BUDGET_MS);
       if (!active()) return;
       if (cached !== undefined) {
         return cached;
@@ -108,6 +110,8 @@ const DIGEST_MANIFEST_KV_CACHE_TTL_SECONDS = 86_400;
  */
 const MANIFEST_HEDGE_MS = 50;
 const POLICY_KV_CACHE_TTL_SECONDS = 60;
+/** Each cold policy KV read has its own budget; a stand-in can require three sequential reads. */
+const POLICY_READ_BUDGET_MS = 2000;
 const MINUTE_MS = 60_000;
 const MINUTES_PER_HOUR = 60;
 /**
@@ -477,13 +481,18 @@ export async function getManifest(
 }
 
 async function readPolicy(env: EdgeBindings, policyId: string): Promise<Lookup<DeliveryPolicy>> {
-  const raw = await lookup('policy', { policyId }, async () => {
-    const stored: unknown = await env.EDGE_STATE.get(kvPolicyKey(policyId), {
-      type: 'json',
-      cacheTtl: POLICY_KV_CACHE_TTL_SECONDS,
-    });
-    return stored ?? undefined;
-  });
+  const raw = await boundedLookup(
+    'policy',
+    { policyId },
+    async (active) => {
+      const stored: unknown = await env.EDGE_STATE.get(kvPolicyKey(policyId), {
+        type: 'json',
+        cacheTtl: POLICY_KV_CACHE_TTL_SECONDS,
+      });
+      return active() ? (stored ?? undefined) : undefined;
+    },
+    POLICY_READ_BUDGET_MS,
+  );
   if (raw.kind !== 'found') {
     return raw;
   }
@@ -502,17 +511,23 @@ async function readPolicy(env: EdgeBindings, policyId: string): Promise<Lookup<D
 }
 
 async function readDefaultPolicyId(env: EdgeBindings): Promise<Lookup<string>> {
-  return lookup('default policy id', {}, async () => {
-    const raw: unknown = await env.EDGE_STATE.get(KV_DEFAULT_POLICY_KEY, {
-      type: 'json',
-      cacheTtl: POLICY_KV_CACHE_TTL_SECONDS,
-    });
-    const policyId =
-      raw === null || typeof raw !== 'object'
-        ? undefined
-        : (raw as { policyId?: unknown }).policyId;
-    return typeof policyId === 'string' && policyId !== '' ? policyId : undefined;
-  });
+  return boundedLookup(
+    'default policy id',
+    {},
+    async (active) => {
+      const raw: unknown = await env.EDGE_STATE.get(KV_DEFAULT_POLICY_KEY, {
+        type: 'json',
+        cacheTtl: POLICY_KV_CACHE_TTL_SECONDS,
+      });
+      if (!active()) return;
+      const policyId =
+        raw === null || typeof raw !== 'object'
+          ? undefined
+          : (raw as { policyId?: unknown }).policyId;
+      return typeof policyId === 'string' && policyId !== '' ? policyId : undefined;
+    },
+    POLICY_READ_BUDGET_MS,
+  );
 }
 
 /** Whether the policy served is the one that was asked for, or a stand-in. */
