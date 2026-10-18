@@ -194,7 +194,9 @@ export function isContentAddressed(source: ImageSource): boolean {
  * gate stands on its path, when the result is this deployment's answer for that path on the host
  * the request came in on, as another pathname of the application is bound to the deployment and
  * the host that answered it: the application sees the host, and may answer each differently; a
- * URL is itself.
+ * URL is itself. A gated file still names its selected bytes in that answer: middleware can let
+ * either this build's file or the previous build's through at the same path (Greptile), and those
+ * must not share the result. The hash goes into the same digest as the path, with no extra read.
  */
 export async function imageSourceId(
   source: ImageSource,
@@ -205,7 +207,9 @@ export async function imageSourceId(
     `local:${deploymentId}:${host}:${await sha256HexOfText(href)}`;
   switch (source.kind) {
     case 'blob': {
-      return source.gate === 'none' ? `blob:${source.file.sha256}` : answered(source.href);
+      return source.gate === 'none'
+        ? `blob:${source.file.sha256}`
+        : answered(`blob:${source.file.sha256}:${source.href}`);
     }
     case 'local': {
       return answered(source.href);
