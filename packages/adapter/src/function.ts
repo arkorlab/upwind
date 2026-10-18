@@ -27,6 +27,7 @@ import {
   outputNameOf,
 } from './dependencies.ts';
 import { dynamicLoadsInChunk } from './dynamic-loads.ts';
+import type { EdgeInstrumentation } from './edge-instrumentation.ts';
 import { bundleEdge, type EdgeEntry } from './edge.ts';
 import { functionSize } from './function-size.ts';
 import { APP_MODULE } from './generated-modules.ts';
@@ -107,6 +108,7 @@ export interface BuildFunctionInput {
   readonly entries: readonly EntryModule[];
   /** The entrypoints `next build` put on the edge runtime; they go into a bundle of their own. */
   readonly edgeEntries: readonly EdgeEntry[];
+  readonly edgeInstrumentation?: EdgeInstrumentation | undefined;
   /** The WebAssembly this Function carries, one module per distinct file (see `wasm.ts`). */
   readonly wasm: WasmCollector;
   readonly manifests: readonly TextModule[];
@@ -402,6 +404,7 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
           distDir: input.patch.distDir,
           workDir,
           entries: input.edgeEntries,
+          instrumentation: input.edgeInstrumentation,
           ...(carriesMaps(input.sourceMaps) && { sourceMaps: true, keptMaps: input.keptMaps }),
         }),
   ]);

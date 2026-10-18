@@ -37,20 +37,21 @@ import {
   isStaticExport,
   middlewareMatchers,
   middlewareOutput,
-  nftAssets,
-  nftChunks,
-  nftWasm,
   tracedChunks,
   tracedWasm,
 } from './collect.ts';
 import { reserveUpwindPrefix } from './dev-prefix.ts';
 import { durableObjectParts } from './durable-objects.ts';
+import {
+  checkedEdgeInstrumentationModules,
+  edgeInstrumentationOf,
+} from './edge-instrumentation.ts';
 import type { EdgeEntry } from './edge.ts';
 import { ensureStaticRoutes } from './ensure-static.ts';
 import { exists } from './fs.ts';
 import { type BuiltFunction, type EntryModule, middlewareManifest } from './function.ts';
 import { declaredGates } from './gates.ts';
-import { composedInstrumentation, writeClientInstrumentation } from './instrumentation.ts';
+import { instrumentationOf, writeClientInstrumentation } from './instrumentation.ts';
 import { keepMapsThrough, readKeptMaps } from './kept-maps.ts';
 import { collectManifests } from './manifests.ts';
 import { readProjectConfig } from './project-config.ts';
@@ -89,47 +90,6 @@ export const BUNDLE_FILE = 'bundle.json';
 /** What went into each Function, and what was done to it: for a diff, not for the platform. */
 const DEPENDENCIES_FILE = 'dependencies.json';
 const MIDDLEWARE_ENTRY_ID = '/_middleware';
-
-/**
- * The instrumentation hook and what it reaches, for a build that has one to run.
- *
- * A static export is not asked: the hook runs before an entrypoint, and such a build has none —
- * nothing of the application's code travels, so there is nothing for it to run before.
- */
-async function instrumentationOf(
-  distDir: string,
-  outDir: string,
-  exported: boolean,
-  hosts: readonly string[],
-): Promise<{
-  readonly file: string | undefined;
-  readonly chunks: readonly string[];
-  readonly wasm: readonly string[];
-  readonly assets: Readonly<Record<string, string>>;
-}> {
-  const file = path.join(distDir, 'server', 'instrumentation.js');
-  const own = (await exists(file)) ? file : undefined;
-  if (exported) {
-    return { file: undefined, chunks: [], wasm: [], assets: {} };
-  }
-  // The host's module goes in front of the project's, or stands alone where the project wrote no
-  // hook (`composedInstrumentation`). What is traced is still the project's own file: the chunks,
-  // the WebAssembly and the files it reads are its, and the generated module only requires it.
-  const composed = await composedInstrumentation({ outDir, own, hosts });
-  if (composed === undefined) {
-    return { file: undefined, chunks: [], wasm: [], assets: {} };
-  }
-  if (own === undefined) {
-    return { file: composed, chunks: [], wasm: [], assets: {} };
-  }
-  // All of these go into both Functions: the hook runs before any entrypoint, in each of them.
-  return {
-    file: composed,
-    chunks: await nftChunks(own),
-    wasm: await nftWasm(own),
-    assets: await nftAssets(own),
-  };
-}
 
 /**
  * What the Node.js entries read through `node:fs`, for each Function to carry what its own entries
@@ -190,7 +150,11 @@ async function emptyOutDir(projectDir: string): Promise<string> {
   return outDir;
 }
 
-async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Promise<void> {
+async function onBuildComplete(
+  ctx: BuildContext,
+  options: AdapterOptions,
+  edgeHosts: readonly string[],
+): Promise<void> {
   const exported = isStaticExport(ctx.config);
   if (!exported) {
     assertBuildPaths(ctx.projectDir, ctx.distDir, path.join(ctx.projectDir, OUT_DIR_NAME));
@@ -247,6 +211,13 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     keptMaps,
   );
   const middleware = middlewareOutput(ctx.outputs);
+  const middlewareParts = middlewarePlacement(middleware);
+  const edgeInstrumentation = await edgeInstrumentationOf({
+    distDir: ctx.distDir,
+    outDir,
+    hosts: edgeHosts,
+    entries: [...edgeEntries, ...middlewareParts.edge],
+  });
 
   // The edge serves every file from storage; the Function carries only what it answers itself —
   // the error documents, and small files outside `_next/static` (robots.txt, `public/`) a
@@ -296,8 +267,9 @@ async function onBuildComplete(ctx: BuildContext, options: AdapterOptions): Prom
     keptMaps,
     manifests,
     hook: instrumentation,
+    edgeInstrumentation,
     cacheHandlers,
-    middleware: { output: middleware, ...middlewarePlacement(middleware) },
+    middleware: { output: middleware, ...middlewareParts },
     ...collected,
     shipped,
     staticBlobs: await staticBlobsOf(shippedStatic, outDir),
@@ -596,6 +568,14 @@ export interface AdapterOptions {
    */
   readonly instrumentationModules?: readonly string[] | undefined;
   /**
+   * Edge-safe host modules, as absolute paths, composed with Next.js's own Edge-compiled hook.
+   * Explicitly opted into: Node `instrumentationModules`, and the generated Workflow World
+   * registration, are never inherited. Host imports use the `edge-light` package condition.
+   * The same host-first/error-isolation contract applies; an unknown instrumentation manifest
+   * or registration shape is refused rather than silently omitting the project's hook.
+   */
+  readonly edgeInstrumentationModules?: readonly string[] | undefined;
+  /**
    * A module of the host's own, as source, run in the browser before React hydrates.
    *
    * Written into the build's own directory and named in `instrumentationClientInject`, which
@@ -759,6 +739,7 @@ function renderInOneProcessForStorage(config: BuildConfig): void {
  */
 export function createAdapter(options: AdapterOptions = {}): NextAdapter {
   checkSplitOptions(options.functions?.split);
+  const edgeHosts = checkedEdgeInstrumentationModules(options.edgeInstrumentationModules);
   return {
     name: 'upwind',
     async modifyConfig(config, context) {
@@ -812,7 +793,7 @@ export function createAdapter(options: AdapterOptions = {}): NextAdapter {
       }
       return config;
     },
-    onBuildComplete: (ctx) => onBuildComplete(ctx, options),
+    onBuildComplete: (ctx) => onBuildComplete(ctx, options, edgeHosts),
   };
 }
 
