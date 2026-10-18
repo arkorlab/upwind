@@ -19,10 +19,14 @@ import { htmlResponse, navigation, pprDocument, seedSite } from './helpers/site.
 const BODY = 'served bytes';
 const IDS = [
   { value: 'abcdef0123456789', prefix: 'abcdef01', full: 'abcdef0123456789' },
-  { value: 'a:b+_~ z', prefix: 'a:b+_~ z', full: 'a:b+_~ z' },
+  { value: 'a:b+_~ z', prefix: 'a:b+_~%20z', full: 'a:b+_~%20z' },
   { value: 'line\r\nbreak', prefix: 'line%5Cr%5Cnbr', full: 'line%5Cr%5Cnbreak' },
   { value: 'nul\0byte', prefix: 'nul%5Cu0000byte', full: 'nul%5Cu0000byte' },
   { value: 'a;b', prefix: 'a%3Bb', full: 'a%3Bb' },
+  { value: 'a ', prefix: 'a%20', full: 'a%20' },
+  { value: ' a ', prefix: '%20a%20', full: '%20a%20' },
+  { value: ' '.repeat(8), prefix: '%20%20%20%20%20%20%20%20', full: '%20%20%20%20%20%20%20%20' },
+  { value: '1234567 tail', prefix: '1234567%20', full: '1234567%20tail' },
   { value: 'a%3Bb', prefix: 'a%253Bb', full: 'a%253Bb' },
   { value: '\u{D800}', prefix: '%5Cud800', full: '%5Cud800' },
   { value: '123456😀', prefix: '123456%F0%9F%98%80', full: '123456%F0%9F%98%80' },

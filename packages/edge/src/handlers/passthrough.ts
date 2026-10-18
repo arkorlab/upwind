@@ -357,6 +357,11 @@ function requestInit(request: Request): RequestInit & { duplex?: 'half' } {
   };
 }
 
+function diagnosticIdentity(value: string): string {
+  // Headers trim terminal spaces, so an identity cannot leave one unescaped.
+  return safeDiagnosticField(value).replaceAll(' ', '%20');
+}
+
 /**
  * What `x-arkor-edge` says of a passthrough: why. And for a validated request to a deployment split
  * across app Workers, which one it asked first — what a probe of each is judged by, and what an
@@ -367,7 +372,7 @@ function passthroughDebug(input: PassthroughInput, answer: Response): string {
   // This only extends the existing header; dispatch and the original response stream are unchanged.
   const identity =
     input.reason === 'regenerate' && input.metrics !== undefined && input.app !== undefined
-      ? `;m=${safeDiagnosticField(input.metrics.manifestId)};policy=${input.metrics.policyId};scope=${safeDiagnosticField(input.app.deploymentId)}`
+      ? `;m=${diagnosticIdentity(input.metrics.manifestId)};policy=${input.metrics.policyId};scope=${diagnosticIdentity(input.app.deploymentId)}`
       : '';
   const debug = `passthrough;reason=${input.reason}${identity}`;
   const dispatched = input.validated === true ? dispatchedOf(answer) : undefined;
