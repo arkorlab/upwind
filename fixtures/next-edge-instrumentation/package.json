@@ -1,0 +1,13 @@
+{
+  "name": "@upwind-fixture/next-edge-instrumentation",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": { "build": "next build" },
+  "dependencies": {
+    "instrumentation-runtime-target": "file:./runtime-target",
+    "next": "16.4.2",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}

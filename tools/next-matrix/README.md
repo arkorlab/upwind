@@ -1,7 +1,7 @@
 # `@upwind-tools/next-matrix`
 
-Builds `fixtures/next-minimal`, `fixtures/next-edge`, `fixtures/next-workflow` and
-`fixtures/next-external-output` with each Next.js
+Builds `fixtures/next-minimal`, `fixtures/next-edge`, `fixtures/next-workflow`,
+`fixtures/next-external-output` and the two instrumentation fixtures with each Next.js
 it is given, and holds each build to what the adapter promises: the bundle parses against
 `deploymentBundleSchema`, every patch the fixture was written to reach appears in
 `.arkor/dependencies.json`, and the outputs that fixture exists to produce are there.
@@ -10,6 +10,14 @@ The external-output fixture also starts the built Function in Miniflare and requ
 App Router page. Its client component requires the carried client-reference manifest, so this
 checks the lazy entry, bundled code and VFS mount together. Pull-request CI runs this one fixture
 with the installed Next.js version; the full version matrix remains separate.
+
+The instrumentation fixtures compile Edge middleware, an Edge route and a Node route with host
+hooks, both with and without the project's own hook. Miniflare verifies awaited, once-only
+registration, host-first error hooks, preserved arguments and receivers, isolated host failures,
+and zero outbound requests. The own hook value-imports `next/server` to exercise early Edge
+globals, while a conditional-export package verifies that added host imports use the Edge
+target. CI builds both fixtures with the installed Next.js version and retains each completed
+or failed case as JSON under `UPWIND_MATRIX_PROOF_DIR`.
 
 ```console
 $ pnpm --filter @stayingupwind/adapter build     # the matrix builds against dist, as a user would

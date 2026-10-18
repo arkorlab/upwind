@@ -377,6 +377,21 @@ a Function loads at startup only the table and evaluates an entry's chunks on th
 needs it; a deployment with no such entrypoint has no `edge.cjs` at all, and its Function is byte
 for byte what it was before.
 
+Hosts may opt into Edge instrumentation with
+`createAdapter({ edgeInstrumentationModules: [absoluteModulePath] })`. These modules must be
+Edge-safe; their imports use the `edge-light` package condition. Their `register` and
+`onRequestError` hooks run before the project's own Edge-compiled hook. A host's load or hook
+failure is logged and isolated, while the project's failure keeps Next.js's own behavior.
+Registration is awaited once before the handler can answer. Builds without this option keep their
+existing Edge load path: neither Node `instrumentationModules` nor a generated Workflow World
+registration is inherited. A host needing both runtimes supplies each option explicitly.
+
+The adapter installs this composition before Next.js can cache its instrumentation registry entry,
+including when the project's hook imports `next/server`. It retains Next.js's compiled Edge hook
+and checks the Turbopack instrumentation-file prefix and registration shape. An incompatible shape
+fails instead of dropping observability. This does not add Edge support to a host's Node-only
+Workflow World.
+
 Three consequences, all from Next.js's own templates:
 
 - An edge entrypoint renders with `postponed: undefined` (`build/templates/edge-ssr-app.ts`), so

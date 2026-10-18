@@ -18,6 +18,7 @@ import {
   type FixtureName,
 } from './coverage.ts';
 import { externalOutputHolds } from './external-output.ts';
+import { instrumentationHolds } from './instrumentation.ts';
 
 /**
  * Builds real applications with real Next.js versions, and holds each build to what the adapter
@@ -262,6 +263,8 @@ async function workflowHolds(
 
 /** What each fixture has to show, by name — every name `coverage.ts` has, and no other. */
 const HOLDS: Readonly<Record<FixtureName, Holds>> = {
+  'next-edge-instrumentation': instrumentationHolds,
+  'next-edge-instrumentation-no-own': instrumentationHolds,
   'next-external-output': externalOutputHolds,
   'next-minimal': minimalHolds,
   'next-edge': edgeHolds,
@@ -466,10 +469,13 @@ async function build(fixture: Fixture, version: string, keep: boolean): Promise<
   const work = await mkdtemp(path.join(os.tmpdir(), `upwind-${fixture.name}-`));
   const app = path.join(work, fixture.name);
   try {
-    await cp(path.join(FIXTURES, fixture.name), app, {
+    await cp(path.join(FIXTURES, fixture.sourceFixture ?? fixture.name), app, {
       recursive: true,
       filter: (source) => isFixtureSource(source),
     });
+    if (fixture.removeOwnInstrumentation === true) {
+      await rm(path.join(app, 'instrumentation.js'));
+    }
     const manifestPath = path.join(app, MANIFEST);
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as {
       dependencies: Record<string, string>;
@@ -491,7 +497,9 @@ async function build(fixture: Fixture, version: string, keep: boolean): Promise<
     // one is a shell script on Unix and a `.cmd` on Windows, and `execFile` runs neither without
     // a shell. The file below is the same JavaScript both of them end up running.
     await run(process.execPath, [nextBin(installDir), 'build'], app, {
-      NEXT_ADAPTER_PATH: ADAPTER,
+      NEXT_ADAPTER_PATH:
+        fixture.adapterFile === undefined ? ADAPTER : path.join(app, fixture.adapterFile),
+      ...(fixture.adapterFile !== undefined && { UPWIND_MATRIX_ADAPTER: ADAPTER }),
     });
     return { fixture: fixture.name, version, problems: await checkOutput(fixture, app) };
   } catch (error) {
