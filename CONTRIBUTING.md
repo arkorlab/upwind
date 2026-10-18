@@ -149,8 +149,8 @@ bump lands there before anything is published. Once the bump is on `main`:
 ```bash
 git switch main && git pull
 # The name is `v` and the version every package now says — nothing else is accepted.
-git tag -s v0.4.0 -m v0.4.0
-git push origin v0.4.0
+git tag -s v0.5.0 -m v0.5.0
+git push origin v0.5.0
 ```
 
 Pushing the tag is the whole of a release, for every release that publishes no new name. `verify`
