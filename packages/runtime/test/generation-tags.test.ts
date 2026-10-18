@@ -86,16 +86,16 @@ describe('the implicit identities a regeneration supplies beside captured tags',
     'keeps a member spelled as its placeholder when its parent fallback is %s',
     (parentFallbackMode) => {
       const descriptor = { kind: 'app-page' as const, route: ROUTE, pathname: ROUTE };
-      const classShell = generationClassShell(
+      const isClass = generationClassShell(
         descriptor,
         selected({
           routeType: 'page',
           parentFallbackMode,
         }),
       );
-      const tags = generationTagValues(descriptor, rendered(), ENTRY_ID, classShell);
+      const tags = generationTagValues(descriptor, rendered(), ENTRY_ID, isClass);
 
-      expect(classShell).toBe(false);
+      expect(isClass).toBe(false);
       expect(tags.has(`${IMPLICIT_TAG_PREFIX}${ROUTE}`)).toBe(true);
       expect(tags.has(sharedShellTagOf(ENTRY_ID))).toBe(false);
     },
@@ -106,10 +106,10 @@ describe('the implicit identities a regeneration supplies beside captured tags',
     (routeType) => {
       const pathname = '/blog/member';
       const descriptor = { kind: 'app-page' as const, route: ROUTE, pathname };
-      const classShell = generationClassShell(descriptor, selected({ pathname, routeType }));
-      const tags = generationTagValues(descriptor, rendered(), ENTRY_ID, classShell);
+      const isClass = generationClassShell(descriptor, selected({ pathname, routeType }));
+      const tags = generationTagValues(descriptor, rendered(), ENTRY_ID, isClass);
 
-      expect(classShell).toBe(true);
+      expect(isClass).toBe(true);
       expect(tags.has(`${IMPLICIT_TAG_PREFIX}${pathname}`)).toBe(false);
       expect(tags.has(sharedShellTagOf(ENTRY_ID))).toBe(true);
     },
@@ -125,10 +125,10 @@ describe('the implicit identities a regeneration supplies beside captured tags',
     },
   ])('uses the route-aware fallback for $label metadata', ({ shell }) => {
     const descriptor = { kind: 'app-page' as const, route: ROUTE, pathname: ROUTE };
-    const classShell = generationClassShell(descriptor, shell);
-    const tags = generationTagValues(descriptor, rendered(), ENTRY_ID, classShell);
+    const isClass = generationClassShell(descriptor, shell);
+    const tags = generationTagValues(descriptor, rendered(), ENTRY_ID, isClass);
 
-    expect(classShell).toBe(true);
+    expect(isClass).toBe(true);
     expect(tags.has(`${IMPLICIT_TAG_PREFIX}${ROUTE}`)).toBe(false);
     expect(tags.has(sharedShellTagOf(ENTRY_ID))).toBe(true);
   });

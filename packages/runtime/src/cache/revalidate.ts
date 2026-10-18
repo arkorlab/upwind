@@ -198,7 +198,7 @@ export async function platformRevalidate(input: RevalidateInput): Promise<void> 
     handler,
     target: {
       descriptor,
-      classShell: generationClassShell(descriptor, targetShell),
+      isClass: generationClassShell(descriptor, targetShell),
       reason: 'manual',
       allowHeader: targetShell?.allowHeader,
       dataPathname:
