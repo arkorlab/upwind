@@ -14,6 +14,7 @@ import {
   PREFETCH_HINT_HEADERS,
   type RequestClass,
   ROUTER_REQUEST_HEADERS,
+  sanitizePassthroughHeaders,
   serializeCookieHeader,
   SKEW_PROTECTION_COOKIE,
 } from '@stayingupwind/core/request';
@@ -45,6 +46,7 @@ import {
   passthroughReason,
 } from './handlers/passthrough.ts';
 import { serviceUnavailableResponse } from './handlers/responses.ts';
+import { forwardedFieldsFor } from './handlers/routing-headers.ts';
 import { hostedFirst } from './hosted-first.ts';
 import { withPatternBudget } from './pattern-budget.ts';
 import {
@@ -351,18 +353,34 @@ function withoutCredentials(headers: Headers, credentials: HostCredentials): Hea
  * What the classification reads by name besides — a router's headers, a navigation's, draft mode's
  * cookies — is read on the same headers, and a host that keeps one of those as its own has them
  * copied for that alone (`classificationReadsCredentials`): Next.js is never handed it either.
+ * Only authority fields read by the manifest (`forwardedFieldsFor`) take their forwarded values.
+ * The client markers used by classification, including the recovery cookie, stay as they came.
  */
 function headersToClassify(
   manifest: ProjectManifest | undefined,
   headers: Headers,
   credentials: HostCredentials,
+  forwarding: ForwardingContext,
 ): Headers {
   const kept = credentials.cookies.length > 0 || credentials.headers.length > 0;
   const copied =
     kept &&
     (classificationReadsCredentials(credentials) ||
       (manifest !== undefined && routingReadsCredentials(manifest, credentials)));
-  return copied ? withoutCredentials(headers, credentials) : headers;
+  const classified = copied ? withoutCredentials(headers, credentials) : headers;
+  const fields = manifest === undefined ? [] : forwardedFieldsFor(manifest);
+  if (fields.length === 0) return classified;
+  const forwarded = withoutHostCredentials(
+    sanitizePassthroughHeaders(headers, forwarding),
+    credentials,
+  );
+  const routed = classified === headers ? new Headers(classified) : classified;
+  for (const name of fields) {
+    const value = forwarded.get(name);
+    if (value === null) routed.delete(name);
+    else routed.set(name, value);
+  }
+  return routed;
 }
 
 function servedAtEdge(classification: RequestClass): boolean {
@@ -527,7 +545,7 @@ function routeWithinBudget(input: ManifestRoutingInput): Promise<Response> {
     const classification = classifyRequest({
       method: request.method,
       url,
-      headers: headersToClassify(undefined, request.headers, input.host.credentials),
+      headers: headersToClassify(undefined, request.headers, input.host.credentials, forwarding),
       manifest: undefined,
       deployment: undefined,
     });
@@ -560,6 +578,7 @@ function routeWithManifest(
     state.manifest,
     request.headers,
     input.host.credentials,
+    forwarding,
   );
   const classification = classifyRequest({
     method: request.method,

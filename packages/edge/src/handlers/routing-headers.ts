@@ -1,4 +1,4 @@
-import type { MiddlewareMatcher } from '@stayingupwind/core/manifest';
+import type { MiddlewareMatcher, ProjectManifest } from '@stayingupwind/core/manifest';
 import {
   EDGE_BYPASS_COOKIE,
   HOP_BY_HOP_HEADERS,
@@ -43,4 +43,35 @@ export function readsForwarding(condition: Condition): boolean {
     (name !== MIDDLEWARE_PREFETCH_HEADER &&
       INTERNAL_REQUEST_HEADER_PREFIXES.some((prefix) => name.startsWith(prefix)))
   );
+}
+
+/** The authority headers forwarding removes or supplies, apart from the URL a host condition reads. */
+const FORWARDED_ROUTING_FIELDS = [
+  'host',
+  'x-forwarded-host',
+  'x-forwarded-proto',
+  'x-forwarded-port',
+];
+const manifestFields = new WeakMap<ProjectManifest, readonly string[]>();
+
+/** Only the authority fields a manifest's routing conditions actually read, found once per manifest. */
+export function forwardedFieldsFor(manifest: ProjectManifest): readonly string[] {
+  const known = manifestFields.get(manifest);
+  if (known !== undefined) return known;
+  const fields = new Set<string>();
+  const remember = (conditions: readonly Condition[] | undefined): void => {
+    for (const condition of conditions ?? []) {
+      const name = condition.type === 'header' ? condition.key?.toLowerCase() : undefined;
+      if (name !== undefined && FORWARDED_ROUTING_FIELDS.includes(name)) fields.add(name);
+    }
+  };
+  for (const rule of [...(manifest.reservedRoutes ?? []), ...(manifest.dynamicRoutes ?? [])]) {
+    remember(rule.has);
+    remember(rule.missing);
+  }
+  for (const route of manifest.dynamicRoutes ?? []) remember(route.members?.bypassFor);
+  for (const entry of Object.values(manifest.routes)) remember(entry.bypassFor);
+  const found = [...fields];
+  manifestFields.set(manifest, found);
+  return found;
 }
