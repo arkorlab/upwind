@@ -41,7 +41,7 @@ import {
   type SourceError,
   sourceLimit,
 } from './image-source.ts';
-import { cuttable } from './image-stream.ts';
+import { cuttable, releaseLateImage } from './image-stream.ts';
 import { imageHrefForLog, transformWithin, withinBudget } from './image-transform.ts';
 import type { MiddlewareContinued } from './middleware.ts';
 import { observeMetric, observeTransformed } from './observer.ts';
@@ -203,10 +203,16 @@ async function cacheKey(
 }
 
 async function lookupCache(cacheName: string, key: Request): Promise<Response | undefined> {
+  let lookup: Promise<Response | undefined> | undefined;
   try {
     const cache = await caches.open(cacheName);
-    return await withDeadline(cache.match(key), CACHE_READ_BUDGET_MS, 'image cache');
+    lookup = cache.match(key);
+    return await withDeadline(lookup, CACHE_READ_BUDGET_MS, 'image cache');
   } catch (error) {
+    // The deadline ends this wait, not the cache read. No response owns a hit that arrives later.
+    void releaseLateImage(lookup).catch(() => {
+      // A failed lookup has no body to release; its failure was logged below.
+    });
     logWarn('image cache read failed', { detail: errorDetail(error) });
     return undefined;
   }

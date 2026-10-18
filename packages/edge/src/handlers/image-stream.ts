@@ -1,5 +1,13 @@
 import { releaseStream, withDeadline } from '@stayingupwind/core/util';
 
+/** A cache hit nobody is waiting for has no reader left to release its body. */
+export async function releaseLateImage(
+  lookup: Promise<Response | undefined> | undefined,
+): Promise<void> {
+  const late = await lookup;
+  releaseStream(late?.body, 'an image cache hit that came too late');
+}
+
 /** The image's bytes, and how the edge ends them without waiting for another read. */
 export interface Cuttable {
   readonly stream: ReadableStream<Uint8Array>;
