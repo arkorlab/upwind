@@ -250,6 +250,7 @@ describe('where a scope stands, as the edge comes to know it', () => {
     const scopeId = 'ordinary:scope/%2E';
     const cache = `signals-${crypto.randomUUID()}`;
     const copies = await caches.open(cache);
+    const keptAt = String(Date.now());
     await copies.put(
       `https://cache.test.invalid/scope-signals/${encodeURIComponent(scopeId)}`,
       Response.json(
@@ -257,7 +258,7 @@ describe('where a scope stands, as the edge comes to know it', () => {
         {
           headers: {
             'cache-control': 'max-age=3600',
-            'x-arkor-kept-at': String(Date.now()),
+            'x-arkor-kept-at': keptAt,
           },
         },
       ),
