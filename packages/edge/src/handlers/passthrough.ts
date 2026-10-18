@@ -36,6 +36,7 @@ import {
   keptByNobody,
   mergeScopedMiddlewareHeaders,
   privateCacheControl,
+  safeDiagnosticField,
 } from './responses.ts';
 import {
   dispatchedOf,
@@ -366,7 +367,7 @@ function passthroughDebug(input: PassthroughInput, answer: Response): string {
   // This only extends the existing header; dispatch and the original response stream are unchanged.
   const identity =
     input.reason === 'regenerate' && input.metrics !== undefined && input.app !== undefined
-      ? `;m=${input.metrics.manifestId};policy=${input.metrics.policyId};scope=${input.app.deploymentId}`
+      ? `;m=${safeDiagnosticField(input.metrics.manifestId)};policy=${input.metrics.policyId};scope=${safeDiagnosticField(input.app.deploymentId)}`
       : '';
   const debug = `passthrough;reason=${input.reason}${identity}`;
   const dispatched = input.validated === true ? dispatchedOf(answer) : undefined;
