@@ -109,6 +109,57 @@ describe('the memory held by a manifest’s member routes', () => {
   });
 });
 
+describe('the lookup maps of captured document policies', () => {
+  it.each([
+    { shared: true, objects: 1 },
+    { shared: false, objects: 2 },
+  ])('charges physical source maps once across both rule lists: %j', ({ shared, objects }) => {
+    const first = { $1: "'sha256-recovery'" };
+    const second = shared ? first : { ...first };
+    const plain = {
+      ...manifestOf([]),
+      headerRules: [{ ...RULE, headers: {} }],
+      foldedHeaderRules: [{ ...RULE, headers: {} }],
+    };
+    const listed = {
+      ...plain,
+      headerRules: [{ ...RULE, headers: {}, documentRecoverySources: first }],
+      foldedHeaderRules: [{ ...RULE, headers: {}, documentRecoverySources: second }],
+    };
+
+    expect(manifestCharge(listed, 0) - manifestCharge(plain, 0)).toBe(80 * objects);
+  });
+
+  it('charges policy-map strings through stored JSON and their parsed container separately', () => {
+    const plain = { ...manifestOf([]), headerRules: [{ ...RULE, headers: {} }] };
+    const listed = {
+      ...plain,
+      headerRules: [
+        {
+          ...RULE,
+          headers: {},
+          documentRecoverySources: {
+            $1: "'sha256-recovery'",
+            'content-security-policy': "'sha256-other'",
+          },
+        },
+      ],
+    };
+    const plainStored = serializeManifest(plain);
+    const stored = serializeManifest(listed);
+    const parsed = parseProjectManifest(stored);
+
+    expect(parsed.headerRules?.[0]?.documentRecoverySources).toStrictEqual(
+      listed.headerRules[0]?.documentRecoverySources,
+    );
+    expect(
+      manifestCharge(parsed, encodeUtf8(stored).byteLength) -
+        manifestCharge(plain, encodeUtf8(plainStored).byteLength) -
+        1.5 * (encodeUtf8(stored).byteLength - encodeUtf8(plainStored).byteLength),
+    ).toBe(80);
+  });
+});
+
 describe('the additional lookup tables of a gated manifest', () => {
   it.each([
     { gates: 1, pathnames: 2 },
@@ -119,7 +170,10 @@ describe('the additional lookup tables of a gated manifest', () => {
     );
     const gatedPathnames = Object.fromEntries(
       Array.from({ length: counts.pathnames }, (_, index) => {
-        const result = [`/member-${index}`, `/gate-${index % counts.gates}`];
+        const result: readonly [string, string] = [
+          `/member-${index}`,
+          `/gate-${index % counts.gates}`,
+        ];
         return result;
       }),
     );
