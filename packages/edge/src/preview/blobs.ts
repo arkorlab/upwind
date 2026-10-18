@@ -113,14 +113,14 @@ async function ask(
   } catch (error) {
     // Past the deadline the call is let go, so an answer that comes after leaves nothing open.
     controller.abort(error);
-    if (signal !== undefined && pending !== undefined) {
+    if (pending !== undefined) {
       void pending
         .then((response) => {
           releaseStream(response.body, 'image source abandoned');
           return null;
         })
         .catch(() => {
-          // An abandoned image's blob fetch usually rejects instead of answering late.
+          // An abandoned blob fetch usually rejects instead of answering late.
         });
     }
     signal?.throwIfAborted();
