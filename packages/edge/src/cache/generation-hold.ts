@@ -4,6 +4,7 @@ import type { RuntimeCacheSettings } from '@stayingupwind/host/delivery';
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { transferInvalidations } from './condemned.ts';
+import { readCurrentBehind } from './generation-current.ts';
 import {
   type GenerationKey,
   type GenerationLoad,
@@ -156,7 +157,7 @@ export function readServedAgain(
   edge: EdgeContext,
   pack: DecodedGenerationPack,
   settings: RuntimeCacheSettings,
-  options: LoadOptions = {},
+  options: LoadOptions & { readonly servedStale?: boolean } = {},
 ): void {
   if (settings.holdMs === 0) {
     return;
@@ -166,9 +167,13 @@ export function readServedAgain(
   const recordKey = kvGenerationKey(key.scopeId, key.entryId);
   const held = memory.generations.get(recordKey);
   const now = edge.runtime.now();
-  if (held?.pack === pack && now - held.readAt >= Math.min(settings.holdMs, STALE_HOLD_MS)) {
-    memory.generations.set(recordKey, { ...held, readAt: now }, held.bytes);
-    edge.ctx.waitUntil(refresh(edge, key, settings, options));
+  if (held?.pack === pack) {
+    const cadenceMs = Math.min(settings.holdMs, STALE_HOLD_MS);
+    if (options.servedStale === true) readCurrentBehind(edge, pack, settings, cadenceMs);
+    if (now - held.readAt >= cadenceMs) {
+      memory.generations.set(recordKey, { ...held, readAt: now }, held.bytes);
+      edge.ctx.waitUntil(refresh(edge, key, settings, options));
+    }
   }
 }
 

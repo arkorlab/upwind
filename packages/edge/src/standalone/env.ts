@@ -34,7 +34,14 @@ export interface StandaloneEnv extends EdgeBindings {
    * reaches every isolate of this edge within a moment. Absent, it reaches them as KV does.
    */
   readonly CACHE_SIGNALS?:
-    | { scopeSignals(scopeId: string, since: number | null): Promise<ScopeSignals> }
+    | {
+        scopeSignals(scopeId: string, since: number | null): Promise<ScopeSignals>;
+        readonly currentRecord?: (
+          scopeId: string,
+          entryId: string,
+          afterRevision: number,
+        ) => Promise<ArrayBuffer | undefined>;
+      }
     | undefined;
   /** Each Function of the deployment, bound by the name the pointer gives it (`functionBinding`). */
   readonly [binding: `APP__${string}`]: Fetcher | undefined;

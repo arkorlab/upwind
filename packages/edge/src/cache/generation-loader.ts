@@ -190,7 +190,7 @@ async function askKv(edge: EdgeContext, recordKey: string): Promise<KvAnswer> {
 
 /** Where a record's bytes came from, which decides what they are checked for. */
 type Origin =
-  | { readonly kind: 'kv' }
+  | { readonly kind: 'kv' | 'authority' }
   /** This data center's copy, whose stamp says which revision it holds. */
   | { readonly kind: 'copy'; readonly revision: number };
 
@@ -240,7 +240,7 @@ interface RecordName {
 }
 
 /** A read in flight, and what it is for. */
-interface Read extends RecordName {
+export interface Read extends RecordName {
   readonly options: LoadOptions;
   readonly startedAt: number;
   /** The data center's copies are read and kept beside KV. */
@@ -266,7 +266,7 @@ interface Read extends RecordName {
  * The record this isolate holds of the entry, past its hold or not, when it is later than one at
  * `revision`: an earlier answer neither answers in its place nor is held over it.
  */
-function heldLater(
+export function heldLater(
   edge: EdgeContext,
   recordKey: string,
   revision: number,
@@ -281,11 +281,11 @@ function heldLater(
  * whatever was there — unless what is there is later, which is weighed after the last wait here,
  * so that another request's record held meanwhile counts.
  */
-async function adoptDecoded(
+export async function adoptDecoded(
   edge: EdgeContext,
   read: Read,
   decoded: Decoded,
-  from: { readonly origin: Origin; readonly byteLength: number },
+  from: { readonly origin: Origin; readonly byteLength: number; readonly wanted?: () => boolean },
 ): Promise<Adoption> {
   const refused = await untrusted(decoded, read.key, from.origin);
   if (refused !== undefined) {
@@ -296,6 +296,7 @@ async function adoptDecoded(
     decoded.pack.header.headers[CSP_HEADER] === undefined || decoded.pack.postponed === undefined
       ? decoded.pack
       : await withRecoveryPermitted(decoded.pack);
+  if (from.wanted?.() === false) return { kind: 'unusable', reason: 'unsupported' };
   const { revision } = pack.header;
   const later = heldLater(edge, read.recordKey, revision);
   if (later !== undefined) {
@@ -472,7 +473,7 @@ async function readKvRecord(edge: EdgeContext, read: Read, bytes: ArrayBuffer): 
  * Never past `LONGEST_COPY_AGE_MS`, whatever the policy asks: an at-once invalidation is kept only
  * so long past that (`memory/invalidations.ts`), and a copy from before one must not outlive it.
  */
-function copyMaxAgeMs(edge: EdgeContext, settings: RuntimeCacheSettings): number {
+export function copyMaxAgeMs(edge: EdgeContext, settings: RuntimeCacheSettings): number {
   const asked = edge.cacheApi && !edge.validated ? (settings.cacheApiMaxAgeMs ?? 0) : 0;
   return Math.min(asked, LONGEST_COPY_AGE_MS);
 }

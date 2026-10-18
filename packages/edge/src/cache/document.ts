@@ -164,8 +164,12 @@ function wantedRegeneration(
  * a second on rather than a hold on (`readServedAgain`). A member's own is read as it was, its
  * absence held (`startMemberRead`).
  */
-function readTargetAgain(input: CachedDocumentInput, target: RegenerationTarget): void {
-  const options = target.member === true ? { holdAbsence: true } : {};
+function readTargetAgain(
+  input: CachedDocumentInput,
+  target: RegenerationTarget,
+  servedStale = false,
+): void {
+  const options = { holdAbsence: target.member === true, servedStale };
   readServedAgain(input.edge, target.pack, input.settings, options);
 }
 
@@ -216,7 +220,7 @@ function serveRecord(
       onServed:
         wanted === target
           ? () => {
-              readTargetAgain(input, target);
+              readTargetAgain(input, target, true);
             }
           : undefined,
     },

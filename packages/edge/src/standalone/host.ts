@@ -64,6 +64,7 @@ export function standaloneHost(env: StandaloneEnv): EdgeHost {
     return held;
   }
   const signals = env.CACHE_SIGNALS;
+  const currentRecord = signals?.currentRecord;
   const host: EdgeHost = {
     names: STANDALONE_NAMES,
     sharedDomain: NO_SHARED_DOMAIN,
@@ -79,6 +80,10 @@ export function standaloneHost(env: StandaloneEnv): EdgeHost {
         scopeSignals: (scopeId, since) => signals.scopeSignals(scopeId, since),
         cacheTagOf: (scopeId) => `upwind-scope-${scopeId}`,
       },
+    }),
+    ...(currentRecord !== undefined && {
+      currentRecord: (scopeId, entryId, afterRevision) =>
+        Reflect.apply(currentRecord, signals, [scopeId, entryId, afterRevision]),
     }),
   };
   hosts.set(env, host);

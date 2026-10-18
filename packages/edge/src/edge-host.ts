@@ -80,4 +80,16 @@ export interface EdgeHost {
    * as before.
    */
   readonly scopeSignals?: ScopeSignalSource | undefined;
+  /**
+   * A delivery record newer than the one served stale, read from the authority behind the
+   * response. Optional for hosts whose records reach the edge only through KV. Fresh delivery
+   * never calls it; returned bytes are held to their identity, digests and revision before use.
+   */
+  readonly currentRecord?:
+    | ((
+        scopeId: string,
+        entryId: string,
+        afterRevision: number,
+      ) => Promise<ArrayBuffer | undefined>)
+    | undefined;
 }
