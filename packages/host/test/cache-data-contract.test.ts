@@ -193,6 +193,30 @@ function deltaPage(count: number) {
 }
 
 describe('a page of the delta', () => {
+  it.each([
+    { truncated: false, tagRevision: 11, historyRevision: 5, accepted: false },
+    { truncated: false, tagRevision: 10, historyRevision: 11, accepted: false },
+    { truncated: true, tagRevision: 10, historyRevision: 11, accepted: false },
+    { truncated: false, tagRevision: 7, historyRevision: 8, accepted: false },
+    { truncated: false, tagRevision: 7, historyRevision: 5, accepted: true },
+    { truncated: true, tagRevision: 10, historyRevision: 10, accepted: true },
+  ])('bounds tag and historical revisions by its cursor: %j', (example) => {
+    const page = {
+      revision: 10,
+      floor: 0,
+      truncated: example.truncated,
+      tags: [
+        {
+          ...tagRecord('posts'),
+          revision: example.tagRevision,
+          history: [{ revision: example.historyRevision, staleAt: 1, hardExpireAt: null }],
+        },
+      ],
+    };
+
+    expect(tagsDeltaResponseSchema.safeParse(page).success).toBe(example.accepted);
+  });
+
   it('holds as many records as a reader may ask a page for', () => {
     expect(tagsDeltaResponseSchema.safeParse(deltaPage(MAX_DELTA_PAGE_TAGS)).success).toBe(true);
   });

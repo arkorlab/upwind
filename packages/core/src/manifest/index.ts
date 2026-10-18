@@ -62,6 +62,8 @@ export {
   preloadLinksSchema,
   type RouteCache,
   routeCacheSchema,
+  type PartialFallbackUpgrade,
+  partialFallbackUpgradeSchema,
   type RouteEntry,
   routeEntrySchema,
   type RouteSegment,

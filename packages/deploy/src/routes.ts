@@ -3,6 +3,7 @@ import {
   cacheablePrerenders,
   type DeploymentBundle,
   functionOfPrerender,
+  partialFallbackUpgradeOf,
   prefetchSegments,
   type Prerender,
   PRIMARY_FUNCTION,
@@ -66,13 +67,11 @@ function middlewareCovers(matchers: readonly MiddlewareMatcher[], pathname: stri
   if (isTemplate(pathname)) {
     return matchers.length > 0;
   }
-  return matchers.some((matcher) => {
-    // The flags `middlewareApplies` runs them under at the edge: case-insensitive, as Next.js
-    // matches them, and without the unicode flag, as it compiled them. A route this read as
-    // uncovered and the edge reads as covered is a route with hints nothing there will use.
-    // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-    return new RegExp(matcher.sourceRegex, 'i').test(pathname);
-  });
+  // The flags `middlewareApplies` runs them under at the edge: case-insensitive, as Next.js
+  // matches them, and without the unicode flag, as it compiled them. A route this read as
+  // uncovered and the edge reads as covered is a route with hints nothing there will use.
+  // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
+  return matchers.some((matcher) => new RegExp(matcher.sourceRegex, 'i').test(pathname));
 }
 
 /**
@@ -223,6 +222,7 @@ export function routeEntryOf(
   const pagesData = context.pagesData.get(prerender.pathname);
   // The Worker that resumes and regenerates the shell: its route's, named where it is not the first.
   const fn = functionOfPrerender(context.placed, prerender);
+  const partialFallback = partialFallbackUpgradeOf(bundle, prerender);
   return {
     pathname,
     status: 200,
@@ -240,6 +240,7 @@ export function routeEntryOf(
     headers,
     prerenderId: prerender.id,
     ...(cache !== undefined && { cache }),
+    ...(partialFallback !== undefined && { partialFallback }),
     ...(prerender.bypassFor !== undefined &&
       prerender.bypassFor.length > 0 && { bypassFor: prerender.bypassFor }),
     // Recorded rather than acted on: the nonce the edge mints is what stops an inline script this
