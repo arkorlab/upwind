@@ -48,10 +48,11 @@ describe('ownership of work passed to a deadline', () => {
     vi.useFakeTimers();
     const input = Promise.withResolvers<never>();
     const result = withDeadline(input.promise, 50, 'body read');
-    const expired = expect(result).rejects.toSatisfy(isDeadlineError);
 
-    await vi.advanceTimersByTimeAsync(51);
-    await expired;
+    await Promise.all([
+      expect(result).rejects.toSatisfy(isDeadlineError),
+      vi.advanceTimersByTimeAsync(51),
+    ]);
 
     input.reject(new Error('read failed after timeout'));
     await vi.advanceTimersByTimeAsync(0);
