@@ -188,9 +188,14 @@ export function routingTables(
   const internalLeftOut =
     (config.i18n !== null && config.i18n !== undefined) ||
     isPagesDataRequestPath(config.basePath, url.pathname);
-  const ahead = routing.beforeMiddleware.filter(
-    (route) => !(internalLeftOut && isInternal(route)) && !(skipHeaderRules && isHeaderRule(route)),
-  );
+  const ahead =
+    internalLeftOut || skipHeaderRules
+      ? routing.beforeMiddleware.filter((route) => {
+          return (
+            !(internalLeftOut && isInternal(route)) && !(skipHeaderRules && isHeaderRule(route))
+          );
+        })
+      : routing.beforeMiddleware;
   return {
     beforeMiddleware: markedRewrites(routingRoutes(ahead), BEFORE_MIDDLEWARE),
     middlewareMatchers: skipMiddleware ? [] : routingRoutes(routing.middlewareMatchers),

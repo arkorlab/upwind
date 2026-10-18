@@ -1,3 +1,4 @@
+import type { Route } from '@stayingupwind/core/bundle';
 import {
   FUNCTION_HEADER,
   HEADER_RULES_JUDGED_HEADER,
@@ -134,6 +135,21 @@ function handle(app: AppModule, request: Request): Promise<Response> {
   });
 }
 
+/** Count rule-list allocations while the production router prepares its tables. */
+function countedRoutes(routes: readonly Route[]) {
+  let allocations = 0;
+  class RuleList extends Array<Route> {
+    constructor(length: number) {
+      super(length);
+      allocations += 1;
+    }
+  }
+  const values = new RuleList(0);
+  values.push(...routes);
+  allocations = 0;
+  return { values, allocations: () => allocations };
+}
+
 describe('the header rules ahead of the middleware, where the edge ran it', () => {
   beforeEach(() => {
     vi.stubGlobal('__ARKOR_FUNCTION_KIND__', 'app');
@@ -144,6 +160,20 @@ describe('the header rules ahead of the middleware, where the edge ran it', () =
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.clearAllMocks();
+  });
+
+  it('avoids an intermediate rule-list allocation when routing keeps every rule', async () => {
+    const store = deployment();
+    const counted = countedRoutes(store.manifest.routing.beforeMiddleware);
+    store.manifest.routing.beforeMiddleware = counted.values;
+    vi.mocked(getStore).mockReturnValue(store);
+    const { app } = passing();
+    const response = await handle(app, fromTheEdge({ [MIDDLEWARE_DONE_HEADER]: '1' }));
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('x-target')).toBe('rule');
+    // Conversion to the router's shape and rewrite marking already make their two lists.
+    expect(counted.allocations()).toBeLessThanOrEqual(2);
   });
 
   it('leaves them out, and says so, where the edge judged them', async () => {
