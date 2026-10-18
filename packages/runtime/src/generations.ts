@@ -41,7 +41,13 @@ import { observationOf } from './incoming.ts';
 import { PAGES_DATA, ROUTE_BODY, SEGMENT_PREFIX } from './representations.ts';
 import { routingParameters } from './route-parameters.ts';
 import { bypassesPrerender, resume, type RoutedInput } from './serve.ts';
-import { completedShell, entrypointKindOf, findShell, isClassShell, type Store } from './store.ts';
+import {
+  entrypointKindOf,
+  findShell,
+  generationPathname,
+  isClassShell,
+  type Store,
+} from './store.ts';
 
 /**
  * The runtime cache's part in answering a request: a regeneration the edge asked for beside a
@@ -78,7 +84,7 @@ function entryPathnameOf(store: Store, route: string, pathname: string): string 
   if (shell === undefined) {
     return pathname;
   }
-  return shell.body === undefined ? completedShell(shell, pathname) : shell.pathname;
+  return generationPathname(shell, pathname);
 }
 
 /** The kind of entry a route makes, from the entrypoint the build recorded for it. */

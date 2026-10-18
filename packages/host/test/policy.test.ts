@@ -89,6 +89,7 @@ describe('deliveryPolicySchema', () => {
       'reason',
       'manifestId',
       'policyId',
+      'selectedPolicy',
       'deployment',
       'cspNonce',
       'cspNonceMode',
