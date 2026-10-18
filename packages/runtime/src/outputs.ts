@@ -255,7 +255,9 @@ export async function serveRouteHandler(
  * shell, is kept under the shell its class completes to (`completedShell`); a prefetch of it before
  * anything is kept is answered from the class's own output — which leaves out what its parameters
  * hold up, a root layout that reads one — and the entry is rendered behind that answer, for the
- * requests after it.
+ * requests after it. An ordinary navigation with no built shell also captures the render first:
+ * Next.js's static Flight output, rather than a live navigation response, can then be reused by
+ * the client on later visits. Speculative requests keep their background render.
  */
 function rscSource(
   input: RoutedInput,
@@ -277,8 +279,8 @@ function rscSource(
   let onMiss: GenerationSource['onMiss'] = 'build';
   if (blocking || (shell?.body !== undefined && pathname !== shell.pathname)) {
     onMiss = 'render';
-  } else if (unbuilt && speculative(want)) {
-    onMiss = 'behind';
+  } else if (unbuilt) {
+    onMiss = speculative(want) ? 'behind' : 'render';
   }
   // Under the route the build filed the shell under, which its entry is keyed by, as a document is.
   return { route: shell?.route ?? resolved.route, pathname, ...want, onMiss };
