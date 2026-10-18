@@ -60,13 +60,18 @@ async function protocol() {
   return import(pathToFileURL(file));
 }
 
-function assertUrlHeader(value, expectedPath) {
+function assertUrlHeader(value, expectedPath, requestPath) {
   if (expectedPath === undefined) {
     assert.equal(value, undefined);
     return;
   }
   const expected = new URL(expectedPath, 'http://locale.test:8443');
-  const actual = new URL(value);
+  // Location may be relative after Next.js adapts a same-origin redirect. Resolve it as
+  // the browser would, against this request; middleware rewrite headers stay absolute.
+  const actual =
+    requestPath === undefined
+      ? new URL(value)
+      : new URL(value, new URL(requestPath, 'http://locale.test:8443'));
   // Next.js serializes URLSearchParams: %20 and + represent the same space. Keep query
   // values, ordering and duplicate keys exact, including nested escapes and literal pluses.
   assert.deepEqual([...actual.searchParams], [...expected.searchParams]);
@@ -251,7 +256,7 @@ try {
     assert.equal(response.bytes, 0, `unexpected app/body ${test.path}`);
     assert.equal(response.complete, true);
     assertUrlHeader(response.headers['x-middleware-rewrite'], test.rewrite);
-    assertUrlHeader(response.headers.location, test.location);
+    assertUrlHeader(response.headers.location, test.location, test.path);
     assert.equal(response.headers['x-middleware-next'], test.next ? '1' : undefined);
     const cookies = response.headers['set-cookie'] ?? [];
     assert.equal(cookies.length, test.cookie ? 1 : 0);
