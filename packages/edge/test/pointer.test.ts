@@ -2,8 +2,9 @@ import { type EdgePointer, edgePointerSchema } from '@stayingupwind/host/deliver
 import { env } from 'cloudflare:workers';
 import { describe, expect, it, vi } from 'vitest';
 
-import { createEdgeMemory } from '../src/memory/caches.ts';
+import { createEdgeMemory, rewriteSeenKey, routeSuspectKey } from '../src/memory/caches.ts';
 import { createPointerReader } from '../src/preview/pointer.ts';
+import { manifestStateFromPointer } from '../src/preview/state.ts';
 import { standaloneRuntime } from '../src/standalone/index.ts';
 import { pprDocument, seedSite } from './helpers/site.ts';
 
@@ -121,5 +122,117 @@ describe('a pointer served past its TTL for a live request', () => {
     } finally {
       warned.mockRestore();
     }
+  });
+});
+
+const COLLIDING_IDENTITIES = [
+  [
+    ['a', 'b:c', '/x'],
+    ['a:b', 'c', '/x'],
+  ],
+  [
+    ['a/b', 'c:d', '/x'],
+    ['a/b:c', 'd', '/x'],
+  ],
+  [
+    ['😀', 'é:雪', '/a:/b'],
+    ['😀:é', '雪', '/a:/b'],
+  ],
+  [
+    ['p', 'm:/a', '/b'],
+    ['p', 'm', '/a:/b'],
+  ],
+] as const;
+
+describe('a suspect route belongs to its composed project and manifest', () => {
+  it.each(COLLIDING_IDENTITIES)(
+    'keeps distinct identifier tuples apart: %j and %j',
+    (first, second) => {
+      const memory = createEdgeMemory(() => 0);
+      memory.suspects.set(routeSuspectKey(first[0], first[1], first[2]), true);
+
+      expect(memory.suspects.get(routeSuspectKey(first[0], first[1], first[2]))).toBe(true);
+      expect(memory.suspects.get(routeSuspectKey(second[0], second[1], second[2]))).toBeUndefined();
+    },
+  );
+
+  it.each(COLLIDING_IDENTITIES)(
+    'keeps the other pointer on the edge: %j and %j',
+    async (first, second) => {
+      const site = await seedSite({ document: pprDocument() });
+      const runtime = standaloneRuntime(env, { memory: createEdgeMemory(() => 0) });
+      const state = (identity: readonly [string, string, string]) => {
+        const [projectId, manifestId, pathname] = identity;
+        const pointer = { ...site.pointer, projectId, manifestId };
+        return manifestStateFromPointer({
+          runtime,
+          pointer,
+          pathname,
+          stored: { kind: 'found', value: { ...site.manifest, projectId } },
+          privateDelivery: false,
+          cspReportingPath: undefined,
+        });
+      };
+      runtime.memory.suspects.set(routeSuspectKey(first[0], first[1], first[2]), true);
+
+      expect(state(first).mode).toBe('passthrough');
+      expect(state(second).mode).toBe('edge');
+    },
+  );
+
+  it('retains ordinary route isolation and the existing expiry', async () => {
+    const site = await seedSite({ document: pprDocument() });
+    const clock = { now: 0 };
+    const runtime = standaloneRuntime(env, {
+      memory: createEdgeMemory(() => clock.now),
+      now: () => clock.now,
+    });
+    const state = (pathname: string) => {
+      return manifestStateFromPointer({
+        runtime,
+        pointer: site.pointer,
+        pathname,
+        stored: { kind: 'found', value: site.manifest },
+        privateDelivery: false,
+        cspReportingPath: undefined,
+      });
+    };
+    const key = routeSuspectKey(site.pointer.projectId, site.manifestId, '/x');
+    runtime.memory.suspects.set(key, true);
+
+    expect(state('/x').mode).toBe('passthrough');
+    expect(state('/y').mode).toBe('edge');
+
+    clock.now = 3_600_001;
+
+    expect(state('/x').mode).toBe('edge');
+  });
+
+  it('keeps Unicode spellings and surrogate identifiers opaque', () => {
+    const keys = [
+      routeSuspectKey('é', 'm', '/x'),
+      routeSuspectKey('é', 'm', '/x'),
+      routeSuspectKey('\u{D800}', 'm', '/x'),
+      routeSuspectKey('\u{D801}', 'm', '/x'),
+      routeSuspectKey('/', 'm', '/x'),
+      routeSuspectKey('%2F', 'm', '/x'),
+    ];
+
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+});
+
+describe('middleware lookahead belongs to its manifest and pathname', () => {
+  it.each([
+    ['a:/b', '/c', 'a', '/b:/c'],
+    ['雪:/x', '/y', '雪', '/x:/y'],
+  ])('keeps %s plus %s apart from %s plus %s', (firstId, firstPath, secondId, secondPath) => {
+    const memory = createEdgeMemory(() => 0);
+    const seen = { kind: 'unserved' } as const;
+    memory.rewritesSeen.set(rewriteSeenKey(firstId, firstPath), seen);
+
+    expect(memory.rewritesSeen.get(rewriteSeenKey(firstId, firstPath))).toBe(seen);
+    expect(memory.rewritesSeen.get(rewriteSeenKey(secondId, secondPath))).toBeUndefined();
+    expect(memory.rewritesSeen.get(rewriteSeenKey(firstId, `${firstPath}/other`))).toBeUndefined();
   });
 });

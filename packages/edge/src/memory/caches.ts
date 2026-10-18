@@ -369,9 +369,9 @@ export function memberEntryKey(scopeId: string, route: string, pathname: string)
   return `${String(scopeId.length)}:${scopeId}:${String(route.length)}:${route}:${pathname}`;
 }
 
-/** The key a document's rewrite is remembered under: the manifest names what the middleware is. */
+/** The rewrite's manifest goes by length: a colon may belong to it or the pathname. */
 export function rewriteSeenKey(manifestId: string, pathname: string): string {
-  return `${manifestId}:${pathname}`;
+  return `${String(manifestId.length)}:${manifestId}:${pathname}`;
 }
 
 /**
@@ -391,8 +391,9 @@ export function refusedAssetKey(
  * The key a route is condemned under within this isolate (`suspects`), until the pointer arrives
  * with it demoted. A continuation that sets a cookie, sends a header the shell cannot carry, or
  * sends nothing at all makes that route unsuitable for splicing; the other isolates cannot read this
- * restriction, and learn of the route from the pointer they read.
+ * restriction, and learn of the route from the pointer they read. Both identifiers go by length,
+ * as a composed host may include a colon in either.
  */
 export function routeSuspectKey(projectId: string, manifestId: string, pathname: string): string {
-  return `${projectId}:${manifestId}:${pathname}`;
+  return `${String(projectId.length)}:${projectId}:${String(manifestId.length)}:${manifestId}:${pathname}`;
 }
