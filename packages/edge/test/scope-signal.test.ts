@@ -224,12 +224,12 @@ describe('where a scope stands, as the edge comes to know it', () => {
     await Promise.all(seeded);
 
     const gate = Promise.withResolvers<true>();
-    const entered = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<true>();
     const asking = authority(
       () => ({ ...UNMOVED, revision: 5 }),
       gate.promise,
       () => {
-        entered.resolve();
+        entered.resolve(true);
       },
     );
     const askingHost = hostOf(cache, asking.source);

@@ -19,6 +19,7 @@ describe('a native body whose remaining read budget is already exhausted', () =>
       await expect(
         readBoundedBody(source.readable, { limit: 16, stallMs: 50, budgetMs: 0 }),
       ).rejects.toSatisfy(isDeadlineError);
+
       // Workerd exposes the readable cancellation to a native writer on its next write.
       const writing = settled(writer.write(new Uint8Array([1])));
 

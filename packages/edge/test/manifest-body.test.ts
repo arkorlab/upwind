@@ -134,6 +134,7 @@ describe('the durable manifest owns its body until its backend deadline', () => 
       await vi.advanceTimersByTimeAsync(READ_MS + 1);
 
       expect((await reading).kind).toBe('missing');
+
       // IdentityTransformStream exposes a readable cancel to its writer on the next write;
       // writer.closed alone need not settle proactively in workerd's native implementation.
       const nextWriting = settled(writer.write(subject.bytes.subarray(0, 1)));

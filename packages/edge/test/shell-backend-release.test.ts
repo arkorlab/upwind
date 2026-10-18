@@ -130,6 +130,7 @@ describe('the backend shell body belongs to its existing two-second owner', () =
           kind: 'unavailable',
           detail: 'shell backend read timed out',
         });
+
         const nextWriting = settled(writer.write(BYTES.subarray(0, 1)));
 
         await expect(nextWriting).resolves.toBe('rejected');
@@ -257,10 +258,12 @@ describe('the backend shell body belongs to its existing two-second owner', () =
       const headers = withLength ? { 'content-length': String(BYTES.byteLength) } : {};
       const response = new Response(BYTES, { headers });
       const ref = { ...subject.ref, byteLength: Number.MAX_SAFE_INTEGER - 1 };
+      // The spy calls this saved method with its original receiver through .call(this, result).
+      // eslint-disable-next-line @typescript-eslint/unbound-method, vitest/unbound-method
       const originalFinish = CacheBody.prototype.finish;
       let capacity: number | undefined;
       let readBytes: Uint8Array | undefined;
-      vi.spyOn(CacheBody.prototype, 'finish').mockImplementation(function (
+      vi.spyOn(CacheBody.prototype, 'finish').mockImplementation(function recordFinishedBody(
         this: CacheBody,
         result,
       ) {
@@ -287,7 +290,14 @@ describe('the backend shell body belongs to its existing two-second owner', () =
     const ref = await reference();
     const ctx = context('kv');
     const pending = Promise.withResolvers<ArrayBuffer | null>();
-    const get = vi.spyOn(env.EDGE_STATE, 'get').mockImplementation(() => pending.promise);
+    // View the same binding through the arrayBuffer overload used by the shell strategy.
+    const shells: {
+      get(
+        key: string,
+        options: { type: 'arrayBuffer'; cacheTtl?: number },
+      ): Promise<ArrayBuffer | null>;
+    } = env.EDGE_STATE;
+    const get = vi.spyOn(shells, 'get').mockImplementation(() => pending.promise);
     const open = vi.spyOn(CacheBody.prototype, 'open');
     const stop = vi.spyOn(CacheBody.prototype, 'stop');
     vi.spyOn(console, 'warn').mockReturnValue();
@@ -302,7 +312,7 @@ describe('the backend shell body belongs to its existing two-second owner', () =
       });
       expect(get).toHaveBeenCalledTimes(1);
 
-      pending.resolve(BYTES.slice().buffer);
+      pending.resolve(new Uint8Array(BYTES).buffer);
       await vi.advanceTimersByTimeAsync(0);
 
       expect(open).not.toHaveBeenCalled();
