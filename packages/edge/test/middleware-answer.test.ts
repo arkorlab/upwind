@@ -5,6 +5,7 @@ import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test'
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 
+import { MisroutedError } from '../src/handlers/upstream.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
 import { serveFromPointer } from '../src/route.ts';
 import { standaloneHost, standaloneRuntime } from '../src/standalone/index.ts';
@@ -34,7 +35,7 @@ interface Answering {
    */
   readonly origin?: ((request: Request) => Response) | undefined;
   /** The application's answer, after the middleware; absent, a plain response. */
-  readonly application?: ((request: Request) => Response) | undefined;
+  readonly application?: ((request: Request) => Response | Promise<Response>) | undefined;
 }
 
 /**
@@ -131,6 +132,103 @@ function refusal(): Response {
 }
 
 describe('an answer the middleware gives', () => {
+  it.each(['unreachable', 'misrouted'] as const)(
+    'keeps continuing middleware headers on an %s application failure',
+    async (failure) => {
+      const response = await throughMiddleware('/api/hello', {
+        middleware: () => {
+          return new Response(null, {
+            headers: {
+              'x-middleware-next': '1',
+              'set-cookie': 'mw=1; Path=/',
+              'x-visible': 'retained',
+              'content-security-policy': "default-src 'self'",
+              'content-type': 'text/plain',
+              'content-length': '123',
+              'content-encoding': 'gzip',
+              'cache-control': 'public, max-age=3600',
+              'cdn-cache-control': 'public, max-age=3600',
+              'x-arkor-edge': 'forged',
+            },
+          });
+        },
+        application: () => {
+          if (failure === 'misrouted') {
+            return Promise.reject(
+              new MisroutedError('wrong Worker', {
+                dispatched: { fn: 'site-app', asked: 'site-app', redispatched: false },
+              }),
+            );
+          }
+          return Promise.reject(new Error('application unavailable'));
+        },
+      });
+
+      expect({
+        status: response.status,
+        visible: response.headers.get('x-visible'),
+        cookies: response.headers.getSetCookie(),
+        csp: response.headers.get('content-security-policy'),
+      }).toStrictEqual({
+        status: 502,
+        visible: 'retained',
+        cookies: ['mw=1; Path=/'],
+        csp: "default-src 'self'",
+      });
+      expect(response.headers.get('content-type')).toContain('text/html');
+      expect(response.headers.get('content-length')).toBeNull();
+      expect(response.headers.get('content-encoding')).toBeNull();
+      expect(response.headers.get('cache-control')).toBe('private, no-store');
+      expect(response.headers.get('cdn-cache-control')).toBeNull();
+      expect(response.headers.get('x-arkor-edge')).toBe(
+        `error;reason=${failure === 'misrouted' ? 'function-misrouted' : 'app-unreachable'}`,
+      );
+      await expect(response.text()).resolves.toContain('The application could not be reached');
+    },
+  );
+
+  it.each([
+    [redirectToLogin, undefined, false],
+    [refusal, undefined, false],
+    [redirectToLogin, 'close', true],
+    [refusal, 'X-Other', true],
+    [refusal, 'X-Internal, Set-Cookie', false],
+  ] as const)(
+    'filters terminal configured Connection fields with middleware %s / %s',
+    async (middleware, connection, retained) => {
+      const response = await throughMiddleware('/', {
+        middleware: () => {
+          const answer = middleware();
+          answer.headers.set('x-internal', 'middleware');
+          if (connection !== undefined) {
+            answer.headers.set('connection', connection);
+          }
+          return answer;
+        },
+        headerRules: [
+          {
+            sourceRegex: EVERY_PATH,
+            headers: {
+              Connection: 'X-Internal, SET-cookie, not a name',
+              'X-Internal': 'configured',
+              'Set-Cookie': 'rule=1; Path=/',
+              'X-Public': 'retained',
+            },
+          },
+        ],
+      });
+
+      expect(response.status).toBe(middleware === refusal ? 401 : 307);
+      expect(response.headers.get('connection')).toBeNull();
+      expect(response.headers.get('x-internal')).toBe(retained ? 'middleware' : null);
+      expect(response.headers.getSetCookie()).toStrictEqual(
+        retained ? ['rule=1; Path=/', 'mw=1; Path=/'] : [],
+      );
+      expect(response.headers.get('x-public')).toBe('retained');
+      await expect(response.text()).resolves.toBe(middleware === refusal ? 'denied' : '');
+    },
+  );
+
   it.each([FILE, '/api/hello'])(
     'drops fields nominated by continuing middleware Connection on %s',
     async (path) => {

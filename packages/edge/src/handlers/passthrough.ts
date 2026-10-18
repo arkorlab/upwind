@@ -444,6 +444,20 @@ function layAfterMiddleware(
   mergeScopedMiddlewareHeaders(headers, middleware.responseHeaders, scope);
 }
 
+/** A failed application call still answers under the middleware that already ran. */
+function failedPassthrough(input: PassthroughInput, reason: string): Response {
+  const response = badGatewayResponse(reason);
+  if (input.middleware !== undefined) {
+    mergeScopedMiddlewareHeaders(
+      response.headers,
+      input.middleware.responseHeaders,
+      input.forwarding,
+    );
+    keptByNobody(response.headers);
+  }
+  return response;
+}
+
 /** Transparent proxy to the deployment's Worker: any method, streamed body, rewritten cookies. */
 
 export async function handlePassthrough(input: PassthroughInput): Promise<Response> {
@@ -481,7 +495,7 @@ export async function handlePassthrough(input: PassthroughInput): Promise<Respon
   } catch (error) {
     if (error instanceof MisroutedError) {
       reportPassthrough(input, `${MISROUTED_PREFIX}${input.reason}`, startedAt, pending);
-      return badGatewayResponse('function-misrouted');
+      return failedPassthrough(input, 'function-misrouted');
     }
     const again = await answeredAgain(input, error);
     if (again !== undefined) {
@@ -490,7 +504,7 @@ export async function handlePassthrough(input: PassthroughInput): Promise<Respon
     }
     // Both hops, where the Worker the first named was the one that could not be reached.
     reportPassthrough(input, `${UNREACHABLE_PREFIX}${input.reason}`, startedAt, pending);
-    return badGatewayResponse('app-unreachable');
+    return failedPassthrough(input, 'app-unreachable');
   }
   // Read before the header goes with every other the edge's protocol reserves, below.
   takeResponseInvalidation(input, originResponse);

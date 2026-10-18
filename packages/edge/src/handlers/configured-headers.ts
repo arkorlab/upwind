@@ -172,3 +172,63 @@ export function withJudgedRules<Outcome extends MiddlewareOutcome>(
     ? { ...outcome, judgedRules: configured }
     : outcome;
 }
+
+/** Iterate valid names: a Connection option need not itself be a valid header name. */
+function withoutNominated(
+  headers: Headers,
+  original: Headers,
+  nominated: ReadonlySet<string>,
+): void {
+  for (const name of original.keys()) {
+    if (nominated.has(name)) {
+      headers.delete(name);
+    }
+  }
+}
+
+/**
+ * The headers the rules of `next.config` set, laid under a redirect or a whole response the
+ * middleware answered with, as Next.js's router lays them: collected ahead of the middleware, each
+ * replaced by one of the middleware's own of the same name (`resolve-routes.js`), and all put on the
+ * response before it redirects or sends the middleware's body (`router-server.js`). A rule's cookie
+ * goes out ahead of the middleware's, as `@next/routing` collects the two for the application's
+ * Worker and as every other answer here carries them — Next.js's own server keeps the middleware's
+ * alone — so of a cookie both set the middleware's is the one that stands; each is scoped as any
+ * is. What the edge takes off every answer it hands on (`forwardedResponse`) is not a rule's to put
+ * back.
+ */
+export function layConfiguredUnder(
+  headers: Headers,
+  configured: ConfiguredHeaders,
+  scope: PassthroughResponseContext,
+  original: Headers,
+): void {
+  // The middleware's Connection replaces the rule's as any of its headers does. Keep its
+  // nominations until after forwarding has removed Connection itself (RFC 9110, 7.6.1).
+  const connection = original.get('connection') ?? configured.headers['connection'];
+  const nominated =
+    connection === undefined
+      ? undefined
+      : new Set(connection.split(',').map((name) => name.trim().toLowerCase()));
+  if (nominated !== undefined) {
+    withoutNominated(headers, original, nominated);
+  }
+  for (const [name, value] of Object.entries(configured.headers)) {
+    if (nominated?.has(name) === true) {
+      continue;
+    }
+    if (name === SET_COOKIE_HEADER) {
+      const own = headers.getSetCookie();
+      headers.delete(SET_COOKIE_HEADER);
+      setConfigured(headers, name, value, scope);
+      for (const cookie of own) {
+        headers.append(SET_COOKIE_HEADER, cookie);
+      }
+    } else if (
+      !PASSTHROUGH_RESPONSE_HEADER_DENYLIST.includes(name) &&
+      !name.startsWith(PLATFORM_HEADER_PREFIX)
+    ) {
+      setConfiguredUnder(headers, name, value, scope);
+    }
+  }
+}

@@ -17,7 +17,6 @@ import {
   dataRequestHeaders,
   EDGE_DEBUG_HEADER,
   HOP_BY_HOP_HEADERS,
-  PASSTHROUGH_RESPONSE_HEADER_DENYLIST,
   PLATFORM_HEADER_PREFIX,
   sanitizePassthroughHeaders,
 } from '@stayingupwind/core/request';
@@ -28,7 +27,7 @@ import type { DispatchApp } from '../edge-runtime.ts';
 import { passthroughHeaders } from '../forwarding.ts';
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeContext } from '../strategies/context.ts';
-import { setConfigured, setConfiguredUnder } from './configured-headers.ts';
+import { layConfiguredUnder } from './configured-headers.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
 import { observeMetric } from './observer.ts';
 import {
@@ -689,39 +688,6 @@ export async function followExternalRewrite(
   return answer;
 }
 
-/**
- * The headers the rules of `next.config` set, laid under a redirect or a whole response the
- * middleware answered with, as Next.js's router lays them: collected ahead of the middleware, each
- * replaced by one of the middleware's own of the same name (`resolve-routes.js`), and all put on the
- * response before it redirects or sends the middleware's body (`router-server.js`). A rule's cookie
- * goes out ahead of the middleware's, as `@next/routing` collects the two for the application's
- * Worker and as every other answer here carries them — Next.js's own server keeps the middleware's
- * alone — so of a cookie both set the middleware's is the one that stands; each is scoped as any
- * is. What the edge takes off every answer it hands on (`forwardedResponse`) is not a rule's to put
- * back.
- */
-function layConfiguredUnder(
-  edge: EdgeContext,
-  headers: Headers,
-  configured: ConfiguredHeaders,
-): void {
-  for (const [name, value] of Object.entries(configured.headers)) {
-    if (name === SET_COOKIE_HEADER) {
-      const own = headers.getSetCookie();
-      headers.delete(SET_COOKIE_HEADER);
-      setConfigured(headers, name, value, edge.forwarding);
-      for (const cookie of own) {
-        headers.append(SET_COOKIE_HEADER, cookie);
-      }
-    } else if (
-      !PASSTHROUGH_RESPONSE_HEADER_DENYLIST.includes(name) &&
-      !name.startsWith(PLATFORM_HEADER_PREFIX)
-    ) {
-      setConfiguredUnder(headers, name, value, edge.forwarding);
-    }
-  }
-}
-
 /** Take what is the middleware protocol's off its own answer. */
 function withoutMiddlewareProtocol(headers: Headers): void {
   // The names chosen first: deleting from the iterator's own Headers would skip entries.
@@ -745,7 +711,7 @@ export function middlewareResponse(
   const answer = forwardedResponse(response, edge.forwarding, request.method);
   const headers = answer.headers;
   withoutMiddlewareProtocol(headers);
-  layConfiguredUnder(edge, headers, answered.configured);
+  layConfiguredUnder(headers, answered.configured, edge.forwarding, response.headers);
   privateCacheControl(headers);
   if (edge.privateDelivery) {
     keptByNobody(headers);
