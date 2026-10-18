@@ -143,8 +143,11 @@ function blobGate(edge: EdgeContext, manifest: ProjectManifest, href: string): B
  * (`dpl`) is answered with it — Next.js's loader puts the document's own on the optimizer's URL. A
  * build kept from the deployment before that answers only its own deployment's `dpl` (`dplOnly`)
  * is no file of a request naming another, or none: its path is this deployment's, and its routing
- * answers it, as it answers a request for the path (`staticFileBuildWithoutDpl`). Any other build
- * is the source whichever deployment the request names.
+ * answers it, as it answers a request for the path (`staticFileBuildWithoutDpl`). A name both
+ * builds have that is no content hash keeps the bytes the deployment before gave it beside this
+ * build's (`previous`): a request naming that deployment is answered with those, as a request for
+ * the file naming it is (`classifyStaticFile`), and its result is kept under their hash, not
+ * under this build's. Any other build is the source whichever deployment the request names.
  */
 function shippedSource(
   manifest: ProjectManifest,
@@ -154,6 +157,11 @@ function shippedSource(
   const entry = findStaticFile(manifest, pathname);
   if (entry === undefined || dpl === entry.deploymentId) {
     return entry;
+  }
+  const { previous } = entry;
+  const shared = entry.immutable && entry.dplOnly !== true;
+  if (!shared && previous !== undefined && previous.deploymentId === dpl) {
+    return { ...previous, immutable: false };
   }
   return staticFileBuildWithoutDpl(entry, manifest.deployment.dplId);
 }
