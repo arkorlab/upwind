@@ -349,8 +349,11 @@ function joinServerTiming(headers: Headers, middlewareHeaders: Headers, timing: 
 
 /**
  * `Server-Timing`: what the document waited on, in the order it came to — the pointer, the
- * manifest, the middleware, the record — and where the shell came from. A wait the request did not
- * make is left out. These are the times the lookups took as they finished; nothing waits for them.
+ * manifest, the middleware, the record — and where the shell came from. `pre` is cumulative from
+ * native handler entry until prerequisite reads were ready, not another cost beside ptr/man.
+ * `mwd` is the native subrequest-to-headers interval inside the outer `mw` interval. A boundary
+ * the host did not provide is left out. These overlap and use Cloudflare's I/O clock; synchronous
+ * CPU can read as zero. Nothing waits on a timing, and none is added to infer total TTFB.
  */
 function timingEntries(header: DocumentHeaderInput): ServerTimingEntry[] {
   const { timings } = header.edge;
@@ -361,8 +364,14 @@ function timingEntries(header: DocumentHeaderInput): ServerTimingEntry[] {
   if (timings.manifestMs !== undefined) {
     entries.push({ name: 'man', durationMs: timings.manifestMs });
   }
+  if (timings.prerequisiteMs !== undefined) {
+    entries.push({ name: 'pre', durationMs: timings.prerequisiteMs });
+  }
   if (timings.middlewareMs !== undefined) {
     entries.push({ name: 'mw', durationMs: timings.middlewareMs });
+  }
+  if (timings.middlewareDispatchMs !== undefined) {
+    entries.push({ name: 'mwd', durationMs: timings.middlewareDispatchMs });
   }
   if (header.record !== undefined) {
     const { lookupMs, description } = header.record;

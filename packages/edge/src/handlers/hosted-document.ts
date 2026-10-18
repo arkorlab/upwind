@@ -400,7 +400,14 @@ export async function routeHostedDocument(input: HostedDocumentInput): Promise<R
       : followExternalRewrite(edge, request, middleware, answered);
   }
   // What the document reports it waited on includes the middleware from here on.
-  const timed = { ...edge, timings: { ...edge.timings, middlewareMs } };
+  const timed = {
+    ...edge,
+    timings: {
+      ...edge.timings,
+      middlewareMs,
+      middlewareDispatchMs: middleware.middlewareMs,
+    },
+  };
   return serveAfterItsMiddleware({ ...input, edge: timed, headerRules }, middleware, preload);
 }
 

@@ -17,6 +17,15 @@ import type { DemotedRoutes } from '../preview/pointer.ts';
  * which records it where it will, or nowhere.
  */
 export interface RequestTimings {
+  /**
+   * The host's native request-handler entry, before pointer/access/manifest reads. Absent where
+   * the host supplies no clock boundary; never inferred from the individual lookup durations.
+   * Cloudflare's clock advances after I/O, so this excludes isolate/module startup before entry
+   * and does not measure CPU. All elapsed intervals can overlap and must not be added.
+   */
+  readonly requestStartedAt?: number | undefined;
+  /** Handler entry until the pointer/access/manifest/policy prerequisites were ready. */
+  readonly prerequisiteMs?: number | undefined;
   readonly pointerMs: number | undefined;
   /**
    * The manifest's lookup and the policy's, read side by side and waited on together
@@ -25,6 +34,8 @@ export interface RequestTimings {
    */
   readonly manifestMs: number | undefined;
   readonly middlewareMs: number | undefined;
+  /** Native middleware dispatch until its response headers, inside the outer middleware wait. */
+  readonly middlewareDispatchMs?: number | undefined;
 }
 
 /** Everything a strategy may touch; passed as the generic context of the core strategy contracts. */

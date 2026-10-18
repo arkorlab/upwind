@@ -16,6 +16,7 @@ export async function handleStandalone(
   ctx: ExecutionContext,
   runtime = standaloneRuntime(env),
 ): Promise<Response> {
+  const requestStartedAt = runtime.now();
   const url = new URL(request.url);
   const pointerStarted = runtime.now();
   const pointer = await standalonePointer(env, runtime, ctx);
@@ -29,6 +30,7 @@ export async function handleStandalone(
         runtime,
         host: standaloneHost(env),
         pointer: pointer.value,
+        requestStartedAt,
         pointerMs: runtime.now() - pointerStarted,
         privateDelivery: false,
         cspReportingPath: undefined,

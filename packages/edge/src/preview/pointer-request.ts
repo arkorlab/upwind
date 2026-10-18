@@ -57,6 +57,8 @@ export interface PointerRequest {
   readonly runtime: EdgeRuntime;
   readonly host: EdgeHost;
   readonly pointer: EdgePointer;
+  /** The host's native handler entry, for cumulative document timings (`RequestTimings`). */
+  readonly requestStartedAt?: number | undefined;
   /** How long the pointer's lookup took (`RequestTimings`). */
   readonly pointerMs: number;
   /** What the host says of the project: its responses are for the visitor let through alone. */
@@ -117,7 +119,12 @@ export async function servePointerRequest(
     // The pointer selected this name. A shipped file uses none of the policy's settings.
     policy: { id: pointer.policyId },
   };
-  const timings = { pointerMs: input.pointerMs, manifestMs, middlewareMs: undefined };
+  const timings = {
+    requestStartedAt: input.requestStartedAt,
+    pointerMs: input.pointerMs,
+    manifestMs,
+    middlewareMs: undefined,
+  };
   let ready: Promise<RoutingInput> | undefined;
   const initial = {
     request,
@@ -141,7 +148,14 @@ export async function servePointerRequest(
           ...initial,
           state: { ...state, policy: policyFromPointer(lookup, pointer) },
           // Documents, images and matching middleware still wait on both concurrent reads.
-          timings: { ...timings, manifestMs: Math.max(manifestMs, completedAt - manifestStarted) },
+          timings: {
+            ...timings,
+            prerequisiteMs:
+              input.requestStartedAt === undefined
+                ? undefined
+                : runtime.now() - input.requestStartedAt,
+            manifestMs: Math.max(manifestMs, completedAt - manifestStarted),
+          },
         };
       })();
       return ready;

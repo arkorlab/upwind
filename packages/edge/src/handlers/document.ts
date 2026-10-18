@@ -22,6 +22,7 @@ import {
 import type { ServedValidity } from '../cache/decision.ts';
 import type { DetachedRegeneration } from '../cache/regenerate.ts';
 import { logWarn } from '../observability/logger.ts';
+import { serverTiming, type ServerTimingEntry } from '../observability/server-timing.ts';
 import { stripEdgeHeaders } from '../request-context.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { resumeContinuation } from '../strategies/continuation-resume.ts';
@@ -409,6 +410,8 @@ function resumeOf(generation: ServedGeneration | undefined): ContinuationResume 
 }
 
 interface Composition {
+  /** Selected shell/rendering is ready: response preparation begins without awaiting its body. */
+  readonly startedAt: number;
   readonly headers: Headers;
   /**
    * The headers recorded with what is served, and those the rules of `next.config` that matched
@@ -456,7 +459,7 @@ function recordTimingOf(input: DocumentInput): RecordTiming | undefined {
 }
 
 /** The response as it goes out: its headers, the nonce, and the encoding the client negotiated. */
-function composeDocument(input: DocumentInput, composition: Composition): Response {
+function composedResponse(input: DocumentInput, composition: Composition): Response {
   const { entry, resolved, edge } = input;
   const { delivery } = composition;
   const { headers, nonce } = documentHeaders({
@@ -500,6 +503,26 @@ function composeDocument(input: DocumentInput, composition: Composition): Respon
     // again, and buffer the shell while doing so.
     encodeBody: 'manual',
   });
+}
+
+/**
+ * The response is ready, without awaiting the continuation or reading its body. `compose` starts
+ * after the selected bytes/rendering were ready; `edge` starts at the host's native handler entry.
+ * Both use the existing I/O clock: synchronous CPU can read as zero, and isolate startup before
+ * handler entry is outside `edge`. These overlap other entries and are not additive phase costs.
+ */
+function composeDocument(input: DocumentInput, composition: Composition): Response {
+  const response = composedResponse(input, composition);
+  const now = input.edge.runtime.now();
+  const entries: ServerTimingEntry[] = [
+    { name: 'compose', durationMs: now - composition.startedAt },
+  ];
+  const { requestStartedAt } = input.edge.timings;
+  if (requestStartedAt !== undefined) {
+    entries.push({ name: 'edge', durationMs: now - requestStartedAt });
+  }
+  response.headers.append('server-timing', serverTiming(entries));
+  return response;
 }
 
 /** What stands for the continuation of a document that has none, should the shell fail it. */
@@ -698,6 +721,7 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
   // generation the cache answered with reports its own lookup.
   const lookupMs = generation?.lookupMs ?? edge.runtime.now() - lookupStart;
   const encoded = await readyRendering(edge, encodedRead);
+  const compositionStarted = edge.runtime.now();
   const delivery = deliveryFor({
     entry,
     shell,
@@ -721,6 +745,7 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
     edge.ctx.waitUntil(reportOutcome({ input, outcome, ...read, subrequests: 0, head }));
     // What the `GET` would say of itself, a resume included: the headers are the `GET`'s.
     return composeDocument(input, {
+      startedAt: compositionStarted,
       headers,
       recorded: [recorded, rules.headers],
       delivery,
@@ -768,6 +793,7 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
     })(),
   );
   return composeDocument(input, {
+    startedAt: compositionStarted,
     headers,
     recorded: [recorded, rules.headers],
     delivery,
