@@ -193,7 +193,84 @@ async function lease(scope: Scope, plan: Plan) {
   return started;
 }
 
+async function damageBlob(plan: Plan, fault: string): Promise<void> {
+  if (fault === 'missing') await env.ARTIFACTS.delete(plan.artifact.storageRef);
+  else {
+    await env.ARTIFACTS.put(
+      plan.artifact.storageRef,
+      new Uint8Array(plan.artifact.byteLength) as BufferSource,
+    );
+  }
+}
+
+function failureFor(scope: Scope, plan: Plan) {
+  return runInDurableObject(scope.stub, (_instance, state) => {
+    return (
+      state.storage.sql
+        .exec<{ value: string }>(
+          `SELECT value FROM meta WHERE key = ?`,
+          `seed_artifact_failure:${plan.entryId}`,
+        )
+        .toArray()[0]?.value ?? null
+    );
+  });
+}
+
 describe('a seed whose artifact projection could not read', () => {
+  it.each(['missing', 'corrupt'])(
+    'immediately reprojects an unchanged seed after its same-key %s blob is restored',
+    async (fault) => {
+      const scope = await scopeForTest();
+      const plan = await planFor(scope);
+      await damageBlob(plan, fault);
+      await seedBatch(scope, [plan.seed]);
+      const before = await rowsFor(scope, plan);
+
+      expect(before.entry.kv_revision).toBe(0);
+      await expect(failureFor(scope, plan)).resolves.toBe(plan.generationId);
+
+      await env.ARTIFACTS.put(plan.artifact.storageRef, encodeUtf8(BODY) as BufferSource);
+      await seedBatch(scope, [plan.seed]);
+
+      const after = await rowsFor(scope, plan);
+
+      expect(after.generation.outputs).toBe(before.generation.outputs);
+      expect(after.entry.kv_revision).toBe(after.entry.record_revision);
+      expect(after.entry.record_revision).toBeGreaterThan(before.entry.record_revision);
+      expect(decodeUtf8((await recordFor(scope, plan.entryId)).html)).toBe(BODY);
+      await expect(failureFor(scope, plan)).resolves.toBeNull();
+    },
+  );
+
+  it('records another failed projection when a shared proposal keeps its missing canonical key', async () => {
+    const scope = await scopeForTest();
+    const first = await planFor(scope, '/first');
+    const second = await planFor(scope, '/second');
+    const canonical = `missing/canonical/${scope.scopeId}`;
+    await seedBatch(scope, [atLocation(first, canonical), atLocation(second, canonical)]);
+    const before = await rowsFor(scope, first);
+
+    await expect(failureFor(scope, first)).resolves.toBe(first.generationId);
+
+    await seedBatch(scope, [atLocation(first, `missing/proposal/${scope.scopeId}`)]);
+
+    const failed = await rowsFor(scope, first);
+
+    expect(failed.generation.outputs).toBe(before.generation.outputs);
+    expect(failed.entry.record_revision).toBeGreaterThan(before.entry.record_revision);
+    expect(failed.entry.kv_revision).toBe(0);
+    await expect(failureFor(scope, first)).resolves.toBe(first.generationId);
+
+    await env.ARTIFACTS.put(canonical, encodeUtf8(BODY) as BufferSource);
+    await seedBatch(scope, [atLocation(first, canonical)]);
+
+    const repaired = await rowsFor(scope, first);
+
+    expect(repaired.entry.kv_revision).toBe(repaired.entry.record_revision);
+    expect(decodeUtf8((await recordFor(scope, first.entryId)).html)).toBe(BODY);
+    await expect(failureFor(scope, first)).resolves.toBeNull();
+  });
+
   it('uses one verified canonical location for duplicate SHA roles in a generation', async () => {
     const scope = await scopeForTest();
     const plan = await planFor(scope);
