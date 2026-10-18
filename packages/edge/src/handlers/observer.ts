@@ -63,12 +63,20 @@ export function sendReport(
   report: RouteReport,
 ): Promise<void> | undefined {
   try {
-    return reports?.report(report);
-  } catch (error) {
-    logWarn('the host reports threw', {
-      kind: report.kind,
-      detail: error instanceof Error ? error.message : String(error),
+    // Keep a host's synchronous opt-out synchronous; delivery alone belongs behind the response.
+    // eslint-disable-next-line unicorn/prefer-await
+    return reports?.report(report)?.catch((error: unknown) => {
+      reportFailed(report, error);
     });
+  } catch (error) {
+    reportFailed(report, error);
     return undefined;
   }
+}
+
+function reportFailed(report: RouteReport, error: unknown): void {
+  logWarn('the host reports threw', {
+    kind: report.kind,
+    detail: error instanceof Error ? error.message : String(error),
+  });
 }
