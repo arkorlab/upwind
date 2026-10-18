@@ -7,9 +7,11 @@ import {
 } from '@stayingupwind/core/cache';
 import type { ProjectManifest } from '@stayingupwind/core/manifest';
 import {
+  FUNCTION_HEADER,
   INVALIDATED_REVISION_HEADER,
   INVALIDATED_TAGS_HEADER,
   MIDDLEWARE_DONE_HEADER,
+  MISDIRECTED_STATUS,
 } from '@stayingupwind/core/paas';
 import { DEFAULT_DELIVERY_POLICY } from '@stayingupwind/host/delivery';
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
@@ -17,7 +19,9 @@ import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 
 import { takeInvalidation, transferInvalidations } from '../src/cache/condemned.ts';
+import { handlePassthrough } from '../src/handlers/passthrough.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
+import type { EdgeMetric } from '../src/observability/metrics.ts';
 import type { PolicyLookup } from '../src/preview/manifest.ts';
 import type { Lookup } from '../src/preview/storage.ts';
 import { serveFromPointer } from '../src/route.ts';
@@ -434,5 +438,90 @@ describe('passthrough before unused pointer reads', () => {
       policy.resolve(POLICY);
       await waitOnExecutionContext(ctx);
     }
+  });
+});
+
+describe('the dispatches a passthrough records', () => {
+  it.each([
+    { kind: 'missing-app', sent: 0, status: 502, fn: undefined },
+    { kind: 'missing-dispatch', sent: 0, status: 502, fn: undefined },
+    { kind: 'answered', sent: 1, status: 200, fn: undefined },
+    { kind: 'failed', sent: 1, status: 502, fn: undefined },
+    { kind: 'redispatched', sent: 2, status: 200, fn: 'app-2' },
+    { kind: 'redispatch-failed', sent: 2, status: 502, fn: 'app-2' },
+    { kind: 'misrouted', sent: 1, status: 502, fn: 'app' },
+    { kind: 'replaced', sent: 1, status: 200, fn: undefined },
+  ])('counts only requests sent when $kind', async (example) => {
+    const points: EdgeMetric[] = [];
+    const calls: string[] = [];
+    const base = standaloneRuntime(env, { memory: createEdgeMemory(() => Date.now()) });
+    const host = standaloneHost(env);
+    const split = example.kind.startsWith('redispatch') || example.kind === 'misrouted';
+    const app = { deploymentId: 'dpl_counted', scriptName: 'counted-app' };
+    const response = await handlePassthrough({
+      request: new Request('https://customer.example.test/api/items'),
+      forwarding: {
+        previewDomain: 'example.test',
+        previewHost: 'customer.example.test',
+        clientIp: undefined,
+      },
+      app:
+        example.kind === 'missing-app'
+          ? undefined
+          : { ...app, ...(split && { functions: { 'app-2': 'counted-app-2' } }) },
+      runtime: {
+        ...base,
+        dispatchApp:
+          example.kind === 'missing-dispatch'
+            ? undefined
+            : (script) => {
+                calls.push(script);
+                if (split && script === app.scriptName) {
+                  return Promise.resolve(
+                    new Response(null, {
+                      status: MISDIRECTED_STATUS,
+                      headers: {
+                        [FUNCTION_HEADER]: example.kind === 'misrouted' ? 'absent' : 'app-2',
+                      },
+                    }),
+                  );
+                }
+                return example.kind.endsWith('failed') || example.kind === 'replaced'
+                  ? Promise.reject(new Error('the dispatched Function could not answer'))
+                  : Promise.resolve(new Response('answered'));
+              },
+      },
+      host: {
+        ...host,
+        functionGone: () => example.kind === 'replaced',
+        observer: {
+          ...host.observer,
+          metric: (point) => {
+            points.push(point);
+          },
+        },
+      },
+      whenGone: () => Promise.resolve(new Response('replacement')),
+      reason: 'route-not-proved',
+      metrics: {
+        projectId: 'project-counted',
+        manifestId: 'manifest-counted',
+        policyId: 'policy-counted',
+        pathname: '/api/items',
+        colo: '',
+        storageReads: 3,
+        resumeDispatches: 2,
+        assetDispatches: 1,
+      },
+    });
+
+    expect(response.status).toBe(example.status);
+    expect(calls).toHaveLength(example.sent);
+    expect(points).toHaveLength(1);
+    expect(points[0]?.subrequests).toBe(6 + example.sent);
+    expect(points[0]?.fn).toBe(example.fn);
+    expect(points[0]?.redispatch).toBe(example.sent === 2 ? 1 : 0);
+
+    await response.body?.cancel();
   });
 });

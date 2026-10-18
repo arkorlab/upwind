@@ -39,7 +39,6 @@ import {
   privateCacheControl,
 } from './responses.ts';
 import {
-  type Dispatched,
   dispatchedOf,
   dispatchedSoFar,
   dispatchesMade,
@@ -257,14 +256,13 @@ function reportPassthrough(
   input: PassthroughInput,
   outcome: string,
   startedAt: number,
-  dispatched?: Dispatched,
+  pending: Promise<Response>,
 ): void {
-  // The Workers asked: the one sent to, and the one it was sent on to where that named another.
-  const asked = dispatched?.redispatched === true ? 2 : 1;
   const { metrics } = input;
   if (metrics === undefined) {
     return;
   }
+  const dispatched = dispatchedSoFar(pending);
   const elapsed = input.runtime.now() - startedAt;
   const point: EdgeMetric = {
     projectId: metrics.projectId,
@@ -295,7 +293,7 @@ function reportPassthrough(
     // The Workers asked, and what came before them — reads of storage, a resume let go, an asset's
     // answer the client was not handed — as a served document's point counts each.
     subrequests:
-      asked +
+      dispatchesMade(pending) +
       (metrics.storageReads ?? 0) +
       (metrics.resumeDispatches ?? 0) +
       (metrics.assetDispatches ?? 0),
@@ -482,26 +480,16 @@ export async function handlePassthrough(input: PassthroughInput): Promise<Respon
     originResponse = await pending;
   } catch (error) {
     if (error instanceof MisroutedError) {
-      reportPassthrough(input, `${MISROUTED_PREFIX}${input.reason}`, startedAt, error.dispatched);
+      reportPassthrough(input, `${MISROUTED_PREFIX}${input.reason}`, startedAt, pending);
       return badGatewayResponse('function-misrouted');
     }
     const again = await answeredAgain(input, error);
     if (again !== undefined) {
-      reportPassthrough(
-        input,
-        `${GONE_PREFIX}${input.reason}`,
-        startedAt,
-        dispatchedSoFar(pending),
-      );
+      reportPassthrough(input, `${GONE_PREFIX}${input.reason}`, startedAt, pending);
       return again;
     }
     // Both hops, where the Worker the first named was the one that could not be reached.
-    reportPassthrough(
-      input,
-      `${UNREACHABLE_PREFIX}${input.reason}`,
-      startedAt,
-      dispatchedSoFar(pending),
-    );
+    reportPassthrough(input, `${UNREACHABLE_PREFIX}${input.reason}`, startedAt, pending);
     return badGatewayResponse('app-unreachable');
   }
   // Read before the header goes with every other the edge's protocol reserves, below.
@@ -528,6 +516,6 @@ export async function handlePassthrough(input: PassthroughInput): Promise<Respon
   }
   applyCspReporting(headers, input.app === undefined ? undefined : input.cspReportingPath);
   // After the response exists, so nothing the client waits for is behind it.
-  reportPassthrough(input, input.reason, startedAt, dispatchedOf(originResponse));
+  reportPassthrough(input, input.reason, startedAt, pending);
   return response;
 }
