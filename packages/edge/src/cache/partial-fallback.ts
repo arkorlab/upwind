@@ -12,8 +12,7 @@ import {
 import { TtlCache, withDeadline } from '@stayingupwind/core/util';
 import { runtimeCacheOf } from '@stayingupwind/host/delivery';
 
-import type { EdgeRuntime } from '../edge-runtime.ts';
-import { memberEntryKey } from '../memory/caches.ts';
+import { type EdgeMemory, memberEntryKey } from '../memory/caches.ts';
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { claimBackgroundRecord } from './background-record-budget.ts';
@@ -36,7 +35,8 @@ interface Reads {
   readonly recent: TtlCache<string, number>;
 }
 
-const reads = new WeakMap<EdgeRuntime, Reads>();
+/** The isolate keeps the cadence when a request's runtime wrapper is let go. */
+const reads = new WeakMap<EdgeMemory, Reads>();
 
 export interface PartialFallbackRead {
   readonly route: string;
@@ -111,10 +111,10 @@ async function readCurrent(edge: EdgeContext, target: Target): Promise<void> {
 }
 
 function refresh(edge: EdgeContext, named: Omit<Target, 'active'>, cadenceMs: number): void {
-  let state = reads.get(edge.runtime);
+  let state = reads.get(edge.runtime.memory);
   if (state === undefined) {
     state = { recent: new TtlCache(cadenceMs, MAX_RECENT, edge.runtime.now) };
-    reads.set(edge.runtime, state);
+    reads.set(edge.runtime.memory, state);
   }
   const now = edge.runtime.now();
   const started = state.recent.get(named.memoKey);

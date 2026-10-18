@@ -25,8 +25,8 @@ interface CurrentReads {
 }
 
 /**
- * A request gets a runtime of its own, but shares its isolate memory. Keep both limits with that
- * memory, created only after stale delivery; fresh delivery has no bookkeeping here.
+ * A request gets a runtime of its own, but shares its isolate memory. Keep its cadence with that
+ * memory; pending reads share the background-record budget. Fresh delivery has no bookkeeping here.
  */
 const reads = new WeakMap<EdgeMemory, CurrentReads>();
 
