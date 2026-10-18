@@ -453,9 +453,19 @@ function dropUnusedEntries(input: RetentionInput): boolean {
   return entries.length === PRUNE_BATCH;
 }
 
-/** The writers' marks past the window a write can cross a later one in (`WRITER_MARK_WINDOW_MS`). */
-function forgetWriterMarks(input: RetentionInput): void {
-  input.sql.exec(`DELETE FROM writer_marks WHERE marked_at < ?`, input.now - WRITER_MARK_WINDOW_MS);
+/** Expired ordering marks, one indexed page so a busy scope leaves room for other requests. */
+function forgetWriterMarks(input: RetentionInput): boolean {
+  const removed = input.sql
+    .exec<{ removed: number }>(
+      `DELETE FROM writer_marks WHERE rowid IN (
+        SELECT rowid FROM writer_marks INDEXED BY writer_marks_by_age
+        WHERE marked_at < ? ORDER BY marked_at LIMIT ?
+      ) RETURNING 1 AS removed`,
+      input.now - WRITER_MARK_WINDOW_MS,
+      PRUNE_BATCH,
+    )
+    .toArray();
+  return removed.length === PRUNE_BATCH;
 }
 
 /** Runs inside one transaction; the caller deletes what the plan names afterwards. */
@@ -478,8 +488,8 @@ export function applyRetention(input: RetentionInput): RetentionPlan {
       pruneFormerGenerations(input, windows, deletable),
       dropUnusedEntries(input),
       foldInvalidations(input),
+      forgetWriterMarks(input),
     );
-    forgetWriterMarks(input);
   }
   full.push(dropOrphanedUploads(input, deletable), ageOutHistory(input, windows, deletable));
   queueDeletions(input.sql, deletable, input.now);
