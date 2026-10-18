@@ -263,6 +263,7 @@ async function workflowHolds(
 
 /** What each fixture has to show, by name — every name `coverage.ts` has, and no other. */
 const HOLDS: Readonly<Record<FixtureName, Holds>> = {
+  'next-edge-instrumentation-baseline': instrumentationHolds,
   'next-edge-instrumentation': instrumentationHolds,
   'next-edge-instrumentation-no-own': instrumentationHolds,
   'next-external-output': externalOutputHolds,

@@ -46,6 +46,7 @@ interface Snapshot {
 interface CaseProof {
   function: string;
   selectedCase: string;
+  hostInstrumentation: boolean;
   status: string;
   snapshots: Snapshot[];
   errorStatus?: number;
@@ -100,10 +101,10 @@ async function modulesOf(spec: FunctionSpec, out: string) {
   return modules;
 }
 
-function assertRegistered(value: Snapshot, own: boolean, selectedCase: string, kind: string) {
-  const edge = kind !== 'app';
-  const hostLoaded = selectedCase !== HOST_LOAD_FAILURE;
-  const hostReady = hostLoaded && selectedCase !== HOST_REGISTER_FAILURE;
+function assertRegistered(value: Snapshot, own: boolean, proof: CaseProof) {
+  const edge = proof.function !== 'app';
+  const hostLoaded = proof.hostInstrumentation && proof.selectedCase !== HOST_LOAD_FAILURE;
+  const hostReady = hostLoaded && proof.selectedCase !== HOST_REGISTER_FAILURE;
   const expected = [
     ...(hostLoaded ? ['host:start', ...(hostReady ? [HOST_END] : [])] : []),
     ...(own ? ['own:start', 'own:end'] : []),
@@ -127,6 +128,7 @@ interface ExerciseInput {
   bundle: DeploymentBundle;
   out: string;
   own: boolean;
+  edgeHosts: boolean;
   signal: AbortSignal;
 }
 
@@ -186,6 +188,15 @@ async function assertErrorHooks(
   if (middleware)
     assert.ok(response.body.includes('fixture middleware failure'), 'hook replaced original error');
   const value = await client.snapshot();
+  if (proof.function === 'app-edge') {
+    // Next 16.4.2's EdgeRouteModuleWrapper awaits handle() without dispatching onRequestError.
+    // Preserve that upstream contract; middleware and Node routes below must compose both hooks.
+    assert.equal(value.hostErrors, 0, 'Edge route added an upstream-absent host error dispatch');
+    assert.equal(value.ownErrors, 0, 'Edge route changed the project error hook dispatch');
+    assert.equal(value.error, null);
+    assertRegistered(value, own, proof);
+    return;
+  }
   assert.equal(value.hostErrors, 1, 'host error hook did not run exactly once');
   assert.equal(value.hostErrorReceiver, true, 'host error hook receiver');
   const errorEvents = own ? [HOST_ERROR, 'own:error'] : [HOST_END, HOST_ERROR];
@@ -206,9 +217,9 @@ async function assertErrorHooks(
 async function assertCase(client: FixtureClient, proof: CaseProof, own: boolean): Promise<void> {
   if (proof.selectedCase === 'own-register-throws') return assertOwnFailure(client, proof);
   const initial = await Promise.all([client.snapshot(), client.snapshot()]);
-  for (const value of initial) assertRegistered(value, own, proof.selectedCase, proof.function);
+  for (const value of initial) assertRegistered(value, own, proof);
   const warm = await client.snapshot();
-  assertRegistered(warm, own, proof.selectedCase, proof.function);
+  assertRegistered(warm, own, proof);
   assert.equal(warm.hostErrors, 0, 'successful handler reported an error');
   assert.equal(warm.ownErrors, 0, 'successful handler reported a project error');
   if (![HOST_LOAD_FAILURE, HOST_REGISTER_FAILURE].includes(proof.selectedCase)) {
@@ -269,21 +280,28 @@ async function exercise(input: ExerciseInput, spec: FunctionSpec, proof: CasePro
 
 async function exerciseAll(input: ExerciseInput, cases: CaseProof[]): Promise<void> {
   assert.ok(input.bundle.functions.middleware, 'Edge middleware Function is absent');
-  for (const [kind, spec] of [
-    ['middleware', input.bundle.functions.middleware],
-    ['app', input.bundle.functions.app],
-    ['app-edge', input.bundle.functions.app],
-  ] as const) {
-    for (const selectedCase of [
-      'normal',
-      HOST_LOAD_FAILURE,
-      HOST_REGISTER_FAILURE,
-      'host-error-throws',
-      ...(input.own ? ['own-register-throws', 'own-error-throws'] : []),
-    ]) {
+  const lanes = input.edgeHosts
+    ? ([
+        ['middleware', input.bundle.functions.middleware],
+        ['app', input.bundle.functions.app],
+        ['app-edge', input.bundle.functions.app],
+      ] as const)
+    : ([['app-edge', input.bundle.functions.app]] as const);
+  const selectedCases = input.edgeHosts
+    ? [
+        'normal',
+        HOST_LOAD_FAILURE,
+        HOST_REGISTER_FAILURE,
+        'host-error-throws',
+        ...(input.own ? ['own-register-throws', 'own-error-throws'] : []),
+      ]
+    : ['normal'];
+  for (const [kind, spec] of lanes) {
+    for (const selectedCase of selectedCases) {
       const one: CaseProof = {
         function: kind,
         selectedCase,
+        hostInstrumentation: input.edgeHosts || kind === 'app',
         status: 'running',
         snapshots: [],
         egressAttempts: 0,
@@ -308,12 +326,16 @@ export async function instrumentationHolds(
 ): Promise<string[]> {
   const name = path.basename(path.dirname(out));
   const own = name !== 'next-edge-instrumentation-no-own';
+  const edgeHosts = name !== 'next-edge-instrumentation-baseline';
   const directory = process.env['UPWIND_MATRIX_PROOF_DIR'] ?? out;
   const file = path.join(directory, `${name}-${bundle.nextVersion}-instrumentation.json`);
   const proof = {
     status: 'running',
     nextVersion: bundle.nextVersion,
     ownInstrumentation: own,
+    edgeHostInstrumentation: edgeHosts,
+    edgeRouteErrorContract: 'Next 16.4.2 returns 500 without invoking onRequestError',
+    sourceSha256: {} as Record<string, string>,
     cases: [] as CaseProof[],
     functions: bundle.functions,
   };
@@ -321,12 +343,21 @@ export async function instrumentationHolds(
   let failure: unknown;
   try {
     const app = path.dirname(out);
+    for (const sourceFile of [
+      'next.config.mjs',
+      'host-hook.js',
+      'app/api/edge-probe/route.js',
+      ...(own ? ['instrumentation.js'] : []),
+    ]) {
+      const source = await readFile(path.join(app, sourceFile));
+      proof.sourceSha256[sourceFile] = createHash('sha256').update(source).digest('hex');
+    }
     const manifestFile = path.join(app, '.next/server/middleware-manifest.json');
     const manifest = JSON.parse(await readFile(manifestFile, 'utf8')) as {
       middleware: Record<string, unknown>;
     };
     assert.notEqual(manifest.middleware['/'], undefined, 'Next.js did not compile Edge middleware');
-    await exerciseAll({ bundle, out, own, signal }, proof.cases);
+    await exerciseAll({ bundle, out, own, edgeHosts, signal }, proof.cases);
     proof.status = 'success';
   } catch (error) {
     proof.status = 'failed';

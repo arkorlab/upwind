@@ -77,6 +77,12 @@ export function namesIn(expected: readonly Expected[]): string[] {
 }
 
 export const FIXTURE_COVERAGE = {
+  'next-edge-instrumentation-baseline': {
+    sourceFixture: 'next-edge-instrumentation',
+    adapterFile: 'adapter-node.mjs',
+    expected: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
+    chunks: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
+  },
   'next-edge-instrumentation': {
     adapterFile: 'adapter.mjs',
     expected: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],

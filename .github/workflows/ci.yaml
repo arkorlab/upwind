@@ -128,7 +128,7 @@ jobs:
           set -euo pipefail
           matrix_next_version="$(node -p 'require("./packages/adapter/node_modules/next/package.json").version')"
           failed=0
-          for fixture in next-edge-instrumentation next-edge-instrumentation-no-own; do
+          for fixture in next-edge-instrumentation next-edge-instrumentation-no-own next-edge-instrumentation-baseline; do
             if ! pnpm check:matrix --fixture "$fixture" --versions "$matrix_next_version"; then
               failed=1
             fi
