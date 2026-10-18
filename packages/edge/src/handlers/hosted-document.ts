@@ -516,45 +516,44 @@ function composePartialFallback(
   if (input.request.method !== 'GET' || entry.partialFallback === undefined) return undefined;
   const { pathname } = requestAsLeft(input, middleware).url;
   const partial = partialFallbackInHand(input.edge, input.manifest, entry, pathname);
-  if (partial !== undefined) {
-    partial.refresh();
-    // The stable completion key spends the same cooldown before and after its digest is derived.
-    const cooldownKey = memberEntryKey(
-      input.manifest.cache?.scopeId ?? '',
-      partial.route,
-      partial.pathname,
-    );
-    if (partial.key !== undefined && partial.load.kind === 'generation') {
-      if (ready !== undefined) abandon(input.edge, ready);
-      return serveCachedDocument({
-        ...document,
-        key: partial.key,
-        settings: runtimeCacheOf(input.edge.policy),
-        generationRead: { load: Promise.resolve(partial.load), shell: undefined },
-        member: undefined,
-        recordMember: { keyed: entry.partialFallback.keyedBy !== undefined },
-        regenerationKey: cooldownKey,
-        refreshRecord: partial.refresh,
-      });
-    }
-    const buildRegeneration = shouldAsk(input.edge, cooldownKey, runtimeCacheOf(input.edge.policy))
-      ? {
-          [REGENERATE_HEADER]: 'background',
-          ...pathHeaders(CACHE_ROUTE_HEADER, CACHE_ROUTE_ESCAPED_HEADER, partial.route),
-          [CACHE_UPGRADE_HEADER]: '1',
-          ...(partial.key !== undefined && { [CACHE_ENTRY_HEADER]: partial.key.entryId }),
-        }
-      : undefined;
-    return handleDocument({
+  if (partial === undefined) return undefined;
+  partial.refresh();
+  // The stable completion key spends the same cooldown before and after its digest is derived.
+  const cooldownKey = memberEntryKey(
+    input.manifest.cache?.scopeId ?? '',
+    partial.route,
+    partial.pathname,
+  );
+  if (partial.key !== undefined && partial.load.kind === 'generation') {
+    if (ready !== undefined) abandon(input.edge, ready);
+    return serveCachedDocument({
       ...document,
-      shellRead: ready?.kind === 'shell' ? ready.read : undefined,
-      generation: undefined,
-      buildRegeneration,
-      onBuildAbandoned:
-        buildRegeneration === undefined ? undefined : allowAnotherAsk(input.edge, cooldownKey),
+      key: partial.key,
+      settings: runtimeCacheOf(input.edge.policy),
+      generationRead: { load: Promise.resolve(partial.load), shell: undefined },
+      member: undefined,
+      recordMember: { keyed: entry.partialFallback.keyedBy !== undefined },
+      regenerationKey: cooldownKey,
+      refreshRecord: partial.refresh,
     });
   }
-  return undefined;
+  const buildRegeneration = shouldAsk(input.edge, cooldownKey, runtimeCacheOf(input.edge.policy))
+    ? {
+        [REGENERATE_HEADER]: 'background',
+        ...pathHeaders(CACHE_ROUTE_HEADER, CACHE_ROUTE_ESCAPED_HEADER, partial.route),
+        [CACHE_UPGRADE_HEADER]: '1',
+        ...(partial.key !== undefined && { [CACHE_ENTRY_HEADER]: partial.key.entryId }),
+      }
+    : undefined;
+  if (ready?.kind === 'generation') abandon(input.edge, ready);
+  return handleDocument({
+    ...document,
+    shellRead: ready?.kind === 'shell' ? ready.read : undefined,
+    generation: undefined,
+    buildRegeneration,
+    onBuildAbandoned:
+      buildRegeneration === undefined ? undefined : allowAnotherAsk(input.edge, cooldownKey),
+  });
 }
 
 /** Compose the document for a route: from its record when the deployment has one, else its shell. */
