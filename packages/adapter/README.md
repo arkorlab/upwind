@@ -386,6 +386,9 @@ failure is logged and isolated, while the project's failure keeps Next.js's own 
 Registration is awaited once before the handler can answer. Builds without this option keep their
 existing Edge load path: neither Node `instrumentationModules` nor a generated Workflow World
 registration is inherited. A host needing both runtimes supplies each option explicitly.
+Added host modules must bundle into the Function's single JavaScript module. Additional emitted
+assets are refused rather than omitted; the exact requested source map is retained separately.
+This option does not add raw host WebAssembly loading support.
 
 The adapter installs this composition before Next.js can cache its instrumentation registry entry,
 including when the project's hook imports `next/server`. It retains Next.js's compiled Edge hook

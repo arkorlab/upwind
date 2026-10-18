@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { runInNewContext } from 'node:vm';
 
-import { rolldown } from 'rolldown';
+import { rolldown, type Plugin } from 'rolldown';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -13,7 +13,13 @@ import {
   edgeInstrumentationOf,
   edgeInstrumentationSource,
 } from '../src/edge-instrumentation.ts';
-import { bundleEdge, edgeBundleOptions, edgeEntrySource, type EdgeEntry } from '../src/edge.ts';
+import {
+  assertEdgeHostOutput,
+  bundleEdge,
+  edgeBundleOptions,
+  edgeEntrySource,
+  type EdgeEntry,
+} from '../src/edge.ts';
 
 interface Hook {
   readonly marker?: string;
@@ -366,6 +372,50 @@ describe('edge instrumentation build boundaries', () => {
 
     await expect(readFile(result.outFile, 'utf8')).resolves.toContain('dynamic-sdk-target');
     expect(result.trace.inputs.some((input) => input.file.endsWith('/host-sdk.mjs'))).toBe(true);
+  });
+
+  it('preserves only the requested map and refuses additional emitted host assets', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'upwind-edge-output-'));
+    temporary.push(root);
+    const entry = path.join(root, 'host.mjs');
+    await writeFile(entry, 'export const register = () => {};');
+    const options = edgeBundleOptions(root, entry, vi.fn(), { hostInstrumentation: true });
+    const emitter: Plugin = {
+      name: 'host-asset-regression',
+      buildStart() {
+        // eslint-disable-next-line unicorn/no-this-outside-of-class -- the plugin API hands the context as `this`
+        this.emitFile({
+          type: 'asset',
+          fileName: 'host.wasm',
+          source: new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]),
+        });
+      },
+    };
+    await using build = await rolldown({
+      ...options,
+      plugins: [options.plugins, emitter],
+    });
+    const { output } = await build.generate({
+      format: 'cjs',
+      sourcemap: 'hidden',
+      codeSplitting: false,
+    });
+
+    expect(output.some((item) => item.type === 'asset' && item.fileName.endsWith('.map'))).toBe(
+      true,
+    );
+
+    const withMapOnly = output.filter((item) => item.fileName !== 'host.wasm');
+
+    expect(() => {
+      assertEdgeHostOutput(output, true);
+    }).toThrow('unsupported asset: host.wasm');
+    expect(() => {
+      assertEdgeHostOutput(withMapOnly, true);
+    }).not.toThrow();
+    expect(() => {
+      assertEdgeHostOutput(withMapOnly, false);
+    }).toThrow('unsupported asset');
   });
 
   it('keeps the existing emitted Edge entry bytes when the new option is absent', () => {

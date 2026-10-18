@@ -257,6 +257,37 @@ export interface BundleEdgeInput {
   readonly keptMaps?: KeptMaps | undefined;
 }
 
+interface EdgeHostOutput {
+  readonly type: 'chunk' | 'asset';
+  readonly fileName: string;
+  readonly sourcemapFileName?: string | null;
+  readonly map?: unknown;
+}
+
+/** Host imports must fit the one JavaScript module the Function carries, plus its requested map. */
+export function assertEdgeHostOutput(output: readonly EdgeHostOutput[], sourceMaps: boolean): void {
+  const chunks = output.filter((item) => item.type === 'chunk');
+  const chunk = chunks[0];
+  if (chunk === undefined || chunks.length !== 1) {
+    throw new Error(
+      '@stayingupwind/adapter: Edge host instrumentation requires one JavaScript chunk',
+    );
+  }
+  for (const item of output) {
+    if (item.type === 'chunk') continue;
+    if (
+      sourceMaps &&
+      chunk.map !== null &&
+      chunk.map !== undefined &&
+      item.fileName === chunk.sourcemapFileName
+    )
+      continue;
+    throw new Error(
+      `@stayingupwind/adapter: Edge host instrumentation emitted an unsupported asset: ${item.fileName}`,
+    );
+  }
+}
+
 export async function bundleEdge(
   input: BundleEdgeInput,
 ): Promise<{ outFile: string; trace: BundleTrace }> {
@@ -286,6 +317,9 @@ export async function bundleEdge(
     comments: { legal: false },
     ...sourcemapOutput(input.sourceMaps === true),
   });
+  if (input.instrumentation !== undefined) {
+    assertEdgeHostOutput(output, input.sourceMaps === true);
+  }
   const chunk = output.find((item): item is OutputChunk => item.type === 'chunk');
   if (chunk === undefined) {
     throw new Error(
