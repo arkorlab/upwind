@@ -37,9 +37,9 @@ const HTTP_OK = 200;
 const MAX_RETRY_EXPONENT = 9;
 const PRIVATE_CACHE_CONTROL = /\b(?:private|no-store)\b/iu;
 /**
- * How many warm jobs one statement queues. A change may reach every entry its scope holds, and its
- * jobs are queued in its own transaction, beside its invalidation: a page a statement, as that
- * invalidation's history is written, rather than a statement for each route.
+ * How many entries a warm-job statement selects or queues. A change may reach the whole scope;
+ * its jobs share its invalidation's transaction, using small pages rather than one unbounded JSON
+ * value or a statement for each route.
  */
 const WARM_JOB_PAGE = 500;
 
@@ -97,7 +97,7 @@ function pendingCount(sql: SqlStorage, resourceId: string): number {
 
 /**
  * No browser identity is invented for a route that is not in the trusted bundle's allowlist. Each
- * entry is judged by its current generation's headers, read beside it in the one query, rather
+ * entry is judged by its current generation's headers, read beside it in the same page, rather
  * than by another read of that generation for each.
  */
 function eligibleEntries(
@@ -106,30 +106,36 @@ function eligibleEntries(
   allowedRoutes: readonly string[],
 ): string[] {
   if (allowedRoutes.length === 0 || affectedEntryIds.length === 0) return [];
-  const entries = sql
-    .exec<Pick<GenerationRow, 'entry_id' | 'headers'>>(
-      `SELECT e.entry_id, g.headers FROM entries e
+  // A trusted route list can itself exceed one SQL value, so it is never bound as JSON here.
+  const allowed = new Set(allowedRoutes);
+  const eligible: string[] = [];
+  for (let offset = 0; offset < affectedEntryIds.length; offset += WARM_JOB_PAGE) {
+    const entries = sql.exec<Pick<GenerationRow, 'entry_id' | 'headers'> & Pick<EntryRow, 'route'>>(
+      `SELECT e.entry_id, e.route, g.headers FROM entries e
        JOIN generations g ON g.generation_id = e.current_generation_id
        WHERE e.entry_id IN (SELECT value FROM json_each(?))
-         AND e.route IN (SELECT value FROM json_each(?))
          AND e.kind IN ('app-page', 'pages', 'app-route')
          AND e.pathname IS NOT NULL AND (e.pathname <> e.route OR instr(e.route, '[') = 0)
          AND g.status = 200 AND g.storage = 'present'`,
-      JSON.stringify(affectedEntryIds),
-      JSON.stringify(allowedRoutes),
-    )
-    .toArray();
-  return entries
-    .filter((entry) => {
-      return Object.entries(generationHeaders(entry)).every(([name, value]) => {
-        const normalized = name.toLowerCase();
-        return (
-          normalized !== 'set-cookie' &&
-          (normalized !== 'cache-control' || !PRIVATE_CACHE_CONTROL.test(value))
-        );
-      });
-    })
-    .map((entry) => entry.entry_id);
+      JSON.stringify(affectedEntryIds.slice(offset, offset + WARM_JOB_PAGE)),
+    );
+    // Disallowed headers are not parsed or retained in a page-sized JavaScript array.
+    for (const entry of entries) {
+      if (entry.route === null || !allowed.has(entry.route)) continue;
+      if (
+        Object.entries(generationHeaders(entry)).every(([name, value]) => {
+          const normalized = name.toLowerCase();
+          return (
+            normalized !== 'set-cookie' &&
+            (normalized !== 'cache-control' || !PRIVATE_CACHE_CONTROL.test(value))
+          );
+        })
+      ) {
+        eligible.push(entry.entry_id);
+      }
+    }
+  }
+  return eligible;
 }
 
 /**
@@ -411,16 +417,13 @@ function currentGeneration(sql: SqlStorage, entryId: string): GenerationRow | un
  */
 function satisfied(sql: SqlStorage, job: WarmJobRow): boolean {
   const row = currentGeneration(sql, job.entry_id);
-  if (
-    row?.status !== HTTP_OK ||
-    row.publication !== 'published' ||
-    row.storage !== 'present' ||
-    row.condemned !== null ||
-    row.dependency_revision < job.required_revision
-  ) {
-    return false;
-  }
-  return true;
+  return (
+    row?.status === HTTP_OK &&
+    row.publication === 'published' &&
+    row.storage === 'present' &&
+    row.condemned === null &&
+    row.dependency_revision >= job.required_revision
+  );
 }
 
 function nextRetryAt(sql: SqlStorage): number | null {
