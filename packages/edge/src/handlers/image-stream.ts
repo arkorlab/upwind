@@ -79,6 +79,8 @@ export async function imageWithin<T>(
   let abandon: (() => void) | undefined;
   const cancelled = new Promise<never>((_resolve, reject) => {
     abandon = () => {
+      // DOM §3.3 requires the abort reason itself, including a non-Error value.
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
       reject(signal.reason);
     };
     if (signal.aborted) {
