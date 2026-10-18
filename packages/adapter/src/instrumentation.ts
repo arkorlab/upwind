@@ -2,6 +2,8 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { jsLiteral } from './codegen.ts';
+import { nftAssets, nftChunks, nftWasm } from './collect.ts';
+import { exists } from './fs.ts';
 
 /**
  * The instrumentation hook a Function runs, when the host has one of its own to add.
@@ -137,4 +139,45 @@ export async function writeClientInstrumentation(input: {
   await mkdir(input.outDir, { recursive: true });
   await writeFile(path.join(input.outDir, CLIENT_MODULE_NAME), input.source);
   return `./${input.outDirName}/${CLIENT_MODULE_NAME}`;
+}
+
+/**
+ * The instrumentation hook and what it reaches, for a build that has one to run.
+ *
+ * A static export is not asked: the hook runs before an entrypoint, and such a build has none —
+ * nothing of the application's code travels, so there is nothing for it to run before.
+ */
+export async function instrumentationOf(
+  distDir: string,
+  outDir: string,
+  exported: boolean,
+  hosts: readonly string[],
+): Promise<{
+  readonly file: string | undefined;
+  readonly chunks: readonly string[];
+  readonly wasm: readonly string[];
+  readonly assets: Readonly<Record<string, string>>;
+}> {
+  const file = path.join(distDir, 'server', 'instrumentation.js');
+  const own = (await exists(file)) ? file : undefined;
+  if (exported) {
+    return { file: undefined, chunks: [], wasm: [], assets: {} };
+  }
+  // The host's module goes in front of the project's, or stands alone where the project wrote no
+  // hook (`composedInstrumentation`). What is traced is still the project's own file: the chunks,
+  // the WebAssembly and the files it reads are its, and the generated module only requires it.
+  const composed = await composedInstrumentation({ outDir, own, hosts });
+  if (composed === undefined) {
+    return { file: undefined, chunks: [], wasm: [], assets: {} };
+  }
+  if (own === undefined) {
+    return { file: composed, chunks: [], wasm: [], assets: {} };
+  }
+  // All of these go into both Functions: the hook runs before any entrypoint, in each of them.
+  return {
+    file: composed,
+    chunks: await nftChunks(own),
+    wasm: await nftWasm(own),
+    assets: await nftAssets(own),
+  };
 }
