@@ -408,9 +408,9 @@ function keyOf(
   // verify the literal asset prefix too; raw hits and ordinary misses never read this flag.
   const assetPrefix = manifest?.staticFileAssetPrefix;
   if (
+    assetPrefix !== undefined &&
     manifest?.staticFileRequestKeys === true &&
     manifest.schemaVersion === REQUEST_FILE_KEYS_SCHEMA_VERSION &&
-    assetPrefix !== undefined &&
     decoded.startsWith(`${assetPrefix.assetPrefix}/_next/`) &&
     !spellsPrefixOf({ basePath: assetPrefix.assetPrefix }, pathname, decoded)
   ) {
