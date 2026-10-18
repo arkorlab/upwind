@@ -27,7 +27,10 @@ export interface StandaloneEnv extends EdgeBindings {
   readonly POINTER_KEY?: string | undefined;
   /** Cloudflare Images, for `next/image`; absent, a source goes out as it is. */
   readonly IMAGES?: ImagesBinding | undefined;
-  /** The bucket's reader (`./blob-worker`); absent, the edge reads `ARTIFACTS` itself. */
+  /**
+   * The bucket's reader (`./blob-worker`), deployed with Workers Cache enabled (`cache.enabled: true`).
+   * Service-binding fetch calls consult the callee's cache. Absent, the edge reads `ARTIFACTS` itself.
+   */
   readonly BLOBS?: Fetcher | undefined;
   /**
    * The standalone cache's `CacheSignals` entrypoint: where a scope stands, so an invalidation

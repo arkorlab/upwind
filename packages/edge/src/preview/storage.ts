@@ -74,13 +74,15 @@ export async function lookup<T>(
 /**
  * A manifest backend cannot keep a cold request from reaching its Function forever. Settle this
  * owner once, consuming late binding outcomes without letting them become an answer. `active`
- * also stops a durable lookup from starting its next read after its budget has ended.
+ * also stops a durable lookup from starting its next read after its budget has ended. A reader
+ * it owns can be released by `onAbandoned` on failure, without waiting for cancellation to finish.
  */
 export function boundedLookup<T>(
   what: string,
   fields: LogFields,
   read: (active: () => boolean) => Promise<T | undefined>,
   budgetMs: number,
+  onAbandoned?: () => void,
 ): Promise<Lookup<T>> {
   return new Promise((resolve, reject) => {
     let finished = false;
@@ -91,6 +93,11 @@ export function boundedLookup<T>(
       if (finished) return;
       finished = true;
       clearTimeout(timer);
+      try {
+        onAbandoned?.();
+      } catch {
+        // A cleanup failure must not leave the bounded owner waiting.
+      }
       try {
         logWarn('storage read failed', {
           what,

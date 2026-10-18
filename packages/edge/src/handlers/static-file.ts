@@ -26,7 +26,7 @@ import {
   readShippedFile,
 } from '../preview/blobs.ts';
 import type { StaticFileContext } from '../strategies/context.ts';
-import { setConfigured } from './configured-headers.ts';
+import { layStaticConfiguredOver } from './configured-headers.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
 import { observeMetric } from './observer.ts';
 import {
@@ -194,12 +194,7 @@ function defaultCacheControl(file: StaticFileEntry): string {
  * with for a file as for a document. A cookie of either is scoped as a Function's is.
  */
 function applicationHeaders(input: StaticFileInput, headers: Headers): void {
-  const configured = Object.entries(input.configured?.headers ?? {});
-  for (const [name, value] of configured) {
-    if (!ENTITY_HEADERS.has(name.toLowerCase())) {
-      setConfigured(headers, name, value, input.edge.forwarding);
-    }
-  }
+  layStaticConfiguredOver(headers, input.configured, input.edge.forwarding, ENTITY_HEADERS);
   if (input.middleware !== undefined) {
     mergeScopedMiddlewareHeaders(headers, input.middleware.responseHeaders, input.edge.forwarding);
   }

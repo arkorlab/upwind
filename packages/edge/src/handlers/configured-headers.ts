@@ -58,6 +58,37 @@ export function layImageConfiguredUnder(
 }
 
 /**
+ * A shipped file's configured fields, over its defaults and before independent middleware.
+ * A rule's Connection names only that rule layer's hop fields (RFC 9110, 7.6.1); the file's
+ * byte metadata still belongs to the file. Iterate once, as the original static overlay did.
+ */
+export function layStaticConfiguredOver(
+  headers: Headers,
+  configured: ConfiguredHeaders | undefined,
+  scope: PassthroughResponseContext,
+  entityHeaders: ReadonlySet<string>,
+): void {
+  const fields = configured?.headers ?? {};
+  const connection = fields[CONNECTION_HEADER];
+  const nominated =
+    connection === undefined
+      ? undefined
+      : new Set(connection.split(',').map((option) => option.trim().toLowerCase()));
+  for (const [name, value] of Object.entries(fields)) {
+    const normalized = name.toLowerCase();
+    if (
+      entityHeaders.has(normalized) ||
+      HOP_BY_HOP_HEADERS.includes(normalized) ||
+      normalized.startsWith(PLATFORM_HEADER_PREFIX) ||
+      nominated?.has(normalized) === true
+    ) {
+      continue;
+    }
+    setConfigured(headers, name, value, scope);
+  }
+}
+
+/**
  * A rule's value as it goes out: a `Set-Cookie` scoped as a Function's is
  * (`rewriteSetCookieForPreview`), so that on a host under the shared domain a `Domain` that would
  * hand the cookie to every other site under it is taken off; anything else as the rule wrote it.

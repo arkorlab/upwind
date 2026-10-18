@@ -201,3 +201,105 @@ describe('a shipped file asked under a precondition', () => {
     expect([response.status, body]).toStrictEqual([404, '<p>not found</p>']);
   });
 });
+
+/** Configured fields pass the same transport boundary before any file condition reads them. */
+describe('a shipped file with configured transport fields', () => {
+  it.each([
+    { method: 'GET', status: 200, body: BODY },
+    { method: 'HEAD', status: 200, body: '' },
+    { method: 'GET', status: 206, body: 'the' },
+  ])('excludes the rule hop for $method status $status', async (example) => {
+    const { pointer, tagOf } = await shipping({ [FILE]: BODY }, [
+      {
+        sourceRegex: String.raw`^/manual\.txt$`,
+        headers: {
+          Connection: ' X-InTeRnAl , set-cookie, not a name, X-Internal ',
+          'x-internal': 'rule-only',
+          'set-cookie': 'rule=secret; Path=/',
+          'keep-alive': 'timeout=5',
+          te: 'trailers',
+          trailer: 'x-internal',
+          'transfer-encoding': 'chunked',
+          upgrade: 'websocket',
+          'x-arkor-internal': 'platform-only',
+          'x-end-to-end': 'kept',
+        },
+      },
+    ]);
+
+    const headers = new Headers();
+    if (example.status === 206) {
+      headers.set('range', 'bytes=0-2');
+    }
+
+    const { response, body } = await serve(pointer, FILE, {
+      method: example.method,
+      headers,
+    });
+
+    expect([response.status, body]).toStrictEqual([example.status, example.body]);
+    expect(response.headers.get('etag')).toBe(tagOf(FILE));
+    expect(response.headers.get('x-end-to-end')).toBe('kept');
+    expect(
+      [
+        'connection',
+        'x-internal',
+        'set-cookie',
+        'keep-alive',
+        'te',
+        'trailer',
+        'transfer-encoding',
+        'upgrade',
+        'x-arkor-internal',
+      ].filter((name) => response.headers.has(name)),
+    ).toStrictEqual([]);
+  });
+
+  it('does not use a nominated date for a false 304 or put the rule hop on an ETag 304', async () => {
+    const { pointer, tagOf } = await shipping({ [FILE]: BODY }, [
+      {
+        sourceRegex: String.raw`^/manual\.txt$`,
+        headers: {
+          connection: 'Last-Modified, X-Internal',
+          'last-modified': LAST_MODIFIED,
+          'x-internal': 'rule-only',
+        },
+      },
+    ]);
+
+    const dated = await serve(pointer, FILE, {
+      headers: { 'if-modified-since': DAY_AFTER },
+    });
+    const tagged = await serve(pointer, FILE, {
+      headers: { 'if-none-match': tagOf(FILE) },
+    });
+
+    expect([dated.response.status, dated.body]).toStrictEqual([200, BODY]);
+    expect([tagged.response.status, tagged.body]).toStrictEqual([304, '']);
+    for (const { response } of [dated, tagged]) {
+      expect(response.headers.has('connection')).toBe(false);
+      expect(response.headers.has('last-modified')).toBe(false);
+      expect(response.headers.has('x-internal')).toBe(false);
+    }
+  });
+
+  it('keeps ordinary configured content type, CORS and scoped cookies without Connection', async () => {
+    const { pointer } = await shipping({ [FILE]: BODY }, [
+      {
+        sourceRegex: String.raw`^/manual\.txt$`,
+        headers: {
+          'content-type': 'text/custom',
+          'access-control-allow-origin': '*',
+          'set-cookie': 'rule=ordinary; Path=/',
+        },
+      },
+    ]);
+
+    const { response, body } = await serve(pointer, FILE);
+
+    expect([response.status, body]).toStrictEqual([200, BODY]);
+    expect(response.headers.get('content-type')).toBe('text/custom');
+    expect(response.headers.get('access-control-allow-origin')).toBe('*');
+    expect(response.headers.getSetCookie()).toStrictEqual(['rule=ordinary; Path=/']);
+  });
+});

@@ -25,6 +25,7 @@ async function delayedPolicyFile(
     readonly privateDelivery?: boolean;
     readonly policyId?: string;
     readonly match?: string;
+    readonly ruleHeaders?: Readonly<Record<string, string>>;
     readonly dispatchApp?: EdgeRuntime['dispatchApp'];
   } = {},
 ) {
@@ -32,7 +33,10 @@ async function delayedPolicyFile(
     document: pprDocument(),
     files: { [FILE_PATH]: FILE_BODY },
     headerRules: [
-      { sourceRegex: String.raw`^/download\.txt$`, headers: { 'x-file-rule': 'kept' } },
+      {
+        sourceRegex: String.raw`^/download\.txt$`,
+        headers: { 'x-file-rule': 'kept', ...options.ruleHeaders },
+      },
     ],
   });
   const app = {
@@ -171,5 +175,44 @@ describe('a shipped file with a policy read still out', () => {
     });
 
     await waitOnExecutionContext(pending.ctx);
+  });
+
+  it('keeps independent middleware fields and cookies named by the configured hop', async () => {
+    const dispatchApp = vi.fn(() =>
+      Promise.resolve(
+        new Response(null, {
+          headers: {
+            'x-middleware-next': '1',
+            'x-internal': 'middleware-value',
+            'set-cookie': 'middleware=kept; Path=/',
+            'access-control-allow-origin': '*',
+          },
+        }),
+      ),
+    );
+    const pending = await delayedPolicyFile({
+      match: String.raw`^/download\.txt$`,
+      ruleHeaders: {
+        connection: 'X-Internal, Set-Cookie',
+        'x-internal': 'rule-only',
+        'set-cookie': 'rule=removed; Path=/',
+      },
+      dispatchApp,
+    });
+    try {
+      pending.policy.resolve({ kind: 'unavailable' });
+
+      const response = await pending.response;
+
+      await expect(response.text()).resolves.toBe(FILE_BODY);
+      expect(response.headers.has('connection')).toBe(false);
+      expect(response.headers.get('x-internal')).toBe('middleware-value');
+      expect(response.headers.getSetCookie()).toStrictEqual(['middleware=kept; Path=/']);
+      expect(response.headers.get('access-control-allow-origin')).toBe('*');
+      expect(dispatchApp).toHaveBeenCalledTimes(1);
+    } finally {
+      pending.policy.resolve({ kind: 'unavailable' });
+      await waitOnExecutionContext(pending.ctx);
+    }
   });
 });

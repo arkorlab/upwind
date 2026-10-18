@@ -22,6 +22,7 @@ import {
 } from '@stayingupwind/host/storage';
 
 import type { EdgeBindings } from '../bindings.ts';
+import { CacheBody, type RecordBytes } from '../cache/cache-body.ts';
 import type { EdgeRuntime } from '../edge-runtime.ts';
 import type { PolicyStandIn } from '../memory/caches.ts';
 import { logWarn } from '../observability/logger.ts';
@@ -52,7 +53,8 @@ async function durableManifest(
   env: EdgeBindings,
   runtime: EdgeRuntime,
   manifestId: string,
-): Promise<Lookup<ArrayBuffer>> {
+): Promise<Lookup<RecordBytes>> {
+  let reading: CacheBody | undefined;
   return boundedLookup(
     'manifest-object',
     { manifestId },
@@ -82,10 +84,15 @@ async function durableManifest(
         logWarn('manifest copy is larger than any manifest', { manifestId, bytes: object.size });
         return;
       }
-      const bytes = await object.arrayBuffer();
+      // Own the native reader so the same backend deadline can stop a partially read body.
+      reading = new CacheBody();
+      const pending = reading.open(new Response(object.body), object.size);
+      if (pending === undefined) return;
+      const bytes = reading.finish(await pending);
       return active() && (await takenUnder(bytes, manifestId, 'r2')) ? bytes : undefined;
     },
     MANIFEST_READ_BUDGET_MS,
+    () => reading?.stop(),
   );
 }
 
@@ -214,11 +221,14 @@ function heldOrAnswered(
  * schema.
  */
 async function takenUnder(
-  bytes: ArrayBuffer,
+  bytes: RecordBytes,
   manifestId: string,
   store: 'kv' | 'r2',
 ): Promise<boolean> {
-  if (!SHA256_HEX.test(manifestId) || (await sha256Hex(new Uint8Array(bytes))) === manifestId) {
+  if (
+    !SHA256_HEX.test(manifestId) ||
+    (await sha256Hex(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes))) === manifestId
+  ) {
     return true;
   }
   logWarn('manifest copy is not what its id names', { manifestId, store });
@@ -278,13 +288,13 @@ function vouchedManifest(text: string): ProjectManifest {
 function parseStored(
   runtime: EdgeRuntime,
   manifestId: string,
-  bytes: ArrayBuffer,
+  bytes: RecordBytes,
   holdAbsence: boolean,
 ): Lookup<ProjectManifest> {
   try {
     // Read as bytes and decoded here, as a read as text is decoded in the binding: it is held at
     // what a deploy's limit counts, its bytes rather than its characters.
-    const text = decodeUtf8(new Uint8Array(bytes));
+    const text = decodeUtf8(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));
     const manifest = SHA256_HEX.test(manifestId)
       ? vouchedManifest(text)
       : parseProjectManifest(text);
@@ -356,7 +366,7 @@ async function kvManifest(
 interface StoredCopies {
   readonly kv: Lookup<ArrayBuffer> | undefined;
   /** Left out when it was not asked: KV had the manifest before the mark. */
-  readonly durable: Lookup<ArrayBuffer> | undefined;
+  readonly durable: Lookup<RecordBytes> | undefined;
 }
 
 const PAST_THE_MARK = Symbol('past the mark');
@@ -388,10 +398,10 @@ async function ended(read: Promise<unknown>): Promise<void> {
 }
 
 /** A store's answer, said to be that store's, for the race between them. */
-async function answerFrom<F extends 'kv' | 'durable'>(
+async function answerFrom<F extends 'kv' | 'durable', T extends RecordBytes>(
   from: F,
-  read: Promise<Lookup<ArrayBuffer>>,
-): Promise<{ readonly from: F; readonly answer: Lookup<ArrayBuffer> }> {
+  read: Promise<Lookup<T>>,
+): Promise<{ readonly from: F; readonly answer: Lookup<T> }> {
   return { from, answer: await read };
 }
 
