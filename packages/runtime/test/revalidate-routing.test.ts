@@ -1,11 +1,15 @@
 import { resolveRoutes } from '@next/routing';
 import type { Prerender } from '@stayingupwind/core/bundle';
-import { IMPLICIT_TAG_PREFIX } from '@stayingupwind/core/cache';
+import { deriveEntry, IMPLICIT_TAG_PREFIX, sharedShellTagOf } from '@stayingupwind/core/cache';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { InvalidatedTags, RequestWrites, withRequestContext } from '../src/cache/context.ts';
 import { invalidateNow } from '../src/cache/handlers.ts';
-import { regenerate } from '../src/cache/regenerate.ts';
+import {
+  type PublishOutcome,
+  type RegenerationOutcome,
+  regenerate,
+} from '../src/cache/regenerate.ts';
 import { platformRevalidate } from '../src/cache/revalidate.ts';
 import type { CacheRuntime } from '../src/cache/runtime.ts';
 import { nodeHandlerOf } from '../src/entries.ts';
@@ -28,6 +32,18 @@ vi.mock(import('../src/store.ts'), async (importOriginal) => {
     getStore: vi.fn(),
   };
 });
+
+const SCOPE = 'revalidate-routing';
+const RENDER = {
+  html: new Uint8Array(),
+  postponed: undefined,
+  rscData: undefined,
+  segments: new Map<string, Uint8Array>(),
+  headers: {},
+  status: 200,
+  cacheControl: { revalidate: 60, expire: undefined },
+  data: undefined,
+};
 
 /** One source route, with a concrete seed when the adapter writes one before its template. */
 interface Route {
@@ -192,40 +208,231 @@ async function routedPage(store: Store, pathname: string): Promise<string | unde
   return result.resolvedPathname;
 }
 
-function revalidate(store: Store, urlPath: string, remote = false): Promise<void> {
+function revalidate(
+  store: Store,
+  urlPath: string,
+  remote = false,
+  options: { readonly invalidated?: InvalidatedTags; readonly outcome?: RegenerationOutcome } = {},
+): Promise<void> {
   vi.mocked(getStore).mockReturnValue(store);
   vi.mocked(nodeHandlerOf).mockResolvedValue(remote ? undefined : () => Promise.resolve());
-  vi.mocked(regenerate).mockResolvedValue({
-    kind: 'accepted',
-    render: {
-      html: new Uint8Array(),
-      postponed: undefined,
-      rscData: undefined,
-      segments: new Map(),
-      headers: {},
-      status: 200,
-      cacheControl: { revalidate: 60, expire: undefined },
-      data: undefined,
+  vi.mocked(regenerate).mockResolvedValue(
+    options.outcome ?? {
+      kind: 'accepted',
+      render: RENDER,
+      published: Promise.resolve({ kind: 'published', generationId: 'new' }),
     },
-    published: Promise.resolve({ kind: 'published', generationId: 'new' }),
-  });
+  );
   return withRequestContext(
     {
       request: new Request('https://app.test/api/revalidate'),
       tables: { app: { entries: {} }, edge: { entries: {} } },
-      runtime: {} as CacheRuntime,
+      runtime: { scopeId: SCOPE } as CacheRuntime,
       startedAt: 0,
       fetchStarts: new Map(),
       waitUntil: () => {
         // Regeneration is replaced; no background work is started.
       },
       run: (work) => work(),
-      invalidated: new InvalidatedTags(),
+      invalidated: options.invalidated ?? new InvalidatedTags(),
       writes: new RequestWrites(),
     },
     () => platformRevalidate({ urlPath }),
   );
 }
+
+/** Two independently reusable shells of one page; the final parameter is resumed per visitor. */
+function terminalDeployment(
+  overrides: Partial<Prerender> = {},
+  cacheComponents = true,
+  classes: readonly string[] = ['b', 'c'],
+): Store {
+  const route = '/prefix/[one]/[two]';
+  const shells: Prerender[] = classes.map((one) => {
+    return {
+      id: one,
+      route,
+      pathname: `/prefix/${one}/[two]`,
+      parentOutputId: route,
+      groupId: 1,
+      routeType: 'shell',
+      response: 'initial',
+      compute: 'resuming',
+      renderingMode: 'PARTIALLY_STATIC',
+      body: { sha256: 'html', byteLength: 10, contentType: 'text/html' },
+      postponed: { sha256: 'state', byteLength: 5, contentType: 'application/json' },
+      ...overrides,
+    };
+  });
+  return {
+    manifest: {
+      config: { basePath: '', i18n: null, cacheComponents, partialPrefetching: false },
+      entrypoints: [{ id: route, pathname: route, kind: 'app-page' }],
+    },
+    prerendersByPathname: new Map(shells.map((shell) => [shell.pathname, shell])),
+    shellsByRoute: new Map([
+      [
+        route,
+        {
+          pages: new Map(),
+          patterns: shells.map((prerender) => {
+            return {
+              // eslint-disable-next-line security/detect-non-literal-regexp -- Test-owned literal class values.
+              pattern: new RegExp(`^/prefix/${prerender.id}/[^/]+$`, 'u'),
+              prerender,
+            };
+          }),
+        },
+      ],
+    ]),
+    pathnames: shells.map((shell) => shell.pathname),
+    slashSpellings: new Map(),
+  } as unknown as Store;
+}
+
+describe('manual revalidation of a shared terminal shell', () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(invalidateNow).mockReset();
+  });
+
+  it('regenerates the shared entry without expiring the previous generation', async () => {
+    const store = terminalDeployment();
+    const descriptor = {
+      kind: 'app-page' as const,
+      route: '/prefix/[one]/[two]',
+      pathname: '/prefix/b/[two]',
+    };
+    const invalidated = new InvalidatedTags();
+
+    await revalidate(store, '/prefix/b/foo', false, { invalidated });
+
+    expect(vi.mocked(regenerate).mock.calls[0]?.[0].target.descriptor).toStrictEqual(descriptor);
+    expect(invalidateNow).not.toHaveBeenCalled();
+    expect(invalidated.tags.size).toBe(0);
+  });
+
+  it('invalidates only the selected class when its page belongs to another Function', async () => {
+    const store = terminalDeployment();
+    vi.mocked(elsewhere).mockReturnValue('app-other');
+    const { entryId } = await deriveEntry(SCOPE, {
+      kind: 'app-page',
+      route: '/prefix/[one]/[two]',
+      pathname: '/prefix/b/[two]',
+    });
+
+    await revalidate(store, '/prefix/b/foo', true);
+
+    expect(invalidateNow).toHaveBeenCalledWith(expect.anything(), [
+      `${IMPLICIT_TAG_PREFIX}/prefix/b/foo`,
+      sharedShellTagOf(entryId),
+    ]);
+    expect(regenerate).not.toHaveBeenCalled();
+  });
+
+  it('leaves the previous class untouched when its manual render fails', async () => {
+    const invalidated = new InvalidatedTags();
+
+    await expect(
+      revalidate(terminalDeployment(), '/prefix/b/foo', false, {
+        invalidated,
+        outcome: { kind: 'failed', render: undefined, error: 'render failed' },
+      }),
+    ).rejects.toThrow('was not regenerated (failed)');
+
+    expect(invalidateNow).not.toHaveBeenCalled();
+    expect(invalidated.tags.size).toBe(0);
+  });
+
+  it('preserves another invalidation while publishing the shared shell', async () => {
+    const invalidated = new InvalidatedTags();
+    invalidated.add(['another-change'], 17);
+
+    await revalidate(terminalDeployment(), '/prefix/b/foo', false, {
+      invalidated,
+      outcome: {
+        kind: 'accepted',
+        render: RENDER,
+        published: Promise.resolve({ kind: 'published', generationId: 'new' }),
+      },
+    });
+
+    expect([...invalidated.tags]).toStrictEqual(['another-change']);
+    expect(invalidated.revision).toBe(17);
+    expect(invalidateNow).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { stage: 'upload', result: { kind: 'failed', error: 'upload failed' } },
+    { stage: 'commit', result: { kind: 'refused', reason: 'commit refused' } },
+  ] as const)('leaves the previous class untouched when $stage fails', async ({ result }) => {
+    const invalidated = new InvalidatedTags();
+
+    await expect(
+      revalidate(terminalDeployment(), '/prefix/b/foo', false, {
+        invalidated,
+        outcome: { kind: 'accepted', render: RENDER, published: Promise.resolve(result) },
+      }),
+    ).rejects.toThrow(`was not regenerated (${result.kind})`);
+
+    expect(invalidateNow).not.toHaveBeenCalled();
+    expect(invalidated.tags.size).toBe(0);
+  });
+
+  it('keeps fresh visitors unmarked while the manual publication is pending', async () => {
+    const publishing = Promise.withResolvers<PublishOutcome>();
+    const invalidated = new InvalidatedTags();
+    const manual = revalidate(terminalDeployment(), '/prefix/b/foo', false, {
+      invalidated,
+      outcome: { kind: 'accepted', render: RENDER, published: publishing.promise },
+    });
+
+    try {
+      await vi.waitFor(() => {
+        expect(regenerate).toHaveBeenCalledTimes(1);
+      });
+
+      expect(invalidateNow).not.toHaveBeenCalled();
+      expect(invalidated.tags.size).toBe(0);
+    } finally {
+      publishing.resolve({ kind: 'published', generationId: 'new' });
+      await manual;
+    }
+  });
+
+  it('invalidates a long shared class through its bounded identity without an oversized pathname tag', async () => {
+    const prefix = 'b'.repeat(500);
+    const store = terminalDeployment({}, true, [prefix, 'c']);
+    vi.mocked(elsewhere).mockReturnValue('app-other');
+    const descriptor = {
+      kind: 'app-page' as const,
+      route: '/prefix/[one]/[two]',
+      pathname: `/prefix/${prefix}/[two]`,
+    };
+    const { entryId } = await deriveEntry(SCOPE, descriptor);
+
+    await revalidate(store, `/prefix/${prefix}/foo`, true);
+
+    expect(invalidateNow).toHaveBeenCalledWith(expect.anything(), [sharedShellTagOf(entryId)]);
+    expect(regenerate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { overrides: { postponed: undefined }, cacheComponents: true },
+    { overrides: {}, cacheComponents: false },
+    { overrides: { partialFallback: true }, cacheComponents: true },
+  ])(
+    'preserves concrete manual regeneration for an incompatible build: %j',
+    async ({ overrides, cacheComponents }) => {
+      await revalidate(terminalDeployment(overrides, cacheComponents), '/prefix/b/foo');
+
+      expect(vi.mocked(regenerate).mock.calls[0]?.[0].target.descriptor.pathname).toBe(
+        '/prefix/b/foo',
+      );
+      expect(invalidateNow).not.toHaveBeenCalled();
+    },
+  );
+});
 
 describe('manual revalidation route precedence', () => {
   afterEach(() => vi.clearAllMocks());

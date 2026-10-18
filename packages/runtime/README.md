@@ -56,6 +56,31 @@ host runs as it did before any cache existed, answering every read a miss. And i
 knowledge of the host** in front of it: what arrives is the wire protocol in `@stayingupwind/core`'s
 `./paas`, and nothing more.
 
+Hosts that seed build outputs into the cache must give reusable terminal shells the same shared
+identity as runtime generations. For each eligible App Router page, append its shared-shell tag
+to the seed's existing tags:
+
+```ts
+import { sharedShellPathname } from '@stayingupwind/core/bundle';
+import { deriveEntry, sharedShellTagOf } from '@stayingupwind/core/cache';
+
+const pathname = sharedShellPathname(prerender);
+if (kind === 'app-page' && pathname !== undefined) {
+  const { entryId } = await deriveEntry(scopeId, {
+    kind: 'app-page',
+    route: prerender.route,
+    pathname,
+  });
+  tags.push({ kind: 'next-implicit', value: sharedShellTagOf(entryId) });
+}
+```
+
+Keep the complete seeded tag list within the existing per-entry quota. Cross-Function manual
+revalidation uses this identity to invalidate the selected shell without expiring unrelated
+classes of the same page. Deploy the host's seed support first, then deploy the application into
+a new immutable deployment and cache scope. Do not replace the runtime inside an existing
+deployment or reuse another deployment's cache scope.
+
 A host whose reads are cached can answer with a generation a later one replaced, or with none, for
 as long as its cache keeps that answer — after another isolate of the same Function published the
 later one. A host that keeps the later one nearer, a copy in the Function's own data center say,
