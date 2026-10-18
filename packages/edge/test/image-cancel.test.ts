@@ -7,7 +7,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { EdgeRuntime, FetchImpl, TransformImage } from '../src/edge-runtime.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
-import type { IncomingRequest } from '../src/request-context.ts';
 import { serveFromPointer } from '../src/route.ts';
 import { standaloneHost, type StandaloneEnv, standaloneRuntime } from '../src/standalone/index.ts';
 import { pprDocument, seedSite } from './helpers/site.ts';
@@ -57,10 +56,13 @@ async function serving(fetchImpl: FetchImpl, transformImage: TransformImage): Pr
 
 function begin(served: Serving, source: string, signal: AbortSignal) {
   const query = new URLSearchParams({ url: source, w: '64', q: '75' });
-  const request = new Request(`https://site.example/_next/image?${query}`, {
-    headers: { accept: 'image/webp', 'sec-fetch-dest': 'image' },
-    signal,
-  }) as IncomingRequest;
+  const request = new Request<unknown, IncomingRequestCfProperties>(
+    `https://site.example/_next/image?${query.toString()}`,
+    {
+      headers: { accept: 'image/webp', 'sec-fetch-dest': 'image' },
+      signal,
+    },
+  );
   const ctx = createExecutionContext();
   const response = serveFromPointer({
     request,
@@ -121,7 +123,9 @@ describe('an image request whose client leaves', () => {
       client.abort(new Error('client left'));
 
       expect(upstream.signal.aborted).toBe(true);
+
       await vi.advanceTimersByTimeAsync(0);
+
       expect((await run.response).status).toBe(400);
       expect(transform).not.toHaveBeenCalled();
     },
@@ -164,8 +168,8 @@ describe('an image request whose client leaves', () => {
     const late = Promise.withResolvers<Awaited<ReturnType<TransformImage>>>();
     const cancelSource = vi.fn();
     const cancelLate = vi.fn();
-    const fetchSource = vi.fn(() =>
-      Promise.resolve(
+    const fetchSource = vi.fn(() => {
+      return Promise.resolve(
         new Response(
           new ReadableStream<Uint8Array>({
             start(controller) {
@@ -174,8 +178,8 @@ describe('an image request whose client leaves', () => {
             cancel: cancelSource,
           }),
         ),
-      ),
-    );
+      );
+    });
     const served = await serving(fetchSource, (source) => {
       given.resolve(source);
       return late.promise;
@@ -191,8 +195,10 @@ describe('an image request whose client leaves', () => {
     expect(cancelSource).toHaveBeenCalledWith('client left');
     expect((await run.response).status).toBe(502);
     await expect(new Response(input).arrayBuffer()).rejects.toThrow('client left');
+
     late.resolve({ contentType: 'image/webp', body: new ReadableStream({ cancel: cancelLate }) });
     await vi.advanceTimersByTimeAsync(0);
+
     expect(cancelLate).toHaveBeenCalledWith('image transformation abandoned');
     expect(fetchSource).toHaveBeenCalledTimes(1);
   });
@@ -219,7 +225,9 @@ describe('an image request whose client leaves', () => {
     client.abort(new Error('client left'));
 
     expect(upstream.signal.aborted).toBe(true);
+
     await vi.advanceTimersByTimeAsync(0);
+
     expect((await run.response).status).toBe(400);
     expect(calls).toBe(2);
   });
@@ -229,8 +237,8 @@ describe('an image request whose client leaves', () => {
     const cancel = vi.fn();
     const served = await serving(
       () => Promise.resolve(new Response(PNG)),
-      () =>
-        Promise.resolve({
+      () => {
+        return Promise.resolve({
           contentType: 'image/webp',
           body: new ReadableStream<Uint8Array>(
             {
@@ -241,7 +249,8 @@ describe('an image request whose client leaves', () => {
             },
             { highWaterMark: 0 },
           ),
-        }),
+        });
+      },
     );
     vi.useFakeTimers();
     const client = new AbortController();
@@ -265,7 +274,9 @@ describe('an image request whose client leaves', () => {
 
     expect(response.status).toBe(200);
     await expect(new Response(response.body).arrayBuffer()).resolves.toStrictEqual(PNG.buffer);
+
     await waitOnExecutionContext(run.ctx);
+
     expect(fetchSource).toHaveBeenCalledTimes(2);
   });
 });
