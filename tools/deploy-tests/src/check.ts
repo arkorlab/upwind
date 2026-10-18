@@ -77,7 +77,7 @@ class HookFailureError extends Error {
 }
 
 function orNothing(said: string | undefined): string {
-  return said !== undefined && said.trim() !== '' ? said.trimEnd() : '(nothing)';
+  return said === undefined || said.trim() === '' ? '(nothing)' : said.trimEnd();
 }
 
 /** Whatever the hook had written to standard error by the time it failed. */
