@@ -197,10 +197,13 @@ export function dispatchesMade(answer: Promise<Response>): number {
 /**
  * The dispatches a request that failed had taken, by what it failed with, for a caller that has
  * the error and not the request (`fetchUpstream`), counted as `dispatchesOf` counts an answer's:
- * two where the Worker first asked named another, and the one it was sent on to failed or named
- * another again (`MisroutedError`).
+ * none where no Worker was named or the runtime supplied no dispatcher; two where the Worker first
+ * asked named another, and the one it was sent on to failed or named another again (`MisroutedError`).
  */
 export function dispatchesOfFailure(error: unknown): number {
+  if (error instanceof NoApplicationError || error instanceof NoDispatchError) {
+    return 0;
+  }
   if (!(error instanceof Error)) {
     return 1;
   }

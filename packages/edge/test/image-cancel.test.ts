@@ -1,5 +1,6 @@
 import type { ImagesConfig } from '@stayingupwind/core/images';
 import type { ProjectManifest } from '@stayingupwind/core/manifest';
+import { FUNCTION_HEADER, MISDIRECTED_STATUS } from '@stayingupwind/core/paas';
 import { concatBytes, encodeUtf8 } from '@stayingupwind/core/util';
 import { DEFAULT_DELIVERY_POLICY, type EdgePointer } from '@stayingupwind/host/delivery';
 import { blobObjectKey } from '@stayingupwind/host/storage';
@@ -129,6 +130,51 @@ describe('an image request whose client leaves', () => {
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  it.each([
+    { kind: 'missing-dispatch', sent: 0 },
+    { kind: 'failed', sent: 1 },
+    { kind: 'split-failed', sent: 2 },
+  ])('counts local source requests actually sent when $kind', async (example) => {
+    const fetchSource = vi.fn(() => Promise.resolve(new Response(PNG)));
+    const transform = vi.fn(transformed);
+    const served = await serving(fetchSource, transform);
+    const app = {
+      ...served.pointer.app!,
+      ...(example.kind === 'split-failed' && { functions: { 'app-2': 'site-app-2' } }),
+    };
+    const dispatch = vi.fn((script: string) => {
+      return example.kind === 'split-failed' && script === app.scriptName
+        ? Promise.resolve(
+            new Response(null, {
+              status: MISDIRECTED_STATUS,
+              headers: { [FUNCTION_HEADER]: 'app-2' },
+            }),
+          )
+        : Promise.reject(new Error('the dispatched source failed'));
+    });
+    const metric = vi.spyOn(served.host.observer, 'metric');
+    const run = begin(
+      {
+        ...served,
+        pointer: { ...served.pointer, app },
+        runtime: {
+          ...served.runtime,
+          dispatchApp: example.kind === 'missing-dispatch' ? undefined : dispatch,
+        },
+      },
+      `/draw/${crypto.randomUUID()}.png`,
+      new AbortController().signal,
+    );
+
+    await expect(run.response).resolves.toHaveProperty('status', 400);
+    expect(metric.mock.calls.at(-1)?.[0].subrequests).toBe(example.sent);
+    expect(dispatch).toHaveBeenCalledTimes(example.sent);
+    expect(fetchSource).not.toHaveBeenCalled();
+    expect(transform).not.toHaveBeenCalled();
+
+    await waitOnExecutionContext(run.ctx);
   });
 
   it.each(['local', 'remote', 'blob'])(

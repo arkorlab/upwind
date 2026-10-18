@@ -32,7 +32,7 @@ import type { EdgeContext } from '../strategies/context.ts';
 import { imageWithin } from './image-stream.ts';
 import { decideMiddleware, type MiddlewareContinued, middlewareMatches } from './middleware.ts';
 import { readStaticFileStream, type StoredStream } from './static-file.ts';
-import { dispatchesOf, dispatchesSoFar, fetchUpstream, functionOfRequest } from './upstream.ts';
+import { dispatchesMade, dispatchesOf, fetchUpstream, functionOfRequest } from './upstream.ts';
 
 /**
  * Where an image's source comes from, and the bytes of it.
@@ -413,7 +413,7 @@ async function fetchLocal(
     releaseLateSource(answer);
     // Two where the Worker the first named failed, or was still out when the budget ran out: the
     // deadline's error is its own, so the dispatch is what says how far it got.
-    const requests = earlier + dispatchesSoFar(answer);
+    const requests = earlier + dispatchesMade(answer);
     return isDeadlineError(error)
       ? refused(HTTP_GATEWAY_TIMEOUT, TIMED_OUT, requests)
       : refused(HTTP_BAD_REQUEST, INTERNAL_INVALID, requests);
