@@ -51,6 +51,7 @@ import {
 } from '@stayingupwind/runtime/cache-host';
 
 import { ArtifactCopies, type FunctionCacheNaming } from './artifacts.ts';
+import { requestedEntryId } from './entry-identity.ts';
 import { ArtifactRoom, ReadBudget } from './read-budget.ts';
 
 /**
@@ -247,13 +248,16 @@ export class Gateway {
   }
 
   /**
-   * A data read's answer, refused where it is of another namespace than the read asked in
-   * (`answersTheRead`): kept as the value of the key asked for, it would be served as that one.
+   * A data read's answer, refused where it is of another entry than the read asked for: kept as
+   * the value of the key asked for, it would be served as that one.
    */
   async #valueOf(response: Response, request: DataGetRequest): Promise<DataGetResponse> {
     const answer = await this.#result(response, dataGetResponseSchema);
-    if (!answersTheRead(request, answer)) {
-      throw new CacheHostError('the data read was answered with a value of another namespace', {
+    if (
+      !answersTheRead(request, answer) ||
+      answer.entryId !== requestedEntryId(this.#scopeId, request)
+    ) {
+      throw new CacheHostError('the data read was answered with a value of another entry', {
         code: 'internal',
         status: response.status,
       });
@@ -365,7 +369,15 @@ export class Gateway {
   }
 
   startAttempt(request: StartAttemptRequest): Promise<StartAttemptResponse> {
-    return this.#json('POST', '/attempts', request, startAttemptResponseSchema);
+    return this.#json(
+      'POST',
+      '/attempts',
+      request,
+      startAttemptResponseSchema.refine(
+        (answer) => answer.entryId === requestedEntryId(this.#scopeId, request.entry),
+        { message: 'the attempt was answered for another entry', path: ['entryId'] },
+      ),
+    );
   }
 
   async uploadArtifact(upload: ArtifactUpload): Promise<UploadedArtifact> {
@@ -427,7 +439,22 @@ export class Gateway {
           })
         : failure;
     }
-    return (await this.#result(response, uploadArtifactsResponseSchema)).artifacts;
+    const uploaded = (await this.#result(response, uploadArtifactsResponseSchema)).artifacts;
+    if (
+      uploaded.length !== artifacts.length ||
+      uploaded.some((artifact, index) => {
+        return (
+          artifact.sha256 !== artifacts[index]?.sha256 ||
+          artifact.byteLength !== uploads[index]?.bytes.byteLength
+        );
+      })
+    ) {
+      throw new CacheHostError('the upload batch was answered with other artifacts', {
+        code: 'internal',
+        status: response.status,
+      });
+    }
+    return uploaded;
   }
 
   /** Say the attempt is still going, so the authority does not give its lease to someone else. */

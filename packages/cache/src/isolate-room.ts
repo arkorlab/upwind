@@ -3,8 +3,8 @@
  * for the artifacts and records it reads (`function/read-budget.ts`), the gateway's for the bodies
  * of the writes it reads (`gateway/body-room.ts`), and a scope object's for the records its settle
  * runs build (`scope/projection-memory.ts`), shared by the objects of an isolate. Each read, write
- * or chunk claims its bytes before it holds any of them, and claims are let in in the order they
- * were made.
+ * or chunk claims its bytes before it holds any of them. New reads keep their order; extra room
+ * for the same artifact grows its original reservation, ahead of later reads it would block.
  *
  * A claim that waits asks again on a timer of its own request every few milliseconds; it is not
  * woken by the claim that gives room back. A request can be cancelled — its caller gone — and an
@@ -34,9 +34,16 @@ const ASKS_A_LOOK = 50;
 /** How many looks in a row a claim goes unrenewed before it is let go: five seconds or more. */
 const LOOKS_TO_LAPSE = 5;
 
+/** The artifact read whose candidates share a reservation (`ArtifactRoom`). */
+interface ReadReservation {
+  readonly hold: (bytes: number, signal: AbortSignal) => Promise<GiveBack>;
+}
+
 /** A claim on the room: its bytes, whether they are held yet, and how often it has been renewed. */
 interface Claim {
   readonly bytes: number;
+  /** The artifact whose reservation this grows, where it has one. */
+  group?: ReadReservation;
   holding: boolean;
   renewals: number;
 }
@@ -82,22 +89,35 @@ export class IsolateRoom {
   }
 
   /** A claim on `bytes`, the whole room at the most; one that is no number at all, the whole room. */
-  #claimOf(bytes: number): Claim {
-    return {
+  #claimOf(bytes: number, group?: ReadReservation): Claim {
+    const claim: Claim = {
       bytes: Number.isFinite(bytes) ? Math.min(bytes, this.#limit) : this.#limit,
       holding: false,
       renewals: 0,
     };
+    if (group !== undefined) claim.group = group;
+    return claim;
   }
 
   /**
    * Renew `claim`, as its own request's work. One that lapsed while its request still waits or
-   * holds — its timers held up past the lapse — is counted again, as one made last.
+   * holds — its timers held up past the lapse — is counted again beside its artifact's other
+   * claims, or last where no reservation of it remains.
    */
   #renew(claim: Claim): void {
     claim.renewals += 1;
     if (!this.#claims.includes(claim)) {
-      this.#claims.push(claim);
+      const last =
+        claim.group === undefined
+          ? -1
+          : this.#claims.findLastIndex((other) => other.group === claim.group);
+      if (last === -1) {
+        this.#claims.push(claim);
+      } else {
+        // Releasing the base would leave an active body uncharged; extending at the tail could
+        // wait behind a later read that cannot fit until that very base is returned.
+        this.#claims.splice(last + 1, 0, claim);
+      }
     }
   }
 
@@ -205,9 +225,12 @@ export class IsolateRoom {
     return this.#limit;
   }
 
-  /** Room for `bytes` where there is room for them now and no claim waits ahead, or none. */
-  takeAtOnce(bytes: number): GiveBack | undefined {
-    const claim = this.#claimOf(bytes);
+  /**
+   * Room for `bytes` now, or none. An artifact's extra room keeps its original reservation's
+   * place (`group`); a new read waits behind earlier reads even where its bytes would fit.
+   */
+  takeAtOnce(bytes: number, group?: ReadReservation): GiveBack | undefined {
+    const claim = this.#claimOf(bytes, group);
     this.#renew(claim);
     if (!this.#admits(claim)) {
       this.#remove(claim);
@@ -232,13 +255,13 @@ export class IsolateRoom {
    * first, and the place in line is given up as it does. Room held just as it aborts is what it
    * resolves with all the same, for its caller to give back.
    */
-  async take(bytes: number, signal: AbortSignal): Promise<GiveBack> {
-    const now = this.takeAtOnce(bytes);
+  async take(bytes: number, signal: AbortSignal, group?: ReadReservation): Promise<GiveBack> {
+    const now = this.takeAtOnce(bytes, group);
     if (now !== undefined) {
       return now;
     }
     signal.throwIfAborted();
-    const claim = this.#claimOf(bytes);
+    const claim = this.#claimOf(bytes, group);
     const leave = (): void => {
       if (!claim.holding) {
         this.#remove(claim);

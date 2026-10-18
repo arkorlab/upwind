@@ -1,15 +1,96 @@
+import { sha256Hex } from '@stayingupwind/core/artifact';
 import { DEPLOYMENT_ID_PREFIX } from '@stayingupwind/core/bundle';
 import { createId } from '@stayingupwind/core/util';
 import { verifyCacheToken } from '@stayingupwind/host/cache';
+import type { UploadedArtifact } from '@stayingupwind/runtime/cache-host';
 import { createExecutionContext } from 'cloudflare:test';
 import { env, exports } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 
+import { Gateway } from '../src/function/gateway.ts';
 import { scopeStub } from '../src/scope/stub.ts';
 import { STANDALONE_AUTHORITY } from '../src/standalone/host.ts';
 import { CacheControl, CacheSignals } from '../src/standalone/worker.ts';
 
 const SCOPE_ID = createId(DEPLOYMENT_ID_PREFIX);
+
+/** An authority answer whose valid digests may still name the wrong output. */
+function batchAnswer(kind: string, artifacts: UploadedArtifact[]): UploadedArtifact[] {
+  switch (kind) {
+    case 'swapped': {
+      return artifacts.toReversed();
+    }
+    case 'digest': {
+      return artifacts.map((artifact) => ({ ...artifact, sha256: '0'.repeat(64) }));
+    }
+    case 'length': {
+      return artifacts.map((artifact) => ({ ...artifact, byteLength: artifact.byteLength + 1 }));
+    }
+    case 'missing': {
+      return artifacts.slice(0, -1);
+    }
+    case 'extra': {
+      return [...artifacts, artifacts[0]!];
+    }
+    default: {
+      return artifacts;
+    }
+  }
+}
+
+/** Equal-length outputs in one upload, answered by a host whose reply the test controls. */
+async function batchFixture(answer: string) {
+  const uploads = ['left', 'rite'].map((body) => {
+    return {
+      attemptId: 'attempt-batch',
+      fencingToken: 1,
+      role: 'html' as const,
+      bytes: new TextEncoder().encode(body),
+      contentType: 'text/html',
+    };
+  });
+  const artifacts = await Promise.all(
+    uploads.map(async (upload) => {
+      const sha256 = await sha256Hex(upload.bytes);
+      return { sha256, byteLength: upload.bytes.byteLength };
+    }),
+  );
+  const requests: Request[] = [];
+  const gateway = new Gateway({
+    scopeId: 'dpl_batch',
+    token: 'token',
+    gatewayUrl: 'https://authority.invalid',
+    naming: { copyCache: 'batch-test', copyKeyOrigin: 'https://copies.invalid' },
+    fetchImpl: (request) => {
+      requests.push(request);
+      return Promise.resolve(
+        Response.json({ ok: true, result: { artifacts: batchAnswer(answer, artifacts) } }),
+      );
+    },
+  });
+  return { gateway, uploads, artifacts, requests };
+}
+
+describe('a Function upload batch', () => {
+  it('accepts the ordered digests of the bytes it sent', async () => {
+    const { gateway, uploads, artifacts, requests } = await batchFixture('correct');
+
+    await expect(gateway.uploadArtifacts(uploads)).resolves.toStrictEqual(artifacts);
+    expect(requests).toHaveLength(1);
+  });
+
+  it.each(['swapped', 'digest', 'length', 'missing', 'extra'])(
+    'refuses the answer when its artifacts are %s',
+    async (answer) => {
+      const { gateway, uploads, requests } = await batchFixture(answer);
+
+      await expect(gateway.uploadArtifacts(uploads)).rejects.toThrow(
+        'the upload batch was answered with other artifacts',
+      );
+      expect(requests).toHaveLength(1);
+    },
+  );
+});
 
 function seedInput(scopeId: string): Parameters<typeof exports.CacheControl.seedScope>[0] {
   return {

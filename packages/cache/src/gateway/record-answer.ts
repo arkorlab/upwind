@@ -165,6 +165,13 @@ export function dropRecordAnswer(record: RecordAnswer | undefined): void {
   }
 }
 
+/** A parallel read failed: let go of the record whenever its own read finishes. */
+export function dropRecordWhenRead(reading: Promise<RecordAnswer | undefined>): void {
+  void reading.then(dropRecordAnswer).catch(() => {
+    // A failed record read releases its own stream.
+  });
+}
+
 /** The answer of a record: what a Function reads it whole in room for, said before it is sent. */
 export function recordResponse(record: RecordAnswer): Response {
   return new Response(record.body, {

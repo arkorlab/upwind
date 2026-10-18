@@ -208,7 +208,7 @@ function errorDetail(error: unknown): string {
  * suites run the runtime, does not.
  */
 export function cacheStorage(): CacheStorage | undefined {
-  const scope: { readonly caches?: CacheStorage } = globalThis;
+  const scope: typeof globalThis & { readonly caches?: CacheStorage } = globalThis;
   return scope.caches;
 }
 
