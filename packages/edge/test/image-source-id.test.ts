@@ -1,6 +1,10 @@
 import { sha256Hex, sha256HexOfText } from '@stayingupwind/core/artifact';
 import type { ImagesConfig } from '@stayingupwind/core/images';
-import type { ProjectManifest, StaticFileEntry } from '@stayingupwind/core/manifest';
+import {
+  appRuntimeSchema,
+  type ProjectManifest,
+  type StaticFileEntry,
+} from '@stayingupwind/core/manifest';
 import { concatBytes, encodeUtf8 } from '@stayingupwind/core/util';
 import { DEFAULT_DELIVERY_POLICY } from '@stayingupwind/host/delivery';
 import { blobObjectKey } from '@stayingupwind/host/storage';
@@ -126,6 +130,45 @@ async function serving() {
 }
 
 describe('an optimized image source identity', () => {
+  it.each([
+    { first: 'a/../local:b', second: 'b' },
+    { first: String.raw`a\..\local:b`, second: 'b' },
+    { first: 'depl\noyment', second: 'deployment' },
+    { first: 'depl\royment', second: 'deployment' },
+  ])(
+    'keeps deployment IDs $first and $second apart in the actual URL cache',
+    async ({ first, second }) => {
+      const source: ImageSource = { kind: 'local', href: '/dynamic.png' };
+      const host = `${crypto.randomUUID()}.example`;
+      const key = async (deploymentId: string): Promise<Request> => {
+        expect(appRuntimeSchema.validate({ deploymentId, scriptName: 'site-app' })).toBe(true);
+
+        return new Request(
+          `https://images.test.invalid/${await imageSourceId(source, deploymentId, host)}/64/75/image/webp`,
+        );
+      };
+      const [one, two] = await Promise.all([key(first), key(second)]);
+      const cache = await caches.open('image-source-url-identity');
+      await cache.put(
+        one,
+        new Response('first image', { headers: { 'cache-control': 'max-age=60' } }),
+      );
+
+      expect(one.url).not.toBe(two.url);
+      await expect(cache.match(two)).resolves.toBeUndefined();
+      await expect((await cache.match(one))?.text()).resolves.toBe('first image');
+    },
+  );
+
+  it('keeps literal escapes and distinct UTF-16 strings apart without refusing a valid ID', async () => {
+    const source: ImageSource = { kind: 'local', href: '/dynamic.png' };
+    const deployments = ['a/b', 'a%2Fb', '\u{D800}', '\u{D801}', String.raw`\ud800`, '\u{FFFD}'];
+    const ids = await Promise.all(deployments.map((id) => imageSourceId(source, id, HOST)));
+    const urls = ids.map((id) => new Request(`https://images.test.invalid/${id}`).url);
+
+    expect(new Set(urls).size).toBe(deployments.length);
+  });
+
   it.each(['middleware', 'reserved'] as const)(
     'separates selected file bytes behind a %s gate at the same deployment, host and path',
     async (gate) => {

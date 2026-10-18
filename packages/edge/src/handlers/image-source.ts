@@ -188,6 +188,16 @@ export function isContentAddressed(source: ImageSource): boolean {
   return source.kind === 'blob' && source.gate === 'none';
 }
 
+/** The usual identifiers keep their bytes; URL syntax cannot consume a component of the key. */
+const UNESCAPED_IMAGE_PART = /^[\w.~-]*$/u;
+
+function imagePathPart(value: string): string {
+  // JSON first preserves every UTF-16 string, including lone surrogates URI encoding refuses.
+  return UNESCAPED_IMAGE_PART.test(value)
+    ? value
+    : encodeURIComponent(JSON.stringify(value).slice(1, -1));
+}
+
 /**
  * What one optimized image is cached under: the source's identity, then the parameters. A shipped
  * file is its hash, shared across deployments and invalidated by a change to the file — unless a
@@ -204,7 +214,7 @@ export async function imageSourceId(
   host: string,
 ): Promise<string> {
   const answered = async (href: string): Promise<string> =>
-    `local:${deploymentId}:${host}:${await sha256HexOfText(href)}`;
+    `local:${imagePathPart(deploymentId)}:${imagePathPart(host)}:${await sha256HexOfText(href)}`;
   switch (source.kind) {
     case 'blob': {
       return source.gate === 'none'
