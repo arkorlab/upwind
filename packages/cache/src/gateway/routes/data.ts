@@ -15,7 +15,7 @@ import { Hono } from 'hono';
 
 import { createLogger, detailOf } from '../../logger.ts';
 import { dataUploadKey } from '../../scope/data-uploads.ts';
-import type { WriteOrder } from '../../scope/data.ts';
+import type { DataSetInput, WriteOrder } from '../../scope/data.ts';
 import { isRefusal } from '../../scope/state.ts';
 import { serverTiming, Timing } from '../../scope/timing.ts';
 import {
@@ -28,6 +28,7 @@ import {
 } from '../auth.ts';
 import {
   ENTRY_BODY_BYTES,
+  inBodyRoom,
   JSON_BYTES_PER_CODE_UNIT,
   readJson,
   readRequest,
@@ -83,6 +84,11 @@ export function maxSetBodyBytes(maxBytes: number): number {
   return base64 + BESIDE_VALUE_BYTES;
 }
 
+/** What a `PUT /data` too large to take is told. */
+function tooLargeOf(maxBytes: number): string {
+  return `a value may hold at most ${maxBytes} bytes, its base64 sent as JSON.stringify writes it`;
+}
+
 function decodeBase64(value: string): Uint8Array | undefined {
   try {
     return fromBase64(value);
@@ -119,7 +125,7 @@ interface SetRequest {
  * A body the schema refuses is refused without its issues past a few KiB, as every other is.
  */
 async function readSetRequest(c: GatewayContext, maxBytes: number): Promise<SetRequest | Response> {
-  const tooLarge = `a value may hold at most ${maxBytes} bytes, its base64 sent as JSON.stringify writes it`;
+  const tooLarge = tooLargeOf(maxBytes);
   const body = await readJson(c, maxSetBodyBytes(maxBytes), tooLarge);
   if (body instanceof Response) {
     return body;
@@ -143,19 +149,17 @@ async function readSetRequest(c: GatewayContext, maxBytes: number): Promise<SetR
   };
 }
 
-async function setValue(c: GatewayContext): Promise<Response> {
-  // How long each part of the write takes, here and in the scope's object: said on its answer
-  // (`Server-Timing`), so that where a write's time goes can be read where it is made.
-  const timing = new Timing();
-  // The one change that waits for the marker: it stores its bytes before the authority answers,
-  // and what it stored for a scope retention has erased nothing would ever sweep, should the
-  // removal after the refusal fail.
-  const retired = await retiredScope(c);
-  timing.lap('retired');
-  if (retired) {
-    return refuseRetired(c);
-  }
-  const request = await readSetRequest(c, c.get('vars').MAX_ARTIFACT_BYTES);
+/**
+ * The value a `PUT /data` asks to store, stored under its content, as the authority is to be told
+ * of it: by its digest and length, with its bytes only where they are few enough to travel with
+ * the write (`CARRIED_VALUE_BYTES`), so that nothing is held of a larger one once this is done.
+ */
+async function storeValue(
+  c: GatewayContext,
+  maxBytes: number,
+  timing: Timing,
+): Promise<DataSetInput | Response> {
+  const request = await readSetRequest(c, maxBytes);
   if (request instanceof Response) {
     return request;
   }
@@ -170,20 +174,42 @@ async function setValue(c: GatewayContext): Promise<Response> {
     httpMetadata: { contentType: OCTET_STREAM },
   });
   timing.lap('upload');
-  // An RPC failure can lose an already committed reply. Leave uncertain uploads for the
-  // authority's orphan sweep, which checks references before deleting them. A small value travels
-  // with the write as well (`CARRIED_VALUE_BYTES`): its settle makes the record of these bytes rather
-  // than read back from storage what was stored just above.
-  const outcome = await c.get('scope').setData(
-    {
-      key: request.key,
-      entry: request.entry,
-      value: { sha256, byteLength: bytes.byteLength, contentType: OCTET_STREAM, storageRef },
-      ...(request.order !== undefined && { order: request.order }),
-      ...(bytes.byteLength <= CARRIED_VALUE_BYTES && { bytes }),
-    },
-    c.get('now'),
+  // A small value travels with the write as well: its settle makes the record of these bytes
+  // rather than read back from storage what was stored just above.
+  return {
+    key: request.key,
+    entry: request.entry,
+    value: { sha256, byteLength: bytes.byteLength, contentType: OCTET_STREAM, storageRef },
+    ...(request.order !== undefined && { order: request.order }),
+    ...(bytes.byteLength <= CARRIED_VALUE_BYTES && { bytes }),
+  };
+}
+
+async function setValue(c: GatewayContext): Promise<Response> {
+  // How long each part of the write takes, here and in the scope's object: said on its answer
+  // (`Server-Timing`), so that where a write's time goes can be read where it is made.
+  const timing = new Timing();
+  // The one change that waits for the marker: it stores its bytes before the authority answers,
+  // and what it stored for a scope retention has erased nothing would ever sweep, should the
+  // removal after the refusal fail.
+  const retired = await retiredScope(c);
+  timing.lap('retired');
+  if (retired) {
+    return refuseRetired(c);
+  }
+  // Read whole and held until storage has it, in room the isolate keeps for such bodies
+  // (`inBodyRoom`): a wait for it is the read's time. Given back before the authority is asked.
+  const maxBytes = c.get('vars').MAX_ARTIFACT_BYTES;
+  const write = await inBodyRoom(c, maxSetBodyBytes(maxBytes), tooLargeOf(maxBytes), () =>
+    storeValue(c, maxBytes, timing),
   );
+  if (write instanceof Response) {
+    return write;
+  }
+  const { storageRef } = write.value;
+  // An RPC failure can lose an already committed reply. Leave uncertain uploads for the
+  // authority's orphan sweep, which checks references before deleting them.
+  const outcome = await c.get('scope').setData(write, c.get('now'));
   timing.lap('scope');
   if (isRefusal(outcome) || outcome.retainedStorageRef !== storageRef) {
     // Adoption is complete. Removing this request's unused upload must not delay its response.

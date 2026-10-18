@@ -20,7 +20,7 @@ import { z } from 'zod';
 import type { UploadedArtifact } from '../../scope/attempts.ts';
 import { isRefusal } from '../../scope/state.ts';
 import { answerScope, type GatewayContext, type GatewayEnv, meterWrite } from '../auth.ts';
-import { ENTRY_BODY_BYTES, readBody, readRequest } from '../body.ts';
+import { ENTRY_BODY_BYTES, inBodyRoom, readBody, readRequest } from '../body.ts';
 import { fail, ok } from '../respond.ts';
 
 /**
@@ -78,10 +78,16 @@ function uploadHeaders(c: GatewayContext): UploadHeaders | Response {
   };
 }
 
+/** What an upload too large to take is told. */
+function tooLargeOf(maxBytes: number): string {
+  return `an artifact may hold at most ${maxBytes} bytes`;
+}
+
 /**
  * `PUT /attempts/:attemptId/artifacts/:sha256`. The bytes are read no further than an artifact may
  * hold, hashed before anything is written, counted against the scope by the authority before they
- * are stored, and stored under their content so a second upload of the same bytes is a no-op.
+ * are stored, and stored under their content so a second upload of the same bytes is a no-op. Read
+ * whole and held until then, in room the isolate keeps for such bodies (`inBodyRoom`).
  */
 async function uploadArtifact(c: GatewayContext): Promise<Response> {
   const headers = uploadHeaders(c);
@@ -93,12 +99,24 @@ async function uploadArtifact(c: GatewayContext): Promise<Response> {
     return fail(c, 'invalid_request', 'the path must name the SHA-256 of the bytes');
   }
   const maxBytes = c.get('vars').MAX_ARTIFACT_BYTES;
-  const bytes = await readBody(c, maxBytes, `an artifact may hold at most ${maxBytes} bytes`);
+  return inBodyRoom(c, maxBytes, tooLargeOf(maxBytes), () =>
+    storeArtifact(c, headers, claimed.data),
+  );
+}
+
+/** The upload's bytes, read whole, checked against the digest `claimed` for them, and stored. */
+async function storeArtifact(
+  c: GatewayContext,
+  headers: UploadHeaders,
+  claimed: string,
+): Promise<Response> {
+  const maxBytes = c.get('vars').MAX_ARTIFACT_BYTES;
+  const bytes = await readBody(c, maxBytes, tooLargeOf(maxBytes));
   if (bytes instanceof Response) {
     return bytes;
   }
   const sha256 = await sha256Hex(bytes);
-  if (sha256 !== claimed.data) {
+  if (sha256 !== claimed) {
     return fail(
       c,
       'artifact_mismatch',

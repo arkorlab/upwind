@@ -14,6 +14,7 @@ import {
 } from '@stayingupwind/host/util';
 import type { Context } from 'hono';
 
+import { withBodyRoom } from './body-room.ts';
 import { describeIssues, fail } from './respond.ts';
 
 /**
@@ -24,7 +25,8 @@ import { describeIssues, fail } from './respond.ts';
  * one read to its end before anything measured it is one deployment deciding how much of that
  * isolate the others are left. The declared length is only the early answer: a body a Worker
  * streams arrives without one, so the bytes are counted as they come and the read stops at the
- * first one past the limit.
+ * first one past the limit. The bodies a write is read whole for, as long as an artifact may be,
+ * are read in room the isolate keeps for them (`inBodyRoom`).
  */
 
 /**
@@ -61,21 +63,66 @@ export const ENTRY_BODY_BYTES =
 export const TAGS_BODY_BYTES =
   JSON_BYTES_PER_CODE_UNIT * MAX_TAGS_PER_CALL * MAX_TAG_LENGTH + REST_BYTES;
 
+/**
+ * How long a write waits for room for its body before it is refused (`inBodyRoom`): as long as a
+ * body may go quiet. A body waiting for room is, to its sender, one the gateway has stopped
+ * reading; the writes ahead of it give their room back once stored, or once a body of theirs that
+ * stopped is given up.
+ */
+const ROOM_WAIT_MS = BODY_STALL_MS;
+
+/**
+ * As long as the body may be: the length it declares, or `limit` where it declares none; or the
+ * refusal of a length that is not one, or that is past `limit`.
+ */
+function lengthOf(
+  c: Context,
+  limit: number,
+  tooLarge: string,
+): Response | { readonly most: number } {
+  const declared = c.req.header('content-length');
+  if (declared === undefined) {
+    return { most: limit };
+  }
+  const length = Number(declared);
+  if (!DIGITS.test(declared) || !Number.isSafeInteger(length)) {
+    return fail(c, 'invalid_request', 'content-length is not a length');
+  }
+  return length > limit ? fail(c, 'too_large', tooLarge) : { most: length };
+}
+
+/**
+ * What `write` answers, made in the room the isolate keeps for the bodies it reads whole for a
+ * write (`body-room.ts`): taken before any of the body is read, by the length it declares, or by
+ * `limit` where it declares none, and given back once `write` is done, whatever it came to. Where
+ * none came within `ROOM_WAIT_MS`, the write is refused as one to make again later, its body
+ * unread: a write the Function makes after a render, which costs a later render, not a response.
+ * A body whose length is refused (`readBody`) is refused before it waits.
+ */
+export function inBodyRoom<T>(
+  c: Context,
+  limit: number,
+  tooLarge: string,
+  write: () => Promise<T | Response>,
+): Promise<T | Response> {
+  const length = lengthOf(c, limit, tooLarge);
+  if (length instanceof Response) {
+    return Promise.resolve(length);
+  }
+  return withBodyRoom<T | Response>(length.most, ROOM_WAIT_MS, write, () =>
+    fail(c, 'quota_exceeded', 'the gateway is holding as many bodies as it has room for'),
+  );
+}
+
 /** The body whole, or the refusal of a length that is not one or of a body past `limit`. */
 export async function readBody(
   c: Context,
   limit: number,
   tooLarge: string,
 ): Promise<Uint8Array | Response> {
-  const declared = c.req.header('content-length');
-  if (declared !== undefined) {
-    const length = Number(declared);
-    if (!DIGITS.test(declared) || !Number.isSafeInteger(length)) {
-      return fail(c, 'invalid_request', 'content-length is not a length');
-    }
-    if (length > limit) {
-      return fail(c, 'too_large', tooLarge);
-    }
+  const length = lengthOf(c, limit, tooLarge);
+  if (length instanceof Response) {
+    return length;
   }
   let read: BoundedBody;
   try {
