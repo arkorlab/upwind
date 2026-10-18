@@ -63,7 +63,8 @@ export function routingReadsFor(
   let reads = false;
   const fields = new Set<string>();
   const remember = (conditions: readonly Condition[] | undefined): void => {
-    for (const condition of conditions ?? []) {
+    if (conditions === undefined) return;
+    for (const condition of conditions) {
       const credentialsRead = readsCredentials(condition, credentials);
       reads ||= credentialsRead;
       const name = condition.type === 'header' ? condition.key?.toLowerCase() : undefined;
@@ -72,14 +73,18 @@ export function routingReadsFor(
       }
     }
   };
-  for (const rule of manifest.reservedRoutes ?? []) {
-    remember(rule.has);
-    remember(rule.missing);
+  if (manifest.reservedRoutes !== undefined) {
+    for (const rule of manifest.reservedRoutes) {
+      remember(rule.has);
+      remember(rule.missing);
+    }
   }
-  for (const route of manifest.dynamicRoutes ?? []) {
-    remember(route.has);
-    remember(route.missing);
-    remember(route.members?.bypassFor);
+  if (manifest.dynamicRoutes !== undefined) {
+    for (const route of manifest.dynamicRoutes) {
+      remember(route.has);
+      remember(route.missing);
+      remember(route.members?.bypassFor);
+    }
   }
   for (const entry of Object.values(manifest.routes)) remember(entry.bypassFor);
   const found = { credentials, reads, forwardedFields: [...fields] };
