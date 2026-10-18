@@ -1,4 +1,5 @@
 import { deriveEntry, type EntryDescriptor } from '@stayingupwind/core/cache';
+import { toBase64 } from '@stayingupwind/core/util';
 import {
   type DataGetRequest,
   type DataGetResponse,
@@ -8,6 +9,7 @@ import {
 import type { FetchLike } from '@stayingupwind/runtime/cache-host';
 import { describe, expect, it, vi } from 'vitest';
 
+import { cacheHostFor } from '../src/function/cache-host.ts';
 import { DataCopies } from '../src/function/data-copies.ts';
 import { Gateway } from '../src/function/gateway.ts';
 import { ReadBudget } from '../src/function/read-budget.ts';
@@ -130,6 +132,50 @@ describe('the entry named by a gateway answer', () => {
 });
 
 describe('the entry named by a data copy', () => {
+  it('reads a kept 600 KiB value after another isolate gets a KV miss', async () => {
+    const scopeId = `scope-${crypto.randomUUID()}`;
+    const request = { kind: 'data:fetch', key: 'large-written-value' } as const;
+    const { entryId } = await deriveEntry(scopeId, request);
+    const original = await valueOf(request);
+    const base64 = toBase64(new Uint8Array(600 * 1024));
+    const answer = {
+      ...original,
+      entryId,
+      entry: { ...original.entry, timestamp: Date.now(), expire: 3600 },
+      value: { kind: 'inline' as const, base64 },
+    };
+    const naming = { copyCache: 'large-data-copies', copyKeyOrigin: 'https://copies.example' };
+    const copies = new DataCopies(
+      caches,
+      naming,
+      { scopeId, token: 'scope-token' },
+      new ReadBudget(2 * 1024 * 1024),
+    );
+    await copies.keep(
+      { key: request.key, entry: answer.entry, valueBase64: base64 },
+      { entryId, generationId: answer.generationId, revision: answer.dependencyRevision },
+    );
+
+    await expect(copies.find(request)).resolves.toStrictEqual(answer);
+
+    const missing = Response.json({ ok: false, error: { code: 'not_found' } }, { status: 404 });
+    const send = vi.fn<FetchLike>().mockResolvedValue(missing);
+    const createHost = cacheHostFor(naming);
+    const binding = createHost({
+      env: {
+        ARKOR_CACHE_GATEWAY_URL: 'https://authority.example',
+        ARKOR_CACHE_READ_GATEWAY_URL: 'https://read.example',
+        ARKOR_CACHE_TOKEN: 'scope-token',
+        NEXT_DEPLOYMENT_ID: scopeId,
+      },
+      fetchImpl: send,
+    });
+
+    await expect(binding?.host.getData(request)).resolves.toStrictEqual(answer);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]?.[0].url).toContain('https://read.example/');
+  });
+
   it.each(['key', 'kind', 'handler', 'entry-id', 'matching'] as const)(
     'judges a cached %s identity before answering',
     async (variation) => {

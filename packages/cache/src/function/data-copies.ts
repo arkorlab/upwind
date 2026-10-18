@@ -3,9 +3,9 @@ import { cacheKeyDigestOf } from '@stayingupwind/core/cache';
 import { readBoundedBody, releaseStream } from '@stayingupwind/core/util';
 import {
   answersTheRead,
+  dataCopyResponseSchema,
   type DataGetRequest,
   type DataGetResponse,
-  dataGetResponseSchema,
   type DataSetRequest,
   type DataSetResponse,
 } from '@stayingupwind/host/cache';
@@ -447,7 +447,7 @@ export class DataCopies {
       if (bytes === undefined) {
         return undefined;
       }
-      const parsed = dataGetResponseSchema.safeParse(JSON.parse(new TextDecoder().decode(bytes)));
+      const parsed = dataCopyResponseSchema.safeParse(JSON.parse(new TextDecoder().decode(bytes)));
       return parsed.success &&
         !withdrawnBy(parsed.data, now()) &&
         answersTheRead(request, parsed.data) &&

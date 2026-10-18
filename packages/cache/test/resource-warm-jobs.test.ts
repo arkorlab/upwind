@@ -110,9 +110,9 @@ function inScope<T>(action: (fixture: Fixture) => T | Promise<T>) {
 }
 
 function claim(fixture: Fixture, now = NOW + SECOND) {
-  return fixture.storage.transactionSync(() => {
-    return claimResourceWarmJobs(fixture.sql, { scopeId: fixture.scopeId, limit: 2 }, now);
-  });
+  return fixture.storage.transactionSync(() =>
+    claimResourceWarmJobs(fixture.sql, { scopeId: fixture.scopeId, limit: 2 }, now),
+  );
 }
 
 function requireJob(fixture: Fixture): ResourceWarmJob {
@@ -132,7 +132,8 @@ function finish(fixture: Fixture, job: ResourceWarmJob, now = ACK_AT, token = jo
 }
 
 function jobsLeft(sql: SqlStorage): number {
-  return sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM resource_warm_jobs').one().count;
+  return sql.exec<{ count: number }>('SELECT COUNT(*) AS count FROM resource_warm_jobs').one()
+    .count;
 }
 
 type Defect = 'under-revision' | 'condemned' | 'unpublished' | 'pruned' | 'non-200';
@@ -140,28 +141,37 @@ type Defect = 'under-revision' | 'condemned' | 'unpublished' | 'pruned' | 'non-2
 function spoil(fixture: Fixture, defect: Defect): void {
   const { sql } = fixture;
   switch (defect) {
-    case 'under-revision':
+    case 'under-revision': {
       sql.exec('UPDATE generations SET dependency_revision = ? WHERE seq = 2', REQUIRED - 1);
       break;
-    case 'condemned':
+    }
+    case 'condemned': {
       sql.exec(
         'UPDATE generations SET condemned = ? WHERE seq = 2',
         JSON.stringify({ revision: REQUIRED + 1, staleAt: PUBLISHED_AT }),
       );
       break;
-    case 'unpublished':
+    }
+    case 'unpublished': {
       sql.exec("UPDATE generations SET publication = 'superseded' WHERE seq = 2");
       break;
-    case 'pruned':
+    }
+    case 'pruned': {
       sql.exec("UPDATE generations SET storage = 'pruned', pruned_at = ? WHERE seq = 2", ACK_AT);
       break;
-    case 'non-200':
+    }
+    case 'non-200': {
       sql.exec('UPDATE generations SET status = 503 WHERE seq = 2');
       break;
+    }
   }
 }
 
-function staleFinish(fixture: Fixture, job: ResourceWarmJob, stale: 'wrong-token' | 'expired-lease') {
+function staleFinish(
+  fixture: Fixture,
+  job: ResourceWarmJob,
+  stale: 'wrong-token' | 'expired-lease',
+) {
   const now = stale === 'expired-lease' ? job.leaseExpiresAt + 1 : ACK_AT;
   const token = stale === 'wrong-token' ? 'another-owner' : job.leaseToken;
   return finish(fixture, job, now, token);
