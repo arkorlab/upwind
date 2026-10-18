@@ -242,6 +242,7 @@ describe('where a scope stands, as the edge comes to know it', () => {
 
     const next = runtimeOf();
     await look(next, askingHost, askingScope);
+
     expect(next.memory.scopes.get(askingScope)?.revision).toBe(5);
     expect(asking.asked()).toBe(1);
   });
