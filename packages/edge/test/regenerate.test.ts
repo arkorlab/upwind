@@ -1,9 +1,10 @@
 import { DEFAULT_RUNTIME_CACHE_SETTINGS } from '@stayingupwind/host/delivery';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { allowAnotherAsk, shouldAsk } from '../src/cache/regenerate.ts';
 import type { EdgeRuntime } from '../src/edge-runtime.ts';
-import { followClient, settle } from '../src/handlers/document-upstream.ts';
+import { followClient, followResume, settle } from '../src/handlers/document-upstream.ts';
+import type { DocumentInput } from '../src/handlers/document.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
 import type { EdgeContext } from '../src/strategies/context.ts';
 
@@ -103,5 +104,80 @@ describe('a regeneration asked for', () => {
     expect(left()).toBe(true);
     expect(aborted).toBe(true);
     expect(shouldAsk(edge, 'entry', DEFAULT_RUNTIME_CACHE_SETTINGS)).toBe(false);
+  });
+
+  it.each(['rejection', 'clientAbort'] as const)(
+    'returns a build-fallback ask after a pre-answer %s',
+    async (failure) => {
+      const edge = edgeAt({ now: 1_800_000_000_000 });
+      shouldAsk(edge, 'build-key', DEFAULT_RUNTIME_CACHE_SETTINGS);
+      const client = new AbortController();
+      const input = {
+        request: new Request('https://site.example/completed', { signal: client.signal }),
+        generation: undefined,
+        onBuildAbandoned: allowAnotherAsk(edge, 'build-key'),
+      } as DocumentInput;
+      const pending = Promise.withResolvers<Response>();
+      const error = new Error('resume did not answer');
+      const abort = vi.fn(() => {
+        pending.reject(error);
+      });
+      const followed = followResume(input, { response: pending.promise, abort });
+
+      const abandon = {
+        rejection: () => {
+          pending.reject(error);
+        },
+        clientAbort: () => {
+          client.abort();
+        },
+      };
+      abandon[failure]();
+      await followed.upstream;
+      followed.clientLeft();
+
+      expect(shouldAsk(edge, 'build-key', DEFAULT_RUNTIME_CACHE_SETTINGS)).toBe(true);
+      expect(abort).toHaveBeenCalledTimes(failure === 'clientAbort' ? 1 : 0);
+    },
+  );
+
+  it('keeps an answered build-fallback ask when its client later leaves', async () => {
+    const edge = edgeAt({ now: 1_800_000_000_000 });
+    shouldAsk(edge, 'build-key', DEFAULT_RUNTIME_CACHE_SETTINGS);
+    const client = new AbortController();
+    const input = {
+      request: new Request('https://site.example/completed', { signal: client.signal }),
+      generation: undefined,
+      onBuildAbandoned: allowAnotherAsk(edge, 'build-key'),
+    } as DocumentInput;
+    const followed = followResume(input, {
+      response: Promise.resolve(new Response()),
+      abort: vi.fn(),
+    });
+
+    await followed.upstream;
+    client.abort();
+    followed.clientLeft();
+
+    expect(shouldAsk(edge, 'build-key', DEFAULT_RUNTIME_CACHE_SETTINGS)).toBe(false);
+  });
+
+  it('keeps a newer build-fallback ask when an older resume rejects', async () => {
+    const edge = edgeAt({ now: 1_800_000_000_000 });
+    shouldAsk(edge, 'build-key', DEFAULT_RUNTIME_CACHE_SETTINGS);
+    const input = {
+      request: new Request('https://site.example/completed'),
+      generation: undefined,
+      onBuildAbandoned: allowAnotherAsk(edge, 'build-key'),
+    } as DocumentInput;
+    const pending = Promise.withResolvers<Response>();
+    const followed = followResume(input, { response: pending.promise, abort: vi.fn() });
+    shouldAsk(edge, 'build-key', { ...DEFAULT_RUNTIME_CACHE_SETTINGS, regenerateCooldownMs: 0 });
+
+    pending.reject(new Error('older resume failed'));
+    await followed.upstream;
+    followed.clientLeft();
+
+    expect(shouldAsk(edge, 'build-key', DEFAULT_RUNTIME_CACHE_SETTINGS)).toBe(false);
   });
 });

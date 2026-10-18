@@ -23,7 +23,7 @@ import { type RecordRead, serveCachedDocument, startRecordRead } from '../cache/
 import type { GenerationKey } from '../cache/generation-loader.ts';
 import { type MemberRead, startMemberRead, upgradesMember } from '../cache/member.ts';
 import { partialFallbackInHand } from '../cache/partial-fallback.ts';
-import { shouldAsk } from '../cache/regenerate.ts';
+import { allowAnotherAsk, shouldAsk } from '../cache/regenerate.ts';
 import { memberEntryKey, type RewriteSeen, rewriteSeenKey } from '../memory/caches.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { loadShell, type ShellLoadResult } from '../strategies/shell-loader.ts';
@@ -547,6 +547,8 @@ function composePartialFallback(
       shellRead: ready?.kind === 'shell' ? ready.read : undefined,
       generation: undefined,
       buildRegeneration,
+      onBuildAbandoned:
+        buildRegeneration === undefined ? undefined : allowAnotherAsk(input.edge, cooldownKey),
     });
   }
   return undefined;

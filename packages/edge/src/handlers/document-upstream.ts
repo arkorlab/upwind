@@ -126,10 +126,9 @@ export function followResume(
   input: DocumentInput,
   handle: ContinuationHandle | undefined,
 ): FollowedResume {
+  const onAbandoned = input.generation?.onAbandoned ?? input.onBuildAbandoned;
   const regeneration: PendingRegeneration | undefined =
-    input.generation?.onAbandoned === undefined
-      ? undefined
-      : { onAbandoned: input.generation.onAbandoned };
+    onAbandoned === undefined ? undefined : { onAbandoned };
   return {
     upstream: handle === undefined ? undefined : settle(handle.response, regeneration),
     clientLeft: followClient(input.request.signal, handle, regeneration),

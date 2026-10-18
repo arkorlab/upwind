@@ -226,7 +226,9 @@ function serveRecord(
           : regenerationHeaders(edge, 'background', asked),
       detached,
       onAbandoned:
-        asked === undefined || complete ? undefined : allowAnotherAsk(edge, asked.entryId),
+        asked === undefined || complete
+          ? undefined
+          : allowAnotherAsk(edge, input.regenerationKey ?? asked.entryId),
       // Served stale with its own regeneration wanted — asked for by this request, or by one before
       // it within the cooldown — the record is read again a second on, for what that regeneration
       // publishes: once the document is certain to go out from it, and not where it is handed to the

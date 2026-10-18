@@ -89,6 +89,8 @@ export interface DocumentInput {
   readonly generation: ServedGeneration | undefined;
   /** A built partial fallback asks for its completed shell beside the resume it already needs. */
   readonly buildRegeneration?: Readonly<Record<string, string>> | undefined;
+  /** Return this build's regeneration ask if its resume is abandoned before the runtime answers. */
+  readonly onBuildAbandoned?: (() => void) | undefined;
   /**
    * Proxy the request to the application's Worker, as every passthrough of the request goes: routed
    * again from the pointer when the Workers it names turned out to be gone
