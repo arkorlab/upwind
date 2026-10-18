@@ -47,14 +47,14 @@ function routerRulePatterns(bundle: DeploymentBundle): RegExp[] {
   return [
     ...headerPhases(bundle).filter((rule) => rule.headers !== undefined),
     ...beforeFilesPhases(bundle),
-  ].flatMap((rule) =>
-    mayHoldForDocument(rule)
+  ].flatMap((rule) => {
+    return mayHoldForDocument(rule)
       ? []
       : // Compiled by Next.js for its own router, which runs them without the unicode flag and
         // without regard to case, as `mayRoutePath` does: a rule for `/Account` covers `/account`.
         // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-        [new RegExp(rule.sourceRegex, 'i')],
-  );
+        [new RegExp(rule.sourceRegex, 'i')];
+  });
 }
 
 /**

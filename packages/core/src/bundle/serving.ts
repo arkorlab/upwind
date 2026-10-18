@@ -150,16 +150,17 @@ function headersReproducible(bundle: DeploymentBundle, prerender: Prerender): bo
   if (reproducesDynamicRouting(bundle)) {
     return true;
   }
-  return !headerPhases(bundle).some(
-    (rule) =>
-      rule.headers !== undefined &&
-      isConditional(rule) &&
-      mayHoldForDocument(rule) &&
+  return headerPhases(bundle).every((rule) => {
+    return (
+      rule.headers === undefined ||
+      !isConditional(rule) ||
+      !mayHoldForDocument(rule) ||
       // Compiled by Next.js for its own router, which runs them without the unicode flag, and
       // without regard to case (`claimedBeforeFiles`).
       // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-      new RegExp(rule.sourceRegex, 'i').test(requestedPathname(bundle, prerender.pathname)),
-  );
+      !new RegExp(rule.sourceRegex, 'i').test(requestedPathname(bundle, prerender.pathname))
+    );
+  });
 }
 
 /**
@@ -194,15 +195,16 @@ export function beforeFilesPhases(bundle: DeploymentBundle): Route[] {
  * either way.
  */
 function claimedBeforeFiles(bundle: DeploymentBundle, prerender: Prerender): boolean {
-  return beforeFilesPhases(bundle).some(
-    (rule) =>
+  return beforeFilesPhases(bundle).some((rule) => {
+    return (
       (reproducesDynamicRouting(bundle) ? !isConditional(rule) : mayHoldForDocument(rule)) &&
       // Compiled by Next.js for its own router, which runs them without the unicode flag, and
       // without regard to case, as `mayRoutePath` matches them: a rule for `/Account` claims the
       // page at `/account`, and `.well-known`'s exemption from a slash redirect is any case's.
       // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-      new RegExp(rule.sourceRegex, 'i').test(requestedPathname(bundle, prerender.pathname)),
-  );
+      new RegExp(rule.sourceRegex, 'i').test(requestedPathname(bundle, prerender.pathname))
+    );
+  });
 }
 
 /** The routes the build put on the edge runtime, by the pathname a prerender names them with. */
