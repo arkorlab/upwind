@@ -8,7 +8,7 @@ import {
   type RouteEntry,
 } from '@stayingupwind/core/manifest';
 import { MIDDLEWARE_SET_COOKIE_HEADER, type MiddlewareResult } from '@stayingupwind/core/paas';
-import { negotiateContentEncoding } from '@stayingupwind/core/request';
+import { negotiateContentEncoding, routeDebugValue } from '@stayingupwind/core/request';
 import type { ContinuationResume, ResolvedPolicy } from '@stayingupwind/host/delivery';
 import {
   buildRecoveryBytes,
@@ -148,7 +148,7 @@ function documentMarker(input: DocumentInput, complete: boolean): string {
   const continuation = complete ? 'none' : 'resume';
   const middleware = middlewareMarker(input.middleware);
   const cache = generationMarker(input.generation);
-  return `;cont=${continuation};mw=${middleware};route=${input.entry.pathname}${cache}`;
+  return `;cont=${continuation};mw=${middleware};route=${routeDebugValue(input.entry.pathname)}${cache}`;
 }
 
 /**

@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { createEdgeMemory } from '../src/memory/caches.ts';
 import { serveFromPointer } from '../src/route.ts';
 import { standaloneHost, standaloneRuntime } from '../src/standalone/index.ts';
-import { pprDocument, seedSite } from './helpers/site.ts';
+import { htmlResponse, navigation, pprDocument, seedSite } from './helpers/site.ts';
 
 const BODY = 'served bytes';
 const IMAGES: ImagesConfig = {
@@ -136,4 +136,55 @@ describe.each(['static', 'segment', 'image'] as const)('%s project diagnostic', 
       expect(debug.split(';')).toContain(`policy=${DEFAULT_DELIVERY_POLICY.id}`);
     },
   );
+});
+
+const ROUTES = [
+  { pathname: '/ordinary', expected: '/ordinary' },
+  { pathname: '/items/[id]', expected: '/items/[id]' },
+  { pathname: '/percent%3B', expected: '/percent%3B' },
+  { pathname: '/semi;policy=forged', expected: '~%2Fsemi%3Bpolicy%3Dforged' },
+  { pathname: '/line\r\nbreak', expected: '~%2Fline%5Cr%5Cnbreak' },
+  { pathname: '/nul\0byte', expected: '~%2Fnul%5Cu0000byte' },
+  { pathname: '/space ', expected: '~%2Fspace%20' },
+  { pathname: '/日本', expected: '~%2F%E6%97%A5%E6%9C%AC' },
+  { pathname: '/a;b', expected: '~%2Fa%3Bb' },
+  { pathname: '/a%3Bb', expected: '/a%3Bb' },
+] as const;
+
+describe('document route diagnostics through the public entry', () => {
+  it.each(ROUTES)('serves the admitted route as one field: $expected', async (example) => {
+    const document = pprDocument();
+    const site = await seedSite({ document, pathname: example.pathname });
+    // Encode each segment as a request does. The route lookup decodes it before finding the entry.
+    const path = example.pathname
+      .split('/')
+      .map((part) => encodeURIComponent(part))
+      .join('/');
+    const request = navigation(path);
+    const ctx = createExecutionContext();
+    const response = await serveFromPointer({
+      request,
+      url: new URL(request.url),
+      env,
+      ctx,
+      runtime: standaloneRuntime(env, {
+        memory: createEdgeMemory(() => Date.now()),
+        dispatchApp: () => Promise.resolve(htmlResponse(document.suffix)),
+      }),
+      host: standaloneHost(env),
+      pointer: site.pointer,
+      pointerMs: 0,
+      privateDelivery: false,
+      cspReportingPath: undefined,
+    });
+    const text = await response.text();
+    await waitOnExecutionContext(ctx);
+    const debug = response.headers.get(EDGE_DEBUG_HEADER) ?? '';
+
+    expect(response.status).toBe(200);
+    expect(text).toBe(document.shellText + document.suffixText);
+    expect(debug.split(';')).toContain(`route=${example.expected}`);
+    expect(debug.split(';')).not.toContain('policy=forged');
+    expect(debug.split(';').filter((field) => field.startsWith('route='))).toHaveLength(1);
+  });
 });
