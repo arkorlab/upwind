@@ -87,9 +87,13 @@ function policyRulesCovering(
   if (isTemplate(pathname)) {
     return rules;
   }
-  // As the edge judges them (`documentHeaderRulesFor`): case-insensitive, without the unicode flag.
-  // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-  return rules.filter((rule) => new RegExp(rule.sourceRegex, 'i').test(pathname));
+  return rules.filter((rule) => {
+    // A concrete page already folds unconditional rules in order, including later overrides.
+    if (rule.has === undefined && rule.missing === undefined) return false;
+    // As the edge judges them (`documentHeaderRulesFor`): case-insensitive, without the unicode flag.
+    // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
+    return new RegExp(rule.sourceRegex, 'i').test(pathname);
+  });
 }
 
 /** A rule's headers, under the lowercase names a route's own are recorded by. */
@@ -107,13 +111,10 @@ function hasCapture(value: string): boolean {
 /** The policies a hint answers to (`withoutForbidden`), by their lowercase names. */
 const POLICY_HEADERS: ReadonlySet<string> = new Set(['content-security-policy', 'referrer-policy']);
 
-/** A conditional rule that names a policy, or can fill its name from a path capture. */
+/** A rule that names a policy, or can fill its name from a path capture. */
 export function maySetPreloadPolicy(rule: HeaderRule): boolean {
-  return (
-    (rule.has !== undefined || rule.missing !== undefined) &&
-    Object.keys(rule.headers).some(
-      (name) => POLICY_HEADERS.has(name.toLowerCase()) || hasCapture(name),
-    )
+  return Object.keys(rule.headers).some(
+    (name) => POLICY_HEADERS.has(name.toLowerCase()) || hasCapture(name),
   );
 }
 
@@ -191,9 +192,9 @@ export interface ManifestContext {
   /** The middleware matchers of the build, for the routes whose answer they can change. */
   readonly matchers: readonly MiddlewareMatcher[];
   /**
-   * The rules of `next.config` the edge judges on each request — the ones with a condition, `has`
-   * or `missing`, which no route's own headers can carry — that set a policy a hint answers to
-   * (`withoutForbidden`): a `Content-Security-Policy` or a `Referrer-Policy`.
+   * The rules of `next.config` that set a policy a hint answers to (`withoutForbidden`): a
+   * `Content-Security-Policy` or a `Referrer-Policy`. A class shell must account for pathname-only
+   * rules naming individual members as well as request conditions no built shell can carry.
    */
   readonly policyRules: readonly HeaderRule[];
   /** The CSP source that authorises the recovery script, added to every policy recorded here. */
