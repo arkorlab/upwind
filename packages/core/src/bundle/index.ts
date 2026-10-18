@@ -66,6 +66,7 @@ export {
 } from './pages-data.ts';
 export { queryDependent } from './query.ts';
 export { partialFallbackUpgradeOf } from './partial-fallback.ts';
+export { sharedShellPathname } from './shared-shell.ts';
 export {
   type PrefetchSegment,
   prefetchSegments,
