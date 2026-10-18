@@ -1,16 +1,23 @@
 import { sha256Hex } from '@stayingupwind/core/artifact';
 import { decodeGenerationPack, policyFromBuild } from '@stayingupwind/core/cache';
 import { encodeUtf8 } from '@stayingupwind/core/util';
+import { runInDurableObject } from 'cloudflare:test';
+import { env } from 'cloudflare:workers';
 import { describe, expect, it, vi } from 'vitest';
 
+import { identifyEntry, insertEntry, publishEntry } from '../src/scope/entries.ts';
+import { type GenerationInsert, insertGeneration } from '../src/scope/generations.ts';
 import type { BlobStore } from '../src/scope/io.ts';
 import {
   PROJECTION_MEMORY_BYTES,
   withProjectionMemory,
   withProjectionMemoryAtOnce,
 } from '../src/scope/projection-memory.ts';
+import { readCurrentData } from '../src/scope/reads.ts';
 import { generationRecordBytes, InvalidArtifactError } from '../src/scope/records.ts';
-import type { EntryRow, GenerationRow } from '../src/scope/rows.ts';
+import { type EntryRow, generationOutputs, type GenerationRow } from '../src/scope/rows.ts';
+import { applySchema } from '../src/scope/schema.ts';
+import { scopeStub } from '../src/scope/stub.ts';
 
 const HTML = encodeUtf8('<p>document</p>');
 const STATE = encodeUtf8('postponed state');
@@ -244,5 +251,152 @@ describe('the reads a delivery record holds room for', () => {
 
     expect(pack).toHaveProperty('pack.html', HTML);
     expect(pack).toHaveProperty('pack.postponed', STATE);
+  });
+});
+
+/** A real SQLite data entry whose inline bytes are read through the supplied BlobStore. */
+async function currentDataFixture(sql: SqlStorage, scopeId: string) {
+  applySchema(sql, []);
+  const identity = await identifyEntry(scopeId, { kind: 'data:fetch', key: 'current-key' });
+  insertEntry(sql, { identity, groupInstanceId: null, revision: 1, now: NOW });
+  const row = await generation();
+  const initial: GenerationInsert = {
+    generationId: 'generation',
+    entryId: identity.entryId,
+    seq: 1,
+    source: 'build',
+    attemptId: null,
+    cacheTimestamp: NOW,
+    producedAt: NOW,
+    policy: policyFromBuild({ initialRevalidate: 60, initialExpiration: 600 }),
+    status: 200,
+    headers: {},
+    tags: [],
+    dependencyCoverage: 'complete',
+    dependencyRevision: 1,
+    publishedRevision: 1,
+    condemned: null,
+    bodyBytes: HTML.byteLength,
+    producer: null,
+    outputs: generationOutputs(row),
+    committedAt: NOW,
+  };
+  insertGeneration(sql, initial);
+  publishEntry(sql, {
+    entryId: identity.entryId,
+    generationId: 'generation',
+    seq: 1,
+    revision: 1,
+    now: NOW,
+  });
+  return { identity, initial };
+}
+
+describe('a current data record while its bytes are read', () => {
+  it.each([
+    'generation',
+    'record-revision',
+    'retired',
+    'deleted',
+    'metadata-only',
+    'unchanged',
+  ] as const)('keeps authority state consistent after %s changes', async (scenario) => {
+    const scopeId = `scope-${crypto.randomUUID()}`;
+    const result = await runInDurableObject(scopeStub(env, scopeId), async (_instance, state) => {
+      const sql = state.storage.sql;
+      const { identity, initial } = await currentDataFixture(sql, scopeId);
+      const pending = Promise.withResolvers<Uint8Array | undefined>();
+      const entered = Promise.withResolvers<true>();
+      const budget = { reserved: 0, limit: 1024 * 1024 };
+      const reading = readCurrentData(
+        {
+          sql,
+          scopeId,
+          blobs: store(() => {
+            entered.resolve(true);
+            return pending.promise;
+          }),
+        },
+        { kind: 'data:fetch', key: 'current-key' },
+        budget,
+      );
+      await entered.promise;
+
+      switch (scenario) {
+        case 'generation': {
+          insertGeneration(sql, {
+            ...initial,
+            generationId: 'next',
+            seq: 2,
+            dependencyRevision: 2,
+          });
+          publishEntry(sql, {
+            entryId: identity.entryId,
+            generationId: 'next',
+            seq: 2,
+            revision: 2,
+            now: NOW,
+          });
+          break;
+        }
+        case 'record-revision': {
+          sql.exec('UPDATE entries SET record_revision = 2 WHERE entry_id = ?', identity.entryId);
+          sql.exec(
+            'UPDATE generations SET condemned = ? WHERE generation_id = ?',
+            JSON.stringify({ revision: 2, staleAt: NOW, hardExpireAt: null }),
+            initial.generationId,
+          );
+          break;
+        }
+        case 'retired': {
+          sql.exec(
+            "UPDATE entries SET publication = 'retired' WHERE entry_id = ?",
+            identity.entryId,
+          );
+          break;
+        }
+        case 'deleted': {
+          sql.exec('DELETE FROM entries WHERE entry_id = ?', identity.entryId);
+          break;
+        }
+        case 'metadata-only': {
+          sql.exec('UPDATE entries SET revision = 2 WHERE entry_id = ?', identity.entryId);
+          break;
+        }
+        case 'unchanged': {
+          break;
+        }
+      }
+      pending.resolve(HTML);
+      return { value: await reading, reserved: budget.reserved };
+    });
+
+    expect(result.reserved).toBe(0);
+
+    const stands = scenario === 'unchanged' || scenario === 'metadata-only';
+
+    expect(result.value?.value).toStrictEqual(
+      stands ? { kind: 'inline', base64: btoa(new TextDecoder().decode(HTML)) } : undefined,
+    );
+    expect(result.value?.revision).toBe(stands ? 1 : undefined);
+  });
+
+  it('keeps the no-room reference path without reading bytes', async () => {
+    const scopeId = `scope-${crypto.randomUUID()}`;
+    const result = await runInDurableObject(scopeStub(env, scopeId), async (_instance, state) => {
+      await currentDataFixture(state.storage.sql, scopeId);
+      const read = vi.fn<BlobStore['read']>();
+      const budget = { reserved: 0, limit: 0 };
+      const value = await readCurrentData(
+        { sql: state.storage.sql, scopeId, blobs: store(read) },
+        { kind: 'data:fetch', key: 'current-key' },
+        budget,
+      );
+      return { value, reads: read.mock.calls.length, reserved: budget.reserved };
+    });
+
+    expect(result.reads).toBe(0);
+    expect(result.reserved).toBe(0);
+    expect(result.value?.value.kind).toBe('ref');
   });
 });
