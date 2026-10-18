@@ -28,7 +28,11 @@ import type { EdgeRuntime } from './edge-runtime.ts';
 import { passthroughHeaders } from './forwarding.ts';
 import { answerAsset } from './handlers/asset-answer.ts';
 import { routeHostedDocument } from './handlers/hosted-document.ts';
-import type { MiddlewareOutcome, MiddlewareTiming } from './handlers/middleware.ts';
+import {
+  dispatchedFor,
+  type MiddlewareOutcome,
+  type MiddlewareTiming,
+} from './handlers/middleware.ts';
 import { observeMetric } from './handlers/observer.ts';
 import {
   finishObserved,
@@ -212,6 +216,7 @@ function passthroughFor(
       colo: coloOf(input.request) ?? '',
       // What the middleware took before this gave up on it, where it is what was given up on.
       ...(middleware?.middlewareMs !== undefined && { middlewareMs: middleware.middlewareMs }),
+      ...(middleware !== undefined && { middlewareDispatches: dispatchedFor(middleware) }),
       // And what came before it was handed on (`PassthroughWait`): a record read for the request
       // that served nothing; what a document it could not serve took, reads of storage and a resume
       // let go; and a regeneration a stale record asked for on its own.

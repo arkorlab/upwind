@@ -208,7 +208,10 @@ export async function reportOutcome(report: OutcomeReport): Promise<void> {
     retry: 0,
     assetHit: 0,
     subrequests:
-      report.subrequests + report.storageReads + (report.dispatched?.redispatched === true ? 1 : 0),
+      report.subrequests +
+      report.storageReads +
+      Number(report.input.middleware?.kind === 'continue') +
+      (report.dispatched?.redispatched === true ? 1 : 0),
     pointerLookupMs: edge.timings.pointerMs,
     manifestLookupMs: edge.timings.manifestMs,
     // The same number the document's `Server-Timing` names `mw` (`document-headers.ts`): taken

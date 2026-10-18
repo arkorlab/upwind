@@ -1,7 +1,7 @@
 import type { ImagesConfig } from '@stayingupwind/core/images';
 import { FUNCTION_HEADER, MISDIRECTED_STATUS } from '@stayingupwind/core/paas';
 import { concatBytes, encodeUtf8 } from '@stayingupwind/core/util';
-import type { EdgePointer } from '@stayingupwind/host/delivery';
+import { DEFAULT_DELIVERY_POLICY, type EdgePointer } from '@stayingupwind/host/delivery';
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
@@ -220,6 +220,145 @@ describe('continuation dispatch accounting', () => {
       fn: example.fn,
       redispatch: example.sent === 2 ? 1 : 0,
     });
+  });
+});
+
+describe('middleware calls in request totals', () => {
+  it.each([
+    { kind: 'resume', middleware: true, app: 1, storage: 1, document: true },
+    { kind: 'head', middleware: true, app: 1, storage: 0, document: false },
+    { kind: 'complete', middleware: true, app: 0, storage: 1, document: true },
+    { kind: 'redispatched', middleware: true, app: 2, storage: 1, document: true },
+    { kind: 'resume-failed', middleware: true, app: 1, storage: 1, document: true },
+    { kind: 'rewritten', middleware: true, app: 1, storage: 0, document: false },
+    { kind: 'rewrite-redispatched', middleware: true, app: 2, storage: 0, document: false },
+    { kind: 'middleware-failed', middleware: true, app: 1, storage: 0, document: false },
+    { kind: 'unreachable', middleware: false, app: 0, storage: 0, document: false },
+  ])('counts each actual Function call when $kind', async (example) => {
+    const partial = pprDocument();
+    const document =
+      example.kind === 'complete'
+        ? {
+            ...partial,
+            shell: concatBytes([partial.shell, partial.suffix]),
+            shellText: partial.shellText + partial.suffixText,
+          }
+        : partial;
+    const site = await seedSite({ document });
+    const points: EdgeMetric[] = [];
+    const calls: string[] = [];
+    const originalHost = standaloneHost(env);
+    const controller = new AbortController();
+    const runtime: EdgeRuntime = {
+      ...standaloneRuntime(env, { memory: createEdgeMemory(() => Date.now()) }),
+      dispatchApp: example.middleware
+        ? (script) => {
+            calls.push(script);
+            if (script === 'site-middleware') {
+              if (example.kind === 'middleware-failed') {
+                return Promise.reject(new Error('middleware failed'));
+              }
+              return Promise.resolve(
+                new Response(null, {
+                  headers: example.kind.startsWith('rewrit')
+                    ? { 'x-middleware-rewrite': `https://${SITE}/uncached` }
+                    : { 'x-middleware-next': '1' },
+                }),
+              );
+            }
+            if (script === 'site-app' && example.app === 2) {
+              return Promise.resolve(
+                new Response(null, {
+                  status: MISDIRECTED_STATUS,
+                  headers: { [FUNCTION_HEADER]: 'app-2' },
+                }),
+              );
+            }
+            return example.kind === 'resume-failed'
+              ? Promise.reject(new Error('resume failed'))
+              : Promise.resolve(htmlResponse(document.suffix));
+          }
+        : undefined,
+    };
+    const routes = Object.fromEntries(
+      Object.entries(site.manifest.routes).map(([path, entry]) => {
+        return [
+          path,
+          example.kind === 'complete'
+            ? {
+                ...entry,
+                cache: {
+                  entryId: 'complete-entry',
+                  kind: 'app-page' as const,
+                  delivery: 'complete' as const,
+                },
+              }
+            : entry,
+        ];
+      }),
+    );
+    const request = navigation('/', {
+      method: example.kind === 'head' ? 'HEAD' : 'GET',
+      signal: controller.signal,
+    });
+    const ctx = createExecutionContext();
+    const response = await serveFromPointer(
+      {
+        request,
+        url: new URL(request.url),
+        env,
+        ctx,
+        runtime,
+        host: {
+          ...originalHost,
+          observer: {
+            ...originalHost.observer,
+            metric: (point) => {
+              points.push(point);
+            },
+          },
+        },
+        pointer: {
+          ...site.pointer,
+          app: {
+            deploymentId: 'dpl_site',
+            scriptName: 'site-app',
+            middlewareScriptName: 'site-middleware',
+            functions: { 'app-2': 'site-app-2' },
+          },
+        },
+        pointerMs: 0,
+        privateDelivery: false,
+        cspReportingPath: undefined,
+      },
+      {
+        manifestLookup: Promise.resolve({
+          kind: 'found',
+          value: {
+            ...site.manifest,
+            routes,
+            middleware: { matchers: [{ sourceRegex: '^/.*$' }] },
+          },
+        }),
+        policyLookup: Promise.resolve({
+          kind: 'found',
+          source: 'exact',
+          policy: DEFAULT_DELIVERY_POLICY,
+        }),
+      },
+    );
+    await response.arrayBuffer();
+    await waitOnExecutionContext(ctx);
+
+    const sent = Number(example.middleware) + example.app;
+    const fn = example.app === 2 ? 'app-2' : 'app';
+
+    expect(calls).toHaveLength(sent);
+    expect(points).toHaveLength(1);
+    expect(points[0]?.kind).toBe(example.document ? 'document' : 'passthrough');
+    expect(points[0]?.subrequests).toBe(sent + example.storage);
+    expect(points[0]?.redispatch).toBe(example.app === 2 ? 1 : 0);
+    expect(points[0]?.fn).toBe(example.app === 0 ? undefined : fn);
   });
 });
 

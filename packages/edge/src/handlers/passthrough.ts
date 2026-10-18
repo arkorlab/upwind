@@ -89,6 +89,8 @@ export interface PassthroughMetrics {
    * refused it can be set against what the middleware actually takes rather than against a guess.
    */
   readonly middlewareMs?: number | undefined;
+  /** Calls already made by middleware, including a run that failed before this fallback. */
+  readonly middlewareDispatches?: number | undefined;
   /**
    * How long a read of a record the request was then not served from took, before this: one that
    * turned out to be none, for a member of a class with no shell (`serveMemberWithoutShell`), or to
@@ -293,6 +295,7 @@ function reportPassthrough(
     // answer the client was not handed — as a served document's point counts each.
     subrequests:
       dispatchesMade(pending) +
+      (metrics.middlewareDispatches ?? Number(input.middleware !== undefined)) +
       (metrics.storageReads ?? 0) +
       (metrics.resumeDispatches ?? 0) +
       (metrics.assetDispatches ?? 0),
