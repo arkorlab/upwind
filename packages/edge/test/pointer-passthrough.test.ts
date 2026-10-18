@@ -29,6 +29,9 @@ import { serveFromPointer } from '../src/route.ts';
 import { standaloneHost, standaloneRuntime } from '../src/standalone/index.ts';
 import { navigation, pprDocument, seedSite } from './helpers/site.ts';
 
+const HIGH_SURROGATE_UNIT = 0xd800;
+const LONE_HIGH_SURROGATE = String.fromCodePoint(HIGH_SURROGATE_UNIT);
+
 const POLICY: PolicyLookup = {
   kind: 'found',
   source: 'exact',
@@ -446,7 +449,7 @@ describe.each(['passthrough', 'disabled'] as const)('opaque reasons in %s pointe
   it.each([
     { reason: 'ordinary-reason', encoded: 'ordinary-reason' },
     { reason: '理由\r\n', encoded: '%E7%90%86%E7%94%B1%5Cr%5Cn' },
-    { reason: 'semi;percent%\uD800', encoded: 'semi%3Bpercent%25%5Cud800' },
+    { reason: `semi;percent%${LONE_HIGH_SURROGATE}`, encoded: 'semi%3Bpercent%25%5Cud800' },
   ])('answers with the diagnostic field $encoded', async (example) => {
     const site = await seedSite({ document: pprDocument() });
     const ctx = createExecutionContext();

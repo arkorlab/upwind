@@ -15,6 +15,8 @@ import { navigation, pprDocument, seedSite } from './helpers/site.ts';
 const FILE_PATH = '/download.txt';
 const FILE_BODY = 'the shipped file';
 const POLICY_ID = 'slow-named-policy';
+const HIGH_SURROGATE_UNIT = 0xd800;
+const LONE_HIGH_SURROGATE = String.fromCodePoint(HIGH_SURROGATE_UNIT);
 
 /** A policy still out while the manifest is already present. */
 async function delayedPolicyFile(
@@ -76,7 +78,7 @@ describe('a shipped file with a policy read still out', () => {
   it.each([
     { policyId: 'ordinary-policy', encoded: 'ordinary-policy' },
     { policyId: '日本\r\n', encoded: '%E6%97%A5%E6%9C%AC%5Cr%5Cn' },
-    { policyId: 'semi;percent%\uD800', encoded: 'semi%3Bpercent%25%5Cud800' },
+    { policyId: `semi;percent%${LONE_HIGH_SURROGATE}`, encoded: 'semi%3Bpercent%25%5Cud800' },
   ])('encodes the unresolved policy field $encoded before streaming', async (example) => {
     const pending = await delayedPolicyFile({ policyId: example.policyId });
     try {
