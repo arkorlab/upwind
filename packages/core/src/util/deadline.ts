@@ -20,6 +20,9 @@ export function isDeadlineError(error: unknown): boolean {
  */
 export async function withDeadline<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
   if (ms <= 0) {
+    // The caller already started this promise; keep a later rejection observed without waiting.
+    // eslint-disable-next-line promise/prefer-await-to-then -- awaiting would extend the expired deadline
+    void promise.catch(() => undefined);
     throw new DeadlineError(what);
   }
   let timer: ReturnType<typeof setTimeout> | undefined;

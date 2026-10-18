@@ -219,7 +219,12 @@ describe('room for unrecognized delivery record bytes', () => {
 
       expect(response.status).toBe(200);
       expect(response.headers.get('content-length')).toBe(String(bytes.byteLength));
-      expect(new Uint8Array(await response.arrayBuffer())).toStrictEqual(bytes);
+
+      const actual = await response.arrayBuffer();
+
+      expect(new DataView(actual)).toStrictEqual(
+        new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+      );
       expect(read).toHaveBeenCalledExactlyOnceWith(scopeId, bytes.byteLength);
     },
   );

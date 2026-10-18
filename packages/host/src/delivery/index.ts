@@ -38,6 +38,8 @@ export {
   type ContinuationStart,
   type ResolvedPolicy,
   resolvePolicy,
+  type ShellBodyReader,
+  type ShellBodyResult,
   type ShellDeliveryStrategy,
   type ShellRead,
   type StrategyRegistry,

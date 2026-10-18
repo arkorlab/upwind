@@ -70,6 +70,29 @@ function listObjects(list: readonly unknown[] | undefined): number {
   return list === undefined ? 0 : 1 + list.length;
 }
 
+/** Rule-local containers, excluding the two collections whose physical identities may be shared. */
+function ruleContainers(rule: RuleObjects): number {
+  let objects = 1 + listObjects(rule.has) + listObjects(rule.missing);
+  objects += (rule.headers === undefined ? 0 : 1) + (rule.documentHeaders === undefined ? 0 : 1);
+  const members = rule.members;
+  if (members !== undefined) {
+    objects += 1 + (members.keyedBy === undefined ? 0 : 1);
+  }
+  return objects;
+}
+
+/** A recovery-source map is charged once across both header-rule lists. */
+function recoveryObjects(
+  sources: Readonly<Record<string, string>>,
+  seen: WeakSet<Readonly<Record<string, string>>>,
+): number {
+  if (seen.has(sources)) {
+    return 0;
+  }
+  seen.add(sources);
+  return 1;
+}
+
 /** The objects rules are made of: each rule, its conditions and their lists, and its headers. */
 function ruleObjects(
   rules: readonly RuleObjects[] | undefined,
@@ -82,23 +105,13 @@ function ruleObjects(
   let next = rules === undefined ? undefined : following;
   while (list !== undefined) {
     for (const rule of list) {
-      objects += 1 + listObjects(rule.has) + listObjects(rule.missing);
-      objects +=
-        (rule.headers === undefined ? 0 : 1) + (rule.documentHeaders === undefined ? 0 : 1);
+      objects += ruleContainers(rule);
       const sources = rule.documentRecoverySources;
       if (sources !== undefined) {
         recoveryMaps ??= new WeakSet();
-        if (!recoveryMaps.has(sources)) {
-          recoveryMaps.add(sources);
-          objects += 1;
-        }
+        objects += recoveryObjects(sources, recoveryMaps);
       }
-      const members = rule.members;
-      if (members === undefined) {
-        continue;
-      }
-      objects += 1 + (members.keyedBy === undefined ? 0 : 1);
-      const conditions = members.bypassFor;
+      const conditions = rule.members?.bypassFor;
       if (conditions === undefined) {
         continue;
       }
