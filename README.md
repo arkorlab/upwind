@@ -496,7 +496,7 @@ Issues, questions and pull requests are all welcome — rough ones included. [CO
 | **An afternoon** | Send a small pull request: a clearer error message, a comment that names the failure it exists for, a doc fix                                                                                            |
 | **Ongoing**      | Tell us what your Next.js app does that upwind does not serve yet                                                                                                                                        |
 
-You need Node 24 — the repository names 24.21.0 — and pnpm, which Corepack fetches at the version the repository pins.
+You need Node 24 — the repository names 24.22.0 — and pnpm, which Corepack fetches at the version the repository pins.
 
 ```bash
 corepack enable        # once per machine; Corepack ships with Node 24
