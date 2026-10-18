@@ -163,6 +163,27 @@ async function lease(scope: Scope, plan: Plan) {
 }
 
 describe('a seed whose artifact projection could not read', () => {
+  it.each([-1, 1])(
+    'refuses an artifact whose declared length differs by %i bytes',
+    async (difference) => {
+      const scope = await scopeForTest();
+      const plan = await planFor(scope);
+      plan.artifact.byteLength += difference;
+      await seedBatch(scope, [plan.seed]);
+      expect(await env.CACHE_STATE.get(kvGenerationKey(scope.scopeId, plan.entryId))).toBeNull();
+      expect((await rowsFor(scope, plan)).entry.kv_revision).toBe(0);
+      const failure = await runInDurableObject(scope.stub, (_instance, state) => {
+        return state.storage.sql
+          .exec<{ value: string }>(
+            `SELECT value FROM meta WHERE key = ?`,
+            `seed_artifact_failure:${plan.entryId}`,
+          )
+          .one().value;
+      });
+      expect(failure).toBe(plan.generationId);
+    },
+  );
+
   it('keeps the failed generation unchanged when a retry names other bytes', async () => {
     const scope = await scopeForTest();
     const plan = await planFor(scope);
