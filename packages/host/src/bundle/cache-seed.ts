@@ -4,6 +4,7 @@ import {
   pagesDataPathnameUnder,
   type Prerender,
   prerenderResponseHeaders,
+  sharedShellPathname,
 } from '@stayingupwind/core/bundle';
 import {
   appPathFor,
@@ -13,6 +14,7 @@ import {
   implicitTagsFor,
   parseCacheTagsHeader,
   policyFromBuild,
+  sharedShellTagOf,
   type RouteEntryDescriptor,
   type RouteEntryKind,
   tagKindOf,
@@ -28,6 +30,12 @@ import { blobObjectKey } from '@stayingupwind/host/storage';
  * with the lifetime Next.js gave it and the tags it recorded. Sequence one of every entry the
  * edge may serve — and of every route handler the build rendered, which the deployment's Worker
  * serves. A Pages Router page brings the data its route serves beside the document.
+ *
+ * Reusable terminal shells also carry the shared identity manual revalidation names across
+ * Functions. Deploy this seed support before the runtime that uses it, then create a new immutable
+ * deployment and cache scope. Never replace that runtime inside an existing deployment or reuse
+ * another deployment's scope. The identity counts with every existing tag toward the authority's
+ * per-entry quota; none is dropped to make room for it.
  */
 
 const CACHE_TAGS_HEADER = 'x-next-cache-tags';
@@ -123,6 +131,28 @@ export function buildTagsOf(kind: RouteEntryKind, prerender: Prerender): Generat
     values.add(value);
   }
   return [...values].map((value) => ({ kind: tagKindOf(value), value }));
+}
+
+function seededTagsOf(
+  bundle: DeploymentBundle,
+  prerender: Prerender,
+  kind: RouteEntryKind,
+  entryId: string,
+): GenerationTag[] {
+  const tags = buildTagsOf(kind, prerender);
+  if (
+    bundle.config.cacheComponents === true &&
+    indexOf(bundle).kinds.get(prerender.route) === 'app-page' &&
+    sharedShellPathname(prerender) !== undefined
+  ) {
+    // The identity counts toward the existing per-entry quota; the per-call invalidation bound
+    // does not permit dropping existing tags or bypassing the generation quota.
+    const value = sharedShellTagOf(entryId);
+    if (tags.every((tag) => tag.value !== value)) {
+      tags.push({ kind: 'next-implicit', value });
+    }
+  }
+  return tags;
 }
 
 /** When the build ran, in unix milliseconds: the origin every seeded lifetime is measured from. */
@@ -266,7 +296,7 @@ export async function seedRouteFor(
         prerender.initialStatus ?? HTTP_OK,
         prerenderResponseHeaders(bundle, prerender),
       ),
-      tags: buildTagsOf(kind, prerender),
+      tags: seededTagsOf(bundle, prerender, kind, derived.entryId),
       outputs: outputsOf(bundle, kind, prerender, body),
       dependencyCoverage: 'complete',
     },

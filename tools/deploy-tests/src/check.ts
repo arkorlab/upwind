@@ -110,12 +110,11 @@ function bounded(
     // The script itself, by its own path, rather than a shell found on `PATH`: they are executable and
     // carry a shebang, and this is how the suite's harness starts them. Or through `via`, a Node.js
     // script handed that path, which starts it as a harness of its own would.
-    const script = path.join(SCRIPTS, name);
-    const options = { cwd: appDir, env, detached: true };
-    const child =
-      via === undefined
-        ? spawn(script, [], options)
-        : spawn(process.execPath, [via, script], options);
+    const child = spawn(
+      via === undefined ? path.join(SCRIPTS, name) : process.execPath,
+      via === undefined ? [] : [via, path.join(SCRIPTS, name)],
+      { cwd: appDir, env, detached: true },
+    );
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (chunk: Buffer) => (stdout = keptTo(stdout, chunk)));
@@ -627,6 +626,8 @@ async function main(): Promise<void> {
     await ownUrlScenarios(deploymentId, appDir, env);
     await nativeConfigScenario(deploymentId, appDir, env);
     await suiteEnvScenario(deploymentId, appDir, env);
+    // End this fixture's lifetime before another fake host can reuse an earlier one's port.
+    rmSync(appDir, { recursive: true, force: true });
     await lifecycleScenarios({
       deploymentId,
       workDir,

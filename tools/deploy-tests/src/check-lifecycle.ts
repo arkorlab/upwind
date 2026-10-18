@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { writeApplication } from './check-application.ts';
@@ -62,6 +62,7 @@ export async function lifecycleScenarios(input: {
       );
     } finally {
       host.close();
+      rmSync(dir, { recursive: true, force: true });
     }
   }
 
@@ -88,5 +89,6 @@ export async function lifecycleScenarios(input: {
     );
   } finally {
     host.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 }
