@@ -447,13 +447,22 @@ function layAfterMiddleware(
 /** A failed application call still answers under the middleware that already ran. */
 function failedPassthrough(input: PassthroughInput, reason: string): Response {
   const response = badGatewayResponse(reason);
+  const headers = response.headers;
   if (input.middleware !== undefined) {
-    mergeScopedMiddlewareHeaders(
-      response.headers,
-      input.middleware.responseHeaders,
-      input.forwarding,
-    );
-    keptByNobody(response.headers);
+    const { judgedRules } = input.middleware;
+    if (judgedRules !== undefined) {
+      // No Function answered, so none can acknowledge deferring these already-judged rules.
+      const contentType = headers.get('content-type');
+      const debug = headers.get(EDGE_DEBUG_HEADER);
+      layConfiguredOver(headers, judgedRules, response, input);
+      // This body belongs to the edge: a rule's representation metadata cannot describe it.
+      if (contentType !== null) headers.set('content-type', contentType);
+      if (debug !== null) headers.set(EDGE_DEBUG_HEADER, debug);
+      headers.delete('content-encoding');
+      headers.delete('content-length');
+    }
+    mergeScopedMiddlewareHeaders(headers, input.middleware.responseHeaders, input.forwarding);
+    keptByNobody(headers);
   }
   return response;
 }

@@ -1,4 +1,5 @@
 import type { HeaderRule, ProjectManifest } from '@stayingupwind/core/manifest';
+import { HEADER_RULES_JUDGED_HEADER } from '@stayingupwind/core/paas';
 import { PLATFORM_HEADER_PREFIX } from '@stayingupwind/core/request';
 import { DEFAULT_DELIVERY_POLICY } from '@stayingupwind/host/delivery';
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
@@ -29,6 +30,8 @@ interface Answering {
   readonly middleware: () => Response;
   /** The rules of `next.config` `headers()`; none, absent. */
   readonly headerRules?: readonly HeaderRule[] | undefined;
+  /** Whether the manifest carries the full routing contract needed to judge all header rules. */
+  readonly completeRouting?: true;
   /**
    * What an origin the middleware rewrites to answers the request it is sent; absent, a body of its
    * own and nothing else.
@@ -52,6 +55,7 @@ async function throughMiddleware(
     document: pprDocument(),
     files: { [FILE]: 'User-agent: *' },
     headerRules: answering.headerRules,
+    ...(answering.completeRouting === true && { dynamicRoutes: [] }),
   });
   const manifest: ProjectManifest = {
     ...site.manifest,
@@ -132,10 +136,34 @@ function refusal(): Response {
 }
 
 describe('an answer the middleware gives', () => {
-  it.each(['unreachable', 'misrouted'] as const)(
-    'keeps continuing middleware headers on an %s application failure',
-    async (failure) => {
+  it.each([
+    { failure: 'unreachable', connection: undefined },
+    { failure: 'misrouted', connection: undefined },
+    {
+      failure: 'unreachable',
+      connection:
+        'X-Rule, Set-Cookie, Content-Type, Content-Encoding, Content-Length, Cache-Control, X-Arkor-Edge, not a name',
+    },
+  ] as const)(
+    'keeps continuing middleware and judged headers on $failure / $connection',
+    async ({ failure, connection }) => {
+      let judged = false;
       const response = await throughMiddleware('/api/hello', {
+        completeRouting: true,
+        headerRules: [
+          {
+            sourceRegex: EVERY_PATH,
+            headers: {
+              'X-Rule': 'configured',
+              'Set-Cookie': 'rule=1; Path=/',
+              'Content-Type': 'application/json',
+              'Content-Encoding': 'br',
+              'Content-Length': '456',
+              'Cache-Control': 'public, max-age=3600',
+              ...(connection !== undefined && { Connection: connection }),
+            },
+          },
+        ],
         middleware: () => {
           return new Response(null, {
             headers: {
@@ -152,7 +180,8 @@ describe('an answer the middleware gives', () => {
             },
           });
         },
-        application: () => {
+        application: (request) => {
+          judged = request.headers.get(HEADER_RULES_JUDGED_HEADER) === '1';
           if (failure === 'misrouted') {
             return Promise.reject(
               new MisroutedError('wrong Worker', {
@@ -167,13 +196,17 @@ describe('an answer the middleware gives', () => {
       expect({
         status: response.status,
         visible: response.headers.get('x-visible'),
+        rule: response.headers.get('x-rule'),
         cookies: response.headers.getSetCookie(),
         csp: response.headers.get('content-security-policy'),
+        judged,
       }).toStrictEqual({
         status: 502,
         visible: 'retained',
-        cookies: ['mw=1; Path=/'],
+        rule: connection === undefined ? 'configured' : null,
+        cookies: connection === undefined ? ['rule=1; Path=/', 'mw=1; Path=/'] : ['mw=1; Path=/'],
         csp: "default-src 'self'",
+        judged: true,
       });
       expect(response.headers.get('content-type')).toContain('text/html');
       expect(response.headers.get('content-length')).toBeNull();
