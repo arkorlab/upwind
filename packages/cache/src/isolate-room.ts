@@ -200,6 +200,11 @@ export class IsolateRoom {
     return this.#hold(claim);
   }
 
+  /** Most one claim can hold: an artifact's two candidates share no more than the whole room. */
+  get capacity(): number {
+    return this.#limit;
+  }
+
   /** Room for `bytes` where there is room for them now and no claim waits ahead, or none. */
   takeAtOnce(bytes: number): GiveBack | undefined {
     const claim = this.#claimOf(bytes);
