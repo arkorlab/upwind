@@ -110,6 +110,7 @@ describe('the gateway JSON body', () => {
   it('takes the largest legal base64 value and metadata whose strings contain JSON punctuation', async () => {
     const response = await read(largestWrite(), (json) => {
       const parsed = dataSetRequestSchema.parse(json);
+
       expect(parsed.valueBase64).toHaveLength(Math.ceil(MAX_BYTES / 3) * 4);
       expect(parsed.key).toHaveLength(MAX_DATA_KEY_LENGTH);
       expect(parsed.entry.tags).toHaveLength(MAX_TAGS_PER_ENTRY);
