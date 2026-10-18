@@ -3,10 +3,8 @@ import {
   type EntrypointKind,
   pagesDataPathnameUnder,
   type Prerender,
-  placeholderSegments,
   prerenderResponseHeaders,
-  queryDependent,
-  standsForClass,
+  sharedShellPathname,
 } from '@stayingupwind/core/bundle';
 import {
   appPathFor,
@@ -14,9 +12,9 @@ import {
   deriveEntry,
   generationResponseHeaders,
   implicitTagsFor,
-  IMPLICIT_TAG_PREFIX,
   parseCacheTagsHeader,
   policyFromBuild,
+  sharedShellTagOf,
   type RouteEntryDescriptor,
   type RouteEntryKind,
   tagKindOf,
@@ -135,22 +133,6 @@ export function buildTagsOf(kind: RouteEntryKind, prerender: Prerender): Generat
   return [...values].map((value) => ({ kind: tagKindOf(value), value }));
 }
 
-/** The same reusable terminal shell the runtime selects, using the bundle's stable primitives. */
-function sharedShell(prerender: Prerender): boolean {
-  return (
-    prerender.body !== undefined &&
-    prerender.postponed !== undefined &&
-    prerender.renderingMode === 'PARTIALLY_STATIC' &&
-    prerender.routeType !== 'route' &&
-    (prerender.response === undefined || prerender.response === 'initial') &&
-    (prerender.compute === undefined || prerender.compute === 'resuming') &&
-    prerender.partialFallback !== true &&
-    standsForClass(prerender) &&
-    placeholderSegments(prerender.pathname, prerender.route).includes(true) &&
-    !queryDependent(prerender, prerender.route, prerender.pathname)
-  );
-}
-
 function seededTagsOf(
   bundle: DeploymentBundle,
   prerender: Prerender,
@@ -161,9 +143,11 @@ function seededTagsOf(
   if (
     bundle.config.cacheComponents === true &&
     indexOf(bundle).kinds.get(prerender.route) === 'app-page' &&
-    sharedShell(prerender)
+    sharedShellPathname(prerender) !== undefined
   ) {
-    const value = `${IMPLICIT_TAG_PREFIX}upwind:shared-shell:${entryId}`;
+    // The identity counts toward the existing per-entry quota; the per-call invalidation bound
+    // does not permit dropping existing tags or bypassing the generation quota.
+    const value = sharedShellTagOf(entryId);
     if (tags.every((tag) => tag.value !== value)) {
       tags.push({ kind: 'next-implicit', value });
     }
