@@ -45,7 +45,7 @@ import { reportOutcome } from './document-report.ts';
 import {
   continuationRequest,
   fallbackToApp,
-  followClient,
+  followResume,
   releaseUpstream,
   settle,
   shellFailure,
@@ -87,6 +87,8 @@ interface ServedGeneration {
   readonly member: boolean;
   /** What the resume is told beside the request when the entry is to be regenerated behind it. */
   readonly regeneration: Readonly<Record<string, string>> | undefined;
+  /** Give its ask back when the visitor takes the resume away before it answers. */
+  readonly onAbandoned?: (() => void) | undefined;
   /**
    * The regeneration asked behind a document complete in itself as a request of its own, there being
    * no resume to ask beside (`triggerDetached`): the document's point counts its dispatches.
@@ -506,8 +508,7 @@ function composeDocument(input: DocumentInput, composition: Composition): Respon
 
 /** What stands for the continuation of a document that has none, should the shell fail it. */
 function noContinuation(): Promise<Upstream> {
-  const absent = new Error('the document has no continuation');
-  return settle(Promise.reject(absent));
+  return settle(Promise.reject(new Error('the document has no continuation')));
 }
 
 /** A document complete as it is: the wire's shell as the body, ended, nothing spliced behind it. */
@@ -679,9 +680,8 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
           resume: resumeOf(generation),
           headers: toldBesideResume(input, generation),
         });
-  const upstream = handle === undefined ? undefined : settle(handle.response);
   // The resume goes with a client that leaves before a splice holds it (`followClient`).
-  const clientLeft = followClient(input.request.signal, handle);
+  const { upstream, clientLeft, cancelled } = followResume(input, handle);
   servedFromRecord(edge, generation);
   const shell = await shellLookup;
   if (shell.kind !== 'ok') {
@@ -766,6 +766,7 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
   edge.ctx.waitUntil(
     (async (): Promise<void> => {
       const outcome = await splice.outcome;
+      cancelled(outcome);
       // Where the resume went, as far as it got: the Worker that answered or failed, or the one it
       // was still out to when the first-byte timeout ended it — the report waits for none of them.
       const dispatched = dispatchedSoFar(handle.response);

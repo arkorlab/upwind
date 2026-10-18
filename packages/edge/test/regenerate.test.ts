@@ -1,8 +1,9 @@
 import { DEFAULT_RUNTIME_CACHE_SETTINGS } from '@stayingupwind/host/delivery';
 import { describe, expect, it } from 'vitest';
 
-import { shouldAsk } from '../src/cache/regenerate.ts';
+import { allowAnotherAsk, shouldAsk } from '../src/cache/regenerate.ts';
 import type { EdgeRuntime } from '../src/edge-runtime.ts';
+import { followClient, settle } from '../src/handlers/document-upstream.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
 import type { EdgeContext } from '../src/strategies/context.ts';
 
@@ -40,5 +41,55 @@ describe('a regeneration asked for', () => {
     const past = shouldAsk(edge, 'entry', settings);
 
     expect([first, within, past]).toStrictEqual([true, false, true]);
+  });
+
+  it('lets an abandoned ask be made again at once', () => {
+    const edge = edgeAt({ now: 1_800_000_000_000 });
+    const settings = DEFAULT_RUNTIME_CACHE_SETTINGS;
+
+    expect(shouldAsk(edge, 'entry', settings)).toBe(true);
+
+    const abandoned = allowAnotherAsk(edge, 'entry');
+
+    expect(shouldAsk(edge, 'entry', settings)).toBe(false);
+
+    abandoned();
+
+    expect(shouldAsk(edge, 'entry', settings)).toBe(true);
+  });
+
+  it('lets no older abandonment undo a newer ask, even with the same clock reading', () => {
+    const edge = edgeAt({ now: 1_800_000_000_000 });
+    const immediate = { ...DEFAULT_RUNTIME_CACHE_SETTINGS, regenerateCooldownMs: 0 };
+    shouldAsk(edge, 'entry', immediate);
+    const older = allowAnotherAsk(edge, 'entry');
+    shouldAsk(edge, 'entry', immediate);
+
+    older();
+
+    expect(shouldAsk(edge, 'entry', DEFAULT_RUNTIME_CACHE_SETTINGS)).toBe(false);
+  });
+
+  it('keeps an answered resume on cooldown when the client leaves before the splice holds it', async () => {
+    const edge = edgeAt({ now: 1_800_000_000_000 });
+    shouldAsk(edge, 'entry', DEFAULT_RUNTIME_CACHE_SETTINGS);
+    const regeneration = { onAbandoned: allowAnotherAsk(edge, 'entry') };
+    const response = Promise.resolve(new Response('suffix'));
+    let aborted = false;
+    const handle = {
+      response,
+      abort: () => {
+        aborted = true;
+      },
+    };
+    const client = new AbortController();
+    const left = followClient(client.signal, handle, regeneration);
+    await settle(response, regeneration);
+
+    client.abort();
+
+    expect(left()).toBe(true);
+    expect(aborted).toBe(true);
+    expect(shouldAsk(edge, 'entry', DEFAULT_RUNTIME_CACHE_SETTINGS)).toBe(false);
   });
 });

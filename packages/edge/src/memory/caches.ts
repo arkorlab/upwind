@@ -170,6 +170,10 @@ const ISOLATE_BUDGET_BYTES = EDGE_ISOLATE_BUDGET_BYTES;
  * (`manifestCharge`).
  */
 const MAX_ENTRY_BYTES = ISOLATE_BUDGET_BYTES / 2;
+/**
+ * Each timestamp is a small identity token, so an older cancelled ask cannot undo a newer one.
+ * Tokens and their keys are bounded by this count, as the other small lookup caches are.
+ */
 const REGENERATION_MAX_ENTRIES = 10_000;
 /**
  * A member's own entry is named by a digest of its pathname, derived once per isolate and kept:
@@ -261,7 +265,7 @@ export interface EdgeMemory {
   /** Delivery records by KV key, with when they were read; judged against the policy's hold. */
   readonly generations: SharedByteLru<HeldGeneration>;
   /** When this isolate last asked for an entry's regeneration; judged against the policy's cooldown. */
-  readonly regenerations: TtlCache<string, number>;
+  readonly regenerations: TtlCache<string, { readonly at: number }>;
   /**
    * When this isolate last found KV without a record, by KV key; judged against the policy's hold,
    * and held past this memory's own TTL as a record is (`generation-hold.ts`).

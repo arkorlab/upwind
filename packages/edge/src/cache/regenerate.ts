@@ -100,15 +100,30 @@ export function shouldAsk(
   settings: RuntimeCacheSettings,
 ): boolean {
   const key = `${edge.manifestId}:${entryId}`;
-  const askedAt = edge.runtime.memory.regenerations.get(key);
+  const asked = edge.runtime.memory.regenerations.get(key);
   const now = edge.runtime.now();
-  if (askedAt !== undefined && now - askedAt < settings.regenerateCooldownMs) {
+  if (asked !== undefined && now - asked.at < settings.regenerateCooldownMs) {
     return false;
   }
   // Kept for the whole cooldown: forgotten sooner, the entry would be asked for again within it.
   const keptMs = Math.max(REGENERATION_MEMORY_TTL_MS, settings.regenerateCooldownMs);
-  edge.runtime.memory.regenerations.set(key, now, keptMs);
+  edge.runtime.memory.regenerations.set(key, { at: now }, keptMs);
   return true;
+}
+
+/**
+ * Let this ask be made again if its resume is abandoned before it answers. An answer hands the
+ * background job to the runtime; before it exists there may be no job to run. Only this ask is
+ * given back: an older visitor leaving cannot undo a newer ask, even with the same clock reading.
+ */
+export function allowAnotherAsk(edge: EdgeContext, entryId: string): () => void {
+  const key = `${edge.manifestId}:${entryId}`;
+  const asked = edge.runtime.memory.regenerations.get(key);
+  return () => {
+    if (asked !== undefined && edge.runtime.memory.regenerations.get(key) === asked) {
+      edge.runtime.memory.regenerations.delete(key);
+    }
+  };
 }
 
 export interface DispatchInput {

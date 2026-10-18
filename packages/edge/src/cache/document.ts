@@ -13,6 +13,7 @@ import { heldGeneration, readServedAgain } from './generation-hold.ts';
 import { type GenerationKey, type GenerationLoad, readGeneration } from './generation-loader.ts';
 import { memberInHand, type MemberLoad, type MemberRead } from './member.ts';
 import {
+  allowAnotherAsk,
   foregroundDocument,
   regenerationHeaders,
   type RegenerationTarget,
@@ -212,6 +213,8 @@ function serveRecord(
           ? regenerationHeaders(edge, 'background', asked)
           : undefined,
       detached,
+      onAbandoned:
+        asked !== undefined && !complete ? allowAnotherAsk(edge, asked.entryId) : undefined,
       // Served stale with its own regeneration wanted — asked for by this request, or by one before
       // it within the cooldown — the record is read again a second on, for what that regeneration
       // publishes: once the document is certain to go out from it, and not where it is handed to the

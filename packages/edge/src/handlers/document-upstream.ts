@@ -1,5 +1,6 @@
 import { releaseStream } from '@stayingupwind/core/util';
 import type { ContinuationHandle } from '@stayingupwind/host/delivery';
+import type { SpliceOutcome } from '@stayingupwind/host/splice';
 
 import type { ContinuationFailureKind } from '../reports.ts';
 import { stripEdgeHeaders } from '../request-context.ts';
@@ -18,13 +19,25 @@ export type Upstream =
   | { readonly ok: true; readonly response: Response }
   | { readonly ok: false; readonly error: unknown };
 
+/** What lets an ask be made again until the runtime answers and owns its background job. */
+export interface PendingRegeneration {
+  onAbandoned: (() => void) | undefined;
+}
+
 /**
  * Observe the resume from the moment it starts: its consumer (splice or fallback) is chosen only
  * after the shell lookup, and a rejection before that must not go unhandled.
  */
-export async function settle(promise: Promise<Response>): Promise<Upstream> {
+export async function settle(
+  promise: Promise<Response>,
+  regeneration?: PendingRegeneration,
+): Promise<Upstream> {
   try {
-    return { ok: true, response: await promise };
+    const response = await promise;
+    if (regeneration !== undefined) {
+      regeneration.onAbandoned = undefined;
+    }
+    return { ok: true, response };
   } catch (error) {
     return { ok: false, error };
   }
@@ -81,11 +94,13 @@ const CLIENT_LEFT = 'client left';
 export function followClient(
   signal: AbortSignal,
   handle: ContinuationHandle | undefined,
+  regeneration?: PendingRegeneration,
 ): () => boolean {
   if (handle === undefined) {
     return () => false;
   }
   const leave = (): void => {
+    regeneration?.onAbandoned?.();
     handle.abort(CLIENT_LEFT);
   };
   if (signal.aborted) {
@@ -96,6 +111,32 @@ export function followClient(
   return () => {
     signal.removeEventListener('abort', leave);
     return signal.aborted;
+  };
+}
+
+interface FollowedResume {
+  readonly upstream: Promise<Upstream> | undefined;
+  readonly clientLeft: () => boolean;
+  readonly cancelled: (outcome: SpliceOutcome) => void;
+}
+
+/** Follow a resume through both the shell lookup and the splice, until its answer owns the job. */
+export function followResume(
+  input: DocumentInput,
+  handle: ContinuationHandle | undefined,
+): FollowedResume {
+  const regeneration: PendingRegeneration | undefined =
+    input.generation?.onAbandoned === undefined
+      ? undefined
+      : { onAbandoned: input.generation.onAbandoned };
+  return {
+    upstream: handle === undefined ? undefined : settle(handle.response, regeneration),
+    clientLeft: followClient(input.request.signal, handle, regeneration),
+    cancelled: (outcome) => {
+      if (outcome.kind === 'client-cancelled') {
+        regeneration?.onAbandoned?.();
+      }
+    },
   };
 }
 
