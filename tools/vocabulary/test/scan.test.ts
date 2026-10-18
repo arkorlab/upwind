@@ -101,6 +101,21 @@ describe('a file', () => {
     ]);
   });
 
+  it('keeps the exact recovery cookie upwind already publishes', () => {
+    expect(saidIn("document.cookie = '__arkor_edge_bypass=1; Path=/';")).toStrictEqual([]);
+  });
+
+  it.each([
+    'not-__arkor_edge_bypass',
+    '__arkor_edge_bypass_extra',
+    '__arkor_edge_bypass-extra',
+    '__arkor_edge_bypass2',
+  ])('still reads the host name in the different identifier %s', (identifier) => {
+    expect(saidIn(`const cookie = '${identifier}';`)).toStrictEqual([
+      { id: 'host-name', text: 'arkor' },
+    ]);
+  });
+
   it('reads no term across an identifier upwind ships, which stands between words as itself', () => {
     expect(
       saidIn('control x-arkor-edge plane; this ARKOR_CACHE platform; analytics arkor:edge engine'),
