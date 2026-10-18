@@ -31,12 +31,21 @@ formats these files with the repository's settings, and sorts the Tailwind class
 | Path                 | What it holds                                                                                                                                 |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | `src/app/[locale]/`  | The root layout and the page. The segment is the language, and `generateStaticParams` prerenders both of them                                 |
-| `src/proxy.ts`       | The only Function that runs per request: `/en/…` → the bare path (recording the choice), `/ja/…` as it stands, and a bare path to one of them |
+| `src/middleware.ts`  | The only Function that runs per request: `/en/…` → the bare path (recording the choice), `/ja/…` as it stands, and a bare path to one of them |
 | `src/content/`       | Every word on the screen: one interface, two dictionaries the type holds to each other                                                        |
 | `src/i18n/`          | The locales, `Accept-Language` negotiation, and the narrowing of the `[locale]` segment                                                       |
 | `src/lib/`           | The site's own facts (`site.ts`), locale paths, and the metadata every page is built from                                                     |
 | `src/components/`    | The header, the footer, the language switch, and the backtick-to-`<code>` renderer                                                            |
 | `src/app/sitemap.ts` | Both pages with their hreflang alternates; `robots.ts` beside it names the sitemap absolutely                                                 |
+
+## Locale routing
+
+The locale handler uses Next.js's Edge middleware convention. Next.js 16.4's `proxy.ts` is
+Node.js-only; `middleware.ts` retains the documented Edge path, despite its deprecated name.
+The handler still uses Next.js's request, response, cookie and instrumentation contracts.
+CI installs this directory's frozen published dependencies, builds it and checks the compiled
+middleware's locale negotiation, redirects, query preservation and cookie behavior in workerd.
+These functional checks do not measure production latency.
 
 ## Changing the copy
 
