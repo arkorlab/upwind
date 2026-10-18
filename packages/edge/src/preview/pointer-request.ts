@@ -123,6 +123,7 @@ export async function servePointerRequest(
     requestStartedAt: input.requestStartedAt,
     pointerMs: input.pointerMs,
     manifestMs,
+    manifestOnlyMs: manifestMs,
     middlewareMs: undefined,
   };
   let ready: Promise<RoutingInput> | undefined;
@@ -155,6 +156,7 @@ export async function servePointerRequest(
                 ? undefined
                 : runtime.now() - input.requestStartedAt,
             manifestMs: Math.max(manifestMs, completedAt - manifestStarted),
+            policyMs: completedAt - manifestStarted,
           },
         };
       })();

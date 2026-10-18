@@ -364,6 +364,12 @@ function timingEntries(header: DocumentHeaderInput): ServerTimingEntry[] {
   if (timings.manifestMs !== undefined) {
     entries.push({ name: 'man', durationMs: timings.manifestMs });
   }
+  if (timings.manifestOnlyMs !== undefined) {
+    entries.push({ name: 'mf', durationMs: timings.manifestOnlyMs });
+  }
+  if (timings.policyMs !== undefined) {
+    entries.push({ name: 'pol', durationMs: timings.policyMs });
+  }
   if (timings.prerequisiteMs !== undefined) {
     entries.push({ name: 'pre', durationMs: timings.prerequisiteMs });
   }

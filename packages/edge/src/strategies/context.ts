@@ -33,6 +33,10 @@ export interface RequestTimings {
    * with no matching middleware waits only for the manifest.
    */
   readonly manifestMs: number | undefined;
+  /** Manifest-only elapsed read, before `manifestMs` also accounts for the parallel policy. */
+  readonly manifestOnlyMs?: number | undefined;
+  /** Parallel policy read from the same start boundary; `manifestMs` is their maximum. */
+  readonly policyMs?: number | undefined;
   readonly middlewareMs: number | undefined;
   /** Native middleware dispatch until its response headers, inside the outer middleware wait. */
   readonly middlewareDispatchMs?: number | undefined;
