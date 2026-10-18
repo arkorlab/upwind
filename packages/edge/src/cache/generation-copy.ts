@@ -2,7 +2,7 @@ import { releaseStream, withDeadline } from '@stayingupwind/core/util';
 
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeContext } from '../strategies/context.ts';
-import { CacheBody } from './cache-body.ts';
+import { CacheBody, type RecordBytes } from './cache-body.ts';
 
 /**
  * A data center's copy of a delivery record, kept in the Cache API beside KV.
@@ -40,7 +40,7 @@ export interface CopyStamps {
 
 /** A record as this data center keeps it: its bytes, when they were kept, and at which revision. */
 export interface RecordCopy extends CopyStamps {
-  readonly bytes: ArrayBuffer;
+  readonly bytes: RecordBytes;
 }
 
 function errorDetail(error: unknown): string {
@@ -97,10 +97,10 @@ async function matchCopy(
   if (stamped === undefined) {
     return undefined;
   }
-  const readable = reading.open(stamped.hit);
-  return readable === undefined
+  const pending = reading.open(stamped.hit);
+  return pending === undefined
     ? undefined
-    : { ...stamped.stamps, bytes: await readable.arrayBuffer() };
+    : { ...stamped.stamps, bytes: reading.finish(await pending) };
 }
 
 async function matchStamps(edge: EdgeContext, recordKey: string): Promise<CopyStamps | undefined> {
@@ -176,7 +176,7 @@ async function copyStampsNow(
 async function keepCopy(
   edge: EdgeContext,
   recordKey: string,
-  record: { readonly bytes: ArrayBuffer; readonly revision: number },
+  record: { readonly bytes: RecordBytes; readonly revision: number },
   maxAgeMs: number,
 ): Promise<CopyStamps | undefined> {
   try {
@@ -264,7 +264,7 @@ export function worthKeeping(
 export async function keepCopyAhead(
   edge: EdgeContext,
   recordKey: string,
-  record: { readonly bytes: ArrayBuffer; readonly revision: number },
+  record: { readonly bytes: RecordBytes; readonly revision: number },
   keeping: { readonly maxAgeMs: number; readonly wanted: () => boolean },
 ): Promise<void> {
   const { maxAgeMs, wanted } = keeping;

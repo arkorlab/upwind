@@ -45,8 +45,10 @@ async function matchCacheApi(
 ): Promise<Uint8Array | undefined> {
   const hit = await caches.default.match(cacheApiKey(ctx, ref.sha256));
   if (hit === undefined) return undefined;
-  const readable = reading.open(hit);
-  return readable === undefined ? undefined : new Uint8Array(await readable.arrayBuffer());
+  const pending = reading.open(hit, ref.byteLength);
+  if (pending === undefined) return undefined;
+  const bytes = reading.finish(await pending);
+  return bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
 }
 
 /**
@@ -182,7 +184,7 @@ function remember(
   storeCache: boolean,
 ): void {
   if (ctx.policy.shell.memoryLru) {
-    ctx.runtime.memory.shells.set(ref.sha256, read.bytes, read.bytes.byteLength);
+    ctx.runtime.memory.shells.set(ref.sha256, read.bytes, read.bytes.buffer.byteLength);
   }
   if (storeCache && ctx.policy.shell.cacheApiLayer) {
     storeCacheApi(ctx, ref, read.bytes);

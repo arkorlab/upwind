@@ -1,10 +1,21 @@
+import { sha256Hex } from '@stayingupwind/core/artifact';
+import {
+  decodeGenerationPack,
+  encodeGenerationPack,
+  kvGenerationKey,
+  policyFromBuild,
+} from '@stayingupwind/core/cache';
 import { encodeUtf8 } from '@stayingupwind/core/util';
-import { DEFAULT_DELIVERY_POLICY } from '@stayingupwind/host/delivery';
-import { createExecutionContext } from 'cloudflare:test';
+import {
+  DEFAULT_DELIVERY_POLICY,
+  DEFAULT_RUNTIME_CACHE_SETTINGS,
+} from '@stayingupwind/host/delivery';
+import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { readCopy } from '../src/cache/generation-copy.ts';
+import { keepCopyAhead, readCopy, recordCopyUrl } from '../src/cache/generation-copy.ts';
+import { readGeneration } from '../src/cache/generation-loader.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
 import { standaloneHost, standaloneRuntime } from '../src/standalone/index.ts';
 import type { EdgeContext } from '../src/strategies/context.ts';
@@ -69,6 +80,53 @@ function holdLookup(
     pending.resolve(hit);
     pendingCache.resolve(test.cache);
   };
+}
+
+function ownedBuffer(bytes: Uint8Array): ArrayBuffer {
+  if (!(bytes.buffer instanceof ArrayBuffer)) throw new TypeError('record buffer must be owned');
+  return bytes.buffer;
+}
+
+function byteView(
+  bytes: ArrayBuffer | Uint8Array<ArrayBuffer> | undefined,
+): Uint8Array<ArrayBuffer> {
+  if (!(bytes instanceof Uint8Array)) throw new TypeError('missing native cached bytes');
+  return bytes;
+}
+
+function present<T>(value: T | undefined): T {
+  if (value === undefined) throw new Error('missing cache answer');
+  return value;
+}
+
+async function record() {
+  return encodeGenerationPack(
+    {
+      schemaVersion: 1,
+      scopeId: 'scope-copy',
+      entryId: 'entry-copy',
+      generationId: 'gen_copy',
+      seq: 1,
+      revision: 3,
+      source: 'runtime',
+      kind: 'app-page',
+      route: '/',
+      pathname: '/',
+      cacheTimestamp: NOW,
+      producedAt: NOW,
+      policy: policyFromBuild({ initialRevalidate: 60, initialExpiration: 600 }),
+      status: 200,
+      headers: { 'content-type': 'text/html' },
+      tags: [],
+      htmlSha256: await sha256Hex(BYTES),
+      htmlLength: BYTES.byteLength,
+      postponedSha256: null,
+      postponedLength: 0,
+      artifacts: [],
+    },
+    BYTES,
+    undefined,
+  );
 }
 
 describe('giving up a record copy after its existing read deadline', () => {
@@ -164,6 +222,88 @@ describe('giving up a record copy after its existing read deadline', () => {
     expect(found).toStrictEqual({ keptAt: NOW, revision: 3, bytes: BYTES.buffer });
     expect(arrayBuffer).toHaveBeenCalledTimes(1);
     expect(cancelled).not.toHaveBeenCalled();
+  });
+
+  it('decodes and keeps a native cached record view without its sentinel capacity', async () => {
+    const { edge, cache, match } = await fixture();
+    match.mockRestore();
+    const bytes = await record();
+    const buffer = ownedBuffer(bytes);
+    const recordKey = kvGenerationKey('scope-copy', 'entry-copy');
+    const request = new Request(recordCopyUrl(edge.host.names.cacheKeyHost, recordKey));
+    await keepCopyAhead(
+      edge,
+      recordKey,
+      { bytes: buffer, revision: 3 },
+      { maxAgeMs: MAX_AGE_MS, wanted: () => true },
+    );
+    const hit = await cache.match(request);
+
+    expect(hit?.headers.get('content-length')).toBe(String(bytes.byteLength));
+
+    await hit?.body?.cancel();
+    const copied = await readCopy(edge, recordKey, MAX_AGE_MS);
+
+    expect(copied?.bytes).toBeInstanceOf(Uint8Array);
+    expect(copied?.bytes.byteLength).toBe(bytes.byteLength);
+
+    const view = byteView(copied?.bytes);
+
+    expect(view.buffer.byteLength).toBe(bytes.byteLength + 1);
+    await expect(sha256Hex(view)).resolves.toBe(await sha256Hex(bytes));
+
+    const decoded = decodeGenerationPack(view);
+
+    expect(decoded.kind).toBe('ok');
+
+    const padded = new Uint8Array(view.byteLength + 7);
+    padded.set(view, 3);
+    const offset = padded.subarray(3, 3 + view.byteLength);
+    await keepCopyAhead(
+      edge,
+      recordKey,
+      { bytes: offset, revision: 4 },
+      { maxAgeMs: MAX_AGE_MS, wanted: () => true },
+    );
+    const rewritten = await cache.match(request);
+
+    expect(rewritten?.headers.get('content-length')).toBe(String(bytes.byteLength));
+    expect(new Uint8Array(await present(rewritten).arrayBuffer())).toStrictEqual(bytes);
+
+    // Recreate the original revision so the normal loader can adopt it beside pending KV.
+    await cache.delete(request);
+    await keepCopyAhead(
+      edge,
+      recordKey,
+      { bytes: view, revision: 3 },
+      { maxAgeMs: MAX_AGE_MS, wanted: () => true },
+    );
+    const kv = Promise.withResolvers<never>();
+    vi.spyOn(env.CACHE_STATE, 'get').mockImplementation(() => kv.promise);
+    try {
+      const load = await readGeneration(
+        edge,
+        { scopeId: 'scope-copy', entryId: 'entry-copy' },
+        {
+          ...DEFAULT_RUNTIME_CACHE_SETTINGS,
+          generations: 'on',
+          cacheApiMaxAgeMs: MAX_AGE_MS,
+        },
+      );
+
+      expect(load.kind === 'generation' && load.source).toBe('cache-api');
+      expect(edge.runtime.memory.generations.get(recordKey)?.pack.html).toStrictEqual(BYTES);
+
+      const retained = bytes.byteLength + 1;
+
+      expect(edge.runtime.memory.generations.get(recordKey)?.bytes).toBe(
+        retained + 4 * (retained - BYTES.byteLength),
+      );
+    } finally {
+      kv.reject(new Error('KV read failed after the copy answered'));
+      await waitOnExecutionContext(edge.ctx);
+      await cache.delete(request);
+    }
   });
 
   it.each(['x-arkor-kept-at', 'x-arkor-revision'] as const)(

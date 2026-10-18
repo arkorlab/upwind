@@ -11,6 +11,7 @@ import { recoveryScriptCspSource } from '@stayingupwind/host/splice';
 import { LONGEST_COPY_AGE_MS } from '../memory/invalidations.ts';
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeContext } from '../strategies/context.ts';
+import type { RecordBytes } from './cache-body.ts';
 import { isInvalidated, transferInvalidations } from './condemned.ts';
 import {
   type CopyStamps,
@@ -132,10 +133,6 @@ export interface LoadOptions {
   readonly holdAbsence?: boolean | undefined;
 }
 
-function errorDetail(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 function packBytes(pack: DecodedGenerationPack, recordBytes: number): number {
   const bodyBytes = pack.html.byteLength + (pack.postponed?.byteLength ?? 0);
   // The body views retain the complete record buffer. Budget decoded strings/objects too,
@@ -182,7 +179,7 @@ async function askKv(edge: EdgeContext, recordKey: string): Promise<KvAnswer> {
     const bytes = await readRecord(edge, recordKey);
     return bytes === null ? { kind: 'none' } : { kind: 'bytes', bytes };
   } catch (error) {
-    const detail = errorDetail(error);
+    const detail = error instanceof Error ? error.message : String(error);
     logWarn('delivery record read failed', { key: recordKey, detail });
     return { kind: 'failed', detail };
   }
@@ -322,10 +319,10 @@ export async function adoptDecoded(
 async function adopt(
   edge: EdgeContext,
   read: Read,
-  bytes: ArrayBuffer,
+  bytes: RecordBytes,
   origin: Origin,
 ): Promise<Adoption> {
-  const decoded = decodeGenerationPack(new Uint8Array(bytes));
+  const decoded = decodeGenerationPack(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));
   if (decoded.kind !== 'ok') {
     logWarn('delivery record unusable', {
       key: read.recordKey,
@@ -334,7 +331,8 @@ async function adopt(
     });
     return { kind: 'unusable', reason: decoded.kind };
   }
-  return adoptDecoded(edge, read, decoded, { origin, byteLength: bytes.byteLength });
+  const byteLength = bytes instanceof Uint8Array ? bytes.buffer.byteLength : bytes.byteLength;
+  return adoptDecoded(edge, read, decoded, { origin, byteLength });
 }
 
 /**
@@ -396,7 +394,7 @@ function absenceHoldable(edge: EdgeContext, read: Read): boolean {
 
 /** A record held to its digests: fit to serve, to hold, and to keep as a copy. */
 interface Verified {
-  readonly bytes: ArrayBuffer;
+  readonly bytes: RecordBytes;
   readonly revision: number;
   /** What the bytes decode to, for what this isolate knows of it beside its revision. */
   readonly pack: DecodedGenerationPack;
