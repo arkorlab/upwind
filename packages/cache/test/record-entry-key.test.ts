@@ -1,6 +1,6 @@
 import { sha256Hex } from '@stayingupwind/core/artifact';
 import { encodeGenerationPack, kvGenerationKey, policyFromBuild } from '@stayingupwind/core/cache';
-import { encodeUtf8 } from '@stayingupwind/core/util';
+import { concatBytes, decodeUtf8, encodeUtf8 } from '@stayingupwind/core/util';
 import { signCacheToken } from '@stayingupwind/host/cache';
 import type { FetchLike } from '@stayingupwind/runtime/cache-host';
 import { createExecutionContext } from 'cloudflare:test';
@@ -55,9 +55,10 @@ async function gatewayFor(kind: 'authority' | 'read') {
     kind === 'authority'
       ? createGatewayApp(STANDALONE_AUTHORITY)
       : createReadGateway(STANDALONE_AUTHORITY);
-  const send = vi.fn<FetchLike>((request) =>
-    Promise.resolve(app.fetch(request, env, createExecutionContext())),
-  );
+  const send = vi.fn<FetchLike>((request) => {
+    const response = app.fetch(request, env, createExecutionContext());
+    return Promise.resolve(response);
+  });
   const client = new Gateway({
     gatewayUrl: 'https://cache.invalid',
     scopeId,
@@ -66,6 +67,22 @@ async function gatewayFor(kind: 'authority' | 'read') {
     fetchImpl: send,
   });
   return { scopeId, client, send };
+}
+
+/** Keep valid pack lengths and payload while replacing a required identity on the actual wire. */
+function brokenIdentity(
+  bytes: Uint8Array,
+  field: 'scopeId' | 'entryId',
+  value: unknown,
+): Uint8Array {
+  const prefix = bytes.slice(0, 9);
+  const view = new DataView(prefix.buffer, prefix.byteOffset, prefix.byteLength);
+  const headerEnd = 9 + view.getUint32(5, true);
+  const header: unknown = JSON.parse(decodeUtf8(bytes.subarray(9, headerEnd)));
+  if (typeof header !== 'object' || header === null) throw new Error('no fixture header');
+  const encoded = encodeUtf8(JSON.stringify({ ...header, [field]: value }));
+  view.setUint32(5, encoded.byteLength, true);
+  return concatBytes([prefix, encoded, bytes.subarray(headerEnd)]);
 }
 
 describe.each(['authority', 'read'] as const)('delivery identities at the %s gateway', (kind) => {
@@ -95,6 +112,30 @@ describe.each(['authority', 'read'] as const)('delivery identities at the %s gat
       expect(send).toHaveBeenCalledTimes(2);
     },
   );
+
+  it.each([
+    { name: 'missing scope', field: 'scopeId', value: undefined },
+    { name: 'null scope', field: 'scopeId', value: null },
+    { name: 'missing entry', field: 'entryId', value: undefined },
+    { name: 'numeric entry', field: 'entryId', value: 42 },
+  ] as const)('refuses a $name identity and reads its repair', async ({ field, value }) => {
+    const { scopeId, client, send } = await gatewayFor(kind);
+    const entryId = 'requested';
+    const bytes = await pack(scopeId, entryId);
+    const key = kvGenerationKey(scopeId, entryId);
+    await env.CACHE_STATE.put(key, brokenIdentity(bytes, field, value));
+
+    await expect(client.readRecord(entryId)).rejects.toMatchObject({
+      code: 'internal',
+      status: 500,
+    });
+    expect(send).toHaveBeenCalledTimes(1);
+
+    await env.CACHE_STATE.put(key, bytes);
+
+    await expect(client.readRecord(entryId)).resolves.toStrictEqual(bytes);
+    expect(send).toHaveBeenCalledTimes(2);
+  });
 
   it('keeps a matching record and an absent entry distinct', async () => {
     const { scopeId, client, send } = await gatewayFor(kind);
