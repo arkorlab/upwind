@@ -50,6 +50,12 @@ URL and headers after middleware before selecting a body. Serve only the current
 in the manifest's deployment and cache scope, with its freshness and privacy vetoes checked. A
 classified route or a public response header alone grants no permission to share its bytes.
 
+Only bundles declaring `routeBodyPrivacy: 2` are eligible: their runtime preserves privacy vetoes
+and `no-transform` prohibitions, including those in targeted CDN cache-control fields. Version 1
+bundles still parse but stay with the Function. Update bundle readers before enabling version 2
+writers. A stored `cache-control: no-transform` alone supplies only a prohibition; the host must
+combine it with its normal revalidation policy rather than infer browser freshness or sharing rights.
+
 ## The seam with a host
 
 `./paas` is the only part that describes two parties talking. The protocol is headers, all prefixed
