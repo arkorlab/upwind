@@ -2,16 +2,22 @@ import type { ArtifactLocator, ShellEncodings } from '@stayingupwind/core/artifa
 import type { ProjectManifest, RouteSegment } from '@stayingupwind/core/manifest';
 import { NULL_BODY_STATUSES } from '@stayingupwind/core/request';
 
+import { transportableHeaderValue } from '../header-values.ts';
+
 const MIN_RESPONSE_STATUS = 200;
 const MAX_RESPONSE_STATUS = 599;
 
-/** Test only transport validity, retaining every value the runtime's Headers accepts. */
+/** Check transport validity, allowing the same HTTP whitespace normalization as Headers.set. */
 function headerCheck(): (artifact: Pick<ArtifactLocator, 'contentType'> | undefined) => void {
   const headers = new Headers();
   const checked = new Set<string>();
   return (artifact) => {
     if (artifact === undefined || checked.has(artifact.contentType)) return;
     headers.set('content-type', artifact.contentType);
+    const normalized = headers.get('content-type');
+    if (normalized === null || !transportableHeaderValue(normalized)) {
+      throw new TypeError('the stored artifact content type cannot be sent as a header');
+    }
     checked.add(artifact.contentType);
   };
 }
@@ -33,12 +39,22 @@ function checkPart(check: Check, part: RouteSegment | undefined): void {
 function checkFileStatus(status: number | undefined): void {
   if (status === undefined) return;
   if (
-    !Number.isInteger(status) ||
+    !Number.isSafeInteger(status) ||
     status < MIN_RESPONSE_STATUS ||
     status > MAX_RESPONSE_STATUS ||
     NULL_BODY_STATUSES.has(status)
   ) {
     throw new TypeError('the stored file status cannot carry its body');
+  }
+}
+
+/** Vouched stored bytes can also carry null, which the prior empty fallback skipped. */
+function checkFiles(check: Check, files: ProjectManifest['staticFiles'] | null): void {
+  if (files === null || files === undefined) return;
+  for (const file of Object.values(files)) {
+    checkFileStatus(file.status);
+    check(file);
+    check(file.previous);
   }
 }
 
@@ -54,9 +70,5 @@ export function checkManifestContentTypes(manifest: ProjectManifest): void {
     checkPart(check, route.payload);
     checkPart(check, route.pagesData);
   }
-  for (const file of Object.values(manifest.staticFiles ?? {})) {
-    checkFileStatus(file.status);
-    check(file);
-    check(file.previous);
-  }
+  checkFiles(check, manifest.staticFiles);
 }

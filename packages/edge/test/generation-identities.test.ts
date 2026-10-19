@@ -13,7 +13,7 @@ import {
 } from '@stayingupwind/host/delivery';
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, assert, describe, expect, it, vi } from 'vitest';
 
 import { keepCopyAhead, readCopy } from '../src/cache/generation-copy.ts';
 import { readCurrentBehind } from '../src/cache/generation-current.ts';
@@ -104,6 +104,8 @@ describe('generation identities adopted before regeneration headers are built', 
   it.each([
     { entryId: 'entry-wire-nul', generationId: 'generation\u{0}bad' },
     { entryId: 'entry-日本語', generationId: 'generation-wire-entry' },
+    { entryId: 'entry-wire-astral', generationId: 'generation-\u{1f600}' },
+    { entryId: 'entry-wire-crlf\r\n', generationId: 'generation-wire-entry' },
   ])(
     'refuses an invalid KV identity before holding $entryId',
     async ({ entryId, generationId }) => {
@@ -178,7 +180,9 @@ describe('generation identities adopted before regeneration headers are built', 
     const first = await loadGeneration(edge, key, SETTINGS);
     const second = await loadGeneration(edge, key, SETTINGS);
     await waitOnExecutionContext(edge.ctx);
-    if (first.kind !== 'generation') throw new TypeError('the safe record must be adopted');
+
+    assert(first.kind === 'generation', 'the safe record must be adopted');
+
     const headers = new Headers(
       regenerationHeaders(edge, 'foreground', { pack: first.pack, entryId }),
     );

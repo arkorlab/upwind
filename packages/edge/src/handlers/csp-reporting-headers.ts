@@ -5,7 +5,8 @@ const REPORT_ONLY = 'content-security-policy-report-only';
 const ENDPOINTS = 'reporting-endpoints';
 const REPORTING_DIRECTIVE = /^report-(?:to|uri)(?:[\t\n\f\r ]|$)/iu;
 const HTML = new Set(['application/xhtml+xml', 'text/html']);
-const COLLECTOR_ESCAPE = /%[\da-fA-F]{2}|[^\w!#$&'()*+./:=?@\[\]~-]/gu;
+const COLLECTOR_ESCAPE = /%[\da-fA-F]{2}|[^\w!#$&'()*+./:=?@[\]~-]/gu;
+const PERCENT_ESCAPE_LENGTH = 3;
 /**
  * The reporting group the edge names its endpoint by, where a policy does not already name it; a
  * policy that does gets the first free one after it (`arkor-csp-1`, …).
@@ -78,14 +79,14 @@ function collectorUri(path: string): string | undefined {
     // Preserve URI syntax and existing escapes, but encode CSP's policy/directive delimiters too.
     // The ASCII result contains neither quotes nor backslashes, so it also fits an SF String.
     return path.replaceAll(COLLECTOR_ESCAPE, (character) => {
-      if (character.length === 3) {
+      if (character.length === PERCENT_ESCAPE_LENGTH) {
         return character;
       }
       return encodeURIComponent(character);
     });
   } catch {
     // A lone surrogate cannot name a UTF-8 URI. Leave the application's policy untouched.
-    return;
+    return undefined;
   }
 }
 
