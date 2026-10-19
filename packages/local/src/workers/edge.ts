@@ -151,11 +151,12 @@ function addressed(
   headers.set('host', origin.host);
   headers.set('x-forwarded-host', origin.host);
   headers.set('x-forwarded-proto', origin.protocol.slice(0, -1));
+  const cf = forwarded.cf ?? originalCf;
   return new Request(url, {
     method: forwarded.method,
     headers,
     body: forwarded.body,
-    cf: forwarded.cf ?? originalCf,
+    ...(cf !== undefined && { cf }),
     redirect: 'manual',
     // A visitor who goes away cancels the Function's work, as deployed.
     signal: forwarded.signal,
