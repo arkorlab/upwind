@@ -17,6 +17,10 @@ describe('a match length proved by a mandatory literal', () => {
     expect(requiredLiteralLength(source)).toBeUndefined();
   });
 
+  it('does not mistake the tail of a legacy octal escape for mandatory text', () => {
+    expect(requiredLiteralLength(String.raw`^\012ab$`)).toBeUndefined();
+  });
+
   it('does not include a quantified final literal in its candidate', () => {
     expect(requiredLiteralLength('^/catalog?$')).toBe(7);
     expect(requiredLiteralLength('^/catalo[g]$')).toBe(7);
