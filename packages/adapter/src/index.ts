@@ -54,7 +54,7 @@ import { declaredGates } from './gates.ts';
 import { instrumentationOf, writeClientInstrumentation } from './instrumentation.ts';
 import { keepMapsThrough, readKeptMaps } from './kept-maps.ts';
 import { collectManifests } from './manifests.ts';
-import { checkPageBodyRange, type UnshippedPrerenderBodies } from './page-bodies.ts';
+import { checkPageBodyHost, type UnshippedPrerenderBodies } from './page-bodies.ts';
 import { readProjectConfig } from './project-config.ts';
 import { projectDirOf } from './project-dir.ts';
 import { carriesMaps, type SourceMapsOption } from './source-maps.ts';
@@ -567,9 +567,10 @@ export interface AdapterOptions {
    * and uploaded blob stays unchanged; small bodies, reusable shells, postponed state, error
    * documents, Pages Router outputs and edge-runtime outputs remain in the Function.
    *
-   * The default is unset: every page body is shipped. A host choosing this must provide
-   * `createBundleBlobReader` and set maxBytes to a size its reader can return. A Function falling
-   * back to an omitted body waits for that reader and fails if the exact body is unavailable.
+   * The default is unset: every page body is shipped. A host choosing this must name a nonempty
+   * `cacheHostModule` exporting `createBundleBlobReader`, and set maxBytes to a size its reader can
+   * return. A missing or blank host module is rejected when the adapter is created. A Function
+   * falling back to an omitted body waits for that reader and fails if the exact body is unavailable.
    * Edge delivery and shipped bodies do not make that read. This trades fallback latency for
    * a smaller Function, and does not promise an improvement in request-time memory or TTFB.
    */
@@ -764,7 +765,7 @@ function renderInOneProcessForStorage(config: BuildConfig): void {
  */
 export function createAdapter(options: AdapterOptions = {}): NextAdapter {
   checkSplitOptions(options.functions?.split);
-  checkPageBodyRange(options.unshippedPrerenderBodies);
+  checkPageBodyHost(options.unshippedPrerenderBodies, options.cacheHostModule);
   const edgeHosts = checkedEdgeInstrumentationModules(options.edgeInstrumentationModules);
   return {
     name: 'upwind',

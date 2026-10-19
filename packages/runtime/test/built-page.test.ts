@@ -4,9 +4,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { builtPageResponse } from '../src/built-page.ts';
 import { bundleBlobReader, type BundleBlobReader } from '../src/bundle-blobs.ts';
 import { HTML_CONTENT_TYPE, type RoutedInput, RSC_CONTENT_TYPE } from '../src/serve.ts';
-import type { Store } from '../src/store.ts';
+import { hasBundleBlob, type Store } from '../src/store.ts';
 
 vi.mock(import('../src/node-bridge.ts'), () => ({ invokeNodeHandler: vi.fn() }));
+vi.mock(import('../src/store.ts'), () => ({ hasBundleBlob: vi.fn() }));
 
 const BYTES = new TextEncoder().encode('BUILD-A');
 const DOCUMENT: Prerender = {
@@ -46,6 +47,9 @@ function fixture(
     readonly blobs?: BundleBlobReader | undefined;
   } = {},
 ) {
+  vi.mocked(hasBundleBlob)
+    .mockReset()
+    .mockReturnValue(input.shipped === true);
   const readBlob = vi.fn(input.shipped === true ? () => BYTES : absent);
   const blobs = vi.fn(input.blobs ?? (() => Promise.resolve(BYTES)));
   const routed = {
@@ -109,6 +113,44 @@ describe.each([DOCUMENT, TWIN])('completed built output $id', (prerender) => {
     expect(result.headers.get('link')).toBe(
       prerender.id === TWIN.id ? null : DOCUMENT.initialHeaders?.['link'],
     );
+  });
+
+  it('answers shipped HEAD without a configured reader or reading body bytes', () => {
+    const test = fixture({ method: 'HEAD', shipped: true });
+    const input = {
+      request: new Request('https://app.test/page', { method: 'HEAD' }),
+    } as RoutedInput;
+    const response = builtPageResponse(input, test.store, prerender, {
+      document: DOCUMENT,
+      contentType: prerender.id === TWIN.id ? RSC_CONTENT_TYPE : HTML_CONTENT_TYPE,
+      status: 200,
+      allowHost: true,
+    });
+
+    expect(response).toBeInstanceOf(Response);
+    expect((response as Response).status).toBe(200);
+    expect(vi.mocked(hasBundleBlob)).toHaveBeenCalledExactlyOnceWith(prerender.body?.sha256);
+    expect(test.readBlob).not.toHaveBeenCalled();
+    expect(test.blobs).not.toHaveBeenCalled();
+  });
+
+  it('rejects HEAD without a local body or reader before reporting HIT', () => {
+    const test = fixture({ method: 'HEAD' });
+    const input = {
+      request: new Request('https://app.test/page', { method: 'HEAD' }),
+    } as RoutedInput;
+
+    expect(() => {
+      return builtPageResponse(input, test.store, prerender, {
+        document: DOCUMENT,
+        contentType: prerender.id === TWIN.id ? RSC_CONTENT_TYPE : HTML_CONTENT_TYPE,
+        status: 200,
+        allowHost: true,
+      });
+    }).toThrow('required built page body is unavailable');
+    expect(vi.mocked(hasBundleBlob)).toHaveBeenCalledExactlyOnceWith(prerender.body?.sha256);
+    expect(test.readBlob).not.toHaveBeenCalled();
+    expect(test.blobs).not.toHaveBeenCalled();
   });
 
   it('answers HEAD with no body lookup or host call', async () => {
@@ -222,6 +264,28 @@ describe('required built body failure boundaries', () => {
     expect(test.readBlob).not.toHaveBeenCalled();
     expect(test.blobs).not.toHaveBeenCalled();
   });
+
+  it.each([204, 205, 304])(
+    'keeps HEAD status %s bodyless with no metadata lookup or reader',
+    (status) => {
+      const test = fixture({ method: 'HEAD' });
+      const input = {
+        request: new Request('https://app.test/page', { method: 'HEAD' }),
+      } as RoutedInput;
+      const response = builtPageResponse(input, test.store, DOCUMENT, {
+        document: DOCUMENT,
+        contentType: HTML_CONTENT_TYPE,
+        status,
+        allowHost: true,
+      });
+
+      expect(response).toBeInstanceOf(Response);
+      expect((response as Response).status).toBe(status);
+      expect(vi.mocked(hasBundleBlob)).not.toHaveBeenCalled();
+      expect(test.readBlob).not.toHaveBeenCalled();
+      expect(test.blobs).not.toHaveBeenCalled();
+    },
+  );
 
   it('forwards the optional size while remaining compatible with a digest-only reader', async () => {
     const reader: BundleBlobReader = (sha256) =>

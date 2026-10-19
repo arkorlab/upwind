@@ -1,5 +1,5 @@
 import { completeAppPageBody, type Prerender } from '@stayingupwind/core/bundle';
-import { NO_STORE_CACHE_CONTROL } from '@stayingupwind/core/request';
+import { NO_STORE_CACHE_CONTROL, NULL_BODY_STATUSES } from '@stayingupwind/core/request';
 
 import {
   type HTML_CONTENT_TYPE,
@@ -9,7 +9,7 @@ import {
   staticResponse,
   withCacheState,
 } from './serve.ts';
-import type { Store } from './store.ts';
+import { hasBundleBlob, type Store } from './store.ts';
 
 interface PageAnswer {
   readonly document: Prerender;
@@ -41,6 +41,17 @@ export function builtPageResponse(
     return withCacheState(response, 'HIT');
   };
   if (input.request.method === 'HEAD') {
+    // A configured reader can supply an omitted body without HEAD fetching it. With no reader,
+    // local metadata is enough to reject a representation that neither source can provide.
+    if (
+      prerender.body !== undefined &&
+      !NULL_BODY_STATUSES.has(how.status) &&
+      input.blobs === undefined &&
+      !hasBundleBlob(prerender.body.sha256)
+    )
+      throw new Error(
+        'next-runtime: required built page body is unavailable without a blob reader',
+      );
     return finish(
       new Response(null, {
         status: how.status,

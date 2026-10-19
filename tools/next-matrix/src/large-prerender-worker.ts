@@ -24,9 +24,22 @@ const HTTP_MISSING = 404;
 const HTTP_ERROR = 500;
 const BLOB_BINDING = 'BUNDLE_BLOBS';
 const NO_READER = 'no-reader';
+const NO_READER_HEAD = 'no-reader-head';
+const SMALL_HEAD_NO_READER = 'small-head-no-reader';
 const WRONG_SIZE = 'wrong-size';
-const FAILURE_MODES: ReadonlySet<Mode> = new Set(['missing', NO_READER, WRONG_SIZE]);
-const ZERO_READ_MODES: ReadonlySet<Mode> = new Set(['head', NO_READER, 'small']);
+const HEAD_MODES: ReadonlySet<Mode> = new Set(['head', NO_READER_HEAD, SMALL_HEAD_NO_READER]);
+const NO_READER_MODES: ReadonlySet<Mode> = new Set([
+  NO_READER,
+  NO_READER_HEAD,
+  SMALL_HEAD_NO_READER,
+]);
+const FAILURE_MODES: ReadonlySet<Mode> = new Set([
+  'missing',
+  NO_READER,
+  NO_READER_HEAD,
+  WRONG_SIZE,
+]);
+const ZERO_READ_MODES: ReadonlySet<Mode> = new Set([...HEAD_MODES, NO_READER, 'small']);
 const TYPES = {
   esm: 'ESModule',
   commonjs: 'CommonJS',
@@ -36,7 +49,16 @@ const TYPES = {
   wasm: 'CompiledWasm',
 } as const;
 
-type Mode = 'html' | 'rsc' | 'head' | 'small' | 'missing' | 'wrong-size' | 'no-reader';
+type Mode =
+  | 'html'
+  | 'rsc'
+  | 'head'
+  | 'small'
+  | 'missing'
+  | 'wrong-size'
+  | 'no-reader'
+  | 'no-reader-head'
+  | 'small-head-no-reader';
 interface BlobCall {
   sha256: string;
   expectedByteLength: number;
@@ -200,20 +222,22 @@ function assertResponse(
 ): void {
   const { bundle, mode, expected } = input;
   const rsc = mode === 'rsc';
+  const head = HEAD_MODES.has(mode);
   assert.ok(proof.response !== undefined);
+  if (head) assert.equal(body.byteLength, 0, 'HEAD body');
   if (FAILURE_MODES.has(mode)) {
     assert.equal(response.status, HTTP_ERROR, 'Unavailable immutable body must fail');
     assert.equal(proof.response.cache, null, 'Failed read must not claim HIT');
-    assert.ok(
-      new TextDecoder().decode(body).includes('required built page body'),
-      'Failure must identify the required built body',
-    );
+    if (!head)
+      assert.ok(
+        new TextDecoder().decode(body).includes('required built page body'),
+        'Failure must identify the required built body',
+      );
   } else {
     assert.equal(response.status, HTTP_OK, 'Built response status');
     assert.equal(proof.response.cache, 'HIT', 'Built response cache state');
     assert.equal(proof.response.contentType, rsc ? 'text/x-component' : 'text/html; charset=utf-8');
-    if (mode === 'head') assert.equal(body.byteLength, 0, 'HEAD body');
-    else {
+    if (!head) {
       assert.equal(body.byteLength, expected.byteLength, 'Response byte length');
       assert.equal(
         proof.response.sha256,
@@ -268,7 +292,7 @@ export async function exercise(input: Exercise): Promise<CaseProof> {
       bindings: {
         NODE_ENV: 'production',
         NEXT_DEPLOYMENT_ID: bundle.deploymentId,
-        NO_BLOB_READER: mode === NO_READER ? '1' : '0',
+        NO_BLOB_READER: NO_READER_MODES.has(mode) ? '1' : '0',
       },
       cf: false,
       telemetry: { enabled: false },
@@ -288,7 +312,7 @@ export async function exercise(input: Exercise): Promise<CaseProof> {
     const rsc = mode === 'rsc';
     const response = await bounded(
       runtime.dispatchFetch(`https://large-prerender.test${input.pathname}`, {
-        method: mode === 'head' ? 'HEAD' : 'GET',
+        method: HEAD_MODES.has(mode) ? 'HEAD' : 'GET',
         headers: rsc ? { [bundle.routing.rsc.header]: '1' } : {},
         signal: requestSignal,
       }),

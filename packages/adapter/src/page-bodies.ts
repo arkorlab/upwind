@@ -25,6 +25,19 @@ export function checkPageBodyRange(range: UnshippedPrerenderBodies | undefined):
   }
 }
 
+/** Omitted page bodies require a host reader, unlike the default that ships every body. */
+export function checkPageBodyHost(
+  range: UnshippedPrerenderBodies | undefined,
+  hostModule: string | undefined,
+): void {
+  checkPageBodyRange(range);
+  if (range !== undefined && (typeof hostModule !== 'string' || hostModule.trim().length === 0)) {
+    throw new Error(
+      '@stayingupwind/adapter: unshippedPrerenderBodies requires a nonempty cacheHostModule exporting createBundleBlobReader',
+    );
+  }
+}
+
 /** Decide from the untouched build records, before collection turns postponed state into blobs. */
 export function pageBodyOmission(input: {
   readonly sources: readonly { readonly prerender: Prerender; readonly hasPostponed: boolean }[];

@@ -364,9 +364,11 @@ small bodies, reusable or postponed shells, error pages, Pages Router and edge-r
 stay shipped. The bundle still records and uploads every immutable blob, and a body shared with
 an output that needs it stays in that output's Function.
 
-This option requires the host's `cacheHostModule` to export `createBundleBlobReader`. Its reader
-receives the exact blob hash and an optional expected byte length; older hash-only readers remain
-compatible. Set `maxBytes` to what that reader can return within its own size and time bounds.
+This option requires a nonempty `cacheHostModule` path whose module exports
+`createBundleBlobReader`. A missing or blank module path is rejected when the adapter is created,
+before a build writes output. Its reader receives the exact blob hash and an optional expected byte
+length; older hash-only readers remain compatible. Set `maxBytes` to what that reader can return
+within its own size and time bounds.
 Shipped responses remain synchronous and edge delivery is unchanged. A Function missing an
 eligible body waits for the reader and fails if the bytes are unavailable or have the wrong
 length; it does not render a replacement. HEAD and bodyless statuses read no body. This reduces

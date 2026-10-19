@@ -279,11 +279,14 @@ export async function largePrerenderHolds(
       'missing',
       'wrong-size',
       'no-reader',
+      'no-reader-head',
+      'small-head-no-reader',
     ] as const) {
       proof.stage = `worker-${mode}`;
       const target = mode === 'rsc' ? outputs.rsc : outputs.document;
-      const expected = mode === 'small' ? small : requiredBody(target);
-      const pathname = mode === 'small' ? '/small' : outputs.document.pathname;
+      const smallControl = mode === 'small' || mode === 'small-head-no-reader';
+      const expected = smallControl ? small : requiredBody(target);
+      const pathname = smallControl ? '/small' : outputs.document.pathname;
       proof.cases.push(await exercise({ bundle, modules, out, signal, mode, pathname, expected }));
     }
     assert.ok(
