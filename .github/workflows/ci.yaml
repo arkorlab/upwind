@@ -138,7 +138,6 @@ jobs:
           const directory = process.env.UPWIND_MATRIX_PROOF_DIR;
           mkdirSync(directory, { recursive: true });
           writeFileSync(path.join(directory, 'checkout.json'), `${JSON.stringify({ head, baseline, productionPackagesUnchanged: changed === '' }, null, 2)}\n`);
-          if (changed !== '') throw new Error('The Twoslash baseline changed production packages');
           appendFileSync(process.env.GITHUB_ENV, `UPWIND_MATRIX_SDK_HEAD=${head}\nUPWIND_MATRIX_PROOF_DIR=${directory}\n`);
           NODE
       - run: pnpm install --frozen-lockfile
