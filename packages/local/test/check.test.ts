@@ -195,8 +195,17 @@ function treePart(parts: readonly Part[]): Part {
   return tree;
 }
 
+/** The hash Next appended after any earlier bare or encoded query keys. */
+function appendedHash(part: Part): string {
+  const hash = part.url.searchParams.getAll('_rsc').at(-1);
+  if (hash === undefined) {
+    throw new Error('the router request carries no computed hash');
+  }
+  return hash;
+}
+
 /** A target whose correct router hash is required for a valid part response. */
-function requiringHash(seen: string[], hash: string | undefined): (search: string) => Answer {
+function requiringHash(seen: string[], hash: string): (search: string) => Answer {
   return (search) => {
     seen.push(search);
     const answer = segmentAnswer('login tree');
@@ -4975,7 +4984,7 @@ describe('what the check makes of the middleware', () => {
       ]);
     });
 
-    it('is kept from shared caches, but for what the application set itself', async () => {
+    it('is kept from shared caches even when the application set an overriding header', async () => {
       const routes = [await routeOf('/', FRONT), await routeOf('/about', ABOUT)];
       // A header a shell is never recorded with (`SHELL_RESPONSE_HEADER_ALLOWLIST`), which a rule of
       // the application's sets on it at every request.
@@ -4999,6 +5008,11 @@ describe('what the check makes of the middleware', () => {
         {
           path: '/',
           reason: "answered for shared caches to keep, though the answer is one visitor's",
+        },
+        {
+          path: '/about',
+          reason:
+            "answered with cdn-cache-control, by which a shared cache keeps it, though the answer is one visitor's",
         },
       ]);
     });
@@ -5994,14 +6008,26 @@ describe('what the check makes of the middleware', () => {
     });
 
     it.each(SHARED_CACHE_CONTROL_HEADERS)(
-      'drops middleware %s from expected composed document headers',
+      'requires middleware %s to be removed from a composed document',
       async (name) => {
         const routes = [await routeOf('/', FRONT)];
         decisions.set('/', { 'x-middleware-next': '1', [name]: 'public, max-age=60' });
-        answers.set('/', documentAnswer(FRONT, 'mw=hit;route=/'));
-        const result = await checkStack(stackOf(routes, {}));
+        const composed = documentAnswer(FRONT, 'mw=hit;route=/');
+        answers.set('/', composed);
+        const safe = await checkStack(stackOf(routes, {}));
+        answers.set('/', {
+          ...composed,
+          headers: { ...composed.headers, [name]: 'public, max-age=60' },
+        });
+        const unsafe = await checkStack(stackOf(routes, {}));
 
-        expect(result).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+        expect(safe).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+        expect(unsafe.failures).toStrictEqual([
+          {
+            path: '/',
+            reason: `answered with ${name}, by which a shared cache keeps it, though the answer is one visitor's`,
+          },
+        ]);
       },
     );
 
@@ -10962,7 +10988,7 @@ describe('what the check makes of the middleware', () => {
           { browser: {}, origin: originAt(stack, page, '') },
         );
         const tree = treePart(parts);
-        const hash = tree.url.searchParams.getAll('_rsc').at(-1);
+        const hash = appendedHash(tree);
         const seen: string[] = [];
         partAnswers.set('/|/_tree', {
           status: 307,

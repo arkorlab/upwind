@@ -116,6 +116,7 @@ function stackFor(sourceRegex: string, condition?: RouteHas): CheckedStack {
 }
 
 function payload(path: string, state = true): Part {
+  const built = undefined;
   return {
     kind: 'payload',
     what: `payload ${path}`,
@@ -126,8 +127,8 @@ function payload(path: string, state = true): Part {
       ...(state && { [NEXT_ROUTER_STATE_TREE_HEADER]: stateTreeOf('/from') }),
     },
     route: route(path),
-    built: undefined,
-    builtOn: () => undefined,
+    built,
+    builtOn: () => built,
     exact: true,
   };
 }
@@ -206,8 +207,9 @@ describe('state-sensitive rules with actual flow cookies and redirected URLs', (
   it('uses cookies set by the redirect before considering its landing irrelevant', async () => {
     const stack = stackFor('^/login$', SELECTED);
     const part = payload('/about');
-    const known = new Map<string, Answered>();
-    known.set(askKey(at('/login'), cookieOn(part.headers, COOKIE)), QUIET);
+    const known = new Map<string, Answered>([
+      [askKey(at('/login'), cookieOn(part.headers, COOKIE)), QUIET],
+    ]);
     const result = await redirectsFrom(
       stack,
       {
@@ -227,9 +229,9 @@ describe('state-sensitive rules with actual flow cookies and redirected URLs', (
     const stack = stackFor('^/middle$');
     const part = payload('/about');
     const known = new Map<string, Answered>([
+      [askKey(at('/finish'), part.headers), QUIET],
       [askKey(at('/first'), part.headers), onward('/middle')],
       [askKey(at('/middle'), part.headers), onward('/finish')],
-      [askKey(at('/finish'), part.headers), QUIET],
     ]);
     const result = await redirectsFrom(
       stack,
@@ -245,8 +247,8 @@ describe('state-sensitive rules with actual flow cookies and redirected URLs', (
     const stack = stackFor('^/private$');
     const part = payload('/about');
     const known = new Map<string, Answered>([
-      [askKey(at('/first'), part.headers), onward('/finish')],
       [askKey(at('/finish'), part.headers), QUIET],
+      [askKey(at('/first'), part.headers), onward('/finish')],
     ]);
     const result = await redirectsFrom(
       stack,

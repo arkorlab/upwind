@@ -68,6 +68,12 @@ export default {
       const answer = await fetch(new URL('/echo?from=self', request.url));
       return Response.json({ status: answer.status, echoed: await answer.json() });
     }
+    if (url.pathname === '/self-alias') {
+      // Address the alias inside the Function, independent of Miniflare's listening socket.
+      const target = new URL('http://alias.invalid/echo?from=self');
+      const answer = await fetch(target, { headers: { host: target.host } });
+      return Response.json({ status: answer.status, echoed: await answer.json() });
+    }
     if (url.pathname.startsWith('/_upwind-local-check/') && url.hostname !== 'localhost') {
       return new Response('asked under ' + url.host, { status: 500 });
     }
@@ -359,9 +365,7 @@ describe('a local stack', () => {
 
   it('keeps a Function HTTP self-fetch under a configured alias on its own edge', async () => {
     const stack = started();
-    const response = await fetch(new URL('/self', stack.url), {
-      headers: { host: 'alias.invalid' },
-    });
+    const response = await fetch(new URL('/self-alias', stack.url));
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({

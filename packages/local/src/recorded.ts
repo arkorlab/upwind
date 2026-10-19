@@ -11,6 +11,7 @@ import {
   EDGE_VALIDATED_HEADER,
   filterShellResponseHeaders,
   routeDebugValue,
+  SHARED_CACHE_CONTROL_HEADERS,
 } from '@stayingupwind/core/request';
 import {
   mergeScopedMiddlewareHeaders,
@@ -116,7 +117,7 @@ function names(header: string, among: readonly string[]): boolean {
  * (`recordedOf`) — by the rules of `next.config` the request selected, and by its middleware.
  */
 export interface Application {
-  /** Whether it set `header` itself. */
+  /** Whether `header` remains application-controlled on this response. */
   sets(header: string, recorded: Readonly<Record<string, string>>): boolean;
   /**
    * Every header it set, as the edge lays them on a document it composes: what was recorded and
@@ -149,6 +150,9 @@ export function applicationOf(
   const scope = cookieScopeOf(stack);
   return {
     sets: (header, recorded) => {
+      if (served !== 'handed-on' && SHARED_CACHE_CONTROL_HEADERS.includes(header)) {
+        return false;
+      }
       return (
         names(header, Object.keys(recorded)) ||
         names(header, ruled) ||

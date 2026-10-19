@@ -338,6 +338,10 @@ async function hopAnswered(
   known: Map<string, Answered>,
 ): Promise<Answered | string> {
   const { url, headers, method } = sent;
+  const unproved = stateTreeUnproved(stack, url, headers);
+  if (unproved !== undefined) {
+    return unproved;
+  }
   // A request for its headers alone is another request than a GET of the same.
   const key = method === undefined ? askKey(url, headers) : `${method} ${askKey(url, headers)}`;
   const kept = known.get(key);
@@ -414,10 +418,6 @@ export async function redirectsFrom(
       policy === undefined ? from.headers : referredUnder(from.headers, policy, next);
     const cookie = cookieFor(jar, next, { crossSite: from.crossSite === true });
     headers = cookieOn(uncookied(referred), cookie);
-    const unproved = stateTreeUnproved(stack, next, headers);
-    if (unproved !== undefined) {
-      return { steps, failure: `redirected to ${next.pathname}, ${unproved}` };
-    }
     const asked = { url: next, headers, method: from.method, whole: from.whole };
     const reply = await hopAnswered(stack, asked, known);
     if (typeof reply === 'string') {

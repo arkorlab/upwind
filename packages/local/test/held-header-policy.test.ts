@@ -240,13 +240,21 @@ async function routeFailures(stack: CheckedStack) {
   return failures;
 }
 
-afterEach(async () => {
+async function removeFixtures(): Promise<void> {
   await Promise.all(
-    directories.splice(0).map(async (directory) => rm(directory, { recursive: true, force: true })),
+    directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
   );
-});
+}
+
+function requiredHeaderRule(stack: CheckedStack): HeaderRule {
+  const prepared = stack.manifest.headerRules?.[0];
+  if (prepared === undefined) throw new Error('the fixture must retain its header rule');
+  return prepared;
+}
 
 describe('held header rules retain document capture preparation', () => {
+  afterEach(removeFixtures);
+
   it.each(CAPTURED_CASES)('accepts actual deploy preparation for $label', async (example) => {
     const { stack, recovery } = await deployed(
       '/about',
@@ -259,6 +267,7 @@ describe('held header rules retain document capture preparation', () => {
 
     expect(prepared?.documentRecoverySources).toStrictEqual({ [example.deferred]: recovery });
     expect(prepared?.documentHeaders).toBeUndefined();
+
     await expect(rulesFailures(stack)).resolves.toStrictEqual([]);
   });
 
@@ -269,12 +278,12 @@ describe('held header rules retain document capture preparation', () => {
         headers: { 'content-security-policy': "script-src 'none'", $1: '$2' },
       },
     ]);
-    const prepared = stack.manifest.headerRules?.[0];
-    if (prepared === undefined) throw new Error('the fixture must retain its header rule');
+    const prepared = requiredHeaderRule(stack);
 
     expect(prepared.documentRecoverySources).toStrictEqual({ $1: recovery });
     expect(prepared.documentHeaders?.['content-security-policy']).toContain(recovery);
     expect(prepared.documentHeaders?.['$1']).toBe('$2');
+
     await expect(rulesFailures(stack)).resolves.toStrictEqual([]);
 
     const broken = {
@@ -290,11 +299,14 @@ describe('held header rules retain document capture preparation', () => {
 });
 
 describe('held preload policies follow the build for class members and path captures', () => {
+  afterEach(removeFixtures);
+
   it.each(POLICY_CASES)('accepts actual deploy hints for $label', async (example) => {
     const { stack } = await deployed(example.pathname, example.rules);
     const route = Object.values(stack.manifest.routes)[0];
 
     expect(route?.preloads ?? []).toHaveLength(example.hints);
+
     await expect(routeFailures(stack)).resolves.toStrictEqual([]);
   });
 });
