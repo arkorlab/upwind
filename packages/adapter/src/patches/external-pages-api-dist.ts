@@ -44,22 +44,38 @@ export const externalPagesApiDistPatch: Patch = {
  * Whether the module built at `pages/api.js` is a Pages API route. Next.js 16.4.2 builds a page
  * file at `pages/api` into a Pages API route with webpack, which takes `/api` for one
  * (`isAPIRoute`), and into a page with Turbopack, which takes only the `api` directory's files for
- * routes. The module's own trace (`<module>.nft.json`) names the runtime it loads: a page's names a
- * Pages page runtime and no Pages API runtime. Any other — no trace read, or a runtime under a name
- * not known here — is held to be a route, so that a moved runtime still fails the build.
+ * routes. The module's own trace (`<module>.nft.json`) names the runtime it loads, in its own file
+ * list or an additional root's (`additionalRoots`): a page's names a Pages page runtime and no Pages
+ * API runtime. Any other — no trace read, or a runtime under a name not known here — is held to be
+ * a route, so that a moved runtime still fails the build.
  */
 function isPagesApiModule(filePath: string): boolean {
-  let files: unknown;
+  let trace: unknown;
   try {
-    files = (JSON.parse(readFileSync(`${filePath}.nft.json`, 'utf8')) as { files?: unknown }).files;
+    trace = JSON.parse(readFileSync(`${filePath}.nft.json`, 'utf8'));
   } catch {
     return true;
   }
-  if (!Array.isArray(files)) return true;
-  const traced = files.filter((file): file is string => typeof file === 'string');
+  const traced = tracedFiles(trace);
   return (
     traced.every((file) => !PAGE_RUNTIME.test(file)) || traced.some((file) => TARGET.test(file))
   );
+}
+
+/** The files a trace names, in its own list and in each of its additional roots'. */
+function tracedFiles(trace: unknown): string[] {
+  const additional = isRecord(trace) ? trace['additionalRoots'] : undefined;
+  const roots: readonly unknown[] = Array.isArray(additional) ? additional : [];
+  return [trace, ...roots].flatMap((list: unknown) => {
+    const files = isRecord(list) ? list['files'] : undefined;
+    return Array.isArray(files)
+      ? files.filter((file): file is string => typeof file === 'string')
+      : [];
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
 }
 
 /** A moved runtime must fail the build instead of leaving an external Pages API to fail at HTTP. */
