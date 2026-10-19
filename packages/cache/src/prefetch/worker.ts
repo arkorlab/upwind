@@ -2,6 +2,7 @@ import { PREFETCH_BLOB_PATH } from '@stayingupwind/host/bindings';
 // The key the upload writes, from the module of the storage keys alone: imported once from behind a
 // barrel of build schemas, it brought zod and every schema with it, 819 KiB of this Worker's 820.
 import { blobObjectKey } from '@stayingupwind/host/storage';
+import { WorkerEntrypoint } from 'cloudflare:workers';
 
 /**
  * One blob of a deployment's own bundle, by the sha256 the bundle names it with.
@@ -24,11 +25,10 @@ import { blobObjectKey } from '@stayingupwind/host/storage';
  *
  * So: one read, one bucket, one shape of key, and nothing else reachable through it.
  *
- * **No token, and the reason is the addressing.** A caller can ask only for bytes whose sha256 it
- * already holds, and what a Function holds is its own bundle's manifest. There is nothing to
- * enumerate: the key space is 2^256 and the Worker answers no listing, no prefix and no range. The
- * internet cannot reach it either — no hostname, no `workers_dev` — so the only callers are the
- * Workers a deploy gave the binding to.
+ * Hosted Functions use `PrefetchForDeployment`: the host configures their accepted bundle's
+ * digests as immutable binding props. Knowing another deployment's digest grants no access.
+ * The default entrypoint is retained only while existing bindings are migrated; it remains an
+ * unscoped capability during that transition and must be disabled after the binding audit.
  */
 
 /** What a sha256 looks like written down; anything else is not a key this Worker will build. */
@@ -47,39 +47,74 @@ const FOUND_HEADERS = { 'content-type': 'application/octet-stream', 'cache-contr
 export interface PrefetchEnv {
   /** The bundle blobs of every deployment, as the upload put them (`blobObjectKey`). */
   readonly ARTIFACTS: R2Bucket;
+  /** Set to deny only after all retained Function bindings have been migrated and audited. */
+  readonly PREFETCH_LEGACY_ACCESS?: string;
 }
 
 function empty(status: number, headers: Readonly<Record<string, string>> = {}): Response {
   return new Response(null, { status, headers: { 'cache-control': 'no-store', ...headers } });
 }
 
+/** Props are installed by the host, rather than supplied in the caller's Request. */
+function permitted(props: unknown, sha256: string): boolean {
+  if (typeof props !== 'object' || props === null) return false;
+  const allowed = Reflect.get(props, 'allowedSha256');
+  return (
+    typeof allowed === 'object' &&
+    allowed !== null &&
+    Object.hasOwn(allowed, sha256) &&
+    Reflect.get(allowed, sha256) === true
+  );
+}
+
+/** Existing storage reads, after the strict entrypoint has checked its binding capability. */
+async function answerBlob(
+  request: Request,
+  env: PrefetchEnv,
+  props: unknown,
+  legacy: boolean,
+): Promise<Response> {
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    // Named with the methods this Worker does answer, as a 405 is (RFC 9110, section 15.5.6).
+    return empty(HTTP_METHOD_NOT_ALLOWED, { allow: 'GET, HEAD' });
+  }
+  const { pathname } = new URL(request.url);
+  if (!pathname.startsWith(PREFETCH_BLOB_PATH)) {
+    return empty(HTTP_NOT_FOUND);
+  }
+  const sha256 = pathname.slice(PREFETCH_BLOB_PATH.length);
+  // Checked rather than passed through: `blobObjectKey` of anything else is a key into the same
+  // bucket, and this Worker builds one key shape only.
+  if (!SHA256.test(sha256)) {
+    return empty(HTTP_NOT_FOUND);
+  }
+  if (!legacy && !permitted(props, sha256)) {
+    return empty(HTTP_NOT_FOUND);
+  }
+  if (request.method === 'HEAD') {
+    // Whether the blob is there, and no more: its object is looked at, and no body opened.
+    const found = await env.ARTIFACTS.head(blobObjectKey(sha256));
+    return found === null ? empty(HTTP_NOT_FOUND) : new Response(null, { headers: FOUND_HEADERS });
+  }
+  const stored = await env.ARTIFACTS.get(blobObjectKey(sha256));
+  if (stored === null) {
+    return empty(HTTP_NOT_FOUND);
+  }
+  return new Response(stored.body, { headers: FOUND_HEADERS });
+}
+
+/** A deployment's own accepted bundle, with no per-read authorization I/O or hashing. */
+export class PrefetchForDeployment extends WorkerEntrypoint<PrefetchEnv, unknown> {
+  override fetch(request: Request): Promise<Response> {
+    return answerBlob(request, this.env, this.ctx.props, false);
+  }
+}
+
 export default {
-  async fetch(request: Request, env: PrefetchEnv): Promise<Response> {
-    if (request.method !== 'GET' && request.method !== 'HEAD') {
-      // Named with the methods this Worker does answer, as a 405 is (RFC 9110, section 15.5.6).
-      return empty(HTTP_METHOD_NOT_ALLOWED, { allow: 'GET, HEAD' });
-    }
-    const { pathname } = new URL(request.url);
-    if (!pathname.startsWith(PREFETCH_BLOB_PATH)) {
-      return empty(HTTP_NOT_FOUND);
-    }
-    const sha256 = pathname.slice(PREFETCH_BLOB_PATH.length);
-    // Checked rather than passed through: `blobObjectKey` of anything else is a key into the same
-    // bucket, and this Worker builds one key shape only.
-    if (!SHA256.test(sha256)) {
-      return empty(HTTP_NOT_FOUND);
-    }
-    if (request.method === 'HEAD') {
-      // Whether the blob is there, and no more: its object is looked at, and no body opened.
-      const found = await env.ARTIFACTS.head(blobObjectKey(sha256));
-      return found === null
-        ? empty(HTTP_NOT_FOUND)
-        : new Response(null, { headers: FOUND_HEADERS });
-    }
-    const stored = await env.ARTIFACTS.get(blobObjectKey(sha256));
-    if (stored === null) {
-      return empty(HTTP_NOT_FOUND);
-    }
-    return new Response(stored.body, { headers: FOUND_HEADERS });
+  fetch(request: Request, env: PrefetchEnv): Promise<Response> {
+    // Temporary migration compatibility. This remains exposed to old unscoped bindings.
+    const legacy =
+      env.PREFETCH_LEGACY_ACCESS === undefined || env.PREFETCH_LEGACY_ACCESS === 'allow';
+    return answerBlob(request, env, undefined, legacy);
   },
 } satisfies ExportedHandler<PrefetchEnv>;

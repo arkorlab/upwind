@@ -34,11 +34,11 @@ function legacy() {
     {
       type: 'bytes',
       start(controller) {
-        controller.enqueue(PREFIX.slice());
+        controller.enqueue(new Uint8Array(PREFIX));
       },
       pull(controller) {
         tailRead();
-        controller.enqueue(TAIL.slice());
+        controller.enqueue(new Uint8Array(TAIL));
         controller.close();
       },
       cancel: cancelled,
@@ -275,7 +275,7 @@ describe('room for unrecognized delivery record bytes', () => {
     const stream = new ReadableStream<Uint8Array>({
       type: 'bytes',
       start(controller) {
-        controller.enqueue(bytes.slice());
+        controller.enqueue(new Uint8Array(bytes));
         controller.close();
       },
     });

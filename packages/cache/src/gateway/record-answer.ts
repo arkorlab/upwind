@@ -34,7 +34,7 @@ const HEADER_LENGTH_AT = VERSION_AT + 1;
 const HEADER_LENGTH_BYTES = 4;
 const PREFIX_LENGTH = HEADER_LENGTH_AT + HEADER_LENGTH_BYTES;
 /** A usual header fits one small read; this is a buffer size, not a record acceptance limit. */
-const FIRST_READ_BYTES = 4 * 1024;
+const FIRST_READ_BYTES = 4096;
 
 /** A record to answer with: its bytes, or a stream of them, and how many there are. */
 export interface RecordAnswer {

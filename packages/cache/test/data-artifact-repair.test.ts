@@ -281,10 +281,11 @@ describe('a data upload replacing a known broken canonical artifact', () => {
       });
       expect(repaired.artifact.storage_ref).not.toBe(before.artifact.storage_ref);
       await expect(valueOf(given, 'fresh')).resolves.toStrictEqual(given.bytes);
+      const nextValue = toBase64(new Uint8Array([1]));
       await expect(
         given.client.setData({
           ...requestFor(given, 'too-much', NOW),
-          valueBase64: toBase64(new Uint8Array([1])),
+          valueBase64: nextValue,
         }),
       ).rejects.toMatchObject({ code: 'quota_exceeded' });
 
