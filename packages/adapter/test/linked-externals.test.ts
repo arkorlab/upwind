@@ -24,11 +24,13 @@ async function emitted() {
   await writeFile(path.join(root, 'package.json'), '{"type":"module"}');
   await writeFile(
     path.join(modules, 'shared.mjs'),
-    "import value from './value.cjs'; export const marker = value.marker; export const url = import.meta.url;",
+    "import value from './value.cjs'; export const { marker, filename, dirname, bound } = value; export const url = import.meta.url;",
   );
   await writeFile(
     path.join(modules, 'value.cjs'),
-    "const { basename } = require('node:path'); module.exports = { marker: basename('/linked/ready') };",
+    `const { basename } = require('node:path');
+function localPaths(__filename, __dirname) { return { filename: __filename, dirname: __dirname }; }
+module.exports = { marker: basename('/linked/ready'), filename: __filename, dirname: __dirname, bound: localPaths('local-file', 'local-dir') };`,
   );
   for (const id of IDS) {
     const directory = path.join(modules, id);
@@ -39,7 +41,7 @@ async function emitted() {
     );
     await writeFile(
       path.join(directory, 'index.js'),
-      "export { marker, url as sharedUrl } from '../../shared.mjs'; export const url = import.meta.url;",
+      "export { marker, filename, dirname, bound, url as sharedUrl } from '../../shared.mjs'; export const url = import.meta.url;",
     );
   }
   const result = await bundleLinkedExternals({
@@ -50,10 +52,9 @@ async function emitted() {
   });
   assert.ok(result !== undefined);
   const files = await Promise.all(
-    result.modules.map(async (module) => ({
-      ...module,
-      contents: await readFile(module.file, 'utf8'),
-    })),
+    result.modules.map(async (module) => {
+      return { ...module, contents: await readFile(module.file, 'utf8') };
+    }),
   );
   return files;
 }
@@ -114,17 +115,33 @@ describe('linked external module URLs', () => {
   it('loads scoped entries and their shared require helper under the legacy Worker registry', async () => {
     const files = await emitted();
     const shared = files.filter((file) => file.name.startsWith('__linked/'));
+
     expect(shared).toHaveLength(1);
+
     const sharedFile = shared[0];
     assert.ok(sharedFile !== undefined);
+
     expect(sharedFile.contents).toContain('createRequire(import.meta.url)');
 
     await expect(inWorker(files, false)).resolves.toStrictEqual({ error: 'ERR_INVALID_ARG_VALUE' });
+
     const sharedUrl = pathToFileURL(path.posix.join('/bundle', sharedFile.name), {
       windows: false,
     }).href;
+    const filename = path.posix.join('/bundle', sharedFile.name);
+    const dirname = path.posix.dirname(filename);
+
     await expect(inWorker(files, true)).resolves.toStrictEqual(
-      IDS.map((id) => ({ marker: 'ready', sharedUrl, url: `file:///bundle/${id}` })),
+      IDS.map((id) => {
+        return {
+          marker: 'ready',
+          filename,
+          dirname,
+          bound: { filename: 'local-file', dirname: 'local-dir' },
+          sharedUrl,
+          url: `file:///bundle/${id}`,
+        };
+      }),
     );
   }, 20_000);
 
@@ -138,6 +155,9 @@ describe('linked external module URLs', () => {
 
     expect(loaded).toMatchObject({
       marker: 'ready',
+      filename: shared.file,
+      dirname: path.dirname(shared.file),
+      bound: { filename: 'local-file', dirname: 'local-dir' },
       sharedUrl: pathToFileURL(shared.file).href,
       url: nativeUrl,
     });
@@ -147,16 +167,21 @@ describe('linked external module URLs', () => {
     [
       '@scope/pkg-0123456789abcdef/a "#?%.js',
       'file:///bundle/@scope/pkg-0123456789abcdef/a%20%22%23%3F%25.js',
+      '/bundle/@scope/pkg-0123456789abcdef',
     ],
-    ['__linked/line\n<script>.js', 'file:///bundle/__linked/line%0A%3Cscript%3E.js'],
+    [
+      '__linked/line\n<script>.js',
+      'file:///bundle/__linked/line%0A%3Cscript%3E.js',
+      '/bundle/__linked',
+    ],
   ])(
     'encodes the final virtual filename %s without introducing source syntax',
-    (name, expected) => {
+    (name, expected, dirname) => {
       const state = { meta: {} };
       // eslint-disable-next-line sonarjs/code-eval -- only the adapter-generated banner runs with a fixed metadata object.
       runInNewContext(linkedModuleBanner(name).replaceAll('import.meta', 'meta'), state);
 
-      expect(state.meta).toStrictEqual({ url: expected });
+      expect(state.meta).toStrictEqual({ url: expected, filename: `/bundle/${name}`, dirname });
     },
   );
 });

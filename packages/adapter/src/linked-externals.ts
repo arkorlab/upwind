@@ -55,8 +55,13 @@ const SHARED_CHUNKS = '__linked/[name]-[hash].js';
  * Each emitted chunk is mounted under its own name, including shared and scoped modules.
  */
 export function linkedModuleBanner(fileName: string): string {
-  const url = pathToFileURL(path.posix.join('/bundle', fileName), { windows: false }).href;
-  return `if(import.meta.url===undefined)import.meta.url=${jsLiteral(url)};`;
+  const filename = path.posix.join('/bundle', fileName);
+  const url = pathToFileURL(filename, { windows: false }).href;
+  return [
+    `if(import.meta.url===undefined)import.meta.url=${jsLiteral(url)};`,
+    `if(import.meta.filename===undefined)import.meta.filename=${jsLiteral(filename)};`,
+    `if(import.meta.dirname===undefined)import.meta.dirname=${jsLiteral(path.posix.dirname(filename))};`,
+  ].join('');
 }
 
 /** Final names avoid percent-encoding Rolldown's preliminary hash placeholders in a banner. */
@@ -152,7 +157,13 @@ export async function bundleLinkedExternals(input: {
     ],
     transform: {
       inject: GLOBAL_OBJECT,
-      define: { ...THROWING_GLOBALS, 'process.env.NODE_ENV': '"production"' },
+      define: {
+        ...THROWING_GLOBALS,
+        'process.env.NODE_ENV': '"production"',
+        // Binding-aware definitions preserve a module's own locals while following its emitted chunk.
+        __filename: 'import.meta.filename',
+        __dirname: 'import.meta.dirname',
+      },
     },
     // A module these packages name and nobody installed is left to fail as it would under
     // Node.js — at run time, when the import runs — rather than failing the build: the package
