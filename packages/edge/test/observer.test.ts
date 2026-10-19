@@ -8,7 +8,7 @@ import { concatBytes, encodeUtf8 } from '@stayingupwind/core/util';
 import { DEFAULT_DELIVERY_POLICY, type EdgePointer } from '@stayingupwind/host/delivery';
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { EdgeHost } from '../src/edge-host.ts';
 import type { EdgeRuntime } from '../src/edge-runtime.ts';
@@ -17,6 +17,7 @@ import type { EdgeMetric } from '../src/observability/metrics.ts';
 import type { IncomingRequest } from '../src/request-context.ts';
 import { serveFromPointer } from '../src/route.ts';
 import { standaloneHost, type StandaloneEnv, standaloneRuntime } from '../src/standalone/index.ts';
+import { kvShellStrategy } from '../src/strategies/shell-kv.ts';
 import { htmlResponse, navigation, pprDocument, seedSite } from './helpers/site.ts';
 
 /**
@@ -336,6 +337,10 @@ describe('continuation dispatch accounting', () => {
 });
 
 describe('middleware calls in request totals', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it.each([
     { kind: 'resume', middleware: true, app: 1, storage: 1, document: true },
     { kind: 'head', middleware: true, app: 1, storage: 0, document: false },
@@ -345,8 +350,9 @@ describe('middleware calls in request totals', () => {
     { kind: 'rewritten', middleware: true, app: 1, storage: 1, document: false },
     { kind: 'rewrite-redispatched', middleware: true, app: 2, storage: 1, document: false },
     { kind: 'middleware-failed', middleware: true, app: 1, storage: 1, document: false },
-    { kind: 'unreachable', middleware: false, app: 0, storage: 0, document: false },
+    { kind: 'unreachable', middleware: false, app: 0, storage: 1, document: false },
   ])('counts each actual Function call when $kind', async (example) => {
+    const shellReads = vi.spyOn(kvShellStrategy, 'getShell');
     const partial = pprDocument();
     const document =
       example.kind === 'complete'
@@ -471,6 +477,7 @@ describe('middleware calls in request totals', () => {
     expect(points[0]?.subrequests).toBe(sent + example.storage);
     expect(points[0]?.redispatch).toBe(example.app === 2 ? 1 : 0);
     expect(points[0]?.fn).toBe(example.app === 0 ? undefined : fn);
+    expect(shellReads).toHaveBeenCalledTimes(example.storage);
   });
 });
 

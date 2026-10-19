@@ -149,10 +149,12 @@ async function fixture(answer: Answer, mode: Generation, warm = false, csp?: Csp
   const budgetTrips = vi.fn((): never => {
     throw new PatternBudgetExceededError({ source: 'target bypass fixture', valueLength: 1 });
   });
+  let preloadStarted = false;
   const rewritten = {
     ...targetEntry,
     get bypassFor() {
-      return budgetTrips();
+      // Routing-header discovery visits every entry before the speculative read starts.
+      return preloadStarted ? budgetTrips() : undefined;
     },
   };
   const derived = await deriveEntry(SCOPE, { kind: 'app-page', route: '/', pathname: '/' });
@@ -202,6 +204,7 @@ async function fixture(answer: Answer, mode: Generation, warm = false, csp?: Csp
   const original = kvShellStrategy.getShell.bind(kvShellStrategy);
   const reads = vi.spyOn(kvShellStrategy, 'getShell').mockImplementation((ref, edge) => {
     if (ref.sha256 === entry.shell.sha256) {
+      preloadStarted = true;
       entered.resolve(true);
       return shell.promise;
     }
