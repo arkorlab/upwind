@@ -40,6 +40,7 @@ import {
 import {
   allowRecoveryScript,
   NO_STORE_CACHE_CONTROL,
+  NULL_BODY_STATUSES,
   SHARED_CACHE_CONTROL_HEADERS,
 } from '@stayingupwind/core/request';
 import {
@@ -12460,7 +12461,7 @@ describe('what the check makes of the middleware', () => {
       async (status) => {
         const routes = [await routeOf('/', FRONT)];
         const files = { '/a.txt': fileOf('kept bytes', TEXT) };
-        const absent = status === 204 || status === 205 || status === 304;
+        const absent = NULL_BODY_STATUSES.has(status);
         decisions.set('/', { 'x-middleware-rewrite': '/a.txt' });
         decisionStatuses.set('/', status);
         answers.set('/', {

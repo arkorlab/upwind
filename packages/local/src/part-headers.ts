@@ -7,7 +7,7 @@ import {
   SHARED_CACHE_CONTROL_HEADERS,
 } from '@stayingupwind/core/request';
 import { mergeScopedMiddlewareHeaders } from '@stayingupwind/edge/handlers/responses';
-import { layStoredConfiguredOver } from '@stayingupwind/edge/internal/handlers/configured-headers';
+import { layStoredConfiguredOver } from '@stayingupwind/edge/internal/handlers/configured-headers.ts';
 
 import {
   type CheckedStack,

@@ -40,11 +40,10 @@ import {
   sentOf,
   servedAs,
   shellBypassFailure,
-  unprovedVerdict,
   whereLanded,
 } from './landings.ts';
 import { noncedOf, restampAt, unstampedFailure } from './nonces.ts';
-import { rewriteStatusVerdict } from './part-handoffs.ts';
+import { DOCUMENT_HANDOFFS, documentHandedOnVerdict } from './part-handoffs.ts';
 import type { Reading } from './reading.ts';
 import {
   type Application,
@@ -77,8 +76,6 @@ import { shellOf } from './shells.ts';
 const REGENERATED = /^passthrough;reason=regenerate(?:;|$)/u;
 /** What the edge says of a page Next.js renders for the request itself (`bypassFor`). */
 const BYPASSED = /^passthrough;reason=bypass-for(?:;|$)/u;
-/** What the edge says of a request it found no route of its own for (`unprovedRoute`). */
-const UNPROVED = /^passthrough;reason=route-not-proved(?:;|$)/u;
 const RECOVERY = Buffer.from(RECOVERY_MARKER);
 
 export interface Asked {
@@ -600,28 +597,12 @@ export async function routeVerdict(
   // Said of a page handed on whether the middleware ran or not: what was kept of it says, where it
   // agrees with what the edge says (`keptFailure`).
   const sent = sentOf(stack, asked);
-  // Handed on for want of a route, where a rule claims the request as the middleware left it.
-  const unproved = UNPROVED.test(answered)
-    ? unprovedVerdict(stack, sent, (await kept()).decided)
-    : undefined;
-  if (unproved !== undefined) {
-    return unproved;
-  }
-  if (BYPASSED.test(answered)) {
+  if (DOCUMENT_HANDOFFS.test(answered)) {
     const { decided } = await kept();
-    const bypassed =
-      keptFailure(answer, decided) === undefined
-        ? bypassedVerdict(stack, decided, sent)
-        : undefined;
-    if (bypassed !== undefined) {
-      return bypassed;
+    const handed = documentHandedOnVerdict(stack, sent, { answer, answered, decided });
+    if (handed !== undefined) {
+      return handed;
     }
-  }
-  if (/^passthrough;reason=rewrite-status(?:;|$)/u.test(answered)) {
-    const { decided } = await kept();
-    const covered = middlewareCovers(stack, url, asked.headers);
-    const unkept = keptFailure(answer, decided, covered);
-    return unkept === undefined ? rewriteStatusVerdict(decided, covered) : failed(unkept);
   }
   // A file of the build the middleware rewrote the request onto is the one other answer it may be.
   const ontoFile = answered.startsWith(FROM_STORAGE) && middlewareRan(answer);

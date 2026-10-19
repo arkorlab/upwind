@@ -26,13 +26,22 @@ import {
   type KeptMiddlewareResult,
   EDGE_HEADER,
   failed,
+  keptFailure,
+  middlewareCovers,
   skipped,
   unrunFailure,
   type Verdict,
   edgeReads,
 } from './answers.ts';
-import { claimedAsLeft, landingOf, unprovedVerdict } from './landings.ts';
+import {
+  bypassedVerdict,
+  claimedAsLeft,
+  landingOf,
+  type SentRequest,
+  unprovedVerdict,
+} from './landings.ts';
 import type { Part, PartKind } from './part-marks.ts';
+import type { Reading } from './reading.ts';
 
 /**
  * A part of a route the edge handed on to the Function rather than answer it (`part-verdicts.ts`):
@@ -78,6 +87,9 @@ const HANDED_ON_PAST_MIDDLEWARE =
 
 /** What the edge says of a request it handed on for want of a route: a navigation's alone. */
 const UNPROVED = /^passthrough;reason=route-not-proved(?:;|$)/u;
+/** Document handoffs that require a captured middleware decision before judging their reason. */
+export const DOCUMENT_HANDOFFS =
+  /^passthrough;reason=(?:route-not-proved|bypass-for|rewrite-status)(?:;|$)/u;
 /** What the edge says of a request it hands on as the middleware failed, before the cause. */
 const MIDDLEWARE_FAILED = 'middleware-failed';
 /** Why the edge hands any part on, as its account says: its route's state, or a pattern's cost. */
@@ -440,6 +452,37 @@ export function handedOnVerdict(stack: CheckedStack, part: Part, read: HandedOn)
     ? unrunFailure(decided, read.covered, 'handed it on')
     : undefined;
   return unrun === undefined ? skipped(APPLICATIONS) : failed(unrun);
+}
+
+/** A document handed on for its route or a captured middleware rewrite's status. */
+export function documentHandedOnVerdict(
+  stack: CheckedStack,
+  sent: SentRequest,
+  read: {
+    readonly answer: Reading;
+    readonly answered: string;
+    readonly decided: KeptMiddlewareResult | undefined;
+  },
+): Verdict | undefined {
+  const { answer, answered, decided } = read;
+  switch (handoffReasonOf(answered)) {
+    case 'route-not-proved': {
+      return unprovedVerdict(stack, sent, decided);
+    }
+    case 'bypass-for': {
+      return keptFailure(answer, decided) === undefined
+        ? bypassedVerdict(stack, decided, sent)
+        : undefined;
+    }
+    case 'rewrite-status': {
+      const covered = middlewareCovers(stack, sent.url, sent.headers);
+      const unkept = keptFailure(answer, decided, covered);
+      return unkept === undefined ? rewriteStatusVerdict(decided, covered) : failed(unkept);
+    }
+    default: {
+      return undefined;
+    }
+  }
 }
 
 /** A document or part handed on under the non-200 status of a captured middleware rewrite. */
