@@ -81,7 +81,7 @@ function partFailure(
   const range = read.what;
   // As the request for the range selects the rules, as the edge applies them to it.
   const expected = expectationOf(stack, url, file, { ...again, headers: sent });
-  if ((file.status ?? HTTP_OK) !== HTTP_OK) {
+  if ((file.status ?? HTTP_OK) !== HTTP_OK || !resumesOn(sent, expected.etag)) {
     const whole = fileFailure(file, answer, expected);
     return whole === undefined ? undefined : `asked for ${range}, ${whole}`;
   }
@@ -144,6 +144,15 @@ export async function rangeFailure(
   }
   const subject = subjectOf(stack, again, { file, head: asked.answer.head });
   return said(subject, partFailure(stack, url, { subject, again, sent, end, what }));
+}
+
+/** An If-Range tag must strongly name the representation selected by this follow-up. */
+function resumesOn(headers: Readonly<Record<string, string>>, etag: string): boolean {
+  const validator = headers['if-range'];
+  return (
+    validator === undefined ||
+    (!validator.startsWith('W/') && !etag.startsWith('W/') && validator === etag)
+  );
 }
 
 /**
@@ -273,6 +282,10 @@ function formFailure(
   const { file } = subject;
   const { answer } = again;
   const expected = expectationOf(stack, url, file, { ...again, headers: sent });
+  if ((file.status ?? HTTP_OK) !== HTTP_OK) {
+    const whole = fileFailure(file, answer, expected);
+    return whole === undefined ? undefined : `asked for ${range}, ${whole}`;
+  }
   const length = file.byteLength;
   if (length === 0) {
     return unsatisfiedFailure(range, { file, answer, expected });

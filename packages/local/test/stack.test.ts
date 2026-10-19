@@ -425,7 +425,11 @@ describe('a local stack', () => {
       'checked',
       'its-own',
     ]);
-    await expect(kept.json()).resolves.toStrictEqual({ decision: null, regenerated: null });
+    await expect(kept.json()).resolves.toStrictEqual({
+      decision: null,
+      regenerated: null,
+      generations: {},
+    });
     expect([reread.status, unknown.status]).toStrictEqual([404, 404]);
     await expect(generation.json()).resolves.toBeNull();
     expect(stack.backstage.port).not.toBe(stack.url.port);

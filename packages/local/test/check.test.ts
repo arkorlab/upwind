@@ -24,7 +24,7 @@ import {
   spelledPrefixOf,
   staticFileLocalesOf,
 } from '@stayingupwind/core/bundle';
-import { deriveEntry, KEY_SCHEMA_VERSION } from '@stayingupwind/core/cache';
+import { deriveEntry, KEY_SCHEMA_VERSION, kvGenerationKey } from '@stayingupwind/core/cache';
 import {
   buildProjectManifest,
   type DynamicRoute,
@@ -738,11 +738,13 @@ function capturedPartGenerations(
 ): Record<string, unknown> | undefined {
   const record = capturedPartRecords.get(pathname);
   if (record === undefined || !traceSegments.has(trace)) return undefined;
+  const [scope = '', entryId = ''] = record.split('|', 2);
+  const key = kvGenerationKey(scope, entryId);
   const generations = generationsOf(record);
   const entries = Object.entries(generations);
   return Object.fromEntries(
     entries.map(([seq, generation]) => {
-      const entry: [string, unknown] = [`${record}|${seq}`, generation];
+      const entry: [string, unknown] = [`${key}|${seq}`, generation];
       return entry;
     }),
   );

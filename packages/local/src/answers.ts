@@ -427,6 +427,12 @@ export interface Kept {
   readonly generations?: ReadonlyMap<string, RecordedGeneration> | undefined;
 }
 
+/** Use this response's captured reads, falling back to the old backstage only for old replies. */
+export function withGenerationEvidence(stack: CheckedStack, kept: Kept): CheckedStack {
+  if (kept.generations === undefined && stack.generationEvidence === undefined) return stack;
+  return { ...stack, generationEvidence: kept.generations };
+}
+
 /**
  * What the edge did for a traced request that its answer does not say, asked of `url` with
  * `headers`, read once: the middleware's own answer, which no client is sent and running the

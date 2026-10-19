@@ -559,6 +559,26 @@ export default defineConfig([
     rules: { 'import-x/no-nodejs-modules': 'error' },
   },
 
+  // This local Worker has nodejs_compat; its async context attributes only its own reads.
+  // Other Workers and Node built-ins retain their existing restrictions.
+  {
+    files: ['packages/local/src/workers/edge.ts'],
+    rules: {
+      'import-x/no-nodejs-modules': ['error', { allow: ['node:async_hooks'] }],
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: NODE_BUILTINS.filter((name) => name !== 'node:async_hooks').map((name) => {
+            return {
+              name,
+              message: 'This package must stay runtime-neutral: no Node.js built-in modules.',
+            };
+          }),
+        },
+      ],
+    },
+  },
+
   // A Worker's entry is loaded for its default export, which is the Worker.
   {
     files: [

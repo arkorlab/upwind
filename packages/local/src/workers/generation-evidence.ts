@@ -98,18 +98,17 @@ export class GenerationEvidence {
     this.#active.delete(trace);
   }
 
-  /** A coalesced read can belong to several requests; keep one metadata object for active checks. */
-  observeActive(key: string, value: unknown): void {
-    if (this.#active.size === 0 || !(value instanceof ArrayBuffer)) return;
+  /** Only the request that read a record may use it as evidence of its response. */
+  observe(trace: string | undefined, key: string, value: unknown): void {
+    if (trace === undefined || !this.#active.has(trace) || !(value instanceof ArrayBuffer)) return;
     const decoded = decodeGenerationPack(new Uint8Array(value));
-    if (decoded.kind === 'ok') this.heldActive(key, decoded.pack);
+    if (decoded.kind === 'ok') this.held(trace, key, decoded.pack);
   }
 
-  heldActive(key: string, pack: DecodedGenerationPack): void {
-    if (this.#active.size === 0) return;
-    const metadata = generationMetadata(pack);
+  held(trace: string | undefined, key: string, pack: DecodedGenerationPack): void {
+    if (trace === undefined || !this.#active.has(trace)) return;
     const at = `${key}|${pack.header.seq}`;
-    for (const trace of this.#active) this.#traces.get(trace)?.set(at, metadata);
+    this.#traces.get(trace)?.set(at, generationMetadata(pack));
   }
 
   snapshot(trace: string): Readonly<Record<string, RecordedGeneration>> {
@@ -122,12 +121,6 @@ export class GenerationEvidence {
     for (const { pack } of held) {
       if (kvGenerationKey(pack.header.scopeId, pack.header.entryId) === key) {
         found.set(String(pack.header.seq), generationMetadata(pack));
-      }
-    }
-    const prefix = `${key}|`;
-    for (const generations of this.#traces.values()) {
-      for (const [at, generation] of generations) {
-        if (at.startsWith(prefix)) found.set(at.slice(prefix.length), generation);
       }
     }
     return Object.fromEntries(found);

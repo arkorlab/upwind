@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 
 import {
@@ -78,12 +79,24 @@ function memoryFor(bytes: number): SharedByteLru<{ readonly pack: DecodedGenerat
   return new SharedByteLru<{ readonly pack: DecodedGenerationPack }>(new IsolateBudget(bytes));
 }
 
+/** The Worker uses the same callback on its persistent memory wrapper. */
+function scopedMemory(
+  memory: ReturnType<typeof memoryFor>,
+  evidence: GenerationEvidence,
+  requestTrace: AsyncLocalStorage<string>,
+) {
+  return watchedGenerationMemory(memory, (key, pack) => {
+    evidence.held(requestTrace.getStore(), key, pack);
+  });
+}
+
 describe('generation evidence kept by the local edge Worker', () => {
   it('permits the same recovery script as a resumable generation while preserving other headers', () => {
     const generations = new GenerationEvidence(256);
     generations.begin('trace');
     const headers = { 'content-security-policy': RESTRICTIVE, 'x-recorded': 'preserved' };
-    generations.observeActive(
+    generations.observe(
+      'trace',
       kvGenerationKey(SCOPE, 'entry_partial'),
       packet('entry_partial', 2, headers, true),
     );
@@ -100,7 +113,8 @@ describe('generation evidence kept by the local edge Worker', () => {
     const generations = new GenerationEvidence(256);
     generations.begin('trace');
     const headers = { 'content-security-policy': RESTRICTIVE, 'x-recorded': 'complete' };
-    generations.observeActive(
+    generations.observe(
+      'trace',
       kvGenerationKey(SCOPE, 'entry_complete'),
       packet('entry_complete', 2, headers, false),
     );
@@ -113,7 +127,8 @@ describe('generation evidence kept by the local edge Worker', () => {
     const generations = new GenerationEvidence(256);
     generations.begin('trace');
     const headers = { 'content-type': 'text/html', 'x-recorded': 'no policy' };
-    generations.observeActive(
+    generations.observe(
+      'trace',
       kvGenerationKey(SCOPE, 'entry_no_policy'),
       packet('entry_no_policy', 2, headers, true),
     );
@@ -125,10 +140,15 @@ describe('generation evidence kept by the local edge Worker', () => {
     const generations = new GenerationEvidence(256);
     generations.begin('trace');
     const firstKey = kvGenerationKey(SCOPE, 'entry_first');
-    generations.observeActive(firstKey, packet('entry_first', 2, { 'x-render': 'first' }, false));
+    generations.observe(
+      'trace',
+      firstKey,
+      packet('entry_first', 2, { 'x-render': 'first' }, false),
+    );
     for (let index = 0; index < 1025; index++) {
       const entry = `entry_${String(index)}`;
-      generations.observeActive(
+      generations.observe(
+        'trace',
         kvGenerationKey(SCOPE, entry),
         packet(entry, 2, { 'x-render': entry }, false),
       );
@@ -148,8 +168,8 @@ describe('generation evidence kept by the local edge Worker', () => {
     const generations = new GenerationEvidence(256);
     generations.begin('trace');
     const key = kvGenerationKey(SCOPE, 'entry_history');
-    generations.observeActive(key, packet('entry_history', 2, { 'x-render': 'old' }, false));
-    generations.observeActive(key, packet('entry_history', 3, { 'x-render': 'new' }, false));
+    generations.observe('trace', key, packet('entry_history', 2, { 'x-render': 'old' }, false));
+    generations.observe('trace', key, packet('entry_history', 3, { 'x-render': 'new' }, false));
 
     expect(observed(generations, 'entry_history', 2)?.headers['x-render']).toBe('old');
     expect(observed(generations, 'entry_history', 3)?.headers['x-render']).toBe('new');
@@ -159,11 +179,11 @@ describe('generation evidence kept by the local edge Worker', () => {
     const generations = new GenerationEvidence(256);
     generations.begin('trace');
     const key = kvGenerationKey(SCOPE, 'entry_valid');
-    generations.observeActive(key, packet('entry_valid', 2, { 'x-render': 'valid' }, false));
+    generations.observe('trace', key, packet('entry_valid', 2, { 'x-render': 'valid' }, false));
     const before = observed(generations, 'entry_valid', 2);
-    generations.observeActive(key, null);
-    generations.observeActive(key, 'not a record');
-    generations.observeActive(key, new ArrayBuffer(1));
+    generations.observe('trace', key, null);
+    generations.observe('trace', key, 'not a record');
+    generations.observe('trace', key, new ArrayBuffer(1));
 
     expect(observed(generations, 'entry_valid', 2)).toBe(before);
     expect(Object.keys(generations.snapshot('trace'))).toHaveLength(1);
@@ -174,13 +194,13 @@ describe('generation evidence kept by the local edge Worker', () => {
     const key = kvGenerationKey(SCOPE, 'entry_untraced');
     const value = packet('entry_untraced', 2, { 'x-render': 'untraced' }, false);
     for (let index = 0; index < 1025; index++) {
-      evidence.observeActive(`${key}_${String(index)}`, value);
+      evidence.observe('owned', `${key}_${String(index)}`, value);
     }
     evidence.begin('owned');
-    evidence.observeActive(key, value);
+    evidence.observe('owned', key, value);
     const captured = evidence.snapshot('owned');
     evidence.forget('owned');
-    evidence.observeActive(key, value);
+    evidence.observe('owned', key, value);
 
     expect(evidence.snapshot('unregistered')).toStrictEqual({});
     expect(evidence.snapshot('owned')).toStrictEqual({});
@@ -227,7 +247,7 @@ describe('generation evidence kept by the local edge Worker', () => {
     memory.set(key, first, 1024);
     evidence.begin('trace');
     const watched = watchedGenerationMemory(memory, (at, pack) => {
-      evidence.heldActive(at, pack);
+      evidence.held('trace', at, pack);
     });
     const hit = watched.get(key);
     watched.set(key, heldPacket('entry_history', 3), 1024);
@@ -247,48 +267,112 @@ describe('generation evidence kept by the local edge Worker', () => {
     const evidence = new GenerationEvidence(256);
     const key = kvGenerationKey(SCOPE, 'entry_history');
     evidence.begin('first');
-    evidence.heldActive(key, heldPacket('entry_history', 2).pack);
+    evidence.held('first', key, heldPacket('entry_history', 2).pack);
     for (let index = 0; index < 256; index++) {
       evidence.begin(`trace_${String(index)}`);
     }
-    evidence.heldActive(key, heldPacket('entry_history', 3).pack);
+    evidence.held('trace_255', key, heldPacket('entry_history', 3).pack);
 
     expect(evidence.snapshot('first')).toStrictEqual({});
     expect(evidence.snapshot('trace_255')[`${key}|3`]?.headers['x-render']).toBe('3');
   });
 
-  it('shares coalesced observations with active checks and stops retaining them after both finish', () => {
+  it('keeps each active request separate and releases both owners after disposal', () => {
     const evidence = new GenerationEvidence(256);
     const key = kvGenerationKey(SCOPE, 'entry_shared');
     const value = packet('entry_shared', 2, { 'x-render': 'shared' }, false);
-    evidence.observeActive(key, value);
+    evidence.observe(undefined, key, value);
     evidence.begin('first');
     evidence.begin('second');
-    evidence.observeActive(key, value);
+    evidence.observe('first', key, value);
     const first = evidence.snapshot('first');
     const second = evidence.snapshot('second');
     evidence.forget('first');
     evidence.forget('second');
-    evidence.observeActive(key, value);
+    evidence.observe('first', key, value);
 
     expect(first[`${key}|2`]?.headers['x-render']).toBe('shared');
-    expect(second[`${key}|2`]).toBe(first[`${key}|2`]);
+    expect(second).toStrictEqual({});
     expect(evidence.snapshot('first')).toStrictEqual({});
     expect(evidence.snapshot('second')).toStrictEqual({});
     expect(evidence.forRecord([], key)).toStrictEqual({});
     expect(Object.hasOwn(first[`${key}|2`] ?? {}, 'pack')).toBe(false);
   });
 
+  it('attributes interleaved memory hits and adoptions only to their asynchronous request', async () => {
+    const evidence = new GenerationEvidence(256);
+    const requestTrace = new AsyncLocalStorage<string>();
+    const memory = memoryFor(4096);
+    const firstKey = kvGenerationKey(SCOPE, 'entry_first');
+    const secondKey = kvGenerationKey(SCOPE, 'entry_second');
+    memory.set(firstKey, heldPacket('entry_first', 2), 1024);
+    const watched = scopedMemory(memory, evidence, requestTrace);
+    const firstRead = Promise.withResolvers<true>();
+    const secondRead = Promise.withResolvers<true>();
+    evidence.begin('first');
+    evidence.begin('second');
+    const first = requestTrace.run('first', async () => {
+      watched.get(firstKey);
+      firstRead.resolve(true);
+      await secondRead.promise;
+      watched.get(firstKey);
+    });
+    const second = requestTrace.run('second', async () => {
+      await firstRead.promise;
+      watched.set(secondKey, heldPacket('entry_second', 3), 1024);
+      secondRead.resolve(true);
+    });
+    await Promise.all([first, second]);
+    // The persistent wrapper also serves ordinary traffic, which belongs to neither trace.
+    watched.set(kvGenerationKey(SCOPE, 'entry_ordinary'), heldPacket('entry_ordinary', 4), 1024);
+    const firstSnapshot = evidence.snapshot('first');
+    const secondSnapshot = evidence.snapshot('second');
+
+    expect(Object.keys(firstSnapshot)).toStrictEqual([`${firstKey}|2`]);
+    expect(Object.keys(secondSnapshot)).toStrictEqual([`${secondKey}|3`]);
+    expect(firstSnapshot[`${firstKey}|2`]?.headers['x-render']).toBe('2');
+    expect(secondSnapshot[`${secondKey}|3`]?.headers['x-render']).toBe('3');
+    expect(requestTrace.getStore()).toBeUndefined();
+  });
+
+  it('excludes concurrent KV and authority reads belonging to a different or untraced request', async () => {
+    const evidence = new GenerationEvidence(256);
+    const key = kvGenerationKey(SCOPE, 'entry_request');
+    const otherKey = kvGenerationKey(SCOPE, 'entry_authority');
+    const otherRead = Promise.withResolvers<true>();
+    evidence.begin('first');
+    evidence.begin('second');
+    const first = async () => {
+      await otherRead.promise;
+      evidence.observe('first', key, packet('entry_request', 2, { 'x-render': 'own' }, false));
+    };
+    const pending = first();
+    evidence.observe('second', key, packet('entry_request', 3, { 'x-render': 'foreign' }, false));
+    evidence.held('second', otherKey, heldPacket('entry_authority', 4).pack);
+    evidence.observe(undefined, key, packet('entry_request', 5, { 'x-render': 'ordinary' }, false));
+    otherRead.resolve(true);
+    await pending;
+    const captured = evidence.snapshot('first');
+    evidence.seal('first');
+    evidence.observe('first', key, packet('entry_request', 6, { 'x-render': 'late' }, false));
+
+    expect(Object.keys(captured)).toStrictEqual([`${key}|2`]);
+    expect(captured[`${key}|2`]?.headers['x-render']).toBe('own');
+    expect(Object.keys(evidence.snapshot('second'))).toStrictEqual([`${key}|3`, `${otherKey}|4`]);
+    expect(evidence.snapshot('first')).toStrictEqual(captured);
+    expect(evidence.forRecord([], key)).toStrictEqual({});
+  });
+
   it('freezes a completed response snapshot even when its DELETE never arrives', () => {
     const evidence = new GenerationEvidence(256);
     const key = kvGenerationKey(SCOPE, 'entry_sealed');
     evidence.begin('unfinished-client');
-    evidence.heldActive(key, heldPacket('entry_sealed', 2).pack);
+    evidence.held('unfinished-client', key, heldPacket('entry_sealed', 2).pack);
     evidence.seal('unfinished-client');
     const captured = evidence.snapshot('unfinished-client');
     for (let index = 0; index < 1025; index++) {
       const entry = `entry_later_${String(index)}`;
-      evidence.heldActive(kvGenerationKey(SCOPE, entry), heldPacket(entry, 3).pack);
+      evidence.held('unfinished-client', kvGenerationKey(SCOPE, entry), heldPacket(entry, 3).pack);
     }
 
     expect(evidence.snapshot('unfinished-client')).toStrictEqual(captured);

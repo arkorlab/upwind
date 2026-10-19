@@ -13,6 +13,7 @@ import {
   type Kept,
   keptFailure,
   keptOf,
+  withGenerationEvidence,
   middlewareCovers,
   middlewareAnswered,
   middlewareRan,
@@ -227,7 +228,9 @@ async function headFailure(
     return undefined;
   }
   // Read whether or not the edge says the middleware ran, which is what is checked (`keptFailure`).
-  const { decided } = await keptOf(stack, trace, url, asked.headers);
+  const kept = await keptOf(stack, trace, url, asked.headers);
+  const { decided } = kept;
+  const captured = withGenerationEvidence(stack, kept);
   const covered = middlewareCovers(stack, url, asked.headers);
   const unkept =
     keptFailure(answer, decided, covered) ??
@@ -236,8 +239,8 @@ async function headFailure(
     return `asked for with HEAD, ${unkept}`;
   }
   const failure = complete
-    ? await headAnswerFailure(stack, asked, { answer, url, decided })
-    : await handedOnHeadFailure(stack, asked, { answer, decided });
+    ? await headAnswerFailure(captured, asked, { answer, url, decided })
+    : await handedOnHeadFailure(captured, asked, { answer, decided });
   return failure === undefined ? undefined : `asked for with HEAD, ${failure}`;
 }
 
@@ -489,7 +492,9 @@ async function regeneratedVerdict(
   read: { readonly kept: () => Promise<Kept>; readonly answer: Reading },
 ): Promise<Verdict> {
   const url = new URL(asked.requested, stack.site);
-  const { decided, regenerated } = await read.kept();
+  const kept = await read.kept();
+  const { decided, regenerated } = kept;
+  const captured = withGenerationEvidence(stack, kept);
   // Which says nothing of the middleware where it did not run: the edge regenerates a page only
   // behind it, so one the build's matchers cover is regenerated with a decision kept, or not at all.
   const covered = middlewareCovers(stack, url, asked.headers);
@@ -516,7 +521,7 @@ async function regeneratedVerdict(
     return failed(
       asked.route.cache === undefined
         ? 'regenerated in the foreground, though the route has no record to regenerate'
-        : ((await regenerationFailure(stack, asked.route, { regenerated, pathname })) ??
+        : ((await regenerationFailure(captured, asked.route, { regenerated, pathname })) ??
             regeneratedFailure(asked.route, read.answer, asked.coding) ??
             laid),
     );
@@ -526,7 +531,7 @@ async function regeneratedVerdict(
     return failed(`${done} ${whereLanded(landed)}, which has no record, and regenerated`);
   }
   const failure =
-    (await regenerationFailure(stack, landed, { regenerated, pathname })) ??
+    (await regenerationFailure(captured, landed, { regenerated, pathname })) ??
     regeneratedFailure(landed, read.answer, asked.coding) ??
     laid;
   return failure === undefined
@@ -611,14 +616,16 @@ export async function routeVerdict(
   }
   // What the middleware decided, as the edge ran it: whether it rewrote the request, and what it set
   // on the answer — read whether or not the edge says it ran, which is what is checked.
-  const { decided } = await kept();
+  const read = await kept();
+  const { decided } = read;
+  const captured = withGenerationEvidence(stack, read);
   const unkept =
     keptFailure(answer, decided, middlewareCovers(stack, url, asked.headers)) ??
     shellBypassFailure(stack, sent, decided);
   if (unkept !== undefined) {
     return failed(unkept);
   }
-  return await composedVerdict(stack, asked, { answer, url, decided });
+  return await composedVerdict(captured, asked, { answer, url, decided });
 }
 
 /**

@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+
 import { kvGenerationKey } from '@stayingupwind/core/cache';
 import {
   CACHE_ENTRY_HEADER,
@@ -57,8 +59,10 @@ const NOTHING_KEPT: TraceRecord = { decision: null, regenerated: null };
 
 /** What was kept of each traced request, by its id (`TRACE_HEADER`). */
 const traces = new Map<string, TraceRecord>();
-/** Only active traces retain observations beyond what the edge's byte-budgeted cache holds. */
+/** Only registered checks retain snapshots beyond what the edge's byte-budgeted cache holds. */
 const generations = new GenerationEvidence(MAX_TRACES);
+/** The request responsible for a memory hit or adoption, including its asynchronous work. */
+const generationTrace = new AsyncLocalStorage<string>();
 type LocalMemory = ReturnType<typeof standaloneRuntime>['memory'];
 /** The same memory identity for every local request, including coalesced and background work. */
 const observedMemories = new WeakMap<LocalMemory, LocalMemory>();
@@ -198,7 +202,7 @@ function servedFrom(
 }
 
 /** `kv`, whatever the edge reads of it looked at for a generation's headers on its way. */
-function watched(kv: KVNamespace): KVNamespace {
+function watched(kv: KVNamespace, trace: string): KVNamespace {
   return new Proxy(kv, {
     get(target, property): unknown {
       const member: unknown = Reflect.get(target, property, target);
@@ -210,7 +214,7 @@ function watched(kv: KVNamespace): KVNamespace {
       }
       return async (key: string, ...rest: unknown[]): Promise<unknown> => {
         const value: unknown = await Reflect.apply(member, target, [key, ...rest]);
-        generations.observeActive(key, value);
+        generations.observe(trace, key, value);
         return value;
       };
     },
@@ -225,10 +229,13 @@ function watched(kv: KVNamespace): KVNamespace {
 function servedEnv(env: StandaloneEnv, origin: URL, trace: string | undefined): StandaloneEnv {
   const local: StandaloneEnv = {
     ...env,
-    CACHE_STATE: watched(env.CACHE_STATE),
-    CACHE_SIGNALS: watchedCacheSignals(env.CACHE_SIGNALS, (key, value) => {
-      generations.observeActive(key, value);
-    }),
+    CACHE_STATE: trace === undefined ? env.CACHE_STATE : watched(env.CACHE_STATE, trace),
+    CACHE_SIGNALS:
+      trace === undefined
+        ? env.CACHE_SIGNALS
+        : watchedCacheSignals(env.CACHE_SIGNALS, (key, value) => {
+            generations.observe(trace, key, value);
+          }),
   };
   for (const name of Object.keys(env)) {
     const service: unknown = Reflect.get(env, name);
@@ -247,7 +254,7 @@ function localRuntime(env: StandaloneEnv): ReturnType<typeof standaloneRuntime> 
     memory = {
       ...runtime.memory,
       generations: watchedGenerationMemory(runtime.memory.generations, (key, pack) => {
-        generations.heldActive(key, pack);
+        generations.held(generationTrace.getStore(), key, pack);
       }),
     };
     observedMemories.set(runtime.memory, memory);
@@ -263,7 +270,10 @@ async function serveTraced(
   trace: string,
 ): Promise<Response> {
   try {
-    return await handleStandalone(request, env, ctx, localRuntime(env));
+    return await generationTrace.run(trace, () => {
+      const response = handleStandalone(request, env, ctx, localRuntime(env));
+      return response;
+    });
   } finally {
     generations.seal(trace);
   }

@@ -4,6 +4,7 @@ import {
   answerTo,
   type CheckedStack,
   keptOf,
+  withGenerationEvidence,
   middlewareAnswered,
   middlewareCovers,
   traced,
@@ -239,9 +240,9 @@ async function partHopAnswer(
   if (middlewareAnswered(answer) !== undefined) {
     return own;
   }
-  const { decided, generations } = await keptOf(stack, tracing.trace, sent.url, sent.headers);
-  const captured =
-    generations === undefined ? stack : { ...stack, generationEvidence: generations };
+  const kept = await keptOf(stack, tracing.trace, sent.url, sent.headers);
+  const { decided } = kept;
+  const captured = withGenerationEvidence(stack, kept);
   const covered = middlewareCovers(stack, sent.url, sent.headers);
   return {
     ...own,

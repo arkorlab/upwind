@@ -27,6 +27,7 @@ import {
   HTTP_OK,
   keptFailure,
   keptOf,
+  withGenerationEvidence,
   middlewareAnswered,
   middlewareCovers,
   policyFailure,
@@ -428,9 +429,18 @@ async function askedVerdict(
     return skipped(APPLICATIONS);
   }
   // What the middleware decided, which the edge answers a part it covers behind.
-  const { decided } = await keptOf(stack, trace, part.url, asked);
+  const kept = await keptOf(stack, trace, part.url, asked);
+  const { decided } = kept;
+  const captured = withGenerationEvidence(stack, kept);
   const covered = middlewareCovers(stack, part.url, asked);
-  return await partAnswerVerdict(stack, part, { answer, decided, covered, coding, asked, within });
+  return await partAnswerVerdict(captured, part, {
+    answer,
+    decided,
+    covered,
+    coding,
+    asked,
+    within,
+  });
 }
 
 /** Judge an already read part against the build or the generation that actually answered it. */
@@ -514,10 +524,15 @@ export async function propsHeadVerdict(
     const said = `answered by the edge itself (${EDGE_HEADER}: ${answered}), though it hands the Function a request for a page's props' headers alone`;
     return { verdict: failed(said), answer };
   }
-  const { decided } = await keptOf(stack, trace, part.url, part.headers);
+  const kept = await keptOf(stack, trace, part.url, part.headers);
+  const { decided } = kept;
+  const captured = withGenerationEvidence(stack, kept);
   const covered = middlewareCovers(stack, part.url, part.headers);
   const asked = part.headers;
-  return { verdict: handedOnVerdict(stack, part, { answered, decided, covered, asked }), answer };
+  return {
+    verdict: handedOnVerdict(captured, part, { answered, decided, covered, asked }),
+    answer,
+  };
 }
 
 /**
