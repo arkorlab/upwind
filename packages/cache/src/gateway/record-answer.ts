@@ -101,16 +101,13 @@ function recordLengthOf(
   const { scopeId, entryId, htmlLength, postponedLength } = header as Readonly<
     Record<string, unknown>
   >;
-  // This header is already read for its length. Its identity must also name the key requested:
-  // valid bytes stored under another entry's key are not that entry's delivery record.
-  if (
-    (typeof scopeId === 'string' && scopeId !== expectedScopeId) ||
-    (typeof entryId === 'string' && entryId !== expectedEntryId)
-  ) {
-    throw new Error('the delivery record does not belong to the requested scope and entry');
-  }
   if (!isCount(htmlLength) || !isCount(postponedLength)) {
     return undefined;
+  }
+  // This header is already read for its length. Its identity must also name the key requested:
+  // valid bytes stored under another entry's key are not that entry's delivery record.
+  if (scopeId !== expectedScopeId || entryId !== expectedEntryId) {
+    throw new Error('the delivery record does not belong to the requested scope and entry');
   }
   // Past what one KV value holds, it is no record's: read whole, it is whatever KV holds.
   const length = PREFIX_LENGTH + headerLength + htmlLength + postponedLength;
