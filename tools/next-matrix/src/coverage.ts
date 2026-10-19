@@ -56,6 +56,8 @@ export interface FixtureCoverage {
   readonly removeOwnInstrumentation?: boolean;
   /** A fixture may configure the built adapter with its own generic host hooks. */
   readonly adapterFile?: string;
+  /** A dedicated proof: opt in with `--fixture` and use exactly this resolved Next.js version. */
+  readonly proofVersion?: string;
   /** The physical output in dependency records; omitted for the usual `.next/`. */
   readonly buildDirectory?: string;
   /** Every patch a build of this fixture has to apply, in one Function or the other. */
@@ -103,6 +105,7 @@ export const FIXTURE_COVERAGE = {
     chunks: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
   },
   'next-twoslash': {
+    proofVersion: '16.4.2',
     expected: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
     chunks: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
   },

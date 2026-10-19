@@ -19,6 +19,7 @@ import {
 } from './coverage.ts';
 import { externalOutputHolds } from './external-output.ts';
 import { instrumentationHolds } from './instrumentation.ts';
+import { checkFixtureVersions, selectFixtures } from './selection.ts';
 import { twoslashHolds } from './twoslash.ts';
 
 /**
@@ -550,17 +551,10 @@ async function main(): Promise<void> {
     .split(',')
     .map((one) => one.trim());
   const only = argument(argv, '--fixture');
-  const fixtures =
-    only === undefined ? FIXTURE_LIST : FIXTURE_LIST.filter((one) => one.name === only);
-  // A name nothing matches would otherwise build nothing and call it a pass, which is the one
-  // outcome a check must never have.
-  if (fixtures.length === 0) {
-    const names = FIXTURE_LIST.map((one) => one.name).join(', ');
-    throw new Error(`next-matrix: no fixture named "${only ?? ''}"; there are ${names}`);
-  }
-
-  await adapterIsBuilt();
+  const fixtures = selectFixtures(FIXTURE_LIST, only);
   const versions = await Promise.all(wanted.map((one) => resolveVersion(one)));
+  checkFixtureVersions(fixtures, versions);
+  await adapterIsBuilt();
   console.log(
     `next-matrix: ${String(fixtures.length)} fixture(s) × ${String(versions.length)} version(s)`,
   );
