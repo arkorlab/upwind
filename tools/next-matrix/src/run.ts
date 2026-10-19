@@ -19,6 +19,7 @@ import {
 } from './coverage.ts';
 import { externalOutputHolds } from './external-output.ts';
 import { instrumentationHolds } from './instrumentation.ts';
+import { twoslashHolds } from './twoslash.ts';
 
 /**
  * Builds real applications with real Next.js versions, and holds each build to what the adapter
@@ -267,6 +268,7 @@ const HOLDS: Readonly<Record<FixtureName, Holds>> = {
   'next-edge-instrumentation': instrumentationHolds,
   'next-edge-instrumentation-no-own': instrumentationHolds,
   'next-external-output': externalOutputHolds,
+  'next-twoslash': twoslashHolds,
   'next-minimal': minimalHolds,
   'next-edge': edgeHolds,
   'next-workflow': workflowHolds,

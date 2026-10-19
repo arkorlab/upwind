@@ -102,6 +102,10 @@ export const FIXTURE_COVERAGE = {
     expected: [TURBOPACK_RUNTIME, TURBOPACK_ROOT, 'external-pages-api-dist'],
     chunks: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
   },
+  'next-twoslash': {
+    expected: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
+    chunks: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
+  },
   // Every patch an application reaches without the Workflow SDK: this fixture exists to be the one
   // build that reaches all of them. The SDK's own patch is `next-workflow`'s, below.
   'next-minimal': {
