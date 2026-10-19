@@ -74,6 +74,8 @@ const STORES = { edgeState: 'edge-state', cacheState: 'cache-state', artifacts: 
 
 /** The date the stack's own Workers run at; each Function keeps the one its build gave it. */
 const COMPATIBILITY_DATE = '2026-09-15';
+/** HTTP's default port is absent from the stack URL's host. */
+const HTTP_DEFAULT_PORT = 80;
 /**
  * What the site is served as. Next.js names every loopback address `localhost` in what it builds
  * (`NextURL`), so a rewrite to the application's own pages comes back under this name whatever
@@ -300,6 +302,10 @@ export function siteNamesOf(socket: Loopback, hostnames: readonly string[]): Sit
     ...served.flatMap((name) =>
       ['http', 'https'].map((scheme) => new URL(`${scheme}://${name}:${port}/`).origin),
     ),
+    // An HTTP default port is absent from stack.url.host, which the check names over HTTPS.
+    ...(socket.port === HTTP_DEFAULT_PORT
+      ? served.map((name) => new URL(`https://${name}/`).origin)
+      : []),
     ...aliases.map((alias) => alias.origin),
     ...hostnames.flatMap((hostname) => {
       const plain = new URL(`http://${hostname}/`).origin;

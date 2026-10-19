@@ -276,10 +276,56 @@ export interface Within {
  */
 const CLOCK_LEEWAY_MS = 2000;
 
+/** The cache mark a core validity permits, with no mark when the generation cannot be served. */
+function addCacheState(
+  states: Set<string>,
+  validity: ReturnType<typeof evaluateFreshness>['validity'],
+): void {
+  if (validity !== 'expired') {
+    states.add(validity === 'stale' ? STALE : HIT);
+  }
+}
+
+/**
+ * Every cache mark possible within the request's clock allowance. Its ends can straddle both
+ * revalidation and expiry: include the first integer millisecond past revalidation too, if it is
+ * inside the window and still serveable. Both clocks use Date.now; a fractional instant between
+ * consecutive milliseconds is no additional observation. The core retains its strict time-expiry
+ * and inclusive hard-expiry boundaries, even where those deadlines coincide.
+ */
+export function cacheStatesWithin(
+  freshness: NonNullable<RecordedGeneration['freshness']>,
+  within: Within,
+): ReadonlySet<string> {
+  const from = within.from - CLOCK_LEEWAY_MS;
+  const to = within.to + CLOCK_LEEWAY_MS;
+  const first = evaluateFreshness({ ...freshness, now: from });
+  const last = evaluateFreshness({ ...freshness, now: to });
+  const states = new Set<string>();
+  addCacheState(states, first.validity);
+  addCacheState(states, last.validity);
+  const { revalidateAt, expireAt } = first;
+  if (states.has(STALE) || revalidateAt.kind !== 'at' || !Number.isFinite(revalidateAt.unixMs)) {
+    return states;
+  }
+  const now = Math.max(Math.ceil(from), Math.floor(revalidateAt.unixMs) + 1);
+  const until = expireAt.kind === 'at' ? Math.min(to, expireAt.unixMs) : to;
+  if (
+    Number.isSafeInteger(now) &&
+    now > revalidateAt.unixMs &&
+    now > from &&
+    now < to &&
+    now <= until
+  ) {
+    addCacheState(states, evaluateFreshness({ ...freshness, now }).validity);
+  }
+  return states;
+}
+
 /**
  * Why a runtime generation's payload or props are not marked as the edge marks one from
  * `generation` (`generationHeaders` in the edge): `STALE` where it was stale as the edge read it,
- * judged as the edge judges it (`evaluateFreshness`) at each end of the request, and `HIT` else.
+ * judged as the edge judges it throughout the request (`cacheStatesWithin`), and `HIT` else.
  * None for a segment, which the edge marks no such way, nor for a generation recorded with nothing
  * to judge it by.
  */
@@ -292,16 +338,7 @@ function cacheStateFailure(
   if (freshness === undefined || read.within === undefined || part.kind === 'segment') {
     return undefined;
   }
-  const ends = [read.within.from - CLOCK_LEEWAY_MS, read.within.to + CLOCK_LEEWAY_MS];
-  const states = new Set(
-    ends.flatMap((now) => {
-      const { validity } = evaluateFreshness({ ...freshness, now });
-      if (validity === 'expired') {
-        return [];
-      }
-      return [validity === 'stale' ? STALE : HIT];
-    }),
-  );
+  const states = cacheStatesWithin(freshness, read.within);
   const said = answer.headers[CACHE_HEADER];
   if (typeof said === 'string' && states.has(said)) {
     return undefined;

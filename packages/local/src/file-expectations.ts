@@ -5,6 +5,8 @@ import {
   NO_STORE_CACHE_CONTROL,
   NULL_BODY_STATUS,
   NULL_BODY_STATUSES,
+  RSC_HEADER,
+  RSC_VARY,
   SHARED_CACHE_CONTROL_HEADERS,
 } from '@stayingupwind/core/request';
 import { mergeScopedMiddlewareHeaders } from '@stayingupwind/edge/handlers/responses';
@@ -151,7 +153,8 @@ export function expectationOf(
     readonly middleware: Decided;
   },
 ): FileExpectation {
-  const configured = headerRulesFor(stack.manifest, url, routedReads(url, read.headers));
+  const routed = routedReads(url, read.headers);
+  const configured = headerRulesFor(stack.manifest, url, routed);
   const scope = cookieScopeOf(stack);
   const laid = new Headers();
   layStoredConfiguredOver(laid, configured, scope, ENTITY_HEADERS);
@@ -166,6 +169,10 @@ export function expectationOf(
   const status = file.status ?? HTTP_OK;
   if (middleware?.kind === 'continue') {
     mergeScopedMiddlewareHeaders(laid, middleware.responseHeaders, scope);
+  }
+  const requestHeaders = middleware?.kind === 'continue' ? middleware.requestHeaders : routed;
+  if (requestHeaders.get(RSC_HEADER) === '1') {
+    laid.append('vary', RSC_VARY);
   }
   return {
     status:

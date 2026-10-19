@@ -41,6 +41,7 @@ import {
   allowRecoveryScript,
   NO_STORE_CACHE_CONTROL,
   NULL_BODY_STATUSES,
+  RSC_VARY,
   SHARED_CACHE_CONTROL_HEADERS,
 } from '@stayingupwind/core/request';
 import {
@@ -12208,6 +12209,7 @@ describe('what the check makes of the middleware', () => {
         headers: {
           'content-type': TEXT,
           'cache-control': GATED,
+          vary: RSC_VARY,
           'x-arkor-edge': `static;src=bucket;project=site;policy=default;m=0000;mw=hit`,
         },
         body: 'kept bytes',
@@ -12221,6 +12223,82 @@ describe('what the check makes of the middleware', () => {
 
       expect(result.failures).toStrictEqual([]);
       expect(partsAsked.has('/|/_tree')).toBe(true);
+    });
+
+    it.each([
+      { name: 'all required names', rsc: '1', vary: `Origin, ${RSC_VARY}`, valid: true },
+      { name: 'missing application name', rsc: '1', vary: RSC_VARY, valid: false },
+      {
+        name: 'missing segment protocol name',
+        rsc: '1',
+        vary: 'Origin, rsc, next-router-state-tree, next-router-prefetch',
+        valid: false,
+      },
+      { name: 'middleware removed RSC', rsc: '0', vary: 'Origin', valid: true },
+    ])('judges a file rewrite Vary with $name', async ({ rsc, vary, valid }) => {
+      const routes = [await routeOf('/', FRONT, { segments: { '/_tree': 'tree bytes' } })];
+      const files = { '/a.txt': fileOf('kept bytes', TEXT) };
+      answers.set('/', documentAnswer(FRONT, 'mw=hit;route=/'));
+      decidedForSegment.set('/|/_tree', {
+        'x-middleware-next': '1',
+        'x-middleware-rewrite': '/a.txt',
+        'x-middleware-override-headers': 'rsc',
+        'x-middleware-request-rsc': rsc,
+        vary: 'Origin',
+      });
+      partAnswers.set('/|/_tree', {
+        headers: {
+          'content-type': TEXT,
+          'cache-control': GATED,
+          vary,
+          'x-arkor-edge': `${FILE_EDGE};mw=hit`,
+        },
+        body: 'kept bytes',
+      });
+      answers.set('/a.txt', {
+        headers: { 'content-type': TEXT, 'cache-control': REVALIDATE, 'x-arkor-edge': FILE_EDGE },
+        body: 'kept bytes',
+      });
+      const result = await checkStack(stackOf(routes, files));
+      const failures = valid
+        ? []
+        : [
+            {
+              path: '/',
+              reason: `its prefetch segment /_tree, rewritten onto /a.txt, and answered with vary ${vary}, not the Origin, ${RSC_VARY} the application set`,
+            },
+          ];
+
+      expect(result.failures).toStrictEqual(failures);
+      expect(partsAsked.has('/|/_tree')).toBe(true);
+    });
+
+    it('keeps an ordinary file rewrite Vary without adding router fields', async () => {
+      const routes = [await routeOf('/', FRONT)];
+      const files = { '/a.txt': fileOf('kept bytes', TEXT) };
+      decisions.set('/', { 'x-middleware-rewrite': '/a.txt', vary: 'Origin' });
+      answers.set('/', {
+        headers: {
+          'content-type': TEXT,
+          'cache-control': GATED,
+          vary: 'Origin',
+          'x-arkor-edge': `${FILE_EDGE};mw=hit`,
+        },
+        body: 'kept bytes',
+      });
+      answers.set('/a.txt', {
+        headers: { 'content-type': TEXT, 'cache-control': REVALIDATE, 'x-arkor-edge': FILE_EDGE },
+        body: 'kept bytes',
+      });
+      const result = await checkStack(
+        withMiddleware(stackOf(routes, files), [{ sourceRegex: '^/$' }]),
+      );
+
+      expect(result.failures).toStrictEqual([]);
+      expect(result.skipped).toContainEqual({
+        path: '/',
+        reason: "the application's middleware rewrote it onto /a.txt",
+      });
     });
 
     it('judges a part rewritten onto a file before its own dynamic class', async () => {
@@ -12239,6 +12317,7 @@ describe('what the check makes of the middleware', () => {
         headers: {
           'content-type': TEXT,
           'cache-control': GATED,
+          vary: RSC_VARY,
           'x-arkor-edge': `${FILE_EDGE};mw=hit`,
         },
         body: 'kept bytes',

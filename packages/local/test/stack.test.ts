@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { OUT_DIR_NAME } from '@stayingupwind/adapter';
 import {
@@ -21,7 +22,9 @@ import {
 import { DEFAULT_DELIVERY_POLICY } from '@stayingupwind/host/delivery';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { bundleWorker } from '../src/bundle.ts';
 import { checkStack } from '../src/check.ts';
+import { type LocalWorker, type RunningWorkers, runWorkers } from '../src/miniflare.ts';
 import { loopbackFor } from '../src/ports.ts';
 import { type LocalStack, siteNamesOf, siteUrlOf, startStack } from '../src/stack.ts';
 
@@ -42,6 +45,60 @@ const IPV6 = (await loopbackFor(undefined)).hosts.includes('::1');
 function digestOf(document: string): { sha256: string; length: number } {
   const sha256 = createHash('sha256').update(document).digest('hex');
   return { sha256, length: Buffer.byteLength(document) };
+}
+
+/** The real outbound router, with a logical port-80 site and unprivileged physical sockets. */
+async function defaultPortWorkers(): Promise<RunningWorkers> {
+  const outbound = await bundleWorker(
+    fileURLToPath(new URL('../src/workers/outbound.ts', import.meta.url)),
+  );
+  const names = siteNamesOf({ hosts: ['127.0.0.1', '::1'], port: 80 }, []);
+  const site = siteUrlOf(new URL('http://127.0.0.1:80/'));
+  const workers: LocalWorker[] = [
+    {
+      name: 'function',
+      compatibilityDate: '2026-09-15',
+      modules: [
+        {
+          type: 'ESModule',
+          name: 'index.mjs',
+          contents: `export default {
+          fetch(request, env) {
+            return fetch(new URL('/echo?from=self', env.CHECKED_ORIGIN));
+          }
+        };`,
+        },
+      ],
+      bindings: { CHECKED_ORIGIN: `https://${site.host}` },
+      outbound: 'outbound',
+      socket: {},
+    },
+    {
+      name: 'outbound',
+      compatibilityDate: '2026-09-15',
+      modules: [{ type: 'ESModule', name: 'index.mjs', contents: outbound.script }],
+      bindings: { SITE_ORIGINS: names.origins },
+      services: { EDGE: 'edge' },
+    },
+    {
+      name: 'edge',
+      compatibilityDate: '2026-09-15',
+      modules: [
+        {
+          type: 'ESModule',
+          name: 'index.mjs',
+          contents: `export default {
+          fetch(request) {
+            return Response.json({ through: 'local-edge', url: request.url });
+          }
+        };`,
+        },
+      ],
+    },
+  ];
+  return runWorkers(workers, () => {
+    // Nothing the fixture Workers log is read here.
+  });
 }
 
 /**
@@ -276,9 +333,32 @@ describe("the names a stack's site goes by", () => {
       'http://localhost:443,https://localhost,http://127.0.0.1:443,https://127.0.0.1',
     );
     expect(plain.origins).toBe(
-      'http://localhost,https://localhost:80,http://127.0.0.1,https://127.0.0.1:80',
+      'http://localhost,https://localhost:80,http://127.0.0.1,https://127.0.0.1:80,https://localhost,https://127.0.0.1',
     );
+    expect(plain.origins.split(',')).not.toContain('https://localhost:8080');
+    expect(plain.origins.split(',')).not.toContain('https://elsewhere.invalid');
   });
+
+  it(
+    'keeps a Function self-fetch under the normalized checker origin on the local edge',
+    async () => {
+      const running = await defaultPortWorkers();
+      try {
+        const url = await running.url('function');
+        const answer = await fetch(url);
+
+        expect(url.port).not.toBe('80');
+        expect(answer.status).toBe(200);
+        await expect(answer.json()).resolves.toStrictEqual({
+          through: 'local-edge',
+          url: 'https://localhost/echo?from=self',
+        });
+      } finally {
+        await running.dispose();
+      }
+    },
+    START_MS,
+  );
 });
 
 describe('a local stack', () => {
