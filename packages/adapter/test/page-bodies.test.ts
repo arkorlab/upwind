@@ -113,10 +113,10 @@ describe('completed page bodies collected without Function copies', () => {
     const uploaded = await Promise.all(
       (await readdir(path.join(outDir, 'blobs')))
         .toSorted((a, b) => a.localeCompare(b))
-        .map(async (sha256) => ({
-          sha256,
-          bytes: await readFile(path.join(outDir, 'blobs', sha256)),
-        })),
+        .map(async (sha256) => {
+          const bytes = await readFile(path.join(outDir, 'blobs', sha256));
+          return { sha256, bytes };
+        }),
     );
     return { ...result, uploaded };
   }
