@@ -88,6 +88,20 @@ export const routeCacheSchema = z.object({
 });
 export type RouteCache = z.infer<typeof routeCacheSchema>;
 
+/**
+ * A complete non-HTML response a host may read from its cache authority. Its current record,
+ * never a response header from the application, supplies the body and its freshness. A reader
+ * unaware of this separate table leaves these requests to the application's Function.
+ */
+export const routeBodyEntrySchema = z.object({
+  pathname: z.string().startsWith('/'),
+  route: z.string().startsWith('/'),
+  entryId: z.string().min(1),
+  bypassFor: z.array(routeHasSchema).optional(),
+  function: splitFunctionNameSchema.optional(),
+});
+export type RouteBodyEntry = z.infer<typeof routeBodyEntrySchema>;
+
 /** The scope a manifest's cache entries belong to: one deployment, under one key schema. */
 export const manifestCacheSchema = z.object({
   keySchemaVersion: z.literal(KEY_SCHEMA_VERSION),
@@ -500,6 +514,12 @@ const projectFields = {
   app: appRuntimeSchema,
   /** Files served straight from storage, by pathname. */
   staticFiles: staticFilesSchema.optional(),
+  /**
+   * Exact Node.js route-handler responses whose non-HTML generations a host may serve whole.
+   * Separate from document routes: older readers keep forwarding them, as they did before this
+   * field existed. Omitted when the host serves none, preserving existing manifests' bytes.
+   */
+  routeBodies: z.record(z.string().startsWith('/'), routeBodyEntrySchema).optional(),
   /** The application's middleware matchers: a document these match is not served without it. */
   middleware: middlewareConfigSchema.optional(),
   /**

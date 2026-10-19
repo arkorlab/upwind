@@ -127,3 +127,5 @@ export {
   DURABLE_OBJECT_BUNDLE_VERSION,
   DURABLE_OBJECT_SPLIT_BUNDLE_VERSION,
 } from './durable-objects.ts';
+
+export { edgeServableRouteBodies } from './route-bodies.ts';
