@@ -11,10 +11,13 @@ export async function readTagRecords(
   scopeId: string,
   values: readonly string[],
 ): Promise<TagsGetResponse> {
+  const requested = new Map<string, string>();
   const keys = await Promise.all(
-    [...new Set(values)].map(async (value) =>
-      kvTagKey(scopeId, await tagIdFor(scopeId, tagKindOf(value), value)),
-    ),
+    [...new Set(values)].map(async (value) => {
+      const key = kvTagKey(scopeId, await tagIdFor(scopeId, tagKindOf(value), value));
+      requested.set(key, value);
+      return key;
+    }),
   );
   const tags: TagsGetResponse['tags'] = [];
   // One Next.js tag list can exceed KV's 100-key bulk limit. Start its independent reads together
@@ -36,10 +39,24 @@ export async function readTagRecords(
     }
     const results = await Promise.all(batches);
     for (const records of results) {
-      for (const value of records.values()) {
-        if (value !== null) tags.push(tagDeltaEntrySchema.parse(value));
+      for (const [key, value] of records) {
+        if (value !== null) tags.push(tagAtKey(scopeId, key, requested, value));
       }
     }
   }
   return { tags };
+}
+
+/** A missing record is meaningful, so a wrong record must fail the whole read, never be omitted. */
+function tagAtKey(
+  scopeId: string,
+  key: string,
+  requested: ReadonlyMap<string, string>,
+  value: unknown,
+): TagsGetResponse['tags'][number] {
+  const tag = tagDeltaEntrySchema.parse(value);
+  if (requested.get(key) !== tag.value || kvTagKey(scopeId, tag.tagId) !== key) {
+    throw new Error('the tag record does not match its requested key');
+  }
+  return tag;
 }
