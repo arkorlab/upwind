@@ -92,7 +92,7 @@ export function reconcileTag(input: TxInput, under: Reconciliation): void {
     condemnPage(input, rows, under);
     if (rows.length < PAGE) return;
     // Every accepted entry id is nonempty; each page advances in the existing tag membership PK.
-    const last = rows[rows.length - 1];
+    const last = rows.at(-1);
     if (last === undefined) return;
     after = last.entry_id;
   }
