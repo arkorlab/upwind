@@ -18,6 +18,7 @@ import { documentAnswerAt } from '../src/document-adoption.ts';
 import { readDocument } from '../src/document-reading.ts';
 import { read } from '../src/reading.ts';
 import { documentRedirects } from '../src/redirects.ts';
+import { routeFollowUpFailure } from '../src/route-follow-ups.ts';
 
 const AT = '2026-10-19T00:00:00.000Z';
 const HTML = 'text/html; charset=utf-8';
@@ -34,7 +35,10 @@ const fixture = {
   status: 200,
   bot: false,
   override: undefined as 'br' | 'gzip' | undefined,
+  target: '/landing',
+  unknownOpen: false,
   middleClosed: Promise.withResolvers<true>(),
+  terminalClosed: Promise.withResolvers<true>(),
 };
 const visits: { readonly path: string; readonly headers: IncomingMessage['headers'] }[] = [];
 const traces: string[] = [];
@@ -89,7 +93,7 @@ const server = createServer((request, response) => {
   }
   if (pathname === '/middle') {
     response.writeHead(302, {
-      location: '/landing',
+      location: fixture.target,
       'content-encoding': 'gzip',
       'set-cookie': 'hop=kept; Path=/',
       'referrer-policy': 'no-referrer',
@@ -98,6 +102,18 @@ const server = createServer((request, response) => {
       fixture.middleClosed.resolve(true);
     });
     // No body bytes or EOF: following Location must not wait for the response's body deadline.
+    response.flushHeaders();
+    return;
+  }
+  if (fixture.unknownOpen && pathname === '/unrecorded') {
+    response.writeHead(200, {
+      'content-type': HTML,
+      'content-encoding': 'gzip',
+      'x-arkor-edge': 'passthrough;reason=not-recorded',
+    });
+    response.on('close', () => {
+      fixture.terminalClosed.resolve(true);
+    });
     response.flushHeaders();
     return;
   }
@@ -201,6 +217,25 @@ function stack(): CheckedStack {
   return fixture.stack;
 }
 
+function metadataStack(): CheckedStack {
+  const original = stack();
+  const route = original.manifest.routes['/landing'];
+  assert(route?.cache !== undefined, 'the landing has a cache delivery policy');
+  const landing = { ...route, cache: { ...route.cache, delivery: 'resume' as const } };
+  return {
+    ...original,
+    manifest: {
+      ...original.manifest,
+      htmlLimitedBots: '.*',
+      routes: {
+        ...original.manifest.routes,
+        '/landing': landing,
+        '/start': { ...landing, pathname: '/start' },
+      },
+    },
+  };
+}
+
 describe('redirected documents retain their original request and response', () => {
   beforeAll(async () => {
     fixture.bundleDir = mkdtempSync(path.join(tmpdir(), 'upwind-document-adoption-'));
@@ -218,7 +253,10 @@ describe('redirected documents retain their original request and response', () =
     fixture.status = 200;
     fixture.bot = false;
     fixture.override = undefined;
+    fixture.target = '/landing';
+    fixture.unknownOpen = false;
     fixture.middleClosed = Promise.withResolvers<true>();
+    fixture.terminalClosed = Promise.withResolvers<true>();
     visits.length = 0;
     traces.length = 0;
   });
@@ -340,14 +378,75 @@ describe('redirected documents retain their original request and response', () =
         documentAnswer: (sent) => documentAnswerAt(own, Buffer.byteLength(DOCUMENT), sent, 'gzip'),
       });
       await fixture.middleClosed.promise;
+      const judge = followed.last?.documentFailure;
+      assert(judge !== undefined, 'the adopted landing retains its intentional document verdict');
 
       expect(followed.failure).toBeUndefined();
-      await expect(Promise.resolve(followed.last?.documentFailure?.())).resolves.toBe(failure);
+      await expect(judge()).resolves.toBe(failure);
       expect(followed.last?.whole?.sha256).toBe(DIGEST);
       expect(visits.at(-1)?.headers['user-agent']).toBe(agent);
       expect(traces).toStrictEqual(['PUT', 'DELETE', 'PUT', 'GET', 'DELETE']);
     },
   );
+
+  it('keeps an intentionally unjudged metadata landing through the actual follow-up verdict', async () => {
+    fixture.bot = true;
+    const own = metadataStack();
+    const route = own.manifest.routes['/start'];
+    assert(route !== undefined, 'the starting route is recorded');
+    const failure = await routeFollowUpFailure(own, Buffer.byteLength(DOCUMENT), {
+      key: '/start',
+      route,
+      requested: '/start',
+      headers: { ...HEADERS, 'user-agent': 'Chrome/' },
+      exact: true,
+    });
+
+    expect(failure).toBeUndefined();
+    expect(visits.some(({ path: pathname }) => pathname === '/landing')).toBe(true);
+    expect(traces.includes('GET')).toBe(true);
+  });
+
+  it('closes an unrecorded streaming landing at its headers through actual follow-ups', async () => {
+    fixture.target = '/unrecorded';
+    fixture.unknownOpen = true;
+    const own = metadataStack();
+    const route = own.manifest.routes['/start'];
+    assert(route !== undefined, 'the starting route is recorded');
+    const failure = await routeFollowUpFailure(own, Buffer.byteLength(DOCUMENT), {
+      key: '/start',
+      route,
+      requested: '/start',
+      headers: { ...HEADERS, 'user-agent': 'Chrome/' },
+      exact: true,
+    });
+    await fixture.terminalClosed.promise;
+
+    expect(failure).toBeUndefined();
+    expect(visits.some(({ path: pathname }) => pathname === '/unrecorded')).toBe(true);
+    expect(traces.includes('GET')).toBe(false);
+  });
+
+  it.each([
+    { status: 200, failure: undefined },
+    { status: 500, failure: 'answered 500' },
+  ])('still reads a $status landing identified only by its response account', async (row) => {
+    fixture.status = row.status;
+    const own = stack();
+    const answered = await documentAnswerAt(
+      own,
+      Buffer.byteLength(DOCUMENT),
+      { url: new URL('/unrecorded', own.site), headers: HEADERS },
+      'gzip',
+    );
+    assert(typeof answered !== 'string', 'the account-scoped document was read');
+    const judge = answered.documentFailure;
+    assert(judge !== undefined, 'the known account retains a mandatory document verdict');
+
+    await expect(judge()).resolves.toBe(row.failure);
+    expect(answered.whole?.sha256).toBe(DIGEST);
+    expect(traces).toStrictEqual(['PUT', 'GET', 'DELETE']);
+  });
 
   it('keeps ordinary identity document reading whole despite a non-redirect Location', async () => {
     const own = stack();

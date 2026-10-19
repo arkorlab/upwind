@@ -1,4 +1,4 @@
-import { answeredBy, type CheckedStack } from './answers.ts';
+import { answeredBy, type CheckedStack, EDGE_HEADER } from './answers.ts';
 import { sentBlockingMetadata } from './browsers.ts';
 import type { Accepted } from './codings.ts';
 import { capturedDocument } from './document-reading.ts';
@@ -15,11 +15,16 @@ export async function documentAnswerAt(
 ): Promise<Answered | string> {
   const { url, headers } = sent;
   const requested = `${url.pathname}${url.search}`;
+  const requestedKey = documentRouteAt(stack.manifest, url, headers);
+  const keyOf = (account: string): string | undefined =>
+    requestedKey ?? landedRouteOf(stack.manifest, account);
   const read = await capturedDocument(stack, headBytes, {
     requested,
     headers,
     coding,
-    headersOnly: redirectHeaders,
+    headersOnly: (status, responseHeaders) =>
+      redirectHeaders(status, responseHeaders) ||
+      keyOf(String(responseHeaders[EDGE_HEADER] ?? '')) === undefined,
   });
   if (typeof read === 'string') {
     return read;
@@ -28,15 +33,13 @@ export async function documentAnswerAt(
   if (read.kind === 'headers') {
     return answered;
   }
-  const key =
-    documentRouteAt(stack.manifest, url, headers) ??
-    landedRouteOf(stack.manifest, answeredBy(read.answer));
+  const key = keyOf(answeredBy(read.answer));
   const route = key === undefined ? undefined : stack.manifest.routes[key];
   if (key === undefined || route === undefined) {
     return answered;
   }
   if (sentBlockingMetadata(stack.manifest, route, new Headers(headers))) {
-    return answered;
+    return { ...answered, documentFailure: () => Promise.resolve(undefined) };
   }
   const asked = {
     key,
