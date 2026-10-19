@@ -69,11 +69,11 @@ async function holdingWrite() {
   return { done, writing };
 }
 
-async function currentBytes(): Promise<Uint8Array> {
+async function currentBytes(scopeId = 'scope'): Promise<Uint8Array> {
   return encodeGenerationPack(
     {
       schemaVersion: 1,
-      scopeId: 'scope',
+      scopeId,
       entryId: 'entry',
       generationId: 'generation',
       seq: 1,
@@ -104,10 +104,10 @@ function responseOf(answer: RecordAnswer | undefined): Response {
   return recordResponse(answer);
 }
 
-async function nativeBytes(kind: string): Promise<Uint8Array> {
+async function nativeBytes(kind: string, scopeId: string): Promise<Uint8Array> {
   switch (kind) {
     case 'current': {
-      return currentBytes();
+      return currentBytes(scopeId);
     }
     case 'empty': {
       return new Uint8Array();
@@ -135,7 +135,7 @@ describe('room for unrecognized delivery record bytes', () => {
     const value = legacy();
     records(new Map([['legacy', value.stream]]));
     const write = await holdingWrite();
-    const reading = readRecordAnswer(env.CACHE_STATE, 'legacy');
+    const reading = readRecordAnswer(env.CACHE_STATE, 'legacy', 'scope', 'entry');
     try {
       await vi.advanceTimersByTimeAsync(0);
 
@@ -153,7 +153,7 @@ describe('room for unrecognized delivery record bytes', () => {
     vi.useFakeTimers();
     const value = legacy();
     records(new Map([['legacy', value.stream]]));
-    const answer = await readRecordAnswer(env.CACHE_STATE, 'legacy');
+    const answer = await readRecordAnswer(env.CACHE_STATE, 'legacy', 'scope', 'entry');
     const made = vi.fn(() => Promise.resolve('write'));
     const writing = withBodyRoom(BODY_ROOM_BYTES, WAIT_MS, made, () => 'refused');
     try {
@@ -179,8 +179,8 @@ describe('room for unrecognized delivery record bytes', () => {
         ['second', second.stream],
       ]),
     );
-    const answer = await readRecordAnswer(env.CACHE_STATE, 'first');
-    const reading = readRecordAnswer(env.CACHE_STATE, 'second');
+    const answer = await readRecordAnswer(env.CACHE_STATE, 'first', 'scope', 'entry');
+    const reading = readRecordAnswer(env.CACHE_STATE, 'second', 'scope', 'entry');
     try {
       await vi.advanceTimersByTimeAsync(0);
 
@@ -201,8 +201,8 @@ describe('room for unrecognized delivery record bytes', () => {
   it.each(['legacy', 'older', 'malformed', 'empty', 'current'])(
     'keeps actual KV %s bytes, length and gateway metering exact',
     async (kind) => {
-      const bytes = await nativeBytes(kind);
       const scopeId = `legacy_${kind}`;
+      const bytes = await nativeBytes(kind, scopeId);
       const entryId = 'entry';
       await env.CACHE_STATE.put(kvGenerationKey(scopeId, entryId), bytes);
       const read = vi.fn<(scopeId: string, bytes: number) => void>();
@@ -235,7 +235,7 @@ describe('room for unrecognized delivery record bytes', () => {
     vi.useFakeTimers();
     const write = await holdingWrite();
     try {
-      const answer = await readRecordAnswer(env.CACHE_STATE, 'current');
+      const answer = await readRecordAnswer(env.CACHE_STATE, 'current', 'scope', 'entry');
 
       expect(answer?.body).toBeInstanceOf(ReadableStream);
 
@@ -249,7 +249,7 @@ describe('room for unrecognized delivery record bytes', () => {
   it('keeps the selected small-write bypass while a legacy body holds room', async () => {
     vi.useFakeTimers();
     records(new Map([['legacy', legacy().stream]]));
-    const answer = await readRecordAnswer(env.CACHE_STATE, 'legacy');
+    const answer = await readRecordAnswer(env.CACHE_STATE, 'legacy', 'scope', 'entry');
     const made = vi.fn(() => Promise.resolve('small'));
     try {
       await expect(
@@ -279,7 +279,9 @@ describe('room for unrecognized delivery record bytes', () => {
     );
     records(new Map([['legacy', stream]]));
 
-    await expect(readRecordAnswer(env.CACHE_STATE, 'legacy')).rejects.toThrow('legacy read failed');
+    await expect(readRecordAnswer(env.CACHE_STATE, 'legacy', 'scope', 'entry')).rejects.toThrow(
+      'legacy read failed',
+    );
     await expect(
       withBodyRoom(
         BODY_ROOM_BYTES,
@@ -297,7 +299,7 @@ describe('room for unrecognized delivery record bytes', () => {
     const write = await holdingWrite();
     const reading = (async () => {
       try {
-        return await readRecordAnswer(env.CACHE_STATE, 'legacy');
+        return await readRecordAnswer(env.CACHE_STATE, 'legacy', 'scope', 'entry');
       } catch (error) {
         return error;
       }
@@ -318,7 +320,7 @@ describe('room for unrecognized delivery record bytes', () => {
     vi.useFakeTimers();
     records(new Map([['legacy', legacy().stream]]));
     const write = await holdingWrite();
-    const reading = readRecordAnswer(env.CACHE_STATE, 'legacy');
+    const reading = readRecordAnswer(env.CACHE_STATE, 'legacy', 'scope', 'entry');
     dropRecordWhenRead(reading);
     write.done.resolve(undefined);
     await write.writing;
