@@ -246,19 +246,61 @@ describe('explicit declaration data traces', () => {
     }).toThrow('carries a module');
   });
 
-  it('refuses an unproved monorepo root interpretation instead of inventing an alias', async () => {
+  it('uses an explicit repository root for nested application and hoisted package declarations', async () => {
     const nested = path.join(project, 'apps', 'site');
     const file = path.join(nested, 'types', 'entry.d.ts');
     await mkdir(path.dirname(file), { recursive: true });
     await writeFile(file, 'project declaration');
+    const fixture = await declarationPackage(project, 'typescript', '5.9.2', {
+      'lib/lib.d.ts': 'hoisted declaration',
+    });
+    await aliasPackage(nested, 'typescript', fixture.root);
+    const packageName = 'apps/site/node_modules/typescript/lib/lib.d.ts';
+    const assets = {
+      'apps/site/types/entry.d.ts': file,
+      [packageName]: fixture.files['lib/lib.d.ts']!,
+    };
 
-    expect(() => {
-      return tracedFiles(
-        [{ assets: { 'apps/site/types/entry.d.ts': file } }],
-        nested,
-        path.join(nested, '.next'),
-      );
-    }).toThrow('declaration');
+    expect(() => tracedFiles([{ assets }], nested, path.join(nested, '.next'))).toThrow(
+      'declaration',
+    );
+    expect(tracedFiles([{ assets }], nested, path.join(nested, '.next'), project)).toStrictEqual([
+      { name: packageName, filePath: fixture.files['lib/lib.d.ts'] },
+      { name: 'apps/site/types/entry.d.ts', filePath: file },
+    ]);
+  });
+
+  it('requires lexical and real project containment in the declared repository', async () => {
+    const file = path.join(project, 'entry.d.ts');
+    await writeFile(file, 'declaration');
+    const outside = path.join(root, 'other-repository');
+    await mkdir(outside);
+    const assets = { 'entry.d.ts': file };
+
+    expect(() => tracedFiles([{ assets }], project, dist, outside)).toThrow('declaration');
+
+    const linkedProject = path.join(project, 'linked-application');
+    await symlink(outside, linkedProject, 'dir');
+
+    expect(() =>
+      tracedFiles([{ assets }], linkedProject, path.join(linkedProject, '.next'), project),
+    ).toThrow('declaration');
+  });
+
+  it('rejects hoisted declaration targets outside the supplied repository', async () => {
+    const nested = path.join(project, 'apps', 'site');
+    await mkdir(nested, { recursive: true });
+    const fixture = await declarationPackage(root, 'typescript', '5.9.2', {
+      'lib/lib.d.ts': 'outside declaration',
+    });
+    await aliasPackage(nested, 'typescript', fixture.root);
+    const assets = {
+      'apps/site/node_modules/typescript/lib/lib.d.ts': fixture.files['lib/lib.d.ts']!,
+    };
+
+    expect(() => tracedFiles([{ assets }], nested, path.join(nested, '.next'), project)).toThrow(
+      'declaration',
+    );
   });
 
   it('preserves ordinary data names and excludes code and untraced package data', async () => {
@@ -273,12 +315,17 @@ describe('explicit declaration data traces', () => {
     await writeFile(builtDeclaration, 'built server asset');
 
     expect(
-      tracedFiles([{ assets: { asset: builtDeclaration } }], project, externalDist),
+      tracedFiles([{ assets: { asset: builtDeclaration } }], project, externalDist, root),
     ).toStrictEqual([
       { name: '.upwind-build/server/assets/template.d.ts', filePath: builtDeclaration },
     ]);
     expect(
-      tracedFiles([{ assets: { ignoredLogicalAlias: data, packageData, code } }], project, dist),
+      tracedFiles(
+        [{ assets: { ignoredLogicalAlias: data, packageData, code } }],
+        project,
+        dist,
+        root,
+      ),
     ).toStrictEqual([{ name: 'data.json', filePath: data }]);
   });
 });

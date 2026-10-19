@@ -336,12 +336,37 @@ function canonicalName(name: string): boolean {
   );
 }
 
+/** The supplied Next.js repository root must contain both spellings of the application. */
+async function checkedRepository(projectDir: string, repoRoot: string) {
+  try {
+    const project = path.resolve(projectDir);
+    const repository = path.resolve(repoRoot);
+    const realRepository = await realpath(repository);
+    if (
+      !path.isAbsolute(projectDir) ||
+      !path.isAbsolute(repoRoot) ||
+      beneath(repository, project) === undefined ||
+      beneath(realRepository, await realpath(project)) === undefined
+    ) {
+      throw new AuditError(
+        '@stayingupwind/adapter: the VFS project must belong to its trusted repository root',
+      );
+    }
+    return { repository, realRepository };
+  } catch (error) {
+    if (error instanceof AuditError) throw error;
+    throw new AuditError('@stayingupwind/adapter: cannot verify the VFS trusted repository root');
+  }
+}
+
 /** This Function's explicitly traced declarations must identify one logical mount of the actual peer. */
 export async function typescriptLibDirectory(
   importer: string,
   projectDir: string,
   files: readonly TracedFile[],
+  repoRoot = projectDir,
 ): Promise<string> {
+  const { repository, realRepository } = await checkedRepository(projectDir, repoRoot);
   let physical: string;
   try {
     physical = await realpath(createRequire(importer).resolve('typescript'));
@@ -357,7 +382,6 @@ export async function typescriptLibDirectory(
     );
   }
   const lib = path.dirname(physical);
-  const project = await realpath(projectDir);
   const directories = new Set<string>();
   for (const file of files) {
     if (!DECLARATION.test(file.name)) continue;
@@ -376,8 +400,9 @@ export async function typescriptLibDirectory(
       segments[packageAt + 1] !== 'typescript' ||
       path.posix.dirname(file.name) !== logicalLib ||
       path.posix.basename(file.name) !== path.basename(source) ||
-      beneath(project, source) === undefined ||
-      (await realpath(path.join(projectDir, file.name))) !== source
+      beneath(realRepository, source) === undefined ||
+      (await realpath(path.join(repository, logicalPackage))) !== peer.root ||
+      (await realpath(path.join(repository, file.name))) !== source
     ) {
       throw new AuditError(
         '@stayingupwind/adapter: TypeScript declaration has an invalid logical trace identity',
@@ -411,6 +436,7 @@ export function replaceTypescriptLibDirectory(
 /** Only real VFS package modules in this linked Function's graph are eligible. */
 export function typescriptVfsPlugin(input: {
   projectDir: string;
+  repoRoot?: string | undefined;
   files: readonly TracedFile[];
 }): Plugin {
   return {
@@ -423,7 +449,12 @@ export function typescriptVfsPlugin(input: {
         const owner = await packageOf(importer);
         if (owner?.name !== VFS_PACKAGE || beneath(owner.root, importer) === undefined) return null;
         if (directoryCalls(code).length === 0) return null;
-        const directory = await typescriptLibDirectory(importer, input.projectDir, input.files);
+        const directory = await typescriptLibDirectory(
+          importer,
+          input.projectDir,
+          input.files,
+          input.repoRoot,
+        );
         const rewritten = replaceTypescriptLibDirectory(code, directory);
         return rewritten === undefined ? null : { code: rewritten.code };
       },

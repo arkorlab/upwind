@@ -25,7 +25,7 @@ import { AuditError } from './dependencies.ts';
  * under a name the build gave it, so it travels as the others do, under its path in the project.
  */
 export interface TracedFile {
-  /** The module's name, and so its path under `/bundle`: the file's path in the project. */
+  /** Its path under `/bundle`: project-relative data, or repository-relative declarations. */
   readonly name: string;
   readonly filePath: string;
 }
@@ -122,12 +122,17 @@ function checkPackage(project: string, segments: readonly string[], file: string
 
 /**
  * Assets name paths relative to the build's repository root. Admit a new declaration only if
- * that interpretation is proved here: its logical path from this project resolves to exactly
- * the traced physical file. A differently rooted monorepo needs an explicit root contract.
- * Package-directory symlinks (including pnpm's) are allowed; escaping the real project or the
+ * that interpretation is proved here: its logical path from the declared repository resolves to
+ * exactly the traced physical file, and the application stays within that repository.
+ * Package-directory symlinks (including pnpm's) are allowed; escaping the real repository or the
  * actual package is not. Nothing is discovered or copied beyond the output's own trace.
  */
-function declarationFile(projectDir: string, logical: string, filePath: string): TracedFile {
+function declarationFile(
+  projectDir: string,
+  repoRoot: string,
+  logical: string,
+  filePath: string,
+): TracedFile {
   const segments = logical.split('/');
   if (
     !isDeclaration(logical) ||
@@ -143,17 +148,25 @@ function declarationFile(projectDir: string, logical: string, filePath: string):
   }
   try {
     const project = path.resolve(projectDir);
+    const repository = path.resolve(repoRoot);
     const realProject = realpathSync(project);
+    const realRepository = realpathSync(repository);
+    if (
+      beneath(repository, project) === undefined ||
+      beneath(realRepository, realProject) === undefined
+    ) {
+      return declarationRefusal('project escapes the declared repository');
+    }
     const physical = realpathSync(filePath);
     if (
-      beneath(project, filePath) === undefined ||
-      beneath(realProject, physical) === undefined ||
-      realpathSync(path.join(project, logical)) !== physical ||
+      beneath(repository, filePath) === undefined ||
+      beneath(realRepository, physical) === undefined ||
+      realpathSync(path.join(repository, logical)) !== physical ||
       !statSync(physical).isFile()
     ) {
-      return declarationRefusal('logical path does not identify a file within the project');
+      return declarationRefusal('logical path does not identify a file within the repository');
     }
-    checkPackage(project, segments, physical);
+    checkPackage(repository, segments, physical);
     return { name: logical, filePath };
   } catch (error) {
     if (error instanceof AuditError) throw error;
@@ -164,16 +177,22 @@ function declarationFile(projectDir: string, logical: string, filePath: string):
 function collectFile(
   files: Map<string, TracedFile>,
   paths: BuildPaths,
-  input: { projectDir: string; distDir: string; logical: string; filePath: string },
+  input: {
+    projectDir: string;
+    distDir: string;
+    repoRoot: string;
+    logical: string;
+    filePath: string;
+  },
 ): void {
-  const { projectDir, distDir, logical, filePath } = input;
+  const { projectDir, distDir, repoRoot, logical, filePath } = input;
   const name = nameOf(projectDir, distDir, filePath, paths);
   if (name !== undefined) {
     if (!files.has(name)) files.set(name, { name, filePath });
     return;
   }
   if (!isDeclaration(filePath)) return;
-  const file = declarationFile(projectDir, logical, filePath);
+  const file = declarationFile(projectDir, repoRoot, logical, filePath);
   const previous = files.get(file.name);
   if (previous !== undefined && realpathSync(previous.filePath) !== realpathSync(file.filePath)) {
     declarationRefusal('one logical name identifies different physical files');
@@ -186,6 +205,7 @@ export function tracedFiles(
   outputs: readonly { readonly runtime?: string; readonly assets: Record<string, string> }[],
   projectDir: string,
   distDir: string,
+  repoRoot: string = projectDir,
 ): TracedFile[] {
   const paths = buildPaths(projectDir, distDir);
   const files = new Map<string, TracedFile>();
@@ -194,7 +214,7 @@ export function tracedFiles(
       continue;
     }
     for (const [logical, filePath] of Object.entries(output.assets)) {
-      collectFile(files, paths, { projectDir, distDir, logical, filePath });
+      collectFile(files, paths, { projectDir, distDir, repoRoot, logical, filePath });
     }
   }
   return [...files.values()].toSorted((a, b) => a.name.localeCompare(b.name));

@@ -122,9 +122,13 @@ function filesRead(
           [...appPages, ...appRoutes, ...pages, ...pagesApi, ...own, ...hook],
           ctx.projectDir,
           ctx.distDir,
+          ctx.repoRoot,
         ),
-    middleware: tracedFiles([...own, ...hook], ctx.projectDir, ctx.distDir),
-    workflow: flow === undefined ? [] : tracedFiles([flow, ...hook], ctx.projectDir, ctx.distDir),
+    middleware: tracedFiles([...own, ...hook], ctx.projectDir, ctx.distDir, ctx.repoRoot),
+    workflow:
+      flow === undefined
+        ? []
+        : tracedFiles([flow, ...hook], ctx.projectDir, ctx.distDir, ctx.repoRoot),
   };
 }
 
@@ -178,7 +182,10 @@ async function onBuildComplete(
     hosts: options.instrumentationModules ?? [],
     worldModule: options.workflowWorldModule,
   });
-  const instrumentation = await instrumentationOf(ctx.distDir, outDir, exported, workflow.hosts);
+  const instrumentation = await instrumentationOf(ctx.distDir, outDir, exported, {
+    hosts: workflow.hosts,
+    repoRoot: ctx.repoRoot,
+  });
   // Not asked of a static export, whose Function runs none of the application's code.
   const cacheHandlers = exported ? undefined : await cacheHandlersModule(ctx.distDir, outDir);
   const id = deploymentId();

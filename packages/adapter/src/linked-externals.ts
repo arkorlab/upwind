@@ -129,6 +129,7 @@ export interface LinkedExternals {
  */
 export async function bundleLinkedExternals(input: {
   readonly projectDir: string;
+  readonly repoRoot?: string | undefined;
   readonly files: readonly TracedFile[];
   readonly distDir: string;
   readonly workDir: string;

@@ -40,11 +40,25 @@ const EXPECTED = [
 ];
 const LINKED = 'vfs-fixture-1111111111111111';
 
-async function fixture(owner = '@typescript/vfs') {
+async function fixture(owner = '@typescript/vfs', nested = false) {
   const root = await mkdtemp(path.join(tmpdir(), 'upwind-vfs-library-'));
-  const distDir = path.join(root, '.next');
-  const vfs = path.join(root, 'node_modules', '@typescript', 'vfs');
-  const lib = path.join(root, 'node_modules', 'typescript', 'lib');
+  const projectDir = nested ? path.join(root, 'apps', 'site') : root;
+  const distDir = path.join(projectDir, '.next');
+  const modules = path.join(root, 'node_modules');
+  const vfs = nested
+    ? path.join(
+        modules,
+        '.pnpm',
+        '@typescript+vfs@1.6.5_typescript@5.9.2',
+        'node_modules',
+        '@typescript',
+        'vfs',
+      )
+    : path.join(modules, '@typescript', 'vfs');
+  const typescript = nested
+    ? path.join(modules, '.pnpm', 'typescript@5.9.2', 'node_modules', 'typescript')
+    : path.join(modules, 'typescript');
+  const lib = path.join(typescript, 'lib');
   const linked = path.join(distDir, 'node_modules', LINKED);
   await mkdir(path.join(distDir, 'server', 'chunks'), { recursive: true });
   await mkdir(vfs, { recursive: true });
@@ -55,6 +69,15 @@ async function fixture(owner = '@typescript/vfs') {
     path.join(vfs, 'package.json'),
     JSON.stringify({ name: owner, main: 'index.cjs' }),
   );
+  if (nested) {
+    await writeFile(path.join(projectDir, 'package.json'), '{"name":"nested-vfs-site"}');
+    const scope = path.join(modules, '@typescript');
+    await mkdir(scope, { recursive: true });
+    await symlink(vfs, path.join(scope, 'vfs'), 'dir');
+    await symlink(typescript, path.join(modules, 'typescript'), 'dir');
+    const peers = path.dirname(path.dirname(vfs));
+    await symlink(typescript, path.join(peers, 'typescript'), 'dir');
+  }
   const importer = path.join(vfs, 'index.cjs');
   await writeFile(importer, SOURCE);
   await writeFile(
@@ -74,10 +97,11 @@ async function fixture(owner = '@typescript/vfs') {
   );
   const files = tracedFiles(
     [{ assets: { 'node_modules/typescript/lib/lib.d.ts': declaration } }],
-    root,
+    projectDir,
     distDir,
+    root,
   );
-  return { root, distDir, importer, declaration, files };
+  return { root, projectDir, distDir, importer, declaration, files };
 }
 
 describe('vfs TypeScript peer library resolution', () => {
@@ -173,7 +197,8 @@ describe('vfs TypeScript peer library resolution', () => {
 
     await expect(
       bundleLinkedExternals({
-        projectDir: setup.root,
+        projectDir: setup.projectDir,
+        repoRoot: setup.root,
         files: setup.files,
         distDir: setup.distDir,
         workDir: setup.root,
@@ -193,6 +218,42 @@ describe('vfs TypeScript peer library resolution', () => {
     await expect(typescriptLibDirectory(setup.importer, setup.root, [])).rejects.toThrow(
       AuditError,
     );
+  });
+
+  it('requires an explicit trusted root for a nested app with a hoisted TypeScript peer', async () => {
+    const setup = await fixture('@typescript/vfs', true);
+    roots.push(setup.root);
+
+    await expect(
+      typescriptLibDirectory(setup.importer, setup.projectDir, setup.files),
+    ).rejects.toThrow(AuditError);
+    await expect(
+      typescriptLibDirectory(setup.importer, setup.projectDir, setup.files, setup.root),
+    ).resolves.toBe(DIRECTORY);
+  });
+
+  it('refuses a repository root that does not lexically contain the project', async () => {
+    const setup = await fixture();
+    roots.push(setup.root);
+    const outside = await mkdtemp(path.join(tmpdir(), 'upwind-vfs-other-root-'));
+    roots.push(outside);
+
+    await expect(
+      typescriptLibDirectory(setup.importer, setup.projectDir, setup.files, outside),
+    ).rejects.toThrow('trusted repository root');
+  });
+
+  it('refuses a lexically nested project whose real directory escapes the trusted root', async () => {
+    const setup = await fixture();
+    roots.push(setup.root);
+    const outside = await mkdtemp(path.join(tmpdir(), 'upwind-vfs-other-project-'));
+    roots.push(outside);
+    const alias = path.join(setup.root, 'escaped-app');
+    await symlink(outside, alias, 'dir');
+
+    await expect(
+      typescriptLibDirectory(setup.importer, alias, setup.files, setup.root),
+    ).rejects.toThrow('trusted repository root');
   });
 
   it('rejects two logical mounts of the same physical peer library', async () => {
@@ -216,15 +277,17 @@ describe('vfs TypeScript peer library resolution', () => {
   });
 
   it.each([
-    { owner: '@typescript/vfs', expected: EXPECTED },
-    { owner: 'unrelated-package', expected: { name: 'TypeError' } },
+    { owner: '@typescript/vfs', nested: false, expected: EXPECTED },
+    { owner: '@typescript/vfs', nested: true, expected: EXPECTED },
+    { owner: 'unrelated-package', nested: false, expected: { name: 'TypeError' } },
   ])(
-    'checks real package identity before emitting a resolver repair for $owner',
-    async ({ owner, expected }) => {
-      const setup = await fixture(owner);
+    'checks actual peer identity for $owner in nested project $nested',
+    async ({ owner, nested, expected }) => {
+      const setup = await fixture(owner, nested);
       roots.push(setup.root);
       const linked = await bundleLinkedExternals({
-        projectDir: setup.root,
+        projectDir: setup.projectDir,
+        repoRoot: setup.root,
         files: setup.files,
         distDir: setup.distDir,
         workDir: setup.root,
