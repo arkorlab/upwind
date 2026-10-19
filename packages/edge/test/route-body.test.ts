@@ -28,7 +28,7 @@ import { createExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-// eslint-disable-next-line import-x/no-relative-packages -- Exercise the host's existing real seed fixture, without a production test export.
+// Exercise the host's existing real seed fixture, without a production test export.
 import { shellBundle } from '../../host/test/shared-shell-fixture.ts';
 import { triggerDetached } from '../src/cache/regenerate.ts';
 import { handlePassthrough } from '../src/handlers/passthrough.ts';

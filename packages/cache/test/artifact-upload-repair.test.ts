@@ -18,17 +18,24 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { limitsOf, parseVars } from '../src/env.ts';
 import { Gateway } from '../src/function/gateway.ts';
 import { createGatewayApp } from '../src/gateway/app.ts';
+import { createLogger } from '../src/logger.ts';
 import { repairStorageRef } from '../src/scope/artifact-repair.ts';
-import { deleteArtifactRow, rememberArtifactFailure } from '../src/scope/artifacts.ts';
+import {
+  deleteArtifactRow,
+  ownedUploadOf,
+  rememberArtifactFailure,
+} from '../src/scope/artifacts.ts';
+import { reservedBytes } from '../src/scope/attempts.ts';
 import { planCommit } from '../src/scope/commit.ts';
 import { findEntry, markRecordWritten } from '../src/scope/entries.ts';
 import { findGeneration } from '../src/scope/generations.ts';
 import { NO_HISTORY } from '../src/scope/history.ts';
-import { blobStore } from '../src/scope/io.ts';
+import { blobStore, kvSink } from '../src/scope/io.ts';
 import { InvalidArtifactError } from '../src/scope/records.ts';
 import { generationOutputs } from '../src/scope/rows.ts';
 import { rememberSeedFailure } from '../src/scope/seed-repair.ts';
-import { readRevision } from '../src/scope/state.ts';
+import { ownRecordsOf, settlePending } from '../src/scope/settle.ts';
+import { readRevision, writeMeta } from '../src/scope/state.ts';
 import { scopeStub } from '../src/scope/stub.ts';
 import { STANDALONE_AUTHORITY } from '../src/standalone/host.ts';
 
@@ -195,6 +202,20 @@ async function damage(storageRef: string, fault: string, length: number): Promis
   }
 }
 
+/** Existing location assertions ignore only the new failure-incarnation fence. */
+function failureLocation(value: string | undefined): string | undefined {
+  if (value?.startsWith('[') !== true) return value;
+  const marker: unknown = JSON.parse(value);
+  if (
+    !Array.isArray(marker) ||
+    typeof marker[0] !== 'number' ||
+    typeof marker[1] !== 'string' ||
+    typeof marker[2] !== 'string'
+  )
+    throw new TypeError('the failure marker must name its location and fence');
+  return `${String(marker[0])}:${marker[1]}`;
+}
+
 function stateFor(scope: Scope, plan: Plan) {
   return runInDurableObject(scope.stub, (_instance, state) => {
     const { sql } = state.storage;
@@ -206,12 +227,14 @@ function stateFor(scope: Scope, plan: Plan) {
         )
         .one(),
       bodyBytes: sql.exec<{ body_bytes: number }>(`SELECT body_bytes FROM scope`).one().body_bytes,
-      marker: sql
-        .exec<{ value: string }>(
-          `SELECT value FROM meta WHERE key = ?`,
-          `artifact_failure:${plan.artifact.sha256}`,
-        )
-        .toArray()[0]?.value,
+      marker: failureLocation(
+        sql
+          .exec<{ value: string }>(
+            `SELECT value FROM meta WHERE key = ?`,
+            `artifact_failure:${plan.artifact.sha256}`,
+          )
+          .toArray()[0]?.value,
+      ),
       originalOutputs: sql
         .exec<{ outputs: string }>(
           `SELECT outputs FROM generations WHERE generation_id = ?`,
@@ -275,6 +298,60 @@ async function brokenSeed(fault = 'missing') {
   return { scope, plan };
 }
 
+type ReservationMarker = 'current' | 'legacy' | 'invalid' | 'elsewhere' | 'invalid-fence';
+
+async function reservedRepair(format: ReservationMarker) {
+  const { scope, plan } = await brokenSeed();
+  await runInDurableObject(scope.stub, (_instance, state) => {
+    const { sql } = state.storage;
+    const { byteLength, storageRef, sha256 } = plan.artifact;
+    if (format === 'legacy') {
+      writeMeta(sql, `artifact_failure:${sha256}`, `${byteLength}:${storageRef}`);
+    } else if (format === 'invalid') {
+      writeMeta(sql, `artifact_failure:${sha256}`, '[not JSON');
+    } else if (format === 'elsewhere') {
+      writeMeta(
+        sql,
+        `artifact_failure:${sha256}`,
+        JSON.stringify([byteLength, '/elsewhere', 'fence']),
+      );
+    } else if (format === 'invalid-fence') {
+      writeMeta(sql, `artifact_failure:${sha256}`, JSON.stringify([byteLength, storageRef, null]));
+    }
+  });
+  await runInDurableObject(scope.stub, (_instance, state) => {
+    state.storage.sql.exec(
+      `UPDATE scope SET body_bytes = ?`,
+      LIMITS.bodyBytesPerScope - plan.bytes.byteLength,
+    );
+  });
+  const started = await lease(scope, plan);
+  await upload(scope, plan, started, 'single');
+  const reservation = await runInDurableObject(scope.stub, (_instance, state) => {
+    const { sql } = state.storage;
+    const owned = ownedUploadOf(sql, plan.artifact.sha256, plan.bytes.byteLength);
+    return { bytes: reservedBytes(sql, ''), added: owned.addedBytes, replace: owned.replace };
+  });
+  const other = await scope.stub.startAttempt(
+    { entry: { kind: 'app-page', route: '/other', pathname: '/other' }, reason: 'miss' },
+    NOW,
+  );
+  if (other.kind !== 'leased') throw new Error('the competing upload needs a lease');
+  const bytes = encodeUtf8('another value');
+  return {
+    scope,
+    plan,
+    reservation,
+    next: {
+      attemptId: other.attemptId,
+      fencingToken: other.fencingToken,
+      role: 'html' as const,
+      contentType: TYPE,
+      bytes,
+    },
+  };
+}
+
 async function repairedOwned() {
   const { scope, plan } = await brokenSeed();
   const started = await lease(scope, plan);
@@ -293,6 +370,97 @@ async function reproject(scope: Scope, plan: Plan) {
     );
   });
   await scope.stub.tick(NOW);
+}
+
+/** Exercise the same bounded alarm slices, without assuming one tick drains a whole deployment. */
+async function drainRecords(scope: Scope, entries: number): Promise<void> {
+  for (let tick = 0; tick <= entries; tick++) {
+    const behind = await runInDurableObject(scope.stub, (_instance, state) => {
+      return state.storage.sql
+        .exec<{ count: number }>(
+          `SELECT COUNT(*) AS count FROM entries WHERE record_revision > kv_revision`,
+        )
+        .one().count;
+    });
+    if (behind === 0) return;
+    if (tick === entries) throw new Error('the bounded projection drain did not finish');
+    await scope.stub.tick(NOW);
+  }
+}
+
+type VerificationRace = 'revision' | 'location' | 'marker';
+
+/** Inject a concurrent authority change after the real read/hash/KV write, before its ACK. */
+function restoredProjectionRace(scope: Scope, plan: Plan, race: VerificationRace) {
+  return runInDurableObject(scope.stub, async (_instance, state) => {
+    const { sql } = state.storage;
+    const key = kvGenerationKey(scope.scopeId, plan.entryId);
+    const marker = () => {
+      return sql
+        .exec<{ value: string }>(
+          `SELECT value FROM meta WHERE key = ?`,
+          `artifact_failure:${plan.artifact.sha256}`,
+        )
+        .toArray()[0]?.value;
+    };
+    const before = marker();
+    const sink = kvSink(env.CACHE_STATE, () => ({}));
+    const history: unknown[] = [];
+    let changed = false;
+    const outcome = await settlePending(
+      {
+        sql,
+        scopeId: scope.scopeId,
+        blobs: blobStore(env.ARTIFACTS, () => ({})),
+        kv: {
+          ...sink,
+          put: async (at, value) => {
+            await sink.put(at, value);
+            if (at !== key || changed) return;
+            changed = true;
+            state.storage.transactionSync(() => {
+              if (race === 'revision') {
+                sql.exec(
+                  `UPDATE entries SET record_revision = record_revision + 1 WHERE entry_id = ?`,
+                  plan.entryId,
+                );
+              } else {
+                const storageRef =
+                  race === 'location'
+                    ? `${plan.artifact.storageRef}/newer`
+                    : plan.artifact.storageRef;
+                sql.exec(
+                  `UPDATE artifacts SET storage_ref = ? WHERE sha256 = ?`,
+                  storageRef,
+                  plan.artifact.sha256,
+                );
+                rememberArtifactFailure(sql, { ...plan.artifact, storageRef });
+              }
+            });
+          },
+        },
+        history: {
+          ...NO_HISTORY,
+          append: (_context, event) => {
+            if (event.kind === 'entries.projected') history.push(event.payload);
+          },
+        },
+        log: createLogger({ component: 'verified-projection-race' }),
+        now: () => NOW,
+        transaction: <T>(body: () => T) => state.storage.transactionSync(body),
+        sliceMs: 1,
+        othersWaiting: () => false,
+        continueSoon: () => {
+          const done = Promise.resolve();
+          return done;
+        },
+      },
+      undefined,
+      ownRecordsOf(sql, readRevision(sql)),
+    );
+    const entry = findEntry(sql, plan.entryId);
+    return { before, after: marker(), changed, failed: outcome.failed, entry, history };
+  });
 }
 
 async function refuseRepair(scope: Scope, kind: string) {
@@ -407,6 +575,34 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
+
+  it.each(['current', 'legacy'] as const)(
+    'reserves a failed borrowed upload with a %s marker before another upload',
+    async (format) => {
+      const { scope, plan, reservation, next } = await reservedRepair(format);
+
+      expect(reservation).toStrictEqual({
+        bytes: plan.bytes.byteLength,
+        added: plan.bytes.byteLength,
+        replace: true,
+      });
+      await expect(scope.client.uploadArtifact(next)).rejects.toMatchObject({
+        code: 'quota_exceeded',
+      });
+    },
+  );
+
+  it.each(['invalid', 'elsewhere', 'invalid-fence'] as const)(
+    'keeps a borrowed artifact uncharged for a nonmatching %s marker',
+    async (format) => {
+      const { scope, reservation, next } = await reservedRepair(format);
+
+      expect(reservation).toStrictEqual({ bytes: 0, added: 0, replace: false });
+      await expect(scope.client.uploadArtifact(next)).resolves.toMatchObject({
+        byteLength: next.bytes.byteLength,
+      });
+    },
+  );
 
   it.each([
     { fault: 'missing', mode: 'single' },
@@ -581,7 +777,7 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
     const started = await lease(scope, first);
     await upload(scope, first, started, 'batch');
     const published = await scope.stub.commit(started.attemptId, requestFor(first, started), NOW);
-    await scope.stub.tick(NOW);
+    await drainRecords(scope, others.length + 1);
     const target = repairStorageRef(scope.scopeId, first.artifact.sha256, started.attemptId);
     const after = await Promise.all(others.map((plan) => liveSnapshot(scope, plan)));
     const bodies = await Promise.all(others.map((plan) => bodyFor(scope, plan)));
@@ -705,6 +901,94 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
     const markers = await lateProjectionMarkers(scope, plan);
 
     expect(markers).toStrictEqual({ revision: [], generation: [], location: [] });
+  });
+
+  it('clears a verified same-key restoration on an unchanged seed and keeps borrowed bytes free', async () => {
+    const { scope, plan } = await brokenSeed('digest');
+    const before = await stateFor(scope, plan);
+    await env.ARTIFACTS.put(plan.artifact.storageRef, plan.bytes as BufferSource);
+    await seedBatch(scope, plan);
+    const restored = await stateFor(scope, plan);
+    const started = await lease(scope, plan);
+    const put = vi.spyOn(env.ARTIFACTS, 'put');
+    await upload(scope, plan, started, 'single');
+    const committed = await scope.stub.commit(started.attemptId, requestFor(plan, started), NOW);
+
+    expect(before.marker).toBe(`${plan.bytes.byteLength}:${plan.artifact.storageRef}`);
+    expect(restored).toMatchObject({ marker: undefined, bodyBytes: 0, artifact: { owned: 0 } });
+    expect(committed).toMatchObject({ kind: 'published' });
+    expect(put).not.toHaveBeenCalled();
+
+    await expect(bodyFor(scope, plan)).resolves.toBe(BODY);
+
+    await expect(stateFor(scope, plan)).resolves.toMatchObject({
+      marker: undefined,
+      bodyBytes: 0,
+      artifact: { owned: 0, storage_ref: plan.artifact.storageRef },
+    });
+  });
+
+  it.each(['revision', 'location', 'marker'] as const)(
+    'keeps failure knowledge across a newer $0 during verified projection',
+    async (race) => {
+      const { scope, plan } = await brokenSeed();
+      await env.ARTIFACTS.put(plan.artifact.storageRef, plan.bytes as BufferSource);
+      const outcome = await restoredProjectionRace(scope, plan, race);
+      const expectedLocation =
+        race === 'location' ? `${plan.artifact.storageRef}/newer` : plan.artifact.storageRef;
+
+      expect(outcome).toMatchObject({ changed: true, failed: false });
+      expect(failureLocation(outcome.after)).toBe(`${plan.bytes.byteLength}:${expectedLocation}`);
+      expect(outcome.after === outcome.before).toBe(race === 'revision');
+      expect(outcome.entry?.kv_revision === outcome.entry?.record_revision).toBe(
+        race !== 'revision',
+      );
+      expect(outcome.history).toStrictEqual(
+        race === 'revision'
+          ? []
+          : [{ entries: [{ entryId: plan.entryId, kvRevision: outcome.entry?.kv_revision }] }],
+      );
+    },
+  );
+
+  it('does not clear a marker for a referenced artifact that projection never reads', async () => {
+    const scope = await scopeForTest();
+    const plan = await planFor(scope);
+    const segmentBytes = encodeUtf8('not an inline record body');
+    const segment = {
+      ...plan.artifact,
+      role: 'rsc' as const,
+      sha256: await sha256Hex(segmentBytes),
+      byteLength: segmentBytes.byteLength,
+      storageRef: `${plan.artifact.storageRef}/referenced`,
+    };
+    plan.seed = {
+      ...plan.seed,
+      generation: {
+        ...plan.seed.generation,
+        outputs: plan.seed.generation.outputs.map((output) => {
+          const expanded = { ...output, artifacts: [...output.artifacts, segment] };
+          return expanded;
+        }),
+      },
+    };
+    await seedBatch(scope, plan);
+    await runInDurableObject(scope.stub, (_instance, state) => {
+      rememberArtifactFailure(state.storage.sql, plan.artifact);
+      rememberArtifactFailure(state.storage.sql, segment);
+    });
+    const get = vi.spyOn(env.ARTIFACTS, 'get');
+    await reproject(scope, plan);
+    const remaining = await runInDurableObject(scope.stub, (_instance, state) => {
+      return state.storage.sql
+        .exec<{ key: string }>(`SELECT key FROM meta WHERE key LIKE 'artifact_failure:%'`)
+        .toArray();
+    });
+
+    expect(remaining).toStrictEqual([{ key: `artifact_failure:${segment.sha256}` }]);
+    expect(get.mock.calls.map(([key]) => key)).toStrictEqual([plan.artifact.storageRef]);
+
+    await expect(bodyFor(scope, plan)).resolves.toBe(BODY);
   });
 
   it('retains a live row marker and removes it when retention deletes the unreferenced row', async () => {

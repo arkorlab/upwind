@@ -27,10 +27,40 @@ const ARTIFACT_IDS_AT_ONCE = 128;
 const REFERENCES_PER_LOOKUP = 100;
 const BORROWED_PER_INSERT = 16;
 const FAILURE_PREFIX = 'artifact_failure:';
+const FENCED_FAILURE_FIELDS = 3;
+
+type ArtifactIdentity = Pick<ArtifactReference, 'sha256' | 'storageRef' | 'byteLength'>;
+
+/** The exact failure observed before an existing read, not one recorded while it was in flight. */
+export interface ArtifactVerification extends ArtifactIdentity {
+  readonly failureMarker: string;
+}
+
+function failureNames(
+  marker: string | undefined,
+  byteLength: number,
+  storageRef: string,
+): marker is string {
+  if (marker === undefined) return false;
+  // Accept markers retained by an older authority; new failures also carry an ABA fence.
+  if (marker === `${byteLength}:${storageRef}`) return true;
+  try {
+    const value: unknown = JSON.parse(marker);
+    return (
+      Array.isArray(value) &&
+      value.length === FENCED_FAILURE_FIELDS &&
+      value[0] === byteLength &&
+      value[1] === storageRef &&
+      typeof value[2] === 'string'
+    );
+  } catch {
+    return false;
+  }
+}
 
 /** A failed projection's exact location, kept only while its artifact row exists. */
 export function artifactFailed(sql: SqlStorage, row: ArtifactRow): boolean {
-  return readMeta(sql, FAILURE_PREFIX + row.sha256) === `${row.byte_length}:${row.storage_ref}`;
+  return failureNames(readMeta(sql, FAILURE_PREFIX + row.sha256), row.byte_length, row.storage_ref);
 }
 
 /** Remember the existing verification's result; no extra body read is needed to repair it. */
@@ -40,12 +70,52 @@ export function rememberArtifactFailure(
 ): void {
   const row = findArtifactBySha(sql, artifact.sha256);
   if (row?.storage_ref === artifact.storageRef && row.byte_length === artifact.byteLength) {
-    writeMeta(sql, FAILURE_PREFIX + row.sha256, `${row.byte_length}:${row.storage_ref}`);
+    writeMeta(
+      sql,
+      FAILURE_PREFIX + row.sha256,
+      JSON.stringify([row.byte_length, row.storage_ref, crypto.randomUUID()]),
+    );
   }
 }
 
 export function forgetArtifactFailure(sql: SqlStorage, sha256: string): void {
   deleteMeta(sql, FAILURE_PREFIX + sha256);
+}
+
+/** Capture before the already-required storage read and digest check begin. */
+export function artifactVerification(
+  sql: SqlStorage,
+  artifact: ArtifactIdentity,
+): ArtifactVerification | undefined {
+  const failureMarker = readMeta(sql, FAILURE_PREFIX + artifact.sha256);
+  return failureNames(failureMarker, artifact.byteLength, artifact.storageRef)
+    ? {
+        sha256: artifact.sha256,
+        byteLength: artifact.byteLength,
+        storageRef: artifact.storageRef,
+        failureMarker,
+      }
+    : undefined;
+}
+
+/** Called only for a current accepted projection and only for bytes it actually read and hashed. */
+export function forgetVerifiedArtifactFailures(
+  sql: SqlStorage,
+  verified: readonly ArtifactVerification[] | undefined,
+): void {
+  if (verified === undefined) return;
+  for (const artifact of verified) {
+    sql.exec(
+      `DELETE FROM meta WHERE key = ? AND value = ? AND EXISTS (
+         SELECT 1 FROM artifacts WHERE sha256 = ? AND byte_length = ? AND storage_ref = ?
+       )`,
+      FAILURE_PREFIX + artifact.sha256,
+      artifact.failureMarker,
+      artifact.sha256,
+      artifact.byteLength,
+      artifact.storageRef,
+    );
+  }
 }
 
 /** Ids for the blobs a commit names, derived ahead of its transaction. */
@@ -116,7 +186,15 @@ export function ownedUploadOf(
 /** Blobs a reference to adds nothing to the scope's bytes (`addedBy`), as an SQL condition. */
 export const HELD_WITHOUT_CHARGE = `(owned = 1 AND refs > 0) OR (owned = 0 AND NOT EXISTS (
   SELECT 1 FROM meta WHERE key = '${FAILURE_PREFIX}' || artifacts.sha256
-    AND value = CAST(artifacts.byte_length AS TEXT) || ':' || artifacts.storage_ref
+    AND (value = CAST(artifacts.byte_length AS TEXT) || ':' || artifacts.storage_ref
+      OR CASE WHEN json_valid(value) THEN
+        json_type(value) = 'array' AND json_array_length(value) = ${FENCED_FAILURE_FIELDS}
+        AND json_type(value, '$[0]') IN ('integer', 'real')
+        AND json_extract(value, '$[0]') = artifacts.byte_length
+        AND json_type(value, '$[1]') = 'text'
+        AND json_extract(value, '$[1]') = artifacts.storage_ref
+        AND json_type(value, '$[2]') = 'text'
+      ELSE 0 END)
 ))`;
 
 /** Count one more reference; the bytes the scope newly holds, for its quota. */

@@ -78,7 +78,7 @@ export function standaloneHost(env: StandaloneEnv): EdgeHost {
     ...(signals !== undefined && {
       scopeSignals: {
         scopeSignals: (scopeId, since) => signals.scopeSignals(scopeId, since),
-        cacheTagOf: (scopeId) => `upwind-scope-${scopeId}`,
+        cacheTagOf: (scopeId) => `upwind-scope-${encodeURIComponent(scopeId)}`,
       },
     }),
     ...(currentRecord !== undefined && {

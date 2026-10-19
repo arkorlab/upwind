@@ -9,6 +9,7 @@ import {
   type ScopeSignals,
   type TagDeltaEntry,
 } from '@stayingupwind/host/cache';
+import { env } from 'cloudflare:workers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { condemnationOf } from '../src/cache/condemned.ts';
@@ -17,6 +18,7 @@ import { lookAtScope, withScopeRevision } from '../src/cache/scope-signal.ts';
 import type { EdgeHost, ScopeSignalSource } from '../src/edge-host.ts';
 import type { EdgeRuntime } from '../src/edge-runtime.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
+import { standaloneHost } from '../src/standalone/host.ts';
 
 /**
  * Where a scope stands, as every isolate of the edge comes to know it (`cache/scope-signal.ts`): the
@@ -203,6 +205,31 @@ describe('where a scope stands, as the edge comes to know it', () => {
       expect(isolate.memory.scopes.get(scopeId)?.revision).toBe(5);
     }
   });
+
+  it.each(['scope\r\nwith-lines', 'scope, with delimiters', '日本'])(
+    'shares a standalone signal copy for a scope named %j',
+    async (scopeId) => {
+      vi.useFakeTimers({ toFake: ['Date', 'performance', 'setTimeout', 'clearTimeout'] });
+      const answered = authority(() => ({ ...UNMOVED, revision: 5 }));
+      const site = { ...env, CACHE_SIGNALS: answered.source };
+      const host = standaloneHost(site);
+      const isolated = {
+        ...host,
+        names: { ...host.names, signalCache: `signals-${crypto.randomUUID()}` },
+      };
+      const behind: Promise<unknown>[] = [];
+      const first = runtimeOf();
+      const other = runtimeOf();
+
+      await look(first, isolated, scopeId, behind);
+      await Promise.all(behind);
+      await look(other, isolated, scopeId);
+
+      expect(answered.asked()).toBe(1);
+      expect(first.memory.scopes.get(scopeId)?.revision).toBe(5);
+      expect(other.memory.scopes.get(scopeId)?.revision).toBe(5);
+    },
+  );
 
   it.each([
     ['.', 'claim'],

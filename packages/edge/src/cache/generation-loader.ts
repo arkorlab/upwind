@@ -29,6 +29,7 @@ import type {
   LoadOptions as HoldOptions,
   Read as HoldRead,
 } from './generation-hold.ts';
+import { transportableIds } from './generation-identities.ts';
 
 /**
  * The delivery record of an entry: the current generation of a hosted application's route, as
@@ -194,6 +195,9 @@ const NOT_THE_DIGESTS = 'delivery record does not match its digests';
 async function untrusted(decoded: Decoded, key: GenerationKey, from: Origin): Promise<Refusal> {
   const { header } = decoded.pack;
   const ofTheEntry = header.scopeId === key.scopeId && header.entryId === key.entryId;
+  if (ofTheEntry && !transportableIds(decoded.pack)) {
+    return 'delivery record identities cannot be sent in regeneration headers';
+  }
   if (from.kind === 'copy') {
     return ofTheEntry && header.revision === from.revision ? undefined : NOT_THE_COPY;
   }

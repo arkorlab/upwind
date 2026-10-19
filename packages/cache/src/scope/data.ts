@@ -11,7 +11,19 @@ import {
 import { createId } from '@stayingupwind/core/util';
 import { type DataEntryMetadata } from '@stayingupwind/host/cache';
 
-import { addedBytesOf, findArtifactBySha, referenceArtifact } from './artifacts.ts';
+import {
+  type ArtifactRepair,
+  finishArtifactRepairs,
+  repairArtifact,
+  retargetedRecordsFailure,
+} from './artifact-repair.ts';
+import {
+  addedBytesOf,
+  artifactFailed,
+  type ArtifactReference,
+  findArtifactBySha,
+  referenceArtifact,
+} from './artifacts.ts';
 import { reservedBytes } from './attempts.ts';
 import { controlFenceFloorInvalidations, controlFenceInvalidations } from './control-fences.ts';
 import {
@@ -35,6 +47,7 @@ import {
   type EntryRow,
   generationOutputs,
   type GenerationRow,
+  type ScopeRow,
   toEntry,
   toEntryState,
   toPublicGeneration,
@@ -52,6 +65,7 @@ import { type Apply, record, type TxInput } from './tx.ts';
 
 const OUTPUT_ID_PREFIX = 'out';
 const DATA_VALUE = 'data-value';
+const NO_DATA_REPAIR = { addedBytes: 0 };
 
 interface DataValueUpload {
   readonly sha256: string;
@@ -329,7 +343,6 @@ function writesNothing(
     generationId: current.generation_id,
     revision: current.dependency_revision,
   };
-  markWriter(sql, plan.input.order, written, where.now);
   const condemned = condemnedOf(current);
   return {
     ...written,
@@ -338,8 +351,71 @@ function writesNothing(
   };
 }
 
+/** A gateway upload replaces only a canonical location whose failure is already recorded. */
+function dataLocation(sql: SqlStorage, plan: DataPlan) {
+  const { value } = plan.input;
+  const existing = findArtifactBySha(sql, value.sha256);
+  const repair: ArtifactRepair | undefined =
+    existing !== undefined && artifactFailed(sql, existing)
+      ? {
+          sha256: value.sha256,
+          byteLength: value.byteLength,
+          previousStorageRef: existing.storage_ref,
+          storageRef: value.storageRef,
+          previouslyOwned: existing.owned === 1,
+        }
+      : undefined;
+  const storageRef = repair?.storageRef ?? existing?.storage_ref ?? value.storageRef;
+  const reference: ArtifactReference = {
+    artifactId: plan.artifactId,
+    sha256: value.sha256,
+    storageRef,
+    byteLength: value.byteLength,
+    owned: true,
+  };
+  return { storageRef, repair, reference, entry: findEntry(sql, plan.identity.entryId) };
+}
+
+/** No refusal may leave an adopted upload, a writer mark, or an entry behind. */
+function dataQuota(
+  input: TxInput,
+  scope: ScopeRow,
+  location: ReturnType<typeof dataLocation>,
+): Refusal | undefined {
+  const { sql, limits } = input;
+  const { repair, reference, entry } = location;
+  const added =
+    repair?.previouslyOwned === false ? reference.byteLength : addedBytesOf(sql, reference);
+  if (
+    added > 0 &&
+    scope.body_bytes + reservedBytes(sql, reference.sha256) + added > limits.bodyBytesPerScope
+  ) {
+    return refuse('quota_exceeded', 'the scope holds as many bytes as it may');
+  }
+  return entry === undefined && scope.entry_count >= limits.entriesPerScope
+    ? refuse('quota_exceeded', 'the scope holds as many entries as it may')
+    : undefined;
+}
+
+/** Quotas were checked before this; a refusal must still precede every repair mutation. */
+function restoreDataArtifact(
+  input: TxInput,
+  repair: ArtifactRepair | undefined,
+  entryId: string,
+  unchanged: boolean,
+): { readonly addedBytes: number } | Refusal {
+  if (repair === undefined) return NO_DATA_REPAIR;
+  const publishingEntry = unchanged ? '' : entryId;
+  const repairs = new Map([[repair.sha256, repair]]);
+  const unwritable = retargetedRecordsFailure(input, repairs.values(), publishingEntry);
+  if (unwritable !== undefined) return refuse('too_large', unwritable);
+  const added = repairArtifact(input, repair);
+  finishArtifactRepairs(input, repairs, publishingEntry);
+  return { addedBytes: added };
+}
+
 function applySetData(input: TxInput, plan: DataPlan): DataSetOutcome | Refusal {
-  const { sql, scopeId, now, revision, limits } = input;
+  const { sql, scopeId, now, revision } = input;
   const scope = requireActiveScope(sql);
   if (isRefusal(scope)) {
     return scope;
@@ -352,36 +428,38 @@ function applySetData(input: TxInput, plan: DataPlan): DataSetOutcome | Refusal 
     return refuse('lease_expired', 'the data value predates reclaimed control fences');
   const events: EventInput[] = [];
   const { value, entry: metadata } = plan.input;
-  // Uploads have unique keys. Reuse the authority's existing content-addressed object, and let
-  // the gateway remove only its own unadopted upload after the transaction answers.
-  const storageRef = findArtifactBySha(sql, value.sha256)?.storage_ref ?? value.storageRef;
-  const reference = {
-    artifactId: plan.artifactId,
-    sha256: value.sha256,
-    storageRef,
-    byteLength: value.byteLength,
-    owned: true,
-  };
-  let entry = findEntry(sql, plan.identity.entryId);
+  // Uploads have unique keys. Reuse a healthy canonical object; a known failed location adopts
+  // this upload. The gateway removes only its own unadopted upload after the transaction answers.
+  const location = dataLocation(sql, plan);
+  const { storageRef, repair, reference } = location;
+  let { entry } = location;
   const unwritten = writesNothing(sql, entry, plan, { storageRef, now });
-  if (unwritten !== undefined) {
+  if (unwritten?.superseded === true) return unwritten;
+  if (unwritten !== undefined && repair === undefined) {
+    markWriter(sql, plan.input.order, unwritten, now);
     return unwritten;
   }
   // Every quota first: a refusal leaves the transaction committed, so anything written before one
   // would stay behind at a revision nothing records — an entry no event ever announced. The bytes
   // live attempts have uploaded count too (`reservedBytes`), as they do for another upload: their
   // commits would add them after this write had taken the room.
-  const added = addedBytesOf(sql, reference);
-  if (
-    added > 0 &&
-    scope.body_bytes + reservedBytes(sql, value.sha256) + added > limits.bodyBytesPerScope
-  ) {
-    return refuse('quota_exceeded', 'the scope holds as many bytes as it may');
+  const quota = dataQuota(input, scope, location);
+  if (quota !== undefined) return quota;
+  const restored = restoreDataArtifact(
+    input,
+    repair,
+    plan.identity.entryId,
+    unwritten !== undefined,
+  );
+  if (isRefusal(restored)) return restored;
+  const repaired = restored.addedBytes;
+  if (unwritten !== undefined) {
+    markWriter(sql, plan.input.order, unwritten, now);
+    sql.exec(`UPDATE scope SET body_bytes = body_bytes + ?`, repaired);
+    record(input, []);
+    return unwritten;
   }
   if (entry === undefined) {
-    if (scope.entry_count >= limits.entriesPerScope) {
-      return refuse('quota_exceeded', 'the scope holds as many entries as it may');
-    }
     entry = insertEntry(sql, { identity: plan.identity, groupInstanceId: null, revision, now });
     events.push({
       entityType: 'entry',
@@ -462,7 +540,7 @@ function applySetData(input: TxInput, plan: DataPlan): DataSetOutcome | Refusal 
     { entryId: entry.entry_id, generationId: plan.generationId, revision },
     now,
   );
-  sql.exec(`UPDATE scope SET body_bytes = body_bytes + ?`, addedBytes);
+  sql.exec(`UPDATE scope SET body_bytes = body_bytes + ?`, repaired + addedBytes);
   const published = findGeneration(sql, plan.generationId);
   if (published !== undefined) {
     events.push({
