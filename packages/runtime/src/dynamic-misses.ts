@@ -2,7 +2,6 @@ import { normalizeRoutePathname, type RouteEntryDescriptor } from '@stayingupwin
 import { TtlCache } from '@stayingupwind/core/util';
 
 import { nowMs } from './cache/clock.ts';
-import type { AttemptReason } from './cache/host.ts';
 import type { RegenerationOutcome } from './cache/regenerate.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
 
@@ -16,6 +15,14 @@ import type { CacheRuntime } from './cache/runtime.ts';
 const DYNAMIC_MISS_MS = 300_000;
 /** How many entries found dynamic at a miss an isolate keeps at the most. */
 const DYNAMIC_MISS_ENTRIES = 1024;
+const KIB = 1024;
+const DYNAMIC_MISS_KIB = 256;
+/**
+ * How many bytes their keys hold at the most: the pathnames in them are the visitors', which a
+ * client of a catch-all route can make as long as it likes.
+ */
+const DYNAMIC_MISS_BYTES = DYNAMIC_MISS_KIB * KIB;
+const UTF16_BYTES = 2;
 
 /** The entries each isolate found dynamic here at a miss, lately (`DYNAMIC_MISS_MS`). */
 const dynamicMisses = new WeakMap<CacheRuntime, TtlCache<string, true>>();
@@ -23,7 +30,10 @@ const dynamicMisses = new WeakMap<CacheRuntime, TtlCache<string, true>>();
 function missesOf(runtime: CacheRuntime): TtlCache<string, true> {
   let misses = dynamicMisses.get(runtime);
   if (misses === undefined) {
-    misses = new TtlCache(DYNAMIC_MISS_MS, DYNAMIC_MISS_ENTRIES, nowMs);
+    misses = new TtlCache(DYNAMIC_MISS_MS, DYNAMIC_MISS_ENTRIES, nowMs, {
+      maxBytes: DYNAMIC_MISS_BYTES,
+      sizeOf: (_found, key) => key.length * UTF16_BYTES,
+    });
     dynamicMisses.set(runtime, misses);
   }
   return misses;
@@ -39,15 +49,19 @@ export function foundDynamic(runtime: CacheRuntime, descriptor: RouteEntryDescri
   return missesOf(runtime).get(keyOf(descriptor)) !== undefined;
 }
 
-/** A regeneration's outcome as it comes, one at a miss that kept nothing remembered as dynamic. */
+/**
+ * A regeneration's outcome as it comes; one of an entry with no generation (`replaces: null`) — at a
+ * miss, behind a prefetch of one, or in the foreground the edge asked for having no record — that
+ * kept nothing is remembered as dynamic.
+ */
 export async function rememberingDynamic(
   runtime: CacheRuntime,
   descriptor: RouteEntryDescriptor,
-  reason: AttemptReason,
+  replaces: string | null | undefined,
   regeneration: Promise<RegenerationOutcome>,
 ): Promise<RegenerationOutcome> {
   const outcome = await regeneration;
-  if (reason === 'miss' && outcome.kind === 'skipped') {
+  if (replaces === null && outcome.kind === 'skipped') {
     missesOf(runtime).set(keyOf(descriptor), true);
   }
   return outcome;
