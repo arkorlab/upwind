@@ -426,6 +426,7 @@ export class Gateway {
     if (!response.ok) {
       await this.#throwFailure(response);
     }
+    releaseStream(response.body, 'the artifact upload response is not used');
     return { sha256, byteLength: upload.bytes.byteLength };
   }
 

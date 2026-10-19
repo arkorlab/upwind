@@ -128,7 +128,7 @@ describe('a build seed referencing its borrowed artifacts', () => {
 
       expect(result.value).toMatchObject({ inserted: 1, skipped: 0, refused: [], revision: 2 });
       expect(result.artifacts).toStrictEqual({ count, refs: count, owned: 0 });
-      expect(result.bindings).toHaveLength(2 * Math.ceil(count / 100) + Math.ceil(count / 16));
+      expect(result.bindings).toHaveLength(3 * Math.ceil(count / 100) + Math.ceil(count / 16));
       expect(Math.max(0, ...result.bindings)).toBeLessThanOrEqual(100);
     },
   );
@@ -137,7 +137,7 @@ describe('a build seed referencing its borrowed artifacts', () => {
     const result = await inScope(async (tx, storage) => {
       const { sql } = tx;
       const first = { ...artifactAt(0), storageRef: 'first', byteLength: 3 };
-      const later = { ...first, storageRef: 'later', byteLength: 9 };
+      const later = { ...first, storageRef: 'later' };
       sql.exec(
         `INSERT INTO pending_deletions (storage_ref,queued_at) VALUES ('first',1),('later',1)`,
       );
@@ -172,7 +172,7 @@ describe('a build seed referencing its borrowed artifacts', () => {
     expect(result.pending).toStrictEqual(['later']);
     expect(result.generations).toStrictEqual([
       { pathname: '/a', body_bytes: 3, published_revision: 2 },
-      { pathname: '/b', body_bytes: 9, published_revision: 2 },
+      { pathname: '/b', body_bytes: 3, published_revision: 2 },
     ]);
   });
 
@@ -198,11 +198,11 @@ describe('a build seed referencing its borrowed artifacts', () => {
       referenceArtifact(sql, borrowed, NOW - 1);
       const firstNew = { ...artifactAt(2), storageRef: 'new-first', byteLength: 3 };
       const refs = [
-        { ...artifactAt(0), storageRef: 'owned-proposed' },
-        { ...artifactAt(1), storageRef: 'borrowed-proposed' },
+        { ...artifactAt(0), storageRef: 'owned-proposed', byteLength: 9 },
+        { ...artifactAt(1), storageRef: 'borrowed-proposed', byteLength: 7 },
         firstNew,
-        { ...firstNew, storageRef: 'new-later', byteLength: 17 },
-        artifactAt(0),
+        { ...firstNew, storageRef: 'new-later' },
+        { ...artifactAt(0), byteLength: 9 },
       ];
       for (const key of [
         'owned-original',
@@ -274,7 +274,7 @@ describe('a build seed referencing its borrowed artifacts', () => {
       { storage_ref: 'new-first', byte_length: 3, owned: 0, refs: 2, referenced_at: NOW },
     ]);
     expect(result.pending).toStrictEqual(['borrowed-proposed', 'new-later', 'owned-proposed']);
-    expect(result.generation).toStrictEqual({ body_bytes: 23, published_revision: 2 });
+    expect(result.generation).toStrictEqual({ body_bytes: 31, published_revision: 2 });
     expect(result.scope).toStrictEqual({ body_bytes: 0, entry_count: 1, revision: 2 });
     expect(result.events).toStrictEqual(['entry.created', 'generation.committed']);
   });
