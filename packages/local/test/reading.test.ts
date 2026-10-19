@@ -51,12 +51,11 @@ const corruptLetGo = Promise.withResolvers<boolean>();
 /** Header-only answers send no body byte, and end only when the reader closes them. */
 const headersClosed = new Map<string, () => void>();
 const fullHeaders = Promise.withResolvers<true>();
-const fullBody = Promise.withResolvers<true>();
-
-async function finishFullBody(response: ServerResponse): Promise<void> {
-  await fullBody.promise;
-  response.end(DOCUMENT);
-}
+const fullBody = {
+  finish(): void {
+    throw new Error('the delayed body fixture has not started');
+  },
+};
 
 /** Header-only streams stay empty; the whole-body control ends only when its test releases it. */
 function headerFixture(request: IncomingMessage, response: ServerResponse): boolean {
@@ -75,8 +74,10 @@ function headerFixture(request: IncomingMessage, response: ServerResponse): bool
   }
   if (request.url === '/full-after-headers') {
     response.writeHead(200);
+    fullBody.finish = () => {
+      response.end(DOCUMENT);
+    };
     response.flushHeaders();
-    finishFullBody(response).catch(() => response.destroy());
     return true;
   }
   return false;
@@ -258,7 +259,7 @@ describe('an answer read as it streams', () => {
     try {
       expect(settled).toBe(false);
     } finally {
-      fullBody.resolve(true);
+      fullBody.finish();
     }
     const reading = await answer;
 

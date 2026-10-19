@@ -42,16 +42,16 @@ const SPELLED_SEGMENT = 'upwind-check';
 const NAMED_PARAMETER = /:[A-Za-z_]\w*(?:\((?:\\.|[^\\()])*\))?[?*+]?/gu;
 /** Small witnesses for common constraints, not a solver for arbitrary matcher expressions. */
 const PARAMETER_WITNESSES = new Map([
-  ['\\d', '1'],
-  ['\\d+', '1'],
   ['[0-9]', '1'],
   ['[0-9]+', '1'],
   ['[a-z]', 'a'],
-  ['[a-z]+', 'a'],
   ['[A-Z]', 'A'],
+  ['[a-z]+', 'a'],
   ['[A-Z]+', 'A'],
   ['[A-Za-z]+', 'a'],
   ['[a-zA-Z]+', 'a'],
+  [String.raw`\d`, '1'],
+  [String.raw`\d+`, '1'],
 ]);
 
 /** Fill each parameter separately, so a numeric parameter need not share a letter's witness. */
@@ -76,7 +76,7 @@ function spelledBy(source: string | undefined, config: CheckedStack['bundle']['c
   const stem = literal.endsWith('/') ? literal.slice(0, -1) : literal;
   const filled = [
     ...[SPELLED_SEGMENT, '1'].map((value) => source.replaceAll(NAMED_PARAMETER, () => value)),
-    source.replaceAll(NAMED_PARAMETER, spelledParameter),
+    source.replaceAll(NAMED_PARAMETER, (parameter) => spelledParameter(parameter)),
   ];
   const locale = config.i18n?.defaultLocale;
   const prefixes = [

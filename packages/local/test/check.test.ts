@@ -1874,7 +1874,7 @@ const ASSET = '/_next/static/chunks/a.js';
 /** The same ordered phrases as a single-line regex, without unbounded backtracking. */
 function includesInLineOrder(value: string | undefined, before: string, after: string): boolean {
   return (
-    value?.split(/[\n\r\u2028\u2029]/u).some((line) => {
+    value?.split(/[\n\r\u{2028}\u{2029}]/u).some((line) => {
       const at = line.indexOf(before);
       return at !== -1 && line.includes(after, at + before.length);
     }) ?? false
@@ -7170,17 +7170,21 @@ describe('what the check makes of the middleware', () => {
       {
         source: String.raw`/api/:id(\d+)/:slug([a-z]+).json`,
         sourceRegex: String.raw`^/api/\d+/[a-z]+\.json$`,
+        compiled: /^\/api\/\d+\/[a-z]+\.json$/u,
       },
       {
         source: String.raw`/api/:slug([a-z]+)/:id(\d+).json`,
         sourceRegex: String.raw`^/api/[a-z]+/\d+\.json$`,
+        compiled: /^\/api\/[a-z]+\/\d+\.json$/u,
       },
     ])('probes distinct witnesses for mixed matcher parameters: $source', async (matcher) => {
-      const stack = withMiddleware(stackOf([], {}), [matcher]);
+      const stack = withMiddleware(stackOf([], {}), [
+        { source: matcher.source, sourceRegex: matcher.sourceRegex },
+      ]);
       state.middlewareProbe = { kind: 'responded', status: 500 };
       const result = await checkStack(stack);
 
-      expect(state.middlewareAsked).toMatch(new RegExp(matcher.sourceRegex, 'u'));
+      expect(state.middlewareAsked).toMatch(matcher.compiled);
       expect(result.failures).toContainEqual({
         path: 'middleware',
         reason: `asked about ${String(state.middlewareAsked)} as the edge asks it, answered 500`,
@@ -8571,7 +8575,7 @@ describe('what the check makes of the middleware', () => {
             'data;src=bucket;enc=identity;strategy=edge;project=site;policy=default;m=0000',
         },
         body: props,
-        claimedWhen: (headers) => !carryingEach('sid')(headers) && headers.purpose === undefined,
+        claimedWhen: (headers) => !carryingEach('sid')(headers) && headers['purpose'] === undefined,
         when: {
           test: (headers, method) =>
             carryingEach('sid')(headers) && (method === 'HEAD' || carryingEach('headed')(headers)),
