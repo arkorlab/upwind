@@ -1,5 +1,5 @@
 import { BUDGET, literalGate, patternCost, type PatternCost, stepsAt } from './pattern-cost.ts';
-import { requiredLiteralLength } from './required-literal-length.ts';
+import { createShortPatternCheck } from './required-literal-length.ts';
 
 /**
  * Where a test of a routing pattern is held to what it may cost (`patternCost`): run where the value
@@ -43,7 +43,19 @@ export function createPatternBudget(): PatternBudget {
   return { remaining: BUDGET };
 }
 
-const budget: { on: boolean; current?: () => PatternBudget | undefined } = { on: false };
+const budget: {
+  on: boolean;
+  current?: () => PatternBudget | undefined;
+  tooShort?: (pattern: RegExp, value: string) => boolean;
+} = { on: false };
+
+/** Each pattern's cost, read once for each kind of value; `null` where it cannot be bounded. */
+interface Costs {
+  lineFree?: PatternCost | null;
+  any?: PatternCost | null;
+}
+
+const costs = new WeakMap<RegExp, Costs>();
 
 /**
  * Bound every test of a routing pattern from here on (`testWithin`, `execWithin`): what the edge
@@ -67,37 +79,7 @@ export function budgetPatterns(current?: () => PatternBudget | undefined): void 
   if (current !== undefined) {
     budget.current = current;
   }
-}
-
-/** Each pattern's cost, read once for each kind of value; `null` where it cannot be bounded. */
-interface Costs {
-  lineFree?: PatternCost | null;
-  any?: PatternCost | null;
-}
-
-const costs = new WeakMap<RegExp, Costs>();
-
-/** A source-only proof, held no longer than its manifest-owned pattern; no visitor value is held. */
-const requiredLengths = new WeakMap<RegExp, number | null>();
-
-function provenTooShort(pattern: RegExp, value: string): boolean {
-  if (!budget.on || costs.has(pattern)) {
-    return false;
-  }
-  const current = budget.current?.();
-  // Without the request store, leave the existing per-test accounting exactly as it is.
-  if (current === undefined || current.remaining < 1) return false;
-  let length = requiredLengths.get(pattern);
-  if (length === undefined) {
-    const flags = pattern.flags;
-    length = flags === '' || flags === 'i' ? (requiredLiteralLength(pattern.source) ?? null) : null;
-    requiredLengths.set(pattern, length);
-  }
-  if (length === null || value.length >= length) return false;
-  // This is a constant-cost length comparison, not a search or a case-fold of the visitor's text.
-  // Charge the attempt before returning a non-match without running the pattern or its analysis.
-  current.remaining -= 1;
-  return true;
+  budget.tooShort ??= createShortPatternCheck(budget, costs);
 }
 
 function costFor(pattern: RegExp, lineFree: boolean): PatternCost | null {
@@ -218,14 +200,14 @@ export function assertAffordable(pattern: RegExp, value: string): void {
 
 /** `pattern.test(value)`, where its cost is within what a test is allowed (`assertAffordable`). */
 export function testWithin(pattern: RegExp, value: string): boolean {
-  if (provenTooShort(pattern, value)) return false;
+  if (budget.tooShort?.(pattern, value) === true) return false;
   assertAffordable(pattern, value);
   return pattern.test(value);
 }
 
 /** `pattern.exec(value)`, where its cost is within what a test is allowed (`assertAffordable`). */
 export function execWithin(pattern: RegExp, value: string): RegExpExecArray | null {
-  if (provenTooShort(pattern, value)) return null;
+  if (budget.tooShort?.(pattern, value) === true) return null;
   assertAffordable(pattern, value);
   return pattern.exec(value);
 }

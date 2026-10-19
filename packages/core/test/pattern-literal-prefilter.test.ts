@@ -36,6 +36,33 @@ describe('proven short routing non-matches', () => {
     expect(unbounded.execWithin(pattern, '/catalog')).toStrictEqual(pattern.exec('/catalog'));
   });
 
+  it('uses a replacement request getter and retains it when enabled again without one', async () => {
+    vi.resetModules();
+    const isolated = await import('../src/request/pattern-budget.ts');
+    const first = { remaining: 1 };
+    const second = { remaining: 2 };
+    const pattern = compiled();
+    const source = vi.spyOn(pattern, 'source', 'get');
+    const execute = vi.spyOn(pattern, 'exec');
+
+    isolated.budgetPatterns(() => first);
+
+    expect(isolated.testWithin(pattern, '/')).toBe(false);
+
+    isolated.budgetPatterns(() => second);
+
+    expect(isolated.execWithin(pattern, '/en')).toBeNull();
+    expect(second.remaining).toBe(1);
+
+    isolated.budgetPatterns();
+
+    expect(isolated.testWithin(pattern, '/ja')).toBe(false);
+    expect([first.remaining, second.remaining]).toStrictEqual([0, 0]);
+    expect(source).toHaveBeenCalledTimes(1);
+    expect(execute).not.toHaveBeenCalled();
+    expect(() => isolated.execWithin(pattern, '/')).toThrow(isolated.PatternBudgetExceededError);
+  });
+
   it.each(['', 'i'])('returns a proven miss without executing the %s pattern', (flags) => {
     const pattern = compiled(ROUTE, flags);
     const test = vi.spyOn(pattern, 'test');
