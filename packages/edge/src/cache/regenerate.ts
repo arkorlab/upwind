@@ -22,6 +22,7 @@ import {
   passthroughMetrics,
   type PassthroughWait,
 } from '../handlers/passthrough.ts';
+import type { Dispatched } from '../handlers/upstream.ts';
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeMetric } from '../observability/metrics.ts';
 import type { EdgeContext } from '../strategies/context.ts';
@@ -221,6 +222,7 @@ async function askDetached(
   edge: EdgeContext,
   input: DispatchInput,
   asked: (soFar: () => number) => void,
+  onDispatched?: (read: () => Dispatched | undefined) => void,
 ): Promise<void> {
   try {
     const response = await handlePassthrough({
@@ -234,6 +236,7 @@ async function askDetached(
       middleware: input.middleware,
       headers: regenerationHeaders(edge, 'detached', input.target),
       onAsked: asked,
+      onDispatched,
     });
     releaseStream(response.body, 'detached regeneration answered');
   } catch (error) {
@@ -248,12 +251,26 @@ async function askDetached(
  * After the response: a request of its own, whose answer nobody reads, counted in the point of the
  * request it was asked behind (`DetachedRegeneration`).
  */
-export function triggerDetached(edge: EdgeContext, input: DispatchInput): DetachedRegeneration {
+export function triggerDetached(
+  edge: EdgeContext,
+  input: DispatchInput,
+  options?: { readonly attributeFunction?: boolean },
+): DetachedRegeneration {
   // Never handed where the request never went out: nothing was asked.
   let soFar: (() => number) | undefined;
-  const answered = askDetached(edge, input, (reader) => {
-    soFar = reader;
-  });
+  let dispatched: (() => Dispatched | undefined) | undefined;
+  const answered = askDetached(
+    edge,
+    input,
+    (reader) => {
+      soFar = reader;
+    },
+    options?.attributeFunction === true
+      ? (reader) => {
+          dispatched = reader;
+        }
+      : undefined,
+  );
   edge.ctx.waitUntil(answered);
   return {
     record: (point) => {
@@ -261,9 +278,25 @@ export function triggerDetached(edge: EdgeContext, input: DispatchInput): Detach
         (async (): Promise<void> => {
           await answeredWithin(answered);
           const dispatches = soFar?.() ?? 0;
-          observeRequestMetric(edge, { ...point, subrequests: point.subrequests + dispatches });
+          const worker = dispatches === 0 ? undefined : observedDispatch(dispatched);
+          observeRequestMetric(edge, {
+            ...point,
+            subrequests: point.subrequests + dispatches,
+            ...(worker !== undefined && { fn: worker.fn, redispatch: worker.redispatched ? 1 : 0 }),
+          });
         })(),
       );
     },
   };
+}
+
+/** Optional accounting cannot change whether a response or a regeneration succeeds. */
+function observedDispatch(
+  read: (() => Dispatched | undefined) | undefined,
+): Dispatched | undefined {
+  try {
+    return read?.();
+  } catch {
+    return undefined;
+  }
 }

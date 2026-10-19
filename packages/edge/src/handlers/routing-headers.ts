@@ -87,6 +87,9 @@ export function routingReadsFor(
     }
   }
   for (const entry of Object.values(manifest.routes)) remember(entry.bypassFor);
+  if (manifest.routeBodies !== undefined) {
+    for (const entry of Object.values(manifest.routeBodies)) remember(entry.bypassFor);
+  }
   const found = { credentials, reads, forwardedFields: [...fields] };
   manifestReaders.set(manifest, found);
   return found;

@@ -41,6 +41,7 @@ import {
   privateCacheControl,
   readMiddlewareAnswer,
 } from './responses.ts';
+import { connectionRefusesSharing } from './route-body-policy.ts';
 import { readsCredentials, readsForwarding } from './routing-headers.ts';
 
 export { readsCredentials } from './routing-headers.ts';
@@ -105,6 +106,8 @@ export interface MiddlewareContinued extends Extract<
    * of the path the client asked for were lost and those of the path it was rewritten to added.
    */
   readonly judgedRules?: ConfiguredHeaders | undefined;
+  /** A deny-only local signal retained before transport filtering removes privacy fields. */
+  readonly routeBodyPrivate?: true | undefined;
 }
 
 /**
@@ -159,11 +162,18 @@ function describe(error: unknown): string {
  * `@next/routing` reads one.
  */
 function decided(result: MiddlewareResult, response: Response): MiddlewareOutcome {
-  return result.kind === 'continue' &&
-    response.status !== HTTP_OK &&
-    response.headers.has(REWRITE_HEADER)
-    ? { ...result, rewriteStatus: response.status }
-    : result;
+  if (result.kind !== 'continue') return result;
+  const rewriteStatus =
+    response.status !== HTTP_OK && response.headers.has(REWRITE_HEADER)
+      ? response.status
+      : undefined;
+  const routeBodyPrivate = connectionRefusesSharing(response.headers);
+  if (rewriteStatus === undefined && !routeBodyPrivate) return result;
+  return {
+    ...result,
+    ...(rewriteStatus !== undefined && { rewriteStatus }),
+    ...(routeBodyPrivate && { routeBodyPrivate: true as const }),
+  };
 }
 
 /** A rule of the application's routing, as far as its conditions go. */

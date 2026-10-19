@@ -125,12 +125,10 @@ export function observeRequestMetric(
   otherRequests?: Promise<number>,
 ): void {
   const shells = edge.abandonedShells?.requests;
-  const requests =
-    otherRequests === undefined
-      ? shells
-      : shells === undefined
-        ? otherRequests
-        : combinedRequests(shells, otherRequests);
+  let requests = shells;
+  if (otherRequests !== undefined) {
+    requests = shells === undefined ? otherRequests : combinedRequests(shells, otherRequests);
+  }
   if (requests === undefined) {
     observeMetric(edge.host, metric);
   } else {
