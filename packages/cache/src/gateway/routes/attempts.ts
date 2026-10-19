@@ -17,8 +17,8 @@ import {
 import { Hono } from 'hono';
 import { z } from 'zod';
 
-import type { UploadedArtifact } from '../../scope/attempts.ts';
-import { isRefusal } from '../../scope/state.ts';
+import type { RecordedArtifact, UploadedArtifact } from '../../scope/attempts.ts';
+import { isRefusal, type Refusal } from '../../scope/state.ts';
 import { answerScope, type GatewayContext, type GatewayEnv, meterWrite } from '../auth.ts';
 import { ENTRY_BODY_BYTES, inBodyRoom, readBody, readRequest } from '../body.ts';
 import { fail, ok } from '../respond.ts';
@@ -173,6 +173,26 @@ function decodedBase64(value: string): Uint8Array | undefined {
   }
 }
 
+/** Select each admitted blob once, retaining its first metadata and any later repair request. */
+function admittedBlobs(
+  decoded: readonly DecodedArtifact[],
+  recorded: readonly (RecordedArtifact | Refusal)[],
+): Map<string, DecodedArtifact> {
+  const blobs = new Map<string, DecodedArtifact>();
+  for (const [index, artifact] of decoded.entries()) {
+    const answer = recorded[index];
+    if (answer === undefined || isRefusal(answer)) continue;
+    const first = blobs.get(artifact.upload.storageRef);
+    if (first !== undefined && answer.replace !== true) continue;
+    const selected = first ?? artifact;
+    blobs.set(
+      artifact.upload.storageRef,
+      answer.replace === true ? { ...selected, replace: true } : selected,
+    );
+  }
+  return blobs;
+}
+
 /**
  * `POST /attempts/:attemptId/artifacts`. Several of the attempt's small artifacts in one request:
  * each read no further than a batch may hold, decoded and hashed before anything is written,
@@ -232,18 +252,7 @@ async function uploadArtifacts(c: GatewayContext): Promise<Response> {
   // Each artifact the authority recorded is stored, refused beside another or not, as one upload's
   // bytes are once it is recorded; each blob once, as the first of the batch's artifacts that are
   // its bytes types it, as the first upload of them does.
-  const blobs = new Map<string, DecodedArtifact>();
-  for (const [index, artifact] of decoded.entries()) {
-    const answer = recorded[index];
-    if (answer === undefined || isRefusal(answer)) continue;
-    const first = blobs.get(artifact.upload.storageRef);
-    if (first !== undefined && answer.replace !== true) continue;
-    const selected = first ?? artifact;
-    blobs.set(
-      artifact.upload.storageRef,
-      answer.replace === true ? { ...selected, replace: true } : selected,
-    );
-  }
+  const blobs = admittedBlobs(decoded, recorded);
   await Promise.all(
     [...blobs.values()].map(async ({ upload, bytes, replace }) => {
       if (replace === true || (await c.env.ARTIFACTS.head(upload.storageRef)) === null) {
