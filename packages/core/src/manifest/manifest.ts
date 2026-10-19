@@ -14,6 +14,7 @@ import {
 } from './built-names.ts';
 import { pageKeyOf } from './page-keys.ts';
 import { namesPagesDataPrefix, pagesDataPrefixOf } from './pages-data-prefix.ts';
+import { routeBodyFields } from './route-bodies.ts';
 import {
   type AppRuntime,
   type AssetPolicy,
@@ -24,6 +25,7 @@ import {
   type ManifestCache,
   type MiddlewareMatcher,
   type ReservedRoute,
+  type RouteBodyEntry,
   type RouteEntry,
   type ProjectManifest,
   projectManifestSchema,
@@ -56,6 +58,7 @@ export interface BuildProjectManifestInput {
   readonly originHost: string;
   readonly deployment: DeploymentFingerprint;
   readonly routes: readonly RouteEntry[];
+  readonly routeBodies?: readonly RouteBodyEntry[] | undefined;
   readonly continuation?: Partial<ContinuationConfig> | undefined;
   readonly assetPolicy?: Partial<AssetPolicy> | undefined;
   readonly app: AppRuntime;
@@ -161,6 +164,11 @@ function unreachableFunctions(input: BuildProjectManifestInput): string[] {
   };
   for (const route of input.routes) {
     check(route.function);
+  }
+  if (input.routeBodies !== undefined) {
+    for (const body of input.routeBodies) {
+      check(body.function);
+    }
   }
   if (input.dynamicRoutes !== undefined) {
     for (const route of input.dynamicRoutes) {
@@ -309,6 +317,7 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
     ...(input.trailingSlash === true && { trailingSlash: true }),
     ...(input.reservedRoutes !== undefined && { reservedRoutes: input.reservedRoutes }),
     ...pathnameFields(input),
+    ...routeBodyFields(input, routes),
     ...(input.exactFunctions !== undefined && { exactFunctions: input.exactFunctions }),
     ...(input.headerRules !== undefined && { headerRules: input.headerRules }),
     ...(input.routerReferences !== undefined && { routerReferences: input.routerReferences }),
@@ -710,6 +719,7 @@ export function findRouteEntry(
   manifest: ProjectManifest,
   pathname: string,
 ): RouteEntry | undefined {
-  const key = pageKeyOf(manifest.routes, pathname, manifest);
+  const named = manifest.routeBodies === undefined ? manifest.routes : manifest.exactPathnames;
+  const key = named === undefined ? undefined : pageKeyOf(named, pathname, manifest);
   return key === undefined ? undefined : manifest.routes[key];
 }

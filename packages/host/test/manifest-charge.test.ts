@@ -214,3 +214,24 @@ describe('the request-key static file format', () => {
     ).toBe(1.5 * extraBytes);
   });
 });
+
+describe('the memory held by route-body mappings', () => {
+  it('charges the map, entries and bypass conditions separately from their JSON', () => {
+    const plain = manifestOf([]);
+    const listed = {
+      ...plain,
+      routeBodies: {
+        '/icon': { pathname: '/icon', route: '/icon', entryId: 'icon', bypassFor: [CONDITION] },
+      },
+    };
+    const plainBytes = encodeUtf8(serializeManifest(plain)).byteLength;
+    const listedBytes = encodeUtf8(serializeManifest(listed)).byteLength;
+    const objects = 4;
+
+    expect(
+      manifestCharge(listed, listedBytes) -
+        manifestCharge(plain, plainBytes) -
+        1.5 * (listedBytes - plainBytes),
+    ).toBe(80 * objects);
+  });
+});
