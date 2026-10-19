@@ -47,6 +47,9 @@ const NODE_ONLY_FILES = [
 const RUNTIME_NEUTRAL_FILES = [
   'packages/auth/src/**/*.ts',
   'packages/core/**/*.ts',
+  // Read by an edge, by the cache behind it and by whatever deploys to them, each of which may run
+  // as a Worker or under Node.
+  'packages/host/**/*.ts',
   'packages/sdk/src/**/*.ts',
 ];
 /** The suites, and what they share, wherever a package or a tool keeps them. */
@@ -67,6 +70,35 @@ function configOf(configs: Record<string, unknown> | undefined, name: string): L
 const NODE_BUILTINS = builtinModules.flatMap((name) =>
   name.startsWith('_') ? [] : [name, `node:${name}`],
 );
+
+/** Syntax no TypeScript here is written in. */
+const RESTRICTED_SYNTAX = [
+  { selector: 'TSEnumDeclaration', message: 'Use string literal unions instead of enums.' },
+  {
+    selector: 'TSParameterProperty',
+    message: 'Parameter properties are not erasable syntax; declare fields explicitly.',
+  },
+  {
+    selector: 'ExportDefaultDeclaration > ArrowFunctionExpression',
+    message: 'Default-export a named function declaration, not an arrow function.',
+  },
+];
+
+/**
+ * zod's `z`, imported as a namespace in a package an application may compile into itself. zod's
+ * entry hands its whole namespace out as the binding `z`, and Turbopack keeps everything behind
+ * that binding once a module names it; imported as a namespace, the same calls leave what nothing
+ * reads behind. Bundlers that shake either are no reason to write it the other way here.
+ */
+const ZOD_NAMESPACE_SYNTAX = [
+  "ImportDeclaration[source.value='zod'][importKind!='type'] > ImportSpecifier[imported.name='z'][importKind!='type']",
+  "ImportDeclaration[source.value='zod'][importKind!='type'] > ImportDefaultSpecifier",
+].map((selector) => {
+  return {
+    selector,
+    message: "Import zod as `import * as z from 'zod'`, which a bundler can shake.",
+  };
+});
 
 export default defineConfig([
   globalIgnores([
@@ -209,18 +241,7 @@ export default defineConfig([
         'error',
         { considerDefaultExhaustiveForUnions: false, requireDefaultForNonUnion: true },
       ],
-      'no-restricted-syntax': [
-        'error',
-        { selector: 'TSEnumDeclaration', message: 'Use string literal unions instead of enums.' },
-        {
-          selector: 'TSParameterProperty',
-          message: 'Parameter properties are not erasable syntax; declare fields explicitly.',
-        },
-        {
-          selector: 'ExportDefaultDeclaration > ArrowFunctionExpression',
-          message: 'Default-export a named function declaration, not an arrow function.',
-        },
-      ],
+      'no-restricted-syntax': ['error', ...RESTRICTED_SYNTAX],
     },
   },
 
@@ -506,6 +527,12 @@ export default defineConfig([
         },
       ],
     },
+  },
+
+  // An application may compile `@stayingupwind/host` into itself, so its zod is a namespace.
+  {
+    files: ['packages/host/**/*.ts'],
+    rules: { 'no-restricted-syntax': ['error', ...RESTRICTED_SYNTAX, ...ZOD_NAMESPACE_SYNTAX] },
   },
 
   // The suites. A literal in a test is the case it is about, and the same literal across tests is

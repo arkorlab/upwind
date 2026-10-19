@@ -31,6 +31,8 @@ upwind/
 │   │              #   the D1 database, KV namespace and R2 bucket its deployment published
 │   ├── auth/      # @stayingupwind/auth — Better Auth with nothing to configure: the config beside
 │   │              #   the app is mounted, given that database, and signed in against upwind itself
+│   ├── host/      # @stayingupwind/host — what an edge, its runtime cache and what deploys to them
+│   │              #   share: the delivery policy, the pointer, the cache's contracts, storage keys
 │   ├── upwind/    # upwind — the CLI; `upwind dev` runs a Next.js dev server behind its own door
 │   └── create-upwind/
 │                   # create-upwind — `pnpm create upwind`, and the application it writes
@@ -53,7 +55,9 @@ upwind/
     └── release-signers.asc              # the keys a release tag may be signed with
 ```
 
-The seven packages under `packages/` are what a release publishes, and all of them move together.
+The packages under `packages/` are what a release publishes, and all of them move together — all
+but a package whose manifest says `private`, which a release leaves out until it is ready to be
+published for the first time.
 The workspace root, `tools/`, `fixtures/` and `web-site/` are not —
 and the fixtures are deliberately outside the pnpm workspace, since a workspace package would be
 pinned to the catalog's single Next.js, which is the one thing the matrix exists to look past.
@@ -140,7 +144,7 @@ only matters if you touched `packages/adapter/src/patches/`. The patch checks ar
 
 ## Releases
 
-Maintainers only. The version of all seven packages moves in lockstep, in a pull request like any
+Maintainers only. The version of every package moves in lockstep, in a pull request like any
 other; a tag is not a place to make a change. A package published for the first time also gets a row
 in `PACKAGES` in [`web-site/src/lib/site.ts`](web-site/src/lib/site.ts) — but **after** the release,
 not in the bump: that table links to npm, the site deploys when a change lands on `main`, and the

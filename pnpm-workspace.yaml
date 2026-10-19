@@ -65,6 +65,11 @@ catalog:
   # lint rules they are held to beside the rest.
   vitest: 5.0.5
   '@vitest/eslint-plugin': 1.6.27
+  # What `@stayingupwind/host` writes the cache's control contract in, and turns core's schemas into
+  # where something takes zod's alone (`./zod`). What the runtime and the edge read — the gateway's
+  # contract, the cache's records — is written with core's own validator instead, which is cheap to
+  # build in an isolate that builds it before its first request.
+  zod: 4.6.5
 
 # Only these dependencies may run install scripts.
 allowBuilds:
