@@ -27,6 +27,7 @@ async function fixture(storage: Storage, answer: Answer, matched = true) {
   const file = site.manifest.staticFiles?.[FILE];
   if (file === undefined) throw new Error('the fixture must ship its file');
   const size = file.byteLength;
+  const etag = `"${file.sha256}"`;
   const stored = await env.ARTIFACTS.get(`blobs/${file.sha256}`);
   if (stored === null) throw new Error('the seeded file must exist');
   const held: R2ObjectBody = stored;
@@ -154,9 +155,17 @@ async function fixture(storage: Storage, answer: Answer, matched = true) {
     if (outcome === 'failed') {
       pending.reject(new Error('bucket read failed'));
     } else {
-      pending.resolve(outcome === 'missing' ? null : { ...held, size, body });
+      pending.resolve(
+        outcome === 'missing'
+          ? null
+          : { ...held, size, body, writeHttpMetadata: held.writeHttpMetadata.bind(held) },
+      );
     }
-    blobPending.resolve(new Response(body, { headers: { 'content-length': String(size) } }));
+    blobPending.resolve(
+      new Response(body, {
+        headers: { 'content-length': String(size), etag, 'cf-cache-status': 'HIT' },
+      }),
+    );
   }
   return { serve, finish, entered, get, blob, cancel, ctx, points, dispatched };
 }
@@ -208,6 +217,7 @@ describe('a middleware answer counts the speculative read it abandons', () => {
         blob: example.storage === 'bucket' ? 0 : 1,
         dispatch: ['site-middleware'],
       });
+
       await response.body?.cancel();
     } finally {
       subject.finish();
@@ -242,6 +252,7 @@ describe('a middleware answer counts the speculative read it abandons', () => {
         const response = await loading;
 
         await expect(response.text()).resolves.toBe('the manual');
+
         await waitOnExecutionContext(subject.ctx);
 
         expect(subject.points).toHaveLength(1);

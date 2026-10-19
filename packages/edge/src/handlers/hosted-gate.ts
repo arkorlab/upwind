@@ -81,7 +81,10 @@ export interface HostedGate {
    * `abandon` lets it go when neither is asked.
    */
   readonly start?: (configured: ConfiguredHeaders) => void;
-  readonly abandon?: (counted?: boolean) => Promise<number> | undefined;
+  readonly abandon?: {
+    (counted?: false): void;
+    (counted: true): Promise<number> | undefined;
+  };
   /**
    * What answers where a pattern of the application's costs more against the request, as the
    * middleware left it, than the edge runs (`budgetPatterns`): handed what the middleware decided,

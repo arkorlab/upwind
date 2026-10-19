@@ -11,6 +11,7 @@ import { releaseStream } from '@stayingupwind/core/util';
 import type { StaticFileContext } from '../strategies/context.ts';
 import {
   type DeferredHostedGateInput,
+  type HostedGate,
   serveAfterMiddleware,
   type TimedContinue,
 } from './hosted-gate.ts';
@@ -166,7 +167,9 @@ export function routeHostedStaticFile(input: HostedStaticFileInput): Promise<Res
   function classified(configured: ConfiguredHeaders): ServedFile {
     return { pathname: url.pathname, file: input.file, early, configured };
   }
-  const letGo = (counted = false): Promise<number> | undefined => {
+  const letGo: NonNullable<HostedGate['abandon']> = (
+    counted = false,
+  ): Promise<number> | undefined => {
     const abandoned = early;
     abandonFileRead(abandoned);
     early = undefined;

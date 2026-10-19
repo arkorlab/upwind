@@ -667,7 +667,7 @@ describe('connection semantics across middleware consumers', () => {
           headers: {
             'Content-Type': 'application/rss+xml',
             'X-Public': 'configured',
-            ...(example.ruleConnection === undefined ? {} : { Connection: example.ruleConnection }),
+            ...(example.ruleConnection !== undefined && { Connection: example.ruleConnection }),
           },
         },
       ],
@@ -675,12 +675,10 @@ describe('connection semantics across middleware consumers', () => {
         return new Response(null, {
           headers: {
             'x-middleware-rewrite': 'https://elsewhere.example/feed',
-            ...(example.middlewareType === undefined
-              ? {}
-              : { 'content-type': example.middlewareType }),
-            ...(example.middlewareConnection === undefined
-              ? {}
-              : { connection: example.middlewareConnection }),
+            ...(example.middlewareType !== undefined && { 'content-type': example.middlewareType }),
+            ...(example.middlewareConnection !== undefined && {
+              connection: example.middlewareConnection,
+            }),
             'set-cookie': 'mw=1; Path=/',
           },
         });
