@@ -58,7 +58,7 @@ function empty(status: number, headers: Readonly<Record<string, string>> = {}): 
 /** Props are installed by the host, rather than supplied in the caller's Request. */
 function permitted(props: unknown, sha256: string): boolean {
   if (typeof props !== 'object' || props === null) return false;
-  const allowed = Reflect.get(props, 'allowedSha256');
+  const allowed: unknown = Reflect.get(props, 'allowedSha256');
   return (
     typeof allowed === 'object' &&
     allowed !== null &&

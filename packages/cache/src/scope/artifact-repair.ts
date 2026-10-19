@@ -169,7 +169,7 @@ export function repairArtifact(input: TxInput, repair: ArtifactRepair): number {
   );
   const rows = changed.toArray();
   const row = rows[0];
-  if (rows.length !== 1 || row === undefined)
+  if (row === undefined || rows.length !== 1)
     throw new Error('the failed artifact location changed');
   if (repair.previouslyOwned && repair.previousStorageRef !== repair.storageRef) {
     sql.exec(
