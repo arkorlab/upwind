@@ -655,12 +655,14 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
       });
 
       await expect(stateFor(scope, plan)).resolves.toStrictEqual(before);
+
       put.mockRestore();
       await upload(scope, plan, started, 'single');
 
       await expect(
         scope.stub.commit(started.attemptId, requestFor(plan, started), NOW),
       ).resolves.toMatchObject({ kind: 'published' });
+
       expect(decodeUtf8((await recordFor(scope, plan)).html)).toBe(BODY);
     } finally {
       blocked.reject(new Error('release replacement fixture'));
@@ -686,11 +688,13 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
       scope.stub.commit(started.attemptId, requestFor(plan, started), NOW),
     ).resolves.toMatchObject({ code: 'artifact_missing' });
     await expect(stateFor(scope, plan)).resolves.toStrictEqual(before);
+
     await upload(scope, plan, started, 'single');
 
     await expect(
       scope.stub.commit(started.attemptId, requestFor(plan, started), NOW),
     ).resolves.toMatchObject({ kind: 'published' });
+
     expect(decodeUtf8((await recordFor(scope, plan)).html)).toBe(BODY);
   });
 
