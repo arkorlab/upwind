@@ -10482,13 +10482,12 @@ describe('what the check makes of the middleware', () => {
         const routes = [await routeOf('/login', finished, { complete: true })];
         const stack = { ...stackOf(routes, {}), site: new URL('https://site.example') };
         answers.set('/login', { ...finishedAnswer(finished, '/login'), status });
-        const answer = await documentAnswerAt(stack, Buffer.byteLength(finished), {
-          url: new URL('/login', stack.site),
-          headers: { 'accept-encoding': BROWSER_CODINGS },
-        });
-        if (typeof answer === 'string') {
-          throw new TypeError(answer);
-        }
+        const answer = requiredCapturedDocument(
+          await documentAnswerAt(stack, Buffer.byteLength(finished), {
+            url: new URL('/login', stack.site),
+            headers: { 'accept-encoding': BROWSER_CODINGS },
+          }),
+        );
         // A later GET would answer the opposite; the deferred verdict must use neither that GET nor
         // a trace already disposed of by capturedDocument.
         answers.set('/login', {
@@ -13249,3 +13248,11 @@ describe('what the check makes of the middleware', () => {
     );
   });
 });
+
+/** The captured document required by its regression, with the existing explicit read failure. */
+function requiredCapturedDocument(answer: Awaited<ReturnType<typeof documentAnswerAt>>) {
+  if (typeof answer === 'string') {
+    throw new TypeError(answer);
+  }
+  return answer;
+}

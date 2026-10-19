@@ -44,7 +44,7 @@ export async function capturedDocument(
   stack: CheckedStack,
   headBytes: number,
   asked: DocumentAsk,
-): Promise<{ readonly answer: Reading; readonly kept: Kept } | string> {
+): Promise<string | { readonly answer: Reading; readonly kept: Kept }> {
   await using tracing = await traced(stack, asked.headers);
   const answer = await readDocument(stack, headBytes, asked, tracing.headers);
   if (typeof answer === 'string') {

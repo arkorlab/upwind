@@ -39,7 +39,7 @@ export async function documentAnswerAt(
     documentFailure: async () => {
       const verdict = await documentVerdict(stack, asked, {
         answer: read.answer,
-        kept: async () => read.kept,
+        kept: () => Promise.resolve(read.kept),
       });
       return verdict.kind === 'failed' ? verdict.reason : undefined;
     },

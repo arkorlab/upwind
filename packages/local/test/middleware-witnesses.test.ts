@@ -25,6 +25,14 @@ function stackFor(backstage: URL, source: string, sourceRegex: string): CheckedS
   } as unknown as CheckedStack;
 }
 
+/** The listening backstage URL, or the same setup failure before a probe can dispatch. */
+function backstageOf(state: { readonly url?: URL }): URL {
+  if (state.url === undefined) {
+    throw new TypeError('the backstage did not start');
+  }
+  return state.url;
+}
+
 describe('finite parameter witnesses for middleware probes', () => {
   const state: { url?: URL } = {};
 
@@ -58,11 +66,9 @@ describe('finite parameter witnesses for middleware probes', () => {
     },
     { source: '/api/:id(a{2})', regex: '^/api/a{2}$', path: '/api/aa' },
   ])('probes a broken middleware covered by $source', async ({ source, regex, path }) => {
-    if (state.url === undefined) {
-      throw new TypeError('the backstage did not start');
-    }
+    const backstage = backstageOf(state);
     const before = observed.length;
-    const verdict = await middlewareProbeVerdict(stackFor(state.url, source, regex), 'checker');
+    const verdict = await middlewareProbeVerdict(stackFor(backstage, source, regex), 'checker');
     const asked = observed.slice(before);
 
     expect(asked).toStrictEqual([path]);
@@ -73,11 +79,9 @@ describe('finite parameter witnesses for middleware probes', () => {
     { source: String.raw`/api/:id(\d{999})`, regex: String.raw`^/api/\d{999}$` },
     { source: '/api/:id([a-z]{2,})', regex: '^/api/[a-z]{2,}$' },
   ])('keeps unsupported $source as unproved without dispatch', async ({ source, regex }) => {
-    if (state.url === undefined) {
-      throw new TypeError('the backstage did not start');
-    }
+    const backstage = backstageOf(state);
     const before = observed.length;
-    const verdict = await middlewareProbeVerdict(stackFor(state.url, source, regex), 'checker');
+    const verdict = await middlewareProbeVerdict(stackFor(backstage, source, regex), 'checker');
 
     expect(verdict.kind).toBe('skipped');
     expect(observed).toHaveLength(before);
