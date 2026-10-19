@@ -39,7 +39,7 @@ const PATTERN_SYNTAX = /[(*+:?\\{]/u;
 /** A segment of the check's own after what a matcher spells, for one that asks for one there. */
 const SPELLED_SEGMENT = 'upwind-check';
 /** Named parameters, with a simple custom pattern and modifier where the matcher names one. */
-const NAMED_PARAMETER = /:[A-Za-z_]\w*(?:\((?:\\.|[^()])*\))?[?*+]?/gu;
+const NAMED_PARAMETER = /:[A-Za-z_]\w*(?:\((?:\\.|[^\\()])*\))?[?*+]?/gu;
 
 /**
  * Pathnames a matcher as the application wrote it (`source`) may cover: what it spells before its
