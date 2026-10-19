@@ -29,6 +29,7 @@ import type { GenerationLoad } from '../cache/generation-loader.ts';
 import { upgradesMember } from '../cache/member.ts';
 import { partialFallbackInHand } from '../cache/partial-fallback.ts';
 import { type DetachedRegeneration, shouldAsk, triggerDetached } from '../cache/regenerate.ts';
+import { lookAtScopeBehind } from '../cache/scope-signal.ts';
 import { memberEntryKey } from '../memory/caches.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { finishShellBody } from '../strategies/shell-loader.ts';
@@ -157,6 +158,7 @@ async function partGeneration(input: PartInput, part: PartAnswer): Promise<PartG
   if (kind === 'payload' && held === undefined && member && !settings.concreteUpgrade) {
     return { kind: 'function' };
   }
+  lookAtScopeBehind(input.edge, key.scopeId);
   let own: MemberRecord | undefined = held === undefined ? undefined : { keyed: keyed === true };
   // Read an upgraded member's own generation; the class pack cannot describe its parts.
   if (held === undefined && upgradesMember(settings, entry, pathname)) {

@@ -20,7 +20,7 @@ import {
   type MiddlewareTiming,
   routedHeaders,
 } from './middleware.ts';
-import { PATTERN_BUDGET } from './passthrough.ts';
+import { PATTERN_BUDGET, type PassthroughWait } from './passthrough.ts';
 
 export type MiddlewareContinue = Extract<MiddlewareResult, { kind: 'continue' }>;
 
@@ -36,6 +36,7 @@ export interface HostedGateInput<Context extends StaticFileContext = EdgeContext
   readonly passthrough: (
     reason: string,
     middleware?: MiddlewareOutcome & Partial<MiddlewareTiming>,
+    waited?: PassthroughWait,
   ) => Promise<Response>;
 }
 

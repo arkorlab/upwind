@@ -245,9 +245,10 @@ describe('hosted middleware fallback accounting', () => {
   it.each([
     { target: 'file', mode: 'retry-failed', calls: [true, true, false], subrequests: 3 },
     { target: 'image', mode: 'retry-failed', calls: [true, true, false], subrequests: 3 },
-    { target: 'file', mode: 'retry-rewritten', calls: [true, true, false], subrequests: 3 },
+    // Rewrites include the discarded file read beside middleware and the final Function.
+    { target: 'file', mode: 'retry-rewritten', calls: [true, true, false], subrequests: 4 },
     { target: 'image', mode: 'retry-rewritten', calls: [true, true, false], subrequests: 3 },
-    { target: 'file', mode: 'rewritten', calls: [true, false], subrequests: 2 },
+    { target: 'file', mode: 'rewritten', calls: [true, false], subrequests: 3 },
     { target: 'file', mode: 'skipped', calls: [], subrequests: 1 },
     { target: 'file', mode: 'unreachable', calls: [], subrequests: 0 },
   ] as const)('counts $target / $mode before the final answer', async (example) => {

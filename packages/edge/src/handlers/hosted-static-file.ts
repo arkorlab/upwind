@@ -201,14 +201,21 @@ export function routeHostedStaticFile(input: HostedStaticFileInput): Promise<Res
         return serveFile(servedInput, classified(configured), middleware, dispatches);
       }
       // The read of the file asked for is let go, and counted among the requests of the file
-      // served instead. A rewrite to a path the Worker answers is a passthrough, which counts the
-      // request it makes and none of what was spent deciding to make it (`passthrough.ts`).
+      // served instead. A rewrite to a path the Worker answers passes the discarded read to the
+      // same background accounting as a discarded shell, without waiting for it before the answer.
       const replaced = early;
       letGo();
       const target = shippedFileAt(manifest, middleware.url);
-      return target === undefined
-        ? undefined
-        : serveFile(servedInput, { ...target, replaced, configured }, middleware, dispatches);
+      if (target === undefined) {
+        return input.passthrough(
+          'rewritten',
+          middleware,
+          replaced === undefined
+            ? undefined
+            : { abandonedShells: { ctx: replaced.ctx, requests: requestsOf(replaced) } },
+        );
+      }
+      return serveFile(servedInput, { ...target, replaced, configured }, middleware, dispatches);
     },
   });
 }

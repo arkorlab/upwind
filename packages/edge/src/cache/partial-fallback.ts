@@ -23,6 +23,7 @@ import {
   type GenerationLoad,
   type Read,
 } from './generation-loader.ts';
+import { lookAtScopeBehind } from './scope-signal.ts';
 
 const MAX_RECENT = 1024;
 const MAX_KEY_CHARS = 2048;
@@ -178,6 +179,7 @@ export function partialFallbackInHand(
   const { scopeId } = manifest.cache;
   const memoKey = memberEntryKey(scopeId, upgrade.route, completed);
   if (memoKey.length > MAX_KEY_CHARS) return undefined;
+  lookAtScopeBehind(edge, scopeId);
   const entryId = edge.runtime.memory.memberEntries.get(memoKey);
   const key = entryId === undefined ? undefined : { scopeId, entryId };
   const held =

@@ -14,7 +14,17 @@ const FILE = '/manual.txt';
 const BYTES = new TextEncoder().encode('the manual');
 type Storage = 'bucket' | 'blob-hit' | 'blob-miss';
 type Outcome = 'found' | 'missing' | 'failed';
-type Answer = 'response' | 'redirect' | 'external' | 'external-unavailable' | 'continue';
+type Answer =
+  | 'response'
+  | 'redirect'
+  | 'external'
+  | 'external-unavailable'
+  | 'internal'
+  | 'continue';
+
+function dispatchedFor(answer: Answer): string[] {
+  return answer === 'internal' ? ['site-middleware', 'site-app'] : ['site-middleware'];
+}
 
 function neverAcknowledges(): Promise<void> {
   return new Promise(() => {
@@ -74,6 +84,9 @@ async function fixture(storage: Storage, answer: Answer, matched = true) {
     memory: createEdgeMemory(() => Date.now()),
     dispatchApp: (script) => {
       dispatched.push(script);
+      if (script === 'site-app') {
+        return Promise.resolve(new Response('the application answers'));
+      }
       switch (answer) {
         case 'redirect': {
           return Promise.resolve(
@@ -93,6 +106,13 @@ async function fixture(storage: Storage, answer: Answer, matched = true) {
         }
         case 'continue': {
           return Promise.resolve(new Response(null, { headers: { 'x-middleware-next': '1' } }));
+        }
+        case 'internal': {
+          return Promise.resolve(
+            new Response(null, {
+              headers: { 'x-middleware-rewrite': 'https://site.example/application' },
+            }),
+          );
         }
         case 'response': {
           return Promise.resolve(new Response('answered', { status: 401 }));
@@ -184,6 +204,10 @@ describe('a middleware answer counts the speculative read it abandons', () => {
     { storage: 'blob-miss', answer: 'redirect', outcome: 'failed', count: 3, status: 307 },
     { storage: 'bucket', answer: 'response', outcome: 'missing', count: 2, status: 401 },
     { storage: 'bucket', answer: 'redirect', outcome: 'failed', count: 2, status: 307 },
+    { storage: 'bucket', answer: 'internal', outcome: 'found', count: 3, status: 200 },
+    { storage: 'blob-hit', answer: 'internal', outcome: 'found', count: 3, status: 200 },
+    { storage: 'blob-miss', answer: 'internal', outcome: 'missing', count: 4, status: 200 },
+    { storage: 'bucket', answer: 'internal', outcome: 'failed', count: 3, status: 200 },
   ] satisfies readonly {
     readonly storage: Storage;
     readonly answer: Answer;
@@ -215,7 +239,7 @@ describe('a middleware answer counts the speculative read it abandons', () => {
       }).toStrictEqual({
         bucket: example.storage === 'blob-hit' ? 0 : 1,
         blob: example.storage === 'bucket' ? 0 : 1,
-        dispatch: ['site-middleware'],
+        dispatch: dispatchedFor(example.answer),
       });
 
       await response.body?.cancel();
@@ -235,6 +259,22 @@ describe('a middleware answer counts the speculative read it abandons', () => {
       expect(subject.get).not.toHaveBeenCalled();
       expect(subject.points).toHaveLength(1);
       expect(subject.points[0]?.subrequests).toBe(1);
+    } finally {
+      subject.finish();
+      await waitOnExecutionContext(subject.ctx);
+    }
+  });
+
+  it('counts only middleware and the Function for a HEAD rewritten away from the file', async () => {
+    const subject = await fixture('bucket', 'internal');
+    try {
+      const response = await subject.serve({ method: 'HEAD' });
+
+      expect(response.status).toBe(200);
+      expect(subject.get).not.toHaveBeenCalled();
+      expect(subject.points).toHaveLength(1);
+      expect(subject.points[0]).toMatchObject({ kind: 'passthrough', subrequests: 2 });
+      expect(subject.dispatched).toStrictEqual(['site-middleware', 'site-app']);
     } finally {
       subject.finish();
       await waitOnExecutionContext(subject.ctx);
