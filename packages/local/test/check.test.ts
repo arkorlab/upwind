@@ -37,6 +37,7 @@ import {
   type StaticFileEntry,
   validationPathnameFor,
 } from '@stayingupwind/core/manifest';
+import { readMiddlewareResponse } from '@stayingupwind/core/paas';
 import {
   allowRecoveryScript,
   NO_STORE_CACHE_CONTROL,
@@ -54,7 +55,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { type CheckResult, checkStack } from '../src/check.ts';
 import { NO_COOKIE_CHANGES } from '../src/cookie-jar.ts';
-import { fileHeadFailure } from '../src/file-expectations.ts';
+import { expectationOf, fileFailure, fileHeadFailure } from '../src/file-expectations.ts';
 import { flowFailure } from '../src/part-flows.ts';
 import type { Part } from '../src/part-marks.ts';
 import { originAt, partsOf } from '../src/parts.ts';
@@ -12226,24 +12227,20 @@ describe('what the check makes of the middleware', () => {
     });
 
     it.each([
-      { name: 'all required names', rsc: '1', vary: `Origin, ${RSC_VARY}`, valid: true },
-      { name: 'missing application name', rsc: '1', vary: RSC_VARY, valid: false },
+      { name: 'all required names', vary: `Origin, ${RSC_VARY}`, valid: true },
+      { name: 'missing application name', vary: RSC_VARY, valid: false },
       {
         name: 'missing segment protocol name',
-        rsc: '1',
         vary: 'Origin, rsc, next-router-state-tree, next-router-prefetch',
         valid: false,
       },
-      { name: 'middleware removed RSC', rsc: '0', vary: 'Origin', valid: true },
-    ])('judges a file rewrite Vary with $name', async ({ rsc, vary, valid }) => {
+    ])('judges a file rewrite Vary with $name', async ({ vary, valid }) => {
       const routes = [await routeOf('/', FRONT, { segments: { '/_tree': 'tree bytes' } })];
       const files = { '/a.txt': fileOf('kept bytes', TEXT) };
       answers.set('/', documentAnswer(FRONT, 'mw=hit;route=/'));
       decidedForSegment.set('/|/_tree', {
         'x-middleware-next': '1',
         'x-middleware-rewrite': '/a.txt',
-        'x-middleware-override-headers': 'rsc',
-        'x-middleware-request-rsc': rsc,
         vary: 'Origin',
       });
       partAnswers.set('/|/_tree', {
@@ -12271,6 +12268,57 @@ describe('what the check makes of the middleware', () => {
 
       expect(result.failures).toStrictEqual(failures);
       expect(partsAsked.has('/|/_tree')).toBe(true);
+    });
+
+    it('judges the file Vary after middleware removes RSC, independently of part renaming', async () => {
+      const file = fileOf('kept bytes', TEXT);
+      const stack = {
+        ...stackOf([], { '/a.txt': file }),
+        site: new URL('https://site.example'),
+      };
+      const url = new URL('/a.txt', stack.site);
+      answers.set('/a.txt', {
+        headers: {
+          'content-type': TEXT,
+          'cache-control': REVALIDATE,
+          vary: 'Origin',
+          'x-arkor-edge': FILE_EDGE,
+        },
+        body: 'kept bytes',
+      });
+      const answer = await read(new URL('/a.txt', stack.url), {
+        headers: {},
+        deadlineMs: 1000,
+      });
+      const asked = { rsc: '1' };
+      const decidedFor = (rsc: string): ReturnType<typeof readMiddlewareResponse> => {
+        const response = new Response(null, {
+          headers: {
+            'x-middleware-next': '1',
+            'x-middleware-override-headers': 'rsc',
+            'x-middleware-request-rsc': rsc,
+            'cache-control': REVALIDATE,
+            vary: 'Origin',
+          },
+        });
+        return readMiddlewareResponse(response, url, new Headers(asked));
+      };
+      const withoutRsc = expectationOf(stack, url, file, {
+        headers: asked,
+        answer,
+        middleware: decidedFor('0'),
+      });
+      const withRsc = expectationOf(stack, url, file, {
+        headers: asked,
+        answer,
+        middleware: decidedFor('1'),
+      });
+
+      expect(answer.headers.vary).toBe('Origin');
+      expect(fileFailure(file, answer, withoutRsc)).toBeUndefined();
+      expect(fileFailure(file, answer, withRsc)).toBe(
+        `answered with vary Origin, not the Origin, ${RSC_VARY} the application set`,
+      );
     });
 
     it('keeps an ordinary file rewrite Vary without adding router fields', async () => {
