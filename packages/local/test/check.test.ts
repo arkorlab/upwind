@@ -1871,6 +1871,16 @@ function assetPrefixRoute(prefix: string): DeploymentBundle['routing']['beforeFi
 /** An asset of the build, which the check asks for with the deployment's id as well. */
 const ASSET = '/_next/static/chunks/a.js';
 
+/** The same ordered phrases as a single-line regex, without unbounded backtracking. */
+function includesInLineOrder(value: string | undefined, before: string, after: string): boolean {
+  return (
+    value?.split(/[\n\r\u2028\u2029]/u).some((line) => {
+      const at = line.indexOf(before);
+      return at !== -1 && line.includes(after, at + before.length);
+    }) ?? false
+  );
+}
+
 /** A failure of `ASSET`, as each of its requests comes to it: as named, then with `?dpl=`. */
 function assetFailures(reason: string): { path: string; reason: string }[] {
   return [
@@ -7156,6 +7166,28 @@ describe('what the check makes of the middleware', () => {
       expect(result.skipped).toStrictEqual([]);
     });
 
+    it.each([
+      {
+        source: String.raw`/api/:id(\d+)/:slug([a-z]+).json`,
+        sourceRegex: String.raw`^/api/\d+/[a-z]+\.json$`,
+      },
+      {
+        source: String.raw`/api/:slug([a-z]+)/:id(\d+).json`,
+        sourceRegex: String.raw`^/api/[a-z]+/\d+\.json$`,
+      },
+    ])('probes distinct witnesses for mixed matcher parameters: $source', async (matcher) => {
+      const stack = withMiddleware(stackOf([], {}), [matcher]);
+      state.middlewareProbe = { kind: 'responded', status: 500 };
+      const result = await checkStack(stack);
+
+      expect(state.middlewareAsked).toMatch(new RegExp(matcher.sourceRegex, 'u'));
+      expect(result.failures).toContainEqual({
+        path: 'middleware',
+        reason: `asked about ${String(state.middlewareAsked)} as the edge asks it, answered 500`,
+      });
+      expect(result.skipped).toStrictEqual([]);
+    });
+
     it('accepts a healthy suffix-bearing middleware probe', async () => {
       const stack = withMiddleware(stackOf([], {}), [
         { source: '/api/:id.json', sourceRegex: String.raw`^/api/[^/]+\.json$` },
@@ -8505,9 +8537,13 @@ describe('what the check makes of the middleware', () => {
       );
 
       expect(result.failures).toHaveLength(1);
-      expect(result.failures[0]?.reason).toMatch(
-        /carrying the cookie sid=1, asked again for its headers alone .*answered by the edge itself/u,
-      );
+      expect(
+        includesInLineOrder(
+          result.failures[0]?.reason,
+          'carrying the cookie sid=1, asked again for its headers alone ',
+          'answered by the edge itself',
+        ),
+      ).toBe(true);
     });
 
     it('follows cookies set by an escaped Pages Router background HEAD', async () => {
@@ -8518,7 +8554,11 @@ describe('what the check makes of the middleware', () => {
       const signedOut: ReservedRoute = {
         sourceRegex: String.raw`^/_next/data/test/about\.json$`,
         beforeFiles: true,
-        missing: [{ type: 'cookie', key: 'sid' }],
+        // Only navigation has the background HEAD whose cookies this case follows.
+        missing: [
+          { type: 'cookie', key: 'sid' },
+          { type: 'header', key: 'purpose' },
+        ],
       };
       answers.set('/about', finishedAnswer(finished, '/about'));
       answers.set('/_next/data/test/about.json', {
@@ -8531,7 +8571,7 @@ describe('what the check makes of the middleware', () => {
             'data;src=bucket;enc=identity;strategy=edge;project=site;policy=default;m=0000',
         },
         body: props,
-        claimedWhen: (headers) => !String(headers.cookie).includes('sid='),
+        claimedWhen: (headers) => !carryingEach('sid')(headers) && headers.purpose === undefined,
         when: {
           test: (headers, method) =>
             carryingEach('sid')(headers) && (method === 'HEAD' || carryingEach('headed')(headers)),

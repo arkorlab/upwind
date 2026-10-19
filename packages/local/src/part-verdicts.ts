@@ -430,7 +430,7 @@ async function askedVerdict(
   // What the middleware decided, which the edge answers a part it covers behind.
   const { decided } = await keptOf(stack, trace, part.url, asked);
   const covered = middlewareCovers(stack, part.url, asked);
-  return partAnswerVerdict(stack, part, { answer, decided, covered, coding, asked, within });
+  return await partAnswerVerdict(stack, part, { answer, decided, covered, coding, asked, within });
 }
 
 /** Judge an already read part against the build or the generation that actually answered it. */

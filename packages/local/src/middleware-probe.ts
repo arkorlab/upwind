@@ -40,6 +40,26 @@ const PATTERN_SYNTAX = /[(*+:?\\{]/u;
 const SPELLED_SEGMENT = 'upwind-check';
 /** Named parameters, with a simple custom pattern and modifier where the matcher names one. */
 const NAMED_PARAMETER = /:[A-Za-z_]\w*(?:\((?:\\.|[^\\()])*\))?[?*+]?/gu;
+/** Small witnesses for common constraints, not a solver for arbitrary matcher expressions. */
+const PARAMETER_WITNESSES = new Map([
+  ['\\d', '1'],
+  ['\\d+', '1'],
+  ['[0-9]', '1'],
+  ['[0-9]+', '1'],
+  ['[a-z]', 'a'],
+  ['[a-z]+', 'a'],
+  ['[A-Z]', 'A'],
+  ['[A-Z]+', 'A'],
+  ['[A-Za-z]+', 'a'],
+  ['[a-zA-Z]+', 'a'],
+]);
+
+/** Fill each parameter separately, so a numeric parameter need not share a letter's witness. */
+function spelledParameter(parameter: string): string {
+  const opening = parameter.indexOf('(');
+  const closing = parameter.lastIndexOf(')');
+  return PARAMETER_WITNESSES.get(parameter.slice(opening + 1, closing)) ?? SPELLED_SEGMENT;
+}
 
 /**
  * Pathnames a matcher as the application wrote it (`source`) may cover: what it spells before its
@@ -54,7 +74,10 @@ function spelledBy(source: string | undefined, config: CheckedStack['bundle']['c
   }
   const literal = source.split(PATTERN_SYNTAX, 1)[0] ?? '';
   const stem = literal.endsWith('/') ? literal.slice(0, -1) : literal;
-  const filled = [SPELLED_SEGMENT, '1'].map((value) => source.replace(NAMED_PARAMETER, value));
+  const filled = [
+    ...[SPELLED_SEGMENT, '1'].map((value) => source.replaceAll(NAMED_PARAMETER, () => value)),
+    source.replaceAll(NAMED_PARAMETER, spelledParameter),
+  ];
   const locale = config.i18n?.defaultLocale;
   const prefixes = [
     config.basePath,

@@ -1,5 +1,10 @@
 import { createHash } from 'node:crypto';
-import { createServer, type IncomingHttpHeaders } from 'node:http';
+import {
+  createServer,
+  type IncomingHttpHeaders,
+  type IncomingMessage,
+  type ServerResponse,
+} from 'node:http';
 import type { AddressInfo } from 'node:net';
 // eslint-disable-next-line n/no-unsupported-features/node-builtins -- what a browser accepts, zstd among it
 import { brotliCompressSync, gzipSync, zstdCompressSync } from 'node:zlib';
@@ -48,7 +53,13 @@ const headersClosed = new Map<string, () => void>();
 const fullHeaders = Promise.withResolvers<true>();
 const fullBody = Promise.withResolvers<true>();
 
-const server = createServer((request, response) => {
+async function finishFullBody(response: ServerResponse): Promise<void> {
+  await fullBody.promise;
+  response.end(DOCUMENT);
+}
+
+/** Header-only streams stay empty; the whole-body control ends only when its test releases it. */
+function headerFixture(request: IncomingMessage, response: ServerResponse): boolean {
   if (request.url?.startsWith('/headers-only-') === true) {
     response.writeHead(request.url.endsWith('redirect') ? 307 : 200, {
       location: '/plain',
@@ -60,16 +71,19 @@ const server = createServer((request, response) => {
       headersClosed.get(request.url ?? '')?.();
     });
     response.flushHeaders();
-    return;
+    return true;
   }
   if (request.url === '/full-after-headers') {
     response.writeHead(200);
     response.flushHeaders();
-    void fullBody.promise.then(() => {
-      response.end(DOCUMENT);
-    });
-    return;
+    finishFullBody(response).catch(() => response.destroy());
+    return true;
   }
+  return false;
+}
+
+const server = createServer((request, response) => {
+  if (headerFixture(request, response)) return;
   const coded = Object.hasOwn(CODED, request.url ?? '') ? CODED[request.url ?? ''] : undefined;
   if (coded !== undefined) {
     const [coding, bytes] = coded;
@@ -221,23 +235,26 @@ describe('an answer read as it streams', () => {
       copyStarted: false,
       decodeStarted: false,
     });
+
     await closed.promise;
   });
 
   it('keeps a whole-body read open after the headers until its delayed body ends', async () => {
     let settled = false;
-    const answer = read(new URL('/full-after-headers', state.url), {
-      headers: {},
-      deadlineMs: 5000,
-      decode: () => {
-        fullHeaders.resolve(true);
-        return false;
-      },
-    }).then((reading) => {
+    const answer = (async () => {
+      const reading = await read(new URL('/full-after-headers', state.url), {
+        headers: {},
+        deadlineMs: 5000,
+        decode: () => {
+          fullHeaders.resolve(true);
+          return false;
+        },
+      });
       settled = true;
       return reading;
-    });
+    })();
     await fullHeaders.promise;
+
     try {
       expect(settled).toBe(false);
     } finally {
