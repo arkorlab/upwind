@@ -83,7 +83,7 @@ async function upload(subject: Fixture): Promise<CommitRequest> {
   const sha256 = await sha256Hex(bytes);
   const storageRef = r2BlobKey(subject.scopeId, sha256);
   const artifact = {
-    role: 'html',
+    role: 'html' as const,
     sha256,
     byteLength: bytes.byteLength,
     contentType: 'text/html',
@@ -132,14 +132,17 @@ async function delayedCommit(subject: Fixture, request: CommitRequest) {
       { ...mutationHost(state.storage, subject.scopeId), clock: Date.now },
       NOW,
       async (input) => {
-        const apply = await planCommit(
-          input,
-          subject.lease.attemptId,
-          request,
-          blobStore(env.ARTIFACTS, noFaults),
-        ).finally(() => {
+        let apply: Awaited<ReturnType<typeof planCommit>>;
+        try {
+          apply = await planCommit(
+            input,
+            subject.lease.attemptId,
+            request,
+            blobStore(env.ARTIFACTS, noFaults),
+          );
+        } finally {
           planned.resolve(undefined);
-        });
+        }
         await release.promise;
         return apply;
       },
@@ -160,9 +163,7 @@ async function fixedHeartbeat(subject: Fixture) {
     const result = await commitMutation(
       mutationHost(state.storage, subject.scopeId),
       NOW,
-      (input) => {
-        return () => applyHeartbeat(input, subject.lease.attemptId, subject.lease.fencingToken);
-      },
+      (input) => () => applyHeartbeat(input, subject.lease.attemptId, subject.lease.fencingToken),
       { empty: refuse('not_found', 'the scope is absent') },
     );
     return result.value;
