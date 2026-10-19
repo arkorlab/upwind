@@ -140,8 +140,9 @@ async function storeArtifact(
   if (isRefusal(recorded)) {
     return answerScope(c, recorded);
   }
-  if (recorded.replace === true || (await c.env.ARTIFACTS.head(storageRef)) === null) {
-    await c.env.ARTIFACTS.put(storageRef, bytes as BufferSource, {
+  const target = recorded.storageRef ?? storageRef;
+  if (recorded.replace === true || (await c.env.ARTIFACTS.head(target)) === null) {
+    await c.env.ARTIFACTS.put(target, bytes as BufferSource, {
       httpMetadata: { contentType: headers.contentType },
     });
   }
@@ -182,13 +183,15 @@ function admittedBlobs(
   for (const [index, artifact] of decoded.entries()) {
     const answer = recorded[index];
     if (answer === undefined || isRefusal(answer)) continue;
-    const first = blobs.get(artifact.upload.storageRef);
+    const storageRef = answer.storageRef ?? artifact.upload.storageRef;
+    const first = blobs.get(storageRef);
     if (first !== undefined && answer.replace !== true) continue;
     const selected = first ?? artifact;
-    blobs.set(
-      artifact.upload.storageRef,
-      answer.replace === true ? { ...selected, replace: true } : selected,
-    );
+    const located =
+      selected.upload.storageRef === storageRef
+        ? selected
+        : { ...selected, upload: { ...selected.upload, storageRef } };
+    blobs.set(storageRef, answer.replace === true ? { ...located, replace: true } : located);
   }
   return blobs;
 }

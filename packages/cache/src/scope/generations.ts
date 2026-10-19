@@ -20,7 +20,9 @@ import { generationHeaders, type GenerationRow, parseJson } from './rows.ts';
  * them afterwards — that a newer one replaced them, that an invalidation condemned them, that
  * their bytes were pruned, and where they are in publication.
  * A build's storage locations can be corrected before its first delivery record is acknowledged
- * in KV (`seed-repair.ts`); the bytes it names stay the same.
+ * in KV (`seed-repair.ts`). A verified artifact repair can redirect current snapshots' storage
+ * refs and reproject them atomically; archived snapshots remain unchanged. Neither changes the
+ * content identity a generation names.
  */
 
 export interface GenerationInsert {

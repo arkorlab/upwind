@@ -48,39 +48,6 @@ export function forgetArtifactFailure(sql: SqlStorage, sha256: string): void {
   deleteMeta(sql, FAILURE_PREFIX + sha256);
 }
 
-export interface ArtifactRepair {
-  readonly sha256: string;
-  readonly byteLength: number;
-  readonly previousStorageRef: string;
-  readonly storageRef: string;
-  readonly previouslyOwned: boolean;
-}
-
-/** A verified upload replaces only the exact location whose projection failed. */
-export function repairArtifact(sql: SqlStorage, repair: ArtifactRepair, now: number): number {
-  const changed = sql.exec(
-    `UPDATE artifacts SET storage_ref = ?, owned = 1
-     WHERE sha256 = ? AND storage_ref = ? AND byte_length = ? AND owned = ?
-     RETURNING sha256`,
-    repair.storageRef,
-    repair.sha256,
-    repair.previousStorageRef,
-    repair.byteLength,
-    repair.previouslyOwned ? 1 : 0,
-  );
-  if (changed.toArray().length !== 1) throw new Error('the failed artifact location changed');
-  if (repair.previouslyOwned && repair.previousStorageRef !== repair.storageRef) {
-    sql.exec(
-      `INSERT OR IGNORE INTO pending_deletions (storage_ref, queued_at) VALUES (?, ?)`,
-      repair.previousStorageRef,
-      now,
-    );
-  }
-  sql.exec(`DELETE FROM pending_deletions WHERE storage_ref = ?`, repair.storageRef);
-  forgetArtifactFailure(sql, repair.sha256);
-  return repair.previouslyOwned ? 0 : repair.byteLength;
-}
-
 /** Ids for the blobs a commit names, derived ahead of its transaction. */
 export async function artifactIdsFor(
   scopeId: string,
@@ -131,15 +98,18 @@ export function ownedUploadOf(
   sql: SqlStorage,
   sha256: string,
   byteLength: number,
-): { readonly addedBytes: number; readonly replace: boolean } {
+): {
+  readonly addedBytes: number;
+  readonly replace: boolean;
+  readonly storageRef: string | undefined;
+} {
   const existing = findArtifactBySha(sql, sha256);
   const replace = existing !== undefined && artifactFailed(sql, existing);
   return {
     addedBytes:
-      replace && existing?.owned === 0
-        ? byteLength
-        : addedBy(existing, { owned: true, byteLength }),
+      replace && existing.owned === 0 ? byteLength : addedBy(existing, { owned: true, byteLength }),
     replace,
+    storageRef: existing?.owned === 1 ? existing.storage_ref : undefined,
   };
 }
 
