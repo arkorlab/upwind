@@ -309,7 +309,6 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
     deployment: input.deployment,
     continuation: { ...DEFAULT_CONTINUATION_CONFIG, ...input.continuation },
     routes,
-    ...routeBodyFields(input, routes),
     assetPolicy: { ...DEFAULT_ASSET_POLICY, ...input.assetPolicy },
     app: input.app,
     ...(input.staticFiles !== undefined && { staticFiles: input.staticFiles }),
@@ -318,6 +317,7 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
     ...(input.trailingSlash === true && { trailingSlash: true }),
     ...(input.reservedRoutes !== undefined && { reservedRoutes: input.reservedRoutes }),
     ...pathnameFields(input),
+    ...routeBodyFields(input, routes),
     ...(input.exactFunctions !== undefined && { exactFunctions: input.exactFunctions }),
     ...(input.headerRules !== undefined && { headerRules: input.headerRules }),
     ...(input.routerReferences !== undefined && { routerReferences: input.routerReferences }),
@@ -719,6 +719,7 @@ export function findRouteEntry(
   manifest: ProjectManifest,
   pathname: string,
 ): RouteEntry | undefined {
-  const key = pageKeyOf(manifest.routes, pathname, manifest);
+  const named = manifest.routeBodies === undefined ? manifest.routes : manifest.exactPathnames;
+  const key = named === undefined ? undefined : pageKeyOf(named, pathname, manifest);
   return key === undefined ? undefined : manifest.routes[key];
 }

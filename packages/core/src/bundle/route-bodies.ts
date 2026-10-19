@@ -1,6 +1,10 @@
 import { generationResponseHeaders } from '../cache/response-headers.ts';
 import type { DeploymentBundle, Prerender } from './schema.ts';
-import { reproducesDynamicRouting, routeHandlerPrerenders } from './serving.ts';
+import {
+  prerenderResponseHeaders,
+  reproducesDynamicRouting,
+  routeHandlerPrerenders,
+} from './serving.ts';
 
 const HTTP_OK = 200;
 const PRIVATE_CACHE_CONTROL = /(?:^|,)\s*(?:private|no-store)(?:[\s,=]|$)/iu;
@@ -30,11 +34,11 @@ function initialHeaders(prerender: Prerender): [string, string][] {
 }
 
 /** The build's privacy vetoes are judged before a stored-response filter can remove them. */
-function publicBody(prerender: Prerender): boolean {
+function publicBody(bundle: DeploymentBundle, prerender: Prerender): boolean {
   if (prerender.body === undefined || !nonHtml(prerender.body.contentType)) {
     return false;
   }
-  const headers = initialHeaders(prerender);
+  const headers = [...initialHeaders(prerender), ...prerenderResponseHeaders(bundle, prerender)];
   if (headers.some(([name, value]) => name.toLowerCase() === 'content-type' && !nonHtml(value))) {
     return false;
   }
@@ -65,7 +69,7 @@ export function edgeServableRouteBodies(bundle: DeploymentBundle): Prerender[] {
       (prerender.initialStatus ?? HTTP_OK) === HTTP_OK &&
       (prerender.allowQuery?.length ?? 0) === 0 &&
       (prerender.allowHeader?.length ?? 0) === 0 &&
-      publicBody(prerender)
+      publicBody(bundle, prerender)
     );
   });
 }

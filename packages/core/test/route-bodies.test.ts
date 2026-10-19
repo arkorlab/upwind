@@ -13,6 +13,7 @@ import { gateFor } from '../src/manifest/gates.ts';
 import {
   type BuildProjectManifestInput,
   buildProjectManifest,
+  findRouteEntry,
   parseProjectManifest,
   serializeManifest,
 } from '../src/manifest/manifest.ts';
@@ -174,6 +175,77 @@ describe('host delivery of a complete route body', () => {
   });
 
   it.each([
+    { document: '/docs/a/b', body: '/docs/a%2Fb', winner: 'document' },
+    { document: '/docs/a%2Fb', body: '/docs/a/b', winner: 'route-body' },
+  ])(
+    'shares the filesystem winner across classification, Function and gate: $winner',
+    ({ document, body, winner }) => {
+      const own = winner === 'document' ? document : body;
+      const manifest = buildProjectManifest({
+        ...input,
+        routes: [{ ...HTML, pathname: document, function: 'app-2' }],
+        routeBodies: [
+          {
+            ...BODY,
+            pathname: body,
+            route: winner === 'route-body' ? body : '/docs/[slug]',
+            function: 'app-3',
+          },
+        ],
+        app: { ...input.app, functions: { 'app-2': 'documents', 'app-3': 'images' } },
+        filesystemPages: [own],
+        dynamicRoutes: [{ sourceRegex: '^/docs/([^/]+?)$', route: '/docs/[slug]' }],
+        gates: { [document]: 'document-access', [body]: 'body-access' },
+        gatedPathnames: { [document]: document, [body]: body },
+      });
+      const asked = request(manifest, NAVIGATION, '/docs/a%2Fb');
+      const isDocument = winner === 'document';
+
+      expect({
+        kind: classifyRequest(asked).kind,
+        document: findRouteEntry(manifest, asked.url.pathname)?.pathname,
+        body: findRouteBody(manifest, asked.url.pathname)?.pathname,
+        function: functionFor(manifest, asked.url, asked.headers),
+        gate: gateFor(manifest, asked.url, asked.headers),
+      }).toStrictEqual({
+        kind: winner,
+        document: isDocument ? document : undefined,
+        body: isDocument ? undefined : body,
+        function: isDocument ? 'app-2' : 'app-3',
+        gate: { route: own, name: isDocument ? 'document-access' : 'body-access' },
+      });
+    },
+  );
+
+  it('shares the filesystem winner when an exact page has no hosted response', () => {
+    const member = '/docs/a%2Fb';
+    const own = '/docs/a/b';
+    const manifest = buildProjectManifest({
+      ...input,
+      routeBodies: [{ ...BODY, pathname: member, route: '/docs/[slug]', function: 'app-2' }],
+      app: { ...input.app, functions: { 'app-2': 'images' } },
+      exactPathnames: [own],
+      filesystemPages: [own],
+      dynamicRoutes: [{ sourceRegex: '^/docs/([^/]+?)$', route: '/docs/[slug]' }],
+      gates: { [own]: 'page-access', [member]: 'body-access' },
+      gatedPathnames: { [own]: own, [member]: member },
+    });
+    const asked = request(manifest, NAVIGATION, '/docs/a%2Fb');
+
+    expect({
+      classification: classifyRequest(asked),
+      body: findRouteBody(manifest, asked.url.pathname),
+      function: functionFor(manifest, asked.url, asked.headers),
+      gate: gateFor(manifest, asked.url, asked.headers),
+    }).toStrictEqual({
+      classification: { kind: 'passthrough', reason: 'route-not-proved' },
+      body: undefined,
+      function: 'app',
+      gate: { route: own, name: 'page-access' },
+    });
+  });
+
+  it.each([
     { headers: { range: 'bytes=0-1' }, reason: 'range' },
     { headers: { 'service-worker': 'script' }, reason: 'service-worker' },
     { headers: { 'x-nextjs-data': '1' }, reason: 'internal-header' },
@@ -211,7 +283,12 @@ describe('host delivery of a complete route body', () => {
       reason: 'method',
     });
 
-    const withoutBodies = { ...manifest, routeBodies: undefined };
+    const withoutBodies = buildProjectManifest({
+      ...input,
+      routeBodies: undefined,
+      routes: [HTML],
+      dynamicRoutes: manifest.dynamicRoutes,
+    });
 
     expect(classifyRequest(request(withoutBodies, NAVIGATION)).kind).toBe('document');
 
@@ -278,6 +355,23 @@ describe('sealed route-body eligibility', () => {
     expect(
       edgeServableRouteBodies(bundleOf({ prerenders: [{ ...PRERENDER, ...extra }] })),
     ).toStrictEqual([]);
+  });
+
+  it.each([
+    { headers: { 'Content-Type': 'text/html; charset=utf-8' } },
+    { headers: { 'Cache-Control': 'private' } },
+    { headers: { 'Content-Encoding': 'gzip' } },
+  ])('checks the effective response headers used to seed a generation: %j', ({ headers }) => {
+    const bundle = bundleOf();
+    const configured = {
+      ...bundle,
+      routing: {
+        ...bundle.routing,
+        onMatch: [{ source: '/icon', sourceRegex: '^/icon$', headers }],
+      },
+    };
+
+    expect(edgeServableRouteBodies(configured)).toStrictEqual([]);
   });
 
   it('leaves unsupported locale routing and its conditional privacy rules to the Function', () => {
