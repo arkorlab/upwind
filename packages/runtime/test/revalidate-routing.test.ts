@@ -241,6 +241,14 @@ function revalidate(
   );
 }
 
+/** The same deployment, of an application that keeps its pages at a trailing slash. */
+function withTrailingSlash(store: Store): Store {
+  return {
+    ...store,
+    manifest: { ...store.manifest, config: { ...store.manifest.config, trailingSlash: true } },
+  };
+}
+
 /** Two independently reusable shells of one page; the final parameter is resumed per visitor. */
 function terminalDeployment(
   overrides: Partial<Prerender> = {},
@@ -303,15 +311,12 @@ describe('manual revalidation of a shared terminal shell', () => {
       route: '/prefix/[one]/[two]',
       pathname: '/prefix/b/[two]',
     };
-    const invalidated = new InvalidatedTags();
-
-    await revalidate(store, '/prefix/b/foo', false, { invalidated });
+    await revalidate(store, '/prefix/b/foo');
 
     expect(vi.mocked(regenerate).mock.calls[0]?.[0].target.descriptor).toStrictEqual(descriptor);
     expect(invalidateNow).toHaveBeenCalledExactlyOnceWith(expect.anything(), [
       `${IMPLICIT_TAG_PREFIX}/prefix/b/foo`,
     ]);
-    expect(invalidated.tags.size).toBe(0);
   });
 
   it('invalidates only the selected class when its page belongs to another Function', async () => {
@@ -347,20 +352,26 @@ describe('manual revalidation of a shared terminal shell', () => {
   });
 
   it('preserves another invalidation while publishing the shared shell', async () => {
+    const publishing = Promise.withResolvers<PublishOutcome>();
     const invalidated = new InvalidatedTags();
     invalidated.add(['another-change'], 17);
-
-    await revalidate(terminalDeployment(), '/prefix/b/foo', false, {
+    const manual = revalidate(terminalDeployment(), '/prefix/b/foo', false, {
       invalidated,
-      outcome: {
-        kind: 'accepted',
-        render: RENDER,
-        published: Promise.resolve({ kind: 'published', generationId: 'new' }),
-      },
+      outcome: { kind: 'accepted', render: RENDER, published: publishing.promise },
     });
 
-    expect([...invalidated.tags]).toStrictEqual(['another-change']);
-    expect(invalidated.revision).toBe(17);
+    try {
+      await vi.waitFor(() => {
+        expect(regenerate).toHaveBeenCalledTimes(1);
+      });
+
+      expect([...invalidated.tags]).toStrictEqual(['another-change']);
+      expect(invalidated.revision).toBe(17);
+    } finally {
+      publishing.resolve({ kind: 'published', generationId: 'new' });
+      await manual;
+    }
+
     expect(invalidateNow).toHaveBeenCalledExactlyOnceWith(expect.anything(), [
       `${IMPLICIT_TAG_PREFIX}/prefix/b/foo`,
     ]);
@@ -406,6 +417,33 @@ describe('manual revalidation of a shared terminal shell', () => {
     expect(invalidateNow).toHaveBeenCalledExactlyOnceWith(expect.anything(), [
       `${IMPLICIT_TAG_PREFIX}/prefix/b/foo`,
     ]);
+  });
+
+  it('invalidates the page at its trailing-slash spelling where the application keeps one', async () => {
+    await revalidate(withTrailingSlash(terminalDeployment()), '/prefix/b/foo/');
+
+    expect(invalidateNow).toHaveBeenCalledExactlyOnceWith(expect.anything(), [
+      `${IMPLICIT_TAG_PREFIX}/prefix/b/foo`,
+      `${IMPLICIT_TAG_PREFIX}/prefix/b/foo/`,
+    ]);
+  });
+
+  it('names both spellings for a page in another Function where the application keeps a slash', async () => {
+    vi.mocked(elsewhere).mockReturnValue('app-other');
+    const { entryId } = await deriveEntry(SCOPE, {
+      kind: 'app-page',
+      route: '/prefix/[one]/[two]',
+      pathname: '/prefix/b/[two]',
+    });
+
+    await revalidate(withTrailingSlash(terminalDeployment()), '/prefix/b/foo/', true);
+
+    expect(invalidateNow).toHaveBeenCalledExactlyOnceWith(expect.anything(), [
+      `${IMPLICIT_TAG_PREFIX}/prefix/b/foo`,
+      `${IMPLICIT_TAG_PREFIX}/prefix/b/foo/`,
+      sharedShellTagOf(entryId),
+    ]);
+    expect(regenerate).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -519,6 +557,7 @@ describe('manual revalidation route precedence', () => {
 
       expect(invalidateNow).toHaveBeenCalledWith(expect.anything(), [
         `${IMPLICIT_TAG_PREFIX}${canonical}`,
+        `${IMPLICIT_TAG_PREFIX}${canonical}/`,
       ]);
       expect(regenerate).not.toHaveBeenCalled();
     },
