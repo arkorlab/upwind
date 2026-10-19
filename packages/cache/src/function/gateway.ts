@@ -60,12 +60,9 @@ import {
 } from './envelope.ts';
 import {
   ArtifactRoom,
-  beginBody,
-  type BodyRead,
-  FUNCTION_READ_BYTES as AUTHORITY_READ_BYTES,
   functionReadBudget,
-  isBodyLengthError,
   projectedLength,
+  readArtifactWhole,
   saidLength,
   type ReadBudget,
 } from './read-budget.ts';
@@ -264,11 +261,11 @@ export class Gateway {
     parse: (body: unknown) => T,
     signal?: AbortSignal,
   ): Promise<T> {
-    return signal !== undefined
-      ? withEnvelope(response, this.#reading, limit, signal, parse)
-      : readWithin('gateway envelope read', RECORD_READ_DEADLINE_MS, (asked) =>
+    return signal === undefined
+      ? readWithin('gateway envelope read', RECORD_READ_DEADLINE_MS, (asked) =>
           withEnvelope(response, this.#reading, limit, asked, parse),
-        );
+        )
+      : withEnvelope(response, this.#reading, limit, signal, parse);
   }
 
   /**
@@ -366,66 +363,8 @@ export class Gateway {
       if (!response.ok) {
         await this.#throwFailure(response, asked);
       }
-      return this.#readArtifactWhole(response, asked, room ?? new ArtifactRoom(this.#reading));
+      return readArtifactWhole(response, asked, room ?? new ArtifactRoom(this.#reading));
     });
-  }
-
-  /**
-   * The Function's artifact buffer, at most its shared 32 MiB room. Larger seeded or configured
-   * uploads still deploy and stream elsewhere; this cache read misses. A native body takes one
-   * BYOB read with a sentinel byte: capacity is charged up to the budget's ceiling, with one extra
-   * byte at that ceiling. Generic host streams stay bounded in chunks.
-   */
-  async #readArtifactWhole(
-    response: Response,
-    signal: AbortSignal,
-    room: ArtifactRoom,
-  ): Promise<Uint8Array | undefined> {
-    const expected = saidLength(response);
-    if (expected !== undefined && expected > AUTHORITY_READ_BYTES) {
-      releaseStream(response.body, 'artifact exceeds the Function read budget');
-      return;
-    }
-    const limit = expected ?? AUTHORITY_READ_BYTES;
-    let release: () => void;
-    try {
-      release = await room.hold(limit + 1, signal);
-    } catch (error) {
-      releaseStream(response.body, 'an artifact read given up before its body');
-      throw error;
-    }
-    let reading: BodyRead | undefined;
-    const abort = (): void => {
-      releaseStream(reading?.reader ?? response.body, 'artifact read abandoned');
-    };
-    try {
-      signal.addEventListener('abort', abort, { once: true });
-      signal.throwIfAborted();
-      if (response.body === null) {
-        return expected === undefined || expected === 0 ? new Uint8Array() : undefined;
-      }
-      reading = beginBody(response.body, limit, 'artifact');
-      if (signal.aborted) abort();
-      const result = await reading.pending;
-      signal.throwIfAborted();
-      const bytes = result instanceof Uint8Array ? result : (result.value ?? new Uint8Array());
-      if (bytes.byteLength > limit || (expected !== undefined && bytes.byteLength !== expected)) {
-        abort();
-        return;
-      }
-      return bytes;
-    } catch (error) {
-      abort();
-      if (isBodyLengthError(error)) return;
-      throw error;
-    } finally {
-      signal.removeEventListener('abort', abort);
-      try {
-        reading?.reader.releaseLock();
-      } finally {
-        release();
-      }
-    }
   }
 
   /**

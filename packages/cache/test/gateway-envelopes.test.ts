@@ -203,13 +203,28 @@ async function settled(pending: Promise<unknown>): Promise<unknown> {
   }
 }
 
+function schemaReading(valid: DataGetResponse, kind: 'valid' | 'invalid') {
+  const result = kind === 'valid' ? valid : { ...valid, entry: { ...valid.entry, tags: 42 } };
+  const parse = dataGetResponseSchema.parse.bind(dataGetResponseSchema);
+  const held: boolean[] = [];
+  vi.spyOn(dataGetResponseSchema, 'parse').mockImplementation((value) => {
+    held.push(!roomIsFree());
+    return parse(value);
+  });
+  const send = vi.fn<FetchLike>().mockResolvedValue(Response.json({ ok: true, result }));
+  return { held, reading: gateway(send).getData(DATA) };
+}
+
 describe('gateway JSON envelopes share the Function read room', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();
   });
 
-  it.each(['start', 'commit'] as const)('accepts a 4 MiB record returned by %s', async (method) => {
+  it.each([
+    ['start', 256 * 1024 + 2],
+    ['commit', 0],
+  ] as const)('accepts a 4 MiB record returned by %s', async (method, locationLength) => {
     const record = toBase64(new Uint8Array(RECORD_BYTES));
     const location = method === 'start' ? '"\\'.repeat(64 * 1024) : undefined;
     const result =
@@ -227,10 +242,8 @@ describe('gateway JSON envelopes share the Function read room', () => {
     const answer = await recordCall(gateway(send), method);
 
     expect('record' in answer && answer.record === record).toBe(true);
-    if (location !== undefined) {
-      expect('current' in answer && answer.current?.location === location).toBe(true);
-      expect(JSON.stringify(location).length).toBe(256 * 1024 + 2);
-    }
+    expect('current' in answer && answer.current?.location === location).toBe(method === 'start');
+    expect(JSON.stringify(location) ?? '').toHaveLength(locationLength);
     expect(send).toHaveBeenCalledTimes(1);
     expect(roomIsFree()).toBe(true);
   });
@@ -239,9 +252,10 @@ describe('gateway JSON envelopes share the Function read room', () => {
     'accepts maximum inline bytes and escaped metadata from %s',
     async (method) => {
       const request = { ...DATA, handler: '\0'.repeat(MAX_DATA_HANDLER_LENGTH) };
-      const tags = Array.from({ length: MAX_TAGS_PER_ENTRY }, (_, index) => {
-        return index.toString(16).padStart(4, '0') + '\0'.repeat(MAX_TAG_LENGTH - 4);
-      });
+      const tags = Array.from(
+        { length: MAX_TAGS_PER_ENTRY },
+        (_, index) => index.toString(16).padStart(4, '0') + '\0'.repeat(MAX_TAG_LENGTH - 4),
+      );
       const base64 = toBase64(new Uint8Array(MAX_INLINE_DATA_VALUE_BYTES));
       const result = await dataResult(request, tags, base64);
       const send = vi.fn<FetchLike>().mockResolvedValue(Response.json({ ok: true, result }));
@@ -250,7 +264,7 @@ describe('gateway JSON envelopes share the Function read room', () => {
       expect(answer?.value.kind === 'inline' && answer.value.base64 === base64).toBe(true);
       expect(answer?.entry.tags).toHaveLength(MAX_TAGS_PER_ENTRY);
       expect(answer?.entry.tags.every((tag, index) => tag === tags[index])).toBe(true);
-      expect(answer?.entry.handler === request.handler).toBe(true);
+      expect(answer?.entry.handler).toBe(request.handler);
       expect(roomIsFree()).toBe(true);
     },
   );
@@ -281,7 +295,9 @@ describe('gateway JSON envelopes share the Function read room', () => {
       extra: DATA_ENVELOPE_BYTES + 2 * CHUNK - encodeUtf8(text).byteLength,
     });
     try {
-      await expect(gateway(() => Promise.resolve(source.response)).getData(DATA)).rejects.toThrow();
+      await expect(gateway(() => Promise.resolve(source.response)).getData(DATA)).rejects.toThrow(
+        Error,
+      );
       expect(source.sent()).toBeLessThanOrEqual(DATA_ENVELOPE_BYTES + CHUNK);
       expect(source.cancel).toHaveBeenCalledTimes(1);
       expect(roomIsFree()).toBe(true);
@@ -294,7 +310,9 @@ describe('gateway JSON envelopes share the Function read room', () => {
     const text = JSON.stringify({ ok: true, result: await dataResult() });
     const source = envelopeBody(text, { declared: encodeUtf8(text).byteLength - 1, extra: CHUNK });
     try {
-      await expect(gateway(() => Promise.resolve(source.response)).getData(DATA)).rejects.toThrow();
+      await expect(gateway(() => Promise.resolve(source.response)).getData(DATA)).rejects.toThrow(
+        Error,
+      );
       expect(source.cancel).toHaveBeenCalledTimes(1);
       expect(roomIsFree()).toBe(true);
     } finally {
@@ -318,10 +336,12 @@ describe('gateway JSON envelopes share the Function read room', () => {
       await vi.advanceTimersByTimeAsync(0);
 
       expect(source.pull).not.toHaveBeenCalled();
+
       release();
       await vi.advanceTimersByTimeAsync(25);
+
       await expect(reading).resolves.toMatchObject({ entry: { kind: DATA.kind } });
-      expect(source.pull).toHaveBeenCalled();
+      expect(source.pull).toHaveBeenCalledWith(expect.anything());
       expect(roomIsFree()).toBe(true);
     } finally {
       release();
@@ -353,50 +373,48 @@ describe('gateway JSON envelopes share the Function read room', () => {
       vi.useFakeTimers();
       const release = holdAllRoom();
       const reading = method === 'getTags' ? subject.getTags(['tag']) : subject[method](DATA);
-      const rejected = expect(reading).rejects.toSatisfy(isDeadlineError);
+      const finished = settled(reading);
       try {
         await asked.promise;
         await vi.advanceTimersByTimeAsync(deadline - 1);
 
         expect(source.pull).not.toHaveBeenCalled();
         expect(source.cancel).not.toHaveBeenCalled();
+
         await vi.advanceTimersByTimeAsync(1);
-        await rejected;
+
+        await expect(reading).rejects.toSatisfy(isDeadlineError);
         expect(source.cancel).toHaveBeenCalledTimes(1);
+
         release();
+
         expect(roomIsFree()).toBe(true);
       } finally {
         release();
         source.stop();
         await vi.advanceTimersByTimeAsync(25);
-        await Promise.allSettled([reading, rejected]);
+        await Promise.allSettled([reading, finished]);
       }
     },
   );
 
-  it.each(['valid', 'invalid'] as const)(
-    'holds room through %s schema validation',
-    async (kind) => {
-      const valid = await dataResult();
-      const result = kind === 'valid' ? valid : { ...valid, entry: { ...valid.entry, tags: 42 } };
-      const parse = dataGetResponseSchema.parse.bind(dataGetResponseSchema);
-      const held: boolean[] = [];
-      vi.spyOn(dataGetResponseSchema, 'parse').mockImplementation((value) => {
-        held.push(!roomIsFree());
-        return parse(value);
-      });
-      const send = vi.fn<FetchLike>().mockResolvedValue(Response.json({ ok: true, result }));
-      const reading = gateway(send).getData(DATA);
-      if (kind === 'valid') {
-        await expect(reading).resolves.toMatchObject({ entryId: valid.entryId });
-      } else {
-        await expect(reading).rejects.toThrow();
-      }
+  it('holds room through valid schema validation', async () => {
+    const valid = await dataResult();
+    const { held, reading } = schemaReading(valid, 'valid');
 
-      expect(held).toStrictEqual([true]);
-      expect(roomIsFree()).toBe(true);
-    },
-  );
+    await expect(reading).resolves.toMatchObject({ entryId: valid.entryId });
+    expect(held).toStrictEqual([true]);
+    expect(roomIsFree()).toBe(true);
+  });
+
+  it('holds room through invalid schema validation', async () => {
+    const valid = await dataResult();
+    const { held, reading } = schemaReading(valid, 'invalid');
+
+    await expect(reading).rejects.toThrow(Error);
+    expect(held).toStrictEqual([true]);
+    expect(roomIsFree()).toBe(true);
+  });
 
   it('returns its room after JSON parsing fails', async () => {
     const source = envelopeBody('{');
@@ -429,21 +447,23 @@ describe('gateway JSON envelopes share the Function read room', () => {
     );
     vi.useFakeTimers();
     const reading = recordCall(subject, 'start');
-    const rejected = expect(reading).rejects.toSatisfy(isDeadlineError);
+    const finished = settled(reading);
     try {
       await entered.promise;
       await vi.advanceTimersByTimeAsync(9999);
 
       expect(roomIsFree()).toBe(false);
+
       await vi.advanceTimersByTimeAsync(1);
-      await rejected;
+
+      await expect(reading).rejects.toSatisfy(isDeadlineError);
       expect(cancel).toHaveBeenCalledTimes(1);
       expect(roomIsFree()).toBe(true);
     } finally {
       acknowledgement.resolve(undefined);
       held?.error(new Error('stalled envelope fixture ended'));
       await vi.advanceTimersByTimeAsync(25);
-      await Promise.allSettled([reading, rejected, acknowledgement.promise]);
+      await Promise.allSettled([reading, finished, acknowledgement.promise]);
     }
   });
 
@@ -475,6 +495,7 @@ describe('gateway JSON envelopes share the Function read room', () => {
       { ok: false, error: { code: 'internal', message: 'refused' } },
       { status: 503 },
     );
+
     await expect(gateway(() => Promise.resolve(response)).getData(DATA)).rejects.toMatchObject({
       code: 'internal',
       status: 503,
