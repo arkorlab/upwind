@@ -41,7 +41,7 @@ import {
 import * as recordAnswers from './commit-record.ts';
 import { type CommitOutcome, planCommit } from './commit.ts';
 import { adoptDataUpload, carriedValueOf } from './data-adopt.ts';
-import { type DataUploadPage, listDataUploads } from './data-uploads.ts';
+import { tryListDataUploads } from './data-uploads.ts';
 import type { DataSetInput, DataSetOutcome } from './data.ts';
 import * as history from './history.ts';
 import { type InvalidateResult, planInvalidate } from './invalidations.ts';
@@ -131,7 +131,8 @@ const UNKNOWN = { empty: { kind: 'unknown' } } as const;
  */
 const SEED = { seed: { kind: 'conflict', reason: 'the scope is retired' }, atOnce: true } as const;
 /** What a change hands its own run (`#mutate`): the records it wants and carries, and its timing. */
-type OwnRun = Pick<OwnRecords, 'wanted' | 'carried'> & Pick<SettleDeps, 'timing'>;
+type OwnRun = Pick<OwnRecords, 'wanted' | 'carried'> &
+  Pick<SettleDeps, 'timing'> & { readonly leaseClock?: true };
 
 export class CacheScope extends DurableObject<CacheBindings> {
   /** The history a host keeps of each scope, made as each object is (`history.ScopeHistory`): none here. */
@@ -221,8 +222,9 @@ export class CacheScope extends DurableObject<CacheBindings> {
     now: number,
     plan: (input: TxInput) => Apply<T> | Promise<Apply<T>>,
     answers: { readonly atOnce?: boolean } & ({ readonly empty: T } | { readonly seed: T }),
-    { wanted, timing, carried }: OwnRun = {},
+    { wanted, timing, carried, leaseClock }: OwnRun = {},
   ): Promise<T> {
+    const clock = leaseClock === true && !this.#vars.ARKOR_TEST_HOOKS ? Date.now : undefined;
     const result = await this.#mutations.run(async () => {
       const committed = await commitMutation(
         {
@@ -235,6 +237,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
           createdTables: () => {
             this.#tables = true;
           },
+          ...(clock !== undefined && { clock }),
         },
         now,
         plan,
@@ -376,19 +379,6 @@ export class CacheScope extends DurableObject<CacheBindings> {
     await this.#armAlarm(nextRetentionAt(this.#sql, now, RETENTION_INTERVAL_MS));
   }
 
-  async #listDataUploads(): Promise<DataUploadPage | undefined> {
-    try {
-      return await listDataUploads({
-        sql: this.#sql,
-        scopeId: this.#scopeId,
-        blobs: this.#blobs(),
-      });
-    } catch (error) {
-      this.#log.warn('data uploads not swept', { detail: detailOf(error) });
-      return undefined;
-    }
-  }
-
   #blobs(): BlobStore {
     return blobStore(this.env.ARTIFACTS, () => this.#faults);
   }
@@ -494,7 +484,9 @@ export class CacheScope extends DurableObject<CacheBindings> {
     request: StartAttemptRequest,
     now: number,
   ): ReturnType<typeof recordAnswers.withCurrentRecord> {
-    const result = await this.#mutate(now, (tx) => planStartAttempt(tx, request), AT_ONCE);
+    const result = await this.#mutate(now, (tx) => planStartAttempt(tx, request), AT_ONCE, {
+      leaseClock: true,
+    });
     if (result.kind === 'leased') {
       await this.#armOrLog(result.leaseExpiresAt + LEASE_SWEEP_GRACE_MS);
     }
@@ -506,7 +498,9 @@ export class CacheScope extends DurableObject<CacheBindings> {
     fencingToken: number,
     now: number,
   ): Promise<Refusal | { readonly leaseExpiresAt: number }> {
-    return this.#mutate(now, (tx) => () => applyHeartbeat(tx, attemptId, fencingToken), AT_ONCE);
+    return this.#mutate(now, (tx) => () => applyHeartbeat(tx, attemptId, fencingToken), AT_ONCE, {
+      leaseClock: true,
+    });
   }
 
   recordArtifact(
@@ -514,7 +508,9 @@ export class CacheScope extends DurableObject<CacheBindings> {
     upload: UploadedArtifact & { readonly fencingToken: number },
     now: number,
   ): Promise<ReturnType<typeof applyRecordArtifact>> {
-    return this.#mutate(now, (tx) => () => applyRecordArtifact(tx, attemptId, upload), AT_ONCE);
+    return this.#mutate(now, (tx) => () => applyRecordArtifact(tx, attemptId, upload), AT_ONCE, {
+      leaseClock: true,
+    });
   }
 
   /** Publish an attempt's generation, answered with the record its run wrote (`answerCommit`). */
@@ -526,12 +522,14 @@ export class CacheScope extends DurableObject<CacheBindings> {
     };
     const entryOf = (): string | undefined => findAttempt(this.#sql, attemptId)?.entry_id;
     const wanted = recordAnswers.wantedRecords(entryOf);
-    const committed = this.#mutate(now, plan, REFUSED, { wanted });
+    const committed = this.#mutate(now, plan, REFUSED, { wanted, leaseClock: true });
     return recordAnswers.answerCommit(committed, wanted, entryOf, this.#deps());
   }
 
   fail(attemptId: string, request: FailRequest, now: number): Promise<FailResponse | Refusal> {
-    return this.#mutate(now, (tx) => () => applyFail(tx, attemptId, request), AT_ONCE);
+    return this.#mutate(now, (tx) => () => applyFail(tx, attemptId, request), AT_ONCE, {
+      leaseClock: true,
+    });
   }
 
   // ---- data cache and invalidation ------------------------------------------------------------
@@ -622,7 +620,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
       return;
     }
     const scanDue = retentionDue(this.#sql, now, options.retention === true, RETENTION_INTERVAL_MS);
-    const page = scanDue ? await this.#listDataUploads() : undefined;
+    const page = scanDue ? await tryListDataUploads(this.#deps()) : undefined;
     const deleteAll = await this.#mutations.run(async () => {
       this.ctx.storage.transactionSync(() => {
         expireLeases({

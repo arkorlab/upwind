@@ -25,6 +25,7 @@
     "./delivery": "./src/delivery/index.ts",
     "./domains": "./src/domains/index.ts",
     "./next-support": "./src/next-support/index.ts",
+    "./prefetch-audit": "./src/prefetch-audit.ts",
     "./preloads": "./src/preloads/index.ts",
     "./splice": "./src/splice/index.ts",
     "./storage": "./src/storage/index.ts",

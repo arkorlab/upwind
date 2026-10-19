@@ -65,6 +65,8 @@ export interface ScopeMutationHost {
   readonly history: ScopeHistory;
   readonly tables: boolean;
   readonly createdTables: () => void;
+  /** Refreshes lease mutation time after planning; absent for an explicit fixed test clock. */
+  readonly clock?: () => number;
 }
 
 interface MutationResult<T> {
@@ -95,13 +97,15 @@ export async function commitMutation<T>(
     sql,
     scopeId: host.scopeId,
     limits: host.limits,
-    now,
+    now: host.clock?.() ?? now,
     revision: readRevision(sql) + 1,
     history: host.history,
     controlTagIds,
     invalidatedTagIds,
   };
   const apply = await plan(input);
+  // Planning may outlive a lease. Test clocks stay fixed; live clocks are read at mutation time.
+  input.now = host.clock?.() ?? now;
   // Projection acknowledgments may commit while asynchronous ID planning yields.
   input.revision = readRevision(sql) + 1;
   const value = host.storage.transactionSync(apply);

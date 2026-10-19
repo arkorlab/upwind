@@ -15,7 +15,7 @@ import { type CommitRequest, type SeedEntryInput, signCacheToken } from '@stayin
 import type { FetchLike } from '@stayingupwind/runtime/cache-host';
 import { createExecutionContext, runInDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { limitsOf, parseVars } from '../src/env.ts';
 import { Gateway } from '../src/function/gateway.ts';
@@ -590,6 +590,10 @@ function lateProjectionMarkers(scope: Scope, plan: Plan) {
 }
 
 describe('verified uploads repairing a known broken canonical artifact', () => {
+  beforeEach(() => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
   });
@@ -750,6 +754,7 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
     await refuseRepair(scope, kind);
 
     const now = kind === 'lease' ? started.leaseExpiresAt : NOW;
+    vi.mocked(Date.now).mockReturnValue(now);
     const outcome =
       kind === 'quota'
         ? limitedCommit(scope, started, request)

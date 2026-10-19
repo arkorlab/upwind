@@ -4,6 +4,8 @@ import { PREFETCH_BLOB_PATH } from '@stayingupwind/host/bindings';
 import { blobObjectKey } from '@stayingupwind/host/storage';
 import { WorkerEntrypoint } from 'cloudflare:workers';
 
+import { recordPrefetchAudit } from './audit.ts';
+
 /**
  * One blob of a deployment's own bundle, by the sha256 the bundle names it with.
  *
@@ -23,7 +25,8 @@ import { WorkerEntrypoint } from 'cloudflare:workers';
  * - Nor any Worker that does more than this: whatever else it answers, every application's Function
  *   bound to it could ask it for — the wrong trade to save a file.
  *
- * So: one read, one bucket, one shape of key, and nothing else reachable through it.
+ * Ordinary delivery remains one read, one bucket and one blob key shape. The explicitly enabled
+ * migration audit writes a separate private witness; no request can choose its contents or key.
  *
  * Hosted Functions use `PrefetchForDeployment`: the host configures their accepted bundle's
  * digests as immutable binding props. Knowing another deployment's digest grants no access.
@@ -49,6 +52,8 @@ export interface PrefetchEnv {
   readonly ARTIFACTS: R2Bucket;
   /** Set to deny only after all retained Function bindings have been migrated and audited. */
   readonly PREFETCH_LEGACY_ACCESS?: string;
+  /** Explicit audit window only: this Worker's actual service name. Unset disables all writes. */
+  readonly PREFETCH_MIGRATION_AUDIT_SERVICE?: string;
 }
 
 function empty(status: number, headers: Readonly<Record<string, string>> = {}): Response {
@@ -106,6 +111,14 @@ async function answerBlob(
 /** A deployment's own accepted bundle, with no per-read authorization I/O or hashing. */
 export class PrefetchForDeployment extends WorkerEntrypoint<PrefetchEnv, unknown> {
   override fetch(request: Request): Promise<Response> {
+    const service = this.env.PREFETCH_MIGRATION_AUDIT_SERVICE;
+    if (
+      typeof service === 'string' &&
+      service !== '' &&
+      (request.method === 'GET' || request.method === 'HEAD')
+    ) {
+      this.ctx.waitUntil(recordPrefetchAudit(this.env.ARTIFACTS, service, this.ctx.props));
+    }
     return answerBlob(request, this.env, this.ctx.props, false);
   }
 }

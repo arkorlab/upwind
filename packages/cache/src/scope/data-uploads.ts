@@ -1,6 +1,7 @@
 import { r2CachePrefix } from '@stayingupwind/core/cache';
 import { createId } from '@stayingupwind/core/util';
 
+import { detailOf, type Logger } from '../logger.ts';
 import type { BlobStore } from './io.ts';
 import { queueDeletions } from './retention.ts';
 import { deleteMeta, readMeta, writeMeta } from './state.ts';
@@ -62,6 +63,18 @@ export async function listDataUploads(input: ListInput): Promise<DataUploadPage>
     limit: SCAN_BATCH,
   });
   return { objects: page.objects, phase, before, after: page.cursor };
+}
+
+/** A failed sweep leaves the ordinary retention run and its retry policy unchanged. */
+export async function tryListDataUploads(
+  input: ListInput & { readonly log: Logger },
+): Promise<DataUploadPage | undefined> {
+  try {
+    return await listDataUploads(input);
+  } catch (error) {
+    input.log.warn('data uploads not swept', { detail: detailOf(error) });
+    return undefined;
+  }
 }
 
 function advanceScan(sql: SqlStorage, page: DataUploadPage): void {
