@@ -1,3 +1,4 @@
+import { encodedScopeId } from '../cache/scope-identity.ts';
 import type { EdgeHost } from '../edge-host.ts';
 import type { StandaloneEnv } from './env.ts';
 
@@ -78,7 +79,7 @@ export function standaloneHost(env: StandaloneEnv): EdgeHost {
     ...(signals !== undefined && {
       scopeSignals: {
         scopeSignals: (scopeId, since) => signals.scopeSignals(scopeId, since),
-        cacheTagOf: (scopeId) => `upwind-scope-${encodeURIComponent(scopeId)}`,
+        cacheTagOf: (scopeId) => `upwind-scope-${encodedScopeId(scopeId)}`,
       },
     }),
     ...(currentRecord !== undefined && {

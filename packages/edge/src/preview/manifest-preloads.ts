@@ -6,7 +6,7 @@ const UNSAFE_PRELOAD = /[\0\r\n]/u;
 /** Cold decode only: omit unsafe hints, retaining every safe value exactly as stored. */
 export function retainSafePreloads(route: RouteEntry): void {
   const { preloads } = route;
-  if (preloads === undefined || !preloads.some((value) => UNSAFE_PRELOAD.test(value))) {
+  if (preloads?.some((value) => UNSAFE_PRELOAD.test(value)) !== true) {
     return;
   }
   const safe = preloads.filter((value) => !UNSAFE_PRELOAD.test(value));
