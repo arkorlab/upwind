@@ -51,11 +51,18 @@ interface RevalidateInput {
   readonly urlPath: string;
 }
 
-/** The tags a page at `pathname` is cached under as itself, as `revalidatePath` names them. */
-function pathTags(pathname: string): string[] {
+/**
+ * The tags a page at `pathname` is cached under as itself, as `revalidatePath` names them — and, in
+ * an application that keeps its pages at a trailing slash (`trailingSlash`), as an entry rendered
+ * for a request at that spelling is tagged: a regeneration names its entry by the pathname the edge
+ * asked for, slash and all (`generationTagValues`).
+ */
+function pathTags(store: Store, pathname: string): string[] {
   const tags = [`${IMPLICIT_TAG_PREFIX}${pathname}`];
   if (pathname === '/') {
     tags.push(`${IMPLICIT_TAG_PREFIX}/index`);
+  } else if (store.manifest.config.trailingSlash) {
+    tags.push(`${IMPLICIT_TAG_PREFIX}${pathname}/`);
   }
   return tags;
 }
@@ -151,10 +158,11 @@ function routeOf(store: Store, pathname: string): RouteEntryDescriptor | undefin
  */
 async function invalidateOwnEntry(
   runtime: CacheRuntime,
+  store: Store,
   pathname: string,
   shell: string,
 ): Promise<void> {
-  const own = pathTags(pathname).filter((tag) => tag.length <= MAX_TAG_LENGTH);
+  const own = pathTags(store, pathname).filter((tag) => tag.length <= MAX_TAG_LENGTH);
   if (pathname !== shell && own.length > 0) {
     await invalidateNow(runtime, own);
   }
@@ -185,7 +193,9 @@ export async function platformRevalidate(input: RevalidateInput): Promise<void> 
   const tags = async (): Promise<string[]> => {
     // A shared class can hold a long resolved prefix. Its bounded identity is sufficient even
     // when the visitor's legacy pathname tag would exceed the cache host's tag-length limit.
-    const values = pathTags(pathname).filter((tag) => !shared || tag.length <= MAX_TAG_LENGTH);
+    const values = pathTags(store, pathname).filter(
+      (tag) => !shared || tag.length <= MAX_TAG_LENGTH,
+    );
     if (shared) {
       const { entryId } = await deriveEntry(runtime.scopeId, descriptor);
       values.push(sharedShellTagOf(entryId));
@@ -238,6 +248,6 @@ export async function platformRevalidate(input: RevalidateInput): Promise<void> 
     throw new Error(`revalidate: ${pathname} was not regenerated (${published.kind})`);
   }
   if (shared) {
-    await invalidateOwnEntry(context.runtime, pathname, descriptor.pathname);
+    await invalidateOwnEntry(context.runtime, store, pathname, descriptor.pathname);
   }
 }
