@@ -27,6 +27,7 @@ import type { EdgeRuntime } from '../edge-runtime.ts';
 import type { PolicyStandIn } from '../memory/caches.ts';
 import { logWarn } from '../observability/logger.ts';
 import { readManifestCopy } from './blobs.ts';
+import { checkManifestContentTypes } from './manifest-content-types.ts';
 import { boundedLookup, type HoldRefresh, type Lookup, MISSING } from './storage.ts';
 
 /** Each cold backend gets the same two seconds as an immutable blob or record read. */
@@ -298,6 +299,7 @@ function parseStored(
     const manifest = SHA256_HEX.test(manifestId)
       ? vouchedManifest(text)
       : parseProjectManifest(text);
+    checkManifestContentTypes(manifest);
     return heldOrAnswered(runtime, { manifestId, manifest, bytes: bytes.byteLength }, holdAbsence);
   } catch (error) {
     // A data fact like a missing key (nothing to retry), not a storage failure — so it is held as
