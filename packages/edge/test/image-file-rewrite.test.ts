@@ -20,6 +20,7 @@ const CONFIG: ImagesConfig = {
   path: IMAGE_PATH,
   basePath: '',
   dangerouslyAllowLocalIP: false,
+  dangerouslyAllowSVG: false,
   sizes: [64],
   qualities: [75],
   formats: ['image/webp'],
@@ -38,7 +39,7 @@ interface Options {
   readonly build: Build;
   readonly method?: string;
   readonly target?: string;
-  readonly reserved?: 'always' | 'missing-nominated';
+  readonly reserved?: 'always' | 'missing-nominated' | 'over-budget';
 }
 
 function fileFor(
@@ -86,6 +87,9 @@ async function rewrittenFile(options: Options) {
               ...(options.reserved === 'missing-nominated' && {
                 missing: [{ type: 'header', key: 'x-private-hop', value: 'present' }],
               }),
+              ...(options.reserved === 'over-budget' && {
+                has: [{ type: 'header', key: 'x-budget', value: 'a+a+b' }],
+              }),
             },
           ],
   };
@@ -95,7 +99,12 @@ async function rewrittenFile(options: Options) {
     `https://site.example${IMAGE_PATH}?url=%2Foriginal.png&w=64&q=0&dpl=${OLD_DPL}`,
     {
       method: options.method ?? 'GET',
-      headers: { accept: 'image/webp', connection: 'x-private-hop', 'x-private-hop': 'present' },
+      headers: {
+        accept: 'image/webp',
+        connection: 'x-private-hop',
+        'x-private-hop': 'present',
+        ...(options.reserved === 'over-budget' && { 'x-budget': `${'a'.repeat(2000)}bc` }),
+      },
     },
   );
   const dispatched: string[] = [];
@@ -183,6 +192,7 @@ describe('an optimizer request rewritten to a shipped file', () => {
     { build: 'current', target: '/not-a-shipped-file' },
     { build: 'current', reserved: 'always' },
     { build: 'current', reserved: 'missing-nominated' },
+    { build: 'current', reserved: 'over-budget' },
   ] as const)('hands an ineligible or reserved target to the Function: %j', async (options) => {
     const result = await rewrittenFile(options);
 

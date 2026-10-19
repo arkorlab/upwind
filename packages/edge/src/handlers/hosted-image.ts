@@ -159,15 +159,23 @@ function routeWithinBudget(input: HostedImageInput): Promise<Response> {
           answering(input, middleware, dispatches, configured),
         );
       }
-      if (
-        manifest.reservedRoutes !== undefined &&
-        isReserved(
-          manifest,
-          middleware.url,
-          handedHeaders(input.edge, middleware.requestHeaders),
-          true,
-        )
-      ) {
+      try {
+        if (
+          manifest.reservedRoutes !== undefined &&
+          isReserved(
+            manifest,
+            middleware.url,
+            handedHeaders(input.edge, middleware.requestHeaders),
+            true,
+          )
+        ) {
+          return undefined;
+        }
+      } catch (error) {
+        if (!(error instanceof PatternBudgetExceededError)) {
+          throw error;
+        }
+        // The rewritten target is no longer an optimizer request; its Function can route it.
         return undefined;
       }
       return serveHostedFile({ ...input, configured }, middleware.url, middleware, dispatches);
