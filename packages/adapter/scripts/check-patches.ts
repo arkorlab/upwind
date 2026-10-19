@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, readdir, readFile, rm, stat } from 'node:fs/promises';
+import { mkdir, readdir, readFile, realpath, rm, stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -72,19 +72,23 @@ const OUTPUT_LIMIT = 67_108_864;
  *
  * The name on `PATH` is a shell script on Unix and a `.cmd` on Windows, and Node will not spawn the
  * second without a shell — which this must not use, since a version read off a registry travels through
- * these arguments. npm ships beside the Node that is running: under `lib/node_modules` on Unix, and
- * beside the executable itself on Windows.
+ * these arguments. Find npm beside this Node or on `PATH`: pnpm-managed runtimes contain the
+ * Node executable without npm, so its installation may be separate. Always run its JavaScript
+ * with `process.execPath`, keeping the project's pinned Node.js version.
  *
  * Duplicated in `tools/next-matrix/src/run.ts`, deliberately: the two live in different packages, and
  * sharing twenty lines would mean either a tool package these scripts depend on or a reach across the
  * workspace. The `npm` name each of them used was duplicated before this was.
  */
 async function npmCli(): Promise<string> {
-  const beside = path.dirname(process.execPath);
-  const candidates = [
-    path.join(beside, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
-    path.join(beside, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  const directories = [
+    path.dirname(process.execPath),
+    ...(process.env.PATH ?? '').split(path.delimiter).filter((directory) => directory.length > 0),
   ];
+  const candidates = directories.flatMap((directory) => [
+    path.join(directory, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    path.join(directory, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  ]);
   for (const candidate of candidates) {
     try {
       await stat(candidate);
@@ -93,8 +97,17 @@ async function npmCli(): Promise<string> {
       continue;
     }
   }
+  // Distribution packages can place npm elsewhere and symlink its CLI onto PATH.
+  for (const directory of directories) {
+    try {
+      const candidate = await realpath(path.join(directory, 'npm'));
+      if (path.basename(candidate) === 'npm-cli.js') return candidate;
+    } catch {
+      continue;
+    }
+  }
   throw new Error(
-    `check-patches: npm was not found beside ${process.execPath}; looked in ${candidates.join(' and ')}`,
+    `check-patches: npm was not found beside ${process.execPath} or on PATH; looked in ${candidates.join(' and ')}`,
   );
 }
 
