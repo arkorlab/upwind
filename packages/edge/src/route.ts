@@ -22,7 +22,6 @@ import { resolvePolicy } from '@stayingupwind/host/delivery';
 
 import type { EdgeBindings } from './bindings.ts';
 import { transferInvalidations } from './cache/condemned.ts';
-import { lookAtScope } from './cache/scope-signal.ts';
 import type { EdgeHost } from './edge-host.ts';
 import type { EdgeRuntime } from './edge-runtime.ts';
 import { passthroughHeaders } from './forwarding.ts';
@@ -60,7 +59,6 @@ import {
 } from './preview/pointer-request.ts';
 import { EDGE_MODE } from './preview/pointer.ts';
 import { notDeployed, type PreviewState } from './preview/state.ts';
-import { heldBehind } from './preview/storage.ts';
 import { coloOf, forwardingFor, type IncomingRequest } from './request-context.ts';
 import type { EdgeContext, RequestTimings, StaticFileContext } from './strategies/context.ts';
 import { edgeStrategyRegistry } from './strategies/registry.ts';
@@ -133,22 +131,6 @@ async function afterDeferredPolicy<T>(
   serve: (ready: RoutingInput) => Promise<T>,
 ): Promise<T> {
   return serve(await input.policyReady());
-}
-
-/**
- * Begin the request's look at where its scope stands (`lookAtScope`), where its deployment has a
- * cache: beside the reads the request makes, and waited for by none of them — what it brings is in
- * force once it lands, for this request where that is before it is judged, and for the next.
- */
-function lookAtScopeOf(input: ManifestRoutingInput): void {
-  const scope = input.state.manifest?.cache;
-  if (scope === undefined || input.state.app === undefined) {
-    return;
-  }
-  // A question to the authority is kept past the answer as the pointer's refresh is, among the
-  // requests out (`heldBehind`); the look itself only has to end.
-  const look = { runtime: input.runtime, host: input.host, waitUntil: heldBehind(input.ctx) };
-  input.ctx.waitUntil(lookAtScope(look, scope.scopeId));
 }
 
 /**
@@ -487,8 +469,11 @@ async function routeWithBudget(input: ManifestRoutingInput): Promise<Response> {
 function routeWithinBudget(input: ManifestRoutingInput): Promise<Response> {
   const { request, url, state } = input;
   const forwarding = forwardingFor(request, input.host.sharedDomain, url.hostname);
-  const passthrough = (reason: string, middleware?: MiddlewareOutcome): Promise<Response> =>
-    passthroughFor(input, reason, middleware);
+  const passthrough = (
+    reason: string,
+    middleware?: MiddlewareOutcome,
+    waited?: PassthroughWait,
+  ): Promise<Response> => passthroughFor(input, reason, middleware, { waited });
   // A probe names the Worker it is for, and is that Worker's to answer whatever the path would be
   // served from otherwise — a catch-all's shell, say, answered here and resumed in a Worker the
   // probe did not name. Only a signed validation sets this.
@@ -575,9 +560,6 @@ function routeWithManifest(
       state.manifest.cache.scopeId,
     );
   }
-  // Files and optimized images read no generation records, so their storage reads never compete
-  // with a scope poll that only document deliveries need.
-  lookAtScopeOf(input);
   if (state.mode !== EDGE_MODE || state.manifest === undefined) {
     // This pointer field is opaque; internal middleware reasons retain their structured fields.
     return passthrough(safeDiagnosticField(state.passthroughReason));

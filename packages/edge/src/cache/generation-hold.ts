@@ -6,6 +6,7 @@ import type { EdgeContext } from '../strategies/context.ts';
 import { transferInvalidations } from './condemned.ts';
 import { readCurrentBehind } from './generation-current.ts';
 import { readGeneration } from './generation-loader.ts';
+import { lookAtScopeBehind } from './scope-signal.ts';
 
 /**
  * What an isolate holds of an entry's delivery record, and how it serves it: the front of every
@@ -208,6 +209,7 @@ export function heldGeneration(
   settings: RuntimeCacheSettings,
   options: LoadOptions = {},
 ): GenerationLoad | undefined {
+  lookAtScopeBehind(edge, key.scopeId);
   transferInvalidations(edge.runtime.memory, edge.app?.deploymentId, key.scopeId);
   if (settings.holdMs === 0) {
     return undefined;
@@ -294,6 +296,7 @@ export async function generationAsHeld(
   settings: RuntimeCacheSettings,
   options: LoadOptions = {},
 ): Promise<GenerationLoad> {
+  lookAtScopeBehind(edge, key.scopeId);
   if (settings.holdMs !== 0) {
     const recordKey = kvGenerationKey(key.scopeId, key.entryId);
     const held = edge.runtime.memory.generations.get(recordKey);

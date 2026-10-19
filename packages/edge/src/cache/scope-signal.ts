@@ -7,6 +7,8 @@ import type { EdgeHost, ScopeSignalSource } from '../edge-host.ts';
 import type { EdgeRuntime } from '../edge-runtime.ts';
 import type { TagBound } from '../memory/invalidations.ts';
 import { logWarn } from '../observability/logger.ts';
+import { heldBehind } from '../preview/storage.ts';
+import type { EdgeContext } from '../strategies/context.ts';
 import { letGoOfInvalidated } from './condemned.ts';
 
 /**
@@ -25,7 +27,7 @@ import { letGoOfInvalidated } from './condemned.ts';
  * before the answer is kept leave the question to it, rather than each asking the same — though the
  * Cache API has no compare-and-set, so isolates that claim it in the same moment both ask.
  *
- * No request waits for a look. One begins as the request is routed, beside its reads, and what it
+ * No request waits for a look. One begins when the request reads a generation, beside its reads, and what it
  * brings is in force as soon as it lands: for the request itself where it lands before a record is
  * judged or the request handed on, and for the requests after it otherwise — the trade a record
  * held past its hold makes, staleness bounded in requests rather than a wait before the first byte.
@@ -112,6 +114,18 @@ const asking = new WeakMap<
   EdgeRuntime['memory'],
   WeakMap<ScopeSignalSource, Map<string, Asking>>
 >();
+
+/** A document may read its class and member, or be routed again to a different deployment. */
+const lookedAt = new WeakMap<ExecutionContext, string>();
+
+/** Only generation reads need scope signals; files and direct Function requests never start one. */
+export function lookAtScopeBehind(edge: EdgeContext, scopeId: string): void {
+  if (edge.app === undefined || edge.host.scopeSignals === undefined) return;
+  if (lookedAt.get(edge.ctx) === scopeId) return;
+  lookedAt.set(edge.ctx, scopeId);
+  const look = { runtime: edge.runtime, host: edge.host, waitUntil: heldBehind(edge.ctx) };
+  edge.ctx.waitUntil(lookAtScope(look, scopeId));
+}
 
 function errorDetail(error: unknown): string {
   return error instanceof Error ? error.message : String(error);

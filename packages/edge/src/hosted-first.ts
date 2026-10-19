@@ -5,6 +5,7 @@ import { classifyStaticFile } from '@stayingupwind/core/request';
 import { routeHostedImage } from './handlers/hosted-image.ts';
 import { routeHostedStaticFile } from './handlers/hosted-static-file.ts';
 import type { MiddlewareOutcome } from './handlers/middleware.ts';
+import type { PassthroughWait } from './handlers/passthrough.ts';
 import type { EdgeContext, StaticFileContext } from './strategies/context.ts';
 
 /**
@@ -26,7 +27,11 @@ export interface HostedFirstInput {
   readonly edge: (manifest: ProjectManifest) => StaticFileContext;
   /** Read the settings only for an image or matching middleware. */
   readonly policyReady: (manifest: ProjectManifest) => EdgeContext | Promise<EdgeContext>;
-  readonly passthrough: (reason: string, middleware?: MiddlewareOutcome) => Promise<Response>;
+  readonly passthrough: (
+    reason: string,
+    middleware?: MiddlewareOutcome,
+    waited?: PassthroughWait,
+  ) => Promise<Response>;
 }
 
 const STATIC_FILE_CLASS = 'static-file';
