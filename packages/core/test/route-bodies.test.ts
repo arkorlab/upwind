@@ -78,7 +78,7 @@ function bundleOf(extra: Partial<DeploymentBundle> = {}): DeploymentBundle {
     buildId: 'build',
     projectDir: '.',
     generatedAt: GENERATED_AT,
-    routeBodyPrivacy: 1,
+    routeBodyPrivacy: 2,
     config: {
       basePath: '',
       trailingSlash: false,
@@ -315,8 +315,10 @@ describe('sealed route-body eligibility', () => {
     const modern = deploymentBundleSchema.parse(bundleOf());
     const old = deploymentBundleSchema.parse(bundleOf({ routeBodyPrivacy: undefined }));
     const serialized = JSON.stringify(old);
+    const previous = deploymentBundleSchema.parse(bundleOf({ routeBodyPrivacy: 1 }));
 
     expect(edgeServableRouteBodies(modern)).toStrictEqual([PRERENDER]);
+    expect(edgeServableRouteBodies(previous)).toStrictEqual([]);
 
     const headerKeyed = deploymentBundleSchema.parse(
       bundleOf({ prerenders: [{ ...PRERENDER, allowHeader: ['authorization'] }] }),
@@ -326,7 +328,7 @@ describe('sealed route-body eligibility', () => {
     expect(edgeServableRouteBodies(headerKeyed)).toStrictEqual([]);
     expect(edgeServableRouteBodies(deploymentBundleSchema.parse(old))).toStrictEqual([]);
     expect(JSON.stringify(deploymentBundleSchema.parse(old))).toBe(serialized);
-    expect(() => deploymentBundleSchema.parse({ ...old, routeBodyPrivacy: 2 })).toThrow(
+    expect(() => deploymentBundleSchema.parse({ ...old, routeBodyPrivacy: 3 })).toThrow(
       /routeBodyPrivacy/u,
     );
   });
