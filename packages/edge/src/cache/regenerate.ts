@@ -15,6 +15,7 @@ import {
 import { releaseStream, withDeadline } from '@stayingupwind/core/util';
 import type { RuntimeCacheSettings } from '@stayingupwind/host/delivery';
 
+import type { MiddlewareTiming } from '../handlers/middleware.ts';
 import { observeRequestMetric } from '../handlers/observer.ts';
 import {
   handlePassthrough,
@@ -134,7 +135,7 @@ export function allowAnotherAsk(edge: EdgeContext, entryId: string): () => void 
 
 export interface DispatchInput {
   readonly request: Request;
-  readonly middleware: MiddlewareContinue | undefined;
+  readonly middleware: (MiddlewareContinue & Partial<MiddlewareTiming>) | undefined;
   readonly target: RegenerationTarget;
   /** The app Worker the entry's route is in, for a deployment split across several. */
   readonly function: string | undefined;
@@ -175,7 +176,11 @@ export function foregroundDocument(
     headers: regenerationHeaders(edge, 'foreground', input.target),
     whenGone: edge.whenGone,
     metrics: {
-      ...passthroughMetrics(edge, input.target.pack.header.route),
+      ...passthroughMetrics(
+        edge,
+        input.target.pack.header.route,
+        edge.timings.middlewareMs ?? input.middleware?.middlewareMs,
+      ),
       ...(recordLookupMs !== undefined && { recordLookupMs }),
     },
   });

@@ -167,9 +167,9 @@ function bodyHeaders(pack: DecodedGenerationPack, entry: RouteBodyEntry): Header
   if (untransformed && !noTransformDirective(cacheControl)) {
     headers.set(
       CACHE_CONTROL,
-      cacheControl !== null && cacheControl !== ''
-        ? `${cacheControl}, ${NO_TRANSFORM}`
-        : NO_TRANSFORM,
+      cacheControl === null || cacheControl === ''
+        ? NO_TRANSFORM
+        : `${cacheControl}, ${NO_TRANSFORM}`,
     );
   }
   headers.set(CONTENT_TYPE, contentType);
