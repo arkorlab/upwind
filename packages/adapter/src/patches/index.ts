@@ -14,6 +14,7 @@ import { taskTimersPatch } from './task-timers.ts';
 import { turbopackRootPatch } from './turbopack-root.ts';
 import { turbopackRuntimePatch } from './turbopack-runtime.ts';
 import type { Patch } from './types.ts';
+import { useCacheCrossRequestPatch } from './use-cache-cross-request.ts';
 import { vercelOgFontPatch, vercelOgImageResponsePatch, vercelOgPatch } from './vercel-og.ts';
 import { runtimeWasmLoaderPatch, wasmLoaderPatch } from './wasm-loader.ts';
 import { workflowQuickjsWasmPatch } from './workflow-quickjs.ts';
@@ -44,6 +45,7 @@ export const PATCHES: readonly Patch[] = [
   cacheSignalTimersPatch,
   fetchCacheWaitUntilPatch,
   hangingInputAbortPatch,
+  useCacheCrossRequestPatch,
   instrumentationPatch,
   cacheHandlersPatch,
   loadManifestPatch,
