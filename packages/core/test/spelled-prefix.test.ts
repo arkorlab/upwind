@@ -167,7 +167,7 @@ describe('files listed by their request names', () => {
 
     expect(staticFileKey(manifest, percent)).toBe(percent);
     expect(staticFileKey(manifest, escaped)).toBe(bracketed);
-    expect(staticFileKey(manifest, escaped.replace('%E8%B3%87', '%e8%b3%87'))).toBeUndefined();
+    expect(staticFileKey(manifest, escaped.replaceAll('%E8%B3%87', '%e8%b3%87'))).toBeUndefined();
   });
 
   it('finds a request alias behind a default locale after leaving the nested base path', () => {
