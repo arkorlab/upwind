@@ -43,10 +43,11 @@ describe('a single artifact upload releases its unused success response', () => 
     const cancel = vi.fn(() => cancelled.promise);
     const subject = gateway(responseWith(cancel));
     let completed = false;
-    const result = subject.uploadArtifact(UPLOAD).then((value) => {
+    const result = (async () => {
+      const value = await subject.uploadArtifact(UPLOAD);
       completed = true;
       return value;
-    });
+    })();
     try {
       await vi.waitFor(() => {
         expect(completed).toBe(true);
