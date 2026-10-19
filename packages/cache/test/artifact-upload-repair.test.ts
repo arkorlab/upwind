@@ -225,9 +225,10 @@ function stateFor(scope: Scope, plan: Plan) {
 function liveSnapshot(scope: Scope, plan: Plan) {
   return runInDurableObject(scope.stub, (_instance, state) => {
     const entry = findEntry(state.storage.sql, plan.entryId);
-    if (entry === undefined || entry.current_generation_id === null)
-      throw new Error('no current entry');
-    const generation = findGeneration(state.storage.sql, entry.current_generation_id);
+    if (entry === undefined) throw new Error('no current entry');
+    const current = entry.current_generation_id;
+    if (current === null) throw new Error('no current entry');
+    const generation = findGeneration(state.storage.sql, current);
     if (generation === undefined) throw new Error('no current generation');
     return {
       generationId: generation.generation_id,
@@ -534,15 +535,13 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
     };
     await refuseRepair(scope, kind);
 
-    await expect(
+    const now = kind === 'lease' ? started.leaseExpiresAt : NOW;
+    const outcome =
       kind === 'quota'
         ? limitedCommit(scope, started, request)
-        : scope.stub.commit(
-            started.attemptId,
-            request,
-            kind === 'lease' ? started.leaseExpiresAt : NOW,
-          ),
-    ).resolves.toMatchObject(expected);
+        : scope.stub.commit(started.attemptId, request, now);
+
+    await expect(outcome).resolves.toMatchObject(expected);
     await expect(stateFor(scope, plan)).resolves.toStrictEqual(before);
   });
 
@@ -601,11 +600,12 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
     );
     expect(after.map((snapshot) => snapshot.outputs)).toStrictEqual(expected);
     expect(
-      after.every(
-        (snapshot, index) =>
+      after.every((snapshot, index) => {
+        const current =
           snapshot.kvRevision === snapshot.recordRevision &&
-          snapshot.recordRevision > (before[index]?.recordRevision ?? -1),
-      ),
+          snapshot.recordRevision > (before[index]?.recordRevision ?? -1);
+        return current;
+      }),
     ).toBe(true);
     expect(staleAcknowledged).toBe(false);
     await expect(stateFor(scope, first)).resolves.toMatchObject({
@@ -629,10 +629,14 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
       entered.resolve(true);
       return blocked.promise;
     });
-    const finished = upload(scope, plan, started, 'single').then(
-      () => 'stored',
-      () => 'failed',
-    );
+    const finished = (async () => {
+      try {
+        await upload(scope, plan, started, 'single');
+        return 'stored';
+      } catch {
+        return 'failed';
+      }
+    })();
     try {
       await entered.promise;
       const overlapping = await scope.stub.commit(
@@ -649,6 +653,7 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
         failed: 'failed',
         afterward: { code: 'artifact_missing' },
       });
+
       await expect(stateFor(scope, plan)).resolves.toStrictEqual(before);
       put.mockRestore();
       await upload(scope, plan, started, 'single');
@@ -676,6 +681,7 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
 
     expect(head).toHaveBeenCalledExactlyOnceWith(storageRef);
     expect(put).not.toHaveBeenCalled();
+
     await expect(
       scope.stub.commit(started.attemptId, requestFor(plan, started), NOW),
     ).resolves.toMatchObject({ code: 'artifact_missing' });

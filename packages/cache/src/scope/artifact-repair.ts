@@ -56,8 +56,7 @@ function repairedOutputs(
       ...output,
       artifacts: output.artifacts.map((artifact) => {
         const repair = repairs.get(artifact.sha256);
-        return repair !== undefined &&
-          artifact.byteLength === repair.byteLength &&
+        return repair?.byteLength === artifact.byteLength &&
           artifact.storageRef === repair.previousStorageRef
           ? { ...artifact, storageRef: repair.storageRef }
           : artifact;
@@ -78,7 +77,6 @@ export function retargetedRecordsFailure(
   for (;;) {
     const page = liveSnapshots(input.sql, selected, { after, excluding: publishingEntry });
     for (const id of page) {
-      after = id.entry_id;
       const generation = findGeneration(input.sql, id.generation_id);
       if (generation === undefined) throw new Error('the current repair snapshot disappeared');
       const fields = headerFieldsOf(

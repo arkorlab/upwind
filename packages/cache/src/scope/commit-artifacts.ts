@@ -124,8 +124,7 @@ function locateArtifact(
     }
     if (!artifactFailed(sql, stored)) return { storageRef: stored.storage_ref };
     if (
-      upload === undefined ||
-      upload.storage_ref !== repairStorageRef(plan.scopeId, artifact.sha256, plan.attemptId) ||
+      upload?.storage_ref !== repairStorageRef(plan.scopeId, artifact.sha256, plan.attemptId) ||
       !plan.checkedUploads.has(upload.storage_ref) ||
       plan.missingUploads.has(upload.storage_ref)
     ) {

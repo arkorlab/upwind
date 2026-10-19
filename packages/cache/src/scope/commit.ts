@@ -384,6 +384,16 @@ function publish(input: TxInput, plan: CommitPlan, state: Publication): CommitOu
   };
 }
 
+function repairedRecordsRefusal(
+  input: TxInput,
+  repairs: ReadonlyMap<string, ArtifactRepair>,
+  publishingEntry: string,
+): Refusal | undefined {
+  if (repairs.size === 0) return undefined;
+  const unwritable = retargetedRecordsFailure(input, repairs.values(), publishingEntry);
+  return unwritable === undefined ? undefined : refuse('too_large', unwritable);
+}
+
 function applyCommit(input: TxInput, plan: CommitPlan): CommitOutcome | Refusal {
   const { sql, now } = input;
   const scope = requireActiveScope(sql);
@@ -471,14 +481,8 @@ function applyCommit(input: TxInput, plan: CommitPlan): CommitOutcome | Refusal 
   if (invalidations.some((row) => row.meaning === 'immediate')) {
     return refuseStale(input, attempt, entry, invalidations);
   }
-  if (storageRefs.repairs.size > 0) {
-    const unwritableRepair = retargetedRecordsFailure(
-      input,
-      storageRefs.repairs.values(),
-      entry.entry_id,
-    );
-    if (unwritableRepair !== undefined) return refuse('too_large', unwritableRepair);
-  }
+  const unwritableRepair = repairedRecordsRefusal(input, storageRefs.repairs, entry.entry_id);
+  if (unwritableRepair !== undefined) return unwritableRepair;
   return publish(input, plan, {
     attempt,
     entry,
