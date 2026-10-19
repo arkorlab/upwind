@@ -103,6 +103,8 @@ export interface BuildFunctionInput {
    */
   readonly name?: string | undefined;
   readonly projectDir: string;
+  /** The trusted repository root Next.js used to name explicitly traced declarations. */
+  readonly repoRoot?: string | undefined;
   readonly outDir: string;
   readonly patch: PatchContext;
   readonly entries: readonly EntryModule[];
@@ -418,6 +420,7 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
   // What the chunks import from `.next/node_modules`, named only once the app bundle has run.
   const linked = await bundleLinkedExternals({
     projectDir: input.projectDir,
+    repoRoot: input.repoRoot,
     files: input.files,
     distDir: input.patch.distDir,
     workDir,
