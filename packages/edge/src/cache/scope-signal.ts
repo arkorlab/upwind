@@ -10,6 +10,7 @@ import { logWarn } from '../observability/logger.ts';
 import { heldBehind } from '../preview/storage.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { letGoOfInvalidated } from './condemned.ts';
+import { encodedScopeId } from './scope-identity.ts';
 
 /**
  * Where a scope stands, as every isolate of the edge comes to know it within a moment of an
@@ -132,7 +133,7 @@ function errorDetail(error: unknown): string {
 }
 
 function signalKey(host: EdgeHost, scopeId: string): string {
-  const encoded = encodeURIComponent(scopeId);
+  const encoded = encodedScopeId(scopeId);
   // URL dot segments disappear even when percent-encoded. A literal colon cannot occur in
   // another encoded scope, so only these two components need a prefix; ordinary keys stay put.
   const component =

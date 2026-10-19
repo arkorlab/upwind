@@ -206,41 +206,47 @@ describe('where a scope stands, as the edge comes to know it', () => {
     }
   });
 
-  it.each(['scope\r\nwith-lines', 'scope, with delimiters', '日本'])(
-    'shares a standalone signal copy for a scope named %j',
-    async (scopeId) => {
-      vi.useFakeTimers({ toFake: ['Date', 'performance', 'setTimeout', 'clearTimeout'] });
-      const answered = authority(() => ({ ...UNMOVED, revision: 5 }));
-      const site = { ...env, CACHE_SIGNALS: answered.source };
-      const host = standaloneHost(site);
-      const isolated = {
-        ...host,
-        names: { ...host.names, signalCache: `signals-${crypto.randomUUID()}` },
-      };
-      const behind: Promise<unknown>[] = [];
-      const first = runtimeOf();
-      const other = runtimeOf();
+  it.each([
+    { name: 'interior newlines', scopeId: 'scope\r\nwith-lines' },
+    { name: 'delimiters', scopeId: 'scope, with delimiters' },
+    { name: 'well-formed Unicode', scopeId: '日本' },
+    { name: 'lone high surrogate', scopeId: '\u{D800}' },
+    { name: 'lone low surrogate', scopeId: '\u{DC00}' },
+  ])('shares a standalone signal copy for $name', async ({ scopeId }) => {
+    vi.useFakeTimers({ toFake: ['Date', 'performance', 'setTimeout', 'clearTimeout'] });
+    const answered = authority(() => ({ ...UNMOVED, revision: 5 }));
+    const site = { ...env, CACHE_SIGNALS: answered.source };
+    const host = standaloneHost(site);
+    const isolated = {
+      ...host,
+      names: { ...host.names, signalCache: `signals-${crypto.randomUUID()}` },
+    };
+    const behind: Promise<unknown>[] = [];
+    const first = runtimeOf();
+    const other = runtimeOf();
 
-      await look(first, isolated, scopeId, behind);
-      await Promise.all(behind);
-      await look(other, isolated, scopeId);
+    await look(first, isolated, scopeId, behind);
+    await Promise.all(behind);
+    await look(other, isolated, scopeId);
 
-      expect(answered.asked()).toBe(1);
-      expect(first.memory.scopes.get(scopeId)?.revision).toBe(5);
-      expect(other.memory.scopes.get(scopeId)?.revision).toBe(5);
-    },
-  );
+    expect(answered.asked()).toBe(1);
+    expect(first.memory.scopes.get(scopeId)?.revision).toBe(5);
+    expect(other.memory.scopes.get(scopeId)?.revision).toBe(5);
+  });
 
   it.each([
-    ['.', 'claim'],
-    ['.', '1:.'],
-    ['..', '2:..'],
-    ['.', '%2E'],
-    ['..', '%2E%2E'],
-    ['a/b', 'a%2Fb'],
-    ['日本', '%E6%97%A5%E6%9C%AC'],
-    ['ordinary', 'ordinary/claim'],
-  ])('keeps the claim for %s separate from the signals for %s', async (askingScope, keptScope) => {
+    { name: 'dot and claim', askingScope: '.', keptScope: 'claim' },
+    { name: 'dot and prefixed dot', askingScope: '.', keptScope: '1:.' },
+    { name: 'parent dot and prefixed dot', askingScope: '..', keptScope: '2:..' },
+    { name: 'dot and encoded dot', askingScope: '.', keptScope: '%2E' },
+    { name: 'parent dot and encoded dot', askingScope: '..', keptScope: '%2E%2E' },
+    { name: 'slash and encoded slash', askingScope: 'a/b', keptScope: 'a%2Fb' },
+    { name: 'Unicode and encoded Unicode', askingScope: '日本', keptScope: '%E6%97%A5%E6%9C%AC' },
+    { name: 'ordinary and claim suffix', askingScope: 'ordinary', keptScope: 'ordinary/claim' },
+    { name: 'high and low surrogate', askingScope: '\u{D800}', keptScope: '\u{DC00}' },
+    { name: 'surrogate and escaped text', askingScope: '\u{D800}', keptScope: String.raw`\ud800` },
+    { name: 'surrogate and tilde text', askingScope: '\u{D800}', keptScope: String.raw`~\ud800` },
+  ])('keeps separate claim and copy keys for $name', async ({ askingScope, keptScope }) => {
     // This proves key ownership, independently of a busy runner exhausting the real copy deadline.
     vi.useFakeTimers({ toFake: ['Date', 'performance', 'setTimeout', 'clearTimeout'] });
     const cache = `signals-${crypto.randomUUID()}`;

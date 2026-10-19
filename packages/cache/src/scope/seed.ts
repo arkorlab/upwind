@@ -29,6 +29,10 @@ import type { EventInput } from './history.ts';
 import { type PackHeaderFields, unwritableRecord } from './records.ts';
 import { toEntry, toEntryState, toPublicGeneration, toScope } from './rows.ts';
 import {
+  existingSeedArtifactLengths,
+  reserveSeedArtifactLengths,
+} from './seed-artifact-lengths.ts';
+import {
   repairSeedEntries,
   seedRepairVerification,
   type SeedLocationProofs,
@@ -348,6 +352,21 @@ function existingGenerationIds(sql: SqlStorage, plans: readonly SeedPlan[]): Set
   return new Set(rows.map((row) => row.generation_id));
 }
 
+/** Shared batch reservations, after the unchanged tag and delivery-record admission checks. */
+function reserveSeedPlan(
+  plan: SeedPlan,
+  generationId: string,
+  generationIds: ReadonlySet<string>,
+  artifactLengths: Map<string, number>,
+): string | undefined {
+  if (generationIds.has(generationId)) {
+    return 'the build generation id is already in use';
+  }
+  return reserveSeedArtifactLengths(artifactLengths, plan.outputs)
+    ? undefined
+    : 'the build gives different byte lengths for the same artifact SHA';
+}
+
 function applySeedEntries(
   input: TxInput,
   plans: readonly SeedPlan[],
@@ -385,14 +404,13 @@ function applySeedEntries(
   // One lookup by this batch's ids, inside the same transaction, avoids failing every
   // unrelated entry at a later INSERT. A refused entry does not reserve an id for the batch.
   const generationIds = existingGenerationIds(sql, fresh);
+  const artifactLengths = existingSeedArtifactLengths(sql, fresh);
   for (const plan of fresh) {
     let reason =
       plan.tagsRefused ??
       unwritableRecord(recordFields(input.scopeId, plan), limits.maxRecordBytes);
     const generationId = plan.entry.generation.generationId;
-    if (reason === undefined && generationIds.has(generationId)) {
-      reason = 'the build generation id is already in use';
-    }
+    reason ??= reserveSeedPlan(plan, generationId, generationIds, artifactLengths);
     if (reason === undefined) {
       seedable.push(plan);
       generationIds.add(generationId);

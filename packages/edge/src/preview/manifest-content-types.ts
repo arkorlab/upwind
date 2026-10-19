@@ -3,6 +3,7 @@ import type { ProjectManifest, RouteSegment } from '@stayingupwind/core/manifest
 import { NULL_BODY_STATUSES } from '@stayingupwind/core/request';
 
 import { transportableHeaderValue } from '../header-values.ts';
+import { retainSafePreloads } from './manifest-preloads.ts';
 
 const MIN_RESPONSE_STATUS = 200;
 const MAX_RESPONSE_STATUS = 599;
@@ -69,6 +70,7 @@ export function checkManifestContentTypes(manifest: ProjectManifest): void {
     }
     checkPart(check, route.payload);
     checkPart(check, route.pagesData);
+    retainSafePreloads(route);
   }
   checkFiles(check, manifest.staticFiles);
 }
