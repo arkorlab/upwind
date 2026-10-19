@@ -1,7 +1,16 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 
-import { headerRulesFor, requestHeaderRulesFor } from '../src/manifest/dynamic.ts';
-import { buildProjectManifest } from '../src/manifest/manifest.ts';
+import {
+  documentHeaderRulesFor,
+  foldedHeadersFor,
+  headerRulesFor,
+  requestHeaderRulesFor,
+} from '../src/manifest/dynamic.ts';
+import {
+  buildProjectManifest,
+  parseProjectManifest,
+  serializeManifest,
+} from '../src/manifest/manifest.ts';
 import type { HeaderRule, ProjectManifest } from '../src/manifest/schema.ts';
 import {
   budgetPatterns,
@@ -11,6 +20,9 @@ import {
 } from '../src/request/pattern-budget.ts';
 
 const OBSERVED_AT = '2026-10-15T00:00:00.000Z';
+const RECOVERY_SOURCE = "'sha256-recovery'";
+const POLICY = "script-src 'none'";
+const PERMITTED_POLICY = `${POLICY} ${RECOVERY_SOURCE}`;
 
 function manifestFor(headerRules?: readonly HeaderRule[]): ProjectManifest {
   return buildProjectManifest({
@@ -176,5 +188,106 @@ describe('one judgement of a request’s response and document header rules', ()
       document: { headers: { 'x-result': 'matched' }, conditioned: true },
     });
     expect(() => headerRulesFor(manifest, url, headers)).toThrow(PatternBudgetExceededError);
+  });
+});
+
+describe('recovery sources for policies resolved from captures', () => {
+  const captured: HeaderRule = {
+    sourceRegex: '^/docs/(.*)$',
+    has: [{ type: 'header', key: 'x-policy' }],
+    headers: { $1: POLICY },
+    documentRecoverySources: { $1: RECOVERY_SOURCE },
+  };
+
+  it('permits the resolved enforcing policy in both document judgement APIs only', () => {
+    const manifest = parseProjectManifest(serializeManifest(manifestFor([captured])));
+    const url = new URL('https://app.example/docs/content-security-policy');
+    const headers = new Headers({ 'x-policy': '1' });
+
+    expect(requestHeaderRulesFor(manifest, url, headers)).toStrictEqual({
+      response: { headers: { 'content-security-policy': POLICY }, conditioned: true },
+      document: { headers: { 'content-security-policy': PERMITTED_POLICY }, conditioned: true },
+    });
+    expect(documentHeaderRulesFor(manifest, url, headers).headers).toStrictEqual({
+      'content-security-policy': PERMITTED_POLICY,
+    });
+    expect(headerRulesFor(manifest, url, headers).headers).toStrictEqual({
+      'content-security-policy': POLICY,
+    });
+  });
+
+  it.each(['x-policy', 'content-security-policy-report-only'])(
+    'keeps the ordinary value when the capture names %s',
+    (name) => {
+      const manifest = manifestFor([captured]);
+      const url = new URL(`https://app.example/docs/${name}`);
+      const both = requestHeaderRulesFor(manifest, url, new Headers({ 'x-policy': '1' }));
+
+      expect(both.document).toStrictEqual(both.response);
+      expect(both.document.headers[name]).toBe(POLICY);
+    },
+  );
+
+  it('does not apply a captured policy whose request condition is absent', () => {
+    const url = new URL('https://app.example/docs/content-security-policy');
+
+    expect(requestHeaderRulesFor(manifestFor([captured]), url, new Headers())).toStrictEqual({
+      response: { headers: {}, conditioned: false },
+      document: { headers: {}, conditioned: false },
+    });
+  });
+
+  it.each(['$1', 'content-security-policy'])(
+    'widens a captured policy value after interpolating the raw name %s',
+    (name) => {
+      const manifest = manifestFor([
+        {
+          sourceRegex: '^/docs/(content-security-policy)/(script-src)$',
+          headers: { [name]: '$2' },
+          documentRecoverySources: { [name]: RECOVERY_SOURCE },
+        },
+      ]);
+      const url = new URL('https://app.example/docs/content-security-policy/script-src');
+
+      expect(requestHeaderRulesFor(manifest, url, new Headers()).document.headers).toStrictEqual({
+        'content-security-policy': `script-src ${RECOVERY_SOURCE}`,
+      });
+    },
+  );
+
+  it('keeps an arbitrary captured document override that is not an enforcing policy', () => {
+    const manifest = manifestFor([
+      {
+        sourceRegex: '^/docs/(.*)$',
+        headers: { 'X-$1': 'response-$1' },
+        documentHeaders: { 'Y-$1': 'document-$1' },
+        documentRecoverySources: { 'Y-$1': RECOVERY_SOURCE },
+      },
+    ]);
+
+    expect(
+      requestHeaderRulesFor(manifest, new URL('https://app.example/docs/hello'), new Headers()),
+    ).toStrictEqual({
+      response: { headers: { 'x-hello': 'response-hello' }, conditioned: false },
+      document: { headers: { 'y-hello': 'document-hello' }, conditioned: false },
+    });
+  });
+
+  it('applies recovery sources to folded document rules without changing an unlisted policy', () => {
+    const manifest = {
+      ...manifestFor(),
+      foldedHeaderRules: [
+        {
+          sourceRegex: captured.sourceRegex,
+          headers: captured.headers,
+          documentRecoverySources: captured.documentRecoverySources,
+        },
+      ],
+    };
+
+    expect(foldedHeadersFor(manifest, '/docs/content-security-policy')).toStrictEqual({
+      'content-security-policy': PERMITTED_POLICY,
+    });
+    expect(foldedHeadersFor(manifest, '/docs/x-policy')).toStrictEqual({ 'x-policy': POLICY });
   });
 });

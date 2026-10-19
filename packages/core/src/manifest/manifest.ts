@@ -27,6 +27,7 @@ import {
   type RouteEntry,
   type ProjectManifest,
   projectManifestSchema,
+  REQUEST_FILE_KEYS_SCHEMA_VERSION,
   type SpelledPrefix,
   type StaticFileAssetPrefix,
   type StaticFileEntry,
@@ -81,6 +82,7 @@ export interface BuildProjectManifestInput {
   readonly crawlersStreamed?: boolean | undefined;
   readonly staticFileLocales?: StaticFileLocales | undefined;
   readonly staticFileAssetPrefix?: StaticFileAssetPrefix | undefined;
+  readonly staticFileRequestKeys?: boolean | undefined;
   readonly staticFileTrailingSlash?: boolean | undefined;
   /**
    * The base path and the build id a Pages Router page's props are asked for under, where a route
@@ -128,13 +130,17 @@ function staticFileFields(
   input: BuildProjectManifestInput,
 ): Pick<
   ProjectManifest,
-  'staticFileLocales' | 'staticFileAssetPrefix' | 'staticFileTrailingSlash'
+  | 'staticFileLocales'
+  | 'staticFileAssetPrefix'
+  | 'staticFileRequestKeys'
+  | 'staticFileTrailingSlash'
 > {
   return {
     ...(input.staticFileLocales !== undefined && { staticFileLocales: input.staticFileLocales }),
     ...(input.staticFileAssetPrefix !== undefined && {
       staticFileAssetPrefix: input.staticFileAssetPrefix,
     }),
+    ...(input.staticFileRequestKeys === true && { staticFileRequestKeys: true as const }),
     ...(input.staticFileTrailingSlash === true && { staticFileTrailingSlash: true as const }),
   };
 }
@@ -284,7 +290,10 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
     routes[entry.pathname] = entry;
   }
   return projectManifestSchema.parse({
-    schemaVersion: MANIFEST_SCHEMA_VERSION,
+    schemaVersion:
+      input.staticFileRequestKeys === true
+        ? REQUEST_FILE_KEYS_SCHEMA_VERSION
+        : MANIFEST_SCHEMA_VERSION,
     projectId: input.projectId,
     runId: input.runId,
     generatedAt: input.generatedAt,
@@ -378,6 +387,7 @@ function keyOf(
   record: Readonly<Record<string, unknown>>,
   pathname: string,
   prefix: SpelledPrefix | undefined,
+  manifest?: FileLookup,
 ): string | undefined {
   if (Object.hasOwn(record, pathname)) {
     return pathname;
@@ -391,9 +401,22 @@ function keyOf(
   } catch {
     return undefined;
   }
-  return Object.hasOwn(record, decoded) && spellsPrefixOf(prefix, pathname, decoded)
-    ? decoded
-    : undefined;
+  if (!Object.hasOwn(record, decoded) || !spellsPrefixOf(prefix, pathname, decoded)) {
+    return undefined;
+  }
+  // Request-key aliases may sit outside the base path. Only the decoded-hit branch needs to
+  // verify the literal asset prefix too; raw hits and ordinary misses never read this flag.
+  const assetPrefix = manifest?.staticFileAssetPrefix;
+  if (
+    assetPrefix !== undefined &&
+    manifest?.staticFileRequestKeys === true &&
+    manifest.schemaVersion === REQUEST_FILE_KEYS_SCHEMA_VERSION &&
+    decoded.startsWith(`${assetPrefix.assetPrefix}/_next/`) &&
+    !spellsPrefixOf({ basePath: assetPrefix.assetPrefix }, pathname, decoded)
+  ) {
+    return undefined;
+  }
+  return decoded;
 }
 
 /**
@@ -439,9 +462,10 @@ type FileLookup = Pick<
   | 'staticFiles'
   | 'staticFileLocales'
   | 'staticFileAssetPrefix'
+  | 'staticFileRequestKeys'
   | 'staticFileTrailingSlash'
   | 'spelledPrefix'
->;
+> & { readonly schemaVersion?: ProjectManifest['schemaVersion'] };
 
 /**
  * The pathname the manifest ships a file under, for a pathname a request names: as spelled or
@@ -478,6 +502,12 @@ export function staticFileKey(manifest: FileLookup, pathname: string): string | 
     return localized;
   }
   if (staticFileAssetPrefix === undefined) {
+    return undefined;
+  }
+  if (
+    manifest.staticFileRequestKeys === true &&
+    manifest.schemaVersion === REQUEST_FILE_KEYS_SCHEMA_VERSION
+  ) {
     return undefined;
   }
   const unprefixed =
@@ -619,7 +649,8 @@ function namedFileKey(
   prefix: SpelledPrefix | undefined,
 ): string | undefined {
   return (
-    keyOf(staticFiles, pathname, prefix) ?? slashedFileKey(manifest, staticFiles, pathname, prefix)
+    keyOf(staticFiles, pathname, prefix, manifest) ??
+    slashedFileKey(manifest, staticFiles, pathname, prefix)
   );
 }
 
@@ -642,7 +673,7 @@ function slashedFileKey(
   // Judged on the file's own name, which the runtime makes the alias of: a request may escape the
   // dot that makes a name a file's (`/manual%2Etxt/`), and the file it decodes to takes no slash.
   // Nor does one whose name has a bracket in it, which the runtime reads as a template's.
-  const key = keyOf(staticFiles, pathname.slice(0, -1), prefix);
+  const key = keyOf(staticFiles, pathname.slice(0, -1), prefix, manifest);
   return key !== undefined && namesNoFile(key) && !key.includes('[') ? key : undefined;
 }
 

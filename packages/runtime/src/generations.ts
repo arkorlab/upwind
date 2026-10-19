@@ -31,6 +31,7 @@ import type { NodeHandler } from './app-module.ts';
 import { nowMs } from './cache/clock.ts';
 import { requestContext } from './cache/context.ts';
 import { type CurrentGeneration, currentGeneration } from './cache/current.ts';
+import { generationClassShell } from './cache/generation-tags.ts';
 import type { AttemptReason } from './cache/host.ts';
 import { catchUp, settledWithin } from './cache/pulls.ts';
 import { regenerate, type RegenerationOutcome } from './cache/regenerate.ts';
@@ -159,18 +160,19 @@ function runJob(
 ): Promise<RegenerationOutcome> {
   const { input, store, target } = job;
   const { descriptor } = target;
+  const shell =
+    store.prerendersByPathname.get(descriptor.pathname) ??
+    findShell(store, descriptor.route, descriptor.pathname);
   return regenerate({
     runtime: job.runtime,
     request: input.request,
     handler: target.handler,
     target: {
       descriptor,
+      isClass: generationClassShell(descriptor, shell),
       reason,
       replaces,
-      allowHeader: (
-        store.prerendersByPathname.get(descriptor.pathname) ??
-        findShell(store, descriptor.route, descriptor.pathname)
-      )?.allowHeader,
+      allowHeader: shell?.allowHeader,
       observation: observationOf(input.request),
       dataPathname:
         descriptor.kind === 'pages'
