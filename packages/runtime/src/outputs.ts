@@ -21,7 +21,7 @@ import {
   staticResponse,
   withCacheState,
 } from './serve.ts';
-import { findShell, generationPathname, type Store } from './store.ts';
+import { findShell, generationPathname, isClassShell, type Store } from './store.ts';
 import { renderedBy } from './with-body.ts';
 
 /**
@@ -255,7 +255,10 @@ export async function serveRouteHandler(
  * shell, is kept under the shell its class completes to (`completedShell`); a prefetch of it before
  * anything is kept is answered from the class's own output — which leaves out what its parameters
  * hold up, a root layout that reads one — and the entry is rendered behind that answer, for the
- * requests after it.
+ * requests after it. A request with no prefetch header and no built shell also captures the render
+ * first when its generation key is concrete: Next.js's static Flight output can then be reused by
+ * the client on later visits. A key with unresolved parameters and other prefetch modes keep the
+ * native RSC path. Requests already recognized as speculative keep their background render.
  */
 function rscSource(
   input: RoutedInput,
@@ -265,10 +268,11 @@ function rscSource(
 ): GenerationSource {
   const blocking = shell?.ensureStatic === 'navigation' && shell.pathname !== resolved.pathname;
   const unbuilt = shell !== undefined && shell.body === undefined;
+  const prefetch = input.request.headers.get(store.manifest.routing.rsc.prefetchHeader);
   const want = {
     representation: rscRepresentation(input.request, store),
     url: resolved.url,
-    prefetch: input.request.headers.get(store.manifest.routing.rsc.prefetchHeader) === '1',
+    prefetch: prefetch === '1',
   };
   let pathname = resolved.pathname;
   if (shell !== undefined && !blocking) {
@@ -279,6 +283,8 @@ function rscSource(
     onMiss = 'render';
   } else if (unbuilt && speculative(want)) {
     onMiss = 'behind';
+  } else if (unbuilt && prefetch === null && !isClassShell(pathname, shell.route)) {
+    onMiss = 'render';
   }
   // Under the route the build filed the shell under, which its entry is keyed by, as a document is.
   return { route: shell?.route ?? resolved.route, pathname, ...want, onMiss };
