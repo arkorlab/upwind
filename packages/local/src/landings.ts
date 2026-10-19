@@ -9,7 +9,7 @@ import {
   staticFileKey,
 } from '@stayingupwind/core/manifest';
 import type { MiddlewareResult } from '@stayingupwind/core/paas';
-import { bypassForHolds, hasBypassCookie } from '@stayingupwind/core/request';
+import { bypassForHolds, hasBypassCookie, routeDebugValue } from '@stayingupwind/core/request';
 
 import {
   type CheckedStack,
@@ -34,6 +34,19 @@ export const ROUTE_MARKER = ';route=';
 /** What follows the route where a record served the document: its state, its sequence, a member's. */
 const GENERATION_MARKERS = /;cache=[^;]*;seq=\d+(?:;member=1)?$/u;
 
+/** Undo only the writer's canonical quoted spelling; malformed accounts remain unmatched. */
+function routeName(value: string): string {
+  if (!value.startsWith('~')) {
+    return value;
+  }
+  try {
+    const named: unknown = JSON.parse(`"${decodeURIComponent(value.slice(1))}"`);
+    return typeof named === 'string' && routeDebugValue(named) === value ? named : value;
+  } catch {
+    return value;
+  }
+}
+
 /**
  * The routes the edge's account of a document could name: its manifest key, after the marker — the
  * route entry's own pathname, which the edge writes there (`document.ts` in the edge), so a class's
@@ -41,7 +54,8 @@ const GENERATION_MARKERS = /;cache=[^;]*;seq=\d+(?:;member=1)?$/u;
  * so it is not read as one of the account's `;`-parted fields; and the edge writes a generation's
  * markers after it where a record served the document, which a pathname could end like. So both
  * readings are offered — all of it, and all of it less what reads as a generation's markers — and
- * the manifest's routes say which is meant.
+ * the manifest's routes say which is meant. The current writer quotes unsafe names; undo that
+ * spelling only after separating the generation fields, retaining older unquoted accounts.
  */
 export function namedRoutes(answered: string): string[] {
   const at = answered.indexOf(ROUTE_MARKER);
@@ -50,7 +64,7 @@ export function namedRoutes(answered: string): string[] {
   }
   const named = answered.slice(at + ROUTE_MARKER.length);
   const bare = named.replace(GENERATION_MARKERS, '');
-  return bare === named ? [named] : [named, bare];
+  return bare === named ? [routeName(named)] : [routeName(named), routeName(bare)];
 }
 
 /**

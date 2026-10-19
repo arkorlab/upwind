@@ -7,7 +7,11 @@ import {
   type RouteEntry,
 } from '@stayingupwind/core/manifest';
 import type { MiddlewareResult } from '@stayingupwind/core/paas';
-import { EDGE_VALIDATED_HEADER, filterShellResponseHeaders } from '@stayingupwind/core/request';
+import {
+  EDGE_VALIDATED_HEADER,
+  filterShellResponseHeaders,
+  routeDebugValue,
+} from '@stayingupwind/core/request';
 import { mergeScopedMiddlewareHeaders } from '@stayingupwind/edge/handlers/responses';
 import { runtimeCacheOf } from '@stayingupwind/host/delivery';
 
@@ -52,6 +56,13 @@ const WHOLE = 'cont=none';
 /** The first generation of a route's record: the build's, as a deploy seeds it. */
 const BUILD_SEQ = 1;
 
+/** Read the generation only after this complete spelling of the route's name. */
+function generationAfter(answered: string, pathname: string): RegExpExecArray | null {
+  const named = `${ROUTE_MARKER}${pathname}`;
+  const at = answered.indexOf(named);
+  return at === -1 ? null : GENERATION_SUFFIX.exec(answered.slice(at + named.length));
+}
+
 /**
  * Whether the edge served a generation of the route's record the runtime rendered since the
  * build's (`seq=` past the build's own), or a member's own record beside its class shell's
@@ -82,10 +93,9 @@ export function servedWhole(answered: string): boolean {
 export function servedGeneration(answer: Reading, route: RouteEntry): ServedGeneration | undefined {
   // Read only after the route's whole name, which may itself hold what reads like a marker.
   const answered = answeredBy(answer);
-  const named = `${ROUTE_MARKER}${route.pathname}`;
-  const at = answered.indexOf(named);
   const generation =
-    at === -1 ? undefined : GENERATION_SUFFIX.exec(answered.slice(at + named.length));
+    generationAfter(answered, routeDebugValue(route.pathname)) ??
+    generationAfter(answered, route.pathname);
   const seq = Number(generation?.[1]);
   const whole = servedWhole(answered);
   return Number.isSafeInteger(seq)
