@@ -1,7 +1,105 @@
+import { buildProjectManifest, type RouteEntry } from '@stayingupwind/core/manifest';
+import { DEFAULT_DELIVERY_POLICY } from '@stayingupwind/host/delivery';
 import { describe, expect, it } from 'vitest';
 
-import type { KeptMiddlewareResult } from '../src/answers.ts';
-import { rewriteStatusVerdict } from '../src/part-handoffs.ts';
+import { type CheckedStack, type KeptMiddlewareResult, middlewareCovers } from '../src/answers.ts';
+import { handedOnVerdict, rewriteStatusVerdict } from '../src/part-handoffs.ts';
+import type { Part } from '../src/part-marks.ts';
+
+const AT = '2026-10-19T00:00:00.000Z';
+const EMPTY_SHA = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+
+function dataRequest(): { readonly stack: CheckedStack; readonly part: Part } {
+  const site = new URL('https://site.example');
+  const route: RouteEntry = {
+    pathname: '/about',
+    status: 200,
+    headers: {},
+    shell: { sha256: EMPTY_SHA, byteLength: 0, contentType: 'text/html' },
+    pagesData: { sha256: EMPTY_SHA, byteLength: 0, contentType: 'application/json' },
+  };
+  const manifest = buildProjectManifest({
+    projectId: 'site',
+    runId: 'run',
+    generatedAt: AT,
+    originHost: site.hostname,
+    deployment: { assetSetHash: EMPTY_SHA, observedAt: AT },
+    app: { deploymentId: 'dpl_site', scriptName: 'app', middlewareScriptName: 'app' },
+    routes: [route],
+  });
+  return {
+    stack: {
+      url: site,
+      site,
+      backstage: new URL('/_backstage/', site),
+      functions: [],
+      bundleDir: '.',
+      deploymentId: 'dpl_site',
+      manifest,
+      app: manifest.app,
+      policy: { ...DEFAULT_DELIVERY_POLICY, id: 'default' },
+      cspNonce: undefined,
+      dispose: () => Promise.resolve(),
+      bundle: {
+        v: 1,
+        deploymentId: 'dpl_site',
+        nextVersion: '16.4.2',
+        buildId: 'build',
+        projectDir: '.',
+        generatedAt: AT,
+        config: {
+          basePath: '',
+          trailingSlash: false,
+          skipTrailingSlashRedirect: true,
+          poweredByHeader: false,
+        },
+        routing: {
+          beforeMiddleware: [],
+          middlewareMatchers: [],
+          beforeFiles: [],
+          afterFiles: [],
+          dynamicRoutes: [],
+          onMatch: [],
+          fallback: [],
+          shouldNormalizeNextData: false,
+          rsc: {
+            header: 'rsc',
+            varyHeader: 'rsc',
+            prefetchHeader: 'next-router-prefetch',
+            didPostponeHeader: 'x-nextjs-postponed',
+            contentTypeHeader: 'text/x-component',
+            suffix: '.rsc',
+            prefetchSegmentHeader: 'next-router-segment-prefetch',
+            prefetchSegmentSuffix: '.segment.rsc',
+            prefetchSegmentDirSuffix: '.segments',
+          },
+        },
+        entrypoints: [],
+        prerenders: [],
+        staticFiles: [],
+        middleware: { matchers: [{ sourceRegex: '^.*$' }] },
+        functions: {
+          app: {
+            mainModule: 'index.mjs',
+            modules: [],
+            compatibilityDate: AT.slice(0, 10),
+            compatibilityFlags: [],
+          },
+        },
+      },
+    },
+    part: {
+      kind: 'data',
+      what: 'props',
+      url: new URL('/_next/data/build/about.json', site),
+      headers: {},
+      built: route.pagesData,
+      route,
+      builtOn: (entry) => entry.pagesData,
+      exact: true,
+    },
+  };
+}
 
 function continued(rewriteStatus: number | undefined): KeptMiddlewareResult {
   return {
@@ -42,5 +140,24 @@ describe('a document or part handed on for a captured middleware rewrite status'
     const decided = continued(404);
 
     expect(rewriteStatusVerdict(decided, false).kind).toBe('failed');
+  });
+
+  it('rejects a Pages data rewrite-status handoff even with a captured applicable rewrite', () => {
+    const { stack, part } = dataRequest();
+    const decided = continued(404);
+    const covered = middlewareCovers(stack, part.url, part.headers);
+    const verdict = handedOnVerdict(stack, part, {
+      answered: 'passthrough;reason=rewrite-status',
+      decided,
+      covered,
+      asked: {},
+    });
+
+    expect(covered).toBe(true);
+    expect(verdict).toStrictEqual({
+      kind: 'failed',
+      reason:
+        "handed on for a reason the edge gives no request of the router's (x-arkor-edge: passthrough;reason=rewrite-status)",
+    });
   });
 });

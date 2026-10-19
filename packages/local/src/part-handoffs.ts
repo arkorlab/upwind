@@ -436,7 +436,7 @@ export function handedOnVerdict(stack: CheckedStack, part: Part, read: HandedOn)
     );
   }
   const reason = handoffReasonOf(answered);
-  if (reason === 'rewrite-status') {
+  if (reason === 'rewrite-status' && part.kind !== 'data') {
     return rewriteStatusVerdict(decided, read.covered);
   }
   if (!HANDOFFS[part.kind].has(reason)) {

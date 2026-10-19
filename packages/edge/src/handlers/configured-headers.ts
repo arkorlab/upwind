@@ -7,7 +7,6 @@ import {
   rewriteSetCookieForPreview,
 } from '@stayingupwind/core/request';
 
-import type { MiddlewareOutcome } from './middleware.ts';
 import { nominatedBy, statusAllowsLength } from './responses.ts';
 
 const SET_COOKIE_HEADER = 'set-cookie';
@@ -236,7 +235,7 @@ function judgesEveryHeaderRule(manifest: ProjectManifest): boolean {
  * cannot tell a header rule's from a redirect's. Telling the Function to leave it off, then dropping
  * it here as a possible redirect, would lose a header that the Function used to answer with.
  */
-export function withJudgedRules<Outcome extends MiddlewareOutcome>(
+export function withJudgedRules<Outcome extends { readonly kind: string }>(
   outcome: Outcome,
   configured: ConfiguredHeaders,
   manifest: ProjectManifest,
