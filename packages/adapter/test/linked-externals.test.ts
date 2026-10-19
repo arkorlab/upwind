@@ -53,7 +53,8 @@ module.exports = { marker: basename('/linked/ready'), filename: __filename, dirn
   assert.ok(result !== undefined);
   const files = await Promise.all(
     result.modules.map(async (module) => {
-      return { ...module, contents: await readFile(module.file, 'utf8') };
+      const contents = await readFile(module.file, 'utf8');
+      return { ...module, contents };
     }),
   );
   return files;

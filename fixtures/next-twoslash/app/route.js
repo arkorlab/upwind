@@ -3,8 +3,19 @@ import ts from 'typescript';
 
 /** A fixed diagnostic category, never the exception's message, filename, stack or source. */
 function errorCategory(error) {
-  if (error?.code === 'MODULE_NOT_FOUND') return 'module-not-found';
-  if (typeof error?.message === 'string' && error.message.startsWith('TSVFS: A request was made')) {
+  const message = typeof error?.message === 'string' ? error.message.slice(0, 512) : '';
+  if (
+    error?.name === 'TypeError' &&
+    message.includes('require') &&
+    message.includes('.resolve is not a function')
+  ) {
+    return 'require-resolve-unavailable';
+  }
+  if (error?.code === 'MODULE_NOT_FOUND' || error?.code === 'ERR_MODULE_NOT_FOUND') {
+    if (message.includes('typescript')) return 'missing-typescript';
+    return 'module-not-found';
+  }
+  if (message.startsWith('TSVFS: A request was made')) {
     return 'missing-library';
   }
   return 'other';
