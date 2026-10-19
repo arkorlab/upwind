@@ -157,17 +157,20 @@ export function finishArtifactRepairs(
 /** A verified attempt-specific upload replaces the failed canonical location atomically. */
 export function repairArtifact(input: TxInput, repair: ArtifactRepair): number {
   const { sql, now } = input;
-  const changed = sql.exec(
+  const changed = sql.exec<{ refs: number }>(
     `UPDATE artifacts SET storage_ref = ?, owned = 1
      WHERE sha256 = ? AND storage_ref = ? AND byte_length = ? AND owned = ?
-     RETURNING sha256`,
+     RETURNING refs`,
     repair.storageRef,
     repair.sha256,
     repair.previousStorageRef,
     repair.byteLength,
     repair.previouslyOwned ? 1 : 0,
   );
-  if (changed.toArray().length !== 1) throw new Error('the failed artifact location changed');
+  const rows = changed.toArray();
+  const row = rows[0];
+  if (rows.length !== 1 || row === undefined)
+    throw new Error('the failed artifact location changed');
   if (repair.previouslyOwned && repair.previousStorageRef !== repair.storageRef) {
     sql.exec(
       `INSERT OR IGNORE INTO pending_deletions (storage_ref, queued_at) VALUES (?, ?)`,
@@ -176,7 +179,8 @@ export function repairArtifact(input: TxInput, repair: ArtifactRepair): number {
     );
   }
   sql.exec(`DELETE FROM pending_deletions WHERE storage_ref = ?`, repair.storageRef);
-  return repair.previouslyOwned ? 0 : repair.byteLength;
+  // An unreferenced row is charged by its first new reference, after this ownership change.
+  return !repair.previouslyOwned && row.refs > 0 ? repair.byteLength : 0;
 }
 
 /** A seed retry changes a borrowed location only after its existing identical-byte verification. */

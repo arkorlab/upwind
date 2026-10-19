@@ -85,6 +85,12 @@ export type DataRecord = z.infer<typeof dataRecordSchema>;
 export interface RecordDeps {
   readonly blobs: BlobStore;
   readonly scopeId: string;
+  /** Observe only actual reads and successful digest checks; carried or referenced data bypass it. */
+  readonly verifying?:
+    | ((
+        artifact: Pick<RecordArtifact, 'sha256' | 'storageRef' | 'byteLength'>,
+      ) => (() => void) | undefined)
+    | undefined;
 }
 
 type RecordArtifact = OutputSnapshot['artifacts'][number];
@@ -101,8 +107,9 @@ export class InvalidArtifactError extends Error {
   }
 }
 
-async function verifiedBytes(blobs: BlobStore, artifact: RecordArtifact): Promise<Uint8Array> {
-  const bytes = await blobs.read(artifact.storageRef);
+async function verifiedBytes(deps: RecordDeps, artifact: RecordArtifact): Promise<Uint8Array> {
+  const verified = deps.verifying?.(artifact);
+  const bytes = await deps.blobs.read(artifact.storageRef);
   if (bytes === undefined) {
     throw new InvalidArtifactError(
       `artifact ${artifact.sha256} (${artifact.role}) is not in storage`,
@@ -121,6 +128,7 @@ async function verifiedBytes(blobs: BlobStore, artifact: RecordArtifact): Promis
       artifact,
     );
   }
+  verified?.();
   return bytes;
 }
 
@@ -398,8 +406,8 @@ export async function generationRecordBytes(
 ): Promise<Uint8Array> {
   const outputs = generationOutputs(generation);
   const { primary, postponed } = recordBodies(outputs);
-  const readingHtml = primary === undefined ? EMPTY : verifiedBytes(deps.blobs, primary);
-  const readingState = postponed === undefined ? undefined : verifiedBytes(deps.blobs, postponed);
+  const readingHtml = primary === undefined ? EMPTY : verifiedBytes(deps, primary);
+  const readingState = postponed === undefined ? undefined : verifiedBytes(deps, postponed);
   try {
     const [html, state] = await Promise.all([readingHtml, readingState]);
     const header = packHeaderOf(
@@ -490,13 +498,13 @@ export function dataRecordByReference(
  * again: the gateway named them by hashing these very bytes, in the request that stored them.
  */
 async function inlineBytes(
-  blobs: BlobStore,
+  deps: RecordDeps,
   artifact: RecordArtifact,
   carried: CarriedValue | undefined,
 ): Promise<Uint8Array> {
   return carried?.sha256 === artifact.sha256 && carried.bytes.byteLength === artifact.byteLength
     ? carried.bytes
-    : verifiedBytes(blobs, artifact);
+    : verifiedBytes(deps, artifact);
 }
 
 /** The data-cache record as KV holds it (`dataRecordFor`), serialized. */
@@ -525,7 +533,7 @@ export async function dataRecordFor(
   }
   const value: DataRecord['value'] =
     artifact.byteLength <= MAX_INLINE_DATA_VALUE_BYTES
-      ? { kind: 'inline', base64: toBase64(await inlineBytes(deps.blobs, artifact, carried)) }
+      ? { kind: 'inline', base64: toBase64(await inlineBytes(deps, artifact, carried)) }
       : {
           kind: 'ref',
           artifactId: artifact.artifactId,
