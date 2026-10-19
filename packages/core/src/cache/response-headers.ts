@@ -6,6 +6,12 @@ import {
 import { filterShellResponseHeaders, filterStoredResponseHeaders } from '../request/headers.ts';
 import type { RouteEntryKind } from './keys.ts';
 
+const CACHE_CONTROL = 'cache-control';
+const TRANSFORM_POLICY_HEADERS: ReadonlySet<string> = new Set([
+  CACHE_CONTROL,
+  ...SHARED_CACHE_CONTROL_HEADERS,
+]);
+
 /**
  * What a redirect cannot be answered without: where it leads, and the `Refresh` Next.js sends
  * beside a permanent one for the clients that do not follow a 308.
@@ -50,7 +56,7 @@ export function generationResponseHeaders(
 function routeBodyHeaders(answered: readonly [string, string][]): Record<string, string> {
   const kept = filterStoredResponseHeaders(answered);
   const privacyNames = new Set([
-    'cache-control',
+    CACHE_CONTROL,
     'content-encoding',
     'content-range',
     'content-type',
@@ -62,7 +68,7 @@ function routeBodyHeaders(answered: readonly [string, string][]): Record<string,
   let privateResponse = false;
   for (const [name, value] of answered) {
     const lower = name.toLowerCase();
-    if (lower === 'cache-control') {
+    if (lower === CACHE_CONTROL) {
       cacheControl.push(value);
     }
     if (
@@ -79,9 +85,25 @@ function routeBodyHeaders(answered: readonly [string, string][]): Record<string,
     }
   }
   if (privateResponse) {
-    kept['cache-control'] = NO_STORE_CACHE_CONTROL;
+    kept[CACHE_CONTROL] = NO_STORE_CACHE_CONTROL;
   } else if (cacheControl.length > 0) {
-    kept['cache-control'] = cacheControl.join(', ');
+    kept[CACHE_CONTROL] = cacheControl.join(', ');
+  }
+  const transformDenied = answered.some(
+    ([name, value]) => TRANSFORM_POLICY_HEADERS.has(name.toLowerCase()) && noTransform(value),
+  );
+  if (transformDenied) {
+    const policy = kept[CACHE_CONTROL];
+    if (policy === undefined) {
+      kept[CACHE_CONTROL] = 'no-transform';
+    } else if (!noTransform(policy)) {
+      kept[CACHE_CONTROL] = `${policy}, no-transform`;
+    }
   }
   return kept;
+}
+
+/** A prohibition only; targeted sharing and freshness directives never become browser policy. */
+function noTransform(value: string): boolean {
+  return value.split(',').some((directive) => directive.trim().toLowerCase() === 'no-transform');
 }
