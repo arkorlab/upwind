@@ -92,8 +92,9 @@ export const DOCUMENT_HANDOFFS =
   /^passthrough;reason=(?:route-not-proved|bypass-for|rewrite-status)(?:;|$)/u;
 /** What the edge says of a request it hands on as the middleware failed, before the cause. */
 const MIDDLEWARE_FAILED = 'middleware-failed';
+const BYPASS_FOR = 'bypass-for';
 /** Why the edge hands any part on, as its account says: its route's state, or a pattern's cost. */
-const ANY_PART_HANDOFFS = ['bypass-for', 'demoted', 'suspect', 'pattern-budget'];
+const ANY_PART_HANDOFFS = [BYPASS_FOR, 'demoted', 'suspect', 'pattern-budget'];
 /**
  * Why the edge hands a part on that no part of this stack's is handed on for, in a verdict's words
  * — as no document of it is (`documents.ts`): its route demoted, which the pointer the stack
@@ -268,7 +269,7 @@ function generalHandoffFailure(
   const { route, url } = part;
   const asked = edgeReads(read.asked);
   switch (read.reason) {
-    case 'bypass-for': {
+    case BYPASS_FOR: {
       return bypassHandoffFailure(stack, part, read);
     }
     case MIDDLEWARE_FAILED: {
@@ -469,7 +470,7 @@ export function documentHandedOnVerdict(
     case 'route-not-proved': {
       return unprovedVerdict(stack, sent, decided);
     }
-    case 'bypass-for': {
+    case BYPASS_FOR: {
       return keptFailure(answer, decided) === undefined
         ? bypassedVerdict(stack, decided, sent)
         : undefined;
