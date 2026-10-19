@@ -201,13 +201,15 @@ describe('lease expiry pages', () => {
   });
 
   it('drains tied leased and uploading deadlines across alarms without postponing an earlier alarm', async () => {
-    const pages = await inScope((fixture) => {
+    const pages = await inScope(async (fixture) => {
       addLeases(fixture, BACKLOG);
       addLeases(fixture, 2, true);
       writeMeta(fixture.sql, 'last_retention_at', String(NOW));
-      return Array.fromAsync([undefined, NOW + 250, undefined], (earlier) =>
-        alarmPage(fixture, earlier),
-      );
+      return [
+        await alarmPage(fixture, undefined),
+        await alarmPage(fixture, NOW + 250),
+        await alarmPage(fixture, undefined),
+      ];
     });
 
     expect(pages).toStrictEqual([

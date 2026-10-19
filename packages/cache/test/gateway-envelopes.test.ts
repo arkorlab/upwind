@@ -240,10 +240,11 @@ describe('gateway JSON envelopes share the Function read room', () => {
           };
     const send = vi.fn<FetchLike>().mockResolvedValue(Response.json({ ok: true, result }));
     const answer = await recordCall(gateway(send), method);
+    const serializedLocation = location === undefined ? '' : JSON.stringify(location);
 
     expect('record' in answer && answer.record === record).toBe(true);
     expect('current' in answer && answer.current?.location === location).toBe(method === 'start');
-    expect(JSON.stringify(location) ?? '').toHaveLength(locationLength);
+    expect(serializedLocation).toHaveLength(locationLength);
     expect(send).toHaveBeenCalledTimes(1);
     expect(roomIsFree()).toBe(true);
   });
