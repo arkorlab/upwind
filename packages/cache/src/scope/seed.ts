@@ -334,6 +334,20 @@ function seedOne(input: TxInput, plan: SeedPlan, events: EventInput[]): void {
   }
 }
 
+/** The ids this batch could collide with, without loading any generation's outputs. */
+function existingGenerationIds(sql: SqlStorage, plans: readonly SeedPlan[]): Set<string> {
+  if (plans.length === 0) return new Set();
+  const ids = plans.map((plan) => plan.entry.generation.generationId);
+  const rows = sql
+    .exec<{ generation_id: string }>(
+      `SELECT generation_id FROM generations
+       WHERE generation_id IN (SELECT value FROM json_each(?))`,
+      JSON.stringify(ids),
+    )
+    .toArray();
+  return new Set(rows.map((row) => row.generation_id));
+}
+
 function applySeedEntries(
   input: TxInput,
   plans: readonly SeedPlan[],
@@ -367,12 +381,21 @@ function applySeedEntries(
   // one whose generation may not carry its tags, which no record could carry either.
   const seedable: SeedPlan[] = [];
   const refused: SeedRefusal[] = [];
+  // The generation primary key is scope-wide, even when each entry's identity is different.
+  // One lookup by this batch's ids, inside the same transaction, avoids failing every
+  // unrelated entry at a later INSERT. A refused entry does not reserve an id for the batch.
+  const generationIds = existingGenerationIds(sql, fresh);
   for (const plan of fresh) {
-    const reason =
+    let reason =
       plan.tagsRefused ??
       unwritableRecord(recordFields(input.scopeId, plan), limits.maxRecordBytes);
+    const generationId = plan.entry.generation.generationId;
+    if (reason === undefined && generationIds.has(generationId)) {
+      reason = 'the build generation id is already in use';
+    }
     if (reason === undefined) {
       seedable.push(plan);
+      generationIds.add(generationId);
     } else {
       refused.push({ descriptor: plan.entry.descriptor, reason });
     }
