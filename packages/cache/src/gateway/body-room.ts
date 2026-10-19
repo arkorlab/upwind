@@ -10,8 +10,9 @@
  * whose body is no longer (`UNCOUNTED_BODY_BYTES`).
  *
  * An unrecognized delivery record is also buffered, for its caller to judge. Those compatibility
- * reads share this room, held through sending or discarding their buffered response. The normal
- * record path streams instead and takes none of this room (`record-answer.ts`).
+ * reads share this room, held through sending or discarding their buffered response. Native
+ * recognized records stream without this room. A non-byte adapter stream reserves it before its
+ * first unbounded chunk and holds it through sending or discarding (`record-answer.ts`).
  *
  * The room is the isolate's (`IsolateRoom`): a write waits for it in its own request's time, asking
  * again every few milliseconds, and a write whose request the runtime cancels, its sender gone,
@@ -50,6 +51,11 @@ export function takeBodyRoom(
   waitMs: number,
 ): GiveBack | Promise<GiveBack | undefined> {
   return room.takeAtOnce(bytes) ?? room.takeWithin(bytes, waitMs);
+}
+
+/** A non-byte record stream must own room before its first unbounded chunk, without waiting. */
+export function tryBodyRoom(bytes: number): GiveBack | undefined {
+  return room.takeAtOnce(bytes);
 }
 
 /**
