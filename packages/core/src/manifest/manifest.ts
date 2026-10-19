@@ -14,6 +14,7 @@ import {
 } from './built-names.ts';
 import { pageKeyOf } from './page-keys.ts';
 import { namesPagesDataPrefix, pagesDataPrefixOf } from './pages-data-prefix.ts';
+import { routeBodyFields } from './route-bodies.ts';
 import {
   type AppRuntime,
   type AssetPolicy,
@@ -24,6 +25,7 @@ import {
   type ManifestCache,
   type MiddlewareMatcher,
   type ReservedRoute,
+  type RouteBodyEntry,
   type RouteEntry,
   type ProjectManifest,
   projectManifestSchema,
@@ -56,6 +58,7 @@ export interface BuildProjectManifestInput {
   readonly originHost: string;
   readonly deployment: DeploymentFingerprint;
   readonly routes: readonly RouteEntry[];
+  readonly routeBodies?: readonly RouteBodyEntry[] | undefined;
   readonly continuation?: Partial<ContinuationConfig> | undefined;
   readonly assetPolicy?: Partial<AssetPolicy> | undefined;
   readonly app: AppRuntime;
@@ -161,6 +164,11 @@ function unreachableFunctions(input: BuildProjectManifestInput): string[] {
   };
   for (const route of input.routes) {
     check(route.function);
+  }
+  if (input.routeBodies !== undefined) {
+    for (const body of input.routeBodies) {
+      check(body.function);
+    }
   }
   if (input.dynamicRoutes !== undefined) {
     for (const route of input.dynamicRoutes) {
@@ -301,6 +309,7 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
     deployment: input.deployment,
     continuation: { ...DEFAULT_CONTINUATION_CONFIG, ...input.continuation },
     routes,
+    ...routeBodyFields(input, routes),
     assetPolicy: { ...DEFAULT_ASSET_POLICY, ...input.assetPolicy },
     app: input.app,
     ...(input.staticFiles !== undefined && { staticFiles: input.staticFiles }),
