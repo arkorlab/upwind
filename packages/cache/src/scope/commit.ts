@@ -322,7 +322,10 @@ function refuseStale(
   invalidations: readonly InvalidationRow[],
 ): CommitResponse {
   const { sql, scopeId, now, revision } = input;
-  const invalidationRevision = Math.max(...invalidations.map((row) => row.revision));
+  let invalidationRevision = -Infinity;
+  for (const row of invalidations) {
+    invalidationRevision = Math.max(invalidationRevision, row.revision);
+  }
   sql.exec(
     `UPDATE attempts SET status = 'failed', finished_at = ?, error = ? WHERE attempt_id = ?`,
     now,
