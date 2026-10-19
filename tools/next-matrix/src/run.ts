@@ -74,7 +74,9 @@ const OUT_DIR = '.arkor';
 async function npmCli(): Promise<string> {
   const directories = [
     path.dirname(process.execPath),
-    ...(process.env.PATH ?? '').split(path.delimiter).filter((directory) => directory.length > 0),
+    ...(process.env['PATH'] ?? '')
+      .split(path.delimiter)
+      .filter((directory) => directory.length > 0),
   ];
   const candidates = directories.flatMap((directory) => [
     path.join(directory, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
