@@ -130,7 +130,14 @@ function ruleObjects(
 
 /** The routes, files and pathnames a manifest lists, and the objects of its rules. */
 function manifestObjects(manifest: ProjectManifest): number {
+  const bodies = manifest.routeBodies;
+  const bodyObjects =
+    bodies === undefined
+      ? 0
+      : 1 +
+        Object.values(bodies).reduce((count, entry) => count + 1 + listObjects(entry.bypassFor), 0);
   return (
+    bodyObjects +
     keysOf(manifest.routes) +
     keysOf(manifest.staticFiles) +
     keysOf(manifest.exactPathnames) +

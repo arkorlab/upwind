@@ -62,6 +62,8 @@ export {
   preloadLinksSchema,
   type RouteCache,
   routeCacheSchema,
+  type RouteBodyEntry,
+  routeBodyEntrySchema,
   type PartialFallbackUpgrade,
   partialFallbackUpgradeSchema,
   type RouteEntry,
@@ -80,3 +82,5 @@ export {
 } from './schema.ts';
 export { spellsPrefixOf } from './spelled-prefix.ts';
 export { fromStoredManifest } from './stored.ts';
+
+export { findRouteBody } from './route-bodies.ts';

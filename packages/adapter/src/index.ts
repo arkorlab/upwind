@@ -322,6 +322,8 @@ async function onBuildComplete(
     // runtime is built on, `@next/routing` 16.4 or later. The edge fills them that way for it.
     routerReferences: 'one-pass',
     aiInference: 1,
+    // The same runtime records cache-control and cookie privacy vetoes for route-body delivery.
+    routeBodyPrivacy: 1,
     ...objects.bundle,
     // Where each entrypoint's code is in the source tree. Only a reader of the build ever asks
     // (`sourcePageSchema`).
