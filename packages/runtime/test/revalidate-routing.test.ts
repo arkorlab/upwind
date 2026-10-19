@@ -1,6 +1,11 @@
 import { resolveRoutes } from '@next/routing';
 import type { Prerender } from '@stayingupwind/core/bundle';
-import { deriveEntry, IMPLICIT_TAG_PREFIX, sharedShellTagOf } from '@stayingupwind/core/cache';
+import {
+  deriveEntry,
+  IMPLICIT_TAG_PREFIX,
+  MAX_TAG_LENGTH,
+  sharedShellTagOf,
+} from '@stayingupwind/core/cache';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { InvalidatedTags, RequestWrites, withRequestContext } from '../src/cache/context.ts';
@@ -241,6 +246,44 @@ function revalidate(
   );
 }
 
+/** A blog whose one reusable shell, its route's own pathname, every post shares. */
+function blogDeployment(): Store {
+  const route = '/blog/[slug]';
+  const shell: Prerender = {
+    id: route,
+    route,
+    pathname: route,
+    parentOutputId: route,
+    groupId: 1,
+    routeType: 'shell',
+    response: 'initial',
+    compute: 'resuming',
+    renderingMode: 'PARTIALLY_STATIC',
+    body: { sha256: 'html', byteLength: 10, contentType: 'text/html' },
+    postponed: { sha256: 'state', byteLength: 5, contentType: 'application/json' },
+  };
+  return {
+    manifest: {
+      config: { basePath: '', i18n: null, cacheComponents: true, partialPrefetching: false },
+      entrypoints: [{ id: route, pathname: route, kind: 'app-page' }],
+    },
+    prerendersByPathname: new Map([[route, shell]]),
+    shellsByRoute: new Map([
+      [route, { pages: new Map(), patterns: [{ pattern: /^\/blog\/[^/]+$/u, prerender: shell }] }],
+    ]),
+    pathnames: [route],
+    slashSpellings: new Map(),
+  } as unknown as Store;
+}
+
+/** The same deployment, of an application that keeps its pages at a trailing slash. */
+function withTrailingSlash(store: Store): Store {
+  return {
+    ...store,
+    manifest: { ...store.manifest, config: { ...store.manifest.config, trailingSlash: true } },
+  };
+}
+
 /** Two independently reusable shells of one page; the final parameter is resumed per visitor. */
 function terminalDeployment(
   overrides: Partial<Prerender> = {},
@@ -303,13 +346,12 @@ describe('manual revalidation of a shared terminal shell', () => {
       route: '/prefix/[one]/[two]',
       pathname: '/prefix/b/[two]',
     };
-    const invalidated = new InvalidatedTags();
-
-    await revalidate(store, '/prefix/b/foo', false, { invalidated });
+    await revalidate(store, '/prefix/b/foo');
 
     expect(vi.mocked(regenerate).mock.calls[0]?.[0].target.descriptor).toStrictEqual(descriptor);
-    expect(invalidateNow).not.toHaveBeenCalled();
-    expect(invalidated.tags.size).toBe(0);
+    expect(invalidateNow).toHaveBeenCalledExactlyOnceWith(expect.anything(), [
+      `${IMPLICIT_TAG_PREFIX}/prefix/b/foo`,
+    ]);
   });
 
   it('invalidates only the selected class when its page belongs to another Function', async () => {
@@ -345,21 +387,29 @@ describe('manual revalidation of a shared terminal shell', () => {
   });
 
   it('preserves another invalidation while publishing the shared shell', async () => {
+    const publishing = Promise.withResolvers<PublishOutcome>();
     const invalidated = new InvalidatedTags();
     invalidated.add(['another-change'], 17);
-
-    await revalidate(terminalDeployment(), '/prefix/b/foo', false, {
+    const manual = revalidate(terminalDeployment(), '/prefix/b/foo', false, {
       invalidated,
-      outcome: {
-        kind: 'accepted',
-        render: RENDER,
-        published: Promise.resolve({ kind: 'published', generationId: 'new' }),
-      },
+      outcome: { kind: 'accepted', render: RENDER, published: publishing.promise },
     });
 
-    expect([...invalidated.tags]).toStrictEqual(['another-change']);
-    expect(invalidated.revision).toBe(17);
-    expect(invalidateNow).not.toHaveBeenCalled();
+    try {
+      await vi.waitFor(() => {
+        expect(regenerate).toHaveBeenCalledTimes(1);
+      });
+
+      expect([...invalidated.tags]).toStrictEqual(['another-change']);
+      expect(invalidated.revision).toBe(17);
+    } finally {
+      publishing.resolve({ kind: 'published', generationId: 'new' });
+      await manual;
+    }
+
+    expect(invalidateNow).toHaveBeenCalledExactlyOnceWith(expect.anything(), [
+      `${IMPLICIT_TAG_PREFIX}/prefix/b/foo`,
+    ]);
   });
 
   it.each([
@@ -398,7 +448,94 @@ describe('manual revalidation of a shared terminal shell', () => {
       publishing.resolve({ kind: 'published', generationId: 'new' });
       await manual;
     }
+
+    expect(invalidateNow).toHaveBeenCalledExactlyOnceWith(expect.anything(), [
+      `${IMPLICIT_TAG_PREFIX}/prefix/b/foo`,
+    ]);
   });
+
+  it('invalidates the page at its trailing-slash spelling where the application keeps one', async () => {
+    await revalidate(withTrailingSlash(terminalDeployment()), '/prefix/b/foo/');
+
+    expect(invalidateNow).toHaveBeenCalledExactlyOnceWith(expect.anything(), [
+      `${IMPLICIT_TAG_PREFIX}/prefix/b/foo`,
+      `${IMPLICIT_TAG_PREFIX}/prefix/b/foo/`,
+    ]);
+  });
+
+  it('names both spellings for a page in another Function where the application keeps a slash', async () => {
+    vi.mocked(elsewhere).mockReturnValue('app-other');
+    const { entryId } = await deriveEntry(SCOPE, {
+      kind: 'app-page',
+      route: '/prefix/[one]/[two]',
+      pathname: '/prefix/b/[two]',
+    });
+
+    await revalidate(withTrailingSlash(terminalDeployment()), '/prefix/b/foo/', true);
+
+    expect(invalidateNow).toHaveBeenCalledExactlyOnceWith(expect.anything(), [
+      `${IMPLICIT_TAG_PREFIX}/prefix/b/foo`,
+      `${IMPLICIT_TAG_PREFIX}/prefix/b/foo/`,
+      sharedShellTagOf(entryId),
+    ]);
+    expect(regenerate).not.toHaveBeenCalled();
+  });
+
+  it('invalidates a post of a blog by its own tag', async () => {
+    await revalidate(blogDeployment(), '/blog/post');
+
+    expect(vi.mocked(regenerate).mock.calls[0]?.[0].target.descriptor.pathname).toBe(
+      '/blog/[slug]',
+    );
+    expect(invalidateNow).toHaveBeenCalledExactlyOnceWith(expect.anything(), [
+      `${IMPLICIT_TAG_PREFIX}/blog/post`,
+    ]);
+  });
+
+  it('invalidates no post whose own tag the shell carries as a layout of its route', async () => {
+    await revalidate(blogDeployment(), '/blog/layout');
+
+    expect(vi.mocked(regenerate).mock.calls[0]?.[0].target.descriptor.pathname).toBe(
+      '/blog/[slug]',
+    );
+    expect(invalidateNow).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['/prefix/b/café', '/prefix/b/caf%C3%A9'],
+    ['/prefix/b/hello world', '/prefix/b/hello%20world'],
+  ])('invalidates %s at the spelling its request URL carries too', async (urlPath, carried) => {
+    await revalidate(terminalDeployment(), urlPath);
+
+    expect(invalidateNow).toHaveBeenCalledExactlyOnceWith(expect.anything(), [
+      `${IMPLICIT_TAG_PREFIX}${urlPath}`,
+      `${IMPLICIT_TAG_PREFIX}${carried}`,
+    ]);
+  });
+
+  it('invalidates the escaped spelling of a page that reads as the shell placeholder', async () => {
+    await revalidate(terminalDeployment(), '/prefix/b/%5Btwo%5D');
+
+    expect(vi.mocked(regenerate).mock.calls[0]?.[0].target.descriptor.pathname).toBe(
+      '/prefix/b/[two]',
+    );
+    expect(invalidateNow).toHaveBeenCalledExactlyOnceWith(expect.anything(), [
+      `${IMPLICIT_TAG_PREFIX}/prefix/b/%5Btwo%5D`,
+    ]);
+  });
+
+  it.each([
+    ['an oversized tag of its own', `/prefix/${'b'.repeat(500)}/foo`, ['b'.repeat(500), 'c']],
+    ['the shared shell named itself', '/prefix/b/[two]', ['b', 'c']],
+  ] as const)(
+    'invalidates nothing more after publishing a shared shell for %s',
+    async (_label, urlPath, classes) => {
+      await revalidate(terminalDeployment({}, true, classes), urlPath);
+
+      expect(regenerate).toHaveBeenCalledTimes(1);
+      expect(invalidateNow).not.toHaveBeenCalled();
+    },
+  );
 
   it('invalidates a long shared class through its bounded identity without an oversized pathname tag', async () => {
     const prefix = 'b'.repeat(500);
@@ -498,10 +635,35 @@ describe('manual revalidation route precedence', () => {
 
       expect(invalidateNow).toHaveBeenCalledWith(expect.anything(), [
         `${IMPLICIT_TAG_PREFIX}${canonical}`,
+        `${IMPLICIT_TAG_PREFIX}${canonical}/`,
       ]);
       expect(regenerate).not.toHaveBeenCalled();
     },
   );
+
+  it('names no slash spelling past the tag bound for a page in another Function', async () => {
+    const seed = 's'.repeat(MAX_TAG_LENGTH - IMPLICIT_TAG_PREFIX.length - 1);
+    const seeded = seededDeployment(true, true, false, seed);
+    const store = {
+      ...seeded,
+      manifest: {
+        ...seeded.manifest,
+        entrypoints: seeded.manifest.entrypoints.map((entry) => {
+          return {
+            ...entry,
+            kind: 'app-page' as const,
+          };
+        }),
+      },
+    };
+    vi.mocked(elsewhere).mockReturnValue('app-other');
+
+    await revalidate(store, `/${seed}/`, true);
+
+    expect(invalidateNow).toHaveBeenCalledExactlyOnceWith(expect.anything(), [
+      `${IMPLICIT_TAG_PREFIX}/${seed}`,
+    ]);
+  });
 
   it.each([
     { seed: 'seed', asked: '/s%65ed/', canonical: '/seed', closed: true, route: '/[...rest]' },
