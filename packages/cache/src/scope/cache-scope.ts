@@ -372,7 +372,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
       return;
     }
     const lease = nextLeaseExpiry(this.#sql);
-    if (lease !== undefined) await this.#armAlarm(lease + LEASE_SWEEP_GRACE_MS);
+    if (lease !== undefined) await this.#armAlarm(Math.max(now, lease) + LEASE_SWEEP_GRACE_MS);
     await this.#armAlarm(nextRetentionAt(this.#sql, now, RETENTION_INTERVAL_MS));
   }
 
