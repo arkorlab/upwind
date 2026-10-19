@@ -3,7 +3,7 @@ import type { OutputSnapshot } from '@stayingupwind/core/cache';
 import { withDeadline } from '@stayingupwind/core/util';
 import type { SeedEntriesResult, SeedEntryInput } from '@stayingupwind/host/cache';
 
-import { findArtifactBySha } from './artifacts.ts';
+import { findArtifactBySha, forgetArtifactFailure, rememberArtifactFailure } from './artifacts.ts';
 import { entryStateEvent } from './attempts.ts';
 import { type EntryIdentity, findEntry, requireEntry } from './entries.ts';
 import { findGeneration } from './generations.ts';
@@ -34,11 +34,14 @@ export function rememberSeedFailure(
   deps.transaction(() => {
     const latest = findEntry(sql, entry.entry_id);
     if (
-      current?.source === 'build' &&
-      latest?.kv_revision === 0 &&
-      latest.current_generation_id === current.generation_id &&
-      latest.record_revision === entry.record_revision
-    ) {
+      current === undefined ||
+      latest?.current_generation_id !== current.generation_id ||
+      latest.record_revision !== entry.record_revision ||
+      latest.publication !== 'published'
+    )
+      return;
+    rememberArtifactFailure(sql, error.artifact);
+    if (current.source === 'build' && latest.kv_revision === 0) {
       writeMeta(sql, FAILURE_PREFIX + entry.entry_id, current.generation_id);
     }
   });
@@ -303,14 +306,16 @@ function repairOne(
     for (const [offset, artifact] of output.artifacts.entries()) {
       const before = previous[index]?.artifacts[offset]?.storageRef ?? '';
       if (artifact.storageRef === before) continue;
-      sql.exec(
+      const changed = sql.exec(
         `UPDATE artifacts SET storage_ref = ?
-         WHERE sha256 = ? AND storage_ref = ? AND byte_length = ? AND owned = 0`,
+         WHERE sha256 = ? AND storage_ref = ? AND byte_length = ? AND owned = 0
+         RETURNING sha256`,
         artifact.storageRef,
         artifact.sha256,
         before,
         artifact.byteLength,
       );
+      if (changed.toArray().length === 1) forgetArtifactFailure(sql, artifact.sha256);
     }
   }
   sql.exec(

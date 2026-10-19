@@ -7,7 +7,7 @@ import {
   type StartAttemptResponse,
 } from '@stayingupwind/host/cache';
 
-import { addedOwnedBytes, HELD_WITHOUT_CHARGE } from './artifacts.ts';
+import { HELD_WITHOUT_CHARGE, ownedUploadOf } from './artifacts.ts';
 import {
   type EntryIdentity,
   findEntry,
@@ -405,6 +405,12 @@ export interface UploadedArtifact {
   readonly storageRef: string;
 }
 
+/** A known broken canonical location needs the already verified upload stored again. */
+export interface RecordedArtifact {
+  readonly ok: true;
+  readonly replace?: true;
+}
+
 /**
  * The bytes already uploaded for attempts that have not committed, counted once per blob and
  * without the one being asked about.
@@ -435,7 +441,7 @@ export function applyRecordArtifact(
   input: TxInput,
   attemptId: string,
   upload: UploadedArtifact & { readonly fencingToken: number },
-): Refusal | { readonly ok: true } {
+): Refusal | RecordedArtifact {
   const { sql, now, limits } = input;
   const checked = checkLease(input, attemptId, upload.fencingToken);
   if (isRefusal(checked)) {
@@ -445,7 +451,7 @@ export function applyRecordArtifact(
   if (isRefusal(scope)) {
     return scope;
   }
-  const added = addedOwnedBytes(sql, upload.sha256, upload.byteLength);
+  const { addedBytes: added, replace } = ownedUploadOf(sql, upload.sha256, upload.byteLength);
   if (
     added > 0 &&
     scope.body_bytes + reservedBytes(sql, upload.sha256) + added > limits.bodyBytesPerScope
@@ -466,7 +472,7 @@ export function applyRecordArtifact(
   );
   sql.exec(`DELETE FROM pending_deletions WHERE storage_ref = ?`, upload.storageRef);
   sql.exec(`UPDATE attempts SET status = 'uploading' WHERE attempt_id = ?`, attemptId);
-  return { ok: true };
+  return replace ? { ok: true, replace: true } : { ok: true };
 }
 
 export function applyFail(
