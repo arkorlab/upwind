@@ -50,8 +50,8 @@ function chunks(size: number) {
   return { body, cancel, sent: () => sent };
 }
 
-function takeRoom(): () => void {
-  const release = functionReadBudget().takeAtOnce(LIMIT);
+function takeRoom(bytes = LIMIT): () => void {
+  const release = functionReadBudget().takeAtOnce(bytes);
   if (release === undefined) throw new Error('test room was not empty');
   return release;
 }
@@ -264,13 +264,13 @@ describe('the Function whole-artifact read ceiling', () => {
     const copies = copiesThatStall();
     vi.spyOn(caches, 'open').mockResolvedValue(copies.cache);
     // Other reads leave exactly two payloads of room, without allocating their bodies here.
-    const releaseOther = functionReadBudget().takeAtOnce(LIMIT - 2 * BYTES.byteLength);
-    if (releaseOther === undefined) throw new Error('test room was not empty');
-    const fetch = vi.fn(() =>
-      Promise.resolve(
-        new Response(BYTES, { headers: { 'content-length': String(BYTES.byteLength) } }),
-      ),
-    );
+    const releaseOther = takeRoom(LIMIT - 2 * BYTES.byteLength);
+    const fetch = vi.fn(() => {
+      const response = new Response(BYTES, {
+        headers: { 'content-length': String(BYTES.byteLength) },
+      });
+      return Promise.resolve(response);
+    });
     const host = gateway(fetch);
     const reads = [host.readArtifact(id), host.readArtifact(id)];
     const settled = Promise.allSettled(reads);
@@ -298,17 +298,15 @@ describe('the Function whole-artifact read ceiling', () => {
     vi.spyOn(console, 'warn').mockReturnValue();
     const copies = copiesThatStall();
     vi.spyOn(caches, 'open').mockResolvedValue(copies.cache);
-    const releaseOther = functionReadBudget().takeAtOnce(LIMIT - 2 * BYTES.byteLength);
-    if (releaseOther === undefined) throw new Error('test room was not empty');
+    const releaseOther = takeRoom(LIMIT - 2 * BYTES.byteLength);
     const acknowledgement = Promise.withResolvers<undefined>();
     const cancel = vi.fn(() => acknowledgement.promise);
-    const host = gateway(() =>
-      Promise.resolve(
-        new Response(nativeBody({ cancel }), {
-          headers: { 'content-length': String(BYTES.byteLength) },
-        }),
-      ),
-    );
+    const host = gateway(() => {
+      const response = new Response(nativeBody({ cancel }), {
+        headers: { 'content-length': String(BYTES.byteLength) },
+      });
+      return Promise.resolve(response);
+    });
     const settled = Promise.allSettled([host.readArtifact(id), host.readArtifact(id)]);
     try {
       await copies.matched;
