@@ -6,6 +6,7 @@ import path from 'node:path';
 import type { DeploymentBundle, FunctionSpec } from '@stayingupwind/core/bundle';
 import { convertV4MiniflareOptions, Log, LogLevel, Miniflare } from 'miniflare';
 
+import { checkedDeclarationSources } from './twoslash-declarations.ts';
 import {
   failureOf,
   importProbeSource,
@@ -343,17 +344,6 @@ async function packageVersions(app: string): Promise<Record<string, string | nul
   return versions;
 }
 
-async function tracedDeclarations(app: string): Promise<number | null> {
-  try {
-    const trace = JSON.parse(
-      await readFile(path.join(app, '.next', 'server', 'app', 'route.js.nft.json'), 'utf8'),
-    ) as { files?: string[] };
-    return trace.files?.filter((file) => file.endsWith('.d.ts')).length ?? null;
-  } catch {
-    return null;
-  }
-}
-
 /** Reuse the adapter's existing upload-size record without recompressing or benchmarking. */
 function recordedSize(dependencies: unknown): { bytes: number; gzipBytes: number } {
   assert.ok(typeof dependencies === 'object' && dependencies !== null && 'app' in dependencies);
@@ -389,9 +379,9 @@ export async function twoslashHolds(
     packageVersions: await packageVersions(path.dirname(out)),
     sourceSha256: {},
     declarationNamedModules: bundle.functions.app.modules.filter((module) =>
-      module.name.endsWith('.d.ts'),
+      DECLARATION_MODULE.test(module.name),
     ).length,
-    tracedDeclarations: await tracedDeclarations(path.dirname(out)),
+    tracedDeclarations: null,
     modulesVerified: 0,
     moduleBytes: 0,
     declarationBytes: 0,
@@ -419,6 +409,11 @@ export async function twoslashHolds(
       bundle.functions.app.modules.some((module) => module.name === 'app.cjs'),
       'the probe must name the emitted application',
     );
+    proof.declarationSources = await checkedDeclarationSources(
+      path.dirname(out),
+      bundle.functions.app,
+    );
+    proof.tracedDeclarations = proof.declarationSources.length;
     proof.functionSize = recordedSize(dependencies);
     const modules = await modulesOf(bundle.functions.app, out, proof);
     assert.equal(

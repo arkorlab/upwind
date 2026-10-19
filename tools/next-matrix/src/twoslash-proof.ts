@@ -1,3 +1,4 @@
+import type { DeclarationSource } from './twoslash-declarations.ts';
 import type { Failure, ImportProbe } from './twoslash-probes.ts';
 
 export type Mode = 'default' | 'esnext';
@@ -45,6 +46,7 @@ export interface Proof extends AnnotationProof {
   sourceSha256: Record<string, string>;
   declarationNamedModules: number;
   tracedDeclarations: number | null;
+  declarationSources?: DeclarationSource[];
   modulesVerified: number;
   moduleBytes: number;
   declarationBytes: number;
