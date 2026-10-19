@@ -385,7 +385,8 @@ async function landingsOf(
       url: page,
       headers,
       jar,
-      documentAnswer: (request: Sent) => documentAnswerAt(stack, headBytes, request),
+      documentAnswer: (request: Sent) =>
+        documentAnswerAt(stack, headBytes, request, navigation.coding),
     };
     const redirected = await documentRedirects(stack, followed, known);
     const { steps, landed, failure } = redirected;

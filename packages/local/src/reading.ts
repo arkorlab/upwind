@@ -56,8 +56,11 @@ export interface ReadOptions {
   readonly marker?: Buffer | undefined;
   /** How long the answer may take, to its last byte. */
   readonly deadlineMs: number;
-  /** Keep the headers and let the answer go at once, without waiting for any body bytes. */
-  readonly headersOnly?: boolean | undefined;
+  /** Keep only headers, optionally selected from this response before any body is consumed. */
+  readonly headersOnly?:
+    | boolean
+    | ((status: number, headers: http.IncomingHttpHeaders) => boolean)
+    | undefined;
   /**
    * How much of the body is read, once which the answer is let go of — said to be cut short — all of
    * it, where this names nothing: for an answer only its start is asked of, one a Function may
@@ -129,6 +132,13 @@ function decodedBody(response: http.IncomingMessage): Readable {
 /** Enough for a document's closing tags and the whitespace that may follow them. */
 const TAIL_BYTES = 1024;
 const EMPTY: Buffer = Buffer.alloc(0);
+
+/** Whether this response ends at its headers, decided before decoding or copying its body. */
+function onlyHeaders(options: ReadOptions, response: http.IncomingMessage): boolean {
+  return typeof options.headersOnly === 'function'
+    ? options.headersOnly(response.statusCode ?? 0, response.headers)
+    : options.headersOnly === true;
+}
 
 /** The last `count` bytes of `before` followed by `chunk`. */
 function lastOf(before: Buffer, chunk: Buffer, count: number): Buffer {
@@ -298,7 +308,7 @@ export function read(url: URL, options: ReadOptions): Promise<Reading> {
           ...(copied !== undefined && { copied }),
         });
       };
-      if (options.headersOnly === true) {
+      if (onlyHeaders(options, response)) {
         // Intentional cancellation may still emit an error; the reading is already settled.
         response.on('error', reject);
         settle(true, undefined);

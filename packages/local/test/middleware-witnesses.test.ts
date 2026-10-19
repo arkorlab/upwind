@@ -72,7 +72,10 @@ describe('finite parameter witnesses for middleware probes', () => {
     const asked = observed.slice(before);
 
     expect(asked).toStrictEqual([path]);
-    expect(verdict).toMatchObject({ kind: 'failed', reason: expect.stringContaining('500') });
+    expect(verdict).toMatchObject({
+      kind: 'failed',
+      reason: expect.stringContaining('500') as unknown,
+    });
   });
 
   it.each([

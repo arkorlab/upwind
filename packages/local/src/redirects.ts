@@ -96,6 +96,12 @@ const REDIRECTS: ReadonlySet<number> = new Set([
   SEE_OTHER,
   TEMPORARY_REDIRECT,
 ]);
+
+/** Whether these headers move the browser on, so their body need not be read to follow it. */
+export function redirectHeaders(status: number, headers: Reading['headers']): boolean {
+  return REDIRECTS.has(status) && headers.location !== undefined;
+}
+
 /** The most redirects a browser's fetch follows before it fails (`fetch`, step 7 of HTTP-redirect fetch). */
 const MAX_REDIRECTS = 20;
 /**

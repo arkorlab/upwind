@@ -10483,10 +10483,15 @@ describe('what the check makes of the middleware', () => {
         const stack = { ...stackOf(routes, {}), site: new URL('https://site.example') };
         answers.set('/login', { ...finishedAnswer(finished, '/login'), status });
         const answer = requiredCapturedDocument(
-          await documentAnswerAt(stack, Buffer.byteLength(finished), {
-            url: new URL('/login', stack.site),
-            headers: { 'accept-encoding': BROWSER_CODINGS },
-          }),
+          await documentAnswerAt(
+            stack,
+            Buffer.byteLength(finished),
+            {
+              url: new URL('/login', stack.site),
+              headers: { 'accept-encoding': BROWSER_CODINGS },
+            },
+            BROWSER_CODINGS,
+          ),
         );
         // A later GET would answer the opposite; the deferred verdict must use neither that GET nor
         // a trace already disposed of by capturedDocument.

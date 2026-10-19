@@ -26,6 +26,7 @@ import { bundleWorker } from '../src/bundle.ts';
 import { checkStack } from '../src/check.ts';
 import { type LocalWorker, type RunningWorkers, runWorkers } from '../src/miniflare.ts';
 import { loopbackFor } from '../src/ports.ts';
+import { read } from '../src/reading.ts';
 import { type LocalStack, siteNamesOf, siteUrlOf, startStack } from '../src/stack.ts';
 
 /**
@@ -37,6 +38,7 @@ const ASSET_PATH = '/_next/static/chunks/asset.js';
 const ASSET = 'console.log("served from the bucket");';
 const ASSET_SHA256 = createHash('sha256').update(ASSET).digest('hex');
 const START_MS = 60_000;
+const JSON_HEAD_BYTES = 4096;
 const DATA = '{"from":"a JSON module","list":[1,2]}';
 /** Whether a stack serves on the IPv6 loopback here: not on a machine that has none. */
 const IPV6 = (await loopbackFor(undefined)).hosts.includes('::1');
@@ -548,7 +550,10 @@ describe('a local stack', () => {
         });
         const trace = new URL('trace/portless-rewrite', stack.backstage);
         const registered = await fetch(trace, { method: 'PUT' });
-        const response = await fetch(new URL('/guard', stack.url), {
+        const response = await read(new URL('/guard', stack.url), {
+          via: stack.url,
+          deadlineMs: START_MS,
+          headBytes: JSON_HEAD_BYTES,
           headers: {
             host: 'alias.invalid',
             'x-forwarded-proto': 'https',
@@ -560,8 +565,10 @@ describe('a local stack', () => {
 
         expect(registered.status).toBe(204);
         expect(response.status).toBe(200);
-        expect(accountOf(response)).not.toContain('reason=external-rewrite');
-        await expect(response.json()).resolves.toMatchObject({
+        expect(String(response.headers['x-arkor-edge'] ?? '').split(';')).not.toContain(
+          'reason=external-rewrite',
+        );
+        expect(JSON.parse(response.head.toString()) as unknown).toMatchObject({
           url: 'https://alias.invalid/echo?from=middleware-rewrite',
           host: 'alias.invalid',
           protocol: 'https',
@@ -572,7 +579,7 @@ describe('a local stack', () => {
             status: 200,
             headers: expect.arrayContaining([
               ['x-middleware-rewrite', 'https://alias.invalid/echo?from=middleware-rewrite'],
-            ]),
+            ]) as unknown,
           },
         });
       } finally {
@@ -588,19 +595,20 @@ describe('a local stack', () => {
     async (scheme) => {
       const stack = started();
       const headers = { host: 'alias.invalid', 'x-forwarded-proto': scheme };
-      const response = await fetch(new URL('/echo?q=1', stack.url), { headers });
-      const self = await fetch(new URL('/self', stack.url), { headers });
+      const options = { via: stack.url, headers, headBytes: JSON_HEAD_BYTES, deadlineMs: START_MS };
+      const response = await read(new URL('/echo?q=1', stack.url), options);
+      const self = await read(new URL('/self', stack.url), options);
 
       expect(stack.url.port).not.toBe('');
       expect(response.status).toBe(200);
-      await expect(response.json()).resolves.toMatchObject({
+      expect(JSON.parse(response.head.toString()) as unknown).toMatchObject({
         url: `${scheme}://alias.invalid/echo?q=1`,
         host: 'alias.invalid',
         forwarded: 'alias.invalid',
         protocol: scheme,
       });
       expect(self.status).toBe(200);
-      await expect(self.json()).resolves.toMatchObject({
+      expect(JSON.parse(self.head.toString()) as unknown).toMatchObject({
         status: 200,
         echoed: {
           url: `${scheme}://alias.invalid/echo?from=self`,
@@ -929,7 +937,7 @@ describe('a local stack', () => {
     const checked = await checkStack(started(), { hostname: 'ALIAS.invalid:443' });
 
     expect(checked.checked).toBe(4);
-    expect(checked.failures).toMatchObject([{ reason: expect.stringContaining('500') }]);
+    expect(checked.failures).toMatchObject([{ reason: expect.stringContaining('500') as unknown }]);
     expect(checked.skipped).toStrictEqual([]);
   });
 
