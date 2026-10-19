@@ -319,7 +319,7 @@ function refuseStale(
   input: TxInput,
   attempt: AttemptRow,
   entry: EntryRow,
-  invalidations: readonly InvalidationRow[],
+  invalidations: readonly Pick<InvalidationRow, 'revision'>[],
 ): CommitResponse {
   const { sql, scopeId, now, revision } = input;
   let invalidationRevision = -Infinity;
