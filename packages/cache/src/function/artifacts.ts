@@ -435,7 +435,7 @@ async function roomFor(
   signal: AbortSignal,
 ): Promise<() => void> {
   try {
-    return await at.room.hold(length, signal);
+    return await at.room.hold(length + 1, signal);
   } catch (error) {
     releaseStream(hit.body, 'a copy given up before its body');
     throw error;

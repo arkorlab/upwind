@@ -3,6 +3,7 @@ import { artifactIdFor, cacheArtifactRefSchema } from '@stayingupwind/core/cache
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { parseVars } from '../src/env.ts';
+import { within } from '../src/function/artifacts.ts';
 import { Gateway } from '../src/function/gateway.ts';
 import { ArtifactRoom, functionReadBudget } from '../src/function/read-budget.ts';
 
@@ -59,6 +60,38 @@ async function nextTurn(): Promise<void> {
   await new Promise((resolve) => {
     setTimeout(resolve, 0);
   });
+}
+
+function copiesThatStall() {
+  const controllers: ReadableStreamDefaultController<Uint8Array>[] = [];
+  const matched = Promise.withResolvers<true>();
+  const cache = {
+    match: () => {
+      const body = new ReadableStream<Uint8Array>(
+        {
+          start(controller) {
+            controllers.push(controller);
+          },
+        },
+        { highWaterMark: 0 },
+      );
+      if (controllers.length === 2) matched.resolve(true);
+      return Promise.resolve(
+        new Response(body, { headers: { 'content-length': String(BYTES.byteLength) } }),
+      );
+    },
+    delete: () => Promise.resolve(false),
+    put: async (_key: RequestInfo, response: Response) => {
+      await response.arrayBuffer();
+    },
+  } as Cache;
+  return {
+    cache,
+    matched: matched.promise,
+    stop() {
+      for (const controller of controllers) controller.error(new Error('copy fixture ended'));
+    },
+  };
 }
 
 describe('the Function whole-artifact read ceiling', () => {
@@ -221,6 +254,83 @@ describe('the Function whole-artifact read ceiling', () => {
     } finally {
       release();
       await read;
+    }
+  });
+
+  it('reads an equal-sized authority answer while two copies compete for the remaining room', async () => {
+    const id = await idFor();
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockReturnValue();
+    const copies = copiesThatStall();
+    vi.spyOn(caches, 'open').mockResolvedValue(copies.cache);
+    // Other reads leave exactly two payloads of room, without allocating their bodies here.
+    const releaseOther = functionReadBudget().takeAtOnce(LIMIT - 2 * BYTES.byteLength);
+    if (releaseOther === undefined) throw new Error('test room was not empty');
+    const fetch = vi.fn(() =>
+      Promise.resolve(
+        new Response(BYTES, { headers: { 'content-length': String(BYTES.byteLength) } }),
+      ),
+    );
+    const host = gateway(fetch);
+    const reads = [host.readArtifact(id), host.readArtifact(id)];
+    const settled = Promise.allSettled(reads);
+    const first = within(Promise.race(reads), 100);
+    try {
+      await copies.matched;
+      await vi.advanceTimersByTimeAsync(100);
+
+      await expect(first).resolves.toStrictEqual(BYTES);
+      expect(fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      copies.stop();
+      releaseOther();
+      await vi.advanceTimersByTimeAsync(10_100);
+      await settled;
+    }
+
+    const release = takeRoom();
+    release();
+  });
+
+  it('returns copy and authority room after deadlines without awaiting cancellation acknowledgement', async () => {
+    const id = await idFor();
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockReturnValue();
+    const copies = copiesThatStall();
+    vi.spyOn(caches, 'open').mockResolvedValue(copies.cache);
+    const releaseOther = functionReadBudget().takeAtOnce(LIMIT - 2 * BYTES.byteLength);
+    if (releaseOther === undefined) throw new Error('test room was not empty');
+    const acknowledgement = Promise.withResolvers<undefined>();
+    const cancel = vi.fn(() => acknowledgement.promise);
+    const host = gateway(() =>
+      Promise.resolve(
+        new Response(nativeBody({ cancel }), {
+          headers: { 'content-length': String(BYTES.byteLength) },
+        }),
+      ),
+    );
+    const settled = Promise.allSettled([host.readArtifact(id), host.readArtifact(id)]);
+    try {
+      await copies.matched;
+      await vi.advanceTimersByTimeAsync(10_100);
+
+      await expect(settled).resolves.toMatchObject([
+        { status: 'rejected' },
+        { status: 'rejected' },
+      ]);
+      expect(cancel).toHaveBeenCalledTimes(2);
+
+      const release = functionReadBudget().takeAtOnce(2 * BYTES.byteLength);
+
+      expect(release).toBeTypeOf('function');
+
+      release?.();
+    } finally {
+      copies.stop();
+      acknowledgement.resolve(undefined);
+      releaseOther();
+      await vi.advanceTimersByTimeAsync(10_100);
+      await settled;
     }
   });
 
