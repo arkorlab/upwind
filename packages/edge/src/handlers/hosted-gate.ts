@@ -81,7 +81,10 @@ export interface HostedGate {
    * `abandon` lets it go when neither is asked.
    */
   readonly start?: (configured: ConfiguredHeaders) => void;
-  readonly abandon?: () => void;
+  readonly abandon?: {
+    (counted?: false): void;
+    (counted: true): Promise<number> | undefined;
+  };
   /**
    * What answers where a pattern of the application's costs more against the request, as the
    * middleware left it, than the edge runs (`budgetPatterns`): handed what the middleware decided,
@@ -188,16 +191,26 @@ async function actOnMiddleware(
   };
   switch (middleware.kind) {
     case 'responded': {
-      gate.abandon?.();
-      return middlewareResponse(edge, request, middleware.response, itself);
+      const abandoned = gate.abandon?.(true);
+      return middlewareResponse(
+        edge,
+        request,
+        middleware.response,
+        abandoned === undefined ? itself : { ...itself, abandoned },
+      );
     }
     case 'failed': {
       gate.abandon?.();
       return input.passthrough(middlewareFailedReason(middleware.cause), middleware);
     }
     case 'external-rewrite': {
-      gate.abandon?.();
-      return followExternalRewrite(edge, request, middleware, itself);
+      const abandoned = gate.abandon?.(true);
+      return followExternalRewrite(
+        edge,
+        request,
+        middleware,
+        abandoned === undefined ? itself : { ...itself, abandoned },
+      );
     }
     case 'skipped': {
       return gate.serve(undefined, dispatches, configured);

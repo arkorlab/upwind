@@ -83,7 +83,12 @@ function isCount(value: unknown): value is number {
 }
 
 /** The length the record's header says it comes to, or `undefined` where the header says none. */
-function recordLengthOf(start: Uint8Array, headerLength: number): number | undefined {
+function recordLengthOf(
+  start: Uint8Array,
+  headerLength: number,
+  expectedScopeId: string,
+  expectedEntryId: string,
+): number | undefined {
   let header: unknown;
   try {
     header = JSON.parse(decodeUtf8(start.subarray(PREFIX_LENGTH, PREFIX_LENGTH + headerLength)));
@@ -93,9 +98,16 @@ function recordLengthOf(start: Uint8Array, headerLength: number): number | undef
   if (typeof header !== 'object' || header === null) {
     return undefined;
   }
-  const { htmlLength, postponedLength } = header as Readonly<Record<string, unknown>>;
+  const { scopeId, entryId, htmlLength, postponedLength } = header as Readonly<
+    Record<string, unknown>
+  >;
   if (!isCount(htmlLength) || !isCount(postponedLength)) {
     return undefined;
+  }
+  // This header is already read for its length. Its identity must also name the key requested:
+  // valid bytes stored under another entry's key are not that entry's delivery record.
+  if (scopeId !== expectedScopeId || entryId !== expectedEntryId) {
+    throw new Error('the delivery record does not belong to the requested scope and entry');
   }
   // Past what one KV value holds, it is no record's: read whole, it is whatever KV holds.
   const length = PREFIX_LENGTH + headerLength + htmlLength + postponedLength;
@@ -160,6 +172,8 @@ function bufferedAnswer(bytes: Uint8Array, giveBack: GiveBack): RecordAnswer {
 export async function readRecordAnswer(
   kv: KVNamespace,
   key: string,
+  scopeId: string,
+  entryId: string,
 ): Promise<RecordAnswer | undefined> {
   const value: ReadableStream<Uint8Array> | null = await kv.get(key, {
     type: 'stream',
@@ -178,7 +192,7 @@ export async function readRecordAnswer(
     const byteLength =
       headerLength === undefined || start.done
         ? undefined
-        : recordLengthOf(start.bytes, headerLength);
+        : recordLengthOf(start.bytes, headerLength, scopeId, entryId);
     if (byteLength === undefined || byteLength < start.bytes.byteLength) {
       // A KV value is at most 25 MiB. Unknown length reserves this whole 32 MiB pool while
       // buffering; an already-ended value takes only its known bytes. This is no new size cap.

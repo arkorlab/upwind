@@ -368,6 +368,11 @@ function servedAtEdge(classification: RequestClass): boolean {
     case ASSET_CLASS: {
       return true;
     }
+    case 'route-body': {
+      // The SDK can describe this capability before this reader supports it. Let the Function
+      // answer until the host's route-body writer and reader are adopted together.
+      return false;
+    }
     case STATIC_FILE_CLASS: {
       // Never classified here: a file the build shipped is answered before the pointer's mode is
       // looked at (`hostedFirst`), by the same reading of the request (`classifyStaticFile`), and

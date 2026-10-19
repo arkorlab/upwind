@@ -63,7 +63,8 @@ export function passthroughReason(classification: RequestClass): string {
     case 'action':
     case ASSET_CLASS:
     case STATIC_FILE_CLASS:
-    case 'document': {
+    case 'document':
+    case 'route-body': {
       return classification.kind;
     }
     default: {

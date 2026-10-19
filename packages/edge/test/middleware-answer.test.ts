@@ -610,6 +610,101 @@ describe('connection semantics across middleware consumers', () => {
     await response.text();
   });
 
+  it.each([
+    {
+      label: 'configured hop',
+      ruleConnection: 'CoNtEnT-TyPe',
+      middlewareType: undefined,
+      middlewareConnection: undefined,
+      targetType: undefined,
+      expected: null,
+    },
+    {
+      label: 'ordinary configured type',
+      ruleConnection: undefined,
+      middlewareType: undefined,
+      middlewareConnection: undefined,
+      targetType: undefined,
+      expected: 'application/rss+xml',
+    },
+    {
+      label: 'independent middleware type',
+      ruleConnection: 'content-type',
+      middlewareType: 'text/csv',
+      middlewareConnection: undefined,
+      targetType: undefined,
+      expected: 'text/csv',
+    },
+    {
+      label: 'middleware hop with allowed rule',
+      ruleConnection: undefined,
+      middlewareType: 'text/csv',
+      middlewareConnection: 'Content-Type',
+      targetType: undefined,
+      expected: 'application/rss+xml',
+    },
+    {
+      label: 'both routing types nominated',
+      ruleConnection: 'content-type',
+      middlewareType: 'text/csv',
+      middlewareConnection: 'Content-Type',
+      targetType: undefined,
+      expected: null,
+    },
+    {
+      label: 'target-owned type',
+      ruleConnection: 'content-type',
+      middlewareType: 'text/csv',
+      middlewareConnection: undefined,
+      targetType: 'application/octet-stream',
+      expected: 'application/octet-stream',
+    },
+  ])('keeps each external-rewrite type layer scoped: $label', async (example) => {
+    const response = await throughMiddleware('/', {
+      headerRules: [
+        {
+          sourceRegex: EVERY_PATH,
+          headers: {
+            'Content-Type': 'application/rss+xml',
+            'X-Public': 'configured',
+            ...(example.ruleConnection !== undefined && { Connection: example.ruleConnection }),
+          },
+        },
+      ],
+      middleware: () => {
+        return new Response(null, {
+          headers: {
+            'x-middleware-rewrite': 'https://elsewhere.example/feed',
+            ...(example.middlewareType !== undefined && { 'content-type': example.middlewareType }),
+            ...(example.middlewareConnection !== undefined && {
+              connection: example.middlewareConnection,
+            }),
+            'set-cookie': 'mw=1; Path=/',
+          },
+        });
+      },
+      origin: () => {
+        return new Response(new Uint8Array([1, 2, 3]), {
+          headers: example.targetType === undefined ? {} : { 'content-type': example.targetType },
+        });
+      },
+    });
+
+    expect({
+      type: response.headers.get('content-type'),
+      connection: response.headers.get('connection'),
+      visible: response.headers.get('x-public'),
+      cookies: response.headers.getSetCookie(),
+    }).toStrictEqual({
+      type: example.expected,
+      connection: null,
+      visible: 'configured',
+      cookies: ['mw=1; Path=/'],
+    });
+
+    await expect(response.arrayBuffer()).resolves.toStrictEqual(new Uint8Array([1, 2, 3]).buffer);
+  });
+
   it('does not resurrect a nominated content type on an external rewrite', async () => {
     const response = await throughMiddleware('/', {
       middleware: () => {
