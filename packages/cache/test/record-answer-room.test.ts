@@ -30,7 +30,7 @@ const WHOLE = concatBytes([PREFIX, TAIL]);
 function legacy() {
   const tailRead = vi.fn();
   const cancelled = vi.fn();
-  const stream = new ReadableStream<Uint8Array>(
+  const stream = new ReadableStream(
     {
       type: 'bytes',
       start(controller) {
@@ -112,6 +112,13 @@ async function currentBytes(
 function responseOf(answer: RecordAnswer | undefined): Response {
   if (answer === undefined) throw new Error('the record was missing');
   return recordResponse(answer);
+}
+
+function streamReaderOf(answer: RecordAnswer | undefined): ReadableStreamDefaultReader<Uint8Array> {
+  if (answer === undefined || answer.body instanceof Uint8Array) {
+    throw new TypeError('the record answer has no stream');
+  }
+  return answer.body.getReader();
 }
 
 async function remainingBytes(
@@ -272,7 +279,7 @@ describe('room for unrecognized delivery record bytes', () => {
 
   it('bounds the first response chunk when one producer chunk contains a large current record', async () => {
     const bytes = await currentBytes('scope', new Uint8Array(1024 * 1024).fill(97));
-    const stream = new ReadableStream<Uint8Array>({
+    const stream = new ReadableStream({
       type: 'bytes',
       start(controller) {
         controller.enqueue(new Uint8Array(bytes));
@@ -282,8 +289,7 @@ describe('room for unrecognized delivery record bytes', () => {
     records(new Map([['current', stream]]));
     const answer = await readRecordAnswer(env.CACHE_STATE, 'current', 'scope', 'entry');
     const response = responseOf(answer);
-    if (response.body === null) throw new TypeError('the record response has no body');
-    const reader = response.body.getReader();
+    const reader = streamReaderOf(answer);
     const first = await reader.read();
     let rest: Uint8Array;
     try {
@@ -302,7 +308,7 @@ describe('room for unrecognized delivery record bytes', () => {
     const headerEnd = 9 + new DataView(bytes.buffer, bytes.byteOffset, 9).getUint32(5, true);
     const body = Promise.withResolvers<true>();
     const tailRead = vi.fn();
-    const stream = new ReadableStream<Uint8Array>(
+    const stream = new ReadableStream(
       {
         type: 'bytes',
         start(controller) {

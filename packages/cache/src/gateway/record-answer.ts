@@ -79,6 +79,12 @@ function byteReaderOf(value: ReadableStream<Uint8Array>): ReadableStreamBYOBRead
   }
 }
 
+/** A native BYOB EOF can return its transferred view together with done. */
+interface ByteRead {
+  readonly value?: Uint8Array<ArrayBuffer> | undefined;
+  readonly done: boolean;
+}
+
 /**
  * Read only into this owned buffer. BYOB transfers it on every read, so each returned view's
  * buffer becomes the next view; bytes already written before its offset survive the transfer.
@@ -97,11 +103,15 @@ async function readBounded(
     const view = bytes.subarray(read);
     const minimum = length - read;
     const atLeast = typeof reader.readAtLeast === 'function';
-    const next = atLeast ? await reader.readAtLeast(minimum, view) : await reader.read(view);
+    const next: ByteRead = atLeast
+      ? await reader.readAtLeast(minimum, view)
+      : await reader.read(view);
     // A conforming BYOB reader returns a view even at EOF, including a zero-length one.
     if (next.value === undefined) throw new Error('the record byte reader returned no view');
     read += next.value.byteLength;
-    bytes = new Uint8Array(next.value.buffer);
+    // Keep the whole owned backing store, including the prefix before the returned view's offset.
+    // eslint-disable-next-line unicorn/no-unsafe-buffer-conversion -- BYOB transfers the whole owned buffer, including the earlier prefix.
+    bytes = new Uint8Array(next.value.buffer, 0, next.value.buffer.byteLength);
     if (bytes.byteLength < read) throw new Error('the record byte reader lost its prefix');
     // Workers readAtLeast returns a short view only at EOF, possibly with done still false.
     if (next.done || (atLeast && next.value.byteLength < minimum)) {

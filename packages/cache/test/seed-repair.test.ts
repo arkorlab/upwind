@@ -16,9 +16,14 @@ import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 
 import { limitsOf, parseVars } from '../src/env.ts';
-import { NO_HISTORY } from '../src/scope/history.ts';
-import { type GenerationRow, generationOutputs } from '../src/scope/rows.ts';
-import { seedLocationKey } from '../src/scope/seed-repair.ts';
+import { type EventInput, NO_HISTORY } from '../src/scope/history.ts';
+import {
+  type EntryStateRow,
+  type GenerationRow,
+  generationOutputs,
+  toEntryState,
+} from '../src/scope/rows.ts';
+import { seedLocationKey, verifySeedLocations } from '../src/scope/seed-repair.ts';
 import { planSeedEntries } from '../src/scope/seed.ts';
 import { scopeStub } from '../src/scope/stub.ts';
 
@@ -226,6 +231,65 @@ function failureFor(scope: Scope, plan: Plan) {
         )
         .toArray()[0]?.value ?? null
     );
+  });
+}
+
+interface RecordedEvent {
+  readonly revision: number;
+  readonly event: EventInput;
+}
+
+function byEntity(left: RecordedEvent, right: RecordedEvent): number {
+  return left.event.entityId.localeCompare(right.event.entityId);
+}
+
+async function observedSeedRepair(scope: Scope, plans: readonly Plan[], revision: number) {
+  const proofs = new Map<string, boolean>();
+  await verifySeedLocations(
+    (key) => env.ARTIFACTS.get(key),
+    plans.map((plan) => plan.artifact),
+    proofs,
+  );
+  return runInDurableObject(scope.stub, async (_instance, state) => {
+    const sql = state.storage.sql;
+    const history: RecordedEvent[] = [];
+    const apply = await planSeedEntries(
+      {
+        sql,
+        scopeId: scope.scopeId,
+        limits: limitsOf(parseVars({})),
+        now: NOW + 1,
+        revision,
+        history: {
+          ...NO_HISTORY,
+          append: (context, event) => {
+            history.push({ revision: context.revision, event });
+          },
+        },
+      },
+      {
+        scopeId: scope.scopeId,
+        batchIndex: 0,
+        entries: plans.map((plan) => plan.seed),
+      },
+      proofs,
+    );
+    const result = state.storage.transactionSync(apply);
+    const states: RecordedEvent[] = sql
+      .exec<EntryStateRow>(`SELECT * FROM entries ORDER BY entry_id`)
+      .toArray()
+      .map<RecordedEvent>((entry) => {
+        return {
+          revision,
+          event: {
+            entityType: 'entry',
+            entityId: entry.entry_id,
+            kind: 'entry.state.changed',
+            payload: { entryState: toEntryState(entry) },
+          },
+        };
+      });
+    return { result, history, states };
   });
 }
 
@@ -579,6 +643,49 @@ describe('a seed whose artifact projection could not read', () => {
       expect(repairedOutputs[0].outputId).toBe(previousOutputs[0].outputId);
     },
   );
+
+  it('records each shared-repair entry state once while retaining both seed generation events', async () => {
+    const scope = await scopeForTest();
+    const first = await planFor(scope, '/first');
+    const second = await planFor(scope, '/second');
+    const outside = await planFor(scope, '/outside');
+    const badLocation = await badLocationFor(scope, 'missing');
+    await seedBatch(scope, [
+      atLocation(first, badLocation),
+      atLocation(second, badLocation),
+      atLocation(outside, badLocation),
+    ]);
+    const before = await rowsFor(scope, first);
+
+    await expect(failureFor(scope, second)).resolves.toBe(second.generationId);
+
+    const observed = await observedSeedRepair(scope, [first, second], before.revision + 1);
+    const states = observed.history.filter(({ event }) => event.kind === 'entry.state.changed');
+    const generations = observed.history.filter(
+      ({ event }) => event.kind === 'generation.committed',
+    );
+    const repaired = await rowsFor(scope, outside);
+
+    expect(observed.result).toStrictEqual({
+      inserted: 0,
+      skipped: 2,
+      refused: [],
+      revision: before.revision + 1,
+    });
+    expect(states.toSorted(byEntity)).toStrictEqual(observed.states.toSorted(byEntity));
+    expect(generations.map(({ event }) => event.entityId).toSorted()).toStrictEqual(
+      [first.generationId, second.generationId].toSorted(),
+    );
+    expect(observed.history).toHaveLength(5);
+    expect(repaired.artifact).toStrictEqual({
+      storage_ref: first.artifact.storageRef,
+      owned: 0,
+      refs: 3,
+    });
+    expect(generationOutputs(repaired.generation)[0]?.artifacts[0]?.storageRef).toBe(
+      first.artifact.storageRef,
+    );
+  });
 
   it('leaves a seed whose record was delivered unchanged on a later retry', async () => {
     const scope = await scopeForTest();

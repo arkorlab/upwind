@@ -171,7 +171,7 @@ export function repairArtifact(input: TxInput, repair: ArtifactRepair): number {
   const row = rows[0];
   if (rows.length !== 1 || row === undefined)
     throw new Error('the failed artifact location changed');
-  if (repair.previouslyOwned && repair.previousStorageRef !== repair.storageRef) {
+  if (repair.previousStorageRef !== repair.storageRef && repair.previouslyOwned) {
     sql.exec(
       `INSERT OR IGNORE INTO pending_deletions (storage_ref, queued_at) VALUES (?, ?)`,
       repair.previousStorageRef,
