@@ -45,6 +45,8 @@ module.exports = { marker: basename('/linked/ready'), filename: __filename, dirn
     );
   }
   const result = await bundleLinkedExternals({
+    projectDir: root,
+    files: [],
     distDir,
     workDir: root,
     kind: 'app',

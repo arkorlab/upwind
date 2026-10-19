@@ -417,6 +417,8 @@ export async function buildFunction(input: BuildFunctionInput): Promise<BuiltFun
   );
   // What the chunks import from `.next/node_modules`, named only once the app bundle has run.
   const linked = await bundleLinkedExternals({
+    projectDir: input.projectDir,
+    files: input.files,
     distDir: input.patch.distDir,
     workDir,
     kind: name,

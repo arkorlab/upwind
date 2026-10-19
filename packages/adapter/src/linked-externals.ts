@@ -9,6 +9,8 @@ import { bundled, type BundleTrace } from './dependencies.ts';
 import { dynamicLoadsInChunk } from './dynamic-loads.ts';
 import { externalsPlugin } from './patches/index.ts';
 import { GLOBAL_OBJECT, globalObjectPlugin, THROWING_GLOBALS } from './throwing-globals.ts';
+import type { TracedFile } from './traced-files.ts';
+import { typescriptVfsPlugin } from './vfs-typescript.ts';
 
 /**
  * The packages a build leaves to the runtime as ES modules, carried as modules of the Function's own.
@@ -126,6 +128,8 @@ export interface LinkedExternals {
  * `undefined` when none of them is linked.
  */
 export async function bundleLinkedExternals(input: {
+  readonly projectDir: string;
+  readonly files: readonly TracedFile[];
   readonly distDir: string;
   readonly workDir: string;
   readonly kind: string;
@@ -152,6 +156,7 @@ export async function bundleLinkedExternals(input: {
     platform: 'node',
     plugins: [
       globalObjectPlugin(),
+      typescriptVfsPlugin(input),
       externalsPlugin((specifier) => externals.add(specifier)),
       linkedModuleURLsPlugin(),
     ],
