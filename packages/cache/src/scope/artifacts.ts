@@ -186,7 +186,15 @@ export function ownedUploadOf(
 /** Blobs a reference to adds nothing to the scope's bytes (`addedBy`), as an SQL condition. */
 export const HELD_WITHOUT_CHARGE = `(owned = 1 AND refs > 0) OR (owned = 0 AND NOT EXISTS (
   SELECT 1 FROM meta WHERE key = '${FAILURE_PREFIX}' || artifacts.sha256
-    AND value = CAST(artifacts.byte_length AS TEXT) || ':' || artifacts.storage_ref
+    AND (value = CAST(artifacts.byte_length AS TEXT) || ':' || artifacts.storage_ref
+      OR CASE WHEN json_valid(value) THEN
+        json_type(value) = 'array' AND json_array_length(value) = ${FENCED_FAILURE_FIELDS}
+        AND json_type(value, '$[0]') IN ('integer', 'real')
+        AND json_extract(value, '$[0]') = artifacts.byte_length
+        AND json_type(value, '$[1]') = 'text'
+        AND json_extract(value, '$[1]') = artifacts.storage_ref
+        AND json_type(value, '$[2]') = 'text'
+      ELSE 0 END)
 ))`;
 
 /** Count one more reference; the bytes the scope newly holds, for its quota. */

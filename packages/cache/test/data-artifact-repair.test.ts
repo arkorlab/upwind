@@ -1,6 +1,5 @@
 import { sha256Hex } from '@stayingupwind/core/artifact';
 import { buildGenerationIdFor, deriveEntry, policyFromBuild } from '@stayingupwind/core/cache';
-import { TEST_CLOCK_HEADER } from '@stayingupwind/core/paas';
 import { createId, fromBase64, toBase64 } from '@stayingupwind/core/util';
 import {
   type DataSetRequest,
@@ -16,9 +15,12 @@ import {
 import { env } from 'cloudflare:workers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { limitsOf, parseVars } from '../src/env.ts';
 import { Gateway } from '../src/function/gateway.ts';
 import { createGatewayApp } from '../src/gateway/app.ts';
-import { artifactFailed, findArtifactBySha } from '../src/scope/artifacts.ts';
+import { artifactFailed, findArtifactBySha, releaseArtifact } from '../src/scope/artifacts.ts';
+import { findEntry } from '../src/scope/entries.ts';
+import { markPruned } from '../src/scope/generations.ts';
 import { requireActiveScope, writeMeta } from '../src/scope/state.ts';
 import { scopeStub } from '../src/scope/stub.ts';
 import { STANDALONE_AUTHORITY } from '../src/standalone/host.ts';
@@ -29,6 +31,7 @@ const KIND = 'data:fetch';
 
 /** Real gateway upload/adoption and real DO tables; only its dispatch transport is in process. */
 async function fixture(length: number, borrowed: boolean) {
+  const now = Date.now();
   const scopeId = createId('dpl');
   const stub = scopeStub(env, scopeId);
   await stub.seedScope(
@@ -43,7 +46,7 @@ async function fixture(length: number, borrowed: boolean) {
         buildId: 'build',
       },
     },
-    NOW,
+    now,
   );
   const bytes = new TextEncoder().encode('x'.repeat(length));
   const sha256 = await sha256Hex(bytes);
@@ -62,8 +65,8 @@ async function fixture(length: number, borrowed: boolean) {
             groupInstanceId: null,
             generation: {
               generationId: await buildGenerationIdFor(scopeId, entryId),
-              cacheTimestamp: NOW,
-              producedAt: NOW,
+              cacheTimestamp: now,
+              producedAt: now,
               policy: policyFromBuild({ initialRevalidate: 60, initialExpiration: 600 }),
               status: 200,
               headers: { 'content-type': 'text/html' },
@@ -94,7 +97,7 @@ async function fixture(length: number, borrowed: boolean) {
           },
         ],
       },
-      NOW,
+      now,
     );
   }
   const token = await signCacheToken(
@@ -107,9 +110,7 @@ async function fixture(length: number, borrowed: boolean) {
   const send: FetchLike = (request) => {
     const ctx = createExecutionContext();
     contexts.push(ctx);
-    const headers = new Headers(request.headers);
-    headers.set(TEST_CLOCK_HEADER, String(NOW));
-    const response = app.fetch(new Request(request, { headers }), env, ctx);
+    const response = app.fetch(request, env, ctx);
     return Promise.resolve(response);
   };
   const client = new Gateway({
@@ -121,6 +122,7 @@ async function fixture(length: number, borrowed: boolean) {
   });
   return {
     scopeId,
+    now,
     stub,
     client,
     bytes,
@@ -192,7 +194,9 @@ async function breakValue(test: Fixture, entryId: string, fault: 'missing' | 'di
       test.seedEntryId ?? entryId,
     );
   });
-  await test.stub.tick(NOW);
+
+  await test.stub.tick(test.now);
+
   return stateFor(test);
 }
 
@@ -205,6 +209,42 @@ async function valueOf(test: Fixture, key: string): Promise<Uint8Array> {
   return bytes;
 }
 
+/** Retention leaves a borrowed row when its last generation has only archived metadata. */
+async function archiveBrokenSeed(given: Fixture) {
+  const entryId = given.seedEntryId;
+  if (entryId === undefined) throw new Error('the fixture needs a borrowed seed');
+  await breakValue(given, entryId, 'missing');
+  return runInDurableObject(given.stub, (_instance, state) => {
+    const { sql } = state.storage;
+    const entry = findEntry(sql, entryId);
+    if (entry === undefined || entry.current_generation_id === null) {
+      throw new Error('the fixture needs a current seed generation');
+    }
+    sql.exec(
+      `UPDATE entries SET current_generation_id = NULL, publication = 'retired',
+       record_revision = record_revision + 1 WHERE entry_id = ?`,
+      entryId,
+    );
+    markPruned(sql, entry.current_generation_id, given.now);
+    releaseArtifact(sql, given.sha256);
+    return sql
+      .exec<{ storage: string; publication: string }>(
+        `SELECT storage, publication FROM generations WHERE generation_id = ?`,
+        entry.current_generation_id,
+      )
+      .one();
+  });
+}
+
+/** Occupy the real quota counter, without enabling test-only hooks in a standalone deployment. */
+async function fillOtherBytes(given: Fixture, available: number): Promise<number> {
+  const bodyBytes = limitsOf(parseVars({})).bodyBytesPerScope - available;
+  await runInDurableObject(given.stub, (_instance, state) => {
+    state.storage.sql.exec(`UPDATE scope SET body_bytes = ?`, bodyBytes);
+  });
+  return bodyBytes;
+}
+
 describe('a data upload replacing a known broken canonical artifact', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -214,17 +254,66 @@ describe('a data upload replacing a known broken canonical artifact', () => {
     { kind: 'inline above the carried limit', length: ABOVE_CARRIED_BYTES },
     { kind: 'reference', length: MAX_INLINE_DATA_VALUE_BYTES + 1 },
   ])(
+    'charges a borrowed zero-reference $kind once when its first new reference is published',
+    async ({ length }) => {
+      const given = await fixture(length, true);
+      const archived = await archiveBrokenSeed(given);
+      const before = await stateFor(given);
+      const occupied = await fillOtherBytes(given, length);
+      const put = vi.spyOn(env.ARTIFACTS, 'put');
+
+      await given.client.setData(requestFor(given, 'fresh', NOW));
+
+      await given.drain();
+
+      const repaired = await stateFor(given);
+
+      expect({ before, archived }).toMatchObject({
+        before: { artifact: { owned: 0, refs: 0 }, bodyBytes: 0, failed: true, locations: [] },
+        archived: { storage: 'pruned', publication: 'retired' },
+      });
+      expect(put).toHaveBeenCalledTimes(1);
+      expect(repaired).toMatchObject({
+        artifact: { owned: 1, refs: 1 },
+        bodyBytes: occupied + length,
+        failed: false,
+        locations: [{ storage_ref: repaired.artifact.storage_ref }],
+      });
+      expect(repaired.artifact.storage_ref).not.toBe(before.artifact.storage_ref);
+      await expect(valueOf(given, 'fresh')).resolves.toStrictEqual(given.bytes);
+      await expect(
+        given.client.setData({
+          ...requestFor(given, 'too-much', NOW),
+          valueBase64: toBase64(new Uint8Array([1])),
+        }),
+      ).rejects.toMatchObject({ code: 'quota_exceeded' });
+
+      await given.drain();
+
+      await expect(stateFor(given)).resolves.toStrictEqual(repaired);
+    },
+  );
+
+  it.each([
+    { kind: 'inline above the carried limit', length: ABOVE_CARRIED_BYTES },
+    { kind: 'reference', length: MAX_INLINE_DATA_VALUE_BYTES + 1 },
+  ])(
     'repairs a borrowed $kind and every live reference without replacing its generation',
     async ({ length }) => {
       const test = await fixture(length, true);
       const first = await test.client.setData(requestFor(test, 'first', NOW));
+
       await test.client.setData(requestFor(test, 'second', NOW));
+
       const broken = await breakValue(test, first.entryId, 'missing');
       const put = vi.spyOn(env.ARTIFACTS, 'put');
 
       const rewritten = await test.client.setData(requestFor(test, 'first', NOW));
+
       await test.drain();
-      await test.stub.tick(NOW);
+
+      await test.stub.tick(test.now);
+
       const repaired = await stateFor(test);
 
       expect(broken).toMatchObject({ artifact: { owned: 0 }, bodyBytes: 0, failed: true });
@@ -234,9 +323,10 @@ describe('a data upload replacing a known broken canonical artifact', () => {
         artifact: { owned: 1, refs: broken.artifact.refs },
         bodyBytes: length,
         failed: false,
-        locations: Array.from({ length: 3 }, () => ({
-          storage_ref: repaired.artifact.storage_ref,
-        })),
+        locations: Array.from({ length: 3 }, () => {
+          const location = { storage_ref: repaired.artifact.storage_ref };
+          return location;
+        }),
       });
       expect(repaired.artifact.storage_ref).not.toBe(broken.artifact.storage_ref);
       await expect(valueOf(test, 'first')).resolves.toStrictEqual(test.bytes);
@@ -251,7 +341,9 @@ describe('a data upload replacing a known broken canonical artifact', () => {
     const put = vi.spyOn(env.ARTIFACTS, 'put');
 
     const rewritten = await test.client.setData(requestFor(test, 'value', NOW + 1));
+
     await test.drain();
+
     const repaired = await stateFor(test);
 
     expect(broken.failed).toBe(true);
@@ -271,6 +363,7 @@ describe('a data upload replacing a known broken canonical artifact', () => {
     const put = vi.spyOn(env.ARTIFACTS, 'put');
 
     const repeated = await test.client.setData(request);
+
     await test.drain();
 
     expect(repeated).toStrictEqual(first);
@@ -289,6 +382,7 @@ describe('a data upload replacing a known broken canonical artifact', () => {
     const superseded = await test.client.setData(
       requestFor(test, 'value', NOW, { writer: 'writer', seq: 1 }),
     );
+
     await test.drain();
 
     expect(superseded).toMatchObject({ generationId: first.generationId, superseded: true });
@@ -299,14 +393,16 @@ describe('a data upload replacing a known broken canonical artifact', () => {
     const test = await fixture(ABOVE_CARRIED_BYTES, true);
     const first = await test.client.setData(requestFor(test, 'value', NOW));
     const broken = await breakValue(test, first.entryId, 'missing');
-    await test.stub.setTestLimits({ bodyBytesPerScope: test.bytes.length - 1 });
+
+    const bodyBytes = await fillOtherBytes(test, test.bytes.length - 1);
 
     await expect(test.client.setData(requestFor(test, 'value', NOW))).rejects.toMatchObject({
       code: 'quota_exceeded',
     });
+
     await test.drain();
 
-    await expect(stateFor(test)).resolves.toStrictEqual(broken);
+    await expect(stateFor(test)).resolves.toStrictEqual({ ...broken, bodyBytes });
   });
 
   it('keeps the control-fence refusal ahead of repair adoption', async () => {
@@ -324,6 +420,7 @@ describe('a data upload replacing a known broken canonical artifact', () => {
     await expect(test.client.setData(requestFor(test, 'value', NOW))).rejects.toMatchObject({
       code: 'lease_expired',
     });
+
     await test.drain();
 
     await expect(stateFor(test)).resolves.toStrictEqual(broken);

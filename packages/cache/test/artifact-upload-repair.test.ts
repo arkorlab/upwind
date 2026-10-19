@@ -20,7 +20,12 @@ import { Gateway } from '../src/function/gateway.ts';
 import { createGatewayApp } from '../src/gateway/app.ts';
 import { createLogger } from '../src/logger.ts';
 import { repairStorageRef } from '../src/scope/artifact-repair.ts';
-import { deleteArtifactRow, rememberArtifactFailure } from '../src/scope/artifacts.ts';
+import {
+  deleteArtifactRow,
+  ownedUploadOf,
+  rememberArtifactFailure,
+} from '../src/scope/artifacts.ts';
+import { reservedBytes } from '../src/scope/attempts.ts';
 import { planCommit } from '../src/scope/commit.ts';
 import { findEntry, markRecordWritten } from '../src/scope/entries.ts';
 import { findGeneration } from '../src/scope/generations.ts';
@@ -30,7 +35,7 @@ import { InvalidArtifactError } from '../src/scope/records.ts';
 import { generationOutputs } from '../src/scope/rows.ts';
 import { rememberSeedFailure } from '../src/scope/seed-repair.ts';
 import { ownRecordsOf, settlePending } from '../src/scope/settle.ts';
-import { readRevision } from '../src/scope/state.ts';
+import { readRevision, writeMeta } from '../src/scope/state.ts';
 import { scopeStub } from '../src/scope/stub.ts';
 import { STANDALONE_AUTHORITY } from '../src/standalone/host.ts';
 
@@ -199,7 +204,7 @@ async function damage(storageRef: string, fault: string, length: number): Promis
 
 /** Existing location assertions ignore only the new failure-incarnation fence. */
 function failureLocation(value: string | undefined): string | undefined {
-  if (value === undefined || !value.startsWith('[')) return value;
+  if (value?.startsWith('[') !== true) return value;
   const marker: unknown = JSON.parse(value);
   if (
     !Array.isArray(marker) ||
@@ -207,7 +212,7 @@ function failureLocation(value: string | undefined): string | undefined {
     typeof marker[1] !== 'string' ||
     typeof marker[2] !== 'string'
   )
-    throw new Error('the failure marker must name its location and fence');
+    throw new TypeError('the failure marker must name its location and fence');
   return `${String(marker[0])}:${marker[1]}`;
 }
 
@@ -291,6 +296,60 @@ async function brokenSeed(fault = 'missing') {
   await damage(plan.artifact.storageRef, fault, plan.bytes.byteLength);
   await seedBatch(scope, plan);
   return { scope, plan };
+}
+
+type ReservationMarker = 'current' | 'legacy' | 'invalid' | 'elsewhere' | 'invalid-fence';
+
+async function reservedRepair(format: ReservationMarker) {
+  const { scope, plan } = await brokenSeed();
+  await runInDurableObject(scope.stub, (_instance, state) => {
+    const { sql } = state.storage;
+    const { byteLength, storageRef, sha256 } = plan.artifact;
+    if (format === 'legacy') {
+      writeMeta(sql, `artifact_failure:${sha256}`, `${byteLength}:${storageRef}`);
+    } else if (format === 'invalid') {
+      writeMeta(sql, `artifact_failure:${sha256}`, '[not JSON');
+    } else if (format === 'elsewhere') {
+      writeMeta(
+        sql,
+        `artifact_failure:${sha256}`,
+        JSON.stringify([byteLength, '/elsewhere', 'fence']),
+      );
+    } else if (format === 'invalid-fence') {
+      writeMeta(sql, `artifact_failure:${sha256}`, JSON.stringify([byteLength, storageRef, null]));
+    }
+  });
+  await runInDurableObject(scope.stub, (_instance, state) => {
+    state.storage.sql.exec(
+      `UPDATE scope SET body_bytes = ?`,
+      LIMITS.bodyBytesPerScope - plan.bytes.byteLength,
+    );
+  });
+  const started = await lease(scope, plan);
+  await upload(scope, plan, started, 'single');
+  const reservation = await runInDurableObject(scope.stub, (_instance, state) => {
+    const { sql } = state.storage;
+    const owned = ownedUploadOf(sql, plan.artifact.sha256, plan.bytes.byteLength);
+    return { bytes: reservedBytes(sql, ''), added: owned.addedBytes, replace: owned.replace };
+  });
+  const other = await scope.stub.startAttempt(
+    { entry: { kind: 'app-page', route: '/other', pathname: '/other' }, reason: 'miss' },
+    NOW,
+  );
+  if (other.kind !== 'leased') throw new Error('the competing upload needs a lease');
+  const bytes = encodeUtf8('another value');
+  return {
+    scope,
+    plan,
+    reservation,
+    next: {
+      attemptId: other.attemptId,
+      fencingToken: other.fencingToken,
+      role: 'html' as const,
+      contentType: TYPE,
+      bytes,
+    },
+  };
 }
 
 async function repairedOwned() {
@@ -516,6 +575,34 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
+
+  it.each(['current', 'legacy'] as const)(
+    'reserves a failed borrowed upload with a %s marker before another upload',
+    async (format) => {
+      const { scope, plan, reservation, next } = await reservedRepair(format);
+
+      expect(reservation).toStrictEqual({
+        bytes: plan.bytes.byteLength,
+        added: plan.bytes.byteLength,
+        replace: true,
+      });
+      await expect(scope.client.uploadArtifact(next)).rejects.toMatchObject({
+        code: 'quota_exceeded',
+      });
+    },
+  );
+
+  it.each(['invalid', 'elsewhere', 'invalid-fence'] as const)(
+    'keeps a borrowed artifact uncharged for a nonmatching %s marker',
+    async (format) => {
+      const { scope, reservation, next } = await reservedRepair(format);
+
+      expect(reservation).toStrictEqual({ bytes: 0, added: 0, replace: false });
+      await expect(scope.client.uploadArtifact(next)).resolves.toMatchObject({
+        byteLength: next.bytes.byteLength,
+      });
+    },
+  );
 
   it.each([
     { fault: 'missing', mode: 'single' },
@@ -879,10 +966,10 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
       ...plan.seed,
       generation: {
         ...plan.seed.generation,
-        outputs: plan.seed.generation.outputs.map((output) => ({
-          ...output,
-          artifacts: [...output.artifacts, segment],
-        })),
+        outputs: plan.seed.generation.outputs.map((output) => {
+          const expanded = { ...output, artifacts: [...output.artifacts, segment] };
+          return expanded;
+        }),
       },
     };
     await seedBatch(scope, plan);

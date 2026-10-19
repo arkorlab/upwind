@@ -51,12 +51,11 @@ export function acknowledge(deps: SettleDeps, projected: readonly ProjectedEntry
   deps.transaction(() => {
     const acknowledged: ProjectedEntry[] = [];
     for (const entry of projected) {
-      if (markRecordWritten(deps.sql, entry.entryId, entry.kvRevision)) {
-        forgetSeedFailure(deps.sql, entry.entryId);
-        forgetVerifiedArtifactFailures(deps.sql, entry.verifiedArtifacts);
-        marked.add(entry.entryId);
-        acknowledged.push({ entryId: entry.entryId, kvRevision: entry.kvRevision });
-      }
+      if (!markRecordWritten(deps.sql, entry.entryId, entry.kvRevision)) continue;
+      forgetSeedFailure(deps.sql, entry.entryId);
+      forgetVerifiedArtifactFailures(deps.sql, entry.verifiedArtifacts);
+      marked.add(entry.entryId);
+      acknowledged.push({ entryId: entry.entryId, kvRevision: entry.kvRevision });
     }
     if (acknowledged.length === 0) {
       return;

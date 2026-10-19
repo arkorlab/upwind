@@ -65,6 +65,7 @@ import { type Apply, record, type TxInput } from './tx.ts';
 
 const OUTPUT_ID_PREFIX = 'out';
 const DATA_VALUE = 'data-value';
+const NO_DATA_REPAIR = { addedBytes: 0 };
 
 interface DataValueUpload {
   readonly sha256: string;
@@ -391,23 +392,26 @@ function dataQuota(
   ) {
     return refuse('quota_exceeded', 'the scope holds as many bytes as it may');
   }
-  if (entry === undefined && scope.entry_count >= limits.entriesPerScope) {
-    return refuse('quota_exceeded', 'the scope holds as many entries as it may');
-  }
+  return entry === undefined && scope.entry_count >= limits.entriesPerScope
+    ? refuse('quota_exceeded', 'the scope holds as many entries as it may')
+    : undefined;
 }
 
 /** Quotas were checked before this; a refusal must still precede every repair mutation. */
 function restoreDataArtifact(
   input: TxInput,
-  repair: ArtifactRepair,
-  publishingEntry: string,
-): number | Refusal {
+  repair: ArtifactRepair | undefined,
+  entryId: string,
+  unchanged: boolean,
+): { readonly addedBytes: number } | Refusal {
+  if (repair === undefined) return NO_DATA_REPAIR;
+  const publishingEntry = unchanged ? '' : entryId;
   const repairs = new Map([[repair.sha256, repair]]);
   const unwritable = retargetedRecordsFailure(input, repairs.values(), publishingEntry);
   if (unwritable !== undefined) return refuse('too_large', unwritable);
   const added = repairArtifact(input, repair);
   finishArtifactRepairs(input, repairs, publishingEntry);
-  return added;
+  return { addedBytes: added };
 }
 
 function applySetData(input: TxInput, plan: DataPlan): DataSetOutcome | Refusal {
@@ -441,11 +445,14 @@ function applySetData(input: TxInput, plan: DataPlan): DataSetOutcome | Refusal 
   // commits would add them after this write had taken the room.
   const quota = dataQuota(input, scope, location);
   if (quota !== undefined) return quota;
-  const repaired =
-    repair === undefined
-      ? 0
-      : restoreDataArtifact(input, repair, unwritten === undefined ? plan.identity.entryId : '');
-  if (typeof repaired !== 'number') return repaired;
+  const restored = restoreDataArtifact(
+    input,
+    repair,
+    plan.identity.entryId,
+    unwritten !== undefined,
+  );
+  if (isRefusal(restored)) return restored;
+  const repaired = restored.addedBytes;
   if (unwritten !== undefined) {
     markWriter(sql, plan.input.order, unwritten, now);
     sql.exec(`UPDATE scope SET body_bytes = body_bytes + ?`, repaired);
