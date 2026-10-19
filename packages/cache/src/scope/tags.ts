@@ -15,11 +15,12 @@ import {
   type TagsDeltaResponse,
 } from '@stayingupwind/host/cache';
 
-import { controlFenceInvalidations } from './control-fences.ts';
-import { foldsPast, recentFolds } from './folded-invalidations.ts';
+import { recentFolds } from './folded-invalidations.ts';
 import type { InvalidationRow, TagRow } from './rows.ts';
 import { deleteMeta, readMeta, writeMeta } from './state.ts';
 import { readTagHistory, recordTagHistory } from './tag-history.ts';
+
+export { type CondemnationQuery, type Weighed, weighInvalidations } from './invalidation-weight.ts';
 
 /**
  * Tags, exact and case-sensitive, and what the last invalidation of each did. `entry_tags` names
@@ -498,23 +499,6 @@ export function latestTagRevision(sql: SqlStorage): number {
     .one().revision;
 }
 
-export interface CondemnationQuery {
-  readonly entryId: string;
-  readonly tagIds: readonly string[];
-  readonly afterRevision: number;
-  /**
-   * What a render's view of the tags held, where its runtime says (`viewHeld`): of each tag it held,
-   * by id, the revision through which the render's reads under the tag were judged against its
-   * invalidations. An immediate invalidation of one of those tags at or before it is one the render
-   * read against, and made its reads afresh for; so is one with a window (`swr`) that such an
-   * immediate one of its tag came after, since a tag stands at its latest invalidation and that is
-   * what the view held of it. Not one with a window the view held last of its tag, under which the
-   * render's reads may have been answered stale; nor one of an entry, a control fence, or a tag the
-   * view held nothing of past it, which the render's reads were not judged against.
-   */
-  readonly held?: ReadonlyMap<string, number> | undefined;
-}
-
 /**
  * What a render's view of the tags held (`CondemnationQuery.held`), where its runtime says
  * (`heldTagRevisions`): of each of the generation's tags it says it of, what it says, though no more
@@ -547,81 +531,12 @@ export function viewHeld(
 }
 
 /**
- * What the invalidations recorded after a render read its inputs that name what it depends on come
- * to (`weighInvalidations`): those that condemn what it made, and how far it stands past its lease
- * by those its view held, which condemn nothing.
- */
-export interface Weighed {
-  readonly condemning: InvalidationRow[];
-  /**
-   * The latest revision of an invalidation the render's view held that condemns nothing
-   * (`CondemnationQuery.held`), 0 where there is none: what the render made stands as of it as it
-   * stands as of its lease, each invalidation of its tags up to it judged.
-   */
-  readonly heldThrough: number;
-}
-
-/**
- * The invalidations recorded after a render read its inputs that name what it depends on. Where it
- * read them before the history window, those retention folded are weighed as their tag's fold, one
- * invalidation that condemns whatever they did (`foldsPast`): its meaning is the latest one's, as
- * what the render's view held of the tag is judged by the latest one it held, and the latest one at
- * once is weighed beside it where that is not the latest, which refuses a render whose view did not
- * hold it, as its row would.
- */
-export function weighInvalidations(sql: SqlStorage, query: CondemnationQuery): Weighed {
-  const kept = sql
-    .exec<InvalidationRow>(
-      `SELECT * FROM invalidations
-       WHERE revision > ?
-         AND ((target_kind = 'tag' AND target_id IN (SELECT value FROM json_each(?)))
-           OR (target_kind = 'entry' AND target_id = ?))
-       ORDER BY revision`,
-      query.afterRevision,
-      JSON.stringify(query.tagIds),
-      query.entryId,
-    )
-    .toArray();
-  const persistent = [...foldsPast(sql, query.tagIds, query.afterRevision), ...kept];
-  const { held } = query;
-  if (held === undefined) {
-    return {
-      condemning: [...persistent, ...controlFenceInvalidations(sql, query)],
-      heldThrough: 0,
-    };
-  }
-  const inView = (row: InvalidationRow): boolean =>
-    row.target_kind === 'tag' && row.revision <= (held.get(row.target_id) ?? 0);
-  // The latest immediate invalidation of each tag the view held: the render read that tag afresh
-  // against it, and against nothing recorded of it before.
-  const afresh = new Map<string, number>();
-  for (const row of persistent) {
-    if (inView(row) && row.meaning === 'immediate') {
-      afresh.set(row.target_id, Math.max(afresh.get(row.target_id) ?? row.revision, row.revision));
-    }
-  }
-  const condemning: InvalidationRow[] = [];
-  let heldThrough = 0;
-  for (const row of persistent) {
-    const excused =
-      inView(row) &&
-      (row.meaning === 'immediate' || (afresh.get(row.target_id) ?? row.revision) > row.revision);
-    if (excused) {
-      heldThrough = Math.max(heldThrough, row.revision);
-    } else {
-      condemning.push(row);
-    }
-  }
-  return { condemning: [...condemning, ...controlFenceInvalidations(sql, query)], heldThrough };
-}
-
-/**
  * What the invalidations a generation is published under leave it with (`weighInvalidations`):
  * stale from the earliest of them, expired at the earliest hard deadline among them, and as of the
  * latest; nothing where there are none.
  */
 export function condemnationOf(
-  invalidations: readonly InvalidationRow[],
+  invalidations: readonly Pick<InvalidationRow, 'revision' | 'stale_at' | 'hard_expire_at'>[],
 ): InvalidationState | null {
   if (invalidations.length === 0) {
     return null;

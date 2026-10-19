@@ -10,20 +10,18 @@ import {
   type ResourceWarmJob,
 } from '@stayingupwind/host/cache';
 
-import { entryStateEvent } from './attempts.ts';
 import { planInvalidate } from './invalidations.ts';
+import { reconcileTag, recordReconciliation } from './resource-reconciliation.ts';
 import {
   type EntryRow,
   type GenerationRow,
   generationHeaders,
   type ResourceHeadRow,
-  type TagRow,
-  toGeneration,
   type WarmJobRow,
 } from './rows.ts';
 import { isRefusal, readScope, type Refusal, refuse, requireActiveScope } from './state.ts';
 import { findTag } from './tags.ts';
-import { type Apply, record, type TxInput } from './tx.ts';
+import type { Apply, TxInput } from './tx.ts';
 
 /**
  * Resource invalidations and their background work commit together. A dispatch job is independent
@@ -329,66 +327,6 @@ function headTagIds(sql: SqlStorage, head: ResourceHeadRow, tagId: string): stri
   return tagIds;
 }
 
-/** The tag's entries whose current generation is older than the head's change, or seeded since. */
-function outdatedUnder(sql: SqlStorage, tagId: string, tagRevision: number): GenerationRow[] {
-  return sql
-    .exec<GenerationRow>(
-      `SELECT g.* FROM entry_tags et JOIN entries e ON e.entry_id = et.entry_id
-       JOIN generations g ON g.generation_id = e.current_generation_id
-       WHERE et.tag_id = ? AND (g.dependency_revision < ?
-         OR (g.source = 'build' AND g.published_revision > ?))`,
-      tagId,
-      tagRevision,
-      tagRevision,
-    )
-    .toArray();
-}
-
-/** Condemn, as the tag stands, the outdated generations the head's change has not condemned. */
-function condemnOutdated(
-  input: TxInput,
-  under: {
-    readonly tag: TagRow | undefined;
-    readonly outdated: readonly GenerationRow[];
-    readonly tagRevision: number;
-  },
-  affected: Set<string>,
-): void {
-  const { sql, now, revision } = input;
-  const { tag, outdated, tagRevision } = under;
-  if (tag?.stale_at === null || tag?.stale_at === undefined) return;
-  for (const generation of outdated) {
-    const condemnedRevision =
-      generation.condemned === null
-        ? 0
-        : (toGeneration(input.scopeId, generation).condemned?.revision ?? 0);
-    if (condemnedRevision >= tagRevision) continue;
-    sql.exec(
-      `UPDATE generations SET condemned = json_object(
-         'revision', MAX(COALESCE(json_extract(condemned, '$.revision'), 0), ?),
-         'staleAt', MIN(COALESCE(json_extract(condemned, '$.staleAt'), ?), ?),
-         'hardExpireAt', MIN(COALESCE(json_extract(condemned, '$.hardExpireAt'), ?), ?)
-       ) WHERE generation_id = ?`,
-      tag.revision,
-      tag.stale_at,
-      tag.stale_at,
-      tag.hard_expire_at,
-      tag.hard_expire_at,
-      generation.generation_id,
-    );
-    sql.exec(
-      `UPDATE entries SET revision = ?, record_revision = ?,
-       regeneration = CASE regeneration WHEN 'idle' THEN 'queued' ELSE regeneration END,
-       updated_at = ? WHERE entry_id = ?`,
-      revision,
-      revision,
-      now,
-      generation.entry_id,
-    );
-    affected.add(generation.entry_id);
-  }
-}
-
 /**
  * Seeding may have committed after the first delivery of this event to an already-active scope,
  * under any tag the head's change invalidated. Each tag's outdated entries are read after those of
@@ -406,21 +344,16 @@ function reconcile(
   const affected = new Set<string>();
   const outdatedEntryIds = new Set<string>();
   for (const id of headTagIds(sql, head, tagId)) {
-    const outdated = outdatedUnder(sql, id, head.tag_revision);
-    for (const generation of outdated) outdatedEntryIds.add(generation.entry_id);
-    condemnOutdated(
-      input,
-      { tag: findTag(sql, id), outdated, tagRevision: head.tag_revision },
+    reconcileTag(input, {
+      tagId: id,
+      tag: findTag(sql, id),
+      tagRevision: head.tag_revision,
       affected,
-    );
+      outdated: outdatedEntryIds,
+    });
   }
   const affectedEntryIds = [...affected];
-  if (affectedEntryIds.length > 0) {
-    record(
-      input,
-      affectedEntryIds.map((entryId) => entryStateEvent(sql, entryId)),
-    );
-  }
+  recordReconciliation(input, affectedEntryIds);
   const queuedJobs = queueEligible(input, request, {
     requiredRevision: head.tag_revision,
     affectedEntryIds: [...outdatedEntryIds],

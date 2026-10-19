@@ -251,7 +251,23 @@ export function toEntry(scopeId: string, row: EntryRow): CacheEntry {
   };
 }
 
-export function toEntryState(row: EntryRow): CacheEntryState {
+export type EntryStateRow = Pick<
+  EntryRow,
+  | 'entry_id'
+  | 'revision'
+  | 'current_generation_id'
+  | 'publication'
+  | 'regeneration'
+  | 'regeneration_attempt_id'
+  | 'failed_count'
+  | 'next_retry_at'
+  | 'tombstone_revision'
+  | 'kv_revision'
+  | 'committed_at'
+  | 'updated_at'
+>;
+
+export function toEntryState(row: EntryStateRow): CacheEntryState {
   return {
     entryId: row.entry_id,
     revision: row.revision,

@@ -6,7 +6,7 @@ import { env } from 'cloudflare:workers';
 import { describe, expect, it, vi } from 'vitest';
 
 import { limitsOf, parseVars } from '../src/env.ts';
-import { planStartAttempt } from '../src/scope/attempts.ts';
+import { applyHeartbeat, planStartAttempt } from '../src/scope/attempts.ts';
 import { planCommit } from '../src/scope/commit.ts';
 import { type EventInput, NO_HISTORY } from '../src/scope/history.ts';
 import { blobStore } from '../src/scope/io.ts';
@@ -15,6 +15,8 @@ import { scopeStub } from '../src/scope/stub.ts';
 import type { TxInput } from '../src/scope/tx.ts';
 
 const NOW = 1_800_000_000_000;
+const HEARTBEAT_AT = NOW + 1000;
+const COMMIT_AT = NOW + 2000;
 const LARGE_HISTORY = 150_000;
 const LIMITS = limitsOf(parseVars({}));
 const ROOT = { kind: 'app-page', route: '/', pathname: '/' } as const;
@@ -48,7 +50,7 @@ function requestFor(fencingToken: number) {
   });
 }
 
-function insertHistory(sql: SqlStorage, tagId: string): void {
+function insertHistory(sql: SqlStorage, tagId: string, count: number): void {
   sql.exec(
     `INSERT INTO invalidations (invalidation_id, revision, target_kind, target_id,
        target_value, stale_at, hard_expire_at, meaning, expire_seconds, cause, recorded_at)
@@ -67,37 +69,44 @@ function insertHistory(sql: SqlStorage, tagId: string): void {
     NOW,
     NOW,
   );
+  // Build distinct retained rows inside SQLite, without a 150k-object JavaScript fixture graph.
+  sql.exec(
+    `WITH digit(n) AS (VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9)),
+     numbers(n) AS (
+       SELECT a.n + 10*b.n + 100*c.n + 1000*d.n + 10000*e.n + 100000*f.n
+       FROM digit a, digit b, digit c, digit d, digit e, digit f LIMIT ?
+     )
+     INSERT INTO invalidations (invalidation_id, revision, target_kind, target_id,
+       target_value, stale_at, hard_expire_at, meaning, expire_seconds, cause, recorded_at)
+     SELECT 'retained-' || n, 1, 'tag', ?, 'shared', ?, NULL, 'swr', NULL, '{}', ?
+     FROM numbers`,
+    count - 3,
+    tagId,
+    NOW,
+    NOW,
+  );
   sql.exec(`UPDATE scope SET revision = 20`);
 }
 
-/**
- * Keep SQLite's matching rows and bindings, but repeat references at its one result boundary.
- * This exercises the real commit transaction with a large argument count without a second large
- * row graph or database. It does not measure the cost of retrieving that many distinct rows.
- */
-function repeatedHistory(sql: SqlStorage, count: number) {
+/** Observe the real native aggregate's one-row result, without replacing its rows or bindings. */
+function observedHistory(sql: SqlStorage) {
   const exec = sql.exec.bind(sql);
   const restores: (() => void)[] = [];
   const reads: {
     bindings: readonly SqlStorageValue[];
-    revisions: (SqlStorageValue | undefined)[];
+    summary: Record<string, SqlStorageValue>;
   }[] = [];
   const reading = vi
     .spyOn(sql, 'exec')
     .mockImplementation((query: string, ...bindings: SqlStorageValue[]) => {
       const cursor = exec(query, ...bindings);
-      if (query.startsWith('SELECT * FROM invalidations')) {
-        const original = cursor.toArray();
-        const [first, middle, last] = original;
-        if (first === undefined || middle === undefined || last === undefined) {
-          throw new Error('the commit must read all three real invalidations');
-        }
-        reads.push({ bindings, revisions: original.map((row) => row['revision']) });
-        const rows = Array.from({ length: count }, () => middle);
-        rows[0] = first;
-        rows[Math.floor(count / 2)] = last;
-        rows[count - 1] = middle;
-        const result = vi.spyOn(cursor, 'toArray').mockReturnValue(rows);
+      if (query.startsWith('WITH input(after_revision')) {
+        const one = cursor.one.bind(cursor);
+        const result = vi.spyOn(cursor, 'one').mockImplementation(() => {
+          const summary = one();
+          reads.push({ bindings, summary });
+          return summary;
+        });
         restores.push(() => {
           result.mockRestore();
         });
@@ -111,6 +120,15 @@ function repeatedHistory(sql: SqlStorage, count: number) {
       for (const restore of restores) restore();
     },
   };
+}
+
+function leaseState(sql: SqlStorage, attemptId: string) {
+  return sql
+    .exec<{ dependency_revision: number; lease_expires_at: number }>(
+      `SELECT dependency_revision, lease_expires_at FROM attempts WHERE attempt_id = ?`,
+      attemptId,
+    )
+    .one();
 }
 
 async function commitWithHistory(count: number) {
@@ -135,13 +153,14 @@ async function commitWithHistory(count: number) {
     const leased = await instance.startAttempt({ entry: ROOT, reason: 'stale' }, NOW);
     if (leased.kind !== 'leased') throw new Error('the render must hold a lease');
     const { sql } = state.storage;
-    insertHistory(sql, tagId);
+    const initialLease = leaseState(sql, leased.attemptId);
+    insertHistory(sql, tagId, count);
     const events: EventInput[] = [];
     const tx: TxInput = {
       sql,
       scopeId,
       limits: LIMITS,
-      now: NOW,
+      now: COMMIT_AT,
       revision: readRevision(sql) + 1,
       history: {
         ...NO_HISTORY,
@@ -156,7 +175,19 @@ async function commitWithHistory(count: number) {
       requestFor(leased.fencingToken),
       blobStore(env.ARTIFACTS, () => ({})),
     );
-    const history = repeatedHistory(sql, count);
+    const heartbeat = state.storage.transactionSync(() => {
+      const result = applyHeartbeat(
+        { ...tx, now: HEARTBEAT_AT },
+        leased.attemptId,
+        leased.fencingToken,
+      );
+      return result;
+    });
+    const dependency = leaseState(sql, leased.attemptId);
+    const retained = sql
+      .exec<{ count: number }>('SELECT COUNT(*) AS count FROM invalidations')
+      .one().count;
+    const history = observedHistory(sql);
     try {
       const answer = state.storage.transactionSync(apply);
       const attempt = sql
@@ -177,6 +208,11 @@ async function commitWithHistory(count: number) {
       );
       return {
         answer,
+        heartbeat,
+        dependency,
+        initialDependencyRevision: initialLease.dependency_revision,
+        initialLeaseExpiresAt: initialLease.lease_expires_at,
+        retained,
         attempt,
         entry,
         retry: state.storage.transactionSync(next),
@@ -201,7 +237,7 @@ describe('refusing a render after retained invalidations', () => {
       expect(result.answer).toStrictEqual({ kind: 'stale-dependencies', invalidationRevision: 20 });
       expect(result.attempt).toStrictEqual({
         status: 'failed',
-        finished_at: NOW,
+        finished_at: COMMIT_AT,
         error: JSON.stringify({
           code: 'stale_dependencies',
           message: 'an immediate invalidation at revision 20 touched what the render read',
@@ -217,8 +253,32 @@ describe('refusing a render after retained invalidations', () => {
         { kind: 'entry.state.changed', entityId: result.entryId },
       ]);
       expect(result.reads).toStrictEqual([
-        { bindings: [0, JSON.stringify([result.tagId]), result.entryId], revisions: [7, 11, 20] },
+        {
+          bindings: [0, JSON.stringify([result.tagId]), result.entryId, '[]', '{}'],
+          summary: {
+            revision: 20,
+            stale_at: NOW,
+            hard_expire_at: NOW,
+            immediate: 1,
+            held_through: 0,
+          },
+        },
       ]);
+      expect({
+        heartbeat: result.heartbeat,
+        dependency: result.dependency,
+        retained: result.retained,
+        initialLeaseExpiresAt: result.initialLeaseExpiresAt,
+      }).toStrictEqual({
+        heartbeat: { leaseExpiresAt: HEARTBEAT_AT + LIMITS.leaseMs },
+        dependency: {
+          dependency_revision: result.initialDependencyRevision,
+          lease_expires_at: HEARTBEAT_AT + LIMITS.leaseMs,
+        },
+        retained: count,
+        initialLeaseExpiresAt: NOW + LIMITS.leaseMs,
+      });
     },
+    120_000,
   );
 });
