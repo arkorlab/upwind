@@ -59,10 +59,13 @@ interface RevalidateInput {
  */
 function pathTags(store: Store, pathname: string): string[] {
   const tags = [`${IMPLICIT_TAG_PREFIX}${pathname}`];
+  const slashed = `${IMPLICIT_TAG_PREFIX}${pathname}/`;
   if (pathname === '/') {
     tags.push(`${IMPLICIT_TAG_PREFIX}/index`);
-  } else if (store.manifest.config.trailingSlash) {
-    tags.push(`${IMPLICIT_TAG_PREFIX}${pathname}/`);
+  } else if (store.manifest.config.trailingSlash && slashed.length <= MAX_TAG_LENGTH) {
+    // Within the host's bound alone: past it, the host would refuse the call with the page's
+    // other tags in it, which a page in another Function sends whatever their length.
+    tags.push(slashed);
   }
   return tags;
 }

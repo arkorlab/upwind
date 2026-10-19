@@ -1,6 +1,11 @@
 import { resolveRoutes } from '@next/routing';
 import type { Prerender } from '@stayingupwind/core/bundle';
-import { deriveEntry, IMPLICIT_TAG_PREFIX, sharedShellTagOf } from '@stayingupwind/core/cache';
+import {
+  deriveEntry,
+  IMPLICIT_TAG_PREFIX,
+  MAX_TAG_LENGTH,
+  sharedShellTagOf,
+} from '@stayingupwind/core/cache';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { InvalidatedTags, RequestWrites, withRequestContext } from '../src/cache/context.ts';
@@ -562,6 +567,30 @@ describe('manual revalidation route precedence', () => {
       expect(regenerate).not.toHaveBeenCalled();
     },
   );
+
+  it('names no slash spelling past the tag bound for a page in another Function', async () => {
+    const seed = 's'.repeat(MAX_TAG_LENGTH - IMPLICIT_TAG_PREFIX.length - 1);
+    const seeded = seededDeployment(true, true, false, seed);
+    const store = {
+      ...seeded,
+      manifest: {
+        ...seeded.manifest,
+        entrypoints: seeded.manifest.entrypoints.map((entry) => {
+          return {
+            ...entry,
+            kind: 'app-page' as const,
+          };
+        }),
+      },
+    };
+    vi.mocked(elsewhere).mockReturnValue('app-other');
+
+    await revalidate(store, `/${seed}/`, true);
+
+    expect(invalidateNow).toHaveBeenCalledExactlyOnceWith(expect.anything(), [
+      `${IMPLICIT_TAG_PREFIX}/${seed}`,
+    ]);
+  });
 
   it.each([
     { seed: 'seed', asked: '/s%65ed/', canonical: '/seed', closed: true, route: '/[...rest]' },
