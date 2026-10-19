@@ -26,9 +26,11 @@ async function fixture(storage: Storage, answer: Answer, matched = true) {
   const site = await seedSite({ document: pprDocument(), files: { [FILE]: 'the manual' } });
   const file = site.manifest.staticFiles?.[FILE];
   if (file === undefined) throw new Error('the fixture must ship its file');
+  const size = file.byteLength;
   const stored = await env.ARTIFACTS.get(`blobs/${file.sha256}`);
   if (stored === null) throw new Error('the seeded file must exist');
-  await stored.body.cancel();
+  const held: R2ObjectBody = stored;
+  await held.body.cancel();
   const pending = Promise.withResolvers<R2ObjectBody | null>();
   const blobPending = Promise.withResolvers<Response>();
   const entered = Promise.withResolvers<undefined>();
@@ -72,24 +74,28 @@ async function fixture(storage: Storage, answer: Answer, matched = true) {
     dispatchApp: (script) => {
       dispatched.push(script);
       switch (answer) {
-        case 'redirect':
+        case 'redirect': {
           return Promise.resolve(
             new Response(null, {
               status: 307,
               headers: { location: 'https://site.example/login' },
             }),
           );
+        }
         case 'external':
-        case 'external-unavailable':
+        case 'external-unavailable': {
           return Promise.resolve(
             new Response(null, {
               headers: { 'x-middleware-rewrite': 'https://elsewhere.example/manual' },
             }),
           );
-        case 'continue':
+        }
+        case 'continue': {
           return Promise.resolve(new Response(null, { headers: { 'x-middleware-next': '1' } }));
-        case 'response':
+        }
+        case 'response': {
           return Promise.resolve(new Response('answered', { status: 401 }));
+        }
       }
     },
     fetchImpl: () => {
@@ -148,20 +154,18 @@ async function fixture(storage: Storage, answer: Answer, matched = true) {
     if (outcome === 'failed') {
       pending.reject(new Error('bucket read failed'));
     } else {
-      pending.resolve(outcome === 'missing' ? null : { ...stored, size: file.byteLength, body });
+      pending.resolve(outcome === 'missing' ? null : { ...held, size, body });
     }
-    blobPending.resolve(
-      new Response(body, { headers: { 'content-length': String(file.byteLength) } }),
-    );
+    blobPending.resolve(new Response(body, { headers: { 'content-length': String(size) } }));
   }
   return { serve, finish, entered, get, blob, cancel, ctx, points, dispatched };
 }
 
-afterEach(() => {
-  vi.restoreAllMocks();
-});
-
 describe('a middleware answer counts the speculative read it abandons', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it.each([
     { storage: 'bucket', answer: 'response', outcome: 'found', count: 2, status: 401 },
     { storage: 'blob-hit', answer: 'redirect', outcome: 'found', count: 2, status: 307 },
