@@ -4,8 +4,10 @@ import {
   sharedShellPathname,
 } from '@stayingupwind/core/bundle';
 import {
+  appPathFor,
   deriveEntry,
   IMPLICIT_TAG_PREFIX,
+  implicitTagsFor,
   MAX_TAG_LENGTH,
   normalizeRoutePathname,
   type RouteEntryDescriptor,
@@ -159,19 +161,23 @@ function routeOf(store: Store, pathname: string): RouteEntryDescriptor | undefin
  * replace. Once it is published, that entry is invalidated by the page's own tags, as for a page in
  * another Function — never by the shared identity, whose new generation is in place. At each of its
  * `spellings`: the one asked, which an entry of its own was made under — an escaped one, of a value
- * that reads as the shell's placeholder, among them — and the name the build gives it.
+ * that reads as the shell's placeholder, among them — and the name the build gives it. Never by a
+ * tag the shell carries itself: a page spelled as one of its route's layouts (`/blog/layout`, of
+ * `/blog/[slug]`) is tagged as that layout is, and invalidated by it, would take the shell just
+ * published, and every page under the layout, with it; such a page's own entry keeps its lifetime.
  */
 async function invalidateOwnEntry(
   runtime: CacheRuntime,
   store: Store,
   spellings: readonly string[],
-  shell: string,
+  shell: RouteEntryDescriptor,
 ): Promise<void> {
+  const carried = new Set(implicitTagsFor(appPathFor(shell.kind, shell.route)));
   const own = new Set(
     spellings
-      .filter((spelling) => spelling !== shell)
+      .filter((spelling) => spelling !== shell.pathname)
       .flatMap((spelling) => pathTags(store, spelling))
-      .filter((tag) => tag.length <= MAX_TAG_LENGTH),
+      .filter((tag) => tag.length <= MAX_TAG_LENGTH && !carried.has(tag)),
   );
   if (own.size > 0) {
     await invalidateNow(runtime, [...own]);
@@ -259,6 +265,6 @@ export async function platformRevalidate(input: RevalidateInput): Promise<void> 
   }
   if (shared) {
     const spellings = [normalizeRoutePathname(asked), pathname];
-    await invalidateOwnEntry(context.runtime, store, spellings, descriptor.pathname);
+    await invalidateOwnEntry(context.runtime, store, spellings, descriptor);
   }
 }

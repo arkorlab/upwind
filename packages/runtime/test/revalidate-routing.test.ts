@@ -246,6 +246,36 @@ function revalidate(
   );
 }
 
+/** A blog whose one reusable shell, its route's own pathname, every post shares. */
+function blogDeployment(): Store {
+  const route = '/blog/[slug]';
+  const shell: Prerender = {
+    id: route,
+    route,
+    pathname: route,
+    parentOutputId: route,
+    groupId: 1,
+    routeType: 'shell',
+    response: 'initial',
+    compute: 'resuming',
+    renderingMode: 'PARTIALLY_STATIC',
+    body: { sha256: 'html', byteLength: 10, contentType: 'text/html' },
+    postponed: { sha256: 'state', byteLength: 5, contentType: 'application/json' },
+  };
+  return {
+    manifest: {
+      config: { basePath: '', i18n: null, cacheComponents: true, partialPrefetching: false },
+      entrypoints: [{ id: route, pathname: route, kind: 'app-page' }],
+    },
+    prerendersByPathname: new Map([[route, shell]]),
+    shellsByRoute: new Map([
+      [route, { pages: new Map(), patterns: [{ pattern: /^\/blog\/[^/]+$/u, prerender: shell }] }],
+    ]),
+    pathnames: [route],
+    slashSpellings: new Map(),
+  } as unknown as Store;
+}
+
 /** The same deployment, of an application that keeps its pages at a trailing slash. */
 function withTrailingSlash(store: Store): Store {
   return {
@@ -449,6 +479,26 @@ describe('manual revalidation of a shared terminal shell', () => {
       sharedShellTagOf(entryId),
     ]);
     expect(regenerate).not.toHaveBeenCalled();
+  });
+
+  it('invalidates a post of a blog by its own tag', async () => {
+    await revalidate(blogDeployment(), '/blog/post');
+
+    expect(vi.mocked(regenerate).mock.calls[0]?.[0].target.descriptor.pathname).toBe(
+      '/blog/[slug]',
+    );
+    expect(invalidateNow).toHaveBeenCalledExactlyOnceWith(expect.anything(), [
+      `${IMPLICIT_TAG_PREFIX}/blog/post`,
+    ]);
+  });
+
+  it('invalidates no post whose own tag the shell carries as a layout of its route', async () => {
+    await revalidate(blogDeployment(), '/blog/layout');
+
+    expect(vi.mocked(regenerate).mock.calls[0]?.[0].target.descriptor.pathname).toBe(
+      '/blog/[slug]',
+    );
+    expect(invalidateNow).not.toHaveBeenCalled();
   });
 
   it('invalidates the escaped spelling of a page that reads as the shell placeholder', async () => {
