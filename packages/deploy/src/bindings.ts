@@ -5,12 +5,13 @@ import {
   CACHE_SERVICE_BINDING,
   CACHE_TOKEN_BINDING,
   DEPLOYMENT_ID_BINDING,
-  PREFETCH_SERVICE_BINDING,
   RESPONSE_CACHE_TTL_BINDING,
   RESPONSE_CACHE_TTL_MS,
   RUNTIME_BINDING,
   RUNTIME_NAME,
 } from '@stayingupwind/host/bindings';
+
+import { prefetchBinding, type PrefetchBlobs } from './prefetch.ts';
 
 /**
  * What every Function of a deployment is bound to by whatever deploys it, beside the application's
@@ -25,10 +26,12 @@ export interface TextBinding {
   readonly secret: boolean;
 }
 
-/** Another Worker a Function reaches without going out to the internet, at its default entrypoint. */
+/** Another Worker a Function reaches without going out to the internet. */
 export interface ServiceBinding {
   readonly name: string;
   readonly service: string;
+  readonly entrypoint?: string | undefined;
+  readonly props?: Readonly<Record<string, unknown>> | undefined;
 }
 
 /**
@@ -99,6 +102,8 @@ export function functionBindings(input: {
    * prefetch the edge did not serve; none for a host that runs none.
    */
   readonly prefetch?: string | undefined;
+  /** Use prefetchBlobsOf on the accepted bundle; an omitted capability grants no blob access. */
+  readonly prefetchBlobs?: PrefetchBlobs | undefined;
 }): {
   readonly text: readonly TextBinding[];
   readonly services: readonly ServiceBinding[];
@@ -119,7 +124,7 @@ export function functionBindings(input: {
       ...reached.services,
       ...(input.prefetch === undefined
         ? []
-        : [{ name: PREFETCH_SERVICE_BINDING, service: input.prefetch }]),
+        : [prefetchBinding(input.prefetch, input.prefetchBlobs ?? {})]),
     ],
   };
 }
