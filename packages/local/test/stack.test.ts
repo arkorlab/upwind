@@ -10,6 +10,7 @@ import {
   type FunctionSpec,
   SPLIT_BUNDLE_VERSION,
 } from '@stayingupwind/core/bundle';
+import { EDGE_BYPASS_COOKIE } from '@stayingupwind/core/request';
 import { createId } from '@stayingupwind/core/util';
 import {
   CACHE_INTERNAL_ORIGIN,
@@ -62,6 +63,15 @@ export default {
     }
     if (url.pathname === '/json') {
       return Response.json(data);
+    }
+    if (url.pathname === '/cf') {
+      return Response.json({
+        url: request.url,
+        host: request.headers.get('host'),
+        protocol: request.headers.get('x-forwarded-proto'),
+        clientCodings: request.cf?.clientAcceptEncoding ?? null,
+        codings: request.headers.get('accept-encoding'),
+      });
     }
     if (url.pathname === '/self') {
       // A page of the site's own, fetched as an application fetches one: by the URL it was asked at.
@@ -140,7 +150,7 @@ function accountOf(answer: Response): string[] {
 }
 
 /** A build of the two Functions and the one asset, under `dir` as the adapter writes one. */
-async function writeBundle(dir: string): Promise<void> {
+async function writeBundle(dir: string, middleware?: string): Promise<void> {
   const bundleDir = path.join(dir, OUT_DIR_NAME);
   const blobs = path.join(bundleDir, 'blobs');
   await mkdir(blobs, { recursive: true });
@@ -164,6 +174,15 @@ async function writeBundle(dir: string): Promise<void> {
     ...app,
     modules: [{ name: 'index.mjs', type: 'esm', blob: await blob(SECOND, 'text/javascript') }],
   };
+  const middlewareFunction: FunctionSpec | undefined =
+    middleware === undefined
+      ? undefined
+      : {
+          ...app,
+          modules: [
+            { name: 'index.mjs', type: 'esm', blob: await blob(middleware, 'text/javascript') },
+          ],
+        };
   const bundle: DeploymentBundle = {
     // A bundle split across Functions says so by its version.
     v: SPLIT_BUNDLE_VERSION,
@@ -210,7 +229,16 @@ async function writeBundle(dir: string): Promise<void> {
       { pathname: ASSET_PATH, blob: await blob(ASSET, 'text/javascript'), immutable: true },
     ],
     // Split across two, as a build whose routes the adapter splits is.
-    functions: { app, split: { 'app-2': second } },
+    functions: {
+      app,
+      split: { 'app-2': second },
+      ...(middlewareFunction !== undefined && { middleware: middlewareFunction }),
+    },
+    ...(middlewareFunction !== undefined && {
+      middleware: {
+        matchers: [{ sourceRegex: '^/guard$', has: [{ type: 'header', key: 'via' }] }],
+      },
+    }),
   };
   await writeFile(path.join(bundleDir, 'bundle.json'), JSON.stringify(bundle));
 }
@@ -340,6 +368,67 @@ describe('a local stack', () => {
     await expect(unencoded.json()).resolves.toMatchObject({ codings: 'gzip, br' });
     await expect(zstd.json()).resolves.toMatchObject({ codings: 'gzip, br' });
   });
+
+  it.each([
+    { scheme: 'http', coding: 'identity' },
+    { scheme: 'https', coding: 'zstd' },
+  ])('keeps the visitor’s cf codings when forwarding over $scheme', async ({ scheme, coding }) => {
+    const stack = started();
+    const expected = new URL('/cf', stack.url);
+    expected.protocol = `${scheme}:`;
+
+    const response = await fetch(new URL('/cf', stack.url), {
+      headers: { 'accept-encoding': coding, 'x-forwarded-proto': scheme },
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toStrictEqual({
+      url: expected.href,
+      host: expected.host,
+      protocol: scheme,
+      clientCodings: coding,
+      codings: 'gzip, br',
+    });
+  });
+
+  it(
+    'asks standalone middleware with the forwarded Via and without internal or recovery fields',
+    async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), 'upwind-local-middleware-view-'));
+      let stack: LocalStack | undefined;
+      try {
+        await writeBundle(
+          dir,
+          `export default {
+          fetch(request) {
+            const cookie = request.headers.get('cookie') ?? '';
+            const valid = request.headers.get('via') === '1.1 arkor-edge'
+              && request.headers.get('x-arkor-test') === null
+              && cookie === 'session=kept';
+            return valid
+              ? new Response(null, { headers: { 'x-middleware-next': '1' } })
+              : new Response('incorrect forwarding view', { status: 500 });
+          },
+        };`,
+        );
+        stack = await startStack({ bundleDir: path.join(dir, OUT_DIR_NAME) });
+        const response = await fetch(new URL('middleware?path=/guard', stack.backstage), {
+          headers: {
+            via: 'the visitor',
+            'x-arkor-test': 'untrusted',
+            cookie: `session=kept; ${EDGE_BYPASS_COOKIE}=1`,
+          },
+        });
+
+        expect(response.status).toBe(200);
+        await expect(response.json()).resolves.toStrictEqual({ kind: 'continue', status: 200 });
+      } finally {
+        await stack?.dispose();
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+    START_MS,
+  );
 
   it('hands a Function a request said to come over HTTPS under that origin, as a check’s is', async () => {
     const stack = started();

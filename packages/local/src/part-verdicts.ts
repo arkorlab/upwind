@@ -68,6 +68,7 @@ import {
   STALE,
 } from './part-marks.ts';
 import type { Reading } from './reading.ts';
+import { routedReads } from './routing-reads.ts';
 
 /**
  * A part of a route, asked for as the client router asks for it (`parts.ts`), judged as the edge
@@ -141,7 +142,7 @@ function configuredFor(
   sent: Readonly<Record<string, string>>,
 ): ConfiguredHeaders {
   const { manifest } = stack;
-  const asked = edgeReads(sent);
+  const asked = routedReads(part.url, sent);
   const configured = headerRulesFor(
     manifest,
     part.url,

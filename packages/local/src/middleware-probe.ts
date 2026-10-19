@@ -14,9 +14,9 @@ import {
   forwarded,
   skipped,
   type Verdict,
-  edgeReads,
 } from './answers.ts';
 import { proverNavigation } from './browsers.ts';
+import { middlewareReads } from './routing-reads.ts';
 import { BACKSTAGE_ROUTES, type MiddlewareProbe } from './workers/protocol.ts';
 
 /**
@@ -54,11 +54,27 @@ const PARAMETER_WITNESSES = new Map([
   [String.raw`\d`, '1'],
 ]);
 
+/** A simple ASCII literal or its alternatives, not an arbitrary regular-expression solver. */
+function firstLiteral(pattern: string): string | undefined {
+  if (
+    pattern === '' ||
+    pattern.startsWith('|') ||
+    pattern.endsWith('|') ||
+    pattern.includes('||') ||
+    /[^\w|-]/u.test(pattern)
+  ) {
+    return undefined;
+  }
+  const alternativeAt = pattern.indexOf('|');
+  return alternativeAt === -1 ? pattern : pattern.slice(0, alternativeAt);
+}
+
 /** Fill each parameter separately, so a numeric parameter need not share a letter's witness. */
 function spelledParameter(parameter: string): string {
   const opening = parameter.indexOf('(');
   const closing = parameter.lastIndexOf(')');
-  return PARAMETER_WITNESSES.get(parameter.slice(opening + 1, closing)) ?? SPELLED_SEGMENT;
+  const pattern = parameter.slice(opening + 1, closing);
+  return PARAMETER_WITNESSES.get(pattern) ?? firstLiteral(pattern) ?? SPELLED_SEGMENT;
 }
 
 /**
@@ -114,10 +130,11 @@ function pathnameFor(stack: CheckedStack, prover: string): string | undefined {
   );
   const spelled = matchers.flatMap((matcher) => spelledBy(matcher.source, bundle.config));
   const candidates = ['/', ...pages, ...files, ...spelled].filter((each) => each !== undefined);
-  const headers = edgeReads(proverNavigation(prover));
-  return candidates.find((pathname) =>
-    middlewareApplies(matchers, new URL(pathname, stack.site), headers),
-  );
+  const headers = proverNavigation(prover);
+  return candidates.find((pathname) => {
+    const url = new URL(pathname, stack.site);
+    return middlewareApplies(matchers, url, middlewareReads(manifest, url, headers));
+  });
 }
 
 /** What the backstage said the middleware made of the request, where it said anything readable. */

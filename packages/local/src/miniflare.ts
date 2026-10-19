@@ -29,8 +29,8 @@ type LocalService =
   | string
   | {
       readonly name: string;
-      readonly entrypoint?: string | undefined;
-      readonly props?: Readonly<Record<string, unknown>> | undefined;
+      readonly entrypoint?: string;
+      readonly props?: Readonly<Record<string, unknown>>;
     };
 
 /** One Worker of a stack. */

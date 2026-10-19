@@ -17,10 +17,10 @@ import {
   EDGE_HEADER,
   HTTP_OK,
   type KeptMiddlewareResult,
-  edgeReads,
 } from './answers.ts';
 import { sharedCacheFailure } from './cache-control.ts';
 import type { Reading } from './reading.ts';
+import { routedReads } from './routing-reads.ts';
 
 /**
  * What a file of the build is expected to be answered with (`files.ts`), as the edge serves it: the
@@ -151,7 +151,7 @@ export function expectationOf(
     readonly middleware: Decided;
   },
 ): FileExpectation {
-  const configured = headerRulesFor(stack.manifest, url, edgeReads(read.headers));
+  const configured = headerRulesFor(stack.manifest, url, routedReads(url, read.headers));
   const scope = cookieScopeOf(stack);
   const laid = new Headers();
   layStoredConfiguredOver(laid, configured, scope, ENTITY_HEADERS);

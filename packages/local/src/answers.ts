@@ -1,13 +1,17 @@
 import { kvGenerationKey } from '@stayingupwind/core/cache';
-import { middlewareApplies, type MiddlewareResult } from '@stayingupwind/core/paas';
+import {
+  MIDDLEWARE_ONLY_HEADER,
+  middlewareApplies,
+  type MiddlewareResult,
+} from '@stayingupwind/core/paas';
 import { type CookieHostContext, rewriteSetCookieForPreview } from '@stayingupwind/core/request';
 import { readMiddlewareAnswer } from '@stayingupwind/edge/handlers/responses';
 
 import { read, type ReadOptions, type Reading } from './reading.ts';
+import { edgeReads, middlewareReads, routedReads } from './routing-reads.ts';
 import type { CspNonceSetting, LocalStack } from './stack.ts';
 import {
   BACKSTAGE_ROUTES,
-  FRONT_LINE_CODINGS,
   type MiddlewareDecision,
   NONCE_PARAMS,
   type NoncedPolicies,
@@ -26,17 +30,7 @@ import {
 /** Where the edge says how it answered. */
 export const EDGE_HEADER = 'x-arkor-edge';
 
-/**
- * A request's headers as the edge is handed them — and the rules of `next.config`, the middleware's
- * matchers and the middleware with it — whatever the visitor sent: its `Accept-Encoding` the one
- * Cloudflare's front line sets on every request (`FRONT_LINE_CODINGS`), the visitor's own kept for
- * the edge to answer by alone, as the stack's edge is handed them too (`workers/edge.ts`).
- */
-export function edgeReads(headers: Readonly<Record<string, string>> | Headers): Headers {
-  const handed = new Headers(headers);
-  handed.set('accept-encoding', FRONT_LINE_CODINGS);
-  return handed;
-}
+export { edgeReads } from './routing-reads.ts';
 /** What it says of a file of the build it served from storage. */
 export const FROM_STORAGE = 'static;';
 /**
@@ -254,7 +248,7 @@ export function middlewareCovers(
   return (
     matchers !== undefined &&
     stack.app.middlewareScriptName !== undefined &&
-    middlewareApplies(matchers, url, edgeReads(headers))
+    middlewareApplies(matchers, url, middlewareReads(stack.manifest, url, headers))
   );
 }
 
@@ -476,7 +470,9 @@ export async function keptOf(
   }
   const answered = new Response(null, { status: decision.status, headers: answeredWith });
   const client = edgeReads(headers);
-  const decided = readMiddlewareAnswer(answered, url, client, client);
+  const handed = routedReads(url, headers);
+  handed.set(MIDDLEWARE_ONLY_HEADER, '1');
+  const decided = readMiddlewareAnswer(answered, url, client, handed);
   return {
     ...kept,
     decided:

@@ -7216,6 +7216,16 @@ describe('what the check makes of the middleware', () => {
         sourceRegex: String.raw`^/api/[a-z]+/\d+\.json$`,
         compiled: /^\/api\/[a-z]+\/\d+\.json$/u,
       },
+      {
+        source: String.raw`/api/:kind(foo|bar)/:id(\d+).json`,
+        sourceRegex: String.raw`^/api/(?:foo|bar)/\d+\.json$`,
+        compiled: /^\/api\/(?:foo|bar)\/\d+\.json$/u,
+      },
+      {
+        source: String.raw`/api/:id(\d+)/:kind(foo|bar).json`,
+        sourceRegex: String.raw`^/api/\d+/(?:foo|bar)\.json$`,
+        compiled: /^\/api\/\d+\/(?:foo|bar)\.json$/u,
+      },
     ])('probes distinct witnesses for mixed matcher parameters: $source', async (matcher) => {
       const stack = withMiddleware(stackOf([], {}), [
         { source: matcher.source, sourceRegex: matcher.sourceRegex },
@@ -12627,6 +12637,77 @@ describe('what the check makes of the middleware', () => {
   });
 
   describe('captured response and configured-header parity with the edge', () => {
+    it('judges a file type on the Via supplied by forwarding, keeping incorrect types rejected', async () => {
+      const files = { '/a.txt': fileOf('kept bytes', TEXT) };
+      const rule: HeaderRule = {
+        sourceRegex: '^/a[.]txt$',
+        has: [{ type: 'header', key: 'via', value: '^1[.]1 arkor-edge$' }],
+        headers: { 'content-type': 'image/png' },
+      };
+      const headers = {
+        'content-type': 'image/png',
+        'cache-control': GATED,
+        'x-arkor-edge': FILE_EDGE,
+      };
+      answers.set('/a.txt', { headers, body: 'kept bytes' });
+      const kept = await checkStack(stackOf([], files, { headerRules: [rule] }));
+      answers.set('/a.txt', { headers: { ...headers, 'content-type': TEXT }, body: 'kept bytes' });
+      const wrong = await checkStack(stackOf([], files, { headerRules: [rule] }));
+
+      expect(kept).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+      expect(wrong.failures).toHaveLength(1);
+      expect(wrong.failures[0]?.path).toBe('/a.txt');
+      expect(wrong.failures[0]?.reason).toContain('image/png');
+    });
+
+    it('judges a document header on forwarding Via and rejects a missing selected header', async () => {
+      const routes = [await routeOf('/', FRONT)];
+      const rule: HeaderRule = {
+        sourceRegex: '^/$',
+        has: [{ type: 'header', key: 'via', value: '^1[.]1 arkor-edge$' }],
+        headers: { 'content-language': 'fr' },
+      };
+      const document = documentAnswer(FRONT, 'mw=miss;route=/');
+      answers.set('/', { ...document, headers: { ...document.headers, 'content-language': 'fr' } });
+      const kept = await checkStack(stackOf(routes, {}, { headerRules: [rule] }));
+      answers.set('/', document);
+      const wrong = await checkStack(stackOf(routes, {}, { headerRules: [rule] }));
+
+      expect(kept).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+      expect(wrong.failures).toHaveLength(1);
+      expect(wrong.failures[0]?.path).toBe('/');
+      expect(wrong.failures[0]?.reason).toContain('content-language');
+    });
+
+    it('judges a stored part header on forwarding Via and retains the selected-header check', async () => {
+      const routes = [await routeOf('/', FRONT, { segments: { '/_tree': 'tree bytes' } })];
+      const rule: HeaderRule = {
+        sourceRegex: '^/$',
+        has: [
+          { type: 'header', key: 'rsc', value: '1' },
+          { type: 'header', key: 'via', value: '^1[.]1 arkor-edge$' },
+        ],
+        headers: { 'content-language': 'fr' },
+      };
+      answers.set('/', documentAnswer(FRONT, 'mw=miss;route=/'));
+      const segment = segmentAnswer('tree bytes');
+      partAnswers.set('/|/_tree', {
+        ...segment,
+        headers: { ...segment.headers, 'cache-control': GATED, 'content-language': 'fr' },
+      });
+      const kept = await checkStack(stackOf(routes, {}, { headerRules: [rule] }));
+      partAnswers.set('/|/_tree', {
+        ...segment,
+        headers: { ...segment.headers, 'cache-control': GATED },
+      });
+      const wrong = await checkStack(stackOf(routes, {}, { headerRules: [rule] }));
+
+      expect(kept).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+      expect(partsAsked.has('/|/_tree')).toBe(true);
+      expect(wrong.failures).toHaveLength(1);
+      expect(wrong.failures[0]?.reason).toContain('content-language');
+    });
+
     it('drops a Connection-nominated middleware tag and still rejects incorrect file bytes metadata', async () => {
       const files = { '/a.txt': fileOf('kept bytes', TEXT) };
       decisions.set('/a.txt', {

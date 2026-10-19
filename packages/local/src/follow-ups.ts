@@ -1,6 +1,6 @@
 import { headerRulesFor, type StaticFileEntry } from '@stayingupwind/core/manifest';
 
-import { type CheckedStack, HTTP_OK, edgeReads } from './answers.ts';
+import { type CheckedStack, HTTP_OK } from './answers.ts';
 import { askedAgain, opaqueTag, said, subjectOf } from './asked-again.ts';
 import { carryingEach, lackingEach } from './escaping.ts';
 import {
@@ -16,6 +16,7 @@ import {
   staleRangeFailure,
 } from './ranges.ts';
 import type { Reading } from './reading.ts';
+import { routedReads } from './routing-reads.ts';
 
 /** The status of an answer to a request on a validator its holder already has. */
 const NOT_MODIFIED_STATUS = 304;
@@ -151,7 +152,7 @@ function typedRequestsOf(
   for (const rule of headerRules) {
     const alone = { ...stack.manifest, headerRules: [rule] };
     const typedBy = (headers: Readonly<Record<string, string>>, at: URL): boolean =>
-      typeSetIn(headerRulesFor(alone, at, edgeReads(headers)).headers) !== undefined;
+      typeSetIn(headerRulesFor(alone, at, routedReads(at, headers)).headers) !== undefined;
     const conditioned = rule.has !== undefined || rule.missing !== undefined;
     if (!conditioned || typeSetIn(rule.headers) === undefined || typedBy(sent, url)) {
       continue;

@@ -12,7 +12,7 @@ import {
   REGENERATE_HEADER,
   type RegenerateMode,
 } from '@stayingupwind/core/paas';
-import { budgetPatterns } from '@stayingupwind/core/request';
+import { budgetPatterns, sanitizePassthroughHeaders } from '@stayingupwind/core/request';
 import { toHex } from '@stayingupwind/core/util';
 import { applyNonceToHeaders, rewriteDocumentNonces } from '@stayingupwind/edge/handlers/csp-nonce';
 import { stateFromPointer } from '@stayingupwind/edge/preview/state';
@@ -136,7 +136,11 @@ function underOrigin(request: IncomingRequest, origin: URL): IncomingRequest {
 }
 
 /** A request forwarded to the visitor's hostname, addressed to their origin. */
-function addressed(origin: URL, forwarded: Request): Request {
+function addressed(
+  origin: URL,
+  forwarded: Request,
+  originalCf: IncomingRequestCfProperties | undefined,
+): Request {
   const url = new URL(forwarded.url);
   if (url.hostname !== origin.hostname) {
     return forwarded;
@@ -151,6 +155,7 @@ function addressed(origin: URL, forwarded: Request): Request {
     method: forwarded.method,
     headers,
     body: forwarded.body,
+    cf: forwarded.cf ?? originalCf,
     redirect: 'manual',
     // A visitor who goes away cancels the Function's work, as deployed.
     signal: forwarded.signal,
@@ -182,6 +187,7 @@ function servedFrom(
   origin: URL,
   service: FunctionService,
   trace: string | undefined,
+  originalCf: IncomingRequestCfProperties | undefined,
 ): FunctionService {
   return {
     async fetch(forwarded) {
@@ -189,7 +195,7 @@ function servedFrom(
       if (trace !== undefined && regenerated !== undefined) {
         keep(trace, { regenerated });
       }
-      const response = await service.fetch(addressed(origin, forwarded));
+      const response = await service.fetch(addressed(origin, forwarded, originalCf));
       // The edge marks its own ask of the middleware (`x-arkor-middleware`, set on every such ask by
       // `middleware.ts` in the edge), which is how it is told from a request the edge forwards to a
       // Function to answer.
@@ -226,7 +232,12 @@ function watched(kv: KVNamespace, trace: string): KVNamespace {
  * read as `watched` reads them, whether KV or the authority answers with them. Both pass through
  * the same decoder before the check is told the generation was read.
  */
-function servedEnv(env: StandaloneEnv, origin: URL, trace: string | undefined): StandaloneEnv {
+function servedEnv(
+  env: StandaloneEnv,
+  origin: URL,
+  trace: string | undefined,
+  originalCf: IncomingRequestCfProperties | undefined,
+): StandaloneEnv {
   const local: StandaloneEnv = {
     ...env,
     CACHE_STATE: trace === undefined ? env.CACHE_STATE : watched(env.CACHE_STATE, trace),
@@ -240,7 +251,7 @@ function servedEnv(env: StandaloneEnv, origin: URL, trace: string | undefined): 
   for (const name of Object.keys(env)) {
     const service: unknown = Reflect.get(env, name);
     if (name.startsWith(FUNCTION_BINDING_PREFIX) && isFunctionService(service)) {
-      Reflect.set(local, name, servedFrom(origin, service, trace));
+      Reflect.set(local, name, servedFrom(origin, service, trace, originalCf));
     }
   }
   return local;
@@ -469,7 +480,8 @@ export class Backstage extends WorkerEntrypoint<StandaloneEnv> {
    */
   private async probe(name: string, pathname: string, request: Request): Promise<Response> {
     const origin = originOf(request);
-    const env = servedEnv(this.env, origin, undefined);
+    const cf = clientCodingsOf(request.headers, undefined);
+    const env = servedEnv(this.env, origin, undefined, cf);
     const pointer = edgePointerSchema.safeParse(await pointerOf(env));
     if (!pointer.success) {
       return new Response('the edge serves no pointer to probe a Function by', { status: 503 });
@@ -495,7 +507,7 @@ export class Backstage extends WorkerEntrypoint<StandaloneEnv> {
       headers: frontLineHeaders(request.headers),
       redirect: 'manual',
       signal: request.signal,
-      cf: clientCodingsOf(request.headers, undefined),
+      cf,
     });
     return routeRequest({
       request: asked,
@@ -521,7 +533,8 @@ export class Backstage extends WorkerEntrypoint<StandaloneEnv> {
    */
   private async middleware(pathname: string, request: Request): Promise<Response> {
     const origin = originOf(request);
-    const env = servedEnv(this.env, origin, undefined);
+    const cf = clientCodingsOf(request.headers, undefined);
+    const env = servedEnv(this.env, origin, undefined, cf);
     const pointer = edgePointerSchema.safeParse(await pointerOf(env));
     const scriptName = pointer.success ? pointer.data.app?.middlewareScriptName : undefined;
     if (scriptName === undefined) {
@@ -530,7 +543,11 @@ export class Backstage extends WorkerEntrypoint<StandaloneEnv> {
     const url = new URL(pathname, origin);
     // As the front line hands the edge the request it asks about (`frontLineHeaders`).
     const handed = frontLineHeaders(request.headers);
-    const headers = new Headers(handed);
+    const headers = sanitizePassthroughHeaders(handed, {
+      previewDomain: 'invalid',
+      previewHost: origin.hostname,
+      clientIp: handed.get('cf-connecting-ip') ?? undefined,
+    });
     headers.set(MIDDLEWARE_ONLY_HEADER, '1');
     const dispatch = localRuntime(env).dispatchApp;
     let probe: MiddlewareProbe;
@@ -590,14 +607,15 @@ export default {
     const asked = visited.headers.get(TRACE_HEADER);
     const own = asked === null ? undefined : registered.get(asked);
     if (asked === null || own === undefined) {
-      const local = servedEnv(env, origin, undefined);
-      return handleStandalone(frontLineHanded(visited), local, ctx, localRuntime(local));
+      const handed = frontLineHanded(visited);
+      const local = servedEnv(env, origin, undefined, handed.cf);
+      return handleStandalone(handed, local, ctx, localRuntime(local));
     }
     registered.delete(asked);
     // Kept from now, so that a check reading it later is told it from an id never seen.
     keep(asked, {});
-    const local = servedEnv(env, origin, asked);
     const handed = frontLineHanded(untraced(visited, own));
+    const local = servedEnv(env, origin, asked, handed.cf);
     generations.begin(asked);
     return serveTraced(handed, local, ctx, asked);
   },

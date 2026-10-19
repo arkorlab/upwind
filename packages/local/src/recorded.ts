@@ -27,10 +27,10 @@ import {
   cookiesSetFailure,
   EDGE_HEADER,
   recordedHeadersOf,
-  edgeReads,
 } from './answers.ts';
 import { ROUTE_MARKER } from './landings.ts';
 import type { Reading } from './reading.ts';
+import { routedReads } from './routing-reads.ts';
 import type { Regeneration } from './workers/protocol.ts';
 
 /**
@@ -143,7 +143,7 @@ export function applicationOf(
 ): Application {
   const url = new URL(asked.requested, stack.site);
   const rulesFor = served === 'resumed' ? documentHeaderRulesFor : headerRulesFor;
-  const rules = rulesFor(stack.manifest, url, edgeReads(asked.headers)).headers;
+  const rules = rulesFor(stack.manifest, url, routedReads(url, asked.headers)).headers;
   const ruled = Object.keys(rules);
   // Of what a shell goes out with, as the edge lays a rule's on a document.
   const configured = Object.entries(filterShellResponseHeaders(Object.entries(rules)));
