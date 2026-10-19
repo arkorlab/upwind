@@ -122,6 +122,15 @@ function observedHistory(sql: SqlStorage) {
   };
 }
 
+function leaseState(sql: SqlStorage, attemptId: string) {
+  return sql
+    .exec<{ dependency_revision: number; lease_expires_at: number }>(
+      `SELECT dependency_revision, lease_expires_at FROM attempts WHERE attempt_id = ?`,
+      attemptId,
+    )
+    .one();
+}
+
 async function commitWithHistory(count: number) {
   const scopeId = createId('dpl');
   const stub = scopeStub(env, scopeId);
@@ -144,6 +153,7 @@ async function commitWithHistory(count: number) {
     const leased = await instance.startAttempt({ entry: ROOT, reason: 'stale' }, NOW);
     if (leased.kind !== 'leased') throw new Error('the render must hold a lease');
     const { sql } = state.storage;
+    const initialLease = leaseState(sql, leased.attemptId);
     insertHistory(sql, tagId, count);
     const events: EventInput[] = [];
     const tx: TxInput = {
@@ -168,12 +178,7 @@ async function commitWithHistory(count: number) {
     const heartbeat = state.storage.transactionSync(() => {
       return applyHeartbeat({ ...tx, now: HEARTBEAT_AT }, leased.attemptId, leased.fencingToken);
     });
-    const dependency = sql
-      .exec<{ dependency_revision: number; lease_expires_at: number }>(
-        `SELECT dependency_revision, lease_expires_at FROM attempts WHERE attempt_id = ?`,
-        leased.attemptId,
-      )
-      .one();
+    const dependency = leaseState(sql, leased.attemptId);
     const retained = sql
       .exec<{ count: number }>('SELECT COUNT(*) AS count FROM invalidations')
       .one().count;
@@ -200,6 +205,8 @@ async function commitWithHistory(count: number) {
         answer,
         heartbeat,
         dependency,
+        initialDependencyRevision: initialLease.dependency_revision,
+        initialLeaseExpiresAt: initialLease.lease_expires_at,
         retained,
         attempt,
         entry,
@@ -256,10 +263,15 @@ describe('refusing a render after retained invalidations', () => {
         heartbeat: result.heartbeat,
         dependency: result.dependency,
         retained: result.retained,
+        initialLeaseExpiresAt: result.initialLeaseExpiresAt,
       }).toStrictEqual({
         heartbeat: { leaseExpiresAt: HEARTBEAT_AT + LIMITS.leaseMs },
-        dependency: { dependency_revision: 0, lease_expires_at: HEARTBEAT_AT + LIMITS.leaseMs },
+        dependency: {
+          dependency_revision: result.initialDependencyRevision,
+          lease_expires_at: HEARTBEAT_AT + LIMITS.leaseMs,
+        },
         retained: count,
+        initialLeaseExpiresAt: NOW + LIMITS.leaseMs,
       });
     },
     120_000,
