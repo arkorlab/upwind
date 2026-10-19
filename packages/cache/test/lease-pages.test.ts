@@ -43,7 +43,8 @@ async function inScope<T>(action: (fixture: Fixture) => T | Promise<T>) {
     STARTED,
   );
   return runInDurableObject(stub, (instance, state) => {
-    return action({ instance, scopeId, sql: state.storage.sql, storage: state.storage });
+    const fixture = { instance, scopeId, sql: state.storage.sql, storage: state.storage };
+    return action(fixture);
   });
 }
 
@@ -94,8 +95,8 @@ function input(fixture: Fixture, history = NO_HISTORY) {
   };
 }
 
-async function start(fixture: Fixture, entry = ROOT, history = NO_HISTORY) {
-  const apply = await planStartAttempt(input(fixture, history), { entry, reason: 'stale' });
+async function start(fixture: Fixture, history = NO_HISTORY) {
+  const apply = await planStartAttempt(input(fixture, history), { entry: ROOT, reason: 'stale' });
   return fixture.storage.transactionSync(apply);
 }
 
@@ -147,9 +148,10 @@ describe('lease expiry pages', () => {
       );
       addLeases(fixture, BACKLOG);
       const events: EventInput[] = [];
-      const second = await start(fixture, ROOT, capturing(events));
+      const second = requireLease(await start(fixture, capturing(events)));
       const late = fixture.storage.transactionSync(() => {
-        return applyHeartbeat(input(fixture), first.attemptId, first.fencingToken);
+        const tx = input(fixture);
+        return applyHeartbeat(tx, first.attemptId, first.fencingToken);
       });
       return {
         second,
@@ -164,10 +166,10 @@ describe('lease expiry pages', () => {
     expect(result.second).toMatchObject({ kind: 'leased', fencingToken: 2 });
     expect(result.late).toMatchObject({ kind: 'refused', code: 'lease_expired' });
     expect(result.counts).toStrictEqual({ old: BACKLOG, expired: 0, live: 0 });
-    expect(result.events).toEqual([
+    expect(result.events).toStrictEqual([
       { kind: 'entry.state.changed', entityId: result.entryId },
       { kind: 'attempt.expired', entityId: result.oldId },
-      { kind: 'attempt.started', entityId: expect.any(String) },
+      { kind: 'attempt.started', entityId: result.second.attemptId },
     ]);
   });
 
@@ -189,7 +191,7 @@ describe('lease expiry pages', () => {
       );
       addLeases(fixture, BACKLOG);
       const events: EventInput[] = [];
-      const answer = await start(fixture, ROOT, capturing(events));
+      const answer = await start(fixture, capturing(events));
       return { first, answer, counts: counts(fixture.sql), events };
     });
 
@@ -199,15 +201,13 @@ describe('lease expiry pages', () => {
   });
 
   it('drains tied leased and uploading deadlines across alarms without postponing an earlier alarm', async () => {
-    const pages = await inScope(async (fixture) => {
+    const pages = await inScope((fixture) => {
       addLeases(fixture, BACKLOG);
       addLeases(fixture, 2, true);
       writeMeta(fixture.sql, 'last_retention_at', String(NOW));
-      const results = [];
-      for (const earlier of [undefined, NOW + 250, undefined]) {
-        results.push(await alarmPage(fixture, earlier));
-      }
-      return results;
+      return Array.fromAsync([undefined, NOW + 250, undefined], (earlier) =>
+        alarmPage(fixture, earlier),
+      );
     });
 
     expect(pages).toStrictEqual([
@@ -225,7 +225,9 @@ describe('lease expiry pages', () => {
       const revision = readRevision(fixture.sql);
       const events: EventInput[] = [];
       const history = capturing(events);
+
       expect(() => expire(fixture, history)).toThrow('expiry failed');
+
       const failed = { ...counts(fixture.sql), revision: readRevision(fixture.sql) };
       fixture.sql.exec(`DROP TRIGGER refuse_expiry`);
       const ended = expire(fixture, history);

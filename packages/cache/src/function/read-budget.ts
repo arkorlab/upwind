@@ -249,3 +249,61 @@ export function saidLength(response: Response): number | undefined {
 export function projectedLength(response: Response): number {
   return saidLength(response) ?? FUNCTION_READ_BYTES;
 }
+
+/**
+ * The Function's artifact buffer, at most its shared 32 MiB room. Larger seeded or configured
+ * uploads still deploy and stream elsewhere; this cache read misses. A native body takes one
+ * BYOB read with a sentinel byte: capacity is charged up to the budget's ceiling, with one extra
+ * byte at that ceiling. Generic host streams stay bounded in chunks.
+ */
+export async function readArtifactWhole(
+  response: Response,
+  signal: AbortSignal,
+  room: ArtifactRoom,
+): Promise<Uint8Array | undefined> {
+  const expected = saidLength(response);
+  if (expected !== undefined && expected > FUNCTION_READ_BYTES) {
+    releaseStream(response.body, 'artifact exceeds the Function read budget');
+    return;
+  }
+  const limit = expected ?? FUNCTION_READ_BYTES;
+  let release: () => void;
+  try {
+    release = await room.hold(limit + 1, signal);
+  } catch (error) {
+    releaseStream(response.body, 'an artifact read given up before its body');
+    throw error;
+  }
+  let reading: BodyRead | undefined;
+  const abort = (): void => {
+    releaseStream(reading?.reader ?? response.body, 'artifact read abandoned');
+  };
+  try {
+    signal.addEventListener('abort', abort, { once: true });
+    signal.throwIfAborted();
+    if (response.body === null) {
+      return expected === undefined || expected === 0 ? new Uint8Array() : undefined;
+    }
+    reading = beginBody(response.body, limit, 'artifact');
+    if (signal.aborted) abort();
+    const result = await reading.pending;
+    signal.throwIfAborted();
+    const bytes = result instanceof Uint8Array ? result : (result.value ?? new Uint8Array());
+    if (bytes.byteLength > limit || (expected !== undefined && bytes.byteLength !== expected)) {
+      abort();
+      return;
+    }
+    return bytes;
+  } catch (error) {
+    abort();
+    if (isBodyLengthError(error)) return;
+    throw error;
+  } finally {
+    signal.removeEventListener('abort', abort);
+    try {
+      reading?.reader.releaseLock();
+    } finally {
+      release();
+    }
+  }
+}
