@@ -3,12 +3,14 @@ import {
   type ImagesConfig,
   parseImageRequest,
 } from '@stayingupwind/core/images';
-import type { ConfiguredHeaders } from '@stayingupwind/core/manifest';
+import { type ConfiguredHeaders, isReserved } from '@stayingupwind/core/manifest';
 import { DEPLOYMENT_ID_QUERY, PatternBudgetExceededError } from '@stayingupwind/core/request';
 
 import { type HostedGateInput, serveAfterMiddleware, type TimedContinue } from './hosted-gate.ts';
+import { serveHostedFile } from './hosted-static-file.ts';
 import { handleImage, type ImageAnswerInput, refuseImage } from './image.ts';
 import {
+  handedHeaders,
   headerRulesAsRouted,
   type MiddlewareOutcome,
   type MiddlewareTiming,
@@ -146,12 +148,29 @@ function routeWithinBudget(input: HostedImageInput): Promise<Response> {
       optimized(input, input.url, answering(input, middleware, dispatches, configured)),
     // A rewrite that stays on the optimizer's path — another source, width or quality — is the
     // optimizer's to answer, as Next.js's router hands it the rewritten parameters: no Worker of
-    // the application has one. A rewrite anywhere else is the Worker's.
+    // the application has one. Elsewhere, the target's routing runs before a shipped file can
+    // answer it; anything the edge cannot serve stays with the Worker.
     rewritten: (middleware, dispatches, configured) => {
       const still = classifyImageRequest({ method: request.method, url: middleware.url, manifest });
-      return still === undefined
-        ? undefined
-        : optimized(input, middleware.url, answering(input, middleware, dispatches, configured));
+      if (still !== undefined) {
+        return optimized(
+          input,
+          middleware.url,
+          answering(input, middleware, dispatches, configured),
+        );
+      }
+      if (
+        manifest.reservedRoutes !== undefined &&
+        isReserved(
+          manifest,
+          middleware.url,
+          handedHeaders(input.edge, middleware.requestHeaders),
+          true,
+        )
+      ) {
+        return undefined;
+      }
+      return serveHostedFile({ ...input, configured }, middleware.url, middleware, dispatches);
     },
   });
 }
