@@ -33,6 +33,8 @@ upwind/
 │   │              #   the app is mounted, given that database, and signed in against upwind itself
 │   ├── host/      # @stayingupwind/host — what an edge, its runtime cache and what deploys to them
 │   │              #   share: the delivery policy, the pointer, the cache's contracts, storage keys
+│   ├── deploy/    # @stayingupwind/deploy — what deploying a build assembles from it: the manifest,
+│   │              #   the shells, the cache's seed, the Functions' bindings, the pointer
 │   ├── upwind/    # upwind — the CLI; `upwind dev` runs a Next.js dev server behind its own door
 │   └── create-upwind/
 │                   # create-upwind — `pnpm create upwind`, and the application it writes
