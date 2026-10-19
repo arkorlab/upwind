@@ -23,6 +23,8 @@ const AT = '2026-10-19T00:00:00.000Z';
 const HTML = 'text/html; charset=utf-8';
 const DOCUMENT = '<!doctype html><html><head></head><body>landing</body></html>';
 const DIGEST = createHash('sha256').update(DOCUMENT).digest('hex');
+const BOT_ACCOUNT = 'passthrough;reason=html-limited-bots';
+const BOT_SHELL_FAILURE = `not answered by the edge from its shell (x-arkor-edge: ${BOT_ACCOUNT})`;
 const HEADERS = { 'accept-encoding': 'gzip', referer: 'https://site.example/start' };
 
 const fixture = {
@@ -30,6 +32,7 @@ const fixture = {
   bundleDir: '',
   stack: undefined as CheckedStack | undefined,
   status: 200,
+  bot: false,
   override: undefined as 'br' | 'gzip' | undefined,
   middleClosed: Promise.withResolvers<true>(),
 };
@@ -47,7 +50,7 @@ function landing(request: IncomingMessage, response: ServerResponse): void {
   const coding = codingOf(request);
   let body: Buffer = Buffer.from(DOCUMENT);
   if (coding === 'br') body = brotliCompressSync(body);
-  if (coding === 'gzip') body = gzipSync(body);
+  else if (coding === 'gzip') body = gzipSync(body);
   const rendering = coding === undefined ? 'identity' : `${coding}-live`;
   response.writeHead(fixture.status, {
     'content-type': HTML,
@@ -55,7 +58,9 @@ function landing(request: IncomingMessage, response: ServerResponse): void {
     vary: 'accept-encoding',
     // A Location on a non-redirect status must not discard this body's evidence.
     location: '/not-a-redirect',
-    'x-arkor-edge': `shell;cont=none;policy=default;enc=${rendering};route=/landing`,
+    'x-arkor-edge': fixture.bot
+      ? BOT_ACCOUNT
+      : `shell;cont=none;policy=default;enc=${rendering};route=/landing`,
     ...(coding !== undefined && { 'content-encoding': coding }),
   });
   response.end(body);
@@ -211,6 +216,7 @@ describe('redirected documents retain their original request and response', () =
 
   beforeEach(() => {
     fixture.status = 200;
+    fixture.bot = false;
     fixture.override = undefined;
     fixture.middleClosed = Promise.withResolvers<true>();
     visits.length = 0;
@@ -296,6 +302,52 @@ describe('redirected documents retain their original request and response', () =
     expect(visits.at(-1)?.headers.referer).toBeUndefined();
     expect(traces).toStrictEqual(['PUT', 'DELETE', 'PUT', 'GET', 'DELETE']);
   });
+
+  it.each([
+    { delivery: 'resume', agent: 'Chrome/', failure: undefined },
+    { delivery: 'complete', agent: 'Chrome/', failure: BOT_SHELL_FAILURE },
+    { delivery: 'resume', agent: 'Firefox/', failure: BOT_SHELL_FAILURE },
+  ] as const)(
+    'uses the original $agent metadata policy for a redirected $delivery page',
+    async ({ delivery, agent, failure }) => {
+      fixture.bot = true;
+      const original = stack();
+      const route = original.manifest.routes['/landing'];
+      assert(route?.cache !== undefined, 'the landing has a cache delivery policy');
+      const own = {
+        ...original,
+        manifest: {
+          ...original.manifest,
+          htmlLimitedBots: 'Chrome',
+          routes: {
+            ...original.manifest.routes,
+            '/landing': { ...route, cache: { ...route.cache, delivery } },
+          },
+        },
+      };
+      const headers = { ...HEADERS, 'user-agent': agent };
+      const first = await read(new URL('/start', own.site), {
+        via: own.url,
+        headers,
+        headersOnly: true,
+        deadlineMs: 1000,
+      });
+      const followed = await documentRedirects(own, {
+        answer: first,
+        url: new URL('/start', own.site),
+        headers,
+        jar: [],
+        documentAnswer: (sent) => documentAnswerAt(own, Buffer.byteLength(DOCUMENT), sent, 'gzip'),
+      });
+      await fixture.middleClosed.promise;
+
+      expect(followed.failure).toBeUndefined();
+      await expect(Promise.resolve(followed.last?.documentFailure?.())).resolves.toBe(failure);
+      expect(followed.last?.whole?.sha256).toBe(DIGEST);
+      expect(visits.at(-1)?.headers['user-agent']).toBe(agent);
+      expect(traces).toStrictEqual(['PUT', 'DELETE', 'PUT', 'GET', 'DELETE']);
+    },
+  );
 
   it('keeps ordinary identity document reading whole despite a non-redirect Location', async () => {
     const own = stack();

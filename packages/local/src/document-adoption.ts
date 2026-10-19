@@ -1,4 +1,5 @@
 import { answeredBy, type CheckedStack } from './answers.ts';
+import { sentBlockingMetadata } from './browsers.ts';
 import type { Accepted } from './codings.ts';
 import { capturedDocument } from './document-reading.ts';
 import { documentVerdict } from './documents.ts';
@@ -32,6 +33,9 @@ export async function documentAnswerAt(
     landedRouteOf(stack.manifest, answeredBy(read.answer));
   const route = key === undefined ? undefined : stack.manifest.routes[key];
   if (key === undefined || route === undefined) {
+    return answered;
+  }
+  if (sentBlockingMetadata(stack.manifest, route, new Headers(headers))) {
     return answered;
   }
   const asked = {

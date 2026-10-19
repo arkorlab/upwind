@@ -209,7 +209,7 @@ function accountOf(answer: Response): string[] {
 }
 
 /** A build of the two Functions and the one asset, under `dir` as the adapter writes one. */
-async function writeBundle(dir: string, middleware?: string): Promise<void> {
+async function writeBundle(dir: string, middleware?: string, guardFile = false): Promise<void> {
   const bundleDir = path.join(dir, OUT_DIR_NAME);
   const blobs = path.join(bundleDir, 'blobs');
   await mkdir(blobs, { recursive: true });
@@ -242,6 +242,9 @@ async function writeBundle(dir: string, middleware?: string): Promise<void> {
             { name: 'index.mjs', type: 'esm', blob: await blob(middleware, 'text/javascript') },
           ],
         };
+  const matchers = [
+    { sourceRegex: '^/guard$', has: [{ type: 'header', key: 'via' }] },
+  ] satisfies NonNullable<DeploymentBundle['middleware']>['matchers'];
   const bundle: DeploymentBundle = {
     // A bundle split across Functions says so by its version.
     v: SPLIT_BUNDLE_VERSION,
@@ -260,7 +263,7 @@ async function writeBundle(dir: string, middleware?: string): Promise<void> {
     },
     routing: {
       beforeMiddleware: [],
-      middlewareMatchers: [],
+      middlewareMatchers: middlewareFunction === undefined ? [] : matchers,
       beforeFiles: [],
       afterFiles: [],
       dynamicRoutes: [],
@@ -286,6 +289,15 @@ async function writeBundle(dir: string, middleware?: string): Promise<void> {
     prerenders: [],
     staticFiles: [
       { pathname: ASSET_PATH, blob: await blob(ASSET, 'text/javascript'), immutable: true },
+      ...(guardFile
+        ? [
+            {
+              pathname: '/guard',
+              blob: await blob('protected file', 'text/plain'),
+              immutable: false,
+            },
+          ]
+        : []),
     ],
     // Split across two, as a build whose routes the adapter splits is.
     functions: {
@@ -294,9 +306,7 @@ async function writeBundle(dir: string, middleware?: string): Promise<void> {
       ...(middlewareFunction !== undefined && { middleware: middlewareFunction }),
     },
     ...(middlewareFunction !== undefined && {
-      middleware: {
-        matchers: [{ sourceRegex: '^/guard$', has: [{ type: 'header', key: 'via' }] }],
-      },
+      middleware: { matchers },
     }),
   };
   await writeFile(path.join(bundleDir, 'bundle.json'), JSON.stringify(bundle));
@@ -543,6 +553,7 @@ describe('a local stack', () => {
               });
             },
           };`,
+          true,
         );
         stack = await startStack({
           bundleDir: path.join(dir, OUT_DIR_NAME),
@@ -742,11 +753,11 @@ describe('a local stack', () => {
       await traced(trace);
     }
     await traced('read');
-    const read = await fetch(new URL('trace/read', stack.backstage));
+    const response = await fetch(new URL('trace/read', stack.backstage));
     const oldest = await fetch(new URL('trace/unread-0', stack.backstage));
     const newest = await fetch(new URL('trace/unread-299', stack.backstage));
 
-    expect([read.status, oldest.status, newest.status]).toStrictEqual([200, 404, 200]);
+    expect([response.status, oldest.status, newest.status]).toStrictEqual([200, 404, 200]);
   });
 
   it('answers on the IPv4 loopback address, under the origin the request came in on', async () => {
