@@ -501,6 +501,18 @@ describe('manual revalidation of a shared terminal shell', () => {
     expect(invalidateNow).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['/prefix/b/café', '/prefix/b/caf%C3%A9'],
+    ['/prefix/b/hello world', '/prefix/b/hello%20world'],
+  ])('invalidates %s at the spelling its request URL carries too', async (urlPath, carried) => {
+    await revalidate(terminalDeployment(), urlPath);
+
+    expect(invalidateNow).toHaveBeenCalledExactlyOnceWith(expect.anything(), [
+      `${IMPLICIT_TAG_PREFIX}${urlPath}`,
+      `${IMPLICIT_TAG_PREFIX}${carried}`,
+    ]);
+  });
+
   it('invalidates the escaped spelling of a page that reads as the shell placeholder', async () => {
     await revalidate(terminalDeployment(), '/prefix/b/%5Btwo%5D');
 
