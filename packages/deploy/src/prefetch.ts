@@ -1,6 +1,8 @@
 import { bundleBlobs, type DeploymentBundle } from '@stayingupwind/core/bundle';
 import { PREFETCH_SERVICE_BINDING } from '@stayingupwind/host/bindings';
 
+import type { ServiceBinding } from './bindings.ts';
+
 /** Deployment-time capability metadata only; never imported by the visitor or Function runtime. */
 export const PREFETCH_DEPLOYMENT_ENTRYPOINT = 'PrefetchForDeployment';
 export type PrefetchBlobs = Readonly<Record<string, true>>;
@@ -13,7 +15,7 @@ export function prefetchBlobsOf(bundle: DeploymentBundle): PrefetchBlobs {
 }
 
 /** Exact digests, carried by a configured binding instead of a request's claims. */
-export function prefetchBinding(service: string, allowed: PrefetchBlobs) {
+export function prefetchBinding(service: string, allowed: PrefetchBlobs): ServiceBinding {
   return {
     name: PREFETCH_SERVICE_BINDING,
     service,
