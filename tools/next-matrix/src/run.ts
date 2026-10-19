@@ -19,6 +19,7 @@ import {
 } from './coverage.ts';
 import { externalOutputHolds } from './external-output.ts';
 import { instrumentationHolds } from './instrumentation.ts';
+import { largePrerenderHolds } from './large-prerender.ts';
 import { checkFixtureVersions, selectFixtures } from './selection.ts';
 import { twoslashHolds } from './twoslash.ts';
 
@@ -270,6 +271,7 @@ const HOLDS: Readonly<Record<FixtureName, Holds>> = {
   'next-edge-instrumentation-no-own': instrumentationHolds,
   'next-external-output': externalOutputHolds,
   'next-twoslash': twoslashHolds,
+  'next-large-prerender-bodies': largePrerenderHolds,
   'next-minimal': minimalHolds,
   'next-edge': edgeHolds,
   'next-workflow': workflowHolds,

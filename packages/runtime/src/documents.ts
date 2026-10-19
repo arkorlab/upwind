@@ -3,6 +3,7 @@ import { NO_STORE_CACHE_CONTROL, SEGMENT_TREE_PATH } from '@stayingupwind/core/r
 import { releaseStream } from '@stayingupwind/core/util';
 
 import { renderDocumentForVisitor } from './answers.ts';
+import { builtPageResponse } from './built-page.ts';
 import { isDraftRequest } from './draft.ts';
 import { type Entry, entryFor } from './entries.ts';
 import { failureAnswer } from './error-pages.ts';
@@ -23,7 +24,6 @@ import {
   type RoutedInput,
   RSC_CONTENT_TYPE,
   staticResponse,
-  withCacheState,
 } from './serve.ts';
 import { entrypointKindOf, findShell, isClassShell, type Store } from './store.ts';
 
@@ -162,7 +162,12 @@ export async function documentFromBuild(
   const status = shell.initialStatus ?? fallbackStatus;
   if (shell.postponed === undefined) {
     releaseStream(input.request.body, 'static document: handler body unused');
-    return withCacheState(staticResponse(store, shell, HTML_CONTENT_TYPE, status), 'HIT');
+    return builtPageResponse(input, store, shell, {
+      document: shell,
+      contentType: HTML_CONTENT_TYPE,
+      status,
+      allowHost: entry.kind === 'node' && shell.pathname === resolved.pathname,
+    });
   }
   if (entry.kind === 'edge') {
     return invokeEntry(input, entry, resolved.url);
@@ -290,7 +295,7 @@ async function fromHost(
   input: RoutedInput,
   ref: BlobRef,
 ): Promise<Uint8Array<ArrayBuffer> | undefined> {
-  const bytes = await input.blobs?.(ref.sha256);
+  const bytes = await input.blobs?.(ref.sha256, ref.byteLength);
   return bytes === undefined ? undefined : new Uint8Array(bytes);
 }
 
@@ -331,27 +336,14 @@ export async function rscFromBuild(
     twin?.body !== undefined &&
     twin.postponed === undefined
   ) {
-    return builtPayload(store, twin);
+    return builtPageResponse(input, store, twin, {
+      document: shell,
+      contentType: RSC_CONTENT_TYPE,
+      status: twin.initialStatus ?? HTTP_OK,
+      allowHost: entry.kind === 'node',
+    });
   }
   return invokeEntry(input, entry, resolved.url);
-}
-
-/**
- * A page's whole payload as the build wrote it, for a page the build made complete: answered as
- * a platform answers it, from the build, under the status the build gave it — none, whatever the
- * page itself answered (`initialStatus: undefined` for a data route, `build/adapter/
- * build-complete.ts`). A redirect or a `notFound()` is carried in the payload, which the client's
- * router follows itself. Asked to render it, the page's handler answered from its cache under the
- * page's own status, which in minimal mode it leaves to the platform to take off (`app-page.ts`,
- * "Redirect information is encoded in RSC payload"): a client navigation to a page that redirects
- * was answered 307 (`app-dir/rsc-redirect`).
- */
-function builtPayload(store: Store, twin: Prerender): Response {
-  const response = staticResponse(store, twin, RSC_CONTENT_TYPE, twin.initialStatus ?? HTTP_OK);
-  response.headers.delete('link');
-  response.headers.set(CACHE_CONTROL, NO_STORE_CACHE_CONTROL);
-  response.headers.set('vary', store.manifest.routing.rsc.varyHeader);
-  return withCacheState(response, 'HIT');
 }
 
 /**
