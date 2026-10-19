@@ -89,8 +89,9 @@ export function createReadGateway(host: AuthorityHost): Hono<ReadEnv> {
       })
       .get(`${SCOPE_PREFIX}/entries/:entryId/record`, async (c) => {
         const scopeId = c.get('scopeId');
-        const key = kvGenerationKey(scopeId, c.req.param('entryId'));
-        const reading = readRecordAnswer(c.env.CACHE_STATE, key);
+        const entryId = c.req.param('entryId');
+        const key = kvGenerationKey(scopeId, entryId);
+        const reading = readRecordAnswer(c.env.CACHE_STATE, key, scopeId, entryId);
         let record: RecordAnswer | undefined;
         let retired: boolean;
         try {

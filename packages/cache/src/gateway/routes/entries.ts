@@ -30,8 +30,9 @@ const OCTET_STREAM = 'application/octet-stream';
 
 async function currentRecord(c: GatewayContext): Promise<Response> {
   const entryId = c.req.param('entryId') ?? '';
-  const key = kvGenerationKey(c.get('scopeId'), entryId);
-  const reading = readRecordAnswer(c.env.CACHE_STATE, key);
+  const scopeId = c.get('scopeId');
+  const key = kvGenerationKey(scopeId, entryId);
+  const reading = readRecordAnswer(c.env.CACHE_STATE, key, scopeId, entryId);
   let record: RecordAnswer | undefined;
   let retired: boolean;
   try {
