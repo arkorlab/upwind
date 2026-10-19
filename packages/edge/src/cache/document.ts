@@ -132,6 +132,11 @@ export interface CachedDocumentInput extends Omit<DocumentInput, 'shellRead' | '
   ) => Promise<Response>;
 }
 
+/** A cold record lookup reads the build beside it, except for a member or a HEAD. */
+function buildForRead(input: CachedDocumentInput): BuildShell | undefined {
+  return input.member === undefined && input.request.method !== 'HEAD' ? input : undefined;
+}
+
 /** What is decided about: the loads in hand, the document as far as it is composed. */
 interface Decided {
   readonly input: CachedDocumentInput;
@@ -319,12 +324,7 @@ function regenerateInFront(
 export async function serveCachedDocument(incoming: CachedDocumentInput): Promise<Response> {
   const read =
     incoming.generationRead ??
-    startRecordRead(
-      incoming.edge,
-      incoming.key,
-      incoming.settings,
-      incoming.member === undefined && incoming.request.method !== 'HEAD' ? incoming : undefined,
-    );
+    startRecordRead(incoming.edge, incoming.key, incoming.settings, buildForRead(incoming));
   const input = read.shell === undefined ? incoming : withShellAccounting(incoming);
   const { edge, key } = input;
   const load = await read.load;

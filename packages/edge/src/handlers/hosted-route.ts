@@ -116,7 +116,7 @@ export function generationKeyOf(
  */
 export function offTheEdge(
   edge: EdgeContext,
-  entry: RouteEntry,
+  entry: Pick<RouteEntry, 'pathname'>,
 ): 'demoted' | 'suspect' | undefined {
   const { demotedRoutes } = edge;
   // Tested before the clock is read: a pointer that demotes nothing costs this and nothing more.

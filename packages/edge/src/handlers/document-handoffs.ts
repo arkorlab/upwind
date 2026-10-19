@@ -1,6 +1,8 @@
 import { sandboxBlocksRecovery } from '@stayingupwind/core/request';
 
+import type { ShellLoadResult } from '../strategies/shell-loader.ts';
 import type { DocumentInput } from './document.ts';
+import { abandonShellRead, withShellAccounting } from './observer.ts';
 
 /**
  * The documents the edge hands to the application's Worker whole rather than compose itself
@@ -25,6 +27,7 @@ export function delegateSandboxedDocument(
   input: DocumentInput,
   complete: boolean,
   headers: Headers,
+  shellLookup: Promise<ShellLoadResult>,
 ): Promise<Response> | undefined {
   const { edge, entry } = input;
   if (complete || edge.app === undefined) return undefined;
@@ -35,5 +38,12 @@ export function delegateSandboxedDocument(
     middleware?.responseHeaders.get('content-security-policy') ??
     headers.get('content-security-policy');
   if (policy === null || sandboxBlocksRecovery(policy) === undefined) return undefined;
-  return input.passthrough('csp-sandbox', input.middleware, entry.pathname);
+  if (input.generation !== undefined) {
+    // generationShell is a synthetic view of metadata already read, not another backend lookup.
+    edge.ctx.waitUntil(shellLookup);
+    return input.passthrough('csp-sandbox', input.middleware, entry.pathname);
+  }
+  const accounted = withShellAccounting(input);
+  abandonShellRead(accounted.edge, shellLookup);
+  return accounted.passthrough('csp-sandbox', input.middleware, entry.pathname);
 }

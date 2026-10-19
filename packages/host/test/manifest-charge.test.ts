@@ -18,6 +18,22 @@ const CONDITION = { type: 'host' as const };
 const MANY_RULES = 1000;
 const MANY_CONDITIONS = 600;
 
+describe('the memory held by complete route-body mappings', () => {
+  it('charges the table, entry, condition array and each condition beside JSON', () => {
+    const plain = manifestOf([]);
+    const body = {
+      pathname: '/icon',
+      route: '/icon',
+      entryId: 'entry_icon',
+      function: 'app-2',
+      bypassFor: [{ type: 'header' as const, key: 'x-bypass', value: 'yes' }],
+    };
+    const listed = { ...plain, routeBodies: { '/icon': body } };
+
+    expect(manifestCharge(listed, 0) - manifestCharge(plain, 0)).toBe(4 * 80);
+  });
+});
+
 function manifestOf(
   dynamicRoutes: readonly DynamicRoute[],
   gateFields: {

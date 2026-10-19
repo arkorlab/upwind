@@ -37,11 +37,17 @@ type Answer =
   | 'budget'
   | 'bypass'
   | 'continue';
-type Generation = 'none' | 'absent' | 'fresh' | 'stale';
+type Generation = 'none' | 'absent' | 'fresh' | 'stale' | 'partial';
+type Csp = 'no-middleware' | 'middleware';
 
-async function generation(document: ReturnType<typeof pprDocument>, stale: boolean) {
+async function generation(
+  document: ReturnType<typeof pprDocument>,
+  mode: 'fresh' | 'stale' | 'partial',
+) {
+  const partial = mode === 'partial';
+  const postponed = partial ? encodeUtf8('postponed') : undefined;
   const { entryId } = await deriveEntry(SCOPE, { kind: 'app-page', route: '/', pathname: '/' });
-  const html = encodeUtf8(document.shellText + document.suffixText);
+  const html = partial ? document.shell : encodeUtf8(document.shellText + document.suffixText);
   const bytes = encodeGenerationPack(
     {
       schemaVersion: 1,
@@ -54,49 +60,60 @@ async function generation(document: ReturnType<typeof pprDocument>, stale: boole
       kind: 'app-page',
       route: '/',
       pathname: '/',
-      cacheTimestamp: stale ? NOW - 2000 : NOW,
+      cacheTimestamp: mode === 'stale' ? NOW - 2000 : NOW,
       producedAt: NOW,
-      policy: policyFromBuild({ initialRevalidate: stale ? 1 : 60, initialExpiration: 600 }),
+      policy: policyFromBuild({
+        initialRevalidate: mode === 'stale' ? 1 : 60,
+        initialExpiration: 600,
+      }),
       status: 200,
-      headers: { 'content-type': 'text/html' },
+      headers: {
+        'content-type': 'text/html',
+        ...(partial && { 'content-security-policy': 'sandbox' }),
+      },
       tags: [],
       htmlSha256: await sha256Hex(html),
       htmlLength: html.byteLength,
-      postponedSha256: null,
-      postponedLength: 0,
+      postponedSha256: postponed === undefined ? null : await sha256Hex(postponed),
+      postponedLength: postponed?.byteLength ?? 0,
       artifacts: [],
     },
     html,
-    undefined,
+    postponed,
   );
   await env.CACHE_STATE.put(kvGenerationKey(SCOPE, entryId), bytes);
 }
 
-function middlewareAnswer(answer: Answer): Response {
+function middlewareAnswer(answer: Answer, sandboxed: boolean): Response {
   switch (answer) {
-    case 'response':
+    case 'response': {
       return new Response('middleware answer', { status: 401 });
-    case 'redirect':
+    }
+    case 'redirect': {
       return new Response(null, {
         status: 307,
         headers: { location: 'https://site.example/login' },
       });
-    case 'external':
+    }
+    case 'external': {
       return new Response(null, {
         headers: { 'x-middleware-rewrite': 'https://elsewhere.example/page' },
       });
+    }
     case 'file':
-    case 'file-status':
+    case 'file-status': {
       return new Response(null, {
         status: answer === 'file-status' ? 404 : 200,
         headers: { 'x-middleware-rewrite': `https://site.example${FILE}` },
       });
+    }
     case 'document':
-    case 'budget':
+    case 'budget': {
       return new Response(null, {
         headers: { 'x-middleware-rewrite': 'https://site.example/target' },
       });
-    case 'bypass':
+    }
+    case 'bypass': {
       return new Response(null, {
         headers: {
           'x-middleware-next': '1',
@@ -104,14 +121,22 @@ function middlewareAnswer(answer: Answer): Response {
           'x-middleware-request-x-skip': '1',
         },
       });
-    case 'failed':
+    }
+    case 'failed': {
       throw new Error('middleware failed');
-    case 'continue':
-      return new Response(null, { headers: { 'x-middleware-next': '1' } });
+    }
+    case 'continue': {
+      return new Response(null, {
+        headers: {
+          'x-middleware-next': '1',
+          ...(sandboxed && { 'content-security-policy': 'sandbox' }),
+        },
+      });
+    }
   }
 }
 
-async function fixture(answer: Answer, mode: Generation, warm = false) {
+async function fixture(answer: Answer, mode: Generation, warm = false, csp?: Csp) {
   const document = pprDocument();
   const site = await seedSite({ document, files: { [FILE]: 'the manual' } });
   const entry = site.manifest.routes['/'];
@@ -131,7 +156,7 @@ async function fixture(answer: Answer, mode: Generation, warm = false) {
     },
   };
   const derived = await deriveEntry(SCOPE, { kind: 'app-page', route: '/', pathname: '/' });
-  if (mode === 'fresh' || mode === 'stale') await generation(document, mode === 'stale');
+  if (mode !== 'none' && mode !== 'absent') await generation(document, mode);
   const manifest = {
     ...site.manifest,
     routes: {
@@ -140,6 +165,12 @@ async function fixture(answer: Answer, mode: Generation, warm = false) {
       ...(answer === 'budget' && { '/target': rewritten }),
       '/': {
         ...entry,
+        ...(csp !== undefined && {
+          headers: {
+            ...entry.headers,
+            'content-security-policy': csp === 'no-middleware' ? 'sandbox' : "script-src 'self'",
+          },
+        }),
         ...(mode !== 'none' && {
           cache: {
             entryId: derived.entryId,
@@ -153,7 +184,7 @@ async function fixture(answer: Answer, mode: Generation, warm = false) {
       },
     },
     ...(mode !== 'none' && { cache: { scopeId: SCOPE, keySchemaVersion: 1 as const } }),
-    middleware: { matchers: [{ sourceRegex: '^/$' }] },
+    middleware: { matchers: csp === 'no-middleware' ? [] : [{ sourceRegex: '^/$' }] },
   };
   const policy = {
     ...DEFAULT_DELIVERY_POLICY,
@@ -168,7 +199,7 @@ async function fixture(answer: Answer, mode: Generation, warm = false) {
   };
   const entered = Promise.withResolvers<true>();
   const shell = Promise.withResolvers<ShellRead | undefined>();
-  const original = kvShellStrategy.getShell;
+  const original = kvShellStrategy.getShell.bind(kvShellStrategy);
   const reads = vi.spyOn(kvShellStrategy, 'getShell').mockImplementation((ref, edge) => {
     if (ref.sha256 === entry.shell.sha256) {
       entered.resolve(true);
@@ -197,9 +228,15 @@ async function fixture(answer: Answer, mode: Generation, warm = false) {
       dispatched.push(script);
       if (script === 'site-middleware') {
         if (answer === 'failed') return Promise.reject(new Error('middleware failed'));
-        return Promise.resolve(middlewareAnswer(answer));
+        return Promise.resolve(middlewareAnswer(answer, csp === 'middleware'));
       }
-      return Promise.resolve(htmlResponse(document.suffix));
+      const response =
+        csp !== undefined || mode === 'partial'
+          ? new Response('whole sandbox document', {
+              headers: { 'content-type': 'text/html', 'content-security-policy': 'sandbox' },
+            })
+          : htmlResponse(document.suffix);
+      return Promise.resolve(response);
     },
     fetchImpl: () => Promise.resolve(new Response('external answer')),
   });
@@ -397,4 +434,72 @@ describe('discarded document shells in the single final delivery point', () => {
       }
     },
   );
+
+  it.each([
+    { label: 'cold without middleware', csp: 'no-middleware', mode: 'none', requests: 2 },
+    { label: 'middleware policy override', csp: 'middleware', mode: 'none', requests: 3 },
+    {
+      label: 'partial record with parallel build shell',
+      csp: undefined,
+      mode: 'partial',
+      requests: 3,
+    },
+  ] satisfies readonly {
+    readonly label: string;
+    readonly csp: Csp | undefined;
+    readonly mode: Generation;
+    readonly requests: number;
+  }[])(
+    'counts the CSP shell handoff for $label without charging record metadata',
+    async (example) => {
+      const subject = await fixture('continue', example.mode, false, example.csp);
+      try {
+        await subject.entered.promise;
+        const response = await subject.loading;
+        const body = await response.text();
+
+        expect({
+          status: response.status,
+          csp: response.headers.get('content-security-policy'),
+          edge: response.headers.get('x-arkor-edge')?.includes('reason=csp-sandbox'),
+          body,
+        }).toStrictEqual({
+          status: 200,
+          csp: 'sandbox',
+          edge: true,
+          body: 'whole sandbox document',
+        });
+        expect(subject.points).toStrictEqual([]);
+
+        subject.finish();
+        await waitOnExecutionContext(subject.ctx);
+
+        expect(subject.points).toHaveLength(1);
+        expect(subject.points[0]?.subrequests).toBe(example.requests);
+        expect(subject.reads).toHaveBeenCalledTimes(1);
+      } finally {
+        subject.finish();
+        await subject.loading;
+        await waitOnExecutionContext(subject.ctx);
+      }
+    },
+  );
+
+  it('does not charge a memory shell discarded by CSP without middleware', async () => {
+    const subject = await fixture('continue', 'none', true, 'no-middleware');
+    try {
+      const response = await subject.loading;
+      await response.text();
+      await waitOnExecutionContext(subject.ctx);
+
+      expect(response.headers.get('x-arkor-edge')).toContain('reason=csp-sandbox');
+      expect(subject.points).toHaveLength(1);
+      expect(subject.points[0]?.subrequests).toBe(1);
+      expect(subject.reads).not.toHaveBeenCalled();
+    } finally {
+      subject.finish();
+      await subject.loading;
+      await waitOnExecutionContext(subject.ctx);
+    }
+  });
 });

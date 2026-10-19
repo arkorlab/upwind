@@ -47,6 +47,7 @@ import {
   passthroughReason,
 } from './handlers/passthrough.ts';
 import { safeDiagnosticField, serviceUnavailableResponse } from './handlers/responses.ts';
+import { routeHostedBody } from './handlers/route-body.ts';
 import { routingReadsFor } from './handlers/routing-headers.ts';
 import { hostedFirst } from './hosted-first.ts';
 import { withPatternBudget } from './pattern-budget.ts';
@@ -73,6 +74,7 @@ export { type PointerReads, type PointerRequest, startReads } from './preview/po
  */
 
 const ASSET_CLASS = 'immutable-asset-candidate';
+const ROUTE_BODY_CLASS = 'route-body';
 const STATIC_FILE_CLASS = 'static-file';
 /** A request that names no route of the build may still be served one after the middleware. */
 const ROUTE_NOT_PROVED = 'route-not-proved';
@@ -365,13 +367,9 @@ function headersToClassify(
 function servedAtEdge(classification: RequestClass): boolean {
   switch (classification.kind) {
     case 'document':
+    case ROUTE_BODY_CLASS:
     case ASSET_CLASS: {
       return true;
-    }
-    case 'route-body': {
-      // The SDK can describe this capability before this reader supports it. Let the Function
-      // answer until the host's route-body writer and reader are adopted together.
-      return false;
     }
     case STATIC_FILE_CLASS: {
       // Never classified here: a file the build shipped is answered before the pointer's mode is
@@ -605,6 +603,9 @@ function routeWithManifest(
   if (classification.kind === ASSET_CLASS && request.method === 'HEAD') {
     return passthrough('head');
   }
+  if (classification.kind === ROUTE_BODY_CLASS && request.method === 'HEAD') {
+    return passthrough('route-body-head');
+  }
   const manifest = state.manifest;
   return afterPolicy(input, (ready) =>
     routeClassified(ready, manifest, forwarding, { classification, headers: classifiedHeaders }),
@@ -630,6 +631,18 @@ async function routeClassified(
       (assetDispatches) =>
         passthroughFor(input, 'asset-unshareable', undefined, { waited: { assetDispatches } }),
     );
+  }
+  if (classification.kind === ROUTE_BODY_CLASS) {
+    return routeHostedBody({
+      request,
+      url,
+      edge,
+      manifest,
+      entry: classification.entry,
+      classifiedHeaders,
+      passthrough: (reason, middleware, waited) =>
+        passthroughFor(input, reason, middleware, { waited }),
+    });
   }
   return routeHostedDocument({
     request,

@@ -16,6 +16,7 @@ import {
   type ForwardingContext,
   NEXT_ROUTER_PREFETCH_HEADER,
   type RequestClass,
+  RSC_HEADER,
 } from '@stayingupwind/core/request';
 
 import { takeInvalidation } from '../cache/condemned.ts';
@@ -39,6 +40,7 @@ import {
   safeDiagnosticField,
 } from './responses.ts';
 import {
+  type Dispatched,
   dispatchedOf,
   dispatchedSoFar,
   dispatchesMade,
@@ -49,6 +51,7 @@ import {
 
 const ASSET_CLASS = 'immutable-asset-candidate';
 const STATIC_FILE_CLASS = 'static-file';
+const REWRITTEN_PATH_HEADER = 'x-nextjs-rewritten-path';
 
 /** What `x-arkor-edge` says a request was proxied for: the class that sent it, or its own reason. */
 export function passthroughReason(classification: RequestClass): string {
@@ -63,8 +66,8 @@ export function passthroughReason(classification: RequestClass): string {
     case 'action':
     case ASSET_CLASS:
     case STATIC_FILE_CLASS:
-    case 'document':
-    case 'route-body': {
+    case 'route-body':
+    case 'document': {
       return classification.kind;
     }
     default: {
@@ -235,6 +238,8 @@ export interface PassthroughInput {
    * point is written — answered, or not yet (`triggerDetached`).
    */
   readonly onAsked?: ((soFar: () => number) => void) | undefined;
+  /** An optional observer of the actual split dispatch, without inspecting the application body. */
+  readonly onDispatched?: ((read: () => Dispatched | undefined) => void) | undefined;
 }
 
 /** The router prefetches Next.js's client sends (`next-router-prefetch`), by the number it uses. */
@@ -456,14 +461,22 @@ function layAfterMiddleware(
   input: Pick<PassthroughInput, 'forwarding' | 'request'>,
 ): void {
   const scope = input.forwarding;
+  // Routing has already settled this path after middleware. Save only the forwarded value:
+  // a Connection-nominated origin field must not be restored from the raw answer.
+  let rewrittenPath =
+    middleware.requestHeaders.get(RSC_HEADER) === '1' ? headers.get(REWRITTEN_PATH_HEADER) : null;
   const { judgedRules } = middleware;
   if (judgedRules !== undefined && answer.headers.get(HEADER_RULES_LEFT_HEADER) === '1') {
     layConfiguredOver(headers, judgedRules, answer, input);
+    // A missing path here means the configured Connection options removed it. Keep that
+    // removal rather than restoring a value the forwarding rules rejected.
+    if (!headers.has(REWRITTEN_PATH_HEADER)) rewrittenPath = null;
   }
   // After the Worker's own, which may repeat the middleware's cookies as Next.js writes them back
   // (`splice/cookies.ts`): a browser keeps the last of a cookie set twice, and the middleware's is
   // the one it meant — a `Max-Age=0` that the copy before it lost, say.
   mergeScopedMiddlewareHeaders(headers, middleware.responseHeaders, scope);
+  if (rewrittenPath !== null) headers.set(REWRITTEN_PATH_HEADER, rewrittenPath);
 }
 
 /** A failed application call still answers under the middleware that already ran. */
@@ -490,6 +503,18 @@ function failedPassthrough(input: PassthroughInput, reason: string): Response {
 }
 
 /** Transparent proxy to the deployment's Worker: any method, streamed body, rewritten cookies. */
+
+function observeDispatch(
+  observer: PassthroughInput['onDispatched'],
+  pending: Promise<Response>,
+): void {
+  if (observer === undefined) return;
+  try {
+    observer(() => dispatchedSoFar(pending));
+  } catch {
+    // An observation must not turn an application's answer into an error.
+  }
+}
 
 export async function handlePassthrough(input: PassthroughInput): Promise<Response> {
   const client = new Request(input.request, {
@@ -520,6 +545,7 @@ export async function handlePassthrough(input: PassthroughInput): Promise<Respon
   const startedAt = input.runtime.now();
   const pending = fetchUpstream(input.runtime, input.app, originRequest, fn);
   input.onAsked?.(() => dispatchesMade(pending));
+  observeDispatch(input.onDispatched, pending);
   let originResponse: Response;
   try {
     originResponse = await pending;

@@ -136,7 +136,7 @@ export function ownedUploadOf(
   const replace = existing !== undefined && artifactFailed(sql, existing);
   return {
     addedBytes:
-      existing?.owned === 0 && replace
+      replace && existing?.owned === 0
         ? byteLength
         : addedBy(existing, { owned: true, byteLength }),
     replace,

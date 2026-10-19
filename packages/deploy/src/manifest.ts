@@ -34,6 +34,7 @@ import {
   SUPPORTED_NEXT_RANGE,
 } from '@stayingupwind/host/next-support';
 
+import { routeBodiesOf } from './route-bodies.ts';
 import {
   documentHeaderRule,
   type ManifestContext,
@@ -247,6 +248,7 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
   const servable = routedPages(input.runtimeCache);
   const prerenders = edgeServablePrerenders(bundle, servable);
   const caches = cached ? await routeCachesOf(bundle, input.deploymentId) : new Map();
+  const routeBodies = await routeBodiesOf(bundle, input.deploymentId, cached);
   const middlewareMatchers = middlewareMatchersOf(bundle);
   const rules = headerRulesOf(bundle);
   const context: ManifestContext = {
@@ -294,6 +296,7 @@ export async function assembleManifest(input: AssembleManifestInput): Promise<As
     originHost: input.originHost,
     deployment: input.fingerprint,
     routes,
+    routeBodies,
     app: input.app,
     staticFiles,
     ...(middlewareMatchers !== undefined && { middleware: { matchers: middlewareMatchers } }),

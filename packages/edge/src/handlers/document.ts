@@ -622,9 +622,8 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
   const recorded = recordedHeaders(input);
   const rules = documentRules(input);
   const headers = replayedDocumentHeaders(recorded, rules);
-  const delegated = delegateSandboxedDocument(input, complete, headers);
+  const delegated = delegateSandboxedDocument(input, complete, headers, shellLookup);
   if (delegated !== undefined) {
-    input.edge.ctx.waitUntil(shellLookup);
     return delegated;
   }
   const encoding = negotiateContentEncoding(clientAcceptEncoding(input.request), CONTENT_ENCODINGS);
