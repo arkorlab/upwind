@@ -29,7 +29,7 @@ import { stripEdgeHeaders } from '../request-context.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { layConfiguredOver } from './configured-headers.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
-import { observeMetric } from './observer.ts';
+import { type AbandonedShellReads, observeMetric, observeRequestMetric } from './observer.ts';
 import {
   badGatewayResponse,
   forwardedResponse,
@@ -84,6 +84,7 @@ export type MiddlewareContinue = Extract<MiddlewareResult, { kind: 'continue' }>
  * recorded nowhere. A cost nothing counts is one nobody finds.
  */
 export interface PassthroughMetrics {
+  readonly abandonedShells?: AbandonedShellReads | undefined;
   /**
    * How long the middleware took before this gave up on it, where that is what it gave up on.
    *
@@ -122,6 +123,7 @@ export interface PassthroughMetrics {
 export const PATTERN_BUDGET = 'pattern-budget';
 /** What the edge waited on before it handed the request on, where it waited on more than routing. */
 export interface PassthroughWait {
+  readonly abandonedShells?: AbandonedShellReads | undefined;
   readonly recordLookupMs?: number | undefined;
   /**
    * The reads of storage made for a document or router part the edge then could not serve: its
@@ -166,6 +168,7 @@ export function passthroughMetrics(
     policyId: edge.policy.id,
     pathname,
     colo: edge.colo ?? '',
+    ...(edge.abandonedShells !== undefined && { abandonedShells: edge.abandonedShells }),
     ...(middlewareMs !== undefined && { middlewareMs }),
   };
 }
@@ -303,10 +306,19 @@ function reportPassthrough(
       (metrics.assetDispatches ?? 0),
   };
   // And a regeneration asked beside it, once it has made its dispatches.
-  if (metrics.regeneration === undefined) {
+  if (metrics.regeneration !== undefined) {
+    metrics.regeneration.record(point);
+  } else if (metrics.abandonedShells === undefined) {
     observeMetric(input.host, point);
   } else {
-    metrics.regeneration.record(point);
+    observeRequestMetric(
+      {
+        host: input.host,
+        ctx: metrics.abandonedShells.ctx,
+        abandonedShells: metrics.abandonedShells,
+      },
+      point,
+    );
   }
 }
 

@@ -15,7 +15,7 @@ import {
 import { releaseStream, withDeadline } from '@stayingupwind/core/util';
 import type { RuntimeCacheSettings } from '@stayingupwind/host/delivery';
 
-import { observeMetric } from '../handlers/observer.ts';
+import { observeRequestMetric } from '../handlers/observer.ts';
 import {
   handlePassthrough,
   type MiddlewareContinue,
@@ -261,7 +261,7 @@ export function triggerDetached(edge: EdgeContext, input: DispatchInput): Detach
         (async (): Promise<void> => {
           await answeredWithin(answered);
           const dispatches = soFar?.() ?? 0;
-          observeMetric(edge.host, { ...point, subrequests: point.subrequests + dispatches });
+          observeRequestMetric(edge, { ...point, subrequests: point.subrequests + dispatches });
         })(),
       );
     },

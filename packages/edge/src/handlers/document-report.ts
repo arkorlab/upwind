@@ -6,7 +6,7 @@ import type { EdgeMetric } from '../observability/metrics.ts';
 import type { ContinuationFailureKind, MismatchKind, RouteReport } from '../reports.ts';
 import { encodingMarker, type ShellDelivery } from './document-headers.ts';
 import type { DocumentInput } from './document.ts';
-import { observeMetric, sendReport } from './observer.ts';
+import { observeRequestMetric, sendReport } from './observer.ts';
 import type { Dispatched } from './upstream.ts';
 
 /** What a document's splice outcome means for the project: the reports made and the metric written. */
@@ -231,7 +231,7 @@ export async function reportOutcome(report: OutcomeReport): Promise<void> {
 function writePoint(report: OutcomeReport, point: EdgeMetric): void {
   const detached = report.input.generation?.detached;
   if (detached === undefined) {
-    observeMetric(report.input.edge.host, point);
+    observeRequestMetric(report.input.edge, point);
   } else {
     detached.record(point);
   }

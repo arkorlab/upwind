@@ -1,6 +1,7 @@
 import { artifactIdFor } from '@stayingupwind/core/cache';
 
 import type { ArtifactRow } from './rows.ts';
+import { deleteMeta, readMeta, writeMeta } from './state.ts';
 import { inChunks } from './tx.ts';
 
 /**
@@ -25,6 +26,60 @@ const ARTIFACT_IDS_AT_ONCE = 128;
 /** SQLite takes 100 bindings: one SHA or location per lookup, six fields per borrowed insert. */
 const REFERENCES_PER_LOOKUP = 100;
 const BORROWED_PER_INSERT = 16;
+const FAILURE_PREFIX = 'artifact_failure:';
+
+/** A failed projection's exact location, kept only while its artifact row exists. */
+export function artifactFailed(sql: SqlStorage, row: ArtifactRow): boolean {
+  return readMeta(sql, FAILURE_PREFIX + row.sha256) === `${row.byte_length}:${row.storage_ref}`;
+}
+
+/** Remember the existing verification's result; no extra body read is needed to repair it. */
+export function rememberArtifactFailure(
+  sql: SqlStorage,
+  artifact: { readonly sha256: string; readonly storageRef: string; readonly byteLength: number },
+): void {
+  const row = findArtifactBySha(sql, artifact.sha256);
+  if (row?.storage_ref === artifact.storageRef && row.byte_length === artifact.byteLength) {
+    writeMeta(sql, FAILURE_PREFIX + row.sha256, `${row.byte_length}:${row.storage_ref}`);
+  }
+}
+
+export function forgetArtifactFailure(sql: SqlStorage, sha256: string): void {
+  deleteMeta(sql, FAILURE_PREFIX + sha256);
+}
+
+export interface ArtifactRepair {
+  readonly sha256: string;
+  readonly byteLength: number;
+  readonly previousStorageRef: string;
+  readonly storageRef: string;
+  readonly previouslyOwned: boolean;
+}
+
+/** A verified upload replaces only the exact location whose projection failed. */
+export function repairArtifact(sql: SqlStorage, repair: ArtifactRepair, now: number): number {
+  const changed = sql.exec(
+    `UPDATE artifacts SET storage_ref = ?, owned = 1
+     WHERE sha256 = ? AND storage_ref = ? AND byte_length = ? AND owned = ?
+     RETURNING sha256`,
+    repair.storageRef,
+    repair.sha256,
+    repair.previousStorageRef,
+    repair.byteLength,
+    repair.previouslyOwned ? 1 : 0,
+  );
+  if (changed.toArray().length !== 1) throw new Error('the failed artifact location changed');
+  if (repair.previouslyOwned && repair.previousStorageRef !== repair.storageRef) {
+    sql.exec(
+      `INSERT OR IGNORE INTO pending_deletions (storage_ref, queued_at) VALUES (?, ?)`,
+      repair.previousStorageRef,
+      now,
+    );
+  }
+  sql.exec(`DELETE FROM pending_deletions WHERE storage_ref = ?`, repair.storageRef);
+  forgetArtifactFailure(sql, repair.sha256);
+  return repair.previouslyOwned ? 0 : repair.byteLength;
+}
 
 /** Ids for the blobs a commit names, derived ahead of its transaction. */
 export async function artifactIdsFor(
@@ -68,15 +123,31 @@ export function addedBytesOf(sql: SqlStorage, ref: ArtifactReference): number {
 
 /**
  * What bytes uploaded as the scope's own would add to its quota once published, counted as the
- * commit counts them (`addedBytesOf`): nothing for bytes the scope already holds, and nothing for
- * bytes the build owns, which the commit refers to where they are rather than to the upload.
+ * commit counts them (`addedBytesOf`): nothing for bytes the scope already holds or healthy bytes
+ * the build owns. Replacing a failed borrowed location makes the upload the scope's own, charged
+ * once when published. The same lookup also says whether storage must replace a known bad copy.
  */
-export function addedOwnedBytes(sql: SqlStorage, sha256: string, byteLength: number): number {
-  return addedBy(findArtifactBySha(sql, sha256), { owned: true, byteLength });
+export function ownedUploadOf(
+  sql: SqlStorage,
+  sha256: string,
+  byteLength: number,
+): { readonly addedBytes: number; readonly replace: boolean } {
+  const existing = findArtifactBySha(sql, sha256);
+  const replace = existing !== undefined && artifactFailed(sql, existing);
+  return {
+    addedBytes:
+      existing?.owned === 0 && replace
+        ? byteLength
+        : addedBy(existing, { owned: true, byteLength }),
+    replace,
+  };
 }
 
 /** Blobs a reference to adds nothing to the scope's bytes (`addedBy`), as an SQL condition. */
-export const HELD_WITHOUT_CHARGE = 'refs > 0 OR owned = 0';
+export const HELD_WITHOUT_CHARGE = `(owned = 1 AND refs > 0) OR (owned = 0 AND NOT EXISTS (
+  SELECT 1 FROM meta WHERE key = '${FAILURE_PREFIX}' || artifacts.sha256
+    AND value = CAST(artifacts.byte_length AS TEXT) || ':' || artifacts.storage_ref
+))`;
 
 /** Count one more reference; the bytes the scope newly holds, for its quota. */
 export function referenceArtifact(
@@ -216,4 +287,9 @@ export function releaseArtifact(sql: SqlStorage, sha256: string): ReleasedArtifa
 
 export function deleteArtifactRow(sql: SqlStorage, sha256: string): void {
   sql.exec(`DELETE FROM artifacts WHERE sha256 = ? AND refs = 0`, sha256);
+  sql.exec(
+    `DELETE FROM meta WHERE key = ? AND NOT EXISTS (SELECT 1 FROM artifacts WHERE sha256 = ?)`,
+    FAILURE_PREFIX + sha256,
+    sha256,
+  );
 }

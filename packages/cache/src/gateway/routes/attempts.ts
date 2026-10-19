@@ -140,7 +140,7 @@ async function storeArtifact(
   if (isRefusal(recorded)) {
     return answerScope(c, recorded);
   }
-  if ((await c.env.ARTIFACTS.head(storageRef)) === null) {
+  if (recorded.replace === true || (await c.env.ARTIFACTS.head(storageRef)) === null) {
     await c.env.ARTIFACTS.put(storageRef, bytes as BufferSource, {
       httpMetadata: { contentType: headers.contentType },
     });
@@ -162,6 +162,7 @@ export const BATCH_BODY_BYTES =
 interface DecodedArtifact {
   readonly upload: UploadedArtifact;
   readonly bytes: Uint8Array;
+  readonly replace?: true;
 }
 
 function decodedBase64(value: string): Uint8Array | undefined {
@@ -233,13 +234,19 @@ async function uploadArtifacts(c: GatewayContext): Promise<Response> {
   // its bytes types it, as the first upload of them does.
   const blobs = new Map<string, DecodedArtifact>();
   for (const [index, artifact] of decoded.entries()) {
-    if (!isRefusal(recorded[index]) && !blobs.has(artifact.upload.storageRef)) {
-      blobs.set(artifact.upload.storageRef, artifact);
-    }
+    const answer = recorded[index];
+    if (answer === undefined || isRefusal(answer)) continue;
+    const first = blobs.get(artifact.upload.storageRef);
+    if (first !== undefined && answer.replace !== true) continue;
+    const selected = first ?? artifact;
+    blobs.set(
+      artifact.upload.storageRef,
+      answer.replace === true ? { ...selected, replace: true } : selected,
+    );
   }
   await Promise.all(
-    [...blobs.values()].map(async ({ upload, bytes }) => {
-      if ((await c.env.ARTIFACTS.head(upload.storageRef)) === null) {
+    [...blobs.values()].map(async ({ upload, bytes, replace }) => {
+      if (replace === true || (await c.env.ARTIFACTS.head(upload.storageRef)) === null) {
         await c.env.ARTIFACTS.put(upload.storageRef, bytes as BufferSource, {
           httpMetadata: { contentType: upload.contentType },
         });

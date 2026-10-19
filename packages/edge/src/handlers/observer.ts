@@ -2,6 +2,10 @@ import type { EdgeHost } from '../edge-host.ts';
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeMetric } from '../observability/metrics.ts';
 import type { RouteReport, RouteReports } from '../reports.ts';
+import type { EdgeContext } from '../strategies/context.ts';
+import { storageReadsOf, type ShellLoadResult } from '../strategies/shell-loader.ts';
+import type { MiddlewareOutcome } from './middleware.ts';
+import type { PassthroughWait } from './passthrough.ts';
 
 /**
  * What the host is told of an answer (`EdgeHost.observer`), told so that the telling can never
@@ -46,6 +50,92 @@ export async function observeMetricAfterRequests(
 ): Promise<void> {
   const spent = await requests;
   observeMetric(host, { ...metric, subrequests: metric.subrequests + spent });
+}
+
+/** One request's discarded shell reads; record/member metadata reads keep their existing exclusion. */
+export interface AbandonedShellReads {
+  readonly ctx: ExecutionContext;
+  seen?: WeakSet<Promise<ShellLoadResult>>;
+  requests?: Promise<number>;
+}
+
+interface ShellAccountingInput {
+  readonly edge: EdgeContext;
+  readonly passthrough: (
+    reason: string,
+    middleware?: MiddlewareOutcome,
+    route?: string,
+    waited?: PassthroughWait,
+  ) => Promise<Response>;
+}
+
+/** Install shared accounting only where a speculative shell actually exists, before routing can fail. */
+export function withShellAccounting<Input extends ShellAccountingInput>(input: Input): Input {
+  if (input.edge.abandonedShells !== undefined) return input;
+  const abandonedShells: AbandonedShellReads = { ctx: input.edge.ctx };
+  return {
+    ...input,
+    edge: { ...input.edge, abandonedShells },
+    passthrough: (
+      reason: string,
+      middleware?: MiddlewareOutcome,
+      route?: string,
+      waited?: PassthroughWait,
+    ) => {
+      const response = input.passthrough(reason, middleware, route, { ...waited, abandonedShells });
+      return response;
+    },
+  };
+}
+
+async function shellRequests(read: Promise<ShellLoadResult>): Promise<number> {
+  try {
+    return storageReadsOf(await read);
+  } catch {
+    // A shell load failing after it started is a failed backend read, as storageReadsOf reports.
+    return 1;
+  }
+}
+
+async function combinedRequests(first: Promise<number>, second: Promise<number>): Promise<number> {
+  const [one, two] = await Promise.all([first, second]);
+  return one + two;
+}
+
+/** Keep warming memory and count each discarded shell promise once, including a repeated catch path. */
+export function abandonShellRead(
+  edge: EdgeContext,
+  read: Promise<ShellLoadResult> | undefined,
+): void {
+  if (read === undefined) return;
+  edge.ctx.waitUntil(read);
+  const accounting = edge.abandonedShells;
+  if (accounting === undefined || accounting.seen?.has(read) === true) return;
+  accounting.seen ??= new WeakSet<Promise<ShellLoadResult>>();
+  accounting.seen.add(read);
+  const requests = shellRequests(read);
+  accounting.requests =
+    accounting.requests === undefined ? requests : combinedRequests(accounting.requests, requests);
+}
+
+/** The final point waits only in the background, after independent detached/static counts compose. */
+export function observeRequestMetric(
+  edge: Pick<EdgeContext, 'host' | 'ctx' | 'abandonedShells'>,
+  metric: EdgeMetric,
+  otherRequests?: Promise<number>,
+): void {
+  const shells = edge.abandonedShells?.requests;
+  const requests =
+    otherRequests === undefined
+      ? shells
+      : shells === undefined
+        ? otherRequests
+        : combinedRequests(shells, otherRequests);
+  if (requests === undefined) {
+    observeMetric(edge.host, metric);
+  } else {
+    edge.ctx.waitUntil(observeMetricAfterRequests(edge.host, metric, requests));
+  }
 }
 
 /** A delivery record read from storage to answer a request (`EdgeObserver.recordServed`). */

@@ -5,6 +5,7 @@ import type { CspNonceMode, DeliveryPolicy } from '@stayingupwind/host/delivery'
 import type { EdgeBindings } from '../bindings.ts';
 import type { EdgeHost } from '../edge-host.ts';
 import type { EdgeRuntime } from '../edge-runtime.ts';
+import type { AbandonedShellReads } from '../handlers/observer.ts';
 import type { DemotedRoutes } from '../preview/pointer.ts';
 
 /**
@@ -97,6 +98,8 @@ export interface EdgeContext {
    */
   readonly privateDelivery: boolean;
   readonly timings: RequestTimings;
+  /** Shared only when a speculative document shell can be discarded; never awaited before the response. */
+  readonly abandonedShells?: AbandonedShellReads | undefined;
   /**
    * The request routed again from the pointer KV holds now, for a dispatch the edge makes itself
    * that finds the Workers it was sent to gone (`RoutingInput.servedAgain`): a foreground
