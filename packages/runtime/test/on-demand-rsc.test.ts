@@ -7,6 +7,11 @@ import {
   packBodyDigests,
   type RouteEntryDescriptor,
 } from '@stayingupwind/core/cache';
+import {
+  CACHE_OUTCOME_HEADER,
+  CACHE_ROUTE_HEADER,
+  REGENERATE_HEADER,
+} from '@stayingupwind/core/paas';
 import { TtlCache } from '@stayingupwind/core/util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -694,6 +699,48 @@ describe('ordinary RSC navigation of an unbuilt fallback', () => {
     await client.drain();
 
     expect(prefetch.status).toBe(200);
+    expect(test.startAttempt).toHaveBeenCalledTimes(1);
+  });
+
+  it('takes a server error a static render answered for a failure, not for a page dynamic here', async () => {
+    const test = cache();
+    vi.mocked(invokeNodeHandler).mockImplementation((input) => {
+      const attempt = input.request.headers.get('x-invocation-id')?.startsWith('attempt-');
+      return Promise.resolve(
+        attempt === true ? new Response('boom', { status: 500 }) : new Response('live'),
+      );
+    });
+    const client = requests(test.runtime);
+    await client.ask('/fully-static-params/t1');
+    await client.drain();
+
+    expect(test.fail.mock.calls[0]?.[1].outcome).toBe('failed');
+
+    await client.ask('/fully-static-params/t1');
+    await client.drain();
+
+    expect(test.startAttempt).toHaveBeenCalledTimes(2);
+  });
+
+  it('remembers a page found dynamic in a foreground regeneration of no record', async () => {
+    const test = cache();
+    vi.mocked(invokeNodeHandler).mockImplementation(dynamicHere);
+    const client = requests(test.runtime);
+    const foreground = {
+      [REGENERATE_HEADER]: 'foreground',
+      [CACHE_ROUTE_HEADER]: STATIC_ROUTE,
+    };
+    const first = await client.ask('/fully-static-params/t1', foreground);
+    await client.drain();
+
+    await expect(first.text()).resolves.toBe('live');
+    expect(test.startAttempt).toHaveBeenCalledTimes(1);
+
+    const again = await client.ask('/fully-static-params/t1', foreground);
+    await client.drain();
+
+    await expect(again.text()).resolves.toBe('live');
+    expect(again.headers.get(CACHE_OUTCOME_HEADER)).toBe('skipped');
     expect(test.startAttempt).toHaveBeenCalledTimes(1);
   });
 

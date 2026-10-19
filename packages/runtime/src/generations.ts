@@ -189,7 +189,7 @@ function runJob(
     waitUntil: input.waitUntil,
     run: input.run,
   });
-  return rememberingDynamic(job.runtime, descriptor, reason, regeneration);
+  return rememberingDynamic(job.runtime, descriptor, replaces, regeneration);
 }
 
 /**
@@ -350,12 +350,13 @@ export async function handleForeground(
   store: Store,
 ): Promise<ForegroundAnswer> {
   const job = await jobOf(input, store);
-  if (job === undefined) {
-    return { response: undefined, outcome: 'skipped', regenerated: undefined };
-  }
   // The generation the edge found expired; none, where it found no record at all and asked for a
-  // first one, whose publish the answer waits for (`holdFirstPublish`).
+  // first one, whose publish the answer waits for (`holdFirstPublish`) — unless the entry was found
+  // dynamic here lately, which the usual path renders as the request came (`foundDynamic`).
   const served = input.request.headers.get(GENERATION_HEADER);
+  if (job === undefined || (served === null && foundDynamic(job.runtime, job.target.descriptor))) {
+    return { response: undefined, outcome: 'skipped', regenerated: job?.target.descriptor };
+  }
   const outcome = await runJob(job, 'expired', served);
   if (served === null) {
     holdFirstPublish(outcome);
