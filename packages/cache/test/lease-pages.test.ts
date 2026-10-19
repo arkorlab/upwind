@@ -2,7 +2,7 @@ import type { RouteEntryDescriptor } from '@stayingupwind/core/cache';
 import { createId } from '@stayingupwind/core/util';
 import { runInDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { limitsOf, parseVars } from '../src/env.ts';
 import { applyHeartbeat, expireLeases, planStartAttempt } from '../src/scope/attempts.ts';
@@ -141,11 +141,21 @@ function expire(fixture: Fixture, history = NO_HISTORY): number {
 }
 
 describe('lease expiry pages', () => {
+  beforeEach(() => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('expires only the requested holder before moving its fencing token and recording its final state', async () => {
     const result = await inScope(async (fixture) => {
+      vi.mocked(Date.now).mockReturnValue(STARTED);
       const first = requireLease(
         await fixture.instance.startAttempt({ entry: ROOT, reason: 'stale' }, STARTED),
       );
+      vi.mocked(Date.now).mockReturnValue(NOW);
       addLeases(fixture, BACKLOG);
       const events: EventInput[] = [];
       const second = requireLease(await start(fixture, capturing(events)));

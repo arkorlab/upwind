@@ -1,10 +1,17 @@
 import { bundleBlobs, type DeploymentBundle } from '@stayingupwind/core/bundle';
 import { PREFETCH_SERVICE_BINDING } from '@stayingupwind/host/bindings';
+import { PREFETCH_DEPLOYMENT_ENTRYPOINT } from '@stayingupwind/host/prefetch-audit';
 
 import type { ServiceBinding } from './bindings.ts';
 
 /** Deployment-time capability metadata only; never imported by the visitor or Function runtime. */
-export const PREFETCH_DEPLOYMENT_ENTRYPOINT = 'PrefetchForDeployment';
+export {
+  prefetchAuditIdentity,
+  prefetchAuditKey,
+  type PrefetchAuditIdentity,
+  type PrefetchAuditWitness,
+  PREFETCH_DEPLOYMENT_ENTRYPOINT,
+} from '@stayingupwind/host/prefetch-audit';
 export type PrefetchBlobs = Readonly<Record<string, true>>;
 
 /** A host supplies the bundle it accepted, after verifying the declared blob uploads. */

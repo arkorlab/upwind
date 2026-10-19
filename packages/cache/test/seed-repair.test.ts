@@ -13,7 +13,7 @@ import { createId, decodeUtf8, encodeUtf8 } from '@stayingupwind/core/util';
 import type { SeedEntryInput } from '@stayingupwind/host/cache';
 import { runInDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { limitsOf, parseVars } from '../src/env.ts';
 import { type EventInput, NO_HISTORY } from '../src/scope/history.ts';
@@ -294,6 +294,14 @@ async function observedSeedRepair(scope: Scope, plans: readonly Plan[], revision
 }
 
 describe('a seed whose artifact projection could not read', () => {
+  beforeEach(() => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it.each(['missing', 'corrupt'])(
     'immediately reprojects an unchanged seed after its same-key %s blob is restored',
     async (fault) => {

@@ -57,7 +57,7 @@ export function retentionDue(
  */
 export function nextRetentionAt(sql: SqlStorage, now: number, interval: number): number {
   const due = Math.max(now, Number(readMeta(sql, META_LAST_RETENTION) ?? '0') + interval);
-  return moreLeft(sql) ? Math.min(due, now + SOON_MS) : due;
+  return moreLeft(sql) || controlFenceSweepPending(sql) ? Math.min(due, now + SOON_MS) : due;
 }
 
 export interface RetentionRun {

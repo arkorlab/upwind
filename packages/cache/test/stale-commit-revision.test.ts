@@ -3,7 +3,7 @@ import { createId } from '@stayingupwind/core/util';
 import { commitRequestSchema } from '@stayingupwind/host/cache';
 import { runInDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { limitsOf, parseVars } from '../src/env.ts';
 import { applyHeartbeat, planStartAttempt } from '../src/scope/attempts.ts';
@@ -229,6 +229,14 @@ async function commitWithHistory(count: number) {
 }
 
 describe('refusing a render after retained invalidations', () => {
+  beforeEach(() => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it.each([3, LARGE_HISTORY])(
     'ends the lease and queues another attempt after %i matching invalidations',
     async (count) => {
