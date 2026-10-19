@@ -156,12 +156,26 @@ function routeOf(store: Store, pathname: string): RouteEntryDescriptor | undefin
 }
 
 /**
+ * `pathname` as a request's URL carries it, escaped where URLs escape (`/caf%C3%A9`, `/a%20b`): the
+ * spelling an entry rendered for that request is named by (`targetOf`, in `generations.ts`).
+ */
+function urlSpelling(pathname: string): string {
+  if (!pathname.startsWith('/')) return pathname;
+  try {
+    return new URL(`https://spelling.invalid${pathname}`).pathname;
+  } catch {
+    return pathname;
+  }
+}
+
+/**
  * A page a shared shell stands for may also hold an entry of its own, rendered for its parameters
  * where a host asked for one (`CACHE_UPGRADE_HEADER`), which publishing the shared shell does not
  * replace. Once it is published, that entry is invalidated by the page's own tags, as for a page in
  * another Function — never by the shared identity, whose new generation is in place. At each of its
- * `spellings`: the one asked, which an entry of its own was made under — an escaped one, of a value
- * that reads as the shell's placeholder, among them — and the name the build gives it. Never by a
+ * `spellings`: the one asked and the one its request's URL carries, which an entry of its own was
+ * made under — an escaped one, of a value that reads as the shell's placeholder, among them — and
+ * the name the build gives it. Never by a
  * tag the shell carries itself: a page spelled as one of its route's layouts (`/blog/layout`, of
  * `/blog/[slug]`) is tagged as that layout is, and invalidated by it, would take the shell just
  * published, and every page under the layout, with it; such a page's own entry keeps its lifetime.
@@ -264,7 +278,11 @@ export async function platformRevalidate(input: RevalidateInput): Promise<void> 
     throw new Error(`revalidate: ${pathname} was not regenerated (${published.kind})`);
   }
   if (shared) {
-    const spellings = [normalizeRoutePathname(asked), pathname];
+    const spellings = [
+      normalizeRoutePathname(asked),
+      normalizeRoutePathname(urlSpelling(asked)),
+      pathname,
+    ];
     await invalidateOwnEntry(context.runtime, store, spellings, descriptor);
   }
 }
