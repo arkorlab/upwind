@@ -85,9 +85,8 @@ function condemnPage(input: TxInput, rows: readonly OutdatedRow[], under: Reconc
  */
 export function reconcileTag(input: TxInput, under: Reconciliation): void {
   let after = '';
-  while (true) {
-    const rows = outdatedPage(input.sql, under, after);
-    if (rows.length === 0) return;
+  let rows = outdatedPage(input.sql, under, after);
+  while (rows.length > 0) {
     for (const row of rows) under.outdated.add(row.entry_id);
     condemnPage(input, rows, under);
     if (rows.length < PAGE) return;
@@ -95,6 +94,7 @@ export function reconcileTag(input: TxInput, under: Reconciliation): void {
     const last = rows.at(-1);
     if (last === undefined) return;
     after = last.entry_id;
+    rows = outdatedPage(input.sql, under, after);
   }
 }
 
