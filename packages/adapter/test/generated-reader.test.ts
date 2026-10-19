@@ -17,6 +17,7 @@ const BOTH = `${CACHE} export function createBundleBlobReader() { return undefin
 interface LinkedCase {
   readonly name: string;
   readonly files: Readonly<Record<string, string>>;
+  readonly marker: string;
 }
 
 function plugin(required: boolean, hostModule: string | undefined = HOST): Plugin {
@@ -126,12 +127,13 @@ describe('required reader through the actual runtime bundler plugin', () => {
   }
 
   it.each<LinkedCase>([
-    { name: 'direct ESM', files: { 'host.mjs': BOTH } },
+    { name: 'direct ESM', files: { 'host.mjs': BOTH }, marker: READER },
     {
       name: 'TypeScript',
       files: {
         'host.ts': `${CACHE} export function createBundleBlobReader(_input: unknown) { return undefined; }`,
       },
+      marker: READER,
     },
     {
       name: 'named alias reexport',
@@ -139,6 +141,7 @@ describe('required reader through the actual runtime bundler plugin', () => {
         'host.mjs': `${CACHE} export { reader as createBundleBlobReader } from './reader.mjs';`,
         'reader.mjs': 'export function reader() { return undefined; }',
       },
+      marker: READER,
     },
     {
       name: 'named reexport',
@@ -146,17 +149,20 @@ describe('required reader through the actual runtime bundler plugin', () => {
         'host.mjs': `${CACHE} export { createBundleBlobReader } from './reader.mjs';`,
         'reader.mjs': 'export function createBundleBlobReader() { return undefined; }',
       },
+      marker: READER,
     },
     {
       name: 'star reexport',
       files: { 'host.mjs': "export * from './reader.mjs';", 'reader.mjs': BOTH },
+      marker: READER,
     },
     {
       name: 'throwing top level without execution',
       files: { 'host.mjs': `throw new Error('host must not execute during build'); ${BOTH}` },
+      marker: 'host must not execute during build',
     },
-  ])('links the $name contract without evaluating it', async ({ files }) => {
-    await expect(emit(files)).resolves.toContain(READER);
+  ])('links the $name contract without evaluating it', async ({ files, marker }) => {
+    await expect(emit(files)).resolves.toContain(marker);
   });
 
   it('rejects a legacy ESM host only when omission is enabled', async () => {
