@@ -3,7 +3,13 @@ import type { OutputSnapshot } from '@stayingupwind/core/cache';
 import { withDeadline } from '@stayingupwind/core/util';
 import type { SeedEntriesResult, SeedEntryInput } from '@stayingupwind/host/cache';
 
-import { findArtifactBySha, forgetArtifactFailure, rememberArtifactFailure } from './artifacts.ts';
+import {
+  type ArtifactRepair,
+  finishArtifactRepairs,
+  relocateBorrowedArtifact,
+  retargetedRecordsFailure,
+} from './artifact-repair.ts';
+import { findArtifactBySha, rememberArtifactFailure } from './artifacts.ts';
 import { entryStateEvent } from './attempts.ts';
 import { type EntryIdentity, findEntry, requireEntry } from './entries.ts';
 import { findGeneration } from './generations.ts';
@@ -276,6 +282,36 @@ function repairableGeneration(sql: SqlStorage, plan: SeedLocations): GenerationR
     : undefined;
 }
 
+/** The unchanged content whose current canonical storage location the seed proposes to move. */
+function seedRelocations(
+  sql: SqlStorage,
+  previous: readonly OutputSnapshot[],
+  outputs: readonly OutputSnapshot[],
+): ArtifactRepair[] {
+  const repairs = new Map<string, ArtifactRepair>();
+  for (const [index, output] of outputs.entries()) {
+    for (const [offset, artifact] of output.artifacts.entries()) {
+      const before = previous[index]?.artifacts[offset]?.storageRef ?? '';
+      if (artifact.storageRef === before) continue;
+      const row = findArtifactBySha(sql, artifact.sha256);
+      if (
+        row?.owned === 0 &&
+        row.storage_ref === before &&
+        row.byte_length === artifact.byteLength
+      ) {
+        repairs.set(artifact.sha256, {
+          sha256: artifact.sha256,
+          byteLength: artifact.byteLength,
+          previousStorageRef: before,
+          storageRef: artifact.storageRef,
+          previouslyOwned: false,
+        });
+      }
+    }
+  }
+  return [...repairs.values()];
+}
+
 function repairOne(
   input: TxInput,
   plan: SeedLocations,
@@ -300,24 +336,14 @@ function repairOne(
   ) {
     return false;
   }
-  // Another entry may already use this shared location. Move it only to verified identical bytes;
-  // a bad proposed copy leaves its canonical location in both the row and the repaired snapshot.
-  for (const [index, output] of outputs.entries()) {
-    for (const [offset, artifact] of output.artifacts.entries()) {
-      const before = previous[index]?.artifacts[offset]?.storageRef ?? '';
-      if (artifact.storageRef === before) continue;
-      const changed = sql.exec(
-        `UPDATE artifacts SET storage_ref = ?
-         WHERE sha256 = ? AND storage_ref = ? AND byte_length = ? AND owned = 0
-         RETURNING sha256`,
-        artifact.storageRef,
-        artifact.sha256,
-        before,
-        artifact.byteLength,
-      );
-      if (changed.toArray().length === 1) forgetArtifactFailure(sql, artifact.sha256);
-    }
+  // Every other live snapshot follows a verified canonical move in the same transaction.
+  const repairs = seedRelocations(sql, previous, outputs);
+  if (retargetedRecordsFailure(input, repairs, generation.entry_id) !== undefined) return false;
+  const moved = new Map<string, ArtifactRepair>();
+  for (const repair of repairs) {
+    if (relocateBorrowedArtifact(input, repair)) moved.set(repair.sha256, repair);
   }
+  if (moved.size > 0) finishArtifactRepairs(input, moved, generation.entry_id);
   sql.exec(
     `UPDATE generations SET outputs = ? WHERE generation_id = ?`,
     JSON.stringify(outputs),

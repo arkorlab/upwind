@@ -4,8 +4,8 @@ import {
   decodeGenerationPack,
   deriveEntry,
   kvGenerationKey,
+  type OutputSnapshot,
   policyFromBuild,
-  r2BlobKey,
   tagIdFor,
 } from '@stayingupwind/core/cache';
 import { createId, decodeUtf8, encodeUtf8 } from '@stayingupwind/core/util';
@@ -18,9 +18,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { limitsOf, parseVars } from '../src/env.ts';
 import { Gateway } from '../src/function/gateway.ts';
 import { createGatewayApp } from '../src/gateway/app.ts';
+import { repairStorageRef } from '../src/scope/artifact-repair.ts';
 import { deleteArtifactRow, rememberArtifactFailure } from '../src/scope/artifacts.ts';
 import { planCommit } from '../src/scope/commit.ts';
-import { findEntry } from '../src/scope/entries.ts';
+import { findEntry, markRecordWritten } from '../src/scope/entries.ts';
 import { findGeneration } from '../src/scope/generations.ts';
 import { NO_HISTORY } from '../src/scope/history.ts';
 import { blobStore } from '../src/scope/io.ts';
@@ -75,8 +76,8 @@ async function scopeForTest() {
 
 type Scope = Awaited<ReturnType<typeof scopeForTest>>;
 
-async function planFor(scope: Scope) {
-  const descriptor = { kind: 'app-page', route: '/', pathname: '/' } as const;
+async function planFor(scope: Scope, pathname = '/') {
+  const descriptor = { kind: 'app-page', route: pathname, pathname } as const;
   const { entryId } = await deriveEntry(scope.scopeId, descriptor);
   const generationId = await buildGenerationIdFor(scope.scopeId, entryId);
   const bytes = encodeUtf8(BODY);
@@ -105,7 +106,7 @@ async function planFor(scope: Scope) {
       outputs: [
         {
           representationKey: 'html',
-          pathname: '/',
+          pathname,
           status: 200,
           headers: { 'content-type': TYPE },
           compute: 'static',
@@ -221,6 +222,39 @@ function stateFor(scope: Scope, plan: Plan) {
   });
 }
 
+function liveSnapshot(scope: Scope, plan: Plan) {
+  return runInDurableObject(scope.stub, (_instance, state) => {
+    const entry = findEntry(state.storage.sql, plan.entryId);
+    if (entry === undefined || entry.current_generation_id === null)
+      throw new Error('no current entry');
+    const generation = findGeneration(state.storage.sql, entry.current_generation_id);
+    if (generation === undefined) throw new Error('no current generation');
+    return {
+      generationId: generation.generation_id,
+      recordRevision: entry.record_revision,
+      kvRevision: entry.kv_revision,
+      outputs: generationOutputs(generation),
+    };
+  });
+}
+
+function relocatedOutputs(
+  outputs: readonly OutputSnapshot[],
+  storageRef: string,
+): OutputSnapshot[] {
+  return outputs.map((output) => {
+    return {
+      ...output,
+      artifacts: output.artifacts.map((artifact) => ({ ...artifact, storageRef })),
+    };
+  });
+}
+
+async function bodyFor(scope: Scope, plan: Plan): Promise<string> {
+  const record = await recordFor(scope, plan);
+  return decodeUtf8(record.html);
+}
+
 async function recordFor(scope: Scope, plan: Plan) {
   const stored = await env.CACHE_STATE.get(
     kvGenerationKey(scope.scopeId, plan.entryId),
@@ -246,7 +280,8 @@ async function repairedOwned() {
   await upload(scope, plan, started, 'single');
   const result = await scope.stub.commit(started.attemptId, requestFor(plan, started), NOW);
   if (!('kind' in result) || result.kind !== 'published') throw new Error('repair did not publish');
-  return { scope, plan };
+  const { artifact } = await stateFor(scope, plan);
+  return { scope, plan, storageRef: artifact.storage_ref };
 }
 
 async function reproject(scope: Scope, plan: Plan) {
@@ -260,11 +295,7 @@ async function reproject(scope: Scope, plan: Plan) {
 }
 
 async function refuseRepair(scope: Scope, kind: string) {
-  if (kind === 'quota') {
-    await runInDurableObject(scope.stub, (instance) => {
-      instance.setTestLimits({ bodyBytesPerScope: 1 });
-    });
-  } else if (kind === 'stale') {
+  if (kind === 'stale') {
     const tagId = await tagIdFor(scope.scopeId, 'next-explicit', 'shared');
     await runInDurableObject(scope.stub, (_instance, state) => {
       state.storage.sql.exec(
@@ -278,6 +309,26 @@ async function refuseRepair(scope: Scope, kind: string) {
       state.storage.sql.exec(`UPDATE scope SET revision = 100`);
     });
   }
+}
+
+async function limitedCommit(scope: Scope, started: Lease, request: CommitRequest) {
+  return runInDurableObject(scope.stub, async (_instance, state) => {
+    const { sql } = state.storage;
+    const apply = await planCommit(
+      {
+        sql,
+        scopeId: scope.scopeId,
+        limits: { ...LIMITS, bodyBytesPerScope: 1 },
+        now: NOW,
+        revision: readRevision(sql) + 1,
+        history: NO_HISTORY,
+      },
+      started.attemptId,
+      request,
+      blobStore(env.ARTIFACTS, () => ({})),
+    );
+    return state.storage.transactionSync(apply);
+  });
 }
 
 async function uncheckedRepair(scope: Scope, plan: Plan, started: Lease) {
@@ -384,7 +435,7 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
 
       expect(after).toMatchObject({
         artifact: {
-          storage_ref: r2BlobKey(scope.scopeId, plan.artifact.sha256),
+          storage_ref: repairStorageRef(scope.scopeId, plan.artifact.sha256, started.attemptId),
           owned: 1,
           refs: 3,
         },
@@ -418,14 +469,14 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
   });
 
   it('deduplicates a healthy owned upload with HEAD and keeps its existing charge', async () => {
-    const { scope, plan } = await repairedOwned();
+    const { scope, plan, storageRef } = await repairedOwned();
     const started = await lease(scope, plan);
     const put = vi.spyOn(env.ARTIFACTS, 'put');
     const head = vi.spyOn(env.ARTIFACTS, 'head');
     await upload(scope, plan, started, 'single');
 
     expect(put).not.toHaveBeenCalled();
-    expect(head).toHaveBeenCalledExactlyOnceWith(r2BlobKey(scope.scopeId, plan.artifact.sha256));
+    expect(head).toHaveBeenCalledExactlyOnceWith(storageRef);
     await expect(
       scope.stub.commit(started.attemptId, requestFor(plan, started), NOW),
     ).resolves.toMatchObject({ kind: 'published' });
@@ -439,8 +490,7 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
   it.each(['single', 'batch'] as const)(
     'overwrites a same-length corrupt owned key through %s',
     async (mode) => {
-      const { scope, plan } = await repairedOwned();
-      const storageRef = r2BlobKey(scope.scopeId, plan.artifact.sha256);
+      const { scope, plan, storageRef } = await repairedOwned();
       await damage(storageRef, 'digest', plan.bytes.byteLength);
       await reproject(scope, plan);
       const marked = await stateFor(scope, plan);
@@ -457,7 +507,11 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
       ).resolves.toMatchObject({ kind: 'published' });
       expect(decodeUtf8((await recordFor(scope, plan)).html)).toBe(BODY);
       await expect(stateFor(scope, plan)).resolves.toMatchObject({
-        artifact: { storage_ref: storageRef, owned: 1, refs: 3 },
+        artifact: {
+          storage_ref: repairStorageRef(scope.scopeId, plan.artifact.sha256, started.attemptId),
+          owned: 1,
+          refs: 3,
+        },
         bodyBytes: plan.bytes.byteLength,
         marker: undefined,
       });
@@ -481,11 +535,13 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
     await refuseRepair(scope, kind);
 
     await expect(
-      scope.stub.commit(
-        started.attemptId,
-        request,
-        kind === 'lease' ? started.leaseExpiresAt : NOW,
-      ),
+      kind === 'quota'
+        ? limitedCommit(scope, started, request)
+        : scope.stub.commit(
+            started.attemptId,
+            request,
+            kind === 'lease' ? started.leaseExpiresAt : NOW,
+          ),
     ).resolves.toMatchObject(expected);
     await expect(stateFor(scope, plan)).resolves.toStrictEqual(before);
   });
@@ -504,6 +560,132 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
       bodyBytes: 0,
       marker: `${plan.bytes.byteLength}:${plan.artifact.storageRef}`,
     });
+  });
+
+  it('retargets every other live snapshot across pages and queues all projections', async () => {
+    const scope = await scopeForTest();
+    const first = await planFor(scope);
+    const others = await Promise.all(
+      Array.from({ length: 51 }, (_value, index) => planFor(scope, `/shared/${String(index)}`)),
+    );
+    await damage(first.artifact.storageRef, 'missing', first.bytes.byteLength);
+    await scope.stub.seedEntries(
+      {
+        scopeId: scope.scopeId,
+        batchIndex: 0,
+        entries: [first.seed, ...others.map((plan) => plan.seed)],
+      },
+      NOW,
+    );
+    const before = await Promise.all(others.map((plan) => liveSnapshot(scope, plan)));
+    const original = await stateFor(scope, first);
+    const started = await lease(scope, first);
+    await upload(scope, first, started, 'batch');
+    const published = await scope.stub.commit(started.attemptId, requestFor(first, started), NOW);
+    await scope.stub.tick(NOW);
+    const target = repairStorageRef(scope.scopeId, first.artifact.sha256, started.attemptId);
+    const after = await Promise.all(others.map((plan) => liveSnapshot(scope, plan)));
+    const bodies = await Promise.all(others.map((plan) => bodyFor(scope, plan)));
+    const staleAcknowledged = await runInDurableObject(scope.stub, (_instance, state) => {
+      return markRecordWritten(
+        state.storage.sql,
+        others[0]?.entryId ?? '',
+        before[0]?.recordRevision ?? -1,
+      );
+    });
+    const expected = before.map((snapshot) => relocatedOutputs(snapshot.outputs, target));
+
+    expect(published).toMatchObject({ kind: 'published' });
+    expect(after.map((snapshot) => snapshot.generationId)).toStrictEqual(
+      others.map((plan) => plan.generationId),
+    );
+    expect(after.map((snapshot) => snapshot.outputs)).toStrictEqual(expected);
+    expect(
+      after.every(
+        (snapshot, index) =>
+          snapshot.kvRevision === snapshot.recordRevision &&
+          snapshot.recordRevision > (before[index]?.recordRevision ?? -1),
+      ),
+    ).toBe(true);
+    expect(staleAcknowledged).toBe(false);
+    await expect(stateFor(scope, first)).resolves.toMatchObject({
+      artifact: { storage_ref: target, owned: 1, refs: 53 },
+      bodyBytes: first.bytes.byteLength,
+      marker: undefined,
+      originalOutputs: original.originalOutputs,
+    });
+    expect(bodies).toStrictEqual(Array.from({ length: 51 }, () => BODY));
+  });
+
+  it('keeps a known bad owned key marked when its replacement PUT overlaps commit or fails', async () => {
+    const { scope, plan, storageRef } = await repairedOwned();
+    await damage(storageRef, 'digest', plan.bytes.byteLength);
+    await reproject(scope, plan);
+    const before = await stateFor(scope, plan);
+    const started = await lease(scope, plan);
+    const entered = Promise.withResolvers<true>();
+    const blocked = Promise.withResolvers<never>();
+    const put = vi.spyOn(env.ARTIFACTS, 'put').mockImplementationOnce(() => {
+      entered.resolve(true);
+      return blocked.promise;
+    });
+    const finished = upload(scope, plan, started, 'single').then(
+      () => 'stored',
+      () => 'failed',
+    );
+    try {
+      await entered.promise;
+      const overlapping = await scope.stub.commit(
+        started.attemptId,
+        requestFor(plan, started),
+        NOW,
+      );
+      blocked.reject(new Error('replacement PUT failed'));
+      const failed = await finished;
+      const afterward = await scope.stub.commit(started.attemptId, requestFor(plan, started), NOW);
+
+      expect({ overlapping, failed, afterward }).toMatchObject({
+        overlapping: { code: 'artifact_missing' },
+        failed: 'failed',
+        afterward: { code: 'artifact_missing' },
+      });
+      await expect(stateFor(scope, plan)).resolves.toStrictEqual(before);
+      put.mockRestore();
+      await upload(scope, plan, started, 'single');
+
+      await expect(
+        scope.stub.commit(started.attemptId, requestFor(plan, started), NOW),
+      ).resolves.toMatchObject({ kind: 'published' });
+      expect(decodeUtf8((await recordFor(scope, plan)).html)).toBe(BODY);
+    } finally {
+      blocked.reject(new Error('release replacement fixture'));
+      await finished;
+      put.mockRestore();
+    }
+  });
+
+  it('refuses an ordinary admitted upload when a failure is discovered before its commit plan', async () => {
+    const { scope, plan, storageRef } = await repairedOwned();
+    await damage(storageRef, 'digest', plan.bytes.byteLength);
+    const started = await lease(scope, plan);
+    const head = vi.spyOn(env.ARTIFACTS, 'head');
+    const put = vi.spyOn(env.ARTIFACTS, 'put');
+    await upload(scope, plan, started, 'single');
+    await reproject(scope, plan);
+    const before = await stateFor(scope, plan);
+
+    expect(head).toHaveBeenCalledExactlyOnceWith(storageRef);
+    expect(put).not.toHaveBeenCalled();
+    await expect(
+      scope.stub.commit(started.attemptId, requestFor(plan, started), NOW),
+    ).resolves.toMatchObject({ code: 'artifact_missing' });
+    await expect(stateFor(scope, plan)).resolves.toStrictEqual(before);
+    await upload(scope, plan, started, 'single');
+
+    await expect(
+      scope.stub.commit(started.attemptId, requestFor(plan, started), NOW),
+    ).resolves.toMatchObject({ kind: 'published' });
+    expect(decodeUtf8((await recordFor(scope, plan)).html)).toBe(BODY);
   });
 
   it('ignores late projection failures for another revision, generation or canonical location', async () => {

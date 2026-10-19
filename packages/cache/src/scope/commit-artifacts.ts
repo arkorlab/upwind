@@ -1,8 +1,10 @@
 import type { CommitArtifact, CommitOutput } from '@stayingupwind/host/cache';
 
+import { type ArtifactRepair, repairStorageRef } from './artifact-repair.ts';
 import { artifactFailed, findArtifactBySha } from './artifacts.ts';
 import type { BlobStore } from './io.ts';
 import type { AttemptArtifactRow } from './rows.ts';
+import { isRefusal, type Refusal, refuse } from './state.ts';
 import { inChunks } from './tx.ts';
 
 /**
@@ -85,4 +87,92 @@ export function mismatchOf(
     return `${named} was uploaded ${upload.encoding}, not ${artifact.encoding}`;
   }
   return undefined;
+}
+
+interface ArtifactLocationsPlan {
+  readonly scopeId: string;
+  readonly attemptId: string;
+  readonly request: { readonly generation: { readonly outputs: readonly CommitOutput[] } };
+  readonly missingUploads: ReadonlySet<string>;
+  readonly checkedUploads: ReadonlySet<string>;
+}
+
+/**
+ * Where one named artifact's bytes are.
+ *
+ * Where the scope already holds them wins, unless projection verified that exact location is
+ * broken. A repair uses the verified upload and moves ownership in the same publishing transaction.
+ */
+function locateArtifact(
+  sql: SqlStorage,
+  plan: ArtifactLocationsPlan,
+  artifact: CommitArtifact,
+): Refusal | { readonly storageRef: string; readonly repair?: ArtifactRepair } {
+  const named = `${artifact.role} ${artifact.sha256}`;
+  const upload = findUpload(sql, plan.attemptId, artifact);
+  const stored = findArtifactBySha(sql, artifact.sha256);
+  const mismatch = upload === undefined ? undefined : mismatchOf(upload, artifact);
+  if (mismatch !== undefined) {
+    return refuse('artifact_mismatch', mismatch);
+  }
+  if (stored !== undefined) {
+    if (stored.byte_length !== artifact.byteLength) {
+      return refuse(
+        'artifact_mismatch',
+        `${named} holds ${stored.byte_length} bytes, not ${artifact.byteLength}`,
+      );
+    }
+    if (!artifactFailed(sql, stored)) return { storageRef: stored.storage_ref };
+    if (
+      upload === undefined ||
+      upload.storage_ref !== repairStorageRef(plan.scopeId, artifact.sha256, plan.attemptId) ||
+      !plan.checkedUploads.has(upload.storage_ref) ||
+      plan.missingUploads.has(upload.storage_ref)
+    ) {
+      return refuse('artifact_missing', `no stored replacement upload for ${named}`);
+    }
+    return {
+      storageRef: upload.storage_ref,
+      repair: {
+        sha256: artifact.sha256,
+        byteLength: artifact.byteLength,
+        previousStorageRef: stored.storage_ref,
+        storageRef: upload.storage_ref,
+        previouslyOwned: stored.owned === 1,
+      },
+    };
+  }
+  if (upload === undefined) {
+    return refuse('artifact_missing', `no upload for ${named}`);
+  }
+  // Published, it would be a generation no record of could ever be written. Refused, it is an
+  // attempt the runtime fails and renders again, and that upload stores the bytes anew.
+  return plan.missingUploads.has(upload.storage_ref)
+    ? refuse('artifact_missing', `the bytes uploaded for ${named} are not in storage`)
+    : { storageRef: upload.storage_ref };
+}
+
+/** Where each named artifact's bytes are: uploaded for this attempt, or already the scope's. */
+export function locateArtifacts(
+  sql: SqlStorage,
+  plan: ArtifactLocationsPlan,
+): LocatedArtifacts | Refusal {
+  const refs = new Map<string, string>();
+  const repairs = new Map<string, ArtifactRepair>();
+  for (const output of plan.request.generation.outputs) {
+    for (const artifact of output.artifacts) {
+      const located = locateArtifact(sql, plan, artifact);
+      if (isRefusal(located)) {
+        return located;
+      }
+      refs.set(artifact.sha256, located.storageRef);
+      if (located.repair !== undefined) repairs.set(artifact.sha256, located.repair);
+    }
+  }
+  return { refs, repairs };
+}
+
+interface LocatedArtifacts {
+  readonly refs: ReadonlyMap<string, string>;
+  readonly repairs: ReadonlyMap<string, ArtifactRepair>;
 }

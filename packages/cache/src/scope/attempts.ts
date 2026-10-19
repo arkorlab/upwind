@@ -7,6 +7,7 @@ import {
   type StartAttemptResponse,
 } from '@stayingupwind/host/cache';
 
+import { repairStorageRef } from './artifact-repair.ts';
 import { HELD_WITHOUT_CHARGE, ownedUploadOf } from './artifacts.ts';
 import {
   type EntryIdentity,
@@ -409,6 +410,7 @@ export interface UploadedArtifact {
 export interface RecordedArtifact {
   readonly ok: true;
   readonly replace?: true;
+  readonly storageRef?: string;
 }
 
 /**
@@ -451,13 +453,20 @@ export function applyRecordArtifact(
   if (isRefusal(scope)) {
     return scope;
   }
-  const { addedBytes: added, replace } = ownedUploadOf(sql, upload.sha256, upload.byteLength);
+  const {
+    addedBytes: added,
+    replace,
+    storageRef: held,
+  } = ownedUploadOf(sql, upload.sha256, upload.byteLength);
   if (
     added > 0 &&
     scope.body_bytes + reservedBytes(sql, upload.sha256) + added > limits.bodyBytesPerScope
   ) {
     return refuse('quota_exceeded', 'the scope holds as many bytes as it may');
   }
+  const storageRef = replace
+    ? repairStorageRef(input.scopeId, upload.sha256, attemptId)
+    : (held ?? upload.storageRef);
   sql.exec(
     `INSERT OR REPLACE INTO attempt_artifacts (attempt_id, sha256, role, byte_length, content_type, encoding, storage_ref, uploaded_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -467,12 +476,13 @@ export function applyRecordArtifact(
     upload.byteLength,
     upload.contentType,
     upload.encoding,
-    upload.storageRef,
+    storageRef,
     now,
   );
-  sql.exec(`DELETE FROM pending_deletions WHERE storage_ref = ?`, upload.storageRef);
+  sql.exec(`DELETE FROM pending_deletions WHERE storage_ref = ?`, storageRef);
   sql.exec(`UPDATE attempts SET status = 'uploading' WHERE attempt_id = ?`, attemptId);
-  return replace ? { ok: true, replace: true } : { ok: true };
+  if (replace) return { ok: true, replace: true, storageRef };
+  return storageRef === upload.storageRef ? { ok: true } : { ok: true, storageRef };
 }
 
 export function applyFail(
