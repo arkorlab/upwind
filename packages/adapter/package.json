@@ -41,7 +41,6 @@
     "@oxc-project/types": "catalog:",
     "@types/node": "catalog:",
     "next": "catalog:",
-    "npm": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },

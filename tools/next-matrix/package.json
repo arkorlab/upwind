@@ -14,7 +14,6 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "miniflare": "catalog:",
-    "npm": "catalog:",
     "typescript": "catalog:"
   },
   "engines": {

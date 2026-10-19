@@ -12,6 +12,7 @@ import {
   type FixtureCoverage,
   namesIn,
 } from '../../../tools/next-matrix/src/coverage.ts';
+import { npmCli } from '../../../tools/next-matrix/src/npm-cli.ts';
 import { type Copy, type Patch, PATCHES, type PatchContext } from '../src/patches/index.ts';
 import { SUPPORTED_NEXT_RANGE } from '../src/patches/versions.ts';
 import { copyOf, missedRuntimes } from './copies.ts';
@@ -67,16 +68,6 @@ const REGISTRY = 'https://registry.npmjs.org';
 const VERSION_PARTS = 3;
 /** 64 MiB, for room rather than for need: both commands are run quiet and print a line at most. */
 const OUTPUT_LIMIT = 67_108_864;
-/**
- * pnpm's runtime contains no npm, and PATH can hold a tool-manager shim rather than its CLI.
- * Resolve our explicit development dependency and run its JavaScript with `process.execPath`.
- */
-const NPM_CLI = path.join(
-  path.dirname(createRequire(import.meta.url).resolve('npm/package.json')),
-  'bin',
-  'npm-cli.js',
-);
-
 /** `tar` needs no such care: Windows has shipped one since 10, as an executable. */
 
 /** The context a patch is handed. Only `instrumentation` reads any of it from a package file. */
@@ -217,7 +208,7 @@ async function fetchPackage(version: string): Promise<string> {
   await mkdir(dir, { recursive: true });
   const { stdout } = await execFileAsync(
     process.execPath,
-    [NPM_CLI, 'pack', `next@${version}`, '--silent', '--pack-destination', dir],
+    [await npmCli(), 'pack', `next@${version}`, '--silent', '--pack-destination', dir],
     { maxBuffer: OUTPUT_LIMIT },
   );
   const printed = stdout.trim().split('\n').at(-1)?.trim();

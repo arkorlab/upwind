@@ -242,9 +242,6 @@ catalogs:
     next:
       specifier: 16.4.2
       version: 16.4.2
-    npm:
-      specifier: 11.19.1
-      version: 11.19.1
     oxfmt:
       specifier: 0.73.0
       version: 0.73.0
@@ -373,9 +370,6 @@ importers:
       next:
         specifier: 'catalog:'
         version: 16.4.2(@types/node@24.19.2)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
-      npm:
-        specifier: 'catalog:'
-        version: 11.19.1
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -561,9 +555,6 @@ importers:
       miniflare:
         specifier: 'catalog:'
         version: 5.20261012.1-beta(@types/node@24.19.2)
-      npm:
-        specifier: 'catalog:'
-        version: 11.19.1
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -2867,77 +2858,6 @@ packages:
     version: 24.22.0
     hasBin: true
 
-  npm@11.19.1:
-    resolution: {integrity: sha512-ztsxKxt/kkIaAs+2i0GU6I+DRmUdrNasxTZKJe9TCdSjKxlhah/4r/hl5ygMD6XAg1qZ9c2TNomR4qgOydp10g==}
-    engines: {node: ^20.17.0 || >=22.9.0}
-    hasBin: true
-    bundledDependencies:
-      - '@isaacs/string-locale-compare'
-      - '@npmcli/arborist'
-      - '@npmcli/config'
-      - '@npmcli/fs'
-      - '@npmcli/map-workspaces'
-      - '@npmcli/metavuln-calculator'
-      - '@npmcli/package-json'
-      - '@npmcli/promise-spawn'
-      - '@npmcli/redact'
-      - '@npmcli/run-script'
-      - '@sigstore/tuf'
-      - abbrev
-      - archy
-      - cacache
-      - chalk
-      - ci-info
-      - fastest-levenshtein
-      - fs-minipass
-      - glob
-      - graceful-fs
-      - hosted-git-info
-      - ini
-      - init-package-json
-      - is-cidr
-      - json-parse-even-better-errors
-      - libnpmaccess
-      - libnpmdiff
-      - libnpmexec
-      - libnpmfund
-      - libnpmorg
-      - libnpmpack
-      - libnpmpublish
-      - libnpmsearch
-      - libnpmteam
-      - libnpmversion
-      - make-fetch-happen
-      - minimatch
-      - minipass
-      - minipass-pipeline
-      - ms
-      - node-gyp
-      - nopt
-      - npm-audit-report
-      - npm-install-checks
-      - npm-package-arg
-      - npm-pick-manifest
-      - npm-profile
-      - npm-registry-fetch
-      - npm-user-validate
-      - p-map
-      - pacote
-      - parse-conflict-json
-      - proc-log
-      - qrcode-terminal
-      - read
-      - semver
-      - spdx-expression-parse
-      - ssri
-      - supports-color
-      - tar
-      - text-table
-      - tiny-relative-date
-      - treeverse
-      - validate-npm-package-name
-      - which
-
   obug@3.0.0:
     resolution: {integrity: sha512-5vvB5+W7ePv+p3uqxi+RcW1XAzLW0/hxt3/4X4Lc4qHudzOhmBiBwOY6DRob4WnanAEGvNcLjF+KNOufrUoEQw==}
     engines: {node: '>=12.20.0'}
@@ -5161,8 +5081,6 @@ snapshots:
   node-releases@2.0.57: {}
 
   node@runtime:24.22.0: {}
-
-  npm@11.19.1: {}
 
   obug@3.0.0: {}
 

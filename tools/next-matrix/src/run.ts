@@ -1,6 +1,5 @@
 import { execFile } from 'node:child_process';
 import { cp, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,6 +19,7 @@ import {
 } from './coverage.ts';
 import { externalOutputHolds } from './external-output.ts';
 import { instrumentationHolds } from './instrumentation.ts';
+import { npmCli } from './npm-cli.ts';
 
 /**
  * Builds real applications with real Next.js versions, and holds each build to what the adapter
@@ -59,16 +59,6 @@ const TAIL_LINES = 20;
 const TAGS = new Set(['beta', 'canary', 'latest', 'rc']);
 /** Where `next build` leaves what the adapter wrote. */
 const OUT_DIR = '.arkor';
-/**
- * pnpm's runtime contains no npm, and PATH can hold a tool-manager shim rather than its CLI.
- * Resolve our explicit development dependency and run its JavaScript with `process.execPath`.
- */
-const NPM_CLI = path.join(
-  path.dirname(createRequire(import.meta.url).resolve('npm/package.json')),
-  'bin',
-  'npm-cli.js',
-);
-
 /** Next.js's own entry in an installed application: JavaScript, and so the same on every platform. */
 function nextBin(app: string): string {
   return path.join(app, 'node_modules', 'next', 'dist', 'bin', 'next');
@@ -473,7 +463,7 @@ async function build(fixture: Fixture, version: string, keep: boolean): Promise<
         `${JSON.stringify({ private: true, workspaces: [fixture.name] }, null, 2)}\n`,
       );
     }
-    await run(process.execPath, [NPM_CLI, 'install', '--no-audit', '--no-fund'], installDir);
+    await run(process.execPath, [await npmCli(), 'install', '--no-audit', '--no-fund'], installDir);
     // Next.js's own entry under this Node, rather than the launcher npm wrote into `.bin`: that
     // one is a shell script on Unix and a `.cmd` on Windows, and `execFile` runs neither without
     // a shell. The file below is the same JavaScript both of them end up running.

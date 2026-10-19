@@ -56,8 +56,6 @@ catalog:
   # `@stayingupwind/adapter`). Keep this aligned with the version Wrangler uses.
   miniflare: 5.20261012.1-beta
   next: 16.4.2
-  # The Next.js verification scripts run this CLI with the pinned Node.js runtime, which has no npm.
-  npm: 11.19.1
   oxfmt: 0.73.0
   rolldown: 1.2.14
   wrangler: 4.151.1
