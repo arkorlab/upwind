@@ -64,3 +64,37 @@ export function requiredLiteralLength(source: string): number | undefined {
     ? literal.length
     : undefined;
 }
+
+interface BudgetContext {
+  readonly current?: () => { remaining: number } | undefined;
+}
+
+/**
+ * Install only where a host enables pattern bounds. Its source-only proofs live no longer than
+ * their manifest-owned patterns; no visitor value is held. The context stays live so a later host
+ * getter replaces the request store without rebuilding this cache.
+ */
+export function createShortPatternCheck(
+  budget: BudgetContext,
+  analyzed: { has(pattern: RegExp): boolean },
+): (pattern: RegExp, value: string) => boolean {
+  const requiredLengths = new WeakMap<RegExp, number | null>();
+  return (pattern, value) => {
+    if (analyzed.has(pattern)) return false;
+    const current = budget.current?.();
+    // Without the request store, leave the existing per-test accounting exactly as it is.
+    if (current === undefined || current.remaining < 1) return false;
+    let length = requiredLengths.get(pattern);
+    if (length === undefined) {
+      const flags = pattern.flags;
+      length =
+        flags === '' || flags === 'i' ? (requiredLiteralLength(pattern.source) ?? null) : null;
+      requiredLengths.set(pattern, length);
+    }
+    if (length === null || value.length >= length) return false;
+    // This is a constant-cost length comparison, not a search or case-fold of the visitor's text.
+    // Charge the attempt before returning without running the pattern or its cost analysis.
+    current.remaining -= 1;
+    return true;
+  };
+}
