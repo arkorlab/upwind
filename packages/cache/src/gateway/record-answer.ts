@@ -6,7 +6,7 @@ import {
 import { concatBytes, decodeUtf8, encodeUtf8, releaseStream } from '@stayingupwind/core/util';
 
 import type { GiveBack } from '../isolate-room.ts';
-import { BODY_ROOM_BYTES, takeBodyRoom } from './body-room.ts';
+import { BODY_ROOM_BYTES, takeBodyRoom, tryBodyRoom } from './body-room.ts';
 
 /**
  * A delivery record as either gateway answers it: as KV sends it, never read in whole first.
@@ -19,6 +19,8 @@ import { BODY_ROOM_BYTES, takeBodyRoom } from './body-room.ts';
  * before reading it whole (`ReadBudget`); the rest goes on as KV sends it, held to that length. A
  * value whose start says no length this gateway can read — no record, or one of another layout —
  * is read whole in the gateway's shared body room and answered as it is, for the Function to judge.
+ * Native byte streams bound the initial read itself. Non-byte adapter streams reserve the same
+ * body room synchronously before their first read; pressure fails that read without a new wait.
  */
 
 /** The regional cache the edge reads with; a record changes at most this long after it is written. */
@@ -31,6 +33,8 @@ const VERSION_AT = MAGIC.byteLength;
 const HEADER_LENGTH_AT = VERSION_AT + 1;
 const HEADER_LENGTH_BYTES = 4;
 const PREFIX_LENGTH = HEADER_LENGTH_AT + HEADER_LENGTH_BYTES;
+/** A usual header fits one small read; this is a buffer size, not a record acceptance limit. */
+const FIRST_READ_BYTES = 4 * 1024;
 
 /** A record to answer with: its bytes, or a stream of them, and how many there are. */
 export interface RecordAnswer {
@@ -65,6 +69,75 @@ async function readTo(
   return { bytes: concatBytes(chunks), done: false };
 }
 
+/** A byte reader never accepts an arbitrarily large producer chunk into the header buffer. */
+function byteReaderOf(value: ReadableStream<Uint8Array>): ReadableStreamBYOBReader | undefined {
+  try {
+    return value.getReader({ mode: 'byob' });
+  } catch {
+    // Adapter streams may not be byte streams. They reserve whole-body room before any read.
+    return undefined;
+  }
+}
+
+/**
+ * Read only into this owned buffer. BYOB transfers it on every read, so each returned view's
+ * buffer becomes the next view; bytes already written before its offset survive the transfer.
+ */
+async function readBounded(
+  reader: ReadableStreamBYOBReader,
+  start: Start,
+  length: number,
+  capacity = length,
+): Promise<Start> {
+  if (start.done || start.bytes.byteLength >= length) return start;
+  let bytes = new Uint8Array(capacity);
+  bytes.set(start.bytes);
+  let read = start.bytes.byteLength;
+  while (read < length) {
+    const view = bytes.subarray(read);
+    const minimum = length - read;
+    const atLeast = typeof reader.readAtLeast === 'function';
+    const next = atLeast ? await reader.readAtLeast(minimum, view) : await reader.read(view);
+    // A conforming BYOB reader returns a view even at EOF, including a zero-length one.
+    if (next.value === undefined) throw new Error('the record byte reader returned no view');
+    read += next.value.byteLength;
+    bytes = new Uint8Array(next.value.buffer);
+    if (bytes.byteLength < read) throw new Error('the record byte reader lost its prefix');
+    // Workers readAtLeast returns a short view only at EOF, possibly with done still false.
+    if (next.done || (atLeast && next.value.byteLength < minimum)) {
+      return { bytes: bytes.subarray(0, read), done: true };
+    }
+    if (read < length && bytes.byteLength < capacity) {
+      const expanded = new Uint8Array(capacity);
+      expanded.set(bytes);
+      bytes = expanded;
+    }
+  }
+  return { bytes: bytes.subarray(0, read), done: false };
+}
+
+/** The prefix and header, bounded for byte streams and reserved before reading for adapters. */
+async function recordStart(
+  reader: ReadableStreamDefaultReader<Uint8Array> | ReadableStreamBYOBReader,
+): Promise<{ readonly start: Start; readonly headerLength: number | undefined }> {
+  const bounded = reader instanceof ReadableStreamBYOBReader;
+  let start = bounded
+    ? await readBounded(reader, NOTHING_READ, PREFIX_LENGTH, FIRST_READ_BYTES)
+    : await readTo(reader, NOTHING_READ, PREFIX_LENGTH);
+  const headerLength = headerLengthOf(start.bytes);
+  if (
+    headerLength !== undefined &&
+    !start.done &&
+    start.bytes.byteLength < PREFIX_LENGTH + headerLength
+  ) {
+    const length = PREFIX_LENGTH + headerLength;
+    start = bounded
+      ? await readBounded(reader, start, length)
+      : await readTo(reader, start, length);
+  }
+  return { start, headerLength };
+}
+
 /** How long the header is that the record's prefix names, or `undefined` for no prefix of one. */
 function headerLengthOf(prefix: Uint8Array): number | undefined {
   if (prefix.byteLength < PREFIX_LENGTH || prefix[VERSION_AT] !== PACK_SCHEMA_VERSION) {
@@ -85,10 +158,11 @@ function isCount(value: unknown): value is number {
 /** The length the record's header says it comes to, or `undefined` where the header says none. */
 function recordLengthOf(
   start: Uint8Array,
-  headerLength: number,
+  headerLength: number | undefined,
   expectedScopeId: string,
   expectedEntryId: string,
 ): number | undefined {
+  if (headerLength === undefined) return undefined;
   let header: unknown;
   try {
     header = JSON.parse(decodeUtf8(start.subarray(PREFIX_LENGTH, PREFIX_LENGTH + headerLength)));
@@ -124,16 +198,22 @@ async function sendOn(
   start: Uint8Array,
   value: ReadableStream<Uint8Array>,
   writable: WritableStream<Uint8Array>,
+  giveBack: GiveBack | undefined,
 ): Promise<void> {
-  const writer = writable.getWriter();
   try {
-    await writer.write(start);
-  } catch (error) {
-    releaseStream(value, 'the record was not read on');
-    throw error;
+    const writer = writable.getWriter();
+    try {
+      await writer.write(start);
+    } catch (error) {
+      releaseStream(value, 'the record was not read on');
+      throw error;
+    } finally {
+      writer.releaseLock();
+    }
+    await value.pipeTo(writable);
+  } finally {
+    giveBack?.();
   }
-  writer.releaseLock();
-  await value.pipeTo(writable);
 }
 
 /** An unknown KV length takes the whole pool; a value already ended needs only its bytes. */
@@ -182,39 +262,48 @@ export async function readRecordAnswer(
   if (value === null) {
     return undefined;
   }
-  const reader = value.getReader();
+  const byteReader = byteReaderOf(value);
+  let reader: ReadableStreamDefaultReader<Uint8Array> | ReadableStreamBYOBReader =
+    byteReader ?? value.getReader();
+  let reserved: GiveBack | undefined;
   try {
-    let start = await readTo(reader, NOTHING_READ, PREFIX_LENGTH);
-    const headerLength = headerLengthOf(start.bytes);
-    if (headerLength !== undefined && !start.done) {
-      start = await readTo(reader, start, PREFIX_LENGTH + headerLength);
+    if (byteReader === undefined) {
+      // An adapter's first chunk may hold the whole value. Pressure is a read failure now,
+      // before pulling any bytes, rather than an extra foreground wait holding those bytes.
+      reserved = tryBodyRoom(BODY_ROOM_BYTES);
+      if (reserved === undefined) throw new Error('no room for the delivery record read');
     }
-    const byteLength =
-      headerLength === undefined || start.done
-        ? undefined
-        : recordLengthOf(start.bytes, headerLength, scopeId, entryId);
-    if (byteLength === undefined || byteLength < start.bytes.byteLength) {
-      // A KV value is at most 25 MiB. Unknown length reserves this whole 32 MiB pool while
-      // buffering; an already-ended value takes only its known bytes. This is no new size cap.
-      const claim = legacyRoom(start);
-      const giveBack = typeof claim === 'function' ? claim : await claim;
-      if (giveBack === undefined) throw new Error('no room for the delivery record read');
-      try {
-        const whole = start.done ? start : await readTo(reader, start, Infinity);
+    const { start, headerLength } = await recordStart(reader);
+    const byteLength = recordLengthOf(start.bytes, headerLength, scopeId, entryId);
+    if (
+      byteLength === undefined ||
+      byteLength < start.bytes.byteLength ||
+      (start.done && byteLength !== start.bytes.byteLength)
+    ) {
+      // Native unknown layouts retain the existing compatibility wait. Adapter streams already
+      // own the same room; neither path adds an accepted record size limit.
+      const claim = reserved ?? legacyRoom(start);
+      reserved = typeof claim === 'function' ? claim : await claim;
+      if (reserved === undefined) throw new Error('no room for the delivery record read');
+      if (reader instanceof ReadableStreamBYOBReader) {
         reader.releaseLock();
-        return bufferedAnswer(whole.bytes, giveBack);
-      } catch (error) {
-        giveBack();
-        throw error;
+        reader = value.getReader();
       }
+      const whole = start.done ? start : await readTo(reader, start, Infinity);
+      reader.releaseLock();
+      const answer = bufferedAnswer(whole.bytes, reserved);
+      reserved = undefined;
+      return answer;
     }
     const { readable, writable } = new FixedLengthStream(byteLength);
     reader.releaseLock();
-    void sendOn(start.bytes, value, writable).catch(() => {
-      // Whichever side failed has taken the other with it: the rest cancelled, or the answer errored.
+    void sendOn(start.bytes, value, writable, reserved).catch(() => {
+      // Whichever side failed has taken the other with it; the send's finally returns adapter room.
     });
+    reserved = undefined;
     return { body: readable, byteLength };
   } catch (error) {
+    reserved?.();
     releaseStream(reader, 'the record could not be read');
     throw error;
   }
