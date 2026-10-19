@@ -448,6 +448,8 @@ const bundleSchema = z.object({
   resourceChanges: z.literal(1).optional(),
   /** Inference-only AI service bindings can be published to this deployment. */
   aiInference: z.literal(1).optional(),
+  /** 1 preserves privacy vetoes; 2 also preserves targeted no-transform prohibitions. */
+  routeBodyPrivacy: z.literal([1, 2]).optional(),
   /**
    * How this deployment's Functions fill a header's `$` references (`routerReferencesSchema`), so
    * that what the edge answers for them carries the values the Function would have given it. Said

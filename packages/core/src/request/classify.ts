@@ -2,6 +2,7 @@ import { isImmutableAssetPath } from '../assets/admission.ts';
 import { pageOfPagesData } from '../bundle/pages-data.ts';
 import type { DeploymentFingerprint } from '../deployment/fingerprint.ts';
 import {
+  findRouteBody,
   findRouteEntry,
   findStaticFile,
   isExactPathname,
@@ -9,12 +10,14 @@ import {
   matchDynamicRoute,
   memberRouteFor,
   type RouteEntry,
+  type RouteBodyEntry,
   type ProjectManifest,
   type StaticFileEntry,
   staticFileBuildWithoutDpl,
 } from '../manifest/index.ts';
 import { acceptsHtml } from './accept.ts';
 import { blockingMetadataReason } from './blocking-metadata.ts';
+import { anyConditionHolds } from './conditions.ts';
 import {
   BYPASS_COOKIE_NAMES,
   BYPASS_QUERY_KEYS,
@@ -58,11 +61,14 @@ export type PassthroughReason =
   | 'accept'
   | 'no-manifest'
   | 'repeated-slash'
+  | 'route-body-bypass'
   | 'route-not-proved';
 
 export type RequestClass =
   /** `entry.pathname` is the manifest key: the pathname itself, or the template of its class. */
   | { readonly kind: 'document'; readonly entry: RouteEntry }
+  /** A complete non-HTML body, read only from the host's trusted cache record. */
+  | { readonly kind: 'route-body'; readonly entry: RouteBodyEntry }
   | { readonly kind: 'immutable-asset-candidate'; readonly originUrl: URL }
   /** A file the manifest holds by content: served from storage, and nobody is asked. */
   | { readonly kind: 'static-file'; readonly pathname: string; readonly file: StaticFileEntry }
@@ -125,6 +131,7 @@ const DOCUMENT_REQUEST_INTERNAL_PREFIXES: readonly string[] = ['x-middleware-', 
 const BYPASS_QUERY: PassthroughReason = 'bypass-query';
 const RSC_CLASS = 'rsc';
 const DPL_MISMATCH: PassthroughReason = 'dpl-mismatch';
+const ROUTE_BODY_BYPASS: PassthroughReason = 'route-body-bypass';
 
 function passthrough(reason: PassthroughReason): RequestClass {
   return { kind: 'passthrough', reason };
@@ -478,6 +485,10 @@ export function classifyRequest(input: ClassifyInput): RequestClass {
   if (early !== undefined) {
     return early;
   }
+  const body = routeBodyRequest(input);
+  if (body !== undefined) {
+    return body;
+  }
   const segmentPath = segmentPrefetchOf(headers);
   if (hasInternalDocumentHeader(headers, segmentPath !== undefined)) {
     return passthrough('internal-header');
@@ -548,6 +559,35 @@ function classifyEarly(input: ClassifyInput): RequestClass | undefined {
     classifyByPath(url) ??
     classifyByRouterHeaders(headers);
   return early?.kind === RSC_CLASS ? (payloadRequest(input) ?? early) : early;
+}
+
+/** A route body needs no browser navigation hints, but keeps every request-level bypass. */
+function routeBodyRequest(input: ClassifyInput): RequestClass | undefined {
+  const { manifest, url, headers } = input;
+  if (manifest === undefined) {
+    return undefined;
+  }
+  const entry = findRouteBody(manifest, url.pathname);
+  if (entry === undefined) {
+    return undefined;
+  }
+  if (manifest.cache === undefined) {
+    return passthrough(ROUTE_BODY_BYPASS);
+  }
+  if (url.pathname.includes('//')) {
+    return passthrough('repeated-slash');
+  }
+  if (hasInternalDocumentHeader(headers, false)) {
+    return passthrough('internal-header');
+  }
+  const pins = classifyByPins(url, headers, false, input.deployment);
+  if (pins !== undefined) {
+    return pins;
+  }
+  return isReserved(manifest, url, headers, true) ||
+    anyConditionHolds(entry.bypassFor ?? [], url, headers)
+    ? passthrough(ROUTE_BODY_BYPASS)
+    : { kind: 'route-body', entry };
 }
 
 /**

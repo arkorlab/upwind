@@ -2,6 +2,7 @@ import { PRIMARY_FUNCTION } from '../bundle/function-name.ts';
 import { dynamicRouteFor, isExactPathname, isReserved } from './dynamic.ts';
 import { findRouteEntry } from './manifest.ts';
 import { pageKeyOf } from './page-keys.ts';
+import { findRouteBody } from './route-bodies.ts';
 import type { AppRuntime, ProjectManifest } from './schema.ts';
 
 /**
@@ -40,6 +41,10 @@ export function functionFor(
   const shell = findRouteEntry(manifest, pathname);
   if (shell !== undefined) {
     return shell.function ?? PRIMARY_FUNCTION;
+  }
+  const body = findRouteBody(manifest, pathname);
+  if (body !== undefined) {
+    return body.function ?? PRIMARY_FUNCTION;
   }
   const exactFunctions = manifest.exactFunctions;
   // Found as a route is (`pageKeyOf`): decoded whole, an escaped slash named another page's
