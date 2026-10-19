@@ -228,6 +228,18 @@ function selectLocation(
   const row = findArtifactBySha(sql, artifact.sha256);
   if (row === undefined) return;
   locations.set(artifact.sha256, row.storage_ref);
+  // An earlier repair in this batch may have advanced every live snapshot to this key.
+  // Keep that already verified canonical location rather than moving it again for a later plan.
+  if (
+    proofs.get(
+      seedLocationKey({
+        sha256: row.sha256,
+        byteLength: row.byte_length,
+        storageRef: row.storage_ref,
+      }),
+    ) === true
+  )
+    return;
   if (
     row.owned === 0 &&
     row.byte_length === artifact.byteLength &&
