@@ -199,7 +199,7 @@ function treePart(parts: readonly Part[]): Part {
 function appendedHash(part: Part): string {
   const hash = part.url.searchParams.getAll('_rsc').at(-1);
   if (typeof hash !== 'string') {
-    throw new Error('the router request carries no computed hash');
+    throw new TypeError('the router request carries no computed hash');
   }
   return hash;
 }

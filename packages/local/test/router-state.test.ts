@@ -22,6 +22,7 @@ const HEADERS = {
   cookie: 'locale=wrong; locale=en',
 };
 const PAGE = new URL('https://site.example/about?variant=selected&_rsc=navigation-digest');
+const DEFAULT_MATCHER: MiddlewareMatcher = { sourceRegex: '^/about$' };
 const VISITOR_STATE = stateTreeOf('/visitor');
 const VISITOR_TREE: RouteHas = {
   type: 'header',
@@ -72,7 +73,7 @@ function withMiddleware(options: {
 function behindMiddleware(
   kind: Kind,
   rule: MiddlewareMatcher,
-  matcher: MiddlewareMatcher = { sourceRegex: '^/about$' },
+  matcher: MiddlewareMatcher = DEFAULT_MATCHER,
 ): StateStack {
   const base = withRule(kind, rule);
   const matchers = base.manifest.middleware?.matchers ?? [matcher];
@@ -98,6 +99,25 @@ function visitorHeaders(headers: Headers): Headers {
   const actual = new Headers(headers);
   actual.set(NEXT_ROUTER_STATE_TREE_HEADER, VISITOR_STATE);
   return actual;
+}
+
+function withoutRunningMiddleware(control: 'absent' | 'unmatched' | 'known-false'): StateStack {
+  const matcher = {
+    sourceRegex: control === 'unmatched' ? '^/elsewhere$' : '^/about$',
+    has:
+      control === 'known-false'
+        ? [{ type: 'header' as const, key: 'x-variant', value: '^private$' }]
+        : [],
+  };
+  const base = behindMiddleware(
+    'dynamic',
+    {
+      sourceRegex: '^/about$',
+      has: [TREE, { type: 'header', key: 'x-variant', value: '^private$' }],
+    },
+    matcher,
+  );
+  return { ...base, app: control === 'absent' ? {} : base.app };
 }
 
 describe('router-state rules that can affect the requested payload', () => {
@@ -239,8 +259,9 @@ describe('router-state rules that can affect the requested payload', () => {
       // Response headers also reach the request, as Next's resolver and this protocol specify.
       const decided = continued({ 'x-middleware-next': '1', 'x-variant': 'private' });
       const stack = behindMiddleware(kind, rule);
+      const browser = visitorHeaders(new Headers(HEADERS));
 
-      expect(middlewareApplies([rule], PAGE, visitorHeaders(new Headers(HEADERS)))).toBe(false);
+      expect(middlewareApplies([rule], PAGE, browser)).toBe(false);
       expect(middlewareApplies([rule], decided.url, visitorHeaders(decided.requestHeaders))).toBe(
         true,
       );
@@ -260,8 +281,9 @@ describe('router-state rules that can affect the requested payload', () => {
         'x-middleware-rewrite': 'https://site.example/private?variant=private',
       });
       const stack = behindMiddleware(kind, rule);
+      const browser = visitorHeaders(new Headers(HEADERS));
 
-      expect(middlewareApplies([rule], PAGE, visitorHeaders(new Headers(HEADERS)))).toBe(false);
+      expect(middlewareApplies([rule], PAGE, browser)).toBe(false);
       expect(middlewareApplies([rule], decided.url, visitorHeaders(decided.requestHeaders))).toBe(
         true,
       );
@@ -285,22 +307,7 @@ describe('router-state rules that can affect the requested payload', () => {
   it.each(['absent', 'unmatched', 'known-false'] as const)(
     'retains the known post-rule filter when middleware is %s',
     (control) => {
-      const matcher = {
-        sourceRegex: control === 'unmatched' ? '^/elsewhere$' : '^/about$',
-        has:
-          control === 'known-false'
-            ? [{ type: 'header' as const, key: 'x-variant', value: '^private$' }]
-            : [],
-      };
-      const base = behindMiddleware(
-        'dynamic',
-        {
-          sourceRegex: '^/about$',
-          has: [TREE, { type: 'header', key: 'x-variant', value: '^private$' }],
-        },
-        matcher,
-      );
-      const stack = { ...base, app: control === 'absent' ? {} : base.app };
+      const stack = withoutRunningMiddleware(control);
 
       expect(stateTreeUnproved(stack, PAGE, HEADERS)).toBeUndefined();
     },
