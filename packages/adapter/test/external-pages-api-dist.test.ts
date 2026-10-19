@@ -119,7 +119,7 @@ describe('the private Pages API route output directory', () => {
 });
 
 describe('an external pages/api.js, told apart by its trace', () => {
-  const NEXT_SERVER = '../../../node_modules/next/dist/compiled/next-server';
+  const NODE_MODULES = '../../../node_modules';
   let root: string;
 
   beforeEach(async () => {
@@ -130,17 +130,33 @@ describe('an external pages/api.js, told apart by its trace', () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  /** An external build's `pages/api.js`, traced as loading the `runtimes` named. */
-  async function traced(runtimes: readonly string[]) {
+  /**
+   * An external build's `pages/api.js`, traced as loading the `runtimes` named — in its own file
+   * list, or in an additional root's (`inRoot`), as Turbopack lists a runtime outside its root.
+   */
+  async function traced(runtimes: readonly string[], inRoot = false) {
     const projectDir = path.join(root, 'apps', 'web');
     const distDir = path.join(root, 'dist', 'apps', 'web', '.next');
     const filePath = path.join(distDir, 'server', 'pages', 'api.js');
     await mkdir(path.dirname(filePath), { recursive: true });
-    const files = [
-      ...runtimes.map((runtime) => `${NEXT_SERVER}/${runtime}`),
-      '../webpack-runtime.js',
-    ];
-    await writeFile(`${filePath}.nft.json`, JSON.stringify({ version: 1, files }));
+    const named = runtimes.map((runtime) => `next/dist/compiled/next-server/${runtime}`);
+    const trace = inRoot
+      ? {
+          version: 1,
+          files: ['../webpack-runtime.js'],
+          additionalRoots: [
+            {
+              name: 'modules',
+              path: '../../../../..',
+              files: named.map((file) => `node_modules/${file}`),
+            },
+          ],
+        }
+      : {
+          version: 1,
+          files: [...named.map((file) => `${NODE_MODULES}/${file}`), '../webpack-runtime.js'],
+        };
+    await writeFile(`${filePath}.nft.json`, JSON.stringify(trace));
     return () => {
       auditExternalPagesApiDist(projectDir, distDir, [{ filePath }], []);
     };
@@ -154,6 +170,16 @@ describe('an external pages/api.js, told apart by its trace', () => {
       expect(audit).not.toThrow();
     },
   );
+
+  it('reads the runtime in an additional root of the trace', async () => {
+    const page = await traced(['pages-turbo.runtime.prod.js'], true);
+
+    expect(page).not.toThrow();
+
+    const route = await traced(['pages-api-turbo.runtime.prod.js'], true);
+
+    expect(route).toThrow('no private route constructor');
+  });
 
   it.each([
     ['the Pages API runtime, as webpack builds one there', ['pages-api.runtime.prod.js']],
