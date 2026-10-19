@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, readdir, readFile, realpath, rm, stat } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -68,53 +68,14 @@ const VERSION_PARTS = 3;
 /** 64 MiB, for room rather than for need: both commands are run quiet and print a line at most. */
 const OUTPUT_LIMIT = 67_108_864;
 /**
- * npm, as something `execFile` can start without a shell: its own JavaScript, run by this Node.
- *
- * The name on `PATH` is a shell script on Unix and a `.cmd` on Windows, and Node will not spawn the
- * second without a shell — which this must not use, since a version read off a registry travels through
- * these arguments. Find npm beside this Node or on `PATH`: pnpm-managed runtimes contain the
- * Node executable without npm, so its installation may be separate. Always run its JavaScript
- * with `process.execPath`, keeping the project's pinned Node.js version.
- *
- * Duplicated in `tools/next-matrix/src/run.ts`, deliberately: the two live in different packages, and
- * sharing twenty lines would mean either a tool package these scripts depend on or a reach across the
- * workspace. The `npm` name each of them used was duplicated before this was.
+ * pnpm's runtime contains no npm, and PATH can hold a tool-manager shim rather than its CLI.
+ * Resolve our explicit development dependency and run its JavaScript with `process.execPath`.
  */
-async function npmCli(): Promise<string> {
-  const npmEntry = 'npm-cli.js';
-  const directories = [
-    path.dirname(process.execPath),
-    ...(process.env['PATH'] ?? '')
-      .split(path.delimiter)
-      .filter((directory) => directory.length > 0),
-  ];
-  const candidates = directories.flatMap((directory) => {
-    return [
-      path.join(directory, 'node_modules', 'npm', 'bin', npmEntry),
-      path.join(directory, '..', 'lib', 'node_modules', 'npm', 'bin', npmEntry),
-    ];
-  });
-  for (const candidate of candidates) {
-    try {
-      await stat(candidate);
-      return candidate;
-    } catch {
-      continue;
-    }
-  }
-  // Distribution packages can place npm elsewhere and symlink its CLI onto PATH.
-  for (const directory of directories) {
-    try {
-      const candidate = await realpath(path.join(directory, 'npm'));
-      if (path.basename(candidate) === npmEntry) return candidate;
-    } catch {
-      continue;
-    }
-  }
-  throw new Error(
-    `check-patches: npm was not found beside ${process.execPath} or on PATH; looked in ${candidates.join(' and ')}`,
-  );
-}
+const NPM_CLI = path.join(
+  path.dirname(createRequire(import.meta.url).resolve('npm/package.json')),
+  'bin',
+  'npm-cli.js',
+);
 
 /** `tar` needs no such care: Windows has shipped one since 10, as an executable. */
 
@@ -256,7 +217,7 @@ async function fetchPackage(version: string): Promise<string> {
   await mkdir(dir, { recursive: true });
   const { stdout } = await execFileAsync(
     process.execPath,
-    [await npmCli(), 'pack', `next@${version}`, '--silent', '--pack-destination', dir],
+    [NPM_CLI, 'pack', `next@${version}`, '--silent', '--pack-destination', dir],
     { maxBuffer: OUTPUT_LIMIT },
   );
   const printed = stdout.trim().split('\n').at(-1)?.trim();

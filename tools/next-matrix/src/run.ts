@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
-import { cp, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -59,53 +60,14 @@ const TAGS = new Set(['beta', 'canary', 'latest', 'rc']);
 /** Where `next build` leaves what the adapter wrote. */
 const OUT_DIR = '.arkor';
 /**
- * npm, as something `execFile` can start without a shell: its own JavaScript, run by this Node.
- *
- * The name on `PATH` is a shell script on Unix and a `.cmd` on Windows, and Node will not spawn the
- * second without a shell — which this must not use, since a version read off a registry travels through
- * these arguments. Find npm beside this Node or on `PATH`: pnpm-managed runtimes contain the
- * Node executable without npm, so its installation may be separate. Always run its JavaScript
- * with `process.execPath`, keeping the project's pinned Node.js version.
- *
- * Duplicated in `packages/adapter/scripts/check-patches.ts`, deliberately: the two live in different
- * packages, and sharing twenty lines would mean either a tool package the adapter's own scripts depend
- * on or a reach across the workspace. The `npm` name each of them used was duplicated before this was.
+ * pnpm's runtime contains no npm, and PATH can hold a tool-manager shim rather than its CLI.
+ * Resolve our explicit development dependency and run its JavaScript with `process.execPath`.
  */
-async function npmCli(): Promise<string> {
-  const npmEntry = 'npm-cli.js';
-  const directories = [
-    path.dirname(process.execPath),
-    ...(process.env['PATH'] ?? '')
-      .split(path.delimiter)
-      .filter((directory) => directory.length > 0),
-  ];
-  const candidates = directories.flatMap((directory) => {
-    return [
-      path.join(directory, 'node_modules', 'npm', 'bin', npmEntry),
-      path.join(directory, '..', 'lib', 'node_modules', 'npm', 'bin', npmEntry),
-    ];
-  });
-  for (const candidate of candidates) {
-    try {
-      await stat(candidate);
-      return candidate;
-    } catch {
-      continue;
-    }
-  }
-  // Distribution packages can place npm elsewhere and symlink its CLI onto PATH.
-  for (const directory of directories) {
-    try {
-      const candidate = await realpath(path.join(directory, 'npm'));
-      if (path.basename(candidate) === npmEntry) return candidate;
-    } catch {
-      continue;
-    }
-  }
-  throw new Error(
-    `next-matrix: npm was not found beside ${process.execPath} or on PATH; looked in ${candidates.join(' and ')}`,
-  );
-}
+const NPM_CLI = path.join(
+  path.dirname(createRequire(import.meta.url).resolve('npm/package.json')),
+  'bin',
+  'npm-cli.js',
+);
 
 /** Next.js's own entry in an installed application: JavaScript, and so the same on every platform. */
 function nextBin(app: string): string {
@@ -511,7 +473,7 @@ async function build(fixture: Fixture, version: string, keep: boolean): Promise<
         `${JSON.stringify({ private: true, workspaces: [fixture.name] }, null, 2)}\n`,
       );
     }
-    await run(process.execPath, [await npmCli(), 'install', '--no-audit', '--no-fund'], installDir);
+    await run(process.execPath, [NPM_CLI, 'install', '--no-audit', '--no-fund'], installDir);
     // Next.js's own entry under this Node, rather than the launcher npm wrote into `.bin`: that
     // one is a shell script on Unix and a `.cmd` on Windows, and `execFile` runs neither without
     // a shell. The file below is the same JavaScript both of them end up running.

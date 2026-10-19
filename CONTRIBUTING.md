@@ -78,7 +78,9 @@ not on until you say so, which is the one step a fresh machine needs.
 `pnpm install` downloads the exact Node.js version from `devEngines.runtime` and records its
 checksum in the lockfile. `pnpm run` scripts and `pnpm exec node` use that runtime even when the
 shell has another Node.js version. Use `pnpm exec node` for manual Node.js commands in this
-workspace. CI reads the same version from `package.json`.
+workspace. CI reads the same version from `package.json`. The Next.js verification tools install
+npm as a development dependency and run its CLI with that Node.js runtime, independently of any
+Node.js or npm shims on the shell's PATH.
 
 ```bash
 corepack enable          # once per machine; `pnpm` does not exist until this runs
