@@ -40,7 +40,7 @@ const EXPECTED = [
 ];
 const LINKED = 'vfs-fixture-1111111111111111';
 
-async function fixture(owner = '@typescript/vfs', nested = false) {
+async function fixture(owner = '@typescript/vfs', nested = false, noPeer = false) {
   const root = await mkdtemp(path.join(tmpdir(), 'upwind-vfs-library-'));
   const projectDir = nested ? path.join(root, 'apps', 'site') : root;
   const distDir = path.join(projectDir, '.next');
@@ -101,6 +101,7 @@ async function fixture(owner = '@typescript/vfs', nested = false) {
     distDir,
     root,
   );
+  if (noPeer) await rm(typescript, { recursive: true });
   return { root, projectDir, distDir, importer, declaration, files };
 }
 
@@ -139,6 +140,54 @@ describe('vfs TypeScript peer library resolution', () => {
 
     // Compare values after crossing the VM realm, whose Array prototype is distinct.
     expect(structuredClone(observed.result)).toStrictEqual(EXPECTED);
+  });
+
+  it('keeps explicit VFS libraries usable when the traced fallback is unavailable', () => {
+    const rewritten = replaceTypescriptLibDirectory(SOURCE, undefined);
+    assert.ok(rewritten !== undefined);
+
+    expect(rewritten.edits).toBe(3);
+
+    const state = { exports: {}, result: undefined as unknown, require: () => path.posix };
+    // eslint-disable-next-line sonarjs/code-eval -- only the rewritten fixed module executes in this test.
+    runInNewContext(
+      `${rewritten.code.toString()}
+      result = [exports.directories('/custom/lib'), exports.shadowed({resolve(){return '/local/typescript.js';}})];`,
+      state,
+    );
+
+    expect(structuredClone(state.result)).toStrictEqual([
+      ['/custom/lib', '/custom/lib', '/custom/lib'],
+      '/local',
+    ]);
+    expect(() => {
+      // eslint-disable-next-line sonarjs/code-eval -- only the rewritten fixed fallback is evaluated.
+      runInNewContext(
+        `${rewritten.code.toString()}
+        exports.directories(undefined);`,
+        state,
+      );
+    }).toThrow('TypeScript library fallback is unavailable');
+    expect(rewritten.code.toString()).not.toContain(DIRECTORY);
+  });
+
+  it('keeps a supplied CDN map from evaluating the unavailable Node fallback', () => {
+    const source = `const path = require('path');
+      exports.map = (supplied) => supplied ?? path.dirname(require.resolve('typescript'));`;
+    const rewritten = replaceTypescriptLibDirectory(source, undefined);
+    assert.ok(rewritten !== undefined);
+    const state = { exports: {}, result: undefined as unknown, require: () => path.posix };
+    // eslint-disable-next-line sonarjs/code-eval -- fixed source with a local map and path-only loader.
+    runInNewContext(
+      `${rewritten.code.toString()}
+      result = [exports.map(new Map([['/lib.d.ts', 'interface String {}']])), exports.map('')];`,
+      state,
+    );
+
+    expect(structuredClone(state.result)).toStrictEqual([
+      new Map([['/lib.d.ts', 'interface String {}']]),
+      '',
+    ]);
   });
 
   it.each([
@@ -215,8 +264,27 @@ describe('vfs TypeScript peer library resolution', () => {
     await expect(typescriptLibDirectory(setup.importer, setup.root, setup.files)).resolves.toBe(
       DIRECTORY,
     );
+    await expect(typescriptLibDirectory(setup.importer, setup.root, [])).resolves.toBeUndefined();
+  });
+
+  it('leaves the Node fallback unavailable when no TypeScript peer is installed', async () => {
+    const setup = await fixture();
+    roots.push(setup.root);
+    await rm(path.join(setup.root, 'node_modules', 'typescript'), { recursive: true });
+
+    await expect(typescriptLibDirectory(setup.importer, setup.root, [])).resolves.toBeUndefined();
+  });
+
+  it('still rejects a package masquerading as the TypeScript peer without a trace', async () => {
+    const setup = await fixture();
+    roots.push(setup.root);
+    await writeFile(
+      path.join(setup.root, 'node_modules', 'typescript', 'package.json'),
+      '{"name":"not-typescript","main":"lib/typescript.js"}',
+    );
+
     await expect(typescriptLibDirectory(setup.importer, setup.root, [])).rejects.toThrow(
-      AuditError,
+      'unverified TypeScript peer',
     );
   });
 
@@ -280,15 +348,36 @@ describe('vfs TypeScript peer library resolution', () => {
     { owner: '@typescript/vfs', nested: false, expected: EXPECTED },
     { owner: '@typescript/vfs', nested: true, expected: EXPECTED },
     { owner: 'unrelated-package', nested: false, expected: { name: 'TypeError' } },
+    {
+      owner: '@typescript/vfs',
+      nested: false,
+      omitTrace: true,
+      explicit: true,
+      expected: [['/custom/lib', '/custom/lib', '/custom/lib']],
+    },
+    {
+      owner: '@typescript/vfs',
+      nested: false,
+      omitTrace: true,
+      expected: { name: 'Error' },
+    },
+    {
+      owner: '@typescript/vfs',
+      nested: false,
+      omitTrace: true,
+      noPeer: true,
+      explicit: true,
+      expected: [['/custom/lib', '/custom/lib', '/custom/lib']],
+    },
   ])(
-    'checks actual peer identity for $owner in nested project $nested',
-    async ({ owner, nested, expected }) => {
-      const setup = await fixture(owner, nested);
+    'checks actual peer identity for $owner in nested project $nested with omitted trace $omitTrace, absent peer $noPeer and explicit libraries $explicit',
+    async ({ owner, nested, expected, omitTrace, noPeer, explicit }) => {
+      const setup = await fixture(owner, nested, noPeer);
       roots.push(setup.root);
       const linked = await bundleLinkedExternals({
         projectDir: setup.projectDir,
         repoRoot: setup.root,
-        files: setup.files,
+        files: omitTrace === true ? [] : setup.files,
         distDir: setup.distDir,
         workDir: setup.root,
         kind: 'app',
@@ -306,7 +395,7 @@ describe('vfs TypeScript peer library resolution', () => {
           const api = await import('./${LINKED}');
           const exports = api;
           let result;
-          ${LOCAL_CALLS}
+          ${explicit === true ? "result = [exports.directories('/custom/lib')];" : LOCAL_CALLS}
           return Response.json(result);
         } catch(error) {return Response.json({name: error.name});}
       }};`;

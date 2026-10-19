@@ -359,22 +359,41 @@ async function checkedRepository(projectDir: string, repoRoot: string) {
   }
 }
 
-/** This Function's explicitly traced declarations must identify one logical mount of the actual peer. */
+/** An optional, absent peer must not prevent callers from supplying their own VFS libraries. */
+async function resolvedTypescriptPeer(importer: string): Promise<string | undefined> {
+  let resolved: string;
+  try {
+    resolved = createRequire(importer).resolve('typescript');
+  } catch (error) {
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      error.code === 'MODULE_NOT_FOUND'
+    )
+      return undefined;
+    throw new AuditError(
+      '@stayingupwind/adapter: cannot resolve the actual TypeScript peer of @typescript/vfs',
+    );
+  }
+  return realpath(resolved);
+}
+
+/**
+ * This Function's explicitly traced declarations identify one logical mount of the actual peer.
+ * An absent peer or declaration trace leaves only the Node fallback unavailable; callers that
+ * provide their own VFS map or library directory do not need that fallback. Invalid identities
+ * and ambiguous mounts still stop the build.
+ */
 export async function typescriptLibDirectory(
   importer: string,
   projectDir: string,
   files: readonly TracedFile[],
   repoRoot = projectDir,
-): Promise<string> {
+): Promise<string | undefined> {
   const { repository, realRepository } = await checkedRepository(projectDir, repoRoot);
-  let physical: string;
-  try {
-    physical = await realpath(createRequire(importer).resolve('typescript'));
-  } catch {
-    throw new AuditError(
-      '@stayingupwind/adapter: cannot resolve the actual TypeScript peer of @typescript/vfs',
-    );
-  }
+  const physical = await resolvedTypescriptPeer(importer);
+  if (physical === undefined) return undefined;
   const peer = await packageOf(physical);
   if (peer?.name !== 'typescript' || beneath(peer.root, physical) === undefined) {
     throw new AuditError(
@@ -410,6 +429,7 @@ export async function typescriptLibDirectory(
     }
     directories.add(path.posix.dirname(file.name));
   }
+  if (directories.size === 0) return undefined;
   if (directories.size !== 1) {
     throw new AuditError(
       '@stayingupwind/adapter: @typescript/vfs needs one unambiguous explicitly traced TypeScript library directory',
@@ -421,15 +441,22 @@ export async function typescriptLibDirectory(
   return path.posix.join(BUNDLE_ROOT, directory);
 }
 
-/** No runtime resolver: the three known dirname calls become the verified, traced peer directory. */
+/**
+ * No runtime resolver: supported calls use the verified directory, or fail only when evaluated.
+ * Leaving an unavailable Node fallback dormant preserves explicit VFS options and CDN maps.
+ */
 export function replaceTypescriptLibDirectory(
   code: string,
-  directory: string,
+  directory: string | undefined,
 ): { code: RolldownMagicString; edits: number } | undefined {
   const calls = directoryCalls(code);
   if (calls.length === 0) return undefined;
   const rewritten = new RolldownMagicString(code);
-  for (const call of calls) rewritten.overwrite(call.start, call.end, jsLiteral(directory));
+  const replacement =
+    directory === undefined
+      ? `(() => { throw new Error(${jsLiteral('@stayingupwind/runtime: TypeScript library fallback is unavailable; trace its declarations or provide explicit VFS libraries')}); })()`
+      : jsLiteral(directory);
+  for (const call of calls) rewritten.overwrite(call.start, call.end, replacement);
   return { code: rewritten, edits: calls.length };
 }
 
