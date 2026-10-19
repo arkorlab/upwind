@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { buildPaths } from '../build-paths.ts';
@@ -16,6 +17,8 @@ const TARGET =
   // eslint-disable-next-line require-unicode-regexp -- a bundler filter: a Go regular expression.
   /next-server\/pages-api(?:-turbo)?(?:-experimental)?\.runtime\.prod\.js$/;
 const CONSTRUCTOR_DIST = /this\.distDir=[\w$]+,this\.relativeProjectDir=(?<project>[\w$]+)/gu;
+/** The Pages page runtimes, which a page loads where a Pages API route loads `TARGET`. */
+const PAGE_RUNTIME = /next-server\/pages(?:-turbo)?(?:-experimental)?\.runtime\.prod\.js$/u;
 
 export const externalPagesApiDistPatch: Patch = {
   name: EXTERNAL_PAGES_API_DIST_PATCH,
@@ -37,6 +40,28 @@ export const externalPagesApiDistPatch: Patch = {
   },
 };
 
+/**
+ * Whether the module built at `pages/api.js` is a Pages API route. Next.js 16.4.2 builds a page
+ * file at `pages/api` into a Pages API route with webpack, which takes `/api` for one
+ * (`isAPIRoute`), and into a page with Turbopack, which takes only the `api` directory's files for
+ * routes. The module's own trace (`<module>.nft.json`) names the runtime it loads: a page's names a
+ * Pages page runtime and no Pages API runtime. Any other — no trace read, or a runtime under a name
+ * not known here — is held to be a route, so that a moved runtime still fails the build.
+ */
+function isPagesApiModule(filePath: string): boolean {
+  let files: unknown;
+  try {
+    files = (JSON.parse(readFileSync(`${filePath}.nft.json`, 'utf8')) as { files?: unknown }).files;
+  } catch {
+    return true;
+  }
+  if (!Array.isArray(files)) return true;
+  const traced = files.filter((file): file is string => typeof file === 'string');
+  return (
+    traced.every((file) => !PAGE_RUNTIME.test(file)) || traced.some((file) => TARGET.test(file))
+  );
+}
+
 /** A moved runtime must fail the build instead of leaving an external Pages API to fail at HTTP. */
 export function auditExternalPagesApiDist(
   projectDir: string,
@@ -48,7 +73,9 @@ export function auditExternalPagesApiDist(
   const pages = path.join(distDir, 'server', 'pages');
   const hasApi = entries.some((entry) => {
     const relative = path.relative(pages, entry.filePath).split(path.sep).join('/');
-    return relative === 'api.js' || relative.startsWith('api/');
+    return (
+      relative.startsWith('api/') || (relative === 'api.js' && isPagesApiModule(entry.filePath))
+    );
   });
   if (hasApi && applied.every((patch) => patch.patch !== EXTERNAL_PAGES_API_DIST_PATCH)) {
     throw new AuditError(
