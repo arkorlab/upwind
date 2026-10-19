@@ -275,10 +275,9 @@ async function observedSeedRepair(scope: Scope, plans: readonly Plan[], revision
       proofs,
     );
     const result = state.storage.transactionSync(apply);
-    const states: RecordedEvent[] = sql
-      .exec<EntryStateRow>(`SELECT * FROM entries ORDER BY entry_id`)
-      .toArray()
-      .map<RecordedEvent>((entry) => {
+    const states = Array.from(
+      sql.exec<EntryStateRow>(`SELECT * FROM entries ORDER BY entry_id`),
+      (entry): RecordedEvent => {
         return {
           revision,
           event: {
@@ -288,7 +287,8 @@ async function observedSeedRepair(scope: Scope, plans: readonly Plan[], revision
             payload: { entryState: toEntryState(entry) },
           },
         };
-      });
+      },
+    );
     return { result, history, states };
   });
 }
@@ -673,8 +673,14 @@ describe('a seed whose artifact projection could not read', () => {
       revision: before.revision + 1,
     });
     expect(states.toSorted(byEntity)).toStrictEqual(observed.states.toSorted(byEntity));
-    expect(generations.map(({ event }) => event.entityId).toSorted()).toStrictEqual(
-      [first.generationId, second.generationId].toSorted(),
+    expect(
+      generations
+        .map(({ event }) => event.entityId)
+        .toSorted((left, right) => left.localeCompare(right)),
+    ).toStrictEqual(
+      [first.generationId, second.generationId].toSorted((left, right) =>
+        left.localeCompare(right),
+      ),
     );
     expect(observed.history).toHaveLength(5);
     expect(repaired.artifact).toStrictEqual({
