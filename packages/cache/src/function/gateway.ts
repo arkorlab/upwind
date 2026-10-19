@@ -1,6 +1,6 @@
 import { sha256Hex } from '@stayingupwind/core/artifact';
 import { TEST_CLOCK_HEADER } from '@stayingupwind/core/paas';
-import { isDeadlineError, releaseStream, toBase64, withDeadline } from '@stayingupwind/core/util';
+import { releaseStream, toBase64 } from '@stayingupwind/core/util';
 import {
   answersTheRead,
   answersTheTags,
@@ -63,6 +63,7 @@ import {
   functionReadBudget,
   projectedLength,
   readArtifactWhole,
+  readWithin,
   saidLength,
   type ReadBudget,
 } from './read-budget.ts';
@@ -135,27 +136,6 @@ const ARTIFACT_READ_DEADLINE_MS = 10_000;
  * that long, or for good where its caller hands no signal.
  */
 const RECORD_READ_DEADLINE_MS = ARTIFACT_READ_DEADLINE_MS;
-/**
- * `read`, given up once it has taken `deadlineMs`, and the request under it with it: it rejects
- * with the deadline's error, and the signal it was handed is aborted, so a gateway that has not
- * answered holds no connection of the render's. The race is what bounds the wait, whatever the
- * transport makes of the signal.
- */
-async function readWithin<T>(
-  what: string,
-  deadlineMs: number,
-  read: (signal: AbortSignal) => Promise<T>,
-): Promise<T> {
-  const controller = new AbortController();
-  try {
-    return await withDeadline(read(controller.signal), deadlineMs, what);
-  } catch (error) {
-    if (isDeadlineError(error)) {
-      controller.abort(error);
-    }
-    throw error;
-  }
-}
 
 interface Envelope {
   readonly ok?: unknown;
@@ -389,6 +369,25 @@ export class Gateway {
     } finally {
       release();
     }
+  }
+
+  /** Both tag metadata reads cross to the authority, regardless of a nearby read gateway. */
+  #authorityTagRead<T>(
+    path: string,
+    read: (response: Response, signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    return readWithin('tag authority read', AUTHORITY_READ_DEADLINE_MS, async (signal) => {
+      const response = await this.#send(path, {
+        method: 'GET',
+        headers: this.#headers(),
+        signal,
+      });
+      if (signal.aborted) {
+        releaseStream(response.body, 'tag metadata headers arrived after the deadline');
+      }
+      signal.throwIfAborted();
+      return read(response, signal);
+    });
   }
 
   /**
@@ -637,29 +636,26 @@ export class Gateway {
     return this.#artifacts.read(artifactId);
   }
 
-  /** Where the scope's tags stand, as the authority says now (`/tags/revision`). */
-  async tagRevision(): Promise<TagRevision> {
-    const response = await this.#send('/tags/revision', {
-      method: 'GET',
-      headers: this.#headers(),
-    });
-    return this.#result(response, tagRevisionSchema);
+  /** Where the scope's tags stand, read within the authority deadline (`/tags/revision`). */
+  tagRevision(): Promise<TagRevision> {
+    return this.#authorityTagRead('/tags/revision', (response, signal) =>
+      this.#result(response, tagRevisionSchema, undefined, signal),
+    );
   }
 
-  async tagsDelta(since: number): Promise<TagsDeltaResponse> {
-    const response = await this.#send(`/tags/delta?since=${since}`, {
-      method: 'GET',
-      headers: this.#headers(),
+  /** One delta page, including its body, read within the authority deadline. */
+  tagsDelta(since: number): Promise<TagsDeltaResponse> {
+    return this.#authorityTagRead(`/tags/delta?since=${since}`, async (response, signal) => {
+      const delta = await this.#result(response, tagsDeltaResponseSchema, undefined, signal);
+      // A repeated page would leave its reader asking for the same invalidations forever.
+      if (!deltaMovesOn(since, delta)) {
+        throw new CacheHostError(`the delta from revision ${since} does not move past it`, {
+          code: 'internal',
+          status: response.status,
+        });
+      }
+      return delta;
     });
-    const delta = await this.#result(response, tagsDeltaResponseSchema);
-    // Asked for again, such a page would be answered the same, and its reader would never be done.
-    if (!deltaMovesOn(since, delta)) {
-      throw new CacheHostError(`the delta from revision ${since} does not move past it`, {
-        code: 'internal',
-        status: response.status,
-      });
-    }
-    return delta;
   }
 
   invalidate(request: InvalidateRequest): Promise<InvalidateResponse> {

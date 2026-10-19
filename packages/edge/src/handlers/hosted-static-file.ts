@@ -204,7 +204,7 @@ export function routeHostedStaticFile(input: HostedStaticFileInput): Promise<Res
       // served instead. A rewrite to a path the Worker answers is a passthrough, which counts the
       // request it makes and none of what was spent deciding to make it (`passthrough.ts`).
       const replaced = early;
-      letGo(false);
+      letGo();
       const target = shippedFileAt(manifest, middleware.url);
       return target === undefined
         ? undefined
