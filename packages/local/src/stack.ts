@@ -300,7 +300,12 @@ export function siteNamesOf(socket: Loopback, hostnames: readonly string[]): Sit
       ['http', 'https'].map((scheme) => new URL(`${scheme}://${name}:${port}/`).origin),
     ),
     ...aliases.map((alias) => alias.origin),
-    ...hostnames.map((hostname) => new URL(`http://${hostname}/`).origin),
+    ...hostnames.flatMap((hostname) => {
+      const plain = new URL(`http://${hostname}/`).origin;
+      const checked = new URL(`https://${hostname}/`);
+      checked.protocol = 'http:';
+      return plain === checked.origin ? [plain] : [plain, checked.origin];
+    }),
   ];
   return {
     hostnames: [...served, ...aliases.map((alias) => alias.hostname)].join(','),

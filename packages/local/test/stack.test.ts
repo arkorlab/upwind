@@ -74,6 +74,12 @@ export default {
       const answer = await fetch(target, { headers: { host: target.host } });
       return Response.json({ status: answer.status, echoed: await answer.json() });
     }
+    if (url.pathname === '/self-default-port') {
+      const target = new URL('https://default-port.invalid:443/echo?from=default-port');
+      target.protocol = 'http:';
+      const answer = await fetch(target, { headers: { host: target.host } });
+      return Response.json({ status: answer.status, echoed: await answer.json() });
+    }
     if (url.pathname.startsWith('/_upwind-local-check/') && url.hostname !== 'localhost') {
       return new Response('asked under ' + url.host, { status: 500 });
     }
@@ -228,6 +234,7 @@ describe("the names a stack's site goes by", () => {
         'https://example.com',
         'https://alias.example:8443',
         'http://example.com:443',
+        'http://example.com',
         'http://alias.example:8443',
       ].join(','),
     });
@@ -269,7 +276,7 @@ describe('a local stack', () => {
         ARKOR_RESOURCE_CHANGES: 'the application’s as well',
       },
       storage: { kv: ['APP_KV'] },
-      hostnames: ['alias.invalid'],
+      hostnames: ['alias.invalid', 'default-port.invalid:443'],
     });
   }, START_MS);
 
@@ -371,6 +378,16 @@ describe('a local stack', () => {
     await expect(response.json()).resolves.toMatchObject({
       status: 200,
       echoed: { url: 'http://alias.invalid/echo?from=self', protocol: 'http' },
+    });
+  });
+
+  it('keeps a Function HTTP self-fetch after its HTTPS alias dropped the default port', async () => {
+    const response = await fetch(new URL('/self-default-port', started().url));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      status: 200,
+      echoed: { url: 'http://default-port.invalid/echo?from=default-port', protocol: 'http' },
     });
   });
 

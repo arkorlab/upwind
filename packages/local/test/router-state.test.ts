@@ -1,5 +1,6 @@
 import type { RouteHas } from '@stayingupwind/core/bundle';
 import type { MiddlewareMatcher } from '@stayingupwind/core/manifest';
+import { middlewareApplies, readMiddlewareResponse } from '@stayingupwind/core/paas';
 import { NEXT_ROUTER_STATE_TREE_HEADER } from '@stayingupwind/core/request';
 import { describe, expect, it } from 'vitest';
 
@@ -21,6 +22,12 @@ const HEADERS = {
   cookie: 'locale=wrong; locale=en',
 };
 const PAGE = new URL('https://site.example/about?variant=selected&_rsc=navigation-digest');
+const VISITOR_STATE = stateTreeOf('/visitor');
+const VISITOR_TREE: RouteHas = {
+  type: 'header',
+  key: NEXT_ROUTER_STATE_TREE_HEADER,
+  value: `^${VISITOR_STATE}$`,
+};
 
 function withRule(kind: Kind, rule: MiddlewareMatcher): StateStack {
   const base = { bundle: { config: {} }, app: {} };
@@ -60,6 +67,37 @@ function withMiddleware(options: {
     },
     app: options.running ? { middlewareScriptName: 'middleware' } : {},
   };
+}
+
+function behindMiddleware(
+  kind: Kind,
+  rule: MiddlewareMatcher,
+  matcher: MiddlewareMatcher = { sourceRegex: '^/about$' },
+): StateStack {
+  const base = withRule(kind, rule);
+  const matchers = base.manifest.middleware?.matchers ?? [matcher];
+  return {
+    ...base,
+    manifest: { ...base.manifest, middleware: { matchers } },
+    bundle: { config: {}, middleware: { matchers } },
+    app: { middlewareScriptName: 'middleware' },
+  };
+}
+
+function continued(headers: Record<string, string>) {
+  const decided = readMiddlewareResponse(
+    new Response(null, { headers }),
+    PAGE,
+    new Headers(HEADERS),
+  );
+  if (decided.kind !== 'continue') throw new Error('the fixture middleware must continue');
+  return decided;
+}
+
+function visitorHeaders(headers: Headers): Headers {
+  const actual = new Headers(headers);
+  actual.set(NEXT_ROUTER_STATE_TREE_HEADER, VISITOR_STATE);
+  return actual;
 }
 
 describe('router-state rules that can affect the requested payload', () => {
@@ -189,5 +227,109 @@ describe('router-state rules that can affect the requested payload', () => {
     const reason = stateTreeUnproved(withMiddleware(options), PAGE, HEADERS);
 
     expect(reason !== undefined).toBe(unproved);
+  });
+
+  it.each(['reserved', 'dynamic'] as const)(
+    'does not exclude a post-middleware %s rule by a changed header',
+    (kind) => {
+      const rule = {
+        sourceRegex: '^/about$',
+        has: [VISITOR_TREE, { type: 'header' as const, key: 'x-variant', value: '^private$' }],
+      };
+      // Response headers also reach the request, as Next's resolver and this protocol specify.
+      const decided = continued({ 'x-middleware-next': '1', 'x-variant': 'private' });
+      const stack = behindMiddleware(kind, rule);
+
+      expect(middlewareApplies([rule], PAGE, visitorHeaders(new Headers(HEADERS)))).toBe(false);
+      expect(middlewareApplies([rule], decided.url, visitorHeaders(decided.requestHeaders))).toBe(
+        true,
+      );
+      expect(middlewareApplies([rule], decided.url, decided.requestHeaders)).toBe(false);
+      expect(stateTreeUnproved(stack, PAGE, HEADERS)).toContain('a rule of next.config asks');
+    },
+  );
+
+  it.each(['reserved', 'dynamic'] as const)(
+    'does not exclude a post-middleware %s rule by the original path or query',
+    (kind) => {
+      const rule = {
+        sourceRegex: '^/private$',
+        has: [VISITOR_TREE, { type: 'query' as const, key: 'variant', value: '^private$' }],
+      };
+      const decided = continued({
+        'x-middleware-rewrite': 'https://site.example/private?variant=private',
+      });
+      const stack = behindMiddleware(kind, rule);
+
+      expect(middlewareApplies([rule], PAGE, visitorHeaders(new Headers(HEADERS)))).toBe(false);
+      expect(middlewareApplies([rule], decided.url, visitorHeaders(decided.requestHeaders))).toBe(
+        true,
+      );
+      expect(middlewareApplies([rule], decided.url, decided.requestHeaders)).toBe(false);
+      expect(stateTreeUnproved(stack, PAGE, HEADERS)).toContain('a rule of next.config asks');
+    },
+  );
+
+  it.each(['headers', 'folded', 'middleware'] as const)(
+    'keeps the known conditions of a pre-middleware %s rule',
+    (kind) => {
+      const stack = behindMiddleware(kind, {
+        sourceRegex: '^/about$',
+        has: [TREE, { type: 'header', key: 'x-variant', value: '^private$' }],
+      });
+
+      expect(stateTreeUnproved(stack, PAGE, HEADERS)).toBeUndefined();
+    },
+  );
+
+  it.each(['absent', 'unmatched', 'known-false'] as const)(
+    'retains the known post-rule filter when middleware is %s',
+    (control) => {
+      const matcher = {
+        sourceRegex: control === 'unmatched' ? '^/elsewhere$' : '^/about$',
+        has:
+          control === 'known-false'
+            ? [{ type: 'header' as const, key: 'x-variant', value: '^private$' }]
+            : [],
+      };
+      const base = behindMiddleware(
+        'dynamic',
+        {
+          sourceRegex: '^/about$',
+          has: [TREE, { type: 'header', key: 'x-variant', value: '^private$' }],
+        },
+        matcher,
+      );
+      const stack = { ...base, app: control === 'absent' ? {} : base.app };
+
+      expect(stateTreeUnproved(stack, PAGE, HEADERS)).toBeUndefined();
+    },
+  );
+
+  it.each([TREE, DIGEST])(
+    'keeps a bundle-only unknown matcher open after middleware: %s',
+    (has) => {
+      const base = behindMiddleware('reserved', {
+        sourceRegex: '^/elsewhere$',
+        has: [TREE],
+      });
+      const stack: StateStack = {
+        ...base,
+        manifest: { ...base.manifest, middleware: undefined },
+        bundle: {
+          config: {},
+          middleware: { matchers: [{ sourceRegex: '^/about$', has: [has] }] },
+        },
+      };
+
+      expect(stateTreeUnproved(stack, PAGE, HEADERS)).toContain('a rule of next.config asks');
+    },
+  );
+
+  it('keeps a manifest-only middleware route open when the build matcher is absent', () => {
+    const base = behindMiddleware('dynamic', { sourceRegex: '^/elsewhere$', has: [TREE] });
+    const stack = { ...base, bundle: { config: {} } };
+
+    expect(stateTreeUnproved(stack, PAGE, HEADERS)).toContain('a rule of next.config asks');
   });
 });

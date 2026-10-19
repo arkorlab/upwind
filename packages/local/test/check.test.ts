@@ -198,7 +198,7 @@ function treePart(parts: readonly Part[]): Part {
 /** The hash Next appended after any earlier bare or encoded query keys. */
 function appendedHash(part: Part): string {
   const hash = part.url.searchParams.getAll('_rsc').at(-1);
-  if (hash === undefined) {
+  if (typeof hash !== 'string') {
     throw new Error('the router request carries no computed hash');
   }
   return hash;
@@ -5862,20 +5862,32 @@ describe('what the check makes of the middleware', () => {
       const answered = documentAnswer(rendered, 'mw=miss;route=/;cache=fresh;seq=2');
       answers.set('/', {
         ...answered,
-        headers: { ...answered.headers, 'cdn-cache-control': 'max-age=60' },
+        headers: { ...answered.headers, 'content-language': 'en' },
       });
       // A manifest that publishes its dynamic routes, whose routes' headers hold no rule of its own.
       const routed = { dynamicRoutes: [] };
       const front = `dpl_site|${await entryOf('/', '/')}|2`;
-      generationHeaders.set(front, { 'cdn-cache-control': 'max-age=60' });
+      generationHeaders.set(front, { 'content-language': 'en' });
       const recorded = await checkStack(stackOf(routes, {}, routed));
+      generationHeaders.set(front, { 'content-language': 'fr' });
+      const mismatched = await checkStack(stackOf(routes, {}, routed));
       // A later render that set none: what an earlier one set is not what this one went out with.
       generationHeaders.set(front, {});
+      answers.set('/', {
+        ...answered,
+        headers: { ...answered.headers, 'cdn-cache-control': 'max-age=60' },
+      });
       const dropped = await checkStack(stackOf(routes, {}, routed));
       generationHeaders.clear();
       const unread = await checkStack(stackOf(routes, {}, routed));
 
       expect(recorded).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+      expect(mismatched.failures).toStrictEqual([
+        {
+          path: '/',
+          reason: 'answered with content-language en, not the fr the application set',
+        },
+      ]);
       expect(dropped.failures).toStrictEqual([
         {
           path: '/',

@@ -88,13 +88,21 @@ function ruleCouldApply(rule: StateRule, url: URL, headers: Headers): boolean {
   }
 }
 
-function middlewareSeesState(stack: StateStack, url: URL, headers: Headers): boolean {
-  const matchers = stack.bundle.middleware?.matchers;
+/** Whether middleware may run, before it can replace routing headers or rewrite the URL. */
+function middlewareCouldRun(stack: StateStack, url: URL, headers: Headers): boolean {
   return (
-    stack.bundle.config.skipProxyUrlNormalize === true &&
-    matchers !== undefined &&
     stack.app.middlewareScriptName !== undefined &&
-    matchers.some((rule) => ruleCouldApply(rule, url, headers))
+    ((stack.manifest.middleware?.matchers.some((rule) => ruleCouldApply(rule, url, headers)) ??
+      false) ||
+      (stack.bundle.middleware?.matchers.some((rule) => ruleCouldApply(rule, url, headers)) ??
+        false))
+  );
+}
+
+function readsState(rule: StateRule): boolean {
+  return (
+    (rule.has ?? []).some((condition) => asksOfRouterState(condition)) ||
+    (rule.missing ?? []).some((condition) => asksOfRouterState(condition))
   );
 }
 
@@ -124,23 +132,22 @@ export function stateTreeUnproved(
     return undefined;
   }
   const { manifest } = stack;
-  const rules = [
-    ...(manifest.reservedRoutes ?? []),
+  const before = [
     ...(manifest.headerRules ?? []),
     ...(manifest.foldedHeaderRules ?? []),
-    ...(manifest.dynamicRoutes ?? []),
     ...(manifest.middleware?.matchers ?? []),
   ];
-  const ruled = rules.some((rule) => {
-    const asks =
-      (rule.has ?? []).some((condition) => asksOfRouterState(condition)) ||
-      (rule.missing ?? []).some((condition) => asksOfRouterState(condition));
-    return asks && ruleCouldApply(rule, url, handed);
-  });
+  const after = [...(manifest.reservedRoutes ?? []), ...(manifest.dynamicRoutes ?? [])];
+  const middleware = middlewareCouldRun(stack, url, handed);
+  // Headers are selected before middleware. Routing is judged again after it, against a URL and
+  // request fields it can replace: browser-side path and companion conditions cannot exclude it.
+  const ruled =
+    before.some((rule) => readsState(rule) && ruleCouldApply(rule, url, handed)) ||
+    after.some((rule) => readsState(rule) && (middleware || ruleCouldApply(rule, url, handed)));
   if (ruled) {
     return `a rule of next.config asks of the router state it is asked from, ${UNPROVED_STATE}`;
   }
-  if (middlewareSeesState(stack, url, handed)) {
+  if (stack.bundle.config.skipProxyUrlNormalize === true && middleware) {
     return `the application's middleware sees the router state it is asked from (skipProxyUrlNormalize), ${UNPROVED_STATE}`;
   }
   return undefined;
