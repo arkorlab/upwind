@@ -369,7 +369,9 @@ function repairOne(
     generation.entry_id,
   );
   forgetSeedFailure(sql, generation.entry_id);
-  events.push(entryStateEvent(sql, generation.entry_id), {
+  // A prior shared-artifact relocation already recorded this same public state at this revision.
+  if (entry.revision !== revision) events.push(entryStateEvent(sql, generation.entry_id));
+  events.push({
     entityType: 'generation',
     entityId: generation.generation_id,
     kind: 'generation.committed',

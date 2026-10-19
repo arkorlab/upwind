@@ -403,7 +403,7 @@ function restoreDataArtifact(
   repair: ArtifactRepair | undefined,
   entryId: string,
   unchanged: boolean,
-): { readonly addedBytes: number } | Refusal {
+): Refusal | { readonly addedBytes: number } {
   if (repair === undefined) return NO_DATA_REPAIR;
   const publishingEntry = unchanged ? '' : entryId;
   const repairs = new Map([[repair.sha256, repair]]);
