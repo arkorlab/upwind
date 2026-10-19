@@ -36,6 +36,7 @@ import {
   findAttempt,
   nextLeaseExpiry,
   planStartAttempt,
+  type RecordedArtifact,
   type UploadedArtifact,
 } from './attempts.ts';
 import * as recordAnswers from './commit-record.ts';
@@ -513,7 +514,7 @@ export class CacheScope extends DurableObject<CacheBindings> {
     attemptId: string,
     upload: UploadedArtifact & { readonly fencingToken: number },
     now: number,
-  ): Promise<Refusal | { readonly ok: true }> {
+  ): Promise<Refusal | RecordedArtifact> {
     return this.#mutate(now, (tx) => () => applyRecordArtifact(tx, attemptId, upload), AT_ONCE);
   }
 

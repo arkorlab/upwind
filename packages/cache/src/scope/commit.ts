@@ -14,7 +14,15 @@ import {
   type CommitResponse,
 } from '@stayingupwind/host/cache';
 
-import { addedBytesOf, artifactIdsFor, findArtifactBySha, referenceArtifact } from './artifacts.ts';
+import {
+  addedBytesOf,
+  artifactFailed,
+  artifactIdsFor,
+  type ArtifactRepair,
+  findArtifactBySha,
+  referenceArtifact,
+  repairArtifact,
+} from './artifacts.ts';
 import { endAttempt, entryStateEvent, findAttempt, isLive } from './attempts.ts';
 import { controlFenceFloorInvalidations } from './control-fences.ts';
 import { publishEntry, requireEntry, setRegeneration } from './entries.ts';
@@ -74,6 +82,7 @@ interface CommitPlan {
   readonly artifactIds: ReadonlyMap<string, string>;
   /** The storage keys of uploads the commit would publish from that hold nothing any more. */
   readonly missingUploads: ReadonlySet<string>;
+  readonly checkedUploads: ReadonlySet<string>;
 }
 
 /**
@@ -112,7 +121,8 @@ export async function planCommit(
       tagRefs,
       artifactIds,
       dependencyTagIds,
-      missingUploads: missing,
+      missingUploads: missing.missing,
+      checkedUploads: missing.checked,
     });
   };
 }
@@ -166,12 +176,13 @@ async function missingUploads(
   attemptId: string,
   outputs: readonly CommitOutput[],
   blobs: BlobStore,
-): Promise<Set<string>> {
+): Promise<{ readonly missing: ReadonlySet<string>; readonly checked: ReadonlySet<string> }> {
   const keys = new Set<string>();
   for (const output of outputs) {
     for (const artifact of output.artifacts) {
       const upload = findUpload(sql, attemptId, artifact);
-      if (upload !== undefined && findArtifactBySha(sql, artifact.sha256) === undefined) {
+      const stored = findArtifactBySha(sql, artifact.sha256);
+      if (upload !== undefined && (stored === undefined || artifactFailed(sql, stored))) {
         keys.add(upload.storage_ref);
       }
     }
@@ -182,7 +193,7 @@ async function missingUploads(
       missing.add(key);
     }
   });
-  return missing;
+  return { missing, checked: keys };
 }
 
 /**
@@ -209,14 +220,14 @@ function mismatchOf(upload: AttemptArtifactRow, artifact: CommitArtifact): strin
 /**
  * Where one named artifact's bytes are.
  *
- * Where the scope already holds them wins over the copy this attempt uploaded beside them: a row
- * referred to at one key and read at another is a blob nothing can ever free.
+ * Where the scope already holds them wins, unless projection verified that exact location is
+ * broken. A repair uses the verified upload and moves ownership in the same publishing transaction.
  */
 function locateArtifact(
   sql: SqlStorage,
   plan: CommitPlan,
   artifact: CommitArtifact,
-): Refusal | { readonly storageRef: string } {
+): Refusal | { readonly storageRef: string; readonly repair?: ArtifactRepair } {
   const named = `${artifact.role} ${artifact.sha256}`;
   const upload = findUpload(sql, plan.attemptId, artifact);
   const stored = findArtifactBySha(sql, artifact.sha256);
@@ -225,12 +236,30 @@ function locateArtifact(
     return refuse('artifact_mismatch', mismatch);
   }
   if (stored !== undefined) {
-    return stored.byte_length === artifact.byteLength
-      ? { storageRef: stored.storage_ref }
-      : refuse(
-          'artifact_mismatch',
-          `${named} holds ${stored.byte_length} bytes, not ${artifact.byteLength}`,
-        );
+    if (stored.byte_length !== artifact.byteLength) {
+      return refuse(
+        'artifact_mismatch',
+        `${named} holds ${stored.byte_length} bytes, not ${artifact.byteLength}`,
+      );
+    }
+    if (!artifactFailed(sql, stored)) return { storageRef: stored.storage_ref };
+    if (
+      upload === undefined ||
+      !plan.checkedUploads.has(upload.storage_ref) ||
+      plan.missingUploads.has(upload.storage_ref)
+    ) {
+      return refuse('artifact_missing', `no stored replacement upload for ${named}`);
+    }
+    return {
+      storageRef: upload.storage_ref,
+      repair: {
+        sha256: artifact.sha256,
+        byteLength: artifact.byteLength,
+        previousStorageRef: stored.storage_ref,
+        storageRef: upload.storage_ref,
+        previouslyOwned: stored.owned === 1,
+      },
+    };
   }
   if (upload === undefined) {
     return refuse('artifact_missing', `no upload for ${named}`);
@@ -243,8 +272,9 @@ function locateArtifact(
 }
 
 /** Where each named artifact's bytes are: uploaded for this attempt, or already the scope's. */
-function locateArtifacts(sql: SqlStorage, plan: CommitPlan): Map<string, string> | Refusal {
+function locateArtifacts(sql: SqlStorage, plan: CommitPlan): LocatedArtifacts | Refusal {
   const refs = new Map<string, string>();
+  const repairs = new Map<string, ArtifactRepair>();
   for (const output of plan.request.generation.outputs) {
     for (const artifact of output.artifacts) {
       const located = locateArtifact(sql, plan, artifact);
@@ -252,9 +282,15 @@ function locateArtifacts(sql: SqlStorage, plan: CommitPlan): Map<string, string>
         return located;
       }
       refs.set(artifact.sha256, located.storageRef);
+      if (located.repair !== undefined) repairs.set(artifact.sha256, located.repair);
     }
   }
-  return refs;
+  return { refs, repairs };
+}
+
+interface LocatedArtifacts {
+  readonly refs: ReadonlyMap<string, string>;
+  readonly repairs: ReadonlyMap<string, ArtifactRepair>;
 }
 
 /** What the delivery record of the generation this commit would publish is made of. */
@@ -384,6 +420,7 @@ interface Publication {
   readonly attempt: AttemptRow;
   readonly entry: EntryRow;
   readonly outputs: readonly OutputSnapshot[];
+  readonly repairs: ReadonlyMap<string, ArtifactRepair>;
   readonly condemned: InvalidationState | null;
   /**
    * The revision the generation's inputs stand as of: the lease's, or the latest invalidation its
@@ -413,6 +450,9 @@ function publish(input: TxInput, plan: CommitPlan, state: Publication): CommitOu
       bodyBytes += artifact.byteLength;
       addedBytes += referenceArtifact(sql, { ...artifact, owned: true }, now).addedBytes;
     }
+  }
+  for (const repair of state.repairs.values()) {
+    addedBytes += repairArtifact(sql, repair, now);
   }
   const seq = entry.seq_max + 1;
   insertGeneration(sql, {
@@ -531,7 +571,7 @@ function applyCommit(input: TxInput, plan: CommitPlan): CommitOutcome | Refusal 
   if (isRefusal(storageRefs)) {
     return storageRefs;
   }
-  const outputs = snapshots(plan, storageRefs);
+  const outputs = snapshots(plan, storageRefs.refs);
   const unwritable = unwritableRecord(
     recordFields(input, plan, entry, outputs),
     input.limits.maxRecordBytes,
@@ -545,6 +585,9 @@ function applyCommit(input: TxInput, plan: CommitPlan): CommitOutcome | Refusal 
   let addedBytes = 0;
   for (const artifact of uniqueArtifacts.values()) {
     addedBytes += addedBytesOf(sql, { ...artifact, owned: true });
+  }
+  for (const repair of storageRefs.repairs.values()) {
+    if (!repair.previouslyOwned) addedBytes += repair.byteLength;
   }
   if (scope.body_bytes + addedBytes > input.limits.bodyBytesPerScope) {
     return refuse('quota_exceeded', 'the scope holds as many bytes as it may');
@@ -587,6 +630,7 @@ function applyCommit(input: TxInput, plan: CommitPlan): CommitOutcome | Refusal 
     attempt,
     entry,
     outputs,
+    repairs: storageRefs.repairs,
     condemned: condemnationOf(invalidations),
     dependencyRevision: Math.max(attempt.dependency_revision, heldThrough),
   });

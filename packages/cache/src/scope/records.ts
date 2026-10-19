@@ -92,6 +92,13 @@ type RecordArtifact = OutputSnapshot['artifacts'][number];
 /** The store answered, but not with the artifact a generation names. */
 export class InvalidArtifactError extends Error {
   override name = 'InvalidArtifactError';
+
+  readonly artifact: Pick<RecordArtifact, 'sha256' | 'storageRef' | 'byteLength'>;
+
+  constructor(message: string, artifact: RecordArtifact) {
+    super(message);
+    this.artifact = artifact;
+  }
 }
 
 async function verifiedBytes(blobs: BlobStore, artifact: RecordArtifact): Promise<Uint8Array> {
@@ -99,16 +106,19 @@ async function verifiedBytes(blobs: BlobStore, artifact: RecordArtifact): Promis
   if (bytes === undefined) {
     throw new InvalidArtifactError(
       `artifact ${artifact.sha256} (${artifact.role}) is not in storage`,
+      artifact,
     );
   }
   if (bytes.byteLength !== artifact.byteLength) {
     throw new InvalidArtifactError(
       `artifact ${artifact.sha256} (${artifact.role}) has ${bytes.byteLength} bytes, not ${artifact.byteLength}`,
+      artifact,
     );
   }
   if ((await sha256Hex(bytes)) !== artifact.sha256) {
     throw new InvalidArtifactError(
       `artifact ${artifact.sha256} (${artifact.role}) does not hash to its name`,
+      artifact,
     );
   }
   return bytes;
