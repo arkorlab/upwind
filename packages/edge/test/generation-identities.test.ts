@@ -104,7 +104,7 @@ describe('generation identities adopted before regeneration headers are built', 
   it.each([
     { entryId: 'entry-wire-nul', generationId: 'generation\u{0}bad' },
     { entryId: 'entry-日本語', generationId: 'generation-wire-entry' },
-    { entryId: 'entry-wire-astral', generationId: 'generation-\u{1f600}' },
+    { entryId: 'entry-wire-astral', generationId: 'generation-\u{1F600}' },
     { entryId: 'entry-wire-crlf\r\n', generationId: 'generation-wire-entry' },
   ])(
     'refuses an invalid KV identity before holding $entryId',
