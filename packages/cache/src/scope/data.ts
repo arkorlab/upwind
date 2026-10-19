@@ -394,7 +394,6 @@ function dataQuota(
   if (entry === undefined && scope.entry_count >= limits.entriesPerScope) {
     return refuse('quota_exceeded', 'the scope holds as many entries as it may');
   }
-  return;
 }
 
 /** Quotas were checked before this; a refusal must still precede every repair mutation. */

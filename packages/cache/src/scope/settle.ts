@@ -2,15 +2,9 @@ import { kvDataKey, kvGenerationKey, kvScopeKey } from '@stayingupwind/core/cach
 
 import { detailOf, type Logger } from '../logger.ts';
 import {
-  artifactVerification,
-  type ArtifactVerification,
-  forgetVerifiedArtifactFailures,
-} from './artifacts.ts';
-import {
   anyRecordBehind,
   type BacklogCursor,
   backlogRecords,
-  markRecordWritten,
   recordIdsBehindAt,
   recordsBehindAmong,
   recordsBehindAt,
@@ -20,21 +14,15 @@ import type { ScopeHistory } from './history.ts';
 import { type BlobStore, type CarriedValue, type KvSink, writeKey } from './io.ts';
 import { PROJECTION_MEMORY_BYTES, withProjectionMemory } from './projection-memory.ts';
 import {
-  dataRecordJson,
-  generationRecordBytes,
-  projectionMemoryOf,
-  type RecordDeps,
-} from './records.ts';
-import type { EntryRow, GenerationRow } from './rows.ts';
-import { forgetSeedFailure, rememberSeedFailure } from './seed-repair.ts';
-import {
-  commitRevision,
-  deleteMeta,
-  readMeta,
-  readRevision,
-  readScope,
-  writeMeta,
-} from './state.ts';
+  acknowledge,
+  type ProjectedEntry,
+  type ProjectingEntry,
+  verifyingRecords,
+} from './projection-records.ts';
+import { dataRecordJson, generationRecordBytes, projectionMemoryOf } from './records.ts';
+import type { EntryRow } from './rows.ts';
+import { rememberSeedFailure } from './seed-repair.ts';
+import { deleteMeta, readMeta, readScope, writeMeta } from './state.ts';
 import {
   ControlTagProjectionError,
   type ControlTagWork,
@@ -167,28 +155,6 @@ interface Writing {
   readonly carried?: CarriedValue | undefined;
 }
 
-interface ProjectingEntry {
-  readonly entry: EntryRow;
-  readonly current: GenerationRow | undefined;
-  verifiedArtifacts?: ArtifactVerification[] | undefined;
-}
-
-/** Proof arrays and completion closures exist only when an actual body names a failure marker. */
-function verifyingRecords(deps: SettleDeps, entry: ProjectingEntry): RecordDeps {
-  return {
-    scopeId: deps.scopeId,
-    blobs: deps.blobs,
-    verifying(artifact) {
-      const proof = artifactVerification(deps.sql, artifact);
-      if (proof === undefined) return;
-      return () => {
-        const verified = (entry.verifiedArtifacts ??= []);
-        verified.push(proof);
-      };
-    },
-  };
-}
-
 /** A chunk of a page, and the bytes its records are reckoned to hold as they are built. */
 interface ProjectionChunk {
   readonly entries: readonly ProjectingEntry[];
@@ -263,12 +229,6 @@ async function projectEntry(
   const bytes = await generationRecordBytes(records, entry, current);
   await writeKey(() => deps.kv.put(key, bytes));
   return wanted?.wants(entry.entry_id, bytes.byteLength) === true ? bytes : undefined;
-}
-
-interface ProjectedEntry {
-  readonly entryId: string;
-  readonly kvRevision: number;
-  readonly verifiedArtifacts?: readonly ArtifactVerification[] | undefined;
 }
 
 /**
@@ -398,44 +358,6 @@ interface PageOutcome {
   readonly written: number;
   /** How many of the page's entries were tried before `stop` said to stop. */
   readonly reached: number;
-}
-
-/**
- * What went out, acknowledged in one transaction: marked written, and an event for the history.
- * The entries marked: one a later change touched while its record was on its way is left behind,
- * and its record is not the entry's to hand on.
- */
-function acknowledge(deps: SettleDeps, projected: readonly ProjectedEntry[]): Set<string> {
-  const marked = new Set<string>();
-  if (projected.length === 0) {
-    return marked;
-  }
-  deps.transaction(() => {
-    const acknowledged: ProjectedEntry[] = [];
-    for (const entry of projected) {
-      if (markRecordWritten(deps.sql, entry.entryId, entry.kvRevision)) {
-        forgetSeedFailure(deps.sql, entry.entryId);
-        forgetVerifiedArtifactFailures(deps.sql, entry.verifiedArtifacts);
-        marked.add(entry.entryId);
-        acknowledged.push({ entryId: entry.entryId, kvRevision: entry.kvRevision });
-      }
-    }
-    if (acknowledged.length === 0) {
-      return;
-    }
-    const revision = readRevision(deps.sql) + 1;
-    commitRevision(deps.sql, revision);
-    deps.history.append(
-      { sql: deps.sql, revision, now: deps.now() },
-      {
-        entityType: 'scope',
-        entityId: deps.scopeId,
-        kind: 'entries.projected',
-        payload: { entries: acknowledged },
-      },
-    );
-  });
-  return marked;
 }
 
 /** Rewrite a page a chunk at a time, asking `stop` after each chunk; acknowledge what went out. */

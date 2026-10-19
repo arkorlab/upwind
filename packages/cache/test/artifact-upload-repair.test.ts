@@ -831,8 +831,10 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
     expect(restored).toMatchObject({ marker: undefined, bodyBytes: 0, artifact: { owned: 0 } });
     expect(committed).toMatchObject({ kind: 'published' });
     expect(put).not.toHaveBeenCalled();
-    expect(await bodyFor(scope, plan)).toBe(BODY);
-    expect(await stateFor(scope, plan)).toMatchObject({
+
+    await expect(bodyFor(scope, plan)).resolves.toBe(BODY);
+
+    await expect(stateFor(scope, plan)).resolves.toMatchObject({
       marker: undefined,
       bodyBytes: 0,
       artifact: { owned: 0, storage_ref: plan.artifact.storageRef },
@@ -898,7 +900,8 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
 
     expect(remaining).toStrictEqual([{ key: `artifact_failure:${segment.sha256}` }]);
     expect(get.mock.calls.map(([key]) => key)).toStrictEqual([plan.artifact.storageRef]);
-    expect(await bodyFor(scope, plan)).toBe(BODY);
+
+    await expect(bodyFor(scope, plan)).resolves.toBe(BODY);
   });
 
   it('retains a live row marker and removes it when retention deletes the unreferenced row', async () => {

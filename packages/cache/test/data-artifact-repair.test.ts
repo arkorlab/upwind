@@ -205,11 +205,11 @@ async function valueOf(test: Fixture, key: string): Promise<Uint8Array> {
   return bytes;
 }
 
-afterEach(() => {
-  vi.restoreAllMocks();
-});
-
 describe('a data upload replacing a known broken canonical artifact', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it.each([
     { kind: 'inline above the carried limit', length: ABOVE_CARRIED_BYTES },
     { kind: 'reference', length: MAX_INLINE_DATA_VALUE_BYTES + 1 },

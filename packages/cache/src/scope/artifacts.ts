@@ -27,6 +27,7 @@ const ARTIFACT_IDS_AT_ONCE = 128;
 const REFERENCES_PER_LOOKUP = 100;
 const BORROWED_PER_INSERT = 16;
 const FAILURE_PREFIX = 'artifact_failure:';
+const FENCED_FAILURE_FIELDS = 3;
 
 type ArtifactIdentity = Pick<ArtifactReference, 'sha256' | 'storageRef' | 'byteLength'>;
 
@@ -47,7 +48,7 @@ function failureNames(
     const value: unknown = JSON.parse(marker);
     return (
       Array.isArray(value) &&
-      value.length === 3 &&
+      value.length === FENCED_FAILURE_FIELDS &&
       value[0] === byteLength &&
       value[1] === storageRef &&
       typeof value[2] === 'string'
