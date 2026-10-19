@@ -4,8 +4,10 @@ import {
   sharedShellPathname,
 } from '@stayingupwind/core/bundle';
 import {
+  appPathFor,
   deriveEntry,
   IMPLICIT_TAG_PREFIX,
+  implicitTagsFor,
   MAX_TAG_LENGTH,
   normalizeRoutePathname,
   type RouteEntryDescriptor,
@@ -29,6 +31,7 @@ import { requestContext } from './context.ts';
 import { generationClassShell } from './generation-tags.ts';
 import { invalidateNow } from './handlers.ts';
 import { regenerate } from './regenerate.ts';
+import type { CacheRuntime } from './runtime.ts';
 
 /**
  * What a Pages Router `res.revalidate(urlPath)` does here: the page at that path is regenerated
@@ -42,17 +45,29 @@ import { regenerate } from './regenerate.ts';
  *
  * Except for a page another app Function holds, in a build split across several: that one is
  * invalidated rather than rendered here, and is rendered by its own Function when next asked for.
+ * A page a reusable terminal shell stands for is regenerated as that shell, which its class shares;
+ * an entry of the page's own, where it has one, is then invalidated by the page's tags.
  */
 
 interface RevalidateInput {
   readonly urlPath: string;
 }
 
-/** The tags a page at `pathname` is cached under as itself, as `revalidatePath` names them. */
-function pathTags(pathname: string): string[] {
+/**
+ * The tags a page at `pathname` is cached under as itself, as `revalidatePath` names them — and, in
+ * an application that keeps its pages at a trailing slash (`trailingSlash`), as an entry rendered
+ * for a request at that spelling is tagged: a regeneration names its entry by the pathname the edge
+ * asked for, slash and all (`generationTagValues`).
+ */
+function pathTags(store: Store, pathname: string): string[] {
   const tags = [`${IMPLICIT_TAG_PREFIX}${pathname}`];
+  const slashed = `${IMPLICIT_TAG_PREFIX}${pathname}/`;
   if (pathname === '/') {
     tags.push(`${IMPLICIT_TAG_PREFIX}/index`);
+  } else if (store.manifest.config.trailingSlash && slashed.length <= MAX_TAG_LENGTH) {
+    // Within the host's bound alone: past it, the host would refuse the call with the page's
+    // other tags in it, which a page in another Function sends whatever their length.
+    tags.push(slashed);
   }
   return tags;
 }
@@ -140,6 +155,49 @@ function routeOf(store: Store, pathname: string): RouteEntryDescriptor | undefin
   return undefined;
 }
 
+/**
+ * `pathname` as a request's URL carries it, escaped where URLs escape (`/caf%C3%A9`, `/a%20b`): the
+ * spelling an entry rendered for that request is named by (`targetOf`, in `generations.ts`).
+ */
+function urlSpelling(pathname: string): string {
+  if (!pathname.startsWith('/')) return pathname;
+  try {
+    return new URL(`https://spelling.invalid${pathname}`).pathname;
+  } catch {
+    return pathname;
+  }
+}
+
+/**
+ * A page a shared shell stands for may also hold an entry of its own, rendered for its parameters
+ * where a host asked for one (`CACHE_UPGRADE_HEADER`), which publishing the shared shell does not
+ * replace. Once it is published, that entry is invalidated by the page's own tags, as for a page in
+ * another Function — never by the shared identity, whose new generation is in place. At each of its
+ * `spellings`: the one asked and the one its request's URL carries, which an entry of its own was
+ * made under — an escaped one, of a value that reads as the shell's placeholder, among them — and
+ * the name the build gives it. Never by a
+ * tag the shell carries itself: a page spelled as one of its route's layouts (`/blog/layout`, of
+ * `/blog/[slug]`) is tagged as that layout is, and invalidated by it, would take the shell just
+ * published, and every page under the layout, with it; such a page's own entry keeps its lifetime.
+ */
+async function invalidateOwnEntry(
+  runtime: CacheRuntime,
+  store: Store,
+  spellings: readonly string[],
+  shell: RouteEntryDescriptor,
+): Promise<void> {
+  const carried = new Set(implicitTagsFor(appPathFor(shell.kind, shell.route)));
+  const own = new Set(
+    spellings
+      .filter((spelling) => spelling !== shell.pathname)
+      .flatMap((spelling) => pathTags(store, spelling))
+      .filter((tag) => tag.length <= MAX_TAG_LENGTH && !carried.has(tag)),
+  );
+  if (own.size > 0) {
+    await invalidateNow(runtime, [...own]);
+  }
+}
+
 export async function platformRevalidate(input: RevalidateInput): Promise<void> {
   const context = requestContext();
   if (context?.runtime === undefined) {
@@ -165,7 +223,9 @@ export async function platformRevalidate(input: RevalidateInput): Promise<void> 
   const tags = async (): Promise<string[]> => {
     // A shared class can hold a long resolved prefix. Its bounded identity is sufficient even
     // when the visitor's legacy pathname tag would exceed the cache host's tag-length limit.
-    const values = pathTags(pathname).filter((tag) => !shared || tag.length <= MAX_TAG_LENGTH);
+    const values = pathTags(store, pathname).filter(
+      (tag) => !shared || tag.length <= MAX_TAG_LENGTH,
+    );
     if (shared) {
       const { entryId } = await deriveEntry(runtime.scopeId, descriptor);
       values.push(sharedShellTagOf(entryId));
@@ -216,5 +276,13 @@ export async function platformRevalidate(input: RevalidateInput): Promise<void> 
   const published = outcome.kind === 'accepted' ? await outcome.published : outcome;
   if (published.kind !== 'published') {
     throw new Error(`revalidate: ${pathname} was not regenerated (${published.kind})`);
+  }
+  if (shared) {
+    const spellings = [
+      normalizeRoutePathname(asked),
+      normalizeRoutePathname(urlSpelling(asked)),
+      pathname,
+    ];
+    await invalidateOwnEntry(context.runtime, store, spellings, descriptor);
   }
 }
