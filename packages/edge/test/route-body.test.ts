@@ -43,6 +43,7 @@ const NOW = 1_800_000_000_000;
 const SCOPE = 'dpl_icon';
 const BODY = new Uint8Array([137, 80, 78, 71, 0, 255, 128, 10]);
 const REPLACEMENT = new Uint8Array([137, 80, 78, 71, 1, 254, 127, 10]);
+const MIDDLEWARE_TOOK_MS = 240;
 
 /** Use the host's real app-route seed contract, including its route-body output and policy. */
 async function fixture(
@@ -51,6 +52,7 @@ async function fixture(
     readonly privateDelivery?: boolean;
     readonly validated?: boolean;
     readonly middlewareHeaders?: Record<string, string>;
+    readonly middlewareMs?: number;
     readonly headerRules?: HeaderRule[];
     readonly holdMs?: number;
     readonly publishOnRegeneration?: boolean;
@@ -135,6 +137,7 @@ async function fixture(
     options.middlewareHeaders !== undefined || options.authorizeByHeader === true;
   const dispatch = vi.fn().mockImplementation(async (script: string, request: Request) => {
     if (script === 'icon-middleware') {
+      clock.now += options.middlewareMs ?? 0;
       if (options.authorizeByHeader === true && request.headers.get('x-allow') !== 'yes') {
         return new Response('Not allowed', {
           status: 403,
@@ -452,6 +455,7 @@ describe('the host serves complete route-body generations', () => {
       deferHeaderRules: true,
       headerRules: [{ sourceRegex: '^/icon$', headers: { 'x-original-rule': 'retained' } }],
       middlewareHeaders: {},
+      middlewareMs: MIDDLEWARE_TOOK_MS,
     });
 
     test.clock.now += 3000;
@@ -464,6 +468,8 @@ describe('the host serves complete route-body generations', () => {
     expect(test.dispatch).toHaveBeenCalledTimes(2);
 
     await test.drain();
+
+    expect(test.points.map((point) => point.middlewareMs)).toStrictEqual([MIDDLEWARE_TOOK_MS]);
   });
 
   it.each([
@@ -990,6 +996,8 @@ describe('the host serves complete route-body generations', () => {
     expect(test.dispatch).toHaveBeenCalledTimes(1);
 
     await test.drain();
+
+    expect(test.points.map((point) => point.middlewareMs)).toStrictEqual([undefined]);
   });
 
   it('adopts a regenerated current record without replacing unrelated stored data', async () => {
