@@ -1148,6 +1148,20 @@ const server = createServer((request, response) => {
   response.end(answer.body);
 });
 
+/** A redirect's initial responses, then a refresh, all recorded without retaining body streams. */
+function initialPartAnswers(
+  first: Answer,
+  after: Answer,
+  seen: string[],
+  firstCount = 2,
+): (search: string) => Answer {
+  return () => {
+    const answer = seen.length < firstCount ? first : after;
+    seen.push(answer.body);
+    return answer;
+  };
+}
+
 /**
  * A route served from generations of its record the stack's edge read, each as recorded with the
  * route's own headers: what `routeOf` gives a route of a record (`record`).
@@ -7118,6 +7132,58 @@ describe('what the check makes of the middleware', () => {
       ]);
     });
 
+    it.each([
+      {
+        source: '/api/:id.json',
+        sourceRegex: String.raw`^/api/[^/]+\.json$`,
+        path: '/api/upwind-check.json',
+      },
+      {
+        source: String.raw`/api/:id(\d+).json`,
+        sourceRegex: String.raw`^/api/\d+\.json$`,
+        path: '/api/1.json',
+      },
+    ])('probes a parameterized middleware source with its suffix: $source', async (matcher) => {
+      const stack = withMiddleware(stackOf([], {}), [matcher]);
+      state.middlewareProbe = { kind: 'responded', status: 500 };
+      const result = await checkStack(stack);
+
+      expect(state.middlewareAsked).toBe(matcher.path);
+      expect(result.failures).toContainEqual({
+        path: 'middleware',
+        reason: `asked about ${matcher.path} as the edge asks it, answered 500`,
+      });
+      expect(result.skipped).toStrictEqual([]);
+    });
+
+    it('accepts a healthy suffix-bearing middleware probe', async () => {
+      const stack = withMiddleware(stackOf([], {}), [
+        { source: '/api/:id.json', sourceRegex: String.raw`^/api/[^/]+\.json$` },
+      ]);
+      state.middlewareProbe = { kind: 'continue', status: 200 };
+      const result = await checkStack(stack);
+
+      expect(state.middlewareAsked).toBe('/api/upwind-check.json');
+      expect(result.failures).toStrictEqual([]);
+      expect(result.skipped).toStrictEqual([]);
+    });
+
+    it('does not send a synthesized middleware probe outside the compiled matcher', async () => {
+      const stack = withMiddleware(stackOf([], {}), [
+        { source: '/api/:id.json', sourceRegex: String.raw`^/unrelated/[^/]+\.json$` },
+      ]);
+      state.middlewareProbe = { kind: 'responded', status: 500 };
+      const result = await checkStack(stack);
+
+      expect(state.middlewareAsked).toBeUndefined();
+      expect(result.failures).toStrictEqual([]);
+      expect(result.skipped).toContainEqual({
+        path: 'middleware',
+        reason:
+          'not asked: its matchers cover none of the pages and files the check asks for, nor a pathname they spell',
+      });
+    });
+
     it("fails where a route's policy is held without the recovery script a deploy permits on it", async () => {
       const policy = "script-src 'self'";
       const route = await routeOf('/', FRONT, { headers: { 'content-security-policy': policy } });
@@ -8397,6 +8463,91 @@ describe('what the check makes of the middleware', () => {
           reason: `its page's props (/_next/data/test/about.json), carrying the cookie sid=1, answered as text/plain, not ${JSON_TYPE}`,
         },
       ]);
+    });
+
+    it("checks an escaped Pages Router flow's background HEAD with the GET's cookies", async () => {
+      const props = '{"pageProps":{}}';
+      const routes = [
+        await routeOf('/about', finished, { complete: true, pages: true, pagesData: props }),
+      ];
+      const data = String.raw`^/_next/data/test/about\.json$`;
+      const signedOut: ReservedRoute = {
+        sourceRegex: data,
+        beforeFiles: true,
+        missing: [{ type: 'cookie', key: 'sid' }],
+      };
+      const seen: HeaderRule = {
+        sourceRegex: data,
+        has: [{ type: 'cookie', key: 'sid' }],
+        headers: { 'set-cookie': 'seen=1; Path=/' },
+      };
+      answers.set('/about', finishedAnswer(finished, '/about'));
+      const account =
+        'data;src=bucket;enc=identity;strategy=edge;project=site;policy=default;m=0000';
+      answers.set('/_next/data/test/about.json', {
+        headers: {
+          'content-type': JSON_TYPE,
+          vary: 'accept-encoding',
+          'x-nextjs-cache': 'HIT',
+          'cache-control': GATED,
+          'x-arkor-edge': account,
+        },
+        body: props,
+        claimedWhen: (headers) => !String(headers.cookie).includes('sid='),
+        withCookie: { name: 'sid', headers: { 'set-cookie': 'seen=1; Path=/' } },
+        when: {
+          test: (headers, method) => method === 'HEAD' && carryingEach('sid', 'seen')(headers),
+          onHead: { 'content-type': JSON_TYPE, 'x-arkor-edge': account },
+        },
+      });
+      const result = await checkStack(
+        stackOf(routes, {}, { reservedRoutes: [signedOut], headerRules: [seen] }),
+      );
+
+      expect(result.failures).toHaveLength(1);
+      expect(result.failures[0]?.reason).toMatch(
+        /carrying the cookie sid=1, asked again for its headers alone .*answered by the edge itself/u,
+      );
+    });
+
+    it('follows cookies set by an escaped Pages Router background HEAD', async () => {
+      const props = '{"pageProps":{}}';
+      const routes = [
+        await routeOf('/about', finished, { complete: true, pages: true, pagesData: props }),
+      ];
+      const signedOut: ReservedRoute = {
+        sourceRegex: String.raw`^/_next/data/test/about\.json$`,
+        beforeFiles: true,
+        missing: [{ type: 'cookie', key: 'sid' }],
+      };
+      answers.set('/about', finishedAnswer(finished, '/about'));
+      answers.set('/_next/data/test/about.json', {
+        headers: {
+          'content-type': JSON_TYPE,
+          vary: 'accept-encoding',
+          'x-nextjs-cache': 'HIT',
+          'cache-control': GATED,
+          'x-arkor-edge':
+            'data;src=bucket;enc=identity;strategy=edge;project=site;policy=default;m=0000',
+        },
+        body: props,
+        claimedWhen: (headers) => !String(headers.cookie).includes('sid='),
+        when: {
+          test: (headers, method) =>
+            carryingEach('sid')(headers) && (method === 'HEAD' || carryingEach('headed')(headers)),
+          headers: { 'content-type': TEXT },
+          onHead: {
+            'content-type': JSON_TYPE,
+            'x-arkor-edge': 'passthrough;reason=pages-data',
+            'set-cookie': 'headed=1; Path=/',
+          },
+        },
+      });
+      const result = await checkStack(stackOf(routes, {}, { reservedRoutes: [signedOut] }));
+
+      expect(result.failures).toHaveLength(1);
+      expect(result.failures[0]?.reason).toContain(`answered as ${TEXT}, not ${JSON_TYPE}`);
+      expect(result.failures[0]?.reason).toContain('with the cookies set by');
     });
 
     it("proves none of a page's props a rule claims without a value the check finds none of", async () => {
@@ -10934,18 +11085,116 @@ describe('what the check makes of the middleware', () => {
         headers: { location: '/login', 'x-arkor-edge': 'passthrough;reason=middleware;mw=hit' },
         body: '',
       });
-      // The login's tree, answered otherwise as the fetch lands there than as the check asks it
-      // again, carrying the stack's trace header.
+      // Both the redirect's first fetch and its router replay fail, before a later valid sample.
+      const again = segmentAnswer('login tree');
+      const seen: string[] = [];
       partAnswers.set('/login|/_tree', {
-        ...segmentAnswer('login tree'),
-        when: { test: (headers) => headers['x-upwind-trace'] === undefined, status: 500 },
+        ...again,
+        forSearch: initialPartAnswers({ ...again, status: 500 }, again, seen),
+      });
+      const result = await checkStack(stackOf(routes, {}));
+
+      expect(result.failures[0]?.path).toBe('/');
+      expect(result.failures[0]?.reason).toBe(
+        'its prefetch segment /_tree, redirected to /login, answered 500',
+      );
+      expect(seen.slice(0, 2)).toStrictEqual(['login tree', 'login tree']);
+    });
+
+    it('judges a redirected runtime part by its own generation while a later sample refreshes', async () => {
+      const routes = [
+        await routeOf('/', FRONT, { segments: { '/_tree': 'tree bytes' } }),
+        await routeOf('/login', finished, { complete: true, segments: { '/_tree': 'login tree' } }),
+      ];
+      answers.set('/', documentAnswer(FRONT, 'mw=miss;route=/'));
+      answers.set('/login', finishedAnswer(finished, '/login'));
+      partAnswers.set('/|/_tree', {
+        status: 307,
+        headers: { location: '/login', 'x-arkor-edge': 'passthrough;reason=middleware;mw=hit' },
+        body: '',
+      });
+      const old = segmentAnswer('stale generation');
+      const fresh = segmentAnswer('fresh generation');
+      const runtime = { 'cache-control': GATED, 'x-nextjs-prerender': '1' };
+      const before = { ...old, headers: { ...old.headers, ...runtime } };
+      const after = { ...fresh, headers: { ...fresh.headers, ...runtime } };
+      const record = `dpl_site|${await entryOf('/login', '/login')}`;
+      generationHeaders.set(`${record}|2`, { 'content-type': HTML });
+      generationHeaders.set(`${record}|3`, { 'content-type': HTML });
+      generationOutputs.set(`${record}|2`, [outputOf('segment', 'segment:/_tree', before.body)]);
+      generationOutputs.set(`${record}|3`, [outputOf('segment', 'segment:/_tree', after.body)]);
+      const seen: string[] = [];
+      partAnswers.set('/login|/_tree', {
+        ...after,
+        forSearch: initialPartAnswers(before, after, seen),
+      });
+      const result = await checkStack(stackOf(routes, {}));
+
+      expect(result.failures).toStrictEqual([]);
+      expect(seen.slice(0, 3)).toStrictEqual([before.body, before.body, after.body]);
+    });
+
+    it('rejects an unrecorded original landing even when the next sample is a valid generation', async () => {
+      const routes = [
+        await routeOf('/', FRONT, { segments: { '/_tree': 'tree bytes' } }),
+        await routeOf('/login', finished, { complete: true, segments: { '/_tree': 'login tree' } }),
+      ];
+      answers.set('/', documentAnswer(FRONT, 'mw=miss;route=/'));
+      answers.set('/login', finishedAnswer(finished, '/login'));
+      partAnswers.set('/|/_tree', {
+        status: 307,
+        headers: { location: '/login', 'x-arkor-edge': 'passthrough;reason=middleware;mw=hit' },
+        body: '',
+      });
+      const unknown = segmentAnswer('unknown generation');
+      const valid = segmentAnswer('recorded generation');
+      const runtime = { 'cache-control': GATED, 'x-nextjs-prerender': '1' };
+      const before = { ...unknown, headers: { ...unknown.headers, ...runtime } };
+      const after = { ...valid, headers: { ...valid.headers, ...runtime } };
+      const at = `dpl_site|${await entryOf('/login', '/login')}|2`;
+      generationHeaders.set(at, { 'content-type': HTML });
+      generationOutputs.set(at, [outputOf('segment', 'segment:/_tree', after.body)]);
+      const seen: string[] = [];
+      partAnswers.set('/login|/_tree', {
+        ...after,
+        forSearch: initialPartAnswers(before, after, seen),
       });
       const result = await checkStack(stackOf(routes, {}));
 
       expect(result.failures[0]?.path).toBe('/');
       expect(result.failures[0]?.reason).toMatch(
-        /^its prefetch segment \/_tree, redirected to \/login, answered 500 with \d+ bytes as the fetch landed there, and 200 with \d+ other bytes asked the same again: no request proves what the fetch was handed$/u,
+        /redirected to \/login, answered \d+ bytes no generation of its route's record the stack's edge read holds for it/u,
       );
+      expect(seen.slice(0, 2)).toStrictEqual([before.body, before.body]);
+    });
+
+    it('does not judge a pre-replay response that the router discards as its final part', async () => {
+      const routes = [
+        await routeOf('/', FRONT, { segments: { '/_tree': 'tree bytes' } }),
+        await routeOf('/login', finished, { complete: true, segments: { '/_tree': 'login tree' } }),
+      ];
+      answers.set('/', documentAnswer(FRONT, 'mw=miss;route=/'));
+      answers.set('/login', finishedAnswer(finished, '/login'));
+      partAnswers.set('/|/_tree', {
+        status: 307,
+        headers: { location: '/login', 'x-arkor-edge': 'passthrough;reason=middleware;mw=hit' },
+        body: '',
+      });
+      const after = segmentAnswer('login tree');
+      const before = {
+        ...after,
+        headers: { ...after.headers, 'content-type': TEXT },
+        body: 'discarded',
+      };
+      const seen: string[] = [];
+      partAnswers.set('/login|/_tree', {
+        ...after,
+        forSearch: initialPartAnswers(before, after, seen, 1),
+      });
+      const result = await checkStack(stackOf(routes, {}));
+
+      expect(result.failures).toStrictEqual([]);
+      expect(seen.slice(0, 2)).toStrictEqual([before.body, after.body]);
     });
 
     it("is judged where the router asks a redirect's URL again with its own _rsc, as Next.js's does", async () => {
@@ -12257,7 +12506,7 @@ describe('what the check makes of the middleware', () => {
         withMiddleware(stackOf([], files), [{ sourceRegex: '^/a[.]txt$' }]),
       );
 
-      expect(kept).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+      expect(kept).toStrictEqual({ checked: 2, failures: [], skipped: [] });
       expect(wrong.failures).toStrictEqual([
         {
           path: '/a.txt',
@@ -12306,7 +12555,7 @@ describe('what the check makes of the middleware', () => {
       const routes = [
         await routeOf('/', FRONT, {
           segments: { '/_tree': 'tree bytes' },
-          headers: { 'x-recorded': 'kept' },
+          headers: { 'content-language': 'en' },
         }),
       ];
       const rule: HeaderRule = {
@@ -12324,7 +12573,7 @@ describe('what the check makes of the middleware', () => {
       const document = documentAnswer(FRONT, 'mw=miss;route=/');
       answers.set('/', {
         ...document,
-        headers: { ...document.headers, 'x-recorded': 'kept', 'x-visible': 'kept' },
+        headers: { ...document.headers, 'content-language': 'en', 'x-visible': 'kept' },
       });
       const segment = segmentAnswer('tree bytes');
       partAnswers.set('/|/_tree', {
@@ -12332,7 +12581,7 @@ describe('what the check makes of the middleware', () => {
         headers: {
           ...segment.headers,
           'cache-control': GATED,
-          'x-recorded': 'kept',
+          'content-language': 'en',
           'x-visible': 'kept',
         },
       });
@@ -12344,11 +12593,12 @@ describe('what the check makes of the middleware', () => {
       const wrong = await checkStack(stackOf(routes, {}, { headerRules: [rule] }));
 
       expect(kept).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+      expect(partsAsked.has('/|/_tree')).toBe(true);
       expect(wrong.failures).toStrictEqual([
         {
           path: '/',
           reason:
-            'its prefetch segment /_tree, answered with x-recorded none, not the kept the application set',
+            'its prefetch segment /_tree, answered with content-language none, not the en the application set',
         },
       ]);
     });
@@ -12377,7 +12627,7 @@ describe('what the check makes of the middleware', () => {
         );
 
         expect(result).toStrictEqual({
-          checked: 0,
+          checked: 1,
           failures: [],
           skipped: [
             {
@@ -12404,8 +12654,8 @@ describe('what the check makes of the middleware', () => {
 
     it('keeps an error file status when the middleware gives its rewrite another status', async () => {
       const routes = [await routeOf('/', FRONT)];
-      const files = { '/404.html': { ...fileOf('not here', HTML), status: 404 } };
-      decisions.set('/', { 'x-middleware-rewrite': '/404.html' });
+      const files = { '/404': { ...fileOf('not here', HTML), status: 404 } };
+      decisions.set('/', { 'x-middleware-rewrite': '/404' });
       decisionStatuses.set('/', 418);
       const headers = {
         'content-type': HTML,
@@ -12413,7 +12663,7 @@ describe('what the check makes of the middleware', () => {
         'x-arkor-edge': `${FILE_EDGE};mw=hit`,
       };
       answers.set('/', { status: 404, headers, body: 'not here' });
-      answers.set('/404.html', {
+      answers.set('/404', {
         status: 404,
         headers: { 'content-type': HTML, 'cache-control': REVALIDATE, 'x-arkor-edge': FILE_EDGE },
         body: 'not here',
@@ -12423,12 +12673,12 @@ describe('what the check makes of the middleware', () => {
       );
 
       expect(result).toStrictEqual({
-        checked: 1,
+        checked: 2,
         failures: [],
         skipped: [
           {
             path: '/',
-            reason: "the application's middleware rewrote it onto /404.html",
+            reason: "the application's middleware rewrote it onto /404",
           },
         ],
       });
@@ -12460,7 +12710,7 @@ describe('what the check makes of the middleware', () => {
           withMiddleware(stackOf([], files), [{ sourceRegex: '^/a[.]txt$' }]),
         );
 
-        expect(result).toStrictEqual({ checked: 1, failures: [], skipped: [] });
+        expect(result).toStrictEqual({ checked: 2, failures: [], skipped: [] });
         expect(rangeTraces.size).toBe(0);
       },
     );
@@ -12483,7 +12733,7 @@ describe('what the check makes of the middleware', () => {
         deadlineMs: 1000,
       });
 
-      expect(answer.length).toBe(0);
+      expect(answer).toHaveLength(0);
       expect(answer.headers['content-length']).toBe('1');
       expect(
         fileHeadFailure(file, answer, {
@@ -12528,7 +12778,7 @@ describe('what the check makes of the middleware', () => {
         );
 
         expect(result).toStrictEqual({
-          checked: 1,
+          checked: 2,
           failures: [],
           skipped: [
             {

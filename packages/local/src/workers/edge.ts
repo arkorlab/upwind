@@ -1,8 +1,4 @@
-import {
-  decodeGenerationPack,
-  kvGenerationKey,
-  type PackArtifactRef,
-} from '@stayingupwind/core/cache';
+import { kvGenerationKey } from '@stayingupwind/core/cache';
 import {
   CACHE_ENTRY_HEADER,
   CACHE_ROUTE_ESCAPED_HEADER,
@@ -29,6 +25,7 @@ import edge from '@stayingupwind/edge/standalone/worker';
 import { cspNonceModeSchema, edgePointerSchema } from '@stayingupwind/host/delivery';
 import { WorkerEntrypoint } from 'cloudflare:workers';
 
+import { rememberGeneration as rememberObservedGeneration } from './generation-evidence.ts';
 import {
   BACKSTAGE_ROUTES,
   FRONT_LINE_CODINGS,
@@ -36,7 +33,6 @@ import {
   NONCE_PARAMS,
   type NoncedPolicies,
   type RecordedGeneration,
-  type RecordedOutput,
   type Regeneration,
   type StampedDigest,
   TRACE_HEADER,
@@ -59,8 +55,6 @@ const MAX_TRACES = 256;
 /** The regeneration a request waits on, whose render is its answer. */
 const FOREGROUND: RegenerateMode = 'foreground';
 const NOTHING_KEPT: TraceRecord = { decision: null, regenerated: null };
-/** How many generations' recorded headers are kept: one for each record of a route the edge read. */
-const MAX_GENERATIONS = 1024;
 
 /** What was kept of each traced request, by its id (`TRACE_HEADER`). */
 const traces = new Map<string, TraceRecord>();
@@ -78,9 +72,9 @@ const generations = new Map<string, RecordedGeneration>();
  */
 const registered = new Map<string, string | null>();
 
-/** The oldest of `kept` let go of, past `most`: a check reads each soon after it. */
-function bound(kept: Map<string, unknown> | Set<string>, most = MAX_TRACES): void {
-  if (kept.size > most) {
+/** The oldest unread trace let go of beyond its budget: a check reads each soon after it. */
+function bound(kept: Map<string, unknown> | Set<string>): void {
+  if (kept.size > MAX_TRACES) {
     const [oldest] = kept.keys();
     if (oldest !== undefined) {
       kept.delete(oldest);
@@ -204,33 +198,9 @@ function servedFrom(
   };
 }
 
-/** An output of a generation as its record names it: which, and its bytes — not where it is kept. */
-function outputOf(artifact: PackArtifactRef): RecordedOutput {
-  const { role, representationKey, encoding, sha256, byteLength } = artifact;
-  return { role, representationKey, encoding, sha256, byteLength };
-}
-
-/** What the edge read under `key`, where it is a generation of a route's record: its headers kept. */
+/** Keep record evidence for the local Worker's lifetime, as long as its edge can reuse a record. */
 function rememberGeneration(key: string, value: unknown): void {
-  if (!(value instanceof ArrayBuffer)) {
-    return;
-  }
-  const decoded = decodeGenerationPack(new Uint8Array(value));
-  if (decoded.kind !== 'ok') {
-    return;
-  }
-  const { seq, headers, artifacts, postponedSha256, source } = decoded.pack.header;
-  const { policy, cacheTimestamp, invalidation } = decoded.pack.header;
-  const at = `${key}|${seq}`;
-  generations.delete(at);
-  generations.set(at, {
-    headers,
-    artifacts: artifacts.map((artifact) => outputOf(artifact)),
-    partial: postponedSha256 !== null,
-    source,
-    freshness: { policy, cacheTimestamp, invalidation },
-  });
-  bound(generations, MAX_GENERATIONS);
+  rememberObservedGeneration(generations, key, value);
 }
 
 /** `kv`, whatever the edge reads of it looked at for a generation's headers on its way. */

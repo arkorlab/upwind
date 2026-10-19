@@ -424,13 +424,30 @@ async function askedVerdict(
   if (coding === (part.browserCodings ?? BROWSER_CODINGS)) {
     part.answered?.(answer);
   }
-  const answered = answeredBy(answer);
   if (middlewareAnswered(answer) !== undefined) {
     return skipped(APPLICATIONS);
   }
   // What the middleware decided, which the edge answers a part it covers behind.
   const { decided } = await keptOf(stack, trace, part.url, asked);
   const covered = middlewareCovers(stack, part.url, asked);
+  return partAnswerVerdict(stack, part, { answer, decided, covered, coding, asked, within });
+}
+
+/** Judge an already read part against the build or the generation that actually answered it. */
+export async function partAnswerVerdict(
+  stack: CheckedStack,
+  part: Part,
+  read: {
+    readonly answer: Reading;
+    readonly decided: MiddlewareResult | undefined;
+    readonly covered: boolean;
+    readonly coding: Accepted | undefined;
+    readonly asked: Readonly<Record<string, string>>;
+    readonly within: Within;
+  },
+): Promise<Verdict> {
+  const { answer, decided, covered, coding, asked, within } = read;
+  const answered = answeredBy(answer);
   if (answered.startsWith('passthrough;')) {
     return handedOnVerdict(stack, part, { answered, decided, covered, asked });
   }

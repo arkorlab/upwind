@@ -54,9 +54,6 @@ function ownNavigationOf(navigation: Readonly<Record<string, string>>): Record<s
 const FETCH_SITE = 'sec-fetch-site';
 const CROSS_SITE = 'cross-site';
 
-/** As much of a page as a visit to it is read for: its headers alone. */
-const HEADERS_ALONE = 1;
-
 /** Each page's answer to a visit, by the request, as the check read it once of a stack. */
 const visited = new WeakMap<CheckedStack, Map<string, Reading | string>>();
 /** Each redirect a visit followed, by the request, as the check read it once of a stack. */
@@ -75,7 +72,7 @@ async function visitAnswer(
   if (known !== undefined) {
     return known;
   }
-  const answer = await answerTo(url, { via: stack.url, headers, limitBytes: HEADERS_ALONE });
+  const answer = await answerTo(url, { via: stack.url, headers, headersOnly: true });
   answers.set(key, answer);
   return answer;
 }

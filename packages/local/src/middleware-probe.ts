@@ -38,10 +38,13 @@ const UNMATCHED =
 const PATTERN_SYNTAX = /[(*+:?\\{]/u;
 /** A segment of the check's own after what a matcher spells, for one that asks for one there. */
 const SPELLED_SEGMENT = 'upwind-check';
+/** Named parameters, with a simple custom pattern and modifier where the matcher names one. */
+const NAMED_PARAMETER = /:[A-Za-z_]\w*(?:\((?:\\.|[^()])*\))?[?*+]?/gu;
 
 /**
  * Pathnames a matcher as the application wrote it (`source`) may cover: what it spells before its
- * first parameter, group or modifier, alone and with a segment after it — under the build's base
+ * first parameter, group or modifier, alone and with a segment after it, and with its named
+ * parameters filled while keeping their literal suffixes — under the build's base
  * path, and its default locale where it has locales, which Next.js has every matcher name first.
  * Only a guess, each held to the matchers as compiled before the middleware is asked about it.
  */
@@ -51,6 +54,7 @@ function spelledBy(source: string | undefined, config: CheckedStack['bundle']['c
   }
   const literal = source.split(PATTERN_SYNTAX, 1)[0] ?? '';
   const stem = literal.endsWith('/') ? literal.slice(0, -1) : literal;
+  const filled = [SPELLED_SEGMENT, '1'].map((value) => source.replace(NAMED_PARAMETER, value));
   const locale = config.i18n?.defaultLocale;
   const prefixes = [
     config.basePath,
@@ -60,6 +64,7 @@ function spelledBy(source: string | undefined, config: CheckedStack['bundle']['c
     return [
       prefix === '' && stem === '' ? '/' : `${prefix}${stem}`,
       `${prefix}${stem}/${SPELLED_SEGMENT}`,
+      ...filled.map((pathname) => `${prefix}${pathname}`),
     ];
   });
 }

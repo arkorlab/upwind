@@ -187,9 +187,6 @@ function onceEach(asks: readonly CodedAsk[]): CodedAsk[] {
   return kept.toReversed();
 }
 
-/** As much of a document as is read for the cookies it was answered with: its headers alone. */
-const HEADERS_ALONE = 1;
-
 /**
  * A route's document, asked as `headers` — read for its headers alone, and judged no further — or
  * why it could not be read.
@@ -200,7 +197,7 @@ async function documentHeadersOn(
   headers: Readonly<Record<string, string>>,
 ): Promise<Reading | string> {
   const url = new URL(asked.requested, stack.site);
-  return answerTo(url, { via: stack.url, headers, limitBytes: HEADERS_ALONE });
+  return answerTo(url, { via: stack.url, headers, headersOnly: true });
 }
 
 /**

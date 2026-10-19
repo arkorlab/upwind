@@ -22,7 +22,7 @@ function dataRequest(): { readonly stack: CheckedStack; readonly part: Part } {
       encoding: 'identity',
     },
     pagesData: {
-      identity: {
+      artifact: {
         sha256: EMPTY_SHA,
         byteLength: 0,
         contentType: 'application/json',
@@ -38,6 +38,7 @@ function dataRequest(): { readonly stack: CheckedStack; readonly part: Part } {
     deployment: { assetSetHash: EMPTY_SHA, observedAt: AT },
     app: { deploymentId: 'dpl_site', scriptName: 'app', middlewareScriptName: 'app' },
     routes: [route],
+    pagesDataUnder: { basePath: '', buildId: 'build' },
   });
   return {
     stack: {
@@ -105,9 +106,9 @@ function dataRequest(): { readonly stack: CheckedStack; readonly part: Part } {
       what: 'props',
       url: new URL('/_next/data/build/about.json', site),
       headers: {},
-      built: route.pagesData?.identity,
+      built: route.pagesData?.artifact,
       route,
-      builtOn: (entry) => entry.pagesData?.identity,
+      builtOn: (entry) => entry.pagesData?.artifact,
       exact: true,
     },
   };

@@ -43,8 +43,33 @@ const CODED: Readonly<Record<string, readonly [string, Buffer]>> = {
 const letGo = Promise.withResolvers<boolean>();
 /** When its answer to `/corrupt-open`, in a coding of bytes that do not undo, was let go of. */
 const corruptLetGo = Promise.withResolvers<boolean>();
+/** Header-only answers send no body byte, and end only when the reader closes them. */
+const headersClosed = new Map<string, () => void>();
+const fullHeaders = Promise.withResolvers<true>();
+const fullBody = Promise.withResolvers<true>();
 
 const server = createServer((request, response) => {
+  if (request.url?.startsWith('/headers-only-') === true) {
+    response.writeHead(request.url.endsWith('redirect') ? 307 : 200, {
+      location: '/plain',
+      'set-cookie': 'seen=1; Path=/',
+      'content-encoding': 'compress',
+      'x-copy': '1',
+    });
+    response.on('close', () => {
+      headersClosed.get(request.url ?? '')?.();
+    });
+    response.flushHeaders();
+    return;
+  }
+  if (request.url === '/full-after-headers') {
+    response.writeHead(200);
+    response.flushHeaders();
+    void fullBody.promise.then(() => {
+      response.end(DOCUMENT);
+    });
+    return;
+  }
   const coded = Object.hasOwn(CODED, request.url ?? '') ? CODED[request.url ?? ''] : undefined;
   if (coded !== undefined) {
     const [coding, bytes] = coded;
@@ -146,6 +171,83 @@ describe('an answer read as it streams', () => {
         resolve();
       });
     });
+  });
+
+  it.each(['redirect', 'page'])('reads a flushed %s without waiting for its body', async (kind) => {
+    const pathname = `/headers-only-${kind}`;
+    const closed = Promise.withResolvers<true>();
+    headersClosed.set(pathname, () => {
+      closed.resolve(true);
+    });
+    let copied = false;
+    let decoded = false;
+    const reading = await read(new URL(pathname, state.url), {
+      headers: {},
+      headersOnly: true,
+      headBytes: 15,
+      deadlineMs: 5000,
+      copyTo: () => {
+        copied = true;
+        return new URL('/copy', state.url);
+      },
+      decode: () => {
+        decoded = true;
+        return true;
+      },
+    });
+
+    expect({
+      status: reading.status,
+      cookies: reading.headers['set-cookie'],
+      location: reading.headers.location,
+      length: reading.length,
+      sha256: reading.sha256,
+      head: reading.head.toString(),
+      tail: reading.tail.toString(),
+      truncated: reading.truncated,
+      copied: reading.copied,
+      copyStarted: copied,
+      decodeStarted: decoded,
+    }).toStrictEqual({
+      status: kind === 'redirect' ? 307 : 200,
+      cookies: ['seen=1; Path=/'],
+      location: '/plain',
+      length: 0,
+      sha256: sha256Of(''),
+      head: '',
+      tail: '',
+      truncated: true,
+      copied: undefined,
+      copyStarted: false,
+      decodeStarted: false,
+    });
+    await closed.promise;
+  });
+
+  it('keeps a whole-body read open after the headers until its delayed body ends', async () => {
+    let settled = false;
+    const answer = read(new URL('/full-after-headers', state.url), {
+      headers: {},
+      deadlineMs: 5000,
+      decode: () => {
+        fullHeaders.resolve(true);
+        return false;
+      },
+    }).then((reading) => {
+      settled = true;
+      return reading;
+    });
+    await fullHeaders.promise;
+    try {
+      expect(settled).toBe(false);
+    } finally {
+      fullBody.resolve(true);
+    }
+    const reading = await answer;
+
+    expect(reading.truncated).toBe(false);
+    expect(reading).toHaveLength(Buffer.byteLength(DOCUMENT));
+    expect(reading.sha256).toBe(sha256Of(DOCUMENT));
   });
 
   it('keeps its head, its tail, its digest and a marker split across two chunks', async () => {

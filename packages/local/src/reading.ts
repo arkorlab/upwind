@@ -28,7 +28,8 @@ export interface Reading {
   /** Whether the bytes asked about (`ReadOptions.marker`) are anywhere in it. */
   readonly marked: boolean;
   /**
-   * Whether it went on past `ReadOptions.limitBytes`, and was let go of there: its length, digest
+   * Whether it was let go of at its headers (`ReadOptions.headersOnly`) or body bound
+   * (`ReadOptions.limitBytes`): its length, digest
    * and tail are then those of what was read, not of the body.
    */
   readonly truncated: boolean;
@@ -55,6 +56,8 @@ export interface ReadOptions {
   readonly marker?: Buffer | undefined;
   /** How long the answer may take, to its last byte. */
   readonly deadlineMs: number;
+  /** Keep the headers and let the answer go at once, without waiting for any body bytes. */
+  readonly headersOnly?: boolean | undefined;
   /**
    * How much of the body is read, once which the answer is let go of — said to be cut short — all of
    * it, where this names nothing: for an answer only its start is asked of, one a Function may
@@ -275,8 +278,6 @@ export function read(url: URL, options: ReadOptions): Promise<Reading> {
     const target = via === undefined ? url : new URL(`${url.pathname}${url.search}`, via);
     const request = http.request(target, { method, headers, signal }, (response) => {
       const kept = new Kept(options);
-      const copyAt = options.copyTo?.(response.headers);
-      const copy = copyAt === undefined ? undefined : new Copy(copyAt, signal);
       // Once: a response let go of past its bound may still say it ended, and its digest is taken
       // only the once it can be.
       let settled = false;
@@ -297,6 +298,15 @@ export function read(url: URL, options: ReadOptions): Promise<Reading> {
           ...(copied !== undefined && { copied }),
         });
       };
+      if (options.headersOnly === true) {
+        // Intentional cancellation may still emit an error; the reading is already settled.
+        response.on('error', reject);
+        settle(true, undefined);
+        response.destroy();
+        return;
+      }
+      const copyAt = options.copyTo?.(response.headers);
+      const copy = copyAt === undefined ? undefined : new Copy(copyAt, signal);
       const decoding =
         typeof options.decode === 'function'
           ? options.decode(response.headers)

@@ -7,7 +7,16 @@ import {
 } from '@stayingupwind/core/manifest';
 import { RSC_CACHE_BUSTING_QUERY } from '@stayingupwind/core/request';
 
-import { type CheckedStack, edgeReads } from './answers.ts';
+import {
+  answerTo,
+  type CheckedStack,
+  edgeReads,
+  keptOf,
+  middlewareAnswered,
+  middlewareCovers,
+  traced,
+  undoneUnlessStored,
+} from './answers.ts';
 import { BROWSER_CODINGS } from './codings.ts';
 import {
   cookieFor,
@@ -21,7 +30,12 @@ import {
 import { carriedScopesOf, type Scoped, scopesOf } from './cookie-scopes.ts';
 import { claimedBy, escaping } from './escaping.ts';
 import type { Part, PartKind } from './part-marks.ts';
-import { ACCEPT_ENCODING, partFailure, propsHeadVerdict } from './part-verdicts.ts';
+import {
+  ACCEPT_ENCODING,
+  partAnswerVerdict,
+  partFailure,
+  propsHeadVerdict,
+} from './part-verdicts.ts';
 import type { Reading } from './reading.ts';
 import {
   type Answered,
@@ -242,37 +256,70 @@ function routeAskedAt(
   return member === undefined ? undefined : { route: member, exact: false };
 }
 
-/** What the edge says of an answer it handed on to the Function, the application's to make. */
-const HANDED_ON = 'passthrough;';
+/** A part at the URL a browser fetch actually reached, with that request's headers. */
+function partLandedAt(stack: CheckedStack, part: Part, sent: Sent): Part | undefined {
+  const at = routeAskedAt(stack, part.kind, sent);
+  return at === undefined
+    ? undefined
+    : {
+        ...part,
+        what: `${part.what}, redirected to ${sent.url.pathname}`,
+        url: sent.url,
+        headers: sent.headers,
+        route: at.route,
+        built: part.builtOn(at.route),
+        exact: at.exact,
+      };
+}
 
-/**
- * Why what the check read of a part's landing, asked again as the browser's fetch asked it
- * (`judged`), does not stand for what the fetch was handed (`last`), in a verdict's words: where
- * the edge answered that itself — not handed on, which is the application's — and was asked the
- * same again, it answered another status or other bytes, read whole and undone alike
- * (`Answered.whole`).
- */
-function landedOtherwise(last: Answered | undefined, judged: Answered): string | undefined {
-  const got = last?.whole;
-  const again = judged.whole;
-  if (
-    got === undefined ||
-    again === undefined ||
-    last?.account === '' ||
-    last?.account.startsWith(HANDED_ON) === true
-  ) {
+/** Read a real redirect hop, retaining its own facts until the router adopts the final response. */
+async function partHopAnswer(
+  stack: CheckedStack,
+  part: Part,
+  sent: Sent,
+): Promise<Answered | string | undefined> {
+  const landed = partLandedAt(stack, part, sent);
+  if (landed === undefined) {
     return undefined;
   }
-  return got.status === again.status && got.length === again.length && got.sha256 === again.sha256
-    ? undefined
-    : `answered ${got.status} with ${got.length} bytes as the fetch landed there, and ${again.status} with ${again.length} other bytes asked the same again: no request proves what the fetch was handed`;
+  await using tracing = await traced(stack, sent.headers);
+  const from = Date.now();
+  const answer = await answerTo(sent.url, {
+    via: stack.url,
+    headers: tracing.headers,
+    decode: undoneUnlessStored(true),
+  });
+  if (typeof answer === 'string') {
+    return answer;
+  }
+  const within = { from, to: Date.now() };
+  const own = answeredOf(answer);
+  if (middlewareAnswered(answer) !== undefined) {
+    return own;
+  }
+  const { decided } = await keptOf(stack, tracing.trace, sent.url, sent.headers);
+  const covered = middlewareCovers(stack, sent.url, sent.headers);
+  return {
+    ...own,
+    partFailure: async () => {
+      const verdict = await partAnswerVerdict(stack, landed, {
+        answer,
+        decided,
+        covered,
+        coding: part.browserCodings ?? BROWSER_CODINGS,
+        asked: sent.headers,
+        within,
+      });
+      return verdict.kind === 'failed' ? `${landed.what}, ${verdict.reason}` : undefined;
+    },
+  };
 }
 
 /**
  * Why what a part's redirects lead its browser's fetch to — the answer it hands the page's router
  * as the part (`Followed.landed`) — is not answered as the edge answers that part of the page it is
- * at (`routeAskedAt`), asked as the fetch asked it last, in a verdict's words (`judgedAnswer`) — and
- * as the fetch was answered there (`landedOtherwise`). None where it is at no page of the build's,
+ * at (`routeAskedAt`), first judged by the response the fetch actually adopted, then asked as the
+ * fetch asked it last in each coding (`judgedAnswer`). None where it is at no page of the build's,
  * which the edge answers no part of.
  */
 async function landedPartFailure(
@@ -285,30 +332,20 @@ async function landedPartFailure(
     readonly answered: AnsweredAsks;
   },
 ): Promise<string | undefined> {
-  const { landed } = landing;
-  const at = routeAskedAt(stack, part.kind, landed);
-  if (at === undefined) {
-    return undefined;
+  const original = await landing.last?.partFailure?.();
+  if (original !== undefined) {
+    return original;
   }
-  // Asked as the part is, each coding apart (`partFailure`).
+  const { landed } = landing;
   const coding = part.headers[ACCEPT_ENCODING];
   const headers =
     coding === undefined ? landed.headers : { ...landed.headers, [ACCEPT_ENCODING]: coding };
-  const asLanded = {
-    ...part,
-    what: `${part.what}, redirected to ${landed.url.pathname}`,
-    url: landed.url,
-    headers,
-    route: at.route,
-    built: part.builtOn(at.route),
-    exact: at.exact,
-  };
-  const judged = await judgedAnswer(stack, asLanded, landing.answered);
-  if (typeof judged === 'string') {
-    return judged;
+  const asLanded = partLandedAt(stack, part, { ...landed, headers });
+  if (asLanded === undefined) {
+    return undefined;
   }
-  const otherwise = landedOtherwise(landing.last, judged);
-  return otherwise === undefined ? undefined : `${asLanded.what}, ${otherwise}`;
+  const judged = await judgedAnswer(stack, asLanded, landing.answered);
+  return typeof judged === 'string' ? judged : undefined;
 }
 
 /**
@@ -344,11 +381,19 @@ async function followedFailure(
     part.kind === 'data'
       ? undefined
       : (part.url.searchParams.getAll(RSC_CACHE_BUSTING_QUERY).at(-1) ?? '');
-  // Each answer on the way read whole, that the one the fetch lands on is held to what the check
-  // reads asking it again.
+  // Read whole, retaining each response's own generation facts; only the final adopted response
+  // is judged as the landing, never by requiring a later request to repeat its bytes.
   const followed = await redirectsFrom(
     stack,
-    { answered: own, url: part.url, headers: followedAs, jar: held, replay, whole: true },
+    {
+      answered: own,
+      url: part.url,
+      headers: followedAs,
+      jar: held,
+      replay,
+      whole: true,
+      partAnswer: (sent) => partHopAnswer(stack, part, sent),
+    },
     answered.followed,
   );
   if (followed.failure !== undefined) {
@@ -422,7 +467,11 @@ async function escapedMoves(
     if (unfollowed !== undefined) {
       return { failure: `${carrying.what}${as}, ${unfollowed}`, moves: [] };
     }
-    const followed = await followedFailure(stack, { part: carrying, own, held: holding }, answered);
+    const followed = await followedWithHead(
+      stack,
+      { part: carrying, own, held: holding },
+      answered,
+    );
     if (followed.failure !== undefined) {
       return { failure: followed.failure, moves: [] };
     }
@@ -480,6 +529,26 @@ async function backgroundHeadOf(
   return { steps: [{ url: part.url, changes: own.changes }, ...followed.steps] };
 }
 
+/** A GET and its redirects, then the Pages Router's background HEAD with their resulting cookies. */
+async function followedWithHead(
+  stack: CheckedStack,
+  from: { readonly part: Part; readonly own: Answered; readonly held: CookieJar },
+  answered: AnsweredAsks,
+): Promise<{ readonly failure?: string; readonly steps: readonly Step[] }> {
+  const followed = await followedFailure(stack, from, answered);
+  if (followed.failure !== undefined) {
+    return followed;
+  }
+  const afterGet = stepsApplied(from.held, followed.steps);
+  if (afterGet.unproved !== undefined) {
+    return { failure: `${from.part.what}, ${afterGet.unproved}`, steps: [] };
+  }
+  const head = await backgroundHeadOf(stack, from.part, { jar: afterGet.jar, answered });
+  return typeof head === 'string'
+    ? { failure: head, steps: [] }
+    : { steps: [...followed.steps, ...(head?.steps ?? [])] };
+}
+
 /**
  * What the answer to `part`, asked for its headers alone, did that a fetch goes on from — or why it
  * is not answered as the edge answers one (`propsHeadVerdict`). One asked before is not asked again.
@@ -526,24 +595,15 @@ async function askedFailure(
   if (typeof own === 'string') {
     return { failure: own, moves: [] };
   }
-  const followed = await followedFailure(stack, { part: asked, own, held: state.jar }, answered);
+  const followed = await followedWithHead(stack, { part: asked, own, held: state.jar }, answered);
   if (followed.failure !== undefined) {
     return { failure: followed.failure, moves: [] };
-  }
-  const afterGet = stepsApplied(state.jar, followed.steps);
-  if (afterGet.unproved !== undefined) {
-    return { failure: `${asked.what}, ${afterGet.unproved}`, moves: [] };
-  }
-  const head = await backgroundHeadOf(stack, asked, { jar: afterGet.jar, answered });
-  if (typeof head === 'string') {
-    return { failure: head, moves: [] };
   }
   const escaped = await escapedMoves(stack, { part: asked, held: state.jar }, answered);
   if (escaped.failure !== undefined) {
     return { failure: escaped.failure, moves: [] };
   }
-  const steps = [...followed.steps, ...(head?.steps ?? [])];
-  return { moves: [{ held: state.jar, steps, as: '' }, ...escaped.moves] };
+  return { moves: [{ held: state.jar, steps: followed.steps, as: '' }, ...escaped.moves] };
 }
 
 /** The most jars the check follows a flow's browser into, past which it proves none (`flowFailure`). */

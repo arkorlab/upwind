@@ -38,6 +38,8 @@ export interface Answered {
    * request is held to where the edge served it (`landedPartFailure`).
    */
   readonly whole?: { readonly status: number; readonly length: number; readonly sha256: string };
+  /** Validate this response when it is the final part a browser fetch adopts, after any replay. */
+  readonly partFailure?: (() => Promise<string | undefined>) | undefined;
 }
 
 /** What a page is found with, and what Next.js answers a path it has no page for with. */
@@ -101,8 +103,6 @@ const MAX_REDIRECTS = 20;
 const MAX_REPLAYS = 20;
 /** Why the check proves nothing past a fetch's redirects that go on past as many as it follows. */
 const TOO_MANY_REDIRECTS = `redirected past the ${MAX_REDIRECTS} redirects a browser's fetch follows, where it fails`;
-/** As much of an answer as is read for the cookies it set: its headers alone. */
-const HEADERS_ALONE = 1;
 /** Where a navigation says it came from (Fetch Metadata), and what it says of another site. */
 const FETCH_SITE = 'sec-fetch-site';
 const CROSS_SITE = 'cross-site';
@@ -334,7 +334,11 @@ function followedTo(
  */
 async function hopAnswered(
   stack: CheckedStack,
-  sent: Sent & { readonly method?: 'HEAD' | undefined; readonly whole?: boolean | undefined },
+  sent: Sent & {
+    readonly method?: 'HEAD' | undefined;
+    readonly whole?: boolean | undefined;
+    readonly partAnswer?: ((sent: Sent) => Promise<Answered | string | undefined>) | undefined;
+  },
   known: Map<string, Answered>,
 ): Promise<Answered | string> {
   const { url, headers, method } = sent;
@@ -348,8 +352,15 @@ async function hopAnswered(
   if (kept !== undefined) {
     return kept;
   }
+  if (sent.partAnswer !== undefined) {
+    const part = await sent.partAnswer(sent);
+    if (part !== undefined) {
+      if (typeof part !== 'string') known.set(key, part);
+      return part;
+    }
+  }
   const reading =
-    sent.whole === true ? { decode: undoneUnlessStored(true) } : { limitBytes: HEADERS_ALONE };
+    sent.whole === true ? { decode: undoneUnlessStored(true) } : { headersOnly: true };
   const read = await answerTo(url, { via: stack.url, headers, method, ...reading });
   if (typeof read === 'string') {
     return read;
@@ -385,6 +396,8 @@ export async function redirectsFrom(
      * the fetch ends on may be held to what the check reads when it asks the same again.
      */
     readonly whole?: boolean | undefined;
+    /** Read a known part once and retain a verdict for the response a fetch finally adopts. */
+    readonly partAnswer?: ((sent: Sent) => Promise<Answered | string | undefined>) | undefined;
   },
   known: Map<string, Answered>,
 ): Promise<Followed> {
@@ -418,7 +431,13 @@ export async function redirectsFrom(
       policy === undefined ? from.headers : referredUnder(from.headers, policy, next);
     const cookie = cookieFor(jar, next, { crossSite: from.crossSite === true });
     headers = cookieOn(uncookied(referred), cookie);
-    const asked = { url: next, headers, method: from.method, whole: from.whole };
+    const asked = {
+      url: next,
+      headers,
+      method: from.method,
+      whole: from.whole,
+      partAnswer: from.partAnswer,
+    };
     const reply = await hopAnswered(stack, asked, known);
     if (typeof reply === 'string') {
       return { steps, failure: `redirected to ${next.pathname}, ${reply}` };
