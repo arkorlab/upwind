@@ -131,14 +131,17 @@ function summarized(row: SummaryRow): CondemningInvalidation[] {
 export function weighInvalidations(sql: SqlStorage, query: CondemnationQuery): Weighed {
   const folds = foldsPast(sql, query.tagIds, query.afterRevision);
   const encodedFolds = JSON.stringify(
-    folds.map((row) => [
-      row.target_kind,
-      row.target_id,
-      row.revision,
-      row.stale_at,
-      row.hard_expire_at,
-      row.meaning,
-    ]),
+    folds.map((row) => {
+      const fields = [
+        row.target_kind,
+        row.target_id,
+        row.revision,
+        row.stale_at,
+        row.hard_expire_at,
+        row.meaning,
+      ];
+      return fields;
+    }),
   );
   const held = query.held;
   const encodedHeld = held === undefined ? '{}' : JSON.stringify(Object.fromEntries(held));

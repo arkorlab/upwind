@@ -176,7 +176,12 @@ async function commitWithHistory(count: number) {
       blobStore(env.ARTIFACTS, () => ({})),
     );
     const heartbeat = state.storage.transactionSync(() => {
-      return applyHeartbeat({ ...tx, now: HEARTBEAT_AT }, leased.attemptId, leased.fencingToken);
+      const result = applyHeartbeat(
+        { ...tx, now: HEARTBEAT_AT },
+        leased.attemptId,
+        leased.fencingToken,
+      );
+      return result;
     });
     const dependency = leaseState(sql, leased.attemptId);
     const retained = sql
