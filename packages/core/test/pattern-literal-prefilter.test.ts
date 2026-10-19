@@ -137,6 +137,17 @@ describe('proven short routing non-matches', () => {
     expect(execute).toHaveBeenCalledExactlyOnceWith('/');
   });
 
+  it.each(['', 'i'])('preserves a real legacy octal match with flags %s', (flags) => {
+    const pattern = compiled(String.raw`^\012ab$`, flags);
+    const value = '\nab';
+    const native = pattern.exec(value);
+    const execute = vi.spyOn(pattern, 'exec');
+
+    expect(testWithin(pattern, value)).toBe(true);
+    expect(execWithin(pattern, value)).toStrictEqual(native);
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
   it('keeps the refusal for a Unicode case-folding pattern its cost cannot bound', () => {
     const pattern = compiled('^/catalog$', 'iu');
     const execute = vi.spyOn(pattern, 'exec');
