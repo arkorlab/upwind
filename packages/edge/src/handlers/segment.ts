@@ -355,6 +355,7 @@ function recordDelivery(input: SegmentInput, delivered: SegmentDelivery): void {
     encoding: rendering.encoding,
     manifestId: edge.manifestId,
     policyId: edge.policy.id,
+    middlewareMs: edge.timings.middlewareMs,
     ttfbInternalMs: edge.runtime.now() - input.startedAt,
     shellLookupMs: lookupMs,
     originFirstByteMs: 0,
