@@ -55,7 +55,7 @@ function publicBody(bundle: DeploymentBundle, prerender: Prerender): boolean {
  * Function responses, even when a newer host assembles their manifest again.
  */
 export function edgeServableRouteBodies(bundle: DeploymentBundle): Prerender[] {
-  if (bundle.routeBodyPrivacy !== 1 || !reproducesDynamicRouting(bundle)) {
+  if (bundle.routeBodyPrivacy !== 2 || !reproducesDynamicRouting(bundle)) {
     return [];
   }
   const kinds = new Map(bundle.entrypoints.map((entry) => [entry.pathname, entry.kind]));
