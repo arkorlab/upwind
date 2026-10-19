@@ -5,6 +5,7 @@ import {
   decodeGenerationPack,
   deriveEntry,
   kvGenerationKey,
+  type OutputSnapshot,
   policyFromBuild,
   r2BlobKey,
 } from '@stayingupwind/core/cache';
@@ -16,6 +17,7 @@ import { describe, expect, it } from 'vitest';
 
 import { limitsOf, parseVars } from '../src/env.ts';
 import { NO_HISTORY } from '../src/scope/history.ts';
+import { type GenerationRow, generationOutputs } from '../src/scope/rows.ts';
 import { seedLocationKey } from '../src/scope/seed-repair.ts';
 import { planSeedEntries } from '../src/scope/seed.ts';
 import { scopeStub } from '../src/scope/stub.ts';
@@ -144,7 +146,7 @@ function rscOf(seed: SeedEntryInput) {
   return artifact;
 }
 
-function rowsFor(scope: Scope, plan: Plan) {
+function rowsFor(scope: Scope, plan: Plan, sha256 = plan.artifact.sha256) {
   return runInDurableObject(scope.stub, (_instance, state) => {
     return {
       revision: state.storage.sql.exec<{ revision: number }>(`SELECT revision FROM scope`).one()
@@ -158,18 +160,29 @@ function rowsFor(scope: Scope, plan: Plan) {
         }>(`SELECT * FROM entries WHERE entry_id = ?`, plan.entryId)
         .one(),
       generation: state.storage.sql
-        .exec<{ outputs: string }>(
-          `SELECT outputs FROM generations WHERE generation_id = ?`,
-          plan.generationId,
-        )
+        .exec<GenerationRow>(`SELECT * FROM generations WHERE generation_id = ?`, plan.generationId)
         .one(),
       artifact: state.storage.sql
         .exec<{ storage_ref: string; owned: number; refs: number }>(
           `SELECT storage_ref, owned, refs FROM artifacts WHERE sha256 = ?`,
-          plan.artifact.sha256,
+          sha256,
         )
         .one(),
     };
+  });
+}
+
+function relocatedArtifact(
+  outputs: readonly OutputSnapshot[],
+  sha256: string,
+  storageRef: string,
+): OutputSnapshot[] {
+  return outputs.map((output) => {
+    const artifacts = output.artifacts.map((artifact) => {
+      const located = artifact.sha256 === sha256 ? { ...artifact, storageRef } : artifact;
+      return located;
+    });
+    return { ...output, artifacts };
   });
 }
 
@@ -389,22 +402,46 @@ describe('a seed whose artifact projection could not read', () => {
     await withSharedRsc(scope, second, sharedRef);
     await env.ARTIFACTS.put(sharedRef, shared.bytes as BufferSource);
     await seedBatch(scope, [atLocation(first, 'missing/all'), atLocation(second, 'missing/all')]);
-    const secondBefore = await rowsFor(scope, second);
+    const secondBefore = await rowsFor(scope, second, shared.artifact.sha256);
 
     await seedBatch(scope, [first.seed]);
+    const firstAfter = await rowsFor(scope, first);
+    const secondAfter = await rowsFor(scope, second, shared.artifact.sha256);
+    const outputs = relocatedArtifact(
+      generationOutputs(secondBefore.generation),
+      shared.artifact.sha256,
+      sharedRef,
+    );
 
     await expect(scope.stub.artifact(shared.artifactId)).resolves.toMatchObject({
       storageRef: sharedRef,
     });
-    await expect(rowsFor(scope, second)).resolves.toMatchObject({
-      entry: secondBefore.entry,
-      generation: secondBefore.generation,
+    expect(secondAfter).toStrictEqual({
+      ...secondBefore,
+      revision: firstAfter.revision,
+      entry: {
+        ...secondBefore.entry,
+        revision: firstAfter.entry.record_revision,
+        record_revision: firstAfter.entry.record_revision,
+      },
+      generation: { ...secondBefore.generation, outputs: JSON.stringify(outputs) },
+      artifact: { ...secondBefore.artifact, storage_ref: sharedRef },
     });
     expect(decodeUtf8((await recordFor(scope, first.entryId)).html)).toBe('<html>first</html>');
 
     await seedBatch(scope, [second.seed]);
 
-    expect(decodeUtf8((await recordFor(scope, second.entryId)).html)).toBe('<html>second</html>');
+    const projected = await rowsFor(scope, second, shared.artifact.sha256);
+
+    expect({
+      body: decodeUtf8((await recordFor(scope, second.entryId)).html),
+      caughtUp: projected.entry.kv_revision === projected.entry.record_revision,
+      artifact: projected.artifact,
+    }).toStrictEqual({
+      body: '<html>second</html>',
+      caughtUp: true,
+      artifact: { ...secondBefore.artifact, storage_ref: sharedRef },
+    });
   });
 
   it.each(['missing', 'corrupt'])(
