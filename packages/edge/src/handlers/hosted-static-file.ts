@@ -19,6 +19,7 @@ import {
   abandonFileRead,
   type EarlyFileRead,
   handleStaticFile,
+  requestsOf,
   startFileRead,
 } from './static-file.ts';
 
@@ -165,9 +166,11 @@ export function routeHostedStaticFile(input: HostedStaticFileInput): Promise<Res
   function classified(configured: ConfiguredHeaders): ServedFile {
     return { pathname: url.pathname, file: input.file, early, configured };
   }
-  const letGo = (): void => {
-    abandonFileRead(early);
+  const letGo = (counted = false): Promise<number> | undefined => {
+    const abandoned = early;
+    abandonFileRead(abandoned);
     early = undefined;
+    return counted && abandoned !== undefined ? requestsOf(abandoned) : undefined;
   };
   return serveAfterMiddleware(input, {
     ready: (edge) => {
@@ -198,7 +201,7 @@ export function routeHostedStaticFile(input: HostedStaticFileInput): Promise<Res
       // served instead. A rewrite to a path the Worker answers is a passthrough, which counts the
       // request it makes and none of what was spent deciding to make it (`passthrough.ts`).
       const replaced = early;
-      letGo();
+      letGo(false);
       const target = shippedFileAt(manifest, middleware.url);
       return target === undefined
         ? undefined

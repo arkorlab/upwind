@@ -38,6 +38,16 @@ export function observeMetric(host: Pick<EdgeHost, 'observer'>, metric: EdgeMetr
   });
 }
 
+/** Count storage already started, behind the answer, before writing its single delivery point. */
+export async function observeMetricAfterRequests(
+  host: Pick<EdgeHost, 'observer'>,
+  metric: EdgeMetric,
+  requests: Promise<number>,
+): Promise<void> {
+  const spent = await requests;
+  observeMetric(host, { ...metric, subrequests: metric.subrequests + spent });
+}
+
 /** A delivery record read from storage to answer a request (`EdgeObserver.recordServed`). */
 export function observeServed(host: Pick<EdgeHost, 'observer'>, bytes: number): void {
   observe(host, 'recordServed', (observer) => {

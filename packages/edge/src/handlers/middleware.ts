@@ -26,10 +26,11 @@ import { type HostCredentials, withoutHostCredentials } from '@stayingupwind/hos
 import type { DispatchApp } from '../edge-runtime.ts';
 import { passthroughHeaders } from '../forwarding.ts';
 import { logWarn } from '../observability/logger.ts';
+import type { EdgeMetric } from '../observability/metrics.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { layConfiguredUnder } from './configured-headers.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
-import { observeMetric } from './observer.ts';
+import { observeMetric, observeMetricAfterRequests } from './observer.ts';
 import {
   badGatewayResponse,
   forwardedResponse,
@@ -513,6 +514,8 @@ export interface MiddlewareAnswered {
    * whole response, another origin's answer to a rewrite.
    */
   readonly configured: ConfiguredHeaders;
+  /** A speculative file read this answer let go of, counted once it has settled. */
+  readonly abandoned?: Promise<number> | undefined;
 }
 
 /**
@@ -525,7 +528,7 @@ function recordMiddlewareAnswer(
   reason: string,
   answered: MiddlewareAnswered & { readonly fetched?: { readonly ms: number } | undefined },
 ): void {
-  observeMetric(edge.host, {
+  const metric: EdgeMetric = {
     projectId: edge.projectId,
     kind: 'passthrough',
     pathname: answered.pathname,
@@ -549,7 +552,13 @@ function recordMiddlewareAnswer(
     assetHit: 0,
     // The middleware's dispatches, and the fetch of the origin it rewrote to where it named one.
     subrequests: answered.dispatches + (answered.fetched === undefined ? 0 : 1),
-  });
+  };
+  if (answered.abandoned === undefined) {
+    observeMetric(edge.host, metric);
+  } else {
+    // Storage may answer after the redirect has gone; counting it must not delay that answer.
+    edge.ctx.waitUntil(observeMetricAfterRequests(edge.host, metric, answered.abandoned));
+  }
 }
 
 /**
@@ -594,11 +603,18 @@ function layRouted(
       headers.set(name, routed.get(name) ?? '');
     }
   }
-  const routedType =
-    rewrite.responseHeaders.get(CONTENT_TYPE_HEADER) ?? rules.get(CONTENT_TYPE_HEADER);
-  if (routedType !== null && !headers.has(CONTENT_TYPE_HEADER)) {
-    headers.set(CONTENT_TYPE_HEADER, routedType);
+  if (!headers.has(CONTENT_TYPE_HEADER)) {
+    const routedType = routedContentType(rewrite.responseHeaders) ?? routedContentType(rules);
+    if (routedType !== null) {
+      headers.set(CONTENT_TYPE_HEADER, routedType);
+    }
   }
+}
+
+/** A missing target type may take routing's type, unless that producer made it hop-local. */
+function routedContentType(headers: Headers): string | null {
+  const value = headers.get(CONTENT_TYPE_HEADER);
+  return value !== null && nominatedBy(headers)?.has(CONTENT_TYPE_HEADER) === true ? null : value;
 }
 
 /**

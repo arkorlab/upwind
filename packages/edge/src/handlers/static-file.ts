@@ -541,7 +541,7 @@ function readFor(
  * The requests a read made, once it has come to something. One that failed failed at the bucket,
  * which is read last, after the blob Worker if the Worker was asked.
  */
-async function requestsOf(early: EarlyFileRead): Promise<number> {
+export async function requestsOf(early: EarlyFileRead): Promise<number> {
   const settled = await early.read;
   if (settled.kind === 'read') {
     return settled.read.requests;
