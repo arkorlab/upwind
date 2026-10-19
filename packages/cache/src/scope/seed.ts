@@ -410,9 +410,7 @@ function applySeedEntries(
       plan.tagsRefused ??
       unwritableRecord(recordFields(input.scopeId, plan), limits.maxRecordBytes);
     const generationId = plan.entry.generation.generationId;
-    if (reason === undefined) {
-      reason = reserveSeedPlan(plan, generationId, generationIds, artifactLengths);
-    }
+    reason ??= reserveSeedPlan(plan, generationId, generationIds, artifactLengths);
     if (reason === undefined) {
       seedable.push(plan);
       generationIds.add(generationId);
