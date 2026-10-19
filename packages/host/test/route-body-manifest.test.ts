@@ -2,9 +2,9 @@ import type { DeploymentBundle, Prerender } from '@stayingupwind/core/bundle';
 import { deriveEntry } from '@stayingupwind/core/cache';
 import { describe, expect, it } from 'vitest';
 
-// eslint-disable-next-line import-x/no-relative-packages -- Exercise the host writer's pure assembly without adding a cyclic production or test package dependency.
+// Exercise the host writer's pure assembly without adding a cyclic production or test package dependency.
 import { assembleManifest } from '../../deploy/src/manifest.ts';
-// eslint-disable-next-line import-x/no-relative-packages -- Validate the writer's internal identity helper without exporting it as a production API.
+// Validate the writer's internal identity helper without exporting it as a production API.
 import { routeBodiesOf } from '../../deploy/src/route-bodies.ts';
 import { seedRouteFor } from '../src/bundle/cache-seed.ts';
 import { shellBundle } from './shared-shell-fixture.ts';
