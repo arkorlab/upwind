@@ -181,7 +181,17 @@ function functionWorker(
     // Later names win, so the deployment's own bindings take a name the application also used.
     bindings: Object.fromEntries(bindings.text.map((binding) => [binding.name, binding.value])),
     services: Object.fromEntries(
-      bindings.services.map((binding) => [binding.name, binding.service]),
+      bindings.services.map((binding) => {
+        const target =
+          binding.entrypoint === undefined && binding.props === undefined
+            ? binding.service
+            : {
+                name: binding.service,
+                ...(binding.entrypoint !== undefined && { entrypoint: binding.entrypoint }),
+                ...(binding.props !== undefined && { props: binding.props }),
+              };
+        return [binding.name, target];
+      }),
     ),
     ...bindings.stores,
   };

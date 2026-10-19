@@ -19,6 +19,7 @@ import {
 import { compareCodeUnits } from '@stayingupwind/core/util';
 import { functionBindings, type TextBinding } from '@stayingupwind/deploy/bindings';
 import { deployBundle } from '@stayingupwind/deploy/deploy';
+import { prefetchBlobsOf } from '@stayingupwind/deploy/prefetch';
 import {
   CACHE_GATEWAY_URL_BINDING,
   CACHE_READ_GATEWAY_URL_BINDING,
@@ -385,6 +386,8 @@ export async function startStack(options: StackOptions): Promise<LocalStack> {
   ]);
   const bound = functionBindings({
     deploymentId,
+    prefetch: WORKERS.prefetch,
+    prefetchBlobs: prefetchBlobsOf(bundle),
     cache: {
       gateway: { kind: 'service', service: WORKERS.cache },
       readGateway: { kind: 'service', service: WORKERS.cacheRead },
@@ -394,10 +397,7 @@ export async function startStack(options: StackOptions): Promise<LocalStack> {
   // No receiver for what the Functions write to the application's stores
   // (`RESOURCE_CHANGES_SERVICE_BINDING`): the runtime leaves such a change to Next.js's ordinary
   // invalidation where its host binds none (`reportResourceChange`), which this stack's cache takes.
-  const services = [
-    ...bound.services,
-    { name: PREFETCH_SERVICE_BINDING, service: WORKERS.prefetch },
-  ];
+  const services = bound.services;
   // A name the deploy binds itself is the deploy's: an application's variable of the same name
   // yields to it, as it does deployed, rather than standing beside a binding of another kind. So do
   // the names the host's contract keeps whether or not this stack binds them (`HOST_NAMES`): the

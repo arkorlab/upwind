@@ -17,7 +17,15 @@ const BINDINGS = {
     { name: 'ARKOR_CACHE_TOKEN', value: 'v1.scope.signature', secret: true },
     { name: 'APP_SETTING', value: 'the deployment’s', secret: false },
   ],
-  services: [{ name: 'ARKOR_CACHE', service: 'upwind-cache' }],
+  services: [
+    { name: 'ARKOR_CACHE', service: 'upwind-cache' },
+    {
+      name: 'ARKOR_PREFETCH',
+      service: 'upwind-prefetch',
+      entrypoint: 'PrefetchForDeployment',
+      props: { allowedSha256: { ['a'.repeat(64)]: true } },
+    },
+  ],
 };
 
 /** A build's directory, with a `blobs/` for its modules. */
@@ -80,7 +88,14 @@ describe('the Functions of a deployment, on a local stack', () => {
       APP_SETTING: 'the deployment’s',
       ARKOR_CACHE_TOKEN: 'v1.scope.signature',
     });
-    expect(workers[0]?.services).toStrictEqual({ ARKOR_CACHE: 'upwind-cache' });
+    expect(workers[0]?.services).toStrictEqual({
+      ARKOR_CACHE: 'upwind-cache',
+      ARKOR_PREFETCH: {
+        name: 'upwind-prefetch',
+        entrypoint: 'PrefetchForDeployment',
+        props: { allowedSha256: { ['a'.repeat(64)]: true } },
+      },
+    });
   });
 
   it('names a split build’s Functions after the first, and the middleware’s, as the pointer will', () => {

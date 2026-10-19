@@ -25,7 +25,13 @@ export interface LocalModule {
 }
 
 /** Another Worker of the stack: its default entrypoint, or the one named. */
-type LocalService = string | { readonly name: string; readonly entrypoint: string };
+type LocalService =
+  | string
+  | {
+      readonly name: string;
+      readonly entrypoint?: string | undefined;
+      readonly props?: Readonly<Record<string, unknown>> | undefined;
+    };
 
 /** One Worker of a stack. */
 export interface LocalWorker {
