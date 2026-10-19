@@ -497,6 +497,7 @@ Issues, questions and pull requests are all welcome — rough ones included. [CO
 | **Ongoing**      | Tell us what your Next.js app does that upwind does not serve yet                                                                                                                                        |
 
 You need Node 24 — the repository names 24.22.0 — and pnpm, which Corepack fetches at the version the repository pins.
+`pnpm install` also fetches the pinned Node.js runtime; scripts and `pnpm exec node` use it.
 
 ```bash
 corepack enable        # once per machine; Corepack ships with Node 24

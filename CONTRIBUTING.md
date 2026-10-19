@@ -75,6 +75,11 @@ Node 24 — the repository names `24.22.0` — and pnpm 12. You do not install p
 `packageManager` names the exact version, and Corepack fetches it. Corepack ships with Node but is
 not on until you say so, which is the one step a fresh machine needs.
 
+`pnpm install` downloads the exact Node.js version from `devEngines.runtime` and records its
+checksum in the lockfile. `pnpm run` scripts and `pnpm exec node` use that runtime even when the
+shell has another Node.js version. Use `pnpm exec node` for manual Node.js commands in this
+workspace. CI reads the same version from `package.json`.
+
 ```bash
 corepack enable          # once per machine; `pnpm` does not exist until this runs
 git clone https://github.com/arkorlab/upwind.git

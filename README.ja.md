@@ -498,6 +498,7 @@ Issue も質問もプルリクエストも歓迎します。荒削りなもの�
 | **継続的に**     | アプリで使っているのに、upwind がまだ配信できないものを教える                                                                                                                                               |
 
 Node 24（リポジトリの指定は 24.22.0）が必要です。pnpm は、リポジトリが固定したバージョンを Corepack が取ってきます。
+`pnpm install` は指定された Node.js も取得し、スクリプトと `pnpm exec node` はそのバージョンで動きます。
 
 ```bash
 corepack enable        # マシンごとに 1 度だけ。Corepack は Node 24 に同梱されている

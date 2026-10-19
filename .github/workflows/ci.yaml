@@ -18,7 +18,7 @@ jobs:
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version-file: package.json
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       # First, because two packages are read through the `dist` they are built into rather than
@@ -61,7 +61,7 @@ jobs:
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version-file: package.json
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       # For the same reason as in `check`: a suite that imports a package read through its `dist`
@@ -117,7 +117,7 @@ jobs:
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version-file: package.json
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @stayingupwind/adapter build
@@ -159,7 +159,7 @@ jobs:
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version-file: package.json
           cache: pnpm
           cache-dependency-path: web-site/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
@@ -206,7 +206,7 @@ jobs:
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version-file: package.json
           cache: pnpm
           cache-dependency-path: ${{ matrix.directory }}/pnpm-lock.yaml
       # The website has its own lockfile and installs the released CLI and adapter as dev

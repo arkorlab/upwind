@@ -198,7 +198,7 @@ jobs:
           fetch-depth: 25
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version-file: adapter/package.json
       # Corepack rather than `pnpm/action-setup`, which reads one `packageManager` from where it runs:
       # there are two checkouts here and no manifest above them, and they do not agree on a version.
       # This way each directory's own `packageManager` is honoured — Next.js's inside `nextjs`, this
