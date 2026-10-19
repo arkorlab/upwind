@@ -38,6 +38,7 @@ import { regenerate, type RegenerationOutcome } from './cache/regenerate.ts';
 import type { CacheRuntime } from './cache/runtime.ts';
 import { servable } from './cache/servable.ts';
 import { documentFromBuild, rscFromBuild } from './documents.ts';
+import { foundDynamic, rememberingDynamic } from './dynamic-misses.ts';
 import { nodeHandlerOf } from './entries.ts';
 import { observationOf } from './incoming.ts';
 import { partialUpgrade, upgradePathname, withPartialFallbackUpgrade } from './partial-fallback.ts';
@@ -163,7 +164,7 @@ function runJob(
   const shell =
     store.prerendersByPathname.get(descriptor.pathname) ??
     findShell(store, descriptor.route, descriptor.pathname);
-  return regenerate({
+  const regeneration = regenerate({
     runtime: job.runtime,
     request: input.request,
     handler: target.handler,
@@ -188,6 +189,7 @@ function runJob(
     waitUntil: input.waitUntil,
     run: input.run,
   });
+  return rememberingDynamic(job.runtime, descriptor, reason, regeneration);
 }
 
 /**
@@ -552,7 +554,8 @@ async function renderSpeculative(
  * An entry the cache holds no record of, as the request's `onMiss` says: rendered now and kept,
  * and the visitor answered from that render; rendered behind the build's answer; or left to the
  * build. `undefined` leaves the build's answer to the caller — and so does an entry a regeneration
- * of this request has already had (`once`).
+ * of this request has already had (`once`), or one found dynamic here at a miss lately, which the
+ * caller renders as the request came (`foundDynamic`).
  */
 async function answerMiss(
   job: Job,
@@ -573,7 +576,7 @@ async function answerMiss(
       : rscFromBuild(input, store, entry, resolved));
     return input.request.method === 'HEAD' ? response : afterPartialFallback(job, response);
   }
-  const { onMiss } = source;
+  const onMiss = foundDynamic(job.runtime, job.target.descriptor) ? 'build' : source.onMiss;
   if (onMiss === 'render' && once) {
     const outcome = await runJob(job, 'miss', null);
     holdFirstPublish(outcome);
