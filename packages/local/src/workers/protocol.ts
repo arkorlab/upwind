@@ -151,4 +151,6 @@ export type MiddlewareProbe =
 export interface TraceRecord {
   readonly decision: MiddlewareDecision | null;
   readonly regenerated: Regeneration | null;
+  /** Metadata observed while this request was active, including memory hits later replaced. */
+  readonly generations?: Readonly<Record<string, RecordedGeneration>> | undefined;
 }

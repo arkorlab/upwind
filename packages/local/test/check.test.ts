@@ -313,6 +313,10 @@ const partialGenerations = new Set<string>();
 const builtGenerations = new Set<string>();
 /** What the edge judged the validity of each generation the test names by, where the test says. */
 const generationFreshness = new Map<string, unknown>();
+/** Records whose metadata the fake backstage captures in the part's own trace reply. */
+const capturedPartRecords = new Map<string, string>();
+/** A refresh after the final redirected response's trace is released, before its deferred verdict. */
+const afterPartTraces = new Map<string, { remaining: number; readonly apply: () => void }>();
 /** The value of the trace header each registered id is to go on with (`?as=`), and by pathname. */
 const registeredAs = new Map<string, string | null>();
 const restored = new Map<string, string | null>();
@@ -722,8 +726,38 @@ function answerTrace(trace: string, method: string | undefined, response: Server
           ? null
           : { status: decisionStatuses.get(tracedPath) ?? 200, headers },
       regenerated: regenerations.get(tracedPath) ?? null,
+      generations: capturedPartGenerations(trace, tracedPath),
     }),
   );
+}
+
+/** The part's wire snapshot, using the same metadata shape as the real trace GET. */
+function capturedPartGenerations(
+  trace: string,
+  pathname: string,
+): Record<string, unknown> | undefined {
+  const record = capturedPartRecords.get(pathname);
+  if (record === undefined || !traceSegments.has(trace)) return undefined;
+  const generations = generationsOf(record);
+  const entries = Object.entries(generations);
+  return Object.fromEntries(
+    entries.map(([seq, generation]) => {
+      const entry: [string, unknown] = [`${record}|${seq}`, generation];
+      return entry;
+    }),
+  );
+}
+
+/** Change the global metadata only after the original redirect fetch and its replay let go. */
+function releasedPartTrace(trace: string): void {
+  const pathname = traces.get(trace) ?? '';
+  const after = afterPartTraces.get(pathname);
+  if (after === undefined || !traceSegments.has(trace)) return;
+  after.remaining -= 1;
+  if (after.remaining === 0) {
+    afterPartTraces.delete(pathname);
+    after.apply();
+  }
 }
 
 /** What the backstage answers of a trace or a generation; false for a request of neither. */
@@ -744,6 +778,7 @@ function answeredBackstage(
     if (request.method === 'DELETE') {
       traceIds.letGo.add(id);
       response.writeHead(204).end();
+      releasedPartTrace(id);
       return true;
     }
     if (request.method === 'PUT') {
@@ -1969,6 +2004,8 @@ describe('what the check makes of the middleware', () => {
     state.middlewareAsked = undefined;
     generationHeaders.clear();
     generationOutputs.clear();
+    capturedPartRecords.clear();
+    afterPartTraces.clear();
     partialGenerations.clear();
     builtGenerations.clear();
     modes.clear();
@@ -11176,6 +11213,65 @@ describe('what the check makes of the middleware', () => {
 
       expect(result.failures).toStrictEqual([]);
       expect(seen.slice(0, 3)).toStrictEqual([before.body, before.body, after.body]);
+    });
+
+    it('keeps a redirected part trace snapshot after DELETE and rejects its own incorrect header', async () => {
+      const routes = [
+        await routeOf('/', FRONT, { segments: { '/_tree': 'tree bytes' } }),
+        await routeOf('/login', finished, { complete: true, segments: { '/_tree': 'login tree' } }),
+      ];
+      answers.set('/', documentAnswer(FRONT, 'mw=miss;route=/'));
+      answers.set('/login', finishedAnswer(finished, '/login'));
+      partAnswers.set('/|/_tree', {
+        status: 307,
+        headers: { location: '/login', 'x-arkor-edge': 'passthrough;reason=middleware;mw=hit' },
+        body: '',
+      });
+      const old = segmentAnswer('captured generation');
+      const fresh = segmentAnswer('refreshed generation');
+      const runtime = { 'cache-control': GATED, 'x-nextjs-prerender': '1' };
+      const before = { ...old, headers: { ...old.headers, ...runtime, 'x-generation': '2' } };
+      const after = { ...fresh, headers: { ...fresh.headers, ...runtime, 'x-generation': '3' } };
+      const record = `dpl_site|${await entryOf('/login', '/login')}`;
+      const first = `${record}|2`;
+      const next = `${record}|3`;
+      const refreshed = () => {
+        generationHeaders.delete(first);
+        generationOutputs.delete(first);
+        generationHeaders.set(next, { 'content-type': HTML, 'x-generation': '3' });
+        generationOutputs.set(next, [outputOf('segment', 'segment:/_tree', after.body)]);
+      };
+      capturedPartRecords.set('/login', record);
+      generationHeaders.set(first, { 'content-type': HTML, 'x-generation': '2' });
+      generationOutputs.set(first, [outputOf('segment', 'segment:/_tree', before.body)]);
+      afterPartTraces.set('/login', { remaining: 2, apply: refreshed });
+      const seen: string[] = [];
+      partAnswers.set('/login|/_tree', {
+        ...after,
+        forSearch: initialPartAnswers(before, after, seen),
+      });
+      const valid = await checkStack(stackOf(routes, {}));
+
+      expect(valid.failures).toStrictEqual([]);
+      expect(seen.slice(0, 3)).toStrictEqual([before.body, before.body, after.body]);
+      expect(generationHeaders.has(first)).toBe(false);
+
+      // A later global snapshot cannot hide a bad header captured for the adopted response.
+      generationHeaders.delete(next);
+      generationOutputs.delete(next);
+      generationHeaders.set(first, { 'content-type': HTML, 'x-generation': 'required' });
+      generationOutputs.set(first, [outputOf('segment', 'segment:/_tree', before.body)]);
+      afterPartTraces.set('/login', { remaining: 2, apply: refreshed });
+      seen.length = 0;
+      partAnswers.set('/login|/_tree', {
+        ...after,
+        forSearch: initialPartAnswers(before, after, seen),
+      });
+      const refused = await checkStack(stackOf(routes, {}));
+
+      expect(refused.failures[0]?.path).toBe('/');
+      expect(refused.failures[0]?.reason).toContain('x-generation');
+      expect(generationHeaders.has(first)).toBe(false);
     });
 
     it('rejects an unrecorded original landing even when the next sample is a valid generation', async () => {

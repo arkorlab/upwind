@@ -239,12 +239,14 @@ async function partHopAnswer(
   if (middlewareAnswered(answer) !== undefined) {
     return own;
   }
-  const { decided } = await keptOf(stack, tracing.trace, sent.url, sent.headers);
+  const { decided, generations } = await keptOf(stack, tracing.trace, sent.url, sent.headers);
+  const captured =
+    generations === undefined ? stack : { ...stack, generationEvidence: generations };
   const covered = middlewareCovers(stack, sent.url, sent.headers);
   return {
     ...own,
     partFailure: async () => {
-      const verdict = await partAnswerVerdict(stack, landed, {
+      const verdict = await partAnswerVerdict(captured, landed, {
         answer,
         decided,
         covered,

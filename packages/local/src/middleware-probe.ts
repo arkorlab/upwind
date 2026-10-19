@@ -50,8 +50,8 @@ const PARAMETER_WITNESSES = new Map([
   ['[A-Z]+', 'A'],
   ['[A-Za-z]+', 'a'],
   ['[a-zA-Z]+', 'a'],
-  [String.raw`\d`, '1'],
   [String.raw`\d+`, '1'],
+  [String.raw`\d`, '1'],
 ]);
 
 /** Fill each parameter separately, so a numeric parameter need not share a letter's witness. */

@@ -1,3 +1,4 @@
+import { kvGenerationKey } from '@stayingupwind/core/cache';
 import { middlewareApplies, type MiddlewareResult } from '@stayingupwind/core/paas';
 import { type CookieHostContext, rewriteSetCookieForPreview } from '@stayingupwind/core/request';
 import { readMiddlewareAnswer } from '@stayingupwind/edge/handlers/responses';
@@ -123,7 +124,11 @@ export async function answerTo(
  */
 export interface CheckedStack extends LocalStack {
   readonly site: URL;
+  /** A response's own trace snapshot, retained after that trace is released. */
+  readonly generationEvidence?: ReadonlyMap<string, RecordedGeneration> | undefined;
 }
+
+type GenerationStack = LocalStack & Pick<CheckedStack, 'generationEvidence'>;
 
 /**
  * The domain the stack's edge shares with other sites, as a standalone edge has it
@@ -419,6 +424,7 @@ export interface Kept {
   readonly decided: KeptMiddlewareResult | undefined;
   /** The record the edge had a Function regenerate in front of the request, where it did. */
   readonly regenerated: Regeneration | undefined;
+  readonly generations?: ReadonlyMap<string, RecordedGeneration> | undefined;
 }
 
 /**
@@ -446,13 +452,14 @@ export async function keptOf(
     );
   }
   const record = await jsonOf(response, 'a traced request');
-  const { decision, regenerated } =
+  const { decision, regenerated, generations } =
     typeof record === 'object' && record !== null
       ? (record as Record<string, unknown>)
-      : { decision: undefined, regenerated: undefined };
+      : { decision: undefined, regenerated: undefined, generations: undefined };
   const kept = {
     decided: undefined,
     regenerated: isRegeneration(regenerated) ? regenerated : undefined,
+    generations: capturedGenerations(generations),
   };
   if (!isDecision(decision)) {
     return kept;
@@ -495,9 +502,13 @@ function isHeaders(value: unknown): value is Readonly<Record<string, string>> {
  * the edge sends a document served from it with. None where the edge never read it.
  */
 export async function recordedHeadersOf(
-  stack: LocalStack,
+  stack: GenerationStack,
   generation: Generation,
 ): Promise<Readonly<Record<string, string>> | undefined> {
+  if (stack.generationEvidence !== undefined) {
+    const key = kvGenerationKey(generation.scopeId, generation.entryId);
+    return stack.generationEvidence.get(`${key}|${generation.seq}`)?.headers;
+  }
   const at = [generation.scopeId, generation.entryId, String(generation.seq)]
     .map((part) => encodeURIComponent(part))
     .join('/');
@@ -541,14 +552,36 @@ function isRecordedGeneration(value: unknown): value is RecordedGeneration {
   );
 }
 
+/** Optional metadata added to the existing trace reply; old backstage replies still work. */
+function capturedGenerations(value: unknown): ReadonlyMap<string, RecordedGeneration> | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  return new Map(
+    Object.entries(value).flatMap(([key, generation]) => {
+      const entry = isRecordedGeneration(generation) ? [[key, generation] as const] : [];
+      return entry;
+    }),
+  );
+}
+
 /**
  * Each generation of a record the stack's edge read, by sequence (`workers/edge.ts`): the headers it
  * was recorded with and the outputs it holds — what the edge serves a part from one of them with.
  */
 export async function recordedGenerationsOf(
-  stack: LocalStack,
+  stack: GenerationStack,
   record: Omit<Generation, 'seq'>,
 ): Promise<ReadonlyMap<number, RecordedGeneration>> {
+  if (stack.generationEvidence !== undefined) {
+    const prefix = `${kvGenerationKey(record.scopeId, record.entryId)}|`;
+    return new Map(
+      [...stack.generationEvidence].flatMap(([key, generation]) => {
+        const entry = key.startsWith(prefix)
+          ? [[Number(key.slice(prefix.length)), generation] as const]
+          : [];
+        return entry;
+      }),
+    );
+  }
   const at = [record.scopeId, record.entryId].map((part) => encodeURIComponent(part)).join('/');
   const response = await fetch(new URL(`.${BACKSTAGE_ROUTES.generation}${at}`, stack.backstage));
   if (!response.ok) {

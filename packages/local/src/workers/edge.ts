@@ -18,21 +18,20 @@ import type { IncomingRequest } from '@stayingupwind/edge/request-context';
 import { routeRequest, startReads } from '@stayingupwind/edge/route';
 import {
   type StandaloneEnv,
+  handleStandalone,
   standaloneHost,
   standaloneRuntime,
 } from '@stayingupwind/edge/standalone';
-import edge from '@stayingupwind/edge/standalone/worker';
 import { cspNonceModeSchema, edgePointerSchema } from '@stayingupwind/host/delivery';
 import { WorkerEntrypoint } from 'cloudflare:workers';
 
-import { rememberGeneration as rememberObservedGeneration } from './generation-evidence.ts';
+import { GenerationEvidence, watchedGenerationMemory } from './generation-evidence.ts';
 import {
   BACKSTAGE_ROUTES,
   FRONT_LINE_CODINGS,
   type MiddlewareProbe,
   NONCE_PARAMS,
   type NoncedPolicies,
-  type RecordedGeneration,
   type Regeneration,
   type StampedDigest,
   TRACE_HEADER,
@@ -58,12 +57,11 @@ const NOTHING_KEPT: TraceRecord = { decision: null, regenerated: null };
 
 /** What was kept of each traced request, by its id (`TRACE_HEADER`). */
 const traces = new Map<string, TraceRecord>();
-/**
- * What each generation of a route's record was recorded with, as the edge read it from
- * `CACHE_STATE` or the authority (`<key>|<seq>`): its headers, which the edge sends a document or a part served from
- * it with, and its outputs, a part of which it serves — which no answer says of itself.
- */
-const generations = new Map<string, RecordedGeneration>();
+/** Only active traces retain observations beyond what the edge's byte-budgeted cache holds. */
+const generations = new GenerationEvidence(MAX_TRACES);
+type LocalMemory = ReturnType<typeof standaloneRuntime>['memory'];
+/** The same memory identity for every local request, including coalesced and background work. */
+const observedMemories = new WeakMap<LocalMemory, LocalMemory>();
 /**
  * The ids a check registered on the backstage, each good for one request, with the value of the
  * header's own the request goes on with, if any (`TRACE_KEEP_PARAM`): only a request carrying one
@@ -93,6 +91,7 @@ function keep(trace: string, kept: Partial<TraceRecord>): void {
 function letGo(trace: string): void {
   registered.delete(trace);
   traces.delete(trace);
+  generations.forget(trace);
 }
 
 function register(trace: string, own: string | null): void {
@@ -198,11 +197,6 @@ function servedFrom(
   };
 }
 
-/** Keep record evidence for the local Worker's lifetime, as long as its edge can reuse a record. */
-function rememberGeneration(key: string, value: unknown): void {
-  rememberObservedGeneration(generations, key, value);
-}
-
 /** `kv`, whatever the edge reads of it looked at for a generation's headers on its way. */
 function watched(kv: KVNamespace): KVNamespace {
   return new Proxy(kv, {
@@ -216,7 +210,7 @@ function watched(kv: KVNamespace): KVNamespace {
       }
       return async (key: string, ...rest: unknown[]): Promise<unknown> => {
         const value: unknown = await Reflect.apply(member, target, [key, ...rest]);
-        rememberGeneration(key, value);
+        generations.observeActive(key, value);
         return value;
       };
     },
@@ -232,7 +226,9 @@ function servedEnv(env: StandaloneEnv, origin: URL, trace: string | undefined): 
   const local: StandaloneEnv = {
     ...env,
     CACHE_STATE: watched(env.CACHE_STATE),
-    CACHE_SIGNALS: watchedCacheSignals(env.CACHE_SIGNALS, rememberGeneration),
+    CACHE_SIGNALS: watchedCacheSignals(env.CACHE_SIGNALS, (key, value) => {
+      generations.observeActive(key, value);
+    }),
   };
   for (const name of Object.keys(env)) {
     const service: unknown = Reflect.get(env, name);
@@ -241,6 +237,36 @@ function servedEnv(env: StandaloneEnv, origin: URL, trace: string | undefined): 
     }
   }
   return local;
+}
+
+/** Preserve isolate-wide control slots keyed by memory identity across traced and ordinary work. */
+function localRuntime(env: StandaloneEnv): ReturnType<typeof standaloneRuntime> {
+  const runtime = standaloneRuntime(env);
+  let memory = observedMemories.get(runtime.memory);
+  if (memory === undefined) {
+    memory = {
+      ...runtime.memory,
+      generations: watchedGenerationMemory(runtime.memory.generations, (key, pack) => {
+        generations.heldActive(key, pack);
+      }),
+    };
+    observedMemories.set(runtime.memory, memory);
+  }
+  return { ...runtime, memory };
+}
+
+/** Capture ends at the response, even when the check never consumes or deletes its trace. */
+async function serveTraced(
+  request: IncomingRequest,
+  env: StandaloneEnv,
+  ctx: ExecutionContext,
+  trace: string,
+): Promise<Response> {
+  try {
+    return await handleStandalone(request, env, ctx, localRuntime(env));
+  } finally {
+    generations.seal(trace);
+  }
 }
 
 /** The pointer the edge serves, as it reads one: pinned on the Worker, or kept under `POINTER_KEY`. */
@@ -323,7 +349,7 @@ function keptAt(trace: string): Response {
     return new Response(null, { status: 404 });
   }
   traces.delete(trace);
-  return Response.json(record);
+  return Response.json({ ...record, generations: generations.snapshot(trace) });
 }
 
 /**
@@ -331,16 +357,11 @@ function keptAt(trace: string): Response {
  * or, asked of no sequence, every generation of the record the edge read, its headers and its
  * outputs, by sequence (`RecordedGeneration`).
  */
-function generationAt(path: string): Response {
+function generationAt(path: string, env: StandaloneEnv): Response {
   const [scopeId = '', entryId = '', seq] = path.split('/').map((part) => decodeURIComponent(part));
   const key = kvGenerationKey(scopeId, entryId);
-  if (seq === undefined) {
-    const read = [...generations].filter(([at]) => at.startsWith(`${key}|`));
-    return Response.json(
-      Object.fromEntries(read.map(([at, headers]) => [at.slice(key.length + 1), headers])),
-    );
-  }
-  return Response.json(generations.get(`${key}|${seq}`)?.headers ?? null);
+  const read = generations.forRecord(standaloneRuntime(env).memory.generations.values(), key);
+  return Response.json(seq === undefined ? read : (read[seq]?.headers ?? null));
 }
 
 /**
@@ -445,7 +466,7 @@ export class Backstage extends WorkerEntrypoint<StandaloneEnv> {
     }
     // Every test of an application's routing pattern bounded, as for any request the edge routes.
     budgetPatterns();
-    const runtime = standaloneRuntime(env);
+    const runtime = localRuntime(env);
     const url = new URL(pathname, origin);
     const started = runtime.now();
     const reads = startReads({ env, ctx: this.ctx, runtime, pointer: pointer.data });
@@ -501,7 +522,7 @@ export class Backstage extends WorkerEntrypoint<StandaloneEnv> {
     const handed = frontLineHeaders(request.headers);
     const headers = new Headers(handed);
     headers.set(MIDDLEWARE_ONLY_HEADER, '1');
-    const dispatch = standaloneRuntime(env).dispatchApp;
+    const dispatch = localRuntime(env).dispatchApp;
     let probe: MiddlewareProbe;
     try {
       const response =
@@ -543,7 +564,7 @@ export class Backstage extends WorkerEntrypoint<StandaloneEnv> {
       return this.probe(name, url.searchParams.get('path') ?? '/', request);
     }
     if (url.pathname.startsWith(BACKSTAGE_ROUTES.generation)) {
-      return generationAt(url.pathname.slice(BACKSTAGE_ROUTES.generation.length));
+      return generationAt(url.pathname.slice(BACKSTAGE_ROUTES.generation.length), this.env);
     }
     return nonceAnswer(url, request) ?? new Response(null, { status: 404 });
   }
@@ -559,11 +580,15 @@ export default {
     const asked = visited.headers.get(TRACE_HEADER);
     const own = asked === null ? undefined : registered.get(asked);
     if (asked === null || own === undefined) {
-      return edge.fetch(frontLineHanded(visited), servedEnv(env, origin, undefined), ctx);
+      const local = servedEnv(env, origin, undefined);
+      return handleStandalone(frontLineHanded(visited), local, ctx, localRuntime(local));
     }
     registered.delete(asked);
     // Kept from now, so that a check reading it later is told it from an id never seen.
     keep(asked, {});
-    return edge.fetch(frontLineHanded(untraced(visited, own)), servedEnv(env, origin, asked), ctx);
+    const local = servedEnv(env, origin, asked);
+    const handed = frontLineHanded(untraced(visited, own));
+    generations.begin(asked);
+    return serveTraced(handed, local, ctx, asked);
   },
 } satisfies ExportedHandler<StandaloneEnv>;
