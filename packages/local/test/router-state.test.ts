@@ -1,7 +1,15 @@
 import type { RouteHas } from '@stayingupwind/core/bundle';
 import type { MiddlewareMatcher } from '@stayingupwind/core/manifest';
-import { middlewareApplies, readMiddlewareResponse } from '@stayingupwind/core/paas';
-import { NEXT_ROUTER_STATE_TREE_HEADER } from '@stayingupwind/core/request';
+import {
+  IP_COUNTRY_HEADER,
+  middlewareApplies,
+  readMiddlewareResponse,
+} from '@stayingupwind/core/paas';
+import {
+  EDGE_BYPASS_COOKIE,
+  NEXT_ROUTER_STATE_TREE_HEADER,
+  sanitizePassthroughHeaders,
+} from '@stayingupwind/core/request';
 import { describe, expect, it } from 'vitest';
 
 import { stateTreeOf, stateTreeUnproved } from '../src/router-state.ts';
@@ -141,6 +149,75 @@ describe('router-state rules that can affect the requested payload', () => {
 
     expect(stateTreeUnproved(stack, PAGE, HEADERS)).toBeUndefined();
   });
+
+  it.each(KINDS)('keeps forwarding-dependent %s conditions open in both polarities', (kind) => {
+    const condition: RouteHas = { type: 'header', key: 'Via', value: '^1[.]1 .+-edge$' };
+    const rule = { sourceRegex: '^/about$', has: [VISITOR_TREE, condition] };
+    const browser = visitorHeaders(new Headers(HEADERS));
+    const routed = sanitizePassthroughHeaders(browser, {
+      previewHost: PAGE.host,
+      previewDomain: PAGE.hostname,
+      clientIp: undefined,
+    });
+
+    expect(middlewareApplies([rule], PAGE, browser)).toBe(false);
+    expect(middlewareApplies([rule], PAGE, routed)).toBe(true);
+    expect(stateTreeUnproved(withRule(kind, rule), PAGE, HEADERS)).toContain(
+      'a rule of next.config asks',
+    );
+    expect(
+      stateTreeUnproved(
+        withRule(kind, { sourceRegex: '^/about$', has: [VISITOR_TREE], missing: [condition] }),
+        PAGE,
+        HEADERS,
+      ),
+    ).toContain('a rule of next.config asks');
+  });
+
+  it.each([
+    { condition: { type: 'header', key: 'X-Forwarded-Proto', value: '^https$' } },
+    { condition: { type: 'header', key: IP_COUNTRY_HEADER, value: '^JP$' } },
+    { condition: { type: 'header', key: 'Connection', value: '^keep-alive$' } },
+    { condition: { type: 'header', key: 'x-nextjs-secret', value: '^private$' } },
+    { condition: { type: 'header', key: 'Cookie', value: '^locale=en$' } },
+    { condition: { type: 'cookie', key: EDGE_BYPASS_COOKIE, value: '^1$' } },
+  ] satisfies readonly { readonly condition: RouteHas }[])(
+    'does not settle a companion changed by forwarding: $condition',
+    ({ condition }) => {
+      const headers = {
+        ...HEADERS,
+        connection: 'keep-alive',
+        'x-nextjs-secret': 'private',
+        cookie: `locale=en; ${EDGE_BYPASS_COOKIE}=1`,
+      };
+      const browser = visitorHeaders(new Headers(headers));
+      const routed = sanitizePassthroughHeaders(browser, {
+        previewHost: PAGE.host,
+        previewDomain: PAGE.hostname,
+        clientIp: undefined,
+        clientCountry: 'JP',
+      });
+      const rule = { sourceRegex: '^/about$', has: [VISITOR_TREE, condition] };
+
+      expect(middlewareApplies([rule], PAGE, browser)).not.toBe(
+        middlewareApplies([rule], PAGE, routed),
+      );
+      expect(stateTreeUnproved(withRule('headers', rule), PAGE, headers)).toContain(
+        'a rule of next.config asks',
+      );
+      expect(
+        stateTreeUnproved(
+          withRule('headers', {
+            sourceRegex: '^/about$',
+            has: [VISITOR_TREE],
+            missing: [condition],
+          }),
+          PAGE,
+          headers,
+        ),
+      ).toContain('a rule of next.config asks');
+    },
+  );
 
   it.each([
     { condition: { type: 'header', key: 'X-VARIANT', value: '^selected$' }, holds: true },

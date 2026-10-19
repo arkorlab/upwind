@@ -5,6 +5,7 @@ import {
   PatternBudgetExceededError,
   RSC_CACHE_BUSTING_QUERY,
 } from '@stayingupwind/core/request';
+import { readsForwarding } from '@stayingupwind/edge/internal/handlers/routing-headers.ts';
 
 import { type CheckedStack, edgeReads } from './answers.ts';
 
@@ -65,17 +66,20 @@ interface StateRule {
 }
 
 /**
- * Leave the unknown tree/digest values open in either polarity, but require the source and every
- * known condition. The shared matcher uses Next.js's case-insensitive patterns and escaped-path
- * fallback; this check is conservative wherever either spelling could reach a state-sensitive rule.
+ * Leave the unknown tree/digest and forwarding-controlled values open in either polarity, but
+ * require the source and every known condition. The standalone host has no host credentials;
+ * forwarding can still replace or remove a field before the edge judges the application's rules.
+ * The shared matcher preserves Next.js's case-insensitive patterns and escaped-path fallback.
  */
 function ruleCouldApply(rule: StateRule, url: URL, headers: Headers): boolean {
   const has = rule.has ?? [];
   const missing = rule.missing ?? [];
   const known = {
     sourceRegex: rule.sourceRegex,
-    has: has.filter((condition) => !asksOfRouterState(condition)),
-    missing: missing.filter((condition) => !asksOfRouterState(condition)),
+    has: has.filter((condition) => !asksOfRouterState(condition) && !readsForwarding(condition)),
+    missing: missing.filter(
+      (condition) => !asksOfRouterState(condition) && !readsForwarding(condition),
+    ),
   };
   try {
     return middlewareApplies([known], url, headers);
