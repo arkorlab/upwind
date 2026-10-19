@@ -703,6 +703,7 @@ describe('connection semantics across middleware consumers', () => {
       visible: 'configured',
       cookies: ['mw=1; Path=/'],
     });
+
     await expect(response.arrayBuffer()).resolves.toStrictEqual(new Uint8Array([1, 2, 3]).buffer);
   });
 
