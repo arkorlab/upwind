@@ -21,7 +21,7 @@ import {
   staticResponse,
   withCacheState,
 } from './serve.ts';
-import { findShell, generationPathname, type Store } from './store.ts';
+import { findShell, generationPathname, isClassShell, type Store } from './store.ts';
 import { renderedBy } from './with-body.ts';
 
 /**
@@ -255,7 +255,11 @@ export async function serveRouteHandler(
  * shell, is kept under the shell its class completes to (`completedShell`); a prefetch of it before
  * anything is kept is answered from the class's own output — which leaves out what its parameters
  * hold up, a root layout that reads one — and the entry is rendered behind that answer, for the
- * requests after it.
+ * requests after it. A request with no prefetch header and no built shell also captures the render
+ * first when its generation key is concrete or completes more of the class's parameters: Next.js's
+ * static Flight output can then be reused by the client on later visits. An unchanged class key
+ * and other prefetch modes keep the native RSC path. Requests already recognized as speculative
+ * keep their background render.
  */
 function rscSource(
   input: RoutedInput,
@@ -265,10 +269,11 @@ function rscSource(
 ): GenerationSource {
   const blocking = shell?.ensureStatic === 'navigation' && shell.pathname !== resolved.pathname;
   const unbuilt = shell !== undefined && shell.body === undefined;
+  const prefetch = input.request.headers.get(store.manifest.routing.rsc.prefetchHeader);
   const want = {
     representation: rscRepresentation(input.request, store),
     url: resolved.url,
-    prefetch: input.request.headers.get(store.manifest.routing.rsc.prefetchHeader) === '1',
+    prefetch: prefetch === '1',
   };
   let pathname = resolved.pathname;
   if (shell !== undefined && !blocking) {
@@ -279,6 +284,12 @@ function rscSource(
     onMiss = 'render';
   } else if (unbuilt && speculative(want)) {
     onMiss = 'behind';
+  } else if (
+    unbuilt &&
+    prefetch === null &&
+    (!isClassShell(pathname, shell.route) || pathname !== shell.pathname)
+  ) {
+    onMiss = 'render';
   }
   // Under the route the build filed the shell under, which its entry is keyed by, as a document is.
   return { route: shell?.route ?? resolved.route, pathname, ...want, onMiss };
@@ -309,9 +320,16 @@ export async function serveRsc(
     if (current !== undefined) {
       return current;
     }
-    // Rendered for the request where nothing kept the blocking render — no cache, or none it may
-    // keep: the class's state is what answered such a member with nothing at all.
-    if (source.onMiss === 'render') {
+    // A newly completed class falls back to its original RSC resume state if no captured answer
+    // is available. Blocking members still need the live entry: their class's state answers none
+    // of the member's Flight. Keep that existing fallback, including literal placeholder URLs.
+    const completedClass =
+      shell !== undefined &&
+      shell.body === undefined &&
+      shell.ensureStatic !== 'navigation' &&
+      source.pathname !== shell.pathname &&
+      isClassShell(source.pathname, shell.route);
+    if (!completedClass && source.onMiss === 'render') {
       return invokeEntry(input, entry, resolved.url);
     }
   }

@@ -33,6 +33,7 @@ import { type Apply, record, type TxInput } from './tx.ts';
 
 const MILLISECONDS_PER_SECOND = 1000;
 const MAX_BACKOFF_SECONDS = 300;
+const LEASE_SWEEP_BATCH = 200;
 const LIVE_STATUSES = new Set(['leased', 'uploading']);
 
 /** `min(2^n, 300)` seconds after the n-th consecutive failure. */
@@ -90,8 +91,10 @@ function latestAttemptOf(sql: SqlStorage, entryId: string): string | undefined {
 function expiredLeases(sql: SqlStorage, now: number): AttemptRow[] {
   return sql
     .exec<AttemptRow>(
-      `SELECT * FROM attempts WHERE status IN ('leased', 'uploading') AND lease_expires_at <= ?`,
+      `SELECT * FROM attempts WHERE status IN ('leased', 'uploading') AND lease_expires_at <= ?
+       ORDER BY lease_expires_at LIMIT ?`,
       now,
+      LEASE_SWEEP_BATCH,
     )
     .toArray();
 }
@@ -141,7 +144,7 @@ export function entryStateEvent(sql: SqlStorage, entryId: string): EventInput {
   };
 }
 
-/** Every lease past its time, ended; the count of them. */
+/** One bounded page of leases past their time, ended; the count of them. */
 export function expireLeases(input: TxInput): number {
   const events: EventInput[] = [];
   const expired = expiredLeases(input.sql, input.now);
@@ -160,6 +163,18 @@ function currentSummary(sql: SqlStorage, entry: EntryRow): StartAttemptResponse[
   }
   const generation = findGeneration(sql, entry.current_generation_id);
   return generation === undefined ? null : summaryOf(generation);
+}
+
+/** Only this entry's holder is ended before it can be leased again; the alarm drains the rest. */
+function expireEntryLease(input: TxInput, entry: EntryRow | undefined, events: EventInput[]): void {
+  const attemptId = entry?.regeneration_attempt_id;
+  if (attemptId === undefined || attemptId === null) {
+    return;
+  }
+  const attempt = findAttempt(input.sql, attemptId);
+  if (attempt !== undefined && isLive(attempt) && attempt.lease_expires_at <= input.now) {
+    endAttempt(input, attempt, { status: 'expired', regeneration: 'idle' }, events);
+  }
 }
 
 interface StartPlan {
@@ -252,12 +267,10 @@ function applyStartAttempt(input: TxInput, plan: StartPlan): StartAttemptRespons
     return scope;
   }
   const events: EventInput[] = [];
-  // A lease past its time is ended here rather than left for the sweep, so at most one lease of an
-  // entry is ever live and a late commit of the old one meets a moved fencing token.
-  for (const stale of expiredLeases(sql, now)) {
-    endAttempt(input, stale, { status: 'expired', regeneration: 'idle' }, events);
-  }
   const existing = findEntry(sql, plan.identity.entryId);
+  // Serialized starts keep one holder per entry. End only this holder here, so its next lease
+  // moves the fencing token without making a request drain unrelated expired leases.
+  expireEntryLease(input, existing, events);
   if (existing === undefined && scope.entry_count >= limits.entriesPerScope) {
     finish(input, events);
     return refuse('quota_exceeded', 'the scope holds as many entries as it may');

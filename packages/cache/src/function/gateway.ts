@@ -53,6 +53,12 @@ import {
 import { ArtifactCopies, type FunctionCacheNaming } from './artifacts.ts';
 import { requestedEntryId } from './entry-identity.ts';
 import {
+  DATA_ENVELOPE_BYTES,
+  FAILURE_ENVELOPE_BYTES,
+  RECORD_ENVELOPE_BYTES,
+  withEnvelope,
+} from './envelope.ts';
+import {
   ArtifactRoom,
   beginBody,
   type BodyRead,
@@ -177,7 +183,8 @@ export class Gateway {
   /**
    * What this isolate reads of artifacts at once, from the authority and from its data center's
    * copies, of delivery records, from the gateways and from its data center's copies, and of its
-   * data center's copies of values (`reading`): one gateway an isolate.
+   * data center's copies of values, and of record/value envelopes through JSON validation
+   * (`reading`): one gateway an isolate.
    */
   readonly #reading = functionReadBudget();
 
@@ -218,20 +225,62 @@ export class Gateway {
   }
 
   /** The result of a call, checked against its schema; a refusal becomes a `CacheHostError`. */
-  async #result<T>(response: Response, schema: Schema<T>): Promise<T> {
-    const body = (await response.json()) as Envelope;
-    if (!response.ok || body.ok !== true) {
+  #result<T>(
+    response: Response,
+    schema: Schema<T>,
+    limit?: number,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    if (!response.ok) {
+      return this.#throwFailure(response, signal);
+    }
+    return limit === undefined
+      ? this.#metadataResult(response, schema)
+      : this.#envelope(
+          response,
+          limit,
+          (body) => this.#parsedResult(response, body, schema),
+          signal,
+        );
+  }
+
+  /** Metadata-only routes keep their existing success-body contract and parsing path. */
+  async #metadataResult<T>(response: Response, schema: Schema<T>): Promise<T> {
+    return this.#parsedResult(response, await response.json(), schema);
+  }
+
+  #parsedResult<T>(response: Response, value: unknown, schema: Schema<T>): T {
+    const body = value as Envelope;
+    if (body.ok !== true) {
       throw this.#refusal(response, body);
     }
     return schema.parse(body.result);
+  }
+
+  /** Existing data-read deadlines cover room and body too; write responses get the record budget. */
+  #envelope<T>(
+    response: Response,
+    limit: number,
+    parse: (body: unknown) => T,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    return signal !== undefined
+      ? withEnvelope(response, this.#reading, limit, signal, parse)
+      : readWithin('gateway envelope read', RECORD_READ_DEADLINE_MS, (asked) =>
+          withEnvelope(response, this.#reading, limit, asked, parse),
+        );
   }
 
   /**
    * A data read's answer, refused where it is of another entry than the read asked for: kept as
    * the value of the key asked for, it would be served as that one.
    */
-  async #valueOf(response: Response, request: DataGetRequest): Promise<DataGetResponse> {
-    const answer = await this.#result(response, dataGetResponseSchema);
+  async #valueOf(
+    response: Response,
+    request: DataGetRequest,
+    signal: AbortSignal,
+  ): Promise<DataGetResponse> {
+    const answer = await this.#result(response, dataGetResponseSchema, DATA_ENVELOPE_BYTES, signal);
     if (
       !answersTheRead(request, answer) ||
       answer.entryId !== requestedEntryId(this.#scopeId, request)
@@ -250,19 +299,23 @@ export class Gateway {
    * schema to hand such a call, and passing an unrelated one only to reach this path made the
    * schema look load-bearing.
    */
-  async #throwFailure(response: Response): Promise<never> {
-    throw await this.#failureOf(response);
+  async #throwFailure(response: Response, signal?: AbortSignal): Promise<never> {
+    throw await this.#failureOf(response, signal);
   }
 
   /** A response already known to have failed, as the error it stands for (`#throwFailure`). */
-  async #failureOf(response: Response): Promise<CacheHostError> {
-    let body: Envelope = {};
+  async #failureOf(response: Response, signal?: AbortSignal): Promise<CacheHostError> {
     try {
-      body = (await response.json()) as Envelope;
+      return await this.#envelope(
+        response,
+        FAILURE_ENVELOPE_BYTES,
+        (body) => this.#refusal(response, body as Envelope),
+        signal,
+      );
     } catch {
       // A refusal with no JSON body says only its status, which is what the fallback below says.
     }
-    return this.#refusal(response, body);
+    return this.#refusal(response, {});
   }
 
   #refusal(response: Response, body: Envelope): CacheHostError {
@@ -273,18 +326,20 @@ export class Gateway {
     );
   }
 
+  // eslint-disable-next-line max-params -- The optional producer bound avoids allocating options on every mutation.
   async #json<T>(
     method: 'POST' | 'PUT',
     path: string,
     payload: unknown,
     schema: Schema<T>,
+    limit?: number,
   ): Promise<T> {
     const response = await this.#send(path, {
       method,
       headers: this.#headers({ 'content-type': JSON_TYPE }),
       body: JSON.stringify(payload),
     });
-    return this.#result(response, schema);
+    return this.#result(response, schema, limit);
   }
 
   /**
@@ -309,7 +364,7 @@ export class Gateway {
         return;
       }
       if (!response.ok) {
-        await this.#throwFailure(response);
+        await this.#throwFailure(response, asked);
       }
       return this.#readArtifactWhole(response, asked, room ?? new ArtifactRoom(this.#reading));
     });
@@ -414,6 +469,7 @@ export class Gateway {
         (answer) => answer.entryId === requestedEntryId(this.#scopeId, request.entry),
         { message: 'the attempt was answered for another entry', path: ['entryId'] },
       ),
+      RECORD_ENVELOPE_BYTES,
     );
   }
 
@@ -505,7 +561,13 @@ export class Gateway {
   }
 
   commit(attemptId: string, request: CommitRequest): Promise<CommitResponse> {
-    return this.#json('POST', `/attempts/${attemptId}/commit`, request, commitResponseSchema);
+    return this.#json(
+      'POST',
+      `/attempts/${attemptId}/commit`,
+      request,
+      commitResponseSchema,
+      RECORD_ENVELOPE_BYTES,
+    );
   }
 
   fail(attemptId: string, request: FailRequest): Promise<FailResponse> {
@@ -532,7 +594,7 @@ export class Gateway {
         return;
       }
       if (!response.ok) {
-        await this.#throwFailure(response);
+        await this.#throwFailure(response, asked);
       }
       if (saidLength(response) === undefined) {
         return new Uint8Array(await response.arrayBuffer());
@@ -564,7 +626,7 @@ export class Gateway {
           await response.body?.cancel();
           return undefined;
         }
-        return this.#valueOf(response, request);
+        return this.#valueOf(response, request, signal);
       },
     );
   }
@@ -591,7 +653,7 @@ export class Gateway {
           await response.body?.cancel();
           return undefined;
         }
-        return this.#valueOf(response, request);
+        return this.#valueOf(response, request, signal);
       },
     );
   }
@@ -616,7 +678,7 @@ export class Gateway {
         },
         true,
       );
-      const answer = await this.#result(response, tagsGetResponseSchema);
+      const answer = await this.#result(response, tagsGetResponseSchema, undefined, signal);
       if (!answersTheTags(tags, answer)) {
         throw new CacheHostError('the tag read was answered of a tag it did not ask about', {
           code: 'internal',
