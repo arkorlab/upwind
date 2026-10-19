@@ -29,6 +29,7 @@ import { requestContext } from './context.ts';
 import { generationClassShell } from './generation-tags.ts';
 import { invalidateNow } from './handlers.ts';
 import { regenerate } from './regenerate.ts';
+import type { CacheRuntime } from './runtime.ts';
 
 /**
  * What a Pages Router `res.revalidate(urlPath)` does here: the page at that path is regenerated
@@ -42,6 +43,8 @@ import { regenerate } from './regenerate.ts';
  *
  * Except for a page another app Function holds, in a build split across several: that one is
  * invalidated rather than rendered here, and is rendered by its own Function when next asked for.
+ * A page a reusable terminal shell stands for is regenerated as that shell, which its class shares;
+ * an entry of the page's own, where it has one, is then invalidated by the page's tags.
  */
 
 interface RevalidateInput {
@@ -140,6 +143,23 @@ function routeOf(store: Store, pathname: string): RouteEntryDescriptor | undefin
   return undefined;
 }
 
+/**
+ * A page a shared shell stands for may also hold an entry of its own, rendered for its parameters
+ * where a host asked for one (`CACHE_UPGRADE_HEADER`), which publishing the shared shell does not
+ * replace. Once it is published, that entry is invalidated by the page's own tags, as for a page in
+ * another Function — never by the shared identity, whose new generation is in place.
+ */
+async function invalidateOwnEntry(
+  runtime: CacheRuntime,
+  pathname: string,
+  shell: string,
+): Promise<void> {
+  const own = pathTags(pathname).filter((tag) => tag.length <= MAX_TAG_LENGTH);
+  if (pathname !== shell && own.length > 0) {
+    await invalidateNow(runtime, own);
+  }
+}
+
 export async function platformRevalidate(input: RevalidateInput): Promise<void> {
   const context = requestContext();
   if (context?.runtime === undefined) {
@@ -216,5 +236,8 @@ export async function platformRevalidate(input: RevalidateInput): Promise<void> 
   const published = outcome.kind === 'accepted' ? await outcome.published : outcome;
   if (published.kind !== 'published') {
     throw new Error(`revalidate: ${pathname} was not regenerated (${published.kind})`);
+  }
+  if (shared) {
+    await invalidateOwnEntry(context.runtime, pathname, descriptor.pathname);
   }
 }
