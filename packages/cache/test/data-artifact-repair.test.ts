@@ -27,6 +27,8 @@ import { STANDALONE_AUTHORITY } from '../src/standalone/host.ts';
 
 const NOW = 1_800_000_000_000;
 const ABOVE_CARRIED_BYTES = 65 * 1024;
+/** The complete multi-write R2/DO repair pipeline has its own bounded integration-test budget. */
+const REPAIR_TEST_TIMEOUT_MS = 10_000;
 const KIND = 'data:fetch';
 
 /** Real gateway upload/adoption and real DO tables; only its dispatch transport is in process. */
@@ -335,6 +337,7 @@ describe('a data upload replacing a known broken canonical artifact', () => {
       await expect(valueOf(test, 'first')).resolves.toStrictEqual(test.bytes);
       await expect(valueOf(test, 'second')).resolves.toStrictEqual(test.bytes);
     },
+    REPAIR_TEST_TIMEOUT_MS,
   );
 
   it('replaces a corrupt owned value with one PUT and no extra body-byte charge', async () => {
