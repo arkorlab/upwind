@@ -5,15 +5,18 @@ import type { FunctionSpec } from '@stayingupwind/core/bundle';
 import type { MiniflareOptions, MiniflareWorkerConfig } from 'miniflare';
 
 type Modules = NonNullable<MiniflareWorkerConfig['manifest']>['modules'];
+type Bindings = NonNullable<MiniflareWorkerConfig['env']>;
 
 /**
  * A Function the build wrote, as Miniflare runs it: its modules read from the blobs under `out`,
- * under the names and the root it is uploaded with, at its own compatibility date and flags.
+ * under the names and the root it is uploaded with, at its own compatibility date and flags, and
+ * with whatever bindings a check gives it.
  */
 export async function functionWorker(
   name: string,
   spec: FunctionSpec,
   out: string,
+  env: Bindings = {},
 ): Promise<NonNullable<MiniflareOptions['workers']>[number]> {
   const modules: Modules = {};
   for (const module of spec.modules) {
@@ -32,6 +35,7 @@ export async function functionWorker(
       compatibilityDate: spec.compatibilityDate,
       compatibilityFlags: spec.compatibilityFlags,
       manifest: { mainModule: spec.mainModule, modulesRoot: '/bundle', modules },
+      env,
     },
   };
 }

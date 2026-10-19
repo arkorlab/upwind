@@ -25,12 +25,16 @@ The separate baseline fixture builds the same sources with only Node host config
 Edge opt-in. Its Edge route must show the same HTTP 500/no-error-hook result, with only the
 project's registration. CI requires all 30 opt-in cases and this independent baseline case.
 
-The `"use cache"` concurrency fixture is built with a cache host of its own, whose every read takes
-a second and a half, and its app Function is started in Miniflare. One request fills a cached
-entry; then two more ask for it 200 ms apart, so that the second arrives while the first is still
-reading it, and both have to be answered from the entry. From 16.3 Next.js has the second join the
-first's read and tee a body of the first request, which workerd refuses — the
-`use-cache-cross-request` patch is what keeps the two apart, and without it the second is answered 500.
+The `"use cache"` concurrency fixture is built with a cache host of its own, and its app Function is
+started in Miniflare with a binding that host tells of every read through, naming the request the
+read is for; a read goes on only once the matrix answers. One request fills a cached entry. Then
+reads are held: a first request is sent, and once its read has begun a second, whose own read of the
+same key has to begin while the first's is still held. Only then are both let go on, and both have
+to be answered from the entry. From 16.3 Next.js has the second join the first's read instead and
+tee a body of the first request, which workerd refuses — the `use-cache-cross-request` patch is what
+keeps the two apart, and without it the second reads nothing of its own and is answered 500. No
+step waits on a delay: a run that cannot show the two reads overlapping fails, and every wait is
+bounded, so a broken one says what it was waiting for.
 
 ```console
 $ pnpm --filter @stayingupwind/adapter build     # the matrix builds against dist, as a user would
