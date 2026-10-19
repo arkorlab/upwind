@@ -124,7 +124,7 @@ function serveFile(
  * naming no deployment (`staticFileBuildWithoutDpl`), and a build kept from the deployment before
  * that answers only its own `dpl` is no file of this one's. `undefined` when `url` names no file.
  */
-function shippedFileAt(manifest: ProjectManifest, url: URL): ServedFile | undefined {
+export function shippedFileAt(manifest: ProjectManifest, url: URL): ServedFile | undefined {
   const pathname = staticFileKey(manifest, url.pathname);
   const entry = pathname === undefined ? undefined : manifest.staticFiles?.[pathname];
   const file =

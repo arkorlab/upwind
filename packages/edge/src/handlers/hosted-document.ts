@@ -42,7 +42,7 @@ import {
   offTheEdge,
   requestAsLeft,
 } from './hosted-route.ts';
-import { serveHostedFile } from './hosted-static-file.ts';
+import { serveHostedFile, shippedFileAt } from './hosted-static-file.ts';
 import {
   dispatchedFor,
   followExternalRewrite,
@@ -165,7 +165,8 @@ function hostedEntry(
   }
   return (
     findRouteEntry(manifest, url.pathname) ??
-    (isExactPathname(manifest, url.pathname)
+    (isExactPathname(manifest, url.pathname) ||
+    (middleware.rewritten && shippedFileAt(manifest, url) !== undefined)
       ? undefined
       : matchDynamicRoute(manifest, url, routedHeaders))
   );
