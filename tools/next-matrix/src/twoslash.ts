@@ -7,14 +7,14 @@ import type { DeploymentBundle, FunctionSpec } from '@stayingupwind/core/bundle'
 import { convertV4MiniflareOptions, Log, LogLevel, Miniflare } from 'miniflare';
 
 import {
-  type Failure,
   failureOf,
-  type ImportProbe,
   importProbeSource,
   importProof,
   linkedImportProbeSource,
 } from './twoslash-probes.ts';
+import type { AnnotationProof, LinkedModuleEvidence, Mode, Proof } from './twoslash-proof.ts';
 
+const MODES: readonly Mode[] = ['default', 'esnext'];
 const REQUEST_MS = 30_000;
 const CLEANUP_MS = 5000;
 const TOTAL_MS = 120_000;
@@ -67,53 +67,6 @@ const EXPECTED = {
   ],
   error: undefined,
 };
-
-interface LinkedModuleEvidence {
-  kind: 'twoslash-entry' | 'shared-linked';
-  sha256: string;
-  byteLength: number;
-  importMetaUrl: number;
-  createRequire: number;
-  createRequireFromImportMeta: number;
-}
-
-interface Proof {
-  status: 'running' | 'passed' | 'failed';
-  sdk: { head: string | null; baseline: string | null };
-  nextVersion: string;
-  packageVersions: Record<string, string | null>;
-  sourceSha256: Record<string, string>;
-  declarationNamedModules: number;
-  tracedDeclarations: number | null;
-  modulesVerified: number;
-  moduleBytes: number;
-  declarationBytes: number;
-  nonDeclarationBytes: number;
-  functionSize: { bytes: number; gzipBytes: number } | null;
-  linkedModules: LinkedModuleEvidence[];
-  egressAttempts: number;
-  normalStage:
-    | 'preparation'
-    | 'runtime-start'
-    | 'request'
-    | 'response-read'
-    | 'annotations'
-    | 'complete';
-  response?: {
-    status: number;
-    bytes: number | null;
-    stage: string | null;
-    errorCategory: string | null;
-    errorName: string | null;
-    errorCode: string | null;
-    annotationsMatch: boolean;
-  };
-  importProbe?: ImportProbe;
-  linkedImportProbe?: ImportProbe;
-  probeFailure?: Failure;
-  linkedProbeFailure?: Failure;
-  failure?: Failure;
-}
 
 /** The native runtime can fail to start or dispose without honoring a request's signal. */
 async function bounded<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -221,13 +174,14 @@ function runtimeOf(
 async function responseOf(
   runtime: Miniflare,
   signal: AbortSignal,
-  proof?: Proof,
+  proof?: AnnotationProof,
+  mode: Mode = 'default',
 ): Promise<LocalResponse> {
   await bounded(runtime.ready, signal);
   if (proof !== undefined) proof.normalStage = 'request';
   const requestSignal = AbortSignal.any([signal, AbortSignal.timeout(REQUEST_MS)]);
   return bounded(
-    runtime.dispatchFetch('https://twoslash.test/?default', { signal: requestSignal }),
+    runtime.dispatchFetch(`https://twoslash.test/?${mode}`, { signal: requestSignal }),
     requestSignal,
   );
 }
@@ -265,10 +219,11 @@ async function bodyOf(response: LocalResponse, signal: AbortSignal): Promise<str
 
 async function assertAnnotations(
   runtime: Miniflare,
-  proof: Proof,
+  proof: AnnotationProof,
   signal: AbortSignal,
+  mode: Mode,
 ): Promise<void> {
-  const response = await responseOf(runtime, signal, proof);
+  const response = await responseOf(runtime, signal, proof, mode);
   proof.normalStage = 'response-read';
   proof.response = {
     status: response.status,
@@ -289,10 +244,42 @@ async function assertAnnotations(
   assert.deepEqual(
     { code: result['code'], nodes: result['nodes'], error: result['error'] },
     EXPECTED,
-    'Twoslash default code and hover annotations',
+    `Twoslash ${mode} code and hover annotations`,
   );
   proof.response.annotationsMatch = true;
   proof.normalStage = 'complete';
+}
+
+/** Each official mode gets its own first normal request, without another mode warming the isolate. */
+async function annotationCase(input: {
+  bundle: DeploymentBundle;
+  modules: Modules;
+  proof: Proof;
+  signal: AbortSignal;
+  mode: Mode;
+}): Promise<void> {
+  const { bundle, modules, proof, signal, mode } = input;
+  const one = proof.cases[mode];
+  one.status = 'running';
+  one.normalStage = 'runtime-start';
+  try {
+    const runtime = runtimeOf(bundle, modules, proof);
+    try {
+      await assertAnnotations(runtime, one, signal, mode);
+    } catch (error) {
+      one.failure = failureOf(error);
+    } finally {
+      await bounded(runtime.dispose(), AbortSignal.timeout(CLEANUP_MS));
+    }
+  } catch (error) {
+    one.failure ??= failureOf(error);
+  }
+  one.status = one.failure === undefined ? 'passed' : 'failed';
+  if (one.failure !== undefined) proof.failure ??= one.failure;
+  if (mode === 'default') {
+    proof.normalStage = one.normalStage;
+    if (one.response !== undefined) proof.response = one.response;
+  }
 }
 
 async function probeImports(
@@ -388,7 +375,12 @@ export async function twoslashHolds(
 ): Promise<string[]> {
   const directory = process.env['UPWIND_MATRIX_PROOF_DIR'] ?? out;
   const proof: Proof = {
+    version: 2,
     status: 'running',
+    cases: {
+      default: { status: 'pending', normalStage: 'preparation' },
+      esnext: { status: 'pending', normalStage: 'preparation' },
+    },
     sdk: {
       head: process.env['UPWIND_MATRIX_SDK_HEAD'] ?? null,
       baseline: process.env['UPWIND_MATRIX_BASELINE'] ?? null,
@@ -434,15 +426,7 @@ export async function twoslashHolds(
       proof.functionSize.bytes,
       'recorded Function upload byte length',
     );
-    proof.normalStage = 'runtime-start';
-    const runtime = runtimeOf(bundle, modules, proof);
-    try {
-      await assertAnnotations(runtime, proof, signal);
-    } catch (error) {
-      proof.failure = failureOf(error);
-    } finally {
-      await bounded(runtime.dispose(), AbortSignal.timeout(CLEANUP_MS));
-    }
+    for (const mode of MODES) await annotationCase({ bundle, modules, proof, signal, mode });
     try {
       await probeImports(bundle, modules, proof, signal);
     } catch (error) {
@@ -455,6 +439,7 @@ export async function twoslashHolds(
     }
     assert.equal(proof.egressAttempts, 0, 'Twoslash fixture attempted outbound network');
     proof.status =
+      MODES.every((mode) => proof.cases[mode].status === 'passed') &&
       proof.failure === undefined &&
       proof.probeFailure === undefined &&
       proof.linkedProbeFailure === undefined
