@@ -122,7 +122,7 @@ async function planFor(scope: Scope) {
 type Plan = Awaited<ReturnType<typeof planFor>>;
 type Mode = 'single' | 'batch';
 
-async function seed(scope: Scope, plan: Plan) {
+async function seedBatch(scope: Scope, plan: Plan) {
   return scope.stub.seedEntries(
     { scopeId: scope.scopeId, batchIndex: 0, entries: [plan.seed] },
     NOW,
@@ -176,6 +176,8 @@ function requestFor(plan: Plan, started: Lease, duplicate = false): CommitReques
     observedTagRevision: started.dependencyRevision,
     generation: {
       ...plan.seed.generation,
+      cacheTimestamp: NOW,
+      producedAt: NOW,
       dependencies: [],
       outputs: duplicate
         ? [output, { ...output, representationKey: 'second', pathname: '/same-bytes' }]
@@ -234,7 +236,7 @@ async function brokenSeed(fault = 'missing') {
   const scope = await scopeForTest();
   const plan = await planFor(scope);
   await damage(plan.artifact.storageRef, fault, plan.bytes.byteLength);
-  await seed(scope, plan);
+  await seedBatch(scope, plan);
   return { scope, plan };
 }
 
@@ -369,7 +371,7 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
       await expect(
         scope.stub.commit(started.attemptId, requestFor(plan, started), NOW),
       ).resolves.toMatchObject({ code: 'artifact_missing' });
-      expect(await stateFor(scope, plan)).toStrictEqual(before);
+      await expect(stateFor(scope, plan)).resolves.toStrictEqual(before);
 
       await expect(upload(scope, plan, started, mode)).resolves.toStrictEqual([
         { sha256: plan.artifact.sha256, byteLength: plan.bytes.byteLength },
@@ -379,6 +381,7 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
       ).resolves.toMatchObject({ kind: 'published' });
 
       const after = await stateFor(scope, plan);
+
       expect(after).toMatchObject({
         artifact: {
           storage_ref: r2BlobKey(scope.scopeId, plan.artifact.sha256),
@@ -397,7 +400,7 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
   it('keeps healthy borrowed bytes canonical and uncharged', async () => {
     const scope = await scopeForTest();
     const plan = await planFor(scope);
-    await seed(scope, plan);
+    await seedBatch(scope, plan);
     const before = await stateFor(scope, plan);
     const started = await lease(scope, plan);
     await upload(scope, plan, started, 'batch');
@@ -405,7 +408,7 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
     await expect(
       scope.stub.commit(started.attemptId, requestFor(plan, started), NOW),
     ).resolves.toMatchObject({ kind: 'published' });
-    expect(await stateFor(scope, plan)).toMatchObject({
+    await expect(stateFor(scope, plan)).resolves.toMatchObject({
       artifact: { storage_ref: plan.artifact.storageRef, owned: 0, refs: 2 },
       bodyBytes: 0,
       marker: undefined,
@@ -426,7 +429,7 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
     await expect(
       scope.stub.commit(started.attemptId, requestFor(plan, started), NOW),
     ).resolves.toMatchObject({ kind: 'published' });
-    expect(await stateFor(scope, plan)).toMatchObject({
+    await expect(stateFor(scope, plan)).resolves.toMatchObject({
       artifact: { owned: 1, refs: 3 },
       bodyBytes: plan.bytes.byteLength,
       marker: undefined,
@@ -453,7 +456,7 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
         scope.stub.commit(started.attemptId, requestFor(plan, started), NOW),
       ).resolves.toMatchObject({ kind: 'published' });
       expect(decodeUtf8((await recordFor(scope, plan)).html)).toBe(BODY);
-      expect(await stateFor(scope, plan)).toMatchObject({
+      await expect(stateFor(scope, plan)).resolves.toMatchObject({
         artifact: { storage_ref: storageRef, owned: 1, refs: 3 },
         bodyBytes: plan.bytes.byteLength,
         marker: undefined,
@@ -484,19 +487,19 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
         kind === 'lease' ? started.leaseExpiresAt : NOW,
       ),
     ).resolves.toMatchObject(expected);
-    expect(await stateFor(scope, plan)).toStrictEqual(before);
+    await expect(stateFor(scope, plan)).resolves.toStrictEqual(before);
   });
 
   it('rejects a replacement whose failure marker appeared after the upload HEAD plan', async () => {
     const scope = await scopeForTest();
     const plan = await planFor(scope);
-    await seed(scope, plan);
+    await seedBatch(scope, plan);
     const started = await lease(scope, plan);
     await upload(scope, plan, started, 'single');
     const outcome = await uncheckedRepair(scope, plan, started);
 
     expect(outcome).toMatchObject({ code: 'artifact_missing' });
-    expect(await stateFor(scope, plan)).toMatchObject({
+    await expect(stateFor(scope, plan)).resolves.toMatchObject({
       artifact: { storage_ref: plan.artifact.storageRef, owned: 0, refs: 1 },
       bodyBytes: 0,
       marker: `${plan.bytes.byteLength}:${plan.artifact.storageRef}`,
@@ -506,7 +509,7 @@ describe('verified uploads repairing a known broken canonical artifact', () => {
   it('ignores late projection failures for another revision, generation or canonical location', async () => {
     const scope = await scopeForTest();
     const plan = await planFor(scope);
-    await seed(scope, plan);
+    await seedBatch(scope, plan);
     const markers = await lateProjectionMarkers(scope, plan);
 
     expect(markers).toStrictEqual({ revision: [], generation: [], location: [] });

@@ -95,8 +95,8 @@ export class InvalidArtifactError extends Error {
 
   readonly artifact: Pick<RecordArtifact, 'sha256' | 'storageRef' | 'byteLength'>;
 
-  constructor(message: string, artifact: RecordArtifact) {
-    super(message);
+  constructor(message: string, artifact: RecordArtifact, options?: ErrorOptions) {
+    super(message, options);
     this.artifact = artifact;
   }
 }
