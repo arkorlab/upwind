@@ -1,5 +1,6 @@
 import { installFetchCacheModes } from './fetch-cache-mode.ts';
 import { installFetchCacheWrites } from './fetch-cache-writes.ts';
+import { installHeadersIterator } from './headers-iterator.ts';
 import { installRandomSafeContext } from './random-safe-context.ts';
 import { installResources } from './resources.ts';
 import { installTaskScheduler } from './tasks.ts';
@@ -13,9 +14,11 @@ import { installWorkflowSdk } from './workflow.ts';
  * from, which its modules may look at as they are evaluated (`resources.ts`), the runner Sentry's
  * SDK reads its random values in, which a copy of it resolves at its first read
  * (`random-safe-context.ts`), and, in a deployment that carries the Workflow SDK, the engine its
- * workflows run on (`workflow.ts`). Imported first by `function.ts`, for its effect alone.
+ * workflows run on (`workflow.ts`). Native Headers also keep Web IDL's pair-iterator alias
+ * (`headers-iterator.ts`). Imported first by `function.ts`, for its effect alone.
  */
 
+installHeadersIterator();
 installTaskScheduler();
 installFetchCacheModes();
 installFetchCacheWrites();
